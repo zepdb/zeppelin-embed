@@ -10,6 +10,9 @@ use zeppelin_embed::property_graph::query::runtime::{RuntimeContext, RuntimeErro
 mod outcome;
 pub use outcome::{OperationOutcome, OutcomeCell, OutcomeTransitionError};
 mod registration;
+/// Scoped allocation-site injection for the canonical opt-in test runner.
+#[cfg(feature = "graph-result-test-support")]
+pub mod test_support;
 pub use registration::{FreeReport, GraphResultRegistry, PreparedResponse};
 
 /// A failure before publication or a rejected free. No partial result escapes.
@@ -219,6 +222,15 @@ pub fn empty_response() -> ZeGraphResponse {
     root
 }
 
+// Every caller has reserved the exact nonzero Layout before this site.
+unsafe fn allocate_raw(layout: Layout) -> *mut u8 {
+    #[cfg(feature = "graph-result-test-support")]
+    if test_support::refuse_allocation() {
+        return std::ptr::null_mut();
+    }
+    unsafe { alloc(layout) }
+}
+
 struct AlignedArena {
     pointer: NonNull<u8>,
     layout: Layout,
@@ -230,7 +242,7 @@ impl AlignedArena {
         let pointer = if layout.size() == 0 {
             NonNull::dangling()
         } else {
-            NonNull::new(unsafe { alloc(layout) }).ok_or(OwnerError::Allocation)?
+            NonNull::new(unsafe { allocate_raw(layout) }).ok_or(OwnerError::Allocation)?
         };
         Ok(Self { pointer, layout })
     }

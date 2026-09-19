@@ -1,0 +1,48 @@
+[
+  {
+    "name": "missing_route",
+    "path": "tests/adversarial/runner.rs",
+    "before": "    super::graph_response::probe(seed, &mut coverage)?;",
+    "after": "    { let _ = seed; }",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--features",
+      "graph-cypher",
+      "--test",
+      "adversarial_tests",
+      "-E",
+      "test(one_runner_episode_reaches_required_graph_response_contracts)"
+    ],
+    "exit_code": 100,
+    "log": "05-missing_route-red.log",
+    "original_sha256": "46764f162898e4847004a74f715492c2dd4d386d15d241b2df94920cba1b6b72",
+    "restored_sha256": "46764f162898e4847004a74f715492c2dd4d386d15d241b2df94920cba1b6b72"
+  },
+  {
+    "name": "missing_fire",
+    "path": "crates/zeppelin-embed-ffi/src/graph_result/test_support.rs",
+    "before": "state.fires = state.fires.saturating_add(1);",
+    "after": "state.fires = state.fires;",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--features",
+      "graph-cypher",
+      "--test",
+      "adversarial_tests",
+      "-E",
+      "test(property_graph_response_probe_checks)"
+    ],
+    "exit_code": 100,
+    "log": "05-missing_fire-red.log",
+    "original_sha256": "a58e1bcc30fe388b07f53d34d34ec9881540384cbdeab924798e244e65dc19ea",
+    "restored_sha256": "a58e1bcc30fe388b07f53d34d34ec9881540384cbdeab924798e244e65dc19ea"
+  }
+]

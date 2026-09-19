@@ -21,6 +21,10 @@ path = "adversarial_cli.rs"
 name = "graph_refinement"
 path = "graph_refinement.rs"
 
+[features]
+# Opt-in internal graph component campaigns; default artifacts stay unchanged.
+graph-cypher = ["zeppelin-embed-ffi/graph-result-test-support"]
+
 [dependencies]
 proptest.workspace = true
 rand.workspace = true

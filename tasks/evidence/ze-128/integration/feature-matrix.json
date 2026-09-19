@@ -1,0 +1,56 @@
+{
+  "default": {
+    "command": [
+      "cargo",
+      "metadata",
+      "--format-version",
+      "1",
+      "--locked",
+      "--offline"
+    ],
+    "ffi_features": [
+      "abi-panic-probe",
+      "default"
+    ],
+    "workspace_test_features": []
+  },
+  "shipping": {
+    "command": [
+      "cargo",
+      "metadata",
+      "--format-version",
+      "1",
+      "--locked",
+      "--offline",
+      "--features",
+      "zeppelin-embed-ffi/graph-cypher"
+    ],
+    "ffi_features": [
+      "abi-panic-probe",
+      "default",
+      "graph-cypher"
+    ],
+    "workspace_test_features": []
+  },
+  "runner": {
+    "command": [
+      "cargo",
+      "metadata",
+      "--format-version",
+      "1",
+      "--locked",
+      "--offline",
+      "--features",
+      "zeppelin-embed-workspace-tests/graph-cypher"
+    ],
+    "ffi_features": [
+      "abi-panic-probe",
+      "default",
+      "graph-cypher",
+      "graph-result-test-support"
+    ],
+    "workspace_test_features": [
+      "graph-cypher"
+    ]
+  }
+}

@@ -1,0 +1,48 @@
+   Compiling zeppelin-embed-adversarial-oracle v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/tests/adversarial-oracle)
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.06s
+────────────
+ Nextest run ID dc0b55da-2ffe-4177-a1bd-78b967ad36d3 with nextest profile: default
+    Starting 1 test across 1 binary (457 tests skipped)
+        FAIL [   0.014s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests property_graph_response_probe_checks_real_owners_and_paired_faults
+  stdout ───
+
+    running 1 test
+    test property_graph_response_probe_checks_real_owners_and_paired_faults ... FAILED
+
+    failures:
+
+    failures:
+        property_graph_response_probe_checks_real_owners_and_paired_faults
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 457 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'property_graph_response_probe_checks_real_owners_and_paired_faults' (34724190) panicked at tests/adversarial_tests.rs:18867:14:
+    PG16 actual graph response owners and independent oracle: "graph query cancelled"
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.015s] 1 test run: 0 passed, 1 failed, 457 skipped
+        FAIL [   0.014s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests property_graph_response_probe_checks_real_owners_and_paired_faults
+  stdout ───
+
+    running 1 test
+    test property_graph_response_probe_checks_real_owners_and_paired_faults ... FAILED
+
+    failures:
+
+    failures:
+        property_graph_response_probe_checks_real_owners_and_paired_faults
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 457 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'property_graph_response_probe_checks_real_owners_and_paired_faults' (34724190) panicked at tests/adversarial_tests.rs:18867:14:
+    PG16 actual graph response owners and independent oracle: "graph query cancelled"
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

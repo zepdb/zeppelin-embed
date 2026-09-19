@@ -1,0 +1,48 @@
+   Compiling zeppelin-embed-adversarial-oracle v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/tests/adversarial-oracle)
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.38s
+────────────
+ Nextest run ID 5392ccfd-cf62-4321-b01e-a83230f9a185 with nextest profile: default
+    Starting 1 test across 1 binary (457 tests skipped)
+        FAIL [   0.520s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_graph_response_contracts
+  stdout ───
+
+    running 1 test
+    test one_runner_episode_reaches_required_graph_response_contracts ... FAILED
+
+    failures:
+
+    failures:
+        one_runner_episode_reaches_required_graph_response_contracts
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 457 filtered out; finished in 0.51s
+
+  stderr ───
+
+    thread 'one_runner_episode_reaches_required_graph_response_contracts' (34730966) panicked at tests/adversarial_tests.rs:18885:9:
+    actual runner omitted property-graph.response.aligned-owner
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.521s] 1 test run: 0 passed, 1 failed, 457 skipped
+        FAIL [   0.520s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_graph_response_contracts
+  stdout ───
+
+    running 1 test
+    test one_runner_episode_reaches_required_graph_response_contracts ... FAILED
+
+    failures:
+
+    failures:
+        one_runner_episode_reaches_required_graph_response_contracts
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 457 filtered out; finished in 0.51s
+
+  stderr ───
+
+    thread 'one_runner_episode_reaches_required_graph_response_contracts' (34730966) panicked at tests/adversarial_tests.rs:18885:9:
+    actual runner omitted property-graph.response.aligned-owner
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

@@ -2,6 +2,30 @@ use std::collections::BTreeMap;
 
 /// Exact product and fault paths that the 12-seed default smoke matrix must reach.
 pub const REQUIRED_SMOKE_COVERAGE: &[&str] = &[
+    #[cfg(feature = "graph-cypher")]
+    "property-graph.response.aligned-owner",
+    #[cfg(feature = "graph-cypher")]
+    "property-graph.response.private-forged-stale",
+    #[cfg(feature = "graph-cypher")]
+    "property-graph.response.abort-cleanup",
+    #[cfg(feature = "graph-cypher")]
+    "property-graph.response.concurrent-single-owner",
+    #[cfg(feature = "graph-cypher")]
+    "property-graph.response.known-outcome",
+    #[cfg(feature = "graph-cypher")]
+    "property-graph.response.allocation.fire",
+    #[cfg(feature = "graph-cypher")]
+    "property-graph.response.cancel.fire",
+    #[cfg(feature = "graph-cypher")]
+    "property-graph.response.memory.fire",
+    #[cfg(feature = "graph-cypher")]
+    "property-graph.response.work.fire",
+    #[cfg(feature = "graph-cypher")]
+    "property-graph.response.registry.fire",
+    #[cfg(feature = "graph-cypher")]
+    "property-graph.response.same-seed-control",
+    #[cfg(feature = "graph-cypher")]
+    "property-graph.response.oracle.can-fire",
     "property-graph.completed.bits-and-bags",
     "property-graph.completed.full-id",
     "property-graph.completed.oracle.can-fire",

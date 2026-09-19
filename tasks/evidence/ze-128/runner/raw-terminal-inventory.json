@@ -1,0 +1,82 @@
+[
+  {
+    "path": "01-before-runner.log",
+    "bytes": 1943,
+    "sha256": "0f2975a05e0ab466c1a7390ab3ae60bf06dfc4e12d9d8a2911a90f8b84252c0c"
+  },
+  {
+    "path": "02-missing-route-red.log",
+    "bytes": 1515,
+    "sha256": "44345e6532e54692433f4661b58acce031de9b6979dcfdb00b417a1ab34167d3"
+  },
+  {
+    "path": "03-probe-check.log",
+    "bytes": 2382,
+    "sha256": "27676fc2d2f19381f4796059194b05bed5361d857a4e0bf101e7ea614f3bdde2"
+  },
+  {
+    "path": "04-probe-green.log",
+    "bytes": 731,
+    "sha256": "fd62a6caf5d7dc9db9c529fd25167356ef189cfc3b07850e45d597a4fff0a2aa"
+  },
+  {
+    "path": "05-missing_fire-red.log",
+    "bytes": 2758,
+    "sha256": "77b06026010be184f79212c48da87c3de93c4a6145a21db347e306d24154df3c"
+  },
+  {
+    "path": "05-missing_route-red.log",
+    "bytes": 2287,
+    "sha256": "225d8f3525537689b6d853e6c4a1a5ba331f2901ebe64f7e320b104fc7caa1ca"
+  },
+  {
+    "path": "06-restored-green.log",
+    "bytes": 1745,
+    "sha256": "82f184d27ac114d2c5ea6eb3577b89f5ef837127851a11ebf663a5beaf3df26e"
+  },
+  {
+    "path": "07-ffi-clippy.log",
+    "bytes": 310,
+    "sha256": "5c8c4f1a7e4d27f6dd348d0d0997710dbc2b7a98fab947e98a99baad7daf9188"
+  },
+  {
+    "path": "08-feature-off.log",
+    "bytes": 782,
+    "sha256": "6ae5ae608a5d2b3b9a0472e2020471f82e8cb7741e7903b72ed85cf5da920dea"
+  },
+  {
+    "path": "09-owner-regression.log",
+    "bytes": 2438,
+    "sha256": "71f67fedb30afda9740df21b4e10080bb43ef76544f99f7e031e049c21fe9ff9"
+  },
+  {
+    "path": "10-oracle.log",
+    "bytes": 700,
+    "sha256": "71a62103d8b4d9584191ba29c364044a5c84b7e00d8158f82287c1e4717c0b7c"
+  },
+  {
+    "path": "11-default-ffi.log",
+    "bytes": 310,
+    "sha256": "5485064038ed0c9b4552cf32c6b4b3ae62c7ca9bb8813183e8c9204f7ac61bb5"
+  },
+  {
+    "path": "12-shipping-graph.log",
+    "bytes": 250,
+    "sha256": "7a9d7440968497f4a845900b8f6984f257a844d6b9142373c5a939bff8e51c7a"
+  },
+  {
+    "path": "13-runner-clippy.log",
+    "bytes": 1507,
+    "sha256": "4d4fe4fd0f9a18f0033d49bddaee590654accdd7dd6e67df957a1f5be9702bd2"
+  },
+  {
+    "path": "14-oracle-clippy.log",
+    "bytes": 263,
+    "sha256": "fdeaf72ea8ecddea54b11d1f462c8b0c2232e4a4b8adca1351b20d82f5a476c0"
+  },
+  {
+    "path": "16-fmt.log",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+]

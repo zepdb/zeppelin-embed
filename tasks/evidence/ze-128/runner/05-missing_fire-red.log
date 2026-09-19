@@ -1,0 +1,56 @@
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi)
+warning: useless assignment of field of type `usize` to itself
+  --> crates/zeppelin-embed-ffi/src/graph_result/test_support.rs:71:13
+   |
+71 |             state.fires = state.fires;
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `zeppelin-embed-ffi` (lib) generated 1 warning
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.65s
+────────────
+ Nextest run ID 120e61c8-2aec-487d-9432-4daf2661b705 with nextest profile: default
+    Starting 1 test across 1 binary (457 tests skipped)
+        FAIL [   0.015s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests property_graph_response_probe_checks_real_owners_and_paired_faults
+  stdout ───
+
+    running 1 test
+    test property_graph_response_probe_checks_real_owners_and_paired_faults ... FAILED
+
+    failures:
+
+    failures:
+        property_graph_response_probe_checks_real_owners_and_paired_faults
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 457 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'property_graph_response_probe_checks_real_owners_and_paired_faults' (34732125) panicked at tests/adversarial_tests.rs:18867:14:
+    PG16 actual graph response owners and independent oracle: "PG16 unproved Allocation(1): refusal=Allocation matches=1 fires=0 charge_restored=true clean=true"
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.015s] 1 test run: 0 passed, 1 failed, 457 skipped
+        FAIL [   0.015s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests property_graph_response_probe_checks_real_owners_and_paired_faults
+  stdout ───
+
+    running 1 test
+    test property_graph_response_probe_checks_real_owners_and_paired_faults ... FAILED
+
+    failures:
+
+    failures:
+        property_graph_response_probe_checks_real_owners_and_paired_faults
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 457 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'property_graph_response_probe_checks_real_owners_and_paired_faults' (34732125) panicked at tests/adversarial_tests.rs:18867:14:
+    PG16 actual graph response owners and independent oracle: "PG16 unproved Allocation(1): refusal=Allocation matches=1 fires=0 charge_restored=true clean=true"
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

@@ -13,6 +13,8 @@ crate-type = ["rlib", "staticlib", "cdylib"]
 default = []
 # Contract surface only; ZE-107 owns complete artifact/compiler feature wiring.
 graph-cypher = []
+# Scoped allocation-site scheduling for the opt-in canonical test runner only.
+graph-result-test-support = ["graph-cypher"]
 abi-panic-probe = []
 text = ["dep:zeppelin-embed-text"]
 

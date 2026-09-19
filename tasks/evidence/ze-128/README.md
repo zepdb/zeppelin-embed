@@ -150,3 +150,12 @@ root-alias/cancellation checks: four passed, 23 filtered out, all six hashes
 unchanged. See independent-review.md and independent-directed.{log,json}. This
 is an independent rerun of existing tests and source review, not a new oracle.
 The review retains all authentic producer and public integration qualifications.
+
+## Required seeded-runner followup
+
+The initial candidate alone lacked the canonical seeded-runner route required
+for changed concurrency/failure paths. The separate followup is documented in
+`runner/README.md`: PG16 executes real owner operations through the actual runner,
+adds required feature-gated coverage keys and an independent primitive oracle,
+and observes missing-route and missing-fault-receipt RED with restored GREEN.
+Root integration and this mandatory followup must both complete before closure.

@@ -1,0 +1,52 @@
+{
+  "initial_source": "f1c4d20dd4086a77ca7fdfbe7276311ea796833a",
+  "initial_main": "e015b3018326ddec0210d90859444321abd87838",
+  "followup_source": "bf463537bcf18ed8977f8482c3e727eb9dd5c33e",
+  "integrated_source": "368f7c43e6b50c34a5524d51251fb8425bd906a2",
+  "host": "Apple M3 Max; macOS arm64; nextest0.9.145; checked-in4process/retries0/libtest1 profile",
+  "commands": {
+    "pg16": "cargo nextest run -p zeppelin-embed-workspace-tests --features graph-cypher --test adversarial_tests -E 'test(property_graph_response_probe_checks) | test(one_runner_episode_reaches_required_graph_response_contracts)' --success-output immediate-final",
+    "owner": "cargo nextest run -p zeppelin-embed-ffi --features graph-result-test-support --lib -E 'test(graph_result_)' --success-output immediate-final",
+    "oracle": "cargo nextest run -p zeppelin-embed-adversarial-oracle -E 'test(graph_response)' --success-output immediate-final",
+    "feature-off": "cargo nextest run -p zeppelin-embed-workspace-tests --test adversarial_tests -E 'test(graph_response_runner_keys_are_absent_without_graph_feature)' --success-output immediate-final",
+    "runner-clippy": "cargo clippy -p zeppelin-embed-workspace-tests --features graph-cypher --test adversarial_tests --no-deps -- -D warnings",
+    "ffi-clippy": "cargo clippy -p zeppelin-embed-ffi --features graph-result-test-support --lib --tests --no-deps -- -D warnings",
+    "shipping-graph": "cargo check -p zeppelin-embed-ffi --features graph-cypher --lib"
+  },
+  "results": {
+    "pg16": {
+      "passed": 2,
+      "skipped": 465
+    },
+    "owner": {
+      "passed": 13,
+      "skipped": 14
+    },
+    "oracle": {
+      "passed": 1,
+      "skipped": 147
+    },
+    "feature-off": {
+      "passed": 1,
+      "skipped": 465
+    },
+    "runner-clippy": {
+      "exit_code": 0
+    },
+    "ffi-clippy": {
+      "exit_code": 0
+    },
+    "shipping-graph": {
+      "exit_code": 0
+    }
+  },
+  "raw_sha256": {
+    "pg16": "83d053e9cc2c2e7c5be7121952bd84bd368cda7aa81af7c9db998e940df354b6",
+    "owner": "0d0e80511f1e3f191a51f709fbc825c8b3364c128ad1976a9b012efd7746c884",
+    "oracle": "fb698b50564123d926012a1923c8db04c7feaa072e1ed516f90eb3d777cfc7f9",
+    "feature-off": "5c8b31630db75954262e2c06cee86d57119a91bb75d911e580004e65b0d03539",
+    "runner-clippy": "51e71a138f200d3d8705ea5c470718d575572a585a585b5b496a8de77b7873cd",
+    "ffi-clippy": "66349856080db18126e5e9f1c8360d1deae773eb34238c5d3747f909110ffb01",
+    "shipping-graph": "54f37c9d69717b3a779bf7cbaee9437c20c938cc4462565ea7b77396e3d11730"
+  }
+}

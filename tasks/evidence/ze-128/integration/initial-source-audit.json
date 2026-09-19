@@ -1,0 +1,198 @@
+{
+  "source": "f1c4d20dd4086a77ca7fdfbe7276311ea796833a",
+  "all_exact": true,
+  "entries": [
+    {
+      "path": "crates/zeppelin-embed-ffi/src/graph_result.rs",
+      "sha256": "bdda71a432e6617dd5b0b3e7dddd056bac357e7481946a1ced8d20abbcf7252c"
+    },
+    {
+      "path": "crates/zeppelin-embed-ffi/src/graph_result/audit.rs",
+      "sha256": "4fa5503389a933c8a6a39609c453bad236c505724193cd662564bd2970a66bef"
+    },
+    {
+      "path": "crates/zeppelin-embed-ffi/src/graph_result/outcome.rs",
+      "sha256": "257b6b7e096776ad1ce0eb763fcd355e685b41062cf928048b0e257f0d9541eb"
+    },
+    {
+      "path": "crates/zeppelin-embed-ffi/src/graph_result/registration.rs",
+      "sha256": "c33f08564541130f0d2c75d340de1784f4e55a54ad38eb540eeedc8b2d83156f"
+    },
+    {
+      "path": "crates/zeppelin-embed-ffi/src/graph_result/tests.rs",
+      "sha256": "1f6848b5723e4e1197a57f2ed8eb8101419d4b378a506c3dec7cd402983f5769"
+    },
+    {
+      "path": "crates/zeppelin-embed-ffi/src/lib.rs",
+      "sha256": "9a00a4c5fdfe4daac324072fc53a2d3cff690541717049b9d90d18b60328730d"
+    },
+    {
+      "path": "tasks/evidence/ze-128/01-layout-red.log",
+      "sha256": "1f38f3bd8f297fae4b4651e51ebb9879c7121110fc29c91d186134f2fc93875e"
+    },
+    {
+      "path": "tasks/evidence/ze-128/02-layout-green.log",
+      "sha256": "2d84d8cdb6cc1e413e31c7ed148c721145d8c474a837fa81f086aa79b9e8a1b7"
+    },
+    {
+      "path": "tasks/evidence/ze-128/03-owner-red.log",
+      "sha256": "8e8c54eafec86fb634cc98818b707c7fe0f7638c3ab4805e1b177504d385e0ad"
+    },
+    {
+      "path": "tasks/evidence/ze-128/04-owner-green.log",
+      "sha256": "73ad2e356836e2489590174885810ed24e924b85f9627234d59efbdb96466058"
+    },
+    {
+      "path": "tasks/evidence/ze-128/05-owner-green.log",
+      "sha256": "003cefc0a04386f11696480cf874e7ed1552da4d2872cdcfdb928e2d46dd4ac1"
+    },
+    {
+      "path": "tasks/evidence/ze-128/06-cross-registry-red.log",
+      "sha256": "cf899036ebfbbf5b7e0306e3c7f0c51bf100be276c848f991b7218f5af42e903"
+    },
+    {
+      "path": "tasks/evidence/ze-128/07-cross-registry-green.log",
+      "sha256": "29fb4d3af19e52eb09f0aecd65d2e19181d8c3f015d3f0fdedd7060497fdaff5"
+    },
+    {
+      "path": "tasks/evidence/ze-128/08-outcome-red.log",
+      "sha256": "16f40ebd1037b166a3829aaff47b752f7677df5e292fc4a12456fe7cdfc85746"
+    },
+    {
+      "path": "tasks/evidence/ze-128/09-outcome-green.log",
+      "sha256": "a85fcdc36e667a4c10b3214364771f4f35139898d5baf365c5d47b32b2d14cfa"
+    },
+    {
+      "path": "tasks/evidence/ze-128/10-allocator-check.log",
+      "sha256": "e26ffe6d9766ffd537f8806901d7f5eb839efeed2622d66be118f98f3ed709b3"
+    },
+    {
+      "path": "tasks/evidence/ze-128/11-allocator-debug.log",
+      "sha256": "b2594412867ffd72fc87604198a145217a7a89705c016aa4dff6fb6403b31804"
+    },
+    {
+      "path": "tasks/evidence/ze-128/12-allocator-green.log",
+      "sha256": "2117042c53ea5c9ddeda9f47cf27d94a80a531d5dd633b2edbb909a199e4509b"
+    },
+    {
+      "path": "tasks/evidence/ze-128/13-controls.log",
+      "sha256": "88fda23c8ec6810c078fd2f65d39a15f4e8128c70249954d093bc660bd5da0d9"
+    },
+    {
+      "path": "tasks/evidence/ze-128/14-fmt-pre.log",
+      "sha256": "7f4530e4928283ac79ed02a15d7f86e09c0a67fcb9977a2e9c5cecb9bd585482"
+    },
+    {
+      "path": "tasks/evidence/ze-128/15-clippy-pre.log",
+      "sha256": "441dd719206ca915fc194f6a2e5e06db3226e1cb04709022af0e231a54e482f9"
+    },
+    {
+      "path": "tasks/evidence/ze-128/16-alias-red.log",
+      "sha256": "d742ba89bc05861b404cabdedfded560b11ffcf501e9d9e2c109dc43f9ea8aa9"
+    },
+    {
+      "path": "tasks/evidence/ze-128/17-alias-green.log",
+      "sha256": "16478a0179491721c7e54e2cf5572266cb72c292d24889b767ca39d9bd042fea"
+    },
+    {
+      "path": "tasks/evidence/ze-128/18-cancel-and-lifetime.log",
+      "sha256": "ba1bbbc0254bc3f9dad638b1bff02b4d23dd95f73ee6b3a477c302a5263fbf87"
+    },
+    {
+      "path": "tasks/evidence/ze-128/19-limits.log",
+      "sha256": "774658fe7f035a45e4a1733e63a3fe06f4623ec59cc5c64b9eeb4b545d29d9d1"
+    },
+    {
+      "path": "tasks/evidence/ze-128/20-clippy.log",
+      "sha256": "8dd5f25ba23accbfa413f7dda2904516c13b6bceb34a35d8037969b7b2e944f9"
+    },
+    {
+      "path": "tasks/evidence/ze-128/21-coverage.log",
+      "sha256": "2335b0e2756a036e0058ee7f2b0e910574415df1b88c3b641f903e6e7deca2b9"
+    },
+    {
+      "path": "tasks/evidence/ze-128/22-contracts.log",
+      "sha256": "9c21002b4d1eda098f8c15abfe73a0162177e50fee39c54769e25bbcb09bd585"
+    },
+    {
+      "path": "tasks/evidence/ze-128/23-mutant-arena_drop.log",
+      "sha256": "37f60c08e65a9f337f9dd7449d9066947ee968a5f5feee1c82dafcbfee118aa7"
+    },
+    {
+      "path": "tasks/evidence/ze-128/23-mutant-final_cancel.log",
+      "sha256": "e65826d12846958e97825aad52b9c1bbb88b97e005aaecbb462df8ef41207794"
+    },
+    {
+      "path": "tasks/evidence/ze-128/23-mutant-geometry.log",
+      "sha256": "cc78980fbe8979ea35b8f78a3afd03575f9a52c2debd98c38b41332029254061"
+    },
+    {
+      "path": "tasks/evidence/ze-128/24-restored-green.log",
+      "sha256": "830028587dfd016a1285b8379a052f6843d2e5d3b3bd82766d093f1c78873341"
+    },
+    {
+      "path": "tasks/evidence/ze-128/25-final-owner.log",
+      "sha256": "3fed80b849072304c967325f582ad847687121d4f59767847289e8ba8489c9c3"
+    },
+    {
+      "path": "tasks/evidence/ze-128/26-final-clippy.log",
+      "sha256": "25902deb9da50a620171388c233defdd84cee8ba0e86d46e2541a177b5fb6663"
+    },
+    {
+      "path": "tasks/evidence/ze-128/27-final-fmt.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "tasks/evidence/ze-128/README.md",
+      "sha256": "e6fa53f11652f8c33fd030d48a615738219601f7ef6396ebb90605b7d06114ff"
+    },
+    {
+      "path": "tasks/evidence/ze-128/coverage-summary.json",
+      "sha256": "996c9c2c27636829ce13b07694e3b406c64cd471ccba516b9393c6d6c6732198"
+    },
+    {
+      "path": "tasks/evidence/ze-128/coverage.json.gz",
+      "sha256": "4a1b29ec9e5a8c584cdf2bd5ec8dacb3845cb9241bee253b4d5113555d413e7d"
+    },
+    {
+      "path": "tasks/evidence/ze-128/frozen-source-inventory.json",
+      "sha256": "ec50c9b8f9c73da30dd652a20958adb43b445022abd3edc2f73136815f9fd22c"
+    },
+    {
+      "path": "tasks/evidence/ze-128/host.txt",
+      "sha256": "cfd257a38798932957fa9e5704a9f152b006585f8293e35444b49f54db7e2495"
+    },
+    {
+      "path": "tasks/evidence/ze-128/independent-directed.json",
+      "sha256": "ab2ec52a2d1bcc07ff13be1f15923f9953b272ed374a05dc719ad12667c90d6b"
+    },
+    {
+      "path": "tasks/evidence/ze-128/independent-directed.log",
+      "sha256": "a9ae025be2fcb285f0001530b464c54d1e41c2f1f738d0f1aaf21e512b99f46a"
+    },
+    {
+      "path": "tasks/evidence/ze-128/independent-review.md",
+      "sha256": "5c13b71333efe615b8614cac3013dfd4d269025243cf08857f72be9da9a6cf4d"
+    },
+    {
+      "path": "tasks/evidence/ze-128/mutants.json",
+      "sha256": "26def49ae68293261756adafc99f7f3562ace2e1f0e9d3e24e822969bba0d378"
+    },
+    {
+      "path": "tasks/evidence/ze-128/mutate.py",
+      "sha256": "861959db80de41174eadcb02cced1c420aac6b710a641bfae1239d2b03ee7685"
+    },
+    {
+      "path": "tasks/evidence/ze-128/owner-contract-proposal.md",
+      "sha256": "c0b31153a3b6accfb98762290e7c4933b603c1f80f71753b3d10104dc3f2d07d"
+    },
+    {
+      "path": "tasks/evidence/ze-128/raw-terminal-inventory.json",
+      "sha256": "017018dea0cd8964c378969f4065fe102cc90693755b46d77136e10060dadaac"
+    },
+    {
+      "path": "tasks/evidence/ze-128/raw-terminal-logs.tar.gz",
+      "sha256": "852f1478639c733370d57732fe666076730451fe2b2fbecbcc6205add737af58"
+    }
+  ]
+}

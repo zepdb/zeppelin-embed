@@ -143,3 +143,5 @@ pub mod graph_adjacency;
 
 /// Independent primitive relational kernel oracle.
 pub mod graph_relational;
+
+pub mod graph_response;

@@ -1,0 +1,65 @@
+{
+  "base_commit": "f1c4d20dd4086a77ca7fdfbe7276311ea796833a",
+  "files": [
+    {
+      "path": "crates/zeppelin-embed-ffi/Cargo.toml",
+      "bytes": 1019,
+      "sha256": "350727bce3d7883a45cc34276b9709ea608f6a2b522412dd038db7a6f3ec3cef"
+    },
+    {
+      "path": "crates/zeppelin-embed-ffi/src/graph_result.rs",
+      "bytes": 13906,
+      "sha256": "f13717c951cda180941ec277948f94565bafa69f4cb1f92fd0a453c16721f1a9"
+    },
+    {
+      "path": "crates/zeppelin-embed-ffi/src/graph_result/registration.rs",
+      "bytes": 19299,
+      "sha256": "33e3349cdf3d2a1c1f6fbd86ee8d3fe8aad2959a101437176b717eb7d5ab8a7c"
+    },
+    {
+      "path": "crates/zeppelin-embed-ffi/src/graph_result/test_support.rs",
+      "bytes": 2455,
+      "sha256": "a58e1bcc30fe388b07f53d34d34ec9881540384cbdeab924798e244e65dc19ea"
+    },
+    {
+      "path": "tests/Cargo.toml",
+      "bytes": 1140,
+      "sha256": "6e6b413cb3618322f154bd6c95e41a88412bb53e3b8efe25620ca8fc5cccbb60"
+    },
+    {
+      "path": "tests/adversarial-oracle/src/lib.rs",
+      "bytes": 4874,
+      "sha256": "5ffb33c3997da9e14950b279d167adea824e5b578caa340bc9284bf72b9aacfe"
+    },
+    {
+      "path": "tests/adversarial-oracle/src/graph_response.rs",
+      "bytes": 4154,
+      "sha256": "a586525ccf44e96b38aa493751af9a67ebdab315092e022d36fc0f88736011f7"
+    },
+    {
+      "path": "tests/adversarial/coverage.rs",
+      "bytes": 8797,
+      "sha256": "c549d90b94d32d880e41977066139784106002fc4642ff114f5dbdb314b98a95"
+    },
+    {
+      "path": "tests/adversarial/mod.rs",
+      "bytes": 2770,
+      "sha256": "90e778f104f7035b96d1ddd89caf34a3cddd3e6a8fe9a1bd76d8986f7f3deef6"
+    },
+    {
+      "path": "tests/adversarial/runner.rs",
+      "bytes": 761363,
+      "sha256": "46764f162898e4847004a74f715492c2dd4d386d15d241b2df94920cba1b6b72"
+    },
+    {
+      "path": "tests/adversarial/graph_response.rs",
+      "bytes": 18334,
+      "sha256": "7f3116c4f9dd0ba086f070435f3c9cc161a7c8d1325f125fd0b7262cddea98ae"
+    },
+    {
+      "path": "tests/adversarial_tests.rs",
+      "bytes": 725565,
+      "sha256": "debec2b9db74b3c344ac9a52c50926c84a8953fcf8dc90be930807f5502dfeb6"
+    }
+  ]
+}

@@ -1,0 +1,270 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on artifact directory
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed)
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-ffi)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 47.71s
+────────────
+ Nextest run ID 39856a83-85f8-4649-89bf-ba8b7235d425 with nextest profile: default
+    Starting 13 tests across 1 binary (14 tests skipped)
+        PASS [   0.010s] ( 1/13) zeppelin-embed-ffi graph_result::registration::tests::graph_result_gate_poison_busy_and_registry_bound_are_precommit_errors
+  stdout ───
+
+    running 1 test
+    test graph_result::registration::tests::graph_result_gate_poison_busy_and_registry_bound_are_precommit_errors ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'graph_result::registration::tests::graph_result_gate_poison_busy_and_registry_bound_are_precommit_errors' (34784786) panicked at crates/zeppelin-embed-ffi/src/graph_result/registration.rs:432:17:
+    injected gate unwind
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.010s] ( 2/13) zeppelin-embed-ffi graph_result::registration::tests::graph_result_token_exhaustion_precedes_allocation_or_exposure
+  stdout ───
+
+    running 1 test
+    test graph_result::registration::tests::graph_result_token_exhaustion_precedes_allocation_or_exposure ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] ( 3/13) zeppelin-embed-ffi graph_result::tests::graph_result_actual_allocator_failures_and_expose_free_have_exact_heap_accounting
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_actual_allocator_failures_and_expose_free_have_exact_heap_accounting ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.012s] ( 4/13) zeppelin-embed-ffi graph_result::tests::graph_result_concurrent_free_publication_and_abort_have_one_owner
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_concurrent_free_publication_and_abort_have_one_owner ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.006s] ( 5/13) zeppelin-embed-ffi graph_result::tests::graph_result_known_commit_survives_unwind_and_unknown_attempt_retains_no_ids
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_known_commit_survives_unwind_and_unknown_attempt_retains_no_ids ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'graph_result::tests::graph_result_known_commit_survives_unwind_and_unknown_attempt_retains_no_ids' (34784840) panicked at crates/zeppelin-embed-ffi/src/graph_result/tests.rs:223:9:
+    delivery failure after durable outcome
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.008s] ( 6/13) zeppelin-embed-ffi graph_result::tests::graph_result_free_rejects_returned_root_inside_authoritative_arena
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_free_rejects_returned_root_inside_authoritative_arena ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] ( 7/13) zeppelin-embed-ffi graph_result::tests::graph_result_every_authoritative_field_mutation_and_foreign_geometry_is_rejected
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_every_authoritative_field_mutation_and_foreign_geometry_is_rejected ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] ( 8/13) zeppelin-embed-ffi graph_result::tests::graph_result_cross_registry_empty_owner_cannot_steal_another_allocation
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_cross_registry_empty_owner_cannot_steal_another_allocation ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] ( 9/13) zeppelin-embed-ffi graph_result::tests::graph_result_layout_aligns_every_typed_pool_and_rejects_oversize
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_layout_aligns_every_typed_pool_and_rejects_oversize ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (10/13) zeppelin-embed-ffi graph_result::tests::graph_result_owned_pools_outlive_temporary_owners_and_lifecycle_fixture
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_owned_pools_outlive_temporary_owners_and_lifecycle_fixture ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (11/13) zeppelin-embed-ffi graph_result::tests::graph_result_real_aligned_owner_publishes_and_frees_without_source_lifetime
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_real_aligned_owner_publishes_and_frees_without_source_lifetime ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.014s] (12/13) zeppelin-embed-ffi graph_result::tests::graph_result_seeded_cancel_sites_can_fire_and_same_seed_control_finishes
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_seeded_cancel_sites_can_fire_and_same_seed_control_finishes ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.01s
+
+  stderr ───
+    ZE_TEST_SEED=128 source_bytes=70128 cancel_sites=1..=5 control=0
+
+        PASS [   0.008s] (13/13) zeppelin-embed-ffi graph_result::tests::graph_result_shape_capacity_work_and_registry_lookup_bounds_are_real
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_shape_capacity_work_and_registry_lookup_bounds_are_real ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+────────────
+     Summary [   0.034s] 13 tests run: 13 passed, 14 skipped
+        PASS [   0.010s] ( 1/13) zeppelin-embed-ffi graph_result::registration::tests::graph_result_gate_poison_busy_and_registry_bound_are_precommit_errors
+  stdout ───
+
+    running 1 test
+    test graph_result::registration::tests::graph_result_gate_poison_busy_and_registry_bound_are_precommit_errors ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'graph_result::registration::tests::graph_result_gate_poison_busy_and_registry_bound_are_precommit_errors' (34784786) panicked at crates/zeppelin-embed-ffi/src/graph_result/registration.rs:432:17:
+    injected gate unwind
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.010s] ( 2/13) zeppelin-embed-ffi graph_result::registration::tests::graph_result_token_exhaustion_precedes_allocation_or_exposure
+  stdout ───
+
+    running 1 test
+    test graph_result::registration::tests::graph_result_token_exhaustion_precedes_allocation_or_exposure ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] ( 3/13) zeppelin-embed-ffi graph_result::tests::graph_result_actual_allocator_failures_and_expose_free_have_exact_heap_accounting
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_actual_allocator_failures_and_expose_free_have_exact_heap_accounting ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.012s] ( 4/13) zeppelin-embed-ffi graph_result::tests::graph_result_concurrent_free_publication_and_abort_have_one_owner
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_concurrent_free_publication_and_abort_have_one_owner ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.006s] ( 5/13) zeppelin-embed-ffi graph_result::tests::graph_result_known_commit_survives_unwind_and_unknown_attempt_retains_no_ids
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_known_commit_survives_unwind_and_unknown_attempt_retains_no_ids ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'graph_result::tests::graph_result_known_commit_survives_unwind_and_unknown_attempt_retains_no_ids' (34784840) panicked at crates/zeppelin-embed-ffi/src/graph_result/tests.rs:223:9:
+    delivery failure after durable outcome
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.008s] ( 6/13) zeppelin-embed-ffi graph_result::tests::graph_result_free_rejects_returned_root_inside_authoritative_arena
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_free_rejects_returned_root_inside_authoritative_arena ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] ( 7/13) zeppelin-embed-ffi graph_result::tests::graph_result_every_authoritative_field_mutation_and_foreign_geometry_is_rejected
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_every_authoritative_field_mutation_and_foreign_geometry_is_rejected ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] ( 8/13) zeppelin-embed-ffi graph_result::tests::graph_result_cross_registry_empty_owner_cannot_steal_another_allocation
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_cross_registry_empty_owner_cannot_steal_another_allocation ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] ( 9/13) zeppelin-embed-ffi graph_result::tests::graph_result_layout_aligns_every_typed_pool_and_rejects_oversize
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_layout_aligns_every_typed_pool_and_rejects_oversize ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (10/13) zeppelin-embed-ffi graph_result::tests::graph_result_owned_pools_outlive_temporary_owners_and_lifecycle_fixture
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_owned_pools_outlive_temporary_owners_and_lifecycle_fixture ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (11/13) zeppelin-embed-ffi graph_result::tests::graph_result_real_aligned_owner_publishes_and_frees_without_source_lifetime
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_real_aligned_owner_publishes_and_frees_without_source_lifetime ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.014s] (12/13) zeppelin-embed-ffi graph_result::tests::graph_result_seeded_cancel_sites_can_fire_and_same_seed_control_finishes
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_seeded_cancel_sites_can_fire_and_same_seed_control_finishes ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.01s
+
+  stderr ───
+    ZE_TEST_SEED=128 source_bytes=70128 cancel_sites=1..=5 control=0
+
+        PASS [   0.008s] (13/13) zeppelin-embed-ffi graph_result::tests::graph_result_shape_capacity_work_and_registry_lookup_bounds_are_real
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_shape_capacity_work_and_registry_lookup_bounds_are_real ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+

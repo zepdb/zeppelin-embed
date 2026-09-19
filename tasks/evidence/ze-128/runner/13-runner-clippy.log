@@ -1,0 +1,30 @@
+    Checking fnv v1.0.7
+    Checking bit-vec v0.8.0
+    Checking memchr v2.8.3
+    Checking itoa v1.0.18
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-bench)
+    Checking quick-error v1.2.3
+    Checking regex-syntax v0.8.11
+    Checking getrandom v0.3.4
+    Checking zerocopy v0.8.52
+    Checking zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed)
+    Checking serde_core v1.0.229
+    Checking zmij v1.0.23
+    Checking wait-timeout v0.2.1
+    Checking unarray v0.1.4
+    Checking num-traits v0.2.19
+    Checking zeppelin-embed-adversarial-oracle v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/tests/adversarial-oracle)
+    Checking rand_core v0.9.5
+    Checking tempfile v3.25.0
+    Checking bit-set v0.8.0
+    Checking rand_xorshift v0.4.0
+    Checking rusty-fork v0.3.1
+    Checking serde_json v1.0.151
+    Checking ppv-lite86 v0.2.21
+    Checking rand_chacha v0.9.0
+    Checking rand v0.9.5
+    Checking proptest v1.10.0
+    Checking zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-cypher)
+    Checking zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi)
+    Checking zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/tests)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.11s

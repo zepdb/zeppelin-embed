@@ -1,0 +1,22 @@
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/tests)
+error[E0433]: failed to resolve: could not find `graph_response` in `adversarial`
+     --> tests/adversarial_tests.rs:18866:35
+      |
+18866 |         let report = adversarial::graph_response::probe(seed, &mut coverage)
+      |                                   ^^^^^^^^^^^^^^ could not find `graph_response` in `adversarial`
+
+error[E0433]: failed to resolve: could not find `graph_response` in `adversarial`
+     --> tests/adversarial_tests.rs:18870:33
+      |
+18870 |         for key in adversarial::graph_response::REQUIRED_COVERAGE {
+      |                                 ^^^^^^^^^^^^^^ could not find `graph_response` in `adversarial`
+
+error[E0433]: failed to resolve: could not find `graph_response` in `adversarial`
+     --> tests/adversarial_tests.rs:18884:29
+      |
+18884 |     for key in adversarial::graph_response::REQUIRED_COVERAGE {
+      |                             ^^^^^^^^^^^^^^ could not find `graph_response` in `adversarial`
+
+For more information about this error, try `rustc --explain E0433`.
+error: could not compile `zeppelin-embed-workspace-tests` (test "adversarial_tests") due to 3 previous errors
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed-workspace-tests --test adversarial_tests --features graph-cypher` exited with code 101

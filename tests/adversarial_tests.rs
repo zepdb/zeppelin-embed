@@ -18998,3 +18998,49 @@ fn one_runner_episode_reaches_completed_owner_controls() {
         assert!(result.coverage.count(key) > 0, "{key}");
     }
 }
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn property_graph_response_probe_checks_real_owners_and_paired_faults() {
+    for seed in [0, 1, 128, u64::MAX] {
+        let mut coverage = adversarial::coverage::CoverageRegistry::default();
+        let report = adversarial::graph_response::probe(seed, &mut coverage)
+            .expect("PG16 actual graph response owners and independent oracle");
+        assert_eq!(report.fault_fires, report.clean_controls);
+        assert!(report.fault_fires >= 5);
+        for key in adversarial::graph_response::REQUIRED_COVERAGE {
+            assert!(coverage.count(key) > 0, "missing PG16 path {key}");
+        }
+        eprintln!("PG16 seed={seed} {report:?}");
+    }
+}
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn one_runner_episode_reaches_required_graph_response_contracts() {
+    let root = tempfile::tempdir().expect("graph response runner artifacts");
+    let outcome = adversarial::runner::run_program(128, FaultProfile::None, root.path())
+        .expect("actual runner episode");
+    assert!(outcome.violations.is_empty(), "{:?}", outcome.violations);
+    for key in adversarial::graph_response::REQUIRED_COVERAGE {
+        assert!(
+            outcome.coverage.count(key) > 0,
+            "actual runner omitted {key}"
+        );
+    }
+    eprintln!(
+        "PG16 actual runner seed=128 operations={} violations={}",
+        outcome.operations,
+        outcome.violations.len()
+    );
+}
+
+#[cfg(not(feature = "graph-cypher"))]
+#[test]
+fn graph_response_runner_keys_are_absent_without_graph_feature() {
+    assert!(
+        !adversarial::coverage::REQUIRED_SMOKE_COVERAGE
+            .iter()
+            .any(|key| key.starts_with("property-graph.response."))
+    );
+}

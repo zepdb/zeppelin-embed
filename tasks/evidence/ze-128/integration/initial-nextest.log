@@ -1,0 +1,978 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed)
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-ffi)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.45s
+────────────
+ Nextest run ID 607e74a8-a609-43e2-91b9-85bd40b36b0d with nextest profile: default
+    Starting 49 tests across 7 binaries (16 tests skipped)
+        PASS [   0.014s] ( 1/49) zeppelin-embed-ffi graph_result::registration::tests::graph_result_token_exhaustion_precedes_allocation_or_exposure
+  stdout ───
+
+    running 1 test
+    test graph_result::registration::tests::graph_result_token_exhaustion_precedes_allocation_or_exposure ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.014s] ( 2/49) zeppelin-embed-ffi graph_result::registration::tests::graph_result_gate_poison_busy_and_registry_bound_are_precommit_errors
+  stdout ───
+
+    running 1 test
+    test graph_result::registration::tests::graph_result_gate_poison_busy_and_registry_bound_are_precommit_errors ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'graph_result::registration::tests::graph_result_gate_poison_busy_and_registry_bound_are_precommit_errors' (34689288) panicked at crates/zeppelin-embed-ffi/src/graph_result/registration.rs:432:17:
+    injected gate unwind
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.015s] ( 3/49) zeppelin-embed-ffi graph_result::tests::graph_result_actual_allocator_failures_and_expose_free_have_exact_heap_accounting
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_actual_allocator_failures_and_expose_free_have_exact_heap_accounting ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.015s] ( 4/49) zeppelin-embed-ffi graph_result::tests::graph_result_concurrent_free_publication_and_abort_have_one_owner
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_concurrent_free_publication_and_abort_have_one_owner ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.01s
+
+
+        PASS [   0.008s] ( 5/49) zeppelin-embed-ffi graph_result::tests::graph_result_known_commit_survives_unwind_and_unknown_attempt_retains_no_ids
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_known_commit_survives_unwind_and_unknown_attempt_retains_no_ids ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'graph_result::tests::graph_result_known_commit_survives_unwind_and_unknown_attempt_retains_no_ids' (34689342) panicked at crates/zeppelin-embed-ffi/src/graph_result/tests.rs:223:9:
+    delivery failure after durable outcome
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.010s] ( 6/49) zeppelin-embed-ffi graph_result::tests::graph_result_every_authoritative_field_mutation_and_foreign_geometry_is_rejected
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_every_authoritative_field_mutation_and_foreign_geometry_is_rejected ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.010s] ( 7/49) zeppelin-embed-ffi graph_result::tests::graph_result_cross_registry_empty_owner_cannot_steal_another_allocation
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_cross_registry_empty_owner_cannot_steal_another_allocation ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] ( 8/49) zeppelin-embed-ffi graph_result::tests::graph_result_free_rejects_returned_root_inside_authoritative_arena
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_free_rejects_returned_root_inside_authoritative_arena ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] ( 9/49) zeppelin-embed-ffi graph_result::tests::graph_result_layout_aligns_every_typed_pool_and_rejects_oversize
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_layout_aligns_every_typed_pool_and_rejects_oversize ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (10/49) zeppelin-embed-ffi graph_result::tests::graph_result_real_aligned_owner_publishes_and_frees_without_source_lifetime
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_real_aligned_owner_publishes_and_frees_without_source_lifetime ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] (11/49) zeppelin-embed-ffi graph_result::tests::graph_result_owned_pools_outlive_temporary_owners_and_lifecycle_fixture
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_owned_pools_outlive_temporary_owners_and_lifecycle_fixture ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.016s] (12/49) zeppelin-embed-ffi graph_result::tests::graph_result_seeded_cancel_sites_can_fire_and_same_seed_control_finishes
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_seeded_cancel_sites_can_fire_and_same_seed_control_finishes ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.01s
+
+  stderr ───
+    ZE_TEST_SEED=128 source_bytes=70128 cancel_sites=1..=5 control=0
+
+        PASS [   0.010s] (13/49) zeppelin-embed-ffi graph_result::tests::graph_result_shape_capacity_work_and_registry_lookup_bounds_are_real
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_shape_capacity_work_and_registry_lookup_bounds_are_real ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.012s] (14/49) zeppelin-embed-ffi::ffi_contract a_second_process_opening_the_same_path_gets_store_busy
+  stdout ───
+
+    running 1 test
+    test a_second_process_opening_the_same_path_gets_store_busy ... 
+    running 1 test
+    test a_second_process_opening_the_same_path_gets_store_busy ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+    ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+
+        PASS [   0.341s] (15/49) zeppelin-embed-ffi::ffi_contract a_second_concurrent_writer_call_returns_ze_err_busy
+  stdout ───
+
+    running 1 test
+    test a_second_concurrent_writer_call_returns_ze_err_busy ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.33s
+
+
+        PASS [   0.008s] (16/49) zeppelin-embed-ffi::ffi_contract error_codes_are_append_only
+  stdout ───
+
+    running 1 test
+    test error_codes_are_append_only ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+
+        PASS [   2.890s] (17/49) zeppelin-embed-ffi::ffi_contract a_deadline_mid_query_returns_typed_timeout_through_the_boundary
+  stdout ───
+
+    running 1 test
+    test a_deadline_mid_query_returns_typed_timeout_through_the_boundary ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 2.88s
+
+
+        PASS [   2.877s] (18/49) zeppelin-embed-ffi::ffi_contract cross_thread_cancellation_returns_typed_cancelled_with_no_candidates_through_the_boundary
+  stdout ───
+
+    running 1 test
+    test cross_thread_cancellation_returns_typed_cancelled_with_no_candidates_through_the_boundary ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 2.87s
+
+
+        PASS [   0.008s] (19/49) zeppelin-embed-ffi::ffi_contract every_phase_two_struct_has_the_frozen_size_and_field_offsets
+  stdout ───
+
+    running 1 test
+    test every_phase_two_struct_has_the_frozen_size_and_field_offsets ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (20/49) zeppelin-embed-ffi::ffi_contract every_request_struct_has_the_frozen_size_and_field_offsets
+  stdout ───
+
+    running 1 test
+    test every_request_struct_has_the_frozen_size_and_field_offsets ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] (21/49) zeppelin-embed-ffi::ffi_contract search_result_ownership_and_the_phase_one_engine_seams_are_real
+  stdout ───
+
+    running 1 test
+    test search_result_ownership_and_the_phase_one_engine_seams_are_real ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (22/49) zeppelin-embed-ffi::ffi_contract swift_error_enum_is_generated_from_the_append_only_error_table
+  stdout ───
+
+    running 1 test
+    test swift_error_enum_is_generated_from_the_append_only_error_table ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (23/49) zeppelin-embed-ffi::ffi_contract the_poison_table_covers_every_exported_handle_taking_symbol
+  stdout ───
+
+    running 1 test
+    test the_poison_table_covers_every_exported_handle_taking_symbol ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (24/49) zeppelin-embed-ffi::ffi_contract use_after_close_double_close_and_a_stale_generation_each_return_typed_errors
+  stdout ───
+
+    running 1 test
+    test use_after_close_double_close_and_a_stale_generation_each_return_typed_errors ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (25/49) zeppelin-embed-ffi::ffi_graph_contract graph_batch_shape_preserves_empty_and_nul_names_with_explicit_image_presence
+  stdout ───
+
+    running 1 test
+    test graph_batch_shape_preserves_empty_and_nul_names_with_explicit_image_presence ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (26/49) zeppelin-embed-ffi::ffi_graph_contract graph_compile_limits_preserve_zero_and_reject_each_widened_guard
+  stdout ───
+
+    running 1 test
+    test graph_compile_limits_preserve_zero_and_reject_each_widened_guard ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+
+        PASS [   0.006s] (27/49) zeppelin-embed-ffi::ffi_graph_contract graph_empty_list_shape_rejects_nonzero_count_and_preserves_typed_empties
+  stdout ───
+
+    running 1 test
+    test graph_empty_list_shape_rejects_nonzero_count_and_preserves_typed_empties ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+
+        PASS [   0.006s] (28/49) zeppelin-embed-ffi::ffi_graph_contract graph_endpoint_shape_keeps_local_and_full_identity_preconditions_separate
+  stdout ───
+
+    running 1 test
+    test graph_endpoint_shape_keeps_local_and_full_identity_preconditions_separate ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+
+        PASS [   0.006s] (29/49) zeppelin-embed-ffi::ffi_graph_contract graph_identity_conversion_retains_high_words_and_rejects_zero
+  stdout ───
+
+    running 1 test
+    test graph_identity_conversion_retains_high_words_and_rejects_zero ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (30/49) zeppelin-embed-ffi::ffi_graph_contract graph_native_error_mapping_preserves_type_arithmetic_and_retry_conflicts
+  stdout ───
+
+    running 1 test
+    test graph_native_error_mapping_preserves_type_arithmetic_and_retry_conflicts ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (31/49) zeppelin-embed-ffi::ffi_graph_contract graph_nested_array_headers_require_exact_v1_stride_and_zero_reserved
+  stdout ───
+
+    running 1 test
+    test graph_nested_array_headers_require_exact_v1_stride_and_zero_reserved ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (32/49) zeppelin-embed-ffi::ffi_graph_contract graph_search_shape_preserves_tier_presence_and_rejects_wrong_kind_options
+  stdout ───
+
+    running 1 test
+    test graph_search_shape_preserves_tier_presence_and_rejects_wrong_kind_options ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (33/49) zeppelin-embed-ffi::ffi_graph_contract graph_tightening_distinguishes_explicit_zero_from_absent_and_rejects_widening
+  stdout ───
+
+    running 1 test
+    test graph_tightening_distinguishes_explicit_zero_from_absent_and_rejects_widening ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (34/49) zeppelin-embed-ffi::ffi_graph_contract graph_value_shapes_preserve_ieee_bits_and_reject_inactive_or_overflowing_fields
+  stdout ───
+
+    running 1 test
+    test graph_value_shapes_preserve_ieee_bits_and_reject_inactive_or_overflowing_fields ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (35/49) zeppelin-embed-ffi::ffi_graph_error appended_graph_error_names_are_distinct_and_stable
+  stdout ───
+
+    running 1 test
+    test appended_graph_error_names_are_distinct_and_stable ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+        PASS [   0.159s] (36/49) zeppelin-embed-ffi::ffi_graph_header graph_c_batch_pool_distinguishes_empty_payloads_and_local_endpoints
+  stdout ───
+
+    running 1 test
+    test graph_c_batch_pool_distinguishes_empty_payloads_and_local_endpoints ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.15s
+
+
+        PASS [   0.156s] (37/49) zeppelin-embed-ffi::ffi_graph_header graph_c_consumer_preserves_strong_full_width_identity_layouts
+  stdout ───
+
+    running 1 test
+    test graph_c_consumer_preserves_strong_full_width_identity_layouts ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.15s
+
+
+        PASS [   0.031s] (38/49) zeppelin-embed-ffi::ffi_graph_header graph_c_identity_kinds_cannot_be_assigned_to_each_other
+  stdout ───
+
+    running 1 test
+    test graph_c_identity_kinds_cannot_be_assigned_to_each_other ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.02s
+
+
+        PASS [   0.151s] (39/49) zeppelin-embed-ffi::ffi_graph_header graph_c_frozen_sizes_offsets_and_discriminants_match_the_reviewed_contract
+  stdout ───
+
+    running 1 test
+    test graph_c_frozen_sizes_offsets_and_discriminants_match_the_reviewed_contract ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.14s
+
+
+        PASS [   0.150s] (40/49) zeppelin-embed-ffi::ffi_graph_header graph_c_requests_and_response_preserve_disposition_and_search_provenance
+  stdout ───
+
+    running 1 test
+    test graph_c_requests_and_response_preserve_disposition_and_search_provenance ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.14s
+
+
+        PASS [   0.020s] (41/49) zeppelin-embed-ffi::ffi_graph_header graph_contract_header_is_exact_separate_cbindgen_output
+  stdout ───
+
+    running 1 test
+    test graph_contract_header_is_exact_separate_cbindgen_output ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.01s
+
+
+        PASS [   0.038s] (42/49) zeppelin-embed-ffi::ffi_graph_header graph_contract_header_is_usable_from_cpp_without_legacy_export_changes
+  stdout ───
+
+    running 1 test
+    test graph_contract_header_is_usable_from_cpp_without_legacy_export_changes ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.03s
+
+
+        PASS [   0.007s] (43/49) zeppelin-embed-ffi::ffi_graph_header legacy_header_and_exports_do_not_advertise_graph_contracts
+  stdout ───
+
+    running 1 test
+    test legacy_header_and_exports_do_not_advertise_graph_contracts ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+
+        PASS [   0.006s] (44/49) zeppelin-embed-ffi::ffi_graph_layout every_graph_discriminant_has_the_frozen_value_and_width
+  stdout ───
+
+    running 1 test
+    test every_graph_discriminant_has_the_frozen_value_and_width ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+
+        PASS [   0.006s] (45/49) zeppelin-embed-ffi::ffi_graph_layout every_graph_struct_has_the_frozen_c_size_alignment_and_field_offsets
+  stdout ───
+
+    running 1 test
+    test every_graph_struct_has_the_frozen_c_size_alignment_and_field_offsets ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+
+        PASS [   0.150s] (46/49) zeppelin-embed-ffi::ffi_graph_header graph_c_typed_plan_retains_search_presence_components_and_path_predicates
+  stdout ───
+
+    running 1 test
+    test graph_c_typed_plan_retains_search_presence_components_and_path_predicates ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.14s
+
+
+        PASS [   0.088s] (47/49) zeppelin-embed-ffi::ffi_header the_committed_header_is_the_exact_cbindgen_output
+  stdout ───
+
+    running 1 test
+    test the_committed_header_is_the_exact_cbindgen_output ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.08s
+
+
+        PASS [   9.589s] (48/49) zeppelin-embed-ffi::ffi_contract a_panic_crossing_the_abi_is_caught_the_handle_is_poisoned_and_the_process_survives
+  stdout ───
+
+    running 1 test
+    test a_panic_crossing_the_abi_is_caught_the_handle_is_poisoned_and_the_process_survives ... 
+    running 1 test
+
+    running 1 test
+    test a_panic_crossing_the_abi_is_caught_the_handle_is_poisoned_and_the_process_survives ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+    test a_panic_crossing_the_abi_is_caught_the_handle_is_poisoned_and_the_process_survives ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.01s
+
+    ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 9.58s
+
+  stderr ───
+       Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-ffi)
+        Finished `test` profile [unoptimized + debuginfo] target(s) in 5.53s
+         Running tests/ffi_contract.rs (target/debug/deps/ffi_contract-ba919753f802f366)
+
+        PASS [   9.251s] (49/49) zeppelin-embed-ffi::ffi_contract every_entry_point_returns_ze_err_poisoned_after_a_caught_panic
+  stdout ───
+
+    running 1 test
+    test every_entry_point_returns_ze_err_poisoned_after_a_caught_panic ... 
+    running 1 test
+    test every_entry_point_returns_ze_err_poisoned_after_a_caught_panic ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.03s
+
+    ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 9.24s
+
+  stderr ───
+        Blocking waiting for file lock on artifact directory
+        Finished `test` profile [unoptimized + debuginfo] target(s) in 5.18s
+         Running tests/ffi_contract.rs (target/debug/deps/ffi_contract-ba919753f802f366)
+
+────────────
+     Summary [   9.640s] 49 tests run: 49 passed, 16 skipped
+        PASS [   0.014s] ( 1/49) zeppelin-embed-ffi graph_result::registration::tests::graph_result_token_exhaustion_precedes_allocation_or_exposure
+  stdout ───
+
+    running 1 test
+    test graph_result::registration::tests::graph_result_token_exhaustion_precedes_allocation_or_exposure ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.014s] ( 2/49) zeppelin-embed-ffi graph_result::registration::tests::graph_result_gate_poison_busy_and_registry_bound_are_precommit_errors
+  stdout ───
+
+    running 1 test
+    test graph_result::registration::tests::graph_result_gate_poison_busy_and_registry_bound_are_precommit_errors ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'graph_result::registration::tests::graph_result_gate_poison_busy_and_registry_bound_are_precommit_errors' (34689288) panicked at crates/zeppelin-embed-ffi/src/graph_result/registration.rs:432:17:
+    injected gate unwind
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.015s] ( 3/49) zeppelin-embed-ffi graph_result::tests::graph_result_actual_allocator_failures_and_expose_free_have_exact_heap_accounting
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_actual_allocator_failures_and_expose_free_have_exact_heap_accounting ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.015s] ( 4/49) zeppelin-embed-ffi graph_result::tests::graph_result_concurrent_free_publication_and_abort_have_one_owner
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_concurrent_free_publication_and_abort_have_one_owner ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.01s
+
+
+        PASS [   0.008s] ( 5/49) zeppelin-embed-ffi graph_result::tests::graph_result_known_commit_survives_unwind_and_unknown_attempt_retains_no_ids
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_known_commit_survives_unwind_and_unknown_attempt_retains_no_ids ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'graph_result::tests::graph_result_known_commit_survives_unwind_and_unknown_attempt_retains_no_ids' (34689342) panicked at crates/zeppelin-embed-ffi/src/graph_result/tests.rs:223:9:
+    delivery failure after durable outcome
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.010s] ( 6/49) zeppelin-embed-ffi graph_result::tests::graph_result_every_authoritative_field_mutation_and_foreign_geometry_is_rejected
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_every_authoritative_field_mutation_and_foreign_geometry_is_rejected ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.010s] ( 7/49) zeppelin-embed-ffi graph_result::tests::graph_result_cross_registry_empty_owner_cannot_steal_another_allocation
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_cross_registry_empty_owner_cannot_steal_another_allocation ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] ( 8/49) zeppelin-embed-ffi graph_result::tests::graph_result_free_rejects_returned_root_inside_authoritative_arena
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_free_rejects_returned_root_inside_authoritative_arena ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] ( 9/49) zeppelin-embed-ffi graph_result::tests::graph_result_layout_aligns_every_typed_pool_and_rejects_oversize
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_layout_aligns_every_typed_pool_and_rejects_oversize ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (10/49) zeppelin-embed-ffi graph_result::tests::graph_result_real_aligned_owner_publishes_and_frees_without_source_lifetime
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_real_aligned_owner_publishes_and_frees_without_source_lifetime ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] (11/49) zeppelin-embed-ffi graph_result::tests::graph_result_owned_pools_outlive_temporary_owners_and_lifecycle_fixture
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_owned_pools_outlive_temporary_owners_and_lifecycle_fixture ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.016s] (12/49) zeppelin-embed-ffi graph_result::tests::graph_result_seeded_cancel_sites_can_fire_and_same_seed_control_finishes
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_seeded_cancel_sites_can_fire_and_same_seed_control_finishes ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.01s
+
+  stderr ───
+    ZE_TEST_SEED=128 source_bytes=70128 cancel_sites=1..=5 control=0
+
+        PASS [   0.010s] (13/49) zeppelin-embed-ffi graph_result::tests::graph_result_shape_capacity_work_and_registry_lookup_bounds_are_real
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_shape_capacity_work_and_registry_lookup_bounds_are_real ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+        PASS [   0.012s] (14/49) zeppelin-embed-ffi::ffi_contract a_second_process_opening_the_same_path_gets_store_busy
+  stdout ───
+
+    running 1 test
+    test a_second_process_opening_the_same_path_gets_store_busy ... 
+    running 1 test
+    test a_second_process_opening_the_same_path_gets_store_busy ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+    ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+
+        PASS [   0.341s] (15/49) zeppelin-embed-ffi::ffi_contract a_second_concurrent_writer_call_returns_ze_err_busy
+  stdout ───
+
+    running 1 test
+    test a_second_concurrent_writer_call_returns_ze_err_busy ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.33s
+
+
+        PASS [   0.008s] (16/49) zeppelin-embed-ffi::ffi_contract error_codes_are_append_only
+  stdout ───
+
+    running 1 test
+    test error_codes_are_append_only ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+
+        PASS [   2.890s] (17/49) zeppelin-embed-ffi::ffi_contract a_deadline_mid_query_returns_typed_timeout_through_the_boundary
+  stdout ───
+
+    running 1 test
+    test a_deadline_mid_query_returns_typed_timeout_through_the_boundary ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 2.88s
+
+
+        PASS [   2.877s] (18/49) zeppelin-embed-ffi::ffi_contract cross_thread_cancellation_returns_typed_cancelled_with_no_candidates_through_the_boundary
+  stdout ───
+
+    running 1 test
+    test cross_thread_cancellation_returns_typed_cancelled_with_no_candidates_through_the_boundary ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 2.87s
+
+
+        PASS [   0.008s] (19/49) zeppelin-embed-ffi::ffi_contract every_phase_two_struct_has_the_frozen_size_and_field_offsets
+  stdout ───
+
+    running 1 test
+    test every_phase_two_struct_has_the_frozen_size_and_field_offsets ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (20/49) zeppelin-embed-ffi::ffi_contract every_request_struct_has_the_frozen_size_and_field_offsets
+  stdout ───
+
+    running 1 test
+    test every_request_struct_has_the_frozen_size_and_field_offsets ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] (21/49) zeppelin-embed-ffi::ffi_contract search_result_ownership_and_the_phase_one_engine_seams_are_real
+  stdout ───
+
+    running 1 test
+    test search_result_ownership_and_the_phase_one_engine_seams_are_real ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (22/49) zeppelin-embed-ffi::ffi_contract swift_error_enum_is_generated_from_the_append_only_error_table
+  stdout ───
+
+    running 1 test
+    test swift_error_enum_is_generated_from_the_append_only_error_table ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (23/49) zeppelin-embed-ffi::ffi_contract the_poison_table_covers_every_exported_handle_taking_symbol
+  stdout ───
+
+    running 1 test
+    test the_poison_table_covers_every_exported_handle_taking_symbol ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (24/49) zeppelin-embed-ffi::ffi_contract use_after_close_double_close_and_a_stale_generation_each_return_typed_errors
+  stdout ───
+
+    running 1 test
+    test use_after_close_double_close_and_a_stale_generation_each_return_typed_errors ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (25/49) zeppelin-embed-ffi::ffi_graph_contract graph_batch_shape_preserves_empty_and_nul_names_with_explicit_image_presence
+  stdout ───
+
+    running 1 test
+    test graph_batch_shape_preserves_empty_and_nul_names_with_explicit_image_presence ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (26/49) zeppelin-embed-ffi::ffi_graph_contract graph_compile_limits_preserve_zero_and_reject_each_widened_guard
+  stdout ───
+
+    running 1 test
+    test graph_compile_limits_preserve_zero_and_reject_each_widened_guard ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+
+        PASS [   0.006s] (27/49) zeppelin-embed-ffi::ffi_graph_contract graph_empty_list_shape_rejects_nonzero_count_and_preserves_typed_empties
+  stdout ───
+
+    running 1 test
+    test graph_empty_list_shape_rejects_nonzero_count_and_preserves_typed_empties ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+
+        PASS [   0.006s] (28/49) zeppelin-embed-ffi::ffi_graph_contract graph_endpoint_shape_keeps_local_and_full_identity_preconditions_separate
+  stdout ───
+
+    running 1 test
+    test graph_endpoint_shape_keeps_local_and_full_identity_preconditions_separate ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+
+        PASS [   0.006s] (29/49) zeppelin-embed-ffi::ffi_graph_contract graph_identity_conversion_retains_high_words_and_rejects_zero
+  stdout ───
+
+    running 1 test
+    test graph_identity_conversion_retains_high_words_and_rejects_zero ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (30/49) zeppelin-embed-ffi::ffi_graph_contract graph_native_error_mapping_preserves_type_arithmetic_and_retry_conflicts
+  stdout ───
+
+    running 1 test
+    test graph_native_error_mapping_preserves_type_arithmetic_and_retry_conflicts ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (31/49) zeppelin-embed-ffi::ffi_graph_contract graph_nested_array_headers_require_exact_v1_stride_and_zero_reserved
+  stdout ───
+
+    running 1 test
+    test graph_nested_array_headers_require_exact_v1_stride_and_zero_reserved ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (32/49) zeppelin-embed-ffi::ffi_graph_contract graph_search_shape_preserves_tier_presence_and_rejects_wrong_kind_options
+  stdout ───
+
+    running 1 test
+    test graph_search_shape_preserves_tier_presence_and_rejects_wrong_kind_options ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (33/49) zeppelin-embed-ffi::ffi_graph_contract graph_tightening_distinguishes_explicit_zero_from_absent_and_rejects_widening
+  stdout ───
+
+    running 1 test
+    test graph_tightening_distinguishes_explicit_zero_from_absent_and_rejects_widening ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (34/49) zeppelin-embed-ffi::ffi_graph_contract graph_value_shapes_preserve_ieee_bits_and_reject_inactive_or_overflowing_fields
+  stdout ───
+
+    running 1 test
+    test graph_value_shapes_preserve_ieee_bits_and_reject_inactive_or_overflowing_fields ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (35/49) zeppelin-embed-ffi::ffi_graph_error appended_graph_error_names_are_distinct_and_stable
+  stdout ───
+
+    running 1 test
+    test appended_graph_error_names_are_distinct_and_stable ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+        PASS [   0.159s] (36/49) zeppelin-embed-ffi::ffi_graph_header graph_c_batch_pool_distinguishes_empty_payloads_and_local_endpoints
+  stdout ───
+
+    running 1 test
+    test graph_c_batch_pool_distinguishes_empty_payloads_and_local_endpoints ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.15s
+
+
+        PASS [   0.156s] (37/49) zeppelin-embed-ffi::ffi_graph_header graph_c_consumer_preserves_strong_full_width_identity_layouts
+  stdout ───
+
+    running 1 test
+    test graph_c_consumer_preserves_strong_full_width_identity_layouts ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.15s
+
+
+        PASS [   0.031s] (38/49) zeppelin-embed-ffi::ffi_graph_header graph_c_identity_kinds_cannot_be_assigned_to_each_other
+  stdout ───
+
+    running 1 test
+    test graph_c_identity_kinds_cannot_be_assigned_to_each_other ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.02s
+
+
+        PASS [   0.151s] (39/49) zeppelin-embed-ffi::ffi_graph_header graph_c_frozen_sizes_offsets_and_discriminants_match_the_reviewed_contract
+  stdout ───
+
+    running 1 test
+    test graph_c_frozen_sizes_offsets_and_discriminants_match_the_reviewed_contract ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.14s
+
+
+        PASS [   0.150s] (40/49) zeppelin-embed-ffi::ffi_graph_header graph_c_requests_and_response_preserve_disposition_and_search_provenance
+  stdout ───
+
+    running 1 test
+    test graph_c_requests_and_response_preserve_disposition_and_search_provenance ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.14s
+
+
+        PASS [   0.020s] (41/49) zeppelin-embed-ffi::ffi_graph_header graph_contract_header_is_exact_separate_cbindgen_output
+  stdout ───
+
+    running 1 test
+    test graph_contract_header_is_exact_separate_cbindgen_output ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.01s
+
+
+        PASS [   0.038s] (42/49) zeppelin-embed-ffi::ffi_graph_header graph_contract_header_is_usable_from_cpp_without_legacy_export_changes
+  stdout ───
+
+    running 1 test
+    test graph_contract_header_is_usable_from_cpp_without_legacy_export_changes ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.03s
+
+
+        PASS [   0.007s] (43/49) zeppelin-embed-ffi::ffi_graph_header legacy_header_and_exports_do_not_advertise_graph_contracts
+  stdout ───
+
+    running 1 test
+    test legacy_header_and_exports_do_not_advertise_graph_contracts ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+
+
+        PASS [   0.006s] (44/49) zeppelin-embed-ffi::ffi_graph_layout every_graph_discriminant_has_the_frozen_value_and_width
+  stdout ───
+
+    running 1 test
+    test every_graph_discriminant_has_the_frozen_value_and_width ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+
+        PASS [   0.006s] (45/49) zeppelin-embed-ffi::ffi_graph_layout every_graph_struct_has_the_frozen_c_size_alignment_and_field_offsets
+  stdout ───
+
+    running 1 test
+    test every_graph_struct_has_the_frozen_c_size_alignment_and_field_offsets ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+
+        PASS [   0.150s] (46/49) zeppelin-embed-ffi::ffi_graph_header graph_c_typed_plan_retains_search_presence_components_and_path_predicates
+  stdout ───
+
+    running 1 test
+    test graph_c_typed_plan_retains_search_presence_components_and_path_predicates ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.14s
+
+
+        PASS [   0.088s] (47/49) zeppelin-embed-ffi::ffi_header the_committed_header_is_the_exact_cbindgen_output
+  stdout ───
+
+    running 1 test
+    test the_committed_header_is_the_exact_cbindgen_output ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.08s
+
+
+        PASS [   9.589s] (48/49) zeppelin-embed-ffi::ffi_contract a_panic_crossing_the_abi_is_caught_the_handle_is_poisoned_and_the_process_survives
+  stdout ───
+
+    running 1 test
+    test a_panic_crossing_the_abi_is_caught_the_handle_is_poisoned_and_the_process_survives ... 
+    running 1 test
+
+    running 1 test
+    test a_panic_crossing_the_abi_is_caught_the_handle_is_poisoned_and_the_process_survives ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+    test a_panic_crossing_the_abi_is_caught_the_handle_is_poisoned_and_the_process_survives ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.01s
+
+    ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 9.58s
+
+  stderr ───
+       Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-ffi)
+        Finished `test` profile [unoptimized + debuginfo] target(s) in 5.53s
+         Running tests/ffi_contract.rs (target/debug/deps/ffi_contract-ba919753f802f366)
+
+        PASS [   9.251s] (49/49) zeppelin-embed-ffi::ffi_contract every_entry_point_returns_ze_err_poisoned_after_a_caught_panic
+  stdout ───
+
+    running 1 test
+    test every_entry_point_returns_ze_err_poisoned_after_a_caught_panic ... 
+    running 1 test
+    test every_entry_point_returns_ze_err_poisoned_after_a_caught_panic ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.03s
+
+    ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 9.24s
+
+  stderr ───
+        Blocking waiting for file lock on artifact directory
+        Finished `test` profile [unoptimized + debuginfo] target(s) in 5.18s
+         Running tests/ffi_contract.rs (target/debug/deps/ffi_contract-ba919753f802f366)
+

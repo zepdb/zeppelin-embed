@@ -1,0 +1,33 @@
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.09s
+────────────
+ Nextest run ID 66b55c96-69e6-47bd-a78c-ecf192a8c896 with nextest profile: default
+    Starting 2 tests across 1 binary (456 tests skipped)
+        PASS [   0.043s] (1/2) zeppelin-embed-workspace-tests::adversarial_tests property_graph_response_probe_checks_real_owners_and_paired_faults
+  stdout ───
+
+    running 1 test
+    test property_graph_response_probe_checks_real_owners_and_paired_faults ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 457 filtered out; finished in 0.03s
+
+  stderr ───
+    PG16 seed=0 ProbeReport { cases: 16, fault_fires: 6, clean_controls: 6 }
+    PG16 seed=1 ProbeReport { cases: 16, fault_fires: 6, clean_controls: 6 }
+    PG16 seed=128 ProbeReport { cases: 16, fault_fires: 6, clean_controls: 6 }
+    PG16 seed=18446744073709551615 ProbeReport { cases: 16, fault_fires: 6, clean_controls: 6 }
+
+        PASS [   0.469s] (2/2) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_graph_response_contracts
+  stdout ───
+
+    running 1 test
+    test one_runner_episode_reaches_required_graph_response_contracts ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 457 filtered out; finished in 0.46s
+
+  stderr ───
+    PG16 actual runner seed=128 operations=58 violations=0
+
+────────────
+     Summary [   0.469s] 2 tests run: 2 passed, 456 skipped

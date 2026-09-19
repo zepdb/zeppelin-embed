@@ -162,7 +162,7 @@ impl GraphResultRegistry {
         let mut root = fill(&arena, &plan, parts, metadata, context)?;
         root.owner_token = token;
         context.checkpoint()?;
-        let raw = NonNull::new(unsafe { alloc(Layout::new::<Node>()) })
+        let raw = NonNull::new(unsafe { allocate_raw(Layout::new::<Node>()) })
             .ok_or(OwnerError::Allocation)?
             .cast::<Node>();
         // The fallible raw allocation is initialized immediately; OwnedNode

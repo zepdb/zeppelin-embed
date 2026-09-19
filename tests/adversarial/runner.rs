@@ -2910,6 +2910,8 @@ fn run_program_for_with_clock(
     super::graph_wal::probe(seed, &mut coverage)?;
     super::graph_runtime::probe(seed, &mut coverage)?;
     super::graph_binding::probe(seed, &mut coverage)?;
+    #[cfg(feature = "graph-cypher")]
+    super::graph_response::probe(seed, &mut coverage)?;
     super::graph_completed::probe(seed, &mut coverage)?;
     super::graph_relational::probe(seed, &mut coverage)?;
     super::graph_adjacency::probe(seed, &mut coverage)?;

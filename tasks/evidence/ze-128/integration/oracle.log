@@ -1,0 +1,32 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on artifact directory
+   Compiling zeppelin-embed-adversarial-oracle v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/tests/adversarial-oracle)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.14s
+────────────
+ Nextest run ID d5217953-4a11-4c58-9ada-3fdad786603e with nextest profile: default
+    Starting 1 test across 8 binaries (147 tests skipped)
+        PASS [   0.008s] (1/1) zeppelin-embed-adversarial-oracle graph_response::tests::graph_response_oracle_rejects_missing_fires_extra_owner_and_changed_commit
+  stdout ───
+
+    running 1 test
+    test graph_response::tests::graph_response_oracle_rejects_missing_fires_extra_owner_and_changed_commit ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 95 filtered out; finished in 0.00s
+
+
+────────────
+     Summary [   0.008s] 1 test run: 1 passed, 147 skipped
+        PASS [   0.008s] (1/1) zeppelin-embed-adversarial-oracle graph_response::tests::graph_response_oracle_rejects_missing_fires_extra_owner_and_changed_commit
+  stdout ───
+
+    running 1 test
+    test graph_response::tests::graph_response_oracle_rejects_missing_fires_extra_owner_and_changed_commit ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 95 filtered out; finished in 0.00s
+
+
