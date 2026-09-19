@@ -1,0 +1,90 @@
+[
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/storage/adjacency/codec.rs",
+    "sha256": "a2b921f8b92e0749d971ed773b68cefdf7315e3f87e2af8f3dc521f129723747"
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/storage/adjacency/merge.rs",
+    "sha256": "3101ae7a7df8e8c18aa6e1f4db52e321804c0242682a8aec4dfc8d79a865f695"
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/storage/adjacency/mod.rs",
+    "sha256": "1b845b64fdbf48ff8aef0f8b795bef85a47fc23b9a03eff3d628eec7e6ad31e9"
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/storage/adjacency/tests.rs",
+    "sha256": "421864289686ddcae96a582f5f7b81337057212cb990c6b196d4af85c2286f79"
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/storage/artifact.rs",
+    "sha256": "bc57259cb855736985d8b8fcb118137a611c75a4f16140b2a67dc662bafb1194"
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/storage/mod.rs",
+    "sha256": "c6a6d7b011d1f0aedd6aa2f0b768118dd80314f7079ff946acddf285dd080f6d"
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/wal/codec.rs",
+    "sha256": "ab8f7bf6eb177e63e75e8df931e5a6bb1a34e57848b7e386bb891dd28ed3dbfd"
+  },
+  {
+    "path": "crates/zeppelin-embed/tests/fixtures/graph-adjacency/base-v1.bin",
+    "sha256": "788e1d9b42c7af8113b2029a04f51bcb7f6cfc459126ca4f469622c8dd22fb29"
+  },
+  {
+    "path": "crates/zeppelin-embed/tests/fixtures/graph-adjacency/delta-v1.bin",
+    "sha256": "e8b1919c44d1b15daf81516a0237dd105ef0e4a7c611449fbca37555923bba06"
+  },
+  {
+    "path": "crates/zeppelin-embed/tests/graph_adjacency.rs",
+    "sha256": "d730ebbc06e53a20854eea8cf71abbbbe2b80babcb8d191a56b949add2af51f1"
+  },
+  {
+    "path": "fuzz/Cargo.toml",
+    "sha256": "70adca47979b897bfbc216ee308c998f3c25cbf25a89ec5f47d68579e2973463"
+  },
+  {
+    "path": "fuzz/fuzz_targets/native_graph_adjacency.rs",
+    "sha256": "069f1d17654d470cdb34319fdb5b32976e3dc9de3bfc6240bc7cc07720cdb128"
+  },
+  {
+    "path": "fuzz/seeds/native_graph_adjacency/base-v1",
+    "sha256": "788e1d9b42c7af8113b2029a04f51bcb7f6cfc459126ca4f469622c8dd22fb29"
+  },
+  {
+    "path": "fuzz/seeds/native_graph_adjacency/delta-v1",
+    "sha256": "e8b1919c44d1b15daf81516a0237dd105ef0e4a7c611449fbca37555923bba06"
+  },
+  {
+    "path": "tasks/evidence/ze-124/design.md",
+    "sha256": "fe53691be2d3ff035ba0210d31b54078a08508b7b8600de4bd17bb223f58b131"
+  },
+  {
+    "path": "tests/adversarial-oracle/src/graph_adjacency.rs",
+    "sha256": "c8e97624db4f0af90d0e2b0f91c62d402ee49095d38f994e641f9cb8ab748868"
+  },
+  {
+    "path": "tests/adversarial-oracle/src/lib.rs",
+    "sha256": "d3ac30384cbdddeab45872c5eb406a282ff67154c55a9038aed542ac6f5b8a6b"
+  },
+  {
+    "path": "tests/adversarial/coverage.rs",
+    "sha256": "7bbb2ea6ace9ff7e6fa06762786d6350f22a1b1463d761b6b6fa0cbe0fccc609"
+  },
+  {
+    "path": "tests/adversarial/graph_adjacency.rs",
+    "sha256": "771220fd85c6d774f4e27342c66307c1ee8ae28b62b9f80b1905828e333f23c3"
+  },
+  {
+    "path": "tests/adversarial/mod.rs",
+    "sha256": "3df10f8b340062f0bbe5667afb66c7bdd6490438e51c83a5bd29bf1cc59f0fea"
+  },
+  {
+    "path": "tests/adversarial/runner.rs",
+    "sha256": "ecc40348900676621a75d7534f7898046f3810cef547264041d1100b6f3549c8"
+  },
+  {
+    "path": "tests/adversarial_tests.rs",
+    "sha256": "080dea5810adec4ee61e083738c09057d849255825f63abb0fb87c3d231dd2ba"
+  }
+]

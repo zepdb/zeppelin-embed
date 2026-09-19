@@ -1,0 +1,7 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s
+────────────
+ Nextest run ID 68254648-f11c-489e-91f2-311d6014e13c with nextest profile: default
+    Starting 1 test across 6 binaries (109 tests skipped)
+        PASS [   0.007s] (1/1) zeppelin-embed-adversarial-oracle graph_adjacency::tests::adjacency_oracle_detects_ignored_delete_neighbor_and_missing_reverse
+────────────
+     Summary [   0.007s] 1 test run: 1 passed, 109 skipped

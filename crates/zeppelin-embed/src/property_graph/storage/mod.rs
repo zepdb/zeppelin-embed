@@ -4,3 +4,6 @@
 pub mod allocation;
 pub mod artifact;
 pub mod tree;
+
+/// Bounded immutable adjacency codecs and range merging.
+pub mod adjacency;

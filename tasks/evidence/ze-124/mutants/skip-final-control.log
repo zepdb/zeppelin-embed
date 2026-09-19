@@ -1,0 +1,50 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-124/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.64s
+────────────
+ Nextest run ID 3956e886-6aa7-49d5-ab01-6132891fa8f4 with nextest profile: default
+    Starting 1 test across 1 binary (11 tests skipped)
+        FAIL [   0.010s] (1/1) zeppelin-embed::graph_adjacency adjacency_every_actual_work_checkpoint_and_final_completion_can_refuse
+  stdout ───
+
+    running 1 test
+    test adjacency_every_actual_work_checkpoint_and_final_completion_can_refuse ... FAILED
+
+    failures:
+
+    failures:
+        adjacency_every_actual_work_checkpoint_and_final_completion_can_refuse
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'adjacency_every_actual_work_checkpoint_and_final_completion_can_refuse' (34568902) panicked at crates/zeppelin-embed/tests/graph_adjacency.rs:351:5:
+    assertion `left == right` failed
+      left: Some(CopyBytes(32))
+     right: Some(Finish)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.010s] 1 test run: 0 passed, 1 failed, 11 skipped
+        FAIL [   0.010s] (1/1) zeppelin-embed::graph_adjacency adjacency_every_actual_work_checkpoint_and_final_completion_can_refuse
+  stdout ───
+
+    running 1 test
+    test adjacency_every_actual_work_checkpoint_and_final_completion_can_refuse ... FAILED
+
+    failures:
+
+    failures:
+        adjacency_every_actual_work_checkpoint_and_final_completion_can_refuse
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'adjacency_every_actual_work_checkpoint_and_final_completion_can_refuse' (34568902) panicked at crates/zeppelin-embed/tests/graph_adjacency.rs:351:5:
+    assertion `left == right` failed
+      left: Some(CopyBytes(32))
+     right: Some(Finish)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

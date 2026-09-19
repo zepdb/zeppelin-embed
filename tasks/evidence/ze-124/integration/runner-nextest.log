@@ -1,0 +1,100 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed)
+   Compiling zeppelin-embed-adversarial-oracle v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/tests/adversarial-oracle)
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-bench)
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-cypher)
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 20.24s
+────────────
+ Nextest run ID 323c9dd4-a5e8-4eb0-bd7f-573755be2d43 with nextest profile: default
+    Starting 4 tests across 1 binary (457 tests skipped)
+        PASS [   0.025s] (1/4) zeppelin-embed-workspace-tests::adversarial_tests property_graph_adjacency_probe_checks_edges_faults_and_comparator_controls
+  stdout ───
+
+    running 1 test
+    test property_graph_adjacency_probe_checks_edges_faults_and_comparator_controls ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 460 filtered out; finished in 0.02s
+
+  stderr ───
+    PG12 seed=0 Report { comparisons: 4, fault_fires: 5, clean_controls: 5 }
+    PG12 seed=1 Report { comparisons: 4, fault_fires: 5, clean_controls: 5 }
+    PG12 seed=124 Report { comparisons: 4, fault_fires: 5, clean_controls: 5 }
+    PG12 seed=18446744073709551615 Report { comparisons: 4, fault_fires: 5, clean_controls: 5 }
+
+        PASS [   0.751s] (2/4) zeppelin-embed-workspace-tests::adversarial_tests adversarial::metadata_filter_planner::tests::candidate_shortfall_fixture_attests_every_graph_adjacency_mutation
+  stdout ───
+
+    running 1 test
+    test adversarial::metadata_filter_planner::tests::candidate_shortfall_fixture_attests_every_graph_adjacency_mutation ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 460 filtered out; finished in 0.74s
+
+
+        PASS [   1.189s] (3/4) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_fixture_comparators
+  stdout ───
+
+    running 1 test
+    test one_runner_episode_reaches_required_fixture_comparators ... PG13 runner seed=0 operations=59 violations=0
+    ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 460 filtered out; finished in 1.18s
+
+
+        PASS [   1.189s] (4/4) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_adjacency_contracts
+  stdout ───
+
+    running 1 test
+    test one_runner_episode_reaches_required_adjacency_contracts ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 460 filtered out; finished in 1.18s
+
+  stderr ───
+    PG12 actual runner seed=0 operations=59 violations=0
+
+────────────
+     Summary [   1.190s] 4 tests run: 4 passed, 457 skipped
+        PASS [   0.025s] (1/4) zeppelin-embed-workspace-tests::adversarial_tests property_graph_adjacency_probe_checks_edges_faults_and_comparator_controls
+  stdout ───
+
+    running 1 test
+    test property_graph_adjacency_probe_checks_edges_faults_and_comparator_controls ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 460 filtered out; finished in 0.02s
+
+  stderr ───
+    PG12 seed=0 Report { comparisons: 4, fault_fires: 5, clean_controls: 5 }
+    PG12 seed=1 Report { comparisons: 4, fault_fires: 5, clean_controls: 5 }
+    PG12 seed=124 Report { comparisons: 4, fault_fires: 5, clean_controls: 5 }
+    PG12 seed=18446744073709551615 Report { comparisons: 4, fault_fires: 5, clean_controls: 5 }
+
+        PASS [   0.751s] (2/4) zeppelin-embed-workspace-tests::adversarial_tests adversarial::metadata_filter_planner::tests::candidate_shortfall_fixture_attests_every_graph_adjacency_mutation
+  stdout ───
+
+    running 1 test
+    test adversarial::metadata_filter_planner::tests::candidate_shortfall_fixture_attests_every_graph_adjacency_mutation ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 460 filtered out; finished in 0.74s
+
+
+        PASS [   1.189s] (3/4) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_fixture_comparators
+  stdout ───
+
+    running 1 test
+    test one_runner_episode_reaches_required_fixture_comparators ... PG13 runner seed=0 operations=59 violations=0
+    ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 460 filtered out; finished in 1.18s
+
+
+        PASS [   1.189s] (4/4) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_adjacency_contracts
+  stdout ───
+
+    running 1 test
+    test one_runner_episode_reaches_required_adjacency_contracts ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 460 filtered out; finished in 1.18s
+
+  stderr ───
+    PG12 actual runner seed=0 operations=59 violations=0
+

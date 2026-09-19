@@ -1,0 +1,50 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-124/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.67s
+────────────
+ Nextest run ID 52f2df02-d87b-4dad-bf52-9c087aefa3f8 with nextest profile: default
+    Starting 1 test across 1 binary (11 tests skipped)
+        FAIL [   0.015s] (1/1) zeppelin-embed::graph_adjacency adjacency_split_4097_and_full_6144_output_keep_exact_intervals
+  stdout ───
+
+    running 1 test
+    test adjacency_split_4097_and_full_6144_output_keep_exact_intervals ... FAILED
+
+    failures:
+
+    failures:
+        adjacency_split_4097_and_full_6144_output_keep_exact_intervals
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'adjacency_split_4097_and_full_6144_output_keep_exact_intervals' (34569444) panicked at crates/zeppelin-embed/tests/graph_adjacency.rs:168:9:
+    assertion `left == right` failed
+      left: Exclusive(RelId(4096))
+     right: Exclusive(RelId(4097))
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.016s] 1 test run: 0 passed, 1 failed, 11 skipped
+        FAIL [   0.015s] (1/1) zeppelin-embed::graph_adjacency adjacency_split_4097_and_full_6144_output_keep_exact_intervals
+  stdout ───
+
+    running 1 test
+    test adjacency_split_4097_and_full_6144_output_keep_exact_intervals ... FAILED
+
+    failures:
+
+    failures:
+        adjacency_split_4097_and_full_6144_output_keep_exact_intervals
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'adjacency_split_4097_and_full_6144_output_keep_exact_intervals' (34569444) panicked at crates/zeppelin-embed/tests/graph_adjacency.rs:168:9:
+    assertion `left == right` failed
+      left: Exclusive(RelId(4096))
+     right: Exclusive(RelId(4097))
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

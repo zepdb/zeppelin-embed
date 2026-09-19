@@ -1,0 +1,146 @@
+[
+  {
+    "path": "allocator-green.log",
+    "sha256": "84c110fec0333164a94e90dd9ceb5b4563b173526c3282f7ee16831ea0af1308"
+  },
+  {
+    "path": "baseline-artifact.log",
+    "sha256": "3970be19a9ac645daf517c7e51f9e21f689dc4cace633ba61b9b6bc898daa363"
+  },
+  {
+    "path": "baseline-runner.log",
+    "sha256": "26bafed768c3756616cb1ea3b60d8a9b753d15b29651b0f6ff7c1be9c9f0b755"
+  },
+  {
+    "path": "design.md",
+    "sha256": "fe53691be2d3ff035ba0210d31b54078a08508b7b8600de4bd17bb223f58b131"
+  },
+  {
+    "path": "environment.json",
+    "sha256": "0b58e46e5c0aadf1ac5ad2261da113d25eeb1ffcce1772916ce0a16c08b971d8"
+  },
+  {
+    "path": "final-checks.json",
+    "sha256": "40a4f21c7cee7ac4f53c740b51026a7f7c4416843e358cba1f13b1ebaed074bb"
+  },
+  {
+    "path": "final-checks.py",
+    "sha256": "c26cff6d747e3b49d5758a84420fb7d38101e07579ff4177c1d809279a370651"
+  },
+  {
+    "path": "final-clippy-core.log",
+    "sha256": "022cba37cdffbd7963e66e72d66c20107c88aa37d7ebd1d48324ca127c11108d"
+  },
+  {
+    "path": "final-clippy-runner.log",
+    "sha256": "70aef6fe2c6b11436b5c46d2ed005e5bf059b5d8ce582945037f69b008d839a0"
+  },
+  {
+    "path": "final-core.log",
+    "sha256": "e9fc2f07ee8f478062cf99a41e62469a3910da55dd87e084605e01dbae0dba69"
+  },
+  {
+    "path": "final-fmt.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "final-oracle.log",
+    "sha256": "f2ae4be24adc79219ce84eb4bd61f5957bfe99a83d737ad1c5a8e9ee2f8b3131"
+  },
+  {
+    "path": "final-runner.log",
+    "sha256": "3a9454713445a904b437f8731649a6661ed8cb46106ede200dfa19473a4775bc"
+  },
+  {
+    "path": "final-whitespace.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "fuzz.log",
+    "sha256": "0244c9bd7fcead028018065a2144a47fd91d1cd4d159eb5701f15ce02c17013c"
+  },
+  {
+    "path": "independent-review.md",
+    "sha256": "1ddbf19f35604ef81e9034613a2d7430c40e907023ae188672ab58b24876bff8"
+  },
+  {
+    "path": "inherited-preserved.json",
+    "sha256": "48d4f4064c04315a89c47794b8f3c3235fecaa13dc9960fcac4ea600bfd143b6"
+  },
+  {
+    "path": "initial-red.log",
+    "sha256": "09554d3ddc294d76dc26b8a0ddbdd8949d60a4eb2ce0b497e0217a08e9e0cf15"
+  },
+  {
+    "path": "mutants/compile-attempt.json",
+    "sha256": "4a5c77d1ed443af97f5b42026d5cc91d68a28eca92f9b4b55ee2b01fee918007"
+  },
+  {
+    "path": "mutants/ignore-delete.log",
+    "sha256": "92917d91ce42fc1935c78b00284cf4a0124e66eb974a1f9ef2a819a450ce7957"
+  },
+  {
+    "path": "mutants/ignore-neighbor.log",
+    "sha256": "3997de8c8ca8172c9f881c580e8ece40257fbaea6846f21bb6593d3b7e6ce76e"
+  },
+  {
+    "path": "mutants/insensitive-attempt.json",
+    "sha256": "c940bffbd1dafdb76376be4dfbec6a296ff16e2ac28c9dde009b06b537a2f17b"
+  },
+  {
+    "path": "mutants/narrow-id-compile-attempt.log",
+    "sha256": "95744a7f72cdc35879c2acac3b4cac8ac30ad1a9ce3c21707d9a346e47e933cf"
+  },
+  {
+    "path": "mutants/narrow-id-insensitive.log",
+    "sha256": "d5504fb22a9c93d25a0df7a67a67c8da0d09b0405ee3e6a80e52ec97596589ac"
+  },
+  {
+    "path": "mutants/narrow-id.log",
+    "sha256": "3a15063e97c53cf91ecd15f4be70507bd0002f9bcfeb37118bf34eb7786dab3e"
+  },
+  {
+    "path": "mutants/restoration.json",
+    "sha256": "382065c568fc3eca5620d4992d12ef2c22dc843ae2a1f89fb47e00ddd7ff23cc"
+  },
+  {
+    "path": "mutants/results.json",
+    "sha256": "39a50a519874b03ff3fb6f0d9b6d8b7b443f303e882a5934dbeeea6d26c055b0"
+  },
+  {
+    "path": "mutants/skip-final-control.log",
+    "sha256": "7210a0c0325efc0f5e4cc5815d92306ce236cfd5820f92459a2062dbc83ff306"
+  },
+  {
+    "path": "mutants/split-early.log",
+    "sha256": "f0e665bfb0bbbf67f8d709d9d820868a2a61bf5143585961d2800cb823ecbd72"
+  },
+  {
+    "path": "mutants/wal-tag-refusal.log",
+    "sha256": "77098a01295734bf4ad65702b5971e380ea13f62b5b37abdd46e78d55579845b"
+  },
+  {
+    "path": "review-1-manifest.json",
+    "sha256": "ab8662631d78cfdc2afe50c73c710a1582db98bdde781732632d886b4a8e6887"
+  },
+  {
+    "path": "run-mutants.py",
+    "sha256": "05a31c875a3774618996de468b5ee62a7373f5f3583abc219a6a29833167d75c"
+  },
+  {
+    "path": "source-allowlist.json",
+    "sha256": "2cefb94eedaa1fbb41a1dcc31db26a9c557b3ed89ea7b0e52b45694d8d3817d2"
+  },
+  {
+    "path": "source-manifest.json",
+    "sha256": "5f686fdeb2d775cb314f6a025f960fc23bb6207d4dcafef69d2ec79ff033cc5d"
+  },
+  {
+    "path": "tags-red.log",
+    "sha256": "ed26ed8d20317d811e7d45052fe5d8cec7e5b478519321cffc31f19e5c5aef9e"
+  },
+  {
+    "path": "wal-tags-red.log",
+    "sha256": "493f8d73ae2f4c54acbe8c8805a9a430103037b3248a6dea3e18b4f32ee1009d"
+  }
+]

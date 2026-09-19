@@ -1,0 +1,46 @@
+[
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/storage/adjacency/merge.rs",
+    "sha256": "3101ae7a7df8e8c18aa6e1f4db52e321804c0242682a8aec4dfc8d79a865f695"
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/storage/adjacency/mod.rs",
+    "sha256": "1b845b64fdbf48ff8aef0f8b795bef85a47fc23b9a03eff3d628eec7e6ad31e9"
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/storage/adjacency/codec.rs",
+    "sha256": "a2b921f8b92e0749d971ed773b68cefdf7315e3f87e2af8f3dc521f129723747"
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/storage/adjacency/tests.rs",
+    "sha256": "458a131b6652de98cf8e68a89e55420a7909be1da7f4ee5f3beade00c1ddb0d5"
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/storage/artifact.rs",
+    "sha256": "bc57259cb855736985d8b8fcb118137a611c75a4f16140b2a67dc662bafb1194"
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/storage/mod.rs",
+    "sha256": "c6a6d7b011d1f0aedd6aa2f0b768118dd80314f7079ff946acddf285dd080f6d"
+  },
+  {
+    "path": "crates/zeppelin-embed/src/property_graph/wal/codec.rs",
+    "sha256": "5529db0aa2fe82cba78738ed3cba3e4a723cb7d98cfaf0d016c59e4d9c1f6c12"
+  },
+  {
+    "path": "crates/zeppelin-embed/tests/graph_adjacency.rs",
+    "sha256": "5b5bc10f3d99b651aa576b66fda1a03db0133349ce1988f4c35e602b54774311"
+  },
+  {
+    "path": "tasks/evidence/ze-124/design.md",
+    "sha256": "fe53691be2d3ff035ba0210d31b54078a08508b7b8600de4bd17bb223f58b131"
+  },
+  {
+    "path": "crates/zeppelin-embed/tests/fixtures/graph-adjacency/delta-v1.bin",
+    "sha256": "e8b1919c44d1b15daf81516a0237dd105ef0e4a7c611449fbca37555923bba06"
+  },
+  {
+    "path": "crates/zeppelin-embed/tests/fixtures/graph-adjacency/base-v1.bin",
+    "sha256": "788e1d9b42c7af8113b2029a04f51bcb7f6cfc459126ca4f469622c8dd22fb29"
+  }
+]

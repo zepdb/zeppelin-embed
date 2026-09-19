@@ -1,0 +1,515 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 23.74s
+────────────
+ Nextest run ID fcb2cb44-614e-490c-a0e9-beaa4e765846 with nextest profile: default
+    Starting 28 tests across 3 binaries (592 tests skipped)
+        PASS [   0.011s] ( 1/28) zeppelin-embed::graph_adjacency adjacency_all_sequences_keep_neighbor_even_behind_delete
+  stdout ───
+
+    running 1 test
+    test adjacency_all_sequences_keep_neighbor_even_behind_delete ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] ( 2/28) zeppelin-embed::graph_adjacency adjacency_append_limits_require_consolidation_without_property_runs
+  stdout ───
+
+    running 1 test
+    test adjacency_append_limits_require_consolidation_without_property_runs ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] ( 3/28) zeppelin-embed::graph_adjacency adjacency_empty_sparse_and_finite_ranges_validate_all_group_fields
+  stdout ───
+
+    running 1 test
+    test adjacency_empty_sparse_and_finite_ranges_validate_all_group_fields ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.013s] ( 4/28) zeppelin-embed property_graph::storage::adjacency::tests::adjacency_actual_allocator_reports_zero_for_encode_merge_and_all_error_classes
+  stdout ───
+
+    running 1 test
+    test property_graph::storage::adjacency::tests::adjacency_actual_allocator_reports_zero_for_encode_merge_and_all_error_classes ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 592 filtered out; finished in 0.00s
+
+  stderr ───
+    adjacency caller bytes=296 cursor/run representation=1224 allocations=0 (success,format,limit,final-control)
+
+        PASS [   0.009s] ( 5/28) zeppelin-embed::graph_adjacency adjacency_goldens_and_numeric_merge_keep_maximum_identity
+  stdout ───
+
+    running 1 test
+    test adjacency_goldens_and_numeric_merge_keep_maximum_identity ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] ( 6/28) zeppelin-embed::graph_adjacency adjacency_every_actual_work_checkpoint_and_final_completion_can_refuse
+  stdout ───
+
+    running 1 test
+    test adjacency_every_actual_work_checkpoint_and_final_completion_can_refuse ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] ( 7/28) zeppelin-embed::graph_adjacency adjacency_every_truncation_reserved_field_and_late_corruption_fail_before_copy
+  stdout ───
+
+    running 1 test
+    test adjacency_every_truncation_reserved_field_and_late_corruption_fail_before_copy ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] ( 8/28) zeppelin-embed::graph_adjacency adjacency_limits_reject_ninth_run_and_2049_total_observations
+  stdout ───
+
+    running 1 test
+    test adjacency_limits_reject_ninth_run_and_2049_total_observations ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] ( 9/28) zeppelin-embed::graph_adjacency adjacency_reserved_outer_tags_roundtrip_without_payload_role_widening
+  stdout ───
+
+    running 1 test
+    test adjacency_reserved_outer_tags_roundtrip_without_payload_role_widening ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] (10/28) zeppelin-embed::graph_adjacency adjacency_merge_comparisons_keep_high_bits_between_runs
+  stdout ───
+
+    running 1 test
+    test adjacency_merge_comparisons_keep_high_bits_between_runs ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] (11/28) zeppelin-embed::graph_adjacency adjacency_sequence_cutoff_equal_duplicates_and_all_sequence_topology
+  stdout ───
+
+    running 1 test
+    test adjacency_sequence_cutoff_equal_duplicates_and_all_sequence_topology ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (12/28) zeppelin-embed::graph_adjacency adjacency_wal_reference_tags_are_append_only_through_public_decode
+  stdout ───
+
+    running 1 test
+    test adjacency_wal_reference_tags_are_append_only_through_public_decode ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] (13/28) zeppelin-embed::graph_artifact allocation_preflight_rejects_before_entropy_or_filesystem_access
+  stdout ───
+
+    running 1 test
+    test allocation_preflight_rejects_before_entropy_or_filesystem_access ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] (14/28) zeppelin-embed::graph_artifact entropy_and_collisions_fail_without_replacing_published_or_orphan_objects
+  stdout ───
+
+    running 1 test
+    test entropy_and_collisions_fail_without_replacing_published_or_orphan_objects ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (15/28) zeppelin-embed::graph_artifact exclusive_creation_survives_vfs_decorators_and_fault_images
+  stdout ───
+
+    running 1 test
+    test exclusive_creation_survives_vfs_decorators_and_fault_images ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.033s] (16/28) zeppelin-embed::graph_adjacency adjacency_split_4097_and_full_6144_output_keep_exact_intervals
+  stdout ───
+
+    running 1 test
+    test adjacency_split_4097_and_full_6144_output_keep_exact_intervals ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.03s
+
+
+        PASS [   0.019s] (17/28) zeppelin-embed::graph_artifact complete_artifact_cap_includes_framing_and_rejects_before_output_mutation
+  stdout ───
+
+    running 1 test
+    test complete_artifact_cap_includes_framing_and_rejects_before_output_mutation ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.01s
+
+
+        PASS [   0.008s] (18/28) zeppelin-embed::graph_artifact exclusive_object_creation_preserves_published_and_orphan_bytes
+  stdout ───
+
+    running 1 test
+    test exclusive_object_creation_preserves_published_and_orphan_bytes ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (19/28) zeppelin-embed::graph_artifact failed_create_reports_its_nonce_without_granting_collision_cleanup_ownership
+  stdout ───
+
+    running 1 test
+    test failed_create_reports_its_nonce_without_granting_collision_cleanup_ownership ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (20/28) zeppelin-embed::graph_artifact graph_object_corruption_and_wrong_references_are_rejected_before_payload_access
+  stdout ───
+
+    running 1 test
+    test graph_object_corruption_and_wrong_references_are_rejected_before_payload_access ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.006s] (21/28) zeppelin-embed::graph_artifact native_graph_formats_are_required_and_append_only
+  stdout ───
+
+    running 1 test
+    test native_graph_formats_are_required_and_append_only ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] (22/28) zeppelin-embed::graph_artifact incompatible_root_validation_never_mutates_root_or_neighbor_artifacts
+  stdout ───
+
+    running 1 test
+    test incompatible_root_validation_never_mutates_root_or_neighbor_artifacts ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (23/28) zeppelin-embed::graph_artifact native_graph_artifact_reference_and_page_bytes_match_independent_goldens
+  stdout ───
+
+    running 1 test
+    test native_graph_artifact_reference_and_page_bytes_match_independent_goldens ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (24/28) zeppelin-embed::graph_artifact native_graph_only_object_reopens_full_width_identity_and_exact_payload
+  stdout ───
+
+    running 1 test
+    test native_graph_only_object_reopens_full_width_identity_and_exact_payload ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.006s] (25/28) zeppelin-embed::graph_artifact page_comparators_use_declared_numeric_fields_and_exact_key_bytes
+  stdout ───
+
+    running 1 test
+    test page_comparators_use_declared_numeric_fields_and_exact_key_bytes ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (26/28) zeppelin-embed::graph_artifact tree_page_frames_keep_full_width_inline_overflow_and_infinite_keys_distinct
+  stdout ───
+
+    running 1 test
+    test tree_page_frames_keep_full_width_inline_overflow_and_infinite_keys_distinct ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.018s] (27/28) zeppelin-embed::graph_artifact tree_page_corruption_cannot_be_hidden_by_valid_outer_checksums
+  stdout ───
+
+    running 1 test
+    test tree_page_corruption_cannot_be_hidden_by_valid_outer_checksums ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.01s
+
+
+        PASS [   0.077s] (28/28) zeppelin-embed::graph_artifact artifact_and_page_preflight_reject_invalid_shapes_without_touching_output
+  stdout ───
+
+    running 1 test
+    test artifact_and_page_preflight_reject_invalid_shapes_without_touching_output ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.07s
+
+
+────────────
+     Summary [   0.107s] 28 tests run: 28 passed, 592 skipped
+        PASS [   0.011s] ( 1/28) zeppelin-embed::graph_adjacency adjacency_all_sequences_keep_neighbor_even_behind_delete
+  stdout ───
+
+    running 1 test
+    test adjacency_all_sequences_keep_neighbor_even_behind_delete ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] ( 2/28) zeppelin-embed::graph_adjacency adjacency_append_limits_require_consolidation_without_property_runs
+  stdout ───
+
+    running 1 test
+    test adjacency_append_limits_require_consolidation_without_property_runs ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] ( 3/28) zeppelin-embed::graph_adjacency adjacency_empty_sparse_and_finite_ranges_validate_all_group_fields
+  stdout ───
+
+    running 1 test
+    test adjacency_empty_sparse_and_finite_ranges_validate_all_group_fields ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.013s] ( 4/28) zeppelin-embed property_graph::storage::adjacency::tests::adjacency_actual_allocator_reports_zero_for_encode_merge_and_all_error_classes
+  stdout ───
+
+    running 1 test
+    test property_graph::storage::adjacency::tests::adjacency_actual_allocator_reports_zero_for_encode_merge_and_all_error_classes ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 592 filtered out; finished in 0.00s
+
+  stderr ───
+    adjacency caller bytes=296 cursor/run representation=1224 allocations=0 (success,format,limit,final-control)
+
+        PASS [   0.009s] ( 5/28) zeppelin-embed::graph_adjacency adjacency_goldens_and_numeric_merge_keep_maximum_identity
+  stdout ───
+
+    running 1 test
+    test adjacency_goldens_and_numeric_merge_keep_maximum_identity ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] ( 6/28) zeppelin-embed::graph_adjacency adjacency_every_actual_work_checkpoint_and_final_completion_can_refuse
+  stdout ───
+
+    running 1 test
+    test adjacency_every_actual_work_checkpoint_and_final_completion_can_refuse ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] ( 7/28) zeppelin-embed::graph_adjacency adjacency_every_truncation_reserved_field_and_late_corruption_fail_before_copy
+  stdout ───
+
+    running 1 test
+    test adjacency_every_truncation_reserved_field_and_late_corruption_fail_before_copy ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] ( 8/28) zeppelin-embed::graph_adjacency adjacency_limits_reject_ninth_run_and_2049_total_observations
+  stdout ───
+
+    running 1 test
+    test adjacency_limits_reject_ninth_run_and_2049_total_observations ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] ( 9/28) zeppelin-embed::graph_adjacency adjacency_reserved_outer_tags_roundtrip_without_payload_role_widening
+  stdout ───
+
+    running 1 test
+    test adjacency_reserved_outer_tags_roundtrip_without_payload_role_widening ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] (10/28) zeppelin-embed::graph_adjacency adjacency_merge_comparisons_keep_high_bits_between_runs
+  stdout ───
+
+    running 1 test
+    test adjacency_merge_comparisons_keep_high_bits_between_runs ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] (11/28) zeppelin-embed::graph_adjacency adjacency_sequence_cutoff_equal_duplicates_and_all_sequence_topology
+  stdout ───
+
+    running 1 test
+    test adjacency_sequence_cutoff_equal_duplicates_and_all_sequence_topology ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (12/28) zeppelin-embed::graph_adjacency adjacency_wal_reference_tags_are_append_only_through_public_decode
+  stdout ───
+
+    running 1 test
+    test adjacency_wal_reference_tags_are_append_only_through_public_decode ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] (13/28) zeppelin-embed::graph_artifact allocation_preflight_rejects_before_entropy_or_filesystem_access
+  stdout ───
+
+    running 1 test
+    test allocation_preflight_rejects_before_entropy_or_filesystem_access ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] (14/28) zeppelin-embed::graph_artifact entropy_and_collisions_fail_without_replacing_published_or_orphan_objects
+  stdout ───
+
+    running 1 test
+    test entropy_and_collisions_fail_without_replacing_published_or_orphan_objects ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (15/28) zeppelin-embed::graph_artifact exclusive_creation_survives_vfs_decorators_and_fault_images
+  stdout ───
+
+    running 1 test
+    test exclusive_creation_survives_vfs_decorators_and_fault_images ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.033s] (16/28) zeppelin-embed::graph_adjacency adjacency_split_4097_and_full_6144_output_keep_exact_intervals
+  stdout ───
+
+    running 1 test
+    test adjacency_split_4097_and_full_6144_output_keep_exact_intervals ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.03s
+
+
+        PASS [   0.019s] (17/28) zeppelin-embed::graph_artifact complete_artifact_cap_includes_framing_and_rejects_before_output_mutation
+  stdout ───
+
+    running 1 test
+    test complete_artifact_cap_includes_framing_and_rejects_before_output_mutation ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.01s
+
+
+        PASS [   0.008s] (18/28) zeppelin-embed::graph_artifact exclusive_object_creation_preserves_published_and_orphan_bytes
+  stdout ───
+
+    running 1 test
+    test exclusive_object_creation_preserves_published_and_orphan_bytes ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (19/28) zeppelin-embed::graph_artifact failed_create_reports_its_nonce_without_granting_collision_cleanup_ownership
+  stdout ───
+
+    running 1 test
+    test failed_create_reports_its_nonce_without_granting_collision_cleanup_ownership ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (20/28) zeppelin-embed::graph_artifact graph_object_corruption_and_wrong_references_are_rejected_before_payload_access
+  stdout ───
+
+    running 1 test
+    test graph_object_corruption_and_wrong_references_are_rejected_before_payload_access ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.006s] (21/28) zeppelin-embed::graph_artifact native_graph_formats_are_required_and_append_only
+  stdout ───
+
+    running 1 test
+    test native_graph_formats_are_required_and_append_only ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] (22/28) zeppelin-embed::graph_artifact incompatible_root_validation_never_mutates_root_or_neighbor_artifacts
+  stdout ───
+
+    running 1 test
+    test incompatible_root_validation_never_mutates_root_or_neighbor_artifacts ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (23/28) zeppelin-embed::graph_artifact native_graph_artifact_reference_and_page_bytes_match_independent_goldens
+  stdout ───
+
+    running 1 test
+    test native_graph_artifact_reference_and_page_bytes_match_independent_goldens ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (24/28) zeppelin-embed::graph_artifact native_graph_only_object_reopens_full_width_identity_and_exact_payload
+  stdout ───
+
+    running 1 test
+    test native_graph_only_object_reopens_full_width_identity_and_exact_payload ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.006s] (25/28) zeppelin-embed::graph_artifact page_comparators_use_declared_numeric_fields_and_exact_key_bytes
+  stdout ───
+
+    running 1 test
+    test page_comparators_use_declared_numeric_fields_and_exact_key_bytes ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (26/28) zeppelin-embed::graph_artifact tree_page_frames_keep_full_width_inline_overflow_and_infinite_keys_distinct
+  stdout ───
+
+    running 1 test
+    test tree_page_frames_keep_full_width_inline_overflow_and_infinite_keys_distinct ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
+
+        PASS [   0.018s] (27/28) zeppelin-embed::graph_artifact tree_page_corruption_cannot_be_hidden_by_valid_outer_checksums
+  stdout ───
+
+    running 1 test
+    test tree_page_corruption_cannot_be_hidden_by_valid_outer_checksums ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.01s
+
+
+        PASS [   0.077s] (28/28) zeppelin-embed::graph_artifact artifact_and_page_preflight_reject_invalid_shapes_without_touching_output
+  stdout ───
+
+    running 1 test
+    test artifact_and_page_preflight_reject_invalid_shapes_without_touching_output ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.07s
+
+

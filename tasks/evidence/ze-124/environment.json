@@ -1,0 +1,69 @@
+[
+  {
+    "command": [
+      "sw_vers"
+    ],
+    "exit": 0,
+    "stdout": "ProductName:\t\tmacOS\nProductVersion:\t\t27.0\nBuildVersion:\t\t26A5388g\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "sysctl",
+      "-n",
+      "hw.model"
+    ],
+    "exit": 0,
+    "stdout": "Mac15,9\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "sysctl",
+      "-n",
+      "hw.memsize"
+    ],
+    "exit": 0,
+    "stdout": "137438953472\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "sysctl",
+      "-n",
+      "machdep.cpu.brand_string"
+    ],
+    "exit": 0,
+    "stdout": "Apple M3 Max\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "sysctl",
+      "-n",
+      "hw.logicalcpu"
+    ],
+    "exit": 0,
+    "stdout": "16\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "rustc",
+      "--version"
+    ],
+    "exit": 0,
+    "stdout": "rustc 1.93.0 (254b59607 2026-01-19)\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "cargo",
+      "nextest",
+      "--version"
+    ],
+    "exit": 0,
+    "stdout": "cargo-nextest 0.9.145 (00af4550e 2026-09-16)\nrelease: 0.9.145\ncommit-hash: 00af4550ec3b3b9f0e574b897b06acb95d325ba2\ncommit-date: 2026-09-16\nhost: aarch64-apple-darwin\n",
+    "stderr": ""
+  }
+]

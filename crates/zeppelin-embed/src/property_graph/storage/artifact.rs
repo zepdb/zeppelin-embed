@@ -68,6 +68,10 @@ pub enum BlockKind {
     CheckpointPayload = 9,
     /// Required role/version-tagged graph commit participant.
     CommitParticipant = 10,
+    /// Bounded immutable adjacency base (ZE-124).
+    AdjacencyBase = 13,
+    /// Bounded immutable adjacency delta (ZE-124).
+    AdjacencyDelta = 14,
 }
 
 /// Identity and monotone creation metadata covered by the file checksum.
@@ -497,6 +501,8 @@ fn block_kind(value: u16) -> Result<BlockKind, FormatError> {
         8 => Ok(BlockKind::ExtentList),
         9 => Ok(BlockKind::CheckpointPayload),
         10 => Ok(BlockKind::CommitParticipant),
+        13 => Ok(BlockKind::AdjacencyBase),
+        14 => Ok(BlockKind::AdjacencyDelta),
         _ => Err(invalid(
             FormatCheck::Family,
             "unknown required graph block kind",

@@ -1,0 +1,10 @@
+{
+  "crates/zeppelin-embed/src/property_graph/storage/adjacency/merge.rs": {
+    "before": "3101ae7a7df8e8c18aa6e1f4db52e321804c0242682a8aec4dfc8d79a865f695",
+    "after": "3101ae7a7df8e8c18aa6e1f4db52e321804c0242682a8aec4dfc8d79a865f695"
+  },
+  "crates/zeppelin-embed/src/property_graph/wal/codec.rs": {
+    "before": "ab8f7bf6eb177e63e75e8df931e5a6bb1a34e57848b7e386bb891dd28ed3dbfd",
+    "after": "ab8f7bf6eb177e63e75e8df931e5a6bb1a34e57848b7e386bb891dd28ed3dbfd"
+  }
+}

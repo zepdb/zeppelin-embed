@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-124/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.73s
+────────────
+ Nextest run ID 66bd007a-1333-4423-ad3a-6043f9d87758 with nextest profile: default
+    Starting 1 test across 1 binary (10 tests skipped)
+        FAIL [   0.008s] (1/1) zeppelin-embed::graph_adjacency adjacency_all_sequences_keep_neighbor_even_behind_delete
+  stdout ───
+
+    running 1 test
+    test adjacency_all_sequences_keep_neighbor_even_behind_delete ... FAILED
+
+    failures:
+
+    failures:
+        adjacency_all_sequences_keep_neighbor_even_behind_delete
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'adjacency_all_sequences_keep_neighbor_even_behind_delete' (34564451) panicked at crates/zeppelin-embed/tests/graph_adjacency.rs:106:60:
+    called `Result::unwrap_err()` on an `Ok` value: Merged { edges: [], partitions: Empty, watermark: 2 }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.008s] 1 test run: 0 passed, 1 failed, 10 skipped
+        FAIL [   0.008s] (1/1) zeppelin-embed::graph_adjacency adjacency_all_sequences_keep_neighbor_even_behind_delete
+  stdout ───
+
+    running 1 test
+    test adjacency_all_sequences_keep_neighbor_even_behind_delete ... FAILED
+
+    failures:
+
+    failures:
+        adjacency_all_sequences_keep_neighbor_even_behind_delete
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'adjacency_all_sequences_keep_neighbor_even_behind_delete' (34564451) panicked at crates/zeppelin-embed/tests/graph_adjacency.rs:106:60:
+    called `Result::unwrap_err()` on an `Ok` value: Merged { edges: [], partitions: Empty, watermark: 2 }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

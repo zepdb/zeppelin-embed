@@ -2,6 +2,14 @@ use std::collections::BTreeMap;
 
 /// Exact product and fault paths that the 12-seed default smoke matrix must reach.
 pub const REQUIRED_SMOKE_COVERAGE: &[&str] = &[
+    "property-graph.adjacency.merge",
+    "property-graph.adjacency.full-id",
+    "property-graph.adjacency.model-paired",
+    "property-graph.adjacency.oracle.can-fire",
+    "property-graph.adjacency.corruption.fire",
+    "property-graph.adjacency.cancel.fire",
+    "property-graph.adjacency.budget.fire",
+    "property-graph.adjacency.same-seed-control",
     // PG13 fixture comparator controls, not product I/O faults.
     "property-graph.fixture.missing-edge.fire",
     "property-graph.fixture.missing-edge.clean",

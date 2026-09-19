@@ -158,6 +158,8 @@ fn block_kind(value: u16) -> Result<super::super::storage::artifact::BlockKind, 
         8 => Ok(ExtentList),
         9 => Ok(CheckpointPayload),
         10 => Ok(CommitParticipant),
+        13 => Ok(AdjacencyBase),
+        14 => Ok(AdjacencyDelta),
         _ => Err(WalError::Unsupported),
     }
 }

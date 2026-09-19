@@ -1,0 +1,19 @@
+{
+  "name": "narrow-id",
+  "command": [
+    "cargo",
+    "nextest",
+    "run",
+    "-p",
+    "zeppelin-embed",
+    "--test",
+    "graph_adjacency",
+    "-E",
+    "test(adjacency_goldens_and_numeric_merge_keep_maximum_identity)",
+    "--test-threads",
+    "4",
+    "--no-fail-fast"
+  ],
+  "exit": 0,
+  "source_restored_sha256": "3101ae7a7df8e8c18aa6e1f4db52e321804c0242682a8aec4dfc8d79a865f695"
+}

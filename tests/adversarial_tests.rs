@@ -18903,3 +18903,37 @@ fn one_runner_episode_reaches_required_fixture_comparators() {
         outcome.violations.len()
     );
 }
+
+#[test]
+fn property_graph_adjacency_probe_checks_edges_faults_and_comparator_controls() {
+    for seed in [0, 1, 124, u64::MAX] {
+        let mut coverage = adversarial::coverage::CoverageRegistry::default();
+        let report = adversarial::graph_adjacency::probe(seed, &mut coverage).unwrap();
+        assert_eq!(
+            (
+                report.comparisons,
+                report.fault_fires,
+                report.clean_controls
+            ),
+            (4, 5, 5)
+        );
+        for key in adversarial::graph_adjacency::REQUIRED_COVERAGE {
+            assert!(coverage.count(key) > 0, "{key}");
+        }
+        eprintln!("PG12 seed={seed} {report:?}");
+    }
+}
+#[test]
+fn one_runner_episode_reaches_required_adjacency_contracts() {
+    let root = tempfile::tempdir().unwrap();
+    let outcome = adversarial::runner::run_program(0, FaultProfile::None, root.path()).unwrap();
+    assert!(outcome.violations.is_empty(), "{:?}", outcome.violations);
+    for key in adversarial::graph_adjacency::REQUIRED_COVERAGE {
+        assert!(outcome.coverage.count(key) > 0, "{key}");
+    }
+    eprintln!(
+        "PG12 actual runner seed=0 operations={} violations={}",
+        outcome.operations,
+        outcome.violations.len()
+    );
+}

@@ -1,0 +1,50 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-124/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.49s
+────────────
+ Nextest run ID e2b54924-0625-4ca2-becb-0d7fefa4930a with nextest profile: default
+    Starting 1 test across 1 binary (11 tests skipped)
+        FAIL [   0.010s] (1/1) zeppelin-embed::graph_adjacency adjacency_merge_comparisons_keep_high_bits_between_runs
+  stdout ───
+
+    running 1 test
+    test adjacency_merge_comparisons_keep_high_bits_between_runs ... FAILED
+
+    failures:
+
+    failures:
+        adjacency_merge_comparisons_keep_high_bits_between_runs
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'adjacency_merge_comparisons_keep_high_bits_between_runs' (34568296) panicked at crates/zeppelin-embed/tests/graph_adjacency.rs:435:5:
+    assertion `left == right` failed
+      left: [Edge { rel: RelId(18446744073709551617), neighbor: NodeId(3) }, Edge { rel: RelId(255), neighbor: NodeId(2) }]
+     right: [Edge { rel: RelId(255), neighbor: NodeId(2) }, Edge { rel: RelId(18446744073709551617), neighbor: NodeId(3) }]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.010s] 1 test run: 0 passed, 1 failed, 11 skipped
+        FAIL [   0.010s] (1/1) zeppelin-embed::graph_adjacency adjacency_merge_comparisons_keep_high_bits_between_runs
+  stdout ───
+
+    running 1 test
+    test adjacency_merge_comparisons_keep_high_bits_between_runs ... FAILED
+
+    failures:
+
+    failures:
+        adjacency_merge_comparisons_keep_high_bits_between_runs
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'adjacency_merge_comparisons_keep_high_bits_between_runs' (34568296) panicked at crates/zeppelin-embed/tests/graph_adjacency.rs:435:5:
+    assertion `left == right` failed
+      left: [Edge { rel: RelId(18446744073709551617), neighbor: NodeId(3) }, Edge { rel: RelId(255), neighbor: NodeId(2) }]
+     right: [Edge { rel: RelId(255), neighbor: NodeId(2) }, Edge { rel: RelId(18446744073709551617), neighbor: NodeId(3) }]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

@@ -1,0 +1,55 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-124/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.28s
+────────────
+ Nextest run ID b56cb009-b51d-47cb-b17b-28e739135fb8 with nextest profile: default
+    Starting 10 tests across 1 binary
+        PASS [   0.010s] ( 1/10) zeppelin-embed::graph_adjacency adjacency_append_limits_require_consolidation_without_property_runs
+        PASS [   0.010s] ( 2/10) zeppelin-embed::graph_adjacency adjacency_all_sequences_keep_neighbor_even_behind_delete
+        PASS [   0.011s] ( 3/10) zeppelin-embed::graph_adjacency adjacency_every_actual_work_checkpoint_and_final_completion_can_refuse
+        PASS [   0.011s] ( 4/10) zeppelin-embed::graph_adjacency adjacency_empty_sparse_and_finite_ranges_validate_all_group_fields
+        PASS [   0.010s] ( 5/10) zeppelin-embed::graph_adjacency adjacency_goldens_and_numeric_merge_keep_maximum_identity
+        PASS [   0.010s] ( 6/10) zeppelin-embed::graph_adjacency adjacency_every_truncation_reserved_field_and_late_corruption_fail_before_copy
+        FAIL [   0.009s] ( 7/10) zeppelin-embed::graph_adjacency adjacency_reserved_outer_tags_roundtrip_without_payload_role_widening
+  stdout ───
+
+    running 1 test
+    test adjacency_reserved_outer_tags_roundtrip_without_payload_role_widening ... FAILED
+
+    failures:
+
+    failures:
+        adjacency_reserved_outer_tags_roundtrip_without_payload_role_widening
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'adjacency_reserved_outer_tags_roundtrip_without_payload_role_widening' (34517870) panicked at crates/zeppelin-embed/tests/graph_adjacency.rs:62:114:
+    called `Result::unwrap()` on an `Err` value: FormatError { artifact: "native graph artifact", check: Family, values: None, detail: "unknown required graph block kind" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.011s] ( 8/10) zeppelin-embed::graph_adjacency adjacency_limits_reject_ninth_run_and_2049_total_observations
+        PASS [   0.008s] ( 9/10) zeppelin-embed::graph_adjacency adjacency_sequence_cutoff_equal_duplicates_and_all_sequence_topology
+        PASS [   0.032s] (10/10) zeppelin-embed::graph_adjacency adjacency_split_4097_and_full_6144_output_keep_exact_intervals
+────────────
+     Summary [   0.052s] 10 tests run: 9 passed, 1 failed, 0 skipped
+        FAIL [   0.009s] ( 7/10) zeppelin-embed::graph_adjacency adjacency_reserved_outer_tags_roundtrip_without_payload_role_widening
+  stdout ───
+
+    running 1 test
+    test adjacency_reserved_outer_tags_roundtrip_without_payload_role_widening ... FAILED
+
+    failures:
+
+    failures:
+        adjacency_reserved_outer_tags_roundtrip_without_payload_role_widening
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'adjacency_reserved_outer_tags_roundtrip_without_payload_role_widening' (34517870) panicked at crates/zeppelin-embed/tests/graph_adjacency.rs:62:114:
+    called `Result::unwrap()` on an `Err` value: FormatError { artifact: "native graph artifact", check: Family, values: None, detail: "unknown required graph block kind" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

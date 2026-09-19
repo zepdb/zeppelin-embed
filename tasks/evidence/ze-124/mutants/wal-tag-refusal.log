@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-124/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.74s
+────────────
+ Nextest run ID f3afb5ef-5236-4c30-9104-c221087bcf20 with nextest profile: default
+    Starting 1 test across 1 binary (11 tests skipped)
+        FAIL [   0.010s] (1/1) zeppelin-embed::graph_adjacency adjacency_wal_reference_tags_are_append_only_through_public_decode
+  stdout ───
+
+    running 1 test
+    test adjacency_wal_reference_tags_are_append_only_through_public_decode ... FAILED
+
+    failures:
+
+    failures:
+        adjacency_wal_reference_tags_are_append_only_through_public_decode
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'adjacency_wal_reference_tags_are_append_only_through_public_decode' (34569986) panicked at crates/zeppelin-embed/tests/graph_adjacency.rs:413:18:
+    called `Result::unwrap()` on an `Err` value: Unsupported
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.011s] 1 test run: 0 passed, 1 failed, 11 skipped
+        FAIL [   0.010s] (1/1) zeppelin-embed::graph_adjacency adjacency_wal_reference_tags_are_append_only_through_public_decode
+  stdout ───
+
+    running 1 test
+    test adjacency_wal_reference_tags_are_append_only_through_public_decode ... FAILED
+
+    failures:
+
+    failures:
+        adjacency_wal_reference_tags_are_append_only_through_public_decode
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'adjacency_wal_reference_tags_are_append_only_through_public_decode' (34569986) panicked at crates/zeppelin-embed/tests/graph_adjacency.rs:413:18:
+    called `Result::unwrap()` on an `Err` value: Unsupported
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

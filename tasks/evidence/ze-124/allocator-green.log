@@ -1,0 +1,141 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-124/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.04s
+────────────
+ Nextest run ID c89a3384-cc0c-4fd6-99ad-536b3f06c232 with nextest profile: default
+    Starting 13 tests across 2 binaries (591 tests skipped)
+        PASS [   0.011s] ( 1/13) zeppelin-embed::graph_adjacency adjacency_all_sequences_keep_neighbor_even_behind_delete
+        PASS [   0.013s] ( 2/13) zeppelin-embed property_graph::wal::codec::adjacency_wal_reference_tags_are_append_only
+        PASS [   0.014s] ( 3/13) zeppelin-embed property_graph::storage::adjacency::tests::adjacency_actual_allocator_reports_zero_for_encode_merge_and_all_error_classes
+        PASS [   0.018s] ( 4/13) zeppelin-embed graph::build::tests::checked_adjacency_rejects_invalid_node_and_degree_inputs
+        PASS [   0.008s] ( 5/13) zeppelin-embed::graph_adjacency adjacency_append_limits_require_consolidation_without_property_runs
+        PASS [   0.007s] ( 6/13) zeppelin-embed::graph_adjacency adjacency_empty_sparse_and_finite_ranges_validate_all_group_fields
+        PASS [   0.007s] ( 7/13) zeppelin-embed::graph_adjacency adjacency_every_actual_work_checkpoint_and_final_completion_can_refuse
+        PASS [   0.007s] ( 8/13) zeppelin-embed::graph_adjacency adjacency_every_truncation_reserved_field_and_late_corruption_fail_before_copy
+        PASS [   0.007s] ( 9/13) zeppelin-embed::graph_adjacency adjacency_goldens_and_numeric_merge_keep_maximum_identity
+        PASS [   0.007s] (10/13) zeppelin-embed::graph_adjacency adjacency_reserved_outer_tags_roundtrip_without_payload_role_widening
+        PASS [   0.008s] (11/13) zeppelin-embed::graph_adjacency adjacency_limits_reject_ninth_run_and_2049_total_observations
+        PASS [   0.007s] (12/13) zeppelin-embed::graph_adjacency adjacency_sequence_cutoff_equal_duplicates_and_all_sequence_topology
+        PASS [   0.031s] (13/13) zeppelin-embed::graph_adjacency adjacency_split_4097_and_full_6144_output_keep_exact_intervals
+────────────
+     Summary [   0.058s] 13 tests run: 13 passed, 591 skipped
+        PASS [   0.011s] ( 1/13) zeppelin-embed::graph_adjacency adjacency_all_sequences_keep_neighbor_even_behind_delete
+  stdout ───
+
+    running 1 test
+    test adjacency_all_sequences_keep_neighbor_even_behind_delete ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+
+        PASS [   0.013s] ( 2/13) zeppelin-embed property_graph::wal::codec::adjacency_wal_reference_tags_are_append_only
+  stdout ───
+
+    running 1 test
+    test property_graph::wal::codec::adjacency_wal_reference_tags_are_append_only ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 593 filtered out; finished in 0.00s
+
+
+        PASS [   0.014s] ( 3/13) zeppelin-embed property_graph::storage::adjacency::tests::adjacency_actual_allocator_reports_zero_for_encode_merge_and_all_error_classes
+  stdout ───
+
+    running 1 test
+    test property_graph::storage::adjacency::tests::adjacency_actual_allocator_reports_zero_for_encode_merge_and_all_error_classes ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 593 filtered out; finished in 0.00s
+
+  stderr ───
+    adjacency caller bytes=296 cursor/run representation=1224 allocations=0 (success,format,limit,final-control)
+
+        PASS [   0.018s] ( 4/13) zeppelin-embed graph::build::tests::checked_adjacency_rejects_invalid_node_and_degree_inputs
+  stdout ───
+
+    running 1 test
+    test graph::build::tests::checked_adjacency_rejects_invalid_node_and_degree_inputs ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 593 filtered out; finished in 0.01s
+
+  stderr ───
+    deterministic test seed: name="graph::build::vamana_build_is_deterministic_under_seed::fixture" ZE_TEST_SEED="0" derived=[9f, 9d, d1, 7f, fa, 6c, d9, f3, a0, 46, 00, de, e1, da, 95, 4c, 3e, d3, b5, ab, 1a, da, 62, f0, 98, 04, 70, bf, ac, ce, 94, 1d]
+
+        PASS [   0.008s] ( 5/13) zeppelin-embed::graph_adjacency adjacency_append_limits_require_consolidation_without_property_runs
+  stdout ───
+
+    running 1 test
+    test adjacency_append_limits_require_consolidation_without_property_runs ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] ( 6/13) zeppelin-embed::graph_adjacency adjacency_empty_sparse_and_finite_ranges_validate_all_group_fields
+  stdout ───
+
+    running 1 test
+    test adjacency_empty_sparse_and_finite_ranges_validate_all_group_fields ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] ( 7/13) zeppelin-embed::graph_adjacency adjacency_every_actual_work_checkpoint_and_final_completion_can_refuse
+  stdout ───
+
+    running 1 test
+    test adjacency_every_actual_work_checkpoint_and_final_completion_can_refuse ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] ( 8/13) zeppelin-embed::graph_adjacency adjacency_every_truncation_reserved_field_and_late_corruption_fail_before_copy
+  stdout ───
+
+    running 1 test
+    test adjacency_every_truncation_reserved_field_and_late_corruption_fail_before_copy ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] ( 9/13) zeppelin-embed::graph_adjacency adjacency_goldens_and_numeric_merge_keep_maximum_identity
+  stdout ───
+
+    running 1 test
+    test adjacency_goldens_and_numeric_merge_keep_maximum_identity ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (10/13) zeppelin-embed::graph_adjacency adjacency_reserved_outer_tags_roundtrip_without_payload_role_widening
+  stdout ───
+
+    running 1 test
+    test adjacency_reserved_outer_tags_roundtrip_without_payload_role_widening ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (11/13) zeppelin-embed::graph_adjacency adjacency_limits_reject_ninth_run_and_2049_total_observations
+  stdout ───
+
+    running 1 test
+    test adjacency_limits_reject_ninth_run_and_2049_total_observations ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+
+        PASS [   0.007s] (12/13) zeppelin-embed::graph_adjacency adjacency_sequence_cutoff_equal_duplicates_and_all_sequence_topology
+  stdout ───
+
+    running 1 test
+    test adjacency_sequence_cutoff_equal_duplicates_and_all_sequence_topology ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+
+
+        PASS [   0.031s] (13/13) zeppelin-embed::graph_adjacency adjacency_split_4097_and_full_6144_output_keep_exact_intervals
+  stdout ───
+
+    running 1 test
+    test adjacency_split_4097_and_full_6144_output_keep_exact_intervals ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.02s
+
+

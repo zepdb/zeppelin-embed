@@ -1,0 +1,86 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.47
+   Compiling libc v0.2.189
+   Compiling cfg-if v1.0.4
+   Compiling zerocopy v0.8.52
+   Compiling getrandom v0.3.4
+   Compiling serde_core v1.0.229
+   Compiling serde v1.0.229
+   Compiling zmij v1.0.23
+   Compiling rustix v1.1.3
+   Compiling autocfg v1.5.1
+   Compiling bitflags v2.13.1
+   Compiling regex-syntax v0.8.11
+   Compiling serde_json v1.0.151
+   Compiling once_cell v1.21.4
+   Compiling anstyle v1.0.14
+   Compiling ciborium-io v0.2.2
+   Compiling clap_lex v1.1.0
+   Compiling memchr v2.8.3
+   Compiling either v1.17.0
+   Compiling fastrand v2.4.1
+   Compiling itoa v1.0.18
+   Compiling num-traits v0.2.19
+   Compiling itertools v0.10.5
+   Compiling clap_builder v4.6.0
+   Compiling cast v0.3.0
+   Compiling byteorder v1.5.0
+   Compiling same-file v1.0.6
+   Compiling bit-vec v0.8.0
+   Compiling fnv v1.0.7
+   Compiling bytemuck v1.25.2
+   Compiling quick-error v1.2.3
+   Compiling walkdir v2.5.0
+   Compiling anes v0.1.6
+   Compiling roaring v0.10.12
+   Compiling unarray v0.1.4
+   Compiling oorandom v11.1.5
+   Compiling bit-set v0.8.0
+   Compiling xxhash-rust v0.8.18
+   Compiling errno v0.3.14
+   Compiling wait-timeout v0.2.1
+   Compiling is-terminal v0.4.17
+   Compiling syn v2.0.119
+   Compiling syn v3.0.3
+   Compiling rand_core v0.9.5
+   Compiling criterion-plot v0.5.0
+   Compiling rand_xorshift v0.4.0
+   Compiling regex-automata v0.4.18
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-124/crates/zeppelin-embed)
+   Compiling clap v4.6.1
+   Compiling tempfile v3.25.0
+   Compiling rusty-fork v0.3.1
+   Compiling serde_derive v1.0.229
+   Compiling regex v1.13.1
+   Compiling zerocopy-derive v0.8.52
+   Compiling tinytemplate v1.2.1
+   Compiling ppv-lite86 v0.2.21
+   Compiling half v2.7.1
+   Compiling rand_chacha v0.9.0
+   Compiling ciborium-ll v0.2.2
+   Compiling rand v0.9.5
+   Compiling ciborium v0.2.2
+   Compiling proptest v1.10.0
+   Compiling criterion v0.5.1
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.67s
+────────────
+ Nextest run ID e04c6d0c-1fca-4dc0-bcd8-12f90653494e with nextest profile: default
+    Starting 15 tests across 1 binary
+        PASS [   0.011s] ( 1/15) zeppelin-embed::graph_artifact allocation_preflight_rejects_before_entropy_or_filesystem_access
+        PASS [   0.011s] ( 2/15) zeppelin-embed::graph_artifact entropy_and_collisions_fail_without_replacing_published_or_orphan_objects
+        PASS [   0.009s] ( 3/15) zeppelin-embed::graph_artifact exclusive_creation_survives_vfs_decorators_and_fault_images
+        PASS [   0.009s] ( 4/15) zeppelin-embed::graph_artifact exclusive_object_creation_preserves_published_and_orphan_bytes
+        PASS [   0.022s] ( 5/15) zeppelin-embed::graph_artifact complete_artifact_cap_includes_framing_and_rejects_before_output_mutation
+        PASS [   0.007s] ( 6/15) zeppelin-embed::graph_artifact graph_object_corruption_and_wrong_references_are_rejected_before_payload_access
+        PASS [   0.008s] ( 7/15) zeppelin-embed::graph_artifact failed_create_reports_its_nonce_without_granting_collision_cleanup_ownership
+        PASS [   0.009s] ( 8/15) zeppelin-embed::graph_artifact incompatible_root_validation_never_mutates_root_or_neighbor_artifacts
+        PASS [   0.007s] ( 9/15) zeppelin-embed::graph_artifact native_graph_formats_are_required_and_append_only
+        PASS [   0.009s] (10/15) zeppelin-embed::graph_artifact native_graph_artifact_reference_and_page_bytes_match_independent_goldens
+        PASS [   0.007s] (11/15) zeppelin-embed::graph_artifact native_graph_only_object_reopens_full_width_identity_and_exact_payload
+        PASS [   0.007s] (12/15) zeppelin-embed::graph_artifact page_comparators_use_declared_numeric_fields_and_exact_key_bytes
+        PASS [   0.007s] (13/15) zeppelin-embed::graph_artifact tree_page_frames_keep_full_width_inline_overflow_and_infinite_keys_distinct
+        PASS [   0.017s] (14/15) zeppelin-embed::graph_artifact tree_page_corruption_cannot_be_hidden_by_valid_outer_checksums
+        PASS [   0.080s] (15/15) zeppelin-embed::graph_artifact artifact_and_page_preflight_reject_invalid_shapes_without_touching_output
+────────────
+     Summary [   0.080s] 15 tests run: 15 passed, 0 skipped

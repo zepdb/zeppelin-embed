@@ -1,0 +1,21 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-124/crates/zeppelin-embed)
+error[E0432]: unresolved import `zeppelin_embed::property_graph::RelTypeId`
+ --> crates/zeppelin-embed/tests/graph_adjacency.rs:2:53
+  |
+2 | use zeppelin_embed::property_graph::{NodeId, RelId, RelTypeId};
+  |                                                     ^^^^^^^^^ no `RelTypeId` in `property_graph`
+  |
+  = help: consider importing this struct instead:
+          zeppelin_embed::property_graph::catalog::RelTypeId
+
+error[E0432]: unresolved imports `zeppelin_embed::property_graph::storage::adjacency`, `zeppelin_embed::property_graph::storage::adjacency`
+ --> crates/zeppelin-embed/tests/graph_adjacency.rs:3:46
+  |
+3 | use zeppelin_embed::property_graph::storage::adjacency::{
+  |                                              ^^^^^^^^^ could not find `adjacency` in `storage`
+4 |     self as a, Action, Admission, DeltaEntry, Direction, Edge, Error, FormatIssue,
+  |     ^^^^^^^^^ no `adjacency` in `property_graph::storage`
+
+For more information about this error, try `rustc --explain E0432`.
+error: could not compile `zeppelin-embed` (test "graph_adjacency") due to 2 previous errors
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_adjacency` exited with code 101

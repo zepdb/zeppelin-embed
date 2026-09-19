@@ -1,0 +1,38 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-124/crates/zeppelin-embed)
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-124/crates/zeppelin-embed-cypher)
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-124/crates/zeppelin-embed-bench)
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-124/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-124/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.88s
+────────────
+ Nextest run ID 06d53bdb-33d6-4d02-884f-2ee93f376161 with nextest profile: default
+    Starting 2 tests across 1 binary (456 tests skipped)
+        PASS [   0.018s] (1/2) zeppelin-embed-workspace-tests::adversarial_tests property_graph_adjacency_probe_checks_edges_faults_and_comparator_controls
+        PASS [   2.160s] (2/2) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_adjacency_contracts
+────────────
+     Summary [   2.161s] 2 tests run: 2 passed, 456 skipped
+        PASS [   0.018s] (1/2) zeppelin-embed-workspace-tests::adversarial_tests property_graph_adjacency_probe_checks_edges_faults_and_comparator_controls
+  stdout ───
+
+    running 1 test
+    test property_graph_adjacency_probe_checks_edges_faults_and_comparator_controls ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 457 filtered out; finished in 0.01s
+
+  stderr ───
+    PG12 seed=0 Report { comparisons: 4, fault_fires: 5, clean_controls: 5 }
+    PG12 seed=1 Report { comparisons: 4, fault_fires: 5, clean_controls: 5 }
+    PG12 seed=124 Report { comparisons: 4, fault_fires: 5, clean_controls: 5 }
+    PG12 seed=18446744073709551615 Report { comparisons: 4, fault_fires: 5, clean_controls: 5 }
+
+        PASS [   2.160s] (2/2) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_adjacency_contracts
+  stdout ───
+
+    running 1 test
+    test one_runner_episode_reaches_required_adjacency_contracts ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 457 filtered out; finished in 2.15s
+
+  stderr ───
+    PG12 actual runner seed=0 operations=59 violations=0
+

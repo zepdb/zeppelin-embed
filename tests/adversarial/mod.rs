@@ -103,3 +103,5 @@ pub mod graph_staging;
 pub mod graph_fixture;
 
 pub mod graph_binding;
+
+pub mod graph_adjacency;
