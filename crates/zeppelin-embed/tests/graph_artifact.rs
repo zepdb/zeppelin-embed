@@ -213,7 +213,7 @@ fn native_graph_only_object_reopens_full_width_identity_and_exact_payload() {
 #[test]
 fn native_graph_formats_are_required_and_append_only() {
     use zeppelin_embed::format::{FormatRegistry, RegistryError};
-    for family in [17, 18] {
+    for family in [17, 18, 19] {
         assert!(FormatRegistry::require(family, 1).is_ok());
         assert!(matches!(
             FormatRegistry::require(family, 2),
@@ -221,8 +221,8 @@ fn native_graph_formats_are_required_and_append_only() {
         ));
     }
     assert_eq!(
-        FormatRegistry::require(19, 1),
-        Err(RegistryError::UnknownFamily(19))
+        FormatRegistry::require(20, 1),
+        Err(RegistryError::UnknownFamily(20))
     );
 }
 

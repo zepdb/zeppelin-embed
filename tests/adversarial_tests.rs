@@ -18723,3 +18723,33 @@ fn one_runner_episode_reaches_required_query_contracts() {
         outcome.violations.len()
     );
 }
+
+#[test]
+fn property_graph_wal_probe_pairs_faults_with_same_seed_clean_controls() {
+    for seed in [0, 1, 42, u64::MAX] {
+        let mut coverage = adversarial::coverage::CoverageRegistry::default();
+        adversarial::graph_wal::probe(seed, &mut coverage).expect("independent PG7 oracle");
+        for key in adversarial::graph_wal::REQUIRED_COVERAGE {
+            assert_eq!(coverage.count(key), 1, "seed={seed}, {key}");
+        }
+    }
+}
+
+#[test]
+fn one_runner_episode_reaches_required_wal_contracts() {
+    let root = tempfile::tempdir().expect("query runner episode artifacts");
+    let outcome = adversarial::runner::run_program(0, FaultProfile::None, root.path())
+        .expect("one actual runner episode");
+    assert!(outcome.violations.is_empty(), "{:?}", outcome.violations);
+    for key in adversarial::graph_wal::REQUIRED_COVERAGE {
+        assert!(
+            outcome.coverage.count(key) > 0,
+            "actual runner omitted {key}"
+        );
+    }
+    eprintln!(
+        "PG7 actual runner seed=0 operations={} violations={}",
+        outcome.operations,
+        outcome.violations.len()
+    );
+}

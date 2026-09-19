@@ -75,3 +75,11 @@
   presence bitmap, one monotonic little-endian `end_offset:u64` per row, then
   concatenated UTF-8 bytes. Absent rows have an unchanged end offset; readers
   validate every present row as UTF-8 before returning any row.
+- Native graph WAL is append-only family19/v1, separate from family11. Its file
+  and record headers are64 bytes, checksums are default-seed xxh3-64, frame kinds
+  Begin1/Mutation2/Inventory3/ReclaimIntent4/ReclaimComplete5/Commit6 are required,
+  and the complete envelope limit is16MiB including all framing. Explicit field
+  offsets and full-width fixtures are frozen in tasks/evidence/ze-38/schema-review.md
+  and tests/fixtures/graph-wal/complete-v1.bin; its matching hex is readable byte
+  authority. Object BlockKind10 requires ZGCP role:u16 and version:u16 at4 and6.
+  Unsupported roles/versions are never opaque optional participants.

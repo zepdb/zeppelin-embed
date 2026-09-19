@@ -1,0 +1,107 @@
+[
+  {
+    "name": "core",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_wal",
+      "--test",
+      "graph_artifact",
+      "--test",
+      "format_golden",
+      "--test",
+      "wal_recovery",
+      "--locked",
+      "--no-tests=fail"
+    ],
+    "exit_code": 0
+  },
+  {
+    "name": "allocation",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed",
+      "--features",
+      "allocation-audit",
+      "--lib",
+      "-E",
+      "test(wal::allocation_tests)",
+      "--locked",
+      "--no-tests=fail"
+    ],
+    "exit_code": 0
+  },
+  {
+    "name": "oracle",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-adversarial-oracle",
+      "--test",
+      "graph_wal",
+      "--locked",
+      "--no-tests=fail"
+    ],
+    "exit_code": 0
+  },
+  {
+    "name": "probes",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--test",
+      "adversarial_tests",
+      "-E",
+      "test(property_graph_wal_probe) | test(one_runner_episode_reaches_required_wal_contracts)",
+      "--locked",
+      "--no-tests=fail",
+      "--success-output",
+      "final"
+    ],
+    "exit_code": 0
+  },
+  {
+    "name": "clippy",
+    "command": [
+      "cargo",
+      "clippy",
+      "-p",
+      "zeppelin-embed",
+      "-p",
+      "zeppelin-embed-adversarial-oracle",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--all-targets",
+      "--features",
+      "zeppelin-embed/allocation-audit,zeppelin-embed/test-support",
+      "--no-deps",
+      "--locked",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0
+  },
+  {
+    "name": "fmt",
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--check"
+    ],
+    "exit_code": 0
+  }
+]

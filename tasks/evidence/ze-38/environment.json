@@ -1,0 +1,12 @@
+{
+  "base": "fc505558ddc4c1c64f40a78a27714058952e73ba",
+  "branch": "codex/ze-38-graph-wal",
+  "platform": "macOS-27.0-arm64-arm-64bit",
+  "hardware": "Mac15,9",
+  "memory_bytes": 137438953472,
+  "rustc": "rustc 1.93.0 (254b59607 2026-01-19)",
+  "nextest": "cargo-nextest 0.9.145 (00af4550e 2026-09-16)",
+  "prior_fixture_files_unchanged": 78,
+  "cargo_lock_sha256": "7516f5763b7a7f6c38d90cc436fbb85308de5f2ccea3dc75dc1647b1db3b2f30",
+  "golden_bytes": 6617
+}

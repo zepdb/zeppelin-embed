@@ -788,3 +788,40 @@ and allocator ownership remain truthful owner assertions; ZE-49 supplies actual
 runtime reservations and shared-store accounting. This is not whole-query memory
 or admission enforcement. Broad qualification deferred by owner to ZE-118 does
 not turn focused component evidence into coverage/platform/GraphStore acceptance.
+
+## ZE-38: native graph WAL participant
+
+- NativeGraphWal family19/v1 is separate from legacy WAL family11. Its exact
+  hand-written headers, frame tags1..6, full state and provenance carriage are
+  frozen in tasks/evidence/ze-38/schema-review.md and the independently minted
+  tests/fixtures/graph-wal/complete-v1.bin. Existing family/block IDs stay fixed;
+  object BlockKind10 is CommitParticipant with required ZGCP role and version.
+- Encode only complete Begin/Change/Commit envelopes, at most16MiB including all
+  framing and at most16,384 mutations. Every frame binds full BatchId, sequence,
+  index, length and checksum; Commit repeats count and hashes all prior encoded
+  frames. Full StoreInstanceId, graph roots, catalog/search/reclaim/inventory
+  participants and all logical/physical high-waters are explicit. High-waters
+  never regress, generations/sequences never wrap. An empty normalized mutation
+  set may still commit allocator/catalog/fence changes.
+- Replay validates complete envelopes into a private recovery view. Every
+  required semantic/object hook must succeed before a batch escapes, followed
+  by a final cancellation check. Missing proof/live objects are errors; deletion
+  targets in a validated intent are not implicitly required-live references.
+  Codec validation grants no deletion authority. Later corruption invalidates
+  publication of the entire private recovery result, including earlier batches.
+- Replay::at_watermark checks all complete old framing/scalar chains through the
+  exact complete checkpoint boundary and binds its full state. Retired historical
+  objects need not exist. A cut header starts at checkpoint.sequence+1; gaps,
+  forged/misaligned cutoffs, incomplete historical prefixes and mismatched state
+  reject. Replay never truncates, rewrites, copies or cleans up the log.
+- WAL owns no heap allocation. Caller buffers/descriptor capacities stay charged
+  to their real staging/storage owner; a64KiB fixed stack allowance and finite
+  work budget are required. Hashing/copy/UTF-8 work polls in at most64KiB chunks.
+  Existing ArtifactFrame admission is a separate storage responsibility: its
+  current decoder allocates error strings and scans up to4MiB without in-work
+  cancellation. The WAL helper consumes already validated frames and does not
+  pretend a caller pre-poll fixes that boundary. Mandatory resolver integration
+  must provide controlled admitted objects/extents and complete semantic checks.
+- ZE39/40 own writer/publication/recovery coordination; ZE43/46 own record and
+  mark/proof semantics. Fixture resolver tests are not whole-store recovery or
+  reclamation acceptance. Broad release qualification remains ZE118/E12.

@@ -101,3 +101,6 @@ pub use key_lifecycle::{
 
 /// Validated typed query plans and query-specific value semantics.
 pub mod query;
+
+/// Complete native graph WAL envelopes and private replay validation.
+pub mod wal;

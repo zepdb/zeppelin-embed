@@ -1,0 +1,10 @@
+{
+  "split-codepoint": {
+    "bytes": 198704,
+    "sha256": "2b960966fb79db4edc9285c6a8eecd3b19cec41e5698e28b0161687b1c33671e"
+  },
+  "complete-v1": {
+    "bytes": 6617,
+    "sha256": "62ebbe42d466349f137f3e6426ec3be8e2ef5beccb30063799a9a71c878f4b08"
+  }
+}

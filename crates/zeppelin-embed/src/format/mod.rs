@@ -43,6 +43,8 @@ pub enum FormatFamily {
     NativeGraphObject = 17,
     /// Required graph root envelopes; logical checkpoint admission is separate.
     NativeGraphRoot = 18,
+    /// Required complete native graph WAL envelopes.
+    NativeGraphWal = 19,
 }
 
 impl FormatFamily {
@@ -71,7 +73,8 @@ impl FormatFamily {
             | Self::PurgeIntent
             | Self::StoredText
             | Self::NativeGraphObject
-            | Self::NativeGraphRoot => 1,
+            | Self::NativeGraphRoot
+            | Self::NativeGraphWal => 1,
         }
     }
 }
@@ -142,7 +145,7 @@ impl std::error::Error for RegistryError {}
 /// Static registry for every persisted family and quantization identifier.
 pub struct FormatRegistry;
 
-const FAMILIES: [FamilySpec; 18] = [
+const FAMILIES: [FamilySpec; 19] = [
     FamilySpec {
         family: FormatFamily::Frame,
         current_version: 1,
@@ -247,6 +250,12 @@ const FAMILIES: [FamilySpec; 18] = [
     },
     FamilySpec {
         family: FormatFamily::NativeGraphRoot,
+        current_version: 1,
+        minimum_accepted_version: 1,
+        maximum_accepted_version: 1,
+    },
+    FamilySpec {
+        family: FormatFamily::NativeGraphWal,
         current_version: 1,
         minimum_accepted_version: 1,
         maximum_accepted_version: 1,

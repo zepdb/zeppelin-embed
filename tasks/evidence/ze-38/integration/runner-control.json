@@ -1,0 +1,41 @@
+[
+  {
+    "phase": "RED",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--test",
+      "adversarial_tests",
+      "-E",
+      "test(=one_runner_episode_reaches_required_wal_contracts)",
+      "--locked",
+      "--no-tests=fail",
+      "--success-output",
+      "final"
+    ],
+    "exit_code": 100
+  },
+  {
+    "phase": "GREEN",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--test",
+      "adversarial_tests",
+      "-E",
+      "test(=one_runner_episode_reaches_required_wal_contracts)",
+      "--locked",
+      "--no-tests=fail",
+      "--success-output",
+      "final"
+    ],
+    "exit_code": 0,
+    "restored_runner_sha256": "14ecb16df40e5d1a3c7e9240490de4700d14532f923e78ddb775e0c4bedd4c9f"
+  }
+]

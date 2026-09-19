@@ -1,0 +1,65 @@
+[
+  {
+    "mutant": "digest",
+    "source": "crates/zeppelin-embed/src/property_graph/wal/replay.rs",
+    "before": "4534f719147067ac1da44c860d7d2157e541d69b90c109ff5f68f3baf8a314e6",
+    "exit": 100,
+    "killed_by_named_runtime_test": true,
+    "test": "repaired_checksums_do_not_hide_frame_splicing_counts_or_state_regression",
+    "restored": "4534f719147067ac1da44c860d7d2157e541d69b90c109ff5f68f3baf8a314e6"
+  },
+  {
+    "mutant": "count",
+    "source": "crates/zeppelin-embed/src/property_graph/wal/replay.rs",
+    "before": "4534f719147067ac1da44c860d7d2157e541d69b90c109ff5f68f3baf8a314e6",
+    "exit": 100,
+    "killed_by_named_runtime_test": true,
+    "test": "repaired_checksums_do_not_hide_frame_splicing_counts_or_state_regression",
+    "restored": "4534f719147067ac1da44c860d7d2157e541d69b90c109ff5f68f3baf8a314e6"
+  },
+  {
+    "mutant": "role",
+    "source": "crates/zeppelin-embed/src/property_graph/wal/replay.rs",
+    "before": "4534f719147067ac1da44c860d7d2157e541d69b90c109ff5f68f3baf8a314e6",
+    "exit": 100,
+    "killed_by_named_runtime_test": true,
+    "test": "framed_objects_reject_swapped_tree_roles_and_unknown_participant_tags",
+    "restored": "4534f719147067ac1da44c860d7d2157e541d69b90c109ff5f68f3baf8a314e6"
+  },
+  {
+    "mutant": "required-extent",
+    "source": "crates/zeppelin-embed/src/property_graph/wal/replay.rs",
+    "before": "4534f719147067ac1da44c860d7d2157e541d69b90c109ff5f68f3baf8a314e6",
+    "exit": 100,
+    "killed_by_named_runtime_test": true,
+    "test": "missing_middle_extent_is_observed_before_any_batch_escapes",
+    "restored": "4534f719147067ac1da44c860d7d2157e541d69b90c109ff5f68f3baf8a314e6"
+  },
+  {
+    "mutant": "partition",
+    "source": "crates/zeppelin-embed/src/property_graph/wal/maintenance.rs",
+    "before": "c5586774a18da40b28da726c11d3bcef032691a72d5dd3bedce70561dec4617d",
+    "exit": 100,
+    "killed_by_named_runtime_test": true,
+    "test": "reclaim_completion_requires_disjoint_exact_candidate_partitions",
+    "restored": "c5586774a18da40b28da726c11d3bcef032691a72d5dd3bedce70561dec4617d"
+  },
+  {
+    "mutant": "high-water",
+    "source": "crates/zeppelin-embed/src/property_graph/wal/framing.rs",
+    "before": "dcedd359638460791eccb73f4bafe93ac53f54b4824b049b04a3325838760b3b",
+    "exit": 100,
+    "killed_by_named_runtime_test": true,
+    "test": "capacities_high_waters_and_sequence_never_wrap_or_partially_write",
+    "restored": "dcedd359638460791eccb73f4bafe93ac53f54b4824b049b04a3325838760b3b"
+  },
+  {
+    "mutant": "final-cancel",
+    "source": "crates/zeppelin-embed/src/property_graph/wal/replay.rs",
+    "before": "4534f719147067ac1da44c860d7d2157e541d69b90c109ff5f68f3baf8a314e6",
+    "exit": 100,
+    "killed_by_named_runtime_test": true,
+    "test": "cancellation_triggered_by_final_validation_cannot_publish_a_batch",
+    "restored": "4534f719147067ac1da44c860d7d2157e541d69b90c109ff5f68f3baf8a314e6"
+  }
+]

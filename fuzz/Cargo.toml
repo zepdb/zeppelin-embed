@@ -130,3 +130,10 @@ path = "fuzz_targets/graph_catalog.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "native_graph_wal"
+path = "fuzz_targets/native_graph_wal.rs"
+test = false
+doc = false
+bench = false

@@ -66,6 +66,8 @@ pub enum BlockKind {
     ExtentList = 8,
     /// Opaque checkpoint bytes requiring writes-owned logical validation.
     CheckpointPayload = 9,
+    /// Required role/version-tagged graph commit participant.
+    CommitParticipant = 10,
 }
 
 /// Identity and monotone creation metadata covered by the file checksum.
@@ -494,6 +496,7 @@ fn block_kind(value: u16) -> Result<BlockKind, FormatError> {
         7 => Ok(BlockKind::OverflowKey),
         8 => Ok(BlockKind::ExtentList),
         9 => Ok(BlockKind::CheckpointPayload),
+        10 => Ok(BlockKind::CommitParticipant),
         _ => Err(invalid(
             FormatCheck::Family,
             "unknown required graph block kind",
@@ -539,4 +542,13 @@ fn checksum(check: FormatCheck, expected: u64, actual: u64) -> Result<(), Format
 
 fn invalid(check: FormatCheck, detail: &str) -> FormatError {
     FormatError::new("native graph artifact", check, detail)
+}
+
+impl ArtifactFrame<'_> {
+    /// Complete immutable bytes whose container framing was validated at decode.
+    /// Callers may borrow them for descriptor/role checks; inner semantics are
+    /// still the owning participant's responsibility.
+    pub fn bytes(&self) -> &[u8] {
+        self.bytes
+    }
 }
