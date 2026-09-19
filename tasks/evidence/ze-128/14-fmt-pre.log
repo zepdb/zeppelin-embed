@@ -1,0 +1,1279 @@
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/audit.rs:12:
+     pub peak: usize,
+ }
+ #[derive(Clone, Copy)]
+-struct State { enabled: bool, fail_at: usize, deny_all: bool, value: Snapshot }
++struct State {
++    enabled: bool,
++    fail_at: usize,
++    deny_all: bool,
++    value: Snapshot,
++}
+ thread_local! {
+     static STATE: Cell<State> = const { Cell::new(State { enabled: false, fail_at: 0, deny_all: false, value: Snapshot { attempts: 0, allocations: 0, frees: 0, bytes: 0, peak: 0 } }) };
+ }
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/audit.rs:23:
+     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+         let denied = STATE.with(|cell| {
+             let mut state = cell.get();
+-            if !state.enabled { return false; }
++            if !state.enabled {
++                return false;
++            }
+             state.value.attempts += 1;
+             let denied = state.deny_all || state.fail_at == state.value.attempts;
+             cell.set(state);
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/audit.rs:30:
+             denied
+         });
+-        if denied { return std::ptr::null_mut(); }
++        if denied {
++            return std::ptr::null_mut();
++        }
+         let result = unsafe { System.alloc(layout) };
+-        if !result.is_null() { STATE.with(|cell| {
+-            let mut state = cell.get();
+-            if state.enabled {
+-                state.value.allocations += 1;
+-                state.value.bytes += layout.size() as isize;
+-                state.value.peak = state.value.peak.max(state.value.bytes.max(0) as usize);
+-                cell.set(state);
+-            }
+-        }); }
++        if !result.is_null() {
++            STATE.with(|cell| {
++                let mut state = cell.get();
++                if state.enabled {
++                    state.value.allocations += 1;
++                    state.value.bytes += layout.size() as isize;
++                    state.value.peak = state.value.peak.max(state.value.bytes.max(0) as usize);
++                    cell.set(state);
++                }
++            });
++        }
+         result
+     }
+     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/audit.rs:46:
+         STATE.with(|cell| {
+             let mut state = cell.get();
+-            if state.enabled { state.value.frees += 1; state.value.bytes -= layout.size() as isize; cell.set(state); }
++            if state.enabled {
++                state.value.frees += 1;
++                state.value.bytes -= layout.size() as isize;
++                cell.set(state);
++            }
+         });
+-        unsafe { System.dealloc(pointer, layout); }
++        unsafe {
++            System.dealloc(pointer, layout);
++        }
+     }
+ }
+ struct Reset;
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/audit.rs:54:
+ impl Drop for Reset {
+-    fn drop(&mut self) { STATE.with(|cell| { let mut state = cell.get(); state.enabled = false; cell.set(state); }); }
++    fn drop(&mut self) {
++        STATE.with(|cell| {
++            let mut state = cell.get();
++            state.enabled = false;
++            cell.set(state);
++        });
++    }
+ }
+ pub(super) fn run<T>(fail_at: usize, deny_all: bool, action: impl FnOnce() -> T) -> (T, Snapshot) {
+-    STATE.with(|cell| cell.set(State { enabled: true, fail_at, deny_all, value: Snapshot::default() }));
++    STATE.with(|cell| {
++        cell.set(State {
++            enabled: true,
++            fail_at,
++            deny_all,
++            value: Snapshot::default(),
++        })
++    });
+     let reset = Reset;
+     let result = action();
+     let snapshot = STATE.with(|cell| cell.get().value);
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/outcome.rs:20:
+ /// Caller-thread outcome state. Keep this outside catch_unwind and record the
+ /// real coordinator result immediately, before delivery/cancellation checks.
+ /// This component cannot authenticate a commit or recover a durable outcome.
+-pub struct OutcomeCell { state: Cell<OperationOutcome> }
++pub struct OutcomeCell {
++    state: Cell<OperationOutcome>,
++}
+ impl OutcomeCell {
+     /// A read remains NotApplicable even if execution or delivery fails.
+-    pub const fn read() -> Self { Self { state: Cell::new(OperationOutcome::Success(SuccessfulOutcome::Read)) } }
++    pub const fn read() -> Self {
++        Self {
++            state: Cell::new(OperationOutcome::Success(SuccessfulOutcome::Read)),
++        }
++    }
+     /// A possible write starts with definite no attempted effects.
+-    pub const fn write() -> Self { Self { state: Cell::new(OperationOutcome::NotCommitted) } }
++    pub const fn write() -> Self {
++        Self {
++            state: Cell::new(OperationOutcome::NotCommitted),
++        }
++    }
+     /// Current metadata, readable after unwind or delivery failure.
+-    pub fn get(&self) -> OperationOutcome { self.state.get() }
++    pub fn get(&self) -> OperationOutcome {
++        self.state.get()
++    }
+     /// Set before crossing the first possibly durable coordinator operation.
+     pub fn begin_attempt(&self) -> Result<(), OutcomeTransitionError> {
+-        if self.get() != OperationOutcome::NotCommitted { return Err(OutcomeTransitionError); }
++        if self.get() != OperationOutcome::NotCommitted {
++            return Err(OutcomeTransitionError);
++        }
+         self.state.set(OperationOutcome::Indeterminate);
+         Ok(())
+     }
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/outcome.rs:40:
+         let next = OperationOutcome::Success(outcome);
+         match (self.get(), outcome) {
+             (previous, _) if previous == next => return Ok(()),
+-            (OperationOutcome::Indeterminate, SuccessfulOutcome::Committed(_) | SuccessfulOutcome::Replayed | SuccessfulOutcome::NoOp)
+-            | (OperationOutcome::NotCommitted, SuccessfulOutcome::Replayed | SuccessfulOutcome::NoOp) => {},
++            (
++                OperationOutcome::Indeterminate,
++                SuccessfulOutcome::Committed(_)
++                | SuccessfulOutcome::Replayed
++                | SuccessfulOutcome::NoOp,
++            )
++            | (
++                OperationOutcome::NotCommitted,
++                SuccessfulOutcome::Replayed | SuccessfulOutcome::NoOp,
++            ) => {}
+             _ => return Err(OutcomeTransitionError),
+         }
+         self.state.set(next);
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/outcome.rs:50:
+     /// Only a coordinator's definite no-effect result permits this transition.
+     /// Never call it merely because cancellation, panic, or delivery failed.
+     pub fn record_not_committed(&self) -> Result<(), OutcomeTransitionError> {
+-        if matches!(self.get(), OperationOutcome::Success(_)) { return Err(OutcomeTransitionError); }
++        if matches!(self.get(), OperationOutcome::Success(_)) {
++            return Err(OutcomeTransitionError);
++        }
+         self.state.set(OperationOutcome::NotCommitted);
+         Ok(())
+     }
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/registration.rs:16:
+     arena: AlignedArena,
+     next: *mut Node,
+ }
+-struct List { head: *mut Node, len: usize }
++struct List {
++    head: *mut Node,
++    len: usize,
++}
+ // SAFETY: links and removals are exclusively protected by the registry gate.
+ // Before publication only the unique PreparedResponse accesses root. After
+ // release/acquire publication root and backing are immutable until removal.
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/registration.rs:23:
+ unsafe impl Send for List {}
+
+-
+ // An embedded gate avoids std Mutex's lazy, infallible 64-byte allocation on
+ // macOS. Normal calls never wait: contention is a typed precommit/free error.
+-struct Gate { held: AtomicBool, poisoned: AtomicBool, value: UnsafeCell<List> }
++struct Gate {
++    held: AtomicBool,
++    poisoned: AtomicBool,
++    value: UnsafeCell<List>,
++}
+ unsafe impl Sync for Gate {} // exclusive acquire/release guard owns List
+ impl Gate {
+     const fn new() -> Self {
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/registration.rs:32:
+-        Self { held: AtomicBool::new(false), poisoned: AtomicBool::new(false), value: UnsafeCell::new(List { head: std::ptr::null_mut(), len: 0 }) }
++        Self {
++            held: AtomicBool::new(false),
++            poisoned: AtomicBool::new(false),
++            value: UnsafeCell::new(List {
++                head: std::ptr::null_mut(),
++                len: 0,
++            }),
++        }
+     }
+     fn acquire(&self) -> Result<GateGuard<'_>, OwnerError> {
+-        self.held.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).map_err(|_| OwnerError::Busy)?;
+-        Ok(GateGuard { gate: self, entered_panicking: std::thread::panicking() })
++        self.held
++            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
++            .map_err(|_| OwnerError::Busy)?;
++        Ok(GateGuard {
++            gate: self,
++            entered_panicking: std::thread::panicking(),
++        })
+     }
+     fn try_lock(&self) -> Result<GateGuard<'_>, OwnerError> {
+         let guard = self.acquire()?;
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/registration.rs:40:
+-        if self.poisoned.load(Ordering::Relaxed) { return Err(OwnerError::Poisoned); }
++        if self.poisoned.load(Ordering::Relaxed) {
++            return Err(OwnerError::Poisoned);
++        }
+         Ok(guard)
+     }
+     fn cleanup_lock(&self) -> GateGuard<'_> {
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/registration.rs:44:
+         // Only abort cleanup waits. Every critical section is bounded by the
+         // explicit registry limit and contains no allocation or callback.
+         loop {
+-            if let Ok(guard) = self.acquire() { return guard; }
++            if let Ok(guard) = self.acquire() {
++                return guard;
++            }
+             std::thread::yield_now();
+         }
+     }
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/registration.rs:51:
+ }
+-struct GateGuard<'a> { gate: &'a Gate, entered_panicking: bool }
++struct GateGuard<'a> {
++    gate: &'a Gate,
++    entered_panicking: bool,
++}
+ impl Deref for GateGuard<'_> {
+     type Target = List;
+-    fn deref(&self) -> &List { unsafe { &*self.gate.value.get() } }
++    fn deref(&self) -> &List {
++        unsafe { &*self.gate.value.get() }
++    }
+ }
+ impl DerefMut for GateGuard<'_> {
+-    fn deref_mut(&mut self) -> &mut List { unsafe { &mut *self.gate.value.get() } }
++    fn deref_mut(&mut self) -> &mut List {
++        unsafe { &mut *self.gate.value.get() }
++    }
+ }
+ impl Drop for GateGuard<'_> {
+     fn drop(&mut self) {
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/registration.rs:62:
+-        if !self.entered_panicking && std::thread::panicking() { self.gate.poisoned.store(true, Ordering::Relaxed); }
++        if !self.entered_panicking && std::thread::panicking() {
++            self.gate.poisoned.store(true, Ordering::Relaxed);
++        }
+         self.gate.held.store(false, Ordering::Release);
+     }
+ }
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/registration.rs:76:
+     /// Declares a static registry and explicit admission bound. Zero rejects all
+     /// preparations. The registry itself allocates no heap slab or hash table.
+     pub const fn new(max_outstanding: usize) -> Self {
+-        Self { list: Gate::new(), max_outstanding }
++        Self {
++            list: Gate::new(),
++            max_outstanding,
++        }
+     }
+     /// Copies aligned typed pools while source owners remain live, reserves the
+     /// actual arena/node/control capacities, then admits a private registry node.
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/registration.rs:83:
+     /// The caller must prove/charge whole source owners at real ZE-68 conversion.
+-    pub fn prepare<'m, 'g>(&'static self, context: &mut RuntimeContext<'_, 'm, 'g>, parts: ResponseParts<'_>, metadata: ResponseMetadata) -> Result<PreparedResponse<'m, 'g>, OwnerError> {
++    pub fn prepare<'m, 'g>(
++        &'static self,
++        context: &mut RuntimeContext<'_, 'm, 'g>,
++        parts: ResponseParts<'_>,
++        metadata: ResponseMetadata,
++    ) -> Result<PreparedResponse<'m, 'g>, OwnerError> {
+         context.checkpoint()?;
+-        if metadata.row_count > 65536 || parts.columns.len() > 256
++        if metadata.row_count > 65536
++            || parts.columns.len() > 256
+             || metadata.row_count.checked_mul(parts.columns.len()) != Some(parts.cells.len())
+-            || (metadata.global_work.start as usize).checked_add(metadata.global_work.count as usize).is_none_or(|end| end > parts.work.len()) {
++            || (metadata.global_work.start as usize)
++                .checked_add(metadata.global_work.count as usize)
++                .is_none_or(|end| end > parts.work.len())
++        {
+             return Err(OwnerError::InvalidShape);
+         }
+         let plan = ArenaLayout::new(parts.counts())?;
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/registration.rs:92:
+         // Exhaustion and poison are typed precommit errors. Tokens are burned
+         // on later failure; they never wrap, reset, or get reused.
+-        let token = NEXT_TOKEN.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| value.checked_add(1)).map_err(|_| OwnerError::TokenExhausted)?;
++        let token = NEXT_TOKEN
++            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
++                value.checked_add(1)
++            })
++            .map_err(|_| OwnerError::TokenExhausted)?;
+         {
+             let list = self.list.try_lock()?;
+-            if list.len >= self.max_outstanding { return Err(OwnerError::RegistryFull); }
++            if list.len >= self.max_outstanding {
++                return Err(OwnerError::RegistryFull);
++            }
+         }
+         let mut charge = context.memory().reserve_external_capacity()?;
+-        let controls = size_of::<PreparedResponse<'_, '_>>() - size_of::<QueryExternalReservation<'_, '_>>() + size_of::<ArenaLayout>() + size_of::<ResponseParts<'_>>() + size_of::<ResponseMetadata>();
+-        let bytes = plan.layout.size().checked_add(size_of::<Node>()).and_then(|n| n.checked_add(controls)).ok_or(OwnerError::Limit)?;
++        let controls = size_of::<PreparedResponse<'_, '_>>()
++            - size_of::<QueryExternalReservation<'_, '_>>()
++            + size_of::<ArenaLayout>()
++            + size_of::<ResponseParts<'_>>()
++            + size_of::<ResponseMetadata>();
++        let bytes = plan
++            .layout
++            .size()
++            .checked_add(size_of::<Node>())
++            .and_then(|n| n.checked_add(controls))
++            .ok_or(OwnerError::Limit)?;
+         charge.reserve_additional(bytes)?;
+         let arena = AlignedArena::allocate(plan.layout)?;
+         let mut root = fill(&arena, &plan, parts, metadata, context)?;
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/registration.rs:105:
+         root.owner_token = token;
+         context.checkpoint()?;
+-        let raw = NonNull::new(unsafe { alloc(Layout::new::<Node>()) }).ok_or(OwnerError::Allocation)?.cast::<Node>();
++        let raw = NonNull::new(unsafe { alloc(Layout::new::<Node>()) })
++            .ok_or(OwnerError::Allocation)?
++            .cast::<Node>();
+         // The fallible raw allocation is initialized immediately; OwnedNode
+         // covers every subsequent error/panic until list admission succeeds.
+-        unsafe { raw.as_ptr().write(Node { token, published: AtomicBool::new(false), root: UnsafeCell::new(root), arena, next: std::ptr::null_mut() }); }
++        unsafe {
++            raw.as_ptr().write(Node {
++                token,
++                published: AtomicBool::new(false),
++                root: UnsafeCell::new(root),
++                arena,
++                next: std::ptr::null_mut(),
++            });
++        }
+         let node = OwnedNode(raw);
+         let mut list = self.list.try_lock()?;
+-        if list.len >= self.max_outstanding { return Err(OwnerError::RegistryFull); }
+-        unsafe { (*raw.as_ptr()).next = list.head; }
++        if list.len >= self.max_outstanding {
++            return Err(OwnerError::RegistryFull);
++        }
++        unsafe {
++            (*raw.as_ptr()).next = list.head;
++        }
+         list.head = raw.as_ptr();
+         list.len += 1; // checked against the explicit usize admission bound
+         std::mem::forget(node);
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/registration.rs:118:
+-        Ok(PreparedResponse { registry: self, node: raw, charge })
++        Ok(PreparedResponse {
++            registry: self,
++            node: raw,
++            charge,
++        })
+     }
+     /// Validates every immutable root/pool field against authoritative geometry.
+     /// A private node, stale token, foreign type, or changed field cannot steal
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/registration.rs:124:
+     /// a successful no-op. Gate poison remains a typed error, preserving owner.
+     pub fn free(&self, root: &mut ZeGraphResponse) -> Result<FreeReport, OwnerError> {
+         if root.owner_token == 0 {
+-            return if same_geometry(root, &empty_response()) { Ok(FreeReport { examined_entries: 0, released_bytes: 0 }) } else { Err(OwnerError::InvalidOwner) };
++            return if same_geometry(root, &empty_response()) {
++                Ok(FreeReport {
++                    examined_entries: 0,
++                    released_bytes: 0,
++                })
++            } else {
++                Err(OwnerError::InvalidOwner)
++            };
+         }
+         let mut list = self.list.try_lock()?;
+         let mut link: *mut *mut Node = &mut list.head;
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/registration.rs:137:
+                 let node = *link;
+                 examined_entries += 1;
+                 if (*node).token == root.owner_token {
+-                    if !(*node).published.load(Ordering::Acquire) || !same_geometry(&*(*node).root.get(), root) { return Err(OwnerError::InvalidOwner); }
++                    if !(*node).published.load(Ordering::Acquire)
++                        || !same_geometry(&*(*node).root.get(), root)
++                    {
++                        return Err(OwnerError::InvalidOwner);
++                    }
+                     *link = (*node).next;
+                     list.len -= 1;
+                     let released_bytes = (*node).arena.layout.size() + size_of::<Node>();
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/registration.rs:144:
+                     drop(list);
+                     drop(OwnedNode(NonNull::new_unchecked(node)));
+                     *root = empty_response();
+-                    return Ok(FreeReport { examined_entries, released_bytes });
++                    return Ok(FreeReport {
++                        examined_entries,
++                        released_bytes,
++                    });
+                 }
+                 link = &mut (*node).next;
+             }
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/registration.rs:203:
+         unsafe { *(*self.node.as_ptr()).root.get() }
+     }
+     /// Measured full padded ABI arena capacity, separate from registry controls.
+-    pub fn arena_bytes(&self) -> usize { unsafe { (*self.node.as_ptr()).arena.layout.size() } }
++    pub fn arena_bytes(&self) -> usize {
++        unsafe { (*self.node.as_ptr()).arena.layout.size() }
++    }
+     /// Measured represented bytes, excluding padding and registry controls.
+     /// The coordinator charges CompletedAbiBytes once using this measurement.
+     pub fn represented_bytes(&self) -> usize {
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/registration.rs:210:
+         let root = self.descriptor();
+-        root.pool.value_count * size_of::<ZeGraphValue>() + root.pool.child_count * 4 + root.pool.byte_count
+-            + root.pool.node_count * size_of::<ZeGraphNode>() + root.pool.relationship_count * size_of::<ZeGraphRelationship>()
+-            + root.pool.property_count * size_of::<ZeGraphProperty>() + root.pool.name_count * size_of::<ZeGraphRange>()
+-            + root.pool.vector_count * 4 + root.column_count * size_of::<ZeGraphColumn>() + root.cell_count * 4
+-            + root.receipt_count * size_of::<ZeGraphReceipt>() + root.report_count * size_of::<ZeGraphSearchReport>()
+-            + root.diagnostic_count * size_of::<ZeGraphDiagnostic>() + root.work_count * size_of::<ZeGraphWorkCounter>()
++        root.pool.value_count * size_of::<ZeGraphValue>()
++            + root.pool.child_count * 4
++            + root.pool.byte_count
++            + root.pool.node_count * size_of::<ZeGraphNode>()
++            + root.pool.relationship_count * size_of::<ZeGraphRelationship>()
++            + root.pool.property_count * size_of::<ZeGraphProperty>()
++            + root.pool.name_count * size_of::<ZeGraphRange>()
++            + root.pool.vector_count * 4
++            + root.column_count * size_of::<ZeGraphColumn>()
++            + root.cell_count * 4
++            + root.receipt_count * size_of::<ZeGraphReceipt>()
++            + root.report_count * size_of::<ZeGraphSearchReport>()
++            + root.diagnostic_count * size_of::<ZeGraphDiagnostic>()
++            + root.work_count * size_of::<ZeGraphWorkCounter>()
+     }
+     /// Actual retained heap bytes: padded arena plus registry node.
+-    pub fn allocation_bytes(&self) -> usize { self.arena_bytes() + size_of::<Node>() }
++    pub fn allocation_bytes(&self) -> usize {
++        self.arena_bytes() + size_of::<Node>()
++    }
+     /// Complete temporary reservation, including explicit control descriptors.
+-    pub fn reserved_bytes(&self) -> usize { self.charge.bytes() + size_of::<QueryExternalReservation<'_, '_>>() }
++    pub fn reserved_bytes(&self) -> usize {
++        self.charge.bytes() + size_of::<QueryExternalReservation<'_, '_>>()
++    }
+     /// Infallible fixed-metadata publication. Caller establishes the authentic
+     /// successful outcome. No registry/fallible gate, allocation, payload copy
+     /// or callback occurs. Existing accounting guard Drop takes its infallible
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/registration.rs:241:
+     }
+ }
+ impl Drop for PreparedResponse<'_, '_> {
+-    fn drop(&mut self) { self.registry.abort(self.node); }
++    fn drop(&mut self) {
++        self.registry.abort(self.node);
++    }
+ }
+
+ fn same_geometry(a: &ZeGraphResponse, b: &ZeGraphResponse) -> bool {
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/registration.rs:249:
+     same!(a, b; abi_size, abi_reserved, owner_token, disposition, has_admitted_generation, admitted_generation,
+         has_changed_generation, reserved, changed_generation, row_count, columns, column_count, cells, cell_count,
+         receipts, receipt_count, reports, report_count, diagnostics, diagnostic_count, work, work_count, global_work)
+-    && same!(a.pool, b.pool; abi_size, abi_reserved, values, value_count, children, child_count, bytes, byte_count,
++        && same!(a.pool, b.pool; abi_size, abi_reserved, values, value_count, children, child_count, bytes, byte_count,
+         nodes, node_count, relationships, relationship_count, properties, property_count, names, name_count, vectors, vector_count)
+ }
+
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/registration.rs:256:
+ #[cfg(test)]
+ mod tests {
+     #![allow(clippy::unwrap_used, clippy::panic)]
+-    use super::*;
+     use super::super::tests::with_context;
++    use super::*;
+
+     #[test]
+     fn graph_result_gate_poison_busy_and_registry_bound_are_precommit_errors() {
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/registration.rs:264:
+         static REGISTRY: GraphResultRegistry = GraphResultRegistry::new(1);
+         with_context(|context| {
+             let baseline = context.memory().reserved_bytes();
+-            let prepared = REGISTRY.prepare(context, ResponseParts::default(), ResponseMetadata::new(0, None)).unwrap();
+-            assert!(matches!(REGISTRY.prepare(context, ResponseParts::default(), ResponseMetadata::new(0, None)), Err(OwnerError::RegistryFull)));
++            let prepared = REGISTRY
++                .prepare(
++                    context,
++                    ResponseParts::default(),
++                    ResponseMetadata::new(0, None),
++                )
++                .unwrap();
++            assert!(matches!(
++                REGISTRY.prepare(
++                    context,
++                    ResponseParts::default(),
++                    ResponseMetadata::new(0, None)
++                ),
++                Err(OwnerError::RegistryFull)
++            ));
+             let guard = REGISTRY.list.try_lock().unwrap();
+-            assert!(matches!(REGISTRY.prepare(context, ResponseParts::default(), ResponseMetadata::new(0, None)), Err(OwnerError::Busy)));
++            assert!(matches!(
++                REGISTRY.prepare(
++                    context,
++                    ResponseParts::default(),
++                    ResponseMetadata::new(0, None)
++                ),
++                Err(OwnerError::Busy)
++            ));
+             drop(guard);
+             let unwind = std::panic::catch_unwind(|| {
+                 let _guard = REGISTRY.list.try_lock().unwrap();
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/registration.rs:274:
+                 panic!("injected gate unwind");
+             });
+             assert!(unwind.is_err());
+-            assert!(matches!(REGISTRY.prepare(context, ResponseParts::default(), ResponseMetadata::new(0, None)), Err(OwnerError::Poisoned)));
++            assert!(matches!(
++                REGISTRY.prepare(
++                    context,
++                    ResponseParts::default(),
++                    ResponseMetadata::new(0, None)
++                ),
++                Err(OwnerError::Poisoned)
++            ));
+             let (_, cleanup) = super::super::audit::run(0, true, || drop(prepared));
+             assert_eq!(cleanup.attempts, 0);
+             assert_eq!(cleanup.frees, 1); // empty arena never allocates
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/registration.rs:290:
+         static REGISTRY: GraphResultRegistry = GraphResultRegistry::new(1);
+         with_context(|context| {
+             let previous = NEXT_TOKEN.swap(u64::MAX, Ordering::Relaxed);
+-            let (result, audit) = super::super::audit::run(0, true, || REGISTRY.prepare(context, ResponseParts::default(), ResponseMetadata::new(0, None)));
++            let (result, audit) = super::super::audit::run(0, true, || {
++                REGISTRY.prepare(
++                    context,
++                    ResponseParts::default(),
++                    ResponseMetadata::new(0, None),
++                )
++            });
+             NEXT_TOKEN.store(previous, Ordering::Relaxed);
+             assert!(matches!(result, Err(OwnerError::TokenExhausted)));
+             assert_eq!(audit.attempts, 0);
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/tests.rs:1:
+-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::indexing_slicing, clippy::panic)]
++#![allow(
++    clippy::expect_used,
++    clippy::unwrap_used,
++    clippy::indexing_slicing,
++    clippy::panic
++)]
+
+ use super::*;
+
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/tests.rs:6:
+ fn graph_result_layout_aligns_every_typed_pool_and_rejects_oversize() {
+     let plan = ArenaLayout::new([1, 1, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]).unwrap();
+     // Independently worked C-layout oracle, including the byte-to-node gap.
+-    assert_eq!(plan.offsets, [0, 48, 52, 56, 160, 272, 296, 304, 308, 332, 336, 408, 552, 600]);
++    assert_eq!(
++        plan.offsets,
++        [
++            0, 48, 52, 56, 160, 272, 296, 304, 308, 332, 336, 408, 552, 600
++        ]
++    );
+     assert_eq!(plan.layout.size(), 624);
+     assert_eq!(plan.layout.align(), 8);
+     let mut huge = [0; 14];
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/tests.rs:18:
+ }
+
+ use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, SnapshotLease, Store};
+-use zeppelin_embed::property_graph::{GraphGeneration, StoreInstanceId};
+-use zeppelin_embed::property_graph::query::{QueryError, QueryView};
+ use zeppelin_embed::property_graph::query::resources::QueryMemory;
+ use zeppelin_embed::property_graph::query::runtime::{RetainedView, RuntimeContext, RuntimeLimits};
++use zeppelin_embed::property_graph::query::{QueryError, QueryView};
+ use zeppelin_embed::property_graph::resources::GraphResources;
++use zeppelin_embed::property_graph::{GraphGeneration, StoreInstanceId};
+
+-struct View { token: QueryView, lease: SnapshotLease }
++struct View {
++    token: QueryView,
++    lease: SnapshotLease,
++}
+ impl RetainedView for View {
+-    fn query_view(&self) -> &QueryView { &self.token }
++    fn query_view(&self) -> &QueryView {
++        &self.token
++    }
+     fn check_active(&self) -> Result<(), QueryError> {
+-        self.lease.check_active().map_err(|_| QueryError::ReadCancelled)
++        self.lease
++            .check_active()
++            .map_err(|_| QueryError::ReadCancelled)
+     }
+ }
+ pub(super) fn with_context(test: impl FnOnce(&mut RuntimeContext<'_, '_, '_>)) {
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/tests.rs:35:
+     let dir = tempfile::tempdir().unwrap();
+-    let store = Store::open(dir.path(), OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024)).unwrap();
++    let store = Store::open(
++        dir.path(),
++        OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
++    )
++    .unwrap();
+     let shared = GraphResources::from_store(&store).unwrap();
+     let memory = QueryMemory::new(&shared, 24 * 1024 * 1024).unwrap();
+-    let view = View { token: QueryView::new(StoreInstanceId::new(1).unwrap(), GraphGeneration::new(0)), lease: store.snapshot().unwrap() };
++    let view = View {
++        token: QueryView::new(StoreInstanceId::new(1).unwrap(), GraphGeneration::new(0)),
++        lease: store.snapshot().unwrap(),
++    };
+     let control = QueryControl::Cancel(CancelToken::new());
+-    let mut context = RuntimeContext::new(&view, &control, &memory, RuntimeLimits::default()).unwrap();
++    let mut context =
++        RuntimeContext::new(&view, &control, &memory, RuntimeLimits::default()).unwrap();
+     test(&mut context);
+ }
+
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/tests.rs:60:
+         let diagnostics = [unsafe { std::mem::zeroed::<ZeGraphDiagnostic>() }];
+         let work = [unsafe { std::mem::zeroed::<ZeGraphWorkCounter>() }];
+         let names = [ZeGraphRange { start: 0, count: 3 }];
+-        let parts = ResponseParts { values: &values, children: &[0], bytes: b"a\0z", nodes: &nodes,
+-            relationships: &relationships, properties: &properties, names: &names, vectors: &[1.25],
+-            columns: &columns, cells: &[0], receipts: &receipts, reports: &reports,
+-            diagnostics: &diagnostics, work: &work };
+-        let prepared = REGISTRY.prepare(context, parts, ResponseMetadata::new(1, Some(42))).unwrap();
++        let parts = ResponseParts {
++            values: &values,
++            children: &[0],
++            bytes: b"a\0z",
++            nodes: &nodes,
++            relationships: &relationships,
++            properties: &properties,
++            names: &names,
++            vectors: &[1.25],
++            columns: &columns,
++            cells: &[0],
++            receipts: &receipts,
++            reports: &reports,
++            diagnostics: &diagnostics,
++            work: &work,
++        };
++        let prepared = REGISTRY
++            .prepare(context, parts, ResponseMetadata::new(1, Some(42)))
++            .unwrap();
+         let mut private = prepared.descriptor();
+-        assert!(matches!(REGISTRY.free(&mut private), Err(OwnerError::InvalidOwner)));
++        assert!(matches!(
++            REGISTRY.free(&mut private),
++            Err(OwnerError::InvalidOwner)
++        ));
+         assert_eq!(prepared.arena_bytes(), 624);
+         assert!(context.memory().reserved_bytes() > baseline + 624);
+         let mut result = prepared.expose(SuccessfulOutcome::Read);
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/tests.rs:73:
+         assert_eq!(context.memory().reserved_bytes(), baseline);
+         assert_eq!(result.admitted_generation, 42);
+-        let addresses = [result.pool.values as usize, result.pool.children as usize, result.pool.bytes as usize,
+-            result.pool.nodes as usize, result.pool.relationships as usize, result.pool.properties as usize,
+-            result.pool.names as usize, result.pool.vectors as usize, result.columns as usize,
+-            result.cells as usize, result.receipts as usize, result.reports as usize,
+-            result.diagnostics as usize, result.work as usize];
+-        for ((pointer, offset), alignment) in addresses.into_iter()
+-            .zip([0, 48, 52, 56, 160, 272, 296, 304, 308, 332, 336, 408, 552, 600])
+-            .zip([8, 4, 1, 8, 8, 4, 4, 4, 4, 4, 8, 8, 4, 8]) {
++        let addresses = [
++            result.pool.values as usize,
++            result.pool.children as usize,
++            result.pool.bytes as usize,
++            result.pool.nodes as usize,
++            result.pool.relationships as usize,
++            result.pool.properties as usize,
++            result.pool.names as usize,
++            result.pool.vectors as usize,
++            result.columns as usize,
++            result.cells as usize,
++            result.receipts as usize,
++            result.reports as usize,
++            result.diagnostics as usize,
++            result.work as usize,
++        ];
++        for ((pointer, offset), alignment) in addresses
++            .into_iter()
++            .zip([
++                0, 48, 52, 56, 160, 272, 296, 304, 308, 332, 336, 408, 552, 600,
++            ])
++            .zip([8, 4, 1, 8, 8, 4, 4, 4, 4, 4, 8, 8, 4, 8])
++        {
+             assert_eq!(pointer - result.pool.values as usize, offset);
+             assert_eq!(pointer % alignment, 0);
+         }
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/tests.rs:86:
+-        assert_eq!(unsafe { std::slice::from_raw_parts(result.pool.bytes, 3) }, b"a\0z");
++        assert_eq!(
++            unsafe { std::slice::from_raw_parts(result.pool.bytes, 3) },
++            b"a\0z"
++        );
+         assert_eq!(unsafe { *result.pool.vectors }, 1.25);
+         let mut stale = result;
+         assert_eq!(REGISTRY.free(&mut result).unwrap().examined_entries, 1);
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/tests.rs:90:
+         assert_eq!(result.owner_token, 0);
+         assert_eq!(REGISTRY.free(&mut result).unwrap().examined_entries, 0);
+-        assert!(matches!(REGISTRY.free(&mut stale), Err(OwnerError::InvalidOwner)));
++        assert!(matches!(
++            REGISTRY.free(&mut stale),
++            Err(OwnerError::InvalidOwner)
++        ));
+     });
+ }
+
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/tests.rs:98:
+     static FIRST: GraphResultRegistry = GraphResultRegistry::new(1);
+     static SECOND: GraphResultRegistry = GraphResultRegistry::new(1);
+     with_context(|context| {
+-        let mut first = FIRST.prepare(context, ResponseParts::default(), ResponseMetadata::new(0, None)).unwrap().expose(SuccessfulOutcome::Read);
+-        let mut second = SECOND.prepare(context, ResponseParts::default(), ResponseMetadata::new(0, None)).unwrap().expose(SuccessfulOutcome::Read);
+-        assert!(matches!(SECOND.free(&mut first), Err(OwnerError::InvalidOwner)));
++        let mut first = FIRST
++            .prepare(
++                context,
++                ResponseParts::default(),
++                ResponseMetadata::new(0, None),
++            )
++            .unwrap()
++            .expose(SuccessfulOutcome::Read);
++        let mut second = SECOND
++            .prepare(
++                context,
++                ResponseParts::default(),
++                ResponseMetadata::new(0, None),
++            )
++            .unwrap()
++            .expose(SuccessfulOutcome::Read);
++        assert!(matches!(
++            SECOND.free(&mut first),
++            Err(OwnerError::InvalidOwner)
++        ));
+         FIRST.free(&mut first).unwrap();
+         SECOND.free(&mut second).unwrap();
+     });
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/tests.rs:113:
+     let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+         outcome.begin_attempt().unwrap();
+         assert_eq!(outcome.get(), OperationOutcome::Indeterminate);
+-        outcome.record_success(SuccessfulOutcome::Committed(std::num::NonZeroU64::new(73).unwrap())).unwrap();
++        outcome
++            .record_success(SuccessfulOutcome::Committed(
++                std::num::NonZeroU64::new(73).unwrap(),
++            ))
++            .unwrap();
+         panic!("delivery failure after durable outcome");
+     }));
+     assert!(failure.is_err());
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/tests.rs:120:
+-    assert_eq!(outcome.get(), OperationOutcome::Success(SuccessfulOutcome::Committed(std::num::NonZeroU64::new(73).unwrap())));
++    assert_eq!(
++        outcome.get(),
++        OperationOutcome::Success(SuccessfulOutcome::Committed(
++            std::num::NonZeroU64::new(73).unwrap()
++        ))
++    );
+     assert!(outcome.begin_attempt().is_err());
+     assert!(outcome.record_not_committed().is_err());
+     assert!(outcome.record_success(SuccessfulOutcome::NoOp).is_err());
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/tests.rs:125:
+     unknown.begin_attempt().unwrap();
+     assert_eq!(unknown.get(), OperationOutcome::Indeterminate);
+     let read = OutcomeCell::read();
+-    assert_eq!(read.get(), OperationOutcome::Success(SuccessfulOutcome::Read));
++    assert_eq!(
++        read.get(),
++        OperationOutcome::Success(SuccessfulOutcome::Read)
++    );
+     assert!(read.begin_attempt().is_err());
+ }
+
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/tests.rs:135:
+     static REGISTRY: GraphResultRegistry = GraphResultRegistry::new(4);
+     with_context(|context| {
+         let mut source = QueryArena::<u8>::new(context.memory(), 70000).unwrap();
+-        for _ in 0..70000 { source.push(17).unwrap(); }
++        for _ in 0..70000 {
++            source.push(17).unwrap();
++        }
+         let baseline = context.memory().reserved_bytes();
+-        let parts = ResponseParts { bytes: source.as_slice(), ..ResponseParts::default() };
++        let parts = ResponseParts {
++            bytes: source.as_slice(),
++            ..ResponseParts::default()
++        };
+         for fail_at in 1..=2 {
+             eprintln!("stage fail {fail_at}");
+-            let (result, audit) = super::audit::run(fail_at, false, || REGISTRY.prepare(context, parts, ResponseMetadata::new(0, Some(0))));
++            let (result, audit) = super::audit::run(fail_at, false, || {
++                REGISTRY.prepare(context, parts, ResponseMetadata::new(0, Some(0)))
++            });
+             assert!(matches!(result, Err(OwnerError::Allocation)));
+             assert_eq!(audit.attempts, fail_at);
+             assert_eq!(audit.allocations, fail_at - 1);
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/tests.rs:149:
+             assert_eq!(context.memory().reserved_bytes(), baseline);
+         }
+         eprintln!("stage prepare success");
+-        let (prepared, allocation) = super::audit::run(0, false, || REGISTRY.prepare(context, parts, ResponseMetadata::new(0, Some(0))).unwrap());
++        let (prepared, allocation) = super::audit::run(0, false, || {
++            REGISTRY
++                .prepare(context, parts, ResponseMetadata::new(0, Some(0)))
++                .unwrap()
++        });
+         assert_eq!(allocation.allocations, 2);
+         assert_eq!(allocation.bytes as usize, prepared.allocation_bytes());
+         assert_eq!(allocation.peak, prepared.allocation_bytes());
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/tests.rs:156:
+-        assert_eq!(context.memory().reserved_bytes(), baseline + prepared.reserved_bytes());
++        assert_eq!(
++            context.memory().reserved_bytes(),
++            baseline + prepared.reserved_bytes()
++        );
+         assert!(context.memory().peak_reserved_bytes() >= baseline + prepared.reserved_bytes());
+         assert_eq!(prepared.represented_bytes(), 70000);
+         let allocation_bytes = prepared.allocation_bytes();
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/tests.rs:174:
+         eprintln!("stage loops");
+         let ((), loops) = super::audit::run(0, false, || {
+             for n in 0..64 {
+-                let prepared = REGISTRY.prepare(context, parts, ResponseMetadata::new(0, None)).unwrap();
+-                if n % 2 == 0 { drop(prepared); } else {
++                let prepared = REGISTRY
++                    .prepare(context, parts, ResponseMetadata::new(0, None))
++                    .unwrap();
++                if n % 2 == 0 {
++                    drop(prepared);
++                } else {
+                     let mut result = prepared.expose(SuccessfulOutcome::Read);
+                     REGISTRY.free(&mut result).unwrap();
+                 }
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/tests.rs:191:
+ fn graph_result_every_authoritative_field_mutation_and_foreign_geometry_is_rejected() {
+     static REGISTRY: GraphResultRegistry = GraphResultRegistry::new(1);
+     with_context(|context| {
+-        let mut result = REGISTRY.prepare(context, ResponseParts { bytes: b"owned", ..ResponseParts::default() }, ResponseMetadata::new(0, Some(9))).unwrap().expose(SuccessfulOutcome::Committed(std::num::NonZeroU64::new(10).unwrap()));
++        let mut result = REGISTRY
++            .prepare(
++                context,
++                ResponseParts {
++                    bytes: b"owned",
++                    ..ResponseParts::default()
++                },
++                ResponseMetadata::new(0, Some(9)),
++            )
++            .unwrap()
++            .expose(SuccessfulOutcome::Committed(
++                std::num::NonZeroU64::new(10).unwrap(),
++            ));
+         let mut mutations = 0;
+         macro_rules! reject { ($($field:ident).+) => {{
+             let mut forged = result;
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/tests.rs:199:
+             assert!(matches!(REGISTRY.free(&mut forged), Err(OwnerError::InvalidOwner)), stringify!($($field).+));
+             mutations += 1;
+         }}; }
+-        reject!(abi_size); reject!(abi_reserved); reject!(owner_token); reject!(disposition);
+-        reject!(has_admitted_generation); reject!(admitted_generation); reject!(has_changed_generation);
+-        reject!(reserved); reject!(changed_generation); reject!(row_count); reject!(column_count);
+-        reject!(cell_count); reject!(receipt_count); reject!(report_count); reject!(diagnostic_count);
+-        reject!(work_count); reject!(global_work.start); reject!(global_work.count);
+-        reject!(pool.abi_size); reject!(pool.abi_reserved); reject!(pool.value_count); reject!(pool.child_count);
+-        reject!(pool.byte_count); reject!(pool.node_count); reject!(pool.relationship_count); reject!(pool.property_count);
+-        reject!(pool.name_count); reject!(pool.vector_count);
++        reject!(abi_size);
++        reject!(abi_reserved);
++        reject!(owner_token);
++        reject!(disposition);
++        reject!(has_admitted_generation);
++        reject!(admitted_generation);
++        reject!(has_changed_generation);
++        reject!(reserved);
++        reject!(changed_generation);
++        reject!(row_count);
++        reject!(column_count);
++        reject!(cell_count);
++        reject!(receipt_count);
++        reject!(report_count);
++        reject!(diagnostic_count);
++        reject!(work_count);
++        reject!(global_work.start);
++        reject!(global_work.count);
++        reject!(pool.abi_size);
++        reject!(pool.abi_reserved);
++        reject!(pool.value_count);
++        reject!(pool.child_count);
++        reject!(pool.byte_count);
++        reject!(pool.node_count);
++        reject!(pool.relationship_count);
++        reject!(pool.property_count);
++        reject!(pool.name_count);
++        reject!(pool.vector_count);
+         macro_rules! reject_pointer { ($($field:ident).+) => {{
+             let mut forged = result;
+             forged.$($field).+ = forged.$($field).+.wrapping_byte_add(1);
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/tests.rs:213:
+             assert!(matches!(REGISTRY.free(&mut forged), Err(OwnerError::InvalidOwner)), stringify!($($field).+));
+             mutations += 1;
+         }}; }
+-        reject_pointer!(columns); reject_pointer!(cells); reject_pointer!(receipts); reject_pointer!(reports);
+-        reject_pointer!(diagnostics); reject_pointer!(work); reject_pointer!(pool.values); reject_pointer!(pool.children);
+-        reject_pointer!(pool.bytes); reject_pointer!(pool.nodes); reject_pointer!(pool.relationships);
+-        reject_pointer!(pool.properties); reject_pointer!(pool.names); reject_pointer!(pool.vectors);
++        reject_pointer!(columns);
++        reject_pointer!(cells);
++        reject_pointer!(receipts);
++        reject_pointer!(reports);
++        reject_pointer!(diagnostics);
++        reject_pointer!(work);
++        reject_pointer!(pool.values);
++        reject_pointer!(pool.children);
++        reject_pointer!(pool.bytes);
++        reject_pointer!(pool.nodes);
++        reject_pointer!(pool.relationships);
++        reject_pointer!(pool.properties);
++        reject_pointer!(pool.names);
++        reject_pointer!(pool.vectors);
+         assert_eq!(mutations, 42);
+         REGISTRY.free(&mut result).unwrap();
+     });
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/tests.rs:227:
+ // dereferencing in competing threads. The registry exclusively owns backing.
+ unsafe impl Send for SendRoot {}
+ impl SendRoot {
+-    fn free(mut self, registry: &GraphResultRegistry) -> Result<FreeReport, OwnerError> { registry.free(&mut self.0) }
++    fn free(mut self, registry: &GraphResultRegistry) -> Result<FreeReport, OwnerError> {
++        registry.free(&mut self.0)
++    }
+ }
+ #[test]
+ fn graph_result_concurrent_free_publication_and_abort_have_one_owner() {
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/tests.rs:235:
+     static REGISTRY: GraphResultRegistry = GraphResultRegistry::new(4);
+     with_context(|context| {
+         for _ in 0..32 {
+-            let prepared = REGISTRY.prepare(context, ResponseParts { bytes: b"alive", ..ResponseParts::default() }, ResponseMetadata::new(0, None)).unwrap();
++            let prepared = REGISTRY
++                .prepare(
++                    context,
++                    ResponseParts {
++                        bytes: b"alive",
++                        ..ResponseParts::default()
++                    },
++                    ResponseMetadata::new(0, None),
++                )
++                .unwrap();
+             let copy = SendRoot(prepared.descriptor());
+             let barrier = Arc::new(Barrier::new(2));
+             let worker_barrier = Arc::clone(&barrier);
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/tests.rs:245:
+                 loop {
+                     match REGISTRY.free(&mut root.0) {
+                         Ok(report) => break report,
+-                        Err(OwnerError::InvalidOwner | OwnerError::Busy) => std::thread::yield_now(),
++                        Err(OwnerError::InvalidOwner | OwnerError::Busy) => {
++                            std::thread::yield_now()
++                        }
+                         other => panic!("unexpected publication/free result: {other:?}"),
+                     }
+                 }
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/tests.rs:253:
+             barrier.wait();
+             let mut stale = prepared.expose(SuccessfulOutcome::Read);
+             assert_eq!(worker.join().unwrap().examined_entries, 1);
+-            assert!(matches!(REGISTRY.free(&mut stale), Err(OwnerError::InvalidOwner)));
++            assert!(matches!(
++                REGISTRY.free(&mut stale),
++                Err(OwnerError::InvalidOwner)
++            ));
+         }
+-        let prepared = REGISTRY.prepare(context, ResponseParts { bytes: b"abort", ..ResponseParts::default() }, ResponseMetadata::new(0, None)).unwrap();
++        let prepared = REGISTRY
++            .prepare(
++                context,
++                ResponseParts {
++                    bytes: b"abort",
++                    ..ResponseParts::default()
++                },
++                ResponseMetadata::new(0, None),
++            )
++            .unwrap();
+         let copy = SendRoot(prepared.descriptor());
+         let worker = std::thread::spawn(move || copy.free(&REGISTRY));
+         drop(prepared);
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/tests.rs:262:
+-        assert!(matches!(worker.join().unwrap(), Err(OwnerError::InvalidOwner | OwnerError::Busy)));
+-        let result = REGISTRY.prepare(context, ResponseParts::default(), ResponseMetadata::new(0, None)).unwrap().expose(SuccessfulOutcome::Read);
++        assert!(matches!(
++            worker.join().unwrap(),
++            Err(OwnerError::InvalidOwner | OwnerError::Busy)
++        ));
++        let result = REGISTRY
++            .prepare(
++                context,
++                ResponseParts::default(),
++                ResponseMetadata::new(0, None),
++            )
++            .unwrap()
++            .expose(SuccessfulOutcome::Read);
+         let first = SendRoot(result);
+         let second = SendRoot(result);
+         let one = std::thread::spawn(move || first.free(&REGISTRY));
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result/tests.rs:267:
+         let two = std::thread::spawn(move || second.free(&REGISTRY));
+         let outcomes = [one.join().unwrap(), two.join().unwrap()];
+         assert_eq!(outcomes.iter().filter(|value| value.is_ok()).count(), 1);
+-        assert_eq!(outcomes.iter().filter(|value| matches!(value, Err(OwnerError::InvalidOwner | OwnerError::Busy))).count(), 1);
++        assert_eq!(
++            outcomes
++                .iter()
++                .filter(|value| matches!(value, Err(OwnerError::InvalidOwner | OwnerError::Busy)))
++                .count(),
++            1
++        );
+     });
+ }
+
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result.rs:1:
+ //! Aligned, pre-registered graph result ownership (internal Rust component).
+ //! Real native conversion and public C entry points remain separate integration.
+
+-use std::alloc::Layout;
+ use crate::*;
++use std::alloc::Layout;
+ use std::alloc::{alloc, dealloc};
+ use std::ptr::NonNull;
+ use zeppelin_embed::property_graph::query::resources::{MemoryError, QueryExternalReservation};
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result.rs:37:
+     InvalidShape,
+ }
+ impl From<MemoryError> for OwnerError {
+-    fn from(error: MemoryError) -> Self { Self::Memory(error) }
++    fn from(error: MemoryError) -> Self {
++        Self::Memory(error)
++    }
+ }
+ impl From<RuntimeError> for OwnerError {
+-    fn from(error: RuntimeError) -> Self { Self::Runtime(error) }
++    fn from(error: RuntimeError) -> Self {
++        Self::Runtime(error)
++    }
+ }
+ impl std::fmt::Display for OwnerError {
+     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result.rs:47:
+         match self {
+-            Self::Memory(e) => e.fmt(f), Self::Runtime(e) => e.fmt(f),
++            Self::Memory(e) => e.fmt(f),
++            Self::Runtime(e) => e.fmt(f),
+             Self::Limit => f.write_str("graph response capacity limit"),
+             Self::Allocation => f.write_str("graph response allocation failed"),
+             Self::Busy => f.write_str("graph response registry busy"),
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result.rs:59:
+ }
+ impl std::error::Error for OwnerError {}
+
+-
+ struct ArenaLayout {
+     layout: Layout,
+     offsets: [usize; 14],
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result.rs:67:
+ impl ArenaLayout {
+     fn new(counts: [usize; 14]) -> Result<Self, OwnerError> {
+         let elements = [
+-            Layout::new::<ZeGraphValue>(), Layout::new::<u32>(), Layout::new::<u8>(),
+-            Layout::new::<ZeGraphNode>(), Layout::new::<ZeGraphRelationship>(),
+-            Layout::new::<ZeGraphProperty>(), Layout::new::<ZeGraphRange>(),
+-            Layout::new::<f32>(), Layout::new::<ZeGraphColumn>(), Layout::new::<u32>(),
+-            Layout::new::<ZeGraphReceipt>(), Layout::new::<ZeGraphSearchReport>(),
+-            Layout::new::<ZeGraphDiagnostic>(), Layout::new::<ZeGraphWorkCounter>(),
++            Layout::new::<ZeGraphValue>(),
++            Layout::new::<u32>(),
++            Layout::new::<u8>(),
++            Layout::new::<ZeGraphNode>(),
++            Layout::new::<ZeGraphRelationship>(),
++            Layout::new::<ZeGraphProperty>(),
++            Layout::new::<ZeGraphRange>(),
++            Layout::new::<f32>(),
++            Layout::new::<ZeGraphColumn>(),
++            Layout::new::<u32>(),
++            Layout::new::<ZeGraphReceipt>(),
++            Layout::new::<ZeGraphSearchReport>(),
++            Layout::new::<ZeGraphDiagnostic>(),
++            Layout::new::<ZeGraphWorkCounter>(),
+         ];
+         let mut layout = Layout::from_size_align(0, 1).map_err(|_| OwnerError::Limit)?;
+         let mut offsets = [0; 14];
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result.rs:79:
+         for ((element, count), offset) in elements.into_iter().zip(counts).zip(&mut offsets) {
+             let size = element.size().checked_mul(count).ok_or(OwnerError::Limit)?;
+-            let array = Layout::from_size_align(size, element.align()).map_err(|_| OwnerError::Limit)?;
++            let array =
++                Layout::from_size_align(size, element.align()).map_err(|_| OwnerError::Limit)?;
+             let (extended, at) = layout.extend(array).map_err(|_| OwnerError::Limit)?;
+             layout = extended;
+             *offset = at;
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result.rs:130:
+ }
+ impl ResponseParts<'_> {
+     fn counts(&self) -> [usize; 14] {
+-        [self.values.len(), self.children.len(), self.bytes.len(), self.nodes.len(), self.relationships.len(), self.properties.len(), self.names.len(), self.vectors.len(), self.columns.len(), self.cells.len(), self.receipts.len(), self.reports.len(), self.diagnostics.len(), self.work.len()]
++        [
++            self.values.len(),
++            self.children.len(),
++            self.bytes.len(),
++            self.nodes.len(),
++            self.relationships.len(),
++            self.properties.len(),
++            self.names.len(),
++            self.vectors.len(),
++            self.columns.len(),
++            self.cells.len(),
++            self.receipts.len(),
++            self.reports.len(),
++            self.diagnostics.len(),
++            self.work.len(),
++        ]
+     }
+ }
+ /// Fixed response metadata. Coordinator/admission authenticity is external.
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result.rs:146:
+ impl ResponseMetadata {
+     /// Creates metadata without inventing an admitted generation.
+     pub const fn new(row_count: usize, admitted_generation: Option<u64>) -> Self {
+-        Self { row_count, admitted_generation, global_work: ZeGraphRange { start: 0, count: 0 } }
++        Self {
++            row_count,
++            admitted_generation,
++            global_work: ZeGraphRange { start: 0, count: 0 },
++        }
+     }
+ }
+ /// Only successful payload outcomes can publish an owned result. Unknown write
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result.rs:166:
+     fn apply(self, root: &mut ZeGraphResponse) {
+         let (disposition, generation) = match self {
+             Self::Read => (ZeGraphDisposition::ZeGraphDispositionNotApplicable, None),
+-            Self::Committed(g) => (ZeGraphDisposition::ZeGraphDispositionCommitted, Some(g.get())),
++            Self::Committed(g) => (
++                ZeGraphDisposition::ZeGraphDispositionCommitted,
++                Some(g.get()),
++            ),
+             Self::Replayed => (ZeGraphDisposition::ZeGraphDispositionReplayed, None),
+             Self::NoOp => (ZeGraphDisposition::ZeGraphDispositionNoOp, None),
+         };
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result.rs:184:
+     root
+ }
+
+-struct AlignedArena { pointer: NonNull<u8>, layout: Layout }
++struct AlignedArena {
++    pointer: NonNull<u8>,
++    layout: Layout,
++}
+ impl AlignedArena {
+     fn allocate(layout: Layout) -> Result<Self, OwnerError> {
+         // Layout size zero must not be passed to the allocator. Empty pools
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result.rs:191:
+         // always publish null pointers and never access this dangling sentinel.
+-        let pointer = if layout.size() == 0 { NonNull::dangling() } else {
++        let pointer = if layout.size() == 0 {
++            NonNull::dangling()
++        } else {
+             NonNull::new(unsafe { alloc(layout) }).ok_or(OwnerError::Allocation)?
+         };
+         Ok(Self { pointer, layout })
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result.rs:196:
+     }
+     // Caller supplies the corresponding checked typed layout offset. These
+     // private calls are fixed below; no external caller selects T or offset.
+-    unsafe fn copy<T: Copy>(&self, offset: usize, source: &[T], context: &mut RuntimeContext<'_, '_, '_>) -> Result<*const T, OwnerError> {
+-        if source.is_empty() { return Ok(std::ptr::null()); }
++    unsafe fn copy<T: Copy>(
++        &self,
++        offset: usize,
++        source: &[T],
++        context: &mut RuntimeContext<'_, '_, '_>,
++    ) -> Result<*const T, OwnerError> {
++        if source.is_empty() {
++            return Ok(std::ptr::null());
++        }
+         let pointer = unsafe { self.pointer.as_ptr().add(offset).cast::<T>() };
+         let chunk_elements = (65536 / std::mem::size_of::<T>()).max(1);
+         let mut initialized = 0;
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result.rs:206:
+             context.charge(WorkKind::CopiedBytes, bytes)?;
+             // The checked units are consumed immediately, with no intervening
+             // fallible operation. Coordinator owns CompletedAbiBytes once.
+-            unsafe { std::ptr::copy_nonoverlapping(chunk.as_ptr(), pointer.add(initialized), chunk.len()); }
++            unsafe {
++                std::ptr::copy_nonoverlapping(
++                    chunk.as_ptr(),
++                    pointer.add(initialized),
++                    chunk.len(),
++                );
++            }
+             initialized += chunk.len();
+         }
+         Ok(pointer)
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result.rs:214:
+ }
+ impl Drop for AlignedArena {
+     fn drop(&mut self) {
+-        if self.layout.size() != 0 { unsafe { dealloc(self.pointer.as_ptr(), self.layout); } }
++        if self.layout.size() != 0 {
++            unsafe {
++                dealloc(self.pointer.as_ptr(), self.layout);
++            }
++        }
+     }
+ }
+
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result.rs:221:
+-fn fill(arena: &AlignedArena, plan: &ArenaLayout, parts: ResponseParts<'_>, metadata: ResponseMetadata, context: &mut RuntimeContext<'_, '_, '_>) -> Result<ZeGraphResponse, OwnerError> {
++fn fill(
++    arena: &AlignedArena,
++    plan: &ArenaLayout,
++    parts: ResponseParts<'_>,
++    metadata: ResponseMetadata,
++    context: &mut RuntimeContext<'_, '_, '_>,
++) -> Result<ZeGraphResponse, OwnerError> {
+     let mut root = empty_response();
+     root.row_count = metadata.row_count;
+     root.has_admitted_generation = u32::from(metadata.admitted_generation.is_some());
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result.rs:225:
+     root.admitted_generation = metadata.admitted_generation.unwrap_or(0);
+     root.global_work = metadata.global_work;
+-    let [off_values, off_children, off_bytes, off_nodes, off_relationships, off_properties, off_names, off_vectors, off_columns, off_cells, off_receipts, off_reports, off_diagnostics, off_work] = plan.offsets;
++    let [
++        off_values,
++        off_children,
++        off_bytes,
++        off_nodes,
++        off_relationships,
++        off_properties,
++        off_names,
++        off_vectors,
++        off_columns,
++        off_cells,
++        off_receipts,
++        off_reports,
++        off_diagnostics,
++        off_work,
++    ] = plan.offsets;
+     root.pool.values = unsafe { arena.copy(off_values, parts.values, context)? };
+     root.pool.value_count = parts.values.len();
+     root.pool.children = unsafe { arena.copy(off_children, parts.children, context)? };
+Diff in /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi/src/graph_result.rs:233:
+     root.pool.byte_count = parts.bytes.len();
+     root.pool.nodes = unsafe { arena.copy(off_nodes, parts.nodes, context)? };
+     root.pool.node_count = parts.nodes.len();
+-    root.pool.relationships = unsafe { arena.copy(off_relationships, parts.relationships, context)? };
++    root.pool.relationships =
++        unsafe { arena.copy(off_relationships, parts.relationships, context)? };
+     root.pool.relationship_count = parts.relationships.len();
+     root.pool.properties = unsafe { arena.copy(off_properties, parts.properties, context)? };
+     root.pool.property_count = parts.properties.len();

@@ -1,0 +1,71 @@
+[
+  {
+    "name": "arena_drop",
+    "file": "crates/zeppelin-embed-ffi/src/graph_result.rs",
+    "before": "if self.layout.size() != 0 {",
+    "after": "if false && self.layout.size() != 0 {",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-ffi",
+      "--features",
+      "graph-cypher",
+      "--lib",
+      "-E",
+      "test(graph_result_actual_allocator)"
+    ],
+    "ZE_TEST_SEED": "128",
+    "exit_code": 100,
+    "log": "23-mutant-arena_drop.log",
+    "original_sha256": "bdda71a432e6617dd5b0b3e7dddd056bac357e7481946a1ced8d20abbcf7252c",
+    "restored_sha256": "bdda71a432e6617dd5b0b3e7dddd056bac357e7481946a1ced8d20abbcf7252c"
+  },
+  {
+    "name": "geometry",
+    "file": "crates/zeppelin-embed-ffi/src/graph_result/registration.rs",
+    "before": "fn same_geometry(a: &ZeGraphResponse, b: &ZeGraphResponse) -> bool {",
+    "after": "fn same_geometry(a: &ZeGraphResponse, b: &ZeGraphResponse) -> bool {\n    return true;",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-ffi",
+      "--features",
+      "graph-cypher",
+      "--lib",
+      "-E",
+      "test(graph_result_every_authoritative)"
+    ],
+    "ZE_TEST_SEED": "128",
+    "exit_code": 100,
+    "log": "23-mutant-geometry.log",
+    "original_sha256": "c33f08564541130f0d2c75d340de1784f4e55a54ad38eb540eeedc8b2d83156f",
+    "restored_sha256": "c33f08564541130f0d2c75d340de1784f4e55a54ad38eb540eeedc8b2d83156f"
+  },
+  {
+    "name": "final_cancel",
+    "file": "crates/zeppelin-embed-ffi/src/graph_result/registration.rs",
+    "before": "        context.checkpoint()?;\n        Ok(prepared)",
+    "after": "        Ok(prepared)",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-ffi",
+      "--features",
+      "graph-cypher",
+      "--lib",
+      "-E",
+      "test(graph_result_seeded_cancel)"
+    ],
+    "ZE_TEST_SEED": "128",
+    "exit_code": 100,
+    "log": "23-mutant-final_cancel.log",
+    "original_sha256": "c33f08564541130f0d2c75d340de1784f4e55a54ad38eb540eeedc8b2d83156f",
+    "restored_sha256": "c33f08564541130f0d2c75d340de1784f4e55a54ad38eb540eeedc8b2d83156f"
+  }
+]

@@ -1,0 +1,52 @@
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi)
+error[E0433]: failed to resolve: use of undeclared type `OutcomeCell`
+   --> crates/zeppelin-embed-ffi/src/graph_result/tests.rs:111:19
+    |
+111 |     let outcome = OutcomeCell::write();
+    |                   ^^^^^^^^^^^ use of undeclared type `OutcomeCell`
+
+error[E0433]: failed to resolve: use of undeclared type `OperationOutcome`
+   --> crates/zeppelin-embed-ffi/src/graph_result/tests.rs:112:31
+    |
+112 |     assert_eq!(outcome.get(), OperationOutcome::NotCommitted);
+    |                               ^^^^^^^^^^^^^^^^ use of undeclared type `OperationOutcome`
+
+error[E0433]: failed to resolve: use of undeclared type `OperationOutcome`
+   --> crates/zeppelin-embed-ffi/src/graph_result/tests.rs:115:35
+    |
+115 |         assert_eq!(outcome.get(), OperationOutcome::Indeterminate);
+    |                                   ^^^^^^^^^^^^^^^^ use of undeclared type `OperationOutcome`
+
+error[E0433]: failed to resolve: use of undeclared type `OperationOutcome`
+   --> crates/zeppelin-embed-ffi/src/graph_result/tests.rs:120:31
+    |
+120 |     assert_eq!(outcome.get(), OperationOutcome::Success(SuccessfulOutcome::Committed(std::num::NonZeroU64::new(73).unwrap())));
+    |                               ^^^^^^^^^^^^^^^^ use of undeclared type `OperationOutcome`
+
+error[E0433]: failed to resolve: use of undeclared type `OutcomeCell`
+   --> crates/zeppelin-embed-ffi/src/graph_result/tests.rs:124:19
+    |
+124 |     let unknown = OutcomeCell::write();
+    |                   ^^^^^^^^^^^ use of undeclared type `OutcomeCell`
+
+error[E0433]: failed to resolve: use of undeclared type `OperationOutcome`
+   --> crates/zeppelin-embed-ffi/src/graph_result/tests.rs:126:31
+    |
+126 |     assert_eq!(unknown.get(), OperationOutcome::Indeterminate);
+    |                               ^^^^^^^^^^^^^^^^ use of undeclared type `OperationOutcome`
+
+error[E0433]: failed to resolve: use of undeclared type `OutcomeCell`
+   --> crates/zeppelin-embed-ffi/src/graph_result/tests.rs:127:16
+    |
+127 |     let read = OutcomeCell::read();
+    |                ^^^^^^^^^^^ use of undeclared type `OutcomeCell`
+
+error[E0433]: failed to resolve: use of undeclared type `OperationOutcome`
+   --> crates/zeppelin-embed-ffi/src/graph_result/tests.rs:128:28
+    |
+128 |     assert_eq!(read.get(), OperationOutcome::Success(SuccessfulOutcome::Read));
+    |                            ^^^^^^^^^^^^^^^^ use of undeclared type `OperationOutcome`
+
+For more information about this error, try `rustc --explain E0433`.
+error: could not compile `zeppelin-embed-ffi` (lib test) due to 8 previous errors
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed-ffi --lib --features graph-cypher` exited with code 101

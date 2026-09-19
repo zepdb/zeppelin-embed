@@ -1,0 +1,17 @@
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.47s
+────────────
+ Nextest run ID ab1c8dc6-86b1-4a23-b2fe-233db49ea0a2 with nextest profile: default
+    Starting 10 tests across 1 binary (14 tests skipped)
+        PASS [   0.010s] ( 1/10) zeppelin-embed-ffi graph_result::registration::tests::graph_result_token_exhaustion_precedes_allocation_or_exposure
+        PASS [   0.010s] ( 2/10) zeppelin-embed-ffi graph_result::registration::tests::graph_result_gate_poison_busy_and_registry_bound_are_precommit_errors
+        PASS [   0.011s] ( 3/10) zeppelin-embed-ffi graph_result::tests::graph_result_actual_allocator_failures_and_expose_free_have_exact_heap_accounting
+        PASS [   0.012s] ( 4/10) zeppelin-embed-ffi graph_result::tests::graph_result_concurrent_free_publication_and_abort_have_one_owner
+        PASS [   0.007s] ( 5/10) zeppelin-embed-ffi graph_result::tests::graph_result_known_commit_survives_unwind_and_unknown_attempt_retains_no_ids
+        PASS [   0.008s] ( 6/10) zeppelin-embed-ffi graph_result::tests::graph_result_free_rejects_returned_root_inside_authoritative_arena
+        PASS [   0.009s] ( 7/10) zeppelin-embed-ffi graph_result::tests::graph_result_cross_registry_empty_owner_cannot_steal_another_allocation
+        PASS [   0.009s] ( 8/10) zeppelin-embed-ffi graph_result::tests::graph_result_every_authoritative_field_mutation_and_foreign_geometry_is_rejected
+        PASS [   0.007s] ( 9/10) zeppelin-embed-ffi graph_result::tests::graph_result_layout_aligns_every_typed_pool_and_rejects_oversize
+        PASS [   0.007s] (10/10) zeppelin-embed-ffi graph_result::tests::graph_result_real_aligned_owner_publishes_and_frees_without_source_lifetime
+────────────
+     Summary [   0.026s] 10 tests run: 10 passed, 14 skipped

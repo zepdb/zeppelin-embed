@@ -1,0 +1,50 @@
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.45s
+────────────
+ Nextest run ID 1c348770-f85c-403f-ade2-fef4fe85a6de with nextest profile: default
+    Starting 1 test across 1 binary (26 tests skipped)
+        FAIL [   0.015s] (1/1) zeppelin-embed-ffi graph_result::tests::graph_result_seeded_cancel_sites_can_fire_and_same_seed_control_finishes
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_seeded_cancel_sites_can_fire_and_same_seed_control_finishes ... FAILED
+
+    failures:
+
+    failures:
+        graph_result::tests::graph_result_seeded_cancel_sites_can_fire_and_same_seed_control_finishes
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.01s
+
+  stderr ───
+    ZE_TEST_SEED=128 source_bytes=70128 cancel_sites=1..=5 control=0
+
+    thread 'graph_result::tests::graph_result_seeded_cancel_sites_can_fire_and_same_seed_control_finishes' (34617316) panicked at crates/zeppelin-embed-ffi/src/graph_result/tests.rs:578:13:
+    assertion failed: matches!(result,
+        Err(OwnerError::Runtime(RuntimeError::Value(QueryError::Cancelled))))
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.015s] 1 test run: 0 passed, 1 failed, 26 skipped
+        FAIL [   0.015s] (1/1) zeppelin-embed-ffi graph_result::tests::graph_result_seeded_cancel_sites_can_fire_and_same_seed_control_finishes
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_seeded_cancel_sites_can_fire_and_same_seed_control_finishes ... FAILED
+
+    failures:
+
+    failures:
+        graph_result::tests::graph_result_seeded_cancel_sites_can_fire_and_same_seed_control_finishes
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.01s
+
+  stderr ───
+    ZE_TEST_SEED=128 source_bytes=70128 cancel_sites=1..=5 control=0
+
+    thread 'graph_result::tests::graph_result_seeded_cancel_sites_can_fire_and_same_seed_control_finishes' (34617316) panicked at crates/zeppelin-embed-ffi/src/graph_result/tests.rs:578:13:
+    assertion failed: matches!(result,
+        Err(OwnerError::Runtime(RuntimeError::Value(QueryError::Cancelled))))
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

@@ -1,0 +1,11 @@
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.68s
+────────────
+ Nextest run ID 6edffe50-81c5-4e9f-ab29-3a5de3c63575 with nextest profile: default
+    Starting 4 tests across 1 binary (14 tests skipped)
+        PASS [   0.008s] (1/4) zeppelin-embed-ffi graph_result::tests::graph_result_layout_aligns_every_typed_pool_and_rejects_oversize
+        PASS [   0.008s] (2/4) zeppelin-embed-ffi graph_result::tests::graph_result_known_commit_survives_unwind_and_unknown_attempt_retains_no_ids
+        PASS [   0.009s] (3/4) zeppelin-embed-ffi graph_result::tests::graph_result_real_aligned_owner_publishes_and_frees_without_source_lifetime
+        PASS [   0.010s] (4/4) zeppelin-embed-ffi graph_result::tests::graph_result_cross_registry_empty_owner_cannot_steal_another_allocation
+────────────
+     Summary [   0.010s] 4 tests run: 4 passed, 14 skipped

@@ -1,0 +1,76 @@
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi)
+warning: unreachable expression
+   --> crates/zeppelin-embed-ffi/src/graph_result/registration.rs:388:5
+    |
+386 |       return true;
+    |       ----------- any code following this expression is unreachable
+387 |       macro_rules! same { ($a:expr, $b:expr; $($field:ident),+ $(,)?) => { true $(&& $a.$field == $b.$field)+ }; }
+388 | /     same!(a, b; abi_size, abi_reserved, owner_token, disposition, has_admitted_generation, admitted_generation,
+389 | |         has_changed_generation, reserved, changed_generation, row_count, columns, column_count, cells, cell_count,
+390 | |         receipts, receipt_count, reports, report_count, diagnostics, diagnostic_count, work, work_count, global_work)
+391 | |         && same!(a.pool, b.pool; abi_size, abi_reserved, values, value_count, children, child_count, bytes, byte_count,
+392 | |         nodes, node_count, relationships, relationship_count, properties, property_count, names, name_count, vectors, vector_count)
+    | |___________________________________________________________________________________________________________________________________^ unreachable expression
+    |
+    = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `a`
+   --> crates/zeppelin-embed-ffi/src/graph_result/registration.rs:385:18
+    |
+385 | fn same_geometry(a: &ZeGraphResponse, b: &ZeGraphResponse) -> bool {
+    |                  ^ help: if this is intentional, prefix it with an underscore: `_a`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `b`
+   --> crates/zeppelin-embed-ffi/src/graph_result/registration.rs:385:39
+    |
+385 | fn same_geometry(a: &ZeGraphResponse, b: &ZeGraphResponse) -> bool {
+    |                                       ^ help: if this is intentional, prefix it with an underscore: `_b`
+
+warning: `zeppelin-embed-ffi` (lib test) generated 3 warnings (run `cargo fix --lib -p zeppelin-embed-ffi --tests` to apply 2 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.43s
+────────────
+ Nextest run ID 181729de-8238-47c3-9fc8-f9ebb6c1cda2 with nextest profile: default
+    Starting 1 test across 1 binary (26 tests skipped)
+        FAIL [   0.013s] (1/1) zeppelin-embed-ffi graph_result::tests::graph_result_every_authoritative_field_mutation_and_foreign_geometry_is_rejected
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_every_authoritative_field_mutation_and_foreign_geometry_is_rejected ... FAILED
+
+    failures:
+
+    failures:
+        graph_result::tests::graph_result_every_authoritative_field_mutation_and_foreign_geometry_is_rejected
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'graph_result::tests::graph_result_every_authoritative_field_mutation_and_foreign_geometry_is_rejected' (34616077) panicked at crates/zeppelin-embed-ffi/src/graph_result/tests.rs:326:9:
+    abi_size
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.014s] 1 test run: 0 passed, 1 failed, 26 skipped
+        FAIL [   0.013s] (1/1) zeppelin-embed-ffi graph_result::tests::graph_result_every_authoritative_field_mutation_and_foreign_geometry_is_rejected
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_every_authoritative_field_mutation_and_foreign_geometry_is_rejected ... FAILED
+
+    failures:
+
+    failures:
+        graph_result::tests::graph_result_every_authoritative_field_mutation_and_foreign_geometry_is_rejected
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'graph_result::tests::graph_result_every_authoritative_field_mutation_and_foreign_geometry_is_rejected' (34616077) panicked at crates/zeppelin-embed-ffi/src/graph_result/tests.rs:326:9:
+    abi_size
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

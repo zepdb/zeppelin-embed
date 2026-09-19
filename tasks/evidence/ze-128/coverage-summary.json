@@ -1,0 +1,119 @@
+{
+  "raw_json_sha256": "9b31ef644bc82f8504a8f25cd1e077bc0587c593e8d3f2fef605bd4cba9cd069",
+  "files": [
+    {
+      "path": "zeppelin-embed-ffi/src/graph_result.rs",
+      "summary": {
+        "branches": {
+          "count": 0,
+          "covered": 0,
+          "notcovered": 0,
+          "percent": 0.0
+        },
+        "mcdc": {
+          "count": 0,
+          "covered": 0,
+          "notcovered": 0,
+          "percent": 0.0
+        },
+        "functions": {
+          "count": 12,
+          "covered": 11,
+          "percent": 91.66666666666666
+        },
+        "instantiations": {
+          "count": 24,
+          "covered": 23,
+          "percent": 95.83333333333334
+        },
+        "lines": {
+          "count": 190,
+          "covered": 175,
+          "percent": 92.10526315789474
+        },
+        "regions": {
+          "count": 339,
+          "covered": 286,
+          "notcovered": 53,
+          "percent": 84.36578171091446
+        }
+      }
+    },
+    {
+      "path": "zeppelin-embed-ffi/src/graph_result/outcome.rs",
+      "summary": {
+        "branches": {
+          "count": 0,
+          "covered": 0,
+          "notcovered": 0,
+          "percent": 0.0
+        },
+        "mcdc": {
+          "count": 0,
+          "covered": 0,
+          "notcovered": 0,
+          "percent": 0.0
+        },
+        "functions": {
+          "count": 6,
+          "covered": 6,
+          "percent": 100.0
+        },
+        "instantiations": {
+          "count": 6,
+          "covered": 6,
+          "percent": 100.0
+        },
+        "lines": {
+          "count": 36,
+          "covered": 33,
+          "percent": 91.66666666666666
+        },
+        "regions": {
+          "count": 46,
+          "covered": 37,
+          "notcovered": 9,
+          "percent": 80.43478260869564
+        }
+      }
+    },
+    {
+      "path": "zeppelin-embed-ffi/src/graph_result/registration.rs",
+      "summary": {
+        "branches": {
+          "count": 0,
+          "covered": 0,
+          "notcovered": 0,
+          "percent": 0.0
+        },
+        "mcdc": {
+          "count": 0,
+          "covered": 0,
+          "notcovered": 0,
+          "percent": 0.0
+        },
+        "functions": {
+          "count": 31,
+          "covered": 29,
+          "percent": 93.54838709677419
+        },
+        "instantiations": {
+          "count": 31,
+          "covered": 29,
+          "percent": 93.54838709677419
+        },
+        "lines": {
+          "count": 306,
+          "covered": 284,
+          "percent": 92.81045751633987
+        },
+        "regions": {
+          "count": 441,
+          "covered": 418,
+          "notcovered": 23,
+          "percent": 94.7845804988662
+        }
+      }
+    }
+  ]
+}

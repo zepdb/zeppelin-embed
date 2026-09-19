@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.45s
+────────────
+ Nextest run ID 5a31bf99-c62d-43c9-a7d5-a5e27572dcf6 with nextest profile: default
+    Starting 1 test across 1 binary (16 tests skipped)
+        FAIL [   0.010s] (1/1) zeppelin-embed-ffi graph_result::tests::graph_result_cross_registry_empty_owner_cannot_steal_another_allocation
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_cross_registry_empty_owner_cannot_steal_another_allocation ... FAILED
+
+    failures:
+
+    failures:
+        graph_result::tests::graph_result_cross_registry_empty_owner_cannot_steal_another_allocation
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'graph_result::tests::graph_result_cross_registry_empty_owner_cannot_steal_another_allocation' (34544666) panicked at crates/zeppelin-embed-ffi/src/graph_result/tests.rs:103:9:
+    assertion failed: matches!(SECOND.free(&mut first), Err(OwnerError::InvalidOwner))
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.011s] 1 test run: 0 passed, 1 failed, 16 skipped
+        FAIL [   0.010s] (1/1) zeppelin-embed-ffi graph_result::tests::graph_result_cross_registry_empty_owner_cannot_steal_another_allocation
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_cross_registry_empty_owner_cannot_steal_another_allocation ... FAILED
+
+    failures:
+
+    failures:
+        graph_result::tests::graph_result_cross_registry_empty_owner_cannot_steal_another_allocation
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'graph_result::tests::graph_result_cross_registry_empty_owner_cannot_steal_another_allocation' (34544666) panicked at crates/zeppelin-embed-ffi/src/graph_result/tests.rs:103:9:
+    assertion failed: matches!(SECOND.free(&mut first), Err(OwnerError::InvalidOwner))
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

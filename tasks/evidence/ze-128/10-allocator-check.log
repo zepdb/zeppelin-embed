@@ -1,0 +1,30 @@
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.65s
+────────────
+ Nextest run ID fd79c227-2b7d-4bcc-92ec-7a9013437605 with nextest profile: default
+    Starting 1 test across 1 binary (18 tests skipped)
+     SIGABRT [   0.009s] (1/1) zeppelin-embed-ffi graph_result::tests::graph_result_actual_allocator_failures_and_expose_free_have_exact_heap_accounting
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_actual_allocator_failures_and_expose_free_have_exact_heap_accounting ...
+  stderr ───
+    memory allocation of 64 bytes failed
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+    (test aborted with signal 6: SIGABRT)
+
+────────────
+     Summary [   0.009s] 1 test run: 0 passed, 1 failed, 18 skipped
+     SIGABRT [   0.009s] (1/1) zeppelin-embed-ffi graph_result::tests::graph_result_actual_allocator_failures_and_expose_free_have_exact_heap_accounting
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_actual_allocator_failures_and_expose_free_have_exact_heap_accounting ...
+  stderr ───
+    memory allocation of 64 bytes failed
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+    (test aborted with signal 6: SIGABRT)
+
+error: test run failed

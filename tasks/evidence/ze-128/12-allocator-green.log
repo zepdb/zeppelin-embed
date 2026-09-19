@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.58s
+────────────
+ Nextest run ID 88db8572-bb6d-4af9-bb37-0b36105e7411 with nextest profile: default
+    Starting 1 test across 1 binary (18 tests skipped)
+        PASS [   0.013s] (1/1) zeppelin-embed-ffi graph_result::tests::graph_result_actual_allocator_failures_and_expose_free_have_exact_heap_accounting
+────────────
+     Summary [   0.013s] 1 test run: 1 passed, 18 skipped

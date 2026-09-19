@@ -3923,3 +3923,8 @@ pub use graph_contracts::*;
 mod graph_error;
 #[cfg(feature = "graph-cypher")]
 mod graph_validate;
+
+/// Internal graph result ownership; not a C runtime export.
+#[cfg(feature = "graph-cypher")]
+#[doc(hidden)]
+pub mod graph_result;

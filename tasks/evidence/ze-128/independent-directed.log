@@ -1,0 +1,10 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s
+────────────
+ Nextest run ID 51529f8b-1d43-47eb-b19b-f5a524725fe2 with nextest profile: default
+    Starting 4 tests across 1 binary (23 tests skipped)
+        PASS [   0.008s] (1/4) zeppelin-embed-ffi graph_result::tests::graph_result_free_rejects_returned_root_inside_authoritative_arena
+        PASS [   0.009s] (2/4) zeppelin-embed-ffi graph_result::tests::graph_result_actual_allocator_failures_and_expose_free_have_exact_heap_accounting
+        PASS [   0.010s] (3/4) zeppelin-embed-ffi graph_result::tests::graph_result_concurrent_free_publication_and_abort_have_one_owner
+        PASS [   0.015s] (4/4) zeppelin-embed-ffi graph_result::tests::graph_result_seeded_cancel_sites_can_fire_and_same_seed_control_finishes
+────────────
+     Summary [   0.015s] 4 tests run: 4 passed, 23 skipped

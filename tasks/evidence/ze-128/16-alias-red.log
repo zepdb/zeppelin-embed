@@ -1,0 +1,34 @@
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.42s
+────────────
+ Nextest run ID ead71f64-f478-40ca-bb20-7a21e88baf2f with nextest profile: default
+    Starting 1 test across 1 binary (23 tests skipped)
+     SIGKILL [   0.011s] (1/1) zeppelin-embed-ffi graph_result::tests::graph_result_free_rejects_returned_root_inside_authoritative_arena
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_free_rejects_returned_root_inside_authoritative_arena ...
+  stderr ───
+
+    thread 'graph_result::tests::graph_result_free_rejects_returned_root_inside_authoritative_arena' (34580923) panicked at crates/zeppelin-embed-ffi/src/graph_result/tests.rs:285:9:
+    assertion failed: matches!(rejected, Err(OwnerError::InvalidOwner))
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+    (test aborted with signal 9: SIGKILL)
+
+────────────
+     Summary [   0.014s] 1 test run: 0 passed, 1 failed, 23 skipped
+     SIGKILL [   0.011s] (1/1) zeppelin-embed-ffi graph_result::tests::graph_result_free_rejects_returned_root_inside_authoritative_arena
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_free_rejects_returned_root_inside_authoritative_arena ...
+  stderr ───
+
+    thread 'graph_result::tests::graph_result_free_rejects_returned_root_inside_authoritative_arena' (34580923) panicked at crates/zeppelin-embed-ffi/src/graph_result/tests.rs:285:9:
+    assertion failed: matches!(rejected, Err(OwnerError::InvalidOwner))
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+    (test aborted with signal 9: SIGKILL)
+
+error: test run failed

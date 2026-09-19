@@ -1,0 +1,32 @@
+{
+  "command": [
+    "cargo",
+    "nextest",
+    "run",
+    "-p",
+    "zeppelin-embed-ffi",
+    "--features",
+    "graph-cypher",
+    "--lib",
+    "-E",
+    "test(graph_result_actual_allocator_failures) | test(graph_result_concurrent_free_publication) | test(graph_result_free_rejects_returned_root) | test(graph_result_seeded_cancel_sites)"
+  ],
+  "ZE_TEST_SEED": 128,
+  "exit_code": 0,
+  "before": {
+    "crates/zeppelin-embed-ffi/src/graph_result.rs": "bdda71a432e6617dd5b0b3e7dddd056bac357e7481946a1ced8d20abbcf7252c",
+    "crates/zeppelin-embed-ffi/src/lib.rs": "9a00a4c5fdfe4daac324072fc53a2d3cff690541717049b9d90d18b60328730d",
+    "crates/zeppelin-embed-ffi/src/graph_result/outcome.rs": "257b6b7e096776ad1ce0eb763fcd355e685b41062cf928048b0e257f0d9541eb",
+    "crates/zeppelin-embed-ffi/src/graph_result/audit.rs": "4fa5503389a933c8a6a39609c453bad236c505724193cd662564bd2970a66bef",
+    "crates/zeppelin-embed-ffi/src/graph_result/registration.rs": "c33f08564541130f0d2c75d340de1784f4e55a54ad38eb540eeedc8b2d83156f",
+    "crates/zeppelin-embed-ffi/src/graph_result/tests.rs": "1f6848b5723e4e1197a57f2ed8eb8101419d4b378a506c3dec7cd402983f5769"
+  },
+  "after": {
+    "crates/zeppelin-embed-ffi/src/graph_result.rs": "bdda71a432e6617dd5b0b3e7dddd056bac357e7481946a1ced8d20abbcf7252c",
+    "crates/zeppelin-embed-ffi/src/lib.rs": "9a00a4c5fdfe4daac324072fc53a2d3cff690541717049b9d90d18b60328730d",
+    "crates/zeppelin-embed-ffi/src/graph_result/outcome.rs": "257b6b7e096776ad1ce0eb763fcd355e685b41062cf928048b0e257f0d9541eb",
+    "crates/zeppelin-embed-ffi/src/graph_result/audit.rs": "4fa5503389a933c8a6a39609c453bad236c505724193cd662564bd2970a66bef",
+    "crates/zeppelin-embed-ffi/src/graph_result/registration.rs": "c33f08564541130f0d2c75d340de1784f4e55a54ad38eb540eeedc8b2d83156f",
+    "crates/zeppelin-embed-ffi/src/graph_result/tests.rs": "1f6848b5723e4e1197a57f2ed8eb8101419d4b378a506c3dec7cd402983f5769"
+  }
+}

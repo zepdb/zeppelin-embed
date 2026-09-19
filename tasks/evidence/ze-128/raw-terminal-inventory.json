@@ -1,0 +1,147 @@
+[
+  {
+    "path": "01-layout-red.log",
+    "bytes": 2825,
+    "sha256": "1f38f3bd8f297fae4b4651e51ebb9879c7121110fc29c91d186134f2fc93875e"
+  },
+  {
+    "path": "02-layout-green.log",
+    "bytes": 602,
+    "sha256": "2d84d8cdb6cc1e413e31c7ed148c721145d8c474a837fa81f086aa79b9e8a1b7"
+  },
+  {
+    "path": "03-owner-red.log",
+    "bytes": 3476,
+    "sha256": "8e8c54eafec86fb634cc98818b707c7fe0f7638c3ab4805e1b177504d385e0ad"
+  },
+  {
+    "path": "04-owner-green.log",
+    "bytes": 2633,
+    "sha256": "73ad2e356836e2489590174885810ed24e924b85f9627234d59efbdb96466058"
+  },
+  {
+    "path": "05-owner-green.log",
+    "bytes": 751,
+    "sha256": "003cefc0a04386f11696480cf874e7ed1552da4d2872cdcfdb928e2d46dd4ac1"
+  },
+  {
+    "path": "06-cross-registry-red.log",
+    "bytes": 2317,
+    "sha256": "cf899036ebfbbf5b7e0306e3c7f0c51bf100be276c848f991b7218f5af42e903"
+  },
+  {
+    "path": "07-cross-registry-green.log",
+    "bytes": 894,
+    "sha256": "29fb4d3af19e52eb09f0aecd65d2e19181d8c3f015d3f0fdedd7060497fdaff5"
+  },
+  {
+    "path": "08-outcome-red.log",
+    "bytes": 2941,
+    "sha256": "16f40ebd1037b166a3829aaff47b752f7677df5e292fc4a12456fe7cdfc85746"
+  },
+  {
+    "path": "09-outcome-green.log",
+    "bytes": 1042,
+    "sha256": "a85fcdc36e667a4c10b3214364771f4f35139898d5baf365c5d47b32b2d14cfa"
+  },
+  {
+    "path": "10-allocator-check.log",
+    "bytes": 1489,
+    "sha256": "f211087468ced6f2754e19bb261ce1e422c7e84016a0aa10c6e7e1c91f75809a"
+  },
+  {
+    "path": "11-allocator-debug.log",
+    "bytes": 1523,
+    "sha256": "7266ad2fffcf20992b550b10fc7e3c2629a4c37331d6781cff020ce148acf57f"
+  },
+  {
+    "path": "12-allocator-green.log",
+    "bytes": 619,
+    "sha256": "2117042c53ea5c9ddeda9f47cf27d94a80a531d5dd633b2edbb909a199e4509b"
+  },
+  {
+    "path": "13-controls.log",
+    "bytes": 1786,
+    "sha256": "88fda23c8ec6810c078fd2f65d39a15f4e8128c70249954d093bc660bd5da0d9"
+  },
+  {
+    "path": "14-fmt-pre.log",
+    "bytes": 65193,
+    "sha256": "dc7d14f7b3376e945e812b9fed928905689b472ce01a63569995f5b9250c96e2"
+  },
+  {
+    "path": "15-clippy-pre.log",
+    "bytes": 10423,
+    "sha256": "441dd719206ca915fc194f6a2e5e06db3226e1cb04709022af0e231a54e482f9"
+  },
+  {
+    "path": "16-alias-red.log",
+    "bytes": 1859,
+    "sha256": "629cacc4c12a6243a2af93200a705e9db380e138b3df6541363bff4edb832e31"
+  },
+  {
+    "path": "17-alias-green.log",
+    "bytes": 1947,
+    "sha256": "16478a0179491721c7e54e2cf5572266cb72c292d24889b767ca39d9bd042fea"
+  },
+  {
+    "path": "18-cancel-and-lifetime.log",
+    "bytes": 2238,
+    "sha256": "ba1bbbc0254bc3f9dad638b1bff02b4d23dd95f73ee6b3a477c302a5263fbf87"
+  },
+  {
+    "path": "19-limits.log",
+    "bytes": 2380,
+    "sha256": "774658fe7f035a45e4a1733e63a3fe06f4623ec59cc5c64b9eeb4b545d29d9d1"
+  },
+  {
+    "path": "20-clippy.log",
+    "bytes": 310,
+    "sha256": "8dd5f25ba23accbfa413f7dda2904516c13b6bceb34a35d8037969b7b2e944f9"
+  },
+  {
+    "path": "21-coverage.log",
+    "bytes": 3043,
+    "sha256": "2335b0e2756a036e0058ee7f2b0e910574415df1b88c3b641f903e6e7deca2b9"
+  },
+  {
+    "path": "22-contracts.log",
+    "bytes": 5316,
+    "sha256": "9c21002b4d1eda098f8c15abfe73a0162177e50fee39c54769e25bbcb09bd585"
+  },
+  {
+    "path": "23-mutant-arena_drop.log",
+    "bytes": 2355,
+    "sha256": "37f60c08e65a9f337f9dd7449d9066947ee968a5f5feee1c82dafcbfee118aa7"
+  },
+  {
+    "path": "23-mutant-final_cancel.log",
+    "bytes": 2525,
+    "sha256": "e65826d12846958e97825aad52b9c1bbb88b97e005aaecbb462df8ef41207794"
+  },
+  {
+    "path": "23-mutant-geometry.log",
+    "bytes": 4258,
+    "sha256": "cc78980fbe8979ea35b8f78a3afd03575f9a52c2debd98c38b41332029254061"
+  },
+  {
+    "path": "24-restored-green.log",
+    "bytes": 2380,
+    "sha256": "830028587dfd016a1285b8379a052f6843d2e5d3b3bd82766d093f1c78873341"
+  },
+  {
+    "path": "25-final-owner.log",
+    "bytes": 2380,
+    "sha256": "3fed80b849072304c967325f582ad847687121d4f59767847289e8ba8489c9c3"
+  },
+  {
+    "path": "26-final-clippy.log",
+    "bytes": 310,
+    "sha256": "25902deb9da50a620171388c233defdd84cee8ba0e86d46e2541a177b5fb6663"
+  },
+  {
+    "path": "27-final-fmt.log",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+]

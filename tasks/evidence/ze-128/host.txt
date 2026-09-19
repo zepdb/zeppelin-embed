@@ -1,0 +1,19 @@
+$ uname -a
+Darwin Anups-MacBook-Pro.local 27.0.0 Darwin Kernel Version 27.0.0: Tue Jul 14 21:42:16 PDT 2026; root:xnu-13432.0.94.501.4~1/RELEASE_ARM64_T6031 arm64
+
+$ sysctl -n machdep.cpu.brand_string hw.memsize
+Apple M3 Max
+137438953472
+
+$ rustc --version
+rustc 1.93.0 (254b59607 2026-01-19)
+
+$ cargo nextest --version
+cargo-nextest 0.9.145 (00af4550e 2026-09-16)
+release: 0.9.145
+commit-hash: 00af4550ec3b3b9f0e574b897b06acb95d325ba2
+commit-date: 2026-09-16
+host: aarch64-apple-darwin
+
+$ cargo llvm-cov --version
+cargo-llvm-cov 0.9.0

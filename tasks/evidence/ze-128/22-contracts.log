@@ -1,0 +1,43 @@
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.53s
+────────────
+ Nextest run ID 9b6a24fc-1a1c-464c-96e2-4171dd6bf11a with nextest profile: default
+    Starting 36 tests across 6 binaries (2 tests skipped)
+        PASS [   0.018s] ( 1/36) zeppelin-embed-ffi::ffi_contract a_second_process_opening_the_same_path_gets_store_busy
+        PASS [   0.359s] ( 2/36) zeppelin-embed-ffi::ffi_contract a_second_concurrent_writer_call_returns_ze_err_busy
+        PASS [   0.008s] ( 3/36) zeppelin-embed-ffi::ffi_contract error_codes_are_append_only
+        PASS [   1.675s] ( 4/36) zeppelin-embed-ffi::ffi_contract a_panic_crossing_the_abi_is_caught_the_handle_is_poisoned_and_the_process_survives
+        PASS [   0.007s] ( 5/36) zeppelin-embed-ffi::ffi_contract every_phase_two_struct_has_the_frozen_size_and_field_offsets
+        PASS [   1.318s] ( 6/36) zeppelin-embed-ffi::ffi_contract every_entry_point_returns_ze_err_poisoned_after_a_caught_panic
+        PASS [   0.007s] ( 7/36) zeppelin-embed-ffi::ffi_contract every_request_struct_has_the_frozen_size_and_field_offsets
+        PASS [   0.007s] ( 8/36) zeppelin-embed-ffi::ffi_contract swift_error_enum_is_generated_from_the_append_only_error_table
+        PASS [   0.011s] ( 9/36) zeppelin-embed-ffi::ffi_contract search_result_ownership_and_the_phase_one_engine_seams_are_real
+        PASS [   0.007s] (10/36) zeppelin-embed-ffi::ffi_contract the_poison_table_covers_every_exported_handle_taking_symbol
+        PASS [   0.007s] (11/36) zeppelin-embed-ffi::ffi_contract use_after_close_double_close_and_a_stale_generation_each_return_typed_errors
+        PASS [   0.007s] (12/36) zeppelin-embed-ffi::ffi_graph_contract graph_batch_shape_preserves_empty_and_nul_names_with_explicit_image_presence
+        PASS [   0.006s] (13/36) zeppelin-embed-ffi::ffi_graph_contract graph_compile_limits_preserve_zero_and_reject_each_widened_guard
+        PASS [   0.006s] (14/36) zeppelin-embed-ffi::ffi_graph_contract graph_empty_list_shape_rejects_nonzero_count_and_preserves_typed_empties
+        PASS [   0.006s] (15/36) zeppelin-embed-ffi::ffi_graph_contract graph_endpoint_shape_keeps_local_and_full_identity_preconditions_separate
+        PASS [   0.006s] (16/36) zeppelin-embed-ffi::ffi_graph_contract graph_native_error_mapping_preserves_type_arithmetic_and_retry_conflicts
+        PASS [   0.006s] (17/36) zeppelin-embed-ffi::ffi_graph_contract graph_identity_conversion_retains_high_words_and_rejects_zero
+        PASS [   0.006s] (18/36) zeppelin-embed-ffi::ffi_graph_contract graph_search_shape_preserves_tier_presence_and_rejects_wrong_kind_options
+        PASS [   0.006s] (19/36) zeppelin-embed-ffi::ffi_graph_contract graph_nested_array_headers_require_exact_v1_stride_and_zero_reserved
+        PASS [   0.006s] (20/36) zeppelin-embed-ffi::ffi_graph_contract graph_value_shapes_preserve_ieee_bits_and_reject_inactive_or_overflowing_fields
+        PASS [   0.006s] (21/36) zeppelin-embed-ffi::ffi_graph_contract graph_tightening_distinguishes_explicit_zero_from_absent_and_rejects_widening
+        PASS [   0.006s] (22/36) zeppelin-embed-ffi::ffi_graph_error appended_graph_error_names_are_distinct_and_stable
+        PASS [   0.151s] (23/36) zeppelin-embed-ffi::ffi_graph_header graph_c_consumer_preserves_strong_full_width_identity_layouts
+        PASS [   0.158s] (24/36) zeppelin-embed-ffi::ffi_graph_header graph_c_batch_pool_distinguishes_empty_payloads_and_local_endpoints
+        PASS [   0.029s] (25/36) zeppelin-embed-ffi::ffi_graph_header graph_c_identity_kinds_cannot_be_assigned_to_each_other
+        PASS [   0.159s] (26/36) zeppelin-embed-ffi::ffi_graph_header graph_c_frozen_sizes_offsets_and_discriminants_match_the_reviewed_contract
+        PASS [   0.162s] (27/36) zeppelin-embed-ffi::ffi_graph_header graph_c_requests_and_response_preserve_disposition_and_search_provenance
+        PASS [   0.031s] (28/36) zeppelin-embed-ffi::ffi_graph_header graph_contract_header_is_exact_separate_cbindgen_output
+        PASS [   0.040s] (29/36) zeppelin-embed-ffi::ffi_graph_header graph_contract_header_is_usable_from_cpp_without_legacy_export_changes
+        PASS [   0.008s] (30/36) zeppelin-embed-ffi::ffi_graph_header legacy_header_and_exports_do_not_advertise_graph_contracts
+        PASS [   0.007s] (31/36) zeppelin-embed-ffi::ffi_graph_layout every_graph_discriminant_has_the_frozen_value_and_width
+        PASS [   0.006s] (32/36) zeppelin-embed-ffi::ffi_graph_layout every_graph_struct_has_the_frozen_c_size_alignment_and_field_offsets
+        PASS [   0.154s] (33/36) zeppelin-embed-ffi::ffi_graph_header graph_c_typed_plan_retains_search_presence_components_and_path_predicates
+        PASS [   0.105s] (34/36) zeppelin-embed-ffi::ffi_header the_committed_header_is_the_exact_cbindgen_output
+        PASS [   2.896s] (35/36) zeppelin-embed-ffi::ffi_contract a_deadline_mid_query_returns_typed_timeout_through_the_boundary
+        PASS [   2.893s] (36/36) zeppelin-embed-ffi::ffi_contract cross_thread_cancellation_returns_typed_cancelled_with_no_candidates_through_the_boundary
+────────────
+     Summary [   2.912s] 36 tests run: 36 passed, 2 skipped

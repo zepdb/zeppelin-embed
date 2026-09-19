@@ -1,0 +1,32 @@
+[
+  {
+    "path": "crates/zeppelin-embed-ffi/src/lib.rs",
+    "bytes": 156697,
+    "sha256": "9a00a4c5fdfe4daac324072fc53a2d3cff690541717049b9d90d18b60328730d"
+  },
+  {
+    "path": "crates/zeppelin-embed-ffi/src/graph_result.rs",
+    "bytes": 13464,
+    "sha256": "bdda71a432e6617dd5b0b3e7dddd056bac357e7481946a1ced8d20abbcf7252c"
+  },
+  {
+    "path": "crates/zeppelin-embed-ffi/src/graph_result/audit.rs",
+    "bytes": 2878,
+    "sha256": "4fa5503389a933c8a6a39609c453bad236c505724193cd662564bd2970a66bef"
+  },
+  {
+    "path": "crates/zeppelin-embed-ffi/src/graph_result/outcome.rs",
+    "bytes": 3383,
+    "sha256": "257b6b7e096776ad1ce0eb763fcd355e685b41062cf928048b0e257f0d9541eb"
+  },
+  {
+    "path": "crates/zeppelin-embed-ffi/src/graph_result/registration.rs",
+    "bytes": 19292,
+    "sha256": "c33f08564541130f0d2c75d340de1784f4e55a54ad38eb540eeedc8b2d83156f"
+  },
+  {
+    "path": "crates/zeppelin-embed-ffi/src/graph_result/tests.rs",
+    "bytes": 29950,
+    "sha256": "1f6848b5723e4e1197a57f2ed8eb8101419d4b378a506c3dec7cd402983f5769"
+  }
+]

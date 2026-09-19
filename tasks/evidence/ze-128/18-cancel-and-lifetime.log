@@ -1,0 +1,19 @@
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.50s
+────────────
+ Nextest run ID bef41686-e596-4b10-8fe6-cb7e692b511d with nextest profile: default
+    Starting 12 tests across 1 binary (14 tests skipped)
+        PASS [   0.015s] ( 1/12) zeppelin-embed-ffi graph_result::registration::tests::graph_result_token_exhaustion_precedes_allocation_or_exposure
+        PASS [   0.016s] ( 2/12) zeppelin-embed-ffi graph_result::registration::tests::graph_result_gate_poison_busy_and_registry_bound_are_precommit_errors
+        PASS [   0.017s] ( 3/12) zeppelin-embed-ffi graph_result::tests::graph_result_actual_allocator_failures_and_expose_free_have_exact_heap_accounting
+        PASS [   0.017s] ( 4/12) zeppelin-embed-ffi graph_result::tests::graph_result_concurrent_free_publication_and_abort_have_one_owner
+        PASS [   0.008s] ( 5/12) zeppelin-embed-ffi graph_result::tests::graph_result_known_commit_survives_unwind_and_unknown_attempt_retains_no_ids
+        PASS [   0.011s] ( 6/12) zeppelin-embed-ffi graph_result::tests::graph_result_every_authoritative_field_mutation_and_foreign_geometry_is_rejected
+        PASS [   0.011s] ( 7/12) zeppelin-embed-ffi graph_result::tests::graph_result_cross_registry_empty_owner_cannot_steal_another_allocation
+        PASS [   0.010s] ( 8/12) zeppelin-embed-ffi graph_result::tests::graph_result_free_rejects_returned_root_inside_authoritative_arena
+        PASS [   0.009s] ( 9/12) zeppelin-embed-ffi graph_result::tests::graph_result_layout_aligns_every_typed_pool_and_rejects_oversize
+        PASS [   0.010s] (10/12) zeppelin-embed-ffi graph_result::tests::graph_result_real_aligned_owner_publishes_and_frees_without_source_lifetime
+        PASS [   0.010s] (11/12) zeppelin-embed-ffi graph_result::tests::graph_result_owned_pools_outlive_temporary_owners_and_lifecycle_fixture
+        PASS [   0.017s] (12/12) zeppelin-embed-ffi graph_result::tests::graph_result_seeded_cancel_sites_can_fire_and_same_seed_control_finishes
+────────────
+     Summary [   0.044s] 12 tests run: 12 passed, 14 skipped

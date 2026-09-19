@@ -1,0 +1,47 @@
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.90s
+────────────
+ Nextest run ID 1abe0398-cc61-49f9-a767-ee990dea35b1 with nextest profile: default
+    Starting 2 tests across 1 binary (14 tests skipped)
+        PASS [   0.008s] (1/2) zeppelin-embed-ffi graph_result::tests::graph_result_layout_aligns_every_typed_pool_and_rejects_oversize
+        FAIL [   0.010s] (2/2) zeppelin-embed-ffi graph_result::tests::graph_result_real_aligned_owner_publishes_and_frees_without_source_lifetime
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_real_aligned_owner_publishes_and_frees_without_source_lifetime ... FAILED
+
+    failures:
+
+    failures:
+        graph_result::tests::graph_result_real_aligned_owner_publishes_and_frees_without_source_lifetime
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 15 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'graph_result::tests::graph_result_real_aligned_owner_publishes_and_frees_without_source_lifetime' (34536410) panicked at crates/zeppelin-embed-ffi/src/graph_result/tests.rs:37:53:
+    called `Result::unwrap()` on an `Err` value: BudgetExceeded { needed: 18446744073709551615, budget: 268435456, component: "graph aggregate configuration" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.010s] 2 tests run: 1 passed, 1 failed, 14 skipped
+        FAIL [   0.010s] (2/2) zeppelin-embed-ffi graph_result::tests::graph_result_real_aligned_owner_publishes_and_frees_without_source_lifetime
+  stdout ───
+
+    running 1 test
+    test graph_result::tests::graph_result_real_aligned_owner_publishes_and_frees_without_source_lifetime ... FAILED
+
+    failures:
+
+    failures:
+        graph_result::tests::graph_result_real_aligned_owner_publishes_and_frees_without_source_lifetime
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 15 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'graph_result::tests::graph_result_real_aligned_owner_publishes_and_frees_without_source_lifetime' (34536410) panicked at crates/zeppelin-embed-ffi/src/graph_result/tests.rs:37:53:
+    called `Result::unwrap()` on an `Err` value: BudgetExceeded { needed: 18446744073709551615, budget: 268435456, component: "graph aggregate configuration" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

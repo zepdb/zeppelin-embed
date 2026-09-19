@@ -1,0 +1,57 @@
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-128/crates/zeppelin-embed-ffi)
+error[E0425]: cannot find type `GraphResultRegistry` in this scope
+  --> crates/zeppelin-embed-ffi/src/graph_result/tests.rs:47:22
+   |
+47 |     static REGISTRY: GraphResultRegistry = GraphResultRegistry::new(8);
+   |                      ^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0422]: cannot find struct, variant or union type `ResponseParts` in this scope
+  --> crates/zeppelin-embed-ffi/src/graph_result/tests.rs:63:21
+   |
+63 |         let parts = ResponseParts { values: &values, children: &[0], bytes: b"a\0z", nodes: &nodes,
+   |                     ^^^^^^^^^^^^^ not found in this scope
+
+error[E0433]: failed to resolve: use of undeclared type `ResponseMetadata`
+  --> crates/zeppelin-embed-ffi/src/graph_result/tests.rs:67:57
+   |
+67 |         let prepared = REGISTRY.prepare(context, parts, ResponseMetadata::new(1, Some(42))).unwrap();
+   |                                                         ^^^^^^^^^^^^^^^^ use of undeclared type `ResponseMetadata`
+
+error[E0599]: no variant or associated item named `InvalidOwner` found for enum `graph_result::OwnerError` in the current scope
+  --> crates/zeppelin-embed-ffi/src/graph_result/tests.rs:69:71
+   |
+69 |         assert!(matches!(REGISTRY.free(&mut private), Err(OwnerError::InvalidOwner)));
+   |                                                                       ^^^^^^^^^^^^ variant or associated item not found in `graph_result::OwnerError`
+   |
+  ::: crates/zeppelin-embed-ffi/src/graph_result.rs:9:1
+   |
+ 9 | pub enum OwnerError {
+   | ------------------- variant or associated item `InvalidOwner` not found for this enum
+
+error[E0433]: failed to resolve: use of undeclared type `SuccessfulOutcome`
+  --> crates/zeppelin-embed-ffi/src/graph_result/tests.rs:72:42
+   |
+72 |         let mut result = prepared.expose(SuccessfulOutcome::Read);
+   |                                          ^^^^^^^^^^^^^^^^^ use of undeclared type `SuccessfulOutcome`
+
+error[E0599]: no variant or associated item named `InvalidOwner` found for enum `graph_result::OwnerError` in the current scope
+  --> crates/zeppelin-embed-ffi/src/graph_result/tests.rs:92:69
+   |
+92 |         assert!(matches!(REGISTRY.free(&mut stale), Err(OwnerError::InvalidOwner)));
+   |                                                                     ^^^^^^^^^^^^ variant or associated item not found in `graph_result::OwnerError`
+   |
+  ::: crates/zeppelin-embed-ffi/src/graph_result.rs:9:1
+   |
+ 9 | pub enum OwnerError {
+   | ------------------- variant or associated item `InvalidOwner` not found for this enum
+
+error[E0433]: failed to resolve: use of undeclared type `GraphResultRegistry`
+  --> crates/zeppelin-embed-ffi/src/graph_result/tests.rs:47:44
+   |
+47 |     static REGISTRY: GraphResultRegistry = GraphResultRegistry::new(8);
+   |                                            ^^^^^^^^^^^^^^^^^^^ use of undeclared type `GraphResultRegistry`
+
+Some errors have detailed explanations: E0422, E0425, E0433, E0599.
+For more information about an error, try `rustc --explain E0422`.
+error: could not compile `zeppelin-embed-ffi` (lib test) due to 7 previous errors
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed-ffi --lib --features graph-cypher` exited with code 101
