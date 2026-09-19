@@ -136,3 +136,5 @@ pub mod graph_staging;
 pub mod graph_binding;
 
 pub mod graph_directory;
+
+pub mod graph_fixture;

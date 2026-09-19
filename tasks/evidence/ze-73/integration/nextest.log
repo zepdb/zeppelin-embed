@@ -1,0 +1,571 @@
+   Compiling zeppelin-embed-adversarial-oracle v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/tests/adversarial-oracle)
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-bench)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.11s
+────────────
+ Nextest run ID 152afd04-fd9f-4b84-8e27-6feb313c79d5 with nextest profile: default
+    Starting 30 tests across 3 binaries (454 tests skipped)
+        PASS [   0.012s] ( 1/30) zeppelin-embed-adversarial-oracle::graph_fixture eligible_vector_truth_never_filters_global_top_k
+  stdout ───
+
+    running 1 test
+    test eligible_vector_truth_never_filters_global_top_k ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.012s] ( 2/30) zeppelin-embed-adversarial-oracle::graph_fixture full_width_identity_and_row_bags_reject_narrowing_and_lost_multiplicity
+  stdout ───
+
+    running 1 test
+    test full_width_identity_and_row_bags_reject_narrowing_and_lost_multiplicity ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.012s] ( 3/30) zeppelin-embed-adversarial-oracle::graph_fixture hybrid_enclosure_pins_directed_rounding_and_the_full_live_vector_population
+  stdout ───
+
+    running 1 test
+    test hybrid_enclosure_pins_directed_rounding_and_the_full_live_vector_population ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.012s] ( 4/30) zeppelin-embed-adversarial-oracle::graph_fixture bounded_paths_preserve_parallel_edges_self_loops_and_relationship_uniqueness
+  stdout ───
+
+    running 1 test
+    test bounded_paths_preserve_parallel_edges_self_loops_and_relationship_uniqueness ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] ( 5/30) zeppelin-embed-adversarial-oracle::graph_fixture independent_key_history_never_resurrects_deleted_keys
+  stdout ───
+
+    running 1 test
+    test independent_key_history_never_resurrects_deleted_keys ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] ( 6/30) zeppelin-embed-adversarial-oracle::graph_fixture hybrid_optional_modalities_keep_query_weights_and_absence_distinct
+  stdout ───
+
+    running 1 test
+    test hybrid_optional_modalities_keep_query_weights_and_absence_distinct ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] ( 7/30) zeppelin-embed-adversarial-oracle::graph_fixture key_and_name_bytes_allow_empty_nul_and_original_list_float_bits
+  stdout ───
+
+    running 1 test
+    test key_and_name_bytes_allow_empty_nul_and_original_list_float_bits ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] ( 8/30) zeppelin-embed-adversarial-oracle::graph_fixture hybrid_reference_cross_scores_optional_modalities_and_empty_eligible_legs
+  stdout ───
+
+    running 1 test
+    test hybrid_reference_cross_scores_optional_modalities_and_empty_eligible_legs ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] ( 9/30) zeppelin-embed-adversarial-oracle::graph_fixture project_evidence_preserves_full_literal_join_row_and_prelimit_order
+  stdout ───
+
+    running 1 test
+    test project_evidence_preserves_full_literal_join_row_and_prelimit_order ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (10/30) zeppelin-embed-adversarial-oracle::graph_fixture lexical_reference_uses_full_live_statistics_and_phrase_positions
+  stdout ───
+
+    running 1 test
+    test lexical_reference_uses_full_live_statistics_and_phrase_positions ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (11/30) zeppelin-embed-adversarial-oracle::graph_fixture primitive_fixture_comparator_rejects_a_missing_parallel_edge
+  stdout ───
+
+    running 1 test
+    test primitive_fixture_comparator_rejects_a_missing_parallel_edge ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (12/30) zeppelin-embed-adversarial-oracle::graph_fixture lifecycle_batches_pin_generation_replay_atomicity_and_tombstone_visibility
+  stdout ───
+
+    running 1 test
+    test lifecycle_batches_pin_generation_replay_atomicity_and_tombstone_visibility ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (13/30) zeppelin-embed-adversarial-oracle::graph_fixture score_comparison_tolerance_never_weakens_ids_order_or_multiplicity
+  stdout ───
+
+    running 1 test
+    test score_comparison_tolerance_never_weakens_ids_order_or_multiplicity ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (14/30) zeppelin-embed-adversarial-oracle::graph_fixture project_join_order_and_limit_preserve_parallel_evidence_multiplicity
+  stdout ───
+
+    running 1 test
+    test project_join_order_and_limit_preserve_parallel_evidence_multiplicity ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (15/30) zeppelin-embed-adversarial-oracle::graph_fixture recreating_a_live_key_has_its_own_typed_rejection
+  stdout ───
+
+    running 1 test
+    test recreating_a_live_key_has_its_own_typed_rejection ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (16/30) zeppelin-embed-adversarial-oracle::graph_fixture restrict_checks_admitted_incidents_unless_relationship_explicitly_deleted
+  stdout ───
+
+    running 1 test
+    test restrict_checks_admitted_incidents_unless_relationship_explicitly_deleted ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (17/30) zeppelin-embed-adversarial-oracle::graph_fixture semantic_context_does_not_refill_seeds_without_context
+  stdout ───
+
+    running 1 test
+    test semantic_context_does_not_refill_seeds_without_context ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (18/30) zeppelin-embed-adversarial-oracle::graph_fixture semantic_context_derives_nearest_full_live_seed_before_expansion
+  stdout ───
+
+    running 1 test
+    test semantic_context_derives_nearest_full_live_seed_before_expansion ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (19/30) zeppelin-embed-adversarial-oracle::graph_fixture semantic_context_preserves_computed_scores_and_three_distinct_rows
+  stdout ───
+
+    running 1 test
+    test semantic_context_preserves_computed_scores_and_three_distinct_rows ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (20/30) zeppelin-embed-adversarial-oracle::graph_fixture semantic_context_top_twenty_uses_full_id_ties_and_keeps_parallel_rows
+  stdout ───
+
+    running 1 test
+    test semantic_context_top_twenty_uses_full_id_ties_and_keeps_parallel_rows ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.010s] (21/30) zeppelin-embed-workspace-tests::adversarial_tests graph_fixture_seed_stream_preserves_existing_adversarial_derivation
+  stdout ───
+
+    running 1 test
+    test graph_fixture_seed_stream_preserves_existing_adversarial_derivation ... seed=0 words=[3417211280, 2575237961, 3040212859, 525309083]
+    seed=41 words=[542041569, 635730472, 1264154463, 3187647042]
+    seed=5139241937847463985 words=[3264171531, 3896240848, 3681769002, 671744701]
+    ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 458 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] (22/30) zeppelin-embed-workspace-tests::adversarial_tests property_graph_fixture_comparators_fire_with_same_seed_controls
+  stdout ───
+
+    running 1 test
+    test property_graph_fixture_comparators_fire_with_same_seed_controls ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 458 filtered out; finished in 0.00s
+
+
+        PASS [   1.480s] (23/30) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_binding_contracts
+  stdout ───
+
+    running 1 test
+    test one_runner_episode_reaches_required_binding_contracts ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 458 filtered out; finished in 1.47s
+
+  stderr ───
+    PG11 actual runner seed=0 operations=59 violations=0
+
+        PASS [   1.481s] (24/30) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_staging_contracts
+  stdout ───
+
+    running 1 test
+    test one_runner_episode_reaches_required_staging_contracts ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 458 filtered out; finished in 1.47s
+
+  stderr ───
+    PG10 actual runner seed=0 operations=59 violations=0
+
+        PASS [   1.482s] (25/30) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_fixture_comparators
+  stdout ───
+
+    running 1 test
+    test one_runner_episode_reaches_required_fixture_comparators ... PG13 runner seed=0 operations=59 violations=0
+    ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 458 filtered out; finished in 1.47s
+
+
+        PASS [   0.007s] (26/30) zeppelin-embed-workspace-tests::graph_fixture pinned_fixture_vocabulary_matches_the_declared_product_analyzer
+  stdout ───
+
+    running 1 test
+    test pinned_fixture_vocabulary_matches_the_declared_product_analyzer ... fixture tokenizer epoch=TokenizerEpoch(1035315901113778624)
+    ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] (27/30) zeppelin-embed-workspace-tests::graph_fixture normalized_low_11_bit_recipe_matches_independent_axis_byte_goldens
+  stdout ───
+
+    running 1 test
+    test normalized_low_11_bit_recipe_matches_independent_axis_byte_goldens ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+
+        PASS [   0.197s] (28/30) zeppelin-embed-workspace-tests::graph_fixture serialized_generation_expectations_follow_admitted_views_through_maintenance
+  stdout ───
+
+    running 1 test
+    test serialized_generation_expectations_follow_admitted_views_through_maintenance ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.19s
+
+
+        PASS [   0.739s] (29/30) zeppelin-embed-workspace-tests::graph_fixture serialized_fixture_is_reproducible_and_rejects_missing_or_modified_files
+  stdout ───
+
+    running 1 test
+    test serialized_fixture_is_reproducible_and_rejects_missing_or_modified_files ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.73s
+
+
+        PASS [   4.364s] (30/30) zeppelin-embed-workspace-tests::graph_fixture approved_fixture_counts_are_observed_from_every_baseline_and_stress_record
+  stdout ───
+
+    running 1 test
+    test approved_fixture_counts_are_observed_from_every_baseline_and_stress_record ... scale=1 inventory=Summary { nodes: 266375, edges: 1003750, vectors: 182500, vector_bytes: 560640000, absent_text: 11825, empty_text: 1825, whitespace_text: 1825, indexed_text: 250900, both: 177025, vector_only: 5475, text_only: 73875, neither: 10000, node_kinds: {"action": 27375, "chunk": 182500, "decision": 27375, "meeting": 9125, "person": 10000, "project": 2000, "topic": 8000}, edge_kinds: {"ABOUT": 109500, "FOR_PROJECT": 9125, "HAS_CHUNK": 182500, "HAS_ITEM": 54750, "MENTIONS": 547500, "PARTICIPATED_IN": 45625, "SUPPORTED_BY": 54750}, indegree: {1: 182500, 2: 54750, 5: 9125, 7: 1, 8: 3, 9: 3, 10: 18, 11: 11, 12: 40, 13: 82, 14: 114, 15: 1118, 16: 246, 17: 378, 18: 440, 19: 538, 20: 2350, 21: 3214, 22: 634, 23: 663, 24: 600, 25: 550, 26: 5253, 27: 439, 28: 308, 29: 263, 30: 223, 31: 160, 32: 114, 33: 82, 34: 51, 35: 41, 36: 26, 37: 13, 38: 8, 39: 5, 40: 5, 41: 2, 43: 1, 44: 2, 81: 348, 108: 1087, 135: 564, 10950: 1, 24651: 1}, outdegree: {0: 10000, 3: 238207, 4: 4282, 5: 4759, 6: 1, 27: 9125, 1825: 1}, degree: {4: 182500, 5: 54750, 7: 1, 8: 3, 9: 3, 10: 18, 11: 11, 12: 40, 13: 82, 14: 114, 15: 161, 16: 246, 17: 378, 18: 1397, 19: 538, 20: 608, 21: 674, 22: 634, 23: 663, 24: 2342, 25: 3090, 26: 494, 27: 439, 28: 308, 29: 263, 30: 223, 31: 4918, 32: 9239, 33: 82, 34: 51, 35: 41, 36: 26, 37: 14, 38: 8, 39: 5, 40: 5, 41: 2, 43: 1, 44: 2, 81: 348, 108: 1087, 135: 564, 12775: 1, 24651: 1}, project_hub_degree: 24651, max_batch_changes: 256, batches: 9204 }
+    scale=10 inventory=Summary { nodes: 2663750, edges: 10037500, vectors: 1825000, vector_bytes: 5606400000, absent_text: 118250, empty_text: 18250, whitespace_text: 18250, indexed_text: 2509000, both: 1770250, vector_only: 54750, text_only: 738750, neither: 100000, node_kinds: {"action": 273750, "chunk": 1825000, "decision": 273750, "meeting": 91250, "person": 100000, "project": 20000, "topic": 80000}, edge_kinds: {"ABOUT": 1095000, "FOR_PROJECT": 91250, "HAS_CHUNK": 1825000, "HAS_ITEM": 547500, "MENTIONS": 5475000, "PARTICIPATED_IN": 456250, "SUPPORTED_BY": 547500}, indegree: {1: 1825000, 2: 547500, 5: 91253, 7: 4, 8: 27, 9: 44, 10: 113, 11: 252, 12: 384, 13: 712, 14: 1224, 15: 11294, 16: 2557, 17: 3332, 18: 4311, 19: 5152, 20: 23451, 21: 31913, 22: 6751, 23: 6542, 24: 6320, 25: 5774, 26: 52644, 27: 4233, 28: 3475, 29: 2727, 30: 2039, 31: 1496, 32: 1081, 33: 787, 34: 506, 35: 327, 36: 202, 37: 135, 38: 95, 39: 37, 40: 22, 41: 12, 42: 9, 43: 4, 44: 5, 45: 1, 47: 1, 50: 1, 81: 3496, 108: 10878, 135: 5625, 109500: 1, 246375: 1}, outdegree: {0: 100000, 3: 2382033, 4: 42931, 5: 47533, 6: 2, 27: 91250, 18250: 1}, degree: {4: 1825000, 5: 547503, 7: 4, 8: 27, 9: 44, 10: 113, 11: 252, 12: 384, 13: 712, 14: 1224, 15: 1761, 16: 2557, 17: 3332, 18: 13844, 19: 5152, 20: 5987, 21: 6446, 22: 6751, 23: 6542, 24: 23784, 25: 31239, 26: 5113, 27: 4233, 28: 3475, 29: 2727, 30: 2041, 31: 49025, 32: 92331, 33: 787, 34: 506, 35: 327, 36: 202, 37: 137, 38: 95, 39: 37, 40: 22, 41: 12, 42: 9, 43: 4, 44: 5, 45: 1, 47: 1, 50: 1, 81: 3496, 108: 10878, 135: 5625, 127750: 1, 246375: 1}, project_hub_degree: 246375, max_batch_changes: 256, batches: 92032 }
+    ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 4.36s
+
+
+────────────
+     Summary [   4.428s] 30 tests run: 30 passed, 454 skipped
+        PASS [   0.012s] ( 1/30) zeppelin-embed-adversarial-oracle::graph_fixture eligible_vector_truth_never_filters_global_top_k
+  stdout ───
+
+    running 1 test
+    test eligible_vector_truth_never_filters_global_top_k ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.012s] ( 2/30) zeppelin-embed-adversarial-oracle::graph_fixture full_width_identity_and_row_bags_reject_narrowing_and_lost_multiplicity
+  stdout ───
+
+    running 1 test
+    test full_width_identity_and_row_bags_reject_narrowing_and_lost_multiplicity ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.012s] ( 3/30) zeppelin-embed-adversarial-oracle::graph_fixture hybrid_enclosure_pins_directed_rounding_and_the_full_live_vector_population
+  stdout ───
+
+    running 1 test
+    test hybrid_enclosure_pins_directed_rounding_and_the_full_live_vector_population ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.012s] ( 4/30) zeppelin-embed-adversarial-oracle::graph_fixture bounded_paths_preserve_parallel_edges_self_loops_and_relationship_uniqueness
+  stdout ───
+
+    running 1 test
+    test bounded_paths_preserve_parallel_edges_self_loops_and_relationship_uniqueness ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] ( 5/30) zeppelin-embed-adversarial-oracle::graph_fixture independent_key_history_never_resurrects_deleted_keys
+  stdout ───
+
+    running 1 test
+    test independent_key_history_never_resurrects_deleted_keys ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] ( 6/30) zeppelin-embed-adversarial-oracle::graph_fixture hybrid_optional_modalities_keep_query_weights_and_absence_distinct
+  stdout ───
+
+    running 1 test
+    test hybrid_optional_modalities_keep_query_weights_and_absence_distinct ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] ( 7/30) zeppelin-embed-adversarial-oracle::graph_fixture key_and_name_bytes_allow_empty_nul_and_original_list_float_bits
+  stdout ───
+
+    running 1 test
+    test key_and_name_bytes_allow_empty_nul_and_original_list_float_bits ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] ( 8/30) zeppelin-embed-adversarial-oracle::graph_fixture hybrid_reference_cross_scores_optional_modalities_and_empty_eligible_legs
+  stdout ───
+
+    running 1 test
+    test hybrid_reference_cross_scores_optional_modalities_and_empty_eligible_legs ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] ( 9/30) zeppelin-embed-adversarial-oracle::graph_fixture project_evidence_preserves_full_literal_join_row_and_prelimit_order
+  stdout ───
+
+    running 1 test
+    test project_evidence_preserves_full_literal_join_row_and_prelimit_order ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (10/30) zeppelin-embed-adversarial-oracle::graph_fixture lexical_reference_uses_full_live_statistics_and_phrase_positions
+  stdout ───
+
+    running 1 test
+    test lexical_reference_uses_full_live_statistics_and_phrase_positions ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (11/30) zeppelin-embed-adversarial-oracle::graph_fixture primitive_fixture_comparator_rejects_a_missing_parallel_edge
+  stdout ───
+
+    running 1 test
+    test primitive_fixture_comparator_rejects_a_missing_parallel_edge ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (12/30) zeppelin-embed-adversarial-oracle::graph_fixture lifecycle_batches_pin_generation_replay_atomicity_and_tombstone_visibility
+  stdout ───
+
+    running 1 test
+    test lifecycle_batches_pin_generation_replay_atomicity_and_tombstone_visibility ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (13/30) zeppelin-embed-adversarial-oracle::graph_fixture score_comparison_tolerance_never_weakens_ids_order_or_multiplicity
+  stdout ───
+
+    running 1 test
+    test score_comparison_tolerance_never_weakens_ids_order_or_multiplicity ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (14/30) zeppelin-embed-adversarial-oracle::graph_fixture project_join_order_and_limit_preserve_parallel_evidence_multiplicity
+  stdout ───
+
+    running 1 test
+    test project_join_order_and_limit_preserve_parallel_evidence_multiplicity ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (15/30) zeppelin-embed-adversarial-oracle::graph_fixture recreating_a_live_key_has_its_own_typed_rejection
+  stdout ───
+
+    running 1 test
+    test recreating_a_live_key_has_its_own_typed_rejection ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (16/30) zeppelin-embed-adversarial-oracle::graph_fixture restrict_checks_admitted_incidents_unless_relationship_explicitly_deleted
+  stdout ───
+
+    running 1 test
+    test restrict_checks_admitted_incidents_unless_relationship_explicitly_deleted ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (17/30) zeppelin-embed-adversarial-oracle::graph_fixture semantic_context_does_not_refill_seeds_without_context
+  stdout ───
+
+    running 1 test
+    test semantic_context_does_not_refill_seeds_without_context ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (18/30) zeppelin-embed-adversarial-oracle::graph_fixture semantic_context_derives_nearest_full_live_seed_before_expansion
+  stdout ───
+
+    running 1 test
+    test semantic_context_derives_nearest_full_live_seed_before_expansion ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (19/30) zeppelin-embed-adversarial-oracle::graph_fixture semantic_context_preserves_computed_scores_and_three_distinct_rows
+  stdout ───
+
+    running 1 test
+    test semantic_context_preserves_computed_scores_and_three_distinct_rows ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (20/30) zeppelin-embed-adversarial-oracle::graph_fixture semantic_context_top_twenty_uses_full_id_ties_and_keeps_parallel_rows
+  stdout ───
+
+    running 1 test
+    test semantic_context_top_twenty_uses_full_id_ties_and_keeps_parallel_rows ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.00s
+
+
+        PASS [   0.010s] (21/30) zeppelin-embed-workspace-tests::adversarial_tests graph_fixture_seed_stream_preserves_existing_adversarial_derivation
+  stdout ───
+
+    running 1 test
+    test graph_fixture_seed_stream_preserves_existing_adversarial_derivation ... seed=0 words=[3417211280, 2575237961, 3040212859, 525309083]
+    seed=41 words=[542041569, 635730472, 1264154463, 3187647042]
+    seed=5139241937847463985 words=[3264171531, 3896240848, 3681769002, 671744701]
+    ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 458 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] (22/30) zeppelin-embed-workspace-tests::adversarial_tests property_graph_fixture_comparators_fire_with_same_seed_controls
+  stdout ───
+
+    running 1 test
+    test property_graph_fixture_comparators_fire_with_same_seed_controls ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 458 filtered out; finished in 0.00s
+
+
+        PASS [   1.480s] (23/30) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_binding_contracts
+  stdout ───
+
+    running 1 test
+    test one_runner_episode_reaches_required_binding_contracts ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 458 filtered out; finished in 1.47s
+
+  stderr ───
+    PG11 actual runner seed=0 operations=59 violations=0
+
+        PASS [   1.481s] (24/30) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_staging_contracts
+  stdout ───
+
+    running 1 test
+    test one_runner_episode_reaches_required_staging_contracts ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 458 filtered out; finished in 1.47s
+
+  stderr ───
+    PG10 actual runner seed=0 operations=59 violations=0
+
+        PASS [   1.482s] (25/30) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_fixture_comparators
+  stdout ───
+
+    running 1 test
+    test one_runner_episode_reaches_required_fixture_comparators ... PG13 runner seed=0 operations=59 violations=0
+    ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 458 filtered out; finished in 1.47s
+
+
+        PASS [   0.007s] (26/30) zeppelin-embed-workspace-tests::graph_fixture pinned_fixture_vocabulary_matches_the_declared_product_analyzer
+  stdout ───
+
+    running 1 test
+    test pinned_fixture_vocabulary_matches_the_declared_product_analyzer ... fixture tokenizer epoch=TokenizerEpoch(1035315901113778624)
+    ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] (27/30) zeppelin-embed-workspace-tests::graph_fixture normalized_low_11_bit_recipe_matches_independent_axis_byte_goldens
+  stdout ───
+
+    running 1 test
+    test normalized_low_11_bit_recipe_matches_independent_axis_byte_goldens ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+
+        PASS [   0.197s] (28/30) zeppelin-embed-workspace-tests::graph_fixture serialized_generation_expectations_follow_admitted_views_through_maintenance
+  stdout ───
+
+    running 1 test
+    test serialized_generation_expectations_follow_admitted_views_through_maintenance ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.19s
+
+
+        PASS [   0.739s] (29/30) zeppelin-embed-workspace-tests::graph_fixture serialized_fixture_is_reproducible_and_rejects_missing_or_modified_files
+  stdout ───
+
+    running 1 test
+    test serialized_fixture_is_reproducible_and_rejects_missing_or_modified_files ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.73s
+
+
+        PASS [   4.364s] (30/30) zeppelin-embed-workspace-tests::graph_fixture approved_fixture_counts_are_observed_from_every_baseline_and_stress_record
+  stdout ───
+
+    running 1 test
+    test approved_fixture_counts_are_observed_from_every_baseline_and_stress_record ... scale=1 inventory=Summary { nodes: 266375, edges: 1003750, vectors: 182500, vector_bytes: 560640000, absent_text: 11825, empty_text: 1825, whitespace_text: 1825, indexed_text: 250900, both: 177025, vector_only: 5475, text_only: 73875, neither: 10000, node_kinds: {"action": 27375, "chunk": 182500, "decision": 27375, "meeting": 9125, "person": 10000, "project": 2000, "topic": 8000}, edge_kinds: {"ABOUT": 109500, "FOR_PROJECT": 9125, "HAS_CHUNK": 182500, "HAS_ITEM": 54750, "MENTIONS": 547500, "PARTICIPATED_IN": 45625, "SUPPORTED_BY": 54750}, indegree: {1: 182500, 2: 54750, 5: 9125, 7: 1, 8: 3, 9: 3, 10: 18, 11: 11, 12: 40, 13: 82, 14: 114, 15: 1118, 16: 246, 17: 378, 18: 440, 19: 538, 20: 2350, 21: 3214, 22: 634, 23: 663, 24: 600, 25: 550, 26: 5253, 27: 439, 28: 308, 29: 263, 30: 223, 31: 160, 32: 114, 33: 82, 34: 51, 35: 41, 36: 26, 37: 13, 38: 8, 39: 5, 40: 5, 41: 2, 43: 1, 44: 2, 81: 348, 108: 1087, 135: 564, 10950: 1, 24651: 1}, outdegree: {0: 10000, 3: 238207, 4: 4282, 5: 4759, 6: 1, 27: 9125, 1825: 1}, degree: {4: 182500, 5: 54750, 7: 1, 8: 3, 9: 3, 10: 18, 11: 11, 12: 40, 13: 82, 14: 114, 15: 161, 16: 246, 17: 378, 18: 1397, 19: 538, 20: 608, 21: 674, 22: 634, 23: 663, 24: 2342, 25: 3090, 26: 494, 27: 439, 28: 308, 29: 263, 30: 223, 31: 4918, 32: 9239, 33: 82, 34: 51, 35: 41, 36: 26, 37: 14, 38: 8, 39: 5, 40: 5, 41: 2, 43: 1, 44: 2, 81: 348, 108: 1087, 135: 564, 12775: 1, 24651: 1}, project_hub_degree: 24651, max_batch_changes: 256, batches: 9204 }
+    scale=10 inventory=Summary { nodes: 2663750, edges: 10037500, vectors: 1825000, vector_bytes: 5606400000, absent_text: 118250, empty_text: 18250, whitespace_text: 18250, indexed_text: 2509000, both: 1770250, vector_only: 54750, text_only: 738750, neither: 100000, node_kinds: {"action": 273750, "chunk": 1825000, "decision": 273750, "meeting": 91250, "person": 100000, "project": 20000, "topic": 80000}, edge_kinds: {"ABOUT": 1095000, "FOR_PROJECT": 91250, "HAS_CHUNK": 1825000, "HAS_ITEM": 547500, "MENTIONS": 5475000, "PARTICIPATED_IN": 456250, "SUPPORTED_BY": 547500}, indegree: {1: 1825000, 2: 547500, 5: 91253, 7: 4, 8: 27, 9: 44, 10: 113, 11: 252, 12: 384, 13: 712, 14: 1224, 15: 11294, 16: 2557, 17: 3332, 18: 4311, 19: 5152, 20: 23451, 21: 31913, 22: 6751, 23: 6542, 24: 6320, 25: 5774, 26: 52644, 27: 4233, 28: 3475, 29: 2727, 30: 2039, 31: 1496, 32: 1081, 33: 787, 34: 506, 35: 327, 36: 202, 37: 135, 38: 95, 39: 37, 40: 22, 41: 12, 42: 9, 43: 4, 44: 5, 45: 1, 47: 1, 50: 1, 81: 3496, 108: 10878, 135: 5625, 109500: 1, 246375: 1}, outdegree: {0: 100000, 3: 2382033, 4: 42931, 5: 47533, 6: 2, 27: 91250, 18250: 1}, degree: {4: 1825000, 5: 547503, 7: 4, 8: 27, 9: 44, 10: 113, 11: 252, 12: 384, 13: 712, 14: 1224, 15: 1761, 16: 2557, 17: 3332, 18: 13844, 19: 5152, 20: 5987, 21: 6446, 22: 6751, 23: 6542, 24: 23784, 25: 31239, 26: 5113, 27: 4233, 28: 3475, 29: 2727, 30: 2041, 31: 49025, 32: 92331, 33: 787, 34: 506, 35: 327, 36: 202, 37: 137, 38: 95, 39: 37, 40: 22, 41: 12, 42: 9, 43: 4, 44: 5, 45: 1, 47: 1, 50: 1, 81: 3496, 108: 10878, 135: 5625, 127750: 1, 246375: 1}, project_hub_degree: 246375, max_batch_changes: 256, batches: 92032 }
+    ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 4.36s
+
+

@@ -1,0 +1,32 @@
+[
+  {
+    "dimensions": 2,
+    "error": 8.881784197001256e-16,
+    "document_squared": 1.0,
+    "document_max": 1.0000000000000007,
+    "query_max": 1.0000000000000007,
+    "ceiling": 4.00000000000001,
+    "fused_distance2": 0.5000000000000012,
+    "fused_bits": "3fe000000000000b"
+  },
+  {
+    "dimensions": 2,
+    "error": 8.881784197001256e-16,
+    "document_squared": 25.0,
+    "document_max": 5.000000000000003,
+    "query_max": 1.0000000000000007,
+    "ceiling": 36.000000000000085,
+    "fused_distance2": 0.9444444444444445,
+    "fused_bits": "3fee38e38e38e38f"
+  },
+  {
+    "dimensions": 768,
+    "error": 3.4106051316490625e-13,
+    "document_squared": 1.0,
+    "document_max": 1.0000000000001708,
+    "query_max": 1.0000000000001708,
+    "ceiling": 4.000000000002731,
+    "fused_distance2": 0.5000000000003414,
+    "fused_bits": "3fe0000000000c03"
+  }
+]

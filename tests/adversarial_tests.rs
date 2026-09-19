@@ -18857,3 +18857,49 @@ fn one_runner_episode_reaches_required_binding_contracts() {
         outcome.violations.len()
     );
 }
+
+#[test]
+fn graph_fixture_seed_stream_preserves_existing_adversarial_derivation() {
+    use rand::Rng;
+    for (seed, expected) in [
+        (0, [3417211280, 2575237961, 3040212859, 525309083]),
+        (41, [542041569, 635730472, 1264154463, 3187647042]),
+        (
+            0x4752_4150_4830_3031,
+            [3264171531, 3896240848, 3681769002, 671744701],
+        ),
+    ] {
+        let mut rng = adversarial::test_support::seeded_rng("graph-fixture-v1/topics", seed);
+        let words: [u32; 4] = std::array::from_fn(|_| rng.random());
+        assert_eq!(words, expected);
+        println!("seed={seed} words={words:?}");
+    }
+}
+
+#[test]
+fn property_graph_fixture_comparators_fire_with_same_seed_controls() {
+    for seed in [0, 1, 42, u64::MAX] {
+        let mut coverage = CoverageRegistry::default();
+        adversarial::graph_fixture::probe(seed, &mut coverage).unwrap();
+        for key in adversarial::graph_fixture::REQUIRED_COVERAGE {
+            assert_eq!(coverage.count(key), 1, "PG13 coverage {key}");
+        }
+    }
+}
+#[test]
+fn one_runner_episode_reaches_required_fixture_comparators() {
+    let root = tempfile::tempdir().unwrap();
+    let outcome = adversarial::runner::run_program(0, FaultProfile::None, root.path()).unwrap();
+    assert!(outcome.violations.is_empty());
+    for key in adversarial::graph_fixture::REQUIRED_COVERAGE {
+        assert!(
+            outcome.coverage.count(key) > 0,
+            "actual runner omitted {key}"
+        );
+    }
+    println!(
+        "PG13 runner seed=0 operations={} violations={}",
+        outcome.operations,
+        outcome.violations.len()
+    );
+}

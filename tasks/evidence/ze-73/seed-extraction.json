@@ -1,0 +1,5 @@
+{
+  "old_module": "tests/adversarial/mod.rs",
+  "new_module": "tests/tooling_seed.rs",
+  "unchanged_function_text_sha256": "8a2cfa1146859b7f5d1aedb3d43bb40d3c7f112812c06ace0eb6e0999be5c773"
+}

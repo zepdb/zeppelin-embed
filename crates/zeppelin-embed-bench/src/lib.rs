@@ -26,3 +26,6 @@ pub mod recall;
 pub mod scheme_level;
 /// Honest public-`TextStore` benchmark aggregation and report rendering.
 pub mod user_bench;
+
+/// Reproducible native graph fixture files and topology inventory.
+pub mod graph_fixture;

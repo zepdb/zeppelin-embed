@@ -1,0 +1,135 @@
+[
+  {
+    "name": "accept-missing-edge",
+    "source": "tests/adversarial-oracle/src/graph_fixture.rs",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-adversarial-oracle",
+      "--test",
+      "graph_fixture",
+      "-E",
+      "test(=primitive_fixture_comparator_rejects_a_missing_parallel_edge)"
+    ],
+    "exit": 100,
+    "assertion_seen": true,
+    "original_sha256": "78ac130b5b1ce1d1950026e4d44dafca28828f274b674f38529e8535744b6252",
+    "restored_sha256": "78ac130b5b1ce1d1950026e4d44dafca28828f274b674f38529e8535744b6252"
+  },
+  {
+    "name": "accept-narrowed-id",
+    "source": "tests/adversarial-oracle/src/graph_fixture.rs",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-adversarial-oracle",
+      "--test",
+      "graph_fixture",
+      "-E",
+      "test(=full_width_identity_and_row_bags_reject_narrowing_and_lost_multiplicity)"
+    ],
+    "exit": 100,
+    "assertion_seen": true,
+    "original_sha256": "78ac130b5b1ce1d1950026e4d44dafca28828f274b674f38529e8535744b6252",
+    "restored_sha256": "78ac130b5b1ce1d1950026e4d44dafca28828f274b674f38529e8535744b6252"
+  },
+  {
+    "name": "resurrect-key",
+    "source": "tests/adversarial-oracle/src/graph_fixture/model.rs",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-adversarial-oracle",
+      "--test",
+      "graph_fixture",
+      "-E",
+      "test(=independent_key_history_never_resurrects_deleted_keys)"
+    ],
+    "exit": 100,
+    "assertion_seen": true,
+    "original_sha256": "b707538eabac8af431d24a75a6b369de86554b4b5065ffcf617a6721693321ce",
+    "restored_sha256": "b707538eabac8af431d24a75a6b369de86554b4b5065ffcf617a6721693321ce"
+  },
+  {
+    "name": "deduplicate-bag",
+    "source": "tests/adversarial-oracle/src/graph_fixture/query.rs",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-adversarial-oracle",
+      "--test",
+      "graph_fixture",
+      "-E",
+      "test(=full_width_identity_and_row_bags_reject_narrowing_and_lost_multiplicity)"
+    ],
+    "exit": 100,
+    "assertion_seen": true,
+    "original_sha256": "16e4a30251cf20513f79d36832d36ec6da2ccc1ebb14ac378f656975a251d46e",
+    "restored_sha256": "16e4a30251cf20513f79d36832d36ec6da2ccc1ebb14ac378f656975a251d46e"
+  },
+  {
+    "name": "ten-bit-vector",
+    "source": "crates/zeppelin-embed-bench/src/graph_fixture/vectors.rs",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--test",
+      "graph_fixture",
+      "-E",
+      "test(=normalized_low_11_bit_recipe_matches_independent_axis_byte_goldens)"
+    ],
+    "exit": 100,
+    "assertion_seen": true,
+    "original_sha256": "c1fefc9b994f419440dcd17806626fa849b2751b6ffa56d16b901a9b62af2ceb",
+    "restored_sha256": "c1fefc9b994f419440dcd17806626fa849b2751b6ffa56d16b901a9b62af2ceb"
+  },
+  {
+    "name": "renormalize-absent-leg",
+    "source": "tests/adversarial-oracle/src/graph_fixture/query.rs",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-adversarial-oracle",
+      "--test",
+      "graph_fixture",
+      "-E",
+      "test(=hybrid_optional_modalities_keep_query_weights_and_absence_distinct)"
+    ],
+    "exit": 100,
+    "assertion_seen": true,
+    "original_sha256": "16e4a30251cf20513f79d36832d36ec6da2ccc1ebb14ac378f656975a251d46e",
+    "restored_sha256": "16e4a30251cf20513f79d36832d36ec6da2ccc1ebb14ac378f656975a251d46e"
+  },
+  {
+    "name": "skip-file-digest",
+    "source": "crates/zeppelin-embed-bench/src/graph_fixture/files.rs",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--test",
+      "graph_fixture",
+      "-E",
+      "test(=serialized_fixture_is_reproducible_and_rejects_missing_or_modified_files)"
+    ],
+    "exit": 100,
+    "assertion_seen": true,
+    "original_sha256": "f2a43fc1f0e9be16511cf43639fe263666eec4195da14481fb71050b402dc9cb",
+    "restored_sha256": "f2a43fc1f0e9be16511cf43639fe263666eec4195da14481fb71050b402dc9cb"
+  }
+]

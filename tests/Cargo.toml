@@ -32,3 +32,11 @@ zeppelin-embed-bench = { path = "../crates/zeppelin-embed-bench", version = "=0.
 zeppelin-embed-ffi = { path = "../crates/zeppelin-embed-ffi", version = "=0.4.2", features = ["abi-panic-probe"] }
 
 zeppelin-embed-cypher = { path = "../crates/zeppelin-embed-cypher", version = "=0.4.2" }
+
+[[test]]
+name = "graph_fixture"
+path = "graph_fixture.rs"
+
+[[bin]]
+name = "graph-fixture"
+path = "graph_fixture_cli.rs"

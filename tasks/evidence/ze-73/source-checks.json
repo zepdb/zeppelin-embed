@@ -1,0 +1,49 @@
+[
+  {
+    "command": [
+      "rustfmt",
+      "--check",
+      "--edition",
+      "2024",
+      "crates/zeppelin-embed-bench/src/graph_fixture.rs",
+      "tests/adversarial-oracle/src/graph_fixture.rs",
+      "tests/adversarial-oracle/tests/graph_fixture.rs",
+      "tests/graph_fixture.rs",
+      "tests/graph_fixture_cli.rs",
+      "tests/adversarial/graph_fixture.rs",
+      "tests/tooling_seed.rs"
+    ],
+    "exit": 0,
+    "output": ""
+  },
+  {
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "exit": 0,
+    "output": ""
+  },
+  {
+    "command": [
+      "git",
+      "diff",
+      "--exit-code",
+      "--",
+      "Cargo.lock"
+    ],
+    "exit": 0,
+    "output": ""
+  },
+  {
+    "command": [
+      "git",
+      "diff",
+      "--cached",
+      "--name-only"
+    ],
+    "exit": 0,
+    "output": ""
+  }
+]

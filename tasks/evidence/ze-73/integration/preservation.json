@@ -1,0 +1,275 @@
+{
+  "entries": [
+    {
+      "path": ".gitignore",
+      "baseline": "8e19c948be4fa3ac026e7cb833118744fb50a4b3b4c87844a0c156497166255b",
+      "current": "8e19c948be4fa3ac026e7cb833118744fb50a4b3b4c87844a0c156497166255b",
+      "unchanged": true
+    },
+    {
+      "path": "AGENTS.md",
+      "baseline": "be39eb0425050e66b61fac415d7c22feaf81cf9a10032407f86cc4f0c321ae00",
+      "current": "e34cf1436cd36f815a941dc64113932cabd4096c78be0ed0493ff09c812d8e97",
+      "unchanged": false
+    },
+    {
+      "path": "README.md",
+      "baseline": "0126721b94a3b3fd8f23c7a99d89a07b83d61332055e0c19e025635d078449cc",
+      "current": "0126721b94a3b3fd8f23c7a99d89a07b83d61332055e0c19e025635d078449cc",
+      "unchanged": true
+    },
+    {
+      "path": "CONTEXT.md",
+      "baseline": "df909e56a30ee1d9c64e047077a9c9260237b78275058807f3f4ab6559be8cb1",
+      "current": "df909e56a30ee1d9c64e047077a9c9260237b78275058807f3f4ab6559be8cb1",
+      "unchanged": true
+    },
+    {
+      "path": "plan.md",
+      "baseline": "1ee843ba44604a55118c5f1c24b0c59157bc15e4d44a524320543e4513346822",
+      "current": "1ee843ba44604a55118c5f1c24b0c59157bc15e4d44a524320543e4513346822",
+      "unchanged": true
+    },
+    {
+      "path": "skills-lock.json",
+      "baseline": "a0811ce6d4364c99a5261e8ad683ed6795203607c30ee359a9d4c332b7759ec1",
+      "current": "a0811ce6d4364c99a5261e8ad683ed6795203607c30ee359a9d4c332b7759ec1",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/research/SKILL.md",
+      "baseline": "985569f15739c713d6784887c3d186d4ef9ac85bec5ad9c068d25bf0739928e4",
+      "current": "985569f15739c713d6784887c3d186d4ef9ac85bec5ad9c068d25bf0739928e4",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/research/agents/openai.yaml",
+      "baseline": "9b4c470d63221c1f68f22df70b83e2f12401b317babe0d1b7b5f24a974474d0d",
+      "current": "9b4c470d63221c1f68f22df70b83e2f12401b317babe0d1b7b5f24a974474d0d",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/domain-modeling/SKILL.md",
+      "baseline": "327a2b50620e2fd70abc6893cd6965e76b20f8d0adb0dc2c8d5eb3845efb643e",
+      "current": "327a2b50620e2fd70abc6893cd6965e76b20f8d0adb0dc2c8d5eb3845efb643e",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/domain-modeling/CONTEXT-FORMAT.md",
+      "baseline": "17ab16ce783e4d2801ee52fd9acdf550cbf44de65ae76797a93943bbedf22a13",
+      "current": "17ab16ce783e4d2801ee52fd9acdf550cbf44de65ae76797a93943bbedf22a13",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/domain-modeling/ADR-FORMAT.md",
+      "baseline": "944c92aa790e8fbdc9199640b170979abb8a34ba8d0fe18c2a01a63bce140ca0",
+      "current": "944c92aa790e8fbdc9199640b170979abb8a34ba8d0fe18c2a01a63bce140ca0",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/domain-modeling/agents/openai.yaml",
+      "baseline": "f6bf2aa996c6e6f53fdd0708e18a0d16a56aed8322cca59fedbe3c0d2c75f06b",
+      "current": "f6bf2aa996c6e6f53fdd0708e18a0d16a56aed8322cca59fedbe3c0d2c75f06b",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/wayfinder/SKILL.md",
+      "baseline": "fee6e1d0c50f0e736b4ef8a599060c959afae904c9a97d82c97f049fcc3aa0f1",
+      "current": "82b8a2b03256e244da41ec3a7aabea90ddf7fec72c4249dabad790f372dacf4c",
+      "unchanged": false
+    },
+    {
+      "path": ".agents/skills/wayfinder/agents/openai.yaml",
+      "baseline": "88bc81a11a6d52ac67aeaa76b8b619e387020d47c5133a4dd4927fd15c4ad073",
+      "current": "88bc81a11a6d52ac67aeaa76b8b619e387020d47c5133a4dd4927fd15c4ad073",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/handoff/SKILL.md",
+      "baseline": "7c62de979fdc7ac32fb5ddb2146156c917f80ee070d30fadc9d40343c4b6ed25",
+      "current": "7c62de979fdc7ac32fb5ddb2146156c917f80ee070d30fadc9d40343c4b6ed25",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/handoff/agents/openai.yaml",
+      "baseline": "5c479fd562c691851690e8b18c8501045bef0943c10743d636b2fae26add1d28",
+      "current": "5c479fd562c691851690e8b18c8501045bef0943c10743d636b2fae26add1d28",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/diagnosing-bugs/SKILL.md",
+      "baseline": "77f3cf31bc99b2f49af943222526531fcc9fc41d047626d3640e875e85af3e84",
+      "current": "77f3cf31bc99b2f49af943222526531fcc9fc41d047626d3640e875e85af3e84",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/diagnosing-bugs/agents/openai.yaml",
+      "baseline": "3e430dbe4334a87597488c060cb3dc3786bb00c9182877d6f5ec41f62490e90b",
+      "current": "3e430dbe4334a87597488c060cb3dc3786bb00c9182877d6f5ec41f62490e90b",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/diagnosing-bugs/scripts/hitl-loop.template.sh",
+      "baseline": "35103539fc36873eea36074769ad454f9379d6fc8b2dc0e26ce987fd3bfe5503",
+      "current": "35103539fc36873eea36074769ad454f9379d6fc8b2dc0e26ce987fd3bfe5503",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/code-review/SKILL.md",
+      "baseline": "47f4e52c21694def9c7c11cbfbf891ca35eac7a93e395797515be3c8a409ae50",
+      "current": "47f4e52c21694def9c7c11cbfbf891ca35eac7a93e395797515be3c8a409ae50",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/code-review/agents/openai.yaml",
+      "baseline": "8229ca854e11dc8e6aef2131ee03f31fb1561cf905fab9ccc325180cf3331352",
+      "current": "8229ca854e11dc8e6aef2131ee03f31fb1561cf905fab9ccc325180cf3331352",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/codebase-design/DESIGN-IT-TWICE.md",
+      "baseline": "8e740bf98446dbd4dfdc132ac4346d9a7eedaf93de6a495889171cf7f99f16bd",
+      "current": "8e740bf98446dbd4dfdc132ac4346d9a7eedaf93de6a495889171cf7f99f16bd",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/codebase-design/SKILL.md",
+      "baseline": "2c20617f87ec8af6a434859f381b2f061a69b530444e74eb39e78bb016a6d1e2",
+      "current": "2c20617f87ec8af6a434859f381b2f061a69b530444e74eb39e78bb016a6d1e2",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/codebase-design/DEEPENING.md",
+      "baseline": "f3dd099ce99289bd213914d8ee3e2429b78309c3957ca4583f7659551b1d53c1",
+      "current": "f3dd099ce99289bd213914d8ee3e2429b78309c3957ca4583f7659551b1d53c1",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/codebase-design/agents/openai.yaml",
+      "baseline": "edebc9e4fcfe102114012575eaa9600b9b5fd08c311664f389c36e7bc717740f",
+      "current": "edebc9e4fcfe102114012575eaa9600b9b5fd08c311664f389c36e7bc717740f",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/prototype/SKILL.md",
+      "baseline": "714de632d116bb73f65cdb5a882db15b9369a6713b9a47c0fad827848f0bfbe3",
+      "current": "714de632d116bb73f65cdb5a882db15b9369a6713b9a47c0fad827848f0bfbe3",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/prototype/LOGIC.md",
+      "baseline": "f61c7d249e786a79ef289018901c348271e1798dd0b0bc5607b5c6f4d4a01ab9",
+      "current": "f61c7d249e786a79ef289018901c348271e1798dd0b0bc5607b5c6f4d4a01ab9",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/prototype/UI.md",
+      "baseline": "723211e878acbc7b6ff09755263f3295cde724ba902ff0064da41eed51d45ad3",
+      "current": "723211e878acbc7b6ff09755263f3295cde724ba902ff0064da41eed51d45ad3",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/prototype/agents/openai.yaml",
+      "baseline": "5af65e43ab41a350436697b81e27b7f848d36782043b73c322bb2c9fa9cc55dc",
+      "current": "5af65e43ab41a350436697b81e27b7f848d36782043b73c322bb2c9fa9cc55dc",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/grill-with-docs/SKILL.md",
+      "baseline": "7de372c13488f1ee96cc11cd8907b56b6809cc93eef776eeddd37de6b6cbe3fe",
+      "current": "7de372c13488f1ee96cc11cd8907b56b6809cc93eef776eeddd37de6b6cbe3fe",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/grill-with-docs/agents/openai.yaml",
+      "baseline": "94cd0ab161fb468a836349f5ed482ba58ce8e709a05c57ce533d739dbd35cca9",
+      "current": "94cd0ab161fb468a836349f5ed482ba58ce8e709a05c57ce533d739dbd35cca9",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/teach/MISSION-FORMAT.md",
+      "baseline": "8cacbb3c0644d3ae0ea4965564797099401a6930a23f7cf462918576587f2418",
+      "current": "8cacbb3c0644d3ae0ea4965564797099401a6930a23f7cf462918576587f2418",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/teach/RESOURCES-FORMAT.md",
+      "baseline": "e9cacf34026e11a8d1c8f9de88abe5bcbf654f4ebdb25cae8c0de0d5f48f44ec",
+      "current": "e9cacf34026e11a8d1c8f9de88abe5bcbf654f4ebdb25cae8c0de0d5f48f44ec",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/teach/LEARNING-RECORD-FORMAT.md",
+      "baseline": "701fa34b6748aa89e6c960ffb815257f481a7d77fb2900f9028f7edf3fdd6052",
+      "current": "701fa34b6748aa89e6c960ffb815257f481a7d77fb2900f9028f7edf3fdd6052",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/teach/GLOSSARY-FORMAT.md",
+      "baseline": "9b99859ec28437668130d8f2ce5a342938970f8a1ed4fd38c3eab4f4b5fff210",
+      "current": "9b99859ec28437668130d8f2ce5a342938970f8a1ed4fd38c3eab4f4b5fff210",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/teach/SKILL.md",
+      "baseline": "a32df9dcdfc0c4fdc1c98e1ed3940c5f56b84c1aa90ff60346f32b8b53915b43",
+      "current": "a32df9dcdfc0c4fdc1c98e1ed3940c5f56b84c1aa90ff60346f32b8b53915b43",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/teach/agents/openai.yaml",
+      "baseline": "5856f3ae8aec742f1499c640aecdd5f1d6af5fa210a7c6ec794de8263a6f733f",
+      "current": "5856f3ae8aec742f1499c640aecdd5f1d6af5fa210a7c6ec794de8263a6f733f",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/tdd/mocking.md",
+      "baseline": "3ceb807fdf4a47d6a93d4d9a891e5ba6d362a6247bd08adc451feebfc17361ef",
+      "current": "3ceb807fdf4a47d6a93d4d9a891e5ba6d362a6247bd08adc451feebfc17361ef",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/tdd/tests.md",
+      "baseline": "859f9e592c188fda4fc7277dd180e4ce9c7a2e13f6efe1f6f29eccc9d28c106a",
+      "current": "859f9e592c188fda4fc7277dd180e4ce9c7a2e13f6efe1f6f29eccc9d28c106a",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/tdd/SKILL.md",
+      "baseline": "cb01f66bebfaa25fa1f88e6b7e769cd9fd9f35b1120b8563749820738814c927",
+      "current": "cb01f66bebfaa25fa1f88e6b7e769cd9fd9f35b1120b8563749820738814c927",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/tdd/agents/openai.yaml",
+      "baseline": "ea6f01cf1b8c06a4b0f5b649d74b1b8ce8685e72af1b38d70d877693e092af0b",
+      "current": "ea6f01cf1b8c06a4b0f5b649d74b1b8ce8685e72af1b38d70d877693e092af0b",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/grill-me/SKILL.md",
+      "baseline": "caaf8b8de1684f96e26b28f3c29189db5c89cce4b73e1c93d86164f66ef88637",
+      "current": "caaf8b8de1684f96e26b28f3c29189db5c89cce4b73e1c93d86164f66ef88637",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/grill-me/agents/openai.yaml",
+      "baseline": "c061e39c3e0f9d865fb1b97556d485704af2a8a58f4b8221a8917a5c2074a32b",
+      "current": "c061e39c3e0f9d865fb1b97556d485704af2a8a58f4b8221a8917a5c2074a32b",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/grilling/SKILL.md",
+      "baseline": "10ff989e7498b23b5acb49d5048f11dcd906757d2f79c5cdf8a00001381296f2",
+      "current": "10ff989e7498b23b5acb49d5048f11dcd906757d2f79c5cdf8a00001381296f2",
+      "unchanged": true
+    },
+    {
+      "path": ".agents/skills/grilling/agents/openai.yaml",
+      "baseline": "1411d7df7d99b7e621a1ff8283c8133cc2464be63d064e52d8ce169c6800ee9b",
+      "current": "1411d7df7d99b7e621a1ff8283c8133cc2464be63d064e52d8ce169c6800ee9b",
+      "unchanged": true
+    }
+  ],
+  "note": "43/45 match older baseline. AGENTS.md and .agents/skills/wayfinder/SKILL.md have newer tracker-ingestion guidance from concurrent workspace changes; neither was touched by integration. Current bytes preserved."
+}

@@ -1,0 +1,210 @@
+{
+  "analyzer": {
+    "epoch": 1035315901113778624,
+    "name": "TokenizerConfig::text_default",
+    "reference_subset": "lowercase ASCII whitespace",
+    "vocabulary": [
+      "amber",
+      "cedar",
+      "cobalt",
+      "delta",
+      "quartz",
+      "velvet",
+      "zephyr"
+    ]
+  },
+  "build": {
+    "architecture": "aarch64",
+    "host": "macos",
+    "rustc": "rustc 1.93.0 (254b59607 2026-01-19)"
+  },
+  "embedding": {
+    "centroids": 64,
+    "corpus_coefficients": [
+      0.875,
+      0.125
+    ],
+    "dimensions": 768,
+    "metric": "squared-l2",
+    "normalization": "ordered-f64-low11-mixture-single-f32-cast-v1",
+    "query_coefficients": [
+      0.96875,
+      0.03125
+    ],
+    "vector_bytes": 245760
+  },
+  "files": [
+    {
+      "bytes": 380078,
+      "name": "batches-a.jsonl",
+      "sha256": "66ff4862548c8449ceaa3f947baa284e1b93741171f75c0b803456e64e0f061a"
+    },
+    {
+      "bytes": 245760,
+      "name": "vectors-a.f32le",
+      "sha256": "bb92c3a66a51f4b6032d73cc332920c982f603f2aa21e0022fc0888079c32260"
+    },
+    {
+      "bytes": 7344,
+      "name": "batches-b.jsonl",
+      "sha256": "d09142a37ed05be7b9f5740d5bf1c8b7e3b79ba1c8960730d52ccfc22dcd4115"
+    },
+    {
+      "bytes": 3072,
+      "name": "vectors-b.f32le",
+      "sha256": "e14dd689b53d9b45f2c004f3a46486884177b838622e5a54224fedbcc5c873a0"
+    },
+    {
+      "bytes": 147520,
+      "name": "queries.jsonl",
+      "sha256": "b1f3fae4aa09d1317c31bfe67c49c6af0a95c99f2e558d54c9a18b2d903e9ae4"
+    },
+    {
+      "bytes": 307200,
+      "name": "query-vectors.f32le",
+      "sha256": "f4c9b9251f10ccd6e501f68dfbcb66c0cc822c66059b5b7a99bc330cdf0e1cd1"
+    }
+  ],
+  "generation_contract": {
+    "maintenance": "record-returned-generation",
+    "mutation": "admitted+1",
+    "mutation_ordinals": "exclude-maintenance"
+  },
+  "generator_version": 1,
+  "inventory": {
+    "degree": {
+      "0": 2,
+      "11": 1,
+      "12": 1,
+      "13": 1,
+      "15": 1,
+      "18": 1,
+      "19": 2,
+      "24": 1,
+      "27": 2,
+      "32": 4,
+      "4": 80,
+      "5": 25,
+      "54": 1,
+      "6": 3,
+      "7": 2,
+      "9": 4
+    },
+    "edge_kinds": {
+      "ABOUT": 48,
+      "FOR_PROJECT": 4,
+      "HAS_CHUNK": 80,
+      "HAS_ITEM": 24,
+      "MENTIONS": 240,
+      "PARTICIPATED_IN": 20,
+      "SUPPORTED_BY": 24
+    },
+    "edges": 440,
+    "indegree": {
+      "0": 2,
+      "1": 80,
+      "10": 1,
+      "11": 1,
+      "13": 1,
+      "15": 2,
+      "16": 2,
+      "2": 24,
+      "20": 1,
+      "27": 2,
+      "5": 8,
+      "54": 1,
+      "6": 2,
+      "9": 4
+    },
+    "initial_batches": 5,
+    "max_initial_batch_changes": 137,
+    "node_kinds": {
+      "action": 12,
+      "chunk": 80,
+      "decision": 12,
+      "meeting": 4,
+      "person": 12,
+      "project": 3,
+      "topic": 8
+    },
+    "nodes": 131,
+    "outdegree": {
+      "0": 13,
+      "1": 5,
+      "2": 1,
+      "27": 4,
+      "3": 107,
+      "4": 1
+    },
+    "populations": {
+      "both": 77,
+      "neither": 11,
+      "text_only": 40,
+      "vector_only": 3
+    },
+    "project_hub_degree": 27,
+    "text": {
+      "absent": 12,
+      "empty": 1,
+      "indexed": 117,
+      "whitespace": 1
+    },
+    "vector_bytes": 245760,
+    "vectors": 80
+  },
+  "policy": {
+    "alpha": 0.75,
+    "anchors": "full-live vector norm enclosure and full-live lexical maximum",
+    "rule_shifts": false,
+    "version": 1
+  },
+  "prng": "rand-0.9.5/rand_chacha-0.9.0/ChaCha8Rng; tests/tooling_seed.rs derivation-v1",
+  "query_cases": 100,
+  "scale": "small-correctness",
+  "seed": "4752415048303031",
+  "source_pin": "ze73-review-fixes",
+  "state_a": {
+    "after_ingest": "checkpoint-and-consolidate",
+    "generation": "record-after-barrier",
+    "mutation_batches": 5
+  },
+  "state_b": {
+    "barriers": "requested actions only; actual engine run counts recorded by product driver",
+    "batches": 3,
+    "checkpoint_trigger_bytes": 16777216,
+    "checkpoint_trigger_envelopes": 64,
+    "final_active_tail_changes": 4,
+    "nodes": [
+      109
+    ],
+    "relationships": [
+      44,
+      311,
+      256,
+      205,
+      242,
+      330,
+      136,
+      120
+    ]
+  },
+  "text_inventory": {
+    "declared_bytes": 163424,
+    "document_frequencies": {
+      "amber": 116,
+      "cedar": 117,
+      "cobalt": 117,
+      "delta": 117,
+      "quartz": 1
+    },
+    "indexed_documents": 117,
+    "indexed_tokens": 25042
+  },
+  "tooling_memory": {
+    "degree_counter_bytes": 2096,
+    "engine_memory_claim": false,
+    "largest_permutation_bytes": 3520,
+    "vector_matrix_retained": false
+  },
+  "version": "graph-fixture-v1"
+}
