@@ -294,3 +294,39 @@ impl<'m, 'g, T> QueryArena<'m, 'g, T> {
         self.values.truncate(length);
     }
 }
+
+/// Grow-only anonymous capacity for a scoped external participant such as the
+/// frontend. This is not an allocation-owner or retained-address capability.
+/// The participant frees every buffer before dropping this guard.
+pub struct QueryExternalReservation<'m, 'g> {
+    charge: QueryReservation<'m, 'g>,
+}
+impl<'g> QueryMemory<'g> {
+    /// Reserves the guard descriptor under this same query and shared store.
+    /// Subsequent capacity must be reserved before external allocation occurs.
+    pub fn reserve_external_capacity(
+        &self,
+    ) -> Result<QueryExternalReservation<'_, 'g>, MemoryError> {
+        Ok(QueryExternalReservation {
+            charge: self.reserve(std::mem::size_of::<QueryExternalReservation<'_, '_>>())?,
+        })
+    }
+}
+impl QueryExternalReservation<'_, '_> {
+    /// Monotonically reserves more participant backing. Failed growth preserves
+    /// the previous reservation. It grants no prepaid pointer/alias proof.
+    pub fn reserve_additional(&mut self, bytes: usize) -> Result<(), MemoryError> {
+        self.charge.resize(
+            self.charge
+                .bytes
+                .checked_add(bytes)
+                .ok_or(MemoryError::Limit)?,
+        )
+    }
+    /// Anonymous capacity excluding this guard's separately reserved descriptor.
+    pub fn bytes(&self) -> usize {
+        self.charge
+            .bytes
+            .saturating_sub(std::mem::size_of::<Self>())
+    }
+}

@@ -444,6 +444,9 @@ dependencies = [
 [[package]]
 name = "zeppelin-embed-cypher"
 version = "0.4.2"
+dependencies = [
+ "zeppelin-embed",
+]
 
 [[package]]
 name = "zeppelin-embed-ffi"

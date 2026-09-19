@@ -30,3 +30,5 @@ zeppelin-embed-adversarial-oracle = { path = "adversarial-oracle", version = "=0
 zeppelin-embed = { path = "../crates/zeppelin-embed", version = "=0.4.2", features = ["test-support"] }
 zeppelin-embed-bench = { path = "../crates/zeppelin-embed-bench", version = "=0.4.2" }
 zeppelin-embed-ffi = { path = "../crates/zeppelin-embed-ffi", version = "=0.4.2", features = ["abi-panic-probe"] }
+
+zeppelin-embed-cypher = { path = "../crates/zeppelin-embed-cypher", version = "=0.4.2" }

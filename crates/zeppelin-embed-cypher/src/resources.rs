@@ -4,6 +4,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResourceError {
     Cancelled,
+    Timeout,
+    Control,
     Memory,
     Allocation,
 }
@@ -131,27 +133,74 @@ pub(crate) fn push<T>(
     resources: &mut dyn Resources,
     span: Span,
 ) -> Result<(), ParseError> {
+    poll(resources, span)?;
     if values.len() == values.capacity() {
-        let additional = values.capacity().max(1);
-        let bytes = additional
+        let capacity = values
+            .capacity()
+            .checked_mul(2)
+            .map(|n| n.max(1))
+            .ok_or_else(|| allocation_error(span, ResourceError::Memory))?;
+        let bytes = capacity
             .checked_mul(std::mem::size_of::<T>())
-            .ok_or_else(|| {
-                ParseError::new(
-                    ErrorKind::Resource(ResourceError::Memory),
-                    span,
-                    "allocation size overflow",
-                )
-            })?;
+            .ok_or_else(|| allocation_error(span, ResourceError::Memory))?;
+        // Both owners coexist. Reserve the complete replacement, not only its
+        // increment; no uninterruptible realloc copies the old contents.
         charge(resources, bytes, span)?;
-        values.try_reserve_exact(additional).map_err(|_| {
-            ParseError::new(
-                ErrorKind::Resource(ResourceError::Allocation),
-                span,
-                "allocation failed",
-            )
-        })?;
+        let mut replacement = Vec::new();
+        replacement
+            .try_reserve_exact(capacity)
+            .map_err(|_| allocation_error(span, ResourceError::Allocation))?;
+        let actual = replacement
+            .capacity()
+            .checked_mul(std::mem::size_of::<T>())
+            .ok_or_else(|| allocation_error(span, ResourceError::Memory))?;
+        if actual > bytes {
+            charge(resources, actual - bytes, span)?;
+        }
+        for old in std::mem::take(values) {
+            poll(resources, span)?;
+            replacement.push(old);
+        }
+        *values = replacement;
     }
     values.push(value);
+    Ok(())
+}
+fn allocation_error(span: Span, kind: ResourceError) -> ParseError {
+    ParseError::new(
+        ErrorKind::Resource(kind),
+        span,
+        "compiler allocation failed",
+    )
+}
+pub(crate) fn push_char(
+    value: &mut String,
+    c: char,
+    resources: &mut dyn Resources,
+    span: Span,
+) -> Result<(), ParseError> {
+    poll(resources, span)?;
+    if value.capacity() - value.len() < c.len_utf8() {
+        let capacity = value
+            .capacity()
+            .checked_mul(2)
+            .map(|n| n.max(4))
+            .ok_or_else(|| allocation_error(span, ResourceError::Memory))?;
+        charge(resources, capacity, span)?;
+        let mut replacement = String::new();
+        replacement
+            .try_reserve_exact(capacity)
+            .map_err(|_| allocation_error(span, ResourceError::Allocation))?;
+        if replacement.capacity() > capacity {
+            charge(resources, replacement.capacity() - capacity, span)?;
+        }
+        for old in value.chars() {
+            poll(resources, span)?;
+            replacement.push(old);
+        }
+        *value = replacement;
+    }
+    value.push(c);
     Ok(())
 }
 pub(crate) fn copy_string(
@@ -168,6 +217,10 @@ pub(crate) fn copy_string(
             "allocation failed",
         )
     })?;
+    if result.capacity() > text.len() {
+        charge(resources, result.capacity() - text.len(), span)?;
+    }
+    poll(resources, span)?;
     result.push_str(text);
     Ok(result)
 }

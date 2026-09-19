@@ -918,3 +918,15 @@ compare an independent cold Store baseline, never warm that path out of evidence
   integration, graph-store admission and crash/reopen proofs are later tickets.
 - ZE-118 retains deferred broad workspace/adversarial and per-crate coverage
   qualification. ZE-37 focused nextest and PG10 results do not replace it.
+
+## ZE-55 scoped frontend capacity
+
+`QueryMemory::reserve_external_capacity` reserves an opaque grow-only guard for
+outer compiler backing. It reserves its descriptor, shares the same query and
+store account, and cannot create RetainedAllocation or alias/prepayment credit.
+The owner must reserve before allocation, reconcile actual capacities and hold
+old/new growth reservations during bounded moves; all backing must drop before
+the guard. Caller-borrowed source/parameters do not establish owner proofs.
+Cypher compile_in uses this seam for frontend allocations and 64 KiB compiler
+scratch. Later execution still requires QueryInputs actual-owner capabilities
+or separately charged copies. A binding callback is not writer/runtime admission.

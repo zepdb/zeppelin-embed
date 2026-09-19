@@ -1,0 +1,4966 @@
+{
+  "format": "zeppelin-cypher-binding-manifest-v1",
+  "source_commit": "007895aff5f33097d67b2e48a0a2babd6bd18590",
+  "source_license": "Apache-2.0; original notices and source blocks remain at the pinned source",
+  "profile": "documented openCypher 9 subset with Zeppelin search extensions",
+  "scope": "All scenarios in the exact 26 selected feature files; not the complete openCypher corpus",
+  "execution_status": "unexecuted; binding success is not result, side-effect, or TCK conformance evidence",
+  "binding_fixture_sha256": "f51e8407791bbffac4d4345e16b177dc3301ad71a8b2371a4b171beaedaa5b7c",
+  "selected_scenarios": 99,
+  "binding_statements": {
+    "bind": 152,
+    "reject": 3
+  },
+  "sources": [
+    {
+      "path": "tck/features/clauses/create/Create1.feature",
+      "sha256": "ecc001e6ed2ef573bc3edac52f1270ed98d264df3b88730b7d058e9ebb4509e4"
+    },
+    {
+      "path": "tck/features/clauses/delete/Delete1.feature",
+      "sha256": "4a7157705c1f6d3b33cfc3b82dce64c88049b3f82535fde7baa94ecbbb7b0b54"
+    },
+    {
+      "path": "tck/features/clauses/match-where/MatchWhere6.feature",
+      "sha256": "450f5c15c04a1dff95f71829c9aa630d21e8108af415c7241c49dfc491a520d9"
+    },
+    {
+      "path": "tck/features/clauses/match/Match1.feature",
+      "sha256": "c7df893866c5225bd572a21837ec4f63c4daecbe12451d3c79eb3bbc2cb152b1"
+    },
+    {
+      "path": "tck/features/clauses/match/Match2.feature",
+      "sha256": "247569c326b57f58221febb3822f5f53993376ab401d57f70eb4b307ba061263"
+    },
+    {
+      "path": "tck/features/clauses/match/Match3.feature",
+      "sha256": "d5012a999e69607ee7ae87388c1baa2fa27fbf058939d4bea275afda7e666916"
+    },
+    {
+      "path": "tck/features/clauses/match/Match4.feature",
+      "sha256": "f78ae136692e1f2c7e382d753e2af52634883bf63eb932710dbeb08e6c2f8d5c"
+    },
+    {
+      "path": "tck/features/clauses/match/Match7.feature",
+      "sha256": "78b688b03cd96d764a91deca91ab9bf60a1e0297a2c3b7e53ff68f99598e30ed"
+    },
+    {
+      "path": "tck/features/clauses/remove/Remove1.feature",
+      "sha256": "cfaac78754628f4c8f3f6a089cc32bc0688fb5223d9f4768854c6944d9e6fd01"
+    },
+    {
+      "path": "tck/features/clauses/remove/Remove2.feature",
+      "sha256": "c4890f765c32c9b946340045a4c9214a05c9d7a05b64f22e140fe0d0826fc7d3"
+    },
+    {
+      "path": "tck/features/clauses/remove/Remove3.feature",
+      "sha256": "4848c5baf88161418580827fc7eb711e5e6ecc74bbdd64001d16fc428ae72ac0"
+    },
+    {
+      "path": "tck/features/clauses/return/Return5.feature",
+      "sha256": "be84ae4e9d9f9f770f3a3e2f61da895c3bcde8cbedde9386c9467b02f813d2f0"
+    },
+    {
+      "path": "tck/features/clauses/set/Set2.feature",
+      "sha256": "26094ad00d2bbd68b8d9e704d3e5de165b1896f7628b1ed3e1197c45d618159a"
+    },
+    {
+      "path": "tck/features/clauses/set/Set3.feature",
+      "sha256": "5536d4848eb982787338fbba0eb3a5271bbcdb0f12a2c791a9924690852c78c8"
+    },
+    {
+      "path": "tck/features/clauses/set/Set6.feature",
+      "sha256": "86e3f7baf259d3784626ca9838504fcbc26dd4465549c7948f9d340559c1dbc2"
+    },
+    {
+      "path": "tck/features/clauses/with/With6.feature",
+      "sha256": "5dc1fd4983e6d2b7ab8ef616b138f3dd939a6fd0caa967f3b78b8dcedcc4d22b"
+    },
+    {
+      "path": "tck/features/expressions/aggregation/Aggregation1.feature",
+      "sha256": "f1f9fd135e5995204c6374132f30dd6cf3f5288dae84c6fdc666a8fdbec7fc86"
+    },
+    {
+      "path": "tck/features/expressions/aggregation/Aggregation5.feature",
+      "sha256": "dcaeaa93fcbc8b63ffe0399986809d82879936c1a63b6fddc90b4066421235c2"
+    },
+    {
+      "path": "tck/features/expressions/aggregation/Aggregation8.feature",
+      "sha256": "147d6c56ee41d3e6b4d61ece7e5258db24e213923062d5eb9ccd2633c3e0b085"
+    },
+    {
+      "path": "tck/features/expressions/boolean/Boolean1.feature",
+      "sha256": "26384da59c629e2e5440d74d5a8c0dcfce0731e02178e3728784559850a9f398"
+    },
+    {
+      "path": "tck/features/expressions/boolean/Boolean2.feature",
+      "sha256": "7221058cbbcee6d5689e105b9ceb0d929a977b088f20c37d3a9891f2260d2810"
+    },
+    {
+      "path": "tck/features/expressions/boolean/Boolean3.feature",
+      "sha256": "6cc6d3cee492c41042058bfecaeb627c5d2e757480b69abba8f18fc8173ed8bd"
+    },
+    {
+      "path": "tck/features/expressions/boolean/Boolean4.feature",
+      "sha256": "d7715c1114e4db108ff5c5a135f7f1d332bba071947e981fc034ebc12cce75be"
+    },
+    {
+      "path": "tck/features/expressions/list/List1.feature",
+      "sha256": "dc9ccba2ea273a8742419b53d00daef3d111bd46fa408563a29db7995e760e6c"
+    },
+    {
+      "path": "tck/features/expressions/list/List3.feature",
+      "sha256": "7056dbf41f195b4ef00ce7c362d63bbd74ef0bc0fb8727a3d90d940d796adbcc"
+    },
+    {
+      "path": "tck/features/expressions/null/Null1.feature",
+      "sha256": "3aeeca239ca737eb3b3cc039feaecfbb74c70b7924fafa9f284f30ee200408c8"
+    }
+  ],
+  "scenarios": [
+    {
+      "feature": "clauses/create/Create1.feature",
+      "scenario": 1,
+      "title": "Create a single node",
+      "source_block_sha256": "19d1bbcb7fcb23b804a49b7c560e7d3e10e9b88ca7b9e84af0d9772f259dbdc2",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "39b1d3a66a1b7bd7c4cf53b5323a8f761dcdfeded0d8cb40e75be60d899efc9e",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/create/Create1.feature",
+      "scenario": 2,
+      "title": "Create two nodes",
+      "source_block_sha256": "74c2c9e731a707f7c05affa4d6c24bbf8a0c735a56e2a502d638fc769745f945",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "144c295f929e83cf13cbbfd7e4d2b25d0a4e102abe4caec86fb5895edb19700a",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/create/Create1.feature",
+      "scenario": 3,
+      "title": "Create a single node with a label",
+      "source_block_sha256": "6beedc7402c534884ae3e80210982c306dd56f94980e7fa3492efbf212831670",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "9d9651ad1f40d3d85561c0912d6d4dc116a11c6a0bd17aa8bbee6f22d5b1fe28",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/create/Create1.feature",
+      "scenario": 4,
+      "title": "Create two nodes with same label",
+      "source_block_sha256": "163934be47f22fc64de7073c90ba3d387ca04f4e8ac63a4ecf543048087851db",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "1dfcef6dc6453c47ea77166234438e1075fde2643a6e000013b63450a4722bf3",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/create/Create1.feature",
+      "scenario": 5,
+      "title": "Create a single node with multiple labels",
+      "source_block_sha256": "fe0aa85c3cf0f5fc44bd5b121dbbbff435d251bdd2147c5d6b946b1b72e32c9d",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "8be1c52e53fabcea576f031590e20b8952639e8c6db12346985225fc0f0e1597",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/create/Create1.feature",
+      "scenario": 6,
+      "title": "Create three nodes with multiple labels",
+      "source_block_sha256": "ace9704a34c5e499475f399d7fd38a82ad927097bcf0ddde39b88a07074521ce",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "6de10e4f4380ecd5150c73dbad7276a43eeb6012e7f2fc3546933a0ae4a24842",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/create/Create1.feature",
+      "scenario": 7,
+      "title": "Create a single node with a property",
+      "source_block_sha256": "ecd34b7a6f58c410f7dd9dc54d41c9a5b4c50a2cf5df18dd93acf70903c120d9",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "916656accaab3b38e30b0e51db2734460f6a57dd10cf2ec7ffc94a2ac1a52f2f",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/create/Create1.feature",
+      "scenario": 8,
+      "title": "Create a single node with a property and return it",
+      "source_block_sha256": "32261cb1abd01b009ee18f8e66bce19d34ea4675505f1d39ba4b71ec621169ea",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "46b424b449e7a3f7a2941090e61c69bd49fc59438ee86eb67107b68e45f66387",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/create/Create1.feature",
+      "scenario": 9,
+      "title": "Create a single node with two properties",
+      "source_block_sha256": "bee2dcab5f91a89c8b8d2ecd3018be7be821c04b0d0a6387ada888bb3d0d555e",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "05bd6472e415b549c178f778790bff35203aa87b8b1d5fbd91333668ed84fd25",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/create/Create1.feature",
+      "scenario": 10,
+      "title": "Create a single node with two properties and return them",
+      "source_block_sha256": "52a0a237ca04f6cd3b7c086c2333337b1c7cb0795a34f05a2bb1bae342f14a29",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "0a72b8d315e984d18c0ab2d42879a81b43a15a9ec20b326ab7fea0ac2c244a69",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/create/Create1.feature",
+      "scenario": 11,
+      "title": "Create a single node with null properties should not return those properties",
+      "source_block_sha256": "fddc5c6da083e5a2d3b89dba0463d9fa48d46142b88accebd51f4df8ddd0e748",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "77e2f52c45143482916384fe7cf13daac080f020d6fe755fd4de1ddb487637e5",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/create/Create1.feature",
+      "scenario": 12,
+      "title": "CREATE does not lose precision on large integers",
+      "source_block_sha256": "eb544bc94484a784ca9650266a08219b7437aab8e5879c01b69aba40a12827f0",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "8c82c28cf0e170f36ca90e1829c8c54224e6e93fc4e1faf56c8b070f99c2aa6b",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/create/Create1.feature",
+      "scenario": 13,
+      "title": "Fail when creating a node that is already bound",
+      "source_block_sha256": "fc1c0006855c5492ac36212315fce72f64dd3a0e365cad9b042d4ed4d8f684e5",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/create/Create1.feature",
+      "scenario": 14,
+      "title": "Fail when creating a node with properties that is already bound",
+      "source_block_sha256": "8cf4450f9fff414edf4e54a950a6ec832068bc35049a25855b63d2e6197c596f",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/create/Create1.feature",
+      "scenario": 15,
+      "title": "Fail when adding a new label predicate on a node that is already bound 1",
+      "source_block_sha256": "80a68cac18a3168d5c5a583bddb97098b10f6f895fcfb804eff38d197cf7d4af",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/create/Create1.feature",
+      "scenario": 16,
+      "title": "Fail when adding new label predicate on a node that is already bound 2",
+      "source_block_sha256": "00c04e1d7cbd57c83985e663900c795c1d1754fa9390565b26bd2e2d5e2c6e28",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/create/Create1.feature",
+      "scenario": 17,
+      "title": "Fail when adding new label predicate on a node that is already bound 3",
+      "source_block_sha256": "3a8e12dc9f41f7c533b4295e9ab3dbea54102e95ab8de074b096ce36f150e764",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/create/Create1.feature",
+      "scenario": 18,
+      "title": "Fail when adding new label predicate on a node that is already bound 4",
+      "source_block_sha256": "1855930745bdb256c5fc413b1b911453249bf53e75ba6c17dda1d2e1495ffa9a",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/create/Create1.feature",
+      "scenario": 19,
+      "title": "Fail when adding new label predicate on a node that is already bound 5",
+      "source_block_sha256": "0f72d2054de4174c71ce2b21141652e435ab2143a3bab0690f820ed330faca65",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/create/Create1.feature",
+      "scenario": 20,
+      "title": "Fail when creating a node using undefined variable in pattern",
+      "source_block_sha256": "3fbee68d2065d0b8102de76ef673664cf3bc5476867e3c9a7eaf1eac4c5c48c2",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/delete/Delete1.feature",
+      "scenario": 1,
+      "title": "Delete nodes",
+      "source_block_sha256": "ad4f31754c2a493e135665f14baa58f430202c599493f6a1fa1678e3279abb78",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "39b1d3a66a1b7bd7c4cf53b5323a8f761dcdfeded0d8cb40e75be60d899efc9e",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "c7aca764af5767e7b51a7f4ced366cdb27f407b43a4f4123bdf9bd18991d751c",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/delete/Delete1.feature",
+      "scenario": 2,
+      "title": "Detach delete node",
+      "source_block_sha256": "aff0d946c656d54b973b4152704bcc4412537b94a11e86d3d47f5a6baab472ba",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "39b1d3a66a1b7bd7c4cf53b5323a8f761dcdfeded0d8cb40e75be60d899efc9e",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "f884efa88e6b0daa79f68a715a427c67c547db62f94312e503925596f1345ae8",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/delete/Delete1.feature",
+      "scenario": 3,
+      "title": "Detach deleting connected nodes and relationships",
+      "source_block_sha256": "50e52d95237a5db9d1c29308f4d03b0de3923c5f2c536bf5603ccb17d7fea9d8",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "7df565375e2752706dec5496f623a5eba999c326cdb172e97381ddd7336b4fd3",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "b6f5df4273cc4c344bd283490014eeefdab8b763065ee5d3638e8dc717d8bf97",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/delete/Delete1.feature",
+      "scenario": 4,
+      "title": "Delete on null node",
+      "source_block_sha256": "73f357ca5f6e10ed61eadb39655c649965e3f3933ea1f833dee71295d69b921c",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "102c47d67d77027ffff43720efdaf286f5aa2564eb9ebc2aa4148e58fb06e3db",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/delete/Delete1.feature",
+      "scenario": 5,
+      "title": "Ignore null when deleting node",
+      "source_block_sha256": "2416e619e373e01a7fcd808d6274023b346e55edd8ca06c6409d2955b135d753",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "5ab7136a3d142bb5ce36a34d792dd3ddea07ce999d91e05d05c03c1e96471740",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/delete/Delete1.feature",
+      "scenario": 6,
+      "title": "Detach delete on null node",
+      "source_block_sha256": "251772e434fc73885a97dfcdeef1257ca08a8e8d239d5b97bbdfe4a4ce90858b",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "cd0952d4ae255f8048c2e415ea78e1663a410aac4d91de654d86014790a9d3ab",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/delete/Delete1.feature",
+      "scenario": 7,
+      "title": "Failing when deleting connected nodes",
+      "source_block_sha256": "c69507a9e098f00b85464008d23149112fb0fa8875440364aee90f2335a1a590",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "7df565375e2752706dec5496f623a5eba999c326cdb172e97381ddd7336b4fd3",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "8efaca6b1bd2a014936d20fea27aa22045f3970d3c8db83968a05caac793ddcf",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      },
+      "original_expected_error": {
+        "class": "ConstraintVerificationFailed",
+        "phase": "runtime",
+        "detail": "DeleteConnectedNode"
+      }
+    },
+    {
+      "feature": "clauses/delete/Delete1.feature",
+      "scenario": 8,
+      "title": "Failing when deleting a label",
+      "source_block_sha256": "9990c410bd4af9f448232780b4e346fd5cf38c2b378244c5e6d4b1437c16c33c",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match-where/MatchWhere6.feature",
+      "scenario": 1,
+      "title": "Filter node with node label predicate on multi variables with multiple bindings after MATCH and OPTIONAL MATCH",
+      "source_block_sha256": "8fd99a776e221f6aeb58efb0c781398188c98c545d8827f20a49bd83b9df469a",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match-where/MatchWhere6.feature",
+      "scenario": 2,
+      "title": "Filter node with false node label predicate after OPTIONAL MATCH",
+      "source_block_sha256": "fc91c292ea7f57c0de5c2383836af586337918f377540ae2f4c77822f58ac82a",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "227174f75c0e37c1769be4172b9fda68f30f39418ffdb038f91860ce791dd6e6",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "125c20ed8ef36fd2a54f3352c328c8a30b9aa3083fd353d9725ea64df61ad850",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match-where/MatchWhere6.feature",
+      "scenario": 3,
+      "title": "Filter node with property predicate on multi variables with multiple bindings after OPTIONAL MATCH",
+      "source_block_sha256": "921fd4f81cf2a1d9cfd7cbac50a04dd1bcd30a4ffed30db3b64d8dc483a8f94b",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match-where/MatchWhere6.feature",
+      "scenario": 4,
+      "title": "Do not fail when predicates on optionally matched and missed nodes are invalid",
+      "source_block_sha256": "0d3bf69c32cd1fe257df2618c98ac4f430835ef9d42cc979396dae1a710bf9c3",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "4d4c0e65582d800707f4c166ec5f190581462b23a27cb8821c60ad0628319d1c",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "960a72ca7592efc697b0d988d946d95c5cb42e16d8bf6b1a83a30615fc214ad0",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match-where/MatchWhere6.feature",
+      "scenario": 5,
+      "title": "Matching and optionally matching with unbound nodes and equality predicate in reverse direction",
+      "source_block_sha256": "589ceee12b810da67ba549bda440a2ae50c6c5bbcc06f4d3865e9a9aeafd15dc",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match-where/MatchWhere6.feature",
+      "scenario": 6,
+      "title": "Join nodes on non-equality of properties – OPTIONAL MATCH and WHERE",
+      "source_block_sha256": "08331f1d44b294a54efeb9eb89936bb157d7b7a3d3c0a5d1f0d8c4b46c2ca4fa",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match-where/MatchWhere6.feature",
+      "scenario": 7,
+      "title": "Join nodes on non-equality of properties – OPTIONAL MATCH on two relationships and WHERE",
+      "source_block_sha256": "aed6d243580f9aa81fdc94da5b3a92051c3127c6d9803dfd4f3670b4a9c3ca32",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match-where/MatchWhere6.feature",
+      "scenario": 8,
+      "title": "Join nodes on non-equality of properties – Two OPTIONAL MATCH clauses and WHERE",
+      "source_block_sha256": "67934ed1a2ce24373279d7dab68edca1b863b4505bca0fa0bbdd8dcd87473931",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match1.feature",
+      "scenario": 1,
+      "title": "Match non-existent nodes returns empty",
+      "source_block_sha256": "c428c5e217f3f0c71545f183285fb9e4636231aa0a200810723306ec1be4449d",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "7e5b66700e2a47f59a596b5d785295a2a92390576462df80e35b6f5059a71464",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match1.feature",
+      "scenario": 2,
+      "title": "Matching all nodes",
+      "source_block_sha256": "eb991b443e0c743d193608b1b0b27aef189b1c068764493dc11c08674203ba88",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "afbf72c3f8e4880f74b88951b94535c24d9767da1d91c440a79438b3f88acd41",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "7e5b66700e2a47f59a596b5d785295a2a92390576462df80e35b6f5059a71464",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match1.feature",
+      "scenario": 3,
+      "title": "Matching nodes using multiple labels",
+      "source_block_sha256": "448bb8668b055659ff16733600618892082b0cd7cc29d2770ecaa7581c419a44",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "3922c15aaa58b0389c6f162f52bb305404ad1e98a832e0de98c07f525517051e",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "faeb8ea1dec68fd9b28cb1aaa650faa2c5a7b4b6592a6fa07b96be1a0e346a60",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match1.feature",
+      "scenario": 4,
+      "title": "Simple node inline property predicate",
+      "source_block_sha256": "4792b3229d48b59363936a9ae7ff453a78e3fdb8f9fbb4ba72ebe08f7651842e",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "5fd1e95c73df9dc1a7d3492b1556eae2367f0952a2c9b8826ae987661b56afdb",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "50873ddbc049ead0af49f667352e83acfba2d4b7cd55eb69ce8be5aa8a350768",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match1.feature",
+      "scenario": 5,
+      "title": "Use multiple MATCH clauses to do a Cartesian product",
+      "source_block_sha256": "9471cdc89fb1c53dd0a8b140545fbcfe4a192d2c887294b27416c149336258f4",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "50e1b3ec2e887a13bdfe73ff56065ff74ccc84389ca198fefa5acb0890cb8837",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "9c7528e6cd7221383aa246f43c631808013d7d961995394e360b776ae91093cf",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match1.feature",
+      "scenario": 6,
+      "title": "Fail when using parameter as node predicate in MATCH",
+      "source_block_sha256": "724e1352a63fabedea3e5594d68bba8f25ddf9a8d2b59f5e897fd2e3248c36e7",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "f2cc401c8a0d975e09d8bf74f9e7ae96680a898c64cc6b9be2ffc704b9b4c3cd",
+            "expected_binding": "reject"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      },
+      "original_expected_error": {
+        "class": "SyntaxError",
+        "phase": "compile",
+        "detail": "InvalidParameterUse"
+      }
+    },
+    {
+      "feature": "clauses/match/Match1.feature",
+      "scenario": 7,
+      "title": "Fail when a relationship has the same variable in a preceding MATCH",
+      "source_block_sha256": "26a6812d04b1ccb54f9070d75a0ca0cdc40afc7e8ad031b0e8f2e1c56827cf5d",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match1.feature",
+      "scenario": 8,
+      "title": "Fail when a path has the same variable in a preceding MATCH",
+      "source_block_sha256": "11c47920f541caa107b4fabf745b8cc1de7e21020410d74c7808a262e2524322",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match1.feature",
+      "scenario": 9,
+      "title": "Fail when a relationship has the same variable in the same pattern",
+      "source_block_sha256": "68839234bf4b789ae3f54b265baede36e944a07c304632da086a391d4b77b8cf",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match1.feature",
+      "scenario": 10,
+      "title": "Fail when a path has the same variable in the same pattern",
+      "source_block_sha256": "f6b7973a94e54b1af2b0fe87a6a3ba692ec8c0a500f1508906a6e14598ab0bc1",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match1.feature",
+      "scenario": 11,
+      "title": "Fail when matching a node variable bound to a value",
+      "source_block_sha256": "8aeb1ed92e5cab590aa4a2e88edc3d8f5328d5c8929f55ae0fba9f8ac1e474bb",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match2.feature",
+      "scenario": 1,
+      "title": "Match non-existent relationships returns empty",
+      "source_block_sha256": "7c5cdd59c630871c835130fe0e6b52481b0ab6912a4daa417e97f03ac3b5452f",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "bf77b12f8fe113c8489706897e189e562df2f914ba6e52f0d238203318a72df6",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match2.feature",
+      "scenario": 2,
+      "title": "Matching a relationship pattern using a label predicate on both sides",
+      "source_block_sha256": "d73e450b370dab22cbc5e5027436fb96f391970675c0db304cdb98fd2f8f92b7",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "d4a304a5b371ef85bca92f9185b6e30e4763b6feb87ece71998edec21913b8db",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "d011774fcd4ff672152cfa36d663206c43eae530696df2b4b37617cb840fb1cf",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match2.feature",
+      "scenario": 3,
+      "title": "Matching a self-loop with an undirected relationship pattern",
+      "source_block_sha256": "7c5b6d6be03d7fcba0bfcc86d28d3897abc0fc54481720cff1e57f0a244ac3ba",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "6f22324dc1e66df78d7422e7aee3b39dc4b8b22702cc9e0b4b07497fba82d4c8",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "9d04a292971d53408832081d04e110386d426c953922addcdc67b303af906bf0",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match2.feature",
+      "scenario": 4,
+      "title": "Matching a self-loop with a directed relationship pattern",
+      "source_block_sha256": "37fe919f79608dc2f946dd48347bc85d7dbd04461c1242813d57b9a5741a0bb1",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "6f22324dc1e66df78d7422e7aee3b39dc4b8b22702cc9e0b4b07497fba82d4c8",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "03ab331f54ad805dcbf0232b999ee0ca674646d2ae1f1dd0c78b51909bd15a16",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match2.feature",
+      "scenario": 5,
+      "title": "Match relationship with inline property value",
+      "source_block_sha256": "7c5aac88c8613fadca51271d0bce83b7779e6bd88251efa62ec60574549dbae4",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "6b6a2ed9a53d78353ccaf87b8a93b848427b9337b23af5060585543486f95532",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "bc43fa8bbc04ed10e92bfa20a16d412586acd39fc6e49162566b5a42599b314c",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match2.feature",
+      "scenario": 6,
+      "title": "Match relationships with multiple types",
+      "source_block_sha256": "2331945e77ff497a858c2fb023383b8f92a154c74de1cf1d4d4c22284880aa7b",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "49850b8643d9cc9b109e21218dde89b3644d96425f50ba06d99ff4c276d92d60",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "8ef4afb60dcdde29112094ebfa87ac61ba49f4be7c68dfd793dfa09d16dbee20",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match2.feature",
+      "scenario": 7,
+      "title": "Matching twice with conflicting relationship types on same relationship",
+      "source_block_sha256": "8f6d63e43eda6adb618343251041177f3a6b546a0d96a7c9eeb8dc396ad564d9",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "f4fc2621e4e55fdaee59f99a05a164f15bd5b99b4f9b28d4f5a2490a458ceebb",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "16bac180b27657d04293fcf9ef283614a7cd59e7ffd99b82c1de3a407c4fcd97",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match2.feature",
+      "scenario": 8,
+      "title": "Fail when using parameter as relationship predicate in MATCH",
+      "source_block_sha256": "26cad4a510cbf35cac69c1e9539eb17a2148feb208ac1ec7d32b8048fff02dc7",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "c6952c35e7acccb7d0d83ee9d4bf0ec8060301fbb02fdc31e62a75193ebebddb",
+            "expected_binding": "reject"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      },
+      "original_expected_error": {
+        "class": "SyntaxError",
+        "phase": "compile",
+        "detail": "InvalidParameterUse"
+      }
+    },
+    {
+      "feature": "clauses/match/Match2.feature",
+      "scenario": 9,
+      "title": "Fail when a node has the same variable in a preceding MATCH",
+      "source_block_sha256": "6beb6d419c13c2798eb5e98400100917723b9a8e1c3de1bf6e13e1df4b9a4bb5",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match2.feature",
+      "scenario": 10,
+      "title": "Fail when a path has the same variable in a preceding MATCH",
+      "source_block_sha256": "5a1d9cc78b0d69b2d8ccc78cd363e33a0b36975ad9fa6b305b8943cfb37ddef1",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match2.feature",
+      "scenario": 11,
+      "title": "Fail when a node has the same variable in the same pattern",
+      "source_block_sha256": "248603aadd07eea6b82dc3308837c37670e846c0abcd76c3322452dfffaab906",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match2.feature",
+      "scenario": 12,
+      "title": "Fail when a path has the same variable in the same pattern",
+      "source_block_sha256": "8f7eef04973c18807245886e73b8c941080775659fc28c44977db707a510b21a",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match2.feature",
+      "scenario": 13,
+      "title": "Fail when matching a relationship variable bound to a value",
+      "source_block_sha256": "fa15fe0ecd2e4ddd10f54148e46772750b13b6204c15d2a2ce65c209ba73c0b5",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match3.feature",
+      "scenario": 1,
+      "title": "Get neighbours",
+      "source_block_sha256": "f837a0a3ee128950187052f4deaf878e961a982147bf878e2ccb8a4864edca8f",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match3.feature",
+      "scenario": 2,
+      "title": "Directed match of a simple relationship",
+      "source_block_sha256": "b1e86bdda3fd3fd4bad1343853148cb76180aa331db36cb9b5a475a065f1bf8d",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match3.feature",
+      "scenario": 3,
+      "title": "Undirected match on simple relationship graph",
+      "source_block_sha256": "e453d25da0eda73ae8c62d89d48cf0dc634b83b2d72e04321e1ca4c02b8b8db4",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match3.feature",
+      "scenario": 4,
+      "title": "Get two related nodes",
+      "source_block_sha256": "e5bcf2fd01fef5b2b87ee4f0c63e19e2582a557708b8545bbe548521ea2bb8ec",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match3.feature",
+      "scenario": 5,
+      "title": "Return two subgraphs with bound undirected relationship",
+      "source_block_sha256": "d231ad451188b4ec6a9ff415717253a0b96b2eb56e0bcb1bfbab5b07eb928541",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match3.feature",
+      "scenario": 6,
+      "title": "Matching a relationship pattern using a label predicate",
+      "source_block_sha256": "9f73477045acda7850416faecd52d424f21577a4d9f7ff1af94fa9996afdbbd8",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match3.feature",
+      "scenario": 7,
+      "title": "Matching nodes with many labels",
+      "source_block_sha256": "eec8f9e6ec747de6034dac7e2d39167a23df3766d36ef830e49cc85d7aae030b",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match3.feature",
+      "scenario": 8,
+      "title": "Matching using relationship predicate with multiples of the same type",
+      "source_block_sha256": "79a74b6043e25948beb669edf68734f42aeb67814031f8790171523656fe7b4c",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match3.feature",
+      "scenario": 9,
+      "title": "Get related to related to",
+      "source_block_sha256": "3340ee07c82fb093ebc059f4517da375c62a6bc76300348be3aad0674bb4ef59",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match3.feature",
+      "scenario": 10,
+      "title": "Matching using self-referencing pattern returns no result",
+      "source_block_sha256": "ee821eb39f389bb0818bab3693c8b184618e2abf088f7cfe41a689c03767865f",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match3.feature",
+      "scenario": 11,
+      "title": "Undirected match in self-relationship graph",
+      "source_block_sha256": "c66e5ac4d02edb6fae2c35ad179ddf3cdb96123e1f11a8d9adea06e96079416f",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match3.feature",
+      "scenario": 12,
+      "title": "Undirected match of self-relationship in self-relationship graph",
+      "source_block_sha256": "48050ecca02d12fdfb8a6e6490166849f38a5e818dc588bc7f0bc678ec791a0d",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match3.feature",
+      "scenario": 13,
+      "title": "Directed match on self-relationship graph",
+      "source_block_sha256": "4a2e03d6523fd43c850f8345939653c4b20fd06cedf8dba543d57fda987ef915",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match3.feature",
+      "scenario": 14,
+      "title": "Directed match of self-relationship on self-relationship graph",
+      "source_block_sha256": "6acbb27633c13306d9ac1dd409b4e559646da379c317654b36d2c5443e093c70",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match3.feature",
+      "scenario": 15,
+      "title": "Mixing directed and undirected pattern parts with self-relationship, simple",
+      "source_block_sha256": "90588cbb7910785c4987bf62c001ad6893877a7ed57493445b5583d0dfb26385",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match3.feature",
+      "scenario": 16,
+      "title": "Mixing directed and undirected pattern parts with self-relationship, undirected",
+      "source_block_sha256": "6a2c96a601437a07d7127b88589dbb233eaa4c0ba6637efb717aa7011ec6f310",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match3.feature",
+      "scenario": 17,
+      "title": "Handling cyclic patterns",
+      "source_block_sha256": "1ae0bc4f6e5bad0b9f7f5c1ae13cafaa8a335ca26ae5ab9d183b4ecca1d87242",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "73ed2273c0cfb83390ac2294bf42a01be95f9dee14d07c831a8c46acc63fb6be",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "7ce94a189c8e4996aab9d64a7556e68062c7bf99df15f7bdd46cb213b5997fde",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match3.feature",
+      "scenario": 18,
+      "title": "Handling cyclic patterns when separated into two parts",
+      "source_block_sha256": "5427ff4d859fd7c6a037c936fa226b82487b5434ee4b5d902d84fbf3c49a52c9",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "73ed2273c0cfb83390ac2294bf42a01be95f9dee14d07c831a8c46acc63fb6be",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "92a4700c6f4ff9fd96f7f373f23a9a1720f5924a5fc34ac89f8bd0a91f11cc5c",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match3.feature",
+      "scenario": 19,
+      "title": "Two bound nodes pointing to the same node",
+      "source_block_sha256": "fbd53fe3edcb0dabb3c9cab0e7b0f91ca49638c40e65bdbe1eaba20d60542100",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match3.feature",
+      "scenario": 20,
+      "title": "Three bound nodes pointing to the same node",
+      "source_block_sha256": "f625ed41ab468e90e7edacec72b8512e715656b98f85c2e807837051f670cf36",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match3.feature",
+      "scenario": 21,
+      "title": "Three bound nodes pointing to the same node with extra connections",
+      "source_block_sha256": "9128f080bae9e89f298569764b2799e32808046b93516fbc672339c424cf1ae4",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match3.feature",
+      "scenario": 22,
+      "title": "Returning bound nodes that are not part of the pattern",
+      "source_block_sha256": "710647fc101363ef6393a5195afe2d740055d9103770ad808b61d53e4056522d",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match3.feature",
+      "scenario": 23,
+      "title": "Matching disconnected patterns",
+      "source_block_sha256": "a62c4912023e231464c28d4a40ae431a8b851459beab379b372a44c59901b458",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "b8f9fdcfaf5fb8fb7713ed6d8d039db187663eafd90810f1c4c439104be68865",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "d1554d4778142fe813e74d5920e68a35f3f921a0e66b5ded8c2902dbccbc1439",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match3.feature",
+      "scenario": 24,
+      "title": "Matching twice with duplicate relationship types on same relationship",
+      "source_block_sha256": "b921fc8a08737ff698ba76a5b4816d57116c9ad42880235059773db8f73eb5e1",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match3.feature",
+      "scenario": 25,
+      "title": "Matching twice with an additional node label",
+      "source_block_sha256": "5b7da2f81a23a8acd237d8ff3f4990d1350e1f71fc0db75a5a54140e7b3983db",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match3.feature",
+      "scenario": 26,
+      "title": "Matching twice with a duplicate predicate",
+      "source_block_sha256": "657b07d90a2258b21d736b30be508b9b65c14e98f4d9607ecd19afebe3053651",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match3.feature",
+      "scenario": 27,
+      "title": "Matching from null nodes should return no results owing to finding no matches",
+      "source_block_sha256": "76a5cd84e7b181147ee255d879e2ce0eed59cf6489c5f5cd8a20683c9c245489",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match3.feature",
+      "scenario": 28,
+      "title": "Matching from null nodes should return no results owing to matches being filtered out",
+      "source_block_sha256": "bab98cbdb2f615a9d93c7107171e065d89ec989d98eef5041882413c4de2e58a",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match3.feature",
+      "scenario": 29,
+      "title": "Fail when re-using a relationship in the same pattern",
+      "source_block_sha256": "4dbb0a897962c335537623fbcbca1b495557a663c43075d8a7c572828d26ec70",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "4ebeed6d9f3c94a4892da0f61ec8a60481f01df9200ae98cd172849f6e808282",
+            "expected_binding": "reject"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      },
+      "original_expected_error": {
+        "class": "SyntaxError",
+        "phase": "compile",
+        "detail": "RelationshipUniquenessViolation"
+      }
+    },
+    {
+      "feature": "clauses/match/Match3.feature",
+      "scenario": 30,
+      "title": "Fail when using a list or nodes as a node",
+      "source_block_sha256": "432e8f229e262f9350fd3daa1cd6de873b9bbd2fc871f6048b94999b63235f21",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match4.feature",
+      "scenario": 1,
+      "title": "Handling fixed-length variable length pattern",
+      "source_block_sha256": "de1f71d855f8fe0ed72d186b99fc16392ae19908a360c0ef9a51f1f9eba9051c",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "f4fc2621e4e55fdaee59f99a05a164f15bd5b99b4f9b28d4f5a2490a458ceebb",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "61c8575fd097cfaa445322dab1b1f8bbd41c82a4f4b3bd0c43a9533f1ccfeae9",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match4.feature",
+      "scenario": 2,
+      "title": "Simple variable length pattern",
+      "source_block_sha256": "a20ebaf3ac31f9a2a27397e85a8a1148d031fc56149de849050faf3fa9784a1c",
+      "support_disposition": "rejected_profile",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match4.feature",
+      "scenario": 3,
+      "title": "Zero-length variable length pattern in the middle of the pattern",
+      "source_block_sha256": "b2e997f0ed6f86c6b8c1b73c4b7e1e534108cb8997ea45e363e5a1184bb6f5a2",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "5e69dce55dafcf7ae28983cb854968cf11abee0295c320ef305a6403d39f0588",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "f95066735093336757f8c205d04241d03712e401ee85610ff5d3e601a2835ea1",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match4.feature",
+      "scenario": 4,
+      "title": "Matching longer variable length paths",
+      "source_block_sha256": "95b2f729dd1f57599b6b2a5e4155505e5dc052d7bd021cff46e3dd5fd798456e",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match4.feature",
+      "scenario": 5,
+      "title": "Matching variable length pattern with property predicate",
+      "source_block_sha256": "579c0af1ae380eb7bad0cdc466b85bdffa97a40c5e876e2f340dc139f694b115",
+      "support_disposition": "rejected_profile",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match4.feature",
+      "scenario": 6,
+      "title": "Matching variable length patterns from a bound node",
+      "source_block_sha256": "6150e62f29e38160e8d37ab4ce122dc2eaeb0b2398af1bcacbe76116c21dbe2b",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "78a25346c1902b46085f6314556ddefd31967eb44ea2b7e664a70f0c835b5a51",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "b24c79f15cd97c4efef87d33c45e9d1eb9bb922a8770b8be60f448a7ebd5e54f",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match4.feature",
+      "scenario": 7,
+      "title": "Matching variable length patterns including a bound relationship",
+      "source_block_sha256": "ad2c8ecf42c2a97a3963268e742948415534bf326b21618801443f4568d6bc87",
+      "support_disposition": "rejected_profile",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match4.feature",
+      "scenario": 8,
+      "title": "Matching relationships into a list and matching variable length using the list",
+      "source_block_sha256": "3cf5d0885f3f283f11d28efdb804e37b573b5e6086491043a39a164bc780141e",
+      "support_disposition": "rejected_profile",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match4.feature",
+      "scenario": 9,
+      "title": "Fail when asterisk operator is missing",
+      "source_block_sha256": "12f71b1ea3b68ab3b6078def66c0f2073300ee8140879a3953f46d768524504d",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match4.feature",
+      "scenario": 10,
+      "title": "Fail on negative bound",
+      "source_block_sha256": "35dbf683b27fb8ee51c3095b746fdcd365256aa7bf51c8d8a2f209104b415a62",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match7.feature",
+      "scenario": 1,
+      "title": "Simple OPTIONAL MATCH on empty graph",
+      "source_block_sha256": "e82c4aa625730f665e2801bd5de37451fdd7644d20f3e293ef3fbd3217ae00de",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "8a0004876f9a9a9e365c0173a0cd7991f2ac8646a51db171c173c13d14afce0e",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match7.feature",
+      "scenario": 2,
+      "title": "OPTIONAL MATCH with previously bound nodes",
+      "source_block_sha256": "3ad2ade67d8e560c0aeb7340be9f96c191eef24b8c785008fb96e733f4c5a45e",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match7.feature",
+      "scenario": 3,
+      "title": "OPTIONAL MATCH and bound nodes",
+      "source_block_sha256": "b9c7f3684a3317f907a9287ded08477716b4446e672bdb057dc478b0bbf78991",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match7.feature",
+      "scenario": 4,
+      "title": "Optionally matching relationship with bound nodes in reverse direction",
+      "source_block_sha256": "56d9b46a80179c2178e47a3281ba58fc7303385fa5cc52412c4e4bd1fd396cc2",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match7.feature",
+      "scenario": 5,
+      "title": "Optionally matching relationship with a relationship that is already bound",
+      "source_block_sha256": "4661016f257ae35027637e56727968416b77ca9ad100aec9a0ab865db6255d3e",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match7.feature",
+      "scenario": 6,
+      "title": "Optionally matching relationship with a relationship and node that are both already bound",
+      "source_block_sha256": "9c93230d3a2c6244f4f1c03bd7bf620fc3d776b28dc542ef975c094f558a87c3",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match7.feature",
+      "scenario": 7,
+      "title": "MATCH with OPTIONAL MATCH in longer pattern",
+      "source_block_sha256": "02e90336f7c8a974dd0a5eb8a9b6549adb736f4f6b98dc4c30347f7811ed877f",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match7.feature",
+      "scenario": 8,
+      "title": "Longer pattern with bound nodes without matches",
+      "source_block_sha256": "7fbfb2df6fcf75c07196cd78b3ba6249ff39c0aa0577a85e5709f1767fd07a4f",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "227174f75c0e37c1769be4172b9fda68f30f39418ffdb038f91860ce791dd6e6",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "a6b0781f42ccec456336cd95059570ca5aefc80b1f7488de455e00037717f4df",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match7.feature",
+      "scenario": 9,
+      "title": "Longer pattern with bound nodes",
+      "source_block_sha256": "1d7acc3ee0db86cea5ac0c26215cc518207430efb1d3d4273372903b838e2a17",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match7.feature",
+      "scenario": 10,
+      "title": "Optionally matching from null nodes should return null",
+      "source_block_sha256": "3610458ecbb1e6d3da8b64e4fb92e6ea0859c54bc628792ffbc2a048788ceb52",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "1f7f5495faf95859743380337f4e8f8f84e45f148e08f266c8347747b7fb050e",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match7.feature",
+      "scenario": 11,
+      "title": "Return two subgraphs with bound undirected relationship and optional relationship",
+      "source_block_sha256": "c287b302de4ec5a0956fe499b294d275ca4d289a7f07d3f13c007750ef7ccbfa",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match7.feature",
+      "scenario": 12,
+      "title": "Variable length optional relationships",
+      "source_block_sha256": "49b6e7244734e606fd7785881b9dde64bd934630e82330e7a68211b8f20b78c9",
+      "support_disposition": "rejected_profile",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match7.feature",
+      "scenario": 13,
+      "title": "Variable length optional relationships with bound nodes",
+      "source_block_sha256": "a40896540154003dab4292a17d90d464d6e5031dfa3a7e75c18aea06f3b7159f",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match7.feature",
+      "scenario": 14,
+      "title": "Variable length optional relationships with length predicates",
+      "source_block_sha256": "fdff20843fc00879e42e22ec0b5bd15befcd4dd9b9fc9dd6bf2e4ab2ac8a4c8a",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match7.feature",
+      "scenario": 15,
+      "title": "Variable length patterns and nulls",
+      "source_block_sha256": "7753101770e3f865e42dc38298d4b518a312504f8eb18934f242624c0a15320c",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match7.feature",
+      "scenario": 16,
+      "title": "Optionally matching named paths - null result",
+      "source_block_sha256": "067fa2e438638174f30dceaafc0fac90a068a39d4a193890f0fd97eccc0f7832",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match7.feature",
+      "scenario": 17,
+      "title": "Optionally matching named paths - existing result",
+      "source_block_sha256": "705bf87c89ec38360a27dd1c3afba71dbe030f81accd9775b5a9dbb72b972722",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match7.feature",
+      "scenario": 18,
+      "title": "Named paths inside optional matches with node predicates",
+      "source_block_sha256": "7f6caa41b7189d56545a762d33373241ea29fbc895711f693cb0e7463017fb17",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match7.feature",
+      "scenario": 19,
+      "title": "Optionally matching named paths with single and variable length patterns",
+      "source_block_sha256": "3ff9b031b2852325cb76ea02e85dcd11e4cf21d35681d87dd38d9c3ed0645ba8",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match7.feature",
+      "scenario": 20,
+      "title": "Variable length optional relationships with bound nodes, no matches",
+      "source_block_sha256": "36bf53e3f305a350b8b3f72a5e068b4d5bf6269a6e208fb22de8aa7af39cbaa3",
+      "support_disposition": "rejected_profile",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match7.feature",
+      "scenario": 21,
+      "title": "Handling optional matches between nulls",
+      "source_block_sha256": "fcad7e16f8daec087d06f1775f33a053bdac1d7a167bdfae9356ee3175d50e97",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match7.feature",
+      "scenario": 22,
+      "title": "MATCH after OPTIONAL MATCH",
+      "source_block_sha256": "748ffb265a4ab1e17c51b73502c01fcca373baa7a092350801f9f52495452361",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match7.feature",
+      "scenario": 23,
+      "title": "OPTIONAL MATCH with labels on the optional end node",
+      "source_block_sha256": "48874785b170542bdc786d0c991ed7b463590dd8a224044f44cb25deea35d38b",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match7.feature",
+      "scenario": 24,
+      "title": "Optionally matching self-loops",
+      "source_block_sha256": "66e11e62bca710daed04bd40621d2beab3729afc6e9910fa2eb4c44db4f89b86",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "227174f75c0e37c1769be4172b9fda68f30f39418ffdb038f91860ce791dd6e6",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "ae98cc31b4c318d5167d3bdb9144d1087e862f86bca47bae2bb7c4338e26eb13",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match7.feature",
+      "scenario": 25,
+      "title": "Optionally matching self-loops without matches",
+      "source_block_sha256": "527d868b4a05b6c1d861dfe3c37482149b48bcd4b5de1a073fe948ae88d0b601",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match7.feature",
+      "scenario": 26,
+      "title": "Handling correlated optional matches; first does not match implies second does not match",
+      "source_block_sha256": "620c48af1809c219890eb06529b107bd1b19a4b33b435119519e4a7acd4bc4cb",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match7.feature",
+      "scenario": 27,
+      "title": "Handling optional matches between optionally matched entities",
+      "source_block_sha256": "8cb9f9a611e0ecce939b84d383a02bb33bbd6bf4e0003b87f7542fa762bb5fbf",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match7.feature",
+      "scenario": 28,
+      "title": "Handling optional matches with inline label predicate",
+      "source_block_sha256": "86ff6938b3b472774be317de3443c6db236e5669b8ff621d97159360b9356290",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match7.feature",
+      "scenario": 29,
+      "title": "Satisfies the open world assumption, relationships between same nodes",
+      "source_block_sha256": "e049e0af1c1ec9884aa9094f4036c6e10d709d01a8c12bf77a7af5c8810e4b0f",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match7.feature",
+      "scenario": 30,
+      "title": "Satisfies the open world assumption, single relationship",
+      "source_block_sha256": "99338523c0db3f97020ee832e8d903e7d70ea5c24ccfb2a67f678622fc0690ec",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/match/Match7.feature",
+      "scenario": 31,
+      "title": "Satisfies the open world assumption, relationships between different nodes",
+      "source_block_sha256": "7bf4895b23c90128f870dc5cad0510179169559e52fb1467d9aa2915c38622ad",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/remove/Remove1.feature",
+      "scenario": 1,
+      "title": "Remove a single node property",
+      "source_block_sha256": "18f0d1960634888995d74bee61d8a66b89d6bea1752f8c60a85d616ab176da90",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "e2fafce58c7139334be0338f6a47dfb0cbee95b88c3ec3fc313f562e91b02575",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "8bbf3f3b22788a69d25eea9f83f289f6fd74e65ecaea4977d7fd1dcfd2a31a69",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/remove/Remove1.feature",
+      "scenario": 2,
+      "title": "Remove multiple node properties",
+      "source_block_sha256": "71315d8995cfd8f40f2a9f340527e910b6c05aeb771c41bb27d177e897545587",
+      "support_disposition": "rejected_profile",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/remove/Remove1.feature",
+      "scenario": 3,
+      "title": "Remove a single relationship property",
+      "source_block_sha256": "79e15bf0ab868a4c1cdfcb010de8bd9ee39f43cef526becfa8378964fa8d5bb3",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "72a44f960fefb875801d04e35a7ef2a8870437bec1d4da4fa5669742a9f8269f",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "983a1cc7a053697db7b9a5b287d4b5976c9c2337b5953f9b4599228b1be79f17",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/remove/Remove1.feature",
+      "scenario": 4,
+      "title": "Remove multiple relationship properties",
+      "source_block_sha256": "528d1115b4354d39de10c6a0503383e24df8f96fd334df52010a26dcac2935cf",
+      "support_disposition": "rejected_profile",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/remove/Remove1.feature",
+      "scenario": 5,
+      "title": "Ignore null when removing property from a node",
+      "source_block_sha256": "b91dc9ad05ebb8e6a49f183bbf37700573df16946844dcf08eb69152acdd4b27",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "c455d58241c5f0e32bf845ac62315c3afcc3ff47288c1ecd0a3ac8de6bf9d81b",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/remove/Remove1.feature",
+      "scenario": 6,
+      "title": "Ignore null when removing property from a relationship",
+      "source_block_sha256": "1298243c852503409b82ce392fa3dc3c2c1db7e6f2fad6c183332ccf506c74e9",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "77ccbd2d4fdc35430bf6c4bb1d893b01dd1ed10bf67199dbe9a2ed8ddfd0922d",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "d56773f7a4f6f7d6d8976ddcf7088817f134d06c7d84f3924798b7ce8ba575eb",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/remove/Remove1.feature",
+      "scenario": 7,
+      "title": "Remove a missing node property",
+      "source_block_sha256": "bb6ec1e1c16cf2f68b7450cf18fa23e5fe2f75298b8e2f4daccd9744f14e0cb5",
+      "support_disposition": "rejected_profile",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/remove/Remove2.feature",
+      "scenario": 1,
+      "title": "Remove a single label from a node with a single label",
+      "source_block_sha256": "25d2490c59451cb266e665c50324fccee86c1e373fa258821b6ee810d14087e8",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "e2fafce58c7139334be0338f6a47dfb0cbee95b88c3ec3fc313f562e91b02575",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "a1ca34b4d5925be042e6df99430e18e33b47a2fed81c05fa47d17759d0c80393",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/remove/Remove2.feature",
+      "scenario": 2,
+      "title": "Remove a single label from a node with two labels",
+      "source_block_sha256": "6049b301616b94b8eeb19ea3fe2bd2a570c6089dc0307742a993642bb0de50d8",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "4b6230a15c2772ca17ffd0935a586b26103a45dbc2173f221882dada0081382e",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "0b7d51b248653f4efc618a8cf3f7c25313049497ebca17a8921c834b2cc9aff2",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/remove/Remove2.feature",
+      "scenario": 3,
+      "title": "Remove two labels from a node with three labels",
+      "source_block_sha256": "36f4c8f68bcaf63f6ac06c456841f8e127cfb46d23376d1ac147cdcc38f42afe",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "dd67f472af135d07d87a94e09c91637fdf74ae5df225a00709a66b676f54abbc",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "cb99a2d25b4c44f8d08435c56d88af39b97a19a6e9fc9e27aa1de40ddabd699c",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/remove/Remove2.feature",
+      "scenario": 4,
+      "title": "Remove a non-existent node label",
+      "source_block_sha256": "088fbbf620d33a626262994ab9dbc6c819d8820622337402af219e436e435977",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "28f945b3628a79a31c78effe056a186a92bf51af82e6b7c6877065bdc1fe984a",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "0f75987f50281f5311d625a2ecea31fd2a3879d9c0d668c4d08a91024ba3da4f",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/remove/Remove2.feature",
+      "scenario": 5,
+      "title": "Ignore null when removing a node label",
+      "source_block_sha256": "c99bc6747c014150ad875b7d4ad10a147e05059b718e2ed791a7fb3d2618575f",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "5095ac5264323c880b1601c61dbd9693934d87b1f46c39781622d74972249278",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/remove/Remove3.feature",
+      "scenario": 1,
+      "title": "Limiting to zero results after removing a property from nodes affects the result set but not the side effects",
+      "source_block_sha256": "7b2a1ef673681ff0677f44b550fca621513fb3da0db316e37716b4baa658a7ea",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "006eb461e4d5e3db1f894c0132582b6531bcc06104c9996a8875b91890678cac",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "0b4d54aaec11d3de076dbf8ce330078cba6aa98f52ffe93dea7e2d77547f19b0",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/remove/Remove3.feature",
+      "scenario": 2,
+      "title": "Skipping all results after removing a property from nodes affects the result set but not the side effects",
+      "source_block_sha256": "86d1b4fb6d8fe2533a4a23621d471e0e90ec285b34ea7c0b3c86d2a4ab3e4305",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/remove/Remove3.feature",
+      "scenario": 3,
+      "title": "Skipping and limiting to a few results after removing a property from nodes affects the result set but not the side effects",
+      "source_block_sha256": "0fd809b34cfca7d6182386b7a08f4449ceba8e68d73af008e11b0d162f352472",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/remove/Remove3.feature",
+      "scenario": 4,
+      "title": "Skipping zero results and limiting to all results after removing a property from nodes does not affect the result set nor the side effects",
+      "source_block_sha256": "6ffd8299e859eaca9af6a93cedea770e79950125f15bcdea9f4744364fb625fb",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/remove/Remove3.feature",
+      "scenario": 5,
+      "title": "Filtering after removing a property from nodes affects the result set but not the side effects",
+      "source_block_sha256": "4d8d243249ca21b31519383f0bae9b767a2b248658223f3aeb628e5e616e9860",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/remove/Remove3.feature",
+      "scenario": 6,
+      "title": "Aggregating in `RETURN` after removing a property from nodes affects the result set but not the side effects",
+      "source_block_sha256": "0793a30dffc8b17667d5b88eb28b8a7763095dd2c18e3838e8ff56c1d5359b4f",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/remove/Remove3.feature",
+      "scenario": 7,
+      "title": "Aggregating in `WITH` after removing a property from nodes affects the result set but not the side effects",
+      "source_block_sha256": "55c30f8a35a60fe07f61c6d5af18228bf679301b6b86b2626f08408ac1f6f963",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/remove/Remove3.feature",
+      "scenario": 8,
+      "title": "Limiting to zero results after removing a label from nodes affects the result set but not the side effects",
+      "source_block_sha256": "57b482ec237a35bf785e007caaff2b662adc04e3b525d689509ade7f43dd889e",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/remove/Remove3.feature",
+      "scenario": 9,
+      "title": "Skipping all results after removing a label from nodes affects the result set but not the side effects",
+      "source_block_sha256": "353d2bac3f82f2821dde2e4ac666c0893aedb7b6ff556ead5498cab702e92ebf",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/remove/Remove3.feature",
+      "scenario": 10,
+      "title": "Skipping and limiting to a few results after removing a label from nodes affects the result set but not the side effects",
+      "source_block_sha256": "d765fc6a81227c754b3c8c4c891103e2f5e54ab659eb8a46cb875a2abeac65cf",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/remove/Remove3.feature",
+      "scenario": 11,
+      "title": "Skipping zero result and limiting to all results after removing a label from nodes does not affect the result set nor the side effects",
+      "source_block_sha256": "39941e36277bd2a395c2c0100d0270e93709463beb08a959dd141731e9e69a1d",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/remove/Remove3.feature",
+      "scenario": 12,
+      "title": "Filtering after removing a label from nodes affects the result set but not the side effects",
+      "source_block_sha256": "409936b82d8ceeb24db94d78b68dfea9bd4c4d0a9ff2de1b8099ad6502114a09",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/remove/Remove3.feature",
+      "scenario": 13,
+      "title": "Aggregating in `RETURN` after removing a label from nodes affects the result set but not the side effects",
+      "source_block_sha256": "4d099397b537651cead1256cbb4a78d6bf37a59713a880f94b5526a579b548a6",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/remove/Remove3.feature",
+      "scenario": 14,
+      "title": "Aggregating in `WITH` after removing a label from nodes affects the result set but not the side effects",
+      "source_block_sha256": "2d2efd3ff1325306b35d473559e90bcef8d2b84a264a9986fcef66b76732f38a",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/remove/Remove3.feature",
+      "scenario": 15,
+      "title": "Limiting to zero results after removing a property from relationships affects the result set but not the side effects",
+      "source_block_sha256": "1970891eebab8a518d0c5d2e6acfd2ca431296126e5d4985d136749810cf8447",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "d27f041849772db31a1ee34a6685efe6ab47a2afea47cabcc050900565f9975c",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "a0692b7fb8f338e96194937215628df41c657d09c759464b5fddc89df69e6bc7",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/remove/Remove3.feature",
+      "scenario": 16,
+      "title": "Skipping all results after removing a property from relationships affects the result set but not the side effects",
+      "source_block_sha256": "6c3c6a16adad5ac3a5a55c7a308982fa608fe64e87d4c4e4139cf662cb4c6584",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/remove/Remove3.feature",
+      "scenario": 17,
+      "title": "Skipping and limiting to a few results after removing a property from relationships affects the result set but not the side effects",
+      "source_block_sha256": "48562f46a7b254a25232c0a617e8d4a62e0d4e4044532c3545c7466756a5bf12",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/remove/Remove3.feature",
+      "scenario": 18,
+      "title": "Skipping zero result and limiting to all results after removing a property from relationships does not affect the result set nor the side effects",
+      "source_block_sha256": "419a4a1ea7844c473a27f1b8ad45f293b9bcb332ce8da5858225426e9ca1010c",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/remove/Remove3.feature",
+      "scenario": 19,
+      "title": "Filtering after removing a property from relationships affects the result set but not the side effects",
+      "source_block_sha256": "b09b29bfcfb5b6c460b386e806bab3b10f5af82746f95845662bc07dd655e332",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/remove/Remove3.feature",
+      "scenario": 20,
+      "title": "Aggregating in `RETURN` after removing a property from relationships affects the result set but not the side effects",
+      "source_block_sha256": "f085101198fe3d99735c07f590d5722a4706c484ab37dd8bc146a17c69f18e4e",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/remove/Remove3.feature",
+      "scenario": 21,
+      "title": "Aggregating in `WITH` after removing a property from relationships affects the result set but not the side effects",
+      "source_block_sha256": "c42032b6cc66fe4f1795a3b83498fae6945182f0a2e01a36e324a174fce452f5",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/return/Return5.feature",
+      "scenario": 1,
+      "title": "DISTINCT inside aggregation should work with lists in maps",
+      "source_block_sha256": "c91760abfdb24c4b2084244d780feb844a1b61e48403236983c51d334e1d6e20",
+      "support_disposition": "rejected_profile",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/return/Return5.feature",
+      "scenario": 2,
+      "title": "DISTINCT on nullable values",
+      "source_block_sha256": "b98f1a891905e3616458e8a1cc40d31eeed3598bbc81223a4a4030d820a788bf",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "82a072df7b5493f2a09db84709588cec832b017056d57b3d1101f18c56fcd9bf",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "8fed5394a90e4500560734242b1c3bd88fe26b16dda74f56ab482e2e371deef6",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/return/Return5.feature",
+      "scenario": 3,
+      "title": "DISTINCT inside aggregation should work with nested lists in maps",
+      "source_block_sha256": "39356a3c4ef409f586a4753da1926e672cb7005910523cd7e4dd9791dacb53df",
+      "support_disposition": "rejected_profile",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/return/Return5.feature",
+      "scenario": 4,
+      "title": "DISTINCT inside aggregation should work with nested lists of maps in maps",
+      "source_block_sha256": "6b5fcaad3447916b314b88230bab5bb10d68eac589548644b84c19c90579acc3",
+      "support_disposition": "rejected_profile",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/return/Return5.feature",
+      "scenario": 5,
+      "title": "Aggregate on list values",
+      "source_block_sha256": "18aad0e52af6025b6c1741d30796ff9dfe1f9bb1c837088dacb16df530970d70",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/set/Set2.feature",
+      "scenario": 1,
+      "title": "Setting a node property to null removes the existing property",
+      "source_block_sha256": "29570b80fc4b629f2e17c0c6ab86285ad401481fe6d2aa8fd4a193ee5e18ba85",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "9162587a79e6788999d89b302805e79f8d05370def89617bc439b260f0150278",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "dec328d5ba718f74bbfd4d55f6ae23ca8030bddf3b1f8bf5b1ff6d28c9541321",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/set/Set2.feature",
+      "scenario": 2,
+      "title": "Setting a node property to null removes the existing property, but not before SET",
+      "source_block_sha256": "5746f1383bc8500e2097014602a9032c80b280fef33b88ba28bfeeb7873d4dcc",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "883e7c438d870bc988850163945c6a209fb8c80ebe5514821959146360a0f00b",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "2ab2bfa26fc32d727bd4d37bc54c0e6a6dfe9f6e9e7b06880bb09a91327850a5",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/set/Set2.feature",
+      "scenario": 3,
+      "title": "Setting a relationship property to null removes the existing property",
+      "source_block_sha256": "f05c6e3df23ae6a5e36c1f63cde9a6dac8d05dbf0cec06b06a88a895e0088706",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "d8a63ff3840133cb015d7f34d890f87fb0ae749f4ef3416518d348ded728f36f",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "b45dd2eff4caca581a3c54660375ecece27cc19df77c00f206d9f5bb20ad2d24",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/set/Set3.feature",
+      "scenario": 1,
+      "title": "Add a single label to a node with no label",
+      "source_block_sha256": "09980ea8f5701eba13383dcbedff6df9362d75176f8b3f37fc99f288008c29ac",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "39b1d3a66a1b7bd7c4cf53b5323a8f761dcdfeded0d8cb40e75be60d899efc9e",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "a3e1b24054481db1d6c576f2f9d11d4f923536a44776051e8ad236a9a5b3908d",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/set/Set3.feature",
+      "scenario": 2,
+      "title": "Adding multiple labels to a node with no label",
+      "source_block_sha256": "ccebc353164706f2b01ca9d2babb2c9331fa1b8778b518f42f9626c90adac9d9",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "39b1d3a66a1b7bd7c4cf53b5323a8f761dcdfeded0d8cb40e75be60d899efc9e",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "64462d79980014beb06d472064206f4f273c00eaf6aec1745057e418f0ecb3b6",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/set/Set3.feature",
+      "scenario": 3,
+      "title": "Add a single label to a node with an existing label",
+      "source_block_sha256": "e992a958446335400e0ac5cc0451d7514ca4463881edbfe0b1f587a2ceb789de",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "57ab0376033386635ea3ea21e062b0bfa9737a685606ac17dc32af2fdf492b39",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "3d0bd41cc03993cf1f1bb1f0ef61102bd409345ae8f0a1df6f162c3fd908248f",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/set/Set3.feature",
+      "scenario": 4,
+      "title": "Adding multiple labels to a node with an existing label",
+      "source_block_sha256": "bfada4d2ba4431871be58f6885368f3683c97e4a3f5a69f3ad28f3eb3dd324de",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "57ab0376033386635ea3ea21e062b0bfa9737a685606ac17dc32af2fdf492b39",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "64462d79980014beb06d472064206f4f273c00eaf6aec1745057e418f0ecb3b6",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/set/Set3.feature",
+      "scenario": 5,
+      "title": "Ignore whitespace before colon 1",
+      "source_block_sha256": "91dcca3cfa2450c85c1c0ede42e9db87eb95208c9f69eb49a6829ff6bb266b8e",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "39b1d3a66a1b7bd7c4cf53b5323a8f761dcdfeded0d8cb40e75be60d899efc9e",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "943e810014d5baa35642b69f5c99e9d8b9122061f7605494a499dd2b2006baf7",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/set/Set3.feature",
+      "scenario": 6,
+      "title": "Ignore whitespace before colon 2",
+      "source_block_sha256": "3346cf1d411d7e16f07d095a08c6a7c0b4a1f67327cdba62868622782b408dcd",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "39b1d3a66a1b7bd7c4cf53b5323a8f761dcdfeded0d8cb40e75be60d899efc9e",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "029b9ebd36c09031fedc9d277b7048181f660f286a3634b2f3c46dc409c280c8",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/set/Set3.feature",
+      "scenario": 7,
+      "title": "Ignore whitespace before colon 3",
+      "source_block_sha256": "670acdaada9a373b1fdd220575246844c8de24ab5434de853ac64a17f068a7ca",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "39b1d3a66a1b7bd7c4cf53b5323a8f761dcdfeded0d8cb40e75be60d899efc9e",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "79323a135d1c51db7eb8a9ac708efb407524324ca917e840489818b92fec9dc5",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/set/Set3.feature",
+      "scenario": 8,
+      "title": "Ignore null when setting label",
+      "source_block_sha256": "6c9146d11947c6eeecdee4266adf2a24e9e897fdc66cc9294a6caf13b967b8e0",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "f3df699c63466f110cda83fcd49daf819f9ffd707e6e4b3830a80b7438542cc1",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/set/Set6.feature",
+      "scenario": 1,
+      "title": "Limiting to zero results after setting a property on nodes affects the result set but not the side effects",
+      "source_block_sha256": "82d6b27387dc8839f973c3c2838d9d36d5c3d99a0a3e4cbe26f57502cc5fb76c",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/set/Set6.feature",
+      "scenario": 2,
+      "title": "Skipping all results after setting a property on nodes affects the result set but not the side effects",
+      "source_block_sha256": "16e9fbb19c518f04dc74d8ed29fc251c25d9d3ecea35e1c27b57cd8c710e8359",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/set/Set6.feature",
+      "scenario": 3,
+      "title": "Skipping and limiting to a few results after setting a property on nodes affects the result set but not the side effects",
+      "source_block_sha256": "36c569d19ec686755b976e1cf178a89bc154677ac01ad5c00d201531c5da4a7d",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/set/Set6.feature",
+      "scenario": 4,
+      "title": "Skipping zero results and limiting to all results after setting a property on nodes does not affect the result set nor the side effects",
+      "source_block_sha256": "72fad23f23a9bc7034482c7245545f200229f071c4867d2592a93b96fe086e22",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/set/Set6.feature",
+      "scenario": 5,
+      "title": "Filtering after setting a property on nodes affects the result set but not the side effects",
+      "source_block_sha256": "094fc5f1d599ed7a01bc93c0da93650d66abe40fed913e9bd89deb6311fc8ee6",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "14a39d91f78cbc1349c0655697f737b63306957aece0b151d37ec279638d1f29",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "cd4a8791bcaf964ba35d6bf9f37b17d4227288c1edb06192bae4c22fe3ef12e6",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/set/Set6.feature",
+      "scenario": 6,
+      "title": "Aggregating in `RETURN` after setting a property on nodes affects the result set but not the side effects",
+      "source_block_sha256": "296dcae9c2dec7e9cdcf965c869ecc336f99c78d7963d826e97f450851175869",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/set/Set6.feature",
+      "scenario": 7,
+      "title": "Aggregating in `WITH` after setting a property on nodes affects the result set but not the side effects",
+      "source_block_sha256": "99dbb5a6a1f9dba9febc93fcae4ef2632b25c00813fbb60ac42f5d4addc7f7cd",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/set/Set6.feature",
+      "scenario": 8,
+      "title": "Limiting to zero results after adding a label on nodes affects the result set but not the side effects",
+      "source_block_sha256": "c4fa7b3b4a775393506047ab7e5cf56aa03337317e895050f26dcb87f9c30c83",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/set/Set6.feature",
+      "scenario": 9,
+      "title": "Skipping all results after adding a label on nodes affects the result set but not the side effects",
+      "source_block_sha256": "18c95b1b73e5d656b5bc2ea35b30632ee665a6acdc61734e1fadcfa6b78e5507",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/set/Set6.feature",
+      "scenario": 10,
+      "title": "Skipping and limiting to a few results after adding a label on nodes affects the result set but not the side effects",
+      "source_block_sha256": "aa7a447e356fe78a647799797e9580c81766f3ba5603f61666053c3ee3aa07d9",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/set/Set6.feature",
+      "scenario": 11,
+      "title": "Skipping zero result and limiting to all results after adding a label on nodes does not affect the result set nor the side effects",
+      "source_block_sha256": "50dd9c9611cb4e3dd3ecdcdbcc24a9724f5e55d6b53d08a9957adc5258c3c8c4",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/set/Set6.feature",
+      "scenario": 12,
+      "title": "Filtering after adding a label on nodes affects the result set but not the side effects",
+      "source_block_sha256": "bc30dffeefa8a12af69c820f24119ee9ddecd01cf70d0014d251eaa159d45209",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/set/Set6.feature",
+      "scenario": 13,
+      "title": "Aggregating in `RETURN` after adding a label on nodes affects the result set but not the side effects",
+      "source_block_sha256": "c9960b5a148544ca04a916e625c33e30a82d6a519ec9e256908fd061967199a0",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/set/Set6.feature",
+      "scenario": 14,
+      "title": "Aggregating in `WITH` after adding a label on nodes affects the result set but not the side effects",
+      "source_block_sha256": "736a8cd706936e1262f579917f65627eddf87f090653d52d34f6c295460104c8",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/set/Set6.feature",
+      "scenario": 15,
+      "title": "Limiting to zero results after setting a property on relationships affects the result set but not the side effects",
+      "source_block_sha256": "f6b7b56ca017a2074f0497b9d8979bf494b0e3b0f8440cd835e9575a661b0a88",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/set/Set6.feature",
+      "scenario": 16,
+      "title": "Skipping all results after setting a property on relationships affects the result set but not the side effects",
+      "source_block_sha256": "78734a6ea804ed7c79805d38e30148307d5b7cb32af29eefd5fc4639ae6af182",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/set/Set6.feature",
+      "scenario": 17,
+      "title": "Skipping and limiting to a few results after setting a property on relationships affects the result set but not the side effects",
+      "source_block_sha256": "f9e36e5756b7298d9827130ca421ae37fd83f713144c510c850798dd25a3d8dc",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/set/Set6.feature",
+      "scenario": 18,
+      "title": "Skipping zero result and limiting to all results after setting a property on relationships does not affect the result set nor the side effects",
+      "source_block_sha256": "a9436baa5c2855ff6d36df7e9072ad1d64bc948e39f0645cf4809743b1c8754a",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/set/Set6.feature",
+      "scenario": 19,
+      "title": "Filtering after setting a property on relationships affects the result set but not the side effects",
+      "source_block_sha256": "967ebb0449228169873429abcecbd2bf59608e9257015aaa27df54a0f5747e4e",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/set/Set6.feature",
+      "scenario": 20,
+      "title": "Aggregating in `RETURN` after setting a property on relationships affects the result set but not the side effects",
+      "source_block_sha256": "18f57e6583082853f752ec21fd901903346f861d8c708da6f7cf2da0aac4371a",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/set/Set6.feature",
+      "scenario": 21,
+      "title": "Aggregating in `WITH` after setting a property on relationships affects the result set but not the side effects",
+      "source_block_sha256": "ae77b7c32953547df5f02c78c7856e769e68bf6f01650d271b75187b4600a4e8",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/with/With6.feature",
+      "scenario": 1,
+      "title": "Implicit grouping with single expression as grouping key and single aggregation",
+      "source_block_sha256": "4afa7b1b94d1403773e0b48112ce08fb15d5b27d3cceb9de290972b4ab2c03a3",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "638aa60a2984b97e99443ee690ac655ad66c72f3871806c48467d1522bda8fc9",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "715dd72128e0d126ff2d9c5dd64f7beaaecdfd763031cb72e7442238f6c798b0",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/with/With6.feature",
+      "scenario": 2,
+      "title": "Implicit grouping with single relationship variable as grouping key and single aggregation",
+      "source_block_sha256": "a32e32f70e0c2aa97602031a5f8adcec3f6d5cc907c29d3ae8f5d713d96095e9",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "1ce78d4b0f1a2ada8516f7be1870c034f34fa4a4bb4dfdef258929e0d038b9d4",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "a9d92ca6ae8d0a96b8ddfd3e3131b2b8a4e4c0f7667acbc1f10687fc1389c189",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/with/With6.feature",
+      "scenario": 3,
+      "title": "Implicit grouping with multiple node and relationship variables as grouping key and single aggregation",
+      "source_block_sha256": "706b618299b1470a7f13a4808b6eb1c8dc18a41a0e83a66feee984d440850e23",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "1ce78d4b0f1a2ada8516f7be1870c034f34fa4a4bb4dfdef258929e0d038b9d4",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "15c33ca336581837f4948f752dcbe331a187af45436da95fa76045758cf69ef2",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/with/With6.feature",
+      "scenario": 4,
+      "title": "Implicit grouping with single path variable as grouping key and single aggregation",
+      "source_block_sha256": "f9f7d7e6b4593c007d87c219bcd058a8c42294c775730cd3e369539af2e862c4",
+      "support_disposition": "rejected_profile",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/with/With6.feature",
+      "scenario": 5,
+      "title": "Handle constants and parameters inside an expression which contains an aggregation expression",
+      "source_block_sha256": "3598d5b3d956aff76b535352497e48a3d59903daccc6948d6f20d0a9071f8627",
+      "support_disposition": "rejected_profile",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/with/With6.feature",
+      "scenario": 6,
+      "title": "Handle projected variables inside an expression which contains an aggregation expression",
+      "source_block_sha256": "49567bd4df3a5cd81afb4e50666d18642d7bd05c3fefb23966c0609c145e891b",
+      "support_disposition": "rejected_profile",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/with/With6.feature",
+      "scenario": 7,
+      "title": "Handle projected property accesses inside an expression which contains an aggregation expression",
+      "source_block_sha256": "bede7ddf53152e4c5650f4c937b964a89b363565947ff74bdb02d95885e6a8ff",
+      "support_disposition": "rejected_profile",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/with/With6.feature",
+      "scenario": 8,
+      "title": "Fail if not projected variables are used inside an expression which contains an aggregation expression",
+      "source_block_sha256": "e7d75aeba58702ba9999b98ee81300874fa3076733d423d2657b1eed4de7143d",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "clauses/with/With6.feature",
+      "scenario": 9,
+      "title": "Fail if more complex expression, even if projected, are used inside expression which contains an aggregation expression",
+      "source_block_sha256": "1d16ca703a4238e2b8f6b601d935fb75045d6647fc17ac800ab8d3dad4bc46d9",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/aggregation/Aggregation1.feature",
+      "scenario": 1,
+      "title": "Count only non-null values",
+      "source_block_sha256": "5efe73fe0f539ec111539a12dea59e2d1d99c788e8481902f65f762bd0a7c737",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "271075281f892c262de9afe93ac538f3edf709ac09e75c18058840bb90a3f7d0",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "0490f3e0498fe76f7a36738a84e2f43dc2ab5ba9d0c904e24bc743bf833c0d90",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/aggregation/Aggregation1.feature",
+      "scenario": 2,
+      "title": "Counting loop relationships",
+      "source_block_sha256": "d8507bcedb2e8b27a3b75cec23594dc5d7f930729ac297d9b97b1de657655bc1",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "7b0e97f57ceb5b5cbf38f6aec9550b59932495a733214bcb982010c4582e5ac6",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "a0687bc53f9a2c89e6a24508db3fbf4e2a4414eda0c73f24c45e5a111a3faa2e",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/aggregation/Aggregation5.feature",
+      "scenario": 1,
+      "title": "`collect()` filtering nulls",
+      "source_block_sha256": "917d2621d2e345376757020a7256aaa62b194452e6796b3d320feb709d4ed4b4",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "39b1d3a66a1b7bd7c4cf53b5323a8f761dcdfeded0d8cb40e75be60d899efc9e",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "8d4c948f03cdb4b189e2e332b35dc1f8f1fd0aee9e5ea5d259beb97436e58ad1",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/aggregation/Aggregation5.feature",
+      "scenario": 2,
+      "title": "OPTIONAL MATCH and `collect()` on node property",
+      "source_block_sha256": "5810374525864ac6d9a1ac9419dcf8de2d1490c3608912f717441826e060e5f8",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "d1f47b6710da313234a5833d0209a730ab49fed692ca8473478bcd1ca2ac91c7",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "004667f7700708c37eb69c640ba4e9d4eb3f0680f32ae17700c3ea30fc2110c4",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/aggregation/Aggregation8.feature",
+      "scenario": 1,
+      "title": "Distinct on unbound node",
+      "source_block_sha256": "efa9c231e72e75e6b703cc7c808088118b5d7bbdad5380c28314cba06824ba39",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "5e3ca23da4a60d96da51b380f16d80862c070593e53203f6b3b657107b05e2a4",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/aggregation/Aggregation8.feature",
+      "scenario": 2,
+      "title": "Distinct on null",
+      "source_block_sha256": "38db69bbb891f8a82759bae10d70d75671eaff14662ddb024b489fe70af99143",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "39b1d3a66a1b7bd7c4cf53b5323a8f761dcdfeded0d8cb40e75be60d899efc9e",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "43e7e2221e70c77363ca69e95c2045e0c1d7baef0c9a950d351fd90c70b34a7b",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/aggregation/Aggregation8.feature",
+      "scenario": 3,
+      "title": "Collect distinct nulls",
+      "source_block_sha256": "58cf48225b4b6b11b78a1697728768bac70c74f4eb1ccd64a1573dee01692256",
+      "support_disposition": "rejected_profile",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/aggregation/Aggregation8.feature",
+      "scenario": 4,
+      "title": "Collect distinct values mixed with nulls",
+      "source_block_sha256": "f8b75dfe35b989327967bfa918c30717ed492bfbc3b78e797592871c5fb9fb68",
+      "support_disposition": "rejected_profile",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/boolean/Boolean1.feature",
+      "scenario": 1,
+      "title": "Conjunction of two truth values",
+      "source_block_sha256": "667d57d0e1a6e161da62619a2fb027e7a3bfefeb354c1a5e52f99ac8b2f504df",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "131d6405e24a25ec519f2d8c9001208760f9014e66e6ed283c01e0f90516bfcf",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/boolean/Boolean1.feature",
+      "scenario": 2,
+      "title": "Conjunction of three truth values",
+      "source_block_sha256": "599ba9eb7fddfd3711c87c0f47e881a4cce1c2783cbf596f6e25aaa75d865d3a",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/boolean/Boolean1.feature",
+      "scenario": 3,
+      "title": "Conjunction of many truth values",
+      "source_block_sha256": "4bca4c668aa4958f318d75767b42fed4b0960ae6160889d6c12d4bb2ef1f13e6",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/boolean/Boolean1.feature",
+      "scenario": 4,
+      "title": "Conjunction is commutative on non-null",
+      "source_block_sha256": "2f76bc161c1e8b5ba2d293b633533da2a5f3c61e35b39d2c4c982b8f18209937",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/boolean/Boolean1.feature",
+      "scenario": 5,
+      "title": "Conjunction is commutative on null",
+      "source_block_sha256": "9478b64eca77e4746eec89113f1bf867a1452bc79c0477bc18a626cfd48834bf",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/boolean/Boolean1.feature",
+      "scenario": 6,
+      "title": "Conjunction is associative on non-null",
+      "source_block_sha256": "64f7cda4bdcd44b10442a3a6a3c217324affb90ff036fb76e7eb5a786b0cdd33",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/boolean/Boolean1.feature",
+      "scenario": 7,
+      "title": "Conjunction is associative on null",
+      "source_block_sha256": "fb6d6f54f5fa83e3d148a2961701a62297135f948c8ef62e277d31f588641a3b",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/boolean/Boolean1.feature",
+      "scenario": 8,
+      "title": "Fail on conjunction of at least one non-booleans",
+      "source_block_sha256": "150dc3a66841364df03dcc6c87d733415903c0f43a4adeebfeeac15cd070a9be",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/boolean/Boolean2.feature",
+      "scenario": 1,
+      "title": "Disjunction of two truth values",
+      "source_block_sha256": "854ccda36a7e0cbcc57c1b1645f24db5d2582cf64920bcd5f4660b35e093b099",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "f6f176cb964efe7dad908021a717bd1ab6f93ee65ded99f0ac5aeba8c5343cde",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/boolean/Boolean2.feature",
+      "scenario": 2,
+      "title": "Disjunction of three truth values",
+      "source_block_sha256": "270666d86abc829599ddf35089e1d95e86cae5206fe406ccb874adbfe208aaa6",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/boolean/Boolean2.feature",
+      "scenario": 3,
+      "title": "Disjunction of many truth values",
+      "source_block_sha256": "2885a19a9bc8c219b604e54c044b2d23d29455df21efc64c190016129d061ce7",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/boolean/Boolean2.feature",
+      "scenario": 4,
+      "title": "Disjunction is commutative on non-null",
+      "source_block_sha256": "61c6f5dcff65e03945cc08a22a8a280c59dd8f13fee430c37426d5240c98ec96",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/boolean/Boolean2.feature",
+      "scenario": 5,
+      "title": "Disjunction is commutative on null",
+      "source_block_sha256": "19f9c630ffa0ca576253d9d4236c194108d5aed45f7f1953ebf4854225566116",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/boolean/Boolean2.feature",
+      "scenario": 6,
+      "title": "Disjunction is associative on non-null",
+      "source_block_sha256": "bc6f2616f4b4b5deb2e408399297db7d93faf07894716ececf07b5b88558eee7",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/boolean/Boolean2.feature",
+      "scenario": 7,
+      "title": "Disjunction is associative on null",
+      "source_block_sha256": "0eca1ead5a7ac357c75c8e4ba18e5d5cb6aa88285d14f15bb03f88aadfb55490",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/boolean/Boolean2.feature",
+      "scenario": 8,
+      "title": "Fail on disjunction of at least one non-booleans",
+      "source_block_sha256": "bb7aaa7de304035deeacd67dbaf850cb5a8609187af328f3be8587f181a5a98f",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/boolean/Boolean3.feature",
+      "scenario": 1,
+      "title": "Exclusive disjunction of two truth values",
+      "source_block_sha256": "8407beb154b913a09cc9bef58e65f750d561663f65b2615fd300e9224c1c7427",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "83acd888abb7460af4e04771e064410a6368f6959f19ae3481a1567772d57a7b",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/boolean/Boolean3.feature",
+      "scenario": 2,
+      "title": "Exclusive disjunction of three truth values",
+      "source_block_sha256": "64fdfafcf875c5386386d892bd4902c5a15b5975fe051b751271664ad4035be6",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/boolean/Boolean3.feature",
+      "scenario": 3,
+      "title": "Exclusive disjunction of many truth values",
+      "source_block_sha256": "d1888ed7d32659fae60632e61136ec798019996b42483cb9bdf0eefa3e14287b",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/boolean/Boolean3.feature",
+      "scenario": 4,
+      "title": "Exclusive disjunction is commutative on non-null",
+      "source_block_sha256": "1a41f08a9f85884798f3369368570e754267e666624fc3a1f8124b340829e0be",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/boolean/Boolean3.feature",
+      "scenario": 5,
+      "title": "Exclusive disjunction is commutative on null",
+      "source_block_sha256": "87665c3f469260c24fc61e3226223ab1b329853d80a16c4295e2b32920092f3a",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/boolean/Boolean3.feature",
+      "scenario": 6,
+      "title": "Exclusive disjunction is associative on non-null",
+      "source_block_sha256": "29ebf36a01a73074d0b845fea2131ac6ac574cf28073ce1c6c256e9745833236",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/boolean/Boolean3.feature",
+      "scenario": 7,
+      "title": "Exclusive disjunction is associative on null",
+      "source_block_sha256": "b5bb2837628d4c6d4fc974672a1cfd60c2d654302c932debd727090fc649a360",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/boolean/Boolean3.feature",
+      "scenario": 8,
+      "title": "Fail on exclusive disjunction of at least one non-booleans",
+      "source_block_sha256": "b4aa147c827aa67376a62c94aa192ec9b1e57aad1553d59a49e4cc1303a3798e",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/boolean/Boolean4.feature",
+      "scenario": 1,
+      "title": "Logical negation of truth values",
+      "source_block_sha256": "3a1e6da3e7ec7a9d619db414ae45706575ad729375329f8a73f9e721f14df4d4",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "e0b6fbb4c9c7e9df3dec8babe6fe942ff8846dc9823f20d4238680f600943790",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/boolean/Boolean4.feature",
+      "scenario": 2,
+      "title": "Double logical negation of truth values",
+      "source_block_sha256": "0167776e2ca8c8b2558d1569872cb061be875f52eba0778d863491caf10d00a2",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/boolean/Boolean4.feature",
+      "scenario": 3,
+      "title": "NOT and false",
+      "source_block_sha256": "e6b3e5bff80ccb9619d66f2845d998945188127041a366c416c6d62bf89fffd3",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/boolean/Boolean4.feature",
+      "scenario": 4,
+      "title": "Fail when using NOT on a non-boolean literal",
+      "source_block_sha256": "5b7aaeeef94acf112d59f9a127c746779c8d38f596ae59d287e2a8f0baadd497",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/list/List1.feature",
+      "scenario": 1,
+      "title": "Indexing into literal list",
+      "source_block_sha256": "a172620a8e0482ca110aa2e238e09fe426d25e7eb383eb2d4e947205198b95c6",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "91d94deda00f39099b8dcfb4a0a88f796e1bb04031c206b1a7ab38aec1bc9f38",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/list/List1.feature",
+      "scenario": 2,
+      "title": "Indexing into nested literal lists",
+      "source_block_sha256": "ef576726ef3c51c209d1a9feb056328e14a77f39d459a9166aa63d96a2c4d90d",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "de9e72519d9ee8e0a452ac4bc1e3ba7616e5a0a62024981cdad99017225f3704",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/list/List1.feature",
+      "scenario": 3,
+      "title": "Use list lookup based on parameters when there is no type information",
+      "source_block_sha256": "57924370a124b8b141456783130fee2f5f9791ec0f68e2a48079549017a2f3fd",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "08edcd56a7ed22226a0009857d2e2571a70fbcc4103da4b8396dfb95bbdf7b43",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/list/List1.feature",
+      "scenario": 4,
+      "title": "Use list lookup based on parameters when there is lhs type information",
+      "source_block_sha256": "f1e889417ead5f46b59df22fcaadf65792691b440e013d7c62670557279e3eab",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "a778ef27f6e1a905626753525dcf6c7ff82763fa4ff9aceb3e993f05e72e9ce2",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/list/List1.feature",
+      "scenario": 5,
+      "title": "Use list lookup based on parameters when there is rhs type information",
+      "source_block_sha256": "bc40e735677425908e1a80d2f901d3abedaafa80032baf72e487ff4b515b22fb",
+      "support_disposition": "rejected_profile",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/list/List1.feature",
+      "scenario": 6,
+      "title": "Fail when indexing a non-list #Example: <exampleName>",
+      "source_block_sha256": "4d675aa39297147f771cd81552cc0c681c3efd2d77e127a6616f6251fbbcf991",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/list/List1.feature",
+      "scenario": 7,
+      "title": "Fail when indexing a non-list given by a parameter #Example: <exampleName>",
+      "source_block_sha256": "168fe3c27860f649e3df7186453e0bafb815e95e6106b8d34b32bb137d4a0fa7",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/list/List1.feature",
+      "scenario": 8,
+      "title": "Fail when indexing with a non-integer #Example: <exampleName>",
+      "source_block_sha256": "0856b9f8dde7ef92205868ec3757cd3021b6d7bb7063a0c7b57d9d4f44c79b44",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/list/List1.feature",
+      "scenario": 9,
+      "title": "Fail when indexing with a non-integer given by a parameter #Example: <exampleName>",
+      "source_block_sha256": "2d0121d411c36ec80ea6df01aec180c761c34f147c697d1d707ed8a2a7aa30db",
+      "support_disposition": "not_selected",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/list/List3.feature",
+      "scenario": 1,
+      "title": "Equality between list and literal should return false",
+      "source_block_sha256": "c8d44f1bf9b420aa065e8c34fec0aa869912e81a6594f0eeddc9f07717fd52cf",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "e13850a9fefa69c2c2eb08591f63e7e11de66d779d8c542193d48731328ede2c",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/list/List3.feature",
+      "scenario": 2,
+      "title": "Equality of lists of different length should return false despite nulls",
+      "source_block_sha256": "833de0921e444b5bd3badb42c67f4cb993c044ef8f7242a2c474ca434dfa6fe4",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "02ff1717436da27a739dfa7592c19f061d6466cd86aa45943ca35a76f8c7b44a",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/list/List3.feature",
+      "scenario": 3,
+      "title": "Equality between different lists with null should return false",
+      "source_block_sha256": "12613dae58559862606fc6cda95637f3c977e4dd0f2af03dd122b2c55d01f47d",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "ba02e2a0ff5ff5ce70dc918c52859b6cbda1c8614dcfbaa2dd57e698580db456",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/list/List3.feature",
+      "scenario": 4,
+      "title": "Equality between almost equal lists with null should return null",
+      "source_block_sha256": "7da1aabb7f1aaddf9bd4a13195c533450b26f118cc475eb5894a35bff15c19e2",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "b3db6443170b73c449a8e5b6eb5cf8db34a795891df05b4672d9e0d4ba85d514",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/list/List3.feature",
+      "scenario": 5,
+      "title": "Equality of nested lists of different length should return false despite nulls",
+      "source_block_sha256": "e914490953be8ade5a8402989f7007e9b9fbe6e61643e75bc4c0c5721494ebeb",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "6f6b994b94b205a261a82c6aff3bba3fb868ae4c4e152ea1f5c927089835f92b",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/list/List3.feature",
+      "scenario": 6,
+      "title": "Equality between different nested lists with null should return false",
+      "source_block_sha256": "f7bc727a92527ef1c78bcee706ae6f6df2fbba9cd4dbb1aed17a97c039b83b6d",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "6664c552eb1201fa4d1c4b1dec23dcb285caebf5750029e38503de109dac4f9b",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/list/List3.feature",
+      "scenario": 7,
+      "title": "Equality between almost equal nested lists with null should return null",
+      "source_block_sha256": "21c39c493ed19072d80267120fc8f6eac12fa09d47e668c36c53f8b855b867f5",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "bfa5368b7d27910d90e08511ac07763097daf1cfaadc24c0297937c71e5f2ecf",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/null/Null1.feature",
+      "scenario": 1,
+      "title": "Property null check on non-null node",
+      "source_block_sha256": "c24d2ea5a7f7156ca9fa507293bfa6230cf8f80af8f40d8f923dbdcf1f6cfb26",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "f7f77731ac7e9b007daf3e50871e15117b5c2519172ca801f6e114f2a3e59b69",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "07872a4d43c3aea721858d32cec64796ce4ff007ef6f806ef500590cddd24ebf",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/null/Null1.feature",
+      "scenario": 2,
+      "title": "Property null check on optional non-null node",
+      "source_block_sha256": "9d27be732a55f7b7fb812fabcb2556ad8898ab270e10892f79df177851395475",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "f7f77731ac7e9b007daf3e50871e15117b5c2519172ca801f6e114f2a3e59b69",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "c0ec5c5ea536aef8066fce40bdb0560dd16ad548935d76f18917c9c13b29813a",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/null/Null1.feature",
+      "scenario": 3,
+      "title": "Property null check on null node",
+      "source_block_sha256": "1ab22e25454559587c2ab25e63dd175f03ad6402e002d9b1581ab0dfd811969d",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "b007b64554212c8c2a21eb6e30b1ddb7887c69c8eddd3d83a8316e52d3fff116",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/null/Null1.feature",
+      "scenario": 4,
+      "title": "A literal null IS null",
+      "source_block_sha256": "a2bd6416d8eac9fb28046d94abedff5afd70a06750595e76a49b822363dd119e",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "query",
+            "query_sha256": "248b20c9b9c346e112ff0e5bd6e6dd92c88b87277f028e44820f2aa206e0e422",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/null/Null1.feature",
+      "scenario": 5,
+      "title": "IS NULL on a map",
+      "source_block_sha256": "ee075c4a8ea42f5feaa2ab7dcf8540de6843795faf8c64563e8b7c75a0109718",
+      "support_disposition": "rejected_profile",
+      "binding": {
+        "state": "unexecuted"
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    },
+    {
+      "feature": "expressions/null/Null1.feature",
+      "scenario": 6,
+      "title": "IS NULL is case insensitive",
+      "source_block_sha256": "c899aaab880179ac953542b296e646ebf0a62d4eca29f456b6690bd25bac4ed8",
+      "support_disposition": "supported",
+      "binding": {
+        "state": "passing",
+        "evidence": "selected_original_statements_bind_without_claiming_execution",
+        "statements": [
+          {
+            "phase": "setup",
+            "query_sha256": "b048080d5e83b7e7518e9a003f2141ccd5300cc777035c81eb38f2c9468bbc00",
+            "expected_binding": "bind"
+          },
+          {
+            "phase": "query",
+            "query_sha256": "85f1a5719ad56dc2f55405dddcc9ef2cabc650d95204a77fce127bfc75cffa09",
+            "expected_binding": "bind"
+          }
+        ]
+      },
+      "execution": {
+        "state": "unexecuted",
+        "evidence": null
+      }
+    }
+  ]
+}

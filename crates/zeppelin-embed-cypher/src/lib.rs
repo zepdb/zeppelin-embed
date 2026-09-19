@@ -14,12 +14,16 @@
 )]
 
 mod ast;
+mod binding;
 mod lexer;
 mod parser;
 mod resources;
+mod shared_resources;
 
 pub use ast::*;
+pub use binding::*;
 pub use resources::*;
+pub use shared_resources::{COMPILER_SCRATCH_BYTES, compile_in};
 
 /// A half-open UTF-8 byte range in the original query.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -37,6 +41,14 @@ pub enum ErrorKind {
     InvalidRange,
     DuplicateProperty,
     InvalidLimits,
+    UnknownVariable,
+    DuplicateVariable,
+    Parameter,
+    Type,
+    RelationshipUniqueness,
+    DeletedEntity,
+    SearchContext,
+    BindingInvariant,
     Limit(LimitKind),
     Resource(ResourceError),
 }

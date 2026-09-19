@@ -1,10 +1,11 @@
-# Internal Cypher syntax frontend
+# Internal Cypher frontend
 
-This dependency-free workspace crate parses the accepted first-release syntax
-profile in `docs/graph/plans/cypher.md`. It does not bind names or parameter
-values, validate entity types, execute queries, or expose a reusable public
-prepared-query API. Those tasks remain in the compiler/binder and typed core
-integration tickets. In particular, a parsed query is not an executable plan.
+This workspace crate parses and binds the accepted first-release profile in
+`docs/graph/plans/cypher.md`. Its only production dependency is the approved
+internal core crate; it adds no third-party package. A successful parse is syntax
+admission, and a successful binding is a typed, source-preserving description.
+Neither grants execution, writer admission, or a reusable prepared-query API.
+General read, write and search operator lowering/execution remain ZE-56/57/58.
 
 `parse` applies the default limits and a 24 MiB conservative allocation budget.
 `parse_with` accepts tighter `CompileLimits` and a caller-supplied `Resources`
@@ -15,8 +16,8 @@ then validates UTF-8. The text path owns a charged copy of its input.
 The maximums are 65,536 input bytes, 8,192 tokens, 4,096 syntax nodes, 64 active
 expression parser frames, 256 distinct named parameters, 256 explicit projection
 items, 16 nested list literals, and 16 path hops. A caller cannot widen these
-limits. Expanded `*` column counts, parameter-value list limits and semantic
-limits still require the binder and execution admission. Arena nodes and
+limits. Expanded `*` column counts and parameter-value list limits are checked by
+the binder; final typed operator/work limits also require execution admission. Arena nodes and
 auxiliary lists use fallible reservations; capacity growth, strings and source
 copies are charged before allocation. Charges accumulate conservatively even
 when scratch storage is released. `Budget` also accepts a shared atomic cancel
@@ -26,7 +27,7 @@ The lexer polls within comments, identifiers, numbers and quoted strings.
 Parsing polls on every consumed token and allocated node. `Ast::visit` walks
 postorder iteratively with cancellation; AST edges contain only `AstId`s, so
 walkers and destruction need no recursive ownership. Lexical `TextId`, syntax
-`AstId` and future core IDs are separate types. Spans are half-open UTF-8 byte
+`AstId` and core IDs are separate types. Spans are half-open UTF-8 byte
 ranges into `Ast::source`; error line/scalar-column rendering is lazy and polled.
 
 The AST retains information for later binding without catalog/store access:
@@ -56,7 +57,7 @@ compound/nested aggregates, unnamed WITH expressions, invalid finite ranges,
 whole-map property parameters, writes mixed with search, and reading clauses
 after updates. Type-dependent restrictions, variable scope/rebinding, aliases,
 YIELD signatures/provenance, deleted-entity results and parameter bindings remain
-binder/runtime checks; their parse success is not a support/conformance claim.
+binder/runtime checks; parse success alone is not their acceptance evidence.
 
 Source adaptation: `src/lexer.rs`, `src/parser.rs` and `src/ast.rs` follow selected
 reviewed portions of Shopify/cypher-parser at
@@ -74,10 +75,54 @@ them. `scripts/cypher-parser-fixtures.py <pinned-checkout>` verifies the source
 objects and exact excerpt bytes; `--write` regenerates this fixture. The parser
 checks 153 accepted inputs and two original InvalidParameterUse inputs. It does
 not run their result/error semantics or state effects, and establishes no TCK
-conformance. The original scenario/execution manifest remains ZE-59's work.
+conformance. The binding manifest described below separately records supported
+coordinates and binding results; original scenario execution remains pending.
 
 `fuzz/fuzz_targets/cypher_parser.rs` exercises malformed bytes and text in the
 excluded tooling workspace. `scripts/cypher-parser-footprint.sh` measures a
 current parser-reachable C consumer and static archives on macOS. Its private
 probe functions are tooling, not a shipped ABI. Final graph packaging and size
 qualification belong to ZE-107 and the release qualification tickets.
+
+## Binding and shared ownership
+
+`compile_with` parses and binds the complete statement before calling a
+higher-ranked consumer. Its borrowed BoundQuery cannot escape that callback.
+The view retains exact clause order, pattern types/bounds/properties, symbolic
+names, source spans, scoped columns, expression facts, complete core scalar
+operations, and per-call search mode/eligibility provenance. AST-indexed
+expressions deliberately include syntax holes; later lowering must prune and
+remap reachable nodes before GraphPlan validation. Synthesized expressions have
+a separate bounded allowance; this does not widen the final typed plan limit.
+
+Known scope/type errors, missing/surplus/duplicate parameters, unsupported
+syntax, duplicate aliases, malformed search signatures, same-pattern relationship
+reuse, invalid stored-property list shapes, and provably deleted results reject
+before consumption. Runtime-dependent property/list/deleted access remains
+explicit. Counts of deleted entities bind; identity functions and size of
+collections containing deleted references require later dynamic validation.
+No compile operation owns a store writer or can publish a graph mutation.
+
+`compile_in` reserves every frontend-created allocation and 64 KiB compiler
+scratch under the existing QueryMemory/GraphResources pair. Actual capacities
+and old/new growth overlap are charged before controlled moves; released
+scratch remains conservatively charged until the invocation ends. Borrowed
+caller source/parameter capacities are not inferred or credited. The opaque
+external-capacity guard grants no retained-owner capability. Later execution
+must retain actual QueryInputs owners or make separately charged copies. The
+integration-only RETURN tracer proves real copied QueryArena backing and an
+actual NodeFacts Vec certificate; it makes no runtime admission claim.
+
+`scripts/cypher-binding-manifest.py <pinned-checkout>` checks exact original
+query/source hashes and the 268 scenarios in the selected 26 feature files:
+99 supported, 20 explicitly profile-rejected, and 149 not selected. The selected
+155 original statements bind 152 and reject three at compile time, preserving
+original error phases. Every execution entry remains `unexecuted`; this is not
+TCK result/side-effect or full-corpus conformance evidence. The manifest's
+negative controls use an isolated source clone:
+`scripts/tests/cypher_binding_manifest.py <pinned-checkout>`.
+
+The PG11 primitive oracle independently checks ordered output/type/parameter-bit
+and mode observations, compile refusal, reached cancellation/budget fault counts
+and same-seed clean controls. Broad original-TCK, full adversarial/workspace,
+coverage and release-size campaigns remain deferred to ZE-118/E12.

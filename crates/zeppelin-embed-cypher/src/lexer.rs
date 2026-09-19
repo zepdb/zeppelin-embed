@@ -2,8 +2,8 @@
 // Shopify/cypher-parser a7b822fbece9ee2c3f2b57ecfd4e90a2ca215383, src/lexer.rs.
 // Copyright (c) 2025-present Shopify Inc. See ../SHOPIFY-LICENSE-MIT.
 // Byte spans, borrowing, escapes, numbers, allocation and interruption are local.
-use crate::resources::{charge, poll, push};
-use crate::{CompileLimits, ErrorKind, LimitKind, ParseError, ResourceError, Resources, Span};
+use crate::resources::{poll, push, push_char};
+use crate::{CompileLimits, ErrorKind, LimitKind, ParseError, Resources, Span};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
@@ -346,26 +346,15 @@ impl Lexer<'_, '_> {
             if quote == '`' && c == '\0' {
                 return Err(self.error(start, ErrorKind::InvalidLiteral, "NUL in name"));
             }
-            let spare = result.capacity() - result.len();
-            if spare < c.len_utf8() {
-                let additional = result.capacity().max(4);
-                charge(
-                    self.resources,
-                    additional,
-                    Span {
-                        start,
-                        end: self.position,
-                    },
-                )?;
-                result.try_reserve_exact(spare + additional).map_err(|_| {
-                    self.error(
-                        start,
-                        ErrorKind::Resource(ResourceError::Allocation),
-                        "allocation failed",
-                    )
-                })?;
-            }
-            result.push(c);
+            push_char(
+                &mut result,
+                c,
+                self.resources,
+                Span {
+                    start,
+                    end: self.position,
+                },
+            )?;
         }
     }
     fn unicode(&mut self, digits: usize, start: usize) -> Result<char, ParseError> {

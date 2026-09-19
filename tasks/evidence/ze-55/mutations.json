@@ -1,0 +1,85 @@
+[
+  {
+    "name": "unreserved-source-copy",
+    "source": "crates/zeppelin-embed-cypher/src/resources.rs",
+    "sha256_restored": "15891cb2a504b472af958be2ed6b27817c51793c380028ece6ecaf517a9af254",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-cypher",
+      "--test",
+      "compiler_allocation",
+      "compiler_reserves_real_growth_overlap_before_allocator_calls"
+    ],
+    "red_exit": 100,
+    "green_exit": 0
+  },
+  {
+    "name": "permissive-oracle",
+    "source": "tests/adversarial-oracle/src/graph_binding.rs",
+    "sha256_restored": "0888c4b339514a9e56ea8d18980808fb84ed126a9171eec6a04b68cc9c4bb6fd",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-adversarial-oracle",
+      "graph_binding::tests::binding_oracle_rejects_wrong_order_types_bits_modes_and_admission"
+    ],
+    "red_exit": 100,
+    "green_exit": 0
+  },
+  {
+    "name": "source-error-span",
+    "source": "crates/zeppelin-embed-cypher/src/binding.rs",
+    "sha256_restored": "759684521795237dccf7d5f932966ec8841fcb988f3700ae7bdecd32bb1df35e",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-cypher",
+      "--test",
+      "binding",
+      "compile_errors_keep_exact_utf8_source_spans_and_never_consume"
+    ],
+    "red_exit": 100,
+    "green_exit": 0
+  },
+  {
+    "name": "scope-lookup",
+    "source": "crates/zeppelin-embed-cypher/src/binding.rs",
+    "sha256_restored": "759684521795237dccf7d5f932966ec8841fcb988f3700ae7bdecd32bb1df35e",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-cypher",
+      "--test",
+      "binding",
+      "scalar_scope_parameters_and_operator_types_bind_before_consumption"
+    ],
+    "red_exit": 100,
+    "green_exit": 0
+  },
+  {
+    "name": "duplicate-output",
+    "source": "crates/zeppelin-embed-cypher/src/binding/projection.rs",
+    "sha256_restored": "beafcd62488c59390cfbb126b78126d25f3289943240c7afecf691c5a5e99cc5",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-cypher",
+      "--test",
+      "binding",
+      "projections_expand_scope_and_preserve_grouped_order_references"
+    ],
+    "red_exit": 100,
+    "green_exit": 0
+  }
+]

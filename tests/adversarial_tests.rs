@@ -18823,3 +18823,37 @@ fn one_runner_episode_reaches_required_staging_contracts() {
         outcome.violations.len()
     );
 }
+
+#[test]
+fn property_graph_binding_probe_preserves_profile_types_and_faults() {
+    for seed in [0, 1, 55, u64::MAX] {
+        let mut coverage = adversarial::coverage::CoverageRegistry::default();
+        let report = adversarial::graph_binding::probe(seed, &mut coverage)
+            .expect("PG11 independent binder model");
+        assert_eq!(
+            (report.cases, report.fault_fires, report.clean_controls),
+            (52, 2, 2)
+        );
+        for key in adversarial::graph_binding::REQUIRED_COVERAGE {
+            assert!(coverage.count(key) > 0, "{key}");
+        }
+    }
+}
+#[test]
+fn one_runner_episode_reaches_required_binding_contracts() {
+    let root = tempfile::tempdir().expect("binder runner artifacts");
+    let outcome = adversarial::runner::run_program(0, FaultProfile::None, root.path())
+        .expect("actual runner episode");
+    assert!(outcome.violations.is_empty(), "{:?}", outcome.violations);
+    for key in adversarial::graph_binding::REQUIRED_COVERAGE {
+        assert!(
+            outcome.coverage.count(key) > 0,
+            "actual runner omitted {key}"
+        );
+    }
+    eprintln!(
+        "PG11 actual runner seed=0 operations={} violations={}",
+        outcome.operations,
+        outcome.violations.len()
+    );
+}
