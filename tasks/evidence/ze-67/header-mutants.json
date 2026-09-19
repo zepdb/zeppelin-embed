@@ -1,0 +1,14 @@
+[
+  {
+    "test": "graph_contract_header_is_exact_separate_cbindgen_output",
+    "exit": 100,
+    "before": "12d4e1a5400f71b25a54de81f81aef0eab6fc13fef6cee949854ab6487be0d0a",
+    "restored": "12d4e1a5400f71b25a54de81f81aef0eab6fc13fef6cee949854ab6487be0d0a"
+  },
+  {
+    "test": "legacy_header_and_exports_do_not_advertise_graph_contracts",
+    "exit": 100,
+    "before": "64aaf2a7ad0f5c018badd0d148a7ed76d752c8474daa8c67f02486a96f6bb933",
+    "restored": "64aaf2a7ad0f5c018badd0d148a7ed76d752c8474daa8c67f02486a96f6bb933"
+  }
+]

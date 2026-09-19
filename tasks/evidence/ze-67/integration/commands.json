@@ -1,0 +1,114 @@
+{
+  "cwd": "/Users/aghatage/Documents/code/zeppelin-embed",
+  "utc": "2026-09-19T18:34:09.928755+00:00",
+  "platform": "macOS-27.0-arm64-arm-64bit",
+  "commands": [
+    {
+      "name": "graph-contracts",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "-p",
+        "zeppelin-embed-ffi",
+        "--features",
+        "graph-cypher",
+        "--test",
+        "ffi_graph_contract",
+        "--test",
+        "ffi_graph_error",
+        "--test",
+        "ffi_graph_header",
+        "--test",
+        "ffi_graph_layout",
+        "--test",
+        "ffi_contract",
+        "--test",
+        "ffi_header"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 34.180989207932726
+    },
+    {
+      "name": "legacy-contracts",
+      "command": [
+        "cargo",
+        "nextest",
+        "run",
+        "-p",
+        "zeppelin-embed-ffi",
+        "--test",
+        "ffi_contract",
+        "--test",
+        "ffi_header",
+        "--test",
+        "ffi_graph_error",
+        "--test",
+        "ffi_graph_header"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 20.630619957926683
+    },
+    {
+      "name": "strict-ffi",
+      "command": [
+        "cargo",
+        "clippy",
+        "-p",
+        "zeppelin-embed-ffi",
+        "--features",
+        "graph-cypher",
+        "--lib",
+        "--test",
+        "ffi_graph_contract",
+        "--test",
+        "ffi_graph_error",
+        "--test",
+        "ffi_graph_header",
+        "--test",
+        "ffi_graph_layout",
+        "--test",
+        "ffi_contract",
+        "--test",
+        "ffi_header",
+        "--no-deps",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 11.080253667081706
+    },
+    {
+      "name": "swift-error-enum",
+      "command": [
+        "swiftc",
+        "-typecheck",
+        "bindings/swift/Sources/ZeppelinEmbed/ZeppelinError.swift"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.14575399993918836
+    },
+    {
+      "name": "format",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 2.000263207941316
+    },
+    {
+      "name": "diff",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.021166000049561262
+    }
+  ]
+}

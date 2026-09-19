@@ -3795,6 +3795,26 @@ pub extern "C" fn ze_error_code_name(code: i32) -> *const c_char {
             32 => b"ZE_ERR_SCAN_STALE\0",
             33 => b"ZE_ERR_SCHEMA_MISMATCH\0",
             34 => b"ZE_ERR_NO_VECTOR_SPACE\0",
+            35 => b"ZE_ERR_STORE_KIND\0",
+            36 => b"ZE_ERR_FORMAT_VERSION\0",
+            37 => b"ZE_ERR_QUERY_SYNTAX\0",
+            38 => b"ZE_ERR_QUERY_UNSUPPORTED\0",
+            39 => b"ZE_ERR_PARAMETER\0",
+            40 => b"ZE_ERR_TYPE\0",
+            41 => b"ZE_ERR_SCOPE\0",
+            42 => b"ZE_ERR_KEY_CONFLICT\0",
+            43 => b"ZE_ERR_INCARNATION_CONFLICT\0",
+            44 => b"ZE_ERR_DELETION_REVISION_CONFLICT\0",
+            45 => b"ZE_ERR_ENDPOINT\0",
+            46 => b"ZE_ERR_DELETED_ENTITY\0",
+            47 => b"ZE_ERR_ARITHMETIC_DOMAIN\0",
+            48 => b"ZE_ERR_ARITHMETIC_OVERFLOW\0",
+            49 => b"ZE_ERR_DIVISION_BY_ZERO\0",
+            50 => b"ZE_ERR_INDETERMINATE_COMMIT\0",
+            51 => b"ZE_ERR_REVISION_OVERFLOW\0",
+            52 => b"ZE_ERR_GENERATION_OVERFLOW\0",
+            53 => b"ZE_ERR_DUPLICATE_TARGET\0",
+            54 => b"ZE_ERR_IDENTITY_OVERFLOW\0",
             _ => b"ZE_ERR_UNKNOWN\0",
         };
         bytes.as_ptr().cast::<c_char>()
@@ -3888,3 +3908,18 @@ const _: () = {
     assert!(size_of::<ZeNamespaceListRequest>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
     assert!(size_of::<ZeNamespaceListResult>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
 };
+
+// The graph ABI is a separate opt-in product; legacy platform support is unchanged.
+#[cfg(all(
+    feature = "graph-cypher",
+    not(all(target_os = "macos", target_arch = "aarch64"))
+))]
+compile_error!("graph-cypher contracts require macOS arm64; graph packaging requires macOS 14+");
+#[cfg(feature = "graph-cypher")]
+mod graph_contracts;
+#[cfg(feature = "graph-cypher")]
+pub use graph_contracts::*;
+#[cfg(feature = "graph-cypher")]
+mod graph_error;
+#[cfg(feature = "graph-cypher")]
+mod graph_validate;

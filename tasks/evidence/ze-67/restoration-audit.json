@@ -1,0 +1,14 @@
+{
+  "mutation_targets": {
+    "crates/zeppelin-embed-ffi/src/graph_contracts.rs": "f23f1c12829db80303a8ea18e4fc754de06b45d806668d5129934b743a1737dc",
+    "crates/zeppelin-embed-ffi/src/graph_validate.rs": "9b5671fc0f409cde0050d180c50b029181a12a1f64c27646af24edb1d408b735",
+    "crates/zeppelin-embed-ffi/src/graph_error.rs": "e02c356a45930d5d92ec2e1255254a03c9aedef3b0d7b052014f133faf2095c3"
+  },
+  "unchanged_legacy_files": {
+    "Cargo.lock": "7516f5763b7a7f6c38d90cc436fbb85308de5f2ccea3dc75dc1647b1db3b2f30",
+    "crates/zeppelin-embed-ffi/symbols.allowlist": "4ada26f510a9a07e01200a12e13f2fb324109d75db18665f161a22aace55c440",
+    "crates/zeppelin-embed-ffi/cbindgen.toml": "84191ff92661e070f59fa6b8155ea50860e7314aa4e1d5b29a9c25f4024158a3",
+    "scripts/release/core_header.py": "3fa7235ee80c480d8bb204356a22c067af20c9cc3a206d61dfc52626355607fd",
+    "crates/zeppelin-embed-ffi/tests/ffi_header.rs": "93463b3d69be13a144e52c9825d02b9d965d83af34360e48b4d67125cae4ed02"
+  }
+}

@@ -94,6 +94,70 @@ const ERROR_CODE_GOLDEN: &[(ZeErrorCode, i32, &str)] = &[
         34,
         "ZE_ERR_NO_VECTOR_SPACE",
     ),
+    (ZeErrorCode::ZeErrStoreKind, 35, "ZE_ERR_STORE_KIND"),
+    (ZeErrorCode::ZeErrFormatVersion, 36, "ZE_ERR_FORMAT_VERSION"),
+    (ZeErrorCode::ZeErrQuerySyntax, 37, "ZE_ERR_QUERY_SYNTAX"),
+    (
+        ZeErrorCode::ZeErrQueryUnsupported,
+        38,
+        "ZE_ERR_QUERY_UNSUPPORTED",
+    ),
+    (ZeErrorCode::ZeErrParameter, 39, "ZE_ERR_PARAMETER"),
+    (ZeErrorCode::ZeErrType, 40, "ZE_ERR_TYPE"),
+    (ZeErrorCode::ZeErrScope, 41, "ZE_ERR_SCOPE"),
+    (ZeErrorCode::ZeErrKeyConflict, 42, "ZE_ERR_KEY_CONFLICT"),
+    (
+        ZeErrorCode::ZeErrIncarnationConflict,
+        43,
+        "ZE_ERR_INCARNATION_CONFLICT",
+    ),
+    (
+        ZeErrorCode::ZeErrDeletionRevisionConflict,
+        44,
+        "ZE_ERR_DELETION_REVISION_CONFLICT",
+    ),
+    (ZeErrorCode::ZeErrEndpoint, 45, "ZE_ERR_ENDPOINT"),
+    (ZeErrorCode::ZeErrDeletedEntity, 46, "ZE_ERR_DELETED_ENTITY"),
+    (
+        ZeErrorCode::ZeErrArithmeticDomain,
+        47,
+        "ZE_ERR_ARITHMETIC_DOMAIN",
+    ),
+    (
+        ZeErrorCode::ZeErrArithmeticOverflow,
+        48,
+        "ZE_ERR_ARITHMETIC_OVERFLOW",
+    ),
+    (
+        ZeErrorCode::ZeErrDivisionByZero,
+        49,
+        "ZE_ERR_DIVISION_BY_ZERO",
+    ),
+    (
+        ZeErrorCode::ZeErrIndeterminateCommit,
+        50,
+        "ZE_ERR_INDETERMINATE_COMMIT",
+    ),
+    (
+        ZeErrorCode::ZeErrRevisionOverflow,
+        51,
+        "ZE_ERR_REVISION_OVERFLOW",
+    ),
+    (
+        ZeErrorCode::ZeErrGenerationOverflow,
+        52,
+        "ZE_ERR_GENERATION_OVERFLOW",
+    ),
+    (
+        ZeErrorCode::ZeErrDuplicateTarget,
+        53,
+        "ZE_ERR_DUPLICATE_TARGET",
+    ),
+    (
+        ZeErrorCode::ZeErrIdentityOverflow,
+        54,
+        "ZE_ERR_IDENTITY_OVERFLOW",
+    ),
 ];
 
 fn header_error_codes() -> Vec<(String, i32)> {

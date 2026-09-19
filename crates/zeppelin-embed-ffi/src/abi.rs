@@ -72,6 +72,46 @@ pub enum ZeErrorCode {
     ZeErrSchemaMismatch = 33,
     /// The requested operation requires a vector space.
     ZeErrNoVectorSpace = 34,
+    /// The directory contains a different store kind.
+    ZeErrStoreKind = 35,
+    /// A required format version is unsupported.
+    ZeErrFormatVersion = 36,
+    /// Query text is syntactically invalid.
+    ZeErrQuerySyntax = 37,
+    /// A query feature is outside the supported profile.
+    ZeErrQueryUnsupported = 38,
+    /// A required parameter is missing or invalid.
+    ZeErrParameter = 39,
+    /// A value has an incompatible query type.
+    ZeErrType = 40,
+    /// A query binding is outside its legal scope.
+    ZeErrScope = 41,
+    /// An application key conflicts with an existing record.
+    ZeErrKeyConflict = 42,
+    /// An expected entity incarnation does not match.
+    ZeErrIncarnationConflict = 43,
+    /// An expected deletion revision does not match.
+    ZeErrDeletionRevisionConflict = 44,
+    /// A relationship endpoint is invalid or unavailable.
+    ZeErrEndpoint = 45,
+    /// A query attempted to use a deleted entity.
+    ZeErrDeletedEntity = 46,
+    /// An arithmetic operand is outside the operation domain.
+    ZeErrArithmeticDomain = 47,
+    /// Checked arithmetic overflowed.
+    ZeErrArithmeticOverflow = 48,
+    /// An arithmetic divisor was zero.
+    ZeErrDivisionByZero = 49,
+    /// The coordinator cannot yet establish the durable write outcome.
+    ZeErrIndeterminateCommit = 50,
+    /// An entity revision cannot advance.
+    ZeErrRevisionOverflow = 51,
+    /// The graph generation cannot advance.
+    ZeErrGenerationOverflow = 52,
+    /// A batch names the same mutation target more than once.
+    ZeErrDuplicateTarget = 53,
+    /// The available identity space is exhausted.
+    ZeErrIdentityOverflow = 54,
 }
 
 /// Opaque generation-tagged store handle.

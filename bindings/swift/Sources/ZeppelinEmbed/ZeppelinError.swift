@@ -36,4 +36,24 @@ public enum ZeppelinError: Int32, Error, Sendable, CaseIterable {
     case scanStale = 32
     case schemaMismatch = 33
     case noVectorSpace = 34
+    case storeKind = 35
+    case formatVersion = 36
+    case querySyntax = 37
+    case queryUnsupported = 38
+    case parameter = 39
+    case type = 40
+    case scope = 41
+    case keyConflict = 42
+    case incarnationConflict = 43
+    case deletionRevisionConflict = 44
+    case endpoint = 45
+    case deletedEntity = 46
+    case arithmeticDomain = 47
+    case arithmeticOverflow = 48
+    case divisionByZero = 49
+    case indeterminateCommit = 50
+    case revisionOverflow = 51
+    case generationOverflow = 52
+    case duplicateTarget = 53
+    case identityOverflow = 54
 }

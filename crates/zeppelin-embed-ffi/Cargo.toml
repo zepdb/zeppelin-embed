@@ -11,6 +11,8 @@ crate-type = ["rlib", "staticlib", "cdylib"]
 
 [features]
 default = []
+# Contract surface only; ZE-107 owns complete artifact/compiler feature wiring.
+graph-cypher = []
 abi-panic-probe = []
 text = ["dep:zeppelin-embed-text"]
 

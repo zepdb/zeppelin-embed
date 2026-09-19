@@ -172,6 +172,86 @@ enum ze_error_code
      The requested operation requires a vector space.
      */
     ZE_ERR_NO_VECTOR_SPACE = 34,
+    /*
+     The directory contains a different store kind.
+     */
+    ZE_ERR_STORE_KIND = 35,
+    /*
+     A required format version is unsupported.
+     */
+    ZE_ERR_FORMAT_VERSION = 36,
+    /*
+     Query text is syntactically invalid.
+     */
+    ZE_ERR_QUERY_SYNTAX = 37,
+    /*
+     A query feature is outside the supported profile.
+     */
+    ZE_ERR_QUERY_UNSUPPORTED = 38,
+    /*
+     A required parameter is missing or invalid.
+     */
+    ZE_ERR_PARAMETER = 39,
+    /*
+     A value has an incompatible query type.
+     */
+    ZE_ERR_TYPE = 40,
+    /*
+     A query binding is outside its legal scope.
+     */
+    ZE_ERR_SCOPE = 41,
+    /*
+     An application key conflicts with an existing record.
+     */
+    ZE_ERR_KEY_CONFLICT = 42,
+    /*
+     An expected entity incarnation does not match.
+     */
+    ZE_ERR_INCARNATION_CONFLICT = 43,
+    /*
+     An expected deletion revision does not match.
+     */
+    ZE_ERR_DELETION_REVISION_CONFLICT = 44,
+    /*
+     A relationship endpoint is invalid or unavailable.
+     */
+    ZE_ERR_ENDPOINT = 45,
+    /*
+     A query attempted to use a deleted entity.
+     */
+    ZE_ERR_DELETED_ENTITY = 46,
+    /*
+     An arithmetic operand is outside the operation domain.
+     */
+    ZE_ERR_ARITHMETIC_DOMAIN = 47,
+    /*
+     Checked arithmetic overflowed.
+     */
+    ZE_ERR_ARITHMETIC_OVERFLOW = 48,
+    /*
+     An arithmetic divisor was zero.
+     */
+    ZE_ERR_DIVISION_BY_ZERO = 49,
+    /*
+     The coordinator cannot yet establish the durable write outcome.
+     */
+    ZE_ERR_INDETERMINATE_COMMIT = 50,
+    /*
+     An entity revision cannot advance.
+     */
+    ZE_ERR_REVISION_OVERFLOW = 51,
+    /*
+     The graph generation cannot advance.
+     */
+    ZE_ERR_GENERATION_OVERFLOW = 52,
+    /*
+     A batch names the same mutation target more than once.
+     */
+    ZE_ERR_DUPLICATE_TARGET = 53,
+    /*
+     The available identity space is exhausted.
+     */
+    ZE_ERR_IDENTITY_OVERFLOW = 54,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L

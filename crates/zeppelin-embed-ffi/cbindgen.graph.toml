@@ -1,0 +1,82 @@
+# Contract-only graph data header. No unavailable runtime functions are declared.
+language = "C"
+include_guard = "ZEPPELIN_GRAPH_CONTRACTS_H"
+cpp_compat = true
+documentation = true
+documentation_style = "c"
+style = "both"
+no_includes = true
+includes = ["zeppelin_embed.h"]
+usize_is_size_t = true
+tab_width = 4
+line_length = 80
+
+[export]
+include = [
+    "ZeNodeId",
+    "ZeRelId",
+    "ZeGraphHandle",
+    "ZeGraphRange",
+    "ZeGraphValueTag",
+    "ZeGraphListKind",
+    "ZeGraphValue",
+    "ZeGraphEntityKind",
+    "ZeGraphEndpointKind",
+    "ZeGraphBatchOperation",
+    "ZeGraphBytes",
+    "ZeGraphControl",
+    "ZeGraphProperty",
+    "ZeGraphNode",
+    "ZeGraphRelationship",
+    "ZeGraphValuePool",
+    "ZeGraphEndpoint",
+    "ZeGraphBatchItem",
+    "ZeGraphBatchRequest",
+    "ZeGraphOptionalIndex",
+    "ZeGraphExpressionKind",
+    "ZeGraphUnaryOperation",
+    "ZeGraphBinaryOperation",
+    "ZeGraphAggregateOperation",
+    "ZeGraphExpression",
+    "ZeGraphProjection",
+    "ZeGraphSortKey",
+    "ZeGraphParameter",
+    "ZeGraphParameterValue",
+    "ZeGraphTier",
+    "ZeGraphSearchKind",
+    "ZeGraphSearchOptions",
+    "ZeGraphSearch",
+    "ZeGraphOperatorKind",
+    "ZeGraphOperator",
+    "ZeGraphMutationKind",
+    "ZeGraphMutation",
+    "ZeGraphPlan",
+    "ZeGraphQueryOptions",
+    "ZeGraphQueryRequest",
+    "ZeGraphOpenMode",
+    "ZeGraphOpenRequest",
+    "ZeGraphCypherRequest",
+    "ZeGraphGetNodesRequest",
+    "ZeGraphGetRelsRequest",
+    "ZeGraphDisposition",
+    "ZeGraphReceipt",
+    "ZeGraphColumn",
+    "ZeGraphDiagnostic",
+    "ZeGraphScorePrecision",
+    "ZeGraphCandidateCoverage",
+    "ZeGraphLegState",
+    "ZeGraphWorkKind",
+    "ZeGraphWorkCounter",
+    "ZeGraphSearchReport",
+    "ZeGraphResponse",
+    "ZeGraphWorkLimit",
+    "ZeGraphQueryLimits",
+    "ZeGraphCompileLimits",
+]
+
+[parse]
+parse_deps = false
+
+[enum]
+rename_variants = "ScreamingSnakeCase"
+prefix_with_name = false

@@ -1,0 +1,108 @@
+{
+  "cwd": "/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-67",
+  "commands": [
+    {
+      "name": "graph-focused",
+      "argv": [
+        "cargo",
+        "nextest",
+        "run",
+        "-p",
+        "zeppelin-embed-ffi",
+        "--features",
+        "graph-cypher",
+        "--test",
+        "ffi_graph_contract",
+        "--test",
+        "ffi_graph_error",
+        "--test",
+        "ffi_graph_header",
+        "--test",
+        "ffi_graph_layout",
+        "--test",
+        "ffi_contract",
+        "--test",
+        "ffi_header"
+      ],
+      "exit": 0,
+      "passed": 36,
+      "skipped": 2,
+      "raw": "raw/resumed-focused-green.log.gz"
+    },
+    {
+      "name": "default-regression",
+      "argv": [
+        "cargo",
+        "nextest",
+        "run",
+        "-p",
+        "zeppelin-embed-ffi",
+        "--no-default-features",
+        "--test",
+        "ffi_graph_error",
+        "--test",
+        "ffi_contract",
+        "--test",
+        "ffi_header",
+        "-E",
+        "test(appended_graph_error_names_are_distinct_and_stable) | test(error_codes_are_append_only) | test(swift_error_enum_is_generated_from_the_append_only_error_table) | test(every_request_struct_has_the_frozen_size_and_field_offsets) | test(every_phase_two_struct_has_the_frozen_size_and_field_offsets) | test(the_poison_table_covers_every_exported_handle_taking_symbol) | test(the_committed_header_is_the_exact_cbindgen_output)"
+      ],
+      "exit": 0,
+      "passed": 7,
+      "skipped": 10,
+      "raw": "raw/resumed-default-green.log.gz"
+    },
+    {
+      "name": "strict-scoped-clippy",
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "zeppelin-embed-ffi",
+        "--features",
+        "graph-cypher",
+        "--lib",
+        "--test",
+        "ffi_graph_contract",
+        "--test",
+        "ffi_graph_error",
+        "--test",
+        "ffi_graph_header",
+        "--test",
+        "ffi_graph_layout",
+        "--test",
+        "ffi_contract",
+        "--test",
+        "ffi_header",
+        "--no-deps",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "raw": "raw/resumed-clippy-green.log.gz"
+    },
+    {
+      "name": "format",
+      "argv": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit": 0,
+      "raw": "raw/resumed-fmt-green.log.gz"
+    },
+    {
+      "name": "diff",
+      "argv": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit": 0,
+      "raw": "raw/resumed-diff-green.log.gz"
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+ZeNodeId 16 8 high=0 low=8
+ZeRelId 16 8 high=0 low=8
+ZeGraphHandle 8 8 token=0
+ZeGraphRange 8 4 start=0 count=4
+ZeGraphValue 48 8 abi_size=0 abi_reserved=4 tag=8 list_kind=12 boolean=16 entity_index=20 integer=24 floating=32 range=40
+ZeGraphBytes 16 8 data=0 count=8
+ZeGraphControl 24 8 abi_size=0 abi_reserved=4 cancel_token=8 deadline_ns=16
+ZeGraphProperty 24 4 abi_size=0 abi_reserved=4 name=8 value=16 reserved=20
+ZeGraphNode 104 8 abi_size=0 abi_reserved=4 id=8 has_key=24 has_text=28 has_vector=32 reserved=36 namespace_name=40 key=48 revision=56 last_change_generation=64 properties=72 text=80 vector=88 labels=96
+ZeGraphRelationship 112 8 abi_size=0 abi_reserved=4 id=8 source=24 target=40 has_key=56 reserved=60 namespace_name=64 key=72 revision=80 last_change_generation=88 properties=96 relationship_type=104
+ZeGraphValuePool 136 8 abi_size=0 abi_reserved=4 values=8 value_count=16 children=24 child_count=32 bytes=40 byte_count=48 nodes=56 node_count=64 relationships=72 relationship_count=80 properties=88 property_count=96 names=104 name_count=112 vectors=120 vector_count=128
+ZeGraphEndpoint 32 8 abi_size=0 abi_reserved=4 kind=8 local_item=12 node=16
+ZeGraphBatchItem 160 8 abi_size=0 abi_reserved=4 entity_kind=8 operation=12 namespace_name=16 key=24 revision=32 expected_node=40 expected_relationship=56 expected_deletion_revision=72 delete_mode=80 has_image=84 image=88 reserved=92 source=96 target=128
+ZeGraphBatchRequest 40 8 abi_size=0 abi_reserved=4 items=8 item_count=16 pool=24 control=32
+ZeGraphOptionalIndex 8 4 present=0 index=4
+ZeGraphExpression 56 4 abi_size=0 abi_reserved=4 kind=8 operation=12 left=16 right=20 has_operand=24 distinct=28 value=32 reserved=36 name=40 children=48
+ZeGraphProjection 16 4 abi_size=0 abi_reserved=4 slot=8 expression=12
+ZeGraphSortKey 16 4 abi_size=0 abi_reserved=4 expression=8 descending=12
+ZeGraphParameter 24 4 abi_size=0 abi_reserved=4 name=8 kinds=16 reserved=20
+ZeGraphParameterValue 24 4 abi_size=0 abi_reserved=4 name=8 value=16 reserved=20
+ZeGraphSearchOptions 64 8 abi_size=0 abi_reserved=4 graph_profile=8 graph_ef=12 graph_seed=16 lexical_flags=24 rescore=28 has_alpha=32 rules_enabled=36 alpha=40 has_max_rounds=48 reserved=52 max_rounds=56
+ZeGraphSearch 96 8 abi_size=0 abi_reserved=4 kind=8 call_id=12 vector=16 text=24 k=32 has_tier=36 tier=40 reserved=44 eligible_set=48 window=56 node_slot=64 score_slot=68 vector_distance_slot=72 lexical_score_slot=80 options=88
+ZeGraphOperator 192 8 abi_size=0 abi_reserved=4 kind=8 entity_kind=12 inputs=16 predicate=24 source_slot=32 node_slot=36 relationship_slot=40 set_slot=44 direction=48 pattern=52 name=56 has_name=64 key_expression=68 node_id=72 relationship_id=88 relationship_types=104 path_min=112 path_max=116 edge_predicate=120 edge_slot=128 search=132 projections=136 aggregates=144 sort_keys=152 mutations=160 offset=168 limit=176 has_limit=184 reserved=188
+ZeGraphMutation 56 4 abi_size=0 abi_reserved=4 kind=8 output=12 entity=16 value=20 source=24 target=28 present=32 detach=36 name=40 labels=48
+ZeGraphPlan 184 8 abi_size=0 abi_reserved=4 root=8 reserved=12 operators=16 operator_count=24 expressions=32 expression_count=40 inputs=48 input_count=56 expression_children=64 expression_child_count=72 projections=80 projection_count=88 sort_keys=96 sort_key_count=104 mutations=112 mutation_count=120 parameters=128 parameter_count=136 searches=144 search_count=152 eager_searches=160 eager_search_count=168 pool=176
+ZeGraphQueryOptions 40 8 abi_size=0 abi_reserved=4 query_tower=8 alignment_digest=16 limits=32
+ZeGraphQueryRequest 56 8 abi_size=0 abi_reserved=4 plan=8 parameters=16 parameter_count=24 parameter_pool=32 options=40 control=48
+ZeGraphOpenRequest 64 8 abi_size=0 abi_reserved=4 path=8 mode=24 tokenizer_profile=28 document_tower=32 reader_drain_timeout_ms=40 max_resident_bytes=48 control=56
+ZeGraphCypherRequest 72 8 abi_size=0 abi_reserved=4 query=8 parameters=24 parameter_count=32 parameter_pool=40 options=48 control=56 compile_limits=64
+ZeGraphGetNodesRequest 48 8 abi_size=0 abi_reserved=4 ids=8 id_count=16 include_text=24 include_vector=28 control=32 limits=40
+ZeGraphGetRelsRequest 40 8 abi_size=0 abi_reserved=4 ids=8 id_count=16 control=24 limits=32
+ZeGraphReceipt 72 8 abi_size=0 abi_reserved=4 item=8 entity_kind=12 disposition=16 deleted=20 node=24 relationship=40 revision=56 generation=64
+ZeGraphColumn 24 4 abi_size=0 abi_reserved=4 name=8 kinds=16 reserved=20
+ZeGraphDiagnostic 48 4 abi_size=0 abi_reserved=4 code=8 reserved=12 operator_index=16 has_source_span=24 source_reserved=28 source_span=32 message=40
+ZeGraphWorkCounter 24 8 abi_size=0 abi_reserved=4 kind=8 reserved=12 value=16
+ZeGraphSearchReport 144 8 abi_size=0 abi_reserved=4 call_id=8 kind=12 generation=16 has_requested_tier=24 requested_tier=28 has_actual_tier=32 actual_tier=36 precision=40 coverage=44 vector_leg=48 lexical_leg=52 has_document_epoch=56 has_query_epoch=60 has_tokenizer_epoch=64 cross_score_complete=68 document_epoch=72 query_epoch=80 tokenizer_epoch=88 effective_alpha=96 normalization_version=104 rules_version=108 candidate_count=112 cross_scored_count=120 fallback_count=128 work=136
+ZeGraphResponse 296 8 abi_size=0 abi_reserved=4 owner_token=8 disposition=16 has_admitted_generation=20 admitted_generation=24 has_changed_generation=32 reserved=36 changed_generation=40 row_count=48 columns=56 column_count=64 cells=72 cell_count=80 pool=88 receipts=224 receipt_count=232 reports=240 report_count=248 diagnostics=256 diagnostic_count=264 work=272 work_count=280 global_work=288
+ZeGraphWorkLimit 24 8 abi_size=0 abi_reserved=4 kind=8 reserved=12 limit=16
+ZeGraphQueryLimits 40 8 abi_size=0 abi_reserved=4 has_query_bytes=8 reserved=12 query_bytes=16 work=24 work_count=32
+ZeGraphCompileLimits 40 4 abi_size=0 abi_reserved=4 text_bytes=8 tokens=12 ast_nodes=16 depth=20 parameters=24 columns=28 list_depth=32 path_hops=36

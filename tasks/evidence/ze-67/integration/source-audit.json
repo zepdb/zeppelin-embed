@@ -1,0 +1,36 @@
+{
+  "candidate_base": "f9d81e0806ca68c876a26ed1983a3fffaf72b902",
+  "main_before": "234dd4fe4ab45c55e16bf7866556e8b78f42ee8b",
+  "frozen_review_files": 19,
+  "frozen_hashes": {
+    "bindings/swift/Sources/ZeppelinEmbed/ZeppelinError.swift": "7b4d1fe63b12106be22bd7925d5bb15845169e0800456be322e9a6ad33f35915",
+    "crates/zeppelin-embed-ffi/Cargo.toml": "9b3065bb8460bdc13d0f7bedf0969a53533e75571946cfa4de83012d944898bc",
+    "crates/zeppelin-embed-ffi/cbindgen.graph.toml": "65cd07f6936b6cef79fea69a5d185e0fa04d7b59a708eeffc79004745b2f7976",
+    "crates/zeppelin-embed-ffi/include/zeppelin_embed.h": "7f54da78bd1422e13ae3285232649a7b564f8319a5840ccc434aa5566bea9b32",
+    "crates/zeppelin-embed-ffi/include/zeppelin_graph_contracts.h": "93e7aec6339cf80747df7810584b25f2da235a2fe0e586cd1c02b59e146b34f8",
+    "crates/zeppelin-embed-ffi/src/abi.rs": "d852ec13c3b9126c501ceec2d62c03ae6b4259afb519ade37a316a7fef404d41",
+    "crates/zeppelin-embed-ffi/src/graph_contracts.rs": "f23f1c12829db80303a8ea18e4fc754de06b45d806668d5129934b743a1737dc",
+    "crates/zeppelin-embed-ffi/src/graph_error.rs": "e02c356a45930d5d92ec2e1255254a03c9aedef3b0d7b052014f133faf2095c3",
+    "crates/zeppelin-embed-ffi/src/graph_validate.rs": "9b5671fc0f409cde0050d180c50b029181a12a1f64c27646af24edb1d408b735",
+    "crates/zeppelin-embed-ffi/src/lib.rs": "5115bd7501d4e9410c7da033e908ede5cb755b4c4ca165809a0d0fe7fe3d5692",
+    "crates/zeppelin-embed-ffi/tests/c/graph_batch.c": "199d6bdbeec0b9ce70bc427e54c8e4609c1f8762a3f706bbfb52572ef534c5ba",
+    "crates/zeppelin-embed-ffi/tests/c/graph_layout.c": "30b32e42704e2b9abd6a12d51240a47b313a0e5efe38ebbc05f427ce5c496f32",
+    "crates/zeppelin-embed-ffi/tests/c/graph_plan.c": "6d0c09758cc92b22d7981eeeaf45b183b2490769befc98285a3b0d48d62084e4",
+    "crates/zeppelin-embed-ffi/tests/c/graph_response.c": "768d733b4673750d50f05335c672cbae7427884386aea34e5ce3c7736914f338",
+    "crates/zeppelin-embed-ffi/tests/ffi_contract.rs": "55bc70eae96710d79449888164e0134c56e6413d66defa922c9e55d3651a105d",
+    "crates/zeppelin-embed-ffi/tests/ffi_graph_contract.rs": "1a9cc64e13eab3c108da22f1a8c23b381c46eb293b88aa6090919f3b54f482fa",
+    "crates/zeppelin-embed-ffi/tests/ffi_graph_error.rs": "399c963b8561e9eac12f7c06d21568dc52a6fc7c60f891e2b41c061db646856c",
+    "crates/zeppelin-embed-ffi/tests/ffi_graph_header.rs": "df5bf8d6d23617e16f1b9e4595f23cc81d59fcc124145e6130afe323a97b3682",
+    "crates/zeppelin-embed-ffi/tests/ffi_graph_layout.rs": "34dccec4a33446de5ca4b9ec8c3a965315e09a1085cc5cdd755e57c95ec666a1"
+  },
+  "hashes_match": true,
+  "source_commit": "abca5c5715afacfc7dbbdfbf70df4f20825ea26a",
+  "candidate_file_count": 86,
+  "all_candidate_bytes_unchanged_on_main": true,
+  "inherited_files_verified": 45,
+  "unchanged_inherited_hashes": true,
+  "test_summaries": {
+    "graph-contracts": "Summary [  10.244s] 36 tests run: 36 passed, 2 skipped",
+    "legacy-contracts": "Summary [   5.420s] 24 tests run: 24 passed, 2 skipped"
+  }
+}

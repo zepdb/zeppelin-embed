@@ -1,0 +1,11 @@
+--- /tmp/ze-67-schema-review/graph_contracts-v2.rs
++++ /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-67/crates/zeppelin-embed-ffi/src/graph_contracts.rs
+@@ -1104,7 +1104,7 @@
+     /// Must be zero.
+     pub reserved: u32,
+     /// Optional originating plan operator index.
+-    pub operator: ZeGraphOptionalIndex,
++    pub operator_index: ZeGraphOptionalIndex,
+     /// Exactly zero or one; absent source range is zero.
+     pub has_source_span: u32,
+     /// Must be zero.
