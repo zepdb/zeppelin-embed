@@ -1,0 +1,148 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.47
+   Compiling libc v0.2.189
+   Compiling cfg-if v1.0.4
+   Compiling zerocopy v0.8.52
+   Compiling getrandom v0.3.4
+   Compiling serde_core v1.0.229
+   Compiling rustix v1.1.3
+   Compiling serde v1.0.229
+   Compiling zmij v1.0.23
+   Compiling autocfg v1.5.1
+   Compiling regex-syntax v0.8.11
+   Compiling bitflags v2.13.1
+   Compiling once_cell v1.21.4
+   Compiling serde_json v1.0.151
+   Compiling memchr v2.8.3
+   Compiling clap_lex v1.1.0
+   Compiling fastrand v2.4.1
+   Compiling either v1.17.0
+   Compiling ciborium-io v0.2.2
+   Compiling itoa v1.0.18
+   Compiling anstyle v1.0.14
+   Compiling itertools v0.10.5
+   Compiling num-traits v0.2.19
+   Compiling bit-vec v0.8.0
+   Compiling clap_builder v4.6.0
+   Compiling bytemuck v1.25.2
+   Compiling byteorder v1.5.0
+   Compiling fnv v1.0.7
+   Compiling quick-error v1.2.3
+   Compiling cast v0.3.0
+   Compiling same-file v1.0.6
+   Compiling bit-set v0.8.0
+   Compiling oorandom v11.1.5
+   Compiling xxhash-rust v0.8.18
+   Compiling unarray v0.1.4
+   Compiling anes v0.1.6
+   Compiling walkdir v2.5.0
+   Compiling roaring v0.10.12
+   Compiling errno v0.3.14
+   Compiling wait-timeout v0.2.1
+   Compiling is-terminal v0.4.17
+   Compiling rand_core v0.9.5
+   Compiling rand_xorshift v0.4.0
+   Compiling syn v2.0.119
+   Compiling syn v3.0.3
+   Compiling criterion-plot v0.5.0
+   Compiling regex-automata v0.4.18
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-123/crates/zeppelin-embed)
+   Compiling clap v4.6.1
+   Compiling tempfile v3.25.0
+   Compiling rusty-fork v0.3.1
+   Compiling regex v1.13.1
+   Compiling serde_derive v1.0.229
+   Compiling zerocopy-derive v0.8.52
+   Compiling tinytemplate v1.2.1
+   Compiling half v2.7.1
+   Compiling ppv-lite86 v0.2.21
+   Compiling rand_chacha v0.9.0
+   Compiling ciborium-ll v0.2.2
+   Compiling rand v0.9.5
+   Compiling ciborium v0.2.2
+   Compiling proptest v1.10.0
+   Compiling criterion v0.5.1
+error[E0422]: cannot find struct, variant or union type `EdgePredicate` in this scope
+    --> crates/zeppelin-embed/tests/graph_query_plan.rs:1664:34
+     |
+1664 |             edge_predicate: Some(EdgePredicate { current_edge: SlotId(u32::MAX), expression: ExprId(4) }),
+     |                                  ^^^^^^^^^^^^^ not found in this scope
+
+error[E0559]: variant `zeppelin_embed::property_graph::query::plan::OperatorKind<'_>::BoundedExpand` has no field named `relationship_types`
+    --> crates/zeppelin-embed/tests/graph_query_plan.rs:1663:45
+     |
+1663 |             direction: Direction::Outgoing, relationship_types: &alternatives, pattern: PatternId(4),
+     |                                             ^^^^^^^^^^^^^^^^^^ unknown field
+     |
+help: a field with a similar name exists
+     |
+1663 -             direction: Direction::Outgoing, relationship_types: &alternatives, pattern: PatternId(4),
+1663 +             direction: Direction::Outgoing, relationship_type: &alternatives, pattern: PatternId(4),
+     |
+
+error[E0559]: variant `zeppelin_embed::property_graph::query::plan::OperatorKind<'_>::BoundedExpand` has no field named `edge_predicate`
+    --> crates/zeppelin-embed/tests/graph_query_plan.rs:1664:13
+     |
+1664 |             edge_predicate: Some(EdgePredicate { current_edge: SlotId(u32::MAX), expression: ExprId(4) }),
+     |             ^^^^^^^^^^^^^^ `zeppelin_embed::property_graph::query::plan::OperatorKind<'_>::BoundedExpand` does not have this field
+     |
+     = note: available fields are: `relationship_type`
+
+error[E0599]: no method named `slot_at` found for reference `&zeppelin_embed::property_graph::query::plan::NodeFacts` in the current scope
+    --> crates/zeppelin-embed/tests/graph_query_plan.rs:1677:27
+     |
+1677 |         assert_eq!(output.slot_at(ordinal), Some((SlotId(id), kind)));
+     |                           ^^^^^^^
+     |
+help: there is a method `slot` with a similar name
+     |
+1677 -         assert_eq!(output.slot_at(ordinal), Some((SlotId(id), kind)));
+1677 +         assert_eq!(output.slot(ordinal), Some((SlotId(id), kind)));
+     |
+
+error[E0599]: no method named `slot_at` found for reference `&zeppelin_embed::property_graph::query::plan::NodeFacts` in the current scope
+    --> crates/zeppelin-embed/tests/graph_query_plan.rs:1679:23
+     |
+1679 |     assert_eq!(output.slot_at(4), None);
+     |                       ^^^^^^^
+     |
+help: there is a method `slot` with a similar name
+     |
+1679 -     assert_eq!(output.slot_at(4), None);
+1679 +     assert_eq!(output.slot(4), None);
+     |
+
+error[E0599]: no method named `slot_at` found for reference `&zeppelin_embed::property_graph::query::plan::NodeFacts` in the current scope
+    --> crates/zeppelin-embed/tests/graph_query_plan.rs:1680:23
+     |
+1680 |     assert_eq!(output.slot_at(usize::MAX), None);
+     |                       ^^^^^^^
+     |
+help: there is a method `slot` with a similar name
+     |
+1680 -     assert_eq!(output.slot_at(usize::MAX), None);
+1680 +     assert_eq!(output.slot(usize::MAX), None);
+     |
+
+error[E0026]: variant `BoundedExpand` does not have fields named `relationship_types`, `edge_predicate`
+    --> crates/zeppelin-embed/tests/graph_query_plan.rs:1681:39
+     |
+1681 |     let OperatorKind::BoundedExpand { relationship_types, edge_predicate, .. } = operators[3].kind else { unreachable!() };
+     |                                       ^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^ variant `BoundedExpand` does not have these fields
+
+error[E0282]: type annotations needed
+    --> crates/zeppelin-embed/tests/graph_query_plan.rs:1682:47
+     |
+1682 |     assert_eq!(relationship_types.iter().map(|n| n.as_str()).collect::<Vec<_>>(), ["FIRST","SECOND","FIRST"]);
+     |                                               ^  - type must be known at this point
+     |
+help: consider giving this closure parameter an explicit type
+     |
+1682 |     assert_eq!(relationship_types.iter().map(|n: /* Type */| n.as_str()).collect::<Vec<_>>(), ["FIRST","SECOND","FIRST"]);
+     |                                                ++++++++++++
+
+Some errors have detailed explanations: E0026, E0282, E0422, E0559, E0599.
+For more information about an error, try `rustc --explain E0026`.
+error: could not compile `zeppelin-embed` (test "graph_query_plan") due to 8 previous errors
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_query_plan` exited with code 101

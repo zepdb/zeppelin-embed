@@ -1,0 +1,47 @@
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-123/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.36s
+────────────
+ Nextest run ID 431c15f2-a145-4a3b-9ec7-cfe1aa880b43 with nextest profile: default
+    Starting 2 tests across 1 binary
+        PASS [   0.010s] (1/2) zeppelin-embed-cypher::pattern_contract scoped_pattern_consumer_preserves_complete_projection_and_private_edge_scope
+  stdout ───
+
+    running 1 test
+    test scoped_pattern_consumer_preserves_complete_projection_and_private_edge_scope ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+  stderr ───
+    pattern consumer frontend=98245 plan=121655 heap=14207 overlap=219900 peak=219900 query_limit=1048576
+
+        PASS [   0.010s] (2/2) zeppelin-embed-cypher::pattern_contract scoped_pattern_consumer_releases_actual_owners_on_capacity_and_final_cancel
+  stdout ───
+
+    running 1 test
+    test scoped_pattern_consumer_releases_actual_owners_on_capacity_and_final_cancel ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+
+────────────
+     Summary [   0.010s] 2 tests run: 2 passed, 0 skipped
+        PASS [   0.010s] (1/2) zeppelin-embed-cypher::pattern_contract scoped_pattern_consumer_preserves_complete_projection_and_private_edge_scope
+  stdout ───
+
+    running 1 test
+    test scoped_pattern_consumer_preserves_complete_projection_and_private_edge_scope ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+  stderr ───
+    pattern consumer frontend=98245 plan=121655 heap=14207 overlap=219900 peak=219900 query_limit=1048576
+
+        PASS [   0.010s] (2/2) zeppelin-embed-cypher::pattern_contract scoped_pattern_consumer_releases_actual_owners_on_capacity_and_final_cancel
+  stdout ───
+
+    running 1 test
+    test scoped_pattern_consumer_releases_actual_owners_on_capacity_and_final_cancel ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+

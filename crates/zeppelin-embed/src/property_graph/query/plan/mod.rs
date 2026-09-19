@@ -344,8 +344,9 @@ pub enum OperatorKind<'a> {
         relationship: SlotId,
         /// Traversal direction.
         direction: Direction,
-        /// Optional symbolic type constraint.
-        relationship_type: Option<GraphName<'a>>,
+        /// Exact-name OR alternatives; empty means unrestricted. Duplicate names
+        /// never multiply runtime rows. Resolution uses the same admitted catalog.
+        relationship_types: &'a [GraphName<'a>],
         /// MATCH uniqueness scope.
         pattern: PatternId,
     },
@@ -357,18 +358,29 @@ pub enum OperatorKind<'a> {
         node: SlotId,
         /// New relationship-list slot, including for one hop.
         relationships: SlotId,
+        /// Predicate over each candidate edge before it enters a path. Null does
+        /// not match; zero-hop paths evaluate no edges. The private slot never
+        /// appears in this operator's output schema.
+        edge_predicate: Option<EdgePredicate>,
         /// Inclusive lower bound.
         min: u8,
         /// Inclusive upper bound, at most 16.
         max: u8,
         /// Traversal direction.
         direction: Direction,
-        /// Optional symbolic type constraint.
-        relationship_type: Option<GraphName<'a>>,
+        /// Exact-name OR alternatives; empty means unrestricted. Duplicate names
+        /// never multiply runtime rows. Resolution uses the same admitted catalog.
+        relationship_types: &'a [GraphName<'a>],
         /// MATCH uniqueness scope.
         pattern: PatternId,
     },
     /// Correlated optional input, predicate applied before null extension.
+    /// If the right sub-DAG contains the left input, execution substitutes each
+    /// left row at that anchor. An independent right DAG instead matches shared
+    /// slots by equality (null never matches), like Join. Shared bindings retain
+    /// their left values; only right-only slots become null if the complete right
+    /// candidate and attached predicate produce no match. A same-named scan
+    /// alone is not an implicit correlated anchor.
     OptionalApply {
         /// Predicate in the combined scope.
         predicate: Option<ExprId>,
@@ -381,6 +393,16 @@ pub enum OperatorKind<'a> {
     Filter(ExprId),
     /// One input; completed-result copying remains a later runtime responsibility.
     Collect,
+}
+/// Candidate-edge scope for bounded traversal, separate from its public list.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EdgePredicate {
+    /// Fresh nonnullable relationship slot visible only while evaluating this
+    /// predicate, alongside the traversal's input bindings. It must differ from
+    /// every input slot and both new traversal output slots.
+    pub current_edge: SlotId,
+    /// Boolean/null expression in the private candidate-edge scope.
+    pub expression: ExprId,
 }
 /// One ORDER BY key; ties remain ties unless a later key distinguishes them.
 #[derive(Clone, Copy, Debug)]
@@ -602,6 +624,11 @@ impl NodeFacts {
     /// Output width, independent of numeric slot IDs.
     pub const fn width(&self) -> usize {
         self.width
+    }
+    /// Read-only ordinal schema access; logical SlotId is never a cell offset.
+    pub fn slot_at(&self, ordinal: usize) -> Option<(SlotId, ValueKinds)> {
+        let slot = self.slots.get(..self.width)?.get(ordinal)?;
+        Some((SlotId(slot.id), slot.kinds))
     }
     /// Possible value kinds for a slot in this exact scope.
     pub fn slot(&self, id: SlotId) -> Option<ValueKinds> {

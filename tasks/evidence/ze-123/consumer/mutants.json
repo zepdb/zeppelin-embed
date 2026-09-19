@@ -1,0 +1,42 @@
+[
+  {
+    "label": "omit-alternative",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-cypher",
+      "--test",
+      "pattern_contract",
+      "-E",
+      "test(=scoped_pattern_consumer_preserves_complete_projection_and_private_edge_scope)",
+      "--test-threads",
+      "4"
+    ],
+    "exit": 100,
+    "expected_diagnostic": "ZE123 bounded OR alternatives must be complete",
+    "before_sha256": "61d13a6281401c98fa418011e887c9a666eee8ba6722100a03b22baf9e789e59",
+    "restored_sha256": "61d13a6281401c98fa418011e887c9a666eee8ba6722100a03b22baf9e789e59"
+  },
+  {
+    "label": "borrow-compiler-name",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed-cypher",
+      "--test",
+      "pattern_contract",
+      "-E",
+      "test(=scoped_pattern_consumer_preserves_complete_projection_and_private_edge_scope)",
+      "--test-threads",
+      "4"
+    ],
+    "exit": 100,
+    "expected_diagnostic": "plan failure: Footprint",
+    "before_sha256": "61d13a6281401c98fa418011e887c9a666eee8ba6722100a03b22baf9e789e59",
+    "restored_sha256": "61d13a6281401c98fa418011e887c9a666eee8ba6722100a03b22baf9e789e59"
+  }
+]

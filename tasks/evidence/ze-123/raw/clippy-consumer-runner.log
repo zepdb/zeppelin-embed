@@ -1,0 +1,16 @@
+    Checking once_cell v1.21.4
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-123/crates/zeppelin-embed-bench)
+    Checking zerocopy v0.8.52
+    Checking serde_core v1.0.229
+    Checking zeppelin-embed-adversarial-oracle v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-123/tests/adversarial-oracle)
+    Checking zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-123/crates/zeppelin-embed-cypher)
+    Checking zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-123/crates/zeppelin-embed-ffi)
+    Checking tempfile v3.25.0
+    Checking rusty-fork v0.3.1
+    Checking serde_json v1.0.151
+    Checking ppv-lite86 v0.2.21
+    Checking rand_chacha v0.9.0
+    Checking rand v0.9.5
+    Checking proptest v1.10.0
+    Checking zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-123/tests)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.71s

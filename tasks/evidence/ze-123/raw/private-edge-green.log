@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-123/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.80s
+────────────
+ Nextest run ID 3d8997aa-cf55-41e4-87f6-c6f163ceeb53 with nextest profile: default
+    Starting 1 test across 1 binary (18 tests skipped)
+        PASS [   0.010s] (1/1) zeppelin-embed::graph_query_plan typed_pattern_contract_preserves_or_types_and_private_edge_scope
+────────────
+     Summary [   0.010s] 1 test run: 1 passed, 18 skipped

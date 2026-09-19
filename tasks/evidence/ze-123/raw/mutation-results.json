@@ -1,0 +1,74 @@
+[
+  {
+    "name": "omit-or-array",
+    "path": "crates/zeppelin-embed/src/property_graph/query/plan/validate.rs",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_query_plan",
+      "-E",
+      "test(typed_pattern_requires_array_and_every_alternative_name_backing)"
+    ],
+    "exit": 100,
+    "original_sha256": "47bb3cabbb3c5a7fa686b700716b013b4c029aaa49bc148c619d1974e3c57aec",
+    "restored_sha256": "47bb3cabbb3c5a7fa686b700716b013b4c029aaa49bc148c619d1974e3c57aec"
+  },
+  {
+    "name": "allow-private-output-alias",
+    "path": "crates/zeppelin-embed/src/property_graph/query/plan/validate.rs",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_query_plan",
+      "-E",
+      "test(typed_pattern_predicate_rejects_aliases_foreign_scope_and_output_escape)"
+    ],
+    "exit": 100,
+    "original_sha256": "47bb3cabbb3c5a7fa686b700716b013b4c029aaa49bc148c619d1974e3c57aec",
+    "restored_sha256": "47bb3cabbb3c5a7fa686b700716b013b4c029aaa49bc148c619d1974e3c57aec"
+  },
+  {
+    "name": "predicate-sees-new-outputs",
+    "path": "crates/zeppelin-embed/src/property_graph/query/plan/validate.rs",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_query_plan",
+      "-E",
+      "test(typed_pattern_predicate_rejects_aliases_foreign_scope_and_output_escape)"
+    ],
+    "exit": 100,
+    "original_sha256": "47bb3cabbb3c5a7fa686b700716b013b4c029aaa49bc148c619d1974e3c57aec",
+    "restored_sha256": "47bb3cabbb3c5a7fa686b700716b013b4c029aaa49bc148c619d1974e3c57aec"
+  },
+  {
+    "name": "ordinal-reads-unused-cell",
+    "path": "crates/zeppelin-embed/src/property_graph/query/plan/mod.rs",
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "-p",
+      "zeppelin-embed",
+      "--test",
+      "graph_query_plan",
+      "-E",
+      "test(typed_pattern_contract_preserves_or_types_and_private_edge_scope)"
+    ],
+    "exit": 100,
+    "original_sha256": "c8f2617776ca771706ddbf9b864d0fa2c6615d82a45172c28c09794a40105be2",
+    "restored_sha256": "c8f2617776ca771706ddbf9b864d0fa2c6615d82a45172c28c09794a40105be2"
+  }
+]

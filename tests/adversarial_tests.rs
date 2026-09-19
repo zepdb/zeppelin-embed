@@ -18697,7 +18697,7 @@ fn property_graph_query_probe_checks_values_scopes_and_inflight_faults() {
             report.fault_fires,
             report.clean_controls
         ),
-        (390, 2, 3, 3)
+        (390, 11, 4, 4)
     );
     eprintln!("PG6 {report:?}");
     for key in adversarial::graph_query::REQUIRED_COVERAGE {

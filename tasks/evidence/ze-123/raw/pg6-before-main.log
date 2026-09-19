@@ -1,0 +1,55 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed)
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-bench)
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-cypher)
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 23.05s
+────────────
+ Nextest run ID d2c007b3-5353-4e2a-b3c9-1db1ba856156 with nextest profile: default
+    Starting 2 tests across 1 binary (454 tests skipped)
+        PASS [   0.014s] (1/2) zeppelin-embed-workspace-tests::adversarial_tests property_graph_query_probe_checks_values_scopes_and_inflight_faults
+  stdout ───
+
+    running 1 test
+    test property_graph_query_probe_checks_values_scopes_and_inflight_faults ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 455 filtered out; finished in 0.01s
+
+  stderr ───
+    PG6 ProbeReport { comparisons: 390, scope_cases: 2, fault_fires: 3, clean_controls: 3 }
+
+        PASS [   0.890s] (2/2) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_query_contracts
+  stdout ───
+
+    running 1 test
+    test one_runner_episode_reaches_required_query_contracts ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 455 filtered out; finished in 0.88s
+
+  stderr ───
+    PG6 actual runner seed=0 operations=59 violations=0
+
+────────────
+     Summary [   0.890s] 2 tests run: 2 passed, 454 skipped
+        PASS [   0.014s] (1/2) zeppelin-embed-workspace-tests::adversarial_tests property_graph_query_probe_checks_values_scopes_and_inflight_faults
+  stdout ───
+
+    running 1 test
+    test property_graph_query_probe_checks_values_scopes_and_inflight_faults ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 455 filtered out; finished in 0.01s
+
+  stderr ───
+    PG6 ProbeReport { comparisons: 390, scope_cases: 2, fault_fires: 3, clean_controls: 3 }
+
+        PASS [   0.890s] (2/2) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_query_contracts
+  stdout ───
+
+    running 1 test
+    test one_runner_episode_reaches_required_query_contracts ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 455 filtered out; finished in 0.88s
+
+  stderr ───
+    PG6 actual runner seed=0 operations=59 violations=0
+

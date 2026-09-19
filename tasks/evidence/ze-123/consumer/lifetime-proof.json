@@ -1,0 +1,53 @@
+{
+  "tracer_sha256": "61d13a6281401c98fa418011e887c9a666eee8ba6722100a03b22baf9e789e59",
+  "rlibs": {
+    "/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-123/target/debug/deps/libzeppelin_embed-9292be036b68f09a.rlib": "c382fbdda5480f06a0b6156ac1cf70a1c1bb37b913024279edd51b5523e58954",
+    "/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-123/target/debug/deps/libzeppelin_embed_cypher-1aa4328a9c64f7fb.rlib": "2392fdc02c2faba670c1caf35e211d9ad6f95f5cc0ab8ac7366553743a270e17"
+  },
+  "probes": [
+    {
+      "probe": "positive",
+      "command": [
+        "rustc",
+        "--edition=2024",
+        "--crate-type",
+        "lib",
+        "--crate-name",
+        "ze123_owner_positive",
+        "/tmp/ze-123-pattern-consumer/positive.rs",
+        "--extern",
+        "zeppelin_embed=/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-123/target/debug/deps/libzeppelin_embed-9292be036b68f09a.rlib",
+        "--extern",
+        "zeppelin_embed_cypher=/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-123/target/debug/deps/libzeppelin_embed_cypher-1aa4328a9c64f7fb.rlib",
+        "-L",
+        "dependency=/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-123/target/debug/deps",
+        "-o",
+        "/tmp/ze-123-pattern-consumer/positive.rlib"
+      ],
+      "exit": 0,
+      "source_sha256": "96aea1ad56225701dd82356df520e84556064df7bb8278f8f97ce688b6b3058e"
+    },
+    {
+      "probe": "escape",
+      "command": [
+        "rustc",
+        "--edition=2024",
+        "--crate-type",
+        "lib",
+        "--crate-name",
+        "ze123_owner_escape",
+        "/tmp/ze-123-pattern-consumer/escape.rs",
+        "--extern",
+        "zeppelin_embed=/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-123/target/debug/deps/libzeppelin_embed-9292be036b68f09a.rlib",
+        "--extern",
+        "zeppelin_embed_cypher=/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-123/target/debug/deps/libzeppelin_embed_cypher-1aa4328a9c64f7fb.rlib",
+        "-L",
+        "dependency=/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-123/target/debug/deps",
+        "-o",
+        "/tmp/ze-123-pattern-consumer/escape.rlib"
+      ],
+      "exit": 1,
+      "source_sha256": "bbcb69233367ce023f61b99c98e0a95de1b7d72f857eb0a88a4b9d65fe032fc9"
+    }
+  ]
+}

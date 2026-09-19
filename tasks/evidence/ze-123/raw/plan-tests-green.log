@@ -1,0 +1,32 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-123/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.28s
+────────────
+ Nextest run ID 2e1217e0-aed7-4c21-b054-f98bcdca871c with nextest profile: default
+    Starting 22 tests across 1 binary
+        PASS [   0.008s] ( 1/22) zeppelin-embed::graph_query_plan eager_search_obligations_survive_limit_zero_and_require_singleton_sources
+        PASS [   0.008s] ( 2/22) zeppelin-embed::graph_query_plan correlated_optional_preserves_an_existing_relationship_binding
+        PASS [   0.008s] ( 3/22) zeppelin-embed::graph_query_plan expression_dags_and_parameter_bindings_reject_cycles_types_and_entities
+        PASS [   0.008s] ( 4/22) zeppelin-embed::graph_query_plan aliased_large_literal_backing_is_charged_once
+        PASS [   0.008s] ( 5/22) zeppelin-embed::graph_query_plan mutation_items_bind_new_entities_in_order_and_validate_every_rhs
+        PASS [   0.008s] ( 6/22) zeppelin-embed::graph_query_plan inner_join_accepts_and_narrows_compatible_optional_bindings
+        PASS [   0.008s] ( 7/22) zeppelin-embed::graph_query_plan mutations_require_eager_input_and_reject_following_reads_or_search
+        PASS [   0.007s] ( 8/22) zeppelin-embed::graph_query_plan pattern_plans_pin_full_ids_path_bounds_and_optional_null_extension
+        PASS [   0.007s] ( 9/22) zeppelin-embed::graph_query_plan renamed_origins_remain_checked_through_multiple_patterns
+        PASS [   0.007s] (10/22) zeppelin-embed::graph_query_plan plan_bounds_charge_actual_declarations_and_hide_unused_fact_capacity
+        PASS [   0.007s] (11/22) zeppelin-embed::graph_query_plan relational_barriers_preserve_declared_order_until_a_join_or_distinct
+        PASS [   0.006s] (12/22) zeppelin-embed::graph_query_plan shared_relationship_origins_survive_lookup_joins_and_slot_renames
+        PASS [   0.006s] (13/22) zeppelin-embed::graph_query_plan search_sources_and_evaluated_bounds_never_clamp_invalid_requests
+        PASS [   0.006s] (14/22) zeppelin-embed::graph_query_plan retained_region_proof_rejects_gaps_overlap_overflow_and_uncharged_capacity
+        PASS [   0.017s] (15/22) zeppelin-embed::graph_query_plan plan_hard_caps_accept_exact_nodes_depth_and_scope_width
+        PASS [   0.007s] (16/22) zeppelin-embed::graph_query_plan structured_lookup_uses_distinct_full_ids_and_symbolic_keys
+        PASS [   0.007s] (17/22) zeppelin-embed::graph_query_plan typed_pattern_predicate_rejects_aliases_foreign_scope_and_output_escape
+        PASS [   0.007s] (18/22) zeppelin-embed::graph_query_plan typed_pattern_contract_preserves_or_types_and_private_edge_scope
+        PASS [   0.007s] (19/22) zeppelin-embed::graph_query_plan typed_pattern_requires_array_and_every_alternative_name_backing
+        PASS [   0.007s] (20/22) zeppelin-embed::graph_query_plan typed_scalar_expression_forms_validate_entity_and_operand_kinds
+        PASS [   0.007s] (21/22) zeppelin-embed::graph_query_plan typed_plan_revalidates_shared_expressions_after_with_scope
+        PASS [   0.007s] (22/22) zeppelin-embed::graph_query_plan typed_pattern_zero_hop_validation_preserves_predicate_and_control_obligations
+────────────
+     Summary [   0.044s] 22 tests run: 22 passed, 0 skipped

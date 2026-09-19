@@ -147,13 +147,17 @@ pub(super) fn preflight(
                 accounting.span(items, context)?;
             }
             OperatorKind::Expand {
-                relationship_type: Some(name),
-                ..
+                relationship_types, ..
             }
             | OperatorKind::BoundedExpand {
-                relationship_type: Some(name),
-                ..
-            } => accounting.span(name.as_str().as_bytes(), context)?,
+                relationship_types, ..
+            } => {
+                accounting.span(relationship_types, context)?;
+                for name in relationship_types {
+                    context.step()?;
+                    accounting.span(name.as_str().as_bytes(), context)?;
+                }
+            }
             _ => {}
         }
     }
@@ -410,6 +414,7 @@ fn derive(
             source,
             node,
             relationships,
+            edge_predicate,
             min,
             max,
             ..
@@ -418,6 +423,20 @@ fn derive(
                 return Err(PlanError::PathBound);
             }
             expand(&mut output, source, node, relationships, ValueKinds::LIST)?;
+            if let Some(predicate) = edge_predicate {
+                if predicate.current_edge == node || predicate.current_edge == relationships {
+                    return Err(PlanError::Scope);
+                }
+                let mut scope = input.clone();
+                add_slot(
+                    &mut scope,
+                    Slot {
+                        id: predicate.current_edge.0,
+                        kinds: ValueKinds::REL,
+                    },
+                )?;
+                boolean(description, predicate.expression, &scope, seen, context)?;
+            }
         }
         OperatorKind::OptionalApply { predicate } | OperatorKind::Join { predicate } => {
             let right = fact(facts, *op.inputs.get(1).ok_or(PlanError::Arity)?)?;

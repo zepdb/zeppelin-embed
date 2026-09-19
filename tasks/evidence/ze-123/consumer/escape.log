@@ -1,0 +1,37 @@
+warning: unused imports: `CancelToken`, `OpenOptions`, and `Store`
+ --> /tmp/ze-123-pattern-consumer/escape.rs:9:33
+  |
+9 | use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
+  |                                 ^^^^^^^^^^^  ^^^^^^^^^^^                ^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `GraphGeneration`, `StoreInstanceId`, and `resources::GraphResources`
+  --> /tmp/ze-123-pattern-consumer/escape.rs:11:5
+   |
+11 |     GraphGeneration, GraphName, StoreInstanceId,
+   |     ^^^^^^^^^^^^^^^             ^^^^^^^^^^^^^^^
+12 |     query::{Comparison, QueryView, ValueContext, plan::*, resources::*},
+13 |     resources::GraphResources,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: lifetime may not live long enough
+   --> /tmp/ze-123-pattern-consumer/escape.rs:687:69
+    |
+687 |     with_pattern_plan(QUERY, memory, control, view, |plan, _, _, _| Ok(plan))
+    |                                                      ----         - ^^^^^^^^ returning this value requires that `'1` must outlive `'2`
+    |                                                      |            |
+    |                                                      |            return type of closure is Result<zeppelin_embed::property_graph::query::plan::GraphPlan<'2, '_>, ParseError>
+    |                                                      has type `zeppelin_embed::property_graph::query::plan::GraphPlan<'1, '_>`
+
+error: lifetime may not live long enough
+   --> /tmp/ze-123-pattern-consumer/escape.rs:687:69
+    |
+687 |     with_pattern_plan(QUERY, memory, control, view, |plan, _, _, _| Ok(plan))
+    |                                                      ----         - ^^^^^^^^ returning this value requires that `'3` must outlive `'4`
+    |                                                      |            |
+    |                                                      |            return type of closure is Result<zeppelin_embed::property_graph::query::plan::GraphPlan<'_, '4>, ParseError>
+    |                                                      has type `zeppelin_embed::property_graph::query::plan::GraphPlan<'_, '3>`
+
+error: aborting due to 2 previous errors; 2 warnings emitted
+

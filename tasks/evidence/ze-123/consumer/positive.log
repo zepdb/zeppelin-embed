@@ -1,0 +1,137 @@
+warning: unused imports: `CancelToken`, `OpenOptions`, and `Store`
+ --> /tmp/ze-123-pattern-consumer/positive.rs:9:33
+  |
+9 | use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
+  |                                 ^^^^^^^^^^^  ^^^^^^^^^^^                ^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `GraphGeneration`, `StoreInstanceId`, and `resources::GraphResources`
+  --> /tmp/ze-123-pattern-consumer/positive.rs:11:5
+   |
+11 |     GraphGeneration, GraphName, StoreInstanceId,
+   |     ^^^^^^^^^^^^^^^             ^^^^^^^^^^^^^^^
+12 |     query::{Comparison, QueryView, ValueContext, plan::*, resources::*},
+13 |     resources::GraphResources,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `QUERY` is never used
+  --> /tmp/ze-123-pattern-consumer/positive.rs:20:7
+   |
+20 | const QUERY: &str = "MATCH (a)-[r:BASE|ALT]->(m) OPTIONAL MATCH (m)-[p:FIRST|SECOND*0..2 {weight:7}]->(b) WHERE b.ok=true RETURN a,r,m,p,b";
+   |       ^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `CURRENT_EDGE` is never used
+  --> /tmp/ze-123-pattern-consumer/positive.rs:21:7
+   |
+21 | const CURRENT_EDGE: SlotId = SlotId(u32::MAX);
+   |       ^^^^^^^^^^^^
+
+warning: constant `OP_COUNT` is never used
+  --> /tmp/ze-123-pattern-consumer/positive.rs:22:7
+   |
+22 | const OP_COUNT: usize = 6;
+   |       ^^^^^^^^
+
+warning: constant `QUERY_BYTES` is never used
+  --> /tmp/ze-123-pattern-consumer/positive.rs:23:7
+   |
+23 | const QUERY_BYTES: usize = 1024 * 1024;
+   |       ^^^^^^^^^^^
+
+warning: constant `LOWERING_SCRATCH_BYTES` is never used
+  --> /tmp/ze-123-pattern-consumer/positive.rs:25:7
+   |
+25 | const LOWERING_SCRATCH_BYTES: usize =
+   |       ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `error` is never used
+  --> /tmp/ze-123-pattern-consumer/positive.rs:28:4
+   |
+28 | fn error(kind: ErrorKind, message: &'static str) -> ParseError {
+   |    ^^^^^
+
+warning: function `invariant` is never used
+  --> /tmp/ze-123-pattern-consumer/positive.rs:35:4
+   |
+35 | fn invariant(message: &'static str) -> ParseError {
+   |    ^^^^^^^^^
+
+warning: function `memory_error` is never used
+  --> /tmp/ze-123-pattern-consumer/positive.rs:38:4
+   |
+38 | fn memory_error(_: MemoryError) -> ParseError {
+   |    ^^^^^^^^^^^^
+
+warning: function `poll` is never used
+  --> /tmp/ze-123-pattern-consumer/positive.rs:44:4
+   |
+44 | fn poll(control: &QueryControl) -> Result<(), ParseError> {
+   |    ^^^^
+
+warning: function `region` is never used
+  --> /tmp/ze-123-pattern-consumer/positive.rs:52:4
+   |
+52 | fn region<T>(arena: &QueryArena<'_, '_, T>) -> RetainedRegion {
+   |    ^^^^^^
+
+warning: struct `Metrics` is never constructed
+  --> /tmp/ze-123-pattern-consumer/positive.rs:56:8
+   |
+56 | struct Metrics {
+   |        ^^^^^^^
+
+warning: struct `Scratch` is never constructed
+  --> /tmp/ze-123-pattern-consumer/positive.rs:62:8
+   |
+62 | struct Scratch(std::path::PathBuf);
+   |        ^^^^^^^
+
+warning: associated function `new` is never used
+  --> /tmp/ze-123-pattern-consumer/positive.rs:64:8
+   |
+63 | impl Scratch {
+   | ------------ associated function in this implementation
+64 |     fn new() -> Self {
+   |        ^^^
+
+warning: function `ordinal` is never used
+  --> /tmp/ze-123-pattern-consumer/positive.rs:77:4
+   |
+77 | fn ordinal(bound: &BoundQuery<'_>, id: AstId) -> Result<usize, ParseError> {
+   |    ^^^^^^^
+
+warning: function `ast_expr` is never used
+  --> /tmp/ze-123-pattern-consumer/positive.rs:89:4
+   |
+89 | fn ast_expr(bound: &BoundQuery<'_>, id: AstId) -> Result<ExprId, ParseError> {
+   |    ^^^^^^^^
+
+warning: function `slot` is never used
+  --> /tmp/ze-123-pattern-consumer/positive.rs:94:4
+   |
+94 | fn slot(bound: &BoundQuery<'_>, id: AstId) -> Result<SlotId, ParseError> {
+   |    ^^^^
+
+warning: function `mark` is never used
+   --> /tmp/ze-123-pattern-consumer/positive.rs:100:4
+    |
+100 | fn mark(
+    |    ^^^^
+
+warning: function `with_pattern_plan` is never used
+   --> /tmp/ze-123-pattern-consumer/positive.rs:136:4
+    |
+136 | fn with_pattern_plan<T>(
+    |    ^^^^^^^^^^^^^^^^^
+
+warning: function `ownership_probe` is never used
+   --> /tmp/ze-123-pattern-consumer/positive.rs:686:4
+    |
+686 | fn ownership_probe(memory: &QueryMemory<'_>, control: &QueryControl, view: &QueryView) -> Result<usize, ParseError> {
+    |    ^^^^^^^^^^^^^^^
+
+warning: 21 warnings emitted
+

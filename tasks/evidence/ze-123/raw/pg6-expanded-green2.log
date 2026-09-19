@@ -1,0 +1,73 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-123/crates/zeppelin-embed)
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-123/crates/zeppelin-embed-cypher)
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-123/crates/zeppelin-embed-bench)
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-123/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-123/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.12s
+────────────
+ Nextest run ID 6aebc419-07b6-4667-baf8-efa4160aed3e with nextest profile: default
+    Starting 3 tests across 1 binary (453 tests skipped)
+        PASS [   0.010s] (1/3) zeppelin-embed-workspace-tests::adversarial_tests adversarial::graph_query::query_oracle_rejects_corrupted_primitive_observations
+  stdout ───
+
+    running 1 test
+    test adversarial::graph_query::query_oracle_rejects_corrupted_primitive_observations ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 455 filtered out; finished in 0.00s
+
+
+        PASS [   0.014s] (2/3) zeppelin-embed-workspace-tests::adversarial_tests property_graph_query_probe_checks_values_scopes_and_inflight_faults
+  stdout ───
+
+    running 1 test
+    test property_graph_query_probe_checks_values_scopes_and_inflight_faults ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 455 filtered out; finished in 0.01s
+
+  stderr ───
+    PG6 ProbeReport { comparisons: 390, scope_cases: 11, fault_fires: 4, clean_controls: 4 }
+
+        PASS [   0.798s] (3/3) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_query_contracts
+  stdout ───
+
+    running 1 test
+    test one_runner_episode_reaches_required_query_contracts ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 455 filtered out; finished in 0.79s
+
+  stderr ───
+    PG6 actual runner seed=0 operations=59 violations=0
+
+────────────
+     Summary [   0.798s] 3 tests run: 3 passed, 453 skipped
+        PASS [   0.010s] (1/3) zeppelin-embed-workspace-tests::adversarial_tests adversarial::graph_query::query_oracle_rejects_corrupted_primitive_observations
+  stdout ───
+
+    running 1 test
+    test adversarial::graph_query::query_oracle_rejects_corrupted_primitive_observations ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 455 filtered out; finished in 0.00s
+
+
+        PASS [   0.014s] (2/3) zeppelin-embed-workspace-tests::adversarial_tests property_graph_query_probe_checks_values_scopes_and_inflight_faults
+  stdout ───
+
+    running 1 test
+    test property_graph_query_probe_checks_values_scopes_and_inflight_faults ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 455 filtered out; finished in 0.01s
+
+  stderr ───
+    PG6 ProbeReport { comparisons: 390, scope_cases: 11, fault_fires: 4, clean_controls: 4 }
+
+        PASS [   0.798s] (3/3) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_query_contracts
+  stdout ───
+
+    running 1 test
+    test one_runner_episode_reaches_required_query_contracts ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 455 filtered out; finished in 0.79s
+
+  stderr ───
+    PG6 actual runner seed=0 operations=59 violations=0
+

@@ -1,0 +1,50 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-123/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.69s
+────────────
+ Nextest run ID 94797178-c3a1-4382-8624-c91029d74e56 with nextest profile: default
+    Starting 1 test across 1 binary (21 tests skipped)
+        FAIL [   0.010s] (1/1) zeppelin-embed::graph_query_plan typed_pattern_contract_preserves_or_types_and_private_edge_scope
+  stdout ───
+
+    running 1 test
+    test typed_pattern_contract_preserves_or_types_and_private_edge_scope ... FAILED
+
+    failures:
+
+    failures:
+        typed_pattern_contract_preserves_or_types_and_private_edge_scope
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 21 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'typed_pattern_contract_preserves_or_types_and_private_edge_scope' (34625779) panicked at crates/zeppelin-embed/tests/graph_query_plan.rs:1740:5:
+    assertion `left == right` failed
+      left: Some((SlotId(0), ValueKinds(0)))
+     right: None
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.010s] 1 test run: 0 passed, 1 failed, 21 skipped
+        FAIL [   0.010s] (1/1) zeppelin-embed::graph_query_plan typed_pattern_contract_preserves_or_types_and_private_edge_scope
+  stdout ───
+
+    running 1 test
+    test typed_pattern_contract_preserves_or_types_and_private_edge_scope ... FAILED
+
+    failures:
+
+    failures:
+        typed_pattern_contract_preserves_or_types_and_private_edge_scope
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 21 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'typed_pattern_contract_preserves_or_types_and_private_edge_scope' (34625779) panicked at crates/zeppelin-embed/tests/graph_query_plan.rs:1740:5:
+    assertion `left == right` failed
+      left: Some((SlotId(0), ValueKinds(0)))
+     right: None
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

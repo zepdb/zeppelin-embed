@@ -1,0 +1,43 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-123/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s
+────────────
+ Nextest run ID 612a51fd-ce56-4e1f-9860-3bb95ae37635 with nextest profile: default
+    Starting 2 tests across 1 binary (21 tests skipped)
+        PASS [   0.009s] (1/2) zeppelin-embed::graph_query_plan reused_pattern_variables_use_fresh_candidates_equality_and_reprojection
+  stdout ───
+
+    running 1 test
+    test reused_pattern_variables_use_fresh_candidates_equality_and_reprojection ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 22 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] (2/2) zeppelin-embed::graph_query_plan typed_pattern_predicate_rejects_aliases_foreign_scope_and_output_escape
+  stdout ───
+
+    running 1 test
+    test typed_pattern_predicate_rejects_aliases_foreign_scope_and_output_escape ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 22 filtered out; finished in 0.00s
+
+
+────────────
+     Summary [   0.010s] 2 tests run: 2 passed, 21 skipped
+        PASS [   0.009s] (1/2) zeppelin-embed::graph_query_plan reused_pattern_variables_use_fresh_candidates_equality_and_reprojection
+  stdout ───
+
+    running 1 test
+    test reused_pattern_variables_use_fresh_candidates_equality_and_reprojection ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 22 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] (2/2) zeppelin-embed::graph_query_plan typed_pattern_predicate_rejects_aliases_foreign_scope_and_output_escape
+  stdout ───
+
+    running 1 test
+    test typed_pattern_predicate_rejects_aliases_foreign_scope_and_output_escape ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 22 filtered out; finished in 0.00s
+
+

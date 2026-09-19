@@ -1,0 +1,11 @@
+   Compiling zeppelin-embed-adversarial-oracle v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-123/tests/adversarial-oracle)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-123/tests)
+error[E0599]: no variant or associated item named `Equal` found for enum `zeppelin_embed::property_graph::query::plan::BinaryExpression` in the current scope
+   --> tests/adversarial/graph_query.rs:147:59
+    |
+147 |         Expression::Binary { operation: BinaryExpression::Equal, left: ExprId(1), right: ExprId(2) },
+    |                                                           ^^^^^ variant or associated item not found in `zeppelin_embed::property_graph::query::plan::BinaryExpression`
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `zeppelin-embed-workspace-tests` (test "adversarial_tests") due to 1 previous error
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed-workspace-tests --test adversarial_tests` exited with code 101

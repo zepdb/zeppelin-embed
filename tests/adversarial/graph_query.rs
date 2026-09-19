@@ -24,6 +24,9 @@ pub const REQUIRED_COVERAGE: &[&str] = &[
     "property-graph.query.clock.list",
     "property-graph.query.clock.plan",
     "property-graph.query.same-seed-control",
+    "property-graph.query.pattern.scope",
+    "property-graph.query.pattern.metadata",
+    "property-graph.query.clock.pattern",
 ];
 #[derive(Debug, Default)]
 pub struct ProbeReport {
@@ -128,7 +131,149 @@ fn scope_case(input: u32, output: u32, context: &mut ValueContext<'_>) -> Result
     )
     .map(|_| ())
 }
+fn pattern_case(
+    base: u32,
+    edge: u32,
+    reference: u32,
+    escapes: bool,
+    context: &mut ValueContext<'_>,
+) -> Result<(), PlanError> {
+    use zeppelin_embed::property_graph::GraphName;
+    let alternatives = ["FIRST", "SECOND", "FIRST"].map(|name| GraphName::new(name).unwrap());
+    let expressions = [
+        Expression::Slot(SlotId(reference)),
+        Expression::Property {
+            entity: ExprId(0),
+            name: GraphName::new("weight").unwrap(),
+        },
+        Expression::Literal(Literal::I64(7)),
+        Expression::Binary {
+            operation: BinaryExpression::Comparison(Comparison::Equal),
+            left: ExprId(1),
+            right: ExprId(2),
+        },
+    ];
+    let edges = [[PlanNodeId(0)], [PlanNodeId(1)], [PlanNodeId(2)]];
+    let mut operators = vec![
+        Operator {
+            inputs: &[],
+            kind: OperatorKind::Unit,
+        },
+        Operator {
+            inputs: &edges[0],
+            kind: OperatorKind::LookupNode {
+                output: SlotId(base),
+                id: NodeId::new((1u128 << 100) + 7).unwrap(),
+            },
+        },
+        Operator {
+            inputs: &edges[1],
+            kind: OperatorKind::BoundedExpand {
+                source: SlotId(base),
+                node: SlotId(base + 1),
+                relationships: SlotId(base + 2),
+                min: 0,
+                max: 2,
+                direction: Direction::Outgoing,
+                relationship_types: &alternatives,
+                edge_predicate: Some(EdgePredicate {
+                    current_edge: SlotId(edge),
+                    expression: ExprId(3),
+                }),
+                pattern: PatternId(9),
+            },
+        },
+    ];
+    if escapes {
+        operators.push(Operator {
+            inputs: &edges[2],
+            kind: OperatorKind::Filter(ExprId(3)),
+        });
+    }
+    let mut facts = vec![NodeFacts::default(); operators.len()];
+    let mut regions = vec![
+        RetainedRegion::vector(&operators)?,
+        RetainedRegion::slice(&expressions)?,
+        RetainedRegion::slice(&edges)?,
+        RetainedRegion::slice(&alternatives)?,
+        RetainedRegion::slice(b"FIRST")?,
+        RetainedRegion::slice(b"SECOND")?,
+        RetainedRegion::slice(b"weight")?,
+        RetainedRegion::vector(&facts)?,
+    ];
+    regions.sort_unstable();
+    let plan = GraphPlan::validate(
+        PlanDescription {
+            operators: &operators,
+            expressions: &expressions,
+            parameters: &[],
+            root: PlanNodeId(operators.len() as u32 - 1),
+            eager_searches: &[],
+        },
+        &mut facts,
+        PlanFootprint::declared(1024 * 1024),
+        PlanBacking::vector(&regions)?,
+        context,
+    )?;
+    let output = plan.facts(PlanNodeId(2)).unwrap();
+    assert_eq!(output.width(), 3);
+    assert_eq!(output.slot_at(0), Some((SlotId(base), ValueKinds::NODE)));
+    assert_eq!(
+        output.slot_at(1),
+        Some((SlotId(base + 1), ValueKinds::NODE))
+    );
+    assert_eq!(
+        output.slot_at(2),
+        Some((SlotId(base + 2), ValueKinds::LIST))
+    );
+    assert_eq!(output.slot_at(3), None);
+    assert_eq!(
+        output.slot(SlotId(edge)),
+        None,
+        "private edge escaped to output"
+    );
+    match plan.description().operators[2].kind {
+        OperatorKind::BoundedExpand {
+            relationship_types,
+            min,
+            max,
+            edge_predicate,
+            pattern,
+            ..
+        } => {
+            assert_eq!(
+                relationship_types
+                    .iter()
+                    .map(|name| name.as_str())
+                    .collect::<Vec<_>>(),
+                ["FIRST", "SECOND", "FIRST"]
+            );
+            assert_eq!((min, max, pattern), (0, 2, PatternId(9)));
+            assert_eq!(
+                edge_predicate,
+                Some(EdgePredicate {
+                    current_edge: SlotId(edge),
+                    expression: ExprId(3)
+                })
+            );
+        }
+        _ => panic!("validated pattern changed its operator kind"),
+    }
+    Ok(())
+}
 fn fault_trial(seed: u64, operation: usize, fault: bool) -> Result<(usize, u64), String> {
+    // Target the last three charged units of the new private expression path,
+    // after all input/type-name backing and ordinary input validation finished.
+    let pattern_work = if operation == 3 {
+        let view = QueryView::new(StoreInstanceId::new(1).unwrap(), GraphGeneration::new(seed));
+        let control = QueryControl::Cancel(CancelToken::new());
+        let mut context =
+            ValueContext::new(&view, &control, 8_000_000).map_err(|e| e.to_string())?;
+        pattern_case(0, 3, 3, false, &mut context).map_err(|e| e.to_string())?;
+        context.work()
+    } else {
+        0
+    };
     let manual = Arc::new(ManualMonotonicClock::new());
     let event = FaultEvent {
         id: format!("PG6-{seed}-{operation}"),
@@ -136,7 +281,11 @@ fn fault_trial(seed: u64, operation: usize, fault: bool) -> Result<(usize, u64),
         layer: Layer::Clock,
         site: FaultSite::Clock,
         mode: FaultMode::ClockJump { seconds: 30 },
-        nth_match: 3,
+        nth_match: if operation == 3 {
+            pattern_work as usize - 2
+        } else {
+            3
+        },
         expected_matches: None,
         deadline_budget_seconds: Some(1),
         path_contains: Some("clock".into()),
@@ -182,10 +331,15 @@ fn fault_trial(seed: u64, operation: usize, fault: bool) -> Result<(usize, u64),
             Err(QueryError::Timeout) => true,
             other => return Err(format!("PG6 list outcome {other:?}")),
         },
-        _ => match scope_case(70_000, 70_000, &mut context) {
+        2 => match scope_case(70_000, 70_000, &mut context) {
             Ok(()) => false,
             Err(PlanError::Control(QueryError::Timeout)) => true,
             other => return Err(format!("PG6 plan outcome {other:?}")),
+        },
+        _ => match pattern_case(0, 3, 3, false, &mut context) {
+            Ok(()) => false,
+            Err(PlanError::Control(QueryError::Timeout)) => true,
+            other => return Err(format!("PG6 private pattern outcome {other:?}")),
         },
     };
     clock.finish_query()?;
@@ -193,6 +347,12 @@ fn fault_trial(seed: u64, operation: usize, fault: bool) -> Result<(usize, u64),
     if timed_out != fault || fires != usize::from(fault) || context.work() == 0 {
         return Err(format!(
             "PG6 fault/control seed={seed} operation={operation} timeout={timed_out} fires={fires} work={}",
+            context.work()
+        ));
+    }
+    if operation == 3 && context.work() != pattern_work - if fault { 3 } else { 0 } {
+        return Err(format!(
+            "PG6 private predicate work location changed: {} of {pattern_work}",
             context.work()
         ));
     }
@@ -282,7 +442,35 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<ProbeReport, 
         report.scope_cases += 1;
     }
     coverage.hit(REQUIRED_COVERAGE[3]);
-    for operation in 0..3 {
+    let base = slot & !7;
+    for (edge, reference, escapes) in [
+        (base + 3, base + 3, false),
+        (base + 3, base, false),
+        (base, base, false),
+        (base + 1, base + 1, false),
+        (base + 2, base + 2, false),
+        (base + 3, base + 1, false),
+        (base + 3, base + 2, false),
+        (base + 3, base + 4, false),
+        (base + 3, base + 3, true),
+    ] {
+        let observed = pattern_case(base, edge, reference, escapes, &mut context);
+        if !matches!(observed, Ok(()) | Err(PlanError::Scope)) {
+            return Err(format!("PG6 unexpected private scope outcome {observed:?}"));
+        }
+        oracle::check_edge_scope(
+            &[base],
+            [base + 1, base + 2],
+            edge,
+            reference,
+            escapes,
+            observed.is_ok(),
+        )?;
+        report.scope_cases += 1;
+    }
+    coverage.hit(REQUIRED_COVERAGE[8]);
+    coverage.hit(REQUIRED_COVERAGE[9]);
+    for operation in 0..4 {
         let (fires, failed_work) = fault_trial(seed, operation, true)?;
         let (_, clean_work) = fault_trial(seed, operation, false)?;
         if clean_work <= failed_work {
@@ -290,7 +478,7 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<ProbeReport, 
         }
         report.fault_fires += fires;
         report.clean_controls += 1;
-        coverage.hit(REQUIRED_COVERAGE[4 + operation]);
+        coverage.hit(REQUIRED_COVERAGE[if operation == 3 { 10 } else { 4 + operation }]);
         coverage.hit(REQUIRED_COVERAGE[7]);
     }
     Ok(report)
@@ -341,4 +529,8 @@ fn query_oracle_rejects_corrupted_primitive_observations() {
     assert!(
         oracle::check_scope(&[vec![(1, None)], vec![(1, Some(1)), (1, None)]], 1, true).is_err()
     );
+    for (edge, reference, escapes) in [(1, 1, false), (2, 2, false), (4, 2, false), (4, 4, true)] {
+        assert!(oracle::check_edge_scope(&[1], [2, 3], edge, reference, escapes, true).is_err());
+    }
+    assert!(oracle::check_edge_scope(&[1], [2, 3], 4, 4, false, false).is_err());
 }

@@ -1,0 +1,50 @@
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-123/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.27s
+────────────
+ Nextest run ID e7960604-42e5-4fc6-b824-1497d32e03ce with nextest profile: default
+    Starting 1 test across 1 binary
+        FAIL [   0.015s] (1/1) zeppelin-embed-cypher::pattern_contract scoped_pattern_consumer_preserves_complete_projection_and_private_edge_scope
+  stdout ───
+
+    running 1 test
+    test scoped_pattern_consumer_preserves_complete_projection_and_private_edge_scope ... FAILED
+
+    failures:
+
+    failures:
+        scoped_pattern_consumer_preserves_complete_projection_and_private_edge_scope
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'scoped_pattern_consumer_preserves_complete_projection_and_private_edge_scope' (34583884) panicked at crates/zeppelin-embed-cypher/tests/pattern_contract.rs:254:13:
+    assertion `left == right` failed
+      left: "-[r:BASE|ALT]->"
+     right: "[r:BASE|ALT]"
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.015s] 1 test run: 0 passed, 1 failed, 0 skipped
+        FAIL [   0.015s] (1/1) zeppelin-embed-cypher::pattern_contract scoped_pattern_consumer_preserves_complete_projection_and_private_edge_scope
+  stdout ───
+
+    running 1 test
+    test scoped_pattern_consumer_preserves_complete_projection_and_private_edge_scope ... FAILED
+
+    failures:
+
+    failures:
+        scoped_pattern_consumer_preserves_complete_projection_and_private_edge_scope
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'scoped_pattern_consumer_preserves_complete_projection_and_private_edge_scope' (34583884) panicked at crates/zeppelin-embed-cypher/tests/pattern_contract.rs:254:13:
+    assertion `left == right` failed
+      left: "-[r:BASE|ALT]->"
+     right: "[r:BASE|ALT]"
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

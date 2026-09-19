@@ -1,0 +1,8 @@
+    Checking byteorder v1.5.0
+    Checking bytemuck v1.25.2
+    Checking xxhash-rust v0.8.18
+    Checking libc v0.2.189
+    Checking roaring v0.10.12
+    Checking zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-123/crates/zeppelin-embed)
+    Checking zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-123/crates/zeppelin-embed-cypher)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.10s

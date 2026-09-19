@@ -1,0 +1,16 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-123/crates/zeppelin-embed)
+error[E0502]: cannot borrow `operators[_].kind` as mutable because it is also borrowed as immutable
+    --> crates/zeppelin-embed/tests/graph_query_plan.rs:1989:48
+     |
+1969 |         describe(&operators),
+     |                  ---------- immutable borrow occurs here
+...
+1989 |     if let OperatorKind::Expand { node, .. } = &mut operators[3].kind {
+     |                                                ^^^^^^^^^^^^^^^^^^^^^^ mutable borrow occurs here
+...
+1992 |     assert_eq!(validate(describe(&operators)), Err(PlanError::Scope));
+     |                         -------- immutable borrow later used here
+
+For more information about this error, try `rustc --explain E0502`.
+error: could not compile `zeppelin-embed` (test "graph_query_plan") due to 1 previous error
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_query_plan` exited with code 101

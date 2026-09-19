@@ -174,3 +174,32 @@ pub fn check_scope(
         ))
     }
 }
+
+/// A bounded pattern evaluates its predicate in an input environment extended
+/// by one temporary edge binding. Outputs exist only in the next environment.
+/// This primitive set model knows no engine slots, expressions, or plan nodes.
+pub fn check_edge_scope(
+    input: &[u32],
+    outputs: [u32; 2],
+    edge: u32,
+    predicate_variable: u32,
+    escapes: bool,
+    accepted: bool,
+) -> Result<(), String> {
+    let before: BTreeSet<_> = input.iter().copied().collect();
+    let mut temporary = before.clone();
+    let fresh_edge = temporary.insert(edge) && !outputs.contains(&edge);
+    let mut after = before;
+    let fresh_outputs = outputs.into_iter().all(|slot| after.insert(slot));
+    let valid = fresh_edge
+        && fresh_outputs
+        && temporary.contains(&predicate_variable)
+        && (!escapes || after.contains(&edge));
+    if valid == accepted {
+        Ok(())
+    } else {
+        Err(format!(
+            "PG6 private edge scope mismatch expected={valid} observed={accepted}"
+        ))
+    }
+}

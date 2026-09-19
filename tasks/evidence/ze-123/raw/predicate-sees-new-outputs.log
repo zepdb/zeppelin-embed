@@ -1,0 +1,50 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-123/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.64s
+────────────
+ Nextest run ID d5556aeb-2e26-447a-abec-7591058d8dd1 with nextest profile: default
+    Starting 1 test across 1 binary (21 tests skipped)
+        FAIL [   0.010s] (1/1) zeppelin-embed::graph_query_plan typed_pattern_predicate_rejects_aliases_foreign_scope_and_output_escape
+  stdout ───
+
+    running 1 test
+    test typed_pattern_predicate_rejects_aliases_foreign_scope_and_output_escape ... FAILED
+
+    failures:
+
+    failures:
+        typed_pattern_predicate_rejects_aliases_foreign_scope_and_output_escape
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 21 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'typed_pattern_predicate_rejects_aliases_foreign_scope_and_output_escape' (34625226) panicked at crates/zeppelin-embed/tests/graph_query_plan.rs:1824:9:
+    assertion `left == right` failed
+      left: Err(Type)
+     right: Err(Scope)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.011s] 1 test run: 0 passed, 1 failed, 21 skipped
+        FAIL [   0.010s] (1/1) zeppelin-embed::graph_query_plan typed_pattern_predicate_rejects_aliases_foreign_scope_and_output_escape
+  stdout ───
+
+    running 1 test
+    test typed_pattern_predicate_rejects_aliases_foreign_scope_and_output_escape ... FAILED
+
+    failures:
+
+    failures:
+        typed_pattern_predicate_rejects_aliases_foreign_scope_and_output_escape
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 21 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'typed_pattern_predicate_rejects_aliases_foreign_scope_and_output_escape' (34625226) panicked at crates/zeppelin-embed/tests/graph_query_plan.rs:1824:9:
+    assertion `left == right` failed
+      left: Err(Type)
+     right: Err(Scope)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

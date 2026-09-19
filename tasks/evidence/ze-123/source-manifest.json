@@ -1,0 +1,10 @@
+{
+  "crates/zeppelin-embed/src/property_graph/query/plan/mod.rs": "945b228dfc39803e3375876ccd2c9fda8ed51f4574d63d160ef9aeaaca216611",
+  "crates/zeppelin-embed/src/property_graph/query/plan/validate.rs": "47bb3cabbb3c5a7fa686b700716b013b4c029aaa49bc148c619d1974e3c57aec",
+  "crates/zeppelin-embed/tests/graph_query_plan.rs": "75df0269a87378dfc5baae1483612c1c26c7356b7d1c996db1a794bcbc806994",
+  "crates/zeppelin-embed-cypher/tests/pattern_contract.rs": "61d13a6281401c98fa418011e887c9a666eee8ba6722100a03b22baf9e789e59",
+  "tests/adversarial-oracle/src/graph_query.rs": "9433aae42b4caed1480dc0e10d4fa055349d3c6d9057bdb7fa792f704367745b",
+  "tests/adversarial/graph_query.rs": "ee8cfb3f1a84b305a184cc66a47f7271cd4c8dd678da44afc72e9e928c366004",
+  "tests/adversarial/coverage.rs": "b7cdff6b0431cb656605c126beaeb01039afd8b5761c440525ec513bbf5b78b5",
+  "tests/adversarial_tests.rs": "25e06b9b11fb55584f8053e50c62874c21ae55d5c122c2d6311818c493d5e307"
+}

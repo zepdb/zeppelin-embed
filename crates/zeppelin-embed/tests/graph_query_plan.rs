@@ -197,7 +197,8 @@ fn pattern_plans_pin_full_ids_path_bounds_and_optional_null_extension() {
                 min: 0,
                 max: 16,
                 direction: Direction::Incoming,
-                relationship_type: None,
+                edge_predicate: None,
+                relationship_types: &[],
                 pattern: PatternId(7),
             },
         },
@@ -244,7 +245,8 @@ fn pattern_plans_pin_full_ids_path_bounds_and_optional_null_extension() {
         min: 0,
         max: 17,
         direction: Direction::Outgoing,
-        relationship_type: None,
+        edge_predicate: None,
+        relationship_types: &[],
         pattern: PatternId(7),
     };
     assert_eq!(validate(describe!()), Err(PlanError::PathBound));
@@ -253,7 +255,7 @@ fn pattern_plans_pin_full_ids_path_bounds_and_optional_null_extension() {
         node: SlotId(2),
         relationship: SlotId(3),
         direction: Direction::Either,
-        relationship_type: None,
+        relationship_types: &[],
         pattern: PatternId(7),
     };
     assert_eq!(validate(describe!()), Err(PlanError::Scope));
@@ -262,7 +264,7 @@ fn pattern_plans_pin_full_ids_path_bounds_and_optional_null_extension() {
         node: SlotId(2),
         relationship: SlotId(100_000),
         direction: Direction::Either,
-        relationship_type: None,
+        relationship_types: &[],
         pattern: PatternId(7),
     };
     assert_eq!(validate(describe!()), Err(PlanError::Scope));
@@ -581,7 +583,7 @@ fn mutations_require_eager_input_and_reject_following_reads_or_search() {
         node: SlotId(2),
         relationship: SlotId(3),
         direction: Direction::Outgoing,
-        relationship_type: None,
+        relationship_types: &[],
         pattern: PatternId(2),
     };
     assert_eq!(validate(describe!()), Err(PlanError::ReadAfterWrite));
@@ -609,7 +611,7 @@ fn correlated_optional_preserves_an_existing_relationship_binding() {
                 node: SlotId(2),
                 relationship: SlotId(3),
                 direction: Direction::Outgoing,
-                relationship_type: None,
+                relationship_types: &[],
                 pattern: PatternId(1),
             },
         },
@@ -620,7 +622,7 @@ fn correlated_optional_preserves_an_existing_relationship_binding() {
                 node: SlotId(4),
                 relationship: SlotId(5),
                 direction: Direction::Outgoing,
-                relationship_type: None,
+                relationship_types: &[],
                 pattern: PatternId(2),
             },
         },
@@ -1235,17 +1237,20 @@ fn retained_regions(description: PlanDescription<'_>, facts: &[NodeFacts]) -> Ve
             OperatorKind::ScanNodes {
                 label: Some(name), ..
             }
-            | OperatorKind::Expand {
-                relationship_type: Some(name),
-                ..
-            }
-            | OperatorKind::BoundedExpand {
-                relationship_type: Some(name),
-                ..
-            }
             | OperatorKind::LookupKey {
                 namespace: name, ..
             } => add(&mut regions, name.as_str().as_bytes()),
+            OperatorKind::Expand {
+                relationship_types, ..
+            }
+            | OperatorKind::BoundedExpand {
+                relationship_types, ..
+            } => {
+                add(&mut regions, relationship_types);
+                for name in relationship_types {
+                    add(&mut regions, name.as_str().as_bytes());
+                }
+            }
             OperatorKind::Mutate(items) => {
                 add(&mut regions, items);
                 for item in items {
@@ -1307,7 +1312,7 @@ fn shared_relationship_origins_survive_lookup_joins_and_slot_renames() {
         node: SlotId(node),
         relationship: SlotId(3),
         direction: Direction::Outgoing,
-        relationship_type: None,
+        relationship_types: &[],
         pattern: PatternId(pattern),
     };
     let mut operators = [
@@ -1384,7 +1389,7 @@ fn inner_join_accepts_and_narrows_compatible_optional_bindings() {
                 node: SlotId(2),
                 relationship: SlotId(3),
                 direction: Direction::Outgoing,
-                relationship_type: None,
+                relationship_types: &[],
                 pattern: PatternId(7),
             },
         },
@@ -1579,7 +1584,7 @@ fn renamed_origins_remain_checked_through_multiple_patterns() {
                 node: SlotId(2),
                 relationship: SlotId(3),
                 direction: Direction::Outgoing,
-                relationship_type: None,
+                relationship_types: &[],
                 pattern: PatternId(7),
             },
         },
@@ -1594,7 +1599,7 @@ fn renamed_origins_remain_checked_through_multiple_patterns() {
                 node: SlotId(4),
                 relationship: SlotId(99),
                 direction: Direction::Outgoing,
-                relationship_type: None,
+                relationship_types: &[],
                 pattern: PatternId(8),
             },
         },
@@ -1609,7 +1614,7 @@ fn renamed_origins_remain_checked_through_multiple_patterns() {
                 node: SlotId(5),
                 relationship: SlotId(99),
                 direction: Direction::Outgoing,
-                relationship_type: None,
+                relationship_types: &[],
                 pattern: PatternId(7),
             },
         },
@@ -1635,8 +1640,477 @@ fn renamed_origins_remain_checked_through_multiple_patterns() {
         node: SlotId(5),
         relationship: SlotId(99),
         direction: Direction::Outgoing,
-        relationship_type: None,
+        relationship_types: &[],
         pattern: PatternId(9),
     };
     assert_eq!(validate(describe!()), Ok(()));
+}
+
+#[test]
+fn typed_pattern_contract_preserves_or_types_and_private_edge_scope() {
+    use zeppelin_embed::property_graph::GraphName;
+    let alternatives = [
+        GraphName::new("FIRST").unwrap(),
+        GraphName::new("SECOND").unwrap(),
+        GraphName::new("FIRST").unwrap(),
+    ];
+    let expressions = [
+        Expression::Literal(Literal::I64(7)),
+        Expression::Slot(SlotId(u32::MAX)),
+        Expression::Property {
+            entity: ExprId(1),
+            name: GraphName::new("weight").unwrap(),
+        },
+        Expression::Slot(SlotId(900)),
+        Expression::Binary {
+            operation: BinaryExpression::Comparison(
+                zeppelin_embed::property_graph::query::Comparison::Equal,
+            ),
+            left: ExprId(2),
+            right: ExprId(3),
+        },
+    ];
+    let projection = [Projection {
+        slot: SlotId(900),
+        expression: ExprId(0),
+    }];
+    let operators = [
+        Operator {
+            inputs: &[],
+            kind: OperatorKind::Unit,
+        },
+        Operator {
+            inputs: &[PlanNodeId(0)],
+            kind: OperatorKind::Project(&projection),
+        },
+        Operator {
+            inputs: &[PlanNodeId(1)],
+            kind: OperatorKind::ScanNodes {
+                output: SlotId(1000),
+                label: None,
+            },
+        },
+        Operator {
+            inputs: &[PlanNodeId(2)],
+            kind: OperatorKind::BoundedExpand {
+                source: SlotId(1000),
+                node: SlotId(2000),
+                relationships: SlotId(3000),
+                min: 0,
+                max: 16,
+                direction: Direction::Outgoing,
+                relationship_types: &alternatives,
+                pattern: PatternId(4),
+                edge_predicate: Some(EdgePredicate {
+                    current_edge: SlotId(u32::MAX),
+                    expression: ExprId(4),
+                }),
+            },
+        },
+    ];
+    let description = PlanDescription {
+        operators: &operators,
+        expressions: &expressions,
+        parameters: &[],
+        root: PlanNodeId(3),
+        eager_searches: &[],
+    };
+    let view = QueryView::new(StoreInstanceId::new(1).unwrap(), GraphGeneration::new(0));
+    let control = QueryControl::Cancel(CancelToken::new());
+    let mut context = ValueContext::new(&view, &control, 8_000_000).unwrap();
+    let mut facts = vec![NodeFacts::default(); operators.len()];
+    let plan = validate_plan(
+        description,
+        &mut facts,
+        PlanFootprint::declared(1024 * 1024),
+        &mut context,
+    )
+    .unwrap();
+    let output = plan.facts(PlanNodeId(3)).unwrap();
+    assert_eq!(output.width(), 4);
+    assert_eq!(output.slot(SlotId(u32::MAX)), None);
+    for (ordinal, id, kind) in [
+        (0, 900, ValueKinds::I64),
+        (1, 1000, ValueKinds::NODE),
+        (2, 2000, ValueKinds::NODE),
+        (3, 3000, ValueKinds::LIST),
+    ] {
+        assert_eq!(output.slot_at(ordinal), Some((SlotId(id), kind)));
+    }
+    assert_eq!(output.slot_at(4), None);
+    assert_eq!(output.slot_at(usize::MAX), None);
+    let (relationship_types, edge_predicate) = match operators[3].kind {
+        OperatorKind::BoundedExpand {
+            relationship_types,
+            edge_predicate,
+            ..
+        } => Some((relationship_types, edge_predicate)),
+        _ => None,
+    }
+    .unwrap();
+    assert_eq!(
+        relationship_types
+            .iter()
+            .map(|n| n.as_str())
+            .collect::<Vec<_>>(),
+        ["FIRST", "SECOND", "FIRST"]
+    );
+    assert_eq!(edge_predicate.unwrap().current_edge, SlotId(u32::MAX));
+}
+
+fn edge_scope_operators<'a>(
+    alternatives: &'a [zeppelin_embed::property_graph::GraphName<'a>],
+    current_edge: SlotId,
+    predicate: ExprId,
+    max: u8,
+) -> [Operator<'a>; 3] {
+    [
+        Operator {
+            inputs: &[],
+            kind: OperatorKind::Unit,
+        },
+        Operator {
+            inputs: &[PlanNodeId(0)],
+            kind: OperatorKind::ScanNodes {
+                output: SlotId(7),
+                label: None,
+            },
+        },
+        Operator {
+            inputs: &[PlanNodeId(1)],
+            kind: OperatorKind::BoundedExpand {
+                source: SlotId(7),
+                node: SlotId(8),
+                relationships: SlotId(9),
+                min: 0,
+                max,
+                relationship_types: alternatives,
+                direction: Direction::Either,
+                pattern: PatternId(0),
+                edge_predicate: Some(EdgePredicate {
+                    current_edge,
+                    expression: predicate,
+                }),
+            },
+        },
+    ]
+}
+
+#[test]
+fn typed_pattern_predicate_rejects_aliases_foreign_scope_and_output_escape() {
+    let expressions = [Expression::Literal(Literal::Bool(true))];
+    for private in [7, 8, 9] {
+        let operators = edge_scope_operators(&[], SlotId(private), ExprId(0), 1);
+        assert_eq!(
+            validate(PlanDescription {
+                operators: &operators,
+                expressions: &expressions,
+                parameters: &[],
+                root: PlanNodeId(2),
+                eager_searches: &[]
+            }),
+            Err(PlanError::Scope)
+        );
+    }
+    for (expression, expected) in [
+        (Expression::Slot(SlotId(42)), PlanError::Type),
+        (Expression::Slot(SlotId(8)), PlanError::Scope),
+        (Expression::Slot(SlotId(9)), PlanError::Scope),
+        (Expression::Slot(SlotId(9000)), PlanError::Scope),
+        (Expression::Literal(Literal::I64(1)), PlanError::Type),
+    ] {
+        let expressions = [expression];
+        let operators = edge_scope_operators(&[], SlotId(42), ExprId(0), 0);
+        assert_eq!(
+            validate(PlanDescription {
+                operators: &operators,
+                expressions: &expressions,
+                parameters: &[],
+                root: PlanNodeId(2),
+                eager_searches: &[]
+            }),
+            Err(expected)
+        );
+    }
+    let base = edge_scope_operators(&[], SlotId(42), ExprId(0), 0);
+    let expressions = [
+        Expression::Literal(Literal::Bool(true)),
+        Expression::Slot(SlotId(42)),
+    ];
+    let operators = [
+        base[0],
+        base[1],
+        base[2],
+        Operator {
+            inputs: &[PlanNodeId(2)],
+            kind: OperatorKind::Filter(ExprId(1)),
+        },
+    ];
+    assert_eq!(
+        validate(PlanDescription {
+            operators: &operators,
+            expressions: &expressions,
+            parameters: &[],
+            root: PlanNodeId(3),
+            eager_searches: &[]
+        }),
+        Err(PlanError::Scope)
+    );
+    let missing = edge_scope_operators(&[], SlotId(42), ExprId(99), 0);
+    assert_eq!(
+        validate(PlanDescription {
+            operators: &missing,
+            expressions: &expressions,
+            parameters: &[],
+            root: PlanNodeId(2),
+            eager_searches: &[],
+        }),
+        Err(PlanError::Reference)
+    );
+}
+
+#[test]
+fn reused_pattern_variables_use_fresh_candidates_equality_and_reprojection() {
+    use zeppelin_embed::property_graph::query::Comparison;
+    let expressions = [
+        Expression::Slot(SlotId(7)),
+        Expression::Slot(SlotId(10)),
+        Expression::Binary {
+            operation: BinaryExpression::Comparison(Comparison::Equal),
+            left: ExprId(0),
+            right: ExprId(1),
+        },
+        Expression::Slot(SlotId(9)),
+        Expression::Slot(SlotId(11)),
+        Expression::Binary {
+            operation: BinaryExpression::Comparison(Comparison::Equal),
+            left: ExprId(3),
+            right: ExprId(4),
+        },
+        Expression::Binary {
+            operation: BinaryExpression::And,
+            left: ExprId(2),
+            right: ExprId(5),
+        },
+        Expression::Slot(SlotId(8)),
+    ];
+    let projection = [
+        Projection {
+            slot: SlotId(7),
+            expression: ExprId(0),
+        },
+        Projection {
+            slot: SlotId(8),
+            expression: ExprId(7),
+        },
+        Projection {
+            slot: SlotId(9),
+            expression: ExprId(3),
+        },
+    ];
+    // MATCH (a)-[r]->(b) MATCH (b)<-[r]-(a): the second MATCH has its
+    // own uniqueness scope and fresh candidate slots. Identity equality
+    // constrains them; projection retains the existing a/r bindings.
+    let mut operators = [
+        Operator {
+            inputs: &[],
+            kind: OperatorKind::Unit,
+        },
+        Operator {
+            inputs: &[PlanNodeId(0)],
+            kind: OperatorKind::ScanNodes {
+                output: SlotId(7),
+                label: None,
+            },
+        },
+        Operator {
+            inputs: &[PlanNodeId(1)],
+            kind: OperatorKind::Expand {
+                source: SlotId(7),
+                node: SlotId(8),
+                relationship: SlotId(9),
+                direction: Direction::Outgoing,
+                relationship_types: &[],
+                pattern: PatternId(0),
+            },
+        },
+        Operator {
+            inputs: &[PlanNodeId(2)],
+            kind: OperatorKind::Expand {
+                source: SlotId(8),
+                node: SlotId(10),
+                relationship: SlotId(11),
+                direction: Direction::Incoming,
+                relationship_types: &[],
+                pattern: PatternId(1),
+            },
+        },
+        Operator {
+            inputs: &[PlanNodeId(3)],
+            kind: OperatorKind::Filter(ExprId(6)),
+        },
+        Operator {
+            inputs: &[PlanNodeId(4)],
+            kind: OperatorKind::Project(&projection),
+        },
+    ];
+    macro_rules! describe {
+        ($operators:expr) => {
+            PlanDescription {
+                operators: $operators,
+                expressions: &expressions,
+                parameters: &[],
+                root: PlanNodeId(5),
+                eager_searches: &[],
+            }
+        };
+    }
+    let view = QueryView::new(StoreInstanceId::new(1).unwrap(), GraphGeneration::new(0));
+    let control = QueryControl::Cancel(CancelToken::new());
+    let mut context = ValueContext::new(&view, &control, 8_000_000).unwrap();
+    let mut facts = vec![NodeFacts::default(); operators.len()];
+    let plan = validate_plan(
+        describe!(&operators),
+        &mut facts,
+        PlanFootprint::declared(1024 * 1024),
+        &mut context,
+    )
+    .unwrap();
+    let output = plan.facts(PlanNodeId(5)).unwrap();
+    assert_eq!(output.width(), 3);
+    for (ordinal, (slot, kinds)) in [
+        (7, ValueKinds::NODE),
+        (8, ValueKinds::NODE),
+        (9, ValueKinds::REL),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(output.slot_at(ordinal), Some((SlotId(slot), kinds)));
+    }
+    assert_eq!(output.slot(SlotId(10)), None);
+    assert_eq!(output.slot(SlotId(11)), None);
+    if let OperatorKind::Expand { node, .. } = &mut operators[3].kind {
+        *node = SlotId(7);
+    }
+    assert_eq!(validate(describe!(&operators)), Err(PlanError::Scope));
+}
+
+#[test]
+fn typed_pattern_requires_array_and_every_alternative_name_backing() {
+    use zeppelin_embed::property_graph::GraphName;
+    let owned = ["first-type".to_owned(), "second-type".to_owned()];
+    let names = [
+        GraphName::new(&owned[0]).unwrap(),
+        GraphName::new(&owned[1]).unwrap(),
+    ];
+    let operators = edge_scope_operators(&names, SlotId(42), ExprId(0), 1);
+    let expressions = [Expression::Literal(Literal::Bool(true))];
+    let description = PlanDescription {
+        operators: &operators,
+        expressions: &expressions,
+        parameters: &[],
+        root: PlanNodeId(2),
+        eager_searches: &[],
+    };
+    let view = QueryView::new(StoreInstanceId::new(1).unwrap(), GraphGeneration::new(0));
+    let control = QueryControl::Cancel(CancelToken::new());
+    for missing in [
+        RetainedRegion::slice(&names).unwrap(),
+        RetainedRegion::slice(owned[0].as_bytes()).unwrap(),
+        RetainedRegion::slice(owned[1].as_bytes()).unwrap(),
+    ] {
+        let mut facts = vec![NodeFacts::default(); operators.len()];
+        let complete = retained_regions(description, &facts);
+        let mut regions = Vec::new();
+        for r in complete {
+            if r.end() <= missing.start() || r.start() >= missing.end() {
+                regions.push(r);
+                continue;
+            }
+            if r.start() < missing.start() {
+                regions.push(
+                    RetainedRegion::declared(r.start(), missing.start() - r.start()).unwrap(),
+                );
+            }
+            if r.end() > missing.end() {
+                regions.push(
+                    RetainedRegion::declared(missing.end(), r.end() - missing.end()).unwrap(),
+                );
+            }
+        }
+        let mut context = ValueContext::new(&view, &control, 8_000_000).unwrap();
+        assert!(matches!(
+            GraphPlan::validate(
+                description,
+                &mut facts,
+                PlanFootprint::declared(1024 * 1024),
+                PlanBacking::vector(&regions).unwrap(),
+                &mut context
+            ),
+            Err(PlanError::Footprint)
+        ));
+    }
+    assert_eq!(validate(description), Ok(()));
+}
+
+#[test]
+fn typed_pattern_zero_hop_validation_preserves_predicate_and_control_obligations() {
+    use zeppelin_embed::property_graph::{GraphName, query::QueryError};
+    let names = [
+        GraphName::new("left").unwrap(),
+        GraphName::new("right").unwrap(),
+    ];
+    let expressions = [Expression::Literal(Literal::Null)];
+    let operators = edge_scope_operators(&names, SlotId(42), ExprId(0), 0);
+    let description = PlanDescription {
+        operators: &operators,
+        expressions: &expressions,
+        parameters: &[],
+        root: PlanNodeId(2),
+        eager_searches: &[],
+    };
+    assert_eq!(validate(description), Ok(()));
+    let view = QueryView::new(StoreInstanceId::new(1).unwrap(), GraphGeneration::new(0));
+    let token = CancelToken::new();
+    let control = QueryControl::Cancel(token.clone());
+    let mut facts = vec![NodeFacts::default(); operators.len()];
+    let regions = retained_regions(description, &facts);
+    let mut context = ValueContext::new(&view, &control, 8_000_000).unwrap();
+    GraphPlan::validate(
+        description,
+        &mut facts,
+        PlanFootprint::declared(1024 * 1024),
+        PlanBacking::vector(&regions).unwrap(),
+        &mut context,
+    )
+    .unwrap();
+    let work = context.work();
+    assert!(work > 0);
+    for limit in 0..work {
+        let mut context = ValueContext::new(&view, &control, limit).unwrap();
+        assert!(matches!(
+            GraphPlan::validate(
+                description,
+                &mut facts,
+                PlanFootprint::declared(1024 * 1024),
+                PlanBacking::vector(&regions).unwrap(),
+                &mut context
+            ),
+            Err(PlanError::Control(QueryError::WorkLimit))
+        ));
+        assert_eq!(context.work(), limit);
+    }
+    let mut context = ValueContext::new(&view, &control, 8_000_000).unwrap();
+    token.cancel();
+    assert!(matches!(
+        GraphPlan::validate(
+            description,
+            &mut facts,
+            PlanFootprint::declared(1024 * 1024),
+            PlanBacking::vector(&regions).unwrap(),
+            &mut context
+        ),
+        Err(PlanError::Control(QueryError::Cancelled))
+    ));
 }

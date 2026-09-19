@@ -1,0 +1,14 @@
+[
+  {
+    "probe": "positive",
+    "exact_helper_prefix": true,
+    "source_hash_verified": true,
+    "recorded_exit": 0
+  },
+  {
+    "probe": "escape",
+    "exact_helper_prefix": true,
+    "source_hash_verified": true,
+    "recorded_exit": 1
+  }
+]
