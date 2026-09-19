@@ -1,0 +1,9 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 23.93s
+     Running unittests src/lib.rs (target/debug/deps/zeppelin_embed-e6fa6a4db8bc291f)
+
+running 1 test
+test property_graph::tests::full_width_identity_and_checked_revisions ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 570 filtered out; finished in 0.00s
+

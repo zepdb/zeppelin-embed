@@ -1,0 +1,6 @@
+{
+  "property-graph.domain.full-width": 224,
+  "property-graph.domain.maximum": 224,
+  "property-graph.domain.random-bits": 14336,
+  "property-graph.domain.zero": 224
+}

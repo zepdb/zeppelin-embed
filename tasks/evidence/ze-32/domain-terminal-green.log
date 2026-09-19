@@ -1,0 +1,15 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 22.81s
+     Running unittests src/lib.rs (target/debug/deps/zeppelin_embed-e6fa6a4db8bc291f)
+
+running 6 tests
+test property_graph::tests::full_width_identity_and_checked_revisions ... ok
+test property_graph::tests::batch_local_references_are_bounded_and_distinct_from_durable_ids ... ok
+test property_graph::tests::all_scalar_and_nonempty_list_kinds_retain_their_values_without_vectors ... ok
+test property_graph::tests::raw_name_admission_checks_byte_limit_before_utf8_work ... ok
+test property_graph::tests::application_keys_and_metadata_preserve_kind_and_exact_utf8 ... ok
+test property_graph::tests::scalar_bits_and_typed_lists_are_distinct_from_finite_vectors ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 570 filtered out; finished in 0.02s
+

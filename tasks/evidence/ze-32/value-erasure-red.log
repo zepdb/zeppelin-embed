@@ -1,0 +1,23 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.36s
+     Running unittests src/lib.rs (target/debug/deps/zeppelin_embed-e6fa6a4db8bc291f)
+
+running 1 test
+test property_graph::tests::all_scalar_and_nonempty_list_kinds_retain_their_values_without_vectors ... FAILED
+
+failures:
+
+---- property_graph::tests::all_scalar_and_nonempty_list_kinds_retain_their_values_without_vectors stdout ----
+
+thread 'property_graph::tests::all_scalar_and_nonempty_list_kinds_retain_their_values_without_vectors' (32084634) panicked at crates/zeppelin-embed/src/property_graph/tests.rs:7:5:
+assertion failed: matches!(PropertyValue::new(PropertyData::Bool(true)).unwrap().data(),
+    PropertyData::Bool(true))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    property_graph::tests::all_scalar_and_nonempty_list_kinds_retain_their_values_without_vectors
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 575 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p zeppelin-embed --lib`

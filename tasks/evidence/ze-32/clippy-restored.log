@@ -1,0 +1,5 @@
+    Checking zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed)
+    Checking zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-bench)
+    Checking zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-ffi)
+    Checking zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/tests)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 42.47s

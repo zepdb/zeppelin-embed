@@ -1,0 +1,10 @@
+   Compiling zeppelin-embed-adversarial-oracle v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/tests/adversarial-oracle)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.73s
+     Running adversarial_tests.rs (target/debug/deps/adversarial_tests-dc11412a44b91ab3)
+
+running 1 test
+test property_graph_domain_probe_preserves_primitive_contracts ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 433 filtered out; finished in 0.00s
+

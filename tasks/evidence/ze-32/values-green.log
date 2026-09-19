@@ -1,0 +1,11 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.55s
+     Running unittests src/lib.rs (target/debug/deps/zeppelin_embed-e6fa6a4db8bc291f)
+
+running 3 tests
+test property_graph::tests::full_width_identity_and_checked_revisions ... ok
+test property_graph::tests::application_keys_and_metadata_preserve_kind_and_exact_utf8 ... ok
+test property_graph::tests::scalar_bits_and_typed_lists_are_distinct_from_finite_vectors ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 570 filtered out; finished in 0.01s
+

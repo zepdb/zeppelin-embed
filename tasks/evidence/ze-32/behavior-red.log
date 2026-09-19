@@ -1,0 +1,49 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.74s
+     Running unittests src/lib.rs (target/debug/deps/zeppelin_embed-e6fa6a4db8bc291f)
+
+running 4 tests
+test property_graph::tests::batch_local_references_are_bounded_and_distinct_from_durable_ids ... FAILED
+test property_graph::tests::full_width_identity_and_checked_revisions ... FAILED
+test property_graph::tests::application_keys_and_metadata_preserve_kind_and_exact_utf8 ... FAILED
+test property_graph::tests::scalar_bits_and_typed_lists_are_distinct_from_finite_vectors ... FAILED
+
+failures:
+
+---- property_graph::tests::batch_local_references_are_bounded_and_distinct_from_durable_ids stdout ----
+
+thread 'property_graph::tests::batch_local_references_are_bounded_and_distinct_from_durable_ids' (32029457) panicked at crates/zeppelin-embed/src/property_graph/tests.rs:18:9:
+assertion `left == right` failed
+  left: Ok(LocalNodeRef { index: 16384, scope: PhantomData<fn(&()) -> &()> })
+ right: Err(LocalReferenceOutOfRange)
+
+---- property_graph::tests::full_width_identity_and_checked_revisions stdout ----
+
+thread 'property_graph::tests::full_width_identity_and_checked_revisions' (32029458) panicked at crates/zeppelin-embed/src/property_graph/tests.rs:162:9:
+assertion `left == right` failed
+  left: 0
+ right: 18446744073709551616
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- property_graph::tests::application_keys_and_metadata_preserve_kind_and_exact_utf8 stdout ----
+
+thread 'property_graph::tests::application_keys_and_metadata_preserve_kind_and_exact_utf8' (32029456) panicked at crates/zeppelin-embed/src/property_graph/tests.rs:149:5:
+assertion `left == right` failed
+  left: Ok(EntityMetadata { id: Node(NodeId(1267650600228229401496703205383)), key: Some(ApplicationKey { kind: Relationship, namespace: GraphName("source"), key: GraphName("é") }), revision: GraphRevision(4), last_change_generation: GraphGeneration(18446744073709551615) })
+ right: Err(EntityKindMismatch)
+
+---- property_graph::tests::scalar_bits_and_typed_lists_are_distinct_from_finite_vectors stdout ----
+
+thread 'property_graph::tests::scalar_bits_and_typed_lists_are_distinct_from_finite_vectors' (32029459) panicked at crates/zeppelin-embed/src/property_graph/tests.rs:112:45:
+called `Result::unwrap_err()` on an `Ok` value: GraphVector([NaN])
+
+
+failures:
+    property_graph::tests::application_keys_and_metadata_preserve_kind_and_exact_utf8
+    property_graph::tests::batch_local_references_are_bounded_and_distinct_from_durable_ids
+    property_graph::tests::full_width_identity_and_checked_revisions
+    property_graph::tests::scalar_bits_and_typed_lists_are_distinct_from_finite_vectors
+
+test result: FAILED. 0 passed; 4 failed; 0 ignored; 0 measured; 570 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p zeppelin-embed --lib`

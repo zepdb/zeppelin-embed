@@ -1,0 +1,254 @@
+[
+  {
+    "path": "crates/zeppelin-embed-ffi/src/error.rs",
+    "sha256": "8ef7400acb11742cddf97c0ced8790294af81b349ce2124cb137bd29ab76ae58",
+    "lines": {
+      "count": 193,
+      "covered": 135,
+      "percent": 69.94818652849742
+    }
+  },
+  {
+    "path": "crates/zeppelin-embed-ffi/src/lib.rs",
+    "sha256": "65a1297b110b96fe39e39ca254d482d68c804248321e542ab0a57034ca01b184",
+    "lines": {
+      "count": 2811,
+      "covered": 2379,
+      "percent": 84.63180362860192
+    }
+  },
+  {
+    "path": "crates/zeppelin-embed-ffi/src/marshal.rs",
+    "sha256": "df4b2625d0452ba100499808fb4e7e422fed1a1151cb0cf8a4a5a88a6c96dd1d",
+    "lines": {
+      "count": 155,
+      "covered": 150,
+      "percent": 96.7741935483871
+    }
+  },
+  {
+    "path": "crates/zeppelin-embed-ffi/src/registry.rs",
+    "sha256": "89a76b3ef08e5f8c44634fcdc0c0855ae7560594629d2fd2700fd09de62b4895",
+    "lines": {
+      "count": 408,
+      "covered": 335,
+      "percent": 82.10784313725489
+    }
+  },
+  {
+    "path": "crates/zeppelin-embed-ffi/src/slots.rs",
+    "sha256": "667baa900e09519512419baea29275bb3c5f75e06f0ae196c476780cce17541e",
+    "lines": {
+      "count": 300,
+      "covered": 285,
+      "percent": 95.0
+    }
+  },
+  {
+    "path": "crates/zeppelin-embed-text/src/arch/bert.rs",
+    "sha256": "5a87de94144b35dc46d278e93401d9a9f3527c018667929e7baf259e8ed9464b",
+    "lines": {
+      "count": 232,
+      "covered": 93,
+      "percent": 40.08620689655172
+    }
+  },
+  {
+    "path": "crates/zeppelin-embed-text/src/arch/gte.rs",
+    "sha256": "23c5b635919fb4ba39b745fbd19641d1291a326e6a91a87a1e871f99435224d6",
+    "lines": {
+      "count": 118,
+      "covered": 0,
+      "percent": 0.0
+    }
+  },
+  {
+    "path": "crates/zeppelin-embed-text/src/bundle.rs",
+    "sha256": "063fad116365f5987dadef07f7c0fd7ff30227128daed805f9338597b1df73bd",
+    "lines": {
+      "count": 625,
+      "covered": 541,
+      "percent": 86.56
+    }
+  },
+  {
+    "path": "crates/zeppelin-embed-text/src/epoch.rs",
+    "sha256": "7d95dfa18b46b10448d9f292b5ee03f43f2c68a284b38e6d35dc4544f1332f33",
+    "lines": {
+      "count": 32,
+      "covered": 32,
+      "percent": 100.0
+    }
+  },
+  {
+    "path": "crates/zeppelin-embed-text/src/error.rs",
+    "sha256": "807ca247f0f3052883cf812e49acae46ff49a55fb2bdf2f53ccf95fb11f155f7",
+    "lines": {
+      "count": 61,
+      "covered": 51,
+      "percent": 83.60655737704919
+    }
+  },
+  {
+    "path": "crates/zeppelin-embed-text/src/ingest.rs",
+    "sha256": "9d11b6dfe95372edde779a12d79269bb340378d5105b2a3802c441d627ce186a",
+    "lines": {
+      "count": 1495,
+      "covered": 1277,
+      "percent": 85.41806020066889
+    }
+  },
+  {
+    "path": "crates/zeppelin-embed-text/src/query.rs",
+    "sha256": "11f8af1a9f62b7b78c969e61782a3158d7ddd174798c4e848f2019639d5adf52",
+    "lines": {
+      "count": 39,
+      "covered": 39,
+      "percent": 100.0
+    }
+  },
+  {
+    "path": "crates/zeppelin-embed-text/src/runtime/coreml.rs",
+    "sha256": "b869c41b41248f782763a0a5e0f9c8680ffae129bbed752d7374549e6a52d089",
+    "lines": {
+      "count": 152,
+      "covered": 0,
+      "percent": 0.0
+    }
+  },
+  {
+    "path": "crates/zeppelin-embed-text/src/runtime/mlx.rs",
+    "sha256": "21ff4b67f31496e87439d35b4e71e690bd0a3b5cd0416eb291532ed0d0fea9d1",
+    "lines": {
+      "count": 284,
+      "covered": 162,
+      "percent": 57.04225352112676
+    }
+  },
+  {
+    "path": "crates/zeppelin-embed-text/src/runtime/mod.rs",
+    "sha256": "99ccecad3189ceafaf7de75e84839ba0568d3d0aeabb64356cfad8180b777dd4",
+    "lines": {
+      "count": 51,
+      "covered": 51,
+      "percent": 100.0
+    }
+  },
+  {
+    "path": "crates/zeppelin-embed-text/src/tokenizer.rs",
+    "sha256": "aa018e29c872ae946e1ed7293073396985dce013577e509e43971af623262839",
+    "lines": {
+      "count": 405,
+      "covered": 357,
+      "percent": 88.14814814814817
+    }
+  },
+  {
+    "path": "crates/zeppelin-embed-text/src/tower.rs",
+    "sha256": "6016eea809f359906f9d08b5810bf4ee4546aa0b18c0f6a718a17302d2a376c2",
+    "lines": {
+      "count": 56,
+      "covered": 20,
+      "percent": 35.714285714285715
+    }
+  },
+  {
+    "path": "tests/adversarial-oracle/src/diagnostics_health.rs",
+    "sha256": "f8d1029df68dcdba58323f7fa761b7df4f17bd28c977877338fc10ccaffb9c1c",
+    "lines": {
+      "count": 67,
+      "covered": 67,
+      "percent": 100.0
+    }
+  },
+  {
+    "path": "tests/adversarial-oracle/src/ffi_bindings.rs",
+    "sha256": "b174fe1c996b16d0a0776af1c32b83272183dfb4f1095322ba144732b6853ccc",
+    "lines": {
+      "count": 82,
+      "covered": 82,
+      "percent": 100.0
+    }
+  },
+  {
+    "path": "tests/adversarial-oracle/src/fts.rs",
+    "sha256": "0131083b27b3e23357cc916cc36cbba120c8abc56e5bce54159501979f742a34",
+    "lines": {
+      "count": 1024,
+      "covered": 864,
+      "percent": 84.375
+    }
+  },
+  {
+    "path": "tests/adversarial-oracle/src/hybrid_fusion.rs",
+    "sha256": "4679591561b483c99abf5ba6be44597c643be41258fe9173c12245be4d10e51b",
+    "lines": {
+      "count": 697,
+      "covered": 597,
+      "percent": 85.65279770444764
+    }
+  },
+  {
+    "path": "tests/adversarial-oracle/src/ingest_retention.rs",
+    "sha256": "4d5626d59454dba1f443797f27c8b0f8588e39d962c648b3ddf8a1960af31ccb",
+    "lines": {
+      "count": 2050,
+      "covered": 1803,
+      "percent": 87.95121951219512
+    }
+  },
+  {
+    "path": "tests/adversarial-oracle/src/lifecycle_accounting.rs",
+    "sha256": "31ee6f5a5d6aa0435c4843d5d55339965b619f01e696c197f7a84f0d4bff65a4",
+    "lines": {
+      "count": 81,
+      "covered": 81,
+      "percent": 100.0
+    }
+  },
+  {
+    "path": "tests/adversarial-oracle/src/metadata_filter_planner.rs",
+    "sha256": "82f1cbb8a9d3b299ffbcaea33a371c2815cd45e8876e1908aa0f963f5c66ec82",
+    "lines": {
+      "count": 3945,
+      "covered": 3406,
+      "percent": 86.33713561470215
+    }
+  },
+  {
+    "path": "tests/adversarial-oracle/src/storage_durability.rs",
+    "sha256": "a97d8f896a7c47e33cfeb3c281e089b5b23ff7ec1bd40f9c4328025c8a933788",
+    "lines": {
+      "count": 2915,
+      "covered": 2185,
+      "percent": 74.95711835334477
+    }
+  },
+  {
+    "path": "tests/adversarial-oracle/src/tiering_maintenance.rs",
+    "sha256": "16f22735b46c13933d7a9adc8b29e789a974ec8a5ef6e3c535f480717fb332d3",
+    "lines": {
+      "count": 431,
+      "covered": 400,
+      "percent": 92.80742459396751
+    }
+  },
+  {
+    "path": "tests/adversarial-oracle/src/vamana_graph.rs",
+    "sha256": "38016b9c9d5828fbdfe3d4d4acc5bebc0d03198b94db14ed8deaea6439035c03",
+    "lines": {
+      "count": 757,
+      "covered": 675,
+      "percent": 89.16776750330251
+    }
+  },
+  {
+    "path": "tests/adversarial-oracle/src/vector_execution.rs",
+    "sha256": "8d1c571749882e327a1a31c4abbcdce3f897d7b3263b52ea70d783fab6214ed5",
+    "lines": {
+      "count": 4139,
+      "covered": 3765,
+      "percent": 90.96400096641702
+    }
+  }
+]

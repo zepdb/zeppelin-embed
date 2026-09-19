@@ -1,0 +1,25 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed)
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-bench)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.70s
+     Running adversarial_tests.rs (target/debug/deps/adversarial_tests-dc11412a44b91ab3)
+
+running 1 test
+test property_graph_domain_probe_preserves_primitive_contracts ... FAILED
+
+failures:
+
+---- property_graph_domain_probe_preserves_primitive_contracts stdout ----
+
+thread 'property_graph_domain_probe_preserves_primitive_contracts' (32028029) panicked at tests/adversarial_tests.rs:14:58:
+independent graph domain oracle: "PG1 domain preservation input=DomainInput { identity: 18446744073709551617, revision: 1, scalar_bits: 9223372036854775808, vector_bits: 2139095040 } expected=DomainObservation { node: Some(18446744073709551617), relationship: Some(18446744073709551617), store: Some(18446744073709551617), revision: Some(1), successor: Some(2), scalar_bits: Some(9223372036854775808), vector_accepted: false } observed=DomainObservation { node: Some(1), relationship: Some(1), store: Some(1), revision: Some(1), successor: Some(2), scalar_bits: Some(9223372036854775808), vector_accepted: false }; seed=0; case=property-graph.domain.full-width"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    property_graph_domain_probe_preserves_primitive_contracts
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 433 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p zeppelin-embed-workspace-tests --test adversarial_tests`

@@ -58,6 +58,8 @@ pub mod manifest;
 pub mod meta;
 /// Query planning and selectivity decisions.
 pub mod planner;
+/// Native property-graph identity and values, independent of vector indexes.
+pub mod property_graph;
 /// Training-free vector quantization.
 pub mod quant;
 /// Exact vector scanning.

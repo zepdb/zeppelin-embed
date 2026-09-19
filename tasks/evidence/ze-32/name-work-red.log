@@ -1,0 +1,24 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.99s
+     Running unittests src/lib.rs (target/debug/deps/zeppelin_embed-e6fa6a4db8bc291f)
+
+running 1 test
+test property_graph::tests::raw_name_admission_checks_byte_limit_before_utf8_work ... FAILED
+
+failures:
+
+---- property_graph::tests::raw_name_admission_checks_byte_limit_before_utf8_work stdout ----
+
+thread 'property_graph::tests::raw_name_admission_checks_byte_limit_before_utf8_work' (32065932) panicked at crates/zeppelin-embed/src/property_graph/tests.rs:7:5:
+assertion `left == right` failed
+  left: Err(InvalidUtf8)
+ right: Err(InputTooLarge)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    property_graph::tests::raw_name_admission_checks_byte_limit_before_utf8_work
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 574 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p zeppelin-embed --lib`

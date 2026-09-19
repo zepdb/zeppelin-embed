@@ -1,0 +1,27 @@
+info: cargo-llvm-cov currently setting cfg(coverage); you can opt-out it by passing --no-cfg-coverage
+   Compiling getrandom v0.3.4
+   Compiling once_cell v1.21.4
+   Compiling tempfile v3.25.0
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-ffi)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.92s
+     Running tests/ffi_boundary_validation.rs (target/llvm-cov-target/debug/deps/ffi_boundary_validation-4566865fca37100f)
+
+running 15 tests
+test filter_values_reject_null_unknown_tags_wrong_columns_and_invalid_bounds ... ok
+test scan_cursor_and_timestamp_flags_reject_ambiguous_requests ... ok
+test filter_grammar_rejects_irrelevant_children_bounds_and_values ... ok
+test empty_mutation_batches_and_zero_dimensions_never_advance_generation ... ok
+test filtered_search_reports_cancelled_and_invalid_vector_errors_with_empty_output ... ok
+test read_only_maintenance_and_purge_retain_access_mode_errors ... ok
+test search_options_reject_reserved_bits_conflicting_controls_and_unknown_profiles ... ok
+test typed_attributes_round_trip_through_get_and_match_exact_filters ... ok
+test malformed_result_frees_preserve_caller_bytes_and_live_allocations ... ok
+test namespace_schema_rejects_invalid_columns_flags_and_epoch_geometry ... ok
+test error_copy_and_scalar_outputs_reject_invalid_buffers_without_writing_them ... ok
+test purge_busy_and_consumed_tokens_are_typed_without_losing_the_first_request ... ok
+test open_rejects_unknown_options_and_read_only_handles_reject_writes ... ok
+test epoch_identity_validates_tags_and_preserves_runtime_compute_and_os_identity ... ok
+test wrong_result_type_or_missing_count_never_consumes_the_owned_allocation ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+

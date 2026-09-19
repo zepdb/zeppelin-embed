@@ -593,3 +593,19 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
 - Contribution reservations belong to their Arc lifetime, including evicted
   values held by old queries. Serialize builders and refuse stale-generation
   replacement; do not drop a live reservation to satisfy the next admission.
+
+## Native property-graph domain (ZE-32)
+
+- `property_graph` is separate from the ANN `graph` module. The historical
+  graph-node-equals-row rules above describe ANN only; native NodeId/RelId
+  preserve distinct, nonzero u128 identities and never convert publicly to DocId.
+- Input constructors borrow caller storage and allocate nothing. Staging must
+  reserve and own copies, charge aggregate canonical bytes including framing,
+  and validate local-slot existence and vector-space identity before publication.
+- Scalar/list F64 properties preserve all IEEE bits. Vector coordinates remain
+  finite-only. Do not use floating equality for exact retry contents.
+- Preserve typed empty lists and the count-zero untyped EmptyList tag. Stored
+  null is absence. Names/keys are exact UTF-8, including embedded NUL, without
+  path rules or normalization. Metadata lives outside the user property map.
+- Batch-local references carry an invariant callback scope; write APIs must
+  retain that scope rather than accepting unbranded slot integers from Rust.

@@ -1,0 +1,96 @@
+{
+  "including_ze32": {
+    "covered": 14698,
+    "count": 16250,
+    "percent": 90.44923076923077,
+    "passes_90": true,
+    "files": 13
+  },
+  "unchanged_baseline": {
+    "covered": 14673,
+    "count": 16225,
+    "percent": 90.43451463790447,
+    "passes_90": true,
+    "files": 12
+  },
+  "per_file": [
+    {
+      "path": "diagnostics_health.rs",
+      "count": 67,
+      "covered": 67,
+      "percent": 100.0
+    },
+    {
+      "path": "ffi_bindings.rs",
+      "count": 82,
+      "covered": 82,
+      "percent": 100.0
+    },
+    {
+      "path": "fts.rs",
+      "count": 1024,
+      "covered": 864,
+      "percent": 84.375
+    },
+    {
+      "path": "hybrid_fusion.rs",
+      "count": 697,
+      "covered": 597,
+      "percent": 85.65279770444764
+    },
+    {
+      "path": "ingest_retention.rs",
+      "count": 2050,
+      "covered": 1803,
+      "percent": 87.95121951219512
+    },
+    {
+      "path": "lib.rs",
+      "count": 37,
+      "covered": 36,
+      "percent": 97.2972972972973
+    },
+    {
+      "path": "lifecycle_accounting.rs",
+      "count": 81,
+      "covered": 81,
+      "percent": 100.0
+    },
+    {
+      "path": "metadata_filter_planner.rs",
+      "count": 3945,
+      "covered": 3735,
+      "percent": 94.67680608365019
+    },
+    {
+      "path": "property_graph.rs",
+      "count": 25,
+      "covered": 25,
+      "percent": 100.0
+    },
+    {
+      "path": "storage_durability.rs",
+      "count": 2915,
+      "covered": 2568,
+      "percent": 88.09605488850771
+    },
+    {
+      "path": "tiering_maintenance.rs",
+      "count": 431,
+      "covered": 400,
+      "percent": 92.80742459396751
+    },
+    {
+      "path": "vamana_graph.rs",
+      "count": 757,
+      "covered": 675,
+      "percent": 89.16776750330251
+    },
+    {
+      "path": "vector_execution.rs",
+      "count": 4139,
+      "covered": 3765,
+      "percent": 90.96400096641702
+    }
+  ]
+}

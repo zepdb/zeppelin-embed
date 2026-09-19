@@ -1,0 +1,9 @@
+{
+  "zeppelin-embed-bench": {
+    "covered": 4744,
+    "count": 5258,
+    "files": 16,
+    "percent": 90.2244199315329,
+    "passes_90": true
+  }
+}

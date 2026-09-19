@@ -1,0 +1,23 @@
+{
+  "zeppelin-embed": {
+    "covered": 62342,
+    "count": 69167,
+    "files": 129,
+    "percent": 90.13257767432447,
+    "passes_90": true
+  },
+  "zeppelin-embed-ffi": {
+    "covered": 3484,
+    "count": 3867,
+    "files": 5,
+    "percent": 90.09568140677528,
+    "passes_90": true
+  },
+  "zeppelin-embed-text": {
+    "covered": 3222,
+    "count": 3550,
+    "files": 12,
+    "percent": 90.7605633802817,
+    "passes_90": true
+  }
+}

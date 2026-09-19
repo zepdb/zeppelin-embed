@@ -1,0 +1,12 @@
+    Blocking waiting for file lock on artifact directory
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.83s
+   Doc-tests zeppelin_embed
+
+running 4 tests
+test crates/zeppelin-embed/src/property_graph/local.rs - property_graph::local::with_local_refs (line 21) - compile fail ... ok
+test crates/zeppelin-embed/src/property_graph/local.rs - property_graph::local::with_local_refs (line 16) - compile fail ... ok
+test crates/zeppelin-embed/src/property_graph/identity.rs - property_graph::identity::NodeId (line 87) - compile fail ... ok
+test crates/zeppelin-embed/src/property_graph/identity.rs - property_graph::identity::NodeId (line 82) - compile fail ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.47s
+

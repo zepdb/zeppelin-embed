@@ -1,0 +1,93 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed)
+error[E0282]: type annotations needed
+ --> crates/zeppelin-embed/src/property_graph/tests.rs:7:22
+  |
+7 |     with_local_refs(|scope| {
+  |                      ^^^^^
+8 |         let node = scope.node(0).unwrap();
+  |                    ----- type must be known at this point
+  |
+help: consider giving this closure parameter an explicit type
+  |
+7 |     with_local_refs(|scope: /* Type */| {
+  |                           ++++++++++++
+
+error[E0433]: failed to resolve: use of undeclared type `NodeRef`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:12:26
+   |
+12 |         assert!(matches!(NodeRef::Local(node), NodeRef::Local(_)));
+   |                          ^^^^^^^ use of undeclared type `NodeRef`
+
+error[E0433]: failed to resolve: use of undeclared type `RelRef`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:13:26
+   |
+13 |         assert!(matches!(RelRef::Local(rel), RelRef::Local(_)));
+   |                          ^^^^^^ use of undeclared type `RelRef`
+
+error[E0433]: failed to resolve: use of undeclared type `NodeRef`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:15:20
+   |
+15 |         assert_eq!(NodeRef::Existing(id), NodeRef::Existing(id));
+   |                    ^^^^^^^ use of undeclared type `NodeRef`
+
+error[E0433]: failed to resolve: use of undeclared type `NodeRef`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:15:43
+   |
+15 |         assert_eq!(NodeRef::Existing(id), NodeRef::Existing(id));
+   |                                           ^^^^^^^ use of undeclared type `NodeRef`
+
+error[E0433]: failed to resolve: use of undeclared type `RelRef`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:17:20
+   |
+17 |         assert_eq!(RelRef::Existing(id), RelRef::Existing(id));
+   |                    ^^^^^^ use of undeclared type `RelRef`
+
+error[E0433]: failed to resolve: use of undeclared type `RelRef`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:17:42
+   |
+17 |         assert_eq!(RelRef::Existing(id), RelRef::Existing(id));
+   |                                          ^^^^^^ use of undeclared type `RelRef`
+
+error[E0599]: no variant or associated item named `LocalReferenceOutOfRange` found for enum `property_graph::DomainError` in the current scope
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:18:57
+   |
+18 |         assert_eq!(scope.node(16_384), Err(DomainError::LocalReferenceOutOfRange));
+   |                                                         ^^^^^^^^^^^^^^^^^^^^^^^^ variant or associated item not found in `property_graph::DomainError`
+   |
+  ::: crates/zeppelin-embed/src/property_graph/mod.rs:20:1
+   |
+20 | pub enum DomainError {
+   | -------------------- variant or associated item `LocalReferenceOutOfRange` not found for this enum
+
+error[E0599]: no variant or associated item named `LocalReferenceOutOfRange` found for enum `property_graph::DomainError` in the current scope
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:19:69
+   |
+19 |         assert_eq!(scope.relationship(usize::MAX), Err(DomainError::LocalReferenceOutOfRange));
+   |                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^ variant or associated item not found in `property_graph::DomainError`
+   |
+  ::: crates/zeppelin-embed/src/property_graph/mod.rs:20:1
+   |
+20 | pub enum DomainError {
+   | -------------------- variant or associated item `LocalReferenceOutOfRange` not found for this enum
+
+error[E0425]: cannot find function `with_local_refs` in this scope
+ --> crates/zeppelin-embed/src/property_graph/tests.rs:7:5
+  |
+7 |     with_local_refs(|scope| {
+  |     ^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0433]: failed to resolve: use of undeclared type `RelRef`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:13:46
+   |
+13 |         assert!(matches!(RelRef::Local(rel), RelRef::Local(_)));
+   |                                              ^^^^^^ use of undeclared type `RelRef`
+
+error[E0433]: failed to resolve: use of undeclared type `NodeRef`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:12:48
+   |
+12 |         assert!(matches!(NodeRef::Local(node), NodeRef::Local(_)));
+   |                                                ^^^^^^^ use of undeclared type `NodeRef`
+
+Some errors have detailed explanations: E0282, E0425, E0433, E0599.
+For more information about an error, try `rustc --explain E0282`.
+error: could not compile `zeppelin-embed` (lib test) due to 12 previous errors

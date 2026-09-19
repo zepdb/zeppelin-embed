@@ -1,0 +1,257 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed)
+error[E0425]: cannot find value `MAX_PROPERTY_LIST_ELEMENTS` in this scope
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:23:31
+   |
+23 |     let list = vec![i64::MIN; MAX_PROPERTY_LIST_ELEMENTS];
+   |                               ^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find value `MAX_PROPERTY_LIST_ELEMENTS` in this scope
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:27:67
+   |
+27 |     assert_eq!(PropertyValue::new(PropertyData::Bools(&vec![true; MAX_PROPERTY_LIST_ELEMENTS + 1])).unwrap_err(), DomainError::ListTooLong);
+   |                                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0433]: failed to resolve: use of undeclared type `PropertyValue`
+ --> crates/zeppelin-embed/src/property_graph/tests.rs:8:21
+  |
+8 |         let value = PropertyValue::new(PropertyData::F64(f64::from_bits(bits))).unwrap();
+  |                     ^^^^^^^^^^^^^ use of undeclared type `PropertyValue`
+
+error[E0433]: failed to resolve: use of undeclared type `PropertyData`
+ --> crates/zeppelin-embed/src/property_graph/tests.rs:8:40
+  |
+8 |         let value = PropertyValue::new(PropertyData::F64(f64::from_bits(bits))).unwrap();
+  |                                        ^^^^^^^^^^^^ use of undeclared type `PropertyData`
+
+error[E0433]: failed to resolve: use of undeclared type `PropertyData`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:15:56
+   |
+15 |     for data in [PropertyData::EmptyList { count: 0 }, PropertyData::Strings(&[]), PropertyData::Bools(&[]), PropertyData::Integers(&[]),...
+   |                                                        ^^^^^^^^^^^^ use of undeclared type `PropertyData`
+
+error[E0433]: failed to resolve: use of undeclared type `PropertyData`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:15:84
+   |
+15 |     for data in [PropertyData::EmptyList { count: 0 }, PropertyData::Strings(&[]), PropertyData::Bools(&[]), PropertyData::Integers(&[]),...
+   |                                                                                    ^^^^^^^^^^^^ use of undeclared type `PropertyData`
+
+error[E0433]: failed to resolve: use of undeclared type `PropertyData`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:15:110
+   |
+15 | ...::Strings(&[]), PropertyData::Bools(&[]), PropertyData::Integers(&[]), PropertyData::Floats(&[])] {
+   |                                              ^^^^^^^^^^^^ use of undeclared type `PropertyData`
+
+error[E0433]: failed to resolve: use of undeclared type `PropertyData`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:15:139
+   |
+15 | ...:Bools(&[]), PropertyData::Integers(&[]), PropertyData::Floats(&[])] {
+   |                                              ^^^^^^^^^^^^ use of undeclared type `PropertyData`
+
+error[E0433]: failed to resolve: use of undeclared type `PropertyValue`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:16:21
+   |
+16 |         let value = PropertyValue::new(data).unwrap();
+   |                     ^^^^^^^^^^^^^ use of undeclared type `PropertyValue`
+
+error[E0433]: failed to resolve: use of undeclared type `PropertyValue`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:20:22
+   |
+20 |     assert!(matches!(PropertyValue::new(PropertyData::Floats(&[])).unwrap().data(), PropertyData::Floats(_)));
+   |                      ^^^^^^^^^^^^^ use of undeclared type `PropertyValue`
+
+error[E0433]: failed to resolve: use of undeclared type `PropertyData`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:20:41
+   |
+20 |     assert!(matches!(PropertyValue::new(PropertyData::Floats(&[])).unwrap().data(), PropertyData::Floats(_)));
+   |                                         ^^^^^^^^^^^^ use of undeclared type `PropertyData`
+
+error[E0433]: failed to resolve: use of undeclared type `PropertyValue`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:21:22
+   |
+21 |     assert!(matches!(PropertyValue::new(PropertyData::EmptyList { count: 0 }).unwrap().data(), PropertyData::EmptyList { count: 0 }));
+   |                      ^^^^^^^^^^^^^ use of undeclared type `PropertyValue`
+
+error[E0433]: failed to resolve: use of undeclared type `PropertyValue`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:22:16
+   |
+22 |     assert_eq!(PropertyValue::new(PropertyData::EmptyList { count: 1 }).unwrap_err(), DomainError::NonemptyUntypedList);
+   |                ^^^^^^^^^^^^^ use of undeclared type `PropertyValue`
+
+error[E0599]: no variant or associated item named `NonemptyUntypedList` found for enum `property_graph::DomainError` in the current scope
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:22:100
+   |
+22 |     assert_eq!(PropertyValue::new(PropertyData::EmptyList { count: 1 }).unwrap_err(), DomainError::NonemptyUntypedList);
+   |                                                                                                    ^^^^^^^^^^^^^^^^^^^ variant or associated item not found in `property_graph::DomainError`
+   |
+  ::: crates/zeppelin-embed/src/property_graph/mod.rs:15:1
+   |
+15 | pub enum DomainError {
+   | -------------------- variant or associated item `NonemptyUntypedList` not found for this enum
+
+error[E0433]: failed to resolve: use of undeclared type `PropertyValue`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:24:17
+   |
+24 |     let value = PropertyValue::new(PropertyData::Integers(&list)).unwrap();
+   |                 ^^^^^^^^^^^^^ use of undeclared type `PropertyValue`
+
+error[E0433]: failed to resolve: use of undeclared type `PropertyData`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:24:36
+   |
+24 |     let value = PropertyValue::new(PropertyData::Integers(&list)).unwrap();
+   |                                    ^^^^^^^^^^^^ use of undeclared type `PropertyData`
+
+error[E0433]: failed to resolve: use of undeclared type `PropertyValue`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:27:16
+   |
+27 |     assert_eq!(PropertyValue::new(PropertyData::Bools(&vec![true; MAX_PROPERTY_LIST_ELEMENTS + 1])).unwrap_err(), DomainError::ListTooLong);
+   |                ^^^^^^^^^^^^^ use of undeclared type `PropertyValue`
+
+error[E0433]: failed to resolve: use of undeclared type `PropertyData`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:27:35
+   |
+27 |     assert_eq!(PropertyValue::new(PropertyData::Bools(&vec![true; MAX_PROPERTY_LIST_ELEMENTS + 1])).unwrap_err(), DomainError::ListTooLong);
+   |                                   ^^^^^^^^^^^^ use of undeclared type `PropertyData`
+
+error[E0599]: no variant or associated item named `ListTooLong` found for enum `property_graph::DomainError` in the current scope
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:27:128
+   |
+27 |     assert_eq!(PropertyValue::new(PropertyData::Bools(&vec![true; MAX_PROPERTY_LIST_ELEMENTS + 1])).unwrap_err(), DomainError::ListTooLong);
+   |                                                                                                                                ^^^^^^^^^^^ variant or associated item not found in `property_graph::DomainError`
+   |
+  ::: crates/zeppelin-embed/src/property_graph/mod.rs:15:1
+   |
+15 | pub enum DomainError {
+   | -------------------- variant or associated item `ListTooLong` not found for this enum
+
+error[E0433]: failed to resolve: use of undeclared type `PropertyValue`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:29:13
+   |
+29 |     assert!(PropertyValue::new(PropertyData::String(&large)).is_ok());
+   |             ^^^^^^^^^^^^^ use of undeclared type `PropertyValue`
+
+error[E0433]: failed to resolve: use of undeclared type `PropertyData`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:29:32
+   |
+29 |     assert!(PropertyValue::new(PropertyData::String(&large)).is_ok());
+   |                                ^^^^^^^^^^^^ use of undeclared type `PropertyData`
+
+error[E0433]: failed to resolve: use of undeclared type `PropertyValue`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:30:16
+   |
+30 |     assert_eq!(PropertyValue::new(PropertyData::Strings(&[&large, "x"])).unwrap_err(), DomainError::InputTooLarge);
+   |                ^^^^^^^^^^^^^ use of undeclared type `PropertyValue`
+
+error[E0433]: failed to resolve: use of undeclared type `PropertyData`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:30:35
+   |
+30 |     assert_eq!(PropertyValue::new(PropertyData::Strings(&[&large, "x"])).unwrap_err(), DomainError::InputTooLarge);
+   |                                   ^^^^^^^^^^^^ use of undeclared type `PropertyData`
+
+error[E0433]: failed to resolve: use of undeclared type `PropertyValue`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:31:16
+   |
+31 |     let text = PropertyValue::new(PropertyData::String("\0é")).unwrap();
+   |                ^^^^^^^^^^^^^ use of undeclared type `PropertyValue`
+
+error[E0433]: failed to resolve: use of undeclared type `PropertyData`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:31:35
+   |
+31 |     let text = PropertyValue::new(PropertyData::String("\0é")).unwrap();
+   |                                   ^^^^^^^^^^^^ use of undeclared type `PropertyData`
+
+error[E0433]: failed to resolve: use of undeclared type `GraphVector`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:35:21
+   |
+35 |     let validated = GraphVector::new(&vector, 4).unwrap();
+   |                     ^^^^^^^^^^^ use of undeclared type `GraphVector`
+
+error[E0433]: failed to resolve: use of undeclared type `GraphVector`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:39:16
+   |
+39 |     assert_eq!(GraphVector::new(&[], 0).unwrap_err(), DomainError::VectorDimensions);
+   |                ^^^^^^^^^^^ use of undeclared type `GraphVector`
+
+error[E0599]: no variant or associated item named `VectorDimensions` found for enum `property_graph::DomainError` in the current scope
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:39:68
+   |
+39 |     assert_eq!(GraphVector::new(&[], 0).unwrap_err(), DomainError::VectorDimensions);
+   |                                                                    ^^^^^^^^^^^^^^^^ variant or associated item not found in `property_graph::DomainError`
+   |
+  ::: crates/zeppelin-embed/src/property_graph/mod.rs:15:1
+   |
+15 | pub enum DomainError {
+   | -------------------- variant or associated item `VectorDimensions` not found for this enum
+
+error[E0433]: failed to resolve: use of undeclared type `GraphVector`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:40:16
+   |
+40 |     assert_eq!(GraphVector::new(&vector, 3).unwrap_err(), DomainError::VectorDimensions);
+   |                ^^^^^^^^^^^ use of undeclared type `GraphVector`
+
+error[E0599]: no variant or associated item named `VectorDimensions` found for enum `property_graph::DomainError` in the current scope
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:40:72
+   |
+40 |     assert_eq!(GraphVector::new(&vector, 3).unwrap_err(), DomainError::VectorDimensions);
+   |                                                                        ^^^^^^^^^^^^^^^^ variant or associated item not found in `property_graph::DomainError`
+   |
+  ::: crates/zeppelin-embed/src/property_graph/mod.rs:15:1
+   |
+15 | pub enum DomainError {
+   | -------------------- variant or associated item `VectorDimensions` not found for this enum
+
+error[E0433]: failed to resolve: use of undeclared type `GraphVector`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:42:20
+   |
+42 |         assert_eq!(GraphVector::new(&[invalid], 1).unwrap_err(), DomainError::NonfiniteVector);
+   |                    ^^^^^^^^^^^ use of undeclared type `GraphVector`
+
+error[E0599]: no variant or associated item named `NonfiniteVector` found for enum `property_graph::DomainError` in the current scope
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:42:79
+   |
+42 |         assert_eq!(GraphVector::new(&[invalid], 1).unwrap_err(), DomainError::NonfiniteVector);
+   |                                                                               ^^^^^^^^^^^^^^^ variant or associated item not found in `property_graph::DomainError`
+   |
+  ::: crates/zeppelin-embed/src/property_graph/mod.rs:15:1
+   |
+15 | pub enum DomainError {
+   | -------------------- variant or associated item `NonfiniteVector` not found for this enum
+
+error[E0433]: failed to resolve: use of undeclared type `PropertyData`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:21:96
+   |
+21 |     assert!(matches!(PropertyValue::new(PropertyData::EmptyList { count: 0 }).unwrap().data(), PropertyData::EmptyList { count: 0 }));
+   |                                                                                                ^^^^^^^^^^^^ use of undeclared type `PropertyData`
+
+error[E0433]: failed to resolve: use of undeclared type `PropertyData`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:20:85
+   |
+20 |     assert!(matches!(PropertyValue::new(PropertyData::Floats(&[])).unwrap().data(), PropertyData::Floats(_)));
+   |                                                                                     ^^^^^^^^^^^^ use of undeclared type `PropertyData`
+
+error[E0433]: failed to resolve: use of undeclared type `PropertyData`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:10:13
+   |
+10 |             PropertyData::F64(value) => assert_eq!(value.to_bits(), bits),
+   |             ^^^^^^^^^^^^ use of undeclared type `PropertyData`
+
+error[E0433]: failed to resolve: use of undeclared type `PropertyData`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:15:18
+   |
+15 |     for data in [PropertyData::EmptyList { count: 0 }, PropertyData::Strings(&[]), PropertyData::Bools(&[]), PropertyData::Integers(&[]),...
+   |                  ^^^^^^^^^^^^ use of undeclared type `PropertyData`
+
+error[E0433]: failed to resolve: use of undeclared type `PropertyData`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:22:35
+   |
+22 |     assert_eq!(PropertyValue::new(PropertyData::EmptyList { count: 1 }).unwrap_err(), DomainError::NonemptyUntypedList);
+   |                                   ^^^^^^^^^^^^ use of undeclared type `PropertyData`
+
+error[E0433]: failed to resolve: use of undeclared type `PropertyData`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:21:41
+   |
+21 |     assert!(matches!(PropertyValue::new(PropertyData::EmptyList { count: 0 }).unwrap().data(), PropertyData::EmptyList { count: 0 }));
+   |                                         ^^^^^^^^^^^^ use of undeclared type `PropertyData`
+
+Some errors have detailed explanations: E0425, E0433, E0599.
+For more information about an error, try `rustc --explain E0425`.
+error: could not compile `zeppelin-embed` (lib test) due to 38 previous errors

@@ -1,0 +1,1714 @@
+info: cargo-llvm-cov currently setting cfg(coverage); you can opt-out it by passing --no-cfg-coverage
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 30.47s
+     Running unittests src/lib.rs (target/llvm-cov-target/debug/deps/zeppelin_embed-e6fa6a4db8bc291f)
+
+running 574 tests
+test fts::bm25::tests::df_above_the_document_count_is_clamped_rather_than_producing_a_negative_idf ... ok
+test fts::bm25::tests::average_document_length_uses_analyzed_tokens ... ok
+test fts::bm25::tests::errors_render_useful_text ... ok
+test adversarial_test_support::tests::receipt_preserves_every_origin_fact ... ok
+test fts::bm25::tests::newtypes_prevent_argument_transposition ... ok
+test fts::bm25::tests::the_ceiling_bounds_every_reachable_score ... ok
+test fts::bm25::tests::scores_are_never_negative ... ok
+test epoch::tests::mutable_state_never_changes_the_epoch_id ... ok
+test epoch::tests::the_embedding_epoch_digest_input_is_byte_exact ... ok
+test fts::bm25::tests::pre_multiplying_the_idf_factor_would_shift_bits ... ok
+test fts::bm25::tests::the_hoisted_scorer_reproduces_the_documented_expression_bit_for_bit ... ok
+test fts::dict::tests::an_empty_dictionary_answers_every_query_negatively ... ok
+test epoch::tests::a_persisted_embedding_digest_mismatch_is_a_typed_error ... ok
+test fts::dict::tests::out_of_order_and_duplicate_terms_are_refused ... ok
+test fts::dict::tests::varints_round_trip_at_the_boundaries ... ok
+test fts::fuzzy::tests::an_empty_dictionary_yields_no_candidates ... ok
+test fts::dict::tests::seek_ceiling_lands_on_the_first_term_at_or_after_the_key ... ok
+test fts::dict::tests::lookups_work_across_many_blocks ... ok
+test fts::dict::tests::front_coding_actually_shares_prefixes ... ok
+test diag::tests::health_status_distinguishes_empty_degraded_and_unhealthy_ledgers ... ok
+test fts::dict::tests::building_from_a_sorted_map_matches_incremental_pushes ... ok
+test fts::dict::tests::an_empty_prefix_is_a_typed_error_not_a_full_scan ... ok
+test fts::dict::tests::exact_lookup_finds_every_term_and_only_those ... ok
+test epoch::tests::changing_any_interpretation_critical_field_changes_the_epoch_id ... ok
+test fts::fuzzy::tests::an_empty_query_matches_nothing ... ok
+test fts::fuzzy::tests::distance_zero_is_an_exact_lookup ... ok
+test fts::fuzzy::tests::the_first_character_rule_confines_the_walk ... ok
+test fts::fuzzy::tests::the_classic_typo_finds_its_correction_at_the_distance_it_actually_costs ... ok
+test fts::fuzzy::tests::every_reported_candidate_carries_its_true_distance ... ok
+test fts::fuzzy::tests::fuzzy_policy_matrix_is_enforced ... ok
+test fts::dict::tests::front_coding_round_trips_through_its_own_bytes ... ok
+test fts::index::tests::errors_render_useful_text ... ok
+test fts::fuzzy::tests::fuzzy_never_visits_more_dictionary_entries_than_the_contract ... ok
+test fts::dict::tests::prefix_range_equals_brute_force ... ok
+test fts::index::tests::an_empty_index_refuses_to_produce_statistics ... ok
+test fts::index::tests::posting_lists_carry_positions ... ok
+test fts::index::tests::document_length_counts_positions_not_tokens ... ok
+test fts::index::tests::rows_are_dense_and_ascending ... ok
+test fts::index::tests::field_lengths_are_tracked_separately_and_summed ... ok
+test fts::fuzzy::tests::fuzzy_results_equal_brute_force_edit_distance_over_the_dictionary ... ok
+test fts::index::tests::an_absent_term_has_no_posting_list_and_zero_frequency ... ok
+test fts::index::tests::corpus_stats_span_every_segment ... ok
+test fts::index::tests::document_frequency_is_summed_across_segments_not_per_segment ... ok
+test fts::index::tests::a_term_in_two_fields_of_one_document_counts_once ... ok
+test fts::index::tests::live_row_counters_and_document_frequency_exclude_tombstones ... ok
+test fts::norms::tests::encoding_is_monotone_non_decreasing_in_length ... ok
+test fts::live_df::tests::astra_17_single_posting_queries_do_not_displace_repeated_terms ... ok
+test fts::norms::tests::decoding_never_understates_the_true_length ... ok
+test fts::norms::tests::norm_bytes_round_trip_through_the_byte_array ... ok
+test fts::norms::tests::the_full_byte_range_is_reachable_and_saturating ... ok
+test fts::norms::tests::norms_index_by_row_id ... ok
+test fts::live_df::tests::astra_18_live_df_lock_wait_is_cancelable ... ok
+test fts::norms::tests::short_documents_are_encoded_exactly ... ok
+test fts::live_df::tests::astra_17_live_df_concurrent_misses_share_one_count ... ok
+test fts::phonetic::tests::a_code_never_exceeds_the_documented_length ... ok
+test fts::fuzzy::tests::astra_18_fuzzy_distance_cancels_inside_one_long_candidate ... ok
+test fts::phonetic::tests::a_term_with_no_letters_encodes_to_nothing ... ok
+test fts::phonetic::tests::double_metaphone_encodings_match_the_committed_name_list ... ok
+test fts::live_df::tests::astra_17_live_df_failures_are_typed_and_publish_no_partial_cache ... ok
+test fts::phonetic::tests::encoding_is_case_and_punctuation_insensitive ... ok
+test fts::phonetic::tests::encoding_never_panics_on_odd_input ... ok
+test fts::phonetic::tests::homophone_surnames_collapse_together ... ok
+test fts::phonetic::tests::encoding_is_deterministic ... ok
+test fts::live_df::tests::astra_17_live_df_field_union_is_exact ... ok
+test fts::control::tests::astra_18_preparation_sort_cancels_inside_comparisons ... ok
+test fts::phonetic::tests::astra_18_phonetic_encoding_cancels_inside_long_terms ... ok
+test fts::live_df::tests::astra_17_live_df_eviction_and_large_keys_preserve_exact_values ... ok
+test fts::phonetic::tests::print_encodings ... ignored, diagnostic printer for hand-checking the rule set
+test fts::phrase::tests::a_missing_term_never_matches ... ok
+test fts::phonetic_index::tests::astra_14_phonetic_empty_invalid_and_multifield_cases_preserve_errors ... ok
+test fts::phrase::tests::a_phrase_crossing_a_stopword_gap_needs_the_slop_the_gap_costs ... ok
+test fts::phrase::tests::an_empty_stream_list_yields_no_displacement ... ok
+test fts::phrase::tests::a_single_term_phrase_is_just_a_term_query ... ok
+test fts::phrase::tests::an_empty_phrase_is_a_typed_error ... ok
+test diag::tests::self_check_reports_a_planted_degradation ... ok
+test diag::tests::self_check_is_deterministic_per_seed ... ok
+test fts::phrase::tests::displacement_is_exact_not_greedy ... ok
+test fts::phrase::tests::stacked_positions_cost_nothing_to_cross ... ok
+test fts::postings::astra_11_tests::astra_11_corrupt_position_payload_is_typed ... ok
+test fts::postings::astra_11_tests::astra_11_position_reader_only_decodes_requested_row ... ok
+test fts::phrase::tests::synonym_stacked_phrase_matches_the_underscored_identifier ... ok
+test fts::postings::tests::a_single_block_round_trips ... ok
+test fts::postings::tests::a_truncated_packed_run_is_a_typed_error ... ok
+test fts::postings::astra_18_tests::astra_18_position_decode_cancels_inside_one_row ... ok
+test fts::phrase::tests::astra_18_phrase_cancels_inside_predecessor_scan ... ok
+test fts::phrase::tests::slop_zero_and_slop_one_semantics_match_the_pinned_fixtures ... ok
+test fts::postings::tests::a_zero_block_size_header_is_refused ... ok
+test fts::postings::tests::a_version_one_stream_reads_back_with_no_impact_pair ... ok
+test fts::postings::tests::a_zero_frequency_posting_is_refused ... ok
+test fts::postings::tests::an_empty_impact_slice_stores_an_absent_pair ... ok
+test fts::postings::tests::an_empty_list_encodes_and_decodes ... ok
+test fts::postings::tests::an_oversized_bit_width_is_a_typed_error ... ok
+test fts::postings::tests::bad_magic_and_version_are_typed_errors ... ok
+test fts::postings::tests::astra_18_block_impacts_cancel_inside_rows ... ok
+test fts::postings::tests::bit_widths_at_every_boundary_round_trip ... ok
+test fts::postings::astra_18_tests::astra_18_position_membership_cancels_inside_one_block ... ok
+test fts::postings::tests::every_truncation_of_a_valid_stream_is_a_typed_error_not_a_panic ... ok
+test fts::postings::tests::out_of_order_docids_are_refused_rather_than_sorted ... ok
+test fts::postings::tests::out_of_order_positions_are_refused ... ok
+test fts::postings::tests::the_block_metadata_row_is_exactly_one_quarter_of_a_cache_line ... ok
+test fts::postings::tests::the_impact_pair_survives_the_persisted_round_trip ... ok
+test fts::prefix::tests::an_empty_dictionary_answers_every_prefix_with_nothing ... ok
+test fts::prefix::tests::a_term_is_a_prefix_of_itself ... ok
+test fts::prefix::tests::a_prefix_matching_nothing_returns_an_empty_range_not_an_error ... ok
+test fts::prefix::tests::a_prefix_can_match_a_term_whose_surface_form_it_does_not_prefix ... ok
+test fts::prefix::tests::matches_carry_the_index_the_dictionary_agrees_with ... ok
+test fts::prefix::tests::empty_prefix_is_rejected_with_a_typed_error ... ok
+test fts::prefix::tests::prefix_results_equal_brute_force_over_the_dictionary ... ok
+test fts::prefix::tests::prefix_ending_mid_grapheme_matches_by_codepoint_rule ... ok
+test fts::postings::tests::astra_18_postings_encoding_cancels_inside_positions ... ok
+test fts::postings::tests::many_blocks_round_trip_across_the_geometry_boundary ... ok
+test fts::postings::astra_18_tests::astra_18_position_metadata_cancels_inside_block_walk ... ok
+test fts::prune::bounds::tests::a_block_bound_is_never_below_any_true_score_in_its_block ... ok
+test fts::prune::bounds::tests::a_bound_built_here_matches_one_built_from_a_sealed_impact_pair ... ok
+test fts::prune::bounds::tests::a_length_beyond_the_slot_saturates_downward ... ok
+test fts::prune::bounds::tests::a_row_with_no_recorded_length_still_yields_a_sound_bound ... ok
+test fts::prune::bounds::tests::blocks_partition_the_entries_exactly_once ... ok
+test fts::prune::bounds::tests::degenerate_inputs_produce_no_bounds_rather_than_panicking ... ok
+test fts::phonetic_index::tests::astra_18_phonetic_build_cancels_between_encodings ... ok
+test fts::prune::bounds::tests::the_bound_survives_statistics_and_parameter_drift ... ok
+test fts::prune::bounds::tests::the_last_row_of_each_block_is_its_skip_key ... ok
+test fts::prune::bounds::tests::the_term_upper_bound_dominates_every_block_bound ... ok
+test fts::prune::tests::an_empty_index_is_a_typed_error_under_every_strategy ... ok
+test fts::properties::a_single_flipped_byte_never_panics_the_decoder ... ok
+test fts::properties::postings_decoder_returns_a_typed_error_on_corrupt_bytes_and_never_panics ... ok
+test fts::prune::tests::seeking_beyond_the_last_row_exhausts_the_cursor ... ok
+test fts::prune::tests::short_list_query_takes_no_pruning_decision ... ok
+test fts::prune::tests::strategy_selection_follows_the_measured_rule ... ok
+test fts::prune::tests::the_exhaustive_strategy_delegates_to_the_oracle ... ok
+test fts::prune::tests::a_sealed_seek_skips_whole_blocks_without_decoding_them ... ok
+test fts::phrase::tests::astra_11_phrase_slop_repetition_and_field_boundaries_match_oracle ... ok
+test fts::prune::tests::the_threshold_is_zero_until_the_heap_is_full ... ok
+test fts::prune::tests::the_top_k_heap_uses_the_pinned_tie_break ... ok
+test fts::properties::postings_blocks_round_trip_arbitrary_docids_tfs_and_positions ... ok
+test fts::prune::tests::the_sealed_block_bound_matches_the_in_memory_oracle ... ok
+test fts::prune::tests::top_k_insertion_matches_a_full_sort_exactly ... ok
+test fts::prune::tests::the_metadata_block_bound_dominates_every_row_it_bounds ... ok
+test fts::query::tests::astra_12_prefix_field_membership_and_byte_edges_preserve_expansion_order ... ok
+test fts::query::tests::astra_12_prefix_visits_only_matching_vocabulary_range ... ok
+test fts::query::tests::astra_12_vocabulary_groups_memberships_with_linear_work ... ok
+test fts::phonetic_index::tests::astra_14_phonetic_cached_expansions_match_full_scan ... ok
+test fts::prune::tests::maxscore_abandons_a_candidate_before_touching_the_cheap_cursor ... ok
+test fts::query::tests::astra_13_fuzzy_distance_boundaries_preserve_boosts ... ok
+test fts::query::tests::astra_13_fuzzy_length_filter_avoids_impossible_dp_work ... ok
+test fts::query::tests::astra_13_fuzzy_scratch_is_reused_per_query ... ok
+test fts::query::tests::astra_14_phonetic_expansion_cost_screen ... ok
+test fts::query::tests::astra_18_expansion_cancels_inside_prefix_and_rejected_fuzzy_candidates ... ok
+test fts::prune::tests::a_sealed_seek_lands_exactly_where_a_linear_walk_would ... ok
+test fts::query::tests::astra_18_weighted_query_size_cancels_inside_walk ... ok
+test fts::query::tests::astra_18_phonetic_selection_cancels_inside_one_bucket ... ok
+test fts::query::tests::structured_query_validation_and_expansion_are_exhaustive ... ok
+test fts::query::tests::terms_with_prefix_expands_exact_terms_before_deterministic_prefix_terms ... ok
+test fts::query::tests::terms_with_prefix_rejects_an_empty_prefix_but_allows_no_leading_terms ... ok
+test fts::query::tests::terms_with_prefix_requires_vocabulary_while_term_does_not ... ok
+test fts::query::tests::vocabulary_expansions_preserve_terms_and_order ... ok
+test fts::query::tests::terms_with_prefix_cancels_inside_the_prefix_walk ... ok
+test fts::index::tests::parallel_analysis_is_identical_to_the_sequential_loop ... ok
+test fts::sealed::tests::a_bound_over_one_field_is_the_stored_impact_pair ... ok
+test fts::sealed::tests::a_list_whose_lengths_are_absent_still_seals ... ok
+test fts::sealed::astra_10_allocation_tests::astra_10_stream_reservation_matches_actual_owned_capacities ... ok
+test fts::sealed::tests::a_landed_block_pays_its_tf_decode_only_when_scored ... ok
+test fts::sealed::tests::a_zero_weight_field_contributes_no_run ... ok
+test fts::sealed::tests::an_empty_segment_seals_and_answers_nothing ... ok
+test fts::live_df::tests::astra_18_cancelled_live_df_does_not_publish_partial_cache ... ok
+test fts::sealed::tests::a_sealed_cursor_reproduces_every_posting_of_the_active_segment ... ok
+test fts::phrase::tests::astra_18_prepared_phrase_cancels_during_position_decode ... ok
+test fts::sealed::tests::astra_18_sealing_union_cancels_inside_merge ... ok
+test fts::query::tests::astra_13_fuzzy_bounded_matches_full_distance_expansions ... ok
+test fts::query::tests::astra_13_fuzzy_expansion_cost_screen ... ok
+test fts::sealed::tests::seeking_past_the_end_exhausts_the_cursor ... ok
+test fts::search::tests::a_query_returns_only_matching_documents_best_first ... ok
+test fts::search::tests::a_repeated_field_is_collapsed_rather_than_counted_twice ... ok
+test fts::search::tests::an_empty_index_is_a_typed_error_not_a_division_by_zero ... ok
+test fts::search::tests::an_empty_query_matches_nothing ... ok
+test fts::search::tests::an_unknown_term_matches_nothing_rather_than_everything ... ok
+test fts::search::tests::astra_02_candidate_bm25_matches_exhaustive_scores ... ok
+test fts::sealed::tests::seeking_jumps_whole_blocks_without_decoding_them ... ok
+test fts::search::tests::astra_02_candidate_nonmatch_is_explicit ... ok
+test fts::search::tests::astra_02_candidate_scoring_cancels_during_sparse_seeks ... ok
+test fts::search::tests::astra_02_candidate_scoring_preserves_repeated_terms_and_fields ... ok
+test fts::index::tests::astra_18_live_statistics_cancel_inside_row_walk ... ok
+test fts::search::tests::astra_02_selective_batch_screen ... ignored, explicit paired release-process candidate screen
+test fts::search::tests::astra_09_prepared_lexical_paths_keep_weighted_repeated_term_scores ... ok
+test fts::search::tests::astra_18_candidate_duplicates_cancel_inside_output_walk ... ok
+test fts::search::tests::astra_18_candidate_routing_cancels_inside_sort ... ok
+test fts::search::tests::astra_18_prepared_field_copy_cancels_before_statistics ... ok
+test fts::search::tests::astra_18_prepared_term_copy_cancels_before_statistics ... ok
+test fts::search::tests::astra_18_prepared_term_size_cancels_inside_walk ... ok
+test fts::search::tests::astra_02_candidate_work_screen ... ok
+test fts::search::tests::astra_02_candidate_bm25_opens_one_stream_per_term_segment ... ok
+test fts::search::tests::dense_allow_list_search_is_posting_driven ... ok
+test fts::search::tests::divisor_rule_keeps_the_selective_boundary_row_driven ... ok
+test fts::search::tests::field_weight_lookup_reports_zero_for_unweighted_fields ... ok
+test fts::search::tests::multiple_query_terms_sum_their_contributions ... ok
+test fts::search::tests::field_weights_change_ranking_and_flat_weights_do_not ... ok
+test fts::search::tests::scores_are_comparable_across_segments ... ok
+test fts::search::tests::the_exhaustive_path_never_skips_a_block ... ok
+test fts::search::tests::the_flat_single_field_length_array_is_borrowed_not_rebuilt ... ok
+test fts::search::tests::the_tie_break_is_ascending_document_id ... ok
+test fts::search::tests::top_k_truncates_without_reordering ... ok
+test fts::snippet::tests::a_field_with_no_match_yields_no_snippet_rather_than_the_whole_field ... ok
+test fts::snippet::tests::a_zero_length_window_is_a_typed_error ... ok
+test fts::snippet::tests::an_empty_field_produces_no_snippet ... ok
+test fts::snippet::tests::an_unstored_field_is_a_typed_error_not_a_guess ... ok
+test fts::snippet::tests::boundary_helpers_never_split_a_character ... ok
+test fts::snippet::tests::highlights_never_overlap_or_nest ... ok
+test fts::snippet::tests::highlights_point_at_the_matched_surface_form ... ok
+test fts::snippet::tests::snippet_ranges_are_in_bounds_utf8_valid_and_contain_the_matched_surface_form ... ok
+test fts::snippet::tests::snippets_are_deterministic_across_runs ... ok
+test fts::snippet::tests::the_window_prefers_more_distinct_terms ... ok
+test fts::tokenizer::fold::tests::case_folds_to_lowercase ... ok
+test fts::tokenizer::fold::tests::combining_marks_fold_away ... ok
+test fts::tokenizer::fold::tests::compatibility_forms_fold_to_ascii ... ok
+test fts::tokenizer::fold::tests::decomposed_and_precomposed_diacritics_fold_alike ... ok
+test fts::tokenizer::fold::tests::diacritics_fold_to_their_ascii_base ... ok
+test fts::tokenizer::fold::tests::folding_is_idempotent ... ok
+test fts::tokenizer::fold::tests::fullwidth_digits_stay_alphanumeric_for_segmentation ... ok
+test fts::tokenizer::fold::tests::ideographs_are_left_alone ... ok
+test fts::tokenizer::fold::tests::punctuation_equivalents_collapse_beyond_nfkc ... ok
+test fts::tokenizer::fold::tests::the_generated_table_is_sorted_and_addressable ... ok
+test fts::tokenizer::fold::tests::the_unicode_version_is_pinned ... ok
+test fts::tokenizer::numbers::tests::degenerate_runs_do_not_compose ... ok
+test fts::tokenizer::numbers::tests::digit_parsing_is_bounded ... ok
+test fts::tokenizer::numbers::tests::multiplier_compositions_hold ... ok
+test fts::tokenizer::numbers::tests::out_of_range_values_are_refused_rather_than_wrapped ... ok
+test fts::tokenizer::numbers::tests::simple_compositions_hold ... ok
+test fts::tokenizer::numbers::tests::spelling_round_trips_through_composition ... ok
+test fts::tokenizer::pipeline::tests::a_vocabulary_entry_stacks_its_canonical_term_at_the_run_start ... ok
+test fts::tokenizer::pipeline::tests::an_identifier_keeps_its_whole_form_its_catenation_and_its_parts ... ok
+test fts::tokenizer::pipeline::tests::analysis_is_deterministic_across_two_runs_of_the_same_input ... ok
+test fts::tokenizer::pipeline::tests::case_and_digit_transitions_split_parts ... ok
+test fts::tokenizer::pipeline::tests::disabling_decomposition_keeps_the_word_whole ... ok
+test fts::tokenizer::pipeline::tests::empty_input_produces_no_tokens ... ok
+test fts::tokenizer::pipeline::tests::number_words_and_digits_emit_each_others_variants_at_one_position ... ok
+test fts::tokenizer::pipeline::tests::offsets_slice_back_to_the_surface_form_for_parts ... ok
+test fts::tokenizer::pipeline::tests::positions_strictly_increase_except_within_a_stack ... ok
+test fts::tokenizer::pipeline::tests::single_character_parts_are_dropped_from_linguistic_profiles ... ok
+test fts::tokenizer::pipeline::tests::stopwords_leave_a_position_gap_rather_than_closing_up ... ok
+test fts::tokenizer::profiles::tests::every_profile_has_a_distinct_epoch ... ok
+test fts::tokenizer::profiles::tests::profile_ids_are_stable ... ok
+test fts::tokenizer::profiles::tests::the_code_profile_neither_stems_nor_drops_stopwords ... ok
+test fts::prune::weighted::tests::astra_10_weighted_bounds_dominate_combined_score ... ok
+test fts::sealed::tests::astra_18_sealing_cancels_inside_row_preparation ... ok
+test fts::tokenizer::properties::a_surface_token_is_exactly_the_fold_of_the_bytes_it_points_at ... ok
+test fts::prune::weighted::tests::astra_10_weighted_topk_matches_literal_fields_duplicates_tombstones_and_ties ... ok
+test fts::sealed::tests::astra_18_field_subset_df_cancellation_preserves_union ... ok
+test fts::tokenizer::properties::folding_is_idempotent_where_it_is_defined ... ok
+test fts::tokenizer::properties::analysis_never_panics_on_arbitrary_text ... ok
+test fts::search::tests::astra_18_weighted_length_preparation_is_cancelable ... ok
+test fts::tokenizer::properties::folding_rewrites_terms_without_moving_or_inventing_offsets ... ok
+test fts::tokenizer::segment::tests::a_lone_ideograph_stays_a_unigram ... ok
+test fts::tokenizer::segment::tests::apostrophes_and_hyphens_do_not_shatter ... ok
+test fts::tokenizer::segment::tests::emails_stay_whole ... ok
+test fts::tokenizer::segment::tests::identifiers_survive_segmentation ... ok
+test fts::tokenizer::segment::tests::ideograph_runs_become_overlapping_bigrams ... ok
+test fts::tokenizer::segment::tests::spans_are_ordered_in_bounds_and_non_overlapping ... ok
+test fts::tokenizer::segment::tests::trailing_punctuation_is_not_absorbed ... ok
+test fts::tokenizer::segment::tests::trailing_symbol_languages_survive ... ok
+test fts::tokenizer::stemmer::tests::documented_algorithm_examples_hold ... ok
+test fts::tokenizer::stemmer::tests::exceptional_forms_are_honoured ... ok
+test fts::tokenizer::stemmer::tests::published_vocabulary_pairs_stem_as_specified ... ok
+test fts::tokenizer::stemmer::tests::short_terms_pass_through_untouched ... ok
+test fts::tokenizer::stemmer::tests::stemming_is_idempotent_on_its_own_output ... ok
+test fts::tokenizer::stemmer::tests::stemming_never_panics_on_odd_input ... ok
+test fts::tokenizer::stopwords::tests::membership_matches_the_shipped_list ... ok
+test fts::tokenizer::stopwords::tests::the_lucene_list_is_sorted_and_complete ... ok
+test fts::tokenizer::tests::adding_a_vocab_entry_unifies_all_three_surface_forms_at_one_position ... ok
+test fts::tokenizer::tests::changing_any_pipeline_knob_changes_the_epoch_digest ... ok
+test fts::tokenizer::tests::flag_algebra_is_consistent ... ok
+test fts::tokenizer::tests::identifier_and_number_tokens_carry_the_no_fuzzy_flag ... ok
+test fts::tokenizer::tests::invalid_utf8_is_rejected_with_a_typed_error_at_the_boundary ... ok
+test fts::tokenizer::tests::oversized_input_is_refused_rather_than_truncated ... ok
+test fts::tokenizer::tests::plain_words_are_not_flagged_no_fuzzy ... ok
+test fts::tokenizer::tests::removing_a_vocab_entry_changes_the_epoch_digest ... ok
+test fts::tokenizer::tests::the_epoch_does_not_depend_on_vocabulary_insertion_order ... ok
+test fts::tokenizer::tests::the_epoch_hex_form_is_stable_and_sixteen_digits ... ok
+test fts::tokenizer::tests::token_offsets_slice_back_to_the_surface_form ... ok
+test fts::tokenizer::tests::valid_utf8_bytes_analyze_identically_to_the_string_path ... ok
+test fts::tokenizer::vocab::tests::a_declaration_registers_every_surface_form_and_the_canonical_term ... ok
+test fts::tokenizer::vocab::tests::conflicting_surface_forms_are_refused_rather_than_overwritten ... ok
+test fts::tokenizer::vocab::tests::degenerate_declarations_are_typed_errors ... ok
+test fts::tokenizer::vocab::tests::redeclaring_the_same_pair_is_idempotent ... ok
+test fts::tokenizer::vocab::tests::removal_clears_every_surface_form ... ok
+test fts::vocabulary::cancellation_tests::astra_18_vocabulary_build_cancels_during_input_walks ... ok
+test fusion::cc::reuse_tests::astra_09_fusion_union_growth_reserves_both_allocations_and_releases_failure ... ok
+test fusion::cc::reuse_tests::astra_09_fusion_union_reuse_matches_literal_scores_and_old_accumulator ... ok
+test graph::block::tests::cached_descriptor_rejects_a_different_mapping_length ... ok
+test graph::build::tests::accounting_rejection_on_resume_preserves_the_valid_checkpoint ... ok
+test graph::build::tests::arbitrary_checkpoint_bytes_fail_typed_without_panicking ... ok
+test fts::prune::tests::astra_18_pruned_lexical_cancels_inside_long_traversal ... ok
+test graph::build::tests::built_graph_publishes_through_the_frozen_m2_writer ... ok
+test graph::build::tests::cancelled_build_leaves_no_partial_artifact ... ok
+test graph::build::tests::checked_adjacency_rejects_invalid_node_and_degree_inputs ... ok
+test graph::build::tests::checkpoint_parser_rejects_semantic_corruption_and_identity_drift ... ok
+test graph::build::tests::build_resumes_from_checkpoint_to_the_same_graph ... ok
+test graph::build::tests::corrupt_checkpoint_refuses_once_clears_the_file_and_the_next_session_starts_fresh ... ok
+test graph::build::tests::checkpointed_build_reports_exact_work_for_each_declared_pass ... ok
+test graph::build::tests::graph_build_errors_preserve_actionable_values_and_sources ... ok
+test graph::build::tests::graph_build_handles_the_minimum_shape_and_rejects_an_empty_segment ... ok
+test fts::prune::wand::tests::astra_18_wand_cancels_during_metadata_only_skip ... ok
+test graph::build::tests::graph_checkpoint_io_goes_through_the_store_vfs ... ok
+test graph::build::tests::graph_checkpoint_publish_syncs_the_temp_file_and_its_directory ... ok
+test graph::build::tests::graph_build_memory_is_budgeted_and_exactly_accounted ... ok
+test graph::build::tests::incomplete_session_and_checkpoint_io_fail_typed ... ok
+test fts::tokenizer::properties::analysis_is_deterministic_across_two_runs_of_the_same_input ... ok
+test fts::tokenizer::properties::offsets_are_in_bounds_monotonic_and_slice_back_to_the_surface_form ... ok
+test graph::consolidate::tests::consolidation_checkpoint_file_round_trips_and_clears ... ok
+test graph::consolidate::tests::consolidation_checkpoint_rejects_every_corruption_class ... ok
+test graph::consolidate::tests::consolidation_checkpoint_round_trips_and_ids_are_deterministic ... ok
+test graph::consolidate::tests::consolidation_region_support_is_the_frozen_merge_set ... ok
+test graph::consolidate::tests::merge_segments_without_documents_carries_live_rows_and_rejects_bad_inputs ... ok
+test graph::params_tests::graph_params_reject_loose_invalid_controls ... ok
+test graph::params_tests::profile_params_and_graph_crossover_are_literal ... ok
+test graph::search::tests::adaptive_defaults_follow_the_measured_profile_rules ... ok
+test graph::search::tests::adaptive_ef_overflow_is_typed ... ok
+test graph::search::tests::adaptive_ef_stays_between_k_and_rows_under_adversarial_shapes ... ok
+test graph::search::tests::an_unfiltered_traversal_is_byte_identical_with_the_mask_parameter_absent ... ok
+test fts::tokenizer::properties::positions_strictly_increase_except_within_a_synonym_stack ... ok
+test fts::sealed::tests::astra_18_fractional_stream_cancels_in_hidden_zero_tf_walk ... ok
+test graph::search::tests::every_filtered_graph_result_satisfies_the_predicate_and_is_alive ... ok
+test graph::search::tests::filtered_budget_and_fail_closed_visited_cap_fire_independently ... ok
+test graph::search::tests::graph_search_errors_keep_typed_sources_and_actionable_messages ... ok
+test graph::search::tests::no_node_is_scored_twice_within_one_query ... ok
+test graph::search::tests::norm_bound_successors_are_exact_ieee_neighbours ... ok
+test graph::search::tests::pre_cancelled_token_is_rejected_at_search_entry ... ok
+test graph::search::tests::prefetch_switch_preserves_results_work_and_candidate_sequence ... ok
+test graph::search::tests::recall_is_monotonic_in_ef ... ok
+test graph::search::tests::request_and_search_geometry_rejections_preserve_the_invalid_values ... ok
+test graph::search::tests::segment_norm_bounds_round_outward_or_fail_open ... ok
+test graph::search::tests::traversal_expands_the_nearest_frontier_node_before_insertion_order ... ok
+test graph::search::tests::traversal_is_deterministic_under_seed ... ok
+test graph::search::tests::traversal_returns_the_same_topk_as_brute_force_at_high_ef ... ok
+test graph::search::tests::vector_row_checkpoint_counts_only_filter_accepted_graph_rows ... ok
+test graph::search::tests::visited_cap_returns_a_typed_error_not_a_wrong_answer ... ok
+test graph::build::tests::vamana_build_is_deterministic_under_seed ... ok
+test ingest::active::tests::in_place_text_mutation_invalidates_the_sealed_lexical_cache ... ok
+test ingest::active_publish_tests::mismatched_active_generation_on_republish_is_a_typed_error ... ok
+test ingest::purge::tests::purge_intent_round_trip_rejects_reserved_and_length_corruption ... ok
+test ingest::purge::tests::purge_tokens_reports_and_errors_preserve_their_contract_values ... ok
+test graph::search::tests::visited_epoch_wraps_correctly_at_255_queries ... ok
+test ingest::revise::tests::revision_order_is_total_and_explicit ... ok
+test ingest::vector_order_tests::documented_candidate_precedes_legacy_candidate_at_an_equal_score ... ok
+test kernels::postings::tests::a_zero_width_run_decodes_to_zeros_and_consumes_nothing ... ok
+test kernels::postings::tests::an_oversized_width_or_short_buffer_is_refused_by_both_arms ... ok
+test kernels::postings::tests::neon_prefix_sum_equals_scalar_for_arbitrary_blocks ... ok
+test kernels::postings::tests::prop_neon_unpack_equals_scalar ... ok
+test kernels::postings::tests::the_dispatched_arm_matches_the_oracle_on_maximal_values ... ok
+test kernels::postings::tests::the_narrow_path_equals_the_oracle_at_every_count_and_exact_buffer ... ok
+test kernels::postings::tests::the_narrow_path_refuses_what_it_cannot_decode ... ok
+test kernels::postings::tests::the_prefix_sum_is_a_running_total ... ok
+test kernels::postings::tests::the_prefix_sum_saturates_rather_than_wrapping ... ok
+test kernels::postings::tests::the_wide_prefix_sum_carries_across_every_group_boundary ... ok
+test graph::build::tests::graph_is_connected_from_the_entry_points ... ok
+test lifecycle::durability::tests::default_policy_skips_every_synchronization ... ok
+test lifecycle::durability::tests::derived_and_durable_none_resolve_to_the_same_policy ... ok
+test lifecycle::durability::tests::maps_every_mode_and_tier_without_attached_fallback ... ok
+test lifecycle::close::tests::background_thread_stops_before_snapshot_is_released_on_drop ... ok
+test lifecycle::expansion::tests::astra_14_refused_phonetic_index_is_not_published ... ok
+test lifecycle::expansion::tests::astra_18_assembly_cache_wait_uses_original_deadline ... ok
+test lifecycle::expansion::tests::astra_18_dictionary_cache_waits_use_the_original_deadline ... ok
+test lifecycle::expansion::tests::astra_14_phonetic_cache_tracks_vocabulary_and_algorithm_identity ... ok
+test ingest::revise::tests::prop_interleaved_ingest_and_search_never_misses_or_returns_superseded ... ok
+test graph::search::tests::cancellation_is_visible_across_threads_during_traversal ... ok
+test graph::build::tests::every_node_has_at_most_r_max_neighbours ... ok
+test graph::search::tests::counting_token_cancels_after_exact_number_of_hops ... ok
+test lifecycle::get_tests::get_documents_preserves_request_order_with_duplicates_and_misses ... ok
+test lifecycle::get_tests::get_documents_reads_mixed_active_and_sealed_documents ... ok
+test lifecycle::get_tests::get_documents_reports_absent_sealed_text_and_metadata_regions ... ok
+test lifecycle::get_tests::get_documents_returns_active_document ... ok
+test lifecycle::get_tests::get_documents_returns_none_for_active_and_sealed_tombstones ... ok
+test lifecycle::get_tests::get_documents_returns_none_for_unknown_id ... ok
+test lifecycle::get_tests::get_documents_returns_only_live_superseding_revision ... ok
+test lifecycle::get_tests::get_documents_returns_sealed_document ... ok
+test lifecycle::get_tests::get_documents_selects_exactly_requested_fields ... ok
+test lifecycle::graph_cache::tests::a_waiting_graph_query_observes_its_deadline_while_blocked ... ok
+test lifecycle::graph_cache::tests::two_graph_queries_on_one_segment_run_concurrently ... ok
+test lifecycle::hybrid::tests::astra_00_all_hybrid_rounds_contribute_work ... ok
+test lifecycle::hybrid::tests::astra_01_ann_boundary_is_not_an_unseen_certificate ... ok
+test lifecycle::hybrid::tests::astra_01_exact_scores_do_not_imply_complete_candidates ... ok
+test lifecycle::hybrid::tests::astra_09_candidate_capacity_is_accounted_through_reuse_and_failed_growth ... ok
+test lifecycle::hybrid::tests::hybrid_window_is_clamped_between_k_and_the_corpus ... ok
+test graph::build::tests::no_node_lists_itself_or_a_duplicate ... ok
+test lifecycle::hybrid_overlap_tests::astra_19_lexical_starts_before_embedding_completion ... ok
+test lifecycle::hybrid_overlap_tests::astra_19_overlap_uses_one_snapshot_despite_concurrent_ingest ... ok
+test lifecycle::hybrid_overlap_tests::astra_19_embed_failure_joins_lexical_work ... ok
+test lifecycle::hybrid_overlap_tests::astra_19_preparation_cancel_preserves_control_error ... ok
+test lifecycle::lexical_assembly_tests::astra_16_delayed_old_query_does_not_replace_newer_assembly ... ok
+test lifecycle::lexical_assembly_tests::astra_16_evicted_assembly_remains_accounted_until_last_query_drops ... ok
+test lifecycle::lexical_assembly_tests::astra_16_refused_contribution_leaves_previous_cache_and_no_charge ... ok
+test lifecycle::lexical_assembly_tests::astra_17_live_df_cache_memory_released_with_reader ... ok
+test lifecycle::lexical_assembly_tests::stats_remains_available_while_old_active_generation_is_retained ... ok
+test lifecycle::prepared::tests::astra_09_graph_score_growth_accounts_overlap_and_releases_on_failure ... ok
+test lifecycle::prepared::tests::astra_09_preparation_budget_refusal_releases_partial_capacity ... ok
+test lifecycle::prepared::tests::astra_09_prepared_layouts_keep_padding_seed_and_query_space_distinct ... ok
+test lifecycle::prepared_lexical::tests::astra_09_lexical_preparation_refuses_foreign_bindings_and_releases_failed_budget ... ok
+test lifecycle::scan_document_tests::scan_documents_pins_negative_null_and_empty_boolean_semantics ... ok
+test lifecycle::scan_document_tests::scan_documents_rejects_a_stale_continuation ... ok
+test lifecycle::scan_document_tests::scan_documents_storage_order_crosses_sealed_and_active_and_pages_every_live_row_once ... ok
+test lifecycle::scan_document_tests::scan_documents_timestamp_orders_use_doc_id_as_the_tie_breaker ... ok
+test lifecycle::scan_document_tests::scan_documents_timestamp_range_prunes_a_segment_and_filters_live_rows ... ok
+test lifecycle::shared_bound_tests::a_later_segment_that_cannot_beat_the_bound_does_almost_no_work ... ok
+test lifecycle::shared_bound_tests::a_pruned_segment_never_hides_a_winning_matching_row ... ok
+test lifecycle::hybrid_overlap_tests::astra_19_overlapped_hybrid_matches_serial_scores_and_text ... ok
+test fts::tokenizer::properties::two_analyzers_with_the_same_config_agree ... ok
+test fts::tokenizer::properties::no_profile_emits_an_empty_term ... ok
+test lifecycle::shared_bound_tests::shared_bound_does_not_leak_between_concurrent_queries ... ok
+test lifecycle::shared_bound_tests::shared_bound_reduces_candidates_scored_across_segments ... ok
+test lifecycle::snapshot::tests::astra_05_snapshot_release_notifies_after_ownership_drops ... ok
+test lifecycle::snapshot::tests::first_durable_ingest_syncs_new_wal_directory_entry_before_ack ... ok
+test lifecycle::snapshot::tests::publish_after_close_returns_the_typed_closed_error ... ok
+test lifecycle::snapshot::tests::publish_swaps_a_whole_snapshot_while_existing_readers_keep_their_generation ... ok
+test lifecycle::snapshot::tests::seal_uses_the_opened_durable_policy_for_segment_and_manifest ... ok
+test lifecycle::shared_bound_tests::shared_bound_still_returns_full_k_when_rows_are_tombstoned ... ok
+test lifecycle::stats::tests::accounted_allocation_after_close_is_typed_closed ... ok
+test lifecycle::stats::tests::accounted_vector_rejects_growth_without_a_reservation ... ok
+test lifecycle::snapshot::tests::sealed_segment_open_is_routed_through_vfs_open_for_map ... ok
+test lifecycle::stats::tests::budget_exceeded_is_typed_and_pre_allocation ... ok
+test lifecycle::stats::tests::stats_bytes_are_conserved ... ok
+test lifecycle::tests::accounting_errors_report_the_typed_context ... ok
+test lifecycle::tests::astra_00_elapsed_includes_ceiling_work ... ok
+test lifecycle::tests::astra_03_lexical_assembly_charge_survives_cache_eviction ... ok
+test lifecycle::stats::tests::repeated_close_returns_exact_stats_counters_to_pre_open_baseline ... ok
+test lifecycle::tests::astra_12_vocabulary_charge_survives_eviction_and_close ... ok
+test lifecycle::tests::astra_18_control_error_precedence_is_completion_order_independent ... ok
+test lifecycle::tests::astra_18_scoped_work_is_joined_before_cancel_returns ... ok
+test lifecycle::tests::astra_12_refused_vocabulary_is_not_published ... ok
+test lifecycle::tests::hybrid_dual_failure_precedence_is_independent_of_leg_completion_order ... ok
+test lifecycle::tests::memory_vfs_store_open_does_not_create_host_directory ... ok
+test lifecycle::tests::exact_and_graph_tiers_preserve_quantizer_validation_errors ... ok
+test lifecycle::tests::open_options_resolve_durability_before_filesystem_mutation ... ok
+test lifecycle::tests::open_refuses_a_manifest_ahead_of_the_checked_wal ... ok
+test meta::alive::tests::alive_counters_remain_consistent ... ok
+test meta::alive::tests::tombstone_then_alive_iteration_skips ... ok
+test meta::bitmap::tests::astra_15_empty_zero_and_max_u32_bitmap_bounds_are_checked ... ok
+test meta::columns::tests::builder_errors_are_typed_and_atomic_at_capacity_edges ... ok
+test lifecycle::tests::the_remembered_vector_ceiling_is_the_recomputed_ceiling_for_every_scheme ... ok
+test lifecycle::shared_bound_tests::multi_segment_graph_search_matches_the_independent_traversal_exactly ... ok
+test meta::dict::tests::dictionary_auto_widens_u16_to_u32 ... ok
+test meta::dict::tests::dictionary_reports_u32_cardinality_overflow ... ok
+test meta::columns::tests::column_builder_widens_dictionary_at_u16_boundary ... ok
+test meta::predicate::tests::empty_in_set_matches_no_rows ... ok
+test meta::predicate::tests::f64_nan_never_matches_ranges ... ok
+test meta::predicate::tests::negation_is_bounded_by_alive_set ... ok
+test meta::predicate::tests::predicate_ast_is_closed_without_unsupported_variant ... ok
+test fts::properties::avgdl_counts_analyzed_tokens_over_the_scored_unit ... ok
+test meta::predicate::tests::range_bounds_are_inclusive_or_exclusive ... ok
+test meta::predicate::tests::range_handles_i64_extremes ... ok
+test planner::exec::tests::metadata_execution_receipt_report_mismatch_is_typed ... ok
+test planner::exec::tests::metadata_execution_receipt_row_count_mismatch_uses_real_evaluator_inputs ... ok
+test planner::prune::tests::pruning_by_clustering_range_never_drops_a_matching_segment ... ok
+test planner::receipt::tests::column_fault_refuses_a_decoder_error_from_the_wrong_guard ... ok
+test planner::receipt::tests::duplicate_execution_receipt_is_rejected ... ok
+test planner::receipt::tests::every_metadata_feature_receipt_originates_at_its_production_site ... ok
+test property_graph::tests::application_keys_and_metadata_preserve_kind_and_exact_utf8 ... ok
+test property_graph::tests::batch_local_references_are_bounded_and_distinct_from_durable_ids ... ok
+test property_graph::tests::full_width_identity_and_checked_revisions ... ok
+test property_graph::tests::scalar_bits_and_typed_lists_are_distinct_from_finite_vectors ... ok
+test quant::rescore::exact_sink_tests::astra_04_sink_checks_precede_nonfinite_and_count_eligible_rows ... ok
+test quant::rescore::reuse_tests::astra_09_reused_rescores_preserve_f64_order_checks_and_new_row_work ... ok
+test quant::tests::batched_squared_l2_is_bit_identical_to_the_single_row_definition ... ok
+test quant::tests::bit4_batch_estimator_is_bit_exact_to_single_row_oracle ... ok
+test quant::tests::bit4_batch_estimator_rejects_shape_and_padding_errors ... ok
+test quant::tests::bit4_golden_fixture_is_stable ... ok
+test quant::tests::bit4_native_estimator_scores_aligned_vector ... ok
+test quant::tests::bit4_rejects_non_finite_values_without_writing ... ok
+test quant::tests::bit4_shape_errors_are_typed ... ok
+test quant::tests::default_quantization_scheme_is_bit4 ... ok
+test quant::tests::extreme_finite_rows_keep_usable_factors_and_reconstruction ... ok
+test quant::tests::int8_golden_fixture_is_stable ... ok
+test quant::tests::int8_rejects_non_finite_values_without_writing ... ok
+test quant::tests::int8_shape_errors_are_typed ... ok
+test quant::tests::narrow_row_sizes_at_dimension_768_are_pinned ... ok
+test quant::tests::partial_byte_padding_is_canonical_and_checked ... ok
+test quant::tests::persisted_scheme_ids_keep_retired_ids_reserved ... ok
+test meta::columns::tests::prop_column_store_builders_and_accessors_roundtrip ... ok
+test quant::tests::prop_bit4_estimator_unbiased_in_expectation ... ok
+test quant::tests::prop_bit4_roundtrip_error_bounded ... ok
+test quant::tests::prop_int8_dot_estimate_close ... ok
+test fts::search::tests::posting_driven_matches_row_driven_hit_for_hit ... ok
+test quant::tests::prop_int8_roundtrip_error_bounded ... ok
+test quant::tests::quant_errors_have_actionable_messages ... ok
+test quant::tests::rescore_cancellation_checkpoint_fires_before_row_sixty_four_is_scored ... ok
+test quant::tests::rescore_returns_exact_topk_when_oversample_covers ... ok
+test quant::tests::rescore_shape_and_counter_errors_are_typed ... ok
+test quant::tests::retained_pool_rejects_out_of_range_row_without_panicking ... ok
+test quant::tests::retained_pool_rescore_uses_exact_squared_l2_and_original_row_ids ... ok
+test quant::tests::retained_squared_l2_rescore_matches_the_row_at_a_time_reference_bit_for_bit ... ok
+test quant::tests::signed_zero_rows_use_canonical_inner_positive_codes ... ok
+test quant::tests::surviving_quantizers_reject_dimensions_beyond_i8_kernel_limit ... ok
+test quant::tests::widened_row_prefetch_preserves_rescore_top_k_scores ... ok
+test scan::tests::all_identical_vectors_tie_by_ascending_row_id ... ok
+test scan::tests::alternating_row_mask_returns_exactly_allowed_ids ... ok
+test scan::tests::bit4_row_major_scans_partial_final_batch ... ok
+test scan::tests::dimension_one_scans_exactly ... ok
+test scan::tests::empty_row_mask_returns_nothing ... ok
+test scan::tests::empty_row_set_returns_no_candidates ... ok
+test scan::tests::explicit_thread_budget_is_honoured_up_to_physical_cap ... ok
+test scan::tests::f32_rows_cache_first_non_finite_input ... ok
+test scan::tests::full_row_mask_equals_unmasked ... ok
+test scan::tests::k_larger_than_row_count_returns_all_rows ... ok
+test meta::dict::tests::prop_dict_roundtrip ... ok
+test fts::properties::document_frequency_is_global_under_every_seal_boundary ... ok
+test scan::tests::row_major_scan_reports_one_exhaustive_payload_pass ... ok
+test scan::tests::row_masks_filter_every_encoded_scheme ... ok
+test scan::tests::scan_validation_errors_are_typed_and_actionable ... ok
+test scan::tests::single_row_returns_that_row ... ok
+test scan::tests::truncate_helper_keeps_only_the_kth_total_cmp_score_tie ... ok
+test scan::tests::zero_k_returns_no_candidates ... ok
+test scan::topk::tests::astra_04_collector_charges_capacity_before_allocation_and_through_drain ... ok
+test scan::topk::tests::astra_04_exact_collector_matches_sort_at_both_capacity_strategies ... ok
+test scan::topk::tests::bounded_top_k_retains_every_candidate_tied_with_the_kth_score ... ok
+test scan::topk::tests::seeded_boundary_tie_set_is_invariant_under_input_permutation ... ok
+test scan::vector_fault::receipt_evidence_tests::forced_backend_receipt_evidence_rejects_mutated_campaign_tag ... ok
+test sys::darwin::tests::a_requested_qos_class_is_what_the_thread_then_reports ... ok
+test sys::darwin::tests::an_unspecified_qos_class_is_refused_rather_than_silently_ignored ... ok
+test sys::darwin::tests::barrier_fsync_returns_typed_error_on_closed_fd ... ok
+test sys::darwin::tests::barrier_fsync_succeeds_on_regular_file ... ok
+test sys::darwin::tests::full_fsync_succeeds_on_regular_file ... ok
+test sys::darwin::tests::mincore_resident_empty_range_is_zero ... ok
+test sys::darwin::tests::mincore_resident_reports_touched_pages ... ok
+test sys::darwin::tests::phys_footprint_is_nonzero_for_current_task ... ok
+test sys::darwin::tests::physical_p_core_count_is_within_logical_cpu_count ... ok
+test sys::darwin::tests::sys_error_preserves_typed_operation ... ok
+test sys::memory::tests::empty_range_has_no_resident_bytes ... ok
+test tests::seeded_rng_is_deterministic_per_name_and_env ... ok
+test tests::version_constant_is_current ... ok
+test tier::maintain::tests::maintain_builds_with_the_same_profile_auto_query_selects ... ok
+test tier::maintain::tests::maintenance_budget_lifecycle_and_identity_fail_closed ... ok
+test tier::maintain::tests::maintenance_errors_preserve_typed_sources_and_messages ... ok
+test tier::policy::tests::policy_decides_graph_above_the_threshold_and_scan_below ... ok
+test tier::policy::tests::policy_never_demotes_a_segment_that_already_has_a_graph ... ok
+test tier::policy::tests::store_policy_at_two_segments_consolidates_only_without_a_dominant_segment ... ok
+test tier::policy::tests::store_policy_consolidates_at_three_or_more_graph_segments ... ok
+test tier::policy::tests::store_policy_consolidates_scan_segments_only_after_graph_threshold ... ok
+test tier::thresholds::tests::graph_min_rows_is_the_first_ladder_point_satisfying_the_two_x_rule ... ok
+test vfs::crash::tests::a_sync_barrier_prevents_cross_barrier_reordering ... ok
+test vfs::crash::tests::correct_data_sync_pointer_rename_directory_sync_protocol_passes ... ok
+test vfs::crash::tests::enumerates_every_prefix_including_before_first_and_after_last ... ok
+test vfs::crash::tests::enumeration_cap_is_loud_and_never_exceeded ... ok
+test vfs::crash::tests::full_length_corruption_classes_are_distinct_and_deterministic ... ok
+test vfs::crash::tests::planted_pointer_before_data_bug_is_caught ... ok
+test vfs::crash::tests::reads_pass_through_without_entering_the_mutation_stream ... ok
+test vfs::crash::tests::real_filesystem_recorder_delegates_reads_and_records_mutations ... ok
+test vfs::crash::tests::records_every_mutation_and_payload_in_order ... ok
+test vfs::crash::tests::repeated_enumeration_is_byte_for_byte_deterministic ... ok
+test vfs::crash::tests::selects_edge_midpoint_and_sector_tear_points_without_a_uniform_grid ... ok
+test vfs::crash::tests::sub_sector_writes_tear_from_both_edges ... ok
+test vfs::crash::tests::torn_append_keeps_prior_bytes_and_appends_only_the_boundary_prefix ... ok
+test vfs::crash::tests::unsynced_rename_can_expose_the_sources_old_content ... ok
+test vfs::crash::tests::unsynchronized_writes_may_persist_as_either_singleton ... ok
+test vfs::fault::tests::fault_append_and_blocking_decorator_cover_handle_and_path_syncs ... ok
+test vfs::fault::tests::fault_vfs_exercises_live_media_and_read_only_image_seams ... ok
+test vfs::tests::counting_vfs_counts_every_mutation_and_sync_kind_exactly ... ok
+test vfs::tests::crash_support_api_gate_is_identical_in_debug_and_release ... ok
+test wal::record::tests::caller_reserved_encoding_keeps_its_allocation ... ok
+test wal::tests::an_explicit_group_cap_still_wins ... ok
+test wal::tests::durable_policy_defaults_to_a_sixteen_mib_group_cap ... ok
+test wal::tests::encoding_failure_in_middle_of_commit_many_is_atomic ... ok
+test wal::tests::ordered_and_skip_policies_keep_the_one_mib_default ... ok
+test lifecycle::expansion::tests::astra_18_public_lexical_deadline_reaches_scoring ... ok
+test fts::properties::scores_do_not_depend_on_where_segments_were_sealed ... ok
+test lifecycle::expansion::tests::astra_18_public_phrase_timeout_releases_partial_position_work ... ok
+test lifecycle::expansion::tests::astra_18_public_statistics_timeout_releases_contribution_reservation ... ok
+test fts::properties::prop_engine_bm25_equals_model ... ok
+test scan::tests::prop_parallel_equals_single_thread ... ok
+test quant::tests::prop_bit4_dot_estimate_close ... ok
+test lifecycle::expansion::tests::astra_18_public_cold_active_seal_cancels_without_cache_publication ... ok
+test meta::predicate::tests::prop_predicate_eval_equals_naive_row_loop ... ok
+test fts::sealed::tests::a_traversed_list_costs_a_couple_of_bytes_per_posting ... ok
+test quant::tests::prop_int8_rank_preservation ... ok
+test scan::tests::prop_row_major_scan_equals_naive_topk ... ok
+test lifecycle::expansion::tests::astra_18_public_expansion_timeout_does_not_publish_partial_caches ... ok
+test fts::sealed::tests::every_decoded_width_falls_in_the_narrow_kernel_path ... ok
+test lifecycle::shared_bound_tests::multi_segment_graph_search_honours_cancellation_mid_segment ... ok
+
+test result: ok. 572 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 35.55s
+
+     Running tests/auto_score_scale.rs (target/llvm-cov-target/debug/deps/auto_score_scale-a4892d57352b3fed)
+
+running 2 tests
+test auto_never_merges_estimated_and_exact_scores ... ok
+test auto_preserves_single_segment_score_scales ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/batch24_error_contracts.rs (target/llvm-cov-target/debug/deps/batch24_error_contracts-87bcfbfa59d1493c)
+
+running 8 tests
+test public_error_conversions_keep_their_original_typed_causes ... ok
+test persisted_registry_header_and_manifest_errors_are_exact_and_typed ... ok
+test wal_errors_keep_framing_ranges_sequences_and_source_chains ... ok
+test lexical_payload_and_kernel_error_matrices_name_every_rejected_boundary ... ok
+test store_errors_name_the_failed_boundary_without_hiding_sources ... ok
+test embedding_and_epoch_transition_errors_preserve_every_actionable_value ... ok
+test planner_metadata_and_ingest_errors_preserve_the_rejected_values ... ok
+test scan_rescore_segment_graph_and_purge_errors_preserve_geometry_and_sources ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/batch24_public_edges.rs (target/llvm-cov-target/debug/deps/batch24_public_edges-e4ba8534d4595df5)
+
+running 7 tests
+test phonetic_encoder_handles_doubled_and_context_sensitive_consonants ... ok
+test empty_typed_columns_keep_all_physical_shapes_and_type_mismatches_atomic ... ok
+test bitmap_wal_payload_rejects_invalid_vectors_and_preserves_every_numeric_column_kind ... ok
+test memory_vfs_handle_and_path_operations_preserve_bytes_and_snapshot_isolation ... ok
+test packed_row_handles_and_posting_wrappers_keep_validated_lengths_visible ... ok
+test tokenizer_byte_offsets_flags_and_vocabulary_are_typed_and_reversible ... ok
+test sealed_lexical_accessors_report_exact_field_and_document_lengths ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/block_max_soundness.rs (target/llvm-cov-target/debug/deps/block_max_soundness-be33df0fd7ea2858)
+
+running 5 tests
+test a_document_length_beyond_the_u16_slot_saturates_downward ... ok
+test a_sealed_bound_holds_while_statistics_are_unchanged ... ok
+test the_impact_pair_bound_survives_both_kinds_of_drift ... ok
+test a_sealed_bound_survives_a_rise_in_average_document_length ... ok
+test a_sealed_bound_survives_a_change_of_k1_and_b ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/bm25_reference.rs (target/llvm-cov-target/debug/deps/bm25_reference-e7da31219d3dac3a)
+
+running 12 tests
+test a_huge_term_frequency_saturates_below_the_idf_ceiling ... ok
+test a_single_token_document_scores_finitely ... ok
+test a_zero_frequency_term_scores_zero ... ok
+test b_of_one_applies_the_full_length_normalization ... ok
+test anserini_defaults_are_available_and_documented ... ok
+test bm25_term_score_matches_hand_computed_values_for_the_tiny_corpus ... ok
+test b_of_zero_makes_the_score_independent_of_document_length ... ok
+test degenerate_parameters_and_stats_are_typed_errors ... ok
+test higher_score_is_always_better ... ok
+test idf_is_monotonically_non_increasing_in_df ... ok
+test idf_is_the_lucene_variant_not_the_classic_robertson_form ... ok
+test k1_of_zero_makes_the_score_independent_of_term_frequency ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/close_contract.rs (target/llvm-cov-target/debug/deps/close_contract-fa977a5793e1d381)
+
+running 8 tests
+test close_unmaps_all_segments ... ok
+test snapshot_lease_outliving_store_observes_read_cancelled ... ok
+test close_during_inflight_search_drains_or_cancels_deterministically ... ok
+test drop_without_close_best_effort_releases ... ok
+test calls_after_close_return_typed_closed_error ... ok
+test close_is_idempotent ... ok
+test no_background_thread_survives_close ... ok
+test close_releases_file_locks_and_reopen_succeeds ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/consolidation.rs (target/llvm-cov-target/debug/deps/consolidation-2b2192cd97b9efae)
+
+running 10 tests
+test consolidation_skips_a_store_whose_graph_rows_are_all_tombstoned ... ok
+test hybrid_graph_cost_fallbacks_are_typed_and_counted ... ok
+test scan_segments_consolidate_into_one_graph_when_their_total_is_eligible ... ok
+test one_maintain_call_promotes_three_batches_and_consolidates_them ... ok
+test consolidation_defers_when_an_input_region_cannot_be_carried ... ok
+test consolidation_merges_every_graph_segment_into_one_and_preserves_results ... ok
+test interrupted_consolidation_leaves_old_segments_published_then_resumes ... ok
+test a_corrupted_consolidation_checkpoint_is_refused_and_cleared ... ok
+test drop_partition_behaves_identically_before_and_after_consolidation ... ok
+test consolidation_is_deterministic_across_runs_and_interruption ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 22.40s
+
+     Running tests/corruption.rs (target/llvm-cov-target/debug/deps/corruption-4b47ec3fca85137a)
+
+running 2 tests
+test manifest_corruption_matrix_returns_the_specific_typed_error ... ok
+test segment_corruption_matrix_returns_the_specific_typed_result ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/coverage_contract.rs (target/llvm-cov-target/debug/deps/coverage_contract-62e766be6935cfc7)
+
+running 5 tests
+test public_error_contracts_keep_values_messages_and_sources ... ok
+test metadata_rejections_are_atomic_and_bitmap_algebra_is_exact ... ok
+test read_only_and_closed_maintenance_paths_fail_closed_without_writes ... ok
+test public_seal_cancellation_preserves_the_uncommitted_active_rows ... ok
+test late_seal_cancellation_preserves_exact_active_multiset_and_emits_receipt ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/crash_matrix.rs (target/llvm-cov-target/debug/deps/crash_matrix-10feeb54b517c1ec)
+
+running 6 tests
+test refinement_checkpoint_crash_matrix ... ok
+test commit_manifest_crash_matrix ... ok
+test new_corruption_classes_reach_checksum_checks_for_both_protocols ... ok
+test write_segment_crash_matrix ... ok
+test segment_then_manifest_crash_matrix ... ok
+test a_crash_mid_purge_reopens_and_completes_or_restarts_cleanly ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.35s
+
+     Running tests/diagnostics_truthfulness.rs (target/llvm-cov-target/debug/deps/diagnostics_truthfulness-2c77b1841b998b69)
+
+running 10 tests
+test the_reported_plan_equals_the_branch_the_executor_actually_took ... ok
+test counters_are_consistent_and_move_by_known_deltas ... ok
+test a_short_result_list_is_always_explained ... ok
+test diagnostics_v1_shape_is_byte_identical ... ok
+test hybrid_without_a_tier_records_its_exact_resolution ... ok
+test observed_qos_appears_in_every_diagnostics_value ... ok
+test scanned_segment_plans_have_typed_reasons ... ok
+test scan_reason_accounting_moves_by_executed_segment ... ok
+test an_exact_flag_implies_equality_with_the_oracle ... ok
+test eligible_unpublished_graph_reports_graph_pending ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.91s
+
+     Running tests/embedder_seam.rs (target/llvm-cov-target/debug/deps/embedder_seam-8b10bc969831fc30)
+
+running 1 test
+test a_delegate_failure_or_timeout_pauses_migration_with_typed_status_and_never_half_publishes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/epoch_contract.rs (target/llvm-cov-target/debug/deps/epoch_contract-64d21e8da3a001f3)
+
+running 16 tests
+test a_manifest_registry_id_must_match_the_complete_embedding_identity ... ok
+test a_read_only_open_declaring_an_epoch_against_an_unstamped_store_is_a_typed_error ... ok
+test an_ingest_declaring_an_epoch_into_an_unstamped_store_is_a_typed_error ... ok
+test opening_a_store_with_a_conflicting_declared_epoch_is_a_typed_error_before_any_write ... ok
+test a_tokenizer_epoch_change_alone_is_a_typed_epoch_mismatch ... ok
+test mismatched_analyzer_is_refused_not_silent ... ok
+test an_ingest_with_a_matching_dimension_but_different_declared_epoch_is_a_typed_epoch_mismatch ... ok
+test an_embedding_epoch_change_alone_is_a_typed_epoch_mismatch ... ok
+test reopening_a_store_declaring_a_different_tokenizer_epoch_alone_is_a_typed_error ... ok
+test a_store_created_under_one_epoch_cannot_be_reopened_under_another_without_ever_sealing ... ok
+test opening_a_pre_epoch_store_with_a_declared_epoch_is_a_typed_error ... ok
+test a_rejected_epoch_mismatch_leaves_the_generation_and_every_search_result_unchanged ... ok
+test every_search_outcome_from_an_epoch_stamped_store_names_that_store_epoch ... ok
+test an_ingest_without_a_declared_epoch_into_an_epoch_stamped_store_is_a_typed_error ... ok
+test opening_an_epoch_stamped_store_without_declaring_an_epoch_is_a_typed_error ... ok
+test the_declared_epoch_survives_ingest_seal_close_and_reopen ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/filter_conformance.rs (target/llvm-cov-target/debug/deps/filter_conformance-d8e5848d5dae4e48)
+
+running 1 test
+test every_registered_filter_cell_is_exact_or_counted_as_skipped ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.50s
+
+     Running tests/format_golden.rs (target/llvm-cov-target/debug/deps/format_golden-91c9df32ffe70f72)
+
+running 9 tests
+test format_frame_golden_is_byte_exact_and_semantically_exact ... ok
+test a_published_alias_must_name_an_epoch_registry_entry ... ok
+test every_segment_epoch_tag_must_name_an_epoch_registry_entry ... ok
+test manifest_clustering_range_extension_is_byte_exact ... ok
+test a_manifest_with_epoch_registry_alias_and_segment_epoch_tags_is_byte_exact ... ok
+test family_10_v1_manifest_fixtures_are_explicitly_rejected ... ok
+test prechange_segment_fixture_opens_without_postings ... ok
+test purge_intent_v1_is_byte_exact ... ok
+test format_every_registered_family_and_edge_shape_matches_checked_in_golden ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/format_validation.rs (target/llvm-cov-target/debug/deps/format_validation-53b85c404eb39a9b)
+
+running 5 tests
+test persisted_error_types_preserve_sources_and_actionable_values ... ok
+test format_registry_and_hex_errors_are_typed ... ok
+test manifest_clustering_extension_rejects_each_semantic_corruption ... ok
+test manifest_codec_roundtrips_all_fields_and_rejects_payload_shapes ... ok
+test frame_decoder_names_every_failed_check ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/fts_format_golden.rs (target/llvm-cov-target/debug/deps/fts_format_golden-df38fcf8b9ae5304)
+
+running 8 tests
+test regenerate_fts_goldens ... ignored, generator, not a gate; run deliberately on a format change
+test sealed_norms_golden_bytes_are_frozen ... ok
+test sealed_dictionary_golden_bytes_are_frozen ... ok
+test the_task_07_postings_reservation_stays_byte_identical ... ok
+test the_persisted_geometry_constants_are_the_ones_the_goldens_were_built_with ... ok
+test sealed_postings_golden_bytes_are_frozen ... ok
+test the_default_geometry_also_round_trips_through_its_own_golden ... ok
+test sealed_postings_v2_golden_bytes_are_frozen ... ok
+
+test result: ok. 7 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/fusion_e2e.rs (target/llvm-cov-target/debug/deps/fusion_e2e-54a782d1e92c158a)
+
+running 4 tests
+test a_segment_without_document_identity_is_a_typed_error_for_hybrid_queries ... ok
+test fused_e2e_goldens_on_a_corpus_where_the_legs_disagree_on_purpose ... ok
+test the_vector_window_entering_fusion_is_exactly_rescored ... ok
+test fusion_under_a_tight_deadline_returns_the_typed_timeout_with_partial_false ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/fusion_props.rs (target/llvm-cov-target/debug/deps/fusion_props-d2107f40b648e3e7)
+
+running 12 tests
+test fusion_policy_constants_are_pinned_to_their_measured_or_placeholder_values ... ok
+test alpha_and_leg_failures_are_typed_displayable_and_short_circuit ... ok
+test validation_rejects_every_invalid_leg_shape_at_its_exact_rank ... ok
+test bounded_fusion_rejects_bounds_that_contradict_the_window ... ok
+test transparent_hits_and_accessors_preserve_native_leg_facts ... ok
+test tied_input_iteration_order_never_changes_the_fused_result ... ok
+test alpha_one_reproduces_dense_order_and_alpha_zero_reproduces_lexical_order ... ok
+test degenerate_legs_take_the_rrf_fallback_and_the_report_says_so ... ok
+test reports_distinguish_stability_exhaustion_and_budget_materialization ... ok
+test a_quoted_phrase_query_shifts_alpha_and_the_report_names_the_rule ... ok
+test affine_transforming_one_legs_raw_scores_never_changes_the_fused_order ... ok
+test iterator_fusion_equals_fusing_the_complete_score_lists_offline ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/graph_node_blocks.rs (target/llvm-cov-target/debug/deps/graph_node_blocks-6f0900dd34ea5fdf)
+
+running 10 tests
+test graph_node_block_writer_rejects_invalid_layouts_and_nodes ... ok
+test graph_node_block_decoder_rejects_each_malformed_field ... ok
+test graph_segment_writer_rejects_mismatched_dimensions_and_node_count ... ok
+test graph_node_block_goldens_are_byte_exact ... ok
+test graph_node_block_alignment_and_stride ... ok
+test graph_node_block_round_trip_through_mapped_accessor ... ok
+test corrupt_graph_fallback_retains_the_complete_boundary_tie_set ... ok
+test prop_graph_node_block_round_trip_and_corruption_is_typed ... ok
+test graph_segment_reader_rejects_checksum_valid_geometry_mismatches ... ok
+test graph_reader_validates_every_node_after_forgeable_checksums ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/health.rs (target/llvm-cov-target/debug/deps/health-978bd25c5568510c)
+
+running 9 tests
+test self_check_after_close_reports_a_typed_state_failure_without_partial_samples ... ok
+test health_starts_unchecked_and_full_self_check_marks_examined_artifacts_healthy ... ok
+test successful_checkpoint_scope_revalidation_clears_a_removed_fault ... ok
+test self_check_examines_the_consolidation_checkpoint_like_a_graph_checkpoint ... ok
+test pending_docs_drops_to_zero_after_seal_and_rises_by_the_batch_size_on_ingest ... ok
+test retained_through_reflects_an_executed_retention_run_and_last_maintenance_matches ... ok
+test self_check_validates_a_good_checkpoint_and_attributes_independent_artifact_damage ... ok
+test self_check_samples_only_live_active_and_sealed_documents_against_the_exact_oracle ... ok
+test self_check_attributes_and_clears_only_the_exact_revalidated_region ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/hybrid_bounded.rs (target/llvm-cov-target/debug/deps/hybrid_bounded-38b7912ff23babbc)
+
+running 28 tests
+test astra_06_rescored_scan_reports_exact_scores_and_approximate_coverage ... ok
+test astra_03_empty_and_zero_range_legs_have_defined_scores ... ok
+test astra_01_exact_hybrid_can_still_certify ... ok
+test astra_09_reused_rounds_match_fresh_rounds_in_scores_and_termination ... ok
+test astra_00_cross_fill_counts_exact_rows_and_bytes ... ok
+test astra_09_structured_widening_reuses_expansions_and_constants ... ok
+test astra_00_lexical_window_survives_worker_handoff ... ok
+test astra_00_cache_receipts_belong_to_the_query ... ok
+test astra_10_expansion_provenance_matches_contributing_terms ... ok
+test astra_09_small_then_large_query_releases_accounted_capacity_on_drop ... ok
+test astra_09_widening_cross_scores_each_candidate_once ... ok
+test astra_09_widening_prepares_lexical_statistics_once_for_both_legs ... ok
+test astra_10_structured_collector_reserves_and_releases_its_capacity ... ok
+test astra_10_combined_winner_below_each_expansion_cutoff_survives ... ok
+test astra_10_empty_expansion_needs_no_live_scoring_statistics ... ok
+test astra_10_small_structured_window_retains_only_bounded_candidates ... ok
+test astra_09_widening_retains_candidate_buffers_between_rounds ... ok
+test astra_03_structured_anchor_uses_the_exact_combined_maximum ... ok
+test hybrid_widens_and_reports_the_round_count_when_the_first_window_is_unproven ... ok
+test astra_10_phrase_rejections_do_not_consume_topk_capacity ... ok
+test astra_09_query_reuse_never_crosses_epoch_source_or_revision ... ok
+test astra_09_supported_scan_round_prepares_once_across_active_and_sealed_sources ... ok
+test astra_10_structured_standalone_and_hybrid_share_exact_lexical_scores ... ok
+test astra_03_window_size_does_not_renormalize_seen_documents ... ok
+test astra_03_vector_winner_receives_bm25_below_lexical_window ... ok
+test astra_03_unseen_lexical_contribution_is_not_erased_by_window_floor ... ok
+test astra_03_bounded_exact_matches_independent_fixed_policy_oracle ... ok
+test hybrid_top_k_equals_offline_fusion_of_the_truncated_exact_lists ... ok
+
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.99s
+
+     Running tests/hybrid_identity.rs (target/llvm-cov-target/debug/deps/hybrid_identity-9155fb8b77a979a8)
+
+running 3 tests
+test matching_legacy_postings_row_without_stored_text_is_a_typed_snippet_error ... ok
+test postings_segment_without_document_identity_is_a_typed_error ... ok
+test a_hybrid_query_does_not_let_the_lexical_path_skip_the_identity_proof ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/ingest_visibility.rs (target/llvm-cov-target/debug/deps/ingest_visibility-d37922c4737cfefd)
+
+running 18 tests
+test ingest_public_batches_and_errors_preserve_typed_context ... ok
+test recovery_errors_preserve_typed_context ... ok
+test ingest_on_a_read_only_store_is_typed_error ... ok
+test replaying_same_revision_is_noop ... ok
+test ingest_ack_returns_the_generation_it_acted_on ... ok
+test every_active_segment_byte_is_accounted ... ok
+test post_ack_batch_retry_emits_one_replay_receipt_without_mutation ... ok
+test committed_write_is_visible_to_next_query ... ok
+test reopen_replays_delete_into_active_segment ... ok
+test ingest_batch_commits_every_document_in_one_generation ... ok
+test lower_revision_after_higher_is_rejected_typed ... ok
+test higher_revision_supersedes_and_old_never_returned ... ok
+test deleted_doc_is_not_returned_and_is_durable ... ok
+test reopen_after_ingest_recovers_acknowledged_writes ... ok
+test partial_batch_append_error_preserves_clean_prefix_and_emits_receipt ... ok
+test reopen_rejects_torn_tail_and_middle_checksum_corruption_typed ... ok
+test global_row_ids_distinguish_active_and_every_sealed_row_zero ... ok
+test queries_admit_while_a_durable_commit_is_in_flight ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/kernels.rs (target/llvm-cov-target/debug/deps/kernels-cee7f1d28ac58a82)
+
+running 34 tests
+test kernels::knob_space_is_registered_as_data_for_task_27_h ... ok
+test kernels::gather_rejects_a_row_length_mismatch_in_each_pointer_slot ... ok
+test kernels::dispatch_errors_and_variants_have_actionable_debug_text ... ok
+test kernels::f16_special_values_have_defined_ieee_behavior ... ok
+test kernels::packed_dot_ignores_unused_trailing_fields ... ok
+test kernels::hamming_counts_all_bits_in_final_packed_byte ... ok
+test kernels::empty_batches_are_defined_without_panics ... ok
+test kernels::gather_rejects_or_debug_asserts_a_malformed_shape ... ok
+test kernels::aarch64_runtime_exposes_neon_variant ... ok
+test kernels::gather_scores_are_bit_identical_to_the_scalar_oracle ... ok
+test kernels::packed_dot_batches_match_worked_single_calls ... ok
+test kernels::packed_dot_public_surface_matches_worked_examples ... ok
+test kernels::gather_scores_are_bit_identical_to_the_contiguous_batch_kernel ... ok
+test kernels::gather_handles_non_adjacent_rows_in_arbitrary_order ... ok
+test kernels::i8mm_variant_is_registered_and_batch_layout_matches_scalar ... ok
+test kernels::perf_hamming_batch_768_1m_is_at_most_10ms ... ignored, wall-clock performance gate; run release-mode on macOS CI
+test kernels::perf_i8_batch_768_100k_is_at_least_8_gbps ... ignored, wall-clock performance gate; run release-mode on macOS CI
+test kernels::prefetch_ladder_preserves_dispatched_gather_scores ... ok
+test kernels::i8_accumulator_bound_and_max_dimension_guard_hold ... ok
+test kernels::i8_min_and_non_lane_tails_are_exact ... ok
+test kernels::public_api_matches_scalar_oracle ... ok
+
+running 1 test
+test kernels::dispatch_forced_arm_override_is_typed_and_never_executes_unsupported_code ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+test kernels::packed_dot_tails_and_byte_boundaries_equal_scalar ... ok
+
+running 1 test
+test kernels::dispatch_forced_arm_override_is_typed_and_never_executes_unsupported_code ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+
+running 1 test
+test kernels::dispatch_forced_arm_override_is_typed_and_never_executes_unsupported_code ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+
+running 1 test
+test kernels::bit4_prepared_max_dimension_intermediates_remain_exact ... ok
+test kernels::dispatch_forced_arm_override_is_typed_and_never_executes_unsupported_code ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+
+running 1 test
+test kernels::dispatch_forced_arm_override_is_typed_and_never_executes_unsupported_code ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+
+running 1 test
+test kernels::dispatch_forced_arm_override_is_typed_and_never_executes_unsupported_code ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+
+running 1 test
+test kernels::dispatch_forced_arm_override_is_typed_and_never_executes_unsupported_code ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+
+running 1 test
+test kernels::dispatch_forced_arm_override_is_typed_and_never_executes_unsupported_code ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+test kernels::dispatch_forced_arm_override_is_typed_and_never_executes_unsupported_code ... ok
+test kernels::prop_batch_equals_n_single_calls ... ok
+test kernels::prop_gather_equals_scalar_oracle_bitwise ... ok
+test kernels::prop_bit4_prepared_all_arms_equal_scalar ... ok
+test kernels::prop_bit4_batch_equals_n_single_calls ... ok
+test kernels::prop_bit4_all_arms_equal_scalar ... ok
+test kernels::prop_bit4_prepared_score_batch_equals_scalar ... ok
+test kernels::prop_hamming_equals_scalar ... ok
+test kernels::prop_neon_i8_dot_equals_scalar ... ok
+test kernels::prop_f16_dot_equals_scalar_within_one_ulp ... ok
+test kernels::prop_f32_dot_equals_scalar_with_relative_epsilon ... ok
+
+test result: ok. 32 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 1.80s
+
+     Running tests/lexical_extras.rs (target/llvm-cov-target/debug/deps/lexical_extras-874f26aa2e19bb07)
+
+running 11 tests
+test reverse_prefix_expansion_prevents_stemming_flicker ... ok
+test terms_with_prefix_finds_meeting_and_uses_divided_prefix_boosts ... ok
+test astra_12_term_and_phrase_still_build_no_vocabulary ... ok
+test astra_14_phonetic_encodes_vocabulary_once ... ok
+test astra_12_vocabulary_reused_until_exact_inputs_change ... ok
+test phrase_matches_iff_naive_token_stream_scan_matches ... ok
+test prefix_results_equal_brute_force_over_the_dictionary ... ok
+test fuzzy_results_equal_brute_force_edit_distance_over_the_dictionary ... ok
+test snippet_ranges_are_in_bounds_utf8_valid_and_contain_the_matched_surface_form ... ok
+test snippets_are_deterministic_across_runs ... ok
+test indexed_phrase_agrees_with_the_model_on_analyzed_documents ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s
+
+     Running tests/lexical_stats_consistency.rs (target/llvm-cov-target/debug/deps/lexical_stats_consistency-62c70c42c3f2639a)
+
+running 15 tests
+test astra_15_wrong_segment_count_precedes_row_validation ... ok
+test astra_16_retention_reuses_survivor_with_new_source_ordinal ... ok
+test astra_17_retention_reuses_tombstoned_survivor_df ... ok
+test tombstoned_term_rows_do_not_change_bm25_at_physical_purge ... ok
+test purging_already_deleted_rows_is_a_no_op_on_bm25_stats ... ok
+test delete_and_purge_of_the_same_rows_yield_identical_bm25_stats ... ok
+test astra_17_live_df_invalidates_on_delete_and_not_unrelated_query ... ok
+test astra_16_alive_change_invalidates_only_affected_contribution ... ok
+test astra_16_cached_global_stats_match_exhaustive_live_model ... ok
+test astra_02_candidate_bm25_matches_exhaustive_scores ... ok
+test astra_15_live_assembly_only_walks_rows_for_token_summation ... ok
+test astra_16_active_ingest_reuses_unchanged_sealed_lexical_statistics ... ok
+test astra_17_live_df_scans_once_for_repeated_immutable_term ... ok
+test astra_15_allow_list_reports_same_first_invalid_row ... ok
+test astra_15_allow_list_validation_does_not_visit_every_valid_row ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.29s
+
+     Running tests/manifest.rs (target/llvm-cov-target/debug/deps/manifest-2e4862d8c6e1aa39)
+
+running 5 tests
+test manifest_refuses_ahead_of_log ... ok
+test manifest_commit_is_atomic_under_rename ... ok
+test open_touches_only_manifest_and_headers ... ok
+test manifest_orphan_sweep_uses_reachability_and_writing_exclusions ... ok
+test prop_orphan_sweep_matches_random_reachable_unreachable_mixes ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running tests/metadata_error_reachability.rs (target/llvm-cov-target/debug/deps/metadata_error_reachability-6133f4cdff75f0cb)
+
+running 31 tests
+test oracle::tests::i36_literal_alive_parser_rejects_truncation_tail_and_trailing_bytes ... ok
+test oracle::tests::canonical_digests_bind_each_owned_input_and_observation_family ... ok
+test oracle::tests::i36_plant_reports_exact_source_column_row_and_primitives ... ok
+test oracle::tests::i37_clean_observation_is_accepted_before_set_plant ... ok
+test oracle::tests::i36_clean_observation_is_accepted_before_presence_and_dictionary_plants ... ok
+test oracle::tests::i37_matrix_uses_literal_btreeset_algebra_and_alive_bounded_not ... ok
+test oracle::tests::i37_plant_reports_operator_path_and_extra_row ... ok
+test alive_out_of_range_is_typed_and_bitmap_atomic ... ok
+test oracle::tests::i36_literal_parser_exposes_exact_semantic_spans_for_clean_bytes ... ok
+test oracle::tests::i36_literal_parser_preserves_every_type_null_and_ieee_bits ... ok
+test oracle::tests::i36_independent_malformed_catalog_covers_required_layout_classes ... ok
+test oracle::tests::i38_refuses_a_live_baseline_hit_without_source_metadata ... ok
+test oracle::tests::i38_requires_one_report_and_receipt_for_every_required_source ... ok
+test oracle::tests::i38_clean_result_is_accepted_before_drop_and_prune_plant ... ok
+test oracle::tests::i38_plant_reports_unsound_prune_and_missing_exact_hit ... ok
+test oracle::tests::i39_clean_execution_branch_is_accepted_before_report_plant ... ok
+test oracle::tests::i39_exact_work_counter_plant_is_rejected ... ok
+test oracle::tests::i39_missing_production_receipt_is_a_named_failure ... ok
+test oracle::tests::i39_expected_case_rejects_a_receipt_from_the_wrong_lifecycle_leg ... ok
+test oracle::tests::i39_plant_reports_exact_query_source_branch_mismatch ... ok
+test eval_errors_fire_through_public_evaluate_with_real_inputs ... ok
+test schema_errors_are_reached_through_schema_new ... ok
+test builder_overflow_guards_are_typed_distinct_and_row_atomic ... ok
+test public_executor_maps_evaluator_row_count_mismatch_exactly ... ok
+test public_executor_rejects_a_planted_reported_branch_lie ... ok
+test public_filtered_search_maps_predicate_errors_without_mutation ... ok
+test public_ingest_build_errors_leave_generation_wal_and_query_state_unchanged ... ok
+test checked_columns_fixed_header_and_numeric_truncations_reach_the_decoder ... ok
+test checked_malformed_catalog_covers_remaining_row_and_length_guards ... ok
+test checked_columns_and_alive_corruptions_reach_exact_semantic_decoders ... ok
+test every_installable_malformed_columns_and_alive_case_reaches_public_store ... ok
+
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/metadata_filter_invariants.rs (target/llvm-cov-target/debug/deps/metadata_filter_invariants-758e1882752fb2fa)
+
+running 28 tests
+test oracle::tests::i36_plant_reports_exact_source_column_row_and_primitives ... ok
+test oracle::tests::canonical_digests_bind_each_owned_input_and_observation_family ... ok
+test oracle::tests::i36_literal_alive_parser_rejects_truncation_tail_and_trailing_bytes ... ok
+test oracle::tests::i36_clean_observation_is_accepted_before_presence_and_dictionary_plants ... ok
+test oracle::tests::i36_literal_parser_exposes_exact_semantic_spans_for_clean_bytes ... ok
+test oracle::tests::i36_literal_parser_preserves_every_type_null_and_ieee_bits ... ok
+test oracle::tests::i37_clean_observation_is_accepted_before_set_plant ... ok
+test oracle::tests::i36_independent_malformed_catalog_covers_required_layout_classes ... ok
+test oracle::tests::i38_clean_result_is_accepted_before_drop_and_prune_plant ... ok
+test oracle::tests::i37_plant_reports_operator_path_and_extra_row ... ok
+test oracle::tests::i38_refuses_a_live_baseline_hit_without_source_metadata ... ok
+test oracle::tests::i38_requires_one_report_and_receipt_for_every_required_source ... ok
+test oracle::tests::i39_clean_execution_branch_is_accepted_before_report_plant ... ok
+test oracle::tests::i39_exact_work_counter_plant_is_rejected ... ok
+test oracle::tests::i39_expected_case_rejects_a_receipt_from_the_wrong_lifecycle_leg ... ok
+test oracle::tests::i37_matrix_uses_literal_btreeset_algebra_and_alive_bounded_not ... ok
+test oracle::tests::i38_plant_reports_unsound_prune_and_missing_exact_hit ... ok
+test oracle::tests::i39_missing_production_receipt_is_a_named_failure ... ok
+test oracle::tests::i39_plant_reports_exact_query_source_branch_mismatch ... ok
+test i39_public_store_attests_both_sides_of_the_exact_threshold ... ok
+test filtered_public_ties_order_document_id_before_physical_source ... ok
+test i38_public_multisegment_pruning_preserves_every_independent_exact_hit ... ok
+test i36_all_null_nullable_dictionary_reopens_without_inventing_a_value ... ok
+test i37_public_evaluator_matches_independent_btreeset_algebra ... ok
+test i37_full_45_case_matrix_runs_against_graph_published_public_store ... ok
+test i37_graph_backed_filter_matches_independent_timestamp_range ... ok
+test i39_graph_fixture_is_published_by_the_public_store_lifecycle ... ok
+test i39_public_graph_clean_fault_retry_uses_actual_traversal_and_fallback_work ... ok
+
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.40s
+
+     Running tests/migration_e2e.rs (target/llvm-cov-target/debug/deps/migration_e2e-7d2887fff12ab90e)
+
+running 3 tests
+test an_alias_cannot_publish_an_incomplete_target_epoch ... ok
+test drop_epoch_commits_the_manifest_before_unlinking ... ok
+test rollback_preserves_old_epoch_results_exactly_and_rollback_after_drop_epoch_is_a_typed_error ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/planner_props.rs (target/llvm-cov-target/debug/deps/planner_props-df2b4870e55b1aaa)
+
+running 6 tests
+test pruning_by_clustering_range_never_drops_a_matching_segment ... ok
+test a_type_mismatched_value_is_rejected_at_plan_time ... ok
+test an_unknown_column_is_rejected_at_plan_time_with_a_typed_error ... ok
+test a_filtered_query_over_the_active_segment_matches_the_oracle ... ok
+test plan_branch_is_deterministic_for_fixed_stats ... ok
+test the_lexical_allow_list_drive_and_post_check_paths_agree_exactly ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/portable_store_fixture.rs (target/llvm-cov-target/debug/deps/portable_store_fixture-f6c387abbc58fe9e)
+
+running 3 tests
+test a_fixture_written_elsewhere_opens_here ... ignored, cross-platform exchange: set ZE_PORTABLE_FIXTURE_DIR and run deliberately
+test emit_portable_fixture ... ignored, cross-platform exchange: set ZE_PORTABLE_FIXTURE_OUT and run deliberately
+test a_portable_fixture_round_trips_in_this_process ... ok
+
+test result: ok. 1 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/postings_region_golden.rs (target/llvm-cov-target/debug/deps/postings_region_golden-c0fcd42c51b20ad1)
+
+running 1 test
+test whole_postings_region_v1_is_byte_exact ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/prune_contracts.rs (target/llvm-cov-target/debug/deps/prune_contracts-0da9fd554dcc8c74)
+
+running 12 tests
+test capture_contracts ... ignored, capture mode; a human approves the numbers by committing them
+test a_malformed_contract_line_fails_loudly_rather_than_being_skipped ... ok
+test strategy_selection_follows_the_recorded_rule ... ok
+test short_list_query_takes_no_pruning_decision ... ok
+test the_exhaustive_path_never_skips_a_block ... ok
+test two_term_zipf_query_at_k10_evaluates_at_most_the_contracted_fraction ... ok
+test maxscore_on_a_long_query_also_evaluates_fewer_documents ... ok
+test two_term_wand_at_one_hundred_thousand_documents ... ok
+test six_term_maxscore_at_one_hundred_thousand_documents ... ok
+test strategy_rule_matches_the_counters_it_was_calibrated_from ... ok
+test block_max_wand_skips_blocks_it_can_prove_unreachable has been running for over 60 seconds
+test block_max_wand_skips_less_as_k_rises has been running for over 60 seconds
+test block_max_wand_skips_blocks_it_can_prove_unreachable ... ok
+test block_max_wand_skips_less_as_k_rises ... ok
+
+test result: ok. 11 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 96.24s
+
+     Running tests/prune_equivalence.rs (target/llvm-cov-target/debug/deps/prune_equivalence-9673b05e0f398c92)
+
+running 6 tests
+test pruning_agrees_when_k_exceeds_the_corpus ... ok
+test pruning_agrees_after_average_document_length_drifts_across_segments ... ok
+test the_selected_strategy_agrees_with_the_exhaustive_scorer ... ok
+test prop_pruned_topk_equals_exhaustive ... ok
+test pruning_agrees_on_a_corpus_that_spans_many_blocks ... ok
+test block_skipping_returns_bit_identical_hits_and_scores ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.86s
+
+     Running tests/purge_proof.rs (target/llvm-cov-target/debug/deps/purge_proof-71d03cfd88f60638)
+
+running 17 tests
+test purge_crash_receipt_child_helper ... ignored, subprocess-only helper selected by the parent purge crash test
+test purge_refuses_without_temp_space_and_leaves_the_store_intact ... ok
+test purge_of_an_unknown_id_is_a_no_op_and_reports_it ... ok
+test purge_does_not_reuse_acknowledged_sequence ... ok
+
+running 1 test
+test purge_crash_receipt_child_helper ... test bl_135_purge_persists_acked_generation_with_nonempty_wal ... ok
+test physical_purge_preserves_every_typed_metadata_column_and_null ... ok
+test active_only_purge_compacts_rows_preserves_tombstones_and_reopens ... ok
+test int8_physical_purge_preserves_surviving_codes_and_tombstones ... ok
+test purge_renumbers_surviving_rows_consistently ... ok
+test purge_does_not_leave_a_graph_pointing_at_stale_row_ids ... ok
+test purge_scrubs_wal_records_that_carried_purged_payloads ... ok
+test pending_physical_purge_is_completed_during_reopen ... ok
+test purge_keeps_acked_wal_after_failed_seal_commit ... ok
+test purged_sentinels_are_absent_from_every_file_under_the_store ... ok
+test unlink_error_receipt_precedes_reopen_completion_and_sentinel_erasure ... ok
+test durable_intent_crash_receipt_reopens_to_complete_physical_purge ... ok
+test purge_token_resolves_only_after_the_bytes_are_gone ... ok
+
+test result: ok. 16 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.19s
+
+     Running tests/query_lifecycle.rs (target/llvm-cov-target/debug/deps/query_lifecycle-d14ededc7a1e6e79)
+
+running 12 tests
+test astra_07_cancelled_materialization_does_not_report_published_kernel_results ... ok
+test astra_07_materialization_survives_physical_purge_of_its_source ... ok
+test deadline_cancellation_is_checked_inside_every_encoded_scan_loop ... ok
+test already_expired_deadline_wins_when_a_tiny_scan_finishes_first ... ok
+test slow_scan_with_deadline_returns_typed_timeout ... ok
+test persistent_query_pool_reuses_threads_across_queries ... ok
+test in_flight_cancel_token_interrupts_without_partial_results ... ok
+test cancelled_query_releases_its_snapshot_lease ... ok
+test admitted_read_observes_close_cancellation_without_caller_cooperation ... ok
+test query_validation_and_error_surfaces_remain_typed ... ok
+test astra_07_close_during_materialization_joins_or_cancels_without_partial_hits ... ok
+test astra_07_materialization_survives_consolidation_with_original_lease ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.39s
+
+     Running tests/query_path_checksums.rs (target/llvm-cov-target/debug/deps/query_path_checksums-edef16e5da7cb853)
+
+running 1 test
+test query_paths_never_call_a_verifying_segment_accessor ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/query_ready_views.rs (target/llvm-cov-target/debug/deps/query_ready_views-baa4474558ec0fb7)
+
+running 7 tests
+test document_version_hashes_the_region_once_per_reader ... ok
+test active_lexical_view_is_sealed_once_per_active_generation ... ok
+test warm_filtered_query_does_not_redecode_columns_or_alive_state ... ok
+test snapshot_query_view_bytes_are_exactly_accounted ... ok
+test warm_lexical_query_does_not_redecode_postings ... ok
+test warm_graph_query_does_not_rehash_rescore_region ... ok
+test touched_rescore_chunk_corruption_still_fails_loudly_and_restores ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/retention.rs (target/llvm-cov-target/debug/deps/retention-072e902d88b6fdb4)
+
+running 13 tests
+test drop_partition_skips_a_segment_that_straddles_the_range ... ok
+test drop_partition_on_an_empty_range_is_a_no_op_and_reports_it ... ok
+test dropped_documents_are_not_returned_by_later_queries ... ok
+test drop_partition_reports_committed_ok_when_a_post_commit_unlink_fails ... ok
+test drop_partition_commits_the_manifest_before_unlinking ... ok
+test a_query_running_during_a_drop_still_completes_and_sees_its_pinned_rows ... ok
+test a_reopen_after_a_failed_unlink_sweeps_the_orphaned_segment_file ... ok
+test ingest_ack_survives_a_failed_replaced_segment_unlink ... ok
+test drop_partition_stays_ok_when_the_post_commit_directory_sync_fails ... ok
+test sealed_segments_carry_their_clustering_key_range ... ok
+test drop_partition_unlinks_and_costs_o_manifest ... ok
+test retention_hook_drops_only_partitions_outside_the_window ... ok
+test explicit_clock_cutoff_emits_receipt_and_keeps_timestamp_equal_to_cutoff ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/rss_flatness.rs (target/llvm-cov-target/debug/deps/rss_flatness-afa2c47146af74e7)
+
+running 1 test
+test rss_flatness ... ignored, macOS CI phys_footprint gate; intentionally not part of local cargo test
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/scan_bench_cli.rs (target/llvm-cov-target/debug/deps/scan_bench_cli-e6007a562bab0fa0)
+
+running 4 tests
+test scan_benchmark_repeat_validation_rejects_zero_or_missing_values ... ok
+test scan_benchmark_repeats_reuse_one_fixture_build ... ok
+test scan_benchmark_single_repeat_preserves_timing_output ... ok
+test scan_benchmark_zero_duration_has_zero_relative_standard_deviation ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/seal.rs (target/llvm-cov-target/debug/deps/seal-a1768e0fa0566197)
+
+running 13 tests
+test reopen_after_seal_does_not_replay_absorbed_wal_records ... ok
+test sealed_segment_is_searchable_through_store_search ... ok
+test stale_revision_after_seal_is_rejected ... ok
+test sealed_rows_survive_close_and_reopen ... ok
+test tombstoned_active_rows_do_not_become_live_sealed_rows ... ok
+test seal_retires_wal_records_and_wal_bytes_falls ... ok
+test seal_of_an_empty_active_segment_is_an_idempotent_no_op_returning_the_current_generation ... ok
+test cancelled_seal_leaves_the_store_unchanged ... ok
+test seal_refuses_a_boundary_ahead_of_the_durable_wal_end ... ok
+test reingest_after_seal_replaces_rather_than_duplicating ... ok
+test seal_publishes_an_immutable_segment_and_empties_the_active_segment ... ok
+test seal_retried_after_a_restart_that_already_committed_the_seal_is_a_no_op ... ok
+test delete_after_seal_removes_the_row_from_search ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/segment_roundtrip.rs (target/llvm-cov-target/debug/deps/segment_roundtrip-4bc177b6535838ff)
+
+running 4 tests
+test every_persisted_column_type_roundtrips_values_nulls_and_ieee_bits ... ok
+test scheme_specific_readers_and_graph_build_reject_cross_scheme_use ... ok
+test segment_large_regions_are_validated_lazily_per_64k_chunk ... ok
+test prop_segment_roundtrip ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.01s
+
+     Running tests/single_writer.rs (target/llvm-cov-target/debug/deps/single_writer-e44e0dd12051f4c8)
+
+running 7 tests
+test lock_probe_child ... ignored, subprocess-only helper selected by the parent lock probe
+test pure_read_open_creates_no_files_and_takes_no_write_locks ... ok
+test second_write_open_returns_typed_store_busy_immediately ... ok
+test open_filesystem_rejections_are_typed ... ok
+test a_refused_in_process_second_acquire_does_not_release_the_kernel_lock ... ok
+test read_only_open_with_live_writer_serves_last_published_snapshot ... ok
+test reopen_succeeds_on_first_attempt_while_a_spawned_child_holds_an_inherited_lock_descriptor ... ok
+
+test result: ok. 6 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/snapshot_remap.rs (target/llvm-cov-target/debug/deps/snapshot_remap-1f558094e254e3e2)
+
+running 12 tests
+test read_only_handle_rejects_prepared_segment_ownership ... ok
+test adopted_vector_charge_uses_capacity_not_length ... ok
+test closed_handle_rejects_prepared_segment_ownership ... ok
+test read_only_handle_rejects_a_segment_prepared_by_a_writer ... ok
+test writer_rejects_a_segment_accounted_to_another_store ... ok
+test durable_state_is_never_mapped_writable ... ok
+test int8_store_search_rejects_checksum_valid_wrong_stride ... ok
+test seal_rejects_generation_overflow_before_writing ... ok
+test sealing_drops_the_anonymous_copy_and_serves_from_the_mapping ... ok
+test int8_buffers_use_the_same_accounted_seal_path ... ok
+test seal_generation_is_strictly_after_ingest_generations ... ok
+test mapped_resident_bytes_tracks_full_touch_across_chunked_mapping ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+
+     Running tests/storage_durability_public.rs (target/llvm-cov-target/debug/deps/storage_durability_public-02be03aad9b4d1d0)
+
+running 22 tests
+test storage_manifest_abort_child_helper ... ignored, subprocess-only helper selected by the parent publication tests
+
+running 1 test
+
+running 1 test
+test storage_manifest_abort_child_helper ... test storage_manifest_abort_child_helper ... test storage_torn_wal_body_can_fire ... ok
+test storage_torn_wal_checksum_can_fire ... ok
+test storage_post_commit_error_can_fire ... ok
+test same_seed_clean_fault_and_retry_converge_exactly ... ok
+test storage_corrupt_segment_region_can_fire ... ok
+test storage_manifest_pre_rename_crash_can_fire ... ok
+test retry_is_byte_idempotent_active_and_sealed ... ok
+test delete_omission_cleanup_report_is_truthful ... ok
+test storage_torn_wal_header_can_fire ... ok
+test sealed_store_torn_wal_header_is_not_masked_by_manifest_coverage ... ok
+test storage_manifest_post_rename_crash_can_fire ... ok
+test draining_a_storage_receipt_does_not_rearm_the_fault ... ok
+
+running 1 test
+test storage_manifest_abort_child_helper ... test storage_wrong_manifest_object_can_fire ... ok
+test storage_wrong_segment_object_can_fire ... ok
+test segment_checksum_receipts_are_scoped_to_one_store ... ok
+test storage_manifest_receipt_checks_the_planned_new_segment ... ok
+test read_only_open_preserves_a_committed_purge_intent_and_all_store_bytes ... ok
+test storage_wrong_segment_identity_can_fire ... ok
+test storage_delete_omission_can_fire ... ok
+test store_open_cleans_only_eligible_orphans ... ok
+test storage_list_omission_can_fire ... ok
+
+test result: ok. 21 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests/storage_validation.rs (target/llvm-cov-target/debug/deps/storage_validation-6ab60b7f49da43e3)
+
+running 8 tests
+test segment_writer_rejects_every_cross_region_shape_before_writing ... ok
+test segment_writer_surfaces_each_vfs_commit_stage ... ok
+test vfs_open_append_preserves_existing_bytes_and_syncs_the_open_handle ... ok
+test std_and_counting_vfs_cover_the_complete_synchronous_seam ... ok
+test alive_and_column_decoders_reject_semantically_invalid_checked_bytes ... ok
+test segment_writer_names_sync_rename_and_directory_sync_failures ... ok
+test column_decoder_rejects_value_bearing_semantic_corruption ... ok
+test segment_header_and_vector_geometry_reject_specific_malformed_fields ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/store_graph_search.rs (target/llvm-cov-target/debug/deps/store_graph_search-a279e69653a1f775)
+
+running 25 tests
+test epoch_profile_selection_admits_matching_towers_and_refuses_mixed_towers ... ok
+test angular_ingest_refuses_a_non_unit_document_before_mutation ... ok
+test auto_profile_follows_epoch_normalization ... ok
+test automatic_store_search_uses_best_first_frontier_before_the_ef_cutoff ... ok
+test explicit_ef_equal_to_k_still_answers_when_rows_are_deleted ... ok
+test angular_graph_build_refuses_a_non_unit_persisted_row ... ok
+test graph_segment_accounting_moves_only_when_traversal_serves_the_plan ... ok
+test a_segment_that_earned_a_graph_still_answers_column_filters ... ok
+test astra_09_graph_widening_exact_scores_each_retained_row_once ... ok
+test graph_tier_never_returns_a_tombstoned_row ... ok
+test graph_tier_rejects_a_sealed_segment_without_a_graph ... ok
+test graph_diagnostics_make_membership_and_score_provenance_independent ... ok
+test genuine_sift_epoch_selects_sift_class ... ok
+test astra_09_mixed_graph_padding_keeps_preparation_and_physical_scores_distinct ... ok
+test graph_tier_reuses_scratch_and_entry_seeds_across_queries ... ok
+test graph_tier_returns_full_k_when_many_rows_are_tombstoned ... ok
+test graph_tier_scratch_is_exactly_accounted ... ok
+test astra_09_widening_prepares_each_geometry_once ... ok
+test store_search_reaches_the_graph_tier_end_to_end ... ok
+test the_zero_point_one_percent_cell_takes_the_exact_fallback_and_the_plan_says_so ... ok
+test a_widened_explicit_ef_under_a_filter_is_reported_in_the_plan ... ok
+test a_traversal_that_crosses_the_filtered_budget_falls_back_and_still_returns_the_true_top_k ... ok
+test a_filtered_graph_query_with_tombstones_uses_one_effective_mask ... ok
+test graph_tier_query_honours_cancellation ... ok
+test astra_01_approximate_stop_does_not_force_full_materialization ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 29.50s
+
+     Running tests/store_text_columns.rs (target/llvm-cov-target/debug/deps/store_text_columns-b1a9b64e3816d9d7)
+
+running 31 tests
+
+running 1 test
+test prechange_wal_fixture_replays_to_the_same_active_state ... ok
+test bitmap_wal_replays_text_and_typed_columns_before_seal ... ok
+test lexical_leg_panic_is_typed_and_the_store_remains_usable ... ok
+test hybrid_lexical_leg_reuses_one_pooled_thread_across_queries ... ok
+
+test result: test replacing_an_active_revision_adds_and_then_removes_optional_payloads ... okok. 1 passed; 0 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.02s
+
+
+test hybrid_structured_accepts_terms_with_prefix ... ok
+test exact_search_reports_the_norm_ball_ceiling_across_sealed_and_active_rows ... ok
+test hybrid_lexical_leg_reuses_one_pooled_thread_across_queries ... ok
+test row_for_document_version_locates_every_sealed_row_and_rejects_absent_revisions ... ok
+test optional_text_and_columns_activate_after_text_free_rows ... ok
+test store_level_hybrid_explicit_exact_tier_preserves_ordered_score_bits ... ok
+test store_level_hybrid_explicit_estimated_tier_is_rejected ... ok
+test store_level_hybrid_default_is_exact_and_populates_diagnostics ... ok
+test store_owned_hybrid_runs_both_legs_and_names_the_lexical_thread ... ok
+test astra_11_phrase_matches_persisted_positions_without_reanalysis ... ok
+test physical_purge_remaps_the_postings_region_with_survivors ... ok
+test store_level_hybrid_requests_the_window_not_the_corpus ... ok
+test stored_text_region_preserves_presence_and_utf8_after_seal ... ok
+test stored_text_returns_the_exact_active_and_sealed_document_versions ... ok
+test lexical_index_cache_follows_the_active_segment_and_the_snapshot ... ok
+test stored_text_verifies_the_region_checksum_on_every_call_of_the_same_reader ... ok
+test vector_leg_panic_is_typed_after_join_and_the_store_remains_usable ... ok
+test astra_11_phrase_rejection_fetches_replacement_topk ... ok
+test structured_expansions_report_pinned_prefix_fuzzy_and_phonetic_boosts ... ok
+test astra_07_missing_text_or_identity_is_typed_and_store_remains_reusable ... ok
+test structured_phrase_query_returns_owned_utf8_snippet_and_provenance ... ok
+test typed_column_ingested_through_public_api_filters_after_reopen ... ok
+test text_ingested_through_the_store_is_searchable_after_reopen ... ok
+test astra_07_result_materialization_uses_one_admission ... ok
+test stored_text_resolves_rows_across_segments_with_stale_revisions_and_absent_text ... ok
+test astra_11_phrase_scratch_budget_refusal_releases_query_memory ... ok
+test astra_07_result_text_and_revision_match_scored_snapshot ... ok
+
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+
+     Running tests/tie_break_parity.rs (target/llvm-cov-target/debug/deps/tie_break_parity-4ff3ea01f0caff6b)
+
+running 2 tests
+test exact_top_k_set_is_independent_of_ingestion_order_for_tied_scores ... ok
+test filtered_exact_top_k_set_is_independent_of_ingestion_order_for_tied_scores ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/tiering.rs (target/llvm-cov-target/debug/deps/tiering-27b49c19ac42fae4)
+
+running 11 tests
+test store_search_scans_a_segment_that_has_not_been_transitioned_yet ... ok
+test maintain_defers_promotion_of_segments_whose_regions_it_cannot_carry ... ok
+test maintain_builds_a_graph_for_a_sealed_segment_above_the_threshold ... ok
+test publish_transition_unlinks_the_replaced_segment ... ok
+test graph_promotion_copies_unknown_region_bytes_forward ... ok
+test store_search_uses_the_graph_automatically_after_maintain ... ok
+test graph_promotion_preserves_stored_metadata_and_postings ... ok
+test maintain_respects_its_budget_and_resumes_interrupted_work ... ok
+test maintain_still_promotes_plain_vector_only_segments ... ok
+test maintain_is_idempotent_and_a_second_call_does_no_work ... ok
+test queries_never_error_or_miss_acked_docs_during_maintain ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.80s
+
+     Running tests/tokenizer_conformance.rs (target/llvm-cov-target/debug/deps/tokenizer_conformance-8864437eee4d5fc3)
+
+running 13 tests
+test regenerate_goldens ... ignored, generator, not a gate; run deliberately when bumping the epoch
+test golden_streams_cannot_change_without_an_epoch_bump ... ok
+test cjk_fixture_matches_its_golden_stream ... ok
+test emoji_fixture_matches_its_golden_stream ... ok
+test diacritic_fixture_matches_its_golden_stream ... ok
+test english_prose_fixture_matches_its_golden_stream ... ok
+test code_switching_fixture_matches_its_golden_stream ... ok
+test apostrophe_and_hyphen_fixture_matches_its_golden_stream ... ok
+test code_identifier_fixture_matches_its_golden_stream ... ok
+test ticket_and_sku_fixture_matches_its_golden_stream ... ok
+test spoken_number_fixture_matches_its_golden_stream ... ok
+test email_and_url_fixture_matches_its_golden_stream ... ok
+test every_fixture_produces_its_committed_token_stream ... ok
+
+test result: ok. 12 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/vector_execution_contract.rs (target/llvm-cov-target/debug/deps/vector_execution_contract-34561f5e499527be)
+
+running 39 tests
+test astra_04_exact_scan_measurement ... ignored, paired process exact selection measurement
+test astra_05_exact_crossover_measurement ... ignored, release-only exact crossover and all-tie collector screen
+test astra_05_exact_pool_measurement ... ignored, release-only FiQA worker-capacity screen; requires ASTRA05_STORE
+test astra_06_mixed_tombstone_measurement ... ignored, release-only mixed-segment and tombstone rescore measurement
+test astra_06_explicit_exact_and_scan_semantics_remain_distinct ... ok
+test astra_04_exact_scan_preserves_cancel_and_nonfinite_precedence ... ok
+test astra_06_rescore_budget_and_boundary_ties_fail_loudly ... ok
+test astra_06_rescored_scan_can_miss_a_true_neighbor ... ok
+test astra_06_rescore_invalid_queries_and_cancellation_fail_closed ... ok
+test astra_06_filtered_rescore_applies_eligibility_before_frontier ... ok
+test astra_06_rescored_scan_reports_exact_scores_and_approximate_coverage ... ok
+test astra_04_exact_scan_boundary_ties_survive_identity_join ... ok
+test astra_06_rescore_corrupt_rows_fail_loudly ... ok
+test default_store_backend_observation_requires_a_real_public_score ... ok
+test i25_code_length_errors_are_exact_for_both_formats ... ok
+test cancel_after_exact_active_rows_has_no_partial_result_and_retry_matches_control ... ok
+test exact_tier_scores_are_bit_identical_to_the_previous_loop ... ok
+test i25_public_store_persists_exact_bit4_bytes_and_rejects_non_finite_atomically ... ok
+test astra_04_exact_scan_does_not_materialize_corpus_results ... ok
+test corrupt_bit4_padding_fires_only_in_public_store_scan_and_retry_matches_control ... ok
+test corrupt_bit4_factor_fires_only_in_public_store_scan_and_retry_matches_control ... ok
+test corrupt_int8_factor_fires_only_in_public_store_scan_and_retry_matches_control ... ok
+test vector_backend_ids_are_unique_and_name_every_concrete_table ... ok
+test int8_factor_validation_runs_once_per_segment ... ok
+test identity_public_store_requires_nonempty_scores_document_ties_and_physical_identity ... ok
+test quant_int8_public_store_ingest_document_leg_persists_and_reopens ... ok
+test int8_scan_results_are_bit_identical_with_factor_cache ... ok
+test vector_allocation_denial_hits_candidate_reserve ... ok
+test vector_forced_backend_requires_selected_scoring_receipt ... ok
+test astra_06_rescored_scan_matches_independent_selected_row_scores ... ok
+test vector_missing_rescore_rows_fires_in_store_search ... ok
+test astra_04_exact_scan_matches_scalar_bits_and_worst_score ... ok
+test astra_05_parallel_exact_matches_serial_bits_and_identity_ties ... ok
+test astra_05_exact_pool_capacity_is_shared_across_callers ... ok
+test astra_05_parallel_narrowing_error_uses_global_f64_order ... ok
+test astra_05_exact_pool_reservation_failure_leaves_store_reusable ... ok
+test astra_05_large_exact_scan_executes_disjoint_worker_partitions ... ok
+test astra_05_exact_worker_cancel_close_and_dual_failure_join_cleanly ... ok
+test astra_05_exact_hybrid_widening_admits_required_workers has been running for over 60 seconds
+test astra_05_exact_hybrid_widening_admits_required_workers ... ok
+
+test result: ok. 35 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 71.81s
+
+     Running tests/vfs_seam_closure.rs (target/llvm-cov-target/debug/deps/vfs_seam_closure-c177cce69e550455)
+
+running 1 test
+test ci_gate_denies_direct_std_fs_in_closed_vfs_modules ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/wal.rs (target/llvm-cov-target/debug/deps/wal-4358c55224194250)
+
+running 15 tests
+test wal_header_rejects_nonzero_shared_file_length ... ok
+test wal_header_is_40_bytes_with_zero_file_length_and_owned_first_sequence ... ok
+test wal_header_reads_first_sequence_from_family_extension ... ok
+test wal_replay_starts_records_at_declared_header_boundary ... ok
+test wal_file_header_uses_shared_layout_and_declares_first_sequence ... ok
+test wal_replay_empty_and_valid_records_end_cleanly ... ok
+test wal_replay_middle_corruption_is_not_treated_as_a_torn_tail ... ok
+test wal_replay_reports_sequence_gap_and_regression ... ok
+test wal_replay_rejects_each_invalid_file_header_before_records ... ok
+test wal_record_errors_display_every_value_in_its_role ... ok
+test wal_record_round_trip_checks_header_and_payload_bytes ... ok
+test wal_header_errors_display_typed_values ... ok
+test wal_goldens_are_byte_exact_and_replay_semantically ... ok
+test wal_replay_uses_header_first_sequence_and_reports_first_mismatch ... ok
+test wal_replay_tail_corruption_returns_valid_prefix_and_specific_reason ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/wal_mutation_golden.rs (target/llvm-cov-target/debug/deps/wal_mutation_golden-8750a693c0b08162)
+
+running 12 tests
+test mutation_operation_ids_are_append_only ... ok
+test mutation_payload_decoder_rejects_corruption_typed ... ok
+test payload_errors_name_the_rejected_invariant ... ok
+test mutation_payload_decoder_rejects_each_noncanonical_field_typed ... ok
+test every_metadata_value_has_a_canonical_round_trip ... ok
+test wal_delete_payload_v1_is_byte_exact ... ok
+test wal_metadata_edit_payload_v1_is_byte_exact ... ok
+test wal_upsert_payload_v1_is_byte_exact ... ok
+test wal_timestamped_upsert_payload_v1_is_byte_exact ... ok
+test prechange_store_wal_fixture_is_byte_exact ... ok
+test wal_upsert_payload_v2_bitmap_is_byte_exact ... ok
+test wal_stored_metadata_upsert_payloads_v1_are_byte_exact ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/wal_recovery.rs (target/llvm-cov-target/debug/deps/wal_recovery-b187e85658c3d27e)
+
+running 49 tests
+test child_process ... ignored, spawned only by kill9_recovery_requires_zero_manual_cleanup
+test crash_support::tests::enumerates_every_prefix_including_before_first_and_after_last ... ok
+test crash_support::tests::full_length_corruption_classes_are_distinct_and_deterministic ... ok
+test crash_support::tests::a_sync_barrier_prevents_cross_barrier_reordering ... ok
+test crash_support::tests::correct_data_sync_pointer_rename_directory_sync_protocol_passes ... ok
+test crash_support::tests::reads_pass_through_without_entering_the_mutation_stream ... ok
+test crash_support::tests::real_filesystem_recorder_delegates_reads_and_records_mutations ... ok
+test commit_reuses_encoded_payload_for_visibility ... ok
+test commit_many_uses_one_shared_encoded_allocation ... ok
+test commit_many_returns_gap_free_sequences_visible_in_input_order ... ok
+test crash_support::tests::records_every_mutation_and_payload_in_order ... ok
+test commit_many_splits_oversized_batch_into_exact_groups ... ok
+test commit_many_staging_failure_consumes_nothing ... ok
+test commit_many_mixed_sizes_still_uses_ceil_byte_groups ... ok
+test commit_many_uses_one_append_and_one_sync_for_one_group ... ok
+test crash_support::tests::planted_pointer_before_data_bug_is_caught ... ok
+test commit_many_durable_stages_all_then_waits_for_the_last_flush ... ok
+test crash_support::tests::sub_sector_writes_tear_from_both_edges ... ok
+test crash_support::tests::unsynced_rename_can_expose_the_sources_old_content ... ok
+test crash_support::tests::unsynchronized_writes_may_persist_as_either_singleton ... ok
+test evidence_ingest_throughput_per_tier ... ignored, local evidence run only
+test durable_retains_every_group_whose_flush_returned ... ok
+test exact_flush_counts_per_tier_and_workload ... ok
+test kill9_recovery_requires_zero_manual_cleanup ... ignored, real-process SIGKILL loop
+test fault_support::tests::fault_vfs_exercises_live_media_and_read_only_image_seams ... ok
+test fault_support::tests::fault_append_and_blocking_decorator_cover_handle_and_path_syncs ... ok
+test durable_follower_waits_for_its_ordered_or_full_sync_to_return ... ok
+test flush_waits_for_records_staged_behind_an_in_flight_sync ... ok
+test none_loses_tail_under_power_cut_and_nothing_under_app_crash ... ok
+test one_record_commit_many_matches_commit_exactly ... ok
+test ordered_never_recovers_out_of_order_and_may_lose_the_tail ... ok
+test n_appends_produce_ceil_n_over_group_flushes ... ok
+test real_durable_log_refuses_a_snapshot_ahead_of_replay ... ok
+test visible_records_are_sequence_and_count_bounded ... ok
+test retirement_refuses_a_visible_record_until_its_flush_returns ... ok
+test statistics_are_fixed_size_with_exact_recent_groups ... ok
+test crash_support::tests::torn_append_keeps_prior_bytes_and_appends_only_the_boundary_prefix ... ok
+test crash_support::tests::repeated_enumeration_is_byte_for_byte_deterministic ... ok
+test wal_bytes_grow_monotonically_without_retirement ... ok
+test retirement_keeps_writer_retained_bytes_bounded ... ok
+test crash_support::tests::selects_edge_midpoint_and_sector_tear_points_without_a_uniform_grid ... ok
+test wal_preallocation_crash_state_class_delta_is_exact ... ok
+test commit_many_durable_waits_for_the_last_group_not_the_first ... ok
+test store_lock_rejects_a_second_writer_and_releases_on_drop ... ok
+test recovery_invariant_all_tiers_x_ingest_seal_publish ... ok
+test crash_support::tests::enumeration_cap_is_loud_and_never_exceeded ... ok
+test an_adopted_manifest_from_an_interrupted_commit_is_made_durable_at_open ... ok
+test wal_committed_supersede_leaves_no_stale_sealed_revision_after_manifest_commit_crash ... ok
+test wal_committed_delete_of_sealed_document_stays_gone_after_manifest_commit_crash ... ok
+
+test result: ok. 46 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests/windows_durability.rs (target/llvm-cov-target/debug/deps/windows_durability-28dbe75aa720159d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/windows_reclamation.rs (target/llvm-cov-target/debug/deps/windows_reclamation-64ccc9cea65c61b7)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/windows_simd_parity.rs (target/llvm-cov-target/debug/deps/windows_simd_parity-b6e92131aba7c786)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/windows_storage_protocol.rs (target/llvm-cov-target/debug/deps/windows_storage_protocol-535751f33c5db8d3)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/write_path_ablation.rs (target/llvm-cov-target/debug/deps/write_path_ablation-99bd7732ff1df05b)
+
+running 7 tests
+test commit_manifest_ablation_all_steps_matches_production ... ok
+test commit_manifest_uses_exact_sync_sequence_per_tier ... ok
+test bl_136_corrupt_temporary_segment_is_not_published ... ok
+test commit_manifest_each_step_ablation_has_specific_verdict ... ok
+test write_segment_ablation_all_steps_matches_production ... ok
+test write_segment_uses_exact_sync_sequence_per_tier ... ok
+test write_segment_each_step_ablation_has_specific_verdict ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+
+
+    Finished report saved to /tmp/ze-32-qualification/core-coverage.json

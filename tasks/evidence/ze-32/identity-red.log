@@ -1,0 +1,109 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed)
+warning: unused import: `super::*`
+ --> crates/zeppelin-embed/src/property_graph/tests.rs:3:5
+  |
+3 | use super::*;
+  |     ^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+error[E0433]: failed to resolve: use of undeclared type `NodeId`
+ --> crates/zeppelin-embed/src/property_graph/tests.rs:7:16
+  |
+7 |     assert_eq!(NodeId::new(0), Err(DomainError::ZeroIdentity));
+  |                ^^^^^^ use of undeclared type `NodeId`
+
+error[E0433]: failed to resolve: use of undeclared type `DomainError`
+ --> crates/zeppelin-embed/src/property_graph/tests.rs:7:36
+  |
+7 |     assert_eq!(NodeId::new(0), Err(DomainError::ZeroIdentity));
+  |                                    ^^^^^^^^^^^ use of undeclared type `DomainError`
+
+error[E0433]: failed to resolve: use of undeclared type `RelId`
+ --> crates/zeppelin-embed/src/property_graph/tests.rs:8:16
+  |
+8 |     assert_eq!(RelId::new(0), Err(DomainError::ZeroIdentity));
+  |                ^^^^^ use of undeclared type `RelId`
+
+error[E0433]: failed to resolve: use of undeclared type `DomainError`
+ --> crates/zeppelin-embed/src/property_graph/tests.rs:8:35
+  |
+8 |     assert_eq!(RelId::new(0), Err(DomainError::ZeroIdentity));
+  |                                   ^^^^^^^^^^^ use of undeclared type `DomainError`
+
+error[E0433]: failed to resolve: use of undeclared type `StoreInstanceId`
+ --> crates/zeppelin-embed/src/property_graph/tests.rs:9:16
+  |
+9 |     assert_eq!(StoreInstanceId::new(0), Err(DomainError::ZeroIdentity));
+  |                ^^^^^^^^^^^^^^^ use of undeclared type `StoreInstanceId`
+
+error[E0433]: failed to resolve: use of undeclared type `DomainError`
+ --> crates/zeppelin-embed/src/property_graph/tests.rs:9:45
+  |
+9 |     assert_eq!(StoreInstanceId::new(0), Err(DomainError::ZeroIdentity));
+  |                                             ^^^^^^^^^^^ use of undeclared type `DomainError`
+
+error[E0433]: failed to resolve: use of undeclared type `NodeId`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:11:20
+   |
+11 |         assert_eq!(NodeId::new(bits).unwrap().get(), bits);
+   |                    ^^^^^^ use of undeclared type `NodeId`
+
+error[E0433]: failed to resolve: use of undeclared type `RelId`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:12:20
+   |
+12 |         assert_eq!(RelId::new(bits).unwrap().get(), bits);
+   |                    ^^^^^ use of undeclared type `RelId`
+
+error[E0433]: failed to resolve: use of undeclared type `StoreInstanceId`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:13:20
+   |
+13 |         assert_eq!(StoreInstanceId::new(bits).unwrap().get(), bits);
+   |                    ^^^^^^^^^^^^^^^ use of undeclared type `StoreInstanceId`
+
+error[E0433]: failed to resolve: use of undeclared type `NodeId`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:15:16
+   |
+15 |     assert_ne!(NodeId::new(1), NodeId::new((1_u128 << 64) + 1));
+   |                ^^^^^^ use of undeclared type `NodeId`
+
+error[E0433]: failed to resolve: use of undeclared type `NodeId`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:15:32
+   |
+15 |     assert_ne!(NodeId::new(1), NodeId::new((1_u128 << 64) + 1));
+   |                                ^^^^^^ use of undeclared type `NodeId`
+
+error[E0433]: failed to resolve: use of undeclared type `GraphRevision`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:16:16
+   |
+16 |     assert_eq!(GraphRevision::new(0), Err(DomainError::ZeroRevision));
+   |                ^^^^^^^^^^^^^ use of undeclared type `GraphRevision`
+
+error[E0433]: failed to resolve: use of undeclared type `DomainError`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:16:43
+   |
+16 |     assert_eq!(GraphRevision::new(0), Err(DomainError::ZeroRevision));
+   |                                           ^^^^^^^^^^^ use of undeclared type `DomainError`
+
+error[E0433]: failed to resolve: use of undeclared type `GraphRevision`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:17:16
+   |
+17 |     assert_eq!(GraphRevision::new(41).unwrap().checked_next().unwrap().get(), 42);
+   |                ^^^^^^^^^^^^^ use of undeclared type `GraphRevision`
+
+error[E0433]: failed to resolve: use of undeclared type `GraphRevision`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:18:16
+   |
+18 |     assert_eq!(GraphRevision::new(u64::MAX).unwrap().checked_next(), Err(DomainError::RevisionOverflow));
+   |                ^^^^^^^^^^^^^ use of undeclared type `GraphRevision`
+
+error[E0433]: failed to resolve: use of undeclared type `DomainError`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:18:74
+   |
+18 |     assert_eq!(GraphRevision::new(u64::MAX).unwrap().checked_next(), Err(DomainError::RevisionOverflow));
+   |                                                                          ^^^^^^^^^^^ use of undeclared type `DomainError`
+
+For more information about this error, try `rustc --explain E0433`.
+warning: `zeppelin-embed` (lib test) generated 1 warning
+error: could not compile `zeppelin-embed` (lib test) due to 16 previous errors; 1 warning emitted

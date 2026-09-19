@@ -1,0 +1,157 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed)
+error[E0425]: cannot find value `MAX_GRAPH_INPUT_BYTES` in this scope
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:18:43
+   |
+18 |     assert_eq!(GraphName::new(&"a".repeat(MAX_GRAPH_INPUT_BYTES + 1)), Err(DomainError::InputTooLarge));
+   |                                           ^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0433]: failed to resolve: use of undeclared type `ApplicationKey`
+ --> crates/zeppelin-embed/src/property_graph/tests.rs:7:16
+  |
+7 |     let node = ApplicationKey::new(EntityKind::Node, "source", "é").unwrap();
+  |                ^^^^^^^^^^^^^^ use of undeclared type `ApplicationKey`
+
+error[E0433]: failed to resolve: use of undeclared type `EntityKind`
+ --> crates/zeppelin-embed/src/property_graph/tests.rs:7:36
+  |
+7 |     let node = ApplicationKey::new(EntityKind::Node, "source", "é").unwrap();
+  |                                    ^^^^^^^^^^ use of undeclared type `EntityKind`
+
+error[E0433]: failed to resolve: use of undeclared type `ApplicationKey`
+ --> crates/zeppelin-embed/src/property_graph/tests.rs:8:15
+  |
+8 |     let rel = ApplicationKey::new(EntityKind::Relationship, "source", "é").unwrap();
+  |               ^^^^^^^^^^^^^^ use of undeclared type `ApplicationKey`
+
+error[E0433]: failed to resolve: use of undeclared type `EntityKind`
+ --> crates/zeppelin-embed/src/property_graph/tests.rs:8:35
+  |
+8 |     let rel = ApplicationKey::new(EntityKind::Relationship, "source", "é").unwrap();
+  |                                   ^^^^^^^^^^ use of undeclared type `EntityKind`
+
+error[E0433]: failed to resolve: use of undeclared type `ApplicationKey`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:10:22
+   |
+10 |     assert_ne!(node, ApplicationKey::new(EntityKind::Node, "Source", "é").unwrap());
+   |                      ^^^^^^^^^^^^^^ use of undeclared type `ApplicationKey`
+
+error[E0433]: failed to resolve: use of undeclared type `EntityKind`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:10:42
+   |
+10 |     assert_ne!(node, ApplicationKey::new(EntityKind::Node, "Source", "é").unwrap());
+   |                                          ^^^^^^^^^^ use of undeclared type `EntityKind`
+
+error[E0433]: failed to resolve: use of undeclared type `ApplicationKey`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:11:22
+   |
+11 |     assert_ne!(node, ApplicationKey::new(EntityKind::Node, "source", "e\u{301}").unwrap());
+   |                      ^^^^^^^^^^^^^^ use of undeclared type `ApplicationKey`
+
+error[E0433]: failed to resolve: use of undeclared type `EntityKind`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:11:42
+   |
+11 |     assert_ne!(node, ApplicationKey::new(EntityKind::Node, "source", "e\u{301}").unwrap());
+   |                                          ^^^^^^^^^^ use of undeclared type `EntityKind`
+
+error[E0433]: failed to resolve: use of undeclared type `EntityKind`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:14:29
+   |
+14 |     assert_eq!(node.kind(), EntityKind::Node);
+   |                             ^^^^^^^^^^ use of undeclared type `EntityKind`
+
+error[E0433]: failed to resolve: use of undeclared type `GraphName`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:15:16
+   |
+15 |     assert_eq!(GraphName::from_utf8(&[0xff]), Err(DomainError::InvalidUtf8));
+   |                ^^^^^^^^^ use of undeclared type `GraphName`
+
+error[E0599]: no variant or associated item named `InvalidUtf8` found for enum `property_graph::DomainError` in the current scope
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:15:64
+   |
+15 |     assert_eq!(GraphName::from_utf8(&[0xff]), Err(DomainError::InvalidUtf8));
+   |                                                                ^^^^^^^^^^^ variant or associated item not found in `property_graph::DomainError`
+   |
+  ::: crates/zeppelin-embed/src/property_graph/mod.rs:9:1
+   |
+ 9 | pub enum DomainError {
+   | -------------------- variant or associated item `InvalidUtf8` not found for this enum
+
+error[E0433]: failed to resolve: use of undeclared type `GraphName`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:16:16
+   |
+16 |     assert_eq!(GraphName::new("\0").unwrap().as_str(), "\0");
+   |                ^^^^^^^^^ use of undeclared type `GraphName`
+
+error[E0433]: failed to resolve: use of undeclared type `GraphName`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:17:16
+   |
+17 |     assert_eq!(GraphName::new("").unwrap().as_str(), "");
+   |                ^^^^^^^^^ use of undeclared type `GraphName`
+
+error[E0433]: failed to resolve: use of undeclared type `GraphName`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:18:16
+   |
+18 |     assert_eq!(GraphName::new(&"a".repeat(MAX_GRAPH_INPUT_BYTES + 1)), Err(DomainError::InputTooLarge));
+   |                ^^^^^^^^^ use of undeclared type `GraphName`
+
+error[E0599]: no variant or associated item named `InputTooLarge` found for enum `property_graph::DomainError` in the current scope
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:18:89
+   |
+18 |     assert_eq!(GraphName::new(&"a".repeat(MAX_GRAPH_INPUT_BYTES + 1)), Err(DomainError::InputTooLarge));
+   |                                                                                         ^^^^^^^^^^^^^ variant or associated item not found in `property_graph::DomainError`
+   |
+  ::: crates/zeppelin-embed/src/property_graph/mod.rs:9:1
+   |
+ 9 | pub enum DomainError {
+   | -------------------- variant or associated item `InputTooLarge` not found for this enum
+
+error[E0433]: failed to resolve: use of undeclared type `EntityId`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:19:14
+   |
+19 |     let id = EntityId::Node(NodeId::new((1_u128 << 100) + 7).unwrap());
+   |              ^^^^^^^^ use of undeclared type `EntityId`
+
+error[E0433]: failed to resolve: use of undeclared type `GraphGeneration`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:21:22
+   |
+21 |     let generation = GraphGeneration::new(u64::MAX);
+   |                      ^^^^^^^^^^^^^^^ use of undeclared type `GraphGeneration`
+
+error[E0433]: failed to resolve: use of undeclared type `EntityMetadata`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:22:20
+   |
+22 |     let metadata = EntityMetadata::new(id, Some(node), revision, generation).unwrap();
+   |                    ^^^^^^^^^^^^^^ use of undeclared type `EntityMetadata`
+
+error[E0433]: failed to resolve: use of undeclared type `EntityMetadata`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:27:16
+   |
+27 |     assert_eq!(EntityMetadata::new(id, Some(rel), revision, generation), Err(DomainError::EntityKindMismatch));
+   |                ^^^^^^^^^^^^^^ use of undeclared type `EntityMetadata`
+
+error[E0599]: no variant or associated item named `EntityKindMismatch` found for enum `property_graph::DomainError` in the current scope
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:27:91
+   |
+27 |     assert_eq!(EntityMetadata::new(id, Some(rel), revision, generation), Err(DomainError::EntityKindMismatch));
+   |                                                                                           ^^^^^^^^^^^^^^^^^^ variant or associated item not found in `property_graph::DomainError`
+   |
+  ::: crates/zeppelin-embed/src/property_graph/mod.rs:9:1
+   |
+ 9 | pub enum DomainError {
+   | -------------------- variant or associated item `EntityKindMismatch` not found for this enum
+
+error[E0433]: failed to resolve: use of undeclared type `EntityMetadata`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:28:13
+   |
+28 |     assert!(EntityMetadata::new(id, None, revision, GraphGeneration::new(0)).is_ok());
+   |             ^^^^^^^^^^^^^^ use of undeclared type `EntityMetadata`
+
+error[E0433]: failed to resolve: use of undeclared type `GraphGeneration`
+  --> crates/zeppelin-embed/src/property_graph/tests.rs:28:53
+   |
+28 |     assert!(EntityMetadata::new(id, None, revision, GraphGeneration::new(0)).is_ok());
+   |                                                     ^^^^^^^^^^^^^^^ use of undeclared type `GraphGeneration`
+
+Some errors have detailed explanations: E0425, E0433, E0599.
+For more information about an error, try `rustc --explain E0425`.
+error: could not compile `zeppelin-embed` (lib test) due to 23 previous errors

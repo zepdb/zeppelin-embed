@@ -1,0 +1,17 @@
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-bench)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/tests)
+error[E0433]: failed to resolve: could not find `property_graph` in `adversarial`
+  --> tests/adversarial_tests.rs:14:18
+   |
+14 |     adversarial::property_graph::probe(0, &mut coverage).expect("independent graph domain oracle");
+   |                  ^^^^^^^^^^^^^^ could not find `property_graph` in `adversarial`
+
+error[E0433]: failed to resolve: could not find `property_graph` in `adversarial`
+  --> tests/adversarial_tests.rs:15:29
+   |
+15 |     for key in adversarial::property_graph::REQUIRED_COVERAGE {
+   |                             ^^^^^^^^^^^^^^ could not find `property_graph` in `adversarial`
+
+For more information about this error, try `rustc --explain E0433`.
+error: could not compile `zeppelin-embed-workspace-tests` (test "adversarial_tests") due to 2 previous errors

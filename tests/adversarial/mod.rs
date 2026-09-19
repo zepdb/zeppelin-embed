@@ -21,6 +21,7 @@ pub mod model;
 pub mod oracle;
 pub mod profiles;
 pub mod program;
+pub mod property_graph;
 pub mod runner;
 pub mod storage_durability;
 pub mod tiering_maintenance;
