@@ -1,0 +1,5 @@
+   Compiling zeppelin-embed-text v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-115/crates/zeppelin-embed-text)
+    Checking zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-115/crates/zeppelin-embed)
+    Checking mlx-sys v0.2.0
+    Checking mlx-rs v0.25.3
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.32s

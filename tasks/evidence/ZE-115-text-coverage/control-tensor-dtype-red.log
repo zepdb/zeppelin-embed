@@ -1,0 +1,21 @@
+   Compiling zeppelin-embed-text v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-115/crates/zeppelin-embed-text)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.76s
+     Running tests/runtime_contracts.rs (target/ze115-coverage/debug/deps/runtime_contracts-2427696f9582929c)
+
+running 1 test
+
+thread 'mapped_model_tensor_metadata_is_rejected_with_qualified_error_context' (32652406) panicked at crates/zeppelin-embed-text/tests/runtime_contracts.rs:188:9:
+assertion failed: matches!(MlxRuntime::load_for_compute(bundle, TowerRole::Document,
+    ComputeUnits::Cpu), Err(RuntimeError::UnsupportedDtype(name)) if name ==
+    "document/embeddings.word_embeddings.weight")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test mapped_model_tensor_metadata_is_rejected_with_qualified_error_context ... FAILED
+
+failures:
+
+failures:
+    mapped_model_tensor_metadata_is_rejected_with_qualified_error_context
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p zeppelin-embed-text --test runtime_contracts`

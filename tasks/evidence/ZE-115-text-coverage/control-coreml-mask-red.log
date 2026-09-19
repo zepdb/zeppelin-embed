@@ -1,0 +1,21 @@
+   Compiling zeppelin-embed-text v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-115/crates/zeppelin-embed-text)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.90s
+     Running tests/coreml_contracts.rs (target/ze115-coverage/debug/deps/coreml_contracts-6d447dabeb22b6f7)
+
+running 1 test
+
+thread 'coreml_runtime_evaluates_exact_rows_and_masks_under_every_requested_policy' (32649791) panicked at crates/zeppelin-embed-text/tests/coreml_contracts.rs:60:9:
+assertion `left == right` failed
+  left: [8.0, 12.0, 4.0, 9.0, -2.0, 6.0]
+ right: [8.0, 11.0, 4.0, 9.0, -2.0, 6.0]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test coreml_runtime_evaluates_exact_rows_and_masks_under_every_requested_policy ... FAILED
+
+failures:
+
+failures:
+    coreml_runtime_evaluates_exact_rows_and_masks_under_every_requested_policy
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.06s
+
+error: test failed, to rerun pass `-p zeppelin-embed-text --test coreml_contracts`

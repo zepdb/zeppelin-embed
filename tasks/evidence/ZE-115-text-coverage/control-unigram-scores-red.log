@@ -1,0 +1,21 @@
+   Compiling zeppelin-embed-text v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-115/crates/zeppelin-embed-text)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.74s
+     Running tests/tokenizer_contracts.rs (target/ze115-coverage/debug/deps/tokenizer_contracts-f35100bf048e85f1)
+
+running 1 test
+
+thread 'bundle_unigram_uses_global_scores_normalization_and_rectangular_masks' (32648957) panicked at crates/zeppelin-embed-text/tests/tokenizer_contracts.rs:75:5:
+assertion `left == right` failed
+  left: (4, 4)
+ right: (4, 5)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test bundle_unigram_uses_global_scores_normalization_and_rectangular_masks ... FAILED
+
+failures:
+
+failures:
+    bundle_unigram_uses_global_scores_normalization_and_rectangular_masks
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p zeppelin-embed-text --test tokenizer_contracts`

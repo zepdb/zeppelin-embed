@@ -1,0 +1,53 @@
+   Compiling zeppelin-embed-text v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-115/crates/zeppelin-embed-text)
+warning: unused variable: `tokens`
+    --> crates/zeppelin-embed-text/src/ingest.rs:1417:9
+     |
+1417 |     let tokens = std::env::var("ZE_QUERY_COREML_TOKENS")
+     |         ^^^^^^ help: if this is intentional, prefix it with an underscore: `_tokens`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `model`
+    --> crates/zeppelin-embed-text/src/ingest.rs:1421:9
+     |
+1421 |     let model = match std::env::var("ZE_QUERY_COREML") {
+     |         ^^^^^ help: if this is intentional, prefix it with an underscore: `_model`
+
+warning: `zeppelin-embed-text` (lib) generated 2 warnings (run `cargo fix --lib -p zeppelin-embed-text` to apply 2 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.79s
+     Running tests/coreml_contracts.rs (target/ze115-coverage/debug/deps/coreml_contracts-6d447dabeb22b6f7)
+
+running 1 test
+
+thread 'discovered_coreml_query_model_is_reported_and_used_by_the_store' (32658810) panicked at crates/zeppelin-embed-text/tests/coreml_contracts.rs:144:5:
+CoreML store child failed:
+
+running 1 test
+test coreml_store_child ... FAILED
+
+failures:
+
+failures:
+    coreml_store_child
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.07s
+
+
+
+thread 'coreml_store_child' (32658819) panicked at crates/zeppelin-embed-text/tests/coreml_contracts.rs:167:5:
+assertion `left == right` failed
+  left: "mlx-c"
+ right: "coreml-cpu-ane"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test discovered_coreml_query_model_is_reported_and_used_by_the_store ... FAILED
+
+failures:
+
+failures:
+    discovered_coreml_query_model_is_reported_and_used_by_the_store
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.16s
+
+error: test failed, to rerun pass `-p zeppelin-embed-text --test coreml_contracts`

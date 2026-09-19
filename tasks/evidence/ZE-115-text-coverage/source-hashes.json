@@ -1,0 +1,107 @@
+[
+  {
+    "path": "crates/zeppelin-embed-text/src/arch/bert.rs",
+    "sha256": "5a87de94144b35dc46d278e93401d9a9f3527c018667929e7baf259e8ed9464b",
+    "equals_base_366cdf4": true
+  },
+  {
+    "path": "crates/zeppelin-embed-text/src/arch/gte.rs",
+    "sha256": "23c5b635919fb4ba39b745fbd19641d1291a326e6a91a87a1e871f99435224d6",
+    "equals_base_366cdf4": true
+  },
+  {
+    "path": "crates/zeppelin-embed-text/src/arch/mod.rs",
+    "sha256": "6cb31f02526025397fe526f08e7c5be7d306e4a4853b54ff68bfffe641638e9e",
+    "equals_base_366cdf4": true
+  },
+  {
+    "path": "crates/zeppelin-embed-text/src/bundle.rs",
+    "sha256": "063fad116365f5987dadef07f7c0fd7ff30227128daed805f9338597b1df73bd",
+    "equals_base_366cdf4": true
+  },
+  {
+    "path": "crates/zeppelin-embed-text/src/epoch.rs",
+    "sha256": "7d95dfa18b46b10448d9f292b5ee03f43f2c68a284b38e6d35dc4544f1332f33",
+    "equals_base_366cdf4": true
+  },
+  {
+    "path": "crates/zeppelin-embed-text/src/error.rs",
+    "sha256": "807ca247f0f3052883cf812e49acae46ff49a55fb2bdf2f53ccf95fb11f155f7",
+    "equals_base_366cdf4": true
+  },
+  {
+    "path": "crates/zeppelin-embed-text/src/ingest.rs",
+    "sha256": "9d11b6dfe95372edde779a12d79269bb340378d5105b2a3802c441d627ce186a",
+    "equals_base_366cdf4": true
+  },
+  {
+    "path": "crates/zeppelin-embed-text/src/lib.rs",
+    "sha256": "d11162458f394bdca3df69aef8b2ce063f55a1d9d1227a824dbfee6310f08b55",
+    "equals_base_366cdf4": true
+  },
+  {
+    "path": "crates/zeppelin-embed-text/src/query.rs",
+    "sha256": "11f8af1a9f62b7b78c969e61782a3158d7ddd174798c4e848f2019639d5adf52",
+    "equals_base_366cdf4": true
+  },
+  {
+    "path": "crates/zeppelin-embed-text/src/query_control_tests.rs",
+    "sha256": "c8f4f868bdd9fdc68d956bf73b6439c86af79ec73ef94bf418dd07ad9cb38ace",
+    "equals_base_366cdf4": true
+  },
+  {
+    "path": "crates/zeppelin-embed-text/src/query_overlap_tests.rs",
+    "sha256": "a42416d184d56d45762547cf8766637bc7c454c817c752b535fc93f07eec0a88",
+    "equals_base_366cdf4": true
+  },
+  {
+    "path": "crates/zeppelin-embed-text/src/runtime/coreml.rs",
+    "sha256": "b869c41b41248f782763a0a5e0f9c8680ffae129bbed752d7374549e6a52d089",
+    "equals_base_366cdf4": true
+  },
+  {
+    "path": "crates/zeppelin-embed-text/src/runtime/mlx.rs",
+    "sha256": "21ff4b67f31496e87439d35b4e71e690bd0a3b5cd0416eb291532ed0d0fea9d1",
+    "equals_base_366cdf4": true
+  },
+  {
+    "path": "crates/zeppelin-embed-text/src/runtime/mod.rs",
+    "sha256": "99ccecad3189ceafaf7de75e84839ba0568d3d0aeabb64356cfad8180b777dd4",
+    "equals_base_366cdf4": true
+  },
+  {
+    "path": "crates/zeppelin-embed-text/src/tokenizer.rs",
+    "sha256": "aa018e29c872ae946e1ed7293073396985dce013577e509e43971af623262839",
+    "equals_base_366cdf4": true
+  },
+  {
+    "path": "crates/zeppelin-embed-text/src/tower.rs",
+    "sha256": "6016eea809f359906f9d08b5810bf4ee4546aa0b18c0f6a718a17302d2a376c2",
+    "equals_base_366cdf4": true
+  },
+  {
+    "path": "Cargo.toml",
+    "sha256": "56c522c4a91e62fc66b68750b5e97e713a9883cf6f8722e671fff6f22b709499",
+    "equals_base_366cdf4": true
+  },
+  {
+    "path": "Cargo.lock",
+    "sha256": "4ac953499d4970a739036edf3dc3b1e7fdfd9131a9f13b59a5d05b4384aa2cc9",
+    "equals_base_366cdf4": true
+  },
+  {
+    "path": "scripts/coverage.sh",
+    "sha256": "3a85431401e4175550ba7b5d140ec0715be2d9a67298f37546b30e8bd164c154",
+    "equals_base_366cdf4": true
+  },
+  {
+    "path": "crates/zeppelin-embed-text/Cargo.toml",
+    "sha256": "70ffbe78f28f2db7dedb957c1e7c327c681bddfcb159d98c22695cd325717c75",
+    "equals_base_366cdf4": true
+  },
+  {
+    "path": "crates/zeppelin-embed-text/objc/ze_coreml.m",
+    "sha256": "a56db21494540debfe91942195d0c6e87dc89a04866e787cf54cf6405fe946f0",
+    "equals_base_366cdf4": true
+  }
+]

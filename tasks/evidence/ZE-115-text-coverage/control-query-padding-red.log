@@ -1,0 +1,30 @@
+   Compiling zeppelin-embed-text v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-115/crates/zeppelin-embed-text)
+warning: unused variable: `width`
+   --> crates/zeppelin-embed-text/src/bundle.rs:381:9
+    |
+381 |         width: usize,
+    |         ^^^^^ help: if this is intentional, prefix it with an underscore: `_width`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `zeppelin-embed-text` (lib) generated 1 warning (run `cargo fix --lib -p zeppelin-embed-text` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.71s
+     Running tests/tokenizer_contracts.rs (target/ze115-coverage/debug/deps/tokenizer_contracts-f35100bf048e85f1)
+
+running 1 test
+
+thread 'bundle_query_padding_preserves_special_tokens_and_refuses_truncation' (32656703) panicked at crates/zeppelin-embed-text/tests/tokenizer_contracts.rs:120:5:
+assertion `left == right` failed
+  left: [2, 5, 6, 4, 3]
+ right: [2, 5, 6, 4, 3, 0, 0, 0]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test bundle_query_padding_preserves_special_tokens_and_refuses_truncation ... FAILED
+
+failures:
+
+failures:
+    bundle_query_padding_preserves_special_tokens_and_refuses_truncation
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p zeppelin-embed-text --test tokenizer_contracts`

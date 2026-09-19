@@ -1,0 +1,14 @@
+arch/bert.rs: 216/232 (93.10344828%)
+arch/gte.rs: 108/118 (91.52542373%)
+bundle.rs: 571/625 (91.36000000%)
+epoch.rs: 32/32 (100.00000000%)
+error.rs: 51/61 (83.60655738%)
+ingest.rs: 1343/1495 (89.83277592%)
+query.rs: 39/39 (100.00000000%)
+runtime/coreml.rs: 143/152 (94.07894737%)
+runtime/mlx.rs: 258/284 (90.84507042%)
+runtime/mod.rs: 51/51 (100.00000000%)
+tokenizer.rs: 378/405 (93.33333333%)
+tower.rs: 55/56 (98.21428571%)
+EXACT TEXT INVENTORY: 3245/3550 = 91.40845070%
+PASS: line coverage >=90%, unchanged3550-line inventory

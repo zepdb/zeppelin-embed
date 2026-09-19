@@ -1,0 +1,147 @@
+info: cargo-llvm-cov currently setting cfg(coverage); you can opt-out it by passing --no-cfg-coverage
+   Compiling zeppelin-embed-text v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-115/crates/zeppelin-embed-text)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.90s
+     Running unittests src/lib.rs (target/ze115-coverage/llvm-cov-target/debug/deps/zeppelin_embed_text-44e674cce9a0d784)
+
+running 11 tests
+test query::tests::query_options_default_to_hybrid_ten_and_allow_an_explicit_leg ... ok
+test ingest::tests::cancellation_prevents_acquiring_an_in_flight_slot ... ok
+test ingest::tests::vector_normalization_checks_dimensions_finiteness_and_unit_norm ... ok
+test bundle::tests::metadata_cursor_reads_every_scalar_and_refuses_truncation_and_nonzero_reservations ... ok
+test error::tests::text_error_preserves_typed_sources_and_stable_context ... ok
+test runtime::tests::embedding_batches_and_runtime_errors_preserve_their_typed_contracts ... ok
+test bundle::tests::bundle_errors_are_typed_and_descriptive ... ok
+test ingest::tests::ingest_options_chunking_and_caller_id_boundaries_fail_loudly ... ok
+test tokenizer::tests::tokenizer_rejects_invalid_tables_and_batch_shapes ... ok
+test tokenizer::tests::unigram_chooses_the_highest_scoring_complete_segmentation_and_fails_unknown_wholes ... ok
+test tokenizer::tests::wordpiece_normalizes_splits_unknowns_and_pads_rectangular_batches ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/adversarial.rs (target/ze115-coverage/llvm-cov-target/debug/deps/adversarial-82a7f7d4671f1b91)
+
+running 1 test
+test text_pipeline_fault_sites_fire_and_surface_typed_errors ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/arch.rs (target/ze115-coverage/llvm-cov-target/debug/deps/arch-cfaae99080c8701f)
+
+running 9 tests
+test arctic_v15_batched_cls_matches_reference_across_padding_and_chunk_boundary ... ignored, requires the external ze-model-bundles-v2-c1 fixture
+test astra_08_ascii_tokenization_is_unchanged ... ignored, requires the external ze-model-bundles-v2-c1 fixture
+test astra_08_reembedded_unicode_documents_match_reference ... ignored, requires the external ze-model-bundles-v2-c1 fixture
+test astra_08_source_tokenizer_normalization_order_matches ... ignored, requires the external ze-model-bundles-v2-c1 fixture
+test astra_08_source_tokenizer_unicode_ids_match ... ignored, requires the external ze-model-bundles-v2-c1 fixture
+test bert_with_dense_head_matches_the_fp32_reference_vectors_for_mdbr_leaf_ir_to_1e_4 ... ignored, requires the external ze-model-bundles-v2-c1 fixture
+test gte_matches_the_fp32_reference_vectors_for_arctic_m_v2_to_1e_4 ... ignored, requires the external ze-model-bundles-v2-c1 fixture
+test an_unknown_architecture_id_fails_typed_at_load ... ok
+test batched_one_dimension_truncation_matches_each_individual_row ... ok
+
+test result: ok. 2 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/bundle.rs (target/ze115-coverage/llvm-cov-target/debug/deps/bundle-6d15fbcfac2a6026)
+
+running 5 tests
+test a_tower_weights_digest_must_equal_its_exact_tensor_section ... ok
+test unknown_tokenizer_flag_bits_are_refused_instead_of_silently_dropped ... ok
+test a_bundle_with_a_corrupted_tensor_digest_is_refused_before_any_tensor_is_mapped ... ok
+test a_two_tower_bundle_binds_document_and_query_by_name_and_a_one_tower_bundle_serves_both ... ok
+test malformed_bundle_metadata_is_refused_at_the_exact_field_boundary ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/coreml_contracts.rs (target/ze115-coverage/llvm-cov-target/debug/deps/coreml_contracts-6d447dabeb22b6f7)
+
+running 4 tests
+test coreml_store_child ... ok
+test coreml_reports_bad_artifacts_paths_shapes_and_prediction_width_without_partial_results ... ok
+test coreml_runtime_evaluates_exact_rows_and_masks_under_every_requested_policy ... ok
+test discovered_coreml_query_model_is_reported_and_used_by_the_store ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+     Running tests/epoch.rs (target/ze115-coverage/llvm-cov-target/debug/deps/epoch-e5d0a56a4cb1e28f)
+
+running 3 tests
+test astra_08_old_tokenizer_epoch_is_refused_without_writes ... ok
+test pre_layout_fix_store_is_refused_without_modifying_persisted_bytes ... ok
+test swapping_the_query_tower_keeps_the_store_open_and_swapping_the_document_tower_refuses_open ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/handoff.rs (target/ze115-coverage/llvm-cov-target/debug/deps/handoff-1504085204ac36cd)
+
+running 1 test
+test the_embed_to_writer_hand_off_allocates_zero_bytes_per_document ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/lifecycle_contracts.rs (target/ze115-coverage/llvm-cov-target/debug/deps/lifecycle_contracts-3110e831a19d1158)
+
+running 2 tests
+test discovered_broken_coreml_artifact_fails_open_without_silent_backend_fallback ... ok
+test paired_towers_keep_query_routing_and_chunk_deletion_across_reopen ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/pipeline.rs (target/ze115-coverage/llvm-cov-target/debug/deps/pipeline-6ff03c67e4de2772)
+
+running 3 tests
+test a_failing_embed_worker_surfaces_as_a_typed_error_and_every_thread_is_joined ... ok
+test ingest_text_over_a_corpus_produces_the_same_rows_and_vectors_as_the_serialized_path ... ok
+test back_pressure_bounds_in_flight_batches_to_the_channel_capacity ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/placement.rs (target/ze115-coverage/llvm-cov-target/debug/deps/placement-ea99268b497413b1)
+
+running 1 test
+test gpu_cpu_and_ane_query_vectors_agree_within_tolerance_on_the_golden_queries ... ignored, requires external MLX and CoreML model fixtures
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/query.rs (target/ze115-coverage/llvm-cov-target/debug/deps/query-15cec236bb88ef4f)
+
+running 6 tests
+test the_query_prefix_is_applied_from_the_bundle_and_never_by_the_caller ... ok
+test astra_18_expired_text_entry_never_returns_partial_hits ... ok
+test a_lexical_query_does_not_evaluate_the_query_tower ... ok
+test astra_06_text_query_exposes_explicit_rescore_and_preserves_tier_controls ... ok
+test astra_00_detailed_text_query_preserves_hits_and_reports_its_boundaries ... ok
+test astra_07_result_materialization_uses_one_admission ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests/runtime_contracts.rs (target/ze115-coverage/llvm-cov-target/debug/deps/runtime_contracts-2427696f9582929c)
+
+running 4 tests
+test token_batches_preserve_every_row_when_padding_and_refuse_shape_loss ... ok
+test mapped_model_tensor_metadata_is_rejected_with_qualified_error_context ... ok
+test mlx_rejects_unsupported_placement_and_malformed_chunk_shapes ... ok
+test tiny_transformers_match_independent_cpu_reference_across_pooling_and_chunk_boundaries ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.28s
+
+     Running tests/text_api.rs (target/ze115-coverage/llvm-cov-target/debug/deps/text_api-c97af1a0ef466978)
+
+running 6 tests
+test default_text_store_over_30000_documents_maintains_and_serves_a_graph ... ignored, requires an unsandboxed MLX runtime
+test default_ingest_seals_at_4096_rows ... ok
+test ingest_text_then_query_text_returns_the_ingested_text_with_the_declared_epoch ... ok
+test health_reports_sealed_scan_segments_and_maintain_reports_complete_below_the_graph_threshold ... ok
+test deleting_a_caller_id_deletes_every_chunk_row ... ok
+test query_options_carry_an_explicit_search_tier_through_dense_and_hybrid_legs ... ok
+
+test result: ok. 5 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/tokenizer_contracts.rs (target/ze115-coverage/llvm-cov-target/debug/deps/tokenizer_contracts-f35100bf048e85f1)
+
+running 2 tests
+test bundle_query_padding_preserves_special_tokens_and_refuses_truncation ... ok
+test bundle_unigram_uses_global_scores_normalization_and_rectangular_masks ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+    Finished report saved to /tmp/ze-115-evidence/final-coverage.json

@@ -1,0 +1,37 @@
+[
+  {
+    "path": "crates/zeppelin-embed-text/tests/fixtures/ze115/README.md",
+    "bytes": 2836,
+    "sha256": "cd1c86b1ef0eac7ada86172f337006a719087050bad0111822dcf47034d64423"
+  },
+  {
+    "path": "crates/zeppelin-embed-text/tests/fixtures/ze115/bert.zem",
+    "bytes": 9316,
+    "sha256": "71592736046b031134e61f537d0f7decbfe8483b10e0676ea6a1abcf04f91db5"
+  },
+  {
+    "path": "crates/zeppelin-embed-text/tests/fixtures/ze115/generate.py",
+    "bytes": 7087,
+    "sha256": "3c7a927073848577c040d58f6822691fbd0626aba6ad8e499ab49ac769c50542"
+  },
+  {
+    "path": "crates/zeppelin-embed-text/tests/fixtures/ze115/generate_coreml.py",
+    "bytes": 1396,
+    "sha256": "a83b84cd59863fedf539762f6a883aeb7f5d52290bba7303e07c0c6a4bbaf3dd"
+  },
+  {
+    "path": "crates/zeppelin-embed-text/tests/fixtures/ze115/gte.zem",
+    "bytes": 9132,
+    "sha256": "9908d55cebe971714503ce18de7580974f6653ac248af60c35ddb666380cd526"
+  },
+  {
+    "path": "crates/zeppelin-embed-text/tests/fixtures/ze115/reference.rs",
+    "bytes": 975,
+    "sha256": "17e65d5b291de552d6bce66f13bccfbaadd6cb391301669fc6b99114321af68b"
+  },
+  {
+    "path": "crates/zeppelin-embed-text/tests/fixtures/ze115/tiny.mlmodel",
+    "bytes": 150,
+    "sha256": "ab7dc03a1da6c70b966a6aa6c74448acdc6296bafd0592ec8172c8404ca54dfc"
+  }
+]

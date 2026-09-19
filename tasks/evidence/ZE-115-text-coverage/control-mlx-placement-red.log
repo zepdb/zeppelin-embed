@@ -1,0 +1,21 @@
+   Compiling zeppelin-embed-text v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-115/crates/zeppelin-embed-text)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.77s
+     Running tests/runtime_contracts.rs (target/ze115-coverage/debug/deps/runtime_contracts-2427696f9582929c)
+
+running 1 test
+
+thread 'mlx_rejects_unsupported_placement_and_malformed_chunk_shapes' (32650831) panicked at crates/zeppelin-embed-text/tests/runtime_contracts.rs:90:9:
+assertion failed: matches!(MlxRuntime::load_for_compute(Arc::clone(&bundle),
+    TowerRole::Document, compute), Err(RuntimeError::Mlx(detail)) if detail ==
+    "MLX does not target the Neural Engine")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test mlx_rejects_unsupported_placement_and_malformed_chunk_shapes ... FAILED
+
+failures:
+
+failures:
+    mlx_rejects_unsupported_placement_and_malformed_chunk_shapes
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.05s
+
+error: test failed, to rerun pass `-p zeppelin-embed-text --test runtime_contracts`

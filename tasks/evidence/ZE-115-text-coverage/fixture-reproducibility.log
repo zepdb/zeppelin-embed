@@ -1,0 +1,5 @@
+torch 2.12.1 xxhash 3.8.0
+bert.zem 9316 71592736046b031134e61f537d0f7decbfe8483b10e0676ea6a1abcf04f91db5
+gte.zem 9132 9908d55cebe971714503ce18de7580974f6653ac248af60c35ddb666380cd526
+reference.rs 975 17e65d5b291de552d6bce66f13bccfbaadd6cb391301669fc6b99114321af68b
+All four fixture/reference SHA-256 values unchanged after regeneration.
