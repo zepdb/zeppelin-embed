@@ -1,4 +1,4 @@
-//! Single-writer ownership via a process-local registry and an OS file lock.
+//! Store ownership via a process-local registry and an OS file lock.
 //!
 //! Two mechanisms are needed, because neither alone is sufficient:
 //!
@@ -17,7 +17,10 @@
 //!
 //! Nothing else in this process may open [`STORE_LOCK_FILE`].
 
-use std::collections::BTreeSet;
+#[cfg(all(test, feature = "graph-cypher"))]
+mod native_tests;
+
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
@@ -32,57 +35,144 @@ pub const STORE_LOCK_FILE: &str = "writer.lock";
 /// Stable filesystem identity of a store directory.
 type StoreKey = (u64, u64);
 
-static HELD_STORES: Mutex<BTreeSet<StoreKey>> = Mutex::new(BTreeSet::new());
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LockMode {
+    Exclusive,
+    Shared,
+}
+
+struct RegistryEntry {
+    _file: File,
+    mode: LockMode,
+    shared_count: u32,
+}
+
+static HELD_STORES: Mutex<BTreeMap<StoreKey, RegistryEntry>> = Mutex::new(BTreeMap::new());
 
 /// Exclusive writer ownership automatically released when the process dies.
 #[derive(Debug)]
 pub struct StoreLock {
-    file: Option<File>,
     registry_key: StoreKey,
+    mode: LockMode,
 }
 
 impl StoreLock {
     /// Attempts to acquire exclusive non-blocking ownership for one store.
     ///
-    /// Registry admission happens first so a second same-process writer is
-    /// rejected before any lock file is touched. Every failure after that point
-    /// unregisters exactly once, so a failed admission never leaves the store
-    /// permanently unopenable.
+    /// Registry admission happens first so a second same-process owner is
+    /// rejected before any lock file is touched.
     pub fn acquire(directory: &Path) -> Result<Self, StoreLockError> {
         let path = directory.join(STORE_LOCK_FILE);
         let registry_key = store_identity(directory).map_err(|source| StoreLockError::Io {
             path: directory.to_path_buf(),
             source,
         })?;
-        if !held_stores().insert(registry_key) {
+        let mut held = held_stores();
+        if held.contains_key(&registry_key) {
             return Err(StoreLockError::Io {
                 path,
                 source: std::io::Error::from(std::io::ErrorKind::WouldBlock),
             });
         }
-        let file = open_lock_file(&path).map_err(|source| {
-            held_stores().remove(&registry_key);
-            StoreLockError::Io {
-                path: path.clone(),
-                source,
-            }
+        let file = open_lock_file(&path).map_err(|source| StoreLockError::Io {
+            path: path.clone(),
+            source,
         })?;
         if let Err(source) = lock_exclusive(&file) {
             drop(file);
-            held_stores().remove(&registry_key);
             return Err(StoreLockError::Io { path, source });
         }
-        Ok(Self {
-            file: Some(file),
+        held.insert(
             registry_key,
+            RegistryEntry {
+                _file: file,
+                mode: LockMode::Exclusive,
+                shared_count: 0,
+            },
+        );
+        Ok(Self {
+            registry_key,
+            mode: LockMode::Exclusive,
+        })
+    }
+
+    /// Attempts to acquire non-blocking shared ownership for a graph reader.
+    ///
+    /// The first reader opens the existing lock file read-only and owns the
+    /// process's single descriptor. Further local readers increment the
+    /// checked holder count without opening the file or issuing another lock
+    /// call. Missing lock files are never created.
+    #[cfg(feature = "graph-cypher")]
+    #[allow(dead_code)] // Consumed by the ZE-40 native read-only constructor.
+    pub(crate) fn acquire_shared(directory: &Path) -> Result<Self, StoreLockError> {
+        let path = directory.join(STORE_LOCK_FILE);
+        let registry_key = store_identity(directory).map_err(|source| StoreLockError::Io {
+            path: directory.to_path_buf(),
+            source,
+        })?;
+        let mut held = held_stores();
+        if let Some(entry) = held.get_mut(&registry_key) {
+            if entry.mode == LockMode::Exclusive {
+                return Err(StoreLockError::Io {
+                    path,
+                    source: std::io::Error::from(std::io::ErrorKind::WouldBlock),
+                });
+            }
+            let Some(next_count) = entry.shared_count.checked_add(1) else {
+                return Err(StoreLockError::Io {
+                    path,
+                    source: std::io::Error::other("shared store lock holder count overflow"),
+                });
+            };
+            entry.shared_count = next_count;
+            return Ok(Self {
+                registry_key,
+                mode: LockMode::Shared,
+            });
+        }
+
+        let file = open_shared_lock_file(&path).map_err(|source| StoreLockError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        if let Err(source) = lock_shared(&file) {
+            drop(file);
+            return Err(StoreLockError::Io { path, source });
+        }
+        held.insert(
+            registry_key,
+            RegistryEntry {
+                _file: file,
+                mode: LockMode::Shared,
+                shared_count: 1,
+            },
+        );
+        Ok(Self {
+            registry_key,
+            mode: LockMode::Shared,
         })
     }
 }
 
-fn held_stores() -> MutexGuard<'static, BTreeSet<StoreKey>> {
+fn held_stores() -> MutexGuard<'static, BTreeMap<StoreKey, RegistryEntry>> {
     match HELD_STORES.lock() {
         Ok(held) => held,
         Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+/// Opens an already-existing lock file without write or creation authority.
+#[cfg(feature = "graph-cypher")]
+#[allow(dead_code)] // Called by the ZE-40 producer seam above.
+fn open_shared_lock_file(path: &Path) -> std::io::Result<File> {
+    let file = OpenOptions::new().read(true).open(path)?;
+    if file.metadata()?.is_file() {
+        Ok(file)
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::IsADirectory,
+            "store lock path is not a regular file",
+        ))
     }
 }
 
@@ -169,6 +259,46 @@ fn lock_exclusive(file: &File) -> std::io::Result<()> {
     }
 }
 
+#[cfg(all(feature = "graph-cypher", unix))]
+#[allow(dead_code)] // Called by the ZE-40 producer seam above.
+fn lock_shared(file: &File) -> std::io::Result<()> {
+    let mut lock = unsafe {
+        // SAFETY: all-zero is a valid `flock` value before named fields are set.
+        std::mem::zeroed::<libc::flock>()
+    };
+    lock.l_type = libc::F_RDLCK as libc::c_short;
+    lock.l_whence = libc::SEEK_SET as libc::c_short;
+    lock.l_start = 0;
+    lock.l_len = 0;
+    let result = unsafe {
+        // SAFETY: `file` owns a live descriptor and `lock` remains valid for
+        // the duration of this non-blocking `F_SETLK` call.
+        libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &lock)
+    };
+    if result == -1 {
+        let error = std::io::Error::last_os_error();
+        if error
+            .raw_os_error()
+            .is_some_and(|errno| errno == libc::EAGAIN || errno == libc::EACCES)
+        {
+            Err(std::io::Error::from(std::io::ErrorKind::WouldBlock))
+        } else {
+            Err(error)
+        }
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(all(feature = "graph-cypher", not(unix)))]
+#[allow(dead_code)] // Called by the ZE-40 producer seam above.
+fn lock_shared(_: &File) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "shared store locks require POSIX file locking",
+    ))
+}
+
 /// Takes the cross-process lock with `LockFileEx`, non-blocking and exclusive,
 /// over the fixed range documented by `sys::windows::WRITER_LOCK_RANGE`.
 ///
@@ -189,10 +319,29 @@ fn lock_exclusive(_: &File) -> std::io::Result<()> {
 
 impl Drop for StoreLock {
     fn drop(&mut self) {
-        // Closing the last handle releases the OS lock on both platforms; the
-        // registry entry is then removed exactly once.
-        drop(self.file.take());
-        held_stores().remove(&self.registry_key);
+        let mut held = held_stores();
+        let remove = match held.get_mut(&self.registry_key) {
+            Some(entry) if entry.mode == LockMode::Shared && self.mode == LockMode::Shared => {
+                if entry.shared_count > 1 {
+                    entry.shared_count -= 1;
+                    false
+                } else {
+                    true
+                }
+            }
+            Some(entry)
+                if entry.mode == LockMode::Exclusive && self.mode == LockMode::Exclusive =>
+            {
+                true
+            }
+            _ => false,
+        };
+        if remove {
+            // POSIX closes of any descriptor for the file release this
+            // process's record locks. Remove and close the registry-owned sole
+            // descriptor while local admission remains excluded.
+            drop(held.remove(&self.registry_key));
+        }
     }
 }
 
