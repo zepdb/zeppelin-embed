@@ -22,6 +22,10 @@ impl<'a> WriteMemory<'a> {
     pub fn reserved_bytes(&self) -> usize {
         self.used.get()
     }
+
+    pub(crate) const fn resources(&self) -> &'a GraphResources {
+        self.resources
+    }
 }
 pub(super) struct Arena<'a, T> {
     values: Vec<T>,

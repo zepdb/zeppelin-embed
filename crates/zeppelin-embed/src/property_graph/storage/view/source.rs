@@ -4,19 +4,67 @@ use super::mapping::NativeReadonlyMapping;
 use crate::lifecycle::native_graph::NativeReadLease;
 use crate::property_graph::query::resources::{QueryArena, QueryMemory, QueryReservation};
 use crate::property_graph::query::runtime::{RetainedView, RuntimeContext, RuntimeInstanceId};
-use crate::property_graph::storage::allocation::artifact_path;
 use crate::property_graph::storage::artifact::{
     self, ArtifactControlError, ArtifactId, ContainerKind, FramedBlock, PhysicalRef,
+    ValidatedArtifact,
 };
 use crate::property_graph::storage::tree::directory::{
     BlockSource, QueryOwner, TreeError, TreeResources,
 };
-use std::cell::OnceCell;
+use std::{cell::OnceCell, ffi::OsString, fmt::Write as _, path::PathBuf};
 
-struct MappedArtifact<'m, 'g> {
+struct MappedArtifact {
     artifact: ArtifactId,
     mapping: NativeReadonlyMapping,
-    _path_charge: QueryReservation<'m, 'g>,
+    validation: ValidatedArtifact,
+}
+
+fn charged_artifact_path<'m, 'g>(
+    memory: &'m QueryMemory<'g>,
+    directory: &std::path::Path,
+    artifact: ArtifactId,
+) -> Result<(PathBuf, QueryReservation<'m, 'g>), TreeError> {
+    const FILENAME_BYTES: usize = b"graph-00000000000000000000000000000000.zgraph".len();
+    let path_upper = directory
+        .as_os_str()
+        .len()
+        .checked_add(1)
+        .and_then(|bytes| bytes.checked_add(FILENAME_BYTES))
+        .ok_or(TreeError::Memory)?;
+    let mut charge = memory
+        .reserve(
+            path_upper
+                .checked_add(FILENAME_BYTES)
+                .ok_or(TreeError::Memory)?,
+        )
+        .map_err(crate::property_graph::query::runtime::RuntimeError::Memory)
+        .map_err(TreeError::Runtime)?;
+    let mut filename = String::new();
+    filename
+        .try_reserve_exact(FILENAME_BYTES)
+        .map_err(|_| TreeError::Memory)?;
+    write!(&mut filename, "graph-{:032x}.zgraph", artifact.get()).map_err(|_| TreeError::Memory)?;
+    let mut raw = OsString::with_capacity(path_upper);
+    raw.push(directory.as_os_str());
+    let mut path = PathBuf::from(raw);
+    path.push(&filename);
+    let raw = path.into_os_string();
+    let path_capacity = raw.capacity();
+    charge
+        .resize(
+            filename
+                .capacity()
+                .checked_add(path_capacity)
+                .ok_or(TreeError::Memory)?,
+        )
+        .map_err(crate::property_graph::query::runtime::RuntimeError::Memory)
+        .map_err(TreeError::Runtime)?;
+    drop(filename);
+    charge
+        .resize(path_capacity)
+        .map_err(crate::property_graph::query::runtime::RuntimeError::Memory)
+        .map_err(TreeError::Runtime)?;
+    Ok((PathBuf::from(raw), charge))
 }
 
 pub(crate) struct NativeQuerySource<'a, 'm, 'g> {
@@ -24,7 +72,7 @@ pub(crate) struct NativeQuerySource<'a, 'm, 'g> {
     memory: &'m QueryMemory<'g>,
     owner: QueryOwner<'m, 'g>,
     runtime: RuntimeInstanceId,
-    slots: QueryArena<'m, 'g, OnceCell<MappedArtifact<'m, 'g>>>,
+    slots: QueryArena<'m, 'g, OnceCell<MappedArtifact>>,
 }
 
 /// Unforgeable proof that one retained lease, query-memory owner and runtime
@@ -106,16 +154,30 @@ impl<'a, 'm, 'g> NativeQuerySource<'a, 'm, 'g> {
 
     fn decode<'s>(
         &'s self,
-        mapped: &'s MappedArtifact<'m, 'g>,
+        mapped: &'s MappedArtifact,
         reference: PhysicalRef,
         resources: &mut TreeResources<'_>,
     ) -> Result<FramedBlock<'s>, TreeError> {
+        resources.step(1)?;
+        let block = mapped
+            .validation
+            .framed_block(mapped.mapping.as_bytes(), reference)
+            .map_err(TreeError::Format)?;
+        self.check_required(block)
+    }
+
+    fn admit_mapping(
+        &self,
+        mapping: &NativeReadonlyMapping,
+        reference: PhysicalRef,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<ValidatedArtifact, TreeError> {
         let base = self.lease.bundle().base();
         let high_waters = self.lease.bundle().high_waters();
         let frame = artifact::decode_with_control(
             ContainerKind::Object,
             Some((base.store, reference.artifact)),
-            mapped.mapping.as_bytes(),
+            mapping.as_bytes(),
             &mut |bytes| resources.step(bytes as u64),
         )
         .map_err(|error| match error {
@@ -131,8 +193,15 @@ impl<'a, 'm, 'g> NativeQuerySource<'a, 'm, 'g> {
             ));
         }
         let block = frame.framed_block(reference).map_err(TreeError::Format)?;
-        if let Some(required) = self.lease.bundle().required_object(reference) {
+        let validation = frame.validation();
+        let _ = self.check_required(block)?;
+        Ok(validation)
+    }
+
+    fn check_required<'s>(&self, block: FramedBlock<'s>) -> Result<FramedBlock<'s>, TreeError> {
+        if let Some(required) = self.lease.bundle().required_object(block.reference()) {
             let expected = required.object;
+            let identity = block.identity();
             if identity.store != expected.store
                 || identity.artifact != expected.artifact
                 || identity.generation != expected.generation
@@ -169,35 +238,26 @@ impl BlockSource for NativeQuerySource<'_, '_, '_> {
             .iter()
             .find(|cell| cell.get().is_none())
             .ok_or(TreeError::Memory)?;
-        const ARTIFACT_PATH_SUFFIX_BYTES: usize =
-            b"/graph-00000000000000000000000000000000.zgraph".len();
-        let path_bytes = self
-            .lease
-            .bundle()
-            .directory()
-            .as_os_str()
-            .len()
-            .checked_add(ARTIFACT_PATH_SUFFIX_BYTES)
-            .ok_or(TreeError::Memory)?;
-        let path_charge = self
-            .memory
-            .reserve(path_bytes)
-            .map_err(crate::property_graph::query::runtime::RuntimeError::Memory)
-            .map_err(TreeError::Runtime)?;
-        let path = artifact_path(self.lease.bundle().directory(), reference.artifact);
+        let (path, path_charge) = charged_artifact_path(
+            self.memory,
+            self.lease.bundle().directory(),
+            reference.artifact,
+        )?;
         let file = self
             .lease
             .bundle()
             .vfs()
             .open_for_map(&path)
             .map_err(TreeError::Io)?;
+        let mapping = NativeReadonlyMapping::open(file, &path, self.lease)?;
+        drop(path);
+        drop(path_charge);
+        let validation = self.admit_mapping(&mapping, reference, resources)?;
         let mapped = MappedArtifact {
             artifact: reference.artifact,
-            mapping: NativeReadonlyMapping::open(file, &path, self.lease)?,
-            _path_charge: path_charge,
+            mapping,
+            validation,
         };
-        // Validate the complete immutable file before exposing or caching it.
-        let _ = self.decode(&mapped, reference, resources)?;
         cell.set(mapped)
             .map_err(|_| TreeError::Invalid("native graph source slot initialized twice"))?;
         let mapped = cell.get().ok_or(TreeError::Invalid(

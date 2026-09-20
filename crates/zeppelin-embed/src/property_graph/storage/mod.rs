@@ -24,9 +24,10 @@ mod view;
     reason = "crate-private ZE-45 interface is consumed by ZE-50 after this dependency lands"
 )]
 pub(crate) use view::{
-    CursorState, DirectionSelection, ExpandCursor, GraphReadView, LabelSelection, NativeCatalog,
-    NativeQuerySource, NativeReadCapability, NodeCursor, NodeView, PreparedGraphArtifacts,
-    PreparedGraphFailure, RelationshipTypeSelection, TextPayloadReader,
+    CursorState, DirectionSelection, ExpandCursor, GraphPreparation, GraphReadView, LabelSelection,
+    NativeCatalog, NativePreparationSource, NativeQuerySource, NativeReadCapability, NodeCursor,
+    NodeView, PreparedGraphArtifacts, PreparedGraphFailure, RelView, RelationshipTypeSelection,
+    TextPayloadReader,
 };
 
 /// Combined private storage capacity inside the authentic writer/store owner.

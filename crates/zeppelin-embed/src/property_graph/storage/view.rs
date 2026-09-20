@@ -25,6 +25,8 @@ mod cursor;
 #[cfg(feature = "graph-cypher")]
 mod mapping;
 #[cfg(feature = "graph-cypher")]
+mod preparation_source;
+#[cfg(feature = "graph-cypher")]
 mod prepared;
 #[cfg(feature = "graph-cypher")]
 mod source;
@@ -37,7 +39,9 @@ pub(crate) use cursor::{
     RelationshipTypeSelection,
 };
 #[cfg(feature = "graph-cypher")]
-pub(crate) use prepared::{PreparedGraphArtifacts, PreparedGraphFailure};
+pub(crate) use preparation_source::NativePreparationSource;
+#[cfg(feature = "graph-cypher")]
+pub(crate) use prepared::{GraphPreparation, PreparedGraphArtifacts, PreparedGraphFailure};
 #[cfg(feature = "graph-cypher")]
 pub(crate) use source::{NativeQuerySource, NativeReadCapability};
 
@@ -340,16 +344,46 @@ pub(super) fn scan_live_nodes_after<'a, 'lease, 'm, 'g>(
     r: &mut TreeResources<'_>,
 ) -> Result<usize, TreeError> {
     use super::tree::{Key, directory::DirectoryCursor};
-    let root = roots.directory(TreeKind::Nodes)?;
-    let lower = after.map(|node| node.get().to_le_bytes());
-    let mut cursor =
-        DirectoryCursor::seek(source, root, lower.as_ref().map(<[u8; 16]>::as_slice), r)?;
+    let node_lower = after.map(|node| node.get().to_le_bytes());
+    let mut label_lower = [0_u8; 24];
+    let (root, lower) = if let Some(label) = labels.first() {
+        label_lower[..8].copy_from_slice(&label.get().to_le_bytes());
+        label_lower[8..].copy_from_slice(&after.map_or(1, NodeId::get).to_le_bytes());
+        (
+            roots.directory(TreeKind::Labels)?,
+            Some(label_lower.as_slice()),
+        )
+    } else {
+        (
+            roots.directory(TreeKind::Nodes)?,
+            node_lower.as_ref().map(<[u8; 16]>::as_slice),
+        )
+    };
+    let mut cursor = DirectoryCursor::seek(source, root, lower, r)?;
     while let Some(entry) = cursor.next_entry(r)? {
         let Key::Inline(key) = entry.key() else {
             return Err(TreeError::Invalid("overflow node identity"));
         };
+        let node_key = if let Some(label) = labels.first() {
+            if !entry.value().is_empty() {
+                return Err(TreeError::Invalid("label membership value is not empty"));
+            }
+            let actual_label = u64::from_le_bytes(
+                key.get(..8)
+                    .and_then(|bytes| bytes.try_into().ok())
+                    .ok_or(TreeError::Invalid("label membership key width"))?,
+            );
+            if actual_label != label.get() {
+                break;
+            }
+            key.get(8..)
+                .ok_or(TreeError::Invalid("label membership node width"))?
+        } else {
+            key
+        };
         let node = NodeId::new(u128::from_le_bytes(
-            key.try_into()
+            node_key
+                .try_into()
                 .map_err(|_| TreeError::Invalid("node identity width"))?,
         ))
         .map_err(|_| TreeError::Invalid("zero node identity"))?;

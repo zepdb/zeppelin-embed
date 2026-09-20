@@ -169,6 +169,18 @@ pub struct ArtifactFrame<'a> {
     count: usize,
     file_checksum: u64,
 }
+
+/// Copyable proof that one immutable artifact's complete framing and checksum
+/// were validated. The owner must retain it beside the same immutable mapping.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ValidatedArtifact {
+    identity: ArtifactIdentity,
+    kind: ContainerKind,
+    directory: usize,
+    count: usize,
+    file_length: usize,
+    file_checksum: u64,
+}
 impl ArtifactFrame<'_> {
     /// Returns the validated store/object identity.
     pub const fn identity(&self) -> ArtifactIdentity {
@@ -177,6 +189,16 @@ impl ArtifactFrame<'_> {
     /// Returns the required container family.
     pub const fn kind(&self) -> ContainerKind {
         self.kind
+    }
+    pub(crate) const fn validation(&self) -> ValidatedArtifact {
+        ValidatedArtifact {
+            identity: self.identity,
+            kind: self.kind,
+            directory: self.directory,
+            count: self.count,
+            file_length: self.bytes.len(),
+            file_checksum: self.file_checksum,
+        }
     }
     /// Returns one directory reference.
     pub fn reference(&self, index: usize) -> Result<PhysicalRef, FormatError> {
@@ -232,6 +254,30 @@ impl ArtifactFrame<'_> {
             FormatCheck::BlockLength,
             "reference is not an exact directory entry",
         ))
+    }
+}
+
+impl ValidatedArtifact {
+    pub(crate) fn framed_block<'a>(
+        self,
+        bytes: &'a [u8],
+        reference: PhysicalRef,
+    ) -> Result<FramedBlock<'a>, FormatError> {
+        if bytes.len() != self.file_length {
+            return Err(invalid(
+                FormatCheck::FileLength,
+                "validated artifact mapping length changed",
+            ));
+        }
+        ArtifactFrame {
+            bytes,
+            identity: self.identity,
+            kind: self.kind,
+            directory: self.directory,
+            count: self.count,
+            file_checksum: self.file_checksum,
+        }
+        .framed_block(reference)
     }
 }
 

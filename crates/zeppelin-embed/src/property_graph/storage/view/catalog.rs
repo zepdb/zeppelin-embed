@@ -97,14 +97,15 @@ impl<'a, 'm, 'g> NativeCatalog<'a, 'm, 'g> {
             })
             .map_err(|error| catalog_error(error, resources))?;
         let high = bundle.high_waters();
+        let [label, relationship_type, property, namespace] = high.symbols;
         if image.declaration.node_high_water != high.node
             || image.declaration.relationship_high_water != high.relationship
             || image.symbols.high_waters()
                 != (SymbolHighWaters {
-                    label: high.symbols[0],
-                    relationship_type: high.symbols[1],
-                    property: high.symbols[2],
-                    namespace: high.symbols[3],
+                    label,
+                    relationship_type,
+                    property,
+                    namespace,
                 })
         {
             return Err(TreeError::Invalid("catalog allocator high-water mismatch"));

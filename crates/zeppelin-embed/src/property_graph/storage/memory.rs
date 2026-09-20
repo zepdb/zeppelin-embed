@@ -62,6 +62,9 @@ impl<'a> StorageMemory<'a> {
     pub(super) fn control(&self) -> &'a QueryControl {
         self.control
     }
+    pub(super) const fn resources(&self) -> &'a crate::property_graph::resources::GraphResources {
+        self.writer.resources()
+    }
     pub(super) fn reserve(&self, bytes: usize) -> Result<StorageReservation<'_>, TreeError> {
         self.control.checkpoint().map_err(TreeError::Control)?;
         let next = self

@@ -1,29 +1,180 @@
 //! Scoped handoff for one actual native preparation and its admitted base.
 
+use super::preparation_source::{NativePreparationCatalog, NativePreparationSource};
 use crate::format::FormatFamily;
 use crate::lifecycle::native_graph::{NativePreparedRegistration, NativeReadLease};
-use crate::property_graph::storage::adjacency::NativeGraphCandidate;
+use crate::property_graph::storage::adjacency::{
+    NativeGraphBase, NativeGraphCandidate, prepare_native_graph,
+};
 use crate::property_graph::storage::memory::StorageBuffer;
-use crate::property_graph::storage::prepared::PreparedObjects;
-use crate::property_graph::storage::tree::directory::{BlockSource, TreeError};
-use crate::property_graph::wal::{ArtifactDescriptor, InventoryChange, InventoryState};
+use crate::property_graph::storage::participant::DirectoryBase;
+use crate::property_graph::storage::prepared::{PackLimits, PreparedObjects};
+use crate::property_graph::storage::tree::directory::{BlockSource, TreeError, TreeResources};
+use crate::property_graph::wal::{
+    ArtifactDescriptor, CommitState, InventoryChange, InventoryState, ReferenceList,
+};
+
+fn same_admitted_bundle(left: &NativeReadLease, right: &NativeReadLease) -> bool {
+    let left = left.bundle();
+    let right = right.bundle();
+    left.base() == right.base()
+        && left.root_envelope() == right.root_envelope()
+        && left.roots().store() == right.roots().store()
+        && left.roots().generation() == right.roots().generation()
+        && left.roots().references() == right.roots().references()
+        && left.wal_roots().slots == right.wal_roots().slots
+        && left.sequence() == right.sequence()
+        && left.catalog() == right.catalog()
+        && left.vector() == right.vector()
+        && left.text() == right.text()
+        && left.reclaim() == right.reclaim()
+        && left.high_waters() == right.high_waters()
+        && left.prepared_inventories() == right.prepared_inventories()
+        && left.lexical() == right.lexical()
+        && left.document() == right.document()
+}
+
+/// Sole scoped owner of the actual native prepare/finalize sequence. It binds
+/// source admission to one cloned complete base lease and returns every pack on
+/// any failure; it has no publication, sync, unlink, or retry authority.
+pub(crate) struct GraphPreparation<'source, 'lease, 'm, F> {
+    objects: PreparedObjects<'m, 'source, NativePreparationSource<'lease, 'm>, F>,
+    catalog: NativePreparationCatalog<'source, 'lease, 'm>,
+    source: &'source NativePreparationSource<'lease, 'm>,
+    base: NativeReadLease,
+}
+
+impl<
+    'source,
+    'lease,
+    'm,
+    F: FnMut() -> Result<crate::property_graph::storage::artifact::ArtifactIdentity, TreeError>,
+> GraphPreparation<'source, 'lease, 'm, F>
+{
+    pub(crate) fn new(
+        source: &'source NativePreparationSource<'lease, 'm>,
+        generation: crate::property_graph::GraphGeneration,
+        identity_source: F,
+        limits: PackLimits,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<Self, TreeError> {
+        resources.require_preparation(source.memory())?;
+        let base_generation = source.lease().bundle().base().generation;
+        if generation.get()
+            != base_generation
+                .get()
+                .checked_add(1)
+                .ok_or(TreeError::Invalid("native preparation generation overflow"))?
+        {
+            return Err(TreeError::Invalid(
+                "native preparation target generation mismatch",
+            ));
+        }
+        let catalog = NativePreparationCatalog::open(source, resources)?;
+        let base = source.lease().clone();
+        let objects = PreparedObjects::new(
+            source,
+            identity_source,
+            base.bundle().base().store,
+            generation,
+            limits,
+            source.memory(),
+            resources,
+        )?;
+        Ok(Self {
+            objects,
+            catalog,
+            source,
+            base,
+        })
+    }
+
+    #[allow(
+        clippy::result_large_err,
+        reason = "failure returns the complete owned packs and retained base lease"
+    )]
+    pub(crate) fn prepare(
+        mut self,
+        batch: &crate::property_graph::staging::StagedBatch<'_>,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<
+        PreparedGraphArtifacts<'source, 'm, 'source, NativePreparationSource<'lease, 'm>, F>,
+        PreparedGraphFailure<'m, 'source, NativePreparationSource<'lease, 'm>, F>,
+    > {
+        let memory = self.source.memory();
+        if !std::ptr::eq(self.objects.memory(), memory) || !self.catalog.owns(self.source) {
+            return Err(PreparedGraphFailure::from_preparation(
+                TreeError::Invalid("prepared native graph memory owner mismatch"),
+                self.objects,
+                self.base,
+            ));
+        }
+        let bundle = self.base.bundle();
+        let committed = CommitState {
+            store: bundle.base().store,
+            generation: bundle.base().generation,
+            sequence: bundle.sequence(),
+            graph: bundle.wal_roots(),
+            catalog: bundle.catalog(),
+            vector: bundle.vector(),
+            text: bundle.text(),
+            reclaim: bundle.reclaim(),
+            high_waters: bundle.high_waters(),
+            prepared_inventories: ReferenceList::Values(bundle.prepared_inventories()),
+        };
+        let candidate = match prepare_native_graph(
+            &mut self.objects,
+            batch,
+            NativeGraphBase {
+                directories: DirectoryBase {
+                    identity: bundle.base(),
+                    roots: bundle.roots(),
+                },
+                committed,
+            },
+            &self.catalog,
+            bundle.document(),
+            memory,
+            resources,
+        ) {
+            Ok(candidate) => candidate,
+            Err(error) => {
+                return Err(PreparedGraphFailure::from_preparation(
+                    error,
+                    self.objects,
+                    self.base,
+                ));
+            }
+        };
+        if let Err(error) = self.objects.finish(resources) {
+            return Err(PreparedGraphFailure::from_preparation(
+                error,
+                self.objects,
+                self.base,
+            ));
+        }
+        PreparedGraphArtifacts::new(candidate, self.objects, self.source.lease(), self.base)
+    }
+}
 
 /// Finished private objects and their complete candidate, retained with the
 /// exact registered base lease. This participant cannot publish or delete.
-pub(crate) struct PreparedGraphArtifacts<'a, 'b, S, F> {
+pub(crate) struct PreparedGraphArtifacts<'source, 'a, 'b, S, F> {
     _registration: NativePreparedRegistration,
     inventory: StorageBuffer<'a, InventoryChange>,
     candidate: NativeGraphCandidate<'a>,
     objects: PreparedObjects<'a, 'b, S, F>,
     base: NativeReadLease,
+    _source: std::marker::PhantomData<&'source NativeReadLease>,
 }
 
 impl<
+    'source,
     'a,
     'b,
     S: BlockSource,
     F: FnMut() -> Result<crate::property_graph::storage::artifact::ArtifactIdentity, TreeError>,
-> PreparedGraphArtifacts<'a, 'b, S, F>
+> PreparedGraphArtifacts<'source, 'a, 'b, S, F>
 {
     #[allow(
         clippy::result_large_err,
@@ -32,10 +183,13 @@ impl<
     pub(crate) fn new(
         candidate: NativeGraphCandidate<'a>,
         objects: PreparedObjects<'a, 'b, S, F>,
+        source_lease: &'source NativeReadLease,
         base: NativeReadLease,
     ) -> Result<Self, PreparedGraphFailure<'a, 'b, S, F>> {
         let admitted = base.bundle();
-        let valid = objects.is_finished()
+        let valid = source_lease.token() == base.token()
+            && same_admitted_bundle(source_lease, &base)
+            && objects.is_finished()
             && candidate.expected_base() == admitted.base()
             && candidate.expected_sequence() == admitted.sequence()
             && candidate.expected_roots() == admitted.wal_roots()
@@ -138,6 +292,7 @@ impl<
             candidate,
             objects,
             base,
+            _source: std::marker::PhantomData,
         })
     }
 
@@ -157,6 +312,14 @@ impl<
 
     pub(crate) fn inventory(&self) -> &[InventoryChange] {
         self.inventory.as_slice()
+    }
+
+    pub(crate) fn expected_root_envelope(&self) -> crate::property_graph::wal::RequiredRef {
+        self.base.bundle().root_envelope()
+    }
+
+    pub(crate) fn matches_base(&self, lease: &NativeReadLease) -> bool {
+        self.base.token() == lease.token() && same_admitted_bundle(&self.base, lease)
     }
 
     pub(crate) fn into_parts(
