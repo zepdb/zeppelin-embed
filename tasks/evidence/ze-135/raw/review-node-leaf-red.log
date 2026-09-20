@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-135/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.54s
+────────────
+ Nextest run ID 139f9df3-3375-4579-a79f-c478f2e07d4e with nextest profile: default
+    Starting 1 test across 1 binary (577 tests skipped)
+        FAIL [   0.030s] (1/1) zeppelin-embed property_graph::storage::view::tests::node_payload_leaf_preserves_full_identity_optional_payloads_and_state
+  stdout ───
+
+    running 1 test
+    test property_graph::storage::view::tests::node_payload_leaf_preserves_full_identity_optional_payloads_and_state ... FAILED
+
+    failures:
+
+    failures:
+        property_graph::storage::view::tests::node_payload_leaf_preserves_full_identity_optional_payloads_and_state
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 577 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'property_graph::storage::view::tests::node_payload_leaf_preserves_full_identity_optional_payloads_and_state' (35492851) panicked at crates/zeppelin-embed/src/property_graph/storage/view.rs:415:18:
+    full node lookup: Format(FormatError { artifact: "native graph tree page", check: BlockLength, values: None, detail: "inline key has wrong declared width" })
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.032s] 1 test run: 0 passed, 1 failed, 577 skipped
+        FAIL [   0.030s] (1/1) zeppelin-embed property_graph::storage::view::tests::node_payload_leaf_preserves_full_identity_optional_payloads_and_state
+  stdout ───
+
+    running 1 test
+    test property_graph::storage::view::tests::node_payload_leaf_preserves_full_identity_optional_payloads_and_state ... FAILED
+
+    failures:
+
+    failures:
+        property_graph::storage::view::tests::node_payload_leaf_preserves_full_identity_optional_payloads_and_state
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 577 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'property_graph::storage::view::tests::node_payload_leaf_preserves_full_identity_optional_payloads_and_state' (35492851) panicked at crates/zeppelin-embed/src/property_graph/storage/view.rs:415:18:
+    full node lookup: Format(FormatError { artifact: "native graph tree page", check: BlockLength, values: None, detail: "inline key has wrong declared width" })
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

@@ -1,0 +1,15 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-135/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.66s
+────────────
+ Nextest run ID 8dd7ff0b-d9cc-4677-8c86-56c137aa051f with nextest profile: default
+    Starting 8 tests across 1 binary
+        PASS [   0.026s] (1/8) zeppelin-embed::graph_query_storage directory_cursor_rejects_runtime_context_swaps_and_latches_both_apis
+        PASS [   0.026s] (2/8) zeppelin-embed::graph_query_storage query_range_scratch_checks_close_before_memory_refusal_without_charging
+        PASS [   0.026s] (3/8) zeppelin-embed::graph_query_storage payload_copies_charge_only_bytes_actually_copied_before_refusal
+        PASS [   0.026s] (4/8) zeppelin-embed::graph_query_storage empty_directory_lookup_and_scan_charge_typed_cumulative_work
+        PASS [   0.013s] (5/8) zeppelin-embed::graph_query_storage query_tree_workspace_uses_the_runtime_memory_and_releases_typed_refusals
+        PASS [   0.014s] (6/8) zeppelin-embed::graph_query_storage query_storage_deadline_expires_after_runtime_admission_before_source_or_copy
+        PASS [   0.014s] (7/8) zeppelin-embed::graph_query_storage query_tree_admission_preserves_deadline_and_close_priority_without_charges
+        PASS [   0.014s] (8/8) zeppelin-embed::graph_query_storage query_range_scratch_uses_the_same_memory_owner_and_releases_all_capacity
+────────────
+     Summary [   0.041s] 8 tests run: 8 passed, 0 skipped

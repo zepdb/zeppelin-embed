@@ -15,7 +15,7 @@
     },
     {
       "path": "crates/zeppelin-embed/src/property_graph/storage/view.rs",
-      "sha256": "d5405c3669655f1fb59f660a1087b98ca315c00c95a2ed8bc58a2243ef14ae68"
+      "sha256": "0ff498a3abb0c614ad210e8386dd98bc8a0ee7374b06b0a9e106b79957000d11"
     },
     {
       "path": "crates/zeppelin-embed/src/property_graph/storage/stream.rs",
@@ -39,7 +39,7 @@
     },
     {
       "path": "crates/zeppelin-embed/tests/graph_query_storage.rs",
-      "sha256": "83321f5927fd03526bd4fc5a370d3892afce732df3699fe1c0fac85183cdcc4d"
+      "sha256": "c3a0bfed130e31d5f0cbdc76200c3a8932dbc423a05ffd6014fb39001c942b51"
     },
     {
       "path": "crates/zeppelin-embed/tests/graph_storage_prepare/native_adjacency.rs",

@@ -1,0 +1,61 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-135/crates/zeppelin-embed)
+warning: method `checkpoint` is never used
+   --> crates/zeppelin-embed/src/property_graph/storage/tree/directory.rs:122:8
+    |
+121 | trait QueryRuntime {
+    |       ------------ method in this trait
+122 |     fn checkpoint(&self) -> Result<(), RuntimeError>;
+    |        ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `zeppelin-embed` (lib) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.02s
+────────────
+ Nextest run ID f738d9ef-b417-424f-8604-66cca9afe62d with nextest profile: default
+    Starting 1 test across 1 binary (7 tests skipped)
+        FAIL [   0.012s] (1/1) zeppelin-embed::graph_query_storage query_storage_deadline_expires_after_runtime_admission_before_source_or_copy
+  stdout ───
+
+    running 1 test
+    test query_storage_deadline_expires_after_runtime_admission_before_source_or_copy ... FAILED
+
+    failures:
+
+    failures:
+        query_storage_deadline_expires_after_runtime_admission_before_source_or_copy
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'query_storage_deadline_expires_after_runtime_admission_before_source_or_copy' (35496690) panicked at crates/zeppelin-embed/tests/graph_query_storage.rs:635:9:
+    assertion `left == right` failed: deadline must precede source access
+      left: 1
+     right: 0
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.012s] 1 test run: 0 passed, 1 failed, 7 skipped
+        FAIL [   0.012s] (1/1) zeppelin-embed::graph_query_storage query_storage_deadline_expires_after_runtime_admission_before_source_or_copy
+  stdout ───
+
+    running 1 test
+    test query_storage_deadline_expires_after_runtime_admission_before_source_or_copy ... FAILED
+
+    failures:
+
+    failures:
+        query_storage_deadline_expires_after_runtime_admission_before_source_or_copy
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'query_storage_deadline_expires_after_runtime_admission_before_source_or_copy' (35496690) panicked at crates/zeppelin-embed/tests/graph_query_storage.rs:635:9:
+    assertion `left == right` failed: deadline must precede source access
+      left: 1
+     right: 0
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

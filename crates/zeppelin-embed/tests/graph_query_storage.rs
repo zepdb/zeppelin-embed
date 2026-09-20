@@ -1,7 +1,7 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
 use zeppelin_embed::lifecycle::{
-    CancelToken, Deadline, OpenOptions, QueryControl, SnapshotLease, Store,
+    CancelToken, Deadline, ManualMonotonicClock, OpenOptions, QueryControl, SnapshotLease, Store,
 };
 use zeppelin_embed::property_graph::query::resources::{MemoryError, QueryMemory};
 use zeppelin_embed::property_graph::query::runtime::{
@@ -503,6 +503,143 @@ fn payload_copies_charge_only_bytes_actually_copied_before_refusal() {
     assert_eq!(context.counters().get(WorkKind::CopiedBytes), 7);
 
     drop(context);
+    drop(retained);
+    store.close().expect("close");
+}
+
+#[test]
+fn query_storage_deadline_expires_after_runtime_admission_before_source_or_copy() {
+    use std::cell::Cell;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use zeppelin_embed::property_graph::storage::artifact::{
+        self, ArtifactId, ArtifactIdentity, Block, BlockKind, ContainerKind, FramedBlock,
+        PhysicalRef,
+    };
+    use zeppelin_embed::property_graph::storage::payload::PayloadRef;
+    use zeppelin_embed::property_graph::storage::stream::PayloadSlice;
+    use zeppelin_embed::property_graph::storage::tree::directory::BlockSource;
+
+    struct Source {
+        bytes: Vec<u8>,
+        reference: PhysicalRef,
+        identity: ArtifactIdentity,
+        calls: Cell<usize>,
+    }
+    impl BlockSource for Source {
+        fn resolve<'a>(
+            &'a self,
+            reference: PhysicalRef,
+            _: &mut TreeResources<'_>,
+        ) -> Result<FramedBlock<'a>, TreeError> {
+            self.calls.set(self.calls.get() + 1);
+            if reference != self.reference {
+                return Err(TreeError::Missing);
+            }
+            let frame = artifact::decode(
+                ContainerKind::Object,
+                Some((self.identity.store, self.identity.artifact)),
+                &self.bytes,
+            )?;
+            Ok(frame.framed_block(reference)?)
+        }
+    }
+
+    let identity = ArtifactIdentity {
+        store: StoreInstanceId::new(17).expect("store identity"),
+        artifact: ArtifactId::new(29).expect("artifact identity"),
+        generation: GraphGeneration::new(3),
+        creation_serial: 31,
+    };
+    let blocks = [Block {
+        kind: BlockKind::StoredText,
+        payload: b"deadline",
+    }];
+    let mut bytes =
+        vec![0; artifact::encoded_len(ContainerKind::Object, &blocks).expect("encoded length")];
+    artifact::encode_into(ContainerKind::Object, identity, &blocks, &mut bytes)
+        .expect("encoded source");
+    let reference = artifact::decode(
+        ContainerKind::Object,
+        Some((identity.store, identity.artifact)),
+        &bytes,
+    )
+    .expect("decoded source")
+    .reference(0)
+    .expect("payload reference");
+    let source = Source {
+        bytes,
+        reference,
+        identity,
+        calls: Cell::new(0),
+    };
+    let payload = PayloadRef::new(BlockKind::StoredText, 8, reference).expect("logical payload");
+    let slice = PayloadSlice::new(&source, identity.store, identity.generation, payload);
+
+    let directory = tempfile::tempdir().expect("store fixture");
+    let store = Store::open(
+        directory.path(),
+        OpenOptions::new().with_max_resident_bytes(2 * 1024 * 1024),
+    )
+    .expect("store");
+    let shared = GraphResources::from_store(&store).expect("shared resources");
+    let memory = QueryMemory::new(&shared, 512 * 1024).expect("query allowance");
+    let retained = view(&store);
+
+    let admission_clock = Arc::new(ManualMonotonicClock::new());
+    let admission_control = QueryControl::Deadline(
+        Deadline::after_with_test_clock(Duration::from_secs(1), admission_clock.clone())
+            .expect("deadline"),
+    );
+    let mut admission_context = RuntimeContext::new(
+        &retained,
+        &admission_control,
+        &memory,
+        RuntimeLimits::default(),
+    )
+    .expect("runtime before deadline");
+    let before_admission = memory.reserved_bytes();
+    admission_clock.advance(Duration::from_secs(2));
+    assert!(matches!(
+        TreeResources::for_query(&mut admission_context),
+        Err(TreeError::Runtime(RuntimeError::Value(QueryError::Timeout)))
+    ));
+    assert_eq!(memory.reserved_bytes(), before_admission);
+    assert_eq!(admission_context.counters().get(WorkKind::CopiedBytes), 0);
+    drop(admission_context);
+
+    let read_clock = Arc::new(ManualMonotonicClock::new());
+    let read_control = QueryControl::Deadline(
+        Deadline::after_with_test_clock(Duration::from_secs(1), read_clock.clone())
+            .expect("deadline"),
+    );
+    let mut read_context =
+        RuntimeContext::new(&retained, &read_control, &memory, RuntimeLimits::default())
+            .expect("runtime before deadline");
+    {
+        let mut resources =
+            TreeResources::for_query(&mut read_context).expect("resources before deadline");
+        let before_work = resources.work();
+        let before_query = memory.reserved_bytes();
+        let before_shared = shared.reserved_bytes().expect("shared reserved bytes");
+        let mut output = [0xa5; 8];
+        read_clock.advance(Duration::from_secs(2));
+        assert!(matches!(
+            slice.read_at(0, &mut output, &mut resources),
+            Err(TreeError::Runtime(RuntimeError::Value(QueryError::Timeout)))
+        ));
+        assert_eq!(source.calls.get(), 0, "deadline must precede source access");
+        assert_eq!(output, [0xa5; 8], "deadline must precede copying");
+        assert_eq!(resources.work(), before_work);
+        assert_eq!(memory.reserved_bytes(), before_query);
+        assert_eq!(
+            shared.reserved_bytes().expect("shared reserved bytes"),
+            before_shared
+        );
+    }
+    assert_eq!(read_context.counters().get(WorkKind::CopiedBytes), 0);
+
+    drop(read_context);
     drop(retained);
     store.close().expect("close");
 }

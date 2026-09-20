@@ -1,0 +1,8 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.02s
+────────────
+ Nextest run ID 677147f2-bb7a-4b0f-a533-de477e5f5937 with nextest profile: default
+    Starting 2 tests across 1 binary (471 tests skipped)
+        PASS [   0.012s] (1/2) zeppelin-embed-workspace-tests::adversarial_tests query_storage_probe_reaches_actual_faults_and_same_seed_controls
+        PASS [   3.506s] (2/2) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_query_storage_contracts
+────────────
+     Summary [   3.507s] 2 tests run: 2 passed, 471 skipped

@@ -37,7 +37,7 @@ also remains independent.
   `ffd8d75956ba79cef43b5734a704bccc199f4d9c862ce7a831b7bd9d7c0e5bf7`
 - preservation recheck: 45 entries checked, 0 mismatches
 - final 16-file source manifest: `source-sha256.json`, SHA-256
-  `9f4cdff8117a221d1b145f981c57b197e8345828fd756ab4d0dbe505c055ce6a`
+  `b73f5df0a6423082c9e6733c5d848161159698a7e0035667d68209d1ef4be563`
 
 The canonical main-worktree plan inputs read for this component were:
 
@@ -51,6 +51,15 @@ The canonical main-worktree plan inputs read for this component were:
 | `/tmp/ze-135-seam-sol-review.md` | `466c31dc90e0b0e22aa1c8b28c3f8a0410fbe264f807c929a441519dffe2a94f` |
 | `/tmp/ze-135-implementation-sol-review.md` | `6fa36fea3c5bcd050ada3b1c289ac0f705e155f8e09a2cdf8c29ac29044bbc4b` |
 | `/tmp/ze-135-astra-scratch-plan.md` | `eccf632eac403c97487dd6281ac92ab57b85217557184152960bdd1ad0673b9c` |
+| `/tmp/ze-135-standards-review.md` | `db034aeaa550a886d0961dff810987fa97b833df27319182a3053e463c347dde` |
+| `/tmp/ze-135-spec-review.md` | `2d35f82d7e3de1c2f282d28a38bcfd093728c7e8f9346eb279a6fa215f3784d6` |
+
+All target-dependent byte measurements were taken on macOS 27.0 build
+26A5388g, Darwin 27.0.0 arm64, on a MacBook Pro Mac15,9 with an Apple M3 Max
+(16 cores: 12 performance and 4 efficiency) and 128 GB memory. The target was
+`aarch64-apple-darwin` with rustc 1.93.0 and LLVM 21.1.8; Cargo was 1.93.0.
+The raw command output is `raw/review-hardware-target.log`. In particular, the
+197,992-byte `RangeScratch` measurement is specific to this target and build.
 
 ## Ownership and errors
 
@@ -140,9 +149,39 @@ Observed behavioral RED runs and their corrections were:
 | physical-entry can-fire | `7db0ceb4-30be-4f56-aab1-8cf690bd4541`: planting one skipped codec event produced 1 versus 16 | `45afe08d-da83-4df0-8c5a-2a5cee259860`: exact hook restored |
 | same-memory scratch context, private guard | `91205901-f0c0-40b4-96e9-182ff21d3e58`: runtime B reached the source instead of returning the owner error | `6a92e7fe-6653-4838-902d-073fe023fe12`: owner rejection before source/work/backing changes |
 | same-memory scratch context, frozen producer | `282f3b1b-73c7-489a-b177-ac171225988e`: real `validate_range` accepted runtime B | `e8a61d4c-fef1-4cd5-b85f-c6d8d4c97c44`: validate and both reader entry shapes reject B; runtime A remains usable |
+| deadline at storage checkpoint | `f738d9ef-b417-424f-8604-66cca9afe62d`: removing the query `TreeResources::step` checkpoint allowed one source access after expiry | `2ca4aea5-b362-4081-baa4-817ee4d528e8`: typed timeout before source, copy, work, counters or charges |
+| full-width private node leaf | `139f9df3-3375-4579-a79f-c478f2e07d4e`: truncating the lookup key to eight bytes failed the direct leaf on the checked 16-byte key width | `4b04e7a4-e082-4772-876b-66ba81c29f4f`: exact full-width lookup restored |
 
 The intentional mutations were immediately restored. They are evidence that
 the exact assertions can fail, rather than alternate product states.
+
+The direct private-leaf test prepares genuine canonical images, provenance,
+native records, a retained tombstone and a Nodes directory in one source. It
+looks up `u128::MAX - 17`, preserves present-empty text, reads both original
+vector coordinates (`1.25`, `-2.5`) after reborrowing query resources, proves
+an absent text/vector stays absent, and distinguishes a tombstone from a
+missing key. Its returned `NodeRecordState<'source, S>` is passed through an
+explicit source-lifetime helper and its payload views remain usable only while
+that immutable source is retained.
+
+## Changed-path adversarial baseline
+
+The pre-change baseline came from an isolated `git archive` extraction of the
+exact prerequisite parent
+`3c2fba32e72a03efdfa50f9ad7a51cdd2e8bcd72` at
+`/tmp/ze135-parent-baseline-3c2fba3`. It ran the four pre-existing adjacency and
+native-directory probe/runner tests with `-j4 --retries 0`: 4/4 passed, 467
+skipped, run `886bbaf9-b704-4d21-a4fd-6a2bd6b0fc49`. The final source ran the
+same four tests: 4/4 passed, 469 skipped, run
+`538d49bc-df8f-4d58-a241-00112b9e19d2`. Exact commands and output are in
+`raw/review-parent-adversarial-baseline.log` and
+`raw/review-final-adversarial-matched.log`.
+
+PG19 is deliberately separate because its additive query-storage module does
+not exist at the prerequisite parent. On final source its probe and one real
+runner episode passed 2/2 in run
+`677147f2-bb7a-4b0f-a533-de477e5f5937`; this remains payload/workspace/control
+evidence and is not represented as native adjacency fault coverage.
 
 ## Focused qualification
 
@@ -157,9 +196,13 @@ The focused command set is:
 cargo nextest run -p zeppelin-embed --features graph-cypher \
   --test graph_query_storage -j4 --retries 0
 cargo nextest run -p zeppelin-embed --features graph-cypher \
+  --lib -E 'test(node_payload_leaf_preserves_full_identity_optional_payloads_and_state)' \
+  -j4 --retries 0
+cargo nextest run -p zeppelin-embed --features graph-cypher \
   --test graph_storage_prepare -j4 --retries 0
 cargo nextest run -p zeppelin-embed-workspace-tests --features graph-cypher \
-  --test adversarial_tests query_storage -j4 --retries 0
+  --test adversarial_tests -j4 --retries 0 \
+  -E 'test(query_storage_probe_reaches_actual_faults_and_same_seed_controls) | test(one_runner_episode_reaches_required_query_storage_contracts)'
 cargo clippy -p zeppelin-embed --features graph-cypher \
   --test graph_query_storage --test graph_storage_prepare --no-deps -- \
   -D warnings
@@ -179,6 +222,18 @@ The terminal post-review runs were:
 | scoped PG19 Clippy | pass with `-D warnings` | `raw/final-clippy-pg19.log` |
 | exact owned-file rustfmt | pass | `raw/final-format.log` |
 | diff check and 45-file preservation | pass; 45 checked, 0 mismatches | `raw/final-diff-check.log`, `raw/final-preservation.log` |
+| review deadline RED | intended failure; source calls 1 rather than 0, run `f738d9ef-b417-424f-8604-66cca9afe62d` | `raw/review-storage-deadline-red.log` |
+| review deadline GREEN | 1/1, run `2ca4aea5-b362-4081-baa4-817ee4d528e8` | `raw/review-storage-deadline-green.log` |
+| review private leaf RED | intended 8-byte-key failure, run `139f9df3-3375-4579-a79f-c478f2e07d4e` | `raw/review-node-leaf-red.log` |
+| review private leaf GREEN | 1/1, run `4b04e7a4-e082-4772-876b-66ba81c29f4f` | `raw/review-node-leaf-green.log` |
+| review terminal query storage | 8/8, run `8dd7ff0b-d9cc-4677-8c86-56c137aa051f` | `raw/review-final-query-storage.log` |
+| review terminal private leaf | 1/1, run `7e6dfc57-b693-4c63-bc1a-b880f7215743` | `raw/review-final-node-leaf.log` |
+| exact-parent adversarial baseline | 4/4, run `886bbaf9-b704-4d21-a4fd-6a2bd6b0fc49` | `raw/review-parent-adversarial-baseline.log` |
+| matched final adversarial controls | 4/4, run `538d49bc-df8f-4d58-a241-00112b9e19d2` | `raw/review-final-adversarial-matched.log` |
+| final PG19 probe plus runner | 2/2, run `677147f2-bb7a-4b0f-a533-de477e5f5937` | `raw/review-final-pg19.log` |
+| final native 16/644 producer | 1/1, run `edb5069d-0fd2-46fe-b31c-385600265c02` | `raw/review-final-native-producer.log` |
+| review scoped Clippy | core and PG19 pass with `-D warnings` | `raw/review-clippy-core.log`, `raw/review-clippy-pg19.log` |
+| review format/diff/preservation | pass; 45 checked, 0 mismatches | `raw/review-format.log`, `raw/review-diff-check.log`, `raw/review-preservation.log` |
 
 The actual-API lifetime harness used the source in `nonescape/negative.rs`.
 Against the pre-correction frozen source it compiled successfully
@@ -207,3 +262,13 @@ Exact formatting was applied only to owned Rust paths because an inherited
 Broad workspace, campaign, coverage, fuzz and size runs were not performed;
 they remain ZE-118. The component fixture is not evidence for public native
 admission, protected lazy-open behavior, or final lifecycle qualification.
+
+## Main integration inventory reconciliation
+
+ZE-133 and ZE-138 landed before ZE-135 on main. The additive cherry-pick retained
+PG18, PG19, and PG20, while the exact registry assertions still reflected the
+pre-PG19 totals. Integrated run `29071748-ce08-4d7a-9b32-f44cd3ce4771` was
+the intended RED: 186 keys were observed versus stale 177. The reconciled
+exact totals are 186 graph-only and 198 with the 12-key PG16 hook. Root's
+integration receipt records the subsequent focused GREEN runs; no key or
+feature gate was removed.

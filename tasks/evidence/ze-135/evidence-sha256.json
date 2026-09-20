@@ -2,7 +2,7 @@
   "files": [
     {
       "path": "tasks/evidence/ze-135/README.md",
-      "sha256": "bdc32afac864908e04a5a66888361503c49a58dce3c374f7107047b23a38465e"
+      "sha256": "e1b1934fe7ec31111bf4c5837e318d4955c46daebb536c6b1d0bdf2e69bf05f4"
     },
     {
       "path": "tasks/evidence/ze-135/nonescape/negative.rs",
@@ -18,7 +18,7 @@
     },
     {
       "path": "tasks/evidence/ze-135/owned-paths.json",
-      "sha256": "1daed96d8cbe1e3914943a9916abbaafc1328ccdf242833654f6fccfafd6447b"
+      "sha256": "9b6219050754cdf061b06b45600c78960d444a5082695032c26a00fd983744ee"
     },
     {
       "path": "tasks/evidence/ze-135/raw/final-clippy-core.log",
@@ -69,8 +69,72 @@
       "sha256": "e01b3787d72884d84e0ea2003c9afd353c4d28ccae43998d7dee35009b2fe7f5"
     },
     {
+      "path": "tasks/evidence/ze-135/raw/review-clippy-core.log",
+      "sha256": "81e674315ccdabb0f2ffd7295c9dde1d97bec64476fdd08eac25ab39a58999f2"
+    },
+    {
+      "path": "tasks/evidence/ze-135/raw/review-clippy-pg19.log",
+      "sha256": "ccaea893775aa83e5d2784e45503b6683e08d1c7111faac3ead632c415bf9562"
+    },
+    {
+      "path": "tasks/evidence/ze-135/raw/review-diff-check.log",
+      "sha256": "160e0b0869742cc115842a79eef5405b9a9b69617764d199c7abfad0acc412ed"
+    },
+    {
+      "path": "tasks/evidence/ze-135/raw/review-final-adversarial-matched.log",
+      "sha256": "e095f0b509b31db1611815a66f63d47f7f13679a855f36eb6ac1e70e15a2ecbb"
+    },
+    {
+      "path": "tasks/evidence/ze-135/raw/review-final-native-producer.log",
+      "sha256": "e6759084d653f20a81806e075c3803f0ff5e42e690d828a83778707192a784fe"
+    },
+    {
+      "path": "tasks/evidence/ze-135/raw/review-final-node-leaf.log",
+      "sha256": "cc458da307c209509d649161a0e2b70ce53536a054f5d6ff18222384120341aa"
+    },
+    {
+      "path": "tasks/evidence/ze-135/raw/review-final-pg19.log",
+      "sha256": "1f3b582478f75f06f879f40390923c51ae9cbbc9397facf20bbc573fa2527f61"
+    },
+    {
+      "path": "tasks/evidence/ze-135/raw/review-final-query-storage.log",
+      "sha256": "a533b974fe832abf0a9327715c5639f0c5a99f66b93396f656170b7e44ee362e"
+    },
+    {
+      "path": "tasks/evidence/ze-135/raw/review-format.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "tasks/evidence/ze-135/raw/review-hardware-target.log",
+      "sha256": "0fc3e690d8cb26c60782e5be218852ba6df0a895f18cbbe34c083c7cc8119ba9"
+    },
+    {
+      "path": "tasks/evidence/ze-135/raw/review-node-leaf-green.log",
+      "sha256": "9ecfdb58c60d9fb9072f9628d4730650b14b5821bb47d7b629ec5cd8e7b26f4f"
+    },
+    {
+      "path": "tasks/evidence/ze-135/raw/review-node-leaf-red.log",
+      "sha256": "3cf6c691c0a97a29d86060630098be8ea8facf2465d88c2f122a6430f7e509b0"
+    },
+    {
+      "path": "tasks/evidence/ze-135/raw/review-parent-adversarial-baseline.log",
+      "sha256": "ab006ecc13ef1ea5837514fbcbfafb98f05d825cb012dbd799a500c02b20f425"
+    },
+    {
+      "path": "tasks/evidence/ze-135/raw/review-preservation.log",
+      "sha256": "bf031e9b963595cc0a368c815660b29bf1d428036bb00ed3dff5fb197f0ea568"
+    },
+    {
+      "path": "tasks/evidence/ze-135/raw/review-storage-deadline-green.log",
+      "sha256": "0baa7e9b83a9645a678761a38d8c12429293e9c792c0ace6036d2d4d254f4eb4"
+    },
+    {
+      "path": "tasks/evidence/ze-135/raw/review-storage-deadline-red.log",
+      "sha256": "664cdda32ea2c0e643401ba149d2a28001c8354adb158029cd908fb6c6b5525e"
+    },
+    {
       "path": "tasks/evidence/ze-135/source-sha256.json",
-      "sha256": "9f4cdff8117a221d1b145f981c57b197e8345828fd756ab4d0dbe505c055ce6a"
+      "sha256": "b73f5df0a6423082c9e6733c5d848161159698a7e0035667d68209d1ef4be563"
     }
   ]
 }

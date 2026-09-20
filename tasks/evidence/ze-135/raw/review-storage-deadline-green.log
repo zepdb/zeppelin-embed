@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-135/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.99s
+────────────
+ Nextest run ID 2ca4aea5-b362-4081-baa4-817ee4d528e8 with nextest profile: default
+    Starting 1 test across 1 binary (7 tests skipped)
+        PASS [   0.015s] (1/1) zeppelin-embed::graph_query_storage query_storage_deadline_expires_after_runtime_admission_before_source_or_copy
+────────────
+     Summary [   0.015s] 1 test run: 1 passed, 7 skipped

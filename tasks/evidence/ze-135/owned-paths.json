@@ -35,6 +35,22 @@
     "tasks/evidence/ze-135/raw/nonescape-after-e0506.log",
     "tasks/evidence/ze-135/raw/nonescape-before-green.log",
     "tasks/evidence/ze-135/raw/nonescape-positive-green.log",
+    "tasks/evidence/ze-135/raw/review-clippy-core.log",
+    "tasks/evidence/ze-135/raw/review-clippy-pg19.log",
+    "tasks/evidence/ze-135/raw/review-diff-check.log",
+    "tasks/evidence/ze-135/raw/review-final-adversarial-matched.log",
+    "tasks/evidence/ze-135/raw/review-final-native-producer.log",
+    "tasks/evidence/ze-135/raw/review-final-node-leaf.log",
+    "tasks/evidence/ze-135/raw/review-final-pg19.log",
+    "tasks/evidence/ze-135/raw/review-final-query-storage.log",
+    "tasks/evidence/ze-135/raw/review-format.log",
+    "tasks/evidence/ze-135/raw/review-hardware-target.log",
+    "tasks/evidence/ze-135/raw/review-node-leaf-green.log",
+    "tasks/evidence/ze-135/raw/review-node-leaf-red.log",
+    "tasks/evidence/ze-135/raw/review-parent-adversarial-baseline.log",
+    "tasks/evidence/ze-135/raw/review-preservation.log",
+    "tasks/evidence/ze-135/raw/review-storage-deadline-green.log",
+    "tasks/evidence/ze-135/raw/review-storage-deadline-red.log",
     "tasks/evidence/ze-135/source-sha256.json"
   ]
 }
