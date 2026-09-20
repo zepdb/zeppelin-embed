@@ -19066,6 +19066,7 @@ fn one_runner_episode_reaches_required_graph_response_contracts() {
 #[cfg(not(feature = "graph-cypher"))]
 #[test]
 fn native_graph_runner_keys_are_absent_without_graph_feature() {
+    assert_eq!(adversarial::coverage::REQUIRED_SMOKE_COVERAGE.len(), 88);
     assert!(
         !adversarial::coverage::required_smoke_coverage()
             .any(|key| key.starts_with("property-graph."))
@@ -19087,6 +19088,16 @@ fn native_graph_runner_keys_are_active_with_graph_feature() {
     for key in adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE {
         assert!(active.contains(key), "enabled graph runner omitted {key}");
     }
+    #[cfg(not(feature = "graph-result-test-support"))]
+    assert_eq!(
+        adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
+        166
+    );
+    #[cfg(feature = "graph-result-test-support")]
+    assert_eq!(
+        adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
+        178
+    );
 }
 
 #[cfg(all(feature = "graph-cypher", not(feature = "graph-result-test-support")))]
@@ -19178,7 +19189,49 @@ fn one_runner_episode_reaches_required_lowering_contracts() {
 #[cfg(feature = "graph-cypher")]
 #[test]
 fn native_adjacency_store_probe_reopens_actual_emitted_participant() {
-    let mut coverage = adversarial::coverage::CoverageRegistry::default();
-    adversarial::graph_adjacency_store::probe(133, &mut coverage)
-        .expect("PG18 actual native adjacency producer and oracle");
+    for seed in [0, 133, u64::MAX] {
+        let mut coverage = adversarial::coverage::CoverageRegistry::default();
+        let report = adversarial::graph_adjacency_store::probe(seed, &mut coverage)
+            .expect("PG18 actual native adjacency producer and oracle");
+        assert_eq!(report.comparisons, 5);
+        assert_eq!(report.root_selection_fires, 2);
+        assert_eq!(report.fault_fires, 2);
+        assert_eq!(report.clean_controls, 2);
+        assert_eq!(report.refusals, 1);
+        assert_eq!(report.cleanup_checks, 10);
+        assert!(report.append_control_appends >= 2);
+        assert!(report.append_fault_appends > 0);
+        assert!(report.append_fault_appends <= report.append_control_appends);
+        assert!(report.append_abort_objects > 0);
+        assert_eq!(report.budget_fault_limit + 1, report.budget_control_work);
+        assert!(report.budget_fault_charged <= report.budget_fault_limit);
+        assert_eq!(report.failed_candidate_root_keys, 0);
+        assert!(report.emitted_files > 0);
+        assert!(report.emitted_root_keys >= 8);
+        assert_eq!(report.storage_after_bytes, report.storage_baseline_bytes);
+        assert!(report.retained_bytes_before_release > report.shared_baseline_bytes);
+        assert_eq!(
+            report.shared_after_release_bytes,
+            report.shared_baseline_bytes
+        );
+        for key in adversarial::graph_adjacency_store::REQUIRED_COVERAGE {
+            assert!(coverage.count(key) > 0, "missing PG18 path {key}");
+        }
+        eprintln!("PG18 seed={seed} {report:?}");
+    }
+}
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn one_runner_episode_reaches_native_adjacency_store_contracts() {
+    let root = tempfile::tempdir().expect("PG18 runner artifacts");
+    let outcome = adversarial::runner::run_program(0, FaultProfile::None, root.path())
+        .expect("PG18 runner episode");
+    assert!(outcome.violations.is_empty(), "{:?}", outcome.violations);
+    for key in adversarial::graph_adjacency_store::REQUIRED_COVERAGE {
+        assert!(
+            outcome.coverage.count(key) > 0,
+            "actual runner omitted {key}"
+        );
+    }
 }

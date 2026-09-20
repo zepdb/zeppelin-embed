@@ -50,8 +50,8 @@ pub const REQUIRED_COVERAGE: &[&str] = &[
     "property-graph.adjacency-store.old-root",
     "property-graph.adjacency-store.reopen",
     "property-graph.adjacency-store.emitted-keys",
-    "property-graph.adjacency-store.oracle.missing-reverse",
-    "property-graph.adjacency-store.oracle.ignored-delete",
+    "property-graph.adjacency-store.participant-selection.missing-reverse",
+    "property-graph.adjacency-store.participant-selection.ignored-delete",
     "property-graph.adjacency-store.append.fire",
     "property-graph.adjacency-store.append.clean",
     "property-graph.adjacency-store.budget.fire",
@@ -63,13 +63,25 @@ pub const REQUIRED_COVERAGE: &[&str] = &[
 #[derive(Debug, Default)]
 pub struct Report {
     pub comparisons: usize,
-    pub comparator_fires: usize,
+    pub root_selection_fires: usize,
     pub emitted_files: usize,
     pub emitted_root_keys: usize,
     pub fault_fires: usize,
     pub clean_controls: usize,
     pub refusals: usize,
     pub cleanup_checks: usize,
+    pub append_control_appends: usize,
+    pub append_fault_appends: usize,
+    pub append_abort_objects: usize,
+    pub budget_control_work: u64,
+    pub budget_fault_limit: u64,
+    pub budget_fault_charged: u64,
+    pub failed_candidate_root_keys: usize,
+    pub storage_baseline_bytes: usize,
+    pub storage_after_bytes: usize,
+    pub retained_bytes_before_release: u64,
+    pub shared_baseline_bytes: u64,
+    pub shared_after_release_bytes: u64,
 }
 
 #[derive(Clone)]
@@ -739,6 +751,7 @@ fn apply_batch(
     permit_stage_plain_delete: bool,
 ) -> Result<PreparedBatch, String> {
     let generation = fixture.identity.generation.get() + 1;
+    let storage_baseline = memory.reserved_bytes();
     let mut r =
         TreeResources::for_prepare(memory, 400_000_000).map_err(|error| error.to_string())?;
     let empty_node =
@@ -755,7 +768,7 @@ fn apply_batch(
         PropertyValue::new(PropertyData::F64(f64::from_bits(generation)))
             .map_err(|error| error.to_string())?,
     )];
-    with_local_refs(|refs| {
+    let result = with_local_refs(|refs| {
         let mut view = GraphBatchReadView::new(fixture, writer, operations.len(), &mut |_| Ok(()))
             .map_err(|error| error.to_string())?;
         let local_nodes: Vec<_> = operations
@@ -902,11 +915,13 @@ fn apply_batch(
             memory,
             &mut r,
         )
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format!("PG18 prepare generation{generation}: {error}"))?;
         let next_roots = candidate.roots();
         let sequence = candidate.sequence();
         drop(candidate);
-        objects.finish(&mut r).map_err(|error| error.to_string())?;
+        objects
+            .finish(&mut r)
+            .map_err(|error| format!("PG18 finish generation{generation}: {error}"))?;
         let object_count = objects.len();
         let mut paths = Vec::new();
         paths
@@ -924,9 +939,12 @@ fn apply_batch(
         }
         drop(objects);
         for (path, identity) in paths {
-            files.admit(&path, identity, shared, &mut r)?;
+            files
+                .admit(&path, identity, shared, &mut r)
+                .map_err(|error| format!("PG18 admit generation{generation}: {error}"))?;
         }
-        let next_state = committed_after(state, next_roots, sequence, batch.high_waters(), files)?;
+        let next_state = committed_after(state, next_roots, sequence, batch.high_waters(), files)
+            .map_err(|error| format!("PG18 commit generation{generation}: {error}"))?;
         Ok(PreparedBatch {
             fixture: next_fixture,
             roots: next_roots,
@@ -934,7 +952,15 @@ fn apply_batch(
             emitted: files.values.len() - before_files,
             root_keys: next_roots.references().into_iter().flatten().count(),
         })
-    })
+    });
+    drop(r);
+    let storage_after = memory.reserved_bytes();
+    if storage_after != storage_baseline {
+        return Err(format!(
+            "PG18 generation{generation} private release baseline={storage_baseline} after={storage_after}"
+        ));
+    }
+    result
 }
 
 fn observe(
@@ -1254,6 +1280,8 @@ fn changed_roots(
     previous: GraphRoots,
     slots: &[usize],
 ) -> Result<GraphRoots, String> {
+    // This is an observer/participant-selection control built after a clean
+    // production candidate. Actual producer mutants are separate RED receipts.
     let mut references = current.references();
     let old = previous.references();
     for slot in slots {
@@ -1261,6 +1289,123 @@ fn changed_roots(
     }
     GraphRoots::from_references(current.store(), current.generation(), references)
         .map_err(|error| error.to_string())
+}
+
+#[derive(Debug)]
+struct FaultReceipt {
+    success: bool,
+    fired: bool,
+    appends: usize,
+    abort_objects: usize,
+    root_keys: usize,
+    work: u64,
+    baseline_bytes: usize,
+    remaining_bytes: usize,
+    error: Option<String>,
+}
+
+fn fault_attempt(seed: u64, fault: PrepareFault, work: u64) -> Result<FaultReceipt, String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let store = Store::open(
+        directory.path(),
+        OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+    )
+    .map_err(|error| error.to_string())?;
+    let shared = GraphResources::from_store(&store).map_err(|error| error.to_string())?;
+    let writer =
+        WriteMemory::new(&shared, WriteLimits::default()).map_err(|error| error.to_string())?;
+    let control = QueryControl::Cancel(CancelToken::new());
+    let memory = StorageMemory::new(&writer, &control, 32 * 1024 * 1024)
+        .map_err(|error| error.to_string())?;
+    let files = Files::new(&shared)?;
+    let fixture = Fixture::empty(&shared, seed)?;
+    let roots = GraphRoots::from_references(
+        fixture.identity.store,
+        fixture.identity.generation,
+        [None; 8],
+    )
+    .map_err(|error| error.to_string())?;
+    let state = bootstrap(&fixture);
+    let mut r = TreeResources::for_prepare(&memory, work).map_err(|error| error.to_string())?;
+    let baseline = memory.reserved_bytes();
+    let image =
+        CanonicalContents::node(&mut [], &mut [], None, None).map_err(|error| error.to_string())?;
+    with_local_refs(|refs| {
+        let mut view = GraphBatchReadView::new(&fixture, &writer, 3, &mut |_| Ok(()))
+            .map_err(|error| error.to_string())?;
+        for slot in 0..2 {
+            view.create(
+                BatchEntityRef::Node(NodeRef::Local(
+                    refs.node(slot).map_err(|error| error.to_string())?,
+                )),
+                WriteImage::Node(&image),
+                &mut |_| Ok(()),
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        view.create(
+            BatchEntityRef::Relationship(RelRef::Local(
+                refs.relationship(2).map_err(|error| error.to_string())?,
+            )),
+            WriteImage::Relationship {
+                source: NodeRef::Local(refs.node(0).map_err(|error| error.to_string())?),
+                target: NodeRef::Local(refs.node(1).map_err(|error| error.to_string())?),
+                relationship_type: GraphName::new("R0").map_err(|error| error.to_string())?,
+                properties: &[],
+            },
+            &mut |_| Ok(()),
+        )
+        .map_err(|error| error.to_string())?;
+        let batch = view
+            .finish(&mut |_| Ok(()))
+            .map_err(|error| error.to_string())?;
+        let mut objects = packed(&files, 1, fixture.identity.store, &memory, &mut r)?;
+        let (success, fired, appends, root_keys, error) = {
+            let mut sink = FaultSink {
+                inner: &mut objects,
+                fault,
+                appends: 0,
+                fired: false,
+            };
+            let result = prepare_native_graph(
+                &mut sink,
+                &batch,
+                NativeGraphBase {
+                    directories: DirectoryBase {
+                        identity: fixture.identity,
+                        roots,
+                    },
+                    committed: state,
+                },
+                &fixture,
+                None,
+                &memory,
+                &mut r,
+            );
+            let root_keys = result.as_ref().map_or(0, |candidate| {
+                candidate.roots().references().into_iter().flatten().count()
+            });
+            let success = result.is_ok();
+            let error = result.as_ref().err().map(ToString::to_string);
+            drop(result);
+            let fired = sink.fired || error.as_deref() == Some("graph directory work exhausted");
+            (success, fired, sink.appends, root_keys, error)
+        };
+        let abort_objects = objects.abort_inventory().count();
+        drop(objects);
+        let remaining_bytes = memory.reserved_bytes();
+        Ok(FaultReceipt {
+            success,
+            fired,
+            appends,
+            abort_objects,
+            root_keys,
+            work: r.work(),
+            baseline_bytes: baseline,
+            remaining_bytes,
+            error,
+        })
+    })
 }
 
 pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<Report, String> {
@@ -1276,6 +1421,8 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<Report, Strin
     let control = QueryControl::Cancel(CancelToken::new());
     let memory = StorageMemory::new(&writer, &control, 32 * 1024 * 1024)
         .map_err(|error| error.to_string())?;
+    let storage_baseline = memory.reserved_bytes();
+    let shared_baseline = shared.reserved_bytes().map_err(|error| error.to_string())?;
     let mut files = Files::new(&shared)?;
     let mut fixture = Fixture::empty(&shared, seed)?;
     let mut roots = GraphRoots::from_references(
@@ -1385,6 +1532,7 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<Report, Strin
     state = first.state;
     report.emitted_files += first.emitted;
     report.emitted_root_keys += first.root_keys;
+    report.cleanup_checks += 1;
     let observed = observe(
         &files,
         roots,
@@ -1415,9 +1563,9 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<Report, Strin
         &memory,
     )?;
     if model.snapshot().check(&plan, &malformed).is_ok() {
-        return Err("PG18 oracle accepted actual participant missing IN root".to_owned());
+        return Err("PG18 oracle accepted root selection missing IN".to_owned());
     }
-    report.comparator_fires += 1;
+    report.root_selection_fires += 1;
     coverage.hit(REQUIRED_COVERAGE[11]);
 
     let property_only = [
@@ -1450,6 +1598,7 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<Report, Strin
     state = second.state;
     report.emitted_files += second.emitted;
     report.emitted_root_keys += second.root_keys;
+    report.cleanup_checks += 1;
     let retained_roots = roots;
     let retained_snapshot = model.snapshot();
     let observed = observe(
@@ -1494,6 +1643,7 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<Report, Strin
         return Err("PG18 primitive model did not refuse plain DELETE".to_owned());
     }
     report.refusals += 1;
+    report.cleanup_checks += 1;
     coverage.hit(REQUIRED_COVERAGE[7]);
 
     let detach = [oracle::Operation::DeleteNode {
@@ -1520,6 +1670,7 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<Report, Strin
     state = third.state;
     report.emitted_files += third.emitted;
     report.emitted_root_keys += third.root_keys;
+    report.cleanup_checks += 1;
     let observed = observe(
         &files,
         roots,
@@ -1560,6 +1711,7 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<Report, Strin
     state = fourth.state;
     report.emitted_files += fourth.emitted;
     report.emitted_root_keys += fourth.root_keys;
+    report.cleanup_checks += 1;
     let observed = observe(
         &files,
         roots,
@@ -1586,9 +1738,9 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<Report, Strin
         &memory,
     )?;
     if model.snapshot().check(&plan, &malformed).is_ok() {
-        return Err("PG18 oracle accepted actual participant ignoring delete".to_owned());
+        return Err("PG18 oracle accepted root selection before delete".to_owned());
     }
-    report.comparator_fires += 1;
+    report.root_selection_fires += 1;
     coverage.hit(REQUIRED_COVERAGE[12]);
     let retained = observe(
         &files,
@@ -1610,5 +1762,92 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<Report, Strin
     if memory.peak_reserved_bytes() > 32 * 1024 * 1024 {
         return Err("PG18 exceeded authentic storage reservation".to_owned());
     }
+    let append_control = fault_attempt(seed, PrepareFault::None, 400_000_000)?;
+    if !append_control.success
+        || append_control.appends < 2
+        || append_control.root_keys < 5
+        || append_control.remaining_bytes != append_control.baseline_bytes
+    {
+        return Err(format!("PG18 append clean control {append_control:?}"));
+    }
+    report.clean_controls += 1;
+    report.cleanup_checks += 1;
+    report.append_control_appends = append_control.appends;
+    coverage.hit(REQUIRED_COVERAGE[14]);
+    let stop = append_control.appends / 2;
+    let append_fault = fault_attempt(seed, PrepareFault::Append(stop), 400_000_000)?;
+    if append_fault.success
+        || !append_fault.fired
+        || append_fault.appends != stop
+        || append_fault.error.as_deref() != Some("missing graph directory artifact")
+        || append_fault.abort_objects == 0
+        || append_fault.remaining_bytes != append_fault.baseline_bytes
+    {
+        return Err(format!("PG18 append fault receipt {append_fault:?}"));
+    }
+    report.fault_fires += 1;
+    report.cleanup_checks += 1;
+    report.append_fault_appends = append_fault.appends;
+    report.append_abort_objects = append_fault.abort_objects;
+    report.failed_candidate_root_keys += append_fault.root_keys;
+    coverage.hit(REQUIRED_COVERAGE[13]);
+    coverage.hit(REQUIRED_COVERAGE[17]);
+
+    let budget_control = fault_attempt(seed, PrepareFault::None, 400_000_000)?;
+    if !budget_control.success
+        || budget_control.work == 0
+        || budget_control.remaining_bytes != budget_control.baseline_bytes
+    {
+        return Err(format!("PG18 budget clean control {budget_control:?}"));
+    }
+    report.clean_controls += 1;
+    report.cleanup_checks += 1;
+    report.budget_control_work = budget_control.work;
+    coverage.hit(REQUIRED_COVERAGE[16]);
+    let budget_fault = fault_attempt(
+        seed,
+        PrepareFault::None,
+        budget_control.work.saturating_sub(1),
+    )?;
+    if budget_fault.success
+        || !budget_fault.fired
+        || budget_fault.error.as_deref() != Some("graph directory work exhausted")
+        || budget_fault.remaining_bytes != budget_fault.baseline_bytes
+    {
+        return Err(format!("PG18 budget fault receipt {budget_fault:?}"));
+    }
+    report.fault_fires += 1;
+    report.cleanup_checks += 1;
+    report.budget_fault_limit = budget_control.work.saturating_sub(1);
+    report.budget_fault_charged = budget_fault.work;
+    report.failed_candidate_root_keys += budget_fault.root_keys;
+    coverage.hit(REQUIRED_COVERAGE[15]);
+    coverage.hit(REQUIRED_COVERAGE[17]);
+    report.storage_baseline_bytes = storage_baseline;
+    report.storage_after_bytes = memory.reserved_bytes();
+    if report.storage_after_bytes != storage_baseline {
+        return Err(format!(
+            "PG18 terminal storage release baseline={storage_baseline} after={}",
+            report.storage_after_bytes
+        ));
+    }
+    report.retained_bytes_before_release =
+        shared.reserved_bytes().map_err(|error| error.to_string())?;
+    report.shared_baseline_bytes = shared_baseline;
+    if report.retained_bytes_before_release <= shared_baseline {
+        return Err("PG18 retained fixture/file owners did not reserve bytes".to_owned());
+    }
+    drop(files);
+    drop(fixture);
+    report.shared_after_release_bytes =
+        shared.reserved_bytes().map_err(|error| error.to_string())?;
+    if report.shared_after_release_bytes != shared_baseline {
+        return Err(format!(
+            "PG18 shared release baseline={shared_baseline} after={}",
+            report.shared_after_release_bytes
+        ));
+    }
+    report.cleanup_checks += 1;
+    coverage.hit(REQUIRED_COVERAGE[18]);
     Ok(report)
 }
