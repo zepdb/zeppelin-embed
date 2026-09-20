@@ -1,0 +1,62 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.47
+   Compiling zerocopy v0.8.52
+   Compiling serde_core v1.0.229
+   Compiling serde v1.0.229
+   Compiling once_cell v1.21.4
+   Compiling ciborium-io v0.2.2
+   Compiling clap_lex v1.1.0
+   Compiling either v1.17.0
+   Compiling anstyle v1.0.14
+   Compiling regex-automata v0.4.18
+   Compiling cast v0.3.0
+   Compiling same-file v1.0.6
+   Compiling is-terminal v0.4.17
+   Compiling anes v0.1.6
+   Compiling oorandom v11.1.5
+   Compiling walkdir v2.5.0
+   Compiling clap_builder v4.6.0
+   Compiling tempfile v3.25.0
+   Compiling itertools v0.10.5
+   Compiling rusty-fork v0.3.1
+   Compiling criterion-plot v0.5.0
+   Compiling syn v2.0.119
+   Compiling syn v3.0.3
+   Compiling regex v1.13.1
+   Compiling clap v4.6.1
+   Compiling serde_json v1.0.151
+   Compiling serde_derive v1.0.229
+   Compiling zerocopy-derive v0.8.52
+   Compiling tinytemplate v1.2.1
+   Compiling ppv-lite86 v0.2.21
+   Compiling half v2.7.1
+   Compiling rand_chacha v0.9.0
+   Compiling ciborium-ll v0.2.2
+   Compiling rand v0.9.5
+   Compiling ciborium v0.2.2
+   Compiling proptest v1.10.0
+   Compiling criterion v0.5.1
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/crates/zeppelin-embed)
+error[E0432]: unresolved import `zeppelin_embed::property_graph::storage::tree::directory::lookup_predecessor`
+   --> crates/zeppelin-embed/tests/graph_directories.rs:148:9
+    |
+148 |     use zeppelin_embed::property_graph::storage::tree::directory::lookup_predecessor;
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `lookup_predecessor` in `property_graph::storage::tree::directory`
+
+error[E0282]: type annotations needed
+   --> crates/zeppelin-embed/tests/graph_directories.rs:195:24
+    |
+195 |             assert_eq!(got.key(), Key::Inline(&key(*tuple)));
+    |                        ^^^ cannot infer type
+
+error[E0282]: type annotations needed
+   --> crates/zeppelin-embed/tests/graph_directories.rs:196:44
+    |
+196 |             assert_eq!(&got.value()[..8], &index.to_le_bytes());
+    |                                            ^^^^^ cannot infer type
+
+Some errors have detailed explanations: E0282, E0432.
+For more information about an error, try `rustc --explain E0282`.
+error: could not compile `zeppelin-embed` (test "graph_directories") due to 3 previous errors
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_directories` exited with code 101

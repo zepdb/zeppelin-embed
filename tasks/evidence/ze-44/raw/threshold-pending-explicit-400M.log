@@ -1,0 +1,29 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/crates/zeppelin-embed)
+error[E0061]: this function takes 10 arguments but 9 arguments were supplied
+   --> crates/zeppelin-embed/tests/graph_storage_prepare/native_adjacency.rs:473:9
+    |
+473 |         history(
+    |         ^^^^^^^
+474 |             &next_base, &frozen, next_roots, next_state, remaining, writer, memory, shared,
+    |                                                                     ------ argument #6 of type `u64` is missing
+    |
+note: function defined here
+   --> crates/zeppelin-embed/tests/graph_storage_prepare/native_adjacency.rs:265:4
+    |
+265 | fn history(
+    |    ^^^^^^^
+...
+271 |     work_limit: u64,
+    |     ---------------
+help: provide the argument
+    |
+473 -         history(
+474 -             &next_base, &frozen, next_roots, next_state, remaining, writer, memory, shared,
+475 -             directory,
+476 -         );
+473 +         history(&next_base, &frozen, next_roots, next_state, remaining, /* u64 */, writer, memory, shared, directory);
+    |
+
+For more information about this error, try `rustc --explain E0061`.
+error: could not compile `zeppelin-embed` (test "graph_storage_prepare") due to 1 previous error
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_storage_prepare` exited with code 101

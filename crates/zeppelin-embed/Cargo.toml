@@ -70,6 +70,10 @@ name = "graph_adjacency"
 required-features = ["graph-cypher"]
 
 [[test]]
+name = "graph_adjacency_store"
+required-features = ["graph-cypher"]
+
+[[test]]
 name = "graph_artifact"
 required-features = ["graph-cypher"]
 

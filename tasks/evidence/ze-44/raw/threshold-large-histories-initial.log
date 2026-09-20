@@ -1,0 +1,75 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.47s
+────────────
+ Nextest run ID 68a0ad75-4b07-4e91-8183-5a42c3882ca2 with nextest profile: default
+    Starting 2 tests across 1 binary (6 tests skipped)
+        FAIL [   1.756s] (1/2) zeppelin-embed::graph_storage_prepare native_adjacency::actual_native_producer_consolidates_before_2049_pending_entries
+        FAIL [  57.904s] (2/2) zeppelin-embed::graph_storage_prepare native_adjacency::actual_native_producer_splits_4097_edges_from_bounded_batches
+────────────
+     Summary [  57.904s] 2 tests run: 0 passed, 2 failed, 6 skipped
+        FAIL [   1.756s] (1/2) zeppelin-embed::graph_storage_prepare native_adjacency::actual_native_producer_consolidates_before_2049_pending_entries
+  stdout ───
+
+    running 1 test
+    test native_adjacency::actual_native_producer_consolidates_before_2049_pending_entries ... FAILED
+
+    failures:
+
+    failures:
+        native_adjacency::actual_native_producer_consolidates_before_2049_pending_entries
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 1.74s
+
+  stderr ───
+
+    thread 'native_adjacency::actual_native_producer_consolidates_before_2049_pending_entries' (35106484) panicked at crates/zeppelin-embed/tests/graph_storage_prepare/native_adjacency.rs:160:34:
+    called `Result::unwrap()` on an `Err` value: Work
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [  57.904s] (2/2) zeppelin-embed::graph_storage_prepare native_adjacency::actual_native_producer_splits_4097_edges_from_bounded_batches
+  stdout ───
+
+    running 1 test
+    test native_adjacency::actual_native_producer_splits_4097_edges_from_bounded_batches ... FAILED
+
+    failures:
+
+    failures:
+        native_adjacency::actual_native_producer_splits_4097_edges_from_bounded_batches
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 57.89s
+
+  stderr ───
+    history generation=1 edges=128 count=128 packs=9 work=65095390 storage_peak=5904576 shared=9507418
+    history generation=2 edges=256 count=128 packs=11 work=83508300 storage_peak=6977728 shared=16335348
+    history generation=3 edges=384 count=128 packs=15 work=100517436 storage_peak=9124032 shared=26250286
+    history generation=4 edges=512 count=128 packs=17 work=110552769 storage_peak=10197184 shared=36085912
+    history generation=5 edges=640 count=128 packs=17 work=110588536 storage_peak=10197184 shared=44937970
+    history generation=6 edges=768 count=128 packs=17 work=110928364 storage_peak=10197184 shared=53830124
+    history generation=7 edges=896 count=128 packs=17 work=112142578 storage_peak=10197184 shared=62828102
+    history generation=8 edges=1024 count=128 packs=17 work=111540711 storage_peak=10197184 shared=71882608
+    history generation=9 edges=1152 count=128 packs=17 work=114208145 storage_peak=10197184 shared=81073562
+    history generation=10 edges=1280 count=128 packs=17 work=112054795 storage_peak=10197184 shared=90290420
+    history generation=11 edges=1408 count=128 packs=17 work=113294359 storage_peak=10197184 shared=99547374
+    history generation=12 edges=1536 count=128 packs=17 work=112957377 storage_peak=10197184 shared=108910152
+    history generation=13 edges=1664 count=128 packs=17 work=114139314 storage_peak=10197184 shared=118329458
+    history generation=14 edges=1792 count=128 packs=17 work=114714151 storage_peak=10197184 shared=127838156
+    history generation=15 edges=1920 count=128 packs=17 work=114678099 storage_peak=10197184 shared=137403382
+    history generation=16 edges=2048 count=128 packs=17 work=116611543 storage_peak=10197184 shared=147058000
+    history generation=17 edges=2176 count=128 packs=17 work=115203547 storage_peak=10197184 shared=156752714
+    history generation=18 edges=2304 count=128 packs=17 work=118986839 storage_peak=10197184 shared=166674036
+    history generation=19 edges=2432 count=128 packs=17 work=115826177 storage_peak=10197184 shared=176547534
+    history generation=20 edges=2560 count=128 packs=17 work=117146964 storage_peak=10197184 shared=186477560
+    history generation=21 edges=2688 count=128 packs=17 work=117191332 storage_peak=10197184 shared=196496978
+    history generation=22 edges=2816 count=128 packs=17 work=117769854 storage_peak=10197184 shared=206556492
+    history generation=23 edges=2944 count=128 packs=17 work=119104665 storage_peak=10197184 shared=216721830
+    history generation=24 edges=3072 count=128 packs=17 work=118729385 storage_peak=10197184 shared=226943696
+    history generation=25 edges=3200 count=128 packs=17 work=120622862 storage_peak=10197184 shared=237238522
+    history generation=26 edges=3328 count=128 packs=17 work=119752191 storage_peak=10197184 shared=247622740
+    history generation=27 edges=3456 count=128 packs=18 work=124299561 storage_peak=10733760 shared=258811158
+
+    thread 'native_adjacency::actual_native_producer_splits_4097_edges_from_bounded_batches' (35106485) panicked at crates/zeppelin-embed/tests/graph_storage_prepare/native_adjacency.rs:150:45:
+    called `Result::unwrap()` on an `Err` value: BudgetExceeded { needed: 268447364, budget: 268435456, component: "temporary" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

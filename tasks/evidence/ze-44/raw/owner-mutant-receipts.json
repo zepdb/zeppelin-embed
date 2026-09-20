@@ -1,0 +1,26 @@
+[
+  {
+    "name": "admission",
+    "source": "crates/zeppelin-embed/src/property_graph/storage/adjacency/prepare/ranges.rs",
+    "test": "actual_native_producer_consolidates_before_ninth_run",
+    "returncode": 100,
+    "source_sha256": "795d94fa4f44f423702c2ee3e5a80d694be2cd1e2ceb5ae598102aaec11b78a4",
+    "log": "/tmp/ze-44-evidence/mutant-admission.log"
+  },
+  {
+    "name": "retained-delete",
+    "source": "crates/zeppelin-embed/src/property_graph/storage/adjacency/prepare/ranges.rs",
+    "test": "property_only_with_detach_preserves_adjacency_then_raw_cleanup_is_paired",
+    "returncode": 100,
+    "source_sha256": "795d94fa4f44f423702c2ee3e5a80d694be2cd1e2ceb5ae598102aaec11b78a4",
+    "log": "/tmp/ze-44-evidence/mutant-retained-delete.log"
+  },
+  {
+    "name": "reserved-descriptor",
+    "source": "crates/zeppelin-embed/src/property_graph/storage/adjacency/range.rs",
+    "test": "outer_descriptor_fuzz_seeds_reach_expected_parser_outcomes",
+    "returncode": 100,
+    "source_sha256": "e1ea903b13c84e4ae05547715ea3195d9ce69c52b144c6b6f513c0826e117921",
+    "log": "/tmp/ze-44-evidence/mutant-reserved-descriptor.log"
+  }
+]

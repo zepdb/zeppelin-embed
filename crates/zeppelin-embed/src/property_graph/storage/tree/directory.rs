@@ -18,6 +18,8 @@ pub enum TreeError {
     Invalid(&'static str),
     /// Outer or page framing failed.
     Format(FormatError),
+    /// Retained WAL root metadata failed its existing typed format contract.
+    WalMetadata(crate::property_graph::wal::WalError),
     /// Mandatory cancellation or deadline check failed.
     Control(QueryError),
     /// A physical artifact read failed without admitting partial bytes.
@@ -38,6 +40,7 @@ impl std::fmt::Display for TreeError {
             Self::Missing => f.write_str("missing graph directory artifact"),
             Self::Invalid(reason) => write!(f, "invalid graph directory: {reason}"),
             Self::Format(error) => error.fmt(f),
+            Self::WalMetadata(error) => error.fmt(f),
             Self::Control(error) => error.fmt(f),
             Self::Io(error) => error.fmt(f),
             Self::Memory => f.write_str("graph directory reservation exhausted"),
@@ -1373,6 +1376,41 @@ pub fn remove_checked<S: BlockSink>(
     })
 }
 
+/// Find the greatest key at or below the exact probe without scanning preceding
+/// leaves. The returned entry retains its actual containing leaf generation.
+pub fn lookup_predecessor<'a>(
+    source: &'a impl BlockSource,
+    root: DirectoryRoot,
+    key: &[u8],
+    resources: &mut TreeResources<'_>,
+) -> Result<Option<DirectoryEntry<'a>>, TreeError> {
+    let mut cursor = DirectoryCursor::seek(source, root, Some(key), resources)?;
+    if cursor.exhausted {
+        resources.step(0)?;
+        return Ok(None);
+    }
+    if cursor.index < cursor.leaf_count {
+        let index = cursor.index;
+        let entry = cursor
+            .next_entry(resources)?
+            .ok_or(TreeError::Invalid("predecessor selected leaf is empty"))?;
+        if compare(source, root, entry.key(), Key::Inline(key), resources)?.is_eq() {
+            resources.step(0)?;
+            return Ok(Some(entry));
+        }
+        cursor.index = index;
+    }
+    if cursor.index == 0 && !cursor.retreat(resources)? {
+        resources.step(0)?;
+        return Ok(None);
+    }
+    cursor.index = cursor
+        .index
+        .checked_sub(1)
+        .ok_or(TreeError::Invalid("predecessor index underflow"))?;
+    cursor.next_entry(resources)
+}
+
 /// Generation-bound ancestor cursor. It borrows one immutable source for its
 /// entire lifetime and never switches providers or follows mutable sibling links.
 /// An error latches permanently; there is no continuation with partial success.
@@ -1396,6 +1434,9 @@ impl<'a, 'm, S: BlockSource> DirectoryCursor<'a, 'm, S> {
         resources: &mut TreeResources<'m>,
     ) -> Result<Self, TreeError> {
         resources.step(1)?;
+        if let Some(key) = lower {
+            validate_key(source, root, Key::Inline(key), resources)?;
+        }
         let reservation = resources.owner.reserve(std::mem::size_of::<Self>())?;
         let mut cursor = Self {
             source,
@@ -1411,7 +1452,6 @@ impl<'a, 'm, S: BlockSource> DirectoryCursor<'a, 'm, S> {
             return Ok(cursor);
         }
         if let Some(key) = lower {
-            validate_key(source, root, Key::Inline(key), resources)?;
             find_path(
                 source,
                 root,
@@ -1611,6 +1651,64 @@ impl<'a, 'm, S: BlockSource> DirectoryCursor<'a, 'm, S> {
             generation_bound = page.header().generation;
         }
         Err(TreeError::Invalid("cursor has no leaf"))
+    }
+    fn descend_right(
+        &mut self,
+        mut reference: PhysicalRef,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<(), TreeError> {
+        loop {
+            let block = checked_block(self.source, self.root, reference, resources)?;
+            let page = checked_page(
+                self.source,
+                self.root,
+                block.identity(),
+                block.payload(),
+                None,
+                None,
+                resources,
+            )?;
+            let last = count(block.payload())?
+                .checked_sub(1)
+                .ok_or(TreeError::Invalid("cursor empty page"))?;
+            self.path.push(PathEntry {
+                reference,
+                child: if page.header().level == 0 { 0 } else { last },
+                level: page.header().level,
+            })?;
+            if page.header().level == 0 {
+                return Ok(());
+            }
+            let Cell::Branch { child, .. } = page.cell(last)? else {
+                return Err(TreeError::Invalid("cursor branch expected"));
+            };
+            reference = child;
+        }
+    }
+    fn retreat(&mut self, resources: &mut TreeResources<'_>) -> Result<bool, TreeError> {
+        for depth in (0..self.path.len.saturating_sub(1)).rev() {
+            let mut entry = self.path.get(depth)?;
+            let Some(prior) = entry.child.checked_sub(1) else {
+                continue;
+            };
+            let block = checked_block(self.source, self.root, entry.reference, resources)?;
+            let page = decode_page(self.root.kind, block.payload())?;
+            let Cell::Branch { child, .. } = page.cell(prior)? else {
+                return Err(TreeError::Invalid("cursor predecessor"));
+            };
+            entry.child = prior;
+            *self
+                .path
+                .entries
+                .get_mut(depth)
+                .ok_or(TreeError::Invalid("path extent"))? = Some(entry);
+            self.path.len = depth + 1;
+            self.descend_right(child, resources)?;
+            self.leaf_count = self.validate_path(resources)?;
+            self.index = self.leaf_count;
+            return Ok(true);
+        }
+        Ok(false)
     }
     fn advance(&mut self, resources: &mut TreeResources<'_>) -> Result<bool, TreeError> {
         for depth in (0..self.path.len.saturating_sub(1)).rev() {

@@ -1,0 +1,48 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.55s
+────────────
+ Nextest run ID 8cb0e654-9923-4f43-a7e5-5046badc1cbc with nextest profile: default
+    Starting 1 test across 1 binary (4 tests skipped)
+        FAIL [   1.696s] (1/1) zeppelin-embed::graph_storage_prepare native_adjacency::actual_native_producer_consolidates_2049_incoming_edges
+  stdout ───
+
+    running 1 test
+    test native_adjacency::actual_native_producer_consolidates_2049_incoming_edges ... FAILED
+
+    failures:
+
+    failures:
+        native_adjacency::actual_native_producer_consolidates_2049_incoming_edges
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 1.68s
+
+  stderr ───
+    2049 incoming: storage_peak=15320115 writer=16240940 shared=16241012 packs=28 result=Err(Work)
+
+    thread 'native_adjacency::actual_native_producer_consolidates_2049_incoming_edges' (35091243) panicked at crates/zeppelin-embed/tests/graph_storage_prepare/native_adjacency.rs:59:32:
+    called `Result::unwrap()` on an `Err` value: Work
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   1.697s] 1 test run: 0 passed, 1 failed, 4 skipped
+        FAIL [   1.696s] (1/1) zeppelin-embed::graph_storage_prepare native_adjacency::actual_native_producer_consolidates_2049_incoming_edges
+  stdout ───
+
+    running 1 test
+    test native_adjacency::actual_native_producer_consolidates_2049_incoming_edges ... FAILED
+
+    failures:
+
+    failures:
+        native_adjacency::actual_native_producer_consolidates_2049_incoming_edges
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 1.68s
+
+  stderr ───
+    2049 incoming: storage_peak=15320115 writer=16240940 shared=16241012 packs=28 result=Err(Work)
+
+    thread 'native_adjacency::actual_native_producer_consolidates_2049_incoming_edges' (35091243) panicked at crates/zeppelin-embed/tests/graph_storage_prepare/native_adjacency.rs:59:32:
+    called `Result::unwrap()` on an `Err` value: Work
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

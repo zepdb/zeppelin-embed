@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed v0.4.2 (/private/tmp/ze44-root-read-probe/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.27s
+────────────
+ Nextest run ID 25f71634-fa30-4afa-8cd2-4e99b56ffadd with nextest profile: default
+    Starting 1 test across 1 binary (3 tests skipped)
+        FAIL [   0.056s] (1/1) zeppelin-embed::graph_storage_prepare authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges
+  stdout ───
+
+    running 1 test
+    test authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges ... FAILED
+
+    failures:
+
+    failures:
+        authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.05s
+
+  stderr ───
+
+    thread 'authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges' (35078397) panicked at crates/zeppelin-embed/tests/graph_storage_prepare.rs:470:13:
+    a missing node entry must not hide an extant relationship
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.057s] 1 test run: 0 passed, 1 failed, 3 skipped
+        FAIL [   0.056s] (1/1) zeppelin-embed::graph_storage_prepare authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges
+  stdout ───
+
+    running 1 test
+    test authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges ... FAILED
+
+    failures:
+
+    failures:
+        authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.05s
+
+  stderr ───
+
+    thread 'authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges' (35078397) panicked at crates/zeppelin-embed/tests/graph_storage_prepare.rs:470:13:
+    a missing node entry must not hide an extant relationship
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

@@ -1,0 +1,18 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.07s
+────────────
+ Nextest run ID edabc3f2-eede-4cae-a6d5-be1c467a0542 with nextest profile: default
+    Starting 1 test across 1 binary (11 tests skipped)
+        PASS [   0.054s] (1/1) zeppelin-embed::graph_storage_prepare native_adjacency::native_adjacency_participant_attributes_and_refuses_each_real_allocation
+────────────
+     Summary [   0.054s] 1 test run: 1 passed, 11 skipped
+        PASS [   0.054s] (1/1) zeppelin-embed::graph_storage_prepare native_adjacency::native_adjacency_participant_attributes_and_refuses_each_real_allocation
+  stdout ───
+
+    running 1 test
+    test native_adjacency::native_adjacency_participant_attributes_and_refuses_each_real_allocation ... ZE44 actual adjacency allocations=12 refusal_fires=12 unattributed_bytes=0 storage_peak=1591648 shared_peak=1592635
+    ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.04s
+
+

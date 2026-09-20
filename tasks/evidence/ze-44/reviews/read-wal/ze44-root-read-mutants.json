@@ -1,0 +1,27 @@
+{
+  "mutants": [
+    {
+      "mutant": "missing-entry",
+      "exit": 100,
+      "marker": "a missing node entry must not hide an extant relationship",
+      "log": "/tmp/ze44-root-read-mutant-missing-entry.log"
+    },
+    {
+      "mutant": "far-endpoint",
+      "exit": 100,
+      "marker": "filtered.relationship(ids[0]",
+      "log": "/tmp/ze44-root-read-mutant-far-endpoint.log"
+    },
+    {
+      "mutant": "wal-metadata",
+      "exit": 100,
+      "marker": "WAL/source binding corruption 3 was admitted",
+      "log": "/tmp/ze44-root-read-mutant-wal-metadata.log"
+    }
+  ],
+  "restored_exit": 0,
+  "source_hashes": {
+    "crates/zeppelin-embed/src/property_graph/storage/adjacency/read.rs": "9c7b6b30cd3a0f335447724cd354c6a27da4c75346b174f250161d027cfafd6d",
+    "crates/zeppelin-embed/src/property_graph/storage/adjacency/prepare.rs": "464fd42dcf65d229d4ecabc5222d180cee5d3b897806f01c70981ca1584f8e88"
+  }
+}

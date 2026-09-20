@@ -1,0 +1,16 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/crates/zeppelin-embed)
+error[E0502]: cannot borrow `p2` as mutable because it is also borrowed as immutable
+   --> crates/zeppelin-embed/tests/graph_storage_prepare/native_adjacency.rs:806:9
+    |
+803 |         let reader2 = NativeGraphReader::new(&p2,roots2,c2.sequence(),&catalog2,None);
+    |                                              --- immutable borrow occurs here
+...
+806 |         p2.finish(&mut r).unwrap();
+    |         ^^^^^^^^^^^^^^^^^ mutable borrow occurs here
+...
+828 |         assert_eq!(reader2.relationship_count(&mut r).unwrap(),1);
+    |                    ------- immutable borrow later used here
+
+For more information about this error, try `rustc --explain E0502`.
+error: could not compile `zeppelin-embed` (test "graph_storage_prepare") due to 1 previous error
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_storage_prepare` exited with code 101

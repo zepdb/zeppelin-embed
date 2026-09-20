@@ -1,0 +1,23 @@
+--- a/crates/zeppelin-embed/src/property_graph/storage/adjacency/read.rs
++++ b/crates/zeppelin-embed/src/property_graph/storage/adjacency/read.rs
+@@ -440,7 +440,7 @@
+     })
+ }
+ fn check_range(range: RelationshipRange) -> Result<(), TreeError> {
+-    if matches!(range.upper, UpperBound::Exclusive(upper) if upper <= range.lower) {
++    if matches!(range.upper, UpperBound::Exclusive(upper) if upper < range.lower) {
+         Err(invalid("relationship read interval"))
+     } else {
+         Ok(())
+--- a/crates/zeppelin-embed/tests/graph_storage_prepare.rs
++++ b/crates/zeppelin-embed/tests/graph_storage_prepare.rs
+@@ -329,6 +329,9 @@
+                 .unwrap()
+                 .is_some()
+         );
++        let first = RelId::new(rel + 1).unwrap();
++        let mut output = [reader.relationship(first, &mut r).unwrap().unwrap(); 1];
++        assert_eq!(reader.scan_relationships(zeppelin_embed::property_graph::storage::adjacency::RelationshipRange {lower: first, upper: zeppelin_embed::property_graph::storage::adjacency::UpperBound::Exclusive(first)}, &mut output, &mut r).unwrap(), 0, "empty read intervals are valid even though persisted ranges must be nonempty");
+         assert!(memory.peak_reserved_bytes() <= 32 * 1024 * 1024);
+     });
+ }

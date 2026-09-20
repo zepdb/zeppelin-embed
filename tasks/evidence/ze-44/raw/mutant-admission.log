@@ -1,0 +1,36 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.35s
+────────────
+ Nextest run ID a7b7ac3a-b24d-428a-a628-c880f6a363d4 with nextest profile: default
+    Starting 1 test across 1 binary (9 tests skipped)
+        FAIL [   0.130s] (1/1) zeppelin-embed::graph_storage_prepare native_adjacency::actual_native_producer_consolidates_before_ninth_run
+────────────
+     Summary [   0.131s] 1 test run: 0 passed, 1 failed, 9 skipped
+        FAIL [   0.130s] (1/1) zeppelin-embed::graph_storage_prepare native_adjacency::actual_native_producer_consolidates_before_ninth_run
+  stdout ───
+
+    running 1 test
+    test native_adjacency::actual_native_producer_consolidates_before_ninth_run ... FAILED
+
+    failures:
+
+    failures:
+        native_adjacency::actual_native_producer_consolidates_before_ninth_run
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.12s
+
+  stderr ───
+    history generation=1 edges=1 count=1 packs=2 work=1679529 storage_peak=2143584 shared=1468225
+    history generation=2 edges=2 count=1 packs=2 work=1434850 storage_peak=2143584 shared=1537068
+    history generation=3 edges=3 count=1 packs=2 work=1437868 storage_peak=2143584 shared=1606385
+    history generation=4 edges=4 count=1 packs=2 work=1440950 storage_peak=2143584 shared=1676272
+    history generation=5 edges=5 count=1 packs=2 work=1444096 storage_peak=2143584 shared=1746729
+    history generation=6 edges=6 count=1 packs=2 work=1447306 storage_peak=2143584 shared=1817756
+    history generation=7 edges=7 count=1 packs=2 work=1450580 storage_peak=2143584 shared=1889353
+    history generation=8 edges=8 count=1 packs=2 work=1453918 storage_peak=2143584 shared=1961520
+
+    thread 'native_adjacency::actual_native_producer_consolidates_before_ninth_run' (35171106) panicked at crates/zeppelin-embed/tests/graph_storage_prepare/native_adjacency.rs:527:10:
+    called `Result::unwrap()` on an `Err` value: Memory
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

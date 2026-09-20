@@ -1,0 +1,791 @@
+--- a/crates/zeppelin-embed/tests/graph_adjacency_store.rs
++++ b/crates/zeppelin-embed/tests/graph_adjacency_store.rs
+@@ -632,3 +632,29 @@
+         "an empty merged interval must be removed, never accepted as an invisible persisted range"
+     );
+ }
++
++#[test]
++fn outer_descriptor_fuzz_seeds_reach_expected_parser_outcomes() {
++    use zeppelin_embed::property_graph::storage::adjacency::RangeDescriptor;
++    use zeppelin_embed::property_graph::storage::tree::TreeKind;
++    let out = include_bytes!("../../../fuzz/seeds/native_graph_adjacency/descriptor-1-v1");
++    let incoming = include_bytes!("../../../fuzz/seeds/native_graph_adjacency/descriptor-2-v1");
++    let reserved =
++        include_bytes!("../../../fuzz/seeds/native_graph_adjacency/descriptor-reserved-byte");
++    for (kind, bytes) in [
++        (TreeKind::OutRanges, out.as_slice()),
++        (TreeKind::InRanges, incoming.as_slice()),
++    ] {
++        let value = RangeDescriptor::decode(kind, &bytes[..40], &bytes[40..]).unwrap();
++        assert_eq!(value.base_count(), 1);
++        assert_eq!(value.watermark(), 100);
++        let mut encoded = [0; 328];
++        value.encode(&mut encoded).unwrap();
++        assert_eq!(encoded, &bytes[40..]);
++    }
++    assert!(RangeDescriptor::decode(TreeKind::OutRanges, &[], &[]).is_err());
++    assert!(
++        RangeDescriptor::decode(TreeKind::OutRanges, &reserved[..40], &reserved[40..]).is_err()
++    );
++    assert!(RangeDescriptor::decode(TreeKind::InRanges, &out[..40], &out[40..]).is_err());
++}
+--- a/crates/zeppelin-embed/tests/graph_storage_prepare.rs
++++ b/crates/zeppelin-embed/tests/graph_storage_prepare.rs
+@@ -583,6 +583,47 @@
+                 scratch_objects.is_empty(),
+                 "failed base binding wrote artifacts {case}"
+             );
++        }
++
++        // Even matching root/WAL metadata cannot substitute a partial physical
++        // reference: the immutable source must recognize every exact field.
++        for offset_changed in [true, false] {
++            let mut state = actual_state;
++            let required = state.graph.slots[0].as_mut().unwrap();
++            if offset_changed {
++                required.block.offset += 1;
++            } else {
++                required.block.length += 1;
++            }
++            let mut references = source_roots.references();
++            references[0] = Some(required.block);
++            let altered_roots = GraphRoots::from_references(
++                source_roots.store(),
++                source_roots.generation(),
++                references,
++            )
++            .unwrap();
++            let mut scratch_objects = packed(&objects, 2, &memory, &mut r);
++            let result = prepare_native_graph(
++                &mut scratch_objects,
++                &no_changes,
++                NativeGraphBase {
++                    directories: DirectoryBase {
++                        roots: altered_roots,
++                        ..actual_base.directories
++                    },
++                    committed: state,
++                },
++                &next_catalog,
++                None,
++                &memory,
++                &mut r,
++            );
++            assert!(
++                result.is_err(),
++                "altered full reference (offset={offset_changed}) must fail"
++            );
++            assert!(scratch_objects.is_empty());
+         }
+ 
+         // A logically absent endpoint entry is also corruption, even while
+--- a/tasks/evidence/ze-44/interface-proposal.md
++++ b/tasks/evidence/ze-44/interface-proposal.md
+@@ -19,9 +19,9 @@
+ directory regressions only where the shared predecessor seam changes behavior.
+ An actual producer observer/runner extends `tests/adversarial` and its required
+ registry; it does not substitute synthetic paired arrays for real OUT/IN roots.
+-The independent primitive model is a proposed disjoint worker task under
+-`tests/adversarial-oracle/src/graph_adjacency_store.rs`; this worker will not
+-duplicate that expected-value implementation. No new dependency or broad suite.
++The independent primitive model is the reviewed, integrated ZE-129 module under
++`tests/adversarial-oracle/src/graph_adjacency_store.rs`; the actual adapter consumes
++that implementation without duplicating its expected-value logic. No new dependency or broad suite.
+ 
+ ## Range descriptor
+ 
+@@ -143,3 +143,32 @@
+ after the changed producer/failure route is registered. Nonessential broad
+ qualification stays ZE-118. Real WAL commit/recovery/publication remains with
+ its existing owner; no component test is labeled that qualification.
++
++## Implementation qualification checkpoints
++
++The compiled source checkpoint `/tmp/ze44-threshold-checkpoint` pins the accepted
++producer APIs and source hashes for the separate actual-runner adapter. Production
++remains identical to the independent producer review except the accepted read
++interval correction: equal lower/upper bounds return an empty query result;
++persisted descriptors still require strict nonempty bounds. The native writer
++retains the independent sequence and all eight exact RequiredRef slots for the
++sole coordinator's later recheck.
++
++The measured 200M mixed work allowance is an explicit test-operation choice,
++not a product/default write limit. Real 2049-pending qualification uses a declared
++finite 400M allowance and reports actual work. The original 200M typed refusal is
++retained. All approved logical and simultaneous 32/64/256MiB bounds are unchanged.
++The 4097 history uses bounded actual producer batches with the 200M allowance.
++Its test-only sink routes TreePage and other blocks into two existing
++PreparedObjects under one StorageMemory; every emitted file remains exact and
++its complete abort inventory is retained. Test RAM retains all record packs and
++page packs reachable from all eight real roots; every retained earlier snapshot
++continues owning its page packs. This is fixture packing/retention, not production
++GC/default-pack qualification. External fixture buffers, vectors and replacement
++overlap are charged to the real shared GraphResources. Post-finish file admission
++and final fresh-file reads are separate operations with explicitly reported work.
++No production counter is reset midway.
++
++Core evidence is consolidated in `core-qualification.md`. Independent runtime
++oracle/registry qualification remains a required final ZE-44 gate; no whole-ticket
++closure or ZE-45 public lease/admission/publication qualification is implied here.
+--- a/crates/zeppelin-embed/tests/graph_storage_prepare/native_adjacency.rs
++++ b/crates/zeppelin-embed/tests/graph_storage_prepare/native_adjacency.rs
+@@ -183,6 +183,20 @@
+         index: usize,
+     ) -> Result<zeppelin_embed::property_graph::storage::prepared::PreparedArtifact<'_>, TreeError>;
+ }
++impl<S: BlockSource, F: FnMut() -> Result<ArtifactIdentity, TreeError>> FinalPacks
++    for PreparedObjects<'_, '_, S, F>
++{
++    fn len(&self) -> usize {
++        PreparedObjects::len(self)
++    }
++    fn artifact(
++        &self,
++        index: usize,
++    ) -> Result<zeppelin_embed::property_graph::storage::prepared::PreparedArtifact<'_>, TreeError>
++    {
++        PreparedObjects::artifact(self, index)
++    }
++}
+ struct SplitPacks<'a, 'b, S, F> {
+     pages: PreparedObjects<'a, 'b, S, F>,
+     records: PreparedObjects<'a, 'b, S, F>,
+@@ -428,6 +442,60 @@
+         });
+     }
+     output
++}
++
++#[inline(never)]
++fn verify_fresh_final(
++    source: &impl BlockSource,
++    roots: GraphRoots,
++    state: CommitState<'_>,
++    base: &Fixture<'_>,
++    total: u128,
++    memory: &StorageMemory<'_>,
++) {
++    // A separate bounded read operation on fresh admitted file bytes,
++    // after all private packs were dropped. This allowance is fixture
++    // read work, independent of the measured producer allowance.
++    let mut verify = TreeResources::for_prepare(memory, 1_000_000_000).unwrap();
++    let catalog = Catalog {
++        base: base.identity,
++        symbols: &base.symbols,
++    };
++    let reader = NativeGraphReader::new(source, roots, state.sequence, &catalog, None);
++    assert_eq!(
++        reader.relationship_count(&mut verify).unwrap() as u128,
++        total
++    );
++    let mut scratch = RangeScratch::for_prepare(memory, &mut verify).unwrap();
++    for kind in [TreeKind::OutRanges, TreeKind::InRanges] {
++        let root = roots.directory(kind).unwrap();
++        let mut cursor = DirectoryCursor::seek(source, root, None, &mut verify).unwrap();
++        let mut found = 0u128;
++        while let Some(entry) = cursor.next_entry(&mut verify).unwrap() {
++            let range = validate_range(
++                source,
++                root,
++                entry,
++                state.sequence,
++                &mut scratch,
++                &mut verify,
++            )
++            .unwrap();
++            for edge in range.edges() {
++                found += 1;
++                assert_eq!(edge.rel.get(), Empty.high_waters().relationship + found);
++                assert_eq!(
++                    edge.neighbor.get(),
++                    Empty.high_waters().node + if kind == TreeKind::OutRanges { 2 } else { 1 }
++                );
++            }
++        }
++        assert_eq!(found, total);
++    }
++    eprintln!(
++        "fresh final file verification edges={total} work={}",
++        verify.work()
++    );
+ }
+ 
+ #[allow(clippy::too_many_arguments)]
+@@ -512,7 +580,12 @@
+         )
+         .unwrap();
+         let next_roots = candidate.roots();
+-        let total = batch.high_waters().relationship - Empty.high_waters().relationship;
++        let total =
++            state.high_waters.relationship - Empty.high_waters().relationship + count as u128;
++        assert_eq!(
++            batch.high_waters().relationship,
++            Empty.high_waters().relationship + total
++        );
+         let mut scratch = RangeScratch::for_prepare(memory, &mut r).unwrap();
+         for kind in [TreeKind::OutRanges, TreeKind::InRanges] {
+             let root = next_roots.directory(kind).unwrap();
+@@ -610,9 +683,11 @@
+         };
+         // Reserve the fixture's bounded clone before allocation. Its provenance
+         // borrows remain backed by the charged live staged batches below.
++        // Four descriptor copies cover Vec replacement overlap during the
++        // existing fixture builder; reconcile to exact retained capacity after.
+         let estimate = (base.entries.len() + batch.deltas().len())
+             * std::mem::size_of::<FixtureEntry<'_>>()
+-            * 2
++            * 4
+             + base
+                 .entries
+                 .iter()
+@@ -627,7 +702,7 @@
+                 .sum::<usize>()
+             + (base.symbols.len() + batch.symbols().len())
+                 * std::mem::size_of::<SymbolEntry<'_>>()
+-                * 2;
++                * 4;
+         let mut fixture_charge = shared.reserve(estimate).unwrap();
+         let next_base = base.after(&batch);
+         let actual = next_base.entries.capacity() * std::mem::size_of::<FixtureEntry<'_>>()
+@@ -641,6 +716,9 @@
+         assert!(actual <= estimate);
+         fixture_charge.resize(actual).unwrap();
+         drop(r);
++        if remaining.is_empty() {
++            verify_fresh_final(&frozen, next_roots, next_state, &next_base, total, memory);
++        }
+         history(
+             &next_base, &frozen, next_roots, next_state, remaining, work_limit, writer, memory,
+             shared, directory,
+@@ -648,6 +726,14 @@
+         drop(next_base);
+         drop(fixture_charge);
+     });
++    if generation == 1 {
++        eprintln!(
++            "history full shared_peak={} storage_peak={} writer_retained={}",
++            shared.peak_reserved_bytes().unwrap(),
++            memory.peak_reserved_bytes(),
++            writer.reserved_bytes()
++        );
++    }
+ }
+ 
+ #[test]
+@@ -741,3 +827,515 @@
+         directory.path(),
+     );
+ }
++#[test]
++fn property_only_with_detach_preserves_adjacency_then_raw_cleanup_is_paired() {
++    use std::cell::Cell;
++    let directory = tempfile::tempdir().unwrap();
++    let store = Store::open(
++        directory.path(),
++        OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
++    )
++    .unwrap();
++    let shared = GraphResources::from_store(&store).unwrap();
++    let writer = WriteMemory::new(&shared, WriteLimits::default()).unwrap();
++    let control = QueryControl::Cancel(CancelToken::new());
++    let memory = StorageMemory::new(&writer, &control, 32 * 1024 * 1024).unwrap();
++    let mut r = TreeResources::for_prepare(&memory, 100_000_000).unwrap();
++    let base = Fixture::empty();
++    let roots0 =
++        GraphRoots::from_references(base.identity.store, base.identity.generation, [None; 8])
++            .unwrap();
++    let node = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
++    let properties = [GraphProperty::new(
++        GraphName::new("changed").unwrap(),
++        PropertyValue::new(PropertyData::I64(7)).unwrap(),
++    )];
++    with_local_refs(|refs| {
++        let mut view = GraphBatchReadView::new(&base, &writer, 5, &mut |_| Ok(())).unwrap();
++        for index in 0..2 {
++            view.create(
++                BatchEntityRef::Node(NodeRef::Local(refs.node(index).unwrap())),
++                WriteImage::Node(&node),
++                &mut |_| Ok(()),
++            )
++            .unwrap();
++        }
++        for (index, target) in [1, 0, 1].into_iter().enumerate() {
++            view.create(
++                BatchEntityRef::Relationship(RelRef::Local(refs.relationship(index).unwrap())),
++                WriteImage::Relationship {
++                    source: NodeRef::Local(refs.node(0).unwrap()),
++                    target: NodeRef::Local(refs.node(target).unwrap()),
++                    relationship_type: GraphName::new("R").unwrap(),
++                    properties: &[],
++                },
++                &mut |_| Ok(()),
++            )
++            .unwrap();
++        }
++        let first = view.finish(&mut |_| Ok(())).unwrap();
++        let mut p1 = packed(&Missing, 1, &memory, &mut r);
++        let c1 = prepare_native_graph(
++            &mut p1,
++            &first,
++            NativeGraphBase {
++                directories: DirectoryBase {
++                    identity: base.identity,
++                    roots: roots0,
++                },
++                committed: bootstrap(base.identity, 100),
++            },
++            &Catalog {
++                base: base.identity,
++                symbols: &[],
++            },
++            None,
++            &memory,
++            &mut r,
++        )
++        .unwrap();
++        let roots1 = c1.roots();
++        p1.finish(&mut r).unwrap();
++        let state1 = state_after(
++            bootstrap(base.identity, 100),
++            &p1,
++            roots1,
++            first.high_waters(),
++        );
++        let base1 = base.after(&first);
++        let a = NodeId::new(Empty.high_waters().node + 1).unwrap();
++        let b = NodeId::new(Empty.high_waters().node + 2).unwrap();
++        let rels = [1, 2, 3].map(|i| RelId::new(Empty.high_waters().relationship + i).unwrap());
++        let mut view = GraphBatchReadView::new(&base1, &writer, 2, &mut |_| Ok(())).unwrap();
++        view.replace(
++            BatchEntityRef::Relationship(RelRef::Existing(rels[0])),
++            WriteImage::Relationship {
++                source: NodeRef::Existing(a),
++                target: NodeRef::Existing(b),
++                relationship_type: GraphName::new("R").unwrap(),
++                properties: &properties,
++            },
++            &mut |_| Ok(()),
++        )
++        .unwrap();
++        view.delete(
++            BatchEntityRef::Node(NodeRef::Existing(b)),
++            GraphDeleteMode::Detach,
++            &mut |_| Ok(()),
++        )
++        .unwrap();
++        let second = view.finish(&mut |_| Ok(())).unwrap();
++        assert_eq!(base1.incidents.get(), 0);
++        struct Trace<'a, S> {
++            source: &'a S,
++            adjacency: Cell<usize>,
++        }
++        impl<S: BlockSource> BlockSource for Trace<'_, S> {
++            fn resolve<'a>(
++                &'a self,
++                reference: PhysicalRef,
++                r: &mut TreeResources<'_>,
++            ) -> Result<FramedBlock<'a>, TreeError> {
++                if matches!(
++                    reference.kind,
++                    BlockKind::AdjacencyBase | BlockKind::AdjacencyDelta
++                ) {
++                    self.adjacency.set(self.adjacency.get() + 1);
++                }
++                self.source.resolve(reference, r)
++            }
++        }
++        let traced = Trace {
++            source: &p1,
++            adjacency: Cell::new(0),
++        };
++        let mut p2 = packed(&traced, 2, &memory, &mut r);
++        let c2 = prepare_native_graph(
++            &mut p2,
++            &second,
++            NativeGraphBase {
++                directories: DirectoryBase {
++                    identity: base1.identity,
++                    roots: roots1,
++                },
++                committed: state1,
++            },
++            &Catalog {
++                base: base1.identity,
++                symbols: &base1.symbols,
++            },
++            None,
++            &memory,
++            &mut r,
++        )
++        .unwrap();
++        assert_eq!(
++            traced.adjacency.get(),
++            0,
++            "property-only+DETACH reads constant root metadata but never an incident base/delta"
++        );
++        let roots2 = c2.roots();
++        for kind in [
++            TreeKind::OutRanges,
++            TreeKind::InRanges,
++            TreeKind::RelationshipTypes,
++        ] {
++            assert_eq!(
++                roots2.directory(kind).unwrap().reference(),
++                roots1.directory(kind).unwrap().reference()
++            );
++        }
++        assert_ne!(
++            record_ref(&p2, roots2, EntityId::Relationship(rels[0]), &mut r),
++            record_ref(&p1, roots1, EntityId::Relationship(rels[0]), &mut r)
++        );
++        let base2 = base1.after(&second);
++        let catalog2 = Catalog {
++            base: base2.identity,
++            symbols: &base2.symbols,
++        };
++        p2.finish(&mut r).unwrap();
++        let reader2 = NativeGraphReader::new(&p2, roots2, c2.sequence(), &catalog2, None);
++        assert_eq!(reader2.relationship_count(&mut r).unwrap(), 1);
++        assert!(reader2.relationship(rels[0], &mut r).unwrap().is_none());
++        let state2 = state_after(state1, &p2, roots2, second.high_waters());
++        let mut view = GraphBatchReadView::new(&base2, &writer, 3, &mut |_| Ok(())).unwrap();
++        for id in [rels[0], rels[1]] {
++            view.delete(
++                BatchEntityRef::Relationship(RelRef::Existing(id)),
++                GraphDeleteMode::Restrict,
++                &mut |_| Ok(()),
++            )
++            .unwrap();
++        }
++        view.delete(
++            BatchEntityRef::Node(NodeRef::Existing(a)),
++            GraphDeleteMode::Restrict,
++            &mut |_| Ok(()),
++        )
++        .unwrap();
++        let third = view.finish(&mut |_| Ok(())).unwrap();
++        assert!(
++            base2.incidents.get() > 0,
++            "plain DELETE checks admitted live incidents excluding explicit removals"
++        );
++        let mut p3 = packed(&p2, 3, &memory, &mut r);
++        let c3 = prepare_native_graph(
++            &mut p3,
++            &third,
++            NativeGraphBase {
++                directories: DirectoryBase {
++                    identity: base2.identity,
++                    roots: roots2,
++                },
++                committed: state2,
++            },
++            &catalog2,
++            None,
++            &memory,
++            &mut r,
++        )
++        .unwrap();
++        assert_eq!(rows(&p3, c3.roots(), TreeKind::Relationships, &mut r), 1);
++        let reader3 = NativeGraphReader::new(&p3, c3.roots(), c3.sequence(), &catalog2, None);
++        assert_eq!(reader3.relationship_count(&mut r).unwrap(), 0);
++        let mut scratch = RangeScratch::for_prepare(&memory, &mut r).unwrap();
++        for kind in [TreeKind::OutRanges, TreeKind::InRanges] {
++            let root = c3.roots().directory(kind).unwrap();
++            let mut cursor = DirectoryCursor::seek(&p3, root, None, &mut r).unwrap();
++            let entry = cursor.next_entry(&mut r).unwrap().unwrap();
++            let range =
++                validate_range(&p3, root, entry, c3.sequence(), &mut scratch, &mut r).unwrap();
++            assert_eq!(
++                range.edges(),
++                &[Edge {
++                    rel: rels[2],
++                    neighbor: if kind == TreeKind::OutRanges { b } else { a }
++                }]
++            );
++            assert!(cursor.next_entry(&mut r).unwrap().is_none());
++        }
++        assert_eq!(
++            NativeGraphReader::new(
++                &p1,
++                roots1,
++                c1.sequence(),
++                &Catalog {
++                    base: base1.identity,
++                    symbols: &base1.symbols
++                },
++                None
++            )
++            .relationship_count(&mut r)
++            .unwrap(),
++            3
++        );
++        assert_eq!(reader2.relationship_count(&mut r).unwrap(), 1);
++    });
++}
++
++#[test]
++fn native_candidate_faults_after_out_before_in_return_no_candidate() {
++    #[derive(Clone, Copy)]
++    enum Fault {
++        None,
++        Io,
++        Cancel,
++        Work,
++    }
++    struct Interrupted<'a, S> {
++        inner: &'a mut S,
++        token: &'a CancelToken,
++        fault: Fault,
++        bases: usize,
++    }
++    impl<S: BlockSource> BlockSource for Interrupted<'_, S> {
++        fn resolve<'a>(
++            &'a self,
++            reference: PhysicalRef,
++            r: &mut TreeResources<'_>,
++        ) -> Result<FramedBlock<'a>, TreeError> {
++            self.inner.resolve(reference, r)
++        }
++    }
++    impl<S: BlockSink> BlockSink for Interrupted<'_, S> {
++        fn append(
++            &mut self,
++            kind: BlockKind,
++            generation: GraphGeneration,
++            bytes: &[u8],
++            r: &mut TreeResources<'_>,
++        ) -> Result<PhysicalRef, TreeError> {
++            if kind == BlockKind::AdjacencyBase {
++                self.bases += 1;
++                if self.bases == 2 {
++                    match self.fault {
++                        Fault::None => (),
++                        Fault::Io => return Err(TreeError::Io(std::io::ErrorKind::Other.into())),
++                        Fault::Cancel => {
++                            self.token.cancel();
++                            r.step(0)?;
++                        }
++                        Fault::Work => r.step(100_000_001)?,
++                    }
++                }
++            }
++            self.inner.append(kind, generation, bytes, r)
++        }
++    }
++    for fault in [Fault::None, Fault::Io, Fault::Cancel, Fault::Work] {
++        let directory = tempfile::tempdir().unwrap();
++        let store = Store::open(
++            directory.path(),
++            OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
++        )
++        .unwrap();
++        let shared = GraphResources::from_store(&store).unwrap();
++        let writer = WriteMemory::new(&shared, WriteLimits::default()).unwrap();
++        let token = CancelToken::new();
++        let control = QueryControl::Cancel(token.clone());
++        let memory = StorageMemory::new(&writer, &control, 32 * 1024 * 1024).unwrap();
++        let mut r = TreeResources::for_prepare(&memory, 100_000_000).unwrap();
++        let before = memory.reserved_bytes();
++        let node = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
++        with_local_refs(|refs| {
++            let requests = [
++                StructuredWrite {
++                    key: ApplicationKey::new(EntityKind::Node, "app", "n").unwrap(),
++                    revision: GraphRevision::new(1).unwrap(),
++                    operation: StructuredOperation::Create,
++                    image: Some(WriteImage::Node(&node)),
++                },
++                StructuredWrite {
++                    key: ApplicationKey::new(EntityKind::Relationship, "app", "r").unwrap(),
++                    revision: GraphRevision::new(1).unwrap(),
++                    operation: StructuredOperation::Create,
++                    image: Some(WriteImage::Relationship {
++                        source: NodeRef::Local(refs.node(0).unwrap()),
++                        target: NodeRef::Local(refs.node(0).unwrap()),
++                        relationship_type: GraphName::new("R").unwrap(),
++                        properties: &[],
++                    }),
++                },
++            ];
++            let batch = stage_structured(&Empty, &requests, &writer, &mut |_| Ok(())).unwrap();
++            let base = Empty.identity();
++            let roots =
++                GraphRoots::from_references(base.store, base.generation, [None; 8]).unwrap();
++            let mut objects = packed(&Missing, 1, &memory, &mut r);
++            let mut interrupted = Interrupted {
++                inner: &mut objects,
++                token: &token,
++                fault,
++                bases: 0,
++            };
++            let result = prepare_native_graph(
++                &mut interrupted,
++                &batch,
++                NativeGraphBase {
++                    directories: DirectoryBase {
++                        identity: base,
++                        roots,
++                    },
++                    committed: bootstrap(base, 100),
++                },
++                &Catalog { base, symbols: &[] },
++                None,
++                &memory,
++                &mut r,
++            );
++            assert_eq!(
++                interrupted.bases, 2,
++                "identical preparation reaches the real reverse-direction append"
++            );
++            match fault {
++                Fault::None => assert!(result.is_ok()),
++                Fault::Io => assert!(matches!(&result, Err(TreeError::Io(_)))),
++                Fault::Cancel => assert!(matches!(&result, Err(TreeError::Control(_)))),
++                Fault::Work => assert!(matches!(&result, Err(TreeError::Work))),
++            }
++            drop(result);
++            assert!(!objects.is_empty());
++            assert_eq!(objects.abort_inventory().count(), objects.len());
++            assert!(objects.artifact(0).is_err());
++            assert!(
++                roots.references().iter().all(Option::is_none),
++                "base roots never change when a candidate fails"
++            );
++            drop(objects);
++            assert_eq!(
++                memory.reserved_bytes(),
++                before,
++                "all private pack/scratch/candidate capacity released"
++            );
++        });
++    }
++}
++
++#[cfg(feature = "allocation-audit")]
++#[test]
++fn native_adjacency_participant_attributes_and_refuses_each_real_allocation() {
++    use zeppelin_embed::adversarial_test_support::{audit_engine_path, fail_attributed_allocation};
++    let directory = tempfile::tempdir().unwrap();
++    let store = Store::open(
++        directory.path(),
++        OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
++    )
++    .unwrap();
++    let shared = GraphResources::from_store(&store).unwrap();
++    let writer = WriteMemory::new(&shared, WriteLimits::default()).unwrap();
++    let control = QueryControl::Cancel(CancelToken::new());
++    let memory = StorageMemory::new(&writer, &control, 32 * 1024 * 1024).unwrap();
++    let node = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
++    with_local_refs(|refs| {
++        let requests = [
++            StructuredWrite {
++                key: ApplicationKey::new(EntityKind::Node, "app", "n").unwrap(),
++                revision: GraphRevision::new(1).unwrap(),
++                operation: StructuredOperation::Create,
++                image: Some(WriteImage::Node(&node)),
++            },
++            StructuredWrite {
++                key: ApplicationKey::new(EntityKind::Relationship, "app", "r").unwrap(),
++                revision: GraphRevision::new(1).unwrap(),
++                operation: StructuredOperation::Create,
++                image: Some(WriteImage::Relationship {
++                    source: NodeRef::Local(refs.node(0).unwrap()),
++                    target: NodeRef::Local(refs.node(0).unwrap()),
++                    relationship_type: GraphName::new("R").unwrap(),
++                    properties: &[],
++                }),
++            },
++        ];
++        let batch = stage_structured(&Empty, &requests, &writer, &mut |_| Ok(())).unwrap();
++        let identity = Empty.identity();
++        let roots =
++            GraphRoots::from_references(identity.store, identity.generation, [None; 8]).unwrap();
++        let base = NativeGraphBase {
++            directories: DirectoryBase { identity, roots },
++            committed: bootstrap(identity, 100),
++        };
++        let catalog = Catalog {
++            base: identity,
++            symbols: &[],
++        };
++        let before = memory.reserved_bytes();
++        let allocations = {
++            let mut r = TreeResources::for_prepare(&memory, 100_000_000).unwrap();
++            let mut objects = packed(&Missing, 1, &memory, &mut r);
++            let (candidate, audit) = audit_engine_path(|| {
++                prepare_native_graph(&mut objects, &batch, base, &catalog, None, &memory, &mut r)
++            });
++            let candidate = candidate.unwrap();
++            assert_eq!(audit.unattributed_bytes, 0);
++            assert!(audit.allocations > 0);
++            assert!(
++                candidate
++                    .roots()
++                    .directory(TreeKind::OutRanges)
++                    .unwrap()
++                    .reference()
++                    .is_some()
++            );
++            assert!(
++                candidate
++                    .roots()
++                    .directory(TreeKind::InRanges)
++                    .unwrap()
++                    .reference()
++                    .is_some()
++            );
++            audit.allocations
++        };
++        assert_eq!(memory.reserved_bytes(), before);
++        for ordinal in 1..=allocations {
++            {
++                let mut r = TreeResources::for_prepare(&memory, 100_000_000).unwrap();
++                let mut objects = packed(&Missing, 1, &memory, &mut r);
++                let (result, fires) = fail_attributed_allocation(ordinal, || {
++                    prepare_native_graph(
++                        &mut objects,
++                        &batch,
++                        base,
++                        &catalog,
++                        None,
++                        &memory,
++                        &mut r,
++                    )
++                });
++                assert_eq!(fires, 1, "actual allocation {ordinal}/{allocations}");
++                assert!(
++                    matches!(&result, Err(TreeError::Memory)),
++                    "refusal {ordinal} yields no candidate"
++                );
++                drop(result);
++                assert_eq!(objects.abort_inventory().count(), objects.len());
++                assert!(objects.artifact(0).is_err());
++            }
++            assert_eq!(
++                memory.reserved_bytes(),
++                before,
++                "refusal {ordinal} releases every private owner"
++            );
++        }
++        let mut r = TreeResources::for_prepare(&memory, 100_000_000).unwrap();
++        let mut clean = packed(&Missing, 1, &memory, &mut r);
++        let candidate =
++            prepare_native_graph(&mut clean, &batch, base, &catalog, None, &memory, &mut r)
++                .unwrap();
++        clean.finish(&mut r).unwrap();
++        assert!(
++            candidate
++                .roots()
++                .directory(TreeKind::InRanges)
++                .unwrap()
++                .reference()
++                .is_some()
++        );
++        println!(
++            "ZE44 actual adjacency allocations={allocations} refusal_fires={allocations} unattributed_bytes=0 storage_peak={} shared_peak={}",
++            memory.peak_reserved_bytes(),
++            shared.peak_reserved_bytes().unwrap()
++        );
++    });
++}

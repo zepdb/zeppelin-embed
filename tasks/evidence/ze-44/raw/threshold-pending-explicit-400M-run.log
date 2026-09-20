@@ -1,0 +1,26 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.54s
+────────────
+ Nextest run ID 0ea6d944-4f75-450f-8570-25590ed3259a with nextest profile: default
+    Starting 1 test across 1 binary (7 tests skipped)
+        PASS [  25.900s] (1/1) zeppelin-embed::graph_storage_prepare native_adjacency::actual_native_producer_consolidates_before_2049_pending_entries
+────────────
+     Summary [  25.900s] 1 test run: 1 passed, 7 skipped
+        PASS [  25.900s] (1/1) zeppelin-embed::graph_storage_prepare native_adjacency::actual_native_producer_consolidates_before_2049_pending_entries
+  stdout ───
+
+    running 1 test
+    test native_adjacency::actual_native_producer_consolidates_before_2049_pending_entries ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 25.89s
+
+  stderr ───
+    history generation=1 edges=300 count=300 packs=24 work=178887852 storage_peak=13980736 shared=25433798
+    history generation=2 edges=600 count=300 packs=39 work=238201808 storage_peak=22029376 shared=53553788
+    history generation=3 edges=900 count=300 packs=39 work=244046707 storage_peak=22029376 shared=73897482
+    history generation=4 edges=1200 count=300 packs=39 work=244281428 storage_peak=22029376 shared=94395744
+    history generation=5 edges=1500 count=300 packs=39 work=247369119 storage_peak=22029376 shared=115065006
+    history generation=6 edges=1800 count=300 packs=39 work=248601821 storage_peak=22029376 shared=135921700
+    history generation=7 edges=2048 count=248 packs=33 work=206071823 storage_peak=22029376 shared=150243750
+    history generation=8 edges=2049 count=1 packs=1 work=6266481 storage_peak=22029376 shared=134349087
+

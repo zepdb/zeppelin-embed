@@ -1,14 +1,23 @@
-//! Bounded adjacency payload codecs and private consolidation kernels.
-//!
-//! Inputs must already be admitted immutable artifact payloads. This module
-//! does not resolve physical references or establish entity/view liveness.
-//! All output is private scratch until success; discard it on any error.
+//! Bounded adjacency codecs, immutable OUT/IN preparation and native reads.
+//! The retained source/catalog owner supplies the coherent admitted view. These
+//! components prepare private candidates and never publish or acquire a lease.
 
 mod codec;
 mod merge;
+mod prepare;
+mod range;
+mod read;
 use crate::property_graph::{NodeId, RelId, catalog::RelTypeId};
 pub use codec::{encode_base, encode_delta};
 pub use merge::{MERGE_STATE_BYTES, Merged, Partition, merge};
+pub use prepare::{NativeGraphBase, NativeGraphCandidate, prepare_native_graph};
+pub use range::{
+    RANGE_DESCRIPTOR_BYTES, RangeDescriptor, RangeEditContext, RangeScratch, ValidatedRange,
+    put_range, remove_range, validate_range,
+};
+pub use read::{
+    AdjacencyQuery, AdjacencyRow, NativeGraphReader, RelationshipRange, RelationshipRow,
+};
 
 /// Version-one inner header, including all required reserved bytes.
 pub const HEADER_BYTES: usize = 96;

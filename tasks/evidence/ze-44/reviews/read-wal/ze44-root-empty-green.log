@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed v0.4.2 (/private/tmp/ze44-root-read-probe/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.01s
+────────────
+ Nextest run ID 83c42020-319d-4f55-b975-cbf7150cdc75 with nextest profile: default
+    Starting 1 test across 1 binary (3 tests skipped)
+        PASS [   0.097s] (1/1) zeppelin-embed::graph_storage_prepare authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges
+────────────
+     Summary [   0.097s] 1 test run: 1 passed, 3 skipped

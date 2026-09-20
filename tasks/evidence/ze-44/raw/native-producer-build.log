@@ -1,0 +1,187 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/crates/zeppelin-embed)
+warning: unused import: `PhysicalRef`
+ --> crates/zeppelin-embed/src/property_graph/storage/adjacency/prepare/ranges.rs:3:59
+  |
+3 | use crate::property_graph::storage::artifact::{BlockKind, PhysicalRef};
+  |                                                           ^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+error[E0609]: no field `object` on type `fn(RequiredRef) -> Result<(), WalError> {reference}`
+   --> crates/zeppelin-embed/src/property_graph/wal/replay.rs:515:26
+    |
+515 |     descriptor(reference.object)?;
+    |                          ^^^^^^ unknown field
+    |
+    = note: the full name for the type has been written to '/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/target/debug/deps/zeppelin_embed-025e8be46cc31927.long-type-14761574059222531249.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+error[E0609]: no field `object` on type `fn(RequiredRef) -> Result<(), WalError> {reference}`
+   --> crates/zeppelin-embed/src/property_graph/wal/replay.rs:519:40
+    |
+519 |         || identity.store != reference.object.store
+    |                                        ^^^^^^ unknown field
+    |
+    = note: the full name for the type has been written to '/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/target/debug/deps/zeppelin_embed-025e8be46cc31927.long-type-14761574059222531249.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+error[E0609]: no field `object` on type `fn(RequiredRef) -> Result<(), WalError> {reference}`
+   --> crates/zeppelin-embed/src/property_graph/wal/replay.rs:520:43
+    |
+520 |         || identity.artifact != reference.object.artifact
+    |                                           ^^^^^^ unknown field
+    |
+    = note: the full name for the type has been written to '/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/target/debug/deps/zeppelin_embed-025e8be46cc31927.long-type-14761574059222531249.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+error[E0609]: no field `block` on type `fn(RequiredRef) -> Result<(), WalError> {reference}`
+   --> crates/zeppelin-embed/src/property_graph/wal/replay.rs:521:43
+    |
+521 |         || identity.artifact != reference.block.artifact
+    |                                           ^^^^^ unknown field
+    |
+    = note: the full name for the type has been written to '/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/target/debug/deps/zeppelin_embed-025e8be46cc31927.long-type-14761574059222531249.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+error[E0609]: no field `object` on type `fn(RequiredRef) -> Result<(), WalError> {reference}`
+   --> crates/zeppelin-embed/src/property_graph/wal/replay.rs:525:41
+    |
+525 |     if identity.generation != reference.object.generation
+    |                                         ^^^^^^ unknown field
+    |
+    = note: the full name for the type has been written to '/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/target/debug/deps/zeppelin_embed-025e8be46cc31927.long-type-14761574059222531249.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+error[E0609]: no field `object` on type `fn(RequiredRef) -> Result<(), WalError> {reference}`
+   --> crates/zeppelin-embed/src/property_graph/wal/replay.rs:526:50
+    |
+526 |         || identity.creation_serial != reference.object.serial
+    |                                                  ^^^^^^ unknown field
+    |
+    = note: the full name for the type has been written to '/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/target/debug/deps/zeppelin_embed-025e8be46cc31927.long-type-14761574059222531249.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+error[E0609]: no field `object` on type `fn(RequiredRef) -> Result<(), WalError> {reference}`
+   --> crates/zeppelin-embed/src/property_graph/wal/replay.rs:527:37
+    |
+527 |         || bytes.len() != reference.object.bytes as usize
+    |                                     ^^^^^^ unknown field
+    |
+    = note: the full name for the type has been written to '/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/target/debug/deps/zeppelin_embed-025e8be46cc31927.long-type-14761574059222531249.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+error[E0609]: no field `object` on type `fn(RequiredRef) -> Result<(), WalError> {reference}`
+   --> crates/zeppelin-embed/src/property_graph/wal/replay.rs:536:32
+    |
+536 |     if rd.u64(r)? != reference.object.checksum {
+    |                                ^^^^^^ unknown field
+    |
+    = note: the full name for the type has been written to '/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/target/debug/deps/zeppelin_embed-025e8be46cc31927.long-type-14761574059222531249.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+error[E0609]: no field `block` on type `fn(RequiredRef) -> Result<(), WalError> {reference}`
+   --> crates/zeppelin-embed/src/property_graph/wal/replay.rs:549:82
+    |
+549 |         if frame.reference(index).map_err(|_| WalError::Malformed)? == reference.block {
+    |                                                                                  ^^^^^ unknown field
+    |
+    = note: the full name for the type has been written to '/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/target/debug/deps/zeppelin_embed-025e8be46cc31927.long-type-14761574059222531249.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+error[E0609]: no field `block` on type `fn(RequiredRef) -> Result<(), WalError> {reference}`
+   --> crates/zeppelin-embed/src/property_graph/wal/replay.rs:557:44
+    |
+557 |     let offset = usize::try_from(reference.block.offset).map_err(|_| WalError::Malformed)?;
+    |                                            ^^^^^ unknown field
+    |
+    = note: the full name for the type has been written to '/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/target/debug/deps/zeppelin_embed-025e8be46cc31927.long-type-14761574059222531249.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+error[E0609]: no field `block` on type `fn(RequiredRef) -> Result<(), WalError> {reference}`
+   --> crates/zeppelin-embed/src/property_graph/wal/replay.rs:559:32
+    |
+559 |         .checked_add(reference.block.length as usize)
+    |                                ^^^^^ unknown field
+    |
+    = note: the full name for the type has been written to '/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/target/debug/deps/zeppelin_embed-025e8be46cc31927.long-type-14761574059222531249.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+error[E0609]: no field `block` on type `fn(RequiredRef) -> Result<(), WalError> {reference}`
+   --> crates/zeppelin-embed/src/property_graph/wal/replay.rs:566:26
+    |
+566 |             if reference.block.kind != BlockKind::TreePage
+    |                          ^^^^^ unknown field
+    |
+    = note: the full name for the type has been written to '/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/target/debug/deps/zeppelin_embed-025e8be46cc31927.long-type-14761574059222531249.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+error[E0609]: no field `block` on type `fn(RequiredRef) -> Result<(), WalError> {reference}`
+   --> crates/zeppelin-embed/src/property_graph/wal/replay.rs:585:26
+    |
+585 |             if reference.block.kind != BlockKind::CommitParticipant
+    |                          ^^^^^ unknown field
+    |
+    = note: the full name for the type has been written to '/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/target/debug/deps/zeppelin_embed-025e8be46cc31927.long-type-14761574059222531249.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+error[E0609]: no field `block` on type `fn(RequiredRef) -> Result<(), WalError> {reference}`
+   --> crates/zeppelin-embed/src/property_graph/wal/replay.rs:606:27
+    |
+606 |                 reference.block.kind,
+    |                           ^^^^^ unknown field
+    |
+    = note: the full name for the type has been written to '/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/target/debug/deps/zeppelin_embed-025e8be46cc31927.long-type-14761574059222531249.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+error: lifetime may not live long enough
+   --> crates/zeppelin-embed/src/property_graph/storage/adjacency/prepare/ranges.rs:329:17
+    |
+218 |     workspace: &mut Workspace<'_>,
+    |     --------- has type `&mut Workspace<'1>`
+219 |     tree: &mut TreeScratch<'_>,
+    |     ---- has type `&mut tree::directory::TreeScratch<'2>`
+...
+329 |         merged: &mut workspace.merged,
+    |                 ^^^^^^^^^^^^^^^^^^^^^ this usage requires that `'2` must outlive `'1`
+    |
+    = note: requirement occurs because of a mutable reference to `adjacency::range::RangeScratch<'_>`
+    = note: mutable references are invariant over their type parameter
+    = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
+help: consider introducing a named lifetime parameter
+    |
+210 ~     sink: &mut 'a, impl BlockSink,
+211 |     root: DirectoryRoot,
+...
+217 |     context: RangeEditContext,
+218 ~     workspace: &mut Workspace<'a>,
+219 ~     tree: &mut TreeScratch<'a>,
+    |
+
+error: lifetime may not live long enough
+   --> crates/zeppelin-embed/src/property_graph/storage/adjacency/prepare/ranges.rs:331:9
+    |
+218 |     workspace: &mut Workspace<'_>,
+    |     --------- has type `&mut Workspace<'1>`
+219 |     tree: &mut TreeScratch<'_>,
+    |     ---- has type `&mut tree::directory::TreeScratch<'2>`
+...
+331 |         tree,
+    |         ^^^^ this usage requires that `'1` must outlive `'2`
+    |
+    = note: requirement occurs because of a mutable reference to `tree::directory::TreeScratch<'_>`
+    = note: mutable references are invariant over their type parameter
+    = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
+help: consider introducing a named lifetime parameter
+    |
+210 ~     sink: &mut 'a, impl BlockSink,
+211 |     root: DirectoryRoot,
+...
+217 |     context: RangeEditContext,
+218 ~     workspace: &mut Workspace<'a>,
+219 ~     tree: &mut TreeScratch<'a>,
+    |
+
+For more information about this error, try `rustc --explain E0609`.
+warning: `zeppelin-embed` (lib) generated 1 warning
+error: could not compile `zeppelin-embed` (lib) due to 16 previous errors; 1 warning emitted
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_storage_prepare` exited with code 101

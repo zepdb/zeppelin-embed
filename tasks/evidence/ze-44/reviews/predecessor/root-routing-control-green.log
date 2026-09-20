@@ -1,0 +1,37 @@
+   Compiling zeppelin-embed v0.4.2 (/private/tmp/ze44-root-predecessor-check/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.59s
+────────────
+ Nextest run ID 958326b5-1acb-499e-9621-c749cb4eb319 with nextest profile: default
+    Starting 3 tests across 1 binary (31 tests skipped)
+        PASS [   0.022s] (1/3) zeppelin-embed::graph_directories root_review_predecessor_discards_previous_leaf_when_cancel_fires_during_read
+        PASS [   0.024s] (2/3) zeppelin-embed::graph_directories root_review_predecessor_rejects_missing_previous_leaf
+        PASS [   0.075s] (3/3) zeppelin-embed::graph_directories root_review_predecessor_ascends_between_branch_subtrees_and_releases_work_failures
+────────────
+     Summary [   0.076s] 3 tests run: 3 passed, 31 skipped
+        PASS [   0.022s] (1/3) zeppelin-embed::graph_directories root_review_predecessor_discards_previous_leaf_when_cancel_fires_during_read
+  stdout ───
+
+    running 1 test
+    test root_review_predecessor_discards_previous_leaf_when_cancel_fires_during_read ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.01s
+
+
+        PASS [   0.024s] (2/3) zeppelin-embed::graph_directories root_review_predecessor_rejects_missing_previous_leaf
+  stdout ───
+
+    running 1 test
+    test root_review_predecessor_rejects_missing_previous_leaf ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.01s
+
+
+        PASS [   0.075s] (3/3) zeppelin-embed::graph_directories root_review_predecessor_ascends_between_branch_subtrees_and_releases_work_failures
+  stdout ───
+
+    running 1 test
+    test root_review_predecessor_ascends_between_branch_subtrees_and_releases_work_failures ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.06s
+
+

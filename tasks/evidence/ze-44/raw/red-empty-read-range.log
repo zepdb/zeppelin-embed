@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.53s
+────────────
+ Nextest run ID 2323350e-5484-4a45-b82c-4a72861c8fce with nextest profile: default
+    Starting 1 test across 1 binary (3 tests skipped)
+        FAIL [   0.035s] (1/1) zeppelin-embed::graph_storage_prepare authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges
+  stdout ───
+
+    running 1 test
+    test authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges ... FAILED
+
+    failures:
+
+    failures:
+        authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.03s
+
+  stderr ───
+
+    thread 'authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges' (35056006) panicked at crates/zeppelin-embed/tests/graph_storage_prepare.rs:334:242:
+    called `Result::unwrap()` on an `Err` value: Invalid("relationship read interval")
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.035s] 1 test run: 0 passed, 1 failed, 3 skipped
+        FAIL [   0.035s] (1/1) zeppelin-embed::graph_storage_prepare authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges
+  stdout ───
+
+    running 1 test
+    test authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges ... FAILED
+
+    failures:
+
+    failures:
+        authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.03s
+
+  stderr ───
+
+    thread 'authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges' (35056006) panicked at crates/zeppelin-embed/tests/graph_storage_prepare.rs:334:242:
+    called `Result::unwrap()` on an `Err` value: Invalid("relationship read interval")
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

@@ -1,0 +1,20 @@
+{
+  "command": [
+    "cargo",
+    "nextest",
+    "run",
+    "-p",
+    "zeppelin-embed",
+    "--features",
+    "test-support",
+    "--test",
+    "graph_directories",
+    "-E",
+    "test(predecessor_seek_rejects_future_leaf_on_selected_and_previous_paths)",
+    "--success-output",
+    "final"
+  ],
+  "mutant_exit": 100,
+  "restored_exit": 0,
+  "restored_sha256": "6b3cee9d5b585cf0a2f5daf4128579d01d6264247e6db2b17ab438f26b8ddab7"
+}

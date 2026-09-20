@@ -95,6 +95,7 @@ packages = {package["name"]: package for package in metadata["packages"]}
 
 core_graph_tests = {
     "graph_adjacency",
+    "graph_adjacency_store",
     "graph_artifact",
     "graph_canonical",
     "graph_catalog",

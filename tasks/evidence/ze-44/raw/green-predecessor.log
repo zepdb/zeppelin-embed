@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.31s
+────────────
+ Nextest run ID c1ecd788-28fd-4961-b4e3-dbe7ecca8805 with nextest profile: default
+    Starting 1 test across 1 binary (28 tests skipped)
+        PASS [   1.810s] (1/1) zeppelin-embed::graph_directories predecessor_seek_crosses_leaves_without_scanning_prior_adjacency_groups
+────────────
+     Summary [   1.811s] 1 test run: 1 passed, 28 skipped

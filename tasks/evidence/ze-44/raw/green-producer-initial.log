@@ -1,0 +1,13 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.28s
+────────────
+ Nextest run ID 6d7a76aa-fde9-4824-a0e9-35b9e419e506 with nextest profile: default
+    Starting 6 tests across 2 binaries
+        PASS [   0.014s] (1/6) zeppelin-embed::graph_adjacency_store native_adjacency_descriptor_pins_every_byte_and_rejects_noncanonical_slots
+        PASS [   0.026s] (2/6) zeppelin-embed::graph_storage_prepare authentic_staged_batch_prepares_native_directories_inside_one_memory_owner
+        PASS [   0.033s] (3/6) zeppelin-embed::graph_adjacency_store native_adjacency_admits_complete_private_runs_and_original_leaf_generation
+        PASS [   0.049s] (4/6) zeppelin-embed::graph_storage_prepare authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges
+        PASS [   0.047s] (5/6) zeppelin-embed::graph_storage_prepare staged_updates_detach_delete_and_recreate_preserve_old_roots_and_permanent_fences
+        PASS [   0.457s] (6/6) zeppelin-embed::graph_storage_prepare native_index_preparation_sorts_chunk_spanning_arrays_in_the_shared_participant
+────────────
+     Summary [   0.471s] 6 tests run: 6 passed, 0 skipped

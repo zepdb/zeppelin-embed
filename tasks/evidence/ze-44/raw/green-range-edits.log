@@ -1,0 +1,9 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.24s
+────────────
+ Nextest run ID d80610cf-ce04-4d34-b063-cc00cd04a12b with nextest profile: default
+    Starting 2 tests across 1 binary
+        PASS [   0.013s] (1/2) zeppelin-embed::graph_adjacency_store native_adjacency_descriptor_pins_every_byte_and_rejects_noncanonical_slots
+        PASS [   0.022s] (2/2) zeppelin-embed::graph_adjacency_store native_adjacency_admits_complete_private_runs_and_original_leaf_generation
+────────────
+     Summary [   0.023s] 2 tests run: 2 passed, 0 skipped

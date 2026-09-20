@@ -1,0 +1,27 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/crates/zeppelin-embed)
+error[E0432]: unresolved imports `zeppelin_embed::property_graph::storage::adjacency::RangeEditContext`, `zeppelin_embed::property_graph::storage::adjacency::put_range`
+   --> crates/zeppelin-embed/tests/graph_adjacency_store.rs:104:9
+    |
+104 |         RangeEditContext, put_range,
+    |         ^^^^^^^^^^^^^^^^  ^^^^^^^^^ no `put_range` in `property_graph::storage::adjacency`
+    |         |
+    |         no `RangeEditContext` in `property_graph::storage::adjacency`
+
+error[E0599]: no function or associated item named `new` found for struct `RangeDescriptor` in the current scope
+   --> crates/zeppelin-embed/tests/graph_adjacency_store.rs:358:36
+    |
+358 |     let overlap = RangeDescriptor::new(overlap_key, 101, 1, overlap_base, &[], 0).unwrap();
+    |                                    ^^^ function or associated item not found in `RangeDescriptor`
+    |
+note: if you're trying to build a new `RangeDescriptor`, consider using `RangeDescriptor::decode` which returns `Result<RangeDescriptor, TreeError>`
+   --> /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/crates/zeppelin-embed/src/property_graph/storage/adjacency/range.rs:207:5
+    |
+207 |     pub fn decode(kind: TreeKind, key: &[u8], bytes: &[u8]) -> Result<Self, TreeError> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: there is a method `ne` with a similar name, but with different arguments
+   --> /rustc/254b59607d4417e9dffbc307138ae5c86280fe4c/library/core/src/cmp.rs:264:5
+
+Some errors have detailed explanations: E0432, E0599.
+For more information about an error, try `rustc --explain E0432`.
+error: could not compile `zeppelin-embed` (test "graph_adjacency_store") due to 2 previous errors
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_adjacency_store` exited with code 101

@@ -1,0 +1,59 @@
+diff --git a/crates/zeppelin-embed/src/property_graph/storage/participant.rs b/crates/zeppelin-embed/src/property_graph/storage/participant.rs
+index 01d37b6..fb27ad7 100644
+--- a/crates/zeppelin-embed/src/property_graph/storage/participant.rs
++++ b/crates/zeppelin-embed/src/property_graph/storage/participant.rs
+@@ -119,9 +119,9 @@ pub fn prepare_directories<'a, S: BlockSink>(
+         _charge: charge,
+     })
+ }
+-struct BatchCatalog<'a, C> {
+-    base: &'a C,
+-    additions: &'a [SymbolEntry<'a>],
++pub(super) struct BatchCatalog<'a, C> {
++    pub(super) base: &'a C,
++    pub(super) additions: &'a [SymbolEntry<'a>],
+ }
+ impl<S: BlockSource, C: RecordCatalog<S>> RecordCatalog<S> for BatchCatalog<'_, C> {
+     fn resolve(
+diff --git a/crates/zeppelin-embed/src/property_graph/storage/records.rs b/crates/zeppelin-embed/src/property_graph/storage/records.rs
+index cc8965d..2781d76 100644
+--- a/crates/zeppelin-embed/src/property_graph/storage/records.rs
++++ b/crates/zeppelin-embed/src/property_graph/storage/records.rs
+@@ -17,6 +17,7 @@ mod native;
+ pub use native::{RecordCatalog, RecordShape, RecordView, verify_record};
+ mod prepare;
+ pub use prepare::{RecordInput, prepare_record};
++pub(crate) use prepare::sort_by_symbol;
+ mod fence;
+ pub use fence::{FenceInput, FenceView, prepare_fence, verify_fence_entry};
+ mod tombstone;
+diff --git a/crates/zeppelin-embed/src/property_graph/storage/records/prepare.rs b/crates/zeppelin-embed/src/property_graph/storage/records/prepare.rs
+index c8c53a6..25c1990 100644
+--- a/crates/zeppelin-embed/src/property_graph/storage/records/prepare.rs
++++ b/crates/zeppelin-embed/src/property_graph/storage/records/prepare.rs
+@@ -198,9 +198,9 @@ fn unique<T>(
+     }
+     Ok(())
+ }
+-fn sort_by_symbol<T>(
++pub(crate) fn sort_by_symbol<T, K: Ord>(
+     items: &mut [T],
+-    key: impl Fn(&T) -> u64,
++    key: impl Fn(&T) -> K,
+     r: &mut TreeResources<'_>,
+ ) -> Result<(), TreeError> {
+     for start in (0..items.len() / 2).rev() {
+@@ -212,11 +212,11 @@ fn sort_by_symbol<T>(
+     }
+     r.step(0)
+ }
+-fn sift<T>(
++fn sift<T, K: Ord>(
+     items: &mut [T],
+     mut root: usize,
+     end: usize,
+-    key: &impl Fn(&T) -> u64,
++    key: &impl Fn(&T) -> K,
+     r: &mut TreeResources<'_>,
+ ) -> Result<(), TreeError> {
+     loop {

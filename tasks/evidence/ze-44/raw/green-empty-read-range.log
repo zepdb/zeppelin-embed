@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.08s
+────────────
+ Nextest run ID 78180080-cb05-46aa-8d4d-3afe10e02848 with nextest profile: default
+    Starting 1 test across 1 binary (3 tests skipped)
+        PASS [   0.034s] (1/1) zeppelin-embed::graph_storage_prepare authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges
+────────────
+     Summary [   0.035s] 1 test run: 1 passed, 3 skipped

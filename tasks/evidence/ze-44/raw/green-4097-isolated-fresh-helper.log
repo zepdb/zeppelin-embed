@@ -1,0 +1,57 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.44s
+────────────
+ Nextest run ID d36b52f7-ed9e-4bd9-b084-30c8d575a134 with nextest profile: default
+    Starting 1 test across 1 binary (11 tests skipped)
+        SLOW [> 60.000s] (───) zeppelin-embed::graph_storage_prepare native_adjacency::actual_native_producer_splits_4097_edges_from_bounded_batches
+        PASS [  71.228s] (1/1) zeppelin-embed::graph_storage_prepare native_adjacency::actual_native_producer_splits_4097_edges_from_bounded_batches
+────────────
+     Summary [  71.228s] 1 test run: 1 passed (1 slow), 11 skipped
+        SLOW [  71.228s] (1/1) zeppelin-embed::graph_storage_prepare native_adjacency::actual_native_producer_splits_4097_edges_from_bounded_batches
+  stdout ───
+
+    running 1 test
+    test native_adjacency::actual_native_producer_splits_4097_edges_from_bounded_batches ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 71.21s
+
+  stderr ───
+    history generation=1 edges=128 count=128 packs=11 work=60454543 storage_peak=6993088 shared=7030290
+    history generation=2 edges=256 count=128 packs=13 work=76085285 storage_peak=8066240 shared=9273204
+    history generation=3 edges=384 count=128 packs=17 work=89326786 storage_peak=10212544 shared=13584134
+    history generation=4 edges=512 count=128 packs=19 work=97563233 storage_peak=11285696 shared=16287168
+    history generation=5 edges=640 count=128 packs=19 work=97044496 storage_peak=11285696 shared=18006346
+    history generation=6 edges=768 count=128 packs=19 work=97754361 storage_peak=11285696 shared=19256124
+    history generation=7 edges=896 count=128 packs=19 work=98490819 storage_peak=11285696 shared=21630622
+    history generation=8 edges=1024 count=128 packs=19 work=98391557 storage_peak=11285696 shared=23552344
+    history generation=9 edges=1152 count=128 packs=19 work=100660823 storage_peak=11285696 shared=25610418
+    history generation=10 edges=1280 count=128 packs=19 work=98537438 storage_peak=11285696 shared=28203892
+    history generation=11 edges=1408 count=128 packs=19 work=99972277 storage_peak=11285696 shared=29818566
+    history generation=12 edges=1536 count=128 packs=19 work=99105106 storage_peak=11285696 shared=32557864
+    history generation=13 edges=1664 count=128 packs=19 work=100546218 storage_peak=11285696 shared=34844386
+    history generation=14 edges=1792 count=128 packs=19 work=100536327 storage_peak=11285696 shared=37729700
+    history generation=15 edges=1920 count=128 packs=19 work=101088833 storage_peak=11285696 shared=40162142
+    history generation=16 edges=2048 count=128 packs=19 work=102534254 storage_peak=11285696 shared=42683880
+    history generation=17 edges=2176 count=128 packs=19 work=101407013 storage_peak=11285696 shared=44736218
+    history generation=18 edges=2304 count=128 packs=19 work=104702784 storage_peak=11285696 shared=47524564
+    history generation=19 edges=2432 count=128 packs=19 work=101475808 storage_peak=11285696 shared=50774678
+    history generation=20 edges=2560 count=128 packs=19 work=103106521 storage_peak=11285696 shared=53571920
+    history generation=21 edges=2688 count=128 packs=19 work=102601226 storage_peak=11285696 shared=56967954
+    history generation=22 edges=2816 count=128 packs=19 work=103580810 storage_peak=11285696 shared=59385188
+    history generation=23 edges=2944 count=128 packs=19 work=104182913 storage_peak=11285696 shared=62927046
+    history generation=24 edges=3072 count=128 packs=19 work=104304566 storage_peak=11285696 shared=66016128
+    history generation=25 edges=3200 count=128 packs=19 work=105915512 storage_peak=11285696 shared=69178074
+    history generation=26 edges=3328 count=128 packs=19 work=105028274 storage_peak=11285696 shared=72938908
+    history generation=27 edges=3456 count=128 packs=19 work=109167649 storage_peak=11285696 shared=75948318
+    history generation=28 edges=3584 count=128 packs=19 work=104528963 storage_peak=11285696 shared=79329048
+    history generation=29 edges=3712 count=128 packs=19 work=106157951 storage_peak=11285696 shared=82782834
+    history generation=30 edges=3840 count=128 packs=19 work=106202176 storage_peak=11285696 shared=86835508
+    history generation=31 edges=3968 count=128 packs=19 work=106950900 storage_peak=11285696 shared=90435310
+    history generation=32 edges=4093 count=125 packs=19 work=105661236 storage_peak=11285696 shared=93907867
+    history generation=33 edges=4094 count=1 packs=2 work=7339537 storage_peak=11285696 shared=87173358
+    history generation=34 edges=4095 count=1 packs=2 work=7294391 storage_peak=11285696 shared=89607979
+    history generation=35 edges=4096 count=1 packs=2 work=7430027 storage_peak=11285696 shared=92043170
+    history generation=36 edges=4097 count=1 packs=2 work=13130187 storage_peak=11285696 shared=94774211
+    fresh final file verification edges=4097 work=24046273
+    history full shared_peak=98105711 storage_peak=11285696 writer_retained=80
+

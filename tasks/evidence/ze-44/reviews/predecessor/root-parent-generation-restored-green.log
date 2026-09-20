@@ -1,0 +1,17 @@
+   Compiling zeppelin-embed v0.4.2 (/private/tmp/ze44-root-predecessor-check/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.14s
+────────────
+ Nextest run ID b0003526-80a0-4244-ae1b-e38c8614a00e with nextest profile: default
+    Starting 1 test across 1 binary (32 tests skipped)
+        PASS [   0.023s] (1/1) zeppelin-embed::graph_directories predecessor_seek_rejects_future_leaf_on_selected_and_previous_paths
+────────────
+     Summary [   0.023s] 1 test run: 1 passed, 32 skipped
+        PASS [   0.023s] (1/1) zeppelin-embed::graph_directories predecessor_seek_rejects_future_leaf_on_selected_and_previous_paths
+  stdout ───
+
+    running 1 test
+    test predecessor_seek_rejects_future_leaf_on_selected_and_previous_paths ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 32 filtered out; finished in 0.01s
+
+

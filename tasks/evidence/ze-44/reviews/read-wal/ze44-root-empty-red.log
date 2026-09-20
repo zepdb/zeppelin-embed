@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed v0.4.2 (/private/tmp/ze44-root-read-probe/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.45s
+────────────
+ Nextest run ID e95e6212-b06e-4dc6-bb34-8a0fb5dcb079 with nextest profile: default
+    Starting 1 test across 1 binary (3 tests skipped)
+        FAIL [   0.097s] (1/1) zeppelin-embed::graph_storage_prepare authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges
+  stdout ───
+
+    running 1 test
+    test authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges ... FAILED
+
+    failures:
+
+    failures:
+        authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.08s
+
+  stderr ───
+
+    thread 'authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges' (35087935) panicked at crates/zeppelin-embed/tests/graph_storage_prepare.rs:513:76:
+    called `Result::unwrap()` on an `Err` value: Invalid("relationship read interval")
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.097s] 1 test run: 0 passed, 1 failed, 3 skipped
+        FAIL [   0.097s] (1/1) zeppelin-embed::graph_storage_prepare authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges
+  stdout ───
+
+    running 1 test
+    test authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges ... FAILED
+
+    failures:
+
+    failures:
+        authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.08s
+
+  stderr ───
+
+    thread 'authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges' (35087935) panicked at crates/zeppelin-embed/tests/graph_storage_prepare.rs:513:76:
+    called `Result::unwrap()` on an `Err` value: Invalid("relationship read interval")
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.71s
+────────────
+ Nextest run ID 49db93fb-a08d-4a67-9f9f-fd7e3a70ce18 with nextest profile: default
+    Starting 1 test across 1 binary (34 tests skipped)
+        PASS [   0.018s] (1/1) zeppelin-embed::graph_directories prepared_native_record_sorts_symbols_without_rewriting_canonical_contents
+────────────
+     Summary [   0.018s] 1 test run: 1 passed, 34 skipped

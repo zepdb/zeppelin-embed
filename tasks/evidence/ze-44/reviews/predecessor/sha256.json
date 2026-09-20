@@ -1,0 +1,7 @@
+{
+  "crates/zeppelin-embed/src/property_graph/storage/tree/directory.rs": "6b3cee9d5b585cf0a2f5daf4128579d01d6264247e6db2b17ab438f26b8ddab7",
+  "crates/zeppelin-embed/tests/graph_directories.rs": "9f2d43b02844b15ca4adc355f7e5f6b42e27daaf373ae0fce8873b507f3ba7ac",
+  "red-predecessor-api.log": "eb19dccaa3717a841966246f806344926250489076f923ef6a77cfc188a2dc23",
+  "green-predecessor.log": "80324e973c9b731b0e3bcf19bc6c52a37237b720a5fde652b0766e1e7f4f8cc4",
+  "green-predecessor-paths.log": "483f5a3fec57fe939ef7a3012c19267023525169344c8fa710ed62f33367ef1c"
+}

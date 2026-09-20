@@ -17,6 +17,7 @@ mod native;
 pub use native::{RecordCatalog, RecordShape, RecordView, verify_record};
 mod prepare;
 pub use prepare::{RecordInput, prepare_record};
+pub(crate) use prepare::sort_by_symbol;
 mod fence;
 pub use fence::{FenceInput, FenceView, prepare_fence, verify_fence_entry};
 mod tombstone;

@@ -311,6 +311,19 @@ pub struct Envelope<'a> {
 mod codec;
 mod framing;
 pub use framing::{encode_envelope, encode_header};
+/// Metadata-only binding reused by the native storage participant. The retained
+/// artifact owner still admits complete bytes/checksum and the coherent lease.
+pub(crate) fn validate_graph_root_reference(
+    state: CommitState<'_>,
+    reference: RequiredRef,
+) -> Result<(), WalError> {
+    framing::validate_ref(
+        reference,
+        state,
+        super::storage::artifact::BlockKind::TreePage,
+    )?;
+    codec::validate_reference_geometry(reference)
+}
 mod replay;
 pub use replay::{
     ChangeReader, ParticipantRole, Replay, ReplayEnd, ReplayStep, ReplayValidator, RequiredRole,

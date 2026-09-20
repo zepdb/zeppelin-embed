@@ -1,0 +1,582 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.58s
+────────────
+ Nextest run ID a2bc69d5-c9ba-43db-ab2d-0f50ca74f88f with nextest profile: default
+    Starting 51 tests across 3 binaries
+        PASS [   0.009s] ( 1/51) zeppelin-embed::graph_adjacency_store outer_descriptor_fuzz_seeds_reach_expected_parser_outcomes
+        PASS [   0.009s] ( 2/51) zeppelin-embed::graph_adjacency_store native_adjacency_descriptor_pins_every_byte_and_rejects_noncanonical_slots
+        PASS [   0.011s] ( 3/51) zeppelin-embed::graph_directories cancellation_after_final_sink_resolution_returns_no_prepared_root
+        PASS [   0.008s] ( 4/51) zeppelin-embed::graph_directories canonical_storage_walk_preserves_typed_empty_and_scalar_bits
+        PASS [   0.011s] ( 5/51) zeppelin-embed::graph_directories cow_does_not_legitimize_future_unselected_branch_child
+        PASS [   0.022s] ( 6/51) zeppelin-embed::graph_adjacency_store native_adjacency_admits_complete_private_runs_and_original_leaf_generation
+        PASS [   0.017s] ( 7/51) zeppelin-embed::graph_directories graph_root_bundle_retains_typed_full_width_label_and_type_directories
+        PASS [   0.013s] ( 8/51) zeppelin-embed::graph_directories immutable_directory_preserves_full_ids_and_old_root_values
+        PASS [   0.030s] ( 9/51) zeppelin-embed::graph_directories inventory_directory_preserves_exact_descriptors_without_granting_liveness
+        PASS [   0.032s] (10/51) zeppelin-embed::graph_directories keyed_fence_retains_complete_history_and_checks_containing_leaf_generation
+        PASS [   0.025s] (11/51) zeppelin-embed::graph_directories lossless_extent_payloads_read_across_chunks_and_preserve_relocated_bytes
+        PASS [   0.374s] (12/51) zeppelin-embed::graph_directories derived_record_stream_spans_objects_without_relaxing_canonical_input_cap
+        PASS [   0.011s] (13/51) zeppelin-embed::graph_directories native_record_requires_complete_canonical_index_labels_and_provenance
+        PASS [   0.009s] (14/51) zeppelin-embed::graph_directories node_tombstone_preserves_full_deletion_provenance_without_dead_payloads
+        PASS [   2.991s] (15/51) zeppelin-embed::graph_directories overflow_keys_compare_full_eight_mib_and_cursor_preserves_exact_bytes
+        PASS [   0.035s] (16/51) zeppelin-embed::graph_directories packed_private_sink_reopens_files_and_keeps_unchanged_old_roots
+        PASS [   0.009s] (17/51) zeppelin-embed::graph_directories predecessor_rejects_malformed_probe_even_on_empty_root
+        PASS [   4.237s] (18/51) zeppelin-embed::graph_directories directory_cursor_matches_ordered_map_after_middle_first_and_last_deletes
+        PASS [   0.015s] (19/51) zeppelin-embed::graph_directories predecessor_seek_rejects_future_leaf_on_selected_and_previous_paths
+        PASS [   0.008s] (20/51) zeppelin-embed::graph_directories preparation_capacity_is_shared_by_scratch_buffers_and_writer
+        PASS [   0.008s] (21/51) zeppelin-embed::graph_directories preparation_reservations_release_on_allocator_and_lower_owner_failures
+        PASS [   0.008s] (22/51) zeppelin-embed::graph_directories prepared_native_record_sorts_symbols_without_rewriting_canonical_contents
+        PASS [   0.028s] (23/51) zeppelin-embed::graph_directories provenance_storage_walk_retains_complete_fields_and_split_utf8_keys
+        PASS [   0.008s] (24/51) zeppelin-embed::graph_directories read_resources_charge_their_shared_fixed_working_set
+        PASS [   0.011s] (25/51) zeppelin-embed::graph_directories relationship_record_correlates_full_topology_and_rejects_future_payloads
+        PASS [   0.019s] (26/51) zeppelin-embed::graph_directories reopened_near_page_inline_key_normalizes_without_changing_logical_bytes
+        PASS [   0.014s] (27/51) zeppelin-embed::graph_directories retained_payload_slices_bound_cross_chunk_utf8_and_cursor_fields
+        PASS [   0.010s] (28/51) zeppelin-embed::graph_directories root_collapse_rejects_wrong_level_in_the_surviving_sibling
+        PASS [   0.061s] (29/51) zeppelin-embed::graph_directories root_review_predecessor_ascends_between_branch_subtrees_and_releases_work_failures
+        PASS [   0.013s] (30/51) zeppelin-embed::graph_directories root_review_predecessor_discards_previous_leaf_when_cancel_fires_during_read
+        PASS [   0.007s] (31/51) zeppelin-embed::graph_directories root_review_predecessor_rejects_malformed_probe_even_on_empty_root
+        PASS [   0.015s] (32/51) zeppelin-embed::graph_directories root_review_predecessor_rejects_missing_previous_leaf
+        PASS [   0.021s] (33/51) zeppelin-embed::graph_directories sequential_provenance_preparation_matches_shared_codec_and_preserves_typed_errors
+        PASS [   0.008s] (34/51) zeppelin-embed::graph_directories tree_scratch_charges_real_shared_capacity_and_releases_before_other_work
+        PASS [   0.054s] (35/51) zeppelin-embed::graph_directories typed_fence_probes_stream_long_keys_without_copying_or_writing_on_lookup
+        PASS [   0.015s] (36/51) zeppelin-embed::graph_directories whole_directory_verifier_rejects_corruption_on_an_unvisited_point_path
+        PASS [   0.083s] (37/51) zeppelin-embed::graph_storage_prepare authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges
+        PASS [   0.015s] (38/51) zeppelin-embed::graph_storage_prepare authentic_staged_batch_prepares_native_directories_inside_one_memory_owner
+        PASS [   4.849s] (39/51) zeppelin-embed::graph_directories directory_leaf_splits_preserve_old_roots_and_share_untouched_pages
+        PASS [   0.115s] (40/51) zeppelin-embed::graph_storage_prepare native_adjacency::actual_native_producer_consolidates_before_ninth_run
+        PASS [   1.862s] (41/51) zeppelin-embed::graph_directories predecessor_seek_crosses_leaves_without_scanning_prior_adjacency_groups
+        PASS [   1.771s] (42/51) zeppelin-embed::graph_storage_prepare native_adjacency::actual_native_producer_refuses_large_batch_at_unchanged_work_limit
+        PASS [   0.040s] (43/51) zeppelin-embed::graph_storage_prepare native_adjacency::native_adjacency_participant_attributes_and_refuses_each_real_allocation
+        PASS [   0.029s] (44/51) zeppelin-embed::graph_storage_prepare native_adjacency::native_candidate_faults_after_out_before_in_return_no_candidate
+        PASS [   0.050s] (45/51) zeppelin-embed::graph_storage_prepare native_adjacency::property_only_with_detach_preserves_adjacency_then_raw_cleanup_is_paired
+        PASS [   0.471s] (46/51) zeppelin-embed::graph_storage_prepare native_index_preparation_sorts_chunk_spanning_arrays_in_the_shared_participant
+        PASS [   0.012s] (47/51) zeppelin-embed::graph_storage_prepare native_participant_accounts_all_allocations_and_releases_each_failed_attempt
+        PASS [   0.042s] (48/51) zeppelin-embed::graph_storage_prepare staged_updates_detach_delete_and_recreate_preserve_old_roots_and_permanent_fences
+        PASS [  14.388s] (49/51) zeppelin-embed::graph_directories multilevel_directory_deletion_restores_last_bounds_and_collapses_root
+        PASS [  26.650s] (50/51) zeppelin-embed::graph_storage_prepare native_adjacency::actual_native_producer_consolidates_before_2049_pending_entries
+        SLOW [> 60.000s] (─────) zeppelin-embed::graph_storage_prepare native_adjacency::actual_native_producer_splits_4097_edges_from_bounded_batches
+     SIGABRT [  70.470s] (51/51) zeppelin-embed::graph_storage_prepare native_adjacency::actual_native_producer_splits_4097_edges_from_bounded_batches
+────────────
+     Summary [  75.778s] 51 tests run: 50 passed, 1 failed, 0 skipped
+        PASS [   0.009s] ( 1/51) zeppelin-embed::graph_adjacency_store outer_descriptor_fuzz_seeds_reach_expected_parser_outcomes
+  stdout ───
+
+    running 1 test
+    test outer_descriptor_fuzz_seeds_reach_expected_parser_outcomes ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] ( 2/51) zeppelin-embed::graph_adjacency_store native_adjacency_descriptor_pins_every_byte_and_rejects_noncanonical_slots
+  stdout ───
+
+    running 1 test
+    test native_adjacency_descriptor_pins_every_byte_and_rejects_noncanonical_slots ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] ( 3/51) zeppelin-embed::graph_directories cancellation_after_final_sink_resolution_returns_no_prepared_root
+  stdout ───
+
+    running 1 test
+    test cancellation_after_final_sink_resolution_returns_no_prepared_root ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] ( 4/51) zeppelin-embed::graph_directories canonical_storage_walk_preserves_typed_empty_and_scalar_bits
+  stdout ───
+
+    running 1 test
+    test canonical_storage_walk_preserves_typed_empty_and_scalar_bits ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] ( 5/51) zeppelin-embed::graph_directories cow_does_not_legitimize_future_unselected_branch_child
+  stdout ───
+
+    running 1 test
+    test cow_does_not_legitimize_future_unselected_branch_child ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.00s
+
+
+        PASS [   0.022s] ( 6/51) zeppelin-embed::graph_adjacency_store native_adjacency_admits_complete_private_runs_and_original_leaf_generation
+  stdout ───
+
+    running 1 test
+    test native_adjacency_admits_complete_private_runs_and_original_leaf_generation ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.01s
+
+
+        PASS [   0.017s] ( 7/51) zeppelin-embed::graph_directories graph_root_bundle_retains_typed_full_width_label_and_type_directories
+  stdout ───
+
+    running 1 test
+    test graph_root_bundle_retains_typed_full_width_label_and_type_directories ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.01s
+
+
+        PASS [   0.013s] ( 8/51) zeppelin-embed::graph_directories immutable_directory_preserves_full_ids_and_old_root_values
+  stdout ───
+
+    running 1 test
+    test immutable_directory_preserves_full_ids_and_old_root_values ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.01s
+
+
+        PASS [   0.030s] ( 9/51) zeppelin-embed::graph_directories inventory_directory_preserves_exact_descriptors_without_granting_liveness
+  stdout ───
+
+    running 1 test
+    test inventory_directory_preserves_exact_descriptors_without_granting_liveness ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.02s
+
+
+        PASS [   0.032s] (10/51) zeppelin-embed::graph_directories keyed_fence_retains_complete_history_and_checks_containing_leaf_generation
+  stdout ───
+
+    running 1 test
+    test keyed_fence_retains_complete_history_and_checks_containing_leaf_generation ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.03s
+
+
+        PASS [   0.025s] (11/51) zeppelin-embed::graph_directories lossless_extent_payloads_read_across_chunks_and_preserve_relocated_bytes
+  stdout ───
+
+    running 1 test
+    test lossless_extent_payloads_read_across_chunks_and_preserve_relocated_bytes ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.02s
+
+
+        PASS [   0.374s] (12/51) zeppelin-embed::graph_directories derived_record_stream_spans_objects_without_relaxing_canonical_input_cap
+  stdout ───
+
+    running 1 test
+    test derived_record_stream_spans_objects_without_relaxing_canonical_input_cap ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.37s
+
+
+        PASS [   0.011s] (13/51) zeppelin-embed::graph_directories native_record_requires_complete_canonical_index_labels_and_provenance
+  stdout ───
+
+    running 1 test
+    test native_record_requires_complete_canonical_index_labels_and_provenance ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] (14/51) zeppelin-embed::graph_directories node_tombstone_preserves_full_deletion_provenance_without_dead_payloads
+  stdout ───
+
+    running 1 test
+    test node_tombstone_preserves_full_deletion_provenance_without_dead_payloads ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.00s
+
+
+        PASS [   2.991s] (15/51) zeppelin-embed::graph_directories overflow_keys_compare_full_eight_mib_and_cursor_preserves_exact_bytes
+  stdout ───
+
+    running 1 test
+    test overflow_keys_compare_full_eight_mib_and_cursor_preserves_exact_bytes ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 2.98s
+
+
+        PASS [   0.035s] (16/51) zeppelin-embed::graph_directories packed_private_sink_reopens_files_and_keeps_unchanged_old_roots
+  stdout ───
+
+    running 1 test
+    test packed_private_sink_reopens_files_and_keeps_unchanged_old_roots ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.03s
+
+
+        PASS [   0.009s] (17/51) zeppelin-embed::graph_directories predecessor_rejects_malformed_probe_even_on_empty_root
+  stdout ───
+
+    running 1 test
+    test predecessor_rejects_malformed_probe_even_on_empty_root ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.00s
+
+
+        PASS [   4.237s] (18/51) zeppelin-embed::graph_directories directory_cursor_matches_ordered_map_after_middle_first_and_last_deletes
+  stdout ───
+
+    running 1 test
+    test directory_cursor_matches_ordered_map_after_middle_first_and_last_deletes ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 4.23s
+
+
+        PASS [   0.015s] (19/51) zeppelin-embed::graph_directories predecessor_seek_rejects_future_leaf_on_selected_and_previous_paths
+  stdout ───
+
+    running 1 test
+    test predecessor_seek_rejects_future_leaf_on_selected_and_previous_paths ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.01s
+
+
+        PASS [   0.008s] (20/51) zeppelin-embed::graph_directories preparation_capacity_is_shared_by_scratch_buffers_and_writer
+  stdout ───
+
+    running 1 test
+    test preparation_capacity_is_shared_by_scratch_buffers_and_writer ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (21/51) zeppelin-embed::graph_directories preparation_reservations_release_on_allocator_and_lower_owner_failures
+  stdout ───
+
+    running 1 test
+    test preparation_reservations_release_on_allocator_and_lower_owner_failures ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (22/51) zeppelin-embed::graph_directories prepared_native_record_sorts_symbols_without_rewriting_canonical_contents
+  stdout ───
+
+    running 1 test
+    test prepared_native_record_sorts_symbols_without_rewriting_canonical_contents ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.00s
+
+
+        PASS [   0.028s] (23/51) zeppelin-embed::graph_directories provenance_storage_walk_retains_complete_fields_and_split_utf8_keys
+  stdout ───
+
+    running 1 test
+    test provenance_storage_walk_retains_complete_fields_and_split_utf8_keys ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.02s
+
+
+        PASS [   0.008s] (24/51) zeppelin-embed::graph_directories read_resources_charge_their_shared_fixed_working_set
+  stdout ───
+
+    running 1 test
+    test read_resources_charge_their_shared_fixed_working_set ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] (25/51) zeppelin-embed::graph_directories relationship_record_correlates_full_topology_and_rejects_future_payloads
+  stdout ───
+
+    running 1 test
+    test relationship_record_correlates_full_topology_and_rejects_future_payloads ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.00s
+
+
+        PASS [   0.019s] (26/51) zeppelin-embed::graph_directories reopened_near_page_inline_key_normalizes_without_changing_logical_bytes
+  stdout ───
+
+    running 1 test
+    test reopened_near_page_inline_key_normalizes_without_changing_logical_bytes ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.01s
+
+
+        PASS [   0.014s] (27/51) zeppelin-embed::graph_directories retained_payload_slices_bound_cross_chunk_utf8_and_cursor_fields
+  stdout ───
+
+    running 1 test
+    test retained_payload_slices_bound_cross_chunk_utf8_and_cursor_fields ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.01s
+
+
+        PASS [   0.010s] (28/51) zeppelin-embed::graph_directories root_collapse_rejects_wrong_level_in_the_surviving_sibling
+  stdout ───
+
+    running 1 test
+    test root_collapse_rejects_wrong_level_in_the_surviving_sibling ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.00s
+
+
+        PASS [   0.061s] (29/51) zeppelin-embed::graph_directories root_review_predecessor_ascends_between_branch_subtrees_and_releases_work_failures
+  stdout ───
+
+    running 1 test
+    test root_review_predecessor_ascends_between_branch_subtrees_and_releases_work_failures ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.05s
+
+
+        PASS [   0.013s] (30/51) zeppelin-embed::graph_directories root_review_predecessor_discards_previous_leaf_when_cancel_fires_during_read
+  stdout ───
+
+    running 1 test
+    test root_review_predecessor_discards_previous_leaf_when_cancel_fires_during_read ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.01s
+
+
+        PASS [   0.007s] (31/51) zeppelin-embed::graph_directories root_review_predecessor_rejects_malformed_probe_even_on_empty_root
+  stdout ───
+
+    running 1 test
+    test root_review_predecessor_rejects_malformed_probe_even_on_empty_root ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.00s
+
+
+        PASS [   0.015s] (32/51) zeppelin-embed::graph_directories root_review_predecessor_rejects_missing_previous_leaf
+  stdout ───
+
+    running 1 test
+    test root_review_predecessor_rejects_missing_previous_leaf ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.01s
+
+
+        PASS [   0.021s] (33/51) zeppelin-embed::graph_directories sequential_provenance_preparation_matches_shared_codec_and_preserves_typed_errors
+  stdout ───
+
+    running 1 test
+    test sequential_provenance_preparation_matches_shared_codec_and_preserves_typed_errors ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.01s
+
+
+        PASS [   0.008s] (34/51) zeppelin-embed::graph_directories tree_scratch_charges_real_shared_capacity_and_releases_before_other_work
+  stdout ───
+
+    running 1 test
+    test tree_scratch_charges_real_shared_capacity_and_releases_before_other_work ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.00s
+
+
+        PASS [   0.054s] (35/51) zeppelin-embed::graph_directories typed_fence_probes_stream_long_keys_without_copying_or_writing_on_lookup
+  stdout ───
+
+    running 1 test
+    test typed_fence_probes_stream_long_keys_without_copying_or_writing_on_lookup ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.05s
+
+
+        PASS [   0.015s] (36/51) zeppelin-embed::graph_directories whole_directory_verifier_rejects_corruption_on_an_unvisited_point_path
+  stdout ───
+
+    running 1 test
+    test whole_directory_verifier_rejects_corruption_on_an_unvisited_point_path ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.01s
+
+
+        PASS [   0.083s] (37/51) zeppelin-embed::graph_storage_prepare authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges
+  stdout ───
+
+    running 1 test
+    test authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.08s
+
+
+        PASS [   0.015s] (38/51) zeppelin-embed::graph_storage_prepare authentic_staged_batch_prepares_native_directories_inside_one_memory_owner
+  stdout ───
+
+    running 1 test
+    test authentic_staged_batch_prepares_native_directories_inside_one_memory_owner ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.01s
+
+
+        PASS [   4.849s] (39/51) zeppelin-embed::graph_directories directory_leaf_splits_preserve_old_roots_and_share_untouched_pages
+  stdout ───
+
+    running 1 test
+    test directory_leaf_splits_preserve_old_roots_and_share_untouched_pages ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 4.84s
+
+
+        PASS [   0.115s] (40/51) zeppelin-embed::graph_storage_prepare native_adjacency::actual_native_producer_consolidates_before_ninth_run
+  stdout ───
+
+    running 1 test
+    test native_adjacency::actual_native_producer_consolidates_before_ninth_run ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.11s
+
+  stderr ───
+    history generation=1 edges=1 count=1 packs=2 work=1679529 storage_peak=2143584 shared=1468225
+    history generation=2 edges=2 count=1 packs=2 work=1434850 storage_peak=2143584 shared=1537068
+    history generation=3 edges=3 count=1 packs=2 work=1437868 storage_peak=2143584 shared=1606385
+    history generation=4 edges=4 count=1 packs=2 work=1440950 storage_peak=2143584 shared=1676272
+    history generation=5 edges=5 count=1 packs=2 work=1444096 storage_peak=2143584 shared=1746729
+    history generation=6 edges=6 count=1 packs=2 work=1447306 storage_peak=2143584 shared=1817756
+    history generation=7 edges=7 count=1 packs=2 work=1450580 storage_peak=2143584 shared=1889353
+    history generation=8 edges=8 count=1 packs=2 work=1453918 storage_peak=2143584 shared=1961520
+    history generation=9 edges=9 count=1 packs=2 work=1461798 storage_peak=2143584 shared=2034753
+    fresh final file verification edges=9 work=218654
+    history full shared_peak=2744812 storage_peak=2143584 writer_retained=80
+
+        PASS [   1.862s] (41/51) zeppelin-embed::graph_directories predecessor_seek_crosses_leaves_without_scanning_prior_adjacency_groups
+  stdout ───
+
+    running 1 test
+    test predecessor_seek_crosses_leaves_without_scanning_prior_adjacency_groups ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 1.85s
+
+
+        PASS [   1.771s] (42/51) zeppelin-embed::graph_storage_prepare native_adjacency::actual_native_producer_refuses_large_batch_at_unchanged_work_limit
+  stdout ───
+
+    running 1 test
+    test native_adjacency::actual_native_producer_refuses_large_batch_at_unchanged_work_limit ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 1.76s
+
+  stderr ───
+    2049 incoming: storage_peak=15320115 writer=16240940 shared=16241012 packs=28 result=Err(Work)
+
+        PASS [   0.040s] (43/51) zeppelin-embed::graph_storage_prepare native_adjacency::native_adjacency_participant_attributes_and_refuses_each_real_allocation
+  stdout ───
+
+    running 1 test
+    test native_adjacency::native_adjacency_participant_attributes_and_refuses_each_real_allocation ... ZE44 actual adjacency allocations=12 refusal_fires=12 unattributed_bytes=0 storage_peak=1591648 shared_peak=1592635
+    ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.03s
+
+
+        PASS [   0.029s] (44/51) zeppelin-embed::graph_storage_prepare native_adjacency::native_candidate_faults_after_out_before_in_return_no_candidate
+  stdout ───
+
+    running 1 test
+    test native_adjacency::native_candidate_faults_after_out_before_in_return_no_candidate ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.02s
+
+
+        PASS [   0.050s] (45/51) zeppelin-embed::graph_storage_prepare native_adjacency::property_only_with_detach_preserves_adjacency_then_raw_cleanup_is_paired
+  stdout ───
+
+    running 1 test
+    test native_adjacency::property_only_with_detach_preserves_adjacency_then_raw_cleanup_is_paired ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.04s
+
+
+        PASS [   0.471s] (46/51) zeppelin-embed::graph_storage_prepare native_index_preparation_sorts_chunk_spanning_arrays_in_the_shared_participant
+  stdout ───
+
+    running 1 test
+    test native_index_preparation_sorts_chunk_spanning_arrays_in_the_shared_participant ... ZE43 chunk-spanning indexes labels=2048 properties=2048 canonical_bytes=71705 native_bytes=65680 participant_peak=879696 work=54075056
+    ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.46s
+
+
+        PASS [   0.012s] (47/51) zeppelin-embed::graph_storage_prepare native_participant_accounts_all_allocations_and_releases_each_failed_attempt
+  stdout ───
+
+    running 1 test
+    test native_participant_accounts_all_allocations_and_releases_each_failed_attempt ... ZE43 native allocations=7 refusal_fires=7 unattributed_bytes=0 participant_peak=831032
+    ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+        PASS [   0.042s] (48/51) zeppelin-embed::graph_storage_prepare staged_updates_detach_delete_and_recreate_preserve_old_roots_and_permanent_fences
+  stdout ───
+
+    running 1 test
+    test staged_updates_detach_delete_and_recreate_preserve_old_roots_and_permanent_fences ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.03s
+
+
+        PASS [  14.388s] (49/51) zeppelin-embed::graph_directories multilevel_directory_deletion_restores_last_bounds_and_collapses_root
+  stdout ───
+
+    running 1 test
+    test multilevel_directory_deletion_restores_last_bounds_and_collapses_root ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 14.38s
+
+
+        PASS [  26.650s] (50/51) zeppelin-embed::graph_storage_prepare native_adjacency::actual_native_producer_consolidates_before_2049_pending_entries
+  stdout ───
+
+    running 1 test
+    test native_adjacency::actual_native_producer_consolidates_before_2049_pending_entries ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 26.64s
+
+  stderr ───
+    history generation=1 edges=300 count=300 packs=28 work=195793127 storage_peak=16142400 shared=17406342
+    history generation=2 edges=600 count=300 packs=43 work=255364982 storage_peak=24191040 shared=28712228
+    history generation=3 edges=900 count=300 packs=43 work=260194512 storage_peak=24191040 shared=32750066
+    history generation=4 edges=1200 count=300 packs=43 work=260155825 storage_peak=24191040 shared=36433072
+    history generation=5 edges=1500 count=300 packs=43 work=262323092 storage_peak=24191040 shared=40286982
+    history generation=6 edges=1800 count=300 packs=43 work=264081021 storage_peak=24191040 shared=44837820
+    history generation=7 edges=2048 count=248 packs=36 work=217738221 storage_peak=24191040 shared=44355318
+    history generation=8 edges=2049 count=1 packs=2 work=6239472 storage_peak=24191040 shared=27385303
+    fresh final file verification edges=2049 work=7338172
+    history full shared_peak=44968892 storage_peak=24191040 writer_retained=80
+
+     SIGABRT [  70.470s] (51/51) zeppelin-embed::graph_storage_prepare native_adjacency::actual_native_producer_splits_4097_edges_from_bounded_batches
+  stdout ───
+
+    running 1 test
+    test native_adjacency::actual_native_producer_splits_4097_edges_from_bounded_batches ... 
+  stderr ───
+    history generation=1 edges=128 count=128 packs=11 work=60454543 storage_peak=6993088 shared=7030290
+    history generation=2 edges=256 count=128 packs=13 work=76085285 storage_peak=8066240 shared=9273204
+    history generation=3 edges=384 count=128 packs=17 work=89326786 storage_peak=10212544 shared=13584134
+    history generation=4 edges=512 count=128 packs=19 work=97563233 storage_peak=11285696 shared=16287168
+    history generation=5 edges=640 count=128 packs=19 work=97044496 storage_peak=11285696 shared=18006346
+    history generation=6 edges=768 count=128 packs=19 work=97754361 storage_peak=11285696 shared=19256124
+    history generation=7 edges=896 count=128 packs=19 work=98490819 storage_peak=11285696 shared=21630622
+    history generation=8 edges=1024 count=128 packs=19 work=98391557 storage_peak=11285696 shared=23552344
+    history generation=9 edges=1152 count=128 packs=19 work=100660823 storage_peak=11285696 shared=25610418
+    history generation=10 edges=1280 count=128 packs=19 work=98537438 storage_peak=11285696 shared=28203892
+    history generation=11 edges=1408 count=128 packs=19 work=99972277 storage_peak=11285696 shared=29818566
+    history generation=12 edges=1536 count=128 packs=19 work=99105106 storage_peak=11285696 shared=32557864
+    history generation=13 edges=1664 count=128 packs=19 work=100546218 storage_peak=11285696 shared=34844386
+    history generation=14 edges=1792 count=128 packs=19 work=100536327 storage_peak=11285696 shared=37729700
+    history generation=15 edges=1920 count=128 packs=19 work=101088833 storage_peak=11285696 shared=40162142
+    history generation=16 edges=2048 count=128 packs=19 work=102534254 storage_peak=11285696 shared=42683880
+    history generation=17 edges=2176 count=128 packs=19 work=101407013 storage_peak=11285696 shared=44736218
+    history generation=18 edges=2304 count=128 packs=19 work=104702784 storage_peak=11285696 shared=47524564
+    history generation=19 edges=2432 count=128 packs=19 work=101475808 storage_peak=11285696 shared=50774678
+    history generation=20 edges=2560 count=128 packs=19 work=103106521 storage_peak=11285696 shared=53571920
+    history generation=21 edges=2688 count=128 packs=19 work=102601226 storage_peak=11285696 shared=56967954
+    history generation=22 edges=2816 count=128 packs=19 work=103580810 storage_peak=11285696 shared=59385188
+    history generation=23 edges=2944 count=128 packs=19 work=104182913 storage_peak=11285696 shared=62927046
+    history generation=24 edges=3072 count=128 packs=19 work=104304566 storage_peak=11285696 shared=66016128
+    history generation=25 edges=3200 count=128 packs=19 work=105915512 storage_peak=11285696 shared=69178074
+    history generation=26 edges=3328 count=128 packs=19 work=105028274 storage_peak=11285696 shared=72938908
+    history generation=27 edges=3456 count=128 packs=19 work=109167649 storage_peak=11285696 shared=75948318
+    history generation=28 edges=3584 count=128 packs=19 work=104528963 storage_peak=11285696 shared=79329048
+    history generation=29 edges=3712 count=128 packs=19 work=106157951 storage_peak=11285696 shared=82782834
+    history generation=30 edges=3840 count=128 packs=19 work=106202176 storage_peak=11285696 shared=86835508
+    history generation=31 edges=3968 count=128 packs=19 work=106950900 storage_peak=11285696 shared=90435310
+    history generation=32 edges=4093 count=125 packs=19 work=105661236 storage_peak=11285696 shared=93907867
+
+    thread 'native_adjacency::actual_native_producer_splits_4097_edges_from_bounded_batches' (35179249) has overflowed its stack
+    fatal runtime error: stack overflow, aborting
+
+    (test aborted with signal 6: SIGABRT)
+
+error: test run failed

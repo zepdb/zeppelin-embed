@@ -1,0 +1,12 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/crates/zeppelin-embed)
+error[E0432]: unresolved imports `zeppelin_embed::property_graph::storage::adjacency::RANGE_DESCRIPTOR_BYTES`, `zeppelin_embed::property_graph::storage::adjacency::RangeDescriptor`
+ --> crates/zeppelin-embed/tests/graph_adjacency_store.rs:4:16
+  |
+4 |     Direction, RANGE_DESCRIPTOR_BYTES, RangeDescriptor, UpperBound,
+  |                ^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^ no `RangeDescriptor` in `property_graph::storage::adjacency`
+  |                |
+  |                no `RANGE_DESCRIPTOR_BYTES` in `property_graph::storage::adjacency`
+
+For more information about this error, try `rustc --explain E0432`.
+error: could not compile `zeppelin-embed` (test "graph_adjacency_store") due to 1 previous error
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_adjacency_store` exited with code 101

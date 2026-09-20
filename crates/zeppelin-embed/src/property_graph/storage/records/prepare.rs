@@ -198,9 +198,9 @@ fn unique<T>(
     }
     Ok(())
 }
-fn sort_by_symbol<T>(
+pub(crate) fn sort_by_symbol<T, K: Ord>(
     items: &mut [T],
-    key: impl Fn(&T) -> u64,
+    key: impl Fn(&T) -> K,
     r: &mut TreeResources<'_>,
 ) -> Result<(), TreeError> {
     for start in (0..items.len() / 2).rev() {
@@ -212,11 +212,11 @@ fn sort_by_symbol<T>(
     }
     r.step(0)
 }
-fn sift<T>(
+fn sift<T, K: Ord>(
     items: &mut [T],
     mut root: usize,
     end: usize,
-    key: &impl Fn(&T) -> u64,
+    key: &impl Fn(&T) -> K,
     r: &mut TreeResources<'_>,
 ) -> Result<(), TreeError> {
     loop {

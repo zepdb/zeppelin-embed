@@ -1,0 +1,11 @@
+INFO: Running with entropic power schedule (0xFF, 100).
+INFO: Seed: 2316942937
+INFO: Loaded 1 modules   (293700 inline 8-bit counters): 293700 [0x103b7fa30, 0x103bc7574), 
+INFO: Loaded 1 PC tables (293700 PCs): 293700 [0x103bc7578,0x1040429b8), 
+fuzz/target/aarch64-apple-darwin/release/native_graph_adjacency: Running 1 inputs 1 time(s) each.
+Running: fuzz/seeds/native_graph_adjacency/descriptor-raw-empty
+Executed fuzz/seeds/native_graph_adjacency/descriptor-raw-empty in 0 ms
+***
+*** NOTE: fuzzing was not performed, you have only
+***       executed the target code on a fixed set of inputs.
+***

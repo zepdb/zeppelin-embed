@@ -1,0 +1,99 @@
+--- a/crates/zeppelin-embed/tests/graph_directories.rs
++++ b/crates/zeppelin-embed/tests/graph_directories.rs
+@@ -11,6 +11,96 @@
+     insert, lookup, remove,
+ };
+ use zeppelin_embed::property_graph::{GraphGeneration, StoreInstanceId};
++
++fn root_review_two_level(objects: &mut Objects, r: &mut TreeResources<'_>) -> (DirectoryRoot, PhysicalRef) {
++    use zeppelin_embed::property_graph::storage::tree::{Cell, Key, PAGE_BYTES, PageHeader, encode_page};
++    let mut bytes = vec![0; PAGE_BYTES];
++    let mut leaves = Vec::new();
++    for id in [10u128, 30, 80, 100] {
++        encode_page(PageHeader { kind: TreeKind::Nodes, level: 0, generation: GraphGeneration::new(1) },
++            &[Cell::Leaf { key: Key::Inline(&id.to_le_bytes()), value: b"old" }], &mut bytes).unwrap();
++        leaves.push(objects.append(BlockKind::TreePage, GraphGeneration::new(1), &bytes, r).unwrap());
++    }
++    let mut branches = Vec::new();
++    for (a, b, upper) in [(leaves[0], leaves[1], 20u128), (leaves[2], leaves[3], 90)] {
++        encode_page(PageHeader { kind: TreeKind::Nodes, level: 1, generation: GraphGeneration::new(2) },
++            &[Cell::Branch { upper: Some(Key::Inline(&upper.to_le_bytes())), child: a }, Cell::Branch { upper: None, child: b }], &mut bytes).unwrap();
++        branches.push(objects.append(BlockKind::TreePage, GraphGeneration::new(2), &bytes, r).unwrap());
++    }
++    encode_page(PageHeader { kind: TreeKind::Nodes, level: 2, generation: GraphGeneration::new(3) },
++        &[Cell::Branch { upper: Some(Key::Inline(&50u128.to_le_bytes())), child: branches[0] }, Cell::Branch { upper: None, child: branches[1] }], &mut bytes).unwrap();
++    let reference = objects.append(BlockKind::TreePage, GraphGeneration::new(3), &bytes, r).unwrap();
++    (DirectoryRoot::from_reference(objects.store, TreeKind::Nodes, GraphGeneration::new(3), Some(reference)).unwrap(), leaves[1])
++}
++
++#[test]
++fn root_review_predecessor_ascends_between_branch_subtrees_and_releases_work_failures() {
++    use zeppelin_embed::property_graph::storage::tree::{Key, directory::lookup_predecessor};
++    let mut objects = Objects::new();
++    let (_dir, _store, shared) = memory_fixture();
++    let control = QueryControl::Cancel(CancelToken::new());
++    let baseline = shared.reserved_bytes().unwrap();
++    let (root, _) = { let mut r = TreeResources::new(&control, &shared, 10_000_000).unwrap(); root_review_two_level(&mut objects, &mut r) };
++    assert_eq!(shared.reserved_bytes().unwrap(), baseline);
++    for (probe, expected) in [(1u128,None),(10,Some(10u128)),(29,Some(10)),(30,Some(30)),(49,Some(30)),(50,Some(30)),(79,Some(30)),(80,Some(80)),(90,Some(80)),(99,Some(80)),(100,Some(100)),(u128::MAX,Some(100))] {
++        let mut r = TreeResources::new(&control, &shared, 10_000_000).unwrap();
++        let before = shared.reserved_bytes().unwrap();
++        let entry = lookup_predecessor(&objects, root, &probe.to_le_bytes(), &mut r).unwrap();
++        assert_eq!(shared.reserved_bytes().unwrap(), before, "cursor capacity releases before returning borrowed entry");
++        assert_eq!(entry.is_some(),expected.is_some());
++        if let (Some(entry),Some(expected))=(entry,expected) { assert_eq!(entry.key(),Key::Inline(&expected.to_le_bytes()));assert_eq!(entry.creation_generation(), GraphGeneration::new(1)); }
++    }
++    let mut refusals=0;let mut successes=0;
++    for limit in [0,1,10,100,1_000,10_000,100_000,1_000_000] {
++        let mut r = TreeResources::new(&control, &shared, limit).unwrap();
++        let before = shared.reserved_bytes().unwrap();
++        match lookup_predecessor(&objects, root, &50u128.to_le_bytes(), &mut r) {
++            Err(TreeError::Work)=>refusals+=1,
++            Ok(Some(_))=>successes+=1,
++            other=>panic!("unexpected {other:?}"),
++        }
++        assert_eq!(shared.reserved_bytes().unwrap(),before);
++    }
++    assert!(refusals>0 && successes>0);
++    assert_eq!(shared.reserved_bytes().unwrap(),baseline);
++}
++
++#[test]
++fn root_review_predecessor_rejects_missing_previous_leaf() {
++    use zeppelin_embed::property_graph::storage::tree::directory::lookup_predecessor;
++    let mut objects=Objects::new();let (_dir,_store,shared)=memory_fixture();let control=QueryControl::Cancel(CancelToken::new());
++    let mut r=TreeResources::new(&control,&shared,10_000_000).unwrap();let(root,previous)=root_review_two_level(&mut objects,&mut r);
++    objects.objects.remove(&previous.artifact.get()).unwrap();
++    assert!(lookup_predecessor(&objects,root,&100u128.to_le_bytes(),&mut r).unwrap().is_some());
++    assert!(matches!(lookup_predecessor(&objects,root,&50u128.to_le_bytes(),&mut r),Err(TreeError::Missing)));
++}
++
++#[test]
++fn root_review_predecessor_discards_previous_leaf_when_cancel_fires_during_read() {
++    use zeppelin_embed::property_graph::storage::tree::directory::lookup_predecessor;
++    struct CancelAtPrevious<'a> { objects: &'a Objects, previous: PhysicalRef, token: CancelToken }
++    impl BlockSource for CancelAtPrevious<'_> {
++        fn resolve<'a>(&'a self, reference: PhysicalRef, resources: &mut TreeResources<'_>) -> Result<FramedBlock<'a>,TreeError> {
++            let block=self.objects.resolve(reference,resources)?;
++            if reference==self.previous {self.token.cancel();}
++            Ok(block)
++        }
++    }
++    let mut objects=Objects::new();let (_dir,_store,shared)=memory_fixture();let token=CancelToken::new();let control=QueryControl::Cancel(token.clone());
++    let mut r=TreeResources::new(&control,&shared,10_000_000).unwrap();let(root,previous)=root_review_two_level(&mut objects,&mut r);
++    let source=CancelAtPrevious{objects:&objects,previous,token};let before=shared.reserved_bytes().unwrap();
++    assert!(matches!(lookup_predecessor(&source,root,&50u128.to_le_bytes(),&mut r),Err(TreeError::Control(_))));
++    assert_eq!(shared.reserved_bytes().unwrap(),before);
++}
++
++#[test]
++fn root_review_predecessor_rejects_malformed_probe_even_on_empty_root() {
++    use zeppelin_embed::property_graph::storage::tree::directory::{lookup_entry,lookup_predecessor};
++    let objects=Objects::new();let (_dir,_store,shared)=memory_fixture();let control=QueryControl::Cancel(CancelToken::new());
++    let mut r=TreeResources::new(&control,&shared,100_000).unwrap();let root=DirectoryRoot::empty(objects.store,TreeKind::Nodes,GraphGeneration::new(0));
++    assert!(lookup_entry(&objects,root,&[],&mut r).is_err());
++    assert!(lookup_predecessor(&objects,root,&[],&mut r).is_err(),"checked floor lookup must reject the same malformed numeric key on empty and populated trees");
++}
+ 
+ struct Objects {
+     store: StoreInstanceId,

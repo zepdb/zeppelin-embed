@@ -1,0 +1,17 @@
+{
+  "command": [
+    "cargo",
+    "nextest",
+    "run",
+    "-p",
+    "zeppelin-embed",
+    "--features",
+    "test-support",
+    "--test",
+    "graph_directories",
+    "--success-output",
+    "final"
+  ],
+  "exit_code": 0,
+  "reason": "Correction changes existing DirectoryCursor::seek empty-root validation; qualify the focused directory test binary."
+}

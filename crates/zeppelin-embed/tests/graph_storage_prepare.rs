@@ -96,6 +96,741 @@ struct Catalog<'a> {
     base: BaseIdentity,
     symbols: &'a [SymbolEntry<'a>],
 }
+
+#[test]
+fn authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges() {
+    use zeppelin_embed::property_graph::storage::adjacency::{
+        Direction, NativeGraphBase, NativeGraphReader, RangeScratch, prepare_native_graph,
+        validate_range,
+    };
+    use zeppelin_embed::property_graph::wal::{
+        ArtifactDescriptor, CommitState, ReferenceList, RequiredRef, WalGraphRoots,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(
+        directory.path(),
+        OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+    )
+    .unwrap();
+    let shared = GraphResources::from_store(&store).unwrap();
+    let writer = WriteMemory::new(&shared, WriteLimits::default()).unwrap();
+    let control = QueryControl::Cancel(CancelToken::new());
+    let memory = StorageMemory::new(&writer, &control, 32 * 1024 * 1024).unwrap();
+    let mut r = TreeResources::for_prepare(&memory, 100_000_000).unwrap();
+    let base = Empty.identity();
+    let roots = GraphRoots::from_references(base.store, base.generation, [None; 8]).unwrap();
+    // Like the existing ZE43 tests, this is an explicit retained-base/catalog
+    // fixture. It does not claim a GraphStore lease or bootstrap publication.
+    let catalog_id = ArtifactId::new(99).unwrap();
+    let committed = CommitState {
+        store: base.store,
+        generation: base.generation,
+        sequence: 100,
+        graph: WalGraphRoots::default(),
+        catalog: RequiredRef {
+            object: ArtifactDescriptor {
+                store: base.store,
+                artifact: catalog_id,
+                generation: base.generation,
+                serial: 1,
+                bytes: 200,
+                family: 17,
+                version: 1,
+                checksum: 0,
+            },
+            block: PhysicalRef {
+                artifact: catalog_id,
+                offset: 96,
+                length: 24,
+                kind: BlockKind::CommitParticipant,
+                version: 1,
+            },
+        },
+        vector: None,
+        text: None,
+        reclaim: None,
+        high_waters: zeppelin_embed::property_graph::wal::HighWaters {
+            node: Empty.high_waters().node,
+            relationship: Empty.high_waters().relationship,
+            creation_serial: 1,
+            ..Default::default()
+        },
+        prepared_inventories: ReferenceList::Values(&[]),
+    };
+    let catalog = Catalog { base, symbols: &[] };
+    let mut objects = packed(&Missing, 1, &memory, &mut r);
+    let noop = stage_structured(&Empty, &[], &writer, &mut |_| Ok(())).unwrap();
+    let candidate = prepare_native_graph(
+        &mut objects,
+        &noop,
+        NativeGraphBase {
+            directories: DirectoryBase {
+                identity: base,
+                roots,
+            },
+            committed,
+        },
+        &catalog,
+        None,
+        &memory,
+        &mut r,
+    )
+    .unwrap();
+    assert_eq!(candidate.roots(), roots);
+    assert_eq!(candidate.sequence(), 100);
+    assert_eq!(candidate.expected_sequence(), 100);
+    assert_eq!(candidate.expected_roots(), committed.graph);
+    assert!(objects.is_empty());
+    drop(candidate);
+    let mut labels = [GraphName::new("NewLabel").unwrap()];
+    let node = CanonicalContents::node(&mut labels, &mut [], None, None).unwrap();
+    with_local_refs(|refs| {
+        let node_write = |key| StructuredWrite {
+            key: ApplicationKey::new(EntityKind::Node, "app", key).unwrap(),
+            revision: GraphRevision::new(1).unwrap(),
+            operation: StructuredOperation::Create,
+            image: Some(WriteImage::Node(&node)),
+        };
+        let rel_write = |key, target| StructuredWrite {
+            key: ApplicationKey::new(EntityKind::Relationship, "app", key).unwrap(),
+            revision: GraphRevision::new(1).unwrap(),
+            operation: StructuredOperation::Create,
+            image: Some(WriteImage::Relationship {
+                source: NodeRef::Local(refs.node(0).unwrap()),
+                target: NodeRef::Local(refs.node(target).unwrap()),
+                relationship_type: GraphName::new("NewType").unwrap(),
+                properties: &[],
+            }),
+        };
+        let requests = [
+            node_write("a"),
+            node_write("b"),
+            rel_write("ab1", 1),
+            rel_write("self", 0),
+            rel_write("ab2", 1),
+        ];
+        let batch = stage_structured(&Empty, &requests, &writer, &mut |_| Ok(())).unwrap();
+        let candidate = prepare_native_graph(
+            &mut objects,
+            &batch,
+            NativeGraphBase {
+                directories: DirectoryBase {
+                    identity: base,
+                    roots,
+                },
+                committed,
+            },
+            &catalog,
+            None,
+            &memory,
+            &mut r,
+        )
+        .unwrap();
+        assert_eq!(candidate.sequence(), 101);
+        assert_eq!(candidate.roots().generation(), GraphGeneration::new(1));
+        assert_eq!(candidate.expected_base(), base);
+        let node_a = (1u128 << 100) + 1;
+        let node_b = (1u128 << 100) + 2;
+        let rel = 1u128 << 110;
+        let mut scratch = RangeScratch::for_prepare(&memory, &mut r).unwrap();
+        for (kind, expected) in [
+            (
+                TreeKind::OutRanges,
+                vec![
+                    (node_a, 1, rel + 1, node_b),
+                    (node_a, 1, rel + 2, node_a),
+                    (node_a, 1, rel + 3, node_b),
+                ],
+            ),
+            (
+                TreeKind::InRanges,
+                vec![
+                    (node_a, 1, rel + 2, node_a),
+                    (node_b, 1, rel + 1, node_a),
+                    (node_b, 1, rel + 3, node_a),
+                ],
+            ),
+        ] {
+            let root = candidate.roots().directory(kind).unwrap();
+            let mut cursor = DirectoryCursor::seek(&objects, root, None, &mut r).unwrap();
+            let mut actual = Vec::new();
+            while let Some(entry) = cursor.next_entry(&mut r).unwrap() {
+                let range = validate_range(
+                    &objects,
+                    root,
+                    entry,
+                    candidate.sequence(),
+                    &mut scratch,
+                    &mut r,
+                )
+                .unwrap();
+                for edge in range.edges() {
+                    actual.push((
+                        range.descriptor().key().node.get(),
+                        range.descriptor().key().rel_type.get(),
+                        edge.rel.get(),
+                        edge.neighbor.get(),
+                    ));
+                }
+            }
+            assert_eq!(actual, expected, "actual producer direction {kind:?}");
+        }
+        let visible_catalog = Catalog {
+            base,
+            symbols: batch.symbols(),
+        };
+        let reader = NativeGraphReader::new(
+            &objects,
+            candidate.roots(),
+            candidate.sequence(),
+            &visible_catalog,
+            None,
+        );
+        assert_eq!(reader.relationship_count(&mut r).unwrap(), 3);
+        assert_eq!(
+            reader
+                .degree(
+                    NodeId::new(node_a).unwrap(),
+                    Direction::Out,
+                    None,
+                    &mut scratch,
+                    &mut r
+                )
+                .unwrap(),
+            3
+        );
+        assert_eq!(
+            reader
+                .degree(
+                    NodeId::new(node_a).unwrap(),
+                    Direction::In,
+                    None,
+                    &mut scratch,
+                    &mut r
+                )
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            reader
+                .degree(
+                    NodeId::new(node_b).unwrap(),
+                    Direction::In,
+                    None,
+                    &mut scratch,
+                    &mut r
+                )
+                .unwrap(),
+            2
+        );
+        assert!(
+            reader
+                .relationship(RelId::new(rel + 2).unwrap(), &mut r)
+                .unwrap()
+                .is_some()
+        );
+
+        let first = RelId::new(rel + 1).unwrap();
+        let mut output = [reader.relationship(first, &mut r).unwrap().unwrap(); 1];
+        assert_eq!(reader.scan_relationships(zeppelin_embed::property_graph::storage::adjacency::RelationshipRange {lower: first, upper: zeppelin_embed::property_graph::storage::adjacency::UpperBound::Exclusive(first)}, &mut output, &mut r).unwrap(), 0, "empty read intervals are valid even though persisted ranges must be nonempty");
+
+        // Independent root review: every public component read uses the same
+        // numeric range and live-endpoint rules, before consuming capacity.
+        use zeppelin_embed::property_graph::storage::adjacency::{
+            AdjacencyQuery, AdjacencyRow, Edge, RelationshipRange, RelationshipRow, UpperBound,
+        };
+        let a = NodeId::new(node_a).unwrap();
+        let b = NodeId::new(node_b).unwrap();
+        let ids = [1, 2, 3].map(|n| RelId::new(rel + n).unwrap());
+        let interval = RelationshipRange {
+            lower: ids[1],
+            upper: UpperBound::Exclusive(ids[2]),
+        };
+        let row = RelationshipRow {
+            rel: ids[0],
+            source: a,
+            target: b,
+            relationship_type: RelTypeId::new(1).unwrap(),
+        };
+        let mut rows = [row; 2];
+        assert_eq!(
+            reader
+                .scan_relationships(interval, &mut rows, &mut r)
+                .unwrap(),
+            1
+        );
+        assert_eq!(rows[0].rel, ids[1]);
+        assert_eq!(rows[0].target, a);
+        let query = AdjacencyQuery {
+            node: a,
+            direction: Direction::Out,
+            relationship_type: Some(RelTypeId::new(1).unwrap()),
+            relationships: interval,
+        };
+        let mut edges = [AdjacencyRow {
+            relationship_type: row.relationship_type,
+            edge: Edge {
+                rel: ids[0],
+                neighbor: b,
+            },
+        }; 1];
+        assert_eq!(
+            reader
+                .expand(query, &mut edges, &mut scratch, &mut r)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            edges[0].edge,
+            Edge {
+                rel: ids[1],
+                neighbor: a
+            }
+        );
+        assert!(
+            !reader
+                .has_live_incident(a, &ids, &mut scratch, &mut r)
+                .unwrap()
+        );
+        assert!(
+            reader
+                .has_live_incident(a, &ids[..2], &mut scratch, &mut r)
+                .unwrap()
+        );
+        assert!(matches!(
+            reader.has_live_incident(a, &[ids[1], ids[0]], &mut scratch, &mut r),
+            Err(TreeError::Invalid(_))
+        ));
+
+        // A missing required far-endpoint record must be corruption in every
+        // edge-facing read; it cannot become a hidden/tombstoned edge.
+        struct MissingReference<'a, S> {
+            source: &'a S,
+            missing: PhysicalRef,
+        }
+        impl<S: BlockSource> BlockSource for MissingReference<'_, S> {
+            fn resolve<'b>(
+                &'b self,
+                reference: PhysicalRef,
+                r: &mut TreeResources<'_>,
+            ) -> Result<FramedBlock<'b>, TreeError> {
+                if reference == self.missing {
+                    Err(TreeError::Missing)
+                } else {
+                    self.source.resolve(reference, r)
+                }
+            }
+        }
+        let absent = record_ref(&objects, candidate.roots(), EntityId::Node(b), &mut r)
+            .unwrap()
+            .reference();
+        {
+            let damaged = MissingReference {
+                source: &objects,
+                missing: absent,
+            };
+            let corrupt = NativeGraphReader::new(
+                &damaged,
+                candidate.roots(),
+                candidate.sequence(),
+                &visible_catalog,
+                None,
+            );
+            let all = RelationshipRange {
+                lower: ids[0],
+                upper: UpperBound::Infinity,
+            };
+            assert!(matches!(
+                corrupt.relationship(ids[0], &mut r),
+                Err(TreeError::Missing)
+            ));
+            assert!(matches!(
+                corrupt.scan_relationships(all, &mut rows[..1], &mut r),
+                Err(TreeError::Missing)
+            ));
+            assert!(matches!(
+                corrupt.relationship_count(&mut r),
+                Err(TreeError::Missing)
+            ));
+            assert!(matches!(
+                corrupt.expand(
+                    AdjacencyQuery {
+                        relationships: all,
+                        ..query
+                    },
+                    &mut edges,
+                    &mut scratch,
+                    &mut r
+                ),
+                Err(TreeError::Missing)
+            ));
+            assert!(matches!(
+                corrupt.degree(a, Direction::Out, None, &mut scratch, &mut r),
+                Err(TreeError::Missing)
+            ));
+            assert!(matches!(
+                corrupt.has_live_incident(a, &[], &mut scratch, &mut r),
+                Err(TreeError::Missing)
+            ));
+            assert!(
+                corrupt.relationship(ids[1], &mut r).unwrap().is_some(),
+                "unrelated self-loop still resolves through the same source"
+            );
+        }
+
+        // Bind a no-op participant to real produced root/object metadata. This
+        // remains the explicit retained-base fixture, not GraphStore admission.
+        objects.finish(&mut r).unwrap();
+        let fixture = Fixture::empty();
+        let next = fixture.after(&batch);
+        let no_changes = stage_structured(&next, &[], &writer, &mut |_| Ok(())).unwrap();
+        let next_catalog = Catalog {
+            base: next.identity,
+            symbols: &next.symbols,
+        };
+        let mut wal_roots = WalGraphRoots::default();
+        let mut max_serial = 1;
+        for (slot, reference) in candidate.roots().references().into_iter().enumerate() {
+            if let Some(reference) = reference {
+                let artifact = (0..objects.len())
+                    .map(|i| objects.artifact(i).unwrap())
+                    .find(|object| object.identity().artifact == reference.artifact)
+                    .unwrap();
+                let identity = artifact.identity();
+                let bytes = artifact.bytes();
+                max_serial = max_serial.max(identity.creation_serial);
+                wal_roots.slots[slot] = Some(RequiredRef {
+                    object: ArtifactDescriptor {
+                        store: identity.store,
+                        artifact: identity.artifact,
+                        generation: identity.generation,
+                        serial: identity.creation_serial,
+                        bytes: bytes.len().try_into().unwrap(),
+                        family: 17,
+                        version: 1,
+                        checksum: u64::from_le_bytes(bytes[bytes.len() - 8..].try_into().unwrap()),
+                    },
+                    block: reference,
+                });
+            }
+        }
+        let mut actual_state = committed;
+        actual_state.generation = next.identity.generation;
+        actual_state.sequence = candidate.sequence();
+        actual_state.graph = wal_roots;
+        actual_state.high_waters.creation_serial = max_serial;
+        let source_roots = candidate.roots();
+        let actual_base = NativeGraphBase {
+            directories: DirectoryBase {
+                identity: next.identity,
+                roots: source_roots,
+            },
+            committed: actual_state,
+        };
+        {
+            let mut scratch_objects = packed(&objects, 2, &memory, &mut r);
+            let no_op = prepare_native_graph(
+                &mut scratch_objects,
+                &no_changes,
+                actual_base,
+                &next_catalog,
+                None,
+                &memory,
+                &mut r,
+            )
+            .unwrap();
+            assert_eq!(no_op.sequence(), 101);
+            assert_eq!(no_op.roots(), source_roots);
+            assert_eq!(no_op.expected_roots(), wal_roots);
+            assert!(scratch_objects.is_empty());
+        }
+        // Every corruption fails before creating any new private artifact.
+        for case in 0..11 {
+            let mut state = actual_state;
+            let required = state.graph.slots[0].as_mut().unwrap();
+            match case {
+                0 => required.object.store = StoreInstanceId::new(2).unwrap(),
+                1 => required.object.generation = GraphGeneration::new(2),
+                2 => required.object.serial = max_serial + 1,
+                3 => required.object.family = 18,
+                4 => required.object.version = 2,
+                5 => required.object.bytes = 104,
+                6 => required.object.artifact = ArtifactId::new(987_654).unwrap(),
+                7 => required.object.generation = GraphGeneration::new(0),
+                8 => required.object.serial = 1,
+                9 => state.graph.slots.swap(0, 1),
+                10 => state.graph.slots[0] = None,
+                _ => unreachable!(),
+            }
+            let mut scratch_objects = packed(&objects, 2, &memory, &mut r);
+            let result = prepare_native_graph(
+                &mut scratch_objects,
+                &no_changes,
+                NativeGraphBase {
+                    committed: state,
+                    ..actual_base
+                },
+                &next_catalog,
+                None,
+                &memory,
+                &mut r,
+            );
+            assert!(
+                result.is_err(),
+                "WAL/source binding corruption {case} was admitted"
+            );
+            assert!(
+                scratch_objects.is_empty(),
+                "failed base binding wrote artifacts {case}"
+            );
+        }
+
+        // Even matching root/WAL metadata cannot substitute a partial physical
+        // reference: the immutable source must recognize every exact field.
+        for offset_changed in [true, false] {
+            let mut state = actual_state;
+            let required = state.graph.slots[0].as_mut().unwrap();
+            if offset_changed {
+                required.block.offset += 1;
+            } else {
+                required.block.length += 1;
+            }
+            let mut references = source_roots.references();
+            references[0] = Some(required.block);
+            let altered_roots = GraphRoots::from_references(
+                source_roots.store(),
+                source_roots.generation(),
+                references,
+            )
+            .unwrap();
+            let mut scratch_objects = packed(&objects, 2, &memory, &mut r);
+            let result = prepare_native_graph(
+                &mut scratch_objects,
+                &no_changes,
+                NativeGraphBase {
+                    directories: DirectoryBase {
+                        roots: altered_roots,
+                        ..actual_base.directories
+                    },
+                    committed: state,
+                },
+                &next_catalog,
+                None,
+                &memory,
+                &mut r,
+            );
+            assert!(
+                result.is_err(),
+                "altered full reference (offset={offset_changed}) must fail"
+            );
+            assert!(scratch_objects.is_empty());
+        }
+
+        // A logically absent endpoint entry is also corruption, even while
+        // every referenced artifact exists and its framing is valid.
+        {
+            let mut missing_objects = packed(&objects, 2, &memory, &mut r);
+            let mut tree = TreeScratch::for_prepare(&memory).unwrap();
+            let missing_nodes = remove(
+                &mut missing_objects,
+                source_roots.directory(TreeKind::Nodes).unwrap(),
+                &b.get().to_le_bytes(),
+                GraphGeneration::new(2),
+                &mut tree,
+                &mut r,
+            )
+            .unwrap();
+            let mut missing_roots = source_roots
+                .for_generation(GraphGeneration::new(2))
+                .unwrap();
+            missing_roots.replace(missing_nodes).unwrap();
+            let corrupt =
+                NativeGraphReader::new(&missing_objects, missing_roots, 102, &next_catalog, None);
+            let all = RelationshipRange {
+                lower: ids[0],
+                upper: UpperBound::Infinity,
+            };
+            assert!(
+                matches!(
+                    corrupt.relationship(ids[0], &mut r),
+                    Err(TreeError::Missing)
+                ),
+                "a missing node entry must not hide an extant relationship"
+            );
+            assert!(matches!(
+                corrupt.scan_relationships(all, &mut rows[..1], &mut r),
+                Err(TreeError::Missing)
+            ));
+            assert!(matches!(
+                corrupt.relationship_count(&mut r),
+                Err(TreeError::Missing)
+            ));
+            assert!(matches!(
+                corrupt.expand(
+                    AdjacencyQuery {
+                        relationships: all,
+                        ..query
+                    },
+                    &mut edges,
+                    &mut scratch,
+                    &mut r
+                ),
+                Err(TreeError::Missing)
+            ));
+            assert!(matches!(
+                corrupt.degree(a, Direction::Out, None, &mut scratch, &mut r),
+                Err(TreeError::Missing)
+            ));
+            assert!(matches!(
+                corrupt.has_live_incident(a, &[], &mut scratch, &mut r),
+                Err(TreeError::Missing)
+            ));
+        }
+        {
+            let deletion = [StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "app", "b").unwrap(),
+                revision: GraphRevision::new(2).unwrap(),
+                operation: StructuredOperation::Delete(EntityId::Node(b), GraphDeleteMode::Detach),
+                image: None,
+            }];
+            let staged = stage_structured(&next, &deletion, &writer, &mut |_| Ok(())).unwrap();
+            assert_eq!(next.incidents.get(), 0, "DETACH must not enumerate");
+            let mut tombstone_objects = packed(&objects, 2, &memory, &mut r);
+            let detached = prepare_native_graph(
+                &mut tombstone_objects,
+                &staged,
+                actual_base,
+                &next_catalog,
+                None,
+                &memory,
+                &mut r,
+            )
+            .unwrap();
+            for kind in [
+                TreeKind::Relationships,
+                TreeKind::OutRanges,
+                TreeKind::InRanges,
+            ] {
+                assert_eq!(
+                    detached.roots().directory(kind).unwrap().reference(),
+                    source_roots.directory(kind).unwrap().reference(),
+                    "DETACH preserves raw {kind:?}"
+                );
+            }
+            let filtered = NativeGraphReader::new(
+                &tombstone_objects,
+                detached.roots(),
+                detached.sequence(),
+                &next_catalog,
+                None,
+            );
+            let all = RelationshipRange {
+                lower: ids[0],
+                upper: UpperBound::Infinity,
+            };
+            assert!(filtered.relationship(ids[0], &mut r).unwrap().is_none());
+            assert_eq!(filtered.relationship_count(&mut r).unwrap(), 1);
+            assert_eq!(
+                filtered
+                    .scan_relationships(all, &mut rows[..1], &mut r)
+                    .unwrap(),
+                1
+            );
+            assert_eq!(
+                rows[0].rel, ids[1],
+                "dead first row must not consume capacity"
+            );
+            assert_eq!(
+                filtered
+                    .expand(
+                        AdjacencyQuery {
+                            relationships: all,
+                            ..query
+                        },
+                        &mut edges,
+                        &mut scratch,
+                        &mut r
+                    )
+                    .unwrap(),
+                1
+            );
+            assert_eq!(edges[0].edge.rel, ids[1]);
+            assert_eq!(
+                filtered
+                    .degree(a, Direction::Out, None, &mut scratch, &mut r)
+                    .unwrap(),
+                1
+            );
+            assert_eq!(
+                filtered
+                    .degree(b, Direction::In, None, &mut scratch, &mut r)
+                    .unwrap(),
+                0
+            );
+            assert!(
+                !filtered
+                    .has_live_incident(b, &[], &mut scratch, &mut r)
+                    .unwrap()
+            );
+            assert_eq!(
+                NativeGraphReader::new(&objects, source_roots, 101, &next_catalog, None)
+                    .relationship_count(&mut r)
+                    .unwrap(),
+                3,
+                "old retained roots remain live"
+            );
+        }
+
+        let empty = RelationshipRange {
+            lower: ids[1],
+            upper: UpperBound::Exclusive(ids[1]),
+        };
+        let old_reader = NativeGraphReader::new(&objects, source_roots, 101, &next_catalog, None);
+        assert_eq!(
+            old_reader
+                .scan_relationships(empty, &mut rows, &mut r)
+                .unwrap(),
+            0,
+            "empty half-open scan interval"
+        );
+        assert_eq!(
+            old_reader
+                .expand(
+                    AdjacencyQuery {
+                        relationships: empty,
+                        ..query
+                    },
+                    &mut edges,
+                    &mut scratch,
+                    &mut r
+                )
+                .unwrap(),
+            0,
+            "empty half-open expand interval"
+        );
+        let reversed = RelationshipRange {
+            lower: ids[1],
+            upper: UpperBound::Exclusive(ids[0]),
+        };
+        assert!(matches!(
+            old_reader.scan_relationships(reversed, &mut rows, &mut r),
+            Err(TreeError::Invalid(_))
+        ));
+        assert!(matches!(
+            old_reader.expand(
+                AdjacencyQuery {
+                    relationships: reversed,
+                    ..query
+                },
+                &mut edges,
+                &mut scratch,
+                &mut r
+            ),
+            Err(TreeError::Invalid(_))
+        ));
+        assert!(memory.peak_reserved_bytes() <= 32 * 1024 * 1024);
+    });
+}
 impl<S: BlockSource> RecordCatalog<S> for Catalog<'_> {
     fn resolve(
         &self,
@@ -1238,3 +1973,6 @@ fn native_index_preparation_sorts_chunk_spanning_arrays_in_the_shared_participan
     assert_eq!(writer.reserved_bytes(), 0);
     assert_eq!(shared.reserved_bytes().unwrap(), baseline);
 }
+
+#[path = "graph_storage_prepare/native_adjacency.rs"]
+mod native_adjacency;

@@ -1,0 +1,10 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.69s
+────────────
+ Nextest run ID 2a5ea5f0-e276-4540-a3ef-9ac0071f1787 with nextest profile: default
+    Starting 3 tests across 2 binaries (10 tests skipped)
+        PASS [   0.014s] (1/3) zeppelin-embed::graph_adjacency_store outer_descriptor_fuzz_seeds_reach_expected_parser_outcomes
+        PASS [   0.070s] (2/3) zeppelin-embed::graph_storage_prepare native_adjacency::property_only_with_detach_preserves_adjacency_then_raw_cleanup_is_paired
+        PASS [   0.123s] (3/3) zeppelin-embed::graph_storage_prepare native_adjacency::actual_native_producer_consolidates_before_ninth_run
+────────────
+     Summary [   0.124s] 3 tests run: 3 passed, 10 skipped

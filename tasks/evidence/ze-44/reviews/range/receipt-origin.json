@@ -1,0 +1,86 @@
+{
+  "source": "/Users/aghatage/.codex/sessions/2026/09/19/rollout-2026-09-19T14-35-48-01a0bb98-cb56-7151-a3d7-7b3e93886c4b.jsonl",
+  "extraction": "Exact original JSONL rows, no reconstructed or rerun output",
+  "rows": [
+    {
+      "original_line": 128,
+      "sha256": "30a6826d006b8a41baf6737e8c3e0fdbefa0637a74d250b9225027527fa90047"
+    },
+    {
+      "original_line": 129,
+      "sha256": "f4c487f15c8904ed7549b87d702e7faf3dd1a4f43bdf2d5a45a4d802e63a8c59"
+    },
+    {
+      "original_line": 159,
+      "sha256": "9bf7402aff28fc197a30ce967dbb38f3834b389a5f807092989fd85a25aeeb09"
+    },
+    {
+      "original_line": 168,
+      "sha256": "a5fd66c05832c26656aec5bceee7368a0bb037e0df9e56f13ba1b3a9a2fbd865"
+    },
+    {
+      "original_line": 173,
+      "sha256": "fb455e72eaa6ff8a24ed0a59fb6c935f60f37d943ce8ee393f591e017f820d78"
+    },
+    {
+      "original_line": 178,
+      "sha256": "b690e521906726850df20b514374f4977afbc8335a05a1f53242580a29408110"
+    },
+    {
+      "original_line": 187,
+      "sha256": "702a4b6c6b1bccf4a8dc68d55ea54d7bf383e004aebd3c3e8776e74586128ad5"
+    },
+    {
+      "original_line": 192,
+      "sha256": "006363d95089a5abbae03c7ebd979f80e51e400f3e63403b0cb46920e165cd8b"
+    },
+    {
+      "original_line": 197,
+      "sha256": "145217b3b33ca44563a2742c3a2b6fe8f328d804edcf5753217392d1ac4e6d01"
+    },
+    {
+      "original_line": 204,
+      "sha256": "8e1371965394cb8a88fdba36d4bdd92468312af4a4fdf1d7baa10605f03f3732"
+    },
+    {
+      "original_line": 209,
+      "sha256": "0453a1ef869f9893b1202ec649cac83afa6af2dfe7350b33962b15ddede11886"
+    },
+    {
+      "original_line": 214,
+      "sha256": "ad4a29f33a13a3c0285f7c607446f39753f48ae52b2add0ae36e760108cd9d8a"
+    },
+    {
+      "original_line": 221,
+      "sha256": "4a3f1cf354f92210051f24e10886d5138ccc26d084f704e7ac3e997e8a0e39f1"
+    },
+    {
+      "original_line": 226,
+      "sha256": "de398b530b3134546f9fe7d99dc591883c5173e6891f7a63c0fd89677fc41b3e"
+    },
+    {
+      "original_line": 237,
+      "sha256": "8eb612659ab26c6d606662af1fb51c3422f69fb86d0f03c9699a0cbd78041fa6"
+    },
+    {
+      "original_line": 246,
+      "sha256": "7b9ed4e9b827bedad1580fa9bdeba5a98efba289d581142e069fc1f332d97363"
+    },
+    {
+      "original_line": 251,
+      "sha256": "ab52b5b848205af22d3a141728d46dc9a2effc66258eaced135b2158dbbb770f"
+    },
+    {
+      "original_line": 258,
+      "sha256": "469abaf6aed09f4aa4641ca82b8539c034a26b07735da239db442d96c8767863"
+    },
+    {
+      "original_line": 263,
+      "sha256": "70c918a24b11803e14ac48413bd50a9aba67309ea1673162842ef07058553250"
+    },
+    {
+      "original_line": 265,
+      "sha256": "241bc6aadc1c499b38ee85620953346bcbba72dcbdf39cea39b441d8d10b449b"
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+   Compiling zeppelin-embed v0.4.2 (/private/tmp/ze44-root-predecessor-check/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.42s
+────────────
+ Nextest run ID 0d6805a8-cabd-4024-91cc-ff212713491e with nextest profile: default
+    Starting 2 tests across 1 binary (31 tests skipped)
+        PASS [   0.019s] (1/2) zeppelin-embed::graph_directories root_review_predecessor_rejects_missing_previous_leaf
+        PASS [   0.065s] (2/2) zeppelin-embed::graph_directories root_review_predecessor_ascends_between_branch_subtrees_and_releases_work_failures
+────────────
+     Summary [   0.065s] 2 tests run: 2 passed, 31 skipped
+        PASS [   0.019s] (1/2) zeppelin-embed::graph_directories root_review_predecessor_rejects_missing_previous_leaf
+  stdout ───
+
+    running 1 test
+    test root_review_predecessor_rejects_missing_previous_leaf ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 32 filtered out; finished in 0.01s
+
+
+        PASS [   0.065s] (2/2) zeppelin-embed::graph_directories root_review_predecessor_ascends_between_branch_subtrees_and_releases_work_failures
+  stdout ───
+
+    running 1 test
+    test root_review_predecessor_ascends_between_branch_subtrees_and_releases_work_failures ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 32 filtered out; finished in 0.06s
+
+

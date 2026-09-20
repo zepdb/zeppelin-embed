@@ -1,0 +1,67 @@
+   Compiling zeppelin-embed v0.4.2 (/private/tmp/ze44-root-predecessor-check/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.04s
+────────────
+ Nextest run ID 5931b9a3-6bfa-477a-a752-acbdc53937a8 with nextest profile: default
+    Starting 6 tests across 1 binary (28 tests skipped)
+        PASS [   0.024s] (1/6) zeppelin-embed::graph_directories root_review_predecessor_discards_previous_leaf_when_cancel_fires_during_read
+        PASS [   0.024s] (2/6) zeppelin-embed::graph_directories predecessor_seek_rejects_future_leaf_on_selected_and_previous_paths
+        PASS [   0.010s] (3/6) zeppelin-embed::graph_directories root_review_predecessor_rejects_malformed_probe_even_on_empty_root
+        PASS [   0.019s] (4/6) zeppelin-embed::graph_directories root_review_predecessor_rejects_missing_previous_leaf
+        PASS [   0.078s] (5/6) zeppelin-embed::graph_directories root_review_predecessor_ascends_between_branch_subtrees_and_releases_work_failures
+        PASS [   1.805s] (6/6) zeppelin-embed::graph_directories predecessor_seek_crosses_leaves_without_scanning_prior_adjacency_groups
+────────────
+     Summary [   1.805s] 6 tests run: 6 passed, 28 skipped
+        PASS [   0.024s] (1/6) zeppelin-embed::graph_directories root_review_predecessor_discards_previous_leaf_when_cancel_fires_during_read
+  stdout ───
+
+    running 1 test
+    test root_review_predecessor_discards_previous_leaf_when_cancel_fires_during_read ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.01s
+
+
+        PASS [   0.024s] (2/6) zeppelin-embed::graph_directories predecessor_seek_rejects_future_leaf_on_selected_and_previous_paths
+  stdout ───
+
+    running 1 test
+    test predecessor_seek_rejects_future_leaf_on_selected_and_previous_paths ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.01s
+
+
+        PASS [   0.010s] (3/6) zeppelin-embed::graph_directories root_review_predecessor_rejects_malformed_probe_even_on_empty_root
+  stdout ───
+
+    running 1 test
+    test root_review_predecessor_rejects_malformed_probe_even_on_empty_root ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+
+        PASS [   0.019s] (4/6) zeppelin-embed::graph_directories root_review_predecessor_rejects_missing_previous_leaf
+  stdout ───
+
+    running 1 test
+    test root_review_predecessor_rejects_missing_previous_leaf ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.01s
+
+
+        PASS [   0.078s] (5/6) zeppelin-embed::graph_directories root_review_predecessor_ascends_between_branch_subtrees_and_releases_work_failures
+  stdout ───
+
+    running 1 test
+    test root_review_predecessor_ascends_between_branch_subtrees_and_releases_work_failures ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.07s
+
+
+        PASS [   1.805s] (6/6) zeppelin-embed::graph_directories predecessor_seek_crosses_leaves_without_scanning_prior_adjacency_groups
+  stdout ───
+
+    running 1 test
+    test predecessor_seek_crosses_leaves_without_scanning_prior_adjacency_groups ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 1.79s
+
+

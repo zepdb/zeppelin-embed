@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.29s
+────────────
+ Nextest run ID ddebab96-b30a-4e17-b356-531a1976053f with nextest profile: default
+    Starting 1 test across 1 binary (1 test skipped)
+        FAIL [   0.034s] (1/1) zeppelin-embed::graph_adjacency_store native_adjacency_admits_complete_private_runs_and_original_leaf_generation
+  stdout ───
+
+    running 1 test
+    test native_adjacency_admits_complete_private_runs_and_original_leaf_generation ... FAILED
+
+    failures:
+
+    failures:
+        native_adjacency_admits_complete_private_runs_and_original_leaf_generation
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.02s
+
+  stderr ───
+
+    thread 'native_adjacency_admits_complete_private_runs_and_original_leaf_generation' (35014302) panicked at crates/zeppelin-embed/tests/graph_adjacency_store.rs:597:5:
+    an empty merged interval must be removed, never accepted as an invisible persisted range
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.035s] 1 test run: 0 passed, 1 failed, 1 skipped
+        FAIL [   0.034s] (1/1) zeppelin-embed::graph_adjacency_store native_adjacency_admits_complete_private_runs_and_original_leaf_generation
+  stdout ───
+
+    running 1 test
+    test native_adjacency_admits_complete_private_runs_and_original_leaf_generation ... FAILED
+
+    failures:
+
+    failures:
+        native_adjacency_admits_complete_private_runs_and_original_leaf_generation
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.02s
+
+  stderr ───
+
+    thread 'native_adjacency_admits_complete_private_runs_and_original_leaf_generation' (35014302) panicked at crates/zeppelin-embed/tests/graph_adjacency_store.rs:597:5:
+    an empty merged interval must be removed, never accepted as an invisible persisted range
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

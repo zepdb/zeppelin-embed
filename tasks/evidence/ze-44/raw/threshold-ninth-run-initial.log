@@ -1,0 +1,45 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/crates/zeppelin-embed)
+error[E0308]: mismatched types
+   --> crates/zeppelin-embed/tests/graph_storage_prepare/native_adjacency.rs:137:66
+    |
+137 |                         serial: identity.creation_serial, bytes: object.bytes().len() as u64, family: 17, version: 1,
+    |                                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `u32`, found `u64`
+
+error[E0277]: the trait bound `u128: From<usize>` is not satisfied
+   --> crates/zeppelin-embed/tests/graph_storage_prepare/native_adjacency.rs:196:149
+    |
+196 | ...Existing(NodeId::new((1u128 << 100) + u128::from(index) + 1).unwrap())};
+    |                                          ^^^^ the trait `From<usize>` is not implemented for `u128`
+    |
+    = help: the following other types implement trait `From<T>`:
+              `u128` implements `From<Char>`
+              `u128` implements `From<Ipv6Addr>`
+              `u128` implements `From<bool>`
+              `u128` implements `From<char>`
+              `u128` implements `From<u16>`
+              `u128` implements `From<u32>`
+              `u128` implements `From<u64>`
+              `u128` implements `From<u8>`
+
+error[E0308]: mismatched types
+   --> crates/zeppelin-embed/tests/graph_storage_prepare/native_adjacency.rs:197:86
+    |
+197 |             view.create(BatchEntityRef::Relationship(RelRef::Local(refs.relationship(index as u32).unwrap())), WriteImage::Relationship {
+    |                                                                         ------------ ^^^^^^^^^^^^ expected `usize`, found `u32`
+    |                                                                         |
+    |                                                                         arguments to this method are incorrect
+    |
+note: method defined here
+   --> /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/crates/zeppelin-embed/src/property_graph/local.rs:73:5
+    |
+ 73 |     relationship,
+    |     ^^^^^^^^^^^^
+help: you can convert a `u32` to a `usize` and panic if the converted value doesn't fit
+    |
+197 |             view.create(BatchEntityRef::Relationship(RelRef::Local(refs.relationship((index as u32).try_into().unwrap()).unwrap())), WriteImage::Relationship {
+    |                                                                                      +            +++++++++++++++++++++
+
+Some errors have detailed explanations: E0277, E0308.
+For more information about an error, try `rustc --explain E0277`.
+error: could not compile `zeppelin-embed` (test "graph_storage_prepare") due to 3 previous errors
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_storage_prepare` exited with code 101

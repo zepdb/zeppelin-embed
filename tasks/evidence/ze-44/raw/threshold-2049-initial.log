@@ -1,0 +1,10 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/crates/zeppelin-embed)
+error[E0599]: no method named `delta_count` found for struct `RangeDescriptor` in the current scope
+  --> crates/zeppelin-embed/tests/graph_storage_prepare/native_adjacency.rs:68:43
+   |
+68 |             assert_eq!(range.descriptor().delta_count(), 0);
+   |                                           ^^^^^^^^^^^ method not found in `RangeDescriptor`
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `zeppelin-embed` (test "graph_storage_prepare") due to 1 previous error
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_storage_prepare` exited with code 101

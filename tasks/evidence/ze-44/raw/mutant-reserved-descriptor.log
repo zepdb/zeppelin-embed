@@ -1,0 +1,29 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.63s
+────────────
+ Nextest run ID aa9bfee2-ad4d-4b14-b795-e06e695b6140 with nextest profile: default
+    Starting 1 test across 1 binary (2 tests skipped)
+        FAIL [   0.014s] (1/1) zeppelin-embed::graph_adjacency_store outer_descriptor_fuzz_seeds_reach_expected_parser_outcomes
+────────────
+     Summary [   0.015s] 1 test run: 0 passed, 1 failed, 2 skipped
+        FAIL [   0.014s] (1/1) zeppelin-embed::graph_adjacency_store outer_descriptor_fuzz_seeds_reach_expected_parser_outcomes
+  stdout ───
+
+    running 1 test
+    test outer_descriptor_fuzz_seeds_reach_expected_parser_outcomes ... FAILED
+
+    failures:
+
+    failures:
+        outer_descriptor_fuzz_seeds_reach_expected_parser_outcomes
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'outer_descriptor_fuzz_seeds_reach_expected_parser_outcomes' (35172570) panicked at crates/zeppelin-embed/tests/graph_adjacency_store.rs:652:5:
+    assertion failed: RangeDescriptor::decode(TreeKind::OutRanges, &reserved[..40],
+            &reserved[40..]).is_err()
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

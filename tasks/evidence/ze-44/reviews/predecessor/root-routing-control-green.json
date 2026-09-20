@@ -1,0 +1,18 @@
+{
+  "command": [
+    "cargo",
+    "nextest",
+    "run",
+    "-p",
+    "zeppelin-embed",
+    "--features",
+    "test-support",
+    "--test",
+    "graph_directories",
+    "-E",
+    "test(root_review_) & !test(malformed)",
+    "--success-output",
+    "final"
+  ],
+  "exit_code": 0
+}

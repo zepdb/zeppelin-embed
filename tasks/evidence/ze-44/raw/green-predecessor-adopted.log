@@ -1,0 +1,14 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.69s
+────────────
+ Nextest run ID 88e58ba5-4729-4250-89a4-dbc6929dceba with nextest profile: default
+    Starting 7 tests across 1 binary (28 tests skipped)
+        PASS [   0.016s] (1/7) zeppelin-embed::graph_directories predecessor_rejects_malformed_probe_even_on_empty_root
+        PASS [   0.024s] (2/7) zeppelin-embed::graph_directories predecessor_seek_rejects_future_leaf_on_selected_and_previous_paths
+        PASS [   0.017s] (3/7) zeppelin-embed::graph_directories root_review_predecessor_discards_previous_leaf_when_cancel_fires_during_read
+        PASS [   0.009s] (4/7) zeppelin-embed::graph_directories root_review_predecessor_rejects_malformed_probe_even_on_empty_root
+        PASS [   0.016s] (5/7) zeppelin-embed::graph_directories root_review_predecessor_rejects_missing_previous_leaf
+        PASS [   0.078s] (6/7) zeppelin-embed::graph_directories root_review_predecessor_ascends_between_branch_subtrees_and_releases_work_failures
+        PASS [   1.749s] (7/7) zeppelin-embed::graph_directories predecessor_seek_crosses_leaves_without_scanning_prior_adjacency_groups
+────────────
+     Summary [   1.750s] 7 tests run: 7 passed, 28 skipped

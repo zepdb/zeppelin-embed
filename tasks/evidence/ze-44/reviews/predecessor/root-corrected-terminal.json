@@ -1,0 +1,20 @@
+{
+  "command": [
+    "cargo",
+    "nextest",
+    "run",
+    "-p",
+    "zeppelin-embed",
+    "--features",
+    "test-support",
+    "--test",
+    "graph_directories",
+    "-E",
+    "test(root_review_) | test(predecessor_seek_)",
+    "--success-output",
+    "final"
+  ],
+  "exit_code": 0,
+  "directory_sha256": "b63cb2aa5835792b0e0fd2cf6a3bdd76473818127f6283efb9dceca890093549",
+  "test_sha256": "f7a8ae7c51b7a71e0e6f804431075e2309ebe8ee87dfcbed528f9ebf5b642a19"
+}

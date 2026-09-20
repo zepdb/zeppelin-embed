@@ -1,0 +1,14 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/crates/zeppelin-embed)
+error[E0432]: unresolved imports `zeppelin_embed::property_graph::storage::adjacency::RangeScratch`, `zeppelin_embed::property_graph::storage::adjacency::validate_range`
+   --> crates/zeppelin-embed/tests/graph_adjacency_store.rs:103:99
+    |
+103 |     use zeppelin_embed::property_graph::storage::adjacency::{self as a, Action, DeltaEntry, Edge, RangeScratch, validate_range};
+    |                                                                                                   ^^^^^^^^^^^^  ^^^^^^^^^^^^^^
+    |                                                                                                   |             |
+    |                                                                                                   |             no `validate_range` in `property_graph::storage::adjacency`
+    |                                                                                                   |             help: a similar name exists in the module: `valid_range`
+    |                                                                                                   no `RangeScratch` in `property_graph::storage::adjacency`
+
+For more information about this error, try `rustc --explain E0432`.
+error: could not compile `zeppelin-embed` (test "graph_adjacency_store") due to 1 previous error
+error: command `/Users/aghatage/.rustup/toolchains/1.93.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package zeppelin-embed --test graph_adjacency_store` exited with code 101

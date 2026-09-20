@@ -1,0 +1,26 @@
+ZE-44 frozen producer review identity
+
+frozen_dir=/tmp/ze44-producer-initial-review
+parent=273eb33e66c281da18264d7f5eb7c08165e63ddf
+manifest_sha256=a94b3fca95736709873e4efc149a92e9840a21d1bb98c5583fe3c5c7aa5c31cd
+manifest_entries=22
+initial_verification=verified_entries=22 mismatches=0
+final_verification=final_verified_entries=22 mismatches=0
+
+prepare.rs=464fd42dcf65d229d4ecabc5222d180cee5d3b897806f01c70981ca1584f8e88
+prepare/ranges.rs=795d94fa4f44f423702c2ee3e5a80d694be2cd1e2ceb5ae598102aaec11b78a4
+scope.md=cfa17521241b8873a8a99c6a693c6db6758bcc3b119d0cbccb50e83f90cc3899
+owned-paths.json=49bbb6b83cc3a59ab3955d2f956896b17ef670e73b0fe70d43f6ee0b79f42f0c
+green-producer-initial.log=516540ecef611c416fc6332969565b784525bfded37f0400e577e3f339f43348
+green-shared-sort-regression.log=87ac7dc19dace843ade993b411e45e952f15ec8a64bdf330b5575b060be3da5d
+clippy-producer-initial.log=5fbe06f7228cb3ad20074aca23f4064a94c806cc26cc5f49e817059be1ffaee0
+
+isolated_overlay=/tmp/ze44-sol-producer-review-wt
+separate_target=/tmp/ze44-sol-producer-target
+git_diff_check=exit_0
+cargo_check_command=CARGO_TARGET_DIR=/tmp/ze44-sol-producer-target cargo check -p zeppelin-embed --lib
+cargo_check_result=exit_0; Finished dev profile in 4.21s
+scratch_prepare.rs_match_frozen=true
+scratch_prepare/ranges.rs_match_frozen=true
+
+No runtime defect probe was added because no concrete defect hypothesis survived static and compiled-delta review. No source mutation was made to the frozen directory.

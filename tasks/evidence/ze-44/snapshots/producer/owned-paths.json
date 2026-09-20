@@ -1,0 +1,18 @@
+[
+  "crates/zeppelin-embed/src/property_graph/storage/adjacency/mod.rs",
+  "crates/zeppelin-embed/src/property_graph/storage/adjacency/range.rs",
+  "crates/zeppelin-embed/src/property_graph/storage/adjacency/range/edit.rs",
+  "crates/zeppelin-embed/src/property_graph/storage/adjacency/read.rs",
+  "crates/zeppelin-embed/src/property_graph/storage/adjacency/prepare.rs",
+  "crates/zeppelin-embed/src/property_graph/storage/adjacency/prepare/ranges.rs",
+  "crates/zeppelin-embed/src/property_graph/storage/tree/directory.rs",
+  "crates/zeppelin-embed/src/property_graph/storage/records.rs",
+  "crates/zeppelin-embed/src/property_graph/storage/records/prepare.rs",
+  "crates/zeppelin-embed/src/property_graph/storage/participant.rs",
+  "crates/zeppelin-embed/src/property_graph/wal/mod.rs",
+  "crates/zeppelin-embed/src/property_graph/wal/codec.rs",
+  "crates/zeppelin-embed/tests/graph_adjacency_store.rs",
+  "crates/zeppelin-embed/tests/graph_storage_prepare.rs",
+  "crates/zeppelin-embed/tests/graph_directories.rs",
+  "tasks/evidence/ze-44/interface-proposal.md"
+]

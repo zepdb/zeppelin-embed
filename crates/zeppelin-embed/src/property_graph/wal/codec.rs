@@ -163,6 +163,9 @@ fn block_kind(value: u16) -> Result<super::super::storage::artifact::BlockKind, 
         _ => Err(WalError::Unsupported),
     }
 }
+pub(super) fn validate_reference_geometry(v: RequiredRef) -> Result<(), WalError> {
+    reference(v)
+}
 fn reference(v: RequiredRef) -> Result<(), WalError> {
     if v.object.artifact != v.block.artifact
         || v.block.offset < 96

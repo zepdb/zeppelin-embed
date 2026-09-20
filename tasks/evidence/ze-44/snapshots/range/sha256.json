@@ -1,0 +1,21 @@
+{
+  "crates/zeppelin-embed/src/property_graph/storage/adjacency/mod.rs": "cb61ae6e546702a9d261ebeadf741f9f2da11df188f141c7dd74a35c657d53ac",
+  "crates/zeppelin-embed/src/property_graph/storage/adjacency/range.rs": "1bb82d1f876a47a024c624a67262257cf158203fbf27514fd8e3959d4d2e7c60",
+  "crates/zeppelin-embed/src/property_graph/storage/adjacency/range/edit.rs": "50b7e7651d44772056a635852e892cfbfa8cf0cda29ff21bdd661799f6e5ff74",
+  "crates/zeppelin-embed/src/property_graph/storage/tree/directory.rs": "b63cb2aa5835792b0e0fd2cf6a3bdd76473818127f6283efb9dceca890093549",
+  "crates/zeppelin-embed/tests/graph_adjacency_store.rs": "8cb879a468063f670f368ff4a1743932083d7219a6dca1494c2a8e1c813084ad",
+  "crates/zeppelin-embed/tests/graph_directories.rs": "5090611184e1b29a83a9bc77dbbe360310ef6d3f0e358094621483fd8bb3253e",
+  "tasks/evidence/ze-44/interface-proposal.md": "d849b14dccf27f5fc5d32e16e3c692648f0dab3a8839ecfe8d05112bb7939d7f",
+  "green-range-admission.log": "1dce0bae61af814acc72356023ff6e1fd7c62d0f4e843678477f20bd1cbc16ca",
+  "clippy-range-initial.log": "a4acc64b7f653092c716f571e5d1dcec6a1ea8c8de4f774cb52f69e71e329e44",
+  "red-descriptor-api.log": "2f7f8db2458a61ad3639ad08c78732162122724aaa99811d65a8b0d466590828",
+  "red-range-admission-api.log": "6cd5227aa5a8fc2f5ea578111f828c064476b7509b54443c7992593c134cb1ef",
+  "red-empty-persisted-range.log": "37b192ce4cb632829477186fef36e1d36e46140c6dedf473adb367894c1b080f",
+  "green-range-neighbors.log": "db6f33309da52ea8aff4c66f3d2700d4123985a189d7c0f9ff49d7f78b7b00bd",
+  "green-empty-persisted-range.log": "24620e1ccb12208e90e05a80a301ddb5ce2cb3a2b4492639c277c1a9f60dac08",
+  "clippy-range-edits.log": "72b7819d7dd2b0d83ad65b0f5b543bb349400402ff504c780e3e022d7bf33b0e",
+  "green-range-edits.log": "9471d2f39f12ac640c5171cd8dda10bc57bec5f31702a9da9baea5fe331c7c1a",
+  "red-range-edit-api.log": "4bf66149e806f4a65c94b83cc4a0611bf2bf6072dbfd09724224944ef37cbcd6",
+  "green-descriptor.log": "5558756534eb755b76b7c44e49195085a84022ed9e425011cffbea890803162b",
+  "clippy-range-predecessor.log": "73813725267be650c560424107888114658ca6f94c00dcb7b398863f5c933447"
+}

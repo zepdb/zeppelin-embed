@@ -8,6 +8,21 @@ fuzz_target!(|data: &[u8]| {
     if data.len() > a::HEADER_BYTES + a::MAX_BASE_ENTRIES * 40 {
         return;
     }
+    // ZE44 outer leaf descriptor: exact canonical bytes on every admitted
+    // input, with both physical direction roles independently attempted.
+    let directory_key = data.get(..40).unwrap_or(data);
+    let value = data.get(40..).unwrap_or(&[]);
+    for kind in [
+        zeppelin_embed::property_graph::storage::tree::TreeKind::OutRanges,
+        zeppelin_embed::property_graph::storage::tree::TreeKind::InRanges,
+    ] {
+        if let Ok(descriptor) = a::RangeDescriptor::decode(kind, directory_key, value) {
+            assert_eq!(descriptor.directory_key().unwrap(), directory_key);
+            let mut encoded = [0; a::RANGE_DESCRIPTOR_BYTES];
+            descriptor.encode(&mut encoded).unwrap();
+            assert_eq!(encoded, value);
+        }
+    }
     let key = RangeKey {
         node: NodeId::new(1 << 100).unwrap(),
         rel_type: RelTypeId::new(7).unwrap(),

@@ -1,0 +1,55 @@
+   Compiling zeppelin-embed v0.4.2 (/private/tmp/ze44-root-read-probe/crates/zeppelin-embed)
+warning: unused variable: `target`
+   --> crates/zeppelin-embed/src/property_graph/storage/adjacency/read.rs:301:13
+    |
+301 |         let target = self.endpoint_live(row.target, r)?;
+    |             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_target`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `zeppelin-embed` (lib) generated 1 warning (run `cargo fix --lib -p zeppelin-embed` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.36s
+────────────
+ Nextest run ID 6999589c-6f59-4190-a1e9-2b008ee53487 with nextest profile: default
+    Starting 1 test across 1 binary (3 tests skipped)
+        FAIL [   0.063s] (1/1) zeppelin-embed::graph_storage_prepare authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges
+  stdout ───
+
+    running 1 test
+    test authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges ... FAILED
+
+    failures:
+
+    failures:
+        authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.06s
+
+  stderr ───
+
+    thread 'authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges' (35079583) panicked at crates/zeppelin-embed/tests/graph_storage_prepare.rs:498:13:
+    assertion failed: filtered.relationship(ids[0], &mut r).unwrap().is_none()
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.063s] 1 test run: 0 passed, 1 failed, 3 skipped
+        FAIL [   0.063s] (1/1) zeppelin-embed::graph_storage_prepare authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges
+  stdout ───
+
+    running 1 test
+    test authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges ... FAILED
+
+    failures:
+
+    failures:
+        authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.06s
+
+  stderr ───
+
+    thread 'authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges' (35079583) panicked at crates/zeppelin-embed/tests/graph_storage_prepare.rs:498:13:
+    assertion failed: filtered.relationship(ids[0], &mut r).unwrap().is_none()
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

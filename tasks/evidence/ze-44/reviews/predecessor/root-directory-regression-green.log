@@ -1,0 +1,346 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID 0200c9cb-e25a-495d-b7af-968fd8688552 with nextest profile: default
+    Starting 34 tests across 1 binary
+        PASS [   0.008s] ( 1/34) zeppelin-embed::graph_directories canonical_storage_walk_preserves_typed_empty_and_scalar_bits
+        PASS [   0.009s] ( 2/34) zeppelin-embed::graph_directories cancellation_after_final_sink_resolution_returns_no_prepared_root
+        PASS [   0.011s] ( 3/34) zeppelin-embed::graph_directories cow_does_not_legitimize_future_unselected_branch_child
+        PASS [   0.015s] ( 4/34) zeppelin-embed::graph_directories graph_root_bundle_retains_typed_full_width_label_and_type_directories
+        PASS [   0.012s] ( 5/34) zeppelin-embed::graph_directories immutable_directory_preserves_full_ids_and_old_root_values
+        PASS [   0.031s] ( 6/34) zeppelin-embed::graph_directories inventory_directory_preserves_exact_descriptors_without_granting_liveness
+        PASS [   0.034s] ( 7/34) zeppelin-embed::graph_directories keyed_fence_retains_complete_history_and_checks_containing_leaf_generation
+        PASS [   0.025s] ( 8/34) zeppelin-embed::graph_directories lossless_extent_payloads_read_across_chunks_and_preserve_relocated_bytes
+        PASS [   0.374s] ( 9/34) zeppelin-embed::graph_directories derived_record_stream_spans_objects_without_relaxing_canonical_input_cap
+        PASS [   0.011s] (10/34) zeppelin-embed::graph_directories native_record_requires_complete_canonical_index_labels_and_provenance
+        PASS [   0.008s] (11/34) zeppelin-embed::graph_directories node_tombstone_preserves_full_deletion_provenance_without_dead_payloads
+        PASS [   2.993s] (12/34) zeppelin-embed::graph_directories overflow_keys_compare_full_eight_mib_and_cursor_preserves_exact_bytes
+        PASS [   0.036s] (13/34) zeppelin-embed::graph_directories packed_private_sink_reopens_files_and_keeps_unchanged_old_roots
+        PASS [   4.193s] (14/34) zeppelin-embed::graph_directories directory_cursor_matches_ordered_map_after_middle_first_and_last_deletes
+        PASS [   0.014s] (15/34) zeppelin-embed::graph_directories predecessor_seek_rejects_future_leaf_on_selected_and_previous_paths
+        PASS [   0.008s] (16/34) zeppelin-embed::graph_directories preparation_capacity_is_shared_by_scratch_buffers_and_writer
+        PASS [   0.009s] (17/34) zeppelin-embed::graph_directories prepared_native_record_sorts_symbols_without_rewriting_canonical_contents
+        PASS [   0.027s] (18/34) zeppelin-embed::graph_directories provenance_storage_walk_retains_complete_fields_and_split_utf8_keys
+        PASS [   0.008s] (19/34) zeppelin-embed::graph_directories read_resources_charge_their_shared_fixed_working_set
+        PASS [   0.011s] (20/34) zeppelin-embed::graph_directories relationship_record_correlates_full_topology_and_rejects_future_payloads
+        PASS [   0.018s] (21/34) zeppelin-embed::graph_directories reopened_near_page_inline_key_normalizes_without_changing_logical_bytes
+        PASS [   0.014s] (22/34) zeppelin-embed::graph_directories retained_payload_slices_bound_cross_chunk_utf8_and_cursor_fields
+        PASS [   0.010s] (23/34) zeppelin-embed::graph_directories root_collapse_rejects_wrong_level_in_the_surviving_sibling
+        PASS [   0.060s] (24/34) zeppelin-embed::graph_directories root_review_predecessor_ascends_between_branch_subtrees_and_releases_work_failures
+        PASS [   0.014s] (25/34) zeppelin-embed::graph_directories root_review_predecessor_discards_previous_leaf_when_cancel_fires_during_read
+        PASS [   0.008s] (26/34) zeppelin-embed::graph_directories root_review_predecessor_rejects_malformed_probe_even_on_empty_root
+        PASS [   0.014s] (27/34) zeppelin-embed::graph_directories root_review_predecessor_rejects_missing_previous_leaf
+        PASS [   0.021s] (28/34) zeppelin-embed::graph_directories sequential_provenance_preparation_matches_shared_codec_and_preserves_typed_errors
+        PASS [   0.008s] (29/34) zeppelin-embed::graph_directories tree_scratch_charges_real_shared_capacity_and_releases_before_other_work
+        PASS [   0.053s] (30/34) zeppelin-embed::graph_directories typed_fence_probes_stream_long_keys_without_copying_or_writing_on_lookup
+        PASS [   0.015s] (31/34) zeppelin-embed::graph_directories whole_directory_verifier_rejects_corruption_on_an_unvisited_point_path
+        PASS [   4.798s] (32/34) zeppelin-embed::graph_directories directory_leaf_splits_preserve_old_roots_and_share_untouched_pages
+        PASS [   1.847s] (33/34) zeppelin-embed::graph_directories predecessor_seek_crosses_leaves_without_scanning_prior_adjacency_groups
+        PASS [  14.058s] (34/34) zeppelin-embed::graph_directories multilevel_directory_deletion_restores_last_bounds_and_collapses_root
+────────────
+     Summary [  14.186s] 34 tests run: 34 passed, 0 skipped
+        PASS [   0.008s] ( 1/34) zeppelin-embed::graph_directories canonical_storage_walk_preserves_typed_empty_and_scalar_bits
+  stdout ───
+
+    running 1 test
+    test canonical_storage_walk_preserves_typed_empty_and_scalar_bits ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] ( 2/34) zeppelin-embed::graph_directories cancellation_after_final_sink_resolution_returns_no_prepared_root
+  stdout ───
+
+    running 1 test
+    test cancellation_after_final_sink_resolution_returns_no_prepared_root ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] ( 3/34) zeppelin-embed::graph_directories cow_does_not_legitimize_future_unselected_branch_child
+  stdout ───
+
+    running 1 test
+    test cow_does_not_legitimize_future_unselected_branch_child ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+
+        PASS [   0.015s] ( 4/34) zeppelin-embed::graph_directories graph_root_bundle_retains_typed_full_width_label_and_type_directories
+  stdout ───
+
+    running 1 test
+    test graph_root_bundle_retains_typed_full_width_label_and_type_directories ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.01s
+
+
+        PASS [   0.012s] ( 5/34) zeppelin-embed::graph_directories immutable_directory_preserves_full_ids_and_old_root_values
+  stdout ───
+
+    running 1 test
+    test immutable_directory_preserves_full_ids_and_old_root_values ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.01s
+
+
+        PASS [   0.031s] ( 6/34) zeppelin-embed::graph_directories inventory_directory_preserves_exact_descriptors_without_granting_liveness
+  stdout ───
+
+    running 1 test
+    test inventory_directory_preserves_exact_descriptors_without_granting_liveness ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.02s
+
+
+        PASS [   0.034s] ( 7/34) zeppelin-embed::graph_directories keyed_fence_retains_complete_history_and_checks_containing_leaf_generation
+  stdout ───
+
+    running 1 test
+    test keyed_fence_retains_complete_history_and_checks_containing_leaf_generation ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.03s
+
+
+        PASS [   0.025s] ( 8/34) zeppelin-embed::graph_directories lossless_extent_payloads_read_across_chunks_and_preserve_relocated_bytes
+  stdout ───
+
+    running 1 test
+    test lossless_extent_payloads_read_across_chunks_and_preserve_relocated_bytes ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.02s
+
+
+        PASS [   0.374s] ( 9/34) zeppelin-embed::graph_directories derived_record_stream_spans_objects_without_relaxing_canonical_input_cap
+  stdout ───
+
+    running 1 test
+    test derived_record_stream_spans_objects_without_relaxing_canonical_input_cap ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.37s
+
+
+        PASS [   0.011s] (10/34) zeppelin-embed::graph_directories native_record_requires_complete_canonical_index_labels_and_provenance
+  stdout ───
+
+    running 1 test
+    test native_record_requires_complete_canonical_index_labels_and_provenance ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+
+        PASS [   0.008s] (11/34) zeppelin-embed::graph_directories node_tombstone_preserves_full_deletion_provenance_without_dead_payloads
+  stdout ───
+
+    running 1 test
+    test node_tombstone_preserves_full_deletion_provenance_without_dead_payloads ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+
+        PASS [   2.993s] (12/34) zeppelin-embed::graph_directories overflow_keys_compare_full_eight_mib_and_cursor_preserves_exact_bytes
+  stdout ───
+
+    running 1 test
+    test overflow_keys_compare_full_eight_mib_and_cursor_preserves_exact_bytes ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 2.99s
+
+
+        PASS [   0.036s] (13/34) zeppelin-embed::graph_directories packed_private_sink_reopens_files_and_keeps_unchanged_old_roots
+  stdout ───
+
+    running 1 test
+    test packed_private_sink_reopens_files_and_keeps_unchanged_old_roots ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.03s
+
+
+        PASS [   4.193s] (14/34) zeppelin-embed::graph_directories directory_cursor_matches_ordered_map_after_middle_first_and_last_deletes
+  stdout ───
+
+    running 1 test
+    test directory_cursor_matches_ordered_map_after_middle_first_and_last_deletes ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 4.18s
+
+
+        PASS [   0.014s] (15/34) zeppelin-embed::graph_directories predecessor_seek_rejects_future_leaf_on_selected_and_previous_paths
+  stdout ───
+
+    running 1 test
+    test predecessor_seek_rejects_future_leaf_on_selected_and_previous_paths ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.01s
+
+
+        PASS [   0.008s] (16/34) zeppelin-embed::graph_directories preparation_capacity_is_shared_by_scratch_buffers_and_writer
+  stdout ───
+
+    running 1 test
+    test preparation_capacity_is_shared_by_scratch_buffers_and_writer ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+
+        PASS [   0.009s] (17/34) zeppelin-embed::graph_directories prepared_native_record_sorts_symbols_without_rewriting_canonical_contents
+  stdout ───
+
+    running 1 test
+    test prepared_native_record_sorts_symbols_without_rewriting_canonical_contents ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+
+        PASS [   0.027s] (18/34) zeppelin-embed::graph_directories provenance_storage_walk_retains_complete_fields_and_split_utf8_keys
+  stdout ───
+
+    running 1 test
+    test provenance_storage_walk_retains_complete_fields_and_split_utf8_keys ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.02s
+
+
+        PASS [   0.008s] (19/34) zeppelin-embed::graph_directories read_resources_charge_their_shared_fixed_working_set
+  stdout ───
+
+    running 1 test
+    test read_resources_charge_their_shared_fixed_working_set ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] (20/34) zeppelin-embed::graph_directories relationship_record_correlates_full_topology_and_rejects_future_payloads
+  stdout ───
+
+    running 1 test
+    test relationship_record_correlates_full_topology_and_rejects_future_payloads ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+
+        PASS [   0.018s] (21/34) zeppelin-embed::graph_directories reopened_near_page_inline_key_normalizes_without_changing_logical_bytes
+  stdout ───
+
+    running 1 test
+    test reopened_near_page_inline_key_normalizes_without_changing_logical_bytes ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.01s
+
+
+        PASS [   0.014s] (22/34) zeppelin-embed::graph_directories retained_payload_slices_bound_cross_chunk_utf8_and_cursor_fields
+  stdout ───
+
+    running 1 test
+    test retained_payload_slices_bound_cross_chunk_utf8_and_cursor_fields ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.01s
+
+
+        PASS [   0.010s] (23/34) zeppelin-embed::graph_directories root_collapse_rejects_wrong_level_in_the_surviving_sibling
+  stdout ───
+
+    running 1 test
+    test root_collapse_rejects_wrong_level_in_the_surviving_sibling ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+
+        PASS [   0.060s] (24/34) zeppelin-embed::graph_directories root_review_predecessor_ascends_between_branch_subtrees_and_releases_work_failures
+  stdout ───
+
+    running 1 test
+    test root_review_predecessor_ascends_between_branch_subtrees_and_releases_work_failures ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.05s
+
+
+        PASS [   0.014s] (25/34) zeppelin-embed::graph_directories root_review_predecessor_discards_previous_leaf_when_cancel_fires_during_read
+  stdout ───
+
+    running 1 test
+    test root_review_predecessor_discards_previous_leaf_when_cancel_fires_during_read ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.01s
+
+
+        PASS [   0.008s] (26/34) zeppelin-embed::graph_directories root_review_predecessor_rejects_malformed_probe_even_on_empty_root
+  stdout ───
+
+    running 1 test
+    test root_review_predecessor_rejects_malformed_probe_even_on_empty_root ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+
+        PASS [   0.014s] (27/34) zeppelin-embed::graph_directories root_review_predecessor_rejects_missing_previous_leaf
+  stdout ───
+
+    running 1 test
+    test root_review_predecessor_rejects_missing_previous_leaf ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.01s
+
+
+        PASS [   0.021s] (28/34) zeppelin-embed::graph_directories sequential_provenance_preparation_matches_shared_codec_and_preserves_typed_errors
+  stdout ───
+
+    running 1 test
+    test sequential_provenance_preparation_matches_shared_codec_and_preserves_typed_errors ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.01s
+
+
+        PASS [   0.008s] (29/34) zeppelin-embed::graph_directories tree_scratch_charges_real_shared_capacity_and_releases_before_other_work
+  stdout ───
+
+    running 1 test
+    test tree_scratch_charges_real_shared_capacity_and_releases_before_other_work ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+
+        PASS [   0.053s] (30/34) zeppelin-embed::graph_directories typed_fence_probes_stream_long_keys_without_copying_or_writing_on_lookup
+  stdout ───
+
+    running 1 test
+    test typed_fence_probes_stream_long_keys_without_copying_or_writing_on_lookup ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.05s
+
+
+        PASS [   0.015s] (31/34) zeppelin-embed::graph_directories whole_directory_verifier_rejects_corruption_on_an_unvisited_point_path
+  stdout ───
+
+    running 1 test
+    test whole_directory_verifier_rejects_corruption_on_an_unvisited_point_path ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.01s
+
+
+        PASS [   4.798s] (32/34) zeppelin-embed::graph_directories directory_leaf_splits_preserve_old_roots_and_share_untouched_pages
+  stdout ───
+
+    running 1 test
+    test directory_leaf_splits_preserve_old_roots_and_share_untouched_pages ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 4.79s
+
+
+        PASS [   1.847s] (33/34) zeppelin-embed::graph_directories predecessor_seek_crosses_leaves_without_scanning_prior_adjacency_groups
+  stdout ───
+
+    running 1 test
+    test predecessor_seek_crosses_leaves_without_scanning_prior_adjacency_groups ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 1.84s
+
+
+        PASS [  14.058s] (34/34) zeppelin-embed::graph_directories multilevel_directory_deletion_restores_last_bounds_and_collapses_root
+  stdout ───
+
+    running 1 test
+    test multilevel_directory_deletion_restores_last_bounds_and_collapses_root ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 14.05s
+
+

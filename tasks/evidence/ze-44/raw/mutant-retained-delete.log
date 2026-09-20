@@ -1,0 +1,28 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-44/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.09s
+────────────
+ Nextest run ID ba00e4fb-41da-4566-91d4-348c1c2227bb with nextest profile: default
+    Starting 1 test across 1 binary (9 tests skipped)
+        FAIL [   0.061s] (1/1) zeppelin-embed::graph_storage_prepare native_adjacency::property_only_with_detach_preserves_adjacency_then_raw_cleanup_is_paired
+────────────
+     Summary [   0.062s] 1 test run: 0 passed, 1 failed, 9 skipped
+        FAIL [   0.061s] (1/1) zeppelin-embed::graph_storage_prepare native_adjacency::property_only_with_detach_preserves_adjacency_then_raw_cleanup_is_paired
+  stdout ───
+
+    running 1 test
+    test native_adjacency::property_only_with_detach_preserves_adjacency_then_raw_cleanup_is_paired ... FAILED
+
+    failures:
+
+    failures:
+        native_adjacency::property_only_with_detach_preserves_adjacency_then_raw_cleanup_is_paired
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.05s
+
+  stderr ───
+
+    thread 'native_adjacency::property_only_with_detach_preserves_adjacency_then_raw_cleanup_is_paired' (35171839) panicked at crates/zeppelin-embed/tests/graph_storage_prepare/native_adjacency.rs:971:10:
+    called `Result::unwrap()` on an `Err` value: Invalid("empty persisted adjacency range")
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed
