@@ -566,6 +566,9 @@ fn read_lowering_preserves_typed_profile_errors() {
             )
             .unwrap_err();
             assert_eq!(error.kind, kind, "{query}");
+            if query == "CREATE (n) RETURN n" {
+                assert_eq!(error.message, "read lowering clause");
+            }
             assert!(!entered);
             assert!(error.span.end > error.span.start, "{query}: {error:?}");
             assert_eq!(memory.reserved_bytes(), baseline);

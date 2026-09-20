@@ -164,7 +164,10 @@ pub(super) fn compile_route_in<'v, T, C: ReadContext<'v>>(
                     return Err(ParseError::new(
                         ErrorKind::Unsupported,
                         node.span,
-                        "lowering route clause",
+                        match route {
+                            Route::Read => "read lowering clause",
+                            Route::Mutation => "mutation lowering clause",
+                        },
                     ));
                 }
             }
@@ -214,7 +217,15 @@ pub(super) fn compile_route_in<'v, T, C: ReadContext<'v>>(
                     {
                         builder.mutation(&bound, clause, current)?
                     }
-                    _ => return Err(invariant(clause.span, "unexpected lowering clause")),
+                    _ => {
+                        return Err(invariant(
+                            clause.span,
+                            match route {
+                                Route::Read => "unexpected read clause",
+                                Route::Mutation => "unexpected mutation clause",
+                            },
+                        ));
+                    }
                 };
                 has_prior = true;
             }
