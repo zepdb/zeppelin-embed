@@ -1360,6 +1360,29 @@ impl NativeReadLease {
         }
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn wait_until_cancelled_for_test(&self) -> Result<(), NativeGraphError> {
+        let publication = self
+            .owner
+            .registration
+            .publication
+            .upgrade()
+            .ok_or(NativeGraphError::Invalid(
+                "native graph publication no longer owns read lease",
+            ))?;
+        let mut state = publication
+            .state
+            .lock()
+            .map_err(|_| NativeGraphError::Invalid("native graph publication poisoned"))?;
+        while self.check_active().is_ok() {
+            state = publication
+                .changed
+                .wait(state)
+                .map_err(|_| NativeGraphError::Invalid("native graph cancellation wait poisoned"))?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn track_mapping(
         &self,
         range: &[u8],

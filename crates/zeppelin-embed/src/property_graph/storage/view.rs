@@ -150,6 +150,13 @@ impl<'s, 'lease, 'm, 'g> GraphReadView<'s, 'lease, 'm, 'g> {
         self.lease.bundle().base().generation
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn wait_until_cancelled_for_test(&self) -> Result<(), TreeError> {
+        self.lease
+            .wait_until_cancelled_for_test()
+            .map_err(|_| TreeError::Invalid("native read cancellation observer"))
+    }
+
     pub(crate) fn lookup_node(
         &self,
         node: NodeId,

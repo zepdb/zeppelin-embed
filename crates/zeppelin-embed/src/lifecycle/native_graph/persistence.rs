@@ -494,6 +494,8 @@ fn empty_catalog<'a>(
     store: crate::property_graph::StoreInstanceId,
     lexical: TokenizerEpoch,
     document: Option<&EmbeddingTower>,
+    node_high_water: u128,
+    relationship_high_water: u128,
 ) -> Result<StorageBuffer<'a, u8>, NativeGraphError> {
     catalog_payload(
         memory,
@@ -501,8 +503,8 @@ fn empty_catalog<'a>(
         store,
         lexical,
         document,
-        0,
-        0,
+        node_high_water,
+        relationship_high_water,
         &[],
         SymbolHighWaters::default(),
     )
@@ -529,6 +531,20 @@ pub(super) fn create(
     vfs: Arc<dyn Vfs>,
     clock: Arc<dyn MonotonicClock>,
     entropy: &mut dyn EntropyProvider,
+) -> Result<Store, NativeGraphError> {
+    create_with_high_waters(path, options, document, vfs, clock, entropy, 0, 0)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_with_high_waters(
+    path: &Path,
+    options: OpenOptions,
+    document: Option<EmbeddingTower>,
+    vfs: Arc<dyn Vfs>,
+    clock: Arc<dyn MonotonicClock>,
+    entropy: &mut dyn EntropyProvider,
+    node_high_water: u128,
+    relationship_high_water: u128,
 ) -> Result<Store, NativeGraphError> {
     if options.access_mode != crate::lifecycle::AccessMode::ReadWrite {
         return Err(NativeGraphError::Store(
@@ -582,7 +598,15 @@ pub(super) fn create(
         generation,
         creation_serial: 1,
     };
-    let catalog_payload = empty_catalog(&storage, &control, identity, lexical, document.as_ref())?;
+    let catalog_payload = empty_catalog(
+        &storage,
+        &control,
+        identity,
+        lexical,
+        document.as_ref(),
+        node_high_water,
+        relationship_high_water,
+    )?;
     let (catalog_bytes, catalog) = encode_framed(
         &storage,
         &control,
@@ -624,8 +648,8 @@ pub(super) fn create(
         text: None,
         reclaim: None,
         high_waters: HighWaters {
-            node: 0,
-            relationship: 0,
+            node: node_high_water,
+            relationship: relationship_high_water,
             symbols: [0; 4],
             creation_serial: 2,
         },
@@ -755,6 +779,37 @@ impl Store {
             Arc::new(crate::vfs::StdVfs),
             Arc::new(SystemMonotonicClock),
             &mut OsEntropy,
+        )
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn create_native_graph_with_allocator_seed_for_test(
+        path: impl AsRef<Path>,
+        options: OpenOptions,
+        document: Option<EmbeddingTower>,
+        first_node: crate::property_graph::NodeId,
+        first_relationship: crate::property_graph::RelId,
+    ) -> Result<Self, NativeGraphError> {
+        let node_high_water = first_node
+            .get()
+            .checked_sub(1)
+            .ok_or(NativeGraphError::Invalid("native node allocator seed"))?;
+        let relationship_high_water =
+            first_relationship
+                .get()
+                .checked_sub(1)
+                .ok_or(NativeGraphError::Invalid(
+                    "native relationship allocator seed",
+                ))?;
+        create_with_high_waters(
+            path.as_ref(),
+            options,
+            document,
+            Arc::new(crate::vfs::StdVfs),
+            Arc::new(SystemMonotonicClock),
+            &mut OsEntropy,
+            node_high_water,
+            relationship_high_water,
         )
     }
 

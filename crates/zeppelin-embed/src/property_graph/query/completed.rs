@@ -7,6 +7,8 @@ use super::{QueryError, QueryView};
 use crate::property_graph::{EntityId, GraphGeneration};
 mod records;
 pub use records::*;
+#[cfg(feature = "graph-cypher")]
+pub(super) mod native;
 mod validate;
 
 /// Checked span into the named typed pool, never a byte pointer.

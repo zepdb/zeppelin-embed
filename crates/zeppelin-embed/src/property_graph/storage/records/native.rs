@@ -108,6 +108,22 @@ impl<'a, S: BlockSource> RecordView<'a, S> {
         };
         Ok(Some(self.canonical_bytes.subslice(row.offset, row.length)?))
     }
+    /// Enumerates one verified native property without reconstructing the
+    /// canonical record. The checked index and correlated key/payload extent
+    /// come from the record's already validated property table.
+    pub fn property_at(
+        &self,
+        index: u64,
+        r: &mut TreeResources<'_>,
+    ) -> Result<(PropertyKeyId, PayloadSlice<'a, S>), TreeError> {
+        if index >= self.canonical.property_count() {
+            return Err(TreeError::Invalid("native property index"));
+        }
+        let row = property_row(self.properties, index, r)?;
+        let key = PropertyKeyId::new(row.key)
+            .map_err(|_| TreeError::Invalid("zero native property key"))?;
+        Ok((key, self.canonical_bytes.subslice(row.offset, row.length)?))
+    }
 }
 
 /// Validate the complete native record, index/canonical bijection, topology,
