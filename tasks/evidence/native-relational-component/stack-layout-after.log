@@ -1,0 +1,5 @@
+print-type-size type: `property_graph::query::pattern::Occurrence<'_, '_, '_, '_, '_>`: 2000 bytes, alignment: 16 bytes
+print-type-size type: `property_graph::query::pattern::relational::SortState<'_, '_, '_>`: 1728 bytes, alignment: 8 bytes
+print-type-size type: `property_graph::query::pattern::PhysicalState<'_, '_, '_, '_, '_>`: 1392 bytes, alignment: 16 bytes
+print-type-size type: `property_graph::query::pattern::relational::AggregateState<'_, '_, '_>`: 1192 bytes, alignment: 8 bytes
+print-type-size type: `property_graph::query::pattern::relational::DistinctState<'_, '_, '_>`: 872 bytes, alignment: 8 bytes

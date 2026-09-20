@@ -51,6 +51,32 @@ impl<'v, 'm, 'g> Rows<'v, 'm, 'g> {
         capacity: StorageCapacity,
         context: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<Self, RuntimeError> {
+        self.aggregate_inner(keys, aggregates, capacity, None, context)
+            .map(|(rows, _)| rows)
+    }
+
+    pub(crate) fn aggregate_with_representatives(
+        self,
+        keys: &[SlotProjection],
+        aggregates: &[AggregateColumn],
+        capacity: StorageCapacity,
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+    ) -> Result<(Self, QueryArena<'m, 'g, Option<usize>>), RuntimeError> {
+        let representative_capacity = if keys.is_empty() { 1 } else { self.len() };
+        let representatives = QueryArena::new(context.memory(), representative_capacity)?;
+        let (rows, representatives) =
+            self.aggregate_inner(keys, aggregates, capacity, Some(representatives), context)?;
+        Ok((rows, representatives.ok_or(RuntimeError::Batch)?))
+    }
+
+    fn aggregate_inner(
+        self,
+        keys: &[SlotProjection],
+        aggregates: &[AggregateColumn],
+        capacity: StorageCapacity,
+        mut representatives: Option<QueryArena<'m, 'g, Option<usize>>>,
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+    ) -> Result<(Self, Option<QueryArena<'m, 'g, Option<usize>>>), RuntimeError> {
         if !self.data.belongs_to(context)
             || keys
                 .len()
@@ -237,8 +263,11 @@ impl<'v, 'm, 'g> Rows<'v, 'm, 'g> {
                 context,
             )?;
             output.order.push(raw)?;
+            if let Some(representatives) = &mut representatives {
+                representatives.push((group.first != usize::MAX).then_some(group.first))?;
+            }
         }
-        Ok(output)
+        Ok((output, representatives))
     }
 }
 struct Gathered<'a, 'v, 'm, 'g> {

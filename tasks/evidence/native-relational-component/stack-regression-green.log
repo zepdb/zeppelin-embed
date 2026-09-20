@@ -1,0 +1,638 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-154/crates/zeppelin-embed)
+warning: unused imports: `prepare_sparse_checkpoint` and `validate_replay_transition`
+  --> crates/zeppelin-embed/src/property_graph/storage/search.rs:10:23
+   |
+10 |     SparseCheckpoint, prepare_sparse_checkpoint, validate_checkpoint,
+   |                       ^^^^^^^^^^^^^^^^^^^^^^^^^
+11 |     validate_persisted_replay_transition, validate_replay_transition,
+   |                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `SearchTraceCursor` and `SearchTraceResult`
+  --> crates/zeppelin-embed/src/property_graph/storage/search.rs:15:24
+   |
+15 | pub(crate) use trace::{SearchTraceCursor, SearchTraceResult};
+   |                        ^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `SparseMember`, `SparseSource`, and `SparseSources`
+  --> crates/zeppelin-embed/src/property_graph/storage/search.rs:16:23
+   |
+16 | pub(crate) use view::{SparseMember, SparseSource, SparseSources, SparseView};
+   |                       ^^^^^^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^^^^^^^
+
+warning: function `fold_char` is never used
+  --> crates/zeppelin-embed/src/fts/tokenizer/fold.rs:96:15
+   |
+96 | pub(crate) fn fold_char(value: char, output: &mut String) {
+   |               ^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `fold` is never used
+   --> crates/zeppelin-embed/src/fts/tokenizer/fold.rs:111:15
+    |
+111 | pub(crate) fn fold(input: &str) -> String {
+    |               ^^^^
+
+warning: function `compose` is never used
+   --> crates/zeppelin-embed/src/fts/tokenizer/numbers.rs:102:15
+    |
+102 | pub(crate) fn compose(words: &[NumberWord]) -> Option<u64> {
+    |               ^^^^^^^
+
+warning: function `spell_joined` is never used
+   --> crates/zeppelin-embed/src/fts/tokenizer/numbers.rs:176:15
+    |
+176 | pub(crate) fn spell_joined(value: u64) -> Option<String> {
+    |               ^^^^^^^^^^^^
+
+warning: function `spell_into` is never used
+   --> crates/zeppelin-embed/src/fts/tokenizer/numbers.rs:289:4
+    |
+289 | fn spell_into(value: u64, out: &mut String) -> Option<()> {
+    |    ^^^^^^^^^^
+
+warning: function `parse_digits` is never used
+   --> crates/zeppelin-embed/src/fts/tokenizer/numbers.rs:320:15
+    |
+320 | pub(crate) fn parse_digits(term: &str) -> Option<u64> {
+    |               ^^^^^^^^^^^^
+
+warning: function `segment` is never used
+  --> crates/zeppelin-embed/src/fts/tokenizer/segment.rs:65:15
+   |
+65 | pub(crate) fn segment(text: &str) -> Vec<Span> {
+   |               ^^^^^^^
+
+warning: function `ideograph_bigrams` is never used
+   --> crates/zeppelin-embed/src/fts/tokenizer/segment.rs:181:15
+    |
+181 | pub(crate) fn ideograph_bigrams(text: &str, span: Span) -> Vec<Span> {
+    |               ^^^^^^^^^^^^^^^^^
+
+warning: function `regions` is never used
+  --> crates/zeppelin-embed/src/fts/tokenizer/stemmer.rs:67:4
+   |
+67 | fn regions(word: &[char]) -> (usize, usize) {
+   |    ^^^^^^^
+
+warning: function `region_after` is never used
+  --> crates/zeppelin-embed/src/fts/tokenizer/stemmer.rs:86:4
+   |
+86 | fn region_after(word: &[char], from: usize) -> usize {
+   |    ^^^^^^^^^^^^
+
+warning: function `stem` is never used
+   --> crates/zeppelin-embed/src/fts/tokenizer/stemmer.rs:200:15
+    |
+200 | pub(crate) fn stem(term: &str) -> String {
+    |               ^^^^
+
+warning: function `restore_y` is never used
+   --> crates/zeppelin-embed/src/fts/tokenizer/stemmer.rs:430:4
+    |
+430 | fn restore_y(word: &[char]) -> String {
+    |    ^^^^^^^^^
+
+warning: function `step_1a` is never used
+   --> crates/zeppelin-embed/src/fts/tokenizer/stemmer.rs:446:4
+    |
+446 | fn step_1a(word: &mut Vec<char>) {
+    |    ^^^^^^^
+
+warning: function `step_1b` is never used
+   --> crates/zeppelin-embed/src/fts/tokenizer/stemmer.rs:473:4
+    |
+473 | fn step_1b(word: &mut Vec<char>, r1: usize) {
+    |    ^^^^^^^
+
+warning: struct `TreeTraceReservation` is never constructed
+   --> crates/zeppelin-embed/src/property_graph/storage/tree/directory.rs:115:19
+    |
+115 | pub(crate) struct TreeTraceReservation<'a> {
+    |                   ^^^^^^^^^^^^^^^^^^^^
+
+warning: method `require` is never used
+   --> crates/zeppelin-embed/src/property_graph/storage/tree/directory.rs:120:19
+    |
+119 | impl TreeTraceReservation<'_> {
+    | ----------------------------- method in this implementation
+120 |     pub(crate) fn require(&self, resources: &TreeResources<'_>) -> Result<(), TreeError> {
+    |                   ^^^^^^^
+
+warning: method `reserve_trace` is never used
+   --> crates/zeppelin-embed/src/property_graph/storage/tree/directory.rs:314:19
+    |
+226 | impl<'a> TreeResources<'a> {
+    | -------------------------- method in this implementation
+...
+314 |     pub(crate) fn reserve_trace(
+    |                   ^^^^^^^^^^^^^
+
+warning: function `trace_page` is never used
+   --> crates/zeppelin-embed/src/property_graph/storage/tree/directory.rs:639:15
+    |
+639 | pub(crate) fn trace_page<'s>(
+    |               ^^^^^^^^^^
+
+warning: method `physical_reference_at` is never used
+   --> crates/zeppelin-embed/src/property_graph/storage/payload.rs:205:19
+    |
+ 27 | impl PayloadRef {
+    | --------------- method in this implementation
+...
+205 |     pub(crate) fn physical_reference_at(
+    |                   ^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `PreparedSparseCheckpoint` is never constructed
+  --> crates/zeppelin-embed/src/property_graph/storage/search/checkpoint.rs:30:19
+   |
+30 | pub(crate) struct PreparedSparseCheckpoint {
+   |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `finalize` is never used
+  --> crates/zeppelin-embed/src/property_graph/storage/search/checkpoint.rs:35:19
+   |
+34 | impl PreparedSparseCheckpoint {
+   | ----------------------------- method in this implementation
+35 |     pub(crate) fn finalize(&self, inventory: &[InventoryChange]) -> Result<SparseRoots, TreeError> {
+   |                   ^^^^^^^^
+
+warning: function `prepare_sparse_checkpoint` is never used
+  --> crates/zeppelin-embed/src/property_graph/storage/search/checkpoint.rs:70:15
+   |
+70 | pub(crate) fn prepare_sparse_checkpoint<'m, S: BlockSink, C: RecordCatalog<S>>(
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `validate_target_origin` is never used
+   --> crates/zeppelin-embed/src/property_graph/storage/search/checkpoint.rs:190:4
+    |
+190 | fn validate_target_origin<S: BlockSource, C: RecordCatalog<S>>(
+    |    ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `validate_replay_transition` is never used
+   --> crates/zeppelin-embed/src/property_graph/storage/search/checkpoint.rs:241:15
+    |
+241 | pub(crate) fn validate_replay_transition<'a, 'm, S: BlockSource, C: RecordCatalog<S>>(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `generation` and `sequence` are never used
+  --> crates/zeppelin-embed/src/property_graph/storage/search/prepare.rs:75:25
+   |
+74 | impl PreparedSparseCandidate<'_> {
+   | -------------------------------- methods in this implementation
+75 |     pub(crate) const fn generation(&self) -> GraphGeneration {
+   |                         ^^^^^^^^^^
+...
+78 |     pub(crate) const fn sequence(&self) -> u64 {
+   |                         ^^^^^^^^
+
+warning: struct `SearchTraceResult` is never constructed
+  --> crates/zeppelin-embed/src/property_graph/storage/search/trace.rs:23:19
+   |
+23 | pub(crate) struct SearchTraceResult {
+   |                   ^^^^^^^^^^^^^^^^^
+
+warning: struct `Bound` is never constructed
+  --> crates/zeppelin-embed/src/property_graph/storage/search/trace.rs:29:8
+   |
+29 | struct Bound {
+   |        ^^^^^
+
+warning: associated items `from_key` and `key` are never used
+  --> crates/zeppelin-embed/src/property_graph/storage/search/trace.rs:35:8
+   |
+34 | impl Bound {
+   | ---------- associated items in this implementation
+35 |     fn from_key(key: Key<'_>, width: usize) -> Result<Self, TreeError> {
+   |        ^^^^^^^^
+...
+53 |     fn key(&self) -> Result<Key<'_>, TreeError> {
+   |        ^^^
+
+warning: struct `PageFrame` is never constructed
+  --> crates/zeppelin-embed/src/property_graph/storage/search/trace.rs:63:8
+   |
+63 | struct PageFrame {
+   |        ^^^^^^^^^
+
+warning: enum `DirectoryFamily` is never used
+  --> crates/zeppelin-embed/src/property_graph/storage/search/trace.rs:74:6
+   |
+74 | enum DirectoryFamily {
+   |      ^^^^^^^^^^^^^^^
+
+warning: struct `DirectoryWalk` is never constructed
+  --> crates/zeppelin-embed/src/property_graph/storage/search/trace.rs:79:8
+   |
+79 | struct DirectoryWalk {
+   |        ^^^^^^^^^^^^^
+
+warning: enum `DirectoryEvent` is never used
+  --> crates/zeppelin-embed/src/property_graph/storage/search/trace.rs:91:6
+   |
+91 | enum DirectoryEvent {
+   |      ^^^^^^^^^^^^^^
+
+warning: associated items `new`, `width`, and `next` are never used
+   --> crates/zeppelin-embed/src/property_graph/storage/search/trace.rs:103:8
+    |
+ 98 | impl DirectoryWalk {
+    | ------------------ associated items in this implementation
+...
+103 |     fn new(
+    |        ^^^
+...
+142 |     fn width(&self) -> usize {
+    |        ^^^^^
+...
+149 |     fn next<S: BlockSource>(
+    |        ^^^^
+
+warning: struct `PayloadState` is never constructed
+   --> crates/zeppelin-embed/src/property_graph/storage/search/trace.rs:315:8
+    |
+315 | struct PayloadState {
+    |        ^^^^^^^^^^^^
+
+warning: struct `SourceState` is never constructed
+   --> crates/zeppelin-embed/src/property_graph/storage/search/trace.rs:323:8
+    |
+323 | struct SourceState {
+    |        ^^^^^^^^^^^
+
+warning: struct `SearchTraceCursor` is never constructed
+   --> crates/zeppelin-embed/src/property_graph/storage/search/trace.rs:337:19
+    |
+337 | pub(crate) struct SearchTraceCursor<'s, 'm, S, C> {
+    |                   ^^^^^^^^^^^^^^^^^
+
+warning: associated function `for_preparation` is never used
+   --> crates/zeppelin-embed/src/property_graph/storage/search/trace.rs:374:19
+    |
+366 | / impl<'s, 'lease, 'm>
+367 | |     SearchTraceCursor<
+368 | |         's,
+369 | |         'm,
+370 | |         NativePreparationSource<'lease, 'm>,
+371 | |         NativePreparationCatalog<'s, 'lease, 'm>,
+372 | |     >
+    | |_____- associated function in this implementation
+373 |   {
+374 |       pub(crate) fn for_preparation(
+    |                     ^^^^^^^^^^^^^^^
+
+warning: associated items `open_checked`, `modality`, `schedule_payload`, `next_reference`, and `trace` are never used
+   --> crates/zeppelin-embed/src/property_graph/storage/search/trace.rs:407:8
+    |
+402 | impl<'s, 'm, S: BlockSource, C: RecordCatalog<S>> SearchTraceCursor<'s, 'm, S, C> {
+    | --------------------------------------------------------------------------------- associated items in this implementation
+...
+407 |     fn open_checked(
+    |        ^^^^^^^^^^^^
+...
+502 |     fn modality(&self) -> Result<Modality, TreeError> {
+    |        ^^^^^^^^
+...
+510 |     fn schedule_payload(&mut self, payload: PayloadRef, generation: GraphGeneration) {
+    |        ^^^^^^^^^^^^^^^^
+...
+519 |     fn next_reference(
+    |        ^^^^^^^^^^^^^^
+...
+824 |     pub(crate) fn trace(
+    |                   ^^^^^
+
+warning: method `sealed` is never used
+   --> crates/zeppelin-embed/src/property_graph/storage/search/view.rs:197:8
+    |
+188 | impl SparseLexical<'_> {
+    | ---------------------- method in this implementation
+...
+197 |     fn sealed(&self) -> &SealedSegment {
+    |        ^^^^^^
+
+warning: function `decode_lexical_prepare` is never used
+   --> crates/zeppelin-embed/src/property_graph/storage/search/view.rs:232:15
+    |
+232 | pub(super) fn decode_lexical_prepare<'m, S: BlockSource>(
+    |               ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: fields `revision`, `row`, and `analyzed_length` are never read
+   --> crates/zeppelin-embed/src/property_graph/storage/search/view.rs:255:16
+    |
+253 | pub(crate) struct SparseMember<'a, S: BlockSource> {
+    |                   ------------ fields in this struct
+254 |     pub(crate) node: NodeId,
+255 |     pub(crate) revision: u64,
+    |                ^^^^^^^^
+256 |     pub(crate) row: u32,
+    |                ^^^
+257 |     pub(crate) analyzed_length: u32,
+    |                ^^^^^^^^^^^^^^^
+
+warning: struct `SparseSources` is never constructed
+   --> crates/zeppelin-embed/src/property_graph/storage/search/view.rs:262:19
+    |
+262 | pub(crate) struct SparseSources<'v, 'a, 'm, 'r, S, C> {
+    |                   ^^^^^^^^^^^^^
+
+warning: struct `SparseSource` is never constructed
+   --> crates/zeppelin-embed/src/property_graph/storage/search/view.rs:271:19
+    |
+271 | pub(crate) struct SparseSource<'v, 'a, 'm, S, C> {
+    |                   ^^^^^^^^^^^^
+
+warning: field `catalog_required` is never read
+   --> crates/zeppelin-embed/src/property_graph/storage/search/view.rs:290:5
+    |
+283 | pub(crate) struct SparseView<'a, 'm, S, C> {
+    |                   ---------- field in this struct
+...
+290 |     catalog_required: RequiredRef,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: methods `text_length`, `interpretation_catalog`, `root_state`, `descriptor`, and `sources` are never used
+   --> crates/zeppelin-embed/src/property_graph/storage/search/view.rs:499:25
+    |
+339 | impl<'a, 'm, S: BlockSource, C: RecordCatalog<S>> SparseView<'a, 'm, S, C> {
+    | -------------------------------------------------------------------------- methods in this implementation
+...
+499 |     pub(crate) const fn text_length(&self) -> u64 {
+    |                         ^^^^^^^^^^^
+...
+517 |     pub(crate) const fn interpretation_catalog(&self) -> RequiredRef {
+    |                         ^^^^^^^^^^^^^^^^^^^^^^
+...
+523 |     pub(super) const fn root_state(&self, modality: Modality) -> Option<SparseRootState> {
+    |                         ^^^^^^^^^^
+...
+543 |     fn descriptor(&self, modality: Modality) -> Option<RootDescriptor> {
+    |        ^^^^^^^^^^
+...
+623 |     pub(crate) fn sources<'v, 'r>(
+    |                   ^^^^^^^
+
+warning: methods `next` and `next_inner` are never used
+   --> crates/zeppelin-embed/src/property_graph/storage/search/view.rs:972:19
+    |
+971 | impl<'v, 'a, 'm, 'r, S: BlockSource, C: RecordCatalog<S>> SparseSources<'v, 'a, 'm, 'r, S, C> {
+    | --------------------------------------------------------------------------------------------- methods in this implementation
+972 |     pub(crate) fn next(
+    |                   ^^^^
+...
+986 |     fn next_inner(
+    |        ^^^^^^^^^^
+
+warning: methods `row_count`, `live_bit`, `is_live`, `resolve_row`, and `lexical` are never used
+    --> crates/zeppelin-embed/src/property_graph/storage/search/view.rs:1141:25
+     |
+1140 | impl<'v, 'a, 'm, S: BlockSource, C: RecordCatalog<S>> SparseSource<'v, 'a, 'm, S, C> {
+     | ------------------------------------------------------------------------------------ methods in this implementation
+1141 |     pub(crate) const fn row_count(&self) -> u32 {
+     |                         ^^^^^^^^^
+...
+1145 |     fn live_bit(&self, row: u32, resources: &mut TreeResources<'_>) -> Result<bool, TreeError> {
+     |        ^^^^^^^^
+...
+1164 |     pub(crate) fn is_live(
+     |                   ^^^^^^^
+...
+1173 |     pub(crate) fn resolve_row(
+     |                   ^^^^^^^^^^^
+...
+1236 |     pub(crate) fn lexical(
+     |                   ^^^^^^^
+
+warning: `zeppelin-embed` (lib) generated 50 warnings (run `cargo fix --lib -p zeppelin-embed` to apply 3 suggestions)
+warning: unused import: `SearchTraceResult`
+  --> crates/zeppelin-embed/src/property_graph/storage/search.rs:15:43
+   |
+15 | pub(crate) use trace::{SearchTraceCursor, SearchTraceResult};
+   |                                           ^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `execution_capacity`
+    --> crates/zeppelin-embed/src/property_graph/query/pattern/tests.rs:548:13
+     |
+ 548 |           let execution_capacity = ExecutionCapacity {
+     |               ^^^^^^^^^^^^^^^^^^
+...
+2293 |           Ok(execute_pattern!(
+     |  ____________-
+2294 | |             view,
+2295 | |             runtime,
+2296 | |             operators,
+...    |
+2327 | |         ))
+     | |_________- in this macro invocation
+     |
+help: `execution_capacity` is captured in macro and introduced a unused variable
+    --> crates/zeppelin-embed/src/property_graph/query/pattern/tests.rs:548:13
+     |
+ 548 |           let execution_capacity = ExecutionCapacity {
+     |               ^^^^^^^^^^^^^^^^^^
+...
+2293 |           Ok(execute_pattern!(
+     |  ____________-
+2294 | |             view,
+2295 | |             runtime,
+2296 | |             operators,
+...    |
+2327 | |         ))
+     | |_________- in this macro invocation
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+     = note: this warning originates in the macro `execute_pattern` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unused variable: `execution_capacity`
+    --> crates/zeppelin-embed/src/property_graph/query/pattern/tests.rs:548:13
+     |
+ 548 |           let execution_capacity = ExecutionCapacity {
+     |               ^^^^^^^^^^^^^^^^^^
+...
+2463 |           Ok(execute_pattern!(
+     |  ____________-
+2464 | |             view,
+2465 | |             runtime,
+2466 | |             operators,
+...    |
+2499 | |         ))
+     | |_________- in this macro invocation
+     |
+help: `execution_capacity` is captured in macro and introduced a unused variable
+    --> crates/zeppelin-embed/src/property_graph/query/pattern/tests.rs:548:13
+     |
+ 548 |           let execution_capacity = ExecutionCapacity {
+     |               ^^^^^^^^^^^^^^^^^^
+...
+2463 |           Ok(execute_pattern!(
+     |  ____________-
+2464 | |             view,
+2465 | |             runtime,
+2466 | |             operators,
+...    |
+2499 | |         ))
+     | |_________- in this macro invocation
+     = note: this warning originates in the macro `execute_pattern` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unused variable: `execution_capacity`
+    --> crates/zeppelin-embed/src/property_graph/query/pattern/tests.rs:548:13
+     |
+ 548 |           let execution_capacity = ExecutionCapacity {
+     |               ^^^^^^^^^^^^^^^^^^
+...
+2648 |           Ok(execute_pattern!(
+     |  ____________-
+2649 | |             view,
+2650 | |             runtime,
+2651 | |             operators,
+...    |
+2682 | |         ))
+     | |_________- in this macro invocation
+     |
+help: `execution_capacity` is captured in macro and introduced a unused variable
+    --> crates/zeppelin-embed/src/property_graph/query/pattern/tests.rs:548:13
+     |
+ 548 |           let execution_capacity = ExecutionCapacity {
+     |               ^^^^^^^^^^^^^^^^^^
+...
+2648 |           Ok(execute_pattern!(
+     |  ____________-
+2649 | |             view,
+2650 | |             runtime,
+2651 | |             operators,
+...    |
+2682 | |         ))
+     | |_________- in this macro invocation
+     = note: this warning originates in the macro `execute_pattern` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unused variable: `execution_capacity`
+    --> crates/zeppelin-embed/src/property_graph/query/pattern/tests.rs:548:13
+     |
+ 548 |           let execution_capacity = ExecutionCapacity {
+     |               ^^^^^^^^^^^^^^^^^^
+...
+2810 |           Ok(execute_pattern!(
+     |  ____________-
+2811 | |             view,
+2812 | |             runtime,
+2813 | |             operators,
+...    |
+2844 | |         ))
+     | |_________- in this macro invocation
+     |
+help: `execution_capacity` is captured in macro and introduced a unused variable
+    --> crates/zeppelin-embed/src/property_graph/query/pattern/tests.rs:548:13
+     |
+ 548 |           let execution_capacity = ExecutionCapacity {
+     |               ^^^^^^^^^^^^^^^^^^
+...
+2810 |           Ok(execute_pattern!(
+     |  ____________-
+2811 | |             view,
+2812 | |             runtime,
+2813 | |             operators,
+...    |
+2844 | |         ))
+     | |_________- in this macro invocation
+     = note: this warning originates in the macro `execute_pattern` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: variable does not need to be mutable
+    --> crates/zeppelin-embed/src/property_graph/query/pattern/tests.rs:523:13
+     |
+ 523 |           let mut source = NativePattern::new(
+     |               ----^^^^^^
+     |               |
+     |               help: remove this `mut`
+...
+5237 |           Ok(execute_pattern!(
+     |  ____________-
+5238 | |             view,
+5239 | |             runtime,
+5240 | |             operators,
+...    |
+5267 | |         ))
+     | |_________- in this macro invocation
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+     = note: this warning originates in the macro `execute_pattern` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: variable does not need to be mutable
+    --> crates/zeppelin-embed/src/property_graph/query/pattern/tests.rs:523:13
+     |
+ 523 |           let mut source = NativePattern::new(
+     |               ----^^^^^^
+     |               |
+     |               help: remove this `mut`
+...
+5806 |           Ok(execute_pattern!(
+     |  ____________-
+5807 | |             view,
+5808 | |             runtime,
+5809 | |             operators,
+...    |
+5846 | |         ))
+     | |_________- in this macro invocation
+     |
+     = note: this warning originates in the macro `execute_pattern` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unused variable: `execution_capacity`
+    --> crates/zeppelin-embed/src/property_graph/query/pattern/tests.rs:548:13
+     |
+ 548 |           let execution_capacity = ExecutionCapacity {
+     |               ^^^^^^^^^^^^^^^^^^
+...
+5806 |           Ok(execute_pattern!(
+     |  ____________-
+5807 | |             view,
+5808 | |             runtime,
+5809 | |             operators,
+...    |
+5846 | |         ))
+     | |_________- in this macro invocation
+     |
+help: `execution_capacity` is captured in macro and introduced a unused variable
+    --> crates/zeppelin-embed/src/property_graph/query/pattern/tests.rs:548:13
+     |
+ 548 |           let execution_capacity = ExecutionCapacity {
+     |               ^^^^^^^^^^^^^^^^^^
+...
+5806 |           Ok(execute_pattern!(
+     |  ____________-
+5807 | |             view,
+5808 | |             runtime,
+5809 | |             operators,
+...    |
+5846 | |         ))
+     | |_________- in this macro invocation
+     = note: this warning originates in the macro `execute_pattern` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: variable does not need to be mutable
+    --> crates/zeppelin-embed/src/property_graph/query/pattern/tests.rs:523:13
+     |
+ 523 |           let mut source = NativePattern::new(
+     |               ----^^^^^^
+     |               |
+     |               help: remove this `mut`
+...
+5887 |           Ok(execute_pattern!(
+     |  ____________-
+5888 | |             view,
+5889 | |             runtime,
+5890 | |             operators,
+...    |
+5909 | |         ))
+     | |_________- in this macro invocation
+     |
+     = note: this warning originates in the macro `execute_pattern` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `zeppelin-embed` (lib test) generated 12 warnings (3 duplicates) (run `cargo fix --lib -p zeppelin-embed --tests` to apply 4 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.99s
+────────────
+ Nextest run ID 06b6ee43-79a8-4154-befc-e286515b98d9 with nextest profile: default
+    Starting 1 test across 1 binary (673 tests skipped)
+        PASS [   0.246s] (1/1) zeppelin-embed property_graph::query::pattern::tests::native_pattern_keys_labels_liveness_full_ids
+────────────
+     Summary [   0.247s] 1 test run: 1 passed, 673 skipped

@@ -1,0 +1,15 @@
+COMMAND
+cargo nextest run -p zeppelin-embed --lib --features graph-cypher -j 4 --retries 0 -E 'test(native_relational_offset_scope_then_match)'
+
+RED
+Nextest run ID 5b56ae4e-bf49-4e83-90c9-9be3da33e2bf
+Starting 1 test across 1 binary (666 tests skipped)
+FAIL [0.120s] (1/1) zeppelin-embed property_graph::query::pattern::relational::tests::native_relational_offset_scope_then_match
+native OffsetLimit before a later MATCH must execute successfully: Some(Build(Plan(Reference)))
+Summary [0.122s] 1 test run: 0 passed, 1 failed, 666 skipped
+
+GREEN
+Nextest run ID 0138f410-411b-46e8-8117-a8848ecf056b
+Starting 1 test across 1 binary (666 tests skipped)
+PASS [0.126s] (1/1) zeppelin-embed property_graph::query::pattern::relational::tests::native_relational_offset_scope_then_match
+Summary [0.127s] 1 test run: 1 passed, 666 skipped

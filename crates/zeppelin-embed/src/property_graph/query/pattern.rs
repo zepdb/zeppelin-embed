@@ -27,6 +27,7 @@ use crate::property_graph::{
 mod expand;
 mod join;
 mod planner;
+pub(super) mod relational;
 mod source;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -224,6 +225,25 @@ enum PhysicalState<'s, 'plan, 'v, 'm, 'g> {
         projections: &'plan [Projection],
         values: QueryArena<'m, 'g, RowBatch<'v, 'm, 'g>>,
     },
+    OffsetLimit {
+        child: usize,
+        offset: u64,
+        limit: Option<u64>,
+        remaining_offset: u64,
+        remaining_limit: Option<u64>,
+    },
+    Sort {
+        child: usize,
+        state: QueryArena<'m, 'g, relational::SortState<'v, 'm, 'g>>,
+    },
+    Distinct {
+        child: usize,
+        state: QueryArena<'m, 'g, relational::DistinctState<'v, 'm, 'g>>,
+    },
+    Aggregate {
+        child: usize,
+        state: QueryArena<'m, 'g, relational::AggregateState<'v, 'm, 'g>>,
+    },
     Collect {
         child: usize,
     },
@@ -267,6 +287,15 @@ pub(crate) struct NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
 }
 
 impl<'s, 'r, 'plan, 'v, 'm, 'g> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn cancel_after_expression_polls(
+        &mut self,
+        polls: usize,
+        cancel: crate::lifecycle::CancelToken,
+    ) {
+        self.evaluator.cancel_after_scratch_polls(polls, cancel);
+    }
+
     #[allow(
         clippy::too_many_arguments,
         reason = "all authentic native owners stay explicit"
@@ -583,6 +612,19 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
                 self.copy_uses(index, *child)?;
                 Ok(true)
             }
+            PhysicalState::OffsetLimit {
+                child,
+                remaining_offset,
+                remaining_limit,
+                ..
+            } => self.next_offset_limit(index, *child, remaining_offset, remaining_limit, context),
+            PhysicalState::Sort { child, state } => self.next_sort(index, *child, state, context),
+            PhysicalState::Distinct { child, state } => {
+                self.next_distinct(index, *child, state, context)
+            }
+            PhysicalState::Aggregate { child, state } => {
+                self.next_aggregate(index, *child, state, context)
+            }
             PhysicalState::Collect { child } => {
                 if !self.next_occurrence(*child, context)? {
                     return Ok(false);
@@ -596,7 +638,11 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn reset_occurrence(&mut self, index: usize) -> Result<(), RuntimeError> {
+    fn reset_occurrence(
+        &mut self,
+        index: usize,
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+    ) -> Result<(), RuntimeError> {
         self.output_mut(index)?.clear();
         self.uses_mut(index)?.clear();
         let mut state = {
@@ -610,15 +656,15 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
                 PhysicalState::Unit { emitted } => *emitted = false,
                 PhysicalState::ScanNodes { child, cursor, .. } => {
                     *cursor = None;
-                    self.reset_occurrence(*child)?;
+                    self.reset_occurrence(*child, context)?;
                 }
                 PhysicalState::LookupNode { child, .. }
                 | PhysicalState::LookupRelationship { child, .. }
                 | PhysicalState::Filter { child, .. }
-                | PhysicalState::Collect { child } => self.reset_occurrence(*child)?,
+                | PhysicalState::Collect { child } => self.reset_occurrence(*child, context)?,
                 PhysicalState::LookupKey { child, value, .. } => {
                     value.clear();
-                    self.reset_occurrence(*child)?;
+                    self.reset_occurrence(*child, context)?;
                 }
                 PhysicalState::Expand {
                     child,
@@ -628,7 +674,7 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
                 } => {
                     *cursor = None;
                     *bound = None;
-                    self.reset_occurrence(*child)?;
+                    self.reset_occurrence(*child, context)?;
                 }
                 PhysicalState::BoundedExpand {
                     child,
@@ -652,7 +698,7 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
                     }
                     *zero_pending = false;
                     *active = false;
-                    self.reset_occurrence(*child)?;
+                    self.reset_occurrence(*child, context)?;
                 }
                 PhysicalState::Join {
                     left,
@@ -685,8 +731,8 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
                     *nested_left_active = false;
                     *probe_active = false;
                     *next_candidate = usize::MAX;
-                    self.reset_occurrence(*left)?;
-                    self.reset_occurrence(*right)?;
+                    self.reset_occurrence(*left, context)?;
+                    self.reset_occurrence(*right, context)?;
                 }
                 PhysicalState::Optional {
                     left,
@@ -697,14 +743,49 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
                 } => {
                     *left_active = false;
                     *matched = false;
-                    self.reset_occurrence(*left)?;
-                    self.reset_occurrence(*right)?;
+                    self.reset_occurrence(*left, context)?;
+                    self.reset_occurrence(*right, context)?;
                 }
                 PhysicalState::Project { child, values, .. } => {
                     for value in values.as_mut_slice() {
                         value.clear();
                     }
-                    self.reset_occurrence(*child)?;
+                    self.reset_occurrence(*child, context)?;
+                }
+                PhysicalState::OffsetLimit {
+                    child,
+                    offset,
+                    limit,
+                    remaining_offset,
+                    remaining_limit,
+                } => {
+                    *remaining_offset = *offset;
+                    *remaining_limit = *limit;
+                    self.reset_occurrence(*child, context)?;
+                }
+                PhysicalState::Sort { child, state } => {
+                    let state = state
+                        .as_mut_slice()
+                        .first_mut()
+                        .ok_or(RuntimeError::Batch)?;
+                    state.reset(context)?;
+                    self.reset_occurrence(*child, context)?;
+                }
+                PhysicalState::Distinct { child, state } => {
+                    let state = state
+                        .as_mut_slice()
+                        .first_mut()
+                        .ok_or(RuntimeError::Batch)?;
+                    state.reset(context)?;
+                    self.reset_occurrence(*child, context)?;
+                }
+                PhysicalState::Aggregate { child, state } => {
+                    let state = state
+                        .as_mut_slice()
+                        .first_mut()
+                        .ok_or(RuntimeError::Batch)?;
+                    state.reset(context)?;
+                    self.reset_occurrence(*child, context)?;
                 }
             }
             Ok(())
@@ -1272,7 +1353,7 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
                 if !self.next_occurrence(left, context)? {
                     return Ok(false);
                 }
-                self.reset_occurrence(right)?;
+                self.reset_occurrence(right, context)?;
                 *left_active = true;
             }
             while self.next_occurrence(right, context)? {
@@ -1431,7 +1512,7 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
                 if !self.next_occurrence(left, context)? {
                     return Ok(false);
                 }
-                self.reset_occurrence(right)?;
+                self.reset_occurrence(right, context)?;
                 *left_active = true;
                 *matched = false;
             }
@@ -1982,6 +2063,10 @@ fn occurrence_count(
             | OperatorKind::Filter(_)
             | OperatorKind::Project(_)
             | OperatorKind::With(_)
+            | OperatorKind::OffsetLimit { .. }
+            | OperatorKind::Sort(_)
+            | OperatorKind::Distinct
+            | OperatorKind::Aggregate { .. }
             | OperatorKind::Collect
     ) {
         return Err(PlanError::Reference);
@@ -2451,6 +2536,91 @@ fn build_occurrence<'s, 'r, 'plan, 'v, 'm, 'g>(
                 values,
             }
         }
+        OperatorKind::OffsetLimit { offset, limit } => PhysicalState::OffsetLimit {
+            child: build_unary(
+                view,
+                plan,
+                operator,
+                capacity,
+                occurrences,
+                context,
+                bindings,
+            )?,
+            offset,
+            limit,
+            remaining_offset: offset,
+            remaining_limit: limit,
+        },
+        OperatorKind::Sort(keys) => {
+            let child = build_unary(
+                view,
+                plan,
+                operator,
+                capacity,
+                occurrences,
+                context,
+                bindings,
+            )?;
+            PhysicalState::Sort {
+                child,
+                state: relational::SortState::new(
+                    occurrences
+                        .as_slice()
+                        .get(child)
+                        .ok_or(RuntimeError::Batch)?
+                        .schema
+                        .slots(),
+                    keys,
+                    capacity,
+                    context,
+                )?,
+            }
+        }
+        OperatorKind::Distinct => {
+            let child = build_unary(
+                view,
+                plan,
+                operator,
+                capacity,
+                occurrences,
+                context,
+                bindings,
+            )?;
+            PhysicalState::Distinct {
+                child,
+                state: relational::DistinctState::new(
+                    occurrences
+                        .as_slice()
+                        .get(child)
+                        .ok_or(RuntimeError::Batch)?
+                        .schema
+                        .slots(),
+                    capacity,
+                    context,
+                )?,
+            }
+        }
+        OperatorKind::Aggregate { keys, aggregates } => {
+            let child = build_unary(
+                view,
+                plan,
+                operator,
+                capacity,
+                occurrences,
+                context,
+                bindings,
+            )?;
+            PhysicalState::Aggregate {
+                child,
+                state: relational::AggregateState::new(
+                    keys,
+                    aggregates,
+                    plan.plan().description().expressions,
+                    capacity,
+                    context,
+                )?,
+            }
+        }
         OperatorKind::Collect => PhysicalState::Collect {
             child: build_unary(
                 view,
@@ -2587,8 +2757,22 @@ fn slot_inherited_from_anchor(
                 slot_inherited_from_anchor(occurrences, expressions, *right, slot, anchor)?
             }
         }
-        PhysicalState::Filter { child, .. } | PhysicalState::Collect { child } => {
+        PhysicalState::Filter { child, .. }
+        | PhysicalState::OffsetLimit { child, .. }
+        | PhysicalState::Sort { child, .. }
+        | PhysicalState::Distinct { child, .. }
+        | PhysicalState::Collect { child } => {
             slot_inherited_from_anchor(occurrences, expressions, *child, slot, anchor)?
+        }
+        PhysicalState::Aggregate { child, state } => {
+            let state = state.as_slice().first().ok_or(RuntimeError::Batch)?;
+            let Some(expression) = state.inherited_key_expression(slot) else {
+                return Ok(false);
+            };
+            matches!(
+                expressions.get(expression.0 as usize),
+                Some(super::plan::Expression::Slot(source)) if *source == slot
+            ) && slot_inherited_from_anchor(occurrences, expressions, *child, slot, anchor)?
         }
         PhysicalState::Project {
             child, projections, ..

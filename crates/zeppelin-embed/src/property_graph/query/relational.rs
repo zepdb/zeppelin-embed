@@ -132,6 +132,13 @@ impl<'v, 'm, 'g> Rows<'v, 'm, 'g> {
     pub fn value(&self, row: usize, column: usize) -> Option<QueryValue<'_>> {
         self.data.value(*self.order.as_slice().get(row)?, column)
     }
+    pub(crate) fn selected_source_row(&self, position: usize) -> Result<usize, RuntimeError> {
+        self.order
+            .as_slice()
+            .get(position)
+            .copied()
+            .ok_or(RuntimeError::Batch)
+    }
     /// Consumes the actual backing into a bounded pull source.
     pub fn into_source(
         self,

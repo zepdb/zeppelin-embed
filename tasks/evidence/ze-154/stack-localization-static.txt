@@ -1,0 +1,156 @@
+current arena-owned states, diagnostic marker binary
+sha256=8515fba67ffd7da67cfbed798b9a1e5f8a9fc156f2da4bdc60e4b9872e79be54
+command=['lldb', '--batch', '-o', 'target create /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-154/target/debug/deps/zeppelin_embed-cf262d81751aec60', '-o', 'disassemble -s 0x1010a6300 -c 16', '-o', 'disassemble -s 0x10132892c -c 16']
+(lldb) target create /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-154/target/debug/deps/zeppelin_embed-cf262d81751aec60
+Current executable set to '/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-154/target/debug/deps/zeppelin_embed-cf262d81751aec60' (arm64).
+(lldb) disassemble -s 0x1010a6300 -c 16
+zeppelin_embed-cf262d81751aec60`zeppelin_embed::property_graph::query::pattern::NativePattern::next_occurrence::h920366ffb58d2145:
+zeppelin_embed-cf262d81751aec60[0x1010a6300] <+0>:  stp    x28, x27, [sp, #-0x20]!
+zeppelin_embed-cf262d81751aec60[0x1010a6304] <+4>:  stp    x29, x30, [sp, #0x10]
+zeppelin_embed-cf262d81751aec60[0x1010a6308] <+8>:  add    x29, sp, #0x10
+zeppelin_embed-cf262d81751aec60[0x1010a630c] <+12>: sub    sp, sp, #0x1, lsl #12     ; =0x1000 
+zeppelin_embed-cf262d81751aec60[0x1010a6310] <+16>: str    xzr, [sp]
+zeppelin_embed-cf262d81751aec60[0x1010a6314] <+20>: sub    sp, sp, #0x9f0
+zeppelin_embed-cf262d81751aec60[0x1010a6318] <+24>: str    xzr, [sp]
+zeppelin_embed-cf262d81751aec60[0x1010a631c] <+28>: add    x9, sp, #0x1, lsl #12     ; =0x1000 
+zeppelin_embed-cf262d81751aec60[0x1010a6320] <+32>: add    x9, x9, #0x7c6
+zeppelin_embed-cf262d81751aec60[0x1010a6324] <+36>: str    x9, [sp, #0xa0]
+zeppelin_embed-cf262d81751aec60[0x1010a6328] <+40>: mov    x3, x8
+zeppelin_embed-cf262d81751aec60[0x1010a632c] <+44>: ldr    x8, [sp, #0xa0]
+zeppelin_embed-cf262d81751aec60[0x1010a6330] <+48>: str    x3, [sp, #0xa8]
+zeppelin_embed-cf262d81751aec60[0x1010a6334] <+52>: mov    x9, x0
+zeppelin_embed-cf262d81751aec60[0x1010a6338] <+56>: str    x9, [sp, #0xb0]
+zeppelin_embed-cf262d81751aec60[0x1010a633c] <+60>: mov    x0, x2
+(lldb) disassemble -s 0x10132892c -c 16
+zeppelin_embed-cf262d81751aec60`zeppelin_embed::property_graph::query::pattern::NativePattern::next_occurrence::_$u7b$$u7b$closure$u7d$$u7d$::h9471e02a4c714092:
+zeppelin_embed-cf262d81751aec60[0x10132892c] <+0>:  stp    x28, x27, [sp, #-0x60]!
+zeppelin_embed-cf262d81751aec60[0x101328930] <+4>:  stp    x26, x25, [sp, #0x10]
+zeppelin_embed-cf262d81751aec60[0x101328934] <+8>:  stp    x24, x23, [sp, #0x20]
+zeppelin_embed-cf262d81751aec60[0x101328938] <+12>: stp    x22, x21, [sp, #0x30]
+zeppelin_embed-cf262d81751aec60[0x10132893c] <+16>: stp    x20, x19, [sp, #0x40]
+zeppelin_embed-cf262d81751aec60[0x101328940] <+20>: stp    x29, x30, [sp, #0x50]
+zeppelin_embed-cf262d81751aec60[0x101328944] <+24>: add    x29, sp, #0x50
+zeppelin_embed-cf262d81751aec60[0x101328948] <+28>: sub    x9, sp, #0x6, lsl #12     ; =0x6000 
+zeppelin_embed-cf262d81751aec60[0x10132894c] <+32>: sub    sp, sp, #0x1, lsl #12     ; =0x1000 
+zeppelin_embed-cf262d81751aec60[0x101328950] <+36>: str    xzr, [sp]
+zeppelin_embed-cf262d81751aec60[0x101328954] <+40>: cmp    sp, x9
+zeppelin_embed-cf262d81751aec60[0x101328958] <+44>: b.ne   0x10132894c               ; <+32> at pattern.rs:357
+zeppelin_embed-cf262d81751aec60[0x10132895c] <+48>: sub    sp, sp, #0xdf0
+zeppelin_embed-cf262d81751aec60[0x101328960] <+52>: str    xzr, [sp]
+zeppelin_embed-cf262d81751aec60[0x101328964] <+56>: add    x9, sp, #0x6, lsl #12     ; =0x6000 
+zeppelin_embed-cf262d81751aec60[0x101328968] <+60>: add    x9, x9, #0xaf
+
+
+existing root binary, not independently pinned baseline
+sha256=6716adc091828a4ebedf155370c590bbf69360f5f21105e6aff2da963bc28b3f
+command=['lldb', '--batch', '-o', 'target create /Users/aghatage/Documents/code/zeppelin-embed/target/debug/deps/zeppelin_embed-cf262d81751aec60', '-o', 'disassemble -s 0x1010ae660 -c 16', '-o', 'disassemble -s 0x100c73780 -c 16']
+(lldb) target create /Users/aghatage/Documents/code/zeppelin-embed/target/debug/deps/zeppelin_embed-cf262d81751aec60
+Current executable set to '/Users/aghatage/Documents/code/zeppelin-embed/target/debug/deps/zeppelin_embed-cf262d81751aec60' (arm64).
+(lldb) disassemble -s 0x1010ae660 -c 16
+zeppelin_embed-cf262d81751aec60`zeppelin_embed::property_graph::query::pattern::NativePattern::next_occurrence::h920366ffb58d2145:
+zeppelin_embed-cf262d81751aec60[0x1010ae660] <+0>:  stp    x28, x27, [sp, #-0x20]!
+zeppelin_embed-cf262d81751aec60[0x1010ae664] <+4>:  stp    x29, x30, [sp, #0x10]
+zeppelin_embed-cf262d81751aec60[0x1010ae668] <+8>:  add    x29, sp, #0x10
+zeppelin_embed-cf262d81751aec60[0x1010ae66c] <+12>: sub    sp, sp, #0x1, lsl #12     ; =0x1000 
+zeppelin_embed-cf262d81751aec60[0x1010ae670] <+16>: str    xzr, [sp]
+zeppelin_embed-cf262d81751aec60[0x1010ae674] <+20>: sub    sp, sp, #0x9f0
+zeppelin_embed-cf262d81751aec60[0x1010ae678] <+24>: str    xzr, [sp]
+zeppelin_embed-cf262d81751aec60[0x1010ae67c] <+28>: add    x9, sp, #0x1, lsl #12     ; =0x1000 
+zeppelin_embed-cf262d81751aec60[0x1010ae680] <+32>: add    x9, x9, #0x7c6
+zeppelin_embed-cf262d81751aec60[0x1010ae684] <+36>: str    x9, [sp, #0xa0]
+zeppelin_embed-cf262d81751aec60[0x1010ae688] <+40>: mov    x3, x8
+zeppelin_embed-cf262d81751aec60[0x1010ae68c] <+44>: ldr    x8, [sp, #0xa0]
+zeppelin_embed-cf262d81751aec60[0x1010ae690] <+48>: str    x3, [sp, #0xa8]
+zeppelin_embed-cf262d81751aec60[0x1010ae694] <+52>: mov    x9, x0
+zeppelin_embed-cf262d81751aec60[0x1010ae698] <+56>: str    x9, [sp, #0xb0]
+zeppelin_embed-cf262d81751aec60[0x1010ae69c] <+60>: mov    x0, x2
+(lldb) disassemble -s 0x100c73780 -c 16
+zeppelin_embed-cf262d81751aec60`zeppelin_embed::property_graph::query::pattern::NativePattern::next_occurrence::_$u7b$$u7b$closure$u7d$$u7d$::h14cd2acb7bc871b6:
+zeppelin_embed-cf262d81751aec60[0x100c73780] <+0>:  stp    x28, x27, [sp, #-0x60]!
+zeppelin_embed-cf262d81751aec60[0x100c73784] <+4>:  stp    x26, x25, [sp, #0x10]
+zeppelin_embed-cf262d81751aec60[0x100c73788] <+8>:  stp    x24, x23, [sp, #0x20]
+zeppelin_embed-cf262d81751aec60[0x100c7378c] <+12>: stp    x22, x21, [sp, #0x30]
+zeppelin_embed-cf262d81751aec60[0x100c73790] <+16>: stp    x20, x19, [sp, #0x40]
+zeppelin_embed-cf262d81751aec60[0x100c73794] <+20>: stp    x29, x30, [sp, #0x50]
+zeppelin_embed-cf262d81751aec60[0x100c73798] <+24>: add    x29, sp, #0x50
+zeppelin_embed-cf262d81751aec60[0x100c7379c] <+28>: sub    x9, sp, #0x6, lsl #12     ; =0x6000 
+zeppelin_embed-cf262d81751aec60[0x100c737a0] <+32>: sub    sp, sp, #0x1, lsl #12     ; =0x1000 
+zeppelin_embed-cf262d81751aec60[0x100c737a4] <+36>: str    xzr, [sp]
+zeppelin_embed-cf262d81751aec60[0x100c737a8] <+40>: cmp    sp, x9
+zeppelin_embed-cf262d81751aec60[0x100c737ac] <+44>: b.ne   0x100c737a0               ; <+32> at pattern.rs:328
+zeppelin_embed-cf262d81751aec60[0x100c737b0] <+48>: sub    sp, sp, #0x780
+zeppelin_embed-cf262d81751aec60[0x100c737b4] <+52>: str    xzr, [sp]
+zeppelin_embed-cf262d81751aec60[0x100c737b8] <+56>: add    x9, sp, #0x5, lsl #12     ; =0x5000 
+zeppelin_embed-cf262d81751aec60[0x100c737bc] <+60>: add    x9, x9, #0xfce
+
+
+crash=/Users/aghatage/Library/Logs/DiagnosticReports/zeppelin_embed-cf262d81751aec60-2026-09-20-134617.ips
+captureTime=2026-09-20 13:46:12.9089 -0700
+sha256=c76ee680d439b287059bd484868c628e7daedc9d903bdf584d993f22ed06746e
+: __pthread_kill +8
+: pthread_kill +296
+: abort +148
+: std::sys::pal::unix::abort_internal::h111ed782a3d16dc7 +12
+: std::process::abort::hdc01e45e25b715e8 +12
+: std::sys::pal::unix::stack_overflow::imp::signal_handler::h89f45eec0e9d2490 +680
+: _sigtramp +56
+chain.rs:169 _$LT$core..iter..adapters..chain..Chain$LT$A$C$B$GT$$u20$as$u20$core..iter..traits..iterator..Iterator$GT$::find::_$u7b$$u7b$closure$u7d$$u7d$::hc4c814c1a7e5afaf +44
+chain.rs:169 _$LT$core..iter..adapters..chain..Chain$LT$A$C$B$GT$$u20$as$u20$core..iter..traits..iterator..Iterator$GT$::find::_$u7b$$u7b$closure$u7d$$u7d$::hc4c814c1a7e5afaf +44
+chain.rs:332 core::iter::adapters::chain::and_then_or_clear::hb07886d71d0bb721 +144
+chain.rs:169 _$LT$core..iter..adapters..chain..Chain$LT$A$C$B$GT$$u20$as$u20$core..iter..traits..iterator..Iterator$GT$::find::hcf60030f5269b7aa +56
+chain.rs:169 _$LT$core..iter..adapters..chain..Chain$LT$A$C$B$GT$$u20$as$u20$core..iter..traits..iterator..Iterator$GT$::find::_$u7b$$u7b$closure$u7d$$u7d$::h42ff8353cc022779 +44
+chain.rs:332 core::iter::adapters::chain::and_then_or_clear::hc6ed7ebf7798ef2e +144
+chain.rs:169 _$LT$core..iter..adapters..chain..Chain$LT$A$C$B$GT$$u20$as$u20$core..iter..traits..iterator..Iterator$GT$::find::ha633b7f2e9c3c2f5 +52
+chain.rs:169 _$LT$core..iter..adapters..chain..Chain$LT$A$C$B$GT$$u20$as$u20$core..iter..traits..iterator..Iterator$GT$::find::_$u7b$$u7b$closure$u7d$$u7d$::h2af33c0b38473ca7 +44
+chain.rs:332 core::iter::adapters::chain::and_then_or_clear::h9ae7abcb550f1d3e +144
+chain.rs:169 _$LT$core..iter..adapters..chain..Chain$LT$A$C$B$GT$$u20$as$u20$core..iter..traits..iterator..Iterator$GT$::find::h13b2a8153a1bee86 +52
+chain.rs:169 _$LT$core..iter..adapters..chain..Chain$LT$A$C$B$GT$$u20$as$u20$core..iter..traits..iterator..Iterator$GT$::find::_$u7b$$u7b$closure$u7d$$u7d$::h966a97a0f4243183 +44
+chain.rs:332 core::iter::adapters::chain::and_then_or_clear::he35f9b7c4a660555 +144
+chain.rs:169 _$LT$core..iter..adapters..chain..Chain$LT$A$C$B$GT$$u20$as$u20$core..iter..traits..iterator..Iterator$GT$::find::h26597db74a328c69 +52
+chain.rs:169 _$LT$core..iter..adapters..chain..Chain$LT$A$C$B$GT$$u20$as$u20$core..iter..traits..iterator..Iterator$GT$::find::_$u7b$$u7b$closure$u7d$$u7d$::hafc8fc09ca3b8533 +44
+chain.rs:332 core::iter::adapters::chain::and_then_or_clear::h06ee6359cc18cf62 +152
+chain.rs:169 _$LT$core..iter..adapters..chain..Chain$LT$A$C$B$GT$$u20$as$u20$core..iter..traits..iterator..Iterator$GT$::find::ha6e063d5ceed6a9e +52
+native_graph.rs:462 zeppelin_embed::lifecycle::native_graph::NativeGraphBundle::required_object::h1225fbee069045b4 +532
+source.rs:202 zeppelin_embed::property_graph::storage::view::source::NativeQuerySource::check_required::h46febe67e55e042e +104
+source.rs:166 zeppelin_embed::property_graph::storage::view::source::NativeQuerySource::decode::h6551535c576887b1 +464
+source.rs:232 _$LT$zeppelin_embed..property_graph..storage..view..source..NativeQuerySource$u20$as$u20$zeppelin_embed..property_graph..storage..tree..directory..BlockSource$GT$::resolve::h941e2ddcde01dbb1 +2600
+payload.rs:531 zeppelin_embed::property_graph::storage::payload::resolve::h62f4fb7bd5d47e25 +384
+payload.rs:142 zeppelin_embed::property_graph::storage::payload::PayloadRef::root::h67c47c29b8f0784f +112
+payload.rs:278 zeppelin_embed::property_graph::storage::payload::PayloadRef::span_at_bounded::h0719b1654fdd3d60 +168
+stream.rs:135 zeppelin_embed::property_graph::storage::stream::PayloadSlice$LT$S$GT$::span_at::hc7e4156466132ce0 +288
+stream.rs:184 zeppelin_embed::property_graph::storage::stream::PayloadSlice$LT$S$GT$::validate_utf8::h40e0161a249f63c7 +260
+catalog.rs:175 _$LT$zeppelin_embed..property_graph..storage..view..catalog..NativeCatalog$u20$as$u20$zeppelin_embed..property_graph..storage..records..native..RecordCatalog$LT$S$GT$$GT$::resolve::h2dd40a383550780e +112
+native.rs:359 _$LT$zeppelin_embed..property_graph..storage..records..native..VerifyIndex$LT$S$C$C$GT$$u20$as$u20$zeppelin_embed..property_graph..storage..records..CanonicalVisitor$LT$S$GT$$GT$::label::h37d1aea6efd2a32e +100
+records.rs:188 zeppelin_embed::property_graph::storage::records::verify_canonical::hd73fa6a7145d0cc0 +1912
+native.rs:205 zeppelin_embed::property_graph::storage::records::native::verify_record::ha34a2ca0942d2c1f +6712
+tombstone.rs:56 zeppelin_embed::property_graph::storage::records::tombstone::verify_node_state::ha0319ac2a38b13be +868
+view.rs:464 zeppelin_embed::property_graph::storage::view::lookup_node_state::h6aeeba50e3516091 +944
+view.rs:169 zeppelin_embed::property_graph::storage::view::GraphReadView::lookup_node::h0cfded94fac2ab4d +324
+pattern.rs:387 zeppelin_embed::property_graph::query::pattern::NativePattern::next_occurrence::_$u7b$$u7b$closure$u7d$$u7d$::h9471e02a4c714092 +3596
+pattern.rs:357 zeppelin_embed::property_graph::query::pattern::NativePattern::next_occurrence::h920366ffb58d2145 +732
+pattern.rs:399 zeppelin_embed::property_graph::query::pattern::NativePattern::next_occurrence::_$u7b$$u7b$closure$u7d$$u7d$::h9471e02a4c714092 +4408
+pattern.rs:357 zeppelin_embed::property_graph::query::pattern::NativePattern::next_occurrence::h920366ffb58d2145 +732
+pattern.rs:863 zeppelin_embed::property_graph::query::pattern::NativePattern::next_key::h682e19453c27ba3f +176
+pattern.rs:425 zeppelin_embed::property_graph::query::pattern::NativePattern::next_occurrence::_$u7b$$u7b$closure$u7d$$u7d$::h9471e02a4c714092 +592
+pattern.rs:357 zeppelin_embed::property_graph::query::pattern::NativePattern::next_occurrence::h920366ffb58d2145 +732
+pattern.rs:863 zeppelin_embed::property_graph::query::pattern::NativePattern::next_key::h682e19453c27ba3f +176
+pattern.rs:425 zeppelin_embed::property_graph::query::pattern::NativePattern::next_occurrence::_$u7b$$u7b$closure$u7d$$u7d$::h9471e02a4c714092 +592
+pattern.rs:357 zeppelin_embed::property_graph::query::pattern::NativePattern::next_occurrence::h920366ffb58d2145 +732
+pattern.rs:643 zeppelin_embed::property_graph::query::pattern::NativePattern::next_occurrence::_$u7b$$u7b$closure$u7d$$u7d$::h9471e02a4c714092 +2408
+pattern.rs:357 zeppelin_embed::property_graph::query::pattern::NativePattern::next_occurrence::h920366ffb58d2145 +732
+pattern.rs:2037 _$LT$zeppelin_embed..property_graph..query..pattern..NativePattern$u20$as$u20$zeppelin_embed..property_graph..query..runtime..driver..PullOperator$LT$zeppelin_embed..property_graph..query..runtime..native_error..NativeExecutionError$GT$$GT$::pull::h3480a079f7e21855 +140
+driver.rs:385 zeppelin_embed::property_graph::query::runtime::driver::drain::_$u7b$$u7b$closure$u7d$$u7d$::h71ed1d36053b8f13 +2028
+driver.rs:346 zeppelin_embed::property_graph::query::runtime::driver::drain::h904446edf55813e1 +324
+driver.rs:322 zeppelin_embed::property_graph::query::runtime::driver::execute_in::haec81e0f585c1a27 +104
+tests.rs:567 _$LT$zeppelin_embed..property_graph..query..pattern..tests..KeyPatternConsumer$u20$as$u20$zeppelin_embed..lifecycle..native_graph..NativeReadConsumer$LT$core..result..Result$LT$zeppelin_embed..property_graph..query..runtime..driver..Execution$LT$zeppelin_embed..property_graph..query..pattern..tests..PrimitiveRows$GT$$C$zeppelin_embed..property_graph..query..runtime..driver..RuntimeFailure$LT$zeppelin_embed..property_graph..query..runtime..native_error..NativeExecutionError$GT$$GT$$GT$$GT$::consume::haa0d9807fa3ec7ef +9388
+native_graph.rs:1510 zeppelin_embed::lifecycle::native_graph::_$LT$impl$u20$zeppelin_embed..lifecycle..Store$GT$::with_native_read::h6a5954e44bccbbdd +2392
+tests.rs:1857 zeppelin_embed::property_graph::query::pattern::tests::native_pattern_keys_labels_liveness_full_ids::ha48eafc48b76f0ea +1704
+tests.rs:1758 zeppelin_embed::property_graph::query::pattern::tests::native_pattern_keys_labels_liveness_full_ids::_$u7b$$u7b$closure$u7d$$u7d$::h1982313909c7c272 +24
+function.rs:250 core::ops::function::FnOnce::call_once::ha3194b5509a01237 +20
+: test::__rust_begin_short_backtrace::h6ca5fe182383a98d +24
+: test::run_test::_$u7b$$u7b$closure$u7d$$u7d$::hca48f6c40383049d +908
+: std::sys::backtrace::__rust_begin_short_backtrace::h4ccc732acb10c9b8 +132
+: core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h590ca23b87b969e2 +64
+: std::sys::thread::unix::Thread::new::thread_start::hd42ed9e591878587 +408
+: _pthread_start +136
+: thread_start +8
