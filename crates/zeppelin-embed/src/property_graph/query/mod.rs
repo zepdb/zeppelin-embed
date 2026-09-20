@@ -97,3 +97,9 @@ pub mod relational;
 
 /// Owned typed completed-result storage, independent of query and store lifetime.
 pub mod completed;
+
+#[cfg(all(feature = "graph-cypher", feature = "test-support"))]
+/// Tooling-only native completed-result directed probes.
+pub mod native_result_test_support {
+    pub use super::completed::native::test_support::{ProbeReport, run_actual_probe};
+}

@@ -2922,6 +2922,7 @@ fn run_program_for_with_clock(
         super::graph_mutation_lowering::probe(seed, &mut coverage)?;
         super::graph_read_view::probe(seed, &mut coverage)?;
         super::graph_publication::probe(seed, &mut coverage)?;
+        super::graph_native_result::probe(seed, &mut coverage)?;
         super::graph_pattern::probe(seed, &mut coverage)?;
         super::graph_recovery::probe(seed, &mut coverage)?;
         super::graph_adjacency::probe(seed, &mut coverage)?;

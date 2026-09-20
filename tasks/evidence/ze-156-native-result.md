@@ -90,7 +90,7 @@ release loops, and the eight directed receipts. The receipt names are `copy`,
 `identity`, `same-view`, `limit.fire`, `control.fire`, `late-error.fire`,
 `release`, and `oracle.can-fire`.
 
-The unchanged ZE-141 owned-storage consumer was run once:
+The unchanged ZE-127 owned-storage consumer was run once:
 
 ```text
 cargo nextest run -p zeppelin-embed \
@@ -124,6 +124,29 @@ coverage, fuzz, sanitizer, soak, performance, size, or release suite was run.
 Root owns registration of the eight probe keys and compilation of the
 registered actual consumers. The high-ID evidence does not claim the separate
 same-low-64-bit collision matrix retained by ZE-53/62.
+
+## Main integration
+
+Root cherry-picked the reviewed source onto main and registered the actual
+native-result probe plus all eight receipt keys in the shared adversarial
+runner. The exact eight focused groups passed again on integrated main in
+nextest run `709444bb-0f58-49fe-a88a-5083ab9bd014` (8/8, 669 skipped).
+
+The actual registered adversarial consumer compiled in all three required
+configurations:
+
+```text
+cargo check -p zeppelin-embed-workspace-tests --test adversarial_tests -j 4
+cargo check -p zeppelin-embed-workspace-tests --test adversarial_tests -j 4 \
+  --features graph-cypher
+cargo check -p zeppelin-embed-workspace-tests --test adversarial_tests -j 4 \
+  --features graph-result-test-support
+```
+
+The commands finished successfully. Their logs are `main-consumer-default.log`,
+`main-consumer-graph.log`, and `main-consumer-result.log`; the integrated
+focused run is `main-focused.log`. These were compile checks of the actual
+registered consumer, not execution of the broad adversarial campaign.
 
 ## Preservation
 
