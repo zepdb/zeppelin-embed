@@ -28,6 +28,26 @@ fn scalar_return_binds_exact_column_and_core_literal() {
 }
 
 #[test]
+fn create_relationship_is_in_scope_for_right_endpoint_properties() {
+    let mut calls = 0;
+    compile_with(
+        "CREATE (a)-[r:R]->(b {x:type(r)}) RETURN b.x",
+        &[],
+        CompileLimits::default(),
+        &mut Budget::default(),
+        |bound| {
+            calls += 1;
+            assert_eq!(bound.columns().len(), 1);
+            assert_eq!(bound.columns()[0].name, "b.x");
+            assert!(bound.columns()[0].kinds.contains(ValueKinds::STRING));
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(calls, 1);
+}
+
+#[test]
 fn scalar_scope_parameters_and_operator_types_bind_before_consumption() {
     use zeppelin_embed::property_graph::query::{
         QueryValue,

@@ -84,18 +84,17 @@ pub(super) fn validate(
                 ValueKinds::NODE.union(ValueKinds::NULL),
             )?,
             Mutation::Delete {
-                entity: receiver,
-                detach,
-            } => {
-                let kinds = if detach {
-                    ValueKinds::NODE.union(ValueKinds::NULL)
-                } else {
-                    ValueKinds::NODE
-                        .union(ValueKinds::REL)
-                        .union(ValueKinds::NULL)
-                };
-                entity(description, receiver, output, seen, context, kinds)?;
-            }
+                entity: receiver, ..
+            } => entity(
+                description,
+                receiver,
+                output,
+                seen,
+                context,
+                ValueKinds::NODE
+                    .union(ValueKinds::REL)
+                    .union(ValueKinds::NULL),
+            )?,
         }
     }
     Ok(())

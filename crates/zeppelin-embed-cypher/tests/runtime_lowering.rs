@@ -15,9 +15,11 @@ use zeppelin_embed::property_graph::{
     query::{MAX_VALUE_WORK, QueryError, QueryValue, QueryView, plan::*, resources::*, runtime::*},
     resources::GraphResources,
 };
-use zeppelin_embed_cypher::{CompileLimits, ErrorKind, ResourceError, compile_read_in};
+use zeppelin_embed_cypher::{
+    CompileLimits, ErrorKind, ResourceError, compile_mutation_in, compile_read_in,
+};
 
-fn fixture(run: impl FnOnce(&Store, &QueryMemory<'_>)) {
+fn fixture<T>(run: impl FnOnce(&Store, &QueryMemory<'_>) -> T) -> T {
     let path = support::unique_temp_dir("ze126-runtime");
     std::fs::create_dir(&path).unwrap();
     let store = Store::open(
@@ -28,15 +30,17 @@ fn fixture(run: impl FnOnce(&Store, &QueryMemory<'_>)) {
     )
     .unwrap();
     let shared = GraphResources::from_store(&store).unwrap();
-    {
+    let output = {
         let memory = QueryMemory::new(&shared, 24 * 1024 * 1024).unwrap();
         let before = memory.reserved_bytes();
-        run(&store, &memory);
+        let output = run(&store, &memory);
         assert_eq!(memory.reserved_bytes(), before);
-    }
+        output
+    };
     store.close().unwrap();
     drop(store);
     std::fs::remove_dir_all(path).unwrap();
+    output
 }
 struct View<'a> {
     token: QueryView,
@@ -482,5 +486,174 @@ fn compiled_read_validation_reports_original_cumulative_work_exhaustion() {
         assert!(!entered);
         assert_eq!(context.values().work(), MAX_VALUE_WORK);
         assert_eq!(memory.reserved_bytes(), baseline);
+    });
+}
+
+fn mutation_close_failure_at(query: &str, fire: usize) -> zeppelin_embed_cypher::ParseError {
+    fixture(|store, memory| {
+        std::thread::scope(|scope| {
+            let (start, wait) = std::sync::mpsc::sync_channel(0);
+            let closing = scope.spawn(move || {
+                wait.recv().unwrap();
+                store.close().unwrap();
+            });
+            let error = {
+                let mut view_charge = memory.reserve_external_capacity().unwrap();
+                view_charge
+                    .reserve_additional(size_of::<View<'_>>())
+                    .unwrap();
+                let mut retained = view(store);
+                retained.start = Some(&start);
+                retained.fire.set(fire);
+                let control = QueryControl::Cancel(retained.cancel.clone());
+                let mut context =
+                    RuntimeContext::new(&retained, &control, memory, RuntimeLimits::default())
+                        .unwrap();
+                let baseline = memory.reserved_bytes();
+                let mut entered = false;
+                let error = compile_mutation_in(
+                    query,
+                    &[],
+                    CompileLimits::default(),
+                    memory,
+                    &mut context,
+                    |_, _| {
+                        entered = true;
+                        Ok(())
+                    },
+                )
+                .unwrap_err();
+                assert_eq!(
+                    error.kind,
+                    ErrorKind::Resource(ResourceError::ReadCancelled)
+                );
+                assert!(!entered);
+                assert_eq!(retained.polls.get(), fire);
+                assert_eq!(memory.reserved_bytes(), baseline);
+                error
+            };
+            closing.join().unwrap();
+            error
+        })
+    })
+}
+
+#[test]
+fn compiled_mutation_lowering_late_checkpoint_preserves_close_before_cancel() {
+    let query = "MATCH (prior) WITH prior,prior.p AS old CREATE (a:A {p:old})-[r:R {p:a.p,q:type(r)}]->(b:B {x:r.p,y:a.p}) SET b.p=b.p+1,b.q=old REMOVE b.missing,b:Old DELETE r DETACH DELETE a RETURN b,old LIMIT 0";
+    let clean_polls = Cell::new(0);
+    let consumer_poll = Cell::new(0);
+    fixture(|store, memory| {
+        let mut view_charge = memory.reserve_external_capacity().unwrap();
+        view_charge
+            .reserve_additional(size_of::<View<'_>>())
+            .unwrap();
+        let retained = view(store);
+        let control = QueryControl::Cancel(retained.cancel.clone());
+        let mut context =
+            RuntimeContext::new(&retained, &control, memory, RuntimeLimits::default()).unwrap();
+        compile_mutation_in(
+            query,
+            &[],
+            CompileLimits::default(),
+            memory,
+            &mut context,
+            |_, _| {
+                consumer_poll.set(retained.polls.get());
+                Ok(())
+            },
+        )
+        .unwrap();
+        clean_polls.set(retained.polls.get());
+    });
+    assert!(consumer_poll.get() > 32);
+
+    let is_post_binder = |message| matches!(message, "read lowering control" | "plan control");
+    let mut first_post_binder = 1usize;
+    let mut upper = consumer_poll.get();
+    while first_post_binder < upper {
+        let middle = first_post_binder + (upper - first_post_binder) / 2;
+        if is_post_binder(mutation_close_failure_at(query, middle).message) {
+            upper = middle;
+        } else {
+            first_post_binder = middle + 1;
+        }
+    }
+    let binder_poll = first_post_binder.checked_sub(1).unwrap();
+    assert!(binder_poll > 32);
+    assert!(!is_post_binder(
+        mutation_close_failure_at(query, binder_poll).message
+    ));
+    assert!(is_post_binder(
+        mutation_close_failure_at(query, first_post_binder).message
+    ));
+    assert!(
+        binder_poll + 1 < consumer_poll.get(),
+        "post-binder/preconsumer interval must contain a checkpoint"
+    );
+    let fire = binder_poll + (consumer_poll.get() - binder_poll) / 2;
+    assert!(fire > binder_poll);
+    assert!(fire < consumer_poll.get());
+    let error = mutation_close_failure_at(query, fire);
+    assert!(is_post_binder(error.message));
+    eprintln!(
+        "mutation_lowering_polls={} binder_poll={} first_lowering_poll={} consumer_poll={} fire={fire}",
+        clean_polls.get(),
+        binder_poll,
+        first_post_binder,
+        consumer_poll.get()
+    );
+}
+
+#[test]
+fn compiled_mutation_final_check_discards_output_and_all_owners() {
+    fixture(|store, memory| {
+        std::thread::scope(|scope| {
+            let (start, wait) = std::sync::mpsc::sync_channel(0);
+            let closing = scope.spawn(move || {
+                wait.recv().unwrap();
+                store.close().unwrap();
+            });
+            {
+                let mut view_charge = memory.reserve_external_capacity().unwrap();
+                view_charge
+                    .reserve_additional(size_of::<View<'_>>())
+                    .unwrap();
+                let mut retained = view(store);
+                retained.start = Some(&start);
+                let control = QueryControl::Cancel(retained.cancel.clone());
+                let mut context =
+                    RuntimeContext::new(&retained, &control, memory, RuntimeLimits::default())
+                        .unwrap();
+                let dropped = Cell::new(0);
+                let baseline = memory.reserved_bytes();
+                let error = compile_mutation_in(
+                    "CREATE (a)-[r:R]->(b {p:type(r)}) RETURN b LIMIT 0",
+                    &[],
+                    CompileLimits::default(),
+                    memory,
+                    &mut context,
+                    |_, _| {
+                        let mut bytes = QueryArena::new(memory, 8).unwrap();
+                        bytes.push(7).unwrap();
+                        retained.fire.set(retained.polls.get() + 1);
+                        Ok(ChargedOutput {
+                            bytes,
+                            dropped: &dropped,
+                        })
+                    },
+                );
+                assert!(matches!(
+                    error,
+                    Err(zeppelin_embed_cypher::ParseError {
+                        kind: ErrorKind::Resource(ResourceError::ReadCancelled),
+                        ..
+                    })
+                ));
+                assert_eq!(dropped.get(), 1);
+                assert_eq!(memory.reserved_bytes(), baseline);
+            }
+            closing.join().unwrap();
+        })
     });
 }

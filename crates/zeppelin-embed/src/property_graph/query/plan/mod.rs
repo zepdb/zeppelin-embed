@@ -501,7 +501,7 @@ pub enum Mutation<'a> {
         /// True adds, false removes.
         present: bool,
     },
-    /// Delete an entity; DETACH is node-only, with atomic limits owned by staging.
+    /// Delete an entity; DETACH adds incident work for nodes and is ordinary deletion for relationships.
     Delete {
         /// Entity expression.
         entity: ExprId,

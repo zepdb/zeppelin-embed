@@ -140,3 +140,6 @@ pub mod graph_search_lowering;
 
 #[cfg(feature = "graph-cypher")]
 pub mod graph_query_storage;
+
+#[cfg(feature = "graph-cypher")]
+pub mod graph_mutation_lowering;

@@ -816,6 +816,115 @@ fn mutation_items_bind_new_entities_in_order_and_validate_every_rhs() {
 }
 
 #[test]
+fn detach_delete_accepts_node_relationship_and_null_targets() {
+    use zeppelin_embed::property_graph::GraphName;
+
+    let validate_items = |expressions: &[Expression<'_>], items: &[Mutation<'_>]| {
+        let operators = [
+            Operator {
+                inputs: &[],
+                kind: OperatorKind::Unit,
+            },
+            Operator {
+                inputs: &[PlanNodeId(0)],
+                kind: OperatorKind::Eager,
+            },
+            Operator {
+                inputs: &[PlanNodeId(1)],
+                kind: OperatorKind::Mutate(items),
+            },
+        ];
+        validate(PlanDescription {
+            operators: &operators,
+            expressions,
+            parameters: &[],
+            root: PlanNodeId(2),
+            eager_searches: &[],
+        })
+    };
+    let validate_node = |detach| {
+        let expressions = [Expression::Slot(SlotId(1))];
+        let items = [
+            Mutation::CreateNode {
+                output: SlotId(1),
+                labels: &[],
+            },
+            Mutation::Delete {
+                entity: ExprId(0),
+                detach,
+            },
+        ];
+        validate_items(&expressions, &items)
+    };
+    let validate_relationship = |detach| {
+        let expressions = [
+            Expression::Slot(SlotId(1)),
+            Expression::Slot(SlotId(2)),
+            Expression::Slot(SlotId(3)),
+        ];
+        let items = [
+            Mutation::CreateNode {
+                output: SlotId(1),
+                labels: &[],
+            },
+            Mutation::CreateNode {
+                output: SlotId(2),
+                labels: &[],
+            },
+            Mutation::CreateRelationship {
+                output: SlotId(3),
+                source: ExprId(0),
+                target: ExprId(1),
+                relationship_type: GraphName::new("R").unwrap(),
+            },
+            Mutation::Delete {
+                entity: ExprId(2),
+                detach,
+            },
+        ];
+        validate_items(&expressions, &items)
+    };
+
+    for detach in [false, true] {
+        assert_eq!(validate_node(detach), Ok(()));
+        assert_eq!(validate_relationship(detach), Ok(()));
+
+        let null = [Expression::Literal(Literal::Null)];
+        let delete_null = [Mutation::Delete {
+            entity: ExprId(0),
+            detach,
+        }];
+        assert_eq!(validate_items(&null, &delete_null), Ok(()));
+
+        for expression in [
+            Expression::Literal(Literal::Bool(false)),
+            Expression::Literal(Literal::I64(1)),
+            Expression::Literal(Literal::String("not an entity")),
+        ] {
+            let scalar = [expression];
+            let delete_scalar = [Mutation::Delete {
+                entity: ExprId(0),
+                detach,
+            }];
+            assert_eq!(
+                validate_items(&scalar, &delete_scalar),
+                Err(PlanError::Type)
+            );
+        }
+
+        let list = [
+            Expression::Literal(Literal::I64(1)),
+            Expression::List(&[ExprId(0)]),
+        ];
+        let delete_list = [Mutation::Delete {
+            entity: ExprId(1),
+            detach,
+        }];
+        assert_eq!(validate_items(&list, &delete_list), Err(PlanError::Type));
+    }
+}
+
+#[test]
 fn search_plans_preserve_request_intent_and_nullable_hybrid_outputs() {
     let expressions = [
         Expression::Literal(Literal::F64(1.0)),

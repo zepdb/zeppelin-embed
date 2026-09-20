@@ -23,7 +23,10 @@ mod shared_resources;
 
 pub use ast::*;
 pub use binding::*;
-pub use lowering::{LoweredRead, PreparationControl, ReadColumn, ReadContext, compile_read_in};
+pub use lowering::{
+    LoweredMutation, LoweredRead, PreparationControl, ReadColumn, ReadContext, compile_mutation_in,
+    compile_read_in,
+};
 pub use resources::*;
 pub use shared_resources::{COMPILER_SCRATCH_BYTES, compile_in};
 

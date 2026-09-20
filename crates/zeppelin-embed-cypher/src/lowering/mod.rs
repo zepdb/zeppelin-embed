@@ -8,12 +8,14 @@ use zeppelin_embed::property_graph::{
 };
 mod context;
 mod expression;
+mod mutation;
 mod owned;
 mod parameters;
 mod pattern;
 mod projection;
 mod search;
 pub use context::{PreparationControl, ReadContext};
+pub use mutation::{LoweredMutation, compile_mutation_in};
 use owned::*;
 use parameters::ParameterValue;
 
@@ -72,6 +74,37 @@ pub fn compile_read_in<'v, T, C: ReadContext<'v>>(
     context: &mut C,
     consume: impl for<'plan, 'facts> FnOnce(LoweredRead<'plan, 'facts>, &mut C) -> Result<T, ParseError>,
 ) -> Result<T, ParseError> {
+    compile_route_in(
+        source,
+        parameters,
+        limits,
+        memory,
+        context,
+        Route::Read,
+        |common, _, _, context| consume(common, context),
+    )
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) enum Route {
+    Read,
+    Mutation,
+}
+
+pub(super) fn compile_route_in<'v, T, C: ReadContext<'v>>(
+    source: &str,
+    parameters: &[ParameterBinding<'_>],
+    limits: CompileLimits,
+    memory: &QueryMemory<'_>,
+    context: &mut C,
+    route: Route,
+    consume: impl for<'plan, 'facts> FnOnce(
+        LoweredRead<'plan, 'facts>,
+        &'plan [Span],
+        bool,
+        &mut C,
+    ) -> Result<T, ParseError>,
+) -> Result<T, ParseError> {
     if !context.matches_memory(memory) {
         return Err(memory_error(MemoryError::UnprovedInput));
     }
@@ -104,21 +137,43 @@ pub fn compile_read_in<'v, T, C: ReadContext<'v>>(
                 .syntax()
                 .node(bound.syntax().root())
                 .ok_or_else(|| invariant(Span::default(), "statement"))?;
+            let mut has_mutation = false;
             for id in root.children() {
                 let node = bound
                     .syntax()
                     .node(*id)
                     .ok_or_else(|| invariant(root.span, "clause"))?;
-                if !matches!(
-                    node.kind,
-                    NodeKind::Projection { .. } | NodeKind::Match { .. } | NodeKind::Call(_)
-                ) {
+                let allowed = match route {
+                    Route::Read => matches!(
+                        node.kind,
+                        NodeKind::Projection { .. } | NodeKind::Match { .. } | NodeKind::Call(_)
+                    ),
+                    Route::Mutation => match node.kind {
+                        NodeKind::Create
+                        | NodeKind::Set
+                        | NodeKind::Remove
+                        | NodeKind::Delete { .. } => {
+                            has_mutation = true;
+                            true
+                        }
+                        NodeKind::Projection { .. } | NodeKind::Match { .. } => true,
+                        _ => false,
+                    },
+                };
+                if !allowed {
                     return Err(ParseError::new(
                         ErrorKind::Unsupported,
                         node.span,
-                        "read lowering clause",
+                        "lowering route clause",
                     ));
                 }
+            }
+            if route == Route::Mutation && !has_mutation {
+                return Err(ParseError::new(
+                    ErrorKind::Unsupported,
+                    root.span,
+                    "mutation lowering requires an updating clause",
+                ));
             }
             builder.copy_parameters(bound.parameters())?;
             for expression in bound.expressions() {
@@ -148,12 +203,29 @@ pub fn compile_read_in<'v, T, C: ReadContext<'v>>(
                         builder.pattern(&bound, clause, current, optional)?
                     }
                     NodeKind::Projection { .. } => builder.projection(&bound, *id, current)?,
-                    NodeKind::Call(_) => builder.search(&bound, *id, current, has_prior)?,
-                    _ => return Err(invariant(clause.span, "unexpected read clause")),
+                    NodeKind::Call(_) if route == Route::Read => {
+                        builder.search(&bound, *id, current, has_prior)?
+                    }
+                    NodeKind::Create
+                    | NodeKind::Set
+                    | NodeKind::Remove
+                    | NodeKind::Delete { .. }
+                        if route == Route::Mutation =>
+                    {
+                        builder.mutation(&bound, clause, current)?
+                    }
+                    _ => return Err(invariant(clause.span, "unexpected lowering clause")),
                 };
                 has_prior = true;
             }
-            builder.finish(&bound, current, source, memory, context, consume)
+            builder.finish(
+                &bound,
+                current,
+                source,
+                bound.requires_deleted_runtime_validation(),
+                context,
+                consume,
+            )
         },
     )
 }
@@ -188,8 +260,41 @@ enum DraftExpr {
     },
 }
 #[derive(Clone, Copy)]
+enum DraftMutation {
+    CreateNode {
+        output: SlotId,
+        labels: Range,
+    },
+    CreateRelationship {
+        output: SlotId,
+        source: ExprId,
+        target: ExprId,
+        relationship_type: Range,
+    },
+    SetProperty {
+        entity: ExprId,
+        name: Range,
+        value: ExprId,
+    },
+    RemoveProperty {
+        entity: ExprId,
+        name: Range,
+    },
+    SetLabel {
+        entity: ExprId,
+        label: Range,
+        present: bool,
+    },
+    Delete {
+        entity: ExprId,
+        detach: bool,
+    },
+}
+#[derive(Clone, Copy)]
 enum DraftOp {
     Unit,
+    Eager,
+    Mutate(Range),
     Project(Range),
     With(Range),
     Filter(ExprId),
@@ -254,6 +359,8 @@ struct Builder<'m, 'g, 'c> {
     expression_spans: Buffer<'m, 'g, Span>,
     operators: Buffer<'m, 'g, DraftOperator>,
     operator_spans: Buffer<'m, 'g, Span>,
+    mutations: Buffer<'m, 'g, DraftMutation>,
+    mutation_spans: Buffer<'m, 'g, Span>,
     sort_keys: Buffer<'m, 'g, SortKey>,
     inputs: Buffer<'m, 'g, PlanNodeId>,
     projections: Buffer<'m, 'g, Projection>,
@@ -281,6 +388,8 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
             expression_spans: Buffer::new(memory)?,
             operators: Buffer::new(memory)?,
             operator_spans: Buffer::new(memory)?,
+            mutations: Buffer::new(memory)?,
+            mutation_spans: Buffer::new(memory)?,
             sort_keys: Buffer::new(memory)?,
             inputs: Buffer::new(memory)?,
             projections: Buffer::new(memory)?,
@@ -340,17 +449,22 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
         bound: &BoundQuery<'_>,
         root: PlanNodeId,
         source: Range,
-        memory: &QueryMemory<'_>,
+        requires_deleted_runtime_validation: bool,
         context: &mut C,
         consume: impl for<'plan, 'facts> FnOnce(
             LoweredRead<'plan, 'facts>,
+            &'plan [Span],
+            bool,
             &mut C,
         ) -> Result<T, ParseError>,
     ) -> Result<T, ParseError> {
+        let memory = self.memory;
         let mut control_charge = memory.reserve_external_capacity().map_err(memory_error)?;
         control_charge
             .reserve_additional(
-                size_of::<[RetainedAllocation<'_>; 33]>() + size_of::<LoweredRead<'_, '_>>(),
+                size_of::<[RetainedAllocation<'_>; 35]>()
+                    + size_of::<LoweredRead<'_, '_>>()
+                    + size_of::<LoweredMutation<'_, '_>>(),
             )
             .map_err(memory_error)?;
         let mut names = QueryArena::new(memory, bound.columns().len()).map_err(memory_error)?;
@@ -460,6 +574,62 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
                 )
                 .map_err(memory_error)?;
         }
+        if self.mutations.len() != self.mutation_spans.len() {
+            return Err(invariant(Span::default(), "mutation span inventory"));
+        }
+        let mut mutations = QueryArena::new(memory, self.mutations.len()).map_err(memory_error)?;
+        for item in self.mutations.slice() {
+            check(self.control, Span::default())?;
+            let name = |range: Range, message: &'static str| {
+                GraphName::new(text(self.bytes.slice(), range, self.control)?)
+                    .map_err(|_| invariant(Span::default(), message))
+            };
+            mutations
+                .push(match *item {
+                    DraftMutation::CreateNode { output, labels } => Mutation::CreateNode {
+                        output,
+                        labels: labels.get(types.as_slice())?,
+                    },
+                    DraftMutation::CreateRelationship {
+                        output,
+                        source,
+                        target,
+                        relationship_type,
+                    } => Mutation::CreateRelationship {
+                        output,
+                        source,
+                        target,
+                        relationship_type: name(relationship_type, "CREATE relationship type")?,
+                    },
+                    DraftMutation::SetProperty {
+                        entity,
+                        name: property,
+                        value,
+                    } => Mutation::SetProperty {
+                        entity,
+                        name: name(property, "SET property")?,
+                        value,
+                    },
+                    DraftMutation::RemoveProperty {
+                        entity,
+                        name: property,
+                    } => Mutation::RemoveProperty {
+                        entity,
+                        name: name(property, "REMOVE property")?,
+                    },
+                    DraftMutation::SetLabel {
+                        entity,
+                        label,
+                        present,
+                    } => Mutation::SetLabel {
+                        entity,
+                        label: name(label, "updated label")?,
+                        present,
+                    },
+                    DraftMutation::Delete { entity, detach } => Mutation::Delete { entity, detach },
+                })
+                .map_err(memory_error)?;
+        }
         let mut operators = QueryArena::new(memory, self.operators.len()).map_err(memory_error)?;
         for operator in self.operators.slice() {
             check(self.control, Span::default())?;
@@ -468,6 +638,10 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
                     inputs: operator.inputs.get(self.inputs.slice())?,
                     kind: match operator.kind {
                         DraftOp::Unit => OperatorKind::Unit,
+                        DraftOp::Eager => OperatorKind::Eager,
+                        DraftOp::Mutate(range) => {
+                            OperatorKind::Mutate(range.get(mutations.as_slice())?)
+                        }
                         DraftOp::Project(range) => {
                             OperatorKind::Project(range.get(self.projections.slice())?)
                         }
@@ -549,7 +723,7 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
             facts.push(NodeFacts::default()).map_err(memory_error)?;
         }
 
-        let mut regions = QueryArena::new(memory, 32).map_err(memory_error)?;
+        let mut regions = QueryArena::new(memory, 34).map_err(memory_error)?;
         for region in [
             region(&level0)?,
             region(&level1)?,
@@ -579,6 +753,8 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
             region(&self.expression_spans.arena)?,
             region(&self.operator_spans.arena)?,
             region(&self.eager_searches.arena)?,
+            region(&mutations)?,
+            region(&self.mutation_spans.arena)?,
             region(&columns)?,
             region(&expressions)?,
             region(&operators)?,
@@ -634,6 +810,8 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
             RetainedAllocation::arena(&self.expression_spans.arena).map_err(memory_error)?,
             RetainedAllocation::arena(&self.operator_spans.arena).map_err(memory_error)?,
             RetainedAllocation::arena(&self.eager_searches.arena).map_err(memory_error)?,
+            RetainedAllocation::arena(&mutations).map_err(memory_error)?,
+            RetainedAllocation::arena(&self.mutation_spans.arena).map_err(memory_error)?,
             RetainedAllocation::arena(&columns).map_err(memory_error)?,
             RetainedAllocation::arena(&expressions).map_err(memory_error)?,
             RetainedAllocation::arena(&operators).map_err(memory_error)?,
@@ -642,16 +820,19 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
         plan.validate_parameters(parameter_bindings.as_slice(), context.value_context())
             .map_err(plan_error)?;
         check(self.control, Span::default())?;
+        let common = LoweredRead {
+            plan,
+            source: text(self.bytes.slice(), source, self.control)?,
+            columns: columns.as_slice(),
+            expression_spans: self.expression_spans.slice(),
+            operator_spans: self.operator_spans.slice(),
+            parameters: parameter_bindings.as_slice(),
+            owners: &owners,
+        };
         let result = consume(
-            LoweredRead {
-                plan,
-                source: text(self.bytes.slice(), source, self.control)?,
-                columns: columns.as_slice(),
-                expression_spans: self.expression_spans.slice(),
-                operator_spans: self.operator_spans.slice(),
-                parameters: parameter_bindings.as_slice(),
-                owners: &owners,
-            },
+            common,
+            self.mutation_spans.slice(),
+            requires_deleted_runtime_validation,
             context,
         )?;
         check(self.control, Span::default())?;
