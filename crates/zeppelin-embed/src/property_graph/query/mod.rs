@@ -6,6 +6,14 @@ pub(crate) mod expression;
 mod grouping;
 mod id_text;
 mod list;
+#[cfg(feature = "graph-cypher")]
+mod pattern;
+
+#[cfg(all(feature = "graph-cypher", feature = "test-support"))]
+/// Tooling-only native pattern directed probes.
+pub mod pattern_test_support {
+    pub use super::pattern::test_support::{ProbeReport, run_actual_probe};
+}
 /// Typed DAG validation, separate from execution and admission.
 pub mod plan;
 mod property;

@@ -1,0 +1,1 @@
+//! Native pattern sources.
