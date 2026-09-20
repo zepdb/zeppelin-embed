@@ -1,0 +1,12 @@
+$ cargo nextest run --profile default -j 4 --retries 0 -p zeppelin-embed --no-default-features --lib -E test(stats_bytes_are_conserved) | test(repeated_close_returns_exact_stats_counters_to_pre_open_baseline)
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.36s
+────────────
+ Nextest run ID d6ab2442-39f8-4b8e-a7df-2c1c47a77c05 with nextest profile: default
+    Starting 2 tests across 1 binary (568 tests skipped)
+        PASS [   0.020s] (1/2) zeppelin-embed lifecycle::stats::tests::stats_bytes_are_conserved
+        PASS [   0.039s] (2/2) zeppelin-embed lifecycle::stats::tests::repeated_close_returns_exact_stats_counters_to_pre_open_baseline
+────────────
+     Summary [   0.040s] 2 tests run: 2 passed, 568 skipped
+
+exit=0

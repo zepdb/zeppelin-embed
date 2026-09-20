@@ -1,0 +1,55 @@
+$ cargo check -p zeppelin-embed-workspace-tests --test adversarial_tests --no-default-features
+    Checking zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed)
+    Checking zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-ffi)
+    Checking zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-bench)
+    Checking zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/tests)
+error[E0432]: unresolved import `zeppelin_embed::graph_read_view_test_support`
+  --> tests/adversarial/graph_read_view.rs:6:21
+   |
+ 6 | use zeppelin_embed::graph_read_view_test_support::{ActualProbeReport, ObservedRelationship};
+   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ could not find `graph_read_view_test_support` in `zeppelin_embed`
+   |
+note: found an item that was configured out
+  --> /Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed/src/lib.rs:45:9
+   |
+43 | #[cfg(all(feature = "graph-cypher", feature = "test-support"))]
+   |           ------------------------ the item is gated behind the `graph-cypher` feature
+44 | #[doc(hidden)]
+45 | pub mod graph_read_view_test_support {
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0433]: failed to resolve: could not find `graph_read_view_test_support` in `zeppelin_embed`
+   --> tests/adversarial/graph_read_view.rs:121:25
+    |
+121 |     if !zeppelin_embed::graph_read_view_test_support::controlled_boundary_is_available() {
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ could not find `graph_read_view_test_support` in `zeppelin_embed`
+    |
+note: found an item that was configured out
+   --> /Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed/src/lib.rs:45:9
+    |
+ 43 | #[cfg(all(feature = "graph-cypher", feature = "test-support"))]
+    |           ------------------------ the item is gated behind the `graph-cypher` feature
+ 44 | #[doc(hidden)]
+ 45 | pub mod graph_read_view_test_support {
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0433]: failed to resolve: could not find `graph_read_view_test_support` in `zeppelin_embed`
+   --> tests/adversarial/graph_read_view.rs:124:34
+    |
+124 |     let actual = zeppelin_embed::graph_read_view_test_support::run_actual_probe(seed_draw);
+    |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ could not find `graph_read_view_test_support` in `zeppelin_embed`
+    |
+note: found an item that was configured out
+   --> /Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed/src/lib.rs:45:9
+    |
+ 43 | #[cfg(all(feature = "graph-cypher", feature = "test-support"))]
+    |           ------------------------ the item is gated behind the `graph-cypher` feature
+ 44 | #[doc(hidden)]
+ 45 | pub mod graph_read_view_test_support {
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Some errors have detailed explanations: E0432, E0433.
+For more information about an error, try `rustc --explain E0432`.
+error: could not compile `zeppelin-embed-workspace-tests` (test "adversarial_tests") due to 3 previous errors
+
+exit=101

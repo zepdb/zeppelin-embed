@@ -789,7 +789,10 @@ impl Store {
                     }
                 })?;
         }
+        #[cfg(feature = "graph-cypher")]
         let (native_mapping_count, native_resident_bytes) = self.native_graph.mapping_stats()?;
+        #[cfg(not(feature = "graph-cypher"))]
+        let (native_mapping_count, native_resident_bytes) = (0, 0);
         mapped_resident_bytes = mapped_resident_bytes
             .checked_add(native_resident_bytes)
             .ok_or_else(|| StoreError::Statistics {

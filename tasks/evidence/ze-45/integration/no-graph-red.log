@@ -1,0 +1,15 @@
+$ cargo check -p zeppelin-embed-workspace-tests --test adversarial_tests --no-default-features
+    Checking zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed)
+    Checking zeppelin-embed-adversarial-oracle v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/tests/adversarial-oracle)
+error[E0609]: no field `native_graph` on type `&Store`
+   --> crates/zeppelin-embed/src/lifecycle/stats.rs:792:66
+    |
+792 |         let (native_mapping_count, native_resident_bytes) = self.native_graph.mapping_stats()?;
+    |                                                                  ^^^^^^^^^^^^ unknown field
+    |
+    = note: available fields are: `directory`, `vfs`, `clock`, `state`, `state_changed` ... and 26 others
+
+For more information about this error, try `rustc --explain E0609`.
+error: could not compile `zeppelin-embed` (lib) due to 1 previous error
+
+exit=101

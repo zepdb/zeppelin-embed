@@ -33,3 +33,9 @@ The C4 fixture exposed, in order: a 64-slot preparation-source exhaustion, a pac
 ## Qualification boundary
 
 The controlled fixture installer is not durable publication, recovery, production GC, search, public Cypher execution, ABI, or release qualification. Those remain with ZE-39, ZE-40, ZE-46, ZE-50, ZE-53, ZE-60/61, and downstream release work. Per owner instruction, adversarial runner execution, broad workspace/full suites, coverage, fuzz, size, soak, performance corpus, Windows, and packaging are deferred to ZE-118 and were not run here.
+
+## Main integration correction
+
+The final feature-boundary corrections and compile RED/GREEN evidence are in
+[integration/README.md](integration/README.md). They restore graph feature
+guards and the exhaustive result test-support error classification.

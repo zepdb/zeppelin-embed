@@ -1,0 +1,2 @@
+Unique registry keys: 237; graph-only: 217; graph-result-test-support: 237
+Source inspection only; no adversarial runner executed.

@@ -623,7 +623,9 @@ fn runtime_failure(stage: NativeConversionStage, error: &RuntimeError) -> Native
             QueryError::Cancelled | QueryError::ReadCancelled | QueryError::Timeout,
         ) => NativeConversionRefusal::Cancel,
         RuntimeError::Memory(_) => NativeConversionRefusal::Memory,
-        RuntimeError::Value(_) | RuntimeError::Batch => NativeConversionRefusal::Other,
+        RuntimeError::Value(_) | RuntimeError::Batch | RuntimeError::IdentityExhausted => {
+            NativeConversionRefusal::Other
+        }
     };
     failure(stage, refusal)
 }
