@@ -113,3 +113,20 @@ dirty-file SHA-256 values in `/tmp/ze-152-preservation.json` and the `.agents`,
 adversarial-runner, coverage, fuzz, soak, size, performance, or release command
 was run. Those broader qualifications remain with ZE-118. Original ZE-50 remains
 blocked by ZE-46 and retains its public/oracle/compaction/reopen acceptance.
+
+## Main integration and actual runner registration
+
+Root cherry-picked source `569dc5af4bc625b9a81578ff4c4499e1f5b883d0`
+as `8e35d7a3ecf074e1ac0dbd4fc764ebe58337b626`. All 13 ticket files were
+byte-identical to that source commit; the six inherited file hashes remained
+unchanged. Root then applied the accepted additive registration: one graph-gated
+module, one actual probe invocation, and twelve unique pattern coverage keys.
+ZE-40 and earlier registrations remain intact.
+
+All three actual registered runner compilation commands listed above passed
+(default, graph-cypher, graph-result-test-support). This supersedes the earlier
+baseline-only compile limitation. Bounded command results and raw-log hashes are
+in `main-registration.log`; warnings remain unqualified. The source final
+nextest run is `b300e723-9398-4835-873f-cae053251d07` (10 passed, 656 skipped).
+The adversarial runner was compiled, not executed. ZE-118 retains broad-suite
+qualification; ZE-50 retains full native/public/compaction/reopen acceptance.

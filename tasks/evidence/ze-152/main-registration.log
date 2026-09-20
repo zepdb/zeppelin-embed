@@ -1,0 +1,33 @@
+ZE-152 actual registered runner compilation on main
+Source commit: 569dc5af4bc625b9a81578ff4c4499e1f5b883d0
+Cherry-pick: 8e35d7a3ecf074e1ac0dbd4fc764ebe58337b626
+
+cargo check -p zeppelin-embed-workspace-tests --test adversarial_tests -j 4
+Exit status: 0
+Raw log: /tmp/ze-152-main-registered-default.log
+SHA256: 66f0b6f6bf2152c6a8a1d56c5deded95547e20d98880830613e66cdf8748538c
+
+warning: `zeppelin-embed` (lib) generated 31 warnings
+    Checking zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-ffi)
+    Checking zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/tests)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.06s
+
+cargo check -p zeppelin-embed-workspace-tests --test adversarial_tests -j 4 --features graph-cypher
+Exit status: 0
+Raw log: /tmp/ze-152-main-registered-graph.log
+SHA256: 9d56d4374840be5a80721ade5a2112c173b81b965f62e8fd5276f9793205a054
+    Checking zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-cypher)
+    Checking zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-bench)
+    Checking zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-ffi)
+    Checking zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/tests)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 13.41s
+
+cargo check -p zeppelin-embed-workspace-tests --test adversarial_tests -j 4 --features graph-result-test-support
+Exit status: 0
+Raw log: /tmp/ze-152-main-registered-result.log
+SHA256: ddce6947763ebce4834deede89a287ab99330e3e4e02cb423c244066a2dc7c96
+
+warning: `zeppelin-embed` (lib) generated 50 warnings (run `cargo fix --lib -p zeppelin-embed` to apply 3 suggestions)
+    Checking zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-ffi)
+    Checking zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/tests)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.83s
