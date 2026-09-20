@@ -1,0 +1,229 @@
+    Checking byteorder v1.5.0
+    Checking bytemuck v1.25.2
+    Checking xxhash-rust v0.8.18
+    Checking libc v0.2.189
+    Checking roaring v0.10.12
+    Checking zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-160/crates/zeppelin-embed)
+warning: method `analyze_with_policy` is never used
+   --> crates/zeppelin-embed/src/fts/tokenizer/mod.rs:402:19
+    |
+371 | impl Analyzer {
+    | ------------- method in this implementation
+...
+402 |     pub(crate) fn analyze_with_policy<'m, P: super::control::BuildPolicy<'m>>(
+    |                   ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `fold_char` is never used
+  --> crates/zeppelin-embed/src/fts/tokenizer/fold.rs:96:15
+   |
+96 | pub(crate) fn fold_char(value: char, output: &mut String) {
+   |               ^^^^^^^^^
+
+warning: function `fold` is never used
+   --> crates/zeppelin-embed/src/fts/tokenizer/fold.rs:111:15
+    |
+111 | pub(crate) fn fold(input: &str) -> String {
+    |               ^^^^
+
+warning: function `compose` is never used
+   --> crates/zeppelin-embed/src/fts/tokenizer/numbers.rs:102:15
+    |
+102 | pub(crate) fn compose(words: &[NumberWord]) -> Option<u64> {
+    |               ^^^^^^^
+
+warning: function `spell_joined` is never used
+   --> crates/zeppelin-embed/src/fts/tokenizer/numbers.rs:176:15
+    |
+176 | pub(crate) fn spell_joined(value: u64) -> Option<String> {
+    |               ^^^^^^^^^^^^
+
+warning: function `spell_into` is never used
+   --> crates/zeppelin-embed/src/fts/tokenizer/numbers.rs:289:4
+    |
+289 | fn spell_into(value: u64, out: &mut String) -> Option<()> {
+    |    ^^^^^^^^^^
+
+warning: function `parse_digits` is never used
+   --> crates/zeppelin-embed/src/fts/tokenizer/numbers.rs:320:15
+    |
+320 | pub(crate) fn parse_digits(term: &str) -> Option<u64> {
+    |               ^^^^^^^^^^^^
+
+warning: methods `term` and `position` are never used
+  --> crates/zeppelin-embed/src/fts/tokenizer/pipeline.rs:78:19
+   |
+77 | impl<C> ControlledToken<'_, C> {
+   | ------------------------------ methods in this implementation
+78 |     pub(crate) fn term(&self) -> &str {
+   |                   ^^^^
+...
+81 |     pub(crate) const fn position(&self) -> u32 {
+   |                         ^^^^^^^^
+
+warning: function `segment` is never used
+  --> crates/zeppelin-embed/src/fts/tokenizer/segment.rs:65:15
+   |
+65 | pub(crate) fn segment(text: &str) -> Vec<Span> {
+   |               ^^^^^^^
+
+warning: function `ideograph_bigrams` is never used
+   --> crates/zeppelin-embed/src/fts/tokenizer/segment.rs:181:15
+    |
+181 | pub(crate) fn ideograph_bigrams(text: &str, span: Span) -> Vec<Span> {
+    |               ^^^^^^^^^^^^^^^^^
+
+warning: function `regions` is never used
+  --> crates/zeppelin-embed/src/fts/tokenizer/stemmer.rs:67:4
+   |
+67 | fn regions(word: &[char]) -> (usize, usize) {
+   |    ^^^^^^^
+
+warning: function `region_after` is never used
+  --> crates/zeppelin-embed/src/fts/tokenizer/stemmer.rs:86:4
+   |
+86 | fn region_after(word: &[char], from: usize) -> usize {
+   |    ^^^^^^^^^^^^
+
+warning: function `stem` is never used
+   --> crates/zeppelin-embed/src/fts/tokenizer/stemmer.rs:200:15
+    |
+200 | pub(crate) fn stem(term: &str) -> String {
+    |               ^^^^
+
+warning: function `restore_y` is never used
+   --> crates/zeppelin-embed/src/fts/tokenizer/stemmer.rs:430:4
+    |
+430 | fn restore_y(word: &[char]) -> String {
+    |    ^^^^^^^^^
+
+warning: function `step_1a` is never used
+   --> crates/zeppelin-embed/src/fts/tokenizer/stemmer.rs:446:4
+    |
+446 | fn step_1a(word: &mut Vec<char>) {
+    |    ^^^^^^^
+
+warning: function `step_1b` is never used
+   --> crates/zeppelin-embed/src/fts/tokenizer/stemmer.rs:473:4
+    |
+473 | fn step_1b(word: &mut Vec<char>, r1: usize) {
+    |    ^^^^^^^
+
+warning: struct `OwnedPosting` is never constructed
+   --> crates/zeppelin-embed/src/fts/postings.rs:169:19
+    |
+169 | pub(crate) struct OwnedPosting<'m, C> {
+    |                   ^^^^^^^^^^^^
+
+warning: struct `GraphEncoded` is never constructed
+   --> crates/zeppelin-embed/src/fts/postings.rs:585:19
+    |
+585 | pub(crate) struct GraphEncoded<'m, C> {
+    |                   ^^^^^^^^^^^^
+
+warning: struct `GraphListSummary` is never constructed
+   --> crates/zeppelin-embed/src/fts/postings.rs:591:19
+    |
+591 | pub(crate) struct GraphListSummary {
+    |                   ^^^^^^^^^^^^^^^^
+
+warning: function `encode_graph_policy` is never used
+   --> crates/zeppelin-embed/src/fts/postings.rs:600:15
+    |
+600 | pub(crate) fn encode_graph_policy<'m, P>(
+    |               ^^^^^^^^^^^^^^^^^^^
+
+warning: function `required_bits_policy` is never used
+   --> crates/zeppelin-embed/src/fts/postings.rs:766:4
+    |
+766 | fn required_bits_policy<'m, P: super::control::BuildPolicy<'m>>(
+    |    ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `pack_bits_policy` is never used
+   --> crates/zeppelin-embed/src/fts/postings.rs:782:4
+    |
+782 | fn pack_bits_policy<'m, P: super::control::BuildPolicy<'m>>(
+    |    ^^^^^^^^^^^^^^^^
+
+warning: function `write_meta_policy` is never used
+   --> crates/zeppelin-embed/src/fts/postings.rs:809:4
+    |
+809 | fn write_meta_policy<'m, P: super::control::BuildPolicy<'m>>(
+    |    ^^^^^^^^^^^^^^^^^
+
+warning: function `validate_graph_policy` is never used
+   --> crates/zeppelin-embed/src/fts/postings.rs:836:15
+    |
+836 | pub(crate) fn validate_graph_policy<'m, P>(
+    |               ^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `lexical_block` and `lexical_posting` are never used
+  --> crates/zeppelin-embed/src/fts/control.rs:22:8
+   |
+16 | pub(crate) trait BuildPolicy<'m> {
+   |                  ----------- methods in this trait
+...
+22 |     fn lexical_block(&mut self) -> Result<(), Self::Error> {
+   |        ^^^^^^^^^^^^^
+...
+25 |     fn lexical_posting(&mut self) -> Result<(), Self::Error> {
+   |        ^^^^^^^^^^^^^^^
+
+warning: methods `is_empty` and `extend_from_slice` are never used
+   --> crates/zeppelin-embed/src/fts/control.rs:138:19
+    |
+120 | impl<'m, T, C> GuardedVec<'m, T, C> {
+    | ----------------------------------- methods in this implementation
+...
+138 |     pub(crate) fn is_empty(&self) -> bool {
+    |                   ^^^^^^^^
+...
+200 |     pub(crate) fn extend_from_slice<P>(
+    |                   ^^^^^^^^^^^^^^^^^
+
+warning: trait `CapacityCharge` is never used
+   --> crates/zeppelin-embed/src/fts/control.rs:234:18
+    |
+234 | pub(crate) trait CapacityCharge {
+    |                  ^^^^^^^^^^^^^^
+
+warning: struct `GraphSealed` is never constructed
+   --> crates/zeppelin-embed/src/fts/sealed.rs:158:19
+    |
+158 | pub(crate) struct GraphSealed<'m, C> {
+    |                   ^^^^^^^^^^^
+
+warning: methods `sealed` and `owned_bytes` are never used
+   --> crates/zeppelin-embed/src/fts/sealed.rs:170:25
+    |
+169 | impl<C: super::control::CapacityCharge> GraphSealed<'_, C> {
+    | ---------------------------------------------------------- methods in this implementation
+170 |     pub(crate) const fn sealed(&self) -> &SealedSegment {
+    |                         ^^^^^^
+...
+174 |     pub(crate) fn owned_bytes(&self) -> usize {
+    |                   ^^^^^^^^^^^
+
+warning: associated items `seal_policy`, `encode_region_policy`, and `decode_policy` are never used
+   --> crates/zeppelin-embed/src/fts/sealed.rs:224:19
+    |
+223 | impl<'m, C> GraphSealed<'m, C> {
+    | ------------------------------ associated items in this implementation
+224 |     pub(crate) fn seal_policy<'a, P, I>(
+    |                   ^^^^^^^^^^^
+...
+372 |     pub(crate) fn encode_region_policy<P>(
+    |                   ^^^^^^^^^^^^^^^^^^^^
+...
+464 |     pub(crate) fn decode_policy<P>(bytes: &[u8], policy: &mut P) -> Result<(Self, u64), P::Error>
+    |                   ^^^^^^^^^^^^^
+
+warning: function `compare_bytes_policy` is never used
+   --> crates/zeppelin-embed/src/fts/sealed.rs:742:4
+    |
+742 | fn compare_bytes_policy<'m, P: super::control::BuildPolicy<'m>>(
+    |    ^^^^^^^^^^^^^^^^^^^^
+
+warning: `zeppelin-embed` (lib) generated 31 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.05s

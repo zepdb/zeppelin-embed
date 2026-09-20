@@ -591,6 +591,8 @@ struct PublicationState {
     admissions_stopped: bool,
     #[cfg(any(test, feature = "test-support"))]
     admission_hook: Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>,
+    #[cfg(any(test, feature = "test-support"))]
+    close_owner_hook: Option<(u64, Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>,
 }
 
 pub(crate) struct NativeGraphPublication {
@@ -696,6 +698,8 @@ impl NativeGraphPublication {
                 admissions_stopped: false,
                 #[cfg(any(test, feature = "test-support"))]
                 admission_hook: None,
+                #[cfg(any(test, feature = "test-support"))]
+                close_owner_hook: None,
             }),
             changed: Condvar::new(),
             accounting: Arc::clone(accounting),
@@ -1139,10 +1143,32 @@ impl NativeGraphPublication {
             state = waited.0;
         }
         if state.leases.iter().any(Option::is_some) {
-            for entry in state.leases.iter().flatten() {
-                if let Some(owner) = entry.owner.upgrade() {
-                    owner.cancelled.store(true, Ordering::Release);
+            let slot_count = state.leases.len();
+            for index in 0..slot_count {
+                let Some((_token, owner)) = state
+                    .leases
+                    .get(index)
+                    .and_then(Option::as_ref)
+                    .and_then(|entry| entry.owner.upgrade().map(|owner| (entry.token, owner)))
+                else {
+                    continue;
+                };
+                owner.cancelled.store(true, Ordering::Release);
+                #[cfg(any(test, feature = "test-support"))]
+                if state
+                    .close_owner_hook
+                    .as_ref()
+                    .is_some_and(|(target, _, _)| *target == _token)
+                    && let Some((_, entered, release)) = state.close_owner_hook.take()
+                {
+                    entered.wait();
+                    release.wait();
                 }
+                drop(state);
+                drop(owner);
+                state = self.state.lock().map_err(|_| StoreError::Synchronization {
+                    component: "native graph publication",
+                })?;
             }
             self.changed.notify_all();
         }
@@ -1164,10 +1190,33 @@ impl NativeGraphPublication {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.closing = true;
-        for entry in state.leases.iter().flatten() {
-            if let Some(owner) = entry.owner.upgrade() {
-                owner.cancelled.store(true, Ordering::Release);
+        let slot_count = state.leases.len();
+        for index in 0..slot_count {
+            let Some((_token, owner)) = state
+                .leases
+                .get(index)
+                .and_then(Option::as_ref)
+                .and_then(|entry| entry.owner.upgrade().map(|owner| (entry.token, owner)))
+            else {
+                continue;
+            };
+            owner.cancelled.store(true, Ordering::Release);
+            #[cfg(any(test, feature = "test-support"))]
+            if state
+                .close_owner_hook
+                .as_ref()
+                .is_some_and(|(target, _, _)| *target == _token)
+                && let Some((_, entered, release)) = state.close_owner_hook.take()
+            {
+                entered.wait();
+                release.wait();
             }
+            drop(state);
+            drop(owner);
+            state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
         drop(state.current.take());
         self.changed.notify_all();
@@ -1503,6 +1552,7 @@ pub(crate) mod tests {
         clippy::unwrap_used
     )]
 
+    mod close_owner;
     mod expression_tests;
     pub(crate) mod publication;
     mod recovery;
@@ -6263,6 +6313,10 @@ pub(crate) mod tests {
         );
         native_read_close_cancels_and_drains_current_and_retired_leases();
         receipt("property-graph.read-view.close-first-drain", 1, 1);
+        close_owner::native_close_drain_releases_last_temporary_owner();
+        receipt("property-graph.read-view.close-drain-last-owner", 0, 1);
+        close_owner::native_close_best_effort_releases_last_temporary_owner();
+        receipt("property-graph.read-view.close-drop-last-owner", 0, 1);
         native_read_drop_cancels_without_destroying_borrowed_mapping();
         receipt("property-graph.read-view.release", 1, 1);
         native_prepared_artifacts_retain_exact_base_source_and_abort_owners();

@@ -1,0 +1,1751 @@
+   Compiling libc v0.2.189
+    Checking bytemuck v1.25.2
+    Checking byteorder v1.5.0
+    Checking xxhash-rust v0.8.18
+    Checking roaring v0.10.12
+    Checking zeppelin-embed v0.4.2 (/private/tmp/ze-160-clippy-base/crates/zeppelin-embed)
+error: unused imports: `prepare_sparse_checkpoint` and `validate_replay_transition`
+  --> crates/zeppelin-embed/src/property_graph/storage/search.rs:10:23
+   |
+10 |     SparseCheckpoint, prepare_sparse_checkpoint, validate_checkpoint,
+   |                       ^^^^^^^^^^^^^^^^^^^^^^^^^
+11 |     validate_persisted_replay_transition, validate_replay_transition,
+   |                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `-D unused-imports` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(unused_imports)]`
+
+error: unused imports: `SearchTraceCursor` and `SearchTraceResult`
+  --> crates/zeppelin-embed/src/property_graph/storage/search.rs:15:24
+   |
+15 | pub(crate) use trace::{SearchTraceCursor, SearchTraceResult};
+   |                        ^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^
+
+error: unused imports: `SparseMember`, `SparseSource`, and `SparseSources`
+  --> crates/zeppelin-embed/src/property_graph/storage/search.rs:16:23
+   |
+16 | pub(crate) use view::{SparseMember, SparseSource, SparseSources, SparseView};
+   |                       ^^^^^^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^^^^^^^
+
+error: function `fold_char` is never used
+  --> crates/zeppelin-embed/src/fts/tokenizer/fold.rs:96:15
+   |
+96 | pub(crate) fn fold_char(value: char, output: &mut String) {
+   |               ^^^^^^^^^
+   |
+   = note: `-D dead-code` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(dead_code)]`
+
+error: function `fold` is never used
+   --> crates/zeppelin-embed/src/fts/tokenizer/fold.rs:111:15
+    |
+111 | pub(crate) fn fold(input: &str) -> String {
+    |               ^^^^
+
+error: function `compose` is never used
+   --> crates/zeppelin-embed/src/fts/tokenizer/numbers.rs:102:15
+    |
+102 | pub(crate) fn compose(words: &[NumberWord]) -> Option<u64> {
+    |               ^^^^^^^
+
+error: function `spell_joined` is never used
+   --> crates/zeppelin-embed/src/fts/tokenizer/numbers.rs:176:15
+    |
+176 | pub(crate) fn spell_joined(value: u64) -> Option<String> {
+    |               ^^^^^^^^^^^^
+
+error: function `spell_into` is never used
+   --> crates/zeppelin-embed/src/fts/tokenizer/numbers.rs:289:4
+    |
+289 | fn spell_into(value: u64, out: &mut String) -> Option<()> {
+    |    ^^^^^^^^^^
+
+error: function `parse_digits` is never used
+   --> crates/zeppelin-embed/src/fts/tokenizer/numbers.rs:320:15
+    |
+320 | pub(crate) fn parse_digits(term: &str) -> Option<u64> {
+    |               ^^^^^^^^^^^^
+
+error: function `segment` is never used
+  --> crates/zeppelin-embed/src/fts/tokenizer/segment.rs:65:15
+   |
+65 | pub(crate) fn segment(text: &str) -> Vec<Span> {
+   |               ^^^^^^^
+
+error: function `ideograph_bigrams` is never used
+   --> crates/zeppelin-embed/src/fts/tokenizer/segment.rs:181:15
+    |
+181 | pub(crate) fn ideograph_bigrams(text: &str, span: Span) -> Vec<Span> {
+    |               ^^^^^^^^^^^^^^^^^
+
+error: function `regions` is never used
+  --> crates/zeppelin-embed/src/fts/tokenizer/stemmer.rs:67:4
+   |
+67 | fn regions(word: &[char]) -> (usize, usize) {
+   |    ^^^^^^^
+
+error: function `region_after` is never used
+  --> crates/zeppelin-embed/src/fts/tokenizer/stemmer.rs:86:4
+   |
+86 | fn region_after(word: &[char], from: usize) -> usize {
+   |    ^^^^^^^^^^^^
+
+error: function `stem` is never used
+   --> crates/zeppelin-embed/src/fts/tokenizer/stemmer.rs:200:15
+    |
+200 | pub(crate) fn stem(term: &str) -> String {
+    |               ^^^^
+
+error: function `restore_y` is never used
+   --> crates/zeppelin-embed/src/fts/tokenizer/stemmer.rs:430:4
+    |
+430 | fn restore_y(word: &[char]) -> String {
+    |    ^^^^^^^^^
+
+error: function `step_1a` is never used
+   --> crates/zeppelin-embed/src/fts/tokenizer/stemmer.rs:446:4
+    |
+446 | fn step_1a(word: &mut Vec<char>) {
+    |    ^^^^^^^
+
+error: function `step_1b` is never used
+   --> crates/zeppelin-embed/src/fts/tokenizer/stemmer.rs:473:4
+    |
+473 | fn step_1b(word: &mut Vec<char>, r1: usize) {
+    |    ^^^^^^^
+
+error: struct `TreeTraceReservation` is never constructed
+   --> crates/zeppelin-embed/src/property_graph/storage/tree/directory.rs:115:19
+    |
+115 | pub(crate) struct TreeTraceReservation<'a> {
+    |                   ^^^^^^^^^^^^^^^^^^^^
+
+error: method `require` is never used
+   --> crates/zeppelin-embed/src/property_graph/storage/tree/directory.rs:120:19
+    |
+119 | impl TreeTraceReservation<'_> {
+    | ----------------------------- method in this implementation
+120 |     pub(crate) fn require(&self, resources: &TreeResources<'_>) -> Result<(), TreeError> {
+    |                   ^^^^^^^
+
+error: method `reserve_trace` is never used
+   --> crates/zeppelin-embed/src/property_graph/storage/tree/directory.rs:314:19
+    |
+226 | impl<'a> TreeResources<'a> {
+    | -------------------------- method in this implementation
+...
+314 |     pub(crate) fn reserve_trace(
+    |                   ^^^^^^^^^^^^^
+
+error: function `trace_page` is never used
+   --> crates/zeppelin-embed/src/property_graph/storage/tree/directory.rs:639:15
+    |
+639 | pub(crate) fn trace_page<'s>(
+    |               ^^^^^^^^^^
+
+error: method `physical_reference_at` is never used
+   --> crates/zeppelin-embed/src/property_graph/storage/payload.rs:205:19
+    |
+ 27 | impl PayloadRef {
+    | --------------- method in this implementation
+...
+205 |     pub(crate) fn physical_reference_at(
+    |                   ^^^^^^^^^^^^^^^^^^^^^
+
+error: struct `PreparedSparseCheckpoint` is never constructed
+  --> crates/zeppelin-embed/src/property_graph/storage/search/checkpoint.rs:30:19
+   |
+30 | pub(crate) struct PreparedSparseCheckpoint {
+   |                   ^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: method `finalize` is never used
+  --> crates/zeppelin-embed/src/property_graph/storage/search/checkpoint.rs:35:19
+   |
+34 | impl PreparedSparseCheckpoint {
+   | ----------------------------- method in this implementation
+35 |     pub(crate) fn finalize(&self, inventory: &[InventoryChange]) -> Result<SparseRoots, TreeError> {
+   |                   ^^^^^^^^
+
+error: function `prepare_sparse_checkpoint` is never used
+  --> crates/zeppelin-embed/src/property_graph/storage/search/checkpoint.rs:70:15
+   |
+70 | pub(crate) fn prepare_sparse_checkpoint<'m, S: BlockSink, C: RecordCatalog<S>>(
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `validate_target_origin` is never used
+   --> crates/zeppelin-embed/src/property_graph/storage/search/checkpoint.rs:190:4
+    |
+190 | fn validate_target_origin<S: BlockSource, C: RecordCatalog<S>>(
+    |    ^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `validate_replay_transition` is never used
+   --> crates/zeppelin-embed/src/property_graph/storage/search/checkpoint.rs:241:15
+    |
+241 | pub(crate) fn validate_replay_transition<'a, 'm, S: BlockSource, C: RecordCatalog<S>>(
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: methods `generation` and `sequence` are never used
+  --> crates/zeppelin-embed/src/property_graph/storage/search/prepare.rs:75:25
+   |
+74 | impl PreparedSparseCandidate<'_> {
+   | -------------------------------- methods in this implementation
+75 |     pub(crate) const fn generation(&self) -> GraphGeneration {
+   |                         ^^^^^^^^^^
+...
+78 |     pub(crate) const fn sequence(&self) -> u64 {
+   |                         ^^^^^^^^
+
+error: struct `SearchTraceResult` is never constructed
+  --> crates/zeppelin-embed/src/property_graph/storage/search/trace.rs:23:19
+   |
+23 | pub(crate) struct SearchTraceResult {
+   |                   ^^^^^^^^^^^^^^^^^
+
+error: struct `Bound` is never constructed
+  --> crates/zeppelin-embed/src/property_graph/storage/search/trace.rs:29:8
+   |
+29 | struct Bound {
+   |        ^^^^^
+
+error: associated items `from_key` and `key` are never used
+  --> crates/zeppelin-embed/src/property_graph/storage/search/trace.rs:35:8
+   |
+34 | impl Bound {
+   | ---------- associated items in this implementation
+35 |     fn from_key(key: Key<'_>, width: usize) -> Result<Self, TreeError> {
+   |        ^^^^^^^^
+...
+53 |     fn key(&self) -> Result<Key<'_>, TreeError> {
+   |        ^^^
+
+error: struct `PageFrame` is never constructed
+  --> crates/zeppelin-embed/src/property_graph/storage/search/trace.rs:63:8
+   |
+63 | struct PageFrame {
+   |        ^^^^^^^^^
+
+error: enum `DirectoryFamily` is never used
+  --> crates/zeppelin-embed/src/property_graph/storage/search/trace.rs:74:6
+   |
+74 | enum DirectoryFamily {
+   |      ^^^^^^^^^^^^^^^
+
+error: struct `DirectoryWalk` is never constructed
+  --> crates/zeppelin-embed/src/property_graph/storage/search/trace.rs:79:8
+   |
+79 | struct DirectoryWalk {
+   |        ^^^^^^^^^^^^^
+
+error: enum `DirectoryEvent` is never used
+  --> crates/zeppelin-embed/src/property_graph/storage/search/trace.rs:91:6
+   |
+91 | enum DirectoryEvent {
+   |      ^^^^^^^^^^^^^^
+
+error: associated items `new`, `width`, and `next` are never used
+   --> crates/zeppelin-embed/src/property_graph/storage/search/trace.rs:103:8
+    |
+ 98 | impl DirectoryWalk {
+    | ------------------ associated items in this implementation
+...
+103 |     fn new(
+    |        ^^^
+...
+142 |     fn width(&self) -> usize {
+    |        ^^^^^
+...
+149 |     fn next<S: BlockSource>(
+    |        ^^^^
+
+error: struct `PayloadState` is never constructed
+   --> crates/zeppelin-embed/src/property_graph/storage/search/trace.rs:315:8
+    |
+315 | struct PayloadState {
+    |        ^^^^^^^^^^^^
+
+error: struct `SourceState` is never constructed
+   --> crates/zeppelin-embed/src/property_graph/storage/search/trace.rs:323:8
+    |
+323 | struct SourceState {
+    |        ^^^^^^^^^^^
+
+error: struct `SearchTraceCursor` is never constructed
+   --> crates/zeppelin-embed/src/property_graph/storage/search/trace.rs:337:19
+    |
+337 | pub(crate) struct SearchTraceCursor<'s, 'm, S, C> {
+    |                   ^^^^^^^^^^^^^^^^^
+
+error: associated function `for_preparation` is never used
+   --> crates/zeppelin-embed/src/property_graph/storage/search/trace.rs:374:19
+    |
+366 | / impl<'s, 'lease, 'm>
+367 | |     SearchTraceCursor<
+368 | |         's,
+369 | |         'm,
+370 | |         NativePreparationSource<'lease, 'm>,
+371 | |         NativePreparationCatalog<'s, 'lease, 'm>,
+372 | |     >
+    | |_____- associated function in this implementation
+373 |   {
+374 |       pub(crate) fn for_preparation(
+    |                     ^^^^^^^^^^^^^^^
+
+error: associated items `open_checked`, `modality`, `schedule_payload`, `next_reference`, and `trace` are never used
+   --> crates/zeppelin-embed/src/property_graph/storage/search/trace.rs:407:8
+    |
+402 | impl<'s, 'm, S: BlockSource, C: RecordCatalog<S>> SearchTraceCursor<'s, 'm, S, C> {
+    | --------------------------------------------------------------------------------- associated items in this implementation
+...
+407 |     fn open_checked(
+    |        ^^^^^^^^^^^^
+...
+502 |     fn modality(&self) -> Result<Modality, TreeError> {
+    |        ^^^^^^^^
+...
+510 |     fn schedule_payload(&mut self, payload: PayloadRef, generation: GraphGeneration) {
+    |        ^^^^^^^^^^^^^^^^
+...
+519 |     fn next_reference(
+    |        ^^^^^^^^^^^^^^
+...
+824 |     pub(crate) fn trace(
+    |                   ^^^^^
+
+error: method `sealed` is never used
+   --> crates/zeppelin-embed/src/property_graph/storage/search/view.rs:197:8
+    |
+188 | impl SparseLexical<'_> {
+    | ---------------------- method in this implementation
+...
+197 |     fn sealed(&self) -> &SealedSegment {
+    |        ^^^^^^
+
+error: function `decode_lexical_prepare` is never used
+   --> crates/zeppelin-embed/src/property_graph/storage/search/view.rs:232:15
+    |
+232 | pub(super) fn decode_lexical_prepare<'m, S: BlockSource>(
+    |               ^^^^^^^^^^^^^^^^^^^^^^
+
+error: fields `revision`, `row`, `analyzed_length`, and `vector` are never read
+   --> crates/zeppelin-embed/src/property_graph/storage/search/view.rs:255:16
+    |
+253 | pub(crate) struct SparseMember<'a, S: BlockSource> {
+    |                   ------------ fields in this struct
+254 |     pub(crate) node: NodeId,
+255 |     pub(crate) revision: u64,
+    |                ^^^^^^^^
+256 |     pub(crate) row: u32,
+    |                ^^^
+257 |     pub(crate) analyzed_length: u32,
+    |                ^^^^^^^^^^^^^^^
+258 |     pub(crate) vector: Option<StoredVector<'a, S>>,
+    |                ^^^^^^
+
+error: struct `SparseSources` is never constructed
+   --> crates/zeppelin-embed/src/property_graph/storage/search/view.rs:262:19
+    |
+262 | pub(crate) struct SparseSources<'v, 'a, 'm, 'r, S, C> {
+    |                   ^^^^^^^^^^^^^
+
+error: struct `SparseSource` is never constructed
+   --> crates/zeppelin-embed/src/property_graph/storage/search/view.rs:271:19
+    |
+271 | pub(crate) struct SparseSource<'v, 'a, 'm, S, C> {
+    |                   ^^^^^^^^^^^^
+
+error: field `catalog_required` is never read
+   --> crates/zeppelin-embed/src/property_graph/storage/search/view.rs:290:5
+    |
+283 | pub(crate) struct SparseView<'a, 'm, S, C> {
+    |                   ---------- field in this struct
+...
+290 |     catalog_required: RequiredRef,
+    |     ^^^^^^^^^^^^^^^^
+
+error: multiple methods are never used
+   --> crates/zeppelin-embed/src/property_graph/storage/search/view.rs:487:25
+    |
+339 | impl<'a, 'm, S: BlockSource, C: RecordCatalog<S>> SparseView<'a, 'm, S, C> {
+    | -------------------------------------------------------------------------- methods in this implementation
+...
+487 |     pub(crate) const fn text_count(&self) -> u64 {
+    |                         ^^^^^^^^^^
+...
+493 |     pub(crate) const fn vector_count(&self) -> u64 {
+    |                         ^^^^^^^^^^^^
+...
+499 |     pub(crate) const fn text_length(&self) -> u64 {
+    |                         ^^^^^^^^^^^
+...
+517 |     pub(crate) const fn interpretation_catalog(&self) -> RequiredRef {
+    |                         ^^^^^^^^^^^^^^^^^^^^^^
+...
+523 |     pub(super) const fn root_state(&self, modality: Modality) -> Option<SparseRootState> {
+    |                         ^^^^^^^^^^
+...
+543 |     fn descriptor(&self, modality: Modality) -> Option<RootDescriptor> {
+    |        ^^^^^^^^^^
+...
+623 |     pub(crate) fn sources<'v, 'r>(
+    |                   ^^^^^^^
+
+error: methods `next` and `next_inner` are never used
+   --> crates/zeppelin-embed/src/property_graph/storage/search/view.rs:972:19
+    |
+971 | impl<'v, 'a, 'm, 'r, S: BlockSource, C: RecordCatalog<S>> SparseSources<'v, 'a, 'm, 'r, S, C> {
+    | --------------------------------------------------------------------------------------------- methods in this implementation
+972 |     pub(crate) fn next(
+    |                   ^^^^
+...
+986 |     fn next_inner(
+    |        ^^^^^^^^^^
+
+error: methods `row_count`, `live_bit`, `is_live`, `resolve_row`, and `lexical` are never used
+    --> crates/zeppelin-embed/src/property_graph/storage/search/view.rs:1141:25
+     |
+1140 | impl<'v, 'a, 'm, S: BlockSource, C: RecordCatalog<S>> SparseSource<'v, 'a, 'm, S, C> {
+     | ------------------------------------------------------------------------------------ methods in this implementation
+1141 |     pub(crate) const fn row_count(&self) -> u32 {
+     |                         ^^^^^^^^^
+...
+1145 |     fn live_bit(&self, row: u32, resources: &mut TreeResources<'_>) -> Result<bool, TreeError> {
+     |        ^^^^^^^^
+...
+1164 |     pub(crate) fn is_live(
+     |                   ^^^^^^^
+...
+1173 |     pub(crate) fn resolve_row(
+     |                   ^^^^^^^^^^^
+...
+1236 |     pub(crate) fn lexical(
+     |                   ^^^^^^^
+
+error: struct `PatternCapacity` is never constructed
+  --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:39:19
+   |
+39 | pub(crate) struct PatternCapacity {
+   |                   ^^^^^^^^^^^^^^^
+
+error: enum `ScalarCell` is never used
+  --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:45:6
+   |
+45 | enum ScalarCell {
+   |      ^^^^^^^^^^
+
+error: method `value` is never used
+  --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:51:8
+   |
+50 | impl ScalarCell {
+   | --------------- method in this implementation
+51 |     fn value(self, view: &QueryView) -> QueryValue<'_> {
+   |        ^^^^^
+
+error: enum `ResolvedLabel` is never used
+  --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:59:6
+   |
+59 | enum ResolvedLabel {
+   |      ^^^^^^^^^^^^^
+
+error: struct `RelationshipUse` is never constructed
+  --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:66:8
+   |
+66 | struct RelationshipUse {
+   |        ^^^^^^^^^^^^^^^
+
+error: struct `PathFrame` is never constructed
+  --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:72:8
+   |
+72 | struct PathFrame<'s, 'm, 'g> {
+   |        ^^^^^^^^^
+
+error: struct `UseSpan` is never constructed
+  --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:77:8
+   |
+77 | struct UseSpan {
+   |        ^^^^^^^
+
+error: struct `RetainedRows` is never constructed
+  --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:82:8
+   |
+82 | struct RetainedRows<'v, 'm, 'g> {
+   |        ^^^^^^^^^^^^
+
+error: associated items `new` and `span` are never used
+   --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:89:8
+    |
+ 88 | impl<'v, 'm, 'g> RetainedRows<'v, 'm, 'g> {
+    | ----------------------------------------- associated items in this implementation
+ 89 |     fn new(
+    |        ^^^
+...
+112 |     fn span(&self, row: usize) -> Result<&[RelationshipUse], RuntimeError> {
+    |        ^^^^
+
+error: enum `PhysicalState` is never used
+   --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:127:6
+    |
+127 | enum PhysicalState<'s, 'plan, 'v, 'm, 'g> {
+    |      ^^^^^^^^^^^^^
+
+error: struct `Occurrence` is never constructed
+   --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:232:8
+    |
+232 | struct Occurrence<'s, 'plan, 'v, 'm, 'g> {
+    |        ^^^^^^^^^^
+
+error: struct `AnchorBinding` is never constructed
+   --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:240:8
+    |
+240 | struct AnchorBinding<'a> {
+    |        ^^^^^^^^^^^^^
+
+error: function `anchor_source` is never used
+   --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:246:4
+    |
+246 | fn anchor_source(bindings: Option<&AnchorBinding<'_>>, node: PlanNodeId) -> Option<usize> {
+    |    ^^^^^^^^^^^^^
+
+error: struct `NativePattern` is never constructed
+   --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:259:19
+    |
+259 | pub(crate) struct NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
+    |                   ^^^^^^^^^^^^^
+
+error: multiple associated items are never used
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:274:19
+     |
+ 269 | impl<'s, 'r, 'plan, 'v, 'm, 'g> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
+     | ------------------------------------------------------------------------ associated items in this implementation
+...
+ 274 |     pub(crate) fn new(
+     |                   ^^^
+...
+ 312 |     fn next_occurrence(
+     |        ^^^^^^^^^^^^^^^
+...
+ 599 |     fn reset_occurrence(&mut self, index: usize) -> Result<(), RuntimeError> {
+     |        ^^^^^^^^^^^^^^^^
+...
+ 716 |     fn next_scan(
+     |        ^^^^^^^^^
+...
+ 756 |     fn next_key(
+     |        ^^^^^^^^
+...
+ 822 |     fn next_expand(
+     |        ^^^^^^^^^^^
+...
+ 898 |     fn next_bounded_expand(
+     |        ^^^^^^^^^^^^^^^^^^^
+...
+1098 |     fn fill_private_edge(
+     |        ^^^^^^^^^^^^^^^^^
+...
+1124 |     fn fill_completed_edge(
+     |        ^^^^^^^^^^^^^^^^^^^
+...
+1156 |     fn push_path(
+     |        ^^^^^^^^^
+...
+1206 |     fn next_join(
+     |        ^^^^^^^^^
+...
+1260 |     fn next_nested_join(
+     |        ^^^^^^^^^^^^^^^^
+...
+1300 |     fn next_hash_join(
+     |        ^^^^^^^^^^^^^^
+...
+1383 |     fn join_predicate_retained(
+     |        ^^^^^^^^^^^^^^^^^^^^^^^
+...
+1418 |     fn next_optional(
+     |        ^^^^^^^^^^^^^
+...
+1465 |     fn drain_occurrence(
+     |        ^^^^^^^^^^^^^^^^
+...
+1501 |     fn build_hash_index(
+     |        ^^^^^^^^^^^^^^^^
+...
+1544 |     fn current_row_hash(
+     |        ^^^^^^^^^^^^^^^^
+...
+1563 |     fn retained_row_hash(
+     |        ^^^^^^^^^^^^^^^^^
+...
+1584 |     fn current_rows_join(
+     |        ^^^^^^^^^^^^^^^^^
+...
+1613 |     fn current_retained_rows_join(
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1643 |     fn combine_current_rows(
+     |        ^^^^^^^^^^^^^^^^^^^^
+...
+1683 |     fn combine_hash_rows(
+     |        ^^^^^^^^^^^^^^^^^
+...
+1741 |     fn push_optional_null_current(
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1770 |     fn occurrence(&self, index: usize) -> Result<&Occurrence<'s, 'plan, 'v, 'm, 'g>, RuntimeError> {
+     |        ^^^^^^^^^^
+...
+1777 |     fn occurrence_mut(
+     |        ^^^^^^^^^^^^^^
+...
+1787 |     fn output_mut(&mut self, index: usize) -> Result<&mut RowBatch<'v, 'm, 'g>, RuntimeError> {
+     |        ^^^^^^^^^^
+...
+1791 |     fn uses_mut(
+     |        ^^^^^^^^
+...
+1798 |     fn node_at(&self, index: usize, slot: SlotId) -> Result<NodeId, RuntimeError> {
+     |        ^^^^^^^
+...
+1807 |     fn copy_output(
+     |        ^^^^^^^^^^^
+...
+1821 |     fn push_extended(
+     |        ^^^^^^^^^^^^^
+...
+1852 |     fn push_projection(
+     |        ^^^^^^^^^^^^^^^
+...
+1882 |     fn relationship_used(
+     |        ^^^^^^^^^^^^^^^^^
+...
+1895 |     fn add_relationship_use(
+     |        ^^^^^^^^^^^^^^^^^^^^
+...
+1907 |     fn copy_uses(&mut self, parent: usize, child: usize) -> Result<(), RuntimeError> {
+     |        ^^^^^^^^^
+
+error: function `occurrence_count` is never used
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:1958:4
+     |
+1958 | fn occurrence_count(
+     |    ^^^^^^^^^^^^^^^^
+
+error: function `build_occurrence` is never used
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:2019:4
+     |
+2019 | fn build_occurrence<'s, 'r, 'plan, 'v, 'm, 'g>(
+     |    ^^^^^^^^^^^^^^^^
+
+error: function `build_unary` is never used
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:2491:4
+     |
+2491 | fn build_unary<'s, 'r, 'plan, 'v, 'm, 'g>(
+     |    ^^^^^^^^^^^
+
+error: function `build_binary` is never used
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:2512:4
+     |
+2512 | fn build_binary<'s, 'r, 'plan, 'v, 'm, 'g>(
+     |    ^^^^^^^^^^^^
+
+error: function `slot_inherited_from_anchor` is never used
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:2540:4
+     |
+2540 | fn slot_inherited_from_anchor(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `shared_slots` is never used
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:2611:4
+     |
+2611 | fn shared_slots<'m, 'g>(
+     |    ^^^^^^^^^^^^
+
+error: function `schema_for` is never used
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:2635:4
+     |
+2635 | fn schema_for<'r, 'plan, 'm, 'g>(
+     |    ^^^^^^^^^^
+
+error: function `private_schema` is never used
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:2651:4
+     |
+2651 | fn private_schema<'m, 'g>(
+     |    ^^^^^^^^^^^^^^
+
+error: function `resolve_relationship_types` is never used
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:2667:4
+     |
+2667 | fn resolve_relationship_types<'m, 'g>(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `child_parent` is never used
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:2686:4
+     |
+2686 | fn child_parent<'a, 's, 'plan, 'v, 'm, 'g>(
+     |    ^^^^^^^^^^^^
+
+error: function `copy_relationship_uses` is never used
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:2706:4
+     |
+2706 | fn copy_relationship_uses(
+     |    ^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `uses_compatible` is never used
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:2718:4
+     |
+2718 | fn uses_compatible(left: &[RelationshipUse], right: &[RelationshipUse]) -> bool {
+     |    ^^^^^^^^^^^^^^^
+
+error: function `relationship_selection` is never used
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:2728:4
+     |
+2728 | fn relationship_selection<'a>(
+     |    ^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `key_expression_error` is never used
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:2739:4
+     |
+2739 | fn key_expression_error(expression: ExprId, error: RuntimeError) -> NativeExecutionError {
+     |    ^^^^^^^^^^^^^^^^^^^^
+
+error: function `validate_lookup_key_bounds` is never used
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:2746:4
+     |
+2746 | fn validate_lookup_key_bounds(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: function `direction_selection` is never used
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:2766:10
+     |
+2766 | const fn direction_selection(direction: Direction) -> DirectionSelection {
+     |          ^^^^^^^^^^^^^^^^^^^
+
+error: function `neighbor` is never used
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:2774:4
+     |
+2774 | fn neighbor(
+     |    ^^^^^^^^
+
+error: function `minimum_node` is never used
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:2788:4
+     |
+2788 | fn minimum_node() -> Result<NodeId, RuntimeError> {
+     |    ^^^^^^^^^^^^
+
+error: function `empty_relationship` is never used
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:2792:4
+     |
+2792 | fn empty_relationship() -> Result<RelationshipRow, RuntimeError> {
+     |    ^^^^^^^^^^^^^^^^^^
+
+error: enum `JoinStrategy` is never used
+ --> crates/zeppelin-embed/src/property_graph/query/pattern/planner.rs:6:17
+  |
+6 | pub(super) enum JoinStrategy {
+  |                 ^^^^^^^^^^^^
+
+error: enum `BuildSide` is never used
+  --> crates/zeppelin-embed/src/property_graph/query/pattern/planner.rs:12:17
+   |
+12 | pub(super) enum BuildSide {
+   |                 ^^^^^^^^^
+
+error: struct `JoinPlan` is never constructed
+  --> crates/zeppelin-embed/src/property_graph/query/pattern/planner.rs:18:19
+   |
+18 | pub(super) struct JoinPlan {
+   |                   ^^^^^^^^
+
+error: function `join_plan` is never used
+  --> crates/zeppelin-embed/src/property_graph/query/pattern/planner.rs:23:15
+   |
+23 | pub(super) fn join_plan(
+   |               ^^^^^^^^^
+
+error: function `safe_source_rank` is never used
+  --> crates/zeppelin-embed/src/property_graph/query/pattern/planner.rs:51:4
+   |
+51 | fn safe_source_rank(operators: &[Operator<'_>], node: PlanNodeId, depth: usize) -> Option<u8> {
+   |    ^^^^^^^^^^^^^^^^
+
+error: function `safe_input_chain` is never used
+  --> crates/zeppelin-embed/src/property_graph/query/pattern/planner.rs:86:4
+   |
+86 | fn safe_input_chain(operators: &[Operator<'_>], operator: &Operator<'_>, depth: usize) -> bool {
+   |    ^^^^^^^^^^^^^^^^
+
+error: enum `NativeExecutionError` is never used
+ --> crates/zeppelin-embed/src/property_graph/query/runtime/native_error.rs:8:17
+  |
+8 | pub(crate) enum NativeExecutionError {
+  |                 ^^^^^^^^^^^^^^^^^^^^
+
+error: very complex type used. Consider factoring parts into `type` definitions
+   --> crates/zeppelin-embed/src/fts/tokenizer/pipeline.rs:115:6
+    |
+115 | ) -> Result<GuardedVec<'m, (usize, usize), P::Charge>, P::Error> {
+    |      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#type_complexity
+    = note: `-D clippy::type-complexity` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::type_complexity)]`
+
+error: very complex type used. Consider factoring parts into `type` definitions
+   --> crates/zeppelin-embed/src/fts/tokenizer/pipeline.rs:205:6
+    |
+205 | ) -> Result<(GuardedVec<'m, Emission<'m, P::Charge>, P::Charge>, u32), P::Error> {
+    |      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#type_complexity
+
+error: very complex type used. Consider factoring parts into `type` definitions
+   --> crates/zeppelin-embed/src/fts/tokenizer/pipeline.rs:657:6
+    |
+657 | ) -> Result<GuardedVec<'m, Emission<'m, P::Charge>, P::Charge>, P::Error> {
+    |      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#type_complexity
+
+error: very complex type used. Consider factoring parts into `type` definitions
+   --> crates/zeppelin-embed/src/fts/tokenizer/pipeline.rs:708:6
+    |
+708 | ) -> Result<GuardedVec<'m, ControlledToken<'m, P::Charge>, P::Charge>, P::Error> {
+    |      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#type_complexity
+
+error: this let-binding has unit value
+   --> crates/zeppelin-embed/src/fts/tokenizer/pipeline.rs:819:9
+    |
+819 |         let _ = term_charge;
+    |         ^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#let_unit_value
+    = note: `-D clippy::let-unit-value` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::let_unit_value)]`
+help: omit the `let` binding
+    |
+819 -         let _ = term_charge;
+819 +         term_charge;
+    |
+
+error: this let-binding has unit value
+   --> crates/zeppelin-embed/src/fts/tokenizer/pipeline.rs:821:5
+    |
+821 |     let _ = charge;
+    |     ^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#let_unit_value
+help: omit the `let` binding
+    |
+821 -     let _ = charge;
+821 +     charge;
+    |
+
+error: very complex type used. Consider factoring parts into `type` definitions
+   --> crates/zeppelin-embed/src/fts/tokenizer/mod.rs:406:10
+    |
+406 |       ) -> Result<
+    |  __________^
+407 | |         super::control::GuardedVec<'m, pipeline::ControlledToken<'m, P::Charge>, P::Charge>,
+408 | |         P::Error,
+409 | |     >
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#type_complexity
+
+error: called `map(..).flatten()` on `Option`
+   --> crates/zeppelin-embed/src/fts/sealed.rs:659:18
+    |
+659 |                   .map(|next| {
+    |  __________________^
+660 | |                     usize::try_from(next.meta_start)
+661 | |                         .unwrap_or(usize::MAX)
+662 | |                         .checked_sub(HEADER_LEN)
+663 | |                 })
+664 | |                 .flatten()
+    | |__________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#map_flatten
+    = note: `-D clippy::map-flatten` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::map_flatten)]`
+help: try replacing `map` with `and_then` and remove the `.flatten()`
+    |
+659 ~                 .and_then(|next| {
+660 +                     usize::try_from(next.meta_start)
+661 +                         .unwrap_or(usize::MAX)
+662 +                         .checked_sub(HEADER_LEN)
+663 +                 })
+    |
+
+error: passing a unit value to a function
+   --> crates/zeppelin-embed/src/kernels/mod.rs:793:5
+    |
+793 |     observe_selected_score(table, vector_fault_kernel_id_dot_i8(), a.len());
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#unit_arg
+    = note: `-D clippy::unit-arg` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::unit_arg)]`
+help: move the expression in front of the call and replace it with the unit literal `()`
+    |
+793 ~     vector_fault_kernel_id_dot_i8();
+794 ~     observe_selected_score(table, (), a.len());
+    |
+
+error: passing a unit value to a function
+   --> crates/zeppelin-embed/src/kernels/mod.rs:807:5
+    |
+807 |     observe_selected_score(table, vector_fault_kernel_id_dot_f32(), a.len());
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#unit_arg
+help: move the expression in front of the call and replace it with the unit literal `()`
+    |
+807 ~     vector_fault_kernel_id_dot_f32();
+808 ~     observe_selected_score(table, (), a.len());
+    |
+
+error: passing a unit value to a function
+   --> crates/zeppelin-embed/src/kernels/mod.rs:822:5
+    |
+822 |     observe_selected_score(table, vector_fault_kernel_id_dot_f16(), a.len());
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#unit_arg
+help: move the expression in front of the call and replace it with the unit literal `()`
+    |
+822 ~     vector_fault_kernel_id_dot_f16();
+823 ~     observe_selected_score(table, (), a.len());
+    |
+
+error: passing a unit value to a function
+   --> crates/zeppelin-embed/src/kernels/mod.rs:837:5
+    |
+837 |     observe_selected_score(table, vector_fault_kernel_id_hamming(), a.len());
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#unit_arg
+help: move the expression in front of the call and replace it with the unit literal `()`
+    |
+837 ~     vector_fault_kernel_id_hamming();
+838 ~     observe_selected_score(table, (), a.len());
+    |
+
+error: passing a unit value to a function
+   --> crates/zeppelin-embed/src/kernels/mod.rs:851:5
+    |
+851 | /     observe_selected_score(
+852 | |         table,
+853 | |         vector_fault_kernel_id_dot_i8_batch(),
+854 | |         d.saturating_mul(out.len()),
+855 | |     );
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#unit_arg
+help: move the expression in front of the call and replace it with the unit literal `()`
+    |
+851 ~     vector_fault_kernel_id_dot_i8_batch();
+852 +     observe_selected_score(
+853 +         table,
+854 +         (),
+855 +         d.saturating_mul(out.len()),
+856 ~     );
+    |
+
+error: passing a unit value to a function
+   --> crates/zeppelin-embed/src/kernels/mod.rs:868:5
+    |
+868 | /     observe_selected_score(
+869 | |         table,
+870 | |         vector_fault_kernel_id_hamming_batch(),
+871 | |         d_bytes.saturating_mul(out.len()),
+872 | |     );
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#unit_arg
+help: move the expression in front of the call and replace it with the unit literal `()`
+    |
+868 ~     vector_fault_kernel_id_hamming_batch();
+869 +     observe_selected_score(
+870 +         table,
+871 +         (),
+872 +         d_bytes.saturating_mul(out.len()),
+873 ~     );
+    |
+
+error: passing a unit value to a function
+   --> crates/zeppelin-embed/src/kernels/mod.rs:888:5
+    |
+888 |     observe_selected_score(table, vector_fault_kernel_id_dot_bit4(), q.len());
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#unit_arg
+help: move the expression in front of the call and replace it with the unit literal `()`
+    |
+888 ~     vector_fault_kernel_id_dot_bit4();
+889 ~     observe_selected_score(table, (), q.len());
+    |
+
+error: passing a unit value to a function
+   --> crates/zeppelin-embed/src/kernels/mod.rs:897:5
+    |
+897 |     observe_selected_score(table, vector_fault_kernel_id_dot_bit4_prepared(), q.len());
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#unit_arg
+help: move the expression in front of the call and replace it with the unit literal `()`
+    |
+897 ~     vector_fault_kernel_id_dot_bit4_prepared();
+898 ~     observe_selected_score(table, (), q.len());
+    |
+
+error: passing a unit value to a function
+   --> crates/zeppelin-embed/src/kernels/mod.rs:914:5
+    |
+914 | /     observe_selected_score(
+915 | |         table,
+916 | |         vector_fault_kernel_id_score_bit4_batch(),
+917 | |         d.saturating_mul(out.len()),
+918 | |     );
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#unit_arg
+help: move the expression in front of the call and replace it with the unit literal `()`
+    |
+914 ~     vector_fault_kernel_id_score_bit4_batch();
+915 +     observe_selected_score(
+916 +         table,
+917 +         (),
+918 +         d.saturating_mul(out.len()),
+919 ~     );
+    |
+
+error: passing a unit value to a function
+   --> crates/zeppelin-embed/src/kernels/mod.rs:986:9
+    |
+986 | /         observe_selected_score(
+987 | |             table,
+988 | |             vector_fault_kernel_id_score_bit4_ptrs(),
+989 | |             q.len().saturating_mul(out.len()),
+990 | |         );
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#unit_arg
+help: move the expression in front of the call and replace it with the unit literal `()`
+    |
+986 ~         vector_fault_kernel_id_score_bit4_ptrs();
+987 +         observe_selected_score(
+988 +             table,
+989 +             (),
+990 +             q.len().saturating_mul(out.len()),
+991 ~         );
+    |
+
+error: passing a unit value to a function
+    --> crates/zeppelin-embed/src/kernels/mod.rs:1007:5
+     |
+1007 | /     observe_selected_score(
+1008 | |         table,
+1009 | |         vector_fault_kernel_id_dot_bit4_batch(),
+1010 | |         d.saturating_mul(out.len()),
+1011 | |     );
+     | |_____^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#unit_arg
+help: move the expression in front of the call and replace it with the unit literal `()`
+     |
+1007 ~     vector_fault_kernel_id_dot_bit4_batch();
+1008 +     observe_selected_score(
+1009 +         table,
+1010 +         (),
+1011 +         d.saturating_mul(out.len()),
+1012 ~     );
+     |
+
+error: this function has too many arguments (8/7)
+   --> crates/zeppelin-embed/src/lifecycle/native_graph/base.rs:360:1
+    |
+360 | / fn cached_from_record<'source, 'resources, 'm>(
+361 | |     source: &'source NativePreparationSource<'source, 'm>,
+362 | |     record: &RecordView<'_, NativePreparationSource<'source, 'm>>,
+363 | |     catalog: &NativePreparationCatalog<'_, 'source, 'm>,
+...   |
+368 | |     resources: &mut TreeResources<'m>,
+369 | | ) -> Result<CachedEntity<'source, 'resources, 'm>, TreeError> {
+    | |_____________________________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#too_many_arguments
+    = note: `-D clippy::too-many-arguments` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::too_many_arguments)]`
+
+error: this function has too many arguments (11/7)
+   --> crates/zeppelin-embed/src/lifecycle/native_graph/base.rs:407:1
+    |
+407 | / fn cached_from_parts<'source, 'resources, 'm>(
+408 | |     source: &'source NativePreparationSource<'source, 'm>,
+409 | |     provenance: &StoredProvenance<'_, NativePreparationSource<'source, 'm>>,
+410 | |     canonical: Option<
+...   |
+423 | |     properties: Option<StorageBuffer<'m, CachedProperty<'m>>>,
+424 | | ) -> Result<CachedEntity<'source, 'resources, 'm>, TreeError> {
+    | |_____________________________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#too_many_arguments
+
+error: this function has too many arguments (9/7)
+   --> crates/zeppelin-embed/src/lifecycle/native_graph/persistence.rs:422:1
+    |
+422 | / pub(super) fn catalog_payload<'a>(
+423 | |     memory: &'a StorageMemory<'a>,
+424 | |     control: &QueryControl,
+425 | |     store: crate::property_graph::StoreInstanceId,
+...   |
+431 | |     symbol_high_waters: SymbolHighWaters,
+432 | | ) -> Result<StorageBuffer<'a, u8>, NativeGraphError> {
+    | |____________________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#too_many_arguments
+
+error: this function has too many arguments (8/7)
+   --> crates/zeppelin-embed/src/lifecycle/native_graph/recovery.rs:833:1
+    |
+833 | / fn validate_native_checkpoint(
+834 | |     source: &RecoverySource<'_, '_>,
+835 | |     catalog: &RecoveryCatalog<'_, '_>,
+836 | |     document: Option<&EmbeddingTower>,
+...   |
+841 | |     resources: &mut TreeResources<'_>,
+842 | | ) -> Result<(), TreeError> {
+    | |__________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#too_many_arguments
+
+error: this expression creates a reference which is immediately dereferenced by the compiler
+   --> crates/zeppelin-embed/src/lifecycle/native_graph/write.rs:212:22
+    |
+212 |             payload: &payload,
+    |                      ^^^^^^^^ help: change this to: `payload`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#needless_borrow
+    = note: `-D clippy::needless-borrow` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::needless_borrow)]`
+
+error: manual slice size calculation
+   --> crates/zeppelin-embed/src/lifecycle/native_graph/write.rs:379:25
+    |
+379 |                 needed: (receipts.len() * std::mem::size_of::<ItemReceipt>()) as u64,
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `std::mem::size_of_val(receipts)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#manual_slice_size_calculation
+    = note: `-D clippy::manual-slice-size-calculation` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::manual_slice_size_calculation)]`
+
+error: call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes
+    --> crates/zeppelin-embed/src/lifecycle/mod.rs:7143:5
+     |
+7143 |     drop(searcher);
+     |     ^^^^^^^^^^^^^^
+     |
+note: argument has type `graph::search::GraphSearcher<'_>`
+    --> crates/zeppelin-embed/src/lifecycle/mod.rs:7143:10
+     |
+7143 |     drop(searcher);
+     |          ^^^^^^^^
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#drop_non_drop
+     = note: `-D clippy::drop-non-drop` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::drop_non_drop)]`
+
+error: the following explicit lifetimes could be elided: 'a
+    --> crates/zeppelin-embed/src/lifecycle/mod.rs:7457:34
+     |
+7457 | fn exact_rescore_rows_for_search<'a>(
+     |                                  ^^
+7458 |     segment: &'a crate::segment::reader::SegmentReader,
+     |               ^^
+...
+7463 | ) -> Result<&'a [f32], QueryError> {
+     |              ^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#needless_lifetimes
+     = note: `-D clippy::needless-lifetimes` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::needless_lifetimes)]`
+help: elide the lifetimes
+     |
+7457 ~ fn exact_rescore_rows_for_search(
+7458 ~     segment: &crate::segment::reader::SegmentReader,
+7459 |     #[cfg(any(test, feature = "test-support"))] controller: Option<
+ ...
+7462 |     #[cfg(any(test, feature = "test-support"))] tier: crate::scan::vector_fault::VectorSearchTier,
+7463 ~ ) -> Result<&[f32], QueryError> {
+     |
+
+error: the following explicit lifetimes could be elided: 'a
+    --> crates/zeppelin-embed/src/lifecycle/mod.rs:7486:34
+     |
+7486 | fn query_rescore_rows_for_search<'a>(
+     |                                  ^^
+7487 |     segment: &'a crate::segment::reader::SegmentReader,
+     |               ^^
+...
+7492 | ) -> Result<&'a [f32], QueryError> {
+     |              ^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#needless_lifetimes
+help: elide the lifetimes
+     |
+7486 ~ fn query_rescore_rows_for_search(
+7487 ~     segment: &crate::segment::reader::SegmentReader,
+7488 |     #[cfg(any(test, feature = "test-support"))] controller: Option<
+ ...
+7491 |     #[cfg(any(test, feature = "test-support"))] tier: crate::scan::vector_fault::VectorSearchTier,
+7492 ~ ) -> Result<&[f32], QueryError> {
+     |
+
+error: this `if` has identical blocks
+   --> crates/zeppelin-embed/src/property_graph/storage/payload.rs:356:69
+    |
+356 |       if matches!(role, BlockKind::NodeRecord | BlockKind::RelRecord) {
+    |  _____________________________________________________________________^
+357 | |         MAX_RECORD_BYTES
+358 | |     } else if matches!(
+    | |_____^
+    |
+note: same as this
+   --> crates/zeppelin-embed/src/property_graph/storage/payload.rs:361:7
+    |
+361 |       ) {
+    |  _______^
+362 | |         MAX_RECORD_BYTES
+363 | |     } else {
+    | |_____^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#if_same_then_else
+    = note: `-D clippy::if-same-then-else` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::if_same_then_else)]`
+
+error: call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes
+   --> crates/zeppelin-embed/src/property_graph/storage/search/checkpoint.rs:105:5
+    |
+105 |     drop(view);
+    |     ^^^^^^^^^^
+    |
+note: argument has type `property_graph::storage::search::view::SparseView<'_, '_, S, C>`
+   --> crates/zeppelin-embed/src/property_graph/storage/search/checkpoint.rs:105:10
+    |
+105 |     drop(view);
+    |          ^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#drop_non_drop
+
+error: this function has too many arguments (12/7)
+   --> crates/zeppelin-embed/src/property_graph/storage/search/prepare.rs:137:1
+    |
+137 | / fn read_root<S: BlockSource>(
+138 | |     source: &S,
+139 | |     required: Option<RequiredRef>,
+140 | |     modality: Modality,
+...   |
+149 | |     resources: &mut TreeResources<'_>,
+150 | | ) -> Result<SparseRootState, TreeError> {
+    | |_______________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#too_many_arguments
+
+error: this function has too many arguments (9/7)
+   --> crates/zeppelin-embed/src/property_graph/storage/search/prepare.rs:220:1
+    |
+220 | / fn prepare_source<S: BlockSink>(
+221 | |     sink: &mut S,
+222 | |     store: crate::property_graph::StoreInstanceId,
+223 | |     modality: Modality,
+...   |
+229 | |     resources: &mut TreeResources<'_>,
+230 | | ) -> Result<Option<(PhysicalRef, PayloadRef, u64)>, TreeError> {
+    | |______________________________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#too_many_arguments
+
+error: this function has too many arguments (9/7)
+   --> crates/zeppelin-embed/src/property_graph/storage/search/prepare.rs:485:1
+    |
+485 | / fn install_source<S: BlockSink>(
+486 | |     sink: &mut S,
+487 | |     mut state: SparseRootState,
+488 | |     source: PhysicalRef,
+...   |
+494 | |     resources: &mut TreeResources<'_>,
+495 | | ) -> Result<SparseRootState, TreeError> {
+    | |_______________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#too_many_arguments
+
+error: this function has too many arguments (9/7)
+   --> crates/zeppelin-embed/src/property_graph/storage/search/prepare.rs:542:1
+    |
+542 | / fn append_root<S: BlockSink>(
+543 | |     sink: &mut S,
+544 | |     modality: Modality,
+545 | |     store: crate::property_graph::StoreInstanceId,
+...   |
+551 | |     resources: &mut TreeResources<'_>,
+552 | | ) -> Result<PhysicalRef, TreeError> {
+    | |___________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#too_many_arguments
+
+error: large size difference between variants
+  --> crates/zeppelin-embed/src/property_graph/storage/search/trace.rs:91:1
+   |
+91 | / enum DirectoryEvent {
+92 | |     Reference(PhysicalRef),
+   | |     ---------------------- the second-largest variant contains at least 32 bytes
+93 | |     Member,
+94 | |     Source(SourceState),
+   | |     ------------------- the largest variant contains at least 336 bytes
+95 | |     Done,
+96 | | }
+   | |_^ the entire enum is at least 336 bytes
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#large_enum_variant
+   = note: `-D clippy::large-enum-variant` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::large_enum_variant)]`
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+   |
+94 -     Source(SourceState),
+94 +     Source(Box<SourceState>),
+   |
+
+error: call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes
+   --> crates/zeppelin-embed/src/property_graph/storage/search/trace.rs:439:9
+    |
+439 |         drop(view);
+    |         ^^^^^^^^^^
+    |
+note: argument has type `property_graph::storage::search::view::SparseView<'_, '_, S, C>`
+   --> crates/zeppelin-embed/src/property_graph/storage/search/trace.rs:439:14
+    |
+439 |         drop(view);
+    |              ^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#drop_non_drop
+
+error: this function has too many arguments (9/7)
+   --> crates/zeppelin-embed/src/property_graph/storage/search/view.rs:295:1
+    |
+295 | / fn open_descriptor<S: BlockSource>(
+296 | |     source: &S,
+297 | |     required: RequiredRef,
+298 | |     modality: Modality,
+...   |
+304 | |     resources: &mut TreeResources<'_>,
+305 | | ) -> Result<RootDescriptor, TreeError> {
+    | |______________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#too_many_arguments
+
+error: this function has too many arguments (10/7)
+   --> crates/zeppelin-embed/src/property_graph/storage/search/view.rs:550:5
+    |
+550 | /     fn resolve_member_row(
+551 | |         &self,
+552 | |         descriptor: RootDescriptor,
+553 | |         modality: Modality,
+...   |
+560 | |         resources: &mut TreeResources<'_>,
+561 | |     ) -> Result<SparseMember<'a, S>, TreeError> {
+    | |_______________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#too_many_arguments
+
+error: manually reimplementing `div_ceil`
+    --> crates/zeppelin-embed/src/property_graph/storage/search/view.rs:1014:27
+     |
+1014 |         let mask_length = (u64::from(manifest.rows) + 7) / 8;
+     |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider using `.div_ceil()`: `u64::from(manifest.rows).div_ceil(8)`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#manual_div_ceil
+     = note: `-D clippy::manual-div-ceil` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::manual_div_ceil)]`
+
+error: use of `default` to create a unit struct
+   --> crates/zeppelin-embed/src/property_graph/query/expression.rs:542:24
+    |
+542 |             test_poll: TestPollControl::default(),
+    |                        ^^^^^^^^^^^^^^^-----------
+    |                                       |
+    |                                       help: remove this call to `default`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#default_constructed_unit_structs
+    = note: `-D clippy::default-constructed-unit-structs` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::default_constructed_unit_structs)]`
+
+error: the `Err`-variant returned from this function is very large
+   --> crates/zeppelin-embed/src/property_graph/query/expression.rs:578:10
+    |
+578 |     ) -> Result<QueryValue<'a>, ExpressionError> {
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 128 bytes
+    |
+    = help: try reducing the size of `property_graph::query::expression::ExpressionError`, for example by boxing large elements or replacing it with `Box<property_graph::query::expression::ExpressionError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#result_large_err
+    = note: `-D clippy::result-large-err` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::result_large_err)]`
+
+error: use `std::ptr::eq` when comparing raw pointers
+   --> crates/zeppelin-embed/src/property_graph/query/expression.rs:582:16
+    |
+582 |             if self.memory != context.memory() as *const _
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `!std::ptr::eq(self.memory, context.memory())`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#ptr_eq
+    = note: `-D clippy::ptr-eq` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::ptr_eq)]`
+
+error: this `let...else` may be rewritten with the `?` operator
+  --> crates/zeppelin-embed/src/property_graph/query/pattern/planner.rs:55:5
+   |
+55 | /     let Some(operator) = operators.get(node.0 as usize) else {
+56 | |         return None;
+57 | |     };
+   | |______^ help: replace it with: `let operator = operators.get(node.0 as usize)?;`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#question_mark
+   = note: `-D clippy::question-mark` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::question_mark)]`
+
+error: large size difference between variants
+   --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:127:1
+    |
+127 | /   enum PhysicalState<'s, 'plan, 'v, 'm, 'g> {
+128 | |       Vacant,
+129 | |       Anchor {
+130 | |           source: usize,
+...   |
+172 | | /     BoundedExpand {
+173 | | |         child: usize,
+174 | | |         source: SlotId,
+175 | | |         node: SlotId,
+...   | |
+193 | | |         active: bool,
+194 | | |     },
+    | | |_____- the largest variant contains at least 1382 bytes
+195 | | /     Join {
+196 | | |         left: usize,
+197 | | |         right: usize,
+198 | | |         predicate: Option<ExprId>,
+...   | |
+208 | | |         next_candidate: usize,
+209 | | |     },
+    | | |_____- the second-largest variant contains at least 893 bytes
+...   |
+229 | |       },
+230 | |   }
+    | |___^ the entire enum is at least 1392 bytes
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#large_enum_variant
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+    |
+191 -         completed_input: Option<RowBatch<'v, 'm, 'g>>,
+191 +         completed_input: Box<Option<RowBatch<'v, 'm, 'g>>>,
+    |
+
+error: the `Err`-variant returned from this function is very large
+   --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:281:10
+    |
+281 |     ) -> Result<Self, NativeExecutionError> {
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: crates/zeppelin-embed/src/property_graph/query/runtime/native_error.rs:10:5
+    |
+ 10 |     Expression(ExpressionError),
+    |     --------------------------- the largest variant contains at least 128 bytes
+    |
+    = help: try reducing the size of `property_graph::query::runtime::native_error::NativeExecutionError`, for example by boxing large elements or replacing it with `Box<property_graph::query::runtime::native_error::NativeExecutionError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#result_large_err
+
+error: the `Err`-variant returned from this function is very large
+   --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:316:10
+    |
+316 |     ) -> Result<bool, NativeExecutionError> {
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: crates/zeppelin-embed/src/property_graph/query/runtime/native_error.rs:10:5
+    |
+ 10 |     Expression(ExpressionError),
+    |     --------------------------- the largest variant contains at least 128 bytes
+    |
+    = help: try reducing the size of `property_graph::query::runtime::native_error::NativeExecutionError`, for example by boxing large elements or replacing it with `Box<property_graph::query::runtime::native_error::NativeExecutionError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#result_large_err
+
+error: deref which would be done by auto-deref
+   --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:582:45
+    |
+582 |                 self.push_projection(index, *projections, values, context)?;
+    |                                             ^^^^^^^^^^^^ help: try: `projections`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#explicit_auto_deref
+    = note: `-D clippy::explicit-auto-deref` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::explicit_auto_deref)]`
+
+error: the `Err`-variant returned from this function is very large
+   --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:724:10
+    |
+724 |     ) -> Result<bool, NativeExecutionError> {
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: crates/zeppelin-embed/src/property_graph/query/runtime/native_error.rs:10:5
+    |
+ 10 |     Expression(ExpressionError),
+    |     --------------------------- the largest variant contains at least 128 bytes
+    |
+    = help: try reducing the size of `property_graph::query::runtime::native_error::NativeExecutionError`, for example by boxing large elements or replacing it with `Box<property_graph::query::runtime::native_error::NativeExecutionError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#result_large_err
+
+error: the `Err`-variant returned from this function is very large
+   --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:766:10
+    |
+766 |     ) -> Result<bool, NativeExecutionError> {
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: crates/zeppelin-embed/src/property_graph/query/runtime/native_error.rs:10:5
+    |
+ 10 |     Expression(ExpressionError),
+    |     --------------------------- the largest variant contains at least 128 bytes
+    |
+    = help: try reducing the size of `property_graph::query::runtime::native_error::NativeExecutionError`, for example by boxing large elements or replacing it with `Box<property_graph::query::runtime::native_error::NativeExecutionError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#result_large_err
+
+error: the `Err`-variant returned from this function is very large
+   --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:836:10
+    |
+836 |     ) -> Result<bool, NativeExecutionError> {
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: crates/zeppelin-embed/src/property_graph/query/runtime/native_error.rs:10:5
+    |
+ 10 |     Expression(ExpressionError),
+    |     --------------------------- the largest variant contains at least 128 bytes
+    |
+    = help: try reducing the size of `property_graph::query::runtime::native_error::NativeExecutionError`, for example by boxing large elements or replacing it with `Box<property_graph::query::runtime::native_error::NativeExecutionError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#result_large_err
+
+error: the `Err`-variant returned from this function is very large
+   --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:923:10
+    |
+923 |     ) -> Result<bool, NativeExecutionError> {
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: crates/zeppelin-embed/src/property_graph/query/runtime/native_error.rs:10:5
+    |
+ 10 |     Expression(ExpressionError),
+    |     --------------------------- the largest variant contains at least 128 bytes
+    |
+    = help: try reducing the size of `property_graph::query::runtime::native_error::NativeExecutionError`, for example by boxing large elements or replacing it with `Box<property_graph::query::runtime::native_error::NativeExecutionError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#result_large_err
+
+error: the `Err`-variant returned from this function is very large
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:1223:10
+     |
+1223 |     ) -> Result<bool, NativeExecutionError> {
+     |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: crates/zeppelin-embed/src/property_graph/query/runtime/native_error.rs:10:5
+     |
+  10 |     Expression(ExpressionError),
+     |     --------------------------- the largest variant contains at least 128 bytes
+     |
+     = help: try reducing the size of `property_graph::query::runtime::native_error::NativeExecutionError`, for example by boxing large elements or replacing it with `Box<property_graph::query::runtime::native_error::NativeExecutionError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#result_large_err
+
+error: the `Err`-variant returned from this function is very large
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:1269:10
+     |
+1269 |     ) -> Result<bool, NativeExecutionError> {
+     |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: crates/zeppelin-embed/src/property_graph/query/runtime/native_error.rs:10:5
+     |
+  10 |     Expression(ExpressionError),
+     |     --------------------------- the largest variant contains at least 128 bytes
+     |
+     = help: try reducing the size of `property_graph::query::runtime::native_error::NativeExecutionError`, for example by boxing large elements or replacing it with `Box<property_graph::query::runtime::native_error::NativeExecutionError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#result_large_err
+
+error: the `Err`-variant returned from this function is very large
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:1316:10
+     |
+1316 |     ) -> Result<bool, NativeExecutionError> {
+     |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: crates/zeppelin-embed/src/property_graph/query/runtime/native_error.rs:10:5
+     |
+  10 |     Expression(ExpressionError),
+     |     --------------------------- the largest variant contains at least 128 bytes
+     |
+     = help: try reducing the size of `property_graph::query::runtime::native_error::NativeExecutionError`, for example by boxing large elements or replacing it with `Box<property_graph::query::runtime::native_error::NativeExecutionError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#result_large_err
+
+error: the `Err`-variant returned from this function is very large
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:1388:10
+     |
+1388 |     ) -> Result<bool, NativeExecutionError> {
+     |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: crates/zeppelin-embed/src/property_graph/query/runtime/native_error.rs:10:5
+     |
+  10 |     Expression(ExpressionError),
+     |     --------------------------- the largest variant contains at least 128 bytes
+     |
+     = help: try reducing the size of `property_graph::query::runtime::native_error::NativeExecutionError`, for example by boxing large elements or replacing it with `Box<property_graph::query::runtime::native_error::NativeExecutionError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#result_large_err
+
+error: the `Err`-variant returned from this function is very large
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:1428:10
+     |
+1428 |     ) -> Result<bool, NativeExecutionError> {
+     |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: crates/zeppelin-embed/src/property_graph/query/runtime/native_error.rs:10:5
+     |
+  10 |     Expression(ExpressionError),
+     |     --------------------------- the largest variant contains at least 128 bytes
+     |
+     = help: try reducing the size of `property_graph::query::runtime::native_error::NativeExecutionError`, for example by boxing large elements or replacing it with `Box<property_graph::query::runtime::native_error::NativeExecutionError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#result_large_err
+
+error: the `Err`-variant returned from this function is very large
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:1470:10
+     |
+1470 |     ) -> Result<(), NativeExecutionError> {
+     |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: crates/zeppelin-embed/src/property_graph/query/runtime/native_error.rs:10:5
+     |
+  10 |     Expression(ExpressionError),
+     |     --------------------------- the largest variant contains at least 128 bytes
+     |
+     = help: try reducing the size of `property_graph::query::runtime::native_error::NativeExecutionError`, for example by boxing large elements or replacing it with `Box<property_graph::query::runtime::native_error::NativeExecutionError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#result_large_err
+
+error: the `Err`-variant returned from this function is very large
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:2027:6
+     |
+2027 | ) -> Result<usize, NativeExecutionError> {
+     |      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: crates/zeppelin-embed/src/property_graph/query/runtime/native_error.rs:10:5
+     |
+  10 |     Expression(ExpressionError),
+     |     --------------------------- the largest variant contains at least 128 bytes
+     |
+     = help: try reducing the size of `property_graph::query::runtime::native_error::NativeExecutionError`, for example by boxing large elements or replacing it with `Box<property_graph::query::runtime::native_error::NativeExecutionError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#result_large_err
+
+error: the `Err`-variant returned from this function is very large
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:2499:6
+     |
+2499 | ) -> Result<usize, NativeExecutionError> {
+     |      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: crates/zeppelin-embed/src/property_graph/query/runtime/native_error.rs:10:5
+     |
+  10 |     Expression(ExpressionError),
+     |     --------------------------- the largest variant contains at least 128 bytes
+     |
+     = help: try reducing the size of `property_graph::query::runtime::native_error::NativeExecutionError`, for example by boxing large elements or replacing it with `Box<property_graph::query::runtime::native_error::NativeExecutionError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#result_large_err
+
+error: the `Err`-variant returned from this function is very large
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:2520:6
+     |
+2520 | ) -> Result<(usize, usize), NativeExecutionError> {
+     |      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: crates/zeppelin-embed/src/property_graph/query/runtime/native_error.rs:10:5
+     |
+  10 |     Expression(ExpressionError),
+     |     --------------------------- the largest variant contains at least 128 bytes
+     |
+     = help: try reducing the size of `property_graph::query::runtime::native_error::NativeExecutionError`, for example by boxing large elements or replacing it with `Box<property_graph::query::runtime::native_error::NativeExecutionError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#result_large_err
+
+error: the `Err`-variant returned from this function is very large
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:2546:6
+     |
+2546 | ) -> Result<bool, NativeExecutionError> {
+     |      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: crates/zeppelin-embed/src/property_graph/query/runtime/native_error.rs:10:5
+     |
+  10 |     Expression(ExpressionError),
+     |     --------------------------- the largest variant contains at least 128 bytes
+     |
+     = help: try reducing the size of `property_graph::query::runtime::native_error::NativeExecutionError`, for example by boxing large elements or replacing it with `Box<property_graph::query::runtime::native_error::NativeExecutionError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#result_large_err
+
+error: the `Err`-variant returned from this function is very large
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:2616:6
+     |
+2616 | ) -> Result<QueryArena<'m, 'g, SlotId>, NativeExecutionError> {
+     |      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: crates/zeppelin-embed/src/property_graph/query/runtime/native_error.rs:10:5
+     |
+  10 |     Expression(ExpressionError),
+     |     --------------------------- the largest variant contains at least 128 bytes
+     |
+     = help: try reducing the size of `property_graph::query::runtime::native_error::NativeExecutionError`, for example by boxing large elements or replacing it with `Box<property_graph::query::runtime::native_error::NativeExecutionError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#result_large_err
+
+error: the `Err`-variant returned from this function is very large
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:2639:6
+     |
+2639 | ) -> Result<Schema<'m, 'g>, NativeExecutionError> {
+     |      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: crates/zeppelin-embed/src/property_graph/query/runtime/native_error.rs:10:5
+     |
+  10 |     Expression(ExpressionError),
+     |     --------------------------- the largest variant contains at least 128 bytes
+     |
+     = help: try reducing the size of `property_graph::query::runtime::native_error::NativeExecutionError`, for example by boxing large elements or replacing it with `Box<property_graph::query::runtime::native_error::NativeExecutionError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#result_large_err
+
+error: the `Err`-variant returned from this function is very large
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:2655:6
+     |
+2655 | ) -> Result<Schema<'m, 'g>, NativeExecutionError> {
+     |      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: crates/zeppelin-embed/src/property_graph/query/runtime/native_error.rs:10:5
+     |
+  10 |     Expression(ExpressionError),
+     |     --------------------------- the largest variant contains at least 128 bytes
+     |
+     = help: try reducing the size of `property_graph::query::runtime::native_error::NativeExecutionError`, for example by boxing large elements or replacing it with `Box<property_graph::query::runtime::native_error::NativeExecutionError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#result_large_err
+
+error: the `Err`-variant returned from this function is very large
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:2671:6
+     |
+2671 | ) -> Result<QueryArena<'m, 'g, RelTypeId>, NativeExecutionError> {
+     |      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: crates/zeppelin-embed/src/property_graph/query/runtime/native_error.rs:10:5
+     |
+  10 |     Expression(ExpressionError),
+     |     --------------------------- the largest variant contains at least 128 bytes
+     |
+     = help: try reducing the size of `property_graph::query::runtime::native_error::NativeExecutionError`, for example by boxing large elements or replacing it with `Box<property_graph::query::runtime::native_error::NativeExecutionError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#result_large_err
+
+error: the `Err`-variant returned from this function is very large
+    --> crates/zeppelin-embed/src/property_graph/query/pattern.rs:2750:6
+     |
+2750 | ) -> Result<(), NativeExecutionError> {
+     |      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+    ::: crates/zeppelin-embed/src/property_graph/query/runtime/native_error.rs:10:5
+     |
+  10 |     Expression(ExpressionError),
+     |     --------------------------- the largest variant contains at least 128 bytes
+     |
+     = help: try reducing the size of `property_graph::query::runtime::native_error::NativeExecutionError`, for example by boxing large elements or replacing it with `Box<property_graph::query::runtime::native_error::NativeExecutionError>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.93.0/index.html#result_large_err
+
+error: could not compile `zeppelin-embed` (lib) due to 157 previous errors
