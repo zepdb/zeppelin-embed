@@ -1,0 +1,50 @@
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/crates/zeppelin-embed-ffi)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.44s
+────────────
+ Nextest run ID fc6d06e4-ef80-4ddf-b57f-8ea7fd1c8ebd with nextest profile: default
+    Starting 1 test across 1 binary (33 tests skipped)
+        FAIL [   0.016s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_all_pools_match_literal_field_oracle
+  stdout ───
+
+    running 1 test
+    test graph_result::conversion::tests::graph_result_native_all_pools_match_literal_field_oracle ... FAILED
+
+    failures:
+
+    failures:
+        graph_result::conversion::tests::graph_result_native_all_pools_match_literal_field_oracle
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'graph_result::conversion::tests::graph_result_native_all_pools_match_literal_field_oracle' (35584733) panicked at crates/zeppelin-embed-ffi/src/graph_result/conversion/tests.rs:428:9:
+    assertion `left == right` failed
+      left: (0, 0)
+     right: (5, 0)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.017s] 1 test run: 0 passed, 1 failed, 33 skipped
+        FAIL [   0.016s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_all_pools_match_literal_field_oracle
+  stdout ───
+
+    running 1 test
+    test graph_result::conversion::tests::graph_result_native_all_pools_match_literal_field_oracle ... FAILED
+
+    failures:
+
+    failures:
+        graph_result::conversion::tests::graph_result_native_all_pools_match_literal_field_oracle
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'graph_result::conversion::tests::graph_result_native_all_pools_match_literal_field_oracle' (35584733) panicked at crates/zeppelin-embed-ffi/src/graph_result/conversion/tests.rs:428:9:
+    assertion `left == right` failed
+      left: (0, 0)
+     right: (5, 0)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

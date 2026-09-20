@@ -9,6 +9,7 @@ use zeppelin_embed::property_graph::query::resources::{MemoryError, QueryExterna
 use zeppelin_embed::property_graph::query::runtime::{RuntimeContext, RuntimeError, WorkKind};
 mod outcome;
 pub use outcome::{OperationOutcome, OutcomeCell, OutcomeTransitionError};
+pub(crate) mod conversion;
 mod registration;
 /// Scoped allocation-site injection for the canonical opt-in test runner.
 #[cfg(feature = "graph-result-test-support")]
@@ -273,6 +274,95 @@ impl AlignedArena {
                 );
             }
             initialized += chunk.len();
+        }
+        Ok(pointer)
+    }
+
+    // The checked ArenaLayout fixes the typed offset and total extent. The
+    // mapper is infallible and allocation-free, so every charged chunk is
+    // initialized before another fallible operation can run.
+    unsafe fn map<T, U>(
+        &self,
+        offset: usize,
+        source: &[U],
+        context: &mut RuntimeContext<'_, '_, '_>,
+        mapper: impl Fn(usize, &U) -> T,
+    ) -> Result<*const T, OwnerError> {
+        if source.is_empty() {
+            return Ok(std::ptr::null());
+        }
+        let element_size = std::mem::size_of::<T>();
+        if element_size == 0 {
+            return Err(OwnerError::Limit);
+        }
+        let bytes = element_size
+            .checked_mul(source.len())
+            .ok_or(OwnerError::Limit)?;
+        if offset
+            .checked_add(bytes)
+            .is_none_or(|end| end > self.layout.size())
+            || unsafe { self.pointer.as_ptr().add(offset) }.align_offset(std::mem::align_of::<T>())
+                != 0
+        {
+            return Err(OwnerError::Limit);
+        }
+        let pointer = unsafe { self.pointer.as_ptr().add(offset).cast::<T>() };
+        let chunk_elements = (65536 / element_size).max(1);
+        let mut initialized = 0;
+        for chunk in source.chunks(chunk_elements) {
+            let chunk_bytes = element_size
+                .checked_mul(chunk.len())
+                .ok_or(OwnerError::Limit)?;
+            context.charge(WorkKind::CopiedBytes, chunk_bytes as u64)?;
+            for item in chunk {
+                unsafe {
+                    pointer.add(initialized).write(mapper(initialized, item));
+                }
+                initialized += 1;
+            }
+        }
+        Ok(pointer)
+    }
+
+    // Same proof as map, for fixed metadata rows synthesized from checked
+    // geometry rather than a source slice.
+    unsafe fn generate<T>(
+        &self,
+        offset: usize,
+        count: usize,
+        context: &mut RuntimeContext<'_, '_, '_>,
+        mapper: impl Fn(usize) -> T,
+    ) -> Result<*const T, OwnerError> {
+        if count == 0 {
+            return Ok(std::ptr::null());
+        }
+        let element_size = std::mem::size_of::<T>();
+        if element_size == 0 {
+            return Err(OwnerError::Limit);
+        }
+        let bytes = element_size.checked_mul(count).ok_or(OwnerError::Limit)?;
+        if offset
+            .checked_add(bytes)
+            .is_none_or(|end| end > self.layout.size())
+            || unsafe { self.pointer.as_ptr().add(offset) }.align_offset(std::mem::align_of::<T>())
+                != 0
+        {
+            return Err(OwnerError::Limit);
+        }
+        let pointer = unsafe { self.pointer.as_ptr().add(offset).cast::<T>() };
+        let chunk_elements = (65536 / element_size).max(1);
+        let mut initialized = 0;
+        while initialized < count {
+            let length = (count - initialized).min(chunk_elements);
+            let chunk_bytes = element_size.checked_mul(length).ok_or(OwnerError::Limit)?;
+            context.charge(WorkKind::CopiedBytes, chunk_bytes as u64)?;
+            let end = initialized + length;
+            while initialized < end {
+                unsafe {
+                    pointer.add(initialized).write(mapper(initialized));
+                }
+                initialized += 1;
+            }
         }
         Ok(pointer)
     }

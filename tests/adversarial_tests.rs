@@ -19100,6 +19100,38 @@ fn one_runner_episode_reaches_required_graph_response_contracts() {
     );
 }
 
+#[cfg(feature = "graph-result-test-support")]
+#[test]
+fn property_graph_native_response_probe_checks_conversion_and_paired_faults() {
+    for seed in [0, 1, 141, u64::MAX] {
+        let mut coverage = adversarial::coverage::CoverageRegistry::default();
+        let report = adversarial::graph_response::probe(seed, &mut coverage)
+            .expect("PG16 native conversion and independent primitive oracle");
+        assert_eq!(report.native_fault_fires, report.native_clean_controls);
+        assert_eq!(report.native_fault_fires, 5);
+        assert!(report.native_cases >= 11);
+        for key in &adversarial::graph_response::REQUIRED_COVERAGE[12..] {
+            assert!(coverage.count(key) > 0, "missing native PG16 path {key}");
+        }
+        eprintln!("PG16 native seed={seed} {report:?}");
+    }
+}
+
+#[cfg(feature = "graph-result-test-support")]
+#[test]
+fn one_runner_episode_reaches_required_native_response_contracts() {
+    let root = tempfile::tempdir().expect("native graph response runner artifacts");
+    let outcome = adversarial::runner::run_program(141, FaultProfile::None, root.path())
+        .expect("actual native conversion runner episode");
+    assert!(outcome.violations.is_empty(), "{:?}", outcome.violations);
+    for key in adversarial::graph_response::REQUIRED_COVERAGE {
+        assert!(
+            outcome.coverage.count(key) > 0,
+            "actual runner omitted {key}"
+        );
+    }
+}
+
 #[cfg(not(feature = "graph-cypher"))]
 #[test]
 fn native_graph_runner_keys_are_absent_without_graph_feature() {
@@ -19152,7 +19184,7 @@ fn graph_response_runner_keys_are_active_with_test_hook() {
     let response_keys = adversarial::coverage::required_smoke_coverage()
         .filter(|key| key.starts_with("property-graph.response."))
         .collect::<Vec<_>>();
-    assert_eq!(response_keys.len(), 12);
+    assert_eq!(response_keys.len(), 20);
 }
 
 #[cfg(feature = "graph-cypher")]

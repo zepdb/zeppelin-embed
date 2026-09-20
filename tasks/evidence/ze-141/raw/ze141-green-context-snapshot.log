@@ -1,0 +1,7 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s
+────────────
+ Nextest run ID 9aaa8a19-c4f2-4ba9-b78a-8372c92fc45b with nextest profile: default
+    Starting 1 test across 1 binary (30 tests skipped)
+        PASS [   0.007s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_context_identity_and_source_snapshot_are_single
+────────────
+     Summary [   0.007s] 1 test run: 1 passed, 30 skipped

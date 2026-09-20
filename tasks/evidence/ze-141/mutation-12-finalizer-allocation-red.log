@@ -1,0 +1,32 @@
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/crates/zeppelin-embed-ffi)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.43s
+────────────
+ Nextest run ID 07090b1a-2730-4d5a-bd9e-e42ba8bfd3a5 with nextest profile: default
+    Starting 1 test across 1 binary (33 tests skipped)
+     SIGABRT [   0.020s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters
+  stdout ───
+
+    running 1 test
+    test graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters ...
+  stderr ───
+    memory allocation of 1 bytes failed
+    memory allocation of 64 bytes failed
+    skipping backtrace printing to avoid potential recursion
+
+    (test aborted with signal 6: SIGABRT)
+
+────────────
+     Summary [   0.021s] 1 test run: 0 passed, 1 failed, 33 skipped
+     SIGABRT [   0.020s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters
+  stdout ───
+
+    running 1 test
+    test graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters ...
+  stderr ───
+    memory allocation of 1 bytes failed
+    memory allocation of 64 bytes failed
+    skipping backtrace printing to avoid potential recursion
+
+    (test aborted with signal 6: SIGABRT)
+
+error: test run failed

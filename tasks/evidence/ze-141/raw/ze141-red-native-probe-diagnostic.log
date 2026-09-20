@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.11s
+────────────
+ Nextest run ID de07108b-eef6-49a6-8a03-7ce4102ca9ff with nextest profile: default
+    Starting 1 test across 1 binary (474 tests skipped)
+        FAIL [   0.056s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests property_graph_native_response_probe_checks_conversion_and_paired_faults
+  stdout ───
+
+    running 1 test
+    test property_graph_native_response_probe_checks_conversion_and_paired_faults ... FAILED
+
+    failures:
+
+    failures:
+        property_graph_native_response_probe_checks_conversion_and_paired_faults
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 474 filtered out; finished in 0.04s
+
+  stderr ───
+
+    thread 'property_graph_native_response_probe_checks_conversion_and_paired_faults' (35506553) panicked at tests/adversarial_tests.rs:19072:14:
+    PG16 native conversion and independent primitive oracle: "no genuine native/C overlap memory refusal fired: [(8192, Some((Native, Memory))), (10240, Some((Native, Memory))), (12288, Some((Native, Memory))), (14336, Some((Native, Memory))), (16384, Some((Native, Memory))), (20480, Some((Native, Memory))), (24576, Some((Native, Memory))), (28672, Some((Native, Memory))), (32768, Some((Native, Memory))), (36864, Some((Native, Memory))), (40960, Some((Native, Memory))), (49152, Some((Native, Memory))), (57344, Some((Native, Memory))), (65536, Some((Native, Memory)))]"
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.057s] 1 test run: 0 passed, 1 failed, 474 skipped
+        FAIL [   0.056s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests property_graph_native_response_probe_checks_conversion_and_paired_faults
+  stdout ───
+
+    running 1 test
+    test property_graph_native_response_probe_checks_conversion_and_paired_faults ... FAILED
+
+    failures:
+
+    failures:
+        property_graph_native_response_probe_checks_conversion_and_paired_faults
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 474 filtered out; finished in 0.04s
+
+  stderr ───
+
+    thread 'property_graph_native_response_probe_checks_conversion_and_paired_faults' (35506553) panicked at tests/adversarial_tests.rs:19072:14:
+    PG16 native conversion and independent primitive oracle: "no genuine native/C overlap memory refusal fired: [(8192, Some((Native, Memory))), (10240, Some((Native, Memory))), (12288, Some((Native, Memory))), (14336, Some((Native, Memory))), (16384, Some((Native, Memory))), (20480, Some((Native, Memory))), (24576, Some((Native, Memory))), (28672, Some((Native, Memory))), (32768, Some((Native, Memory))), (36864, Some((Native, Memory))), (40960, Some((Native, Memory))), (49152, Some((Native, Memory))), (57344, Some((Native, Memory))), (65536, Some((Native, Memory)))]"
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

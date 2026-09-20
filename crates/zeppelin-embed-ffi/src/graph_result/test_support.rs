@@ -3,6 +3,13 @@
 use std::cell::Cell;
 use std::marker::PhantomData;
 
+mod conversion;
+pub use conversion::{
+    NativeConversionCase, NativeConversionFailure, NativeConversionObservation,
+    NativeConversionOutcome, NativeConversionRefusal, NativeConversionStage,
+    run_native_conversion_case,
+};
+
 #[derive(Clone, Copy)]
 struct State {
     enabled: bool,
@@ -73,5 +80,15 @@ pub(super) fn refuse_allocation() -> bool {
         }
         cell.set(state);
         refuse
+    })
+}
+
+pub(super) fn current_allocation_fault_receipt() -> AllocationFaultReceipt {
+    STATE.with(|state| {
+        let state = state.get();
+        AllocationFaultReceipt {
+            matching_sites: state.attempts,
+            fires: state.fires,
+        }
     })
 }

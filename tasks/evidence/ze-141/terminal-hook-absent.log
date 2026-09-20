@@ -1,0 +1,10 @@
+    Blocking waiting for file lock on package cache
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.61s
+────────────
+ Nextest run ID ca156332-ff93-44ed-a085-966b9b922993 with nextest profile: default
+    Starting 1 test across 1 binary (470 tests skipped)
+        PASS [   0.008s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests graph_response_runner_keys_are_absent_without_test_hook
+────────────
+     Summary [   0.008s] 1 test run: 1 passed, 470 skipped

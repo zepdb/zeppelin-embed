@@ -1,0 +1,7 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s
+────────────
+ Nextest run ID 753c6891-b354-4b60-876f-427d47efe26f with nextest profile: default
+    Starting 1 test across 1 binary (33 tests skipped)
+        PASS [   0.013s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_geometry_limits_and_real_overlap_reject
+────────────
+     Summary [   0.013s] 1 test run: 1 passed, 33 skipped

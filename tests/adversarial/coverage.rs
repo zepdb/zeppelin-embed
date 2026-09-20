@@ -42,6 +42,22 @@ pub const REQUIRED_GRAPH_SMOKE_COVERAGE: &[&str] = &[
     "property-graph.response.same-seed-control",
     #[cfg(feature = "graph-result-test-support")]
     "property-graph.response.oracle.can-fire",
+    #[cfg(feature = "graph-result-test-support")]
+    "property-graph.response.native-map",
+    #[cfg(feature = "graph-result-test-support")]
+    "property-graph.response.native-context",
+    #[cfg(feature = "graph-result-test-support")]
+    "property-graph.response.native-final-counters",
+    #[cfg(feature = "graph-result-test-support")]
+    "property-graph.response.native-overlap",
+    #[cfg(feature = "graph-result-test-support")]
+    "property-graph.response.native-allocation.fire",
+    #[cfg(feature = "graph-result-test-support")]
+    "property-graph.response.native-cancel-work.fire",
+    #[cfg(feature = "graph-result-test-support")]
+    "property-graph.response.native-same-seed-control",
+    #[cfg(feature = "graph-result-test-support")]
+    "property-graph.response.native-oracle.can-fire",
     "property-graph.completed.bits-and-bags",
     "property-graph.completed.full-id",
     "property-graph.completed.oracle.can-fire",

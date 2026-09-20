@@ -1,0 +1,50 @@
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/crates/zeppelin-embed-ffi)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.42s
+────────────
+ Nextest run ID 6850ac41-eb2b-431a-9f7c-61b19b8e6459 with nextest profile: default
+    Starting 1 test across 1 binary (33 tests skipped)
+        FAIL [   0.020s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_reports_receipts_outcomes_are_lossless
+  stdout ───
+
+    running 1 test
+    test graph_result::conversion::tests::graph_result_native_reports_receipts_outcomes_are_lossless ... FAILED
+
+    failures:
+
+    failures:
+        graph_result::conversion::tests::graph_result_native_reports_receipts_outcomes_are_lossless
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'graph_result::conversion::tests::graph_result_native_reports_receipts_outcomes_are_lossless' (35585595) panicked at crates/zeppelin-embed-ffi/src/graph_result/conversion/tests.rs:873:9:
+    assertion `left == right` failed
+      left: (2, 0, 0)
+     right: (3, 0, 0)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.021s] 1 test run: 0 passed, 1 failed, 33 skipped
+        FAIL [   0.020s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_reports_receipts_outcomes_are_lossless
+  stdout ───
+
+    running 1 test
+    test graph_result::conversion::tests::graph_result_native_reports_receipts_outcomes_are_lossless ... FAILED
+
+    failures:
+
+    failures:
+        graph_result::conversion::tests::graph_result_native_reports_receipts_outcomes_are_lossless
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'graph_result::conversion::tests::graph_result_native_reports_receipts_outcomes_are_lossless' (35585595) panicked at crates/zeppelin-embed-ffi/src/graph_result/conversion/tests.rs:873:9:
+    assertion `left == right` failed
+      left: (2, 0, 0)
+     right: (3, 0, 0)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

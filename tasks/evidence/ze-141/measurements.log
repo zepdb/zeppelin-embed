@@ -1,0 +1,54 @@
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/crates/zeppelin-embed-ffi)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.58s
+────────────
+ Nextest run ID 0415b3e3-ebe9-4ccd-b46f-0b8cf7ae74fa with nextest profile: default
+    Starting 4 tests across 1 binary (30 tests skipped)
+        PASS [   0.019s] (1/4) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters
+  stdout ───
+
+    running 1 test
+    test graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+  stderr ───
+    ZE-141 finalization native_bytes=504 c_bytes=552 peak=165400 copied_bytes=575 completed_bytes=511 completed_abi_bytes=561
+
+        PASS [   0.021s] (2/4) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_private_drop_and_source_independence_are_heap_flat
+  stdout ───
+
+    running 1 test
+    test graph_result::conversion::tests::graph_result_native_private_drop_and_source_independence_are_heap_flat ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.01s
+
+  stderr ───
+    ZE-141 loop-audit allocations=320 frees=320 bytes=0 peak=34192
+
+        PASS [   0.025s] (3/4) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans
+  stdout ───
+
+    running 1 test
+    test graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.01s
+
+  stderr ───
+    ZE-141 allocator attempts=5 allocations=5 frees=5 bytes=0 peak=132041
+    ZE-141 empty prepare final checkpoint ordinal=5
+
+        PASS [   0.034s] (4/4) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_geometry_limits_and_real_overlap_reject
+  stdout ───
+
+    running 1 test
+    test graph_result::conversion::tests::graph_result_native_geometry_limits_and_real_overlap_reject ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.02s
+
+  stderr ───
+    ZE-141 geometry arena_bytes=1688 allocation_bytes=2032 reserved_bytes=2608 peak=165400
+    ZE-141 query-overlap required_bytes=223128 rejected_limit=223127
+    ZE-141 aggregate shared_baseline=76424 conversion_peak=146696 held_bytes=3971185 aggregate_limit=4194304
+
+────────────
+     Summary [   0.035s] 4 tests run: 4 passed, 30 skipped

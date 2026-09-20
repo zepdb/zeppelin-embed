@@ -1,0 +1,480 @@
+[
+  {
+    "before_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+    },
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--profile",
+      "default",
+      "-j",
+      "4",
+      "--retries",
+      "0",
+      "-p",
+      "zeppelin-embed-ffi",
+      "--features",
+      "graph-cypher",
+      "--lib",
+      "-E",
+      "test(=graph_result::conversion::tests::graph_result_native_all_pools_match_literal_field_oracle)"
+    ],
+    "expected_assertion": "all-pool literal oracle rejects a zeroed node-id high half",
+    "green_exit_status": 0,
+    "key": "01-id-high-half",
+    "mutant_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "76aa56f158a4315971807fa88d7700c5a92f65a076e3909b19456d0ac960695a"
+    },
+    "red_exit_status": 100,
+    "replacement_count": 1,
+    "restored_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+    }
+  },
+  {
+    "before_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+    },
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--profile",
+      "default",
+      "-j",
+      "4",
+      "--retries",
+      "0",
+      "-p",
+      "zeppelin-embed-ffi",
+      "--features",
+      "graph-cypher",
+      "--lib",
+      "-E",
+      "test(=graph_result::conversion::tests::graph_result_native_all_pools_match_literal_field_oracle)"
+    ],
+    "expected_assertion": "all-pool literal oracle rejects normalized negative-zero or NaN bits",
+    "green_exit_status": 0,
+    "key": "02-f64-bits",
+    "mutant_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "d60004861201dc2e13b63e23b5f7792ebceeda5a3407fd35e5e83d385ee5986e"
+    },
+    "red_exit_status": 100,
+    "replacement_count": 1,
+    "restored_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+    }
+  },
+  {
+    "before_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+    },
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--profile",
+      "default",
+      "-j",
+      "4",
+      "--retries",
+      "0",
+      "-p",
+      "zeppelin-embed-ffi",
+      "--features",
+      "graph-cypher",
+      "--lib",
+      "-E",
+      "test(=graph_result::conversion::tests::graph_result_native_all_pools_match_literal_field_oracle) | test(=graph_result::conversion::tests::graph_result_native_reports_receipts_outcomes_are_lossless)"
+    ],
+    "expected_assertion": "literal pool and report oracles reject cleared present-empty text and Some(0) epoch flags",
+    "green_exit_status": 0,
+    "key": "03-presence-bits",
+    "mutant_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "76284cee6ab48b6f1baeb0b80be6b3b0b009339370c57306fc900c581951239d"
+    },
+    "red_exit_status": 100,
+    "replacement_count": 2,
+    "restored_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+    }
+  },
+  {
+    "before_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+    },
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--profile",
+      "default",
+      "-j",
+      "4",
+      "--retries",
+      "0",
+      "-p",
+      "zeppelin-embed-ffi",
+      "--features",
+      "graph-cypher",
+      "--lib",
+      "-E",
+      "test(=graph_result::conversion::tests::graph_result_native_all_pools_match_literal_field_oracle)"
+    ],
+    "expected_assertion": "literal value oracle rejects mapping the stored Empty sentinel as Query",
+    "green_exit_status": 0,
+    "key": "04-empty-list-tag",
+    "mutant_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "535d8d916630afe88e9cce7a406419b4c27ccc3c7ce1353b1d252893b4f7edc2"
+    },
+    "red_exit_status": 100,
+    "replacement_count": 1,
+    "restored_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+    }
+  },
+  {
+    "before_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+    },
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--profile",
+      "default",
+      "-j",
+      "4",
+      "--retries",
+      "0",
+      "-p",
+      "zeppelin-embed-ffi",
+      "--features",
+      "graph-cypher",
+      "--lib",
+      "-E",
+      "test(=graph_result::conversion::tests::graph_result_native_reports_receipts_outcomes_are_lossless)"
+    ],
+    "expected_assertion": "receipt oracle rejects a replayed item forced to Committed",
+    "green_exit_status": 0,
+    "key": "05-receipt-disposition",
+    "mutant_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "06bc1df1c8cf595371ba2382d49a6a4b8a8882cba89a4b2ca7d38b7095c17803"
+    },
+    "red_exit_status": 100,
+    "replacement_count": 1,
+    "restored_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+    }
+  },
+  {
+    "before_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+    },
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--profile",
+      "default",
+      "-j",
+      "4",
+      "--retries",
+      "0",
+      "-p",
+      "zeppelin-embed-ffi",
+      "--features",
+      "graph-cypher",
+      "--lib",
+      "-E",
+      "test(=graph_result::conversion::tests::graph_result_native_reports_receipts_outcomes_are_lossless)"
+    ],
+    "expected_assertion": "eight-report oracle rejects ranges starting at 22*i instead of 23+22*i",
+    "green_exit_status": 0,
+    "key": "06-report-work-range",
+    "mutant_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "4b3c28fe9229ee802cb0701dc6fd49df2c875fa776303173e3999f3ca156aa8d"
+    },
+    "red_exit_status": 100,
+    "replacement_count": 1,
+    "restored_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+    }
+  },
+  {
+    "before_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+    },
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--profile",
+      "default",
+      "-j",
+      "4",
+      "--retries",
+      "0",
+      "-p",
+      "zeppelin-embed-ffi",
+      "--features",
+      "graph-cypher",
+      "--lib",
+      "-E",
+      "test(=graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters)"
+    ],
+    "expected_assertion": "actual-driver oracle rejects CompletedAbiBytes copied from CompletedBytes",
+    "green_exit_status": 0,
+    "key": "07-completed-abi-counter",
+    "mutant_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "9060bcaa42b901786a8466d12e0cf4d0439b4c8c4b552451095fef81e21bd731"
+    },
+    "red_exit_status": 100,
+    "replacement_count": 1,
+    "restored_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+    }
+  },
+  {
+    "before_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+    },
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--profile",
+      "default",
+      "-j",
+      "4",
+      "--retries",
+      "0",
+      "-p",
+      "zeppelin-embed-ffi",
+      "--features",
+      "graph-cypher",
+      "--lib",
+      "-E",
+      "test(=graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters)"
+    ],
+    "expected_assertion": "actual-driver oracle rejects a zero peak-owned value",
+    "green_exit_status": 0,
+    "key": "08-peak-counter",
+    "mutant_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "f24f57a33cd404d521de6e0301404f5eda2b7b734ffd5d65c630972211a42775"
+    },
+    "red_exit_status": 100,
+    "replacement_count": 1,
+    "restored_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+    }
+  },
+  {
+    "before_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result.rs": "ece05cad3ecab3514a882ccf54b60844f356369c4d1401fa0daad8ab22fb4ff5"
+    },
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--profile",
+      "default",
+      "-j",
+      "4",
+      "--retries",
+      "0",
+      "-p",
+      "zeppelin-embed-ffi",
+      "--features",
+      "graph-cypher",
+      "--lib",
+      "-E",
+      "test(=graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters)"
+    ],
+    "expected_assertion": "known copied-byte delta rejects a removed direct-map chunk charge",
+    "green_exit_status": 0,
+    "key": "09-copied-byte-charge",
+    "mutant_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result.rs": "89fa66fcc35a5ac4e3eda5c4bb792c9ed190095d3d4ee614f3cd92d655808c2f"
+    },
+    "red_exit_status": 100,
+    "replacement_count": 1,
+    "restored_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result.rs": "ece05cad3ecab3514a882ccf54b60844f356369c4d1401fa0daad8ab22fb4ff5"
+    }
+  },
+  {
+    "before_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result/registration.rs": "02aafc1d63ea8dee61b1b6ca27b96d79c8f7ffc7d7fde441404cbc9b77ab8031"
+    },
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--profile",
+      "default",
+      "-j",
+      "4",
+      "--retries",
+      "0",
+      "-p",
+      "zeppelin-embed-ffi",
+      "--features",
+      "graph-cypher",
+      "--lib",
+      "-E",
+      "test(=graph_result::conversion::tests::graph_result_native_geometry_limits_and_real_overlap_reject)"
+    ],
+    "expected_assertion": "measured peak-minus-one overlap test rejects uncharged live C arena capacity",
+    "green_exit_status": 0,
+    "key": "10-overlap-accounting",
+    "mutant_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result/registration.rs": "de302c05dc2f2e2d86c9f9886b3a038f3c1fa1d55c5ae09abd8456fb37aeddfb"
+    },
+    "red_exit_status": 100,
+    "replacement_count": 1,
+    "restored_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result/registration.rs": "02aafc1d63ea8dee61b1b6ca27b96d79c8f7ffc7d7fde441404cbc9b77ab8031"
+    }
+  },
+  {
+    "before_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result/registration.rs": "02aafc1d63ea8dee61b1b6ca27b96d79c8f7ffc7d7fde441404cbc9b77ab8031"
+    },
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--profile",
+      "default",
+      "-j",
+      "4",
+      "--retries",
+      "0",
+      "-p",
+      "zeppelin-embed-ffi",
+      "--features",
+      "graph-cypher",
+      "--lib",
+      "-E",
+      "test(=graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans)"
+    ],
+    "expected_assertion": "scheduled final-checkpoint cancellation rejects success after checkpoint removal",
+    "green_exit_status": 0,
+    "key": "11-post-registration-checkpoint",
+    "mutant_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result/registration.rs": "01654f3d489cb5d95cdf0b61b31115aca7cc463e265d43b737b72a9b44ef6686"
+    },
+    "red_exit_status": 100,
+    "replacement_count": 1,
+    "restored_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result/registration.rs": "02aafc1d63ea8dee61b1b6ca27b96d79c8f7ffc7d7fde441404cbc9b77ab8031"
+    }
+  },
+  {
+    "before_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+    },
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--profile",
+      "default",
+      "-j",
+      "4",
+      "--retries",
+      "0",
+      "-p",
+      "zeppelin-embed-ffi",
+      "--features",
+      "graph-cypher",
+      "--lib",
+      "-E",
+      "test(=graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters)"
+    ],
+    "expected_assertion": "deny-all finalization audit rejects a retained Vec allocation",
+    "green_exit_status": 0,
+    "key": "12-finalizer-allocation",
+    "mutant_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "3aef1996095b5c8e523fae430efd775026a66ac00585861aeafda976863d4553"
+    },
+    "red_exit_status": 100,
+    "replacement_count": 1,
+    "restored_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+    }
+  },
+  {
+    "before_sha256": {
+      "tests/adversarial/graph_response.rs": "ff92b3005c0701837f07bc86ab855076b038711f98006c214f1d0ed2dfc47d2a"
+    },
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--profile",
+      "default",
+      "-j",
+      "4",
+      "--retries",
+      "0",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--features",
+      "graph-result-test-support",
+      "--test",
+      "adversarial_tests",
+      "-E",
+      "test(=one_runner_episode_reaches_required_native_response_contracts)"
+    ],
+    "expected_assertion": "canonical seed-141 runner rejects removal of the additive native probe",
+    "green_exit_status": 0,
+    "key": "13-native-probe-route",
+    "mutant_sha256": {
+      "tests/adversarial/graph_response.rs": "3ff69f51443a501a005c0c704c89c2004e6bfd8ba5a67a06d6c92061632dbf72"
+    },
+    "red_exit_status": 100,
+    "replacement_count": 1,
+    "restored_sha256": {
+      "tests/adversarial/graph_response.rs": "ff92b3005c0701837f07bc86ab855076b038711f98006c214f1d0ed2dfc47d2a"
+    }
+  },
+  {
+    "before_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result.rs": "ece05cad3ecab3514a882ccf54b60844f356369c4d1401fa0daad8ab22fb4ff5"
+    },
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--profile",
+      "default",
+      "-j",
+      "4",
+      "--retries",
+      "0",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--features",
+      "graph-result-test-support",
+      "--test",
+      "adversarial_tests",
+      "-E",
+      "test(=property_graph_native_response_probe_checks_conversion_and_paired_faults)"
+    ],
+    "expected_assertion": "four-seed primitive fault checker rejects suppressed real C allocation injection",
+    "green_exit_status": 0,
+    "key": "14-c-allocation-receipt",
+    "mutant_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result.rs": "0ff0f38ebfce8d9facfa8eda870e14b1dcbc748b3c8fb2e29d50bd9be1250805"
+    },
+    "red_exit_status": 100,
+    "replacement_count": 1,
+    "restored_sha256": {
+      "crates/zeppelin-embed-ffi/src/graph_result.rs": "ece05cad3ecab3514a882ccf54b60844f356369c4d1401fa0daad8ab22fb4ff5"
+    }
+  }
+]

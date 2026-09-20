@@ -1,0 +1,48 @@
+   Compiling zeppelin-embed-adversarial-oracle v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/tests/adversarial-oracle)
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.74s
+────────────
+ Nextest run ID 04a8206b-c36b-4973-99ed-db00042342cc with nextest profile: default
+    Starting 1 test across 1 binary (474 tests skipped)
+        FAIL [   3.684s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_native_response_contracts
+  stdout ───
+
+    running 1 test
+    test one_runner_episode_reaches_required_native_response_contracts ... FAILED
+
+    failures:
+
+    failures:
+        one_runner_episode_reaches_required_native_response_contracts
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 474 filtered out; finished in 3.66s
+
+  stderr ───
+
+    thread 'one_runner_episode_reaches_required_native_response_contracts' (35593183) panicked at tests/adversarial_tests.rs:19091:9:
+    actual runner omitted property-graph.response.native-map
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   3.687s] 1 test run: 0 passed, 1 failed, 474 skipped
+        FAIL [   3.684s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_native_response_contracts
+  stdout ───
+
+    running 1 test
+    test one_runner_episode_reaches_required_native_response_contracts ... FAILED
+
+    failures:
+
+    failures:
+        one_runner_episode_reaches_required_native_response_contracts
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 474 filtered out; finished in 3.66s
+
+  stderr ───
+
+    thread 'one_runner_episode_reaches_required_native_response_contracts' (35593183) panicked at tests/adversarial_tests.rs:19091:9:
+    actual runner omitted property-graph.response.native-map
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

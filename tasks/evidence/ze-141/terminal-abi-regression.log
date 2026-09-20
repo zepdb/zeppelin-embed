@@ -1,0 +1,28 @@
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/crates/zeppelin-embed-ffi)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.53s
+────────────
+ Nextest run ID 74e6cede-3cd5-4705-84b0-75da424996dc with nextest profile: default
+    Starting 21 tests across 3 binaries
+        PASS [   0.019s] ( 1/21) zeppelin-embed-ffi::ffi_graph_contract graph_compile_limits_preserve_zero_and_reject_each_widened_guard
+        PASS [   0.020s] ( 2/21) zeppelin-embed-ffi::ffi_graph_contract graph_empty_list_shape_rejects_nonzero_count_and_preserves_typed_empties
+        PASS [   0.021s] ( 3/21) zeppelin-embed-ffi::ffi_graph_contract graph_batch_shape_preserves_empty_and_nul_names_with_explicit_image_presence
+        PASS [   0.021s] ( 4/21) zeppelin-embed-ffi::ffi_graph_contract graph_endpoint_shape_keeps_local_and_full_identity_preconditions_separate
+        PASS [   0.010s] ( 5/21) zeppelin-embed-ffi::ffi_graph_contract graph_identity_conversion_retains_high_words_and_rejects_zero
+        PASS [   0.010s] ( 6/21) zeppelin-embed-ffi::ffi_graph_contract graph_native_error_mapping_preserves_type_arithmetic_and_retry_conflicts
+        PASS [   0.010s] ( 7/21) zeppelin-embed-ffi::ffi_graph_contract graph_nested_array_headers_require_exact_v1_stride_and_zero_reserved
+        PASS [   0.010s] ( 8/21) zeppelin-embed-ffi::ffi_graph_contract graph_search_shape_preserves_tier_presence_and_rejects_wrong_kind_options
+        PASS [   0.010s] ( 9/21) zeppelin-embed-ffi::ffi_graph_contract graph_tightening_distinguishes_explicit_zero_from_absent_and_rejects_widening
+        PASS [   0.010s] (10/21) zeppelin-embed-ffi::ffi_graph_contract graph_value_shapes_preserve_ieee_bits_and_reject_inactive_or_overflowing_fields
+        PASS [   0.106s] (11/21) zeppelin-embed-ffi::ffi_graph_header graph_c_identity_kinds_cannot_be_assigned_to_each_other
+        PASS [   0.276s] (12/21) zeppelin-embed-ffi::ffi_graph_header graph_c_batch_pool_distinguishes_empty_payloads_and_local_endpoints
+        PASS [   0.267s] (13/21) zeppelin-embed-ffi::ffi_graph_header graph_c_frozen_sizes_offsets_and_discriminants_match_the_reviewed_contract
+        PASS [   0.278s] (14/21) zeppelin-embed-ffi::ffi_graph_header graph_c_consumer_preserves_strong_full_width_identity_layouts
+        PASS [   0.170s] (15/21) zeppelin-embed-ffi::ffi_graph_header graph_c_requests_and_response_preserve_disposition_and_search_provenance
+        PASS [   0.009s] (16/21) zeppelin-embed-ffi::ffi_graph_header legacy_header_and_exports_do_not_advertise_graph_contracts
+        PASS [   0.007s] (17/21) zeppelin-embed-ffi::ffi_graph_layout every_graph_discriminant_has_the_frozen_value_and_width
+        PASS [   0.007s] (18/21) zeppelin-embed-ffi::ffi_graph_layout every_graph_struct_has_the_frozen_c_size_alignment_and_field_offsets
+        PASS [   0.036s] (19/21) zeppelin-embed-ffi::ffi_graph_header graph_contract_header_is_exact_separate_cbindgen_output
+        PASS [   0.073s] (20/21) zeppelin-embed-ffi::ffi_graph_header graph_contract_header_is_usable_from_cpp_without_legacy_export_changes
+        PASS [   0.167s] (21/21) zeppelin-embed-ffi::ffi_graph_header graph_c_typed_plan_retains_search_presence_components_and_path_predicates
+────────────
+     Summary [   0.475s] 21 tests run: 21 passed, 0 skipped

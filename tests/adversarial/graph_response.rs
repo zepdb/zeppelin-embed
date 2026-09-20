@@ -16,6 +16,10 @@ use zeppelin_embed::property_graph::{GraphGeneration, StoreInstanceId};
 use zeppelin_embed_adversarial_oracle::graph_response::{
     self as oracle, Fault, Observation, Refusal,
 };
+use zeppelin_embed_ffi::graph_result::test_support::{
+    NativeConversionCase, NativeConversionObservation, NativeConversionOutcome,
+    NativeConversionRefusal, NativeConversionStage, run_native_conversion_case,
+};
 use zeppelin_embed_ffi::graph_result::{test_support::AllocationFaultScope, *};
 use zeppelin_embed_ffi::*;
 
@@ -32,12 +36,23 @@ pub const REQUIRED_COVERAGE: &[&str] = &[
     "property-graph.response.registry.fire",
     "property-graph.response.same-seed-control",
     "property-graph.response.oracle.can-fire",
+    "property-graph.response.native-map",
+    "property-graph.response.native-context",
+    "property-graph.response.native-final-counters",
+    "property-graph.response.native-overlap",
+    "property-graph.response.native-allocation.fire",
+    "property-graph.response.native-cancel-work.fire",
+    "property-graph.response.native-same-seed-control",
+    "property-graph.response.native-oracle.can-fire",
 ];
 #[derive(Debug, Default)]
 pub struct ProbeReport {
     pub cases: usize,
     pub fault_fires: usize,
     pub clean_controls: usize,
+    pub native_cases: usize,
+    pub native_fault_fires: usize,
+    pub native_clean_controls: usize,
 }
 struct View {
     token: QueryView,
@@ -456,5 +471,246 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<ProbeReport, 
     })?;
     coverage.hit(REQUIRED_COVERAGE[4]);
     report.cases += 1;
+    native_probe(seed, coverage, &mut report)?;
     Ok(report)
+}
+
+fn native_probe(
+    seed: u64,
+    coverage: &mut CoverageRegistry,
+    report: &mut ProbeReport,
+) -> Result<(), String> {
+    let mut rng = super::test_support::seeded_rng("property_graph::native_response_probe", seed);
+    let node_id = (u128::from(rng.next_u64()) << 64) | u128::from(rng.next_u64() | 1);
+    let relationship_id = (u128::from(rng.next_u64()) << 64) | u128::from(rng.next_u64() | 1);
+    let scalar_bits = rng.next_u64();
+    let mut payload = format!("native-PG16\0λ-{seed:016x}");
+    payload.extend(std::iter::repeat_n('x', 70 * 1024));
+    let case = NativeConversionCase {
+        node_id,
+        relationship_id,
+        scalar_bits,
+        payload: &payload,
+        outcome: NativeConversionOutcome::Read,
+        include_report: true,
+    };
+    let clean = native_clean(case)?;
+    let observed = native_observation(&clean);
+    oracle::check_native(
+        node_id,
+        relationship_id,
+        scalar_bits,
+        payload.as_bytes(),
+        true,
+        &observed,
+    )?;
+    coverage.hit(REQUIRED_COVERAGE[12]);
+    coverage.hit(REQUIRED_COVERAGE[13]);
+    coverage.hit(REQUIRED_COVERAGE[14]);
+    report.native_cases += 1;
+
+    for mutation in 0..9 {
+        let mut wrong = observed.clone();
+        match mutation {
+            0 => wrong.node_id.0 ^= 1,
+            1 => wrong.scalar_bits ^= 1,
+            2 => wrong.text.0 = 0,
+            3 => wrong.list_tag = 0,
+            4 => wrong.report_work.0 = 22,
+            5 => wrong.global_work.0 = 22,
+            6 => wrong.query_charge_restored = false,
+            7 => wrong.allocation_matching_sites = 1,
+            _ => wrong.allocation_fires = 1,
+        }
+        if oracle::check_native(
+            node_id,
+            relationship_id,
+            scalar_bits,
+            payload.as_bytes(),
+            true,
+            &wrong,
+        )
+        .is_ok()
+        {
+            return Err(format!("PG16 native oracle mutation {mutation} survived"));
+        }
+    }
+    coverage.hit(REQUIRED_COVERAGE[19]);
+
+    for ordinal in 1..=2 {
+        let failure = context(24 * 1024 * 1024, u64::MAX, 0, |context, _| {
+            let scope = AllocationFaultScope::arm(ordinal);
+            let result = run_native_conversion_case(context, case)
+                .err()
+                .ok_or_else(|| format!("native C allocation ordinal {ordinal} did not fire"))?;
+            let receipt = scope.receipt();
+            if (result.allocation_matching_sites, result.allocation_fires)
+                != (receipt.matching_sites, receipt.fires)
+            {
+                return Err("native allocation receipt transport mismatch".into());
+            }
+            Ok(result)
+        })?;
+        let clean_succeeded = native_clean(case).is_ok();
+        oracle::check_native_failure(
+            stage_code(NativeConversionStage::C),
+            refusal_code(NativeConversionRefusal::Allocation),
+            ordinal,
+            stage_code(failure.stage),
+            refusal_code(failure.refusal),
+            failure.allocation_matching_sites,
+            failure.allocation_fires,
+            failure.query_charge_restored,
+            clean_succeeded,
+        )?;
+        report.native_fault_fires += failure.allocation_fires;
+        report.native_clean_controls += usize::from(clean_succeeded);
+        report.native_cases += 2;
+    }
+    coverage.hit(REQUIRED_COVERAGE[16]);
+    coverage.hit(REQUIRED_COVERAGE[18]);
+
+    let mut cancellation = None;
+    for stop in 2..=64 {
+        let attempt = context(24 * 1024 * 1024, u64::MAX, stop, |context, view| {
+            let result = run_native_conversion_case(context, case);
+            Ok((result, view.fires.get()))
+        })?;
+        if let (Err(failure), 1) = attempt
+            && matches!(
+                failure.stage,
+                NativeConversionStage::Native | NativeConversionStage::C
+            )
+            && failure.refusal == NativeConversionRefusal::Cancel
+        {
+            cancellation = Some(failure);
+            break;
+        }
+    }
+    let cancellation = cancellation.ok_or("no in-conversion native cancellation fired")?;
+    let clean_succeeded = native_clean(case).is_ok();
+    oracle::check_native_failure(
+        stage_code(cancellation.stage),
+        refusal_code(NativeConversionRefusal::Cancel),
+        1,
+        stage_code(cancellation.stage),
+        refusal_code(cancellation.refusal),
+        1,
+        1,
+        cancellation.query_charge_restored,
+        clean_succeeded,
+    )?;
+    report.native_fault_fires += 1;
+    report.native_clean_controls += usize::from(clean_succeeded);
+    report.native_cases += 2;
+
+    let work_failure = context(24 * 1024 * 1024, 0, 0, |context, _| {
+        run_native_conversion_case(context, case)
+            .err()
+            .ok_or_else(|| "native copied-work refusal did not fire".into())
+    })?;
+    let clean_succeeded = native_clean(case).is_ok();
+    oracle::check_native_failure(
+        stage_code(NativeConversionStage::Native),
+        refusal_code(NativeConversionRefusal::Work),
+        1,
+        stage_code(work_failure.stage),
+        refusal_code(work_failure.refusal),
+        1,
+        1,
+        work_failure.query_charge_restored,
+        clean_succeeded,
+    )?;
+    report.native_fault_fires += 1;
+    report.native_clean_controls += usize::from(clean_succeeded);
+    report.native_cases += 2;
+    coverage.hit(REQUIRED_COVERAGE[17]);
+    coverage.hit(REQUIRED_COVERAGE[18]);
+
+    let overlap_limit = usize::try_from(clean.peak_query_bytes)
+        .map_err(|_| "native peak does not fit usize")?
+        .checked_sub(1)
+        .ok_or("native peak cannot be tightened")?;
+    let overlap = context(overlap_limit, u64::MAX, 0, |context, _| {
+        run_native_conversion_case(context, case)
+            .err()
+            .ok_or_else(|| "one-byte-tight native overlap limit did not fire".into())
+    })?;
+    if overlap.stage != NativeConversionStage::C
+        || overlap.refusal != NativeConversionRefusal::Memory
+    {
+        return Err(format!(
+            "one-byte-tight native overlap fired at wrong boundary: {overlap:?}"
+        ));
+    }
+    let clean_succeeded = native_clean(case).is_ok();
+    oracle::check_native_failure(
+        stage_code(NativeConversionStage::C),
+        refusal_code(NativeConversionRefusal::Memory),
+        1,
+        stage_code(overlap.stage),
+        refusal_code(overlap.refusal),
+        1,
+        1,
+        overlap.query_charge_restored,
+        clean_succeeded,
+    )?;
+    coverage.hit(REQUIRED_COVERAGE[15]);
+    coverage.hit(REQUIRED_COVERAGE[18]);
+    report.native_fault_fires += 1;
+    report.native_clean_controls += usize::from(clean_succeeded);
+    report.native_cases += 2;
+    Ok(())
+}
+
+fn native_clean(case: NativeConversionCase<'_>) -> Result<NativeConversionObservation, String> {
+    context(24 * 1024 * 1024, u64::MAX, 0, |context, _| {
+        let scope = AllocationFaultScope::arm(0);
+        let observation = run_native_conversion_case(context, case)
+            .map_err(|failure| format!("native clean control failed: {failure:?}"))?;
+        if scope.receipt().fires != 0 {
+            return Err("native clean allocation scope fired".into());
+        }
+        Ok(observation)
+    })
+}
+
+fn native_observation(value: &NativeConversionObservation) -> oracle::NativeObservation {
+    oracle::NativeObservation {
+        node_id: value.node_id,
+        relationship_id: value.relationship_id,
+        scalar_bits: value.scalar_bits,
+        list_tag: value.list_tag,
+        text: value.text,
+        payload: value.payload.clone(),
+        report_work: value.report_work,
+        global_work: value.global_work,
+        peak_query_bytes: value.peak_query_bytes,
+        source_calls: value.source_calls,
+        allocation_matching_sites: value.allocation.matching_sites,
+        allocation_fires: value.allocation.fires,
+        query_charge_restored: value.query_charge_restored,
+    }
+}
+
+fn stage_code(value: NativeConversionStage) -> u32 {
+    match value {
+        NativeConversionStage::Native => 0,
+        NativeConversionStage::C => 1,
+        NativeConversionStage::Driver => 2,
+    }
+}
+
+fn refusal_code(value: NativeConversionRefusal) -> u32 {
+    match value {
+        NativeConversionRefusal::Context => 0,
+        NativeConversionRefusal::Shape => 1,
+        NativeConversionRefusal::Limit => 2,
+        NativeConversionRefusal::Allocation => 3,
+        NativeConversionRefusal::Memory => 4,
+        NativeConversionRefusal::Cancel => 5,
+        NativeConversionRefusal::Work => 6,
+        NativeConversionRefusal::Registry => 7,
+        NativeConversionRefusal::Other => 8,
+    }
 }

@@ -1,0 +1,46 @@
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.91s
+────────────
+ Nextest run ID 038d68e7-3cd0-4659-b209-51e54e08e18f with nextest profile: default
+    Starting 1 test across 1 binary (474 tests skipped)
+        FAIL [   0.077s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests property_graph_native_response_probe_checks_conversion_and_paired_faults
+  stdout ───
+
+    running 1 test
+    test property_graph_native_response_probe_checks_conversion_and_paired_faults ... FAILED
+
+    failures:
+
+    failures:
+        property_graph_native_response_probe_checks_conversion_and_paired_faults
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 474 filtered out; finished in 0.06s
+
+  stderr ───
+
+    thread 'property_graph_native_response_probe_checks_conversion_and_paired_faults' (35512442) panicked at tests/adversarial_tests.rs:19072:14:
+    PG16 native conversion and independent primitive oracle: "no genuine native/C overlap memory refusal fired: [(170496, Some((Driver, Shape))), (170497, Some((Driver, Shape))), (170498, Some((Driver, Shape))), (170499, Some((Driver, Shape))), (170500, Some((Driver, Shape))), (170501, Some((Driver, Shape))), (170502, Some((Driver, Shape))), (170503, Some((Driver, Shape))), (170504, Some((Driver, Shape))), (170505, Some((Driver, Shape))), (170506, Some((Driver, Shape))), (170507, Some((Driver, Shape))), (170508, Some((Driver, Shape))), (170509, Some((Driver, Shape))), (170510, Some((Driver, Shape))), (170511, Some((Driver, Shape))), (170512, Some((Driver, Shape))), (170513, Some((Driver, Shape))), (170514, Some((Driver, Shape))), (170515, Some((Driver, Shape))), (170516, Some((Driver, Shape))), (170517, Some((Driver, Shape))), (170518, Some((Driver, Shape))), (170519, Some((Driver, Shape))), (170520, Some((Driver, Shape))), (170521, Some((Driver, Shape))), (170522, Some((Driver, Shape))), (170523, Some((Driver, Shape))), (170524, Some((Driver, Shape))), (170525, Some((Driver, Shape))), (170526, Some((Driver, Shape))), (170527, Some((Driver, Shape))), (170528, Some((Driver, Shape))), (170529, Some((Driver, Shape))), (170530, Some((Driver, Shape))), (170531, Some((Driver, Shape))), (170532, Some((Driver, Shape))), (170533, Some((Driver, Shape))), (170534, Some((Driver, Shape))), (170535, Some((Driver, Shape))), (170536, Some((Driver, Shape))), (170537, Some((Driver, Shape))), (170538, Some((Driver, Shape))), (170539, None), (170540, None), (170541, None), (170542, None), (170543, None), (170544, None), (170545, None), (170546, None), (170547, None), (170548, None), (170549, None), (170550, None), (170551, None), (170552, None), (170553, None), (170554, None), (170555, None), (170556, None), (170557, None), (170558, None), (170559, None), (170560, None)]"
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.078s] 1 test run: 0 passed, 1 failed, 474 skipped
+        FAIL [   0.077s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests property_graph_native_response_probe_checks_conversion_and_paired_faults
+  stdout ───
+
+    running 1 test
+    test property_graph_native_response_probe_checks_conversion_and_paired_faults ... FAILED
+
+    failures:
+
+    failures:
+        property_graph_native_response_probe_checks_conversion_and_paired_faults
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 474 filtered out; finished in 0.06s
+
+  stderr ───
+
+    thread 'property_graph_native_response_probe_checks_conversion_and_paired_faults' (35512442) panicked at tests/adversarial_tests.rs:19072:14:
+    PG16 native conversion and independent primitive oracle: "no genuine native/C overlap memory refusal fired: [(170496, Some((Driver, Shape))), (170497, Some((Driver, Shape))), (170498, Some((Driver, Shape))), (170499, Some((Driver, Shape))), (170500, Some((Driver, Shape))), (170501, Some((Driver, Shape))), (170502, Some((Driver, Shape))), (170503, Some((Driver, Shape))), (170504, Some((Driver, Shape))), (170505, Some((Driver, Shape))), (170506, Some((Driver, Shape))), (170507, Some((Driver, Shape))), (170508, Some((Driver, Shape))), (170509, Some((Driver, Shape))), (170510, Some((Driver, Shape))), (170511, Some((Driver, Shape))), (170512, Some((Driver, Shape))), (170513, Some((Driver, Shape))), (170514, Some((Driver, Shape))), (170515, Some((Driver, Shape))), (170516, Some((Driver, Shape))), (170517, Some((Driver, Shape))), (170518, Some((Driver, Shape))), (170519, Some((Driver, Shape))), (170520, Some((Driver, Shape))), (170521, Some((Driver, Shape))), (170522, Some((Driver, Shape))), (170523, Some((Driver, Shape))), (170524, Some((Driver, Shape))), (170525, Some((Driver, Shape))), (170526, Some((Driver, Shape))), (170527, Some((Driver, Shape))), (170528, Some((Driver, Shape))), (170529, Some((Driver, Shape))), (170530, Some((Driver, Shape))), (170531, Some((Driver, Shape))), (170532, Some((Driver, Shape))), (170533, Some((Driver, Shape))), (170534, Some((Driver, Shape))), (170535, Some((Driver, Shape))), (170536, Some((Driver, Shape))), (170537, Some((Driver, Shape))), (170538, Some((Driver, Shape))), (170539, None), (170540, None), (170541, None), (170542, None), (170543, None), (170544, None), (170545, None), (170546, None), (170547, None), (170548, None), (170549, None), (170550, None), (170551, None), (170552, None), (170553, None), (170554, None), (170555, None), (170556, None), (170557, None), (170558, None), (170559, None), (170560, None)]"
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

@@ -1,0 +1,10 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on artifact directory
+   Compiling zeppelin-embed-adversarial-oracle v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/tests/adversarial-oracle)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.18s
+────────────
+ Nextest run ID 98d3179e-76d0-4820-9b12-298a1a53eb47 with nextest profile: default
+    Starting 1 test across 1 binary (95 tests skipped)
+        PASS [   0.021s] (1/1) zeppelin-embed-adversarial-oracle graph_response::tests::graph_response_oracle_rejects_missing_fires_extra_owner_and_changed_commit
+────────────
+     Summary [   0.022s] 1 test run: 1 passed, 95 skipped

@@ -1,0 +1,29 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+────────────
+ Nextest run ID fc4f03a5-3b13-45e5-a6cb-4594e225b67c with nextest profile: default
+    Starting 19 tests across 2 binaries
+        PASS [   0.012s] ( 1/19) zeppelin-embed::graph_compiled_context borrowed_driver_final_close_precedes_cancel_and_drops_completed_owner
+        PASS [   0.012s] ( 2/19) zeppelin-embed::graph_compiled_context borrowed_driver_keeps_prior_validation_value_and_operator_work
+        PASS [   0.012s] ( 3/19) zeppelin-embed::graph_compiled_context charged_fact_arena_is_credited_once_and_rejects_another_query_owner
+        PASS [   0.013s] ( 4/19) zeppelin-embed::graph_completed_results allocations::consuming_detach_is_allocator_denied_and_preserves_every_live_pointer
+        PASS [   0.013s] ( 5/19) zeppelin-embed::graph_completed_results allocations::every_actual_allocation_failure_releases_real_buffers_before_guards
+        PASS [   0.013s] ( 6/19) zeppelin-embed::graph_completed_results allocations::every_typed_pool_uses_real_fallible_allocation_and_exact_cleanup
+        PASS [   0.008s] ( 7/19) zeppelin-embed::graph_completed_results complete_reports_reject_contradictory_kind_route_and_modality_states
+        PASS [   0.008s] ( 8/19) zeppelin-embed::graph_completed_results completed_graph_lists_entities_and_reports_preserve_full_literal_contents
+        PASS [   0.008s] ( 9/19) zeppelin-embed::graph_completed_results completed_receipts_preserve_original_items_deletion_and_mixed_generations
+        PASS [   0.008s] (10/19) zeppelin-embed::graph_completed_results completed_scalar_table_owns_exact_bits_and_bytes_after_sources_are_gone
+        PASS [   0.008s] (11/19) zeppelin-embed::graph_completed_results copy_limit_records_only_performed_chunks_and_returns_no_partial_owner
+        PASS [   0.008s] (12/19) zeppelin-embed::graph_completed_results every_actual_validation_and_copy_checkpoint_can_cancel_without_an_owner
+        PASS [   0.009s] (13/19) zeppelin-embed::graph_completed_results malformed_lists_and_ranges_never_expose_partial_owned_results
+        PASS [   0.009s] (14/19) zeppelin-embed::graph_completed_results malformed_entity_metadata_and_unreferenced_pool_entries_reject
+        PASS [   0.009s] (15/19) zeppelin-embed::graph_completed_results expanded_descendants_and_complete_representation_caps_cannot_be_bypassed
+        PASS [   0.008s] (16/19) zeppelin-embed::graph_completed_results report_geometry_rejects_wrong_generation_call_and_nonfinite_policy
+        PASS [   0.009s] (17/19) zeppelin-embed::graph_completed_results producer_errors_and_identical_metadata_foreign_tokens_remain_distinct
+        PASS [   0.009s] (18/19) zeppelin-embed::graph_completed_results real_retained_capacity_overlap_enforces_query_and_shared_caps
+        PASS [   0.580s] (19/19) zeppelin-embed::graph_compiled_context borrowed_driver_cannot_restart_exhausted_value_work
+────────────
+     Summary [   0.581s] 19 tests run: 19 passed, 0 skipped

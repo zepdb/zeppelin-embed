@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.30s
+────────────
+ Nextest run ID 0a43864b-7358-4de3-8d32-abdb0b369e8c with nextest profile: default
+    Starting 1 test across 1 binary (474 tests skipped)
+        PASS [   0.202s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests property_graph_native_response_probe_checks_conversion_and_paired_faults
+────────────
+     Summary [   0.203s] 1 test run: 1 passed, 474 skipped

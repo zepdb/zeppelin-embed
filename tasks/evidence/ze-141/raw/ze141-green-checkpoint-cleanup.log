@@ -1,0 +1,9 @@
+    Blocking waiting for file lock on package cache
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/crates/zeppelin-embed-ffi)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.60s
+────────────
+ Nextest run ID d26313ca-d916-4f9a-a3a1-2d3aa9dbf777 with nextest profile: default
+    Starting 1 test across 1 binary (33 tests skipped)
+        PASS [   0.012s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans
+────────────
+     Summary [   0.013s] 1 test run: 1 passed, 33 skipped

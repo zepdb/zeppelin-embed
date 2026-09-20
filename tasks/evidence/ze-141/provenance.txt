@@ -1,0 +1,36 @@
+ZE-141 provenance
+captured_utc=2026-09-20T00:55:03Z
+branch=codex/ze-141-native-c-conversion
+head=e2d16b106593050711bc055d46d5673af0848bd7
+required_base=e2d16b106593050711bc055d46d5673af0848bd7
+merge_base=e2d16b106593050711bc055d46d5673af0848bd7
+features=graph-cypher; graph-result-test-support (opt-in adversarial bridge)
+nextest_profile=default jobs=4 retries=0
+seed=141; directed native seeds=0,1,141,u64::MAX
+platform_partition=local macOS arm64 only
+source_plan_sha256=85d7708488e50193b7c6fd8f4aaa976de23045cebb26ba71665ebe91fac1ad91
+source_pin_sha256=05276a143af6ee57ea2e2cae8e300e2a4d50ccb4caa163ecf17f8e8743c9d15c
+preservation_manifest_sha256=1910f7df16aa70948c270e45e399c4b2c7187d52c04d3f637ff8eef682c18c34
+
+      Model Name: MacBook Pro
+      Model Identifier: Mac15,9
+      Chip: Apple M3 Max
+      Total Number of Cores: 16 (12 Performance and 4 Efficiency)
+      Memory: 128 GB
+uname=Darwin 27.0.0 Darwin Kernel Version 27.0.0: Tue Jul 14 21:42:16 PDT 2026; root:xnu-13432.0.94.501.4~1/RELEASE_ARM64_T6031 arm64 arm
+ProductName:		macOS
+ProductVersion:		27.0
+BuildVersion:		26A5388g
+rustc 1.93.0 (254b59607 2026-01-19)
+binary: rustc
+commit-hash: 254b59607d4417e9dffbc307138ae5c86280fe4c
+commit-date: 2026-01-19
+host: aarch64-apple-darwin
+release: 1.93.0
+LLVM version: 21.1.8
+cargo 1.93.0 (083ac5135 2025-12-15)
+cargo-nextest 0.9.145 (00af4550e 2026-09-16)
+release: 0.9.145
+commit-hash: 00af4550ec3b3b9f0e574b897b06acb95d325ba2
+commit-date: 2026-09-16
+host: aarch64-apple-darwin

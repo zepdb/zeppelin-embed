@@ -121,17 +121,54 @@ impl GraphResultRegistry {
         parts: ResponseParts<'_>,
         metadata: ResponseMetadata,
     ) -> Result<PreparedResponse<'m, 'g>, OwnerError> {
+        self.prepare_with(
+            context,
+            parts.counts(),
+            metadata,
+            size_of::<ResponseParts<'_>>(),
+            move |arena, plan, context| fill(arena, plan, parts, metadata, context),
+        )
+    }
+
+    pub(super) fn prepare_with<'v, 'm, 'g>(
+        &'static self,
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+        counts: [usize; 14],
+        metadata: ResponseMetadata,
+        initializer_controls: usize,
+        initialize: impl FnOnce(
+            &AlignedArena,
+            &ArenaLayout,
+            &mut RuntimeContext<'v, 'm, 'g>,
+        ) -> Result<ZeGraphResponse, OwnerError>,
+    ) -> Result<PreparedResponse<'m, 'g>, OwnerError> {
         context.checkpoint()?;
+        let [
+            _,
+            _,
+            _,
+            _,
+            _,
+            _,
+            _,
+            _,
+            column_count,
+            cell_count,
+            _,
+            _,
+            _,
+            work_count,
+        ] = counts;
         if metadata.row_count > 65536
-            || parts.columns.len() > 256
-            || metadata.row_count.checked_mul(parts.columns.len()) != Some(parts.cells.len())
+            || column_count > 256
+            || metadata.row_count.checked_mul(column_count) != Some(cell_count)
             || (metadata.global_work.start as usize)
                 .checked_add(metadata.global_work.count as usize)
-                .is_none_or(|end| end > parts.work.len())
+                .is_none_or(|end| end > work_count)
         {
             return Err(OwnerError::InvalidShape);
         }
-        let plan = ArenaLayout::new(parts.counts())?;
+        let plan = ArenaLayout::new(counts)?;
         // Exhaustion and poison are typed precommit errors. Tokens are burned
         // on later failure; they never wrap, reset, or get reused.
         let token = NEXT_TOKEN
@@ -149,7 +186,7 @@ impl GraphResultRegistry {
         let controls = size_of::<PreparedResponse<'_, '_>>()
             - size_of::<QueryExternalReservation<'_, '_>>()
             + size_of::<ArenaLayout>()
-            + size_of::<ResponseParts<'_>>()
+            + initializer_controls
             + size_of::<ResponseMetadata>();
         let bytes = plan
             .layout
@@ -159,7 +196,7 @@ impl GraphResultRegistry {
             .ok_or(OwnerError::Limit)?;
         charge.reserve_additional(bytes)?;
         let arena = AlignedArena::allocate(plan.layout)?;
-        let mut root = fill(&arena, &plan, parts, metadata, context)?;
+        let mut root = initialize(&arena, &plan, context)?;
         root.owner_token = token;
         context.checkpoint()?;
         let raw = NonNull::new(unsafe { allocate_raw(Layout::new::<Node>()) })

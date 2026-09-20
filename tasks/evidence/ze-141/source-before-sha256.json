@@ -1,0 +1,19 @@
+{
+  "AGENTS.md": "e34cf1436cd36f815a941dc64113932cabd4096c78be0ed0493ff09c812d8e97",
+  "tasks/evidence/ze-139/README.md": "3220f319ef480249b0981c15695ba8e202a29b42734db119605701040c795110",
+  "crates/zeppelin-embed/src/property_graph/query/completed.rs": "dc2689bc422b0e1f31ad825ba57f94d78b2841d182c210c9db91fdfbf7de6efe",
+  "crates/zeppelin-embed/src/property_graph/query/completed/records.rs": "f4218b5beb35b321e324e191a6e391d9a1c533d8864a049217e9bc9d52a27bfa",
+  "crates/zeppelin-embed/src/property_graph/query/completed/validate.rs": "f7b33938b4dba611b53ee06cc979742597049081e2989c07fef4f2424bb6eef3",
+  "crates/zeppelin-embed/src/property_graph/query/runtime.rs": "fa447d95059cca0c86e15b61adf65eda88fe2a3f13182f9f04b8bbd1bcd0057a",
+  "crates/zeppelin-embed/src/property_graph/query/runtime/driver.rs": "86247f3a247088a65c0f2b25450d3c511be617c92812c0c6a72ad92d20320bb1",
+  "crates/zeppelin-embed/src/property_graph/query/resources.rs": "e0f3aa2c7113414a00ae0d4a6b4b5576d7723bcb692d8ab293517f93c744f3f2",
+  "crates/zeppelin-embed-ffi/src/graph_contracts.rs": "f23f1c12829db80303a8ea18e4fc754de06b45d806668d5129934b743a1737dc",
+  "crates/zeppelin-embed-ffi/src/graph_result.rs": "f13717c951cda180941ec277948f94565bafa69f4cb1f92fd0a453c16721f1a9",
+  "crates/zeppelin-embed-ffi/src/graph_result/registration.rs": "33e3349cdf3d2a1c1f6fbd86ee8d3fe8aad2959a101437176b717eb7d5ab8a7c",
+  "crates/zeppelin-embed-ffi/src/graph_result/test_support.rs": "a58e1bcc30fe388b07f53d34d34ec9881540384cbdeab924798e244e65dc19ea",
+  "tests/adversarial/graph_response.rs": "7f3116c4f9dd0ba086f070435f3c9cc161a7c8d1325f125fd0b7262cddea98ae",
+  "tests/adversarial/coverage.rs": "ba3cfae4c15277542bbda08ac59868233d2a711b53b33d8090662b689c5e0a49",
+  "tests/adversarial_tests.rs": "be629f9c1d37f3d3e99e822290294fa3057eb604995189e2a7b335456e3cb463",
+  "tests/adversarial-oracle/src/graph_response.rs": "a586525ccf44e96b38aa493751af9a67ebdab315092e022d36fc0f88736011f7",
+  ".config/nextest.toml": "2a06cdd38da0a15c714e7df3a4bc331122ed001781c0987fee109321b418ecab"
+}

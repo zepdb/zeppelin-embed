@@ -1,0 +1,80 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.24
+   Compiling zerocopy v0.8.52
+   Compiling getrandom v0.3.4
+   Compiling serde_core v1.0.229
+   Compiling zmij v1.0.23
+   Compiling serde v1.0.229
+   Compiling autocfg v1.5.1
+   Compiling regex-syntax v0.8.11
+   Compiling once_cell v1.21.4
+   Compiling serde_json v1.0.151
+   Compiling anstyle v1.0.14
+   Compiling ciborium-io v0.2.2
+   Compiling itoa v1.0.18
+   Compiling memchr v2.8.3
+   Compiling either v1.17.0
+   Compiling clap_lex v1.1.0
+   Compiling wait-timeout v0.2.1
+   Compiling same-file v1.0.6
+   Compiling cast v0.3.0
+   Compiling itertools v0.10.5
+   Compiling clap_builder v4.6.0
+   Compiling bit-vec v0.8.0
+   Compiling fnv v1.0.7
+   Compiling num-traits v0.2.19
+   Compiling quick-error v1.2.3
+   Compiling walkdir v2.5.0
+   Compiling bit-set v0.8.0
+   Compiling is-terminal v0.4.17
+   Compiling oorandom v11.1.5
+   Compiling unarray v0.1.4
+   Compiling anes v0.1.6
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/crates/zeppelin-embed)
+   Compiling rand_core v0.9.5
+   Compiling tempfile v3.25.0
+   Compiling rand_xorshift v0.4.0
+   Compiling rusty-fork v0.3.1
+   Compiling criterion-plot v0.5.0
+   Compiling regex-automata v0.4.18
+   Compiling syn v2.0.119
+   Compiling syn v3.0.3
+   Compiling clap v4.6.1
+   Compiling regex v1.13.1
+   Compiling serde_derive v1.0.229
+   Compiling zerocopy-derive v0.8.52
+   Compiling tinytemplate v1.2.1
+   Compiling ppv-lite86 v0.2.21
+   Compiling half v2.7.1
+   Compiling rand_chacha v0.9.0
+   Compiling ciborium-ll v0.2.2
+   Compiling rand v0.9.5
+   Compiling ciborium v0.2.2
+   Compiling proptest v1.10.0
+   Compiling criterion v0.5.1
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.50s
+────────────
+ Nextest run ID c3a7933f-c97c-4791-8c40-e70ce6f23896 with nextest profile: default
+    Starting 19 tests across 2 binaries
+        PASS [   0.011s] ( 1/19) zeppelin-embed::graph_compiled_context borrowed_driver_keeps_prior_validation_value_and_operator_work
+        PASS [   0.011s] ( 2/19) zeppelin-embed::graph_compiled_context borrowed_driver_final_close_precedes_cancel_and_drops_completed_owner
+        PASS [   0.011s] ( 3/19) zeppelin-embed::graph_compiled_context charged_fact_arena_is_credited_once_and_rejects_another_query_owner
+        PASS [   0.010s] ( 4/19) zeppelin-embed::graph_completed_results allocations::consuming_detach_is_allocator_denied_and_preserves_every_live_pointer
+        PASS [   0.011s] ( 5/19) zeppelin-embed::graph_completed_results allocations::every_actual_allocation_failure_releases_real_buffers_before_guards
+        PASS [   0.011s] ( 6/19) zeppelin-embed::graph_completed_results allocations::every_typed_pool_uses_real_fallible_allocation_and_exact_cleanup
+        PASS [   0.009s] ( 7/19) zeppelin-embed::graph_completed_results complete_reports_reject_contradictory_kind_route_and_modality_states
+        PASS [   0.009s] ( 8/19) zeppelin-embed::graph_completed_results completed_graph_lists_entities_and_reports_preserve_full_literal_contents
+        PASS [   0.009s] ( 9/19) zeppelin-embed::graph_completed_results completed_receipts_preserve_original_items_deletion_and_mixed_generations
+        PASS [   0.009s] (10/19) zeppelin-embed::graph_completed_results completed_scalar_table_owns_exact_bits_and_bytes_after_sources_are_gone
+        PASS [   0.009s] (11/19) zeppelin-embed::graph_completed_results copy_limit_records_only_performed_chunks_and_returns_no_partial_owner
+        PASS [   0.009s] (12/19) zeppelin-embed::graph_completed_results every_actual_validation_and_copy_checkpoint_can_cancel_without_an_owner
+        PASS [   0.009s] (13/19) zeppelin-embed::graph_completed_results malformed_entity_metadata_and_unreferenced_pool_entries_reject
+        PASS [   0.009s] (14/19) zeppelin-embed::graph_completed_results malformed_lists_and_ranges_never_expose_partial_owned_results
+        PASS [   0.009s] (15/19) zeppelin-embed::graph_completed_results expanded_descendants_and_complete_representation_caps_cannot_be_bypassed
+        PASS [   0.009s] (16/19) zeppelin-embed::graph_completed_results producer_errors_and_identical_metadata_foreign_tokens_remain_distinct
+        PASS [   0.008s] (17/19) zeppelin-embed::graph_completed_results report_geometry_rejects_wrong_generation_call_and_nonfinite_policy
+        PASS [   0.009s] (18/19) zeppelin-embed::graph_completed_results real_retained_capacity_overlap_enforces_query_and_shared_caps
+        PASS [   0.579s] (19/19) zeppelin-embed::graph_compiled_context borrowed_driver_cannot_restart_exhausted_value_work
+────────────
+     Summary [   0.579s] 19 tests run: 19 passed, 0 skipped

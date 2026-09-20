@@ -1,0 +1,7 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s
+────────────
+ Nextest run ID 1052b7b4-18a7-416d-b028-6d28847115b0 with nextest profile: default
+    Starting 1 test across 1 binary (30 tests skipped)
+        PASS [   0.008s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_reports_receipts_outcomes_are_lossless
+────────────
+     Summary [   0.008s] 1 test run: 1 passed, 30 skipped
