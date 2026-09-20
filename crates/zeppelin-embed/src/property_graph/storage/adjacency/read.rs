@@ -53,6 +53,19 @@ pub struct AdjacencyRow {
     pub edge: Edge,
 }
 
+/// Exact immutable range and inclusive physical relationship position for the
+/// next expansion pull. `After` is the exclusive boundary after one descriptor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ExpansionResume {
+    Inclusive {
+        descriptor: RangeKey,
+        relationship: RelId,
+    },
+    After {
+        descriptor: RangeKey,
+    },
+}
+
 /// Source-bound component reader. A returned row always agrees with the native
 /// relationship and has two live endpoints. Missing required endpoints are
 /// corruption; explicit retained tombstones make the edge invisible.
@@ -200,46 +213,144 @@ impl<'a, S: BlockSource, C: RecordCatalog<S>> NativeGraphReader<'a, S, C> {
         r.step(0)?;
         Ok(count)
     }
-    /// Reconstruct one bounded high-level expansion pull without retaining the
-    /// low range cursor/scratch across calls. `skip` is the number of visible
-    /// rows already returned for this exact query. One additional visible row
-    /// is examined to distinguish a full terminal batch from `More`.
+    /// Pull from one exact physical range/relationship position. Resume never
+    /// replays visible rows from the beginning, and `After` avoids incrementing
+    /// `u128::MAX` at a descriptor boundary.
     #[allow(dead_code, reason = "used by the crate-private ZE-45 scoped adapter")]
-    pub(crate) fn expand_after_skip<'m, 'g>(
+    pub(crate) fn expand_from<'m, 'g>(
         &self,
         query: AdjacencyQuery,
-        skip: u64,
+        resume: Option<ExpansionResume>,
         output: &mut QueryArena<'m, 'g, AdjacencyRow>,
         scratch: &mut RangeScratch<'_>,
         r: &mut TreeResources<'_>,
-    ) -> Result<(usize, bool), TreeError> {
+    ) -> Result<(usize, Option<ExpansionResume>), TreeError> {
         scratch.require_owner(r)?;
         check_range(query.relationships)?;
         if output.capacity() == 0 {
             return Err(TreeError::Invalid("zero expansion capacity"));
         }
-        let mut visited = 0_u64;
+        let kind = match query.direction {
+            Direction::Out => TreeKind::OutRanges,
+            Direction::In => TreeKind::InRanges,
+        };
+        let root = self.roots.directory(kind)?;
+        let probe = RangeKey {
+            node: query.node,
+            rel_type: query
+                .relationship_type
+                .unwrap_or(RelTypeId::new(1).map_err(|_| invalid("minimum relationship type"))?),
+            direction: query.direction,
+            lower: if query.relationship_type.is_some() {
+                query.relationships.lower
+            } else {
+                all_relationships()?.lower
+            },
+            upper: UpperBound::Infinity,
+        };
+        let mut start = match resume {
+            Some(ExpansionResume::Inclusive { descriptor, .. })
+            | Some(ExpansionResume::After { descriptor }) => range::directory_key(descriptor)?,
+            None => range::directory_key(probe)?,
+        };
+        if resume.is_none()
+            && query.relationship_type.is_some()
+            && let Some(entry) = lookup_predecessor(self.source, root, &start, r)?
+        {
+            let descriptor = decode_descriptor(root, entry, r)?;
+            if descriptor.key().node == query.node
+                && Some(descriptor.key().rel_type) == query.relationship_type
+                && !beyond(query.relationships.lower, descriptor.key().upper)
+            {
+                start = descriptor.directory_key()?;
+            }
+        }
+        let mut cursor = DirectoryCursor::seek(self.source, root, Some(&start), r)?;
+        let mut resumed = resume.is_none();
         let mut count = 0_usize;
-        let mut more = false;
-        self.visit_adjacency(query, scratch, r, &mut |row, r| {
-            if visited < skip {
-                visited = visited.checked_add(1).ok_or(TreeError::Work)?;
-                return Ok(true);
+        while let Some(entry) = cursor.next_entry(r)? {
+            let descriptor = decode_descriptor(root, entry, r)?;
+            let key = descriptor.key();
+            if key.node != query.node
+                || query
+                    .relationship_type
+                    .is_some_and(|wanted| key.rel_type != wanted)
+            {
+                break;
             }
-            if count == output.capacity() {
-                more = true;
-                return Ok(false);
+            let lower = match resume {
+                Some(ExpansionResume::Inclusive {
+                    descriptor,
+                    relationship,
+                }) if !resumed => {
+                    if key != descriptor {
+                        return Err(invalid("expansion resume descriptor missing"));
+                    }
+                    resumed = true;
+                    relationship
+                }
+                Some(ExpansionResume::After { descriptor }) if !resumed => {
+                    if key != descriptor {
+                        return Err(invalid("expansion resume descriptor missing"));
+                    }
+                    resumed = true;
+                    continue;
+                }
+                _ => query.relationships.lower,
+            };
+            let range = validate_range(self.source, root, entry, self.cutoff, scratch, r)?;
+            let first = range.edges().partition_point(|edge| edge.rel < lower);
+            for (index, edge) in range.edges().iter().enumerate().skip(first) {
+                r.step(std::mem::size_of::<Edge>() as u64)?;
+                r.read_event(NativeReadEvent::AdjacencyEntry)?;
+                if beyond(edge.rel, query.relationships.upper) {
+                    break;
+                }
+                let authoritative = self
+                    .raw_relationship(edge.rel, r)?
+                    .ok_or(TreeError::Missing)?;
+                let (bound, neighbor) = match query.direction {
+                    Direction::Out => (authoritative.source, authoritative.target),
+                    Direction::In => (authoritative.target, authoritative.source),
+                };
+                if bound != query.node
+                    || neighbor != edge.neighbor
+                    || authoritative.relationship_type != key.rel_type
+                {
+                    return Err(invalid("adjacency differs from authoritative relationship"));
+                }
+                if !self.visible(authoritative, r)? {
+                    continue;
+                }
+                r.step(std::mem::size_of::<AdjacencyRow>() as u64)?;
+                r.read_event(NativeReadEvent::CopiedBytes(
+                    std::mem::size_of::<AdjacencyRow>() as u64,
+                ))?;
+                output
+                    .push(AdjacencyRow {
+                        relationship_type: key.rel_type,
+                        edge: *edge,
+                    })
+                    .map_err(|_| TreeError::Memory)?;
+                count += 1;
+                if count == output.capacity() {
+                    let next = range.edges().get(index + 1).map_or(
+                        ExpansionResume::After { descriptor: key },
+                        |edge| ExpansionResume::Inclusive {
+                            descriptor: key,
+                            relationship: edge.rel,
+                        },
+                    );
+                    r.step(0)?;
+                    return Ok((count, Some(next)));
+                }
             }
-            r.step(std::mem::size_of::<AdjacencyRow>() as u64)?;
-            r.read_event(NativeReadEvent::CopiedBytes(
-                std::mem::size_of::<AdjacencyRow>() as u64,
-            ))?;
-            output.push(row).map_err(|_| TreeError::Memory)?;
-            count += 1;
-            Ok(true)
-        })?;
+        }
+        if !resumed {
+            return Err(invalid("expansion resume descriptor missing"));
+        }
         r.step(0)?;
-        Ok((count, more))
+        Ok((count, None))
     }
     /// Count one physical direction after checking both endpoints. A self-loop
     /// counts once in each direction; undirected execution owns its deduplication.
@@ -359,7 +470,7 @@ impl<'a, S: BlockSource, C: RecordCatalog<S>> NativeGraphReader<'a, S, C> {
             relationship_type,
         })
     }
-    pub(super) fn endpoint_live(
+    pub(crate) fn endpoint_live(
         &self,
         node: NodeId,
         r: &mut TreeResources<'_>,

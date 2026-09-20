@@ -1,6 +1,7 @@
 //! Read-only private mapping for native graph object files.
 
 use super::TreeError;
+use crate::lifecycle::native_graph::{NativeMappingOwnership, NativeReadLease};
 use crate::property_graph::storage::artifact::MAX_ARTIFACT_BYTES;
 use std::fs::File;
 use std::path::Path;
@@ -12,6 +13,12 @@ use std::ptr::NonNull;
 
 #[cfg(unix)]
 pub(super) struct NativeReadonlyMapping {
+    _ownership: NativeMappingOwnership,
+    inner: UnixReadonlyMapping,
+}
+
+#[cfg(unix)]
+struct UnixReadonlyMapping {
     _file: File,
     pointer: NonNull<u8>,
     length: usize,
@@ -19,7 +26,11 @@ pub(super) struct NativeReadonlyMapping {
 
 #[cfg(unix)]
 impl NativeReadonlyMapping {
-    pub(super) fn open(file: File, path: &Path) -> Result<Self, TreeError> {
+    pub(super) fn open(
+        file: File,
+        path: &Path,
+        lease: &NativeReadLease,
+    ) -> Result<Self, TreeError> {
         let metadata = file.metadata().map_err(TreeError::Io)?;
         if !metadata.file_type().is_file() {
             return Err(TreeError::Invalid(
@@ -53,14 +64,28 @@ impl NativeReadonlyMapping {
             "mmap returned a null non-failure pointer",
         ))?;
         let _ = path;
-        Ok(Self {
+        let inner = UnixReadonlyMapping {
             _file: file,
             pointer,
             length,
+        };
+        let ownership = lease
+            .track_mapping(inner.as_bytes())
+            .map_err(|_| TreeError::Memory)?;
+        Ok(Self {
+            _ownership: ownership,
+            inner,
         })
     }
 
     pub(super) fn as_bytes(&self) -> &[u8] {
+        self.inner.as_bytes()
+    }
+}
+
+#[cfg(unix)]
+impl UnixReadonlyMapping {
+    fn as_bytes(&self) -> &[u8] {
         // SAFETY: the read-only mapping remains valid for `length` bytes for
         // the entire returned borrow through `&self`.
         unsafe { std::slice::from_raw_parts(self.pointer.as_ptr(), self.length) }
@@ -68,7 +93,7 @@ impl NativeReadonlyMapping {
 }
 
 #[cfg(unix)]
-impl Drop for NativeReadonlyMapping {
+impl Drop for UnixReadonlyMapping {
     fn drop(&mut self) {
         // SAFETY: this is the exact successful mmap pointer/length pair and the
         // sole mapping owner drops once.
@@ -78,12 +103,17 @@ impl Drop for NativeReadonlyMapping {
 
 #[cfg(windows)]
 pub(super) struct NativeReadonlyMapping {
+    _ownership: NativeMappingOwnership,
     inner: crate::sys::windows::FileMapping,
 }
 
 #[cfg(windows)]
 impl NativeReadonlyMapping {
-    pub(super) fn open(file: File, _path: &Path) -> Result<Self, TreeError> {
+    pub(super) fn open(
+        file: File,
+        _path: &Path,
+        lease: &NativeReadLease,
+    ) -> Result<Self, TreeError> {
         let metadata = file.metadata().map_err(TreeError::Io)?;
         if !metadata.file_type().is_file() {
             return Err(TreeError::Invalid(
@@ -99,7 +129,13 @@ impl NativeReadonlyMapping {
         }
         let inner = crate::sys::windows::FileMapping::from_file(file, metadata.len())
             .map_err(TreeError::Io)?;
-        Ok(Self { inner })
+        let ownership = lease
+            .track_mapping(inner.as_bytes())
+            .map_err(|_| TreeError::Memory)?;
+        Ok(Self {
+            _ownership: ownership,
+            inner,
+        })
     }
 
     pub(super) fn as_bytes(&self) -> &[u8] {

@@ -102,6 +102,15 @@ impl<'a, 'b, S: BlockSource, F: FnMut() -> Result<ArtifactIdentity, TreeError>>
     pub fn len(&self) -> usize {
         self.packs.as_slice().len()
     }
+    pub(crate) const fn store(&self) -> StoreInstanceId {
+        self.store
+    }
+    pub(crate) const fn generation(&self) -> GraphGeneration {
+        self.generation
+    }
+    pub(crate) const fn memory(&self) -> &'a StorageMemory<'a> {
+        self.memory
+    }
     /// Whether this preparation allocated no object identity.
     pub fn is_empty(&self) -> bool {
         self.packs.as_slice().is_empty()

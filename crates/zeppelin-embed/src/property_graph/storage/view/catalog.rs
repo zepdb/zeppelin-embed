@@ -1,12 +1,13 @@
 //! Exact read-only catalog bound to one admitted native bundle.
 
-use crate::lifecycle::native_graph::NativeGraphBundle;
+use super::source::NativeQuerySource;
 use crate::property_graph::catalog::{
     CatalogError, CatalogImage, GraphInterpretation, Symbol, SymbolEntry, SymbolHighWaters,
     SymbolKind,
 };
 use crate::property_graph::query::resources::{QueryMemory, QueryReservation};
 use crate::property_graph::query::runtime::RuntimeError;
+use crate::property_graph::query::runtime::RuntimeInstanceId;
 use crate::property_graph::storage::artifact::BlockKind;
 use crate::property_graph::storage::records::RecordCatalog;
 use crate::property_graph::storage::stream::PayloadSlice;
@@ -14,16 +15,19 @@ use crate::property_graph::storage::tree::directory::{BlockSource, TreeError, Tr
 
 pub(crate) struct NativeCatalog<'a, 'm, 'g> {
     image: CatalogImage<'a>,
+    lease_token: u64,
+    runtime: RuntimeInstanceId,
+    memory: &'m QueryMemory<'g>,
     _descriptors: QueryReservation<'m, 'g>,
 }
 
 impl<'a, 'm, 'g> NativeCatalog<'a, 'm, 'g> {
-    pub(crate) fn open<S: BlockSource>(
-        source: &'a S,
-        bundle: &NativeGraphBundle,
-        memory: &'m QueryMemory<'g>,
+    pub(crate) fn open(
+        source: &'a NativeQuerySource<'_, 'm, 'g>,
         resources: &mut TreeResources<'_>,
     ) -> Result<Self, TreeError> {
+        let bundle = source.lease().bundle();
+        let memory = source.memory();
         let required = bundle.catalog();
         let block = source.resolve(required.block, resources)?;
         let identity = block.identity();
@@ -107,8 +111,17 @@ impl<'a, 'm, 'g> NativeCatalog<'a, 'm, 'g> {
         }
         Ok(Self {
             image,
+            lease_token: source.lease().token(),
+            runtime: source.runtime(),
+            memory,
             _descriptors: descriptors,
         })
+    }
+
+    pub(super) fn owns(&self, source: &NativeQuerySource<'_, 'm, 'g>) -> bool {
+        self.lease_token == source.lease().token()
+            && self.runtime == source.runtime()
+            && std::ptr::eq(self.memory, source.memory())
     }
 }
 

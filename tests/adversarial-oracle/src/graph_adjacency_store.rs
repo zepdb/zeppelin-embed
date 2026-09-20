@@ -165,6 +165,53 @@ pub struct Model {
     state: Snapshot,
 }
 
+/// Stable identity for the independent ZE-45 visible-expansion comparator.
+pub const READ_VIEW_COMPARATOR_ID: &str = "ZE-129/read-view-visible-outgoing-v1";
+
+/// Derives the expected visible outgoing expansion from primitive graph
+/// operations and compares exact type/relationship order without normalizing
+/// the engine observation.
+pub fn compare_read_view_expansion(
+    generation: u64,
+    operations: &[Operation],
+    bound_node: u128,
+    observed: &[RelationshipRow],
+) -> Result<(), Difference> {
+    let mut model = Model::new();
+    model
+        .apply(generation, operations)
+        .map_err(|error| Difference {
+            path: "read_view.operations".to_owned(),
+            expected: "valid independent model input".to_owned(),
+            observed: format!("{error:?}"),
+        })?;
+    let observation = model
+        .snapshot()
+        .observation(&ObservationPlan::default())
+        .map_err(|error| Difference {
+            path: "read_view.plan".to_owned(),
+            expected: "valid independent observation".to_owned(),
+            observed: format!("{error:?}"),
+        })?;
+    let expected = observation
+        .visible_outgoing
+        .into_iter()
+        .filter(|row| row.bound_node == bound_node)
+        .map(|row| RelationshipRow {
+            rel: row.rel,
+            source: row.bound_node,
+            target: row.neighbor,
+            relationship_type: row.relationship_type,
+        })
+        .collect::<Vec<_>>();
+    sequence(
+        "read_view.visible_outgoing",
+        &expected,
+        observed,
+        relationship,
+    )
+}
+
 impl Model {
     #[must_use]
     pub fn new() -> Self {

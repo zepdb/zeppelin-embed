@@ -5,7 +5,9 @@
 )]
 use super::{
     payload::PayloadRef,
-    records::{NodeRecordState, RecordCatalog, verify_node_state},
+    records::{
+        NodeRecordState, RecordCatalog, RecordShape, RecordView, verify_node_state, verify_record,
+    },
     stream::PayloadSlice,
     tree::{
         TreeKind,
@@ -37,11 +39,40 @@ pub(crate) use cursor::{
 #[cfg(feature = "graph-cypher")]
 pub(crate) use prepared::{PreparedGraphArtifacts, PreparedGraphFailure};
 #[cfg(feature = "graph-cypher")]
-pub(crate) use source::NativeQuerySource;
+pub(crate) use source::{NativeQuerySource, NativeReadCapability};
 
 /// Source-bound live node returned only inside one admitted read scope.
 pub(crate) struct NodeView<'a, S: BlockSource> {
     record: super::records::RecordView<'a, S>,
+}
+
+/// One live relationship whose topology, revision, provenance and properties
+/// all remain bound to the exact admitted source that verified its record.
+pub(crate) struct RelView<'a, S: BlockSource> {
+    row: super::adjacency::RelationshipRow,
+    record: RecordView<'a, S>,
+}
+
+impl<'a, S: BlockSource> RelView<'a, S> {
+    pub(crate) const fn row(&self) -> super::adjacency::RelationshipRow {
+        self.row
+    }
+
+    pub(crate) const fn record(&self) -> &RecordView<'a, S> {
+        &self.record
+    }
+}
+
+impl<S: BlockSource> std::fmt::Debug for RelView<'_, S> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.row.fmt(formatter)
+    }
+}
+
+impl<S: BlockSource> PartialEq<super::adjacency::RelationshipRow> for RelView<'_, S> {
+    fn eq(&self, other: &super::adjacency::RelationshipRow) -> bool {
+        self.row == *other
+    }
 }
 
 impl<'a, S: BlockSource> NodeView<'a, S> {
@@ -81,16 +112,18 @@ pub(crate) struct GraphReadView<'s, 'lease, 'm, 'g> {
 }
 
 impl<'s, 'lease, 'm, 'g> GraphReadView<'s, 'lease, 'm, 'g> {
-    pub(crate) const fn new(
-        lease: &'lease NativeReadLease,
+    pub(crate) fn new(
         source: &'s NativeQuerySource<'lease, 'm, 'g>,
         catalog: &'s NativeCatalog<'s, 'm, 'g>,
-    ) -> Self {
-        Self {
-            lease,
+    ) -> Result<Self, TreeError> {
+        if !catalog.owns(source) {
+            return Err(TreeError::Invalid("foreign native catalog capability"));
+        }
+        Ok(Self {
+            lease: source.lease(),
             source,
             catalog,
-        }
+        })
     }
 
     pub(crate) fn sequence(&self) -> u64 {
@@ -123,19 +156,62 @@ impl<'s, 'lease, 'm, 'g> GraphReadView<'s, 'lease, 'm, 'g> {
         &self,
         relationship: RelId,
         resources: &mut TreeResources<'_>,
-    ) -> Result<Option<super::adjacency::RelationshipRow>, TreeError> {
+    ) -> Result<Option<RelView<'s, NativeQuerySource<'lease, 'm, 'g>>>, TreeError> {
         self.lease
             .check_active()
             .map_err(crate::property_graph::query::runtime::RuntimeError::Value)
             .map_err(TreeError::Runtime)?;
-        super::adjacency::NativeGraphReader::new(
+        let roots = self.lease.bundle().roots();
+        let Some(entry) = lookup_entry(
             self.source,
-            self.lease.bundle().roots(),
+            roots.directory(TreeKind::Relationships)?,
+            &relationship.get().to_le_bytes(),
+            resources,
+        )?
+        else {
+            return Ok(None);
+        };
+        let payload = PayloadRef::decode(entry.value())?;
+        let record = verify_record(
+            PayloadSlice::new(
+                self.source,
+                roots.store(),
+                entry.creation_generation(),
+                payload,
+            ),
+            crate::property_graph::EntityId::Relationship(relationship),
+            self.catalog,
+            self.lease.bundle().document(),
+            resources,
+        )?;
+        let RecordShape::Relationship {
+            id,
+            source,
+            target,
+            relationship_type,
+        } = record.shape()
+        else {
+            return Err(TreeError::Invalid("relationship directory role"));
+        };
+        let reader = super::adjacency::NativeGraphReader::new(
+            self.source,
+            roots,
             self.lease.bundle().sequence(),
             self.catalog,
             self.lease.bundle().document(),
-        )
-        .relationship(relationship, resources)
+        );
+        if !reader.endpoint_live(source, resources)? || !reader.endpoint_live(target, resources)? {
+            return Ok(None);
+        }
+        Ok(Some(RelView {
+            row: super::adjacency::RelationshipRow {
+                rel: id,
+                source,
+                target,
+                relationship_type,
+            },
+            record,
+        }))
     }
 
     pub(crate) fn node_property(
@@ -149,6 +225,19 @@ impl<'s, 'lease, 'm, 'g> GraphReadView<'s, 'lease, 'm, 'g> {
             .map_err(crate::property_graph::query::runtime::RuntimeError::Value)
             .map_err(TreeError::Runtime)?;
         node.record.property(key, resources)
+    }
+
+    pub(crate) fn relationship_property(
+        &self,
+        relationship: &RelView<'s, NativeQuerySource<'lease, 'm, 'g>>,
+        key: crate::property_graph::catalog::PropertyKeyId,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<Option<PayloadSlice<'s, NativeQuerySource<'lease, 'm, 'g>>>, TreeError> {
+        self.lease
+            .check_active()
+            .map_err(crate::property_graph::query::runtime::RuntimeError::Value)
+            .map_err(TreeError::Runtime)?;
+        relationship.record.property(key, resources)
     }
 
     pub(crate) fn stored_text(

@@ -3,6 +3,7 @@
 use super::mapping::NativeReadonlyMapping;
 use crate::lifecycle::native_graph::NativeReadLease;
 use crate::property_graph::query::resources::{QueryArena, QueryMemory, QueryReservation};
+use crate::property_graph::query::runtime::{RetainedView, RuntimeContext, RuntimeInstanceId};
 use crate::property_graph::storage::allocation::artifact_path;
 use crate::property_graph::storage::artifact::{
     self, ArtifactControlError, ArtifactId, ContainerKind, FramedBlock, PhysicalRef,
@@ -22,21 +23,49 @@ pub(crate) struct NativeQuerySource<'a, 'm, 'g> {
     lease: &'a NativeReadLease,
     memory: &'m QueryMemory<'g>,
     owner: QueryOwner<'m, 'g>,
+    runtime: RuntimeInstanceId,
     slots: QueryArena<'m, 'g, OnceCell<MappedArtifact<'m, 'g>>>,
+}
+
+/// Unforgeable proof that one retained lease, query-memory owner and runtime
+/// view were admitted together before any native source or catalog is opened.
+pub(crate) struct NativeReadCapability<'a, 'm, 'g> {
+    lease: &'a NativeReadLease,
+    memory: &'m QueryMemory<'g>,
+    runtime: RuntimeInstanceId,
+}
+
+impl<'a, 'm, 'g> NativeReadCapability<'a, 'm, 'g> {
+    pub(crate) fn admit(
+        lease: &'a NativeReadLease,
+        runtime: &RuntimeContext<'a, 'm, 'g>,
+    ) -> Result<Self, TreeError> {
+        lease
+            .check_active()
+            .map_err(crate::property_graph::query::runtime::RuntimeError::Value)
+            .map_err(TreeError::Runtime)?;
+        if !std::ptr::eq(runtime.view(), lease.query_view()) {
+            return Err(TreeError::Invalid("foreign native read capability"));
+        }
+        Ok(Self {
+            lease,
+            memory: runtime.memory(),
+            runtime: runtime.identity(),
+        })
+    }
 }
 
 impl<'a, 'm, 'g> NativeQuerySource<'a, 'm, 'g> {
     pub(crate) fn new(
-        lease: &'a NativeReadLease,
-        memory: &'m QueryMemory<'g>,
+        capability: NativeReadCapability<'a, 'm, 'g>,
         resources: &TreeResources<'_>,
         capacity: usize,
     ) -> Result<Self, TreeError> {
         if capacity == 0 {
             return Err(TreeError::Memory);
         }
-        let owner = resources.query_owner(memory)?;
-        let mut slots = QueryArena::new(memory, capacity)
+        let owner = resources.query_owner(capability.memory)?;
+        let mut slots = QueryArena::new(capability.memory, capacity)
             .map_err(crate::property_graph::query::runtime::RuntimeError::Memory)
             .map_err(TreeError::Runtime)?;
         for _ in 0..capacity {
@@ -46,11 +75,24 @@ impl<'a, 'm, 'g> NativeQuerySource<'a, 'm, 'g> {
                 .map_err(TreeError::Runtime)?;
         }
         Ok(Self {
-            lease,
-            memory,
+            lease: capability.lease,
+            memory: capability.memory,
             owner,
+            runtime: capability.runtime,
             slots,
         })
+    }
+
+    pub(super) const fn lease(&self) -> &'a NativeReadLease {
+        self.lease
+    }
+
+    pub(super) const fn memory(&self) -> &'m QueryMemory<'g> {
+        self.memory
+    }
+
+    pub(super) const fn runtime(&self) -> RuntimeInstanceId {
+        self.runtime
     }
 
     fn check_owner(&self, resources: &mut TreeResources<'_>) -> Result<(), TreeError> {
@@ -151,7 +193,7 @@ impl BlockSource for NativeQuerySource<'_, '_, '_> {
             .map_err(TreeError::Io)?;
         let mapped = MappedArtifact {
             artifact: reference.artifact,
-            mapping: NativeReadonlyMapping::open(file, &path)?,
+            mapping: NativeReadonlyMapping::open(file, &path, self.lease)?,
             _path_charge: path_charge,
         };
         // Validate the complete immutable file before exposing or caching it.

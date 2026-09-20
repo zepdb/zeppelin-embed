@@ -43,6 +43,34 @@ pub mod adversarial_test_support;
 #[cfg(all(feature = "graph-cypher", feature = "test-support"))]
 #[doc(hidden)]
 pub mod graph_read_view_test_support {
+    /// One completed production boundary, emitted only after its exact direct
+    /// assertion and any paired clean control returned successfully.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct PathReceipt {
+        /// Registry key owned by the completed boundary.
+        pub key: &'static str,
+        /// Actual scheduled failures observed at that boundary.
+        pub fires: u64,
+        /// Same-seed clean executions observed after or beside the failure.
+        pub clean_controls: u64,
+    }
+
+    /// Primitive actual relationship observation for the independent ZE-129
+    /// oracle crate; this type contains no expected answer or comparator.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct ObservedRelationship {
+        pub rel: u128,
+        pub source: u128,
+        pub target: u128,
+        pub relationship_type: u64,
+    }
+
+    /// Exact receipts and actual rows from one controlled probe execution.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct ActualProbeReport {
+        pub receipts: Vec<PathReceipt>,
+        pub relationships: Vec<ObservedRelationship>,
+    }
     /// Confirms that the controlled fixture boundary is linked only into a
     /// test-support build. Behavioral acceptance remains on the internal scoped
     /// adapter so no installer or read capability becomes a shipping API.
@@ -55,7 +83,7 @@ pub mod graph_read_view_test_support {
     /// Runs the real controlled native adapter, fault, lifetime and release paths.
     /// Panics are retained as test failures; the shipping graph feature has no
     /// installer or fixture surface because this module requires test-support.
-    pub fn run_actual_probe(seed: u64) -> usize {
+    pub fn run_actual_probe(seed: u64) -> ActualProbeReport {
         crate::lifecycle::native_graph::tests::run_adversarial_probe(seed)
     }
 }

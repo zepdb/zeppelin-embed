@@ -11,7 +11,7 @@ use crate::property_graph::storage::{
     tree::{TreeKind, directory::*},
 };
 use crate::property_graph::{
-    EntityId, GraphDeleteMode,
+    EntityId, GraphDeleteMode, GraphGeneration,
     staging::{BaseIdentity, StagedBatch},
     wal::{self, CommitState, WalGraphRoots},
 };
@@ -33,6 +33,13 @@ pub struct NativeGraphCandidate<'a> {
     roots: GraphRoots,
     expected_sequence: u64,
     expected_roots: WalGraphRoots,
+    expected_catalog: wal::RequiredRef,
+    expected_vector: Option<wal::RequiredRef>,
+    expected_text: Option<wal::RequiredRef>,
+    expected_reclaim: Option<wal::RequiredRef>,
+    expected_high_waters: wal::HighWaters,
+    expected_prepared_inventories: StorageBuffer<'a, wal::RequiredRef>,
+    target_generation: GraphGeneration,
     sequence: u64,
     _charge: StorageReservation<'a>,
 }
@@ -48,6 +55,34 @@ impl NativeGraphCandidate<'_> {
     /// Every optional required root, including complete object metadata.
     pub const fn expected_roots(&self) -> WalGraphRoots {
         self.expected_roots
+    }
+    /// Exact admitted catalog descriptor required at handoff.
+    pub const fn expected_catalog(&self) -> wal::RequiredRef {
+        self.expected_catalog
+    }
+    /// Exact optional admitted vector descriptor required at handoff.
+    pub const fn expected_vector(&self) -> Option<wal::RequiredRef> {
+        self.expected_vector
+    }
+    /// Exact optional admitted text descriptor required at handoff.
+    pub const fn expected_text(&self) -> Option<wal::RequiredRef> {
+        self.expected_text
+    }
+    /// Exact optional admitted reclaim descriptor required at handoff.
+    pub const fn expected_reclaim(&self) -> Option<wal::RequiredRef> {
+        self.expected_reclaim
+    }
+    /// Complete admitted allocation high-water identities required at handoff.
+    pub const fn expected_high_waters(&self) -> wal::HighWaters {
+        self.expected_high_waters
+    }
+    /// Exact admitted prepared inventory descriptors required at handoff.
+    pub fn expected_prepared_inventories(&self) -> &[wal::RequiredRef] {
+        self.expected_prepared_inventories.as_slice()
+    }
+    /// Generation assigned to every newly prepared artifact.
+    pub const fn target_generation(&self) -> GraphGeneration {
+        self.target_generation
     }
     /// All eight proposed native roots, including both adjacency directions.
     pub const fn roots(&self) -> GraphRoots {
@@ -74,6 +109,24 @@ pub fn prepare_native_graph<'a, S: BlockSink>(
     memory.require_batch(batch)?;
     bind_base(sink, base, r)?;
     let charge = memory.reserve(std::mem::size_of::<NativeGraphCandidate<'_>>())?;
+    let inventory_count = base
+        .committed
+        .prepared_inventories
+        .len()
+        .map_err(TreeError::WalMetadata)?;
+    let mut expected_prepared_inventories = StorageBuffer::new(memory, inventory_count)?;
+    let mut no_cancel = || false;
+    let mut wal_resources =
+        wal::WalResources::new(u64::MAX, wal::STACK_RESERVATION_BYTES, &mut no_cancel)
+            .map_err(TreeError::WalMetadata)?;
+    for index in 0..inventory_count {
+        expected_prepared_inventories.push(
+            base.committed
+                .prepared_inventories
+                .get(index, &mut wal_resources)
+                .map_err(TreeError::WalMetadata)?,
+        )?;
+    }
     let context = if batch.deltas().is_empty() {
         None
     } else {
@@ -130,6 +183,13 @@ pub fn prepare_native_graph<'a, S: BlockSink>(
         roots,
         expected_sequence: base.committed.sequence,
         expected_roots: base.committed.graph,
+        expected_catalog: base.committed.catalog,
+        expected_vector: base.committed.vector,
+        expected_text: base.committed.text,
+        expected_reclaim: base.committed.reclaim,
+        expected_high_waters: base.committed.high_waters,
+        expected_prepared_inventories,
+        target_generation: roots.generation(),
         sequence: context.map_or(base.committed.sequence, RangeEditContext::target_sequence),
         _charge: charge,
     })

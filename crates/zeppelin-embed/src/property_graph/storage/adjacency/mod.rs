@@ -17,6 +17,7 @@ pub use range::{
     RANGE_DESCRIPTOR_BYTES, RangeDescriptor, RangeEditContext, RangeScratch, ValidatedRange,
     put_range, remove_range, validate_range,
 };
+pub(crate) use read::ExpansionResume;
 pub use read::{
     AdjacencyQuery, AdjacencyRow, NativeGraphReader, RelationshipRange, RelationshipRow,
 };

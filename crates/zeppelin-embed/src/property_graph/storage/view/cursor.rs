@@ -205,7 +205,7 @@ pub(crate) struct ExpandCursor<'view, 'm, 'g> {
     types: Option<QueryArena<'m, 'g, RelTypeId>>,
     type_index: usize,
     phase: Direction,
-    skipped: u64,
+    resume: Option<super::super::adjacency::ExpansionResume>,
     exhausted: bool,
     failed: bool,
     _view: PhantomData<&'view ()>,
@@ -247,7 +247,7 @@ impl<'view, 'm, 'g> ExpandCursor<'view, 'm, 'g> {
                 DirectionSelection::In => Direction::In,
                 DirectionSelection::Out | DirectionSelection::Undirected => Direction::Out,
             },
-            skipped: 0,
+            resume: None,
             exhausted,
             failed: false,
             _view: PhantomData,
@@ -321,7 +321,7 @@ impl<'view, 'm, 'g> ExpandCursor<'view, 'm, 'g> {
                 catalog,
                 lease.bundle().document(),
             );
-            let (count, more) = reader.expand_after_skip(
+            let (_count, resume) = reader.expand_from(
                 AdjacencyQuery {
                     node: self.node,
                     direction: self.phase,
@@ -332,7 +332,7 @@ impl<'view, 'm, 'g> ExpandCursor<'view, 'm, 'g> {
                         upper: UpperBound::Infinity,
                     },
                 },
-                self.skipped,
+                self.resume,
                 &mut adjacent,
                 &mut scratch,
                 &mut resources,
@@ -349,13 +349,10 @@ impl<'view, 'm, 'g> ExpandCursor<'view, 'm, 'g> {
                     .ok_or(TreeError::Invalid("visible adjacency relationship missing"))?;
                 private.push(relationship).map_err(|_| TreeError::Memory)?;
             }
-            self.skipped = self
-                .skipped
-                .checked_add(count as u64)
-                .ok_or(TreeError::Work)?;
+            self.resume = resume;
             drop(scratch);
             drop(resources);
-            if !more {
+            if self.resume.is_none() {
                 self.advance_query();
             }
         }
@@ -381,7 +378,7 @@ impl<'view, 'm, 'g> ExpandCursor<'view, 'm, 'g> {
     }
 
     fn advance_query(&mut self) {
-        self.skipped = 0;
+        self.resume = None;
         if let Some(types) = self.types.as_ref()
             && self.type_index + 1 < types.len()
         {

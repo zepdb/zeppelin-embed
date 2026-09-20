@@ -19176,10 +19176,93 @@ fn native_read_view_probe_reaches_actual_faults_and_same_seed_controls() {
         let mut coverage = adversarial::coverage::CoverageRegistry::default();
         let report = adversarial::graph_read_view::probe(seed, &mut coverage)
             .expect("ZE-45 controlled read-view boundary probe");
-        assert_eq!(report.actual_paths, 15);
+        assert_eq!(
+            report.actual_paths,
+            adversarial::graph_read_view::REQUIRED_COVERAGE.len()
+        );
+        assert_eq!(
+            report.comparator,
+            zeppelin_embed_adversarial_oracle::graph_adjacency_store::READ_VIEW_COMPARATOR_ID
+        );
         for key in adversarial::graph_read_view::REQUIRED_COVERAGE {
             assert_eq!(coverage.count(key), 1, "missing ZE-45 path {key}");
         }
+    }
+}
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn native_read_view_receipts_and_independent_comparator_reject_missing_or_mutated_facts() {
+    use zeppelin_embed::graph_read_view_test_support::{
+        ActualProbeReport, ObservedRelationship, PathReceipt,
+    };
+
+    let node_a = (1_u128 << 100) + 1;
+    let node_b = node_a + 1;
+    let rel = 1_u128 << 110;
+    let complete = ActualProbeReport {
+        receipts: adversarial::graph_read_view::REQUIRED_COVERAGE
+            .iter()
+            .filter(|key| **key != "property-graph.read-view.oracle.can-fire")
+            .map(|key| PathReceipt {
+                key,
+                fires: u64::from(key.ends_with(".fire")),
+                clean_controls: u64::from(!key.ends_with(".fire")),
+            })
+            .collect(),
+        relationships: vec![
+            ObservedRelationship {
+                rel: rel + 1,
+                source: node_a,
+                target: node_b,
+                relationship_type: 1,
+            },
+            ObservedRelationship {
+                rel: rel + 3,
+                source: node_a,
+                target: node_b,
+                relationship_type: 1,
+            },
+            ObservedRelationship {
+                rel: rel + 2,
+                source: node_a,
+                target: node_a,
+                relationship_type: 2,
+            },
+        ],
+    };
+
+    let mut missing = complete.clone();
+    missing.receipts.pop();
+    assert!(
+        adversarial::graph_read_view::record_report(
+            &missing,
+            &mut adversarial::coverage::CoverageRegistry::default()
+        )
+        .unwrap_err()
+        .contains("missing ZE-45 receipt")
+    );
+
+    let mut mutated = complete.clone();
+    mutated.relationships[0].target = node_a;
+    let mut mutated_coverage = adversarial::coverage::CoverageRegistry::default();
+    assert!(
+        adversarial::graph_read_view::record_report(&mutated, &mut mutated_coverage)
+            .unwrap_err()
+            .contains("ZE-129 read-view difference")
+    );
+    assert_eq!(
+        mutated_coverage.count("property-graph.read-view.oracle.can-fire"),
+        0
+    );
+
+    let mut restored_coverage = adversarial::coverage::CoverageRegistry::default();
+    assert_eq!(
+        adversarial::graph_read_view::record_report(&complete, &mut restored_coverage).unwrap(),
+        adversarial::graph_read_view::REQUIRED_COVERAGE.len()
+    );
+    for key in adversarial::graph_read_view::REQUIRED_COVERAGE {
+        assert_eq!(restored_coverage.count(key), 1, "missing receipt {key}");
     }
 }
 

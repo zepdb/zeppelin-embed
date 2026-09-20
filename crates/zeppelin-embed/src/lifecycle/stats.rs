@@ -708,7 +708,7 @@ impl Store {
             .map_err(|_| StoreError::Synchronization {
                 component: "WAL writer",
             })?;
-        let open_files =
+        let base_open_files =
             u64::from(writer_lock.is_some()).saturating_add(u64::from(wal_writer.is_some()));
         let active_guard = self
             .active
@@ -760,7 +760,20 @@ impl Store {
             source: std::io::Error::other("snapshot lease count exceeds u64"),
         })?;
         let mut mapped_resident_bytes = 0_u64;
+        let mut segment_bytes = 0_u64;
         for segment in snapshot.all_segments() {
+            let bytes =
+                u64::try_from(segment.mapped_bytes()).map_err(|_| StoreError::Statistics {
+                    component: "segment mapped bytes",
+                    source: std::io::Error::other("segment mapped byte count exceeds u64"),
+                })?;
+            segment_bytes =
+                segment_bytes
+                    .checked_add(bytes)
+                    .ok_or_else(|| StoreError::Statistics {
+                        component: "segment mapped bytes",
+                        source: std::io::Error::other("segment mapped byte count overflow"),
+                    })?;
             let resident =
                 segment
                     .mapped_resident_bytes()
@@ -776,6 +789,19 @@ impl Store {
                     }
                 })?;
         }
+        let (native_mapping_count, native_resident_bytes) = self.native_graph.mapping_stats()?;
+        mapped_resident_bytes = mapped_resident_bytes
+            .checked_add(native_resident_bytes)
+            .ok_or_else(|| StoreError::Statistics {
+                component: "mapped resident bytes",
+                source: std::io::Error::other("mapped resident byte count overflow"),
+            })?;
+        let open_files = base_open_files
+            .checked_add(native_mapping_count)
+            .ok_or_else(|| StoreError::Statistics {
+                component: "open file count",
+                source: std::io::Error::other("open file count overflow"),
+            })?;
         #[cfg(any(target_os = "macos", target_os = "ios"))]
         let phys_footprint =
             Some(
@@ -795,7 +821,7 @@ impl Store {
             snapshot_bytes: accounting.snapshot_bytes,
             mapped_bytes: accounting.mapped_bytes,
             mapped_resident_bytes,
-            segment_bytes: accounting.mapped_bytes,
+            segment_bytes,
             active_segment_bytes,
             retired_active_segment_bytes,
             active_row_count,

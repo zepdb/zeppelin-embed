@@ -15,7 +15,9 @@ use crate::property_graph::resources::{GraphReservation, GraphResources};
 use crate::property_graph::staging::BaseIdentity;
 use crate::property_graph::storage::artifact::{BlockKind, PhysicalRef};
 use crate::property_graph::storage::tree::directory::GraphRoots;
-use crate::property_graph::wal::{HighWaters, RequiredRef, WalGraphRoots};
+use crate::property_graph::wal::{
+    ArtifactDescriptor, HighWaters, InventoryChange, RequiredRef, WalGraphRoots,
+};
 use crate::vfs::Vfs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,6 +25,8 @@ use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::Instant;
 
 const MAX_NATIVE_READ_LEASES: usize = 1024;
+const MAX_NATIVE_READ_MAPPINGS: usize = MAX_NATIVE_READ_LEASES * 16;
+const MAX_NATIVE_PREPARATIONS: usize = MAX_NATIVE_READ_LEASES;
 
 /// Native lifecycle rejection, kept separate from tree/query data errors.
 #[derive(Debug)]
@@ -188,6 +192,22 @@ impl NativeGraphBundle {
         self.catalog
     }
 
+    pub(crate) const fn vector(&self) -> Option<RequiredRef> {
+        self.vector
+    }
+
+    pub(crate) const fn text(&self) -> Option<RequiredRef> {
+        self.text
+    }
+
+    pub(crate) const fn reclaim(&self) -> Option<RequiredRef> {
+        self.reclaim
+    }
+
+    pub(crate) fn prepared_inventories(&self) -> &[RequiredRef] {
+        &self.prepared_inventories
+    }
+
     pub(crate) const fn high_waters(&self) -> HighWaters {
         self.high_waters
     }
@@ -326,10 +346,28 @@ struct RegistryEntry {
     owner: Weak<NativeReadOwner>,
 }
 
+#[derive(Clone, Copy)]
+struct NativeMappingEntry {
+    token: u64,
+    address: usize,
+    length: usize,
+}
+
+#[derive(Clone, Copy)]
+struct NativePreparationEntry {
+    token: u64,
+    address: usize,
+    length: usize,
+}
+
 struct PublicationState {
     current: Option<Arc<NativeGraphBundle>>,
     leases: Vec<Option<RegistryEntry>>,
+    mappings: Vec<Option<NativeMappingEntry>>,
+    preparations: Vec<Option<NativePreparationEntry>>,
     next_token: u64,
+    next_mapping_token: u64,
+    next_preparation_token: u64,
     closing: bool,
     #[cfg(any(test, feature = "test-support"))]
     admission_hook: Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>,
@@ -338,6 +376,7 @@ struct PublicationState {
 pub(crate) struct NativeGraphPublication {
     state: Mutex<PublicationState>,
     changed: Condvar,
+    accounting: Arc<super::stats::Accounting>,
     _charge: super::stats::AccountedCounter,
 }
 
@@ -353,9 +392,25 @@ impl NativeGraphPublication {
                 needed: u64::MAX,
                 component: "native graph registry",
             })?;
+        let mapping_bytes = MAX_NATIVE_READ_MAPPINGS
+            .checked_mul(std::mem::size_of::<Option<NativeMappingEntry>>())
+            .ok_or(StoreError::AllocationFailed {
+                needed: u64::MAX,
+                component: "native graph mapping registry",
+            })?;
+        let preparation_bytes = MAX_NATIVE_PREPARATIONS
+            .checked_mul(std::mem::size_of::<Option<NativePreparationEntry>>())
+            .ok_or(StoreError::AllocationFailed {
+                needed: u64::MAX,
+                component: "native graph preparation registry",
+            })?;
         let bytes = std::mem::size_of::<Self>()
             .checked_add(2 * std::mem::size_of::<usize>())
             .and_then(|bytes| bytes.checked_add(lease_bytes))
+            .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<usize>()))
+            .and_then(|bytes| bytes.checked_add(mapping_bytes))
+            .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<usize>()))
+            .and_then(|bytes| bytes.checked_add(preparation_bytes))
             .ok_or(StoreError::AllocationFailed {
                 needed: u64::MAX,
                 component: "native graph registry",
@@ -373,18 +428,157 @@ impl NativeGraphPublication {
             component: "native graph registry",
         })?;
         leases.resize_with(MAX_NATIVE_READ_LEASES, || None);
+        let mut mappings = Vec::new();
+        #[cfg(feature = "allocation-audit")]
+        let reserved = crate::allocation_audit::attributed(|| {
+            mappings.try_reserve_exact(MAX_NATIVE_READ_MAPPINGS)
+        });
+        #[cfg(not(feature = "allocation-audit"))]
+        let reserved = mappings.try_reserve_exact(MAX_NATIVE_READ_MAPPINGS);
+        reserved.map_err(|_| StoreError::AllocationFailed {
+            needed: mapping_bytes as u64,
+            component: "native graph mapping registry",
+        })?;
+        mappings.resize_with(MAX_NATIVE_READ_MAPPINGS, || None);
+        let mut preparations = Vec::new();
+        #[cfg(feature = "allocation-audit")]
+        let reserved = crate::allocation_audit::attributed(|| {
+            preparations.try_reserve_exact(MAX_NATIVE_PREPARATIONS)
+        });
+        #[cfg(not(feature = "allocation-audit"))]
+        let reserved = preparations.try_reserve_exact(MAX_NATIVE_PREPARATIONS);
+        reserved.map_err(|_| StoreError::AllocationFailed {
+            needed: preparation_bytes as u64,
+            component: "native graph preparation registry",
+        })?;
+        preparations.resize_with(MAX_NATIVE_PREPARATIONS, || None);
         Ok(Arc::new(Self {
             state: Mutex::new(PublicationState {
                 current: None,
                 leases,
+                mappings,
+                preparations,
                 next_token: 1,
+                next_mapping_token: 1,
+                next_preparation_token: 1,
                 closing: false,
                 #[cfg(any(test, feature = "test-support"))]
                 admission_hook: None,
             }),
             changed: Condvar::new(),
+            accounting: Arc::clone(accounting),
             _charge: charge,
         }))
+    }
+
+    fn register_prepared(
+        self: &Arc<Self>,
+        inventory: &[InventoryChange],
+    ) -> Result<NativePreparedRegistration, NativeGraphError> {
+        let mut state = self.state.lock().map_err(|_| {
+            NativeGraphError::Store(StoreError::Synchronization {
+                component: "native graph publication",
+            })
+        })?;
+        if state.closing {
+            return Err(NativeGraphError::Store(StoreError::Closing));
+        }
+        let slot = state
+            .preparations
+            .iter()
+            .position(Option::is_none)
+            .ok_or(NativeGraphError::LeaseLimit)?;
+        let token = state.next_preparation_token;
+        state.next_preparation_token = state
+            .next_preparation_token
+            .checked_add(1)
+            .ok_or(NativeGraphError::IdentityExhausted)?;
+        *state
+            .preparations
+            .get_mut(slot)
+            .ok_or(NativeGraphError::LeaseLimit)? = Some(NativePreparationEntry {
+            token,
+            address: inventory.as_ptr() as usize,
+            length: inventory.len(),
+        });
+        Ok(NativePreparedRegistration {
+            publication: Arc::downgrade(self),
+            slot,
+            token,
+        })
+    }
+
+    fn register_mapping(
+        self: &Arc<Self>,
+        range: &[u8],
+    ) -> Result<NativeMappingOwnership, NativeGraphError> {
+        let bytes = u64::try_from(range.len())
+            .map_err(|_| NativeGraphError::Invalid("native graph mapping length exceeds u64"))?;
+        let reservation = self.accounting.track_mapping(bytes)?;
+        let mut state = self.state.lock().map_err(|_| {
+            NativeGraphError::Store(StoreError::Synchronization {
+                component: "native graph publication",
+            })
+        })?;
+        let slot = state
+            .mappings
+            .iter()
+            .position(Option::is_none)
+            .ok_or(NativeGraphError::LeaseLimit)?;
+        let token = state.next_mapping_token;
+        state.next_mapping_token = state
+            .next_mapping_token
+            .checked_add(1)
+            .ok_or(NativeGraphError::IdentityExhausted)?;
+        *state
+            .mappings
+            .get_mut(slot)
+            .ok_or(NativeGraphError::LeaseLimit)? = Some(NativeMappingEntry {
+            token,
+            address: range.as_ptr() as usize,
+            length: range.len(),
+        });
+        Ok(NativeMappingOwnership {
+            _registration: NativeMappingRegistration {
+                publication: Arc::downgrade(self),
+                slot,
+                token,
+            },
+            _reservation: reservation,
+        })
+    }
+
+    pub(crate) fn mapping_stats(&self) -> Result<(u64, u64), StoreError> {
+        let state = self.state.lock().map_err(|_| StoreError::Synchronization {
+            component: "native graph publication",
+        })?;
+        let mut count = 0_u64;
+        let mut resident = 0_u64;
+        for entry in state.mappings.iter().flatten() {
+            count = count.checked_add(1).ok_or_else(|| StoreError::Statistics {
+                component: "native graph mapped file count",
+                source: std::io::Error::other("mapped file count overflow"),
+            })?;
+            // SAFETY: a mapping registration is removed before its sole mapping
+            // owner unmaps this exact range. Holding the publication mutex keeps
+            // that removal and unmap from racing this read-only residency probe.
+            let range =
+                unsafe { std::slice::from_raw_parts(entry.address as *const u8, entry.length) };
+            #[cfg(unix)]
+            let bytes = crate::sys::memory::mincore_resident_bytes(range);
+            #[cfg(windows)]
+            let bytes = crate::sys::windows::resident_bytes(range);
+            resident = resident
+                .checked_add(bytes.map_err(|source| StoreError::Statistics {
+                    component: "native graph mapped resident bytes",
+                    source,
+                })?)
+                .ok_or_else(|| StoreError::Statistics {
+                    component: "native graph mapped resident bytes",
+                    source: std::io::Error::other("mapped resident byte count overflow"),
+                })?;
+        }
+        Ok((count, resident))
     }
 
     fn install(&self, bundle: Arc<NativeGraphBundle>) -> Result<(), NativeGraphError> {
@@ -466,8 +660,19 @@ impl NativeGraphPublication {
         let capacity = 1_usize
             .checked_add(state.leases.iter().filter(|entry| entry.is_some()).count())
             .ok_or(NativeGraphError::LeaseLimit)?;
+        let prepared_capacity = state
+            .preparations
+            .iter()
+            .flatten()
+            .try_fold(0_usize, |total, entry| total.checked_add(entry.length))
+            .ok_or(NativeGraphError::LeaseLimit)?;
         let bytes = capacity
             .checked_mul(std::mem::size_of::<Arc<NativeGraphBundle>>())
+            .and_then(|bytes| {
+                prepared_capacity
+                    .checked_mul(std::mem::size_of::<ArtifactDescriptor>())
+                    .and_then(|prepared| bytes.checked_add(prepared))
+            })
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<NativeProtectedRoots>()))
             .ok_or(NativeGraphError::LeaseLimit)?;
         let mut charge = resources.reserve(bytes)?;
@@ -482,6 +687,18 @@ impl NativeGraphPublication {
                 component: "native graph protected roots",
             })
         })?;
+        let mut prepared = Vec::new();
+        #[cfg(feature = "allocation-audit")]
+        let reserved =
+            crate::allocation_audit::attributed(|| prepared.try_reserve_exact(prepared_capacity));
+        #[cfg(not(feature = "allocation-audit"))]
+        let reserved = prepared.try_reserve_exact(prepared_capacity);
+        reserved.map_err(|_| {
+            NativeGraphError::Store(StoreError::AllocationFailed {
+                needed: bytes as u64,
+                component: "native graph prepared roots",
+            })
+        })?;
         if let Some(current) = state.current.as_ref() {
             bundles.push(Arc::clone(current));
         }
@@ -494,14 +711,30 @@ impl NativeGraphPublication {
                 bundles.push(Arc::clone(&owner.bundle));
             }
         }
+        for entry in state.preparations.iter().flatten() {
+            // SAFETY: registration is removed while holding this mutex before
+            // its owning charged inventory is dropped. Capture holds the same
+            // mutex while copying the immutable finalized descriptors.
+            let changes = unsafe {
+                std::slice::from_raw_parts(entry.address as *const InventoryChange, entry.length)
+            };
+            prepared.extend(changes.iter().map(|change| change.object));
+        }
         let actual = bundles
             .capacity()
             .checked_mul(std::mem::size_of::<Arc<NativeGraphBundle>>())
+            .and_then(|bytes| {
+                prepared
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<ArtifactDescriptor>())
+                    .and_then(|prepared| bytes.checked_add(prepared))
+            })
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<NativeProtectedRoots>()))
             .ok_or(NativeGraphError::LeaseLimit)?;
         charge.resize(actual)?;
         Ok(NativeProtectedRoots {
             bundles,
+            prepared,
             _charge: charge,
         })
     }
@@ -570,6 +803,68 @@ struct NativeReadRegistration {
     token: u64,
 }
 
+struct NativeMappingRegistration {
+    publication: Weak<NativeGraphPublication>,
+    slot: usize,
+    token: u64,
+}
+
+pub(crate) struct NativePreparedRegistration {
+    publication: Weak<NativeGraphPublication>,
+    slot: usize,
+    token: u64,
+}
+
+impl Drop for NativePreparedRegistration {
+    fn drop(&mut self) {
+        let Some(publication) = self.publication.upgrade() else {
+            return;
+        };
+        let mut state = publication
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state
+            .preparations
+            .get(self.slot)
+            .and_then(Option::as_ref)
+            .is_some_and(|entry| entry.token == self.token)
+            && let Some(slot) = state.preparations.get_mut(self.slot)
+        {
+            *slot = None;
+        }
+    }
+}
+
+impl Drop for NativeMappingRegistration {
+    fn drop(&mut self) {
+        let Some(publication) = self.publication.upgrade() else {
+            return;
+        };
+        let mut state = publication
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state
+            .mappings
+            .get(self.slot)
+            .and_then(Option::as_ref)
+            .is_some_and(|entry| entry.token == self.token)
+            && let Some(slot) = state.mappings.get_mut(self.slot)
+        {
+            *slot = None;
+        }
+    }
+}
+
+/// Owns both exact mapped-byte accounting and the live residency probe. Field
+/// order removes the probe before releasing mapped bytes; the mapping itself is
+/// declared after this owner by `NativeReadonlyMapping` and unmaps last.
+pub(crate) struct NativeMappingOwnership {
+    _registration: NativeMappingRegistration,
+    _reservation: super::stats::MappingReservation,
+}
+
 impl Drop for NativeReadRegistration {
     fn drop(&mut self) {
         let Some(publication) = self.publication.upgrade() else {
@@ -631,6 +926,36 @@ impl NativeReadLease {
             Ok(())
         }
     }
+
+    pub(crate) fn track_mapping(
+        &self,
+        range: &[u8],
+    ) -> Result<NativeMappingOwnership, NativeGraphError> {
+        let publication =
+            self.owner
+                .registration
+                .publication
+                .upgrade()
+                .ok_or(NativeGraphError::Invalid(
+                    "native graph publication no longer owns mapping",
+                ))?;
+        publication.register_mapping(range)
+    }
+
+    pub(crate) fn register_prepared(
+        &self,
+        inventory: &[InventoryChange],
+    ) -> Result<NativePreparedRegistration, NativeGraphError> {
+        let publication =
+            self.owner
+                .registration
+                .publication
+                .upgrade()
+                .ok_or(NativeGraphError::Invalid(
+                    "native graph publication no longer owns preparation",
+                ))?;
+        publication.register_prepared(inventory)
+    }
 }
 
 impl RetainedView for NativeReadLease {
@@ -645,6 +970,7 @@ impl RetainedView for NativeReadLease {
 
 pub(crate) struct NativeProtectedRoots {
     bundles: Vec<Arc<NativeGraphBundle>>,
+    prepared: Vec<ArtifactDescriptor>,
     _charge: GraphReservation,
 }
 
@@ -655,6 +981,10 @@ impl NativeProtectedRoots {
 
     fn bundle_count(&self) -> usize {
         self.bundles.len()
+    }
+
+    fn contains_prepared(&self, object: ArtifactDescriptor) -> bool {
+        self.prepared.contains(&object)
     }
 }
 
@@ -718,20 +1048,27 @@ impl Store {
         use crate::property_graph::query::resources::QueryMemory;
         use crate::property_graph::query::runtime::{RuntimeContext, RuntimeError};
         use crate::property_graph::storage::tree::directory::TreeResources;
-        use crate::property_graph::storage::{GraphReadView, NativeCatalog, NativeQuerySource};
+        use crate::property_graph::storage::{
+            GraphReadView, NativeCatalog, NativeQuerySource, NativeReadCapability,
+        };
 
         let lease = self.admit_native_read()?;
+        self.active_queries.fetch_add(1, Ordering::Relaxed);
+        let _active_query = super::ActiveQuery {
+            count: &self.active_queries,
+        };
         let shared = GraphResources::from_store(self)?;
         let memory = QueryMemory::new(&shared, memory_limit)
             .map_err(RuntimeError::Memory)
             .map_err(crate::property_graph::storage::tree::directory::TreeError::Runtime)?;
         let mut runtime = RuntimeContext::new(&lease, control, &memory, limits)
             .map_err(crate::property_graph::storage::tree::directory::TreeError::Runtime)?;
+        let capability = NativeReadCapability::admit(&lease, &runtime)?;
         let mut resources = TreeResources::for_query(&mut runtime)?;
-        let source = NativeQuerySource::new(&lease, &memory, &resources, source_slots)?;
-        let catalog = NativeCatalog::open(&source, lease.bundle(), &memory, &mut resources)?;
+        let source = NativeQuerySource::new(capability, &resources, source_slots)?;
+        let catalog = NativeCatalog::open(&source, &mut resources)?;
         drop(resources);
-        let view = GraphReadView::new(&lease, &source, &catalog);
+        let view = GraphReadView::new(&source, &catalog)?;
         let result = consumer.consume(&view, &mut runtime)?;
         runtime
             .checkpoint()
@@ -810,15 +1147,17 @@ pub(crate) mod tests {
     use crate::property_graph::storage::records::RecordCatalog;
     use crate::property_graph::storage::stream::PayloadSlice;
     use crate::property_graph::storage::tree::directory::GraphRoots;
-    use crate::property_graph::storage::tree::directory::{BlockSource, TreeResources};
+    use crate::property_graph::storage::tree::directory::{BlockSource, TreeError, TreeResources};
     use crate::property_graph::storage::{
         CursorState, DirectionSelection, GraphReadView, LabelSelection, NativeCatalog,
-        NativeQuerySource, NodeCursor, PreparedGraphArtifacts, RelationshipTypeSelection,
+        NativeQuerySource, NativeReadCapability, NodeCursor, PreparedGraphArtifacts,
+        PreparedGraphFailure, RelationshipTypeSelection,
     };
     use crate::property_graph::wal::{ArtifactDescriptor, HighWaters, RequiredRef, WalGraphRoots};
     use crate::property_graph::{
         ApplicationKey, CanonicalContents, EntityId, EntityKind, GraphGeneration, GraphName,
-        GraphRevision, NodeRef, PropertyValue, StoreInstanceId, with_local_refs,
+        GraphProperty, GraphRevision, NodeId, NodeRef, PropertyData, PropertyValue,
+        StoreInstanceId, with_local_refs,
     };
     use crate::vfs::{CountingVfs, StdVfs, SyncKind, Vfs, VfsFile};
     use std::fs::File;
@@ -1343,6 +1682,10 @@ pub(crate) mod tests {
             .collect::<Vec<_>>();
         with_local_refs(|refs| {
             let mut labels_a = [label];
+            let relationship_properties = [GraphProperty::new(
+                GraphName::new("weight").unwrap(),
+                PropertyValue::new(PropertyData::I64(-17)).unwrap(),
+            )];
             let coordinates = [f32::from_bits(0x3f80_0001), f32::from_bits(0x8000_0000)];
             let embedding = document.as_ref().map(|document| {
                 crate::property_graph::CanonicalEmbedding::new(document, &coordinates).unwrap()
@@ -1413,7 +1756,7 @@ pub(crate) mod tests {
                     source: NodeRef::Local(refs.node(0).unwrap()),
                     target: NodeRef::Local(refs.node(1).unwrap()),
                     relationship_type: rel_type,
-                    properties: &[],
+                    properties: &relationship_properties,
                 }),
             });
             let staged = stage_structured(&admitted, &requests, &writer, &mut |_| Ok(())).unwrap();
@@ -2055,8 +2398,9 @@ pub(crate) mod tests {
         let control = QueryControl::Cancel(CancelToken::new());
         let mut runtime =
             RuntimeContext::new(&lease, &control, &memory, RuntimeLimits::default()).unwrap();
+        let capability = NativeReadCapability::admit(&lease, &runtime).unwrap();
         let mut resources = TreeResources::for_query(&mut runtime).unwrap();
-        let source = NativeQuerySource::new(&lease, &memory, &resources, 2).unwrap();
+        let source = NativeQuerySource::new(capability, &resources, 2).unwrap();
         assert_eq!(vfs.open_for_map_calls(), opens_before_scope);
 
         store
@@ -2121,8 +2465,9 @@ pub(crate) mod tests {
         let control = QueryControl::Cancel(CancelToken::new());
         let mut runtime =
             RuntimeContext::new(&lease, &control, &memory, RuntimeLimits::default()).unwrap();
+        let capability = NativeReadCapability::admit(&lease, &runtime).unwrap();
         let mut resources = TreeResources::for_query(&mut runtime).unwrap();
-        let source = NativeQuerySource::new(&lease, &memory, &resources, 2).unwrap();
+        let source = NativeQuerySource::new(capability, &resources, 2).unwrap();
 
         std::fs::remove_file(&path).unwrap();
         assert!(matches!(
@@ -2186,8 +2531,9 @@ pub(crate) mod tests {
         let control = QueryControl::Cancel(CancelToken::new());
         let mut runtime =
             RuntimeContext::new(&lease, &control, &memory, RuntimeLimits::default()).unwrap();
+        let capability = NativeReadCapability::admit(&lease, &runtime).unwrap();
         let mut resources = TreeResources::for_query(&mut runtime).unwrap();
-        let source = NativeQuerySource::new(&lease, &memory, &resources, 2).unwrap();
+        let source = NativeQuerySource::new(capability, &resources, 2).unwrap();
         let borrowed = source.resolve(reference, &mut resources).unwrap();
         drop(store);
         assert_eq!(borrowed.payload(), b"mapping-survives-store-drop");
@@ -2251,11 +2597,11 @@ pub(crate) mod tests {
         let control = QueryControl::Cancel(CancelToken::new());
         let mut runtime =
             RuntimeContext::new(&lease, &control, &memory, RuntimeLimits::default()).unwrap();
+        let capability = NativeReadCapability::admit(&lease, &runtime).unwrap();
         let mut resources = TreeResources::for_query(&mut runtime).unwrap();
-        let source = NativeQuerySource::new(&lease, &memory, &resources, 8).unwrap();
-        let catalog =
-            NativeCatalog::open(&source, lease.bundle(), &memory, &mut resources).unwrap();
-        let view = GraphReadView::new(&lease, &source, &catalog);
+        let source = NativeQuerySource::new(capability, &resources, 8).unwrap();
+        let catalog = NativeCatalog::open(&source, &mut resources).unwrap();
+        let view = GraphReadView::new(&source, &catalog).unwrap();
         let node = crate::property_graph::NodeId::new((1_u128 << 100) + 1).unwrap();
         assert!(matches!(
             view.lookup_node(node, &mut resources),
@@ -2466,6 +2812,16 @@ pub(crate) mod tests {
             artifacts.abort_inventory().count(),
             artifacts.objects().len()
         );
+        assert_eq!(artifacts.inventory().len(), artifacts.objects().len());
+        let protected = store.capture_native_read_roots().unwrap();
+        for change in artifacts.inventory() {
+            assert_eq!(
+                change.state,
+                crate::property_graph::wal::InventoryState::Prepared
+            );
+            assert!(protected.contains_prepared(change.object));
+        }
+        drop(protected);
         let (_candidate, _objects, retained) = artifacts.into_parts();
         assert_eq!(retained.bundle().base(), base_identity);
         drop(retained);
@@ -2541,6 +2897,9 @@ pub(crate) mod tests {
         .expect("open store");
         let identity = StoreInstanceId::new(1_u128 << 87).unwrap();
         let generation = GraphGeneration::new(1);
+        store
+            .install_native_graph_for_test(bundle(identity, 1, 281))
+            .unwrap();
         let shared = GraphResources::from_store(&store).unwrap();
         let writer = WriteMemory::new(&shared, WriteLimits::default()).unwrap();
         let control = QueryControl::Cancel(CancelToken::new());
@@ -2646,15 +3005,22 @@ pub(crate) mod tests {
                 .unwrap();
             drop(setup);
             let mut injected = TreeResources::for_prepare(&storage, 0).unwrap();
-            assert!(matches!(
-                objects.finish(&mut injected),
-                Err(TreeError::Work)
-            ));
+            let error = objects.finish(&mut injected).unwrap_err();
+            assert!(matches!(error, TreeError::Work));
             assert_eq!(objects.abort_inventory().count(), 1);
             assert!(
                 objects.artifact(0).is_err(),
                 "seal failure exposed no candidate"
             );
+            let failure = PreparedGraphFailure::from_preparation(
+                error,
+                objects,
+                store.admit_native_read().unwrap(),
+            );
+            let (error, objects, base) = failure.into_parts();
+            assert!(matches!(error, TreeError::Work));
+            assert_eq!(objects.abort_inventory().count(), 1);
+            assert_eq!(base.bundle().base().generation, generation);
         }
         assert_eq!(storage.reserved_bytes(), baseline);
         drop(storage);
@@ -2766,11 +3132,12 @@ pub(crate) mod tests {
         let control = QueryControl::Cancel(CancelToken::new());
         let mut runtime_a =
             RuntimeContext::new(&lease, &control, &memory, RuntimeLimits::default()).unwrap();
+        let capability = NativeReadCapability::admit(&lease, &runtime_a).unwrap();
         let mut initial = TreeResources::for_query(&mut runtime_a).unwrap();
-        let source = NativeQuerySource::new(&lease, &memory, &initial, 4).unwrap();
-        let catalog = NativeCatalog::open(&source, lease.bundle(), &memory, &mut initial).unwrap();
+        let source = NativeQuerySource::new(capability, &initial, 4).unwrap();
+        let catalog = NativeCatalog::open(&source, &mut initial).unwrap();
         drop(initial);
-        let view = GraphReadView::new(&lease, &source, &catalog);
+        let view = GraphReadView::new(&source, &catalog).unwrap();
         let mut foreign = view
             .relationship_cursor(RelationshipTypeSelection::All, &mut runtime_a)
             .unwrap();
@@ -2814,6 +3181,41 @@ pub(crate) mod tests {
     }
 
     #[cfg_attr(test, test)]
+    fn native_read_capability_rejects_foreign_runtime_before_source_construction() {
+        let directory = tempfile::tempdir().expect("store directory");
+        let store = Store::open(
+            directory.path(),
+            OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+        )
+        .expect("open store");
+        let identity = StoreInstanceId::new(1_u128 << 79).unwrap();
+        store
+            .install_native_graph_for_test(actual_producer_bundle(
+                &store,
+                directory.path(),
+                identity,
+            ))
+            .unwrap();
+        let first = store.admit_native_read().unwrap();
+        let second = store.admit_native_read().unwrap();
+        let shared = GraphResources::from_store(&store).unwrap();
+        let memory = QueryMemory::new(&shared, 2 * 1024 * 1024).unwrap();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let runtime =
+            RuntimeContext::new(&second, &control, &memory, RuntimeLimits::default()).unwrap();
+        let before = runtime.counters();
+        assert!(matches!(
+            NativeReadCapability::admit(&first, &runtime),
+            Err(TreeError::Invalid("foreign native read capability"))
+        ));
+        assert_eq!(runtime.counters(), before);
+        drop(runtime);
+        drop(second);
+        drop(first);
+        store.close().unwrap();
+    }
+
+    #[cfg_attr(test, test)]
     fn native_read_cursor_rejects_same_metadata_foreign_admission() {
         use crate::property_graph::catalog::RelTypeId;
         use crate::property_graph::storage::adjacency::RelationshipRow;
@@ -2839,24 +3241,24 @@ pub(crate) mod tests {
         let control = QueryControl::Cancel(CancelToken::new());
         let mut runtime_a =
             RuntimeContext::new(&first, &control, &memory, RuntimeLimits::default()).unwrap();
+        let source_a_capability = NativeReadCapability::admit(&first, &runtime_a).unwrap();
         let mut initial_a = TreeResources::for_query(&mut runtime_a).unwrap();
-        let source_a = NativeQuerySource::new(&first, &memory, &initial_a, 4).unwrap();
-        let catalog_a =
-            NativeCatalog::open(&source_a, first.bundle(), &memory, &mut initial_a).unwrap();
+        let source_a = NativeQuerySource::new(source_a_capability, &initial_a, 4).unwrap();
+        let catalog_a = NativeCatalog::open(&source_a, &mut initial_a).unwrap();
         drop(initial_a);
-        let view_a = GraphReadView::new(&first, &source_a, &catalog_a);
+        let view_a = GraphReadView::new(&source_a, &catalog_a).unwrap();
         let mut cursor = view_a
             .relationship_cursor(RelationshipTypeSelection::All, &mut runtime_a)
             .unwrap();
 
         let mut runtime_b =
             RuntimeContext::new(&second, &control, &memory, RuntimeLimits::default()).unwrap();
+        let source_b_capability = NativeReadCapability::admit(&second, &runtime_b).unwrap();
         let mut initial_b = TreeResources::for_query(&mut runtime_b).unwrap();
-        let source_b = NativeQuerySource::new(&second, &memory, &initial_b, 4).unwrap();
-        let catalog_b =
-            NativeCatalog::open(&source_b, second.bundle(), &memory, &mut initial_b).unwrap();
+        let source_b = NativeQuerySource::new(source_b_capability, &initial_b, 4).unwrap();
+        let catalog_b = NativeCatalog::open(&source_b, &mut initial_b).unwrap();
         drop(initial_b);
-        let view_b = GraphReadView::new(&second, &source_b, &catalog_b);
+        let view_b = GraphReadView::new(&source_b, &catalog_b).unwrap();
         let before = runtime_a.counters();
         let dummy = RelationshipRow {
             rel: RelId::new(1).unwrap(),
@@ -2910,11 +3312,12 @@ pub(crate) mod tests {
         let control = QueryControl::Cancel(CancelToken::new());
         let mut runtime =
             RuntimeContext::new(&lease, &control, &memory, RuntimeLimits::default()).unwrap();
+        let capability = NativeReadCapability::admit(&lease, &runtime).unwrap();
         let mut initial = TreeResources::for_query(&mut runtime).unwrap();
-        let source = NativeQuerySource::new(&lease, &memory, &initial, 8).unwrap();
-        let catalog = NativeCatalog::open(&source, lease.bundle(), &memory, &mut initial).unwrap();
+        let source = NativeQuerySource::new(capability, &initial, 8).unwrap();
+        let catalog = NativeCatalog::open(&source, &mut initial).unwrap();
         drop(initial);
-        let view = GraphReadView::new(&lease, &source, &catalog);
+        let view = GraphReadView::new(&source, &catalog).unwrap();
         store
             .install_native_graph_for_test(bundle(identity, 2, 231))
             .unwrap();
@@ -3068,11 +3471,12 @@ pub(crate) mod tests {
         let control = QueryControl::Cancel(CancelToken::new());
         let mut runtime =
             RuntimeContext::new(&lease, &control, &memory, RuntimeLimits::default()).unwrap();
+        let capability = NativeReadCapability::admit(&lease, &runtime).unwrap();
         let mut initial = TreeResources::for_query(&mut runtime).unwrap();
-        let source = NativeQuerySource::new(&lease, &memory, &initial, 8).unwrap();
-        let catalog = NativeCatalog::open(&source, lease.bundle(), &memory, &mut initial).unwrap();
+        let source = NativeQuerySource::new(capability, &initial, 8).unwrap();
+        let catalog = NativeCatalog::open(&source, &mut initial).unwrap();
         drop(initial);
-        let view = GraphReadView::new(&lease, &source, &catalog);
+        let view = GraphReadView::new(&source, &catalog).unwrap();
         let node_a = NodeId::new((1_u128 << 100) + 1).unwrap();
         let node_b = NodeId::new((1_u128 << 100) + 2).unwrap();
         let mut resources = TreeResources::for_query(&mut runtime).unwrap();
@@ -3103,6 +3507,7 @@ pub(crate) mod tests {
         store.close().unwrap();
     }
 
+    #[cfg_attr(test, test)]
     fn actual_max_identity_and_split_contract() {
         use crate::property_graph::catalog::RelTypeId;
         use crate::property_graph::storage::adjacency::exact_split_fixture;
@@ -3131,11 +3536,12 @@ pub(crate) mod tests {
         let control = QueryControl::Cancel(CancelToken::new());
         let mut runtime =
             RuntimeContext::new(&lease, &control, &memory, RuntimeLimits::default()).unwrap();
+        let capability = NativeReadCapability::admit(&lease, &runtime).unwrap();
         let mut initial = TreeResources::for_query(&mut runtime).unwrap();
-        let source = NativeQuerySource::new(&lease, &memory, &initial, 16).unwrap();
-        let catalog = NativeCatalog::open(&source, lease.bundle(), &memory, &mut initial).unwrap();
+        let source = NativeQuerySource::new(capability, &initial, 16).unwrap();
+        let catalog = NativeCatalog::open(&source, &mut initial).unwrap();
         drop(initial);
-        let view = GraphReadView::new(&lease, &source, &catalog);
+        let view = GraphReadView::new(&source, &catalog).unwrap();
         let node_a = NodeId::new(u128::MAX - 1).unwrap();
         let node_b = NodeId::new(u128::MAX).unwrap();
         let max_relationship = RelId::new(u128::MAX).unwrap();
@@ -3148,10 +3554,39 @@ pub(crate) mod tests {
             .lookup_relationship(max_relationship, &mut resources)
             .unwrap()
             .expect("u128::MAX relationship is live");
-        assert_eq!(row.rel, max_relationship);
-        assert_eq!(row.source, node_a);
-        assert_eq!(row.target, node_b);
-        assert_eq!(row.relationship_type, relationship_type);
+        assert_eq!(
+            row.record().incarnation(),
+            EntityId::Relationship(max_relationship)
+        );
+        assert_eq!(row.record().revision(), GraphRevision::new(1).unwrap());
+        let crate::property_graph::storage::records::RecordShape::Relationship {
+            id,
+            source: source_node,
+            target: target_node,
+            relationship_type: actual_type,
+        } = row.record().shape()
+        else {
+            panic!("relationship lookup returned a node record");
+        };
+        assert_eq!(id, max_relationship);
+        assert_eq!(source_node, node_a);
+        assert_eq!(target_node, node_b);
+        assert_eq!(actual_type, relationship_type);
+        let property = view
+            .relationship_property(
+                &row,
+                crate::property_graph::catalog::PropertyKeyId::new(1).unwrap(),
+                &mut resources,
+            )
+            .unwrap()
+            .expect("relationship property is present");
+        let mut encoded = [0_u8; 9];
+        assert_eq!(
+            property.read_at(0, &mut encoded, &mut resources).unwrap(),
+            9
+        );
+        assert_eq!(encoded[0], 3);
+        assert_eq!(i64::from_le_bytes(encoded[1..].try_into().unwrap()), -17);
         drop(resources);
 
         let dummy = crate::property_graph::storage::adjacency::RelationshipRow {
@@ -3219,8 +3654,9 @@ pub(crate) mod tests {
         let control = QueryControl::Cancel(CancelToken::new());
         let mut runtime =
             RuntimeContext::new(&lease, &control, &memory, RuntimeLimits::default()).unwrap();
+        let capability = NativeReadCapability::admit(&lease, &runtime).unwrap();
         let mut resources = TreeResources::for_query(&mut runtime).unwrap();
-        let source = NativeQuerySource::new(&lease, &memory, &resources, 16).unwrap();
+        let source = NativeQuerySource::new(capability, &resources, 16).unwrap();
         let root = lease.bundle().roots().directory(TreeKind::Nodes).unwrap();
         let block = source
             .resolve(
@@ -3294,11 +3730,12 @@ pub(crate) mod tests {
         let control = QueryControl::Cancel(CancelToken::new());
         let mut runtime =
             RuntimeContext::new(&lease, &control, &memory, RuntimeLimits::default()).unwrap();
+        let capability = NativeReadCapability::admit(&lease, &runtime).unwrap();
         let mut initial = TreeResources::for_query(&mut runtime).unwrap();
-        let source = NativeQuerySource::new(&lease, &memory, &initial, 16).unwrap();
-        let catalog = NativeCatalog::open(&source, lease.bundle(), &memory, &mut initial).unwrap();
+        let source = NativeQuerySource::new(capability, &initial, 16).unwrap();
+        let catalog = NativeCatalog::open(&source, &mut initial).unwrap();
         drop(initial);
-        let view = GraphReadView::new(&lease, &source, &catalog);
+        let view = GraphReadView::new(&source, &catalog).unwrap();
 
         let mut plan_scratch = memory.reserve_external_capacity().unwrap();
         plan_scratch
@@ -3445,12 +3882,12 @@ pub(crate) mod tests {
         let control = QueryControl::Cancel(CancelToken::new());
         let mut old_runtime =
             RuntimeContext::new(&old, &control, &old_memory, RuntimeLimits::default()).unwrap();
+        let old_source_capability = NativeReadCapability::admit(&old, &old_runtime).unwrap();
         let mut old_initial = TreeResources::for_query(&mut old_runtime).unwrap();
-        let old_source = NativeQuerySource::new(&old, &old_memory, &old_initial, 8).unwrap();
-        let old_catalog =
-            NativeCatalog::open(&old_source, old.bundle(), &old_memory, &mut old_initial).unwrap();
+        let old_source = NativeQuerySource::new(old_source_capability, &old_initial, 8).unwrap();
+        let old_catalog = NativeCatalog::open(&old_source, &mut old_initial).unwrap();
         drop(old_initial);
-        let old_view = GraphReadView::new(&old, &old_source, &old_catalog);
+        let old_view = GraphReadView::new(&old_source, &old_catalog).unwrap();
 
         let rel = RelId::new((1_u128 << 110) + 1).unwrap();
         let expected = RelationshipRow {
@@ -3463,7 +3900,8 @@ pub(crate) mod tests {
         assert_eq!(
             old_view
                 .lookup_relationship(rel, &mut old_resources)
-                .unwrap(),
+                .unwrap()
+                .map(|relationship| relationship.row()),
             Some(expected)
         );
         drop(old_resources);
@@ -3477,26 +3915,21 @@ pub(crate) mod tests {
             RuntimeLimits::default(),
         )
         .unwrap();
+        let tombstone_capability =
+            NativeReadCapability::admit(&tombstone_lease, &tombstone_runtime).unwrap();
         let mut tombstone_initial = TreeResources::for_query(&mut tombstone_runtime).unwrap();
         let tombstone_source =
-            NativeQuerySource::new(&tombstone_lease, &tombstone_memory, &tombstone_initial, 12)
-                .unwrap();
-        let tombstone_catalog = NativeCatalog::open(
-            &tombstone_source,
-            tombstone_lease.bundle(),
-            &tombstone_memory,
-            &mut tombstone_initial,
-        )
-        .unwrap();
+            NativeQuerySource::new(tombstone_capability, &tombstone_initial, 12).unwrap();
+        let tombstone_catalog =
+            NativeCatalog::open(&tombstone_source, &mut tombstone_initial).unwrap();
         drop(tombstone_initial);
-        let tombstone_view =
-            GraphReadView::new(&tombstone_lease, &tombstone_source, &tombstone_catalog);
+        let tombstone_view = GraphReadView::new(&tombstone_source, &tombstone_catalog).unwrap();
         let mut tombstone_resources = TreeResources::for_query(&mut tombstone_runtime).unwrap();
-        assert_eq!(
+        assert!(
             tombstone_view
                 .lookup_relationship(rel, &mut tombstone_resources)
-                .unwrap(),
-            None,
+                .unwrap()
+                .is_none(),
             "tombstoned far endpoint hides rather than corrupts the relationship",
         );
         drop(tombstone_resources);
@@ -3566,18 +3999,13 @@ pub(crate) mod tests {
             RuntimeLimits::default(),
         )
         .unwrap();
+        let current_capability = NativeReadCapability::admit(&current, &current_runtime).unwrap();
         let mut current_initial = TreeResources::for_query(&mut current_runtime).unwrap();
         let current_source =
-            NativeQuerySource::new(&current, &current_memory, &current_initial, 8).unwrap();
-        let current_catalog = NativeCatalog::open(
-            &current_source,
-            current.bundle(),
-            &current_memory,
-            &mut current_initial,
-        )
-        .unwrap();
+            NativeQuerySource::new(current_capability, &current_initial, 8).unwrap();
+        let current_catalog = NativeCatalog::open(&current_source, &mut current_initial).unwrap();
         drop(current_initial);
-        let current_view = GraphReadView::new(&current, &current_source, &current_catalog);
+        let current_view = GraphReadView::new(&current_source, &current_catalog).unwrap();
         let mut current_resources = TreeResources::for_query(&mut current_runtime).unwrap();
         assert!(matches!(
             current_view.lookup_relationship(rel, &mut current_resources),
@@ -3624,8 +4052,8 @@ pub(crate) mod tests {
         store.close().unwrap();
     }
 
-    #[cfg_attr(test, test)]
-    fn native_read_limits_are_cumulative_and_refused_batch_is_private() {
+    fn native_read_limits_are_cumulative_and_refused_batch_is_private_probe() -> (u64, u64, u64, u64)
+    {
         use crate::property_graph::catalog::RelTypeId;
         use crate::property_graph::query::runtime::{RuntimeError, WorkKind};
         use crate::property_graph::storage::adjacency::RelationshipRow;
@@ -3654,11 +4082,12 @@ pub(crate) mod tests {
         let memory = QueryMemory::new(&shared, 8 * 1024 * 1024).unwrap();
         let mut runtime =
             RuntimeContext::new(&lease, &control, &memory, RuntimeLimits::default()).unwrap();
+        let capability = NativeReadCapability::admit(&lease, &runtime).unwrap();
         let mut initial = TreeResources::for_query(&mut runtime).unwrap();
-        let source = NativeQuerySource::new(&lease, &memory, &initial, 8).unwrap();
-        let catalog = NativeCatalog::open(&source, lease.bundle(), &memory, &mut initial).unwrap();
+        let source = NativeQuerySource::new(capability, &initial, 8).unwrap();
+        let catalog = NativeCatalog::open(&source, &mut initial).unwrap();
         drop(initial);
-        let view = GraphReadView::new(&lease, &source, &catalog);
+        let view = GraphReadView::new(&source, &catalog).unwrap();
         let before = runtime.counters().get(WorkKind::Lookups);
         let mut resources = TreeResources::for_query(&mut runtime).unwrap();
         assert!(view.lookup_node(node, &mut resources).unwrap().is_some());
@@ -3670,6 +4099,8 @@ pub(crate) mod tests {
         let after_two = runtime.counters().get(WorkKind::Lookups);
         assert!(after_one > before);
         assert_eq!(after_two - after_one, after_one - before);
+        let work_clean =
+            u64::from(after_one > before && after_two - after_one == after_one - before);
         drop(view);
         drop(catalog);
         drop(source);
@@ -3684,17 +4115,13 @@ pub(crate) mod tests {
             .with_limit(WorkKind::CopiedBytes, 0)
             .unwrap();
         let mut limited = RuntimeContext::new(&lease, &control, &limited_memory, limits).unwrap();
+        let limited_source_capability = NativeReadCapability::admit(&lease, &limited).unwrap();
         let mut initial = TreeResources::for_query(&mut limited).unwrap();
-        let limited_source = NativeQuerySource::new(&lease, &limited_memory, &initial, 8).unwrap();
-        let limited_catalog = NativeCatalog::open(
-            &limited_source,
-            lease.bundle(),
-            &limited_memory,
-            &mut initial,
-        )
-        .unwrap();
+        let limited_source =
+            NativeQuerySource::new(limited_source_capability, &initial, 8).unwrap();
+        let limited_catalog = NativeCatalog::open(&limited_source, &mut initial).unwrap();
         drop(initial);
-        let limited_view = GraphReadView::new(&lease, &limited_source, &limited_catalog);
+        let limited_view = GraphReadView::new(&limited_source, &limited_catalog).unwrap();
         let mut cursor = limited_view
             .relationship_cursor(RelationshipTypeSelection::All, &mut limited)
             .unwrap();
@@ -3705,12 +4132,15 @@ pub(crate) mod tests {
             relationship_type: RelTypeId::new(1).unwrap(),
         };
         let mut output = [sentinel];
-        assert!(matches!(
-            limited_view.scan_relationships(&mut cursor, &mut output, &mut limited),
+        let limited_result =
+            limited_view.scan_relationships(&mut cursor, &mut output, &mut limited);
+        let work_fire = u64::from(matches!(
+            limited_result,
             Err(TreeError::Runtime(RuntimeError::Limit(
                 WorkKind::CopiedBytes
             )))
         ));
+        assert_eq!(work_fire, 1);
         assert_eq!(output, [sentinel]);
         assert_eq!(limited.counters().get(WorkKind::CopiedBytes), 0);
         drop(cursor);
@@ -3725,22 +4155,38 @@ pub(crate) mod tests {
 
         let refused = QueryMemory::new(&shared, std::mem::size_of::<QueryMemory<'_>>()).unwrap();
         let baseline = refused.reserved_bytes();
-        assert!(matches!(
-            RuntimeContext::new(&lease, &control, &refused, RuntimeLimits::default()),
+        let refused_result =
+            RuntimeContext::new(&lease, &control, &refused, RuntimeLimits::default());
+        let memory_fire = u64::from(matches!(
+            refused_result,
             Err(RuntimeError::Memory(
                 crate::property_graph::query::resources::MemoryError::Limit
             ))
         ));
+        assert_eq!(memory_fire, 1);
         assert_eq!(refused.reserved_bytes(), baseline);
+        let memory_clean = u64::from(refused.reserved_bytes() == baseline);
 
         drop(lease);
         store.close().unwrap();
+        (memory_fire, memory_clean, work_fire, work_clean)
     }
 
-    #[cfg_attr(test, test)]
-    fn native_read_undirected_self_loop_and_parallel_edges_are_exact() {
+    #[test]
+    fn native_read_limits_are_cumulative_and_refused_batch_is_private() {
+        assert_eq!(
+            native_read_limits_are_cumulative_and_refused_batch_is_private_probe(),
+            (1, 1, 1, 1)
+        );
+    }
+
+    fn native_read_undirected_self_loop_and_parallel_edges_are_exact_probe()
+    -> Vec<crate::property_graph::storage::adjacency::RelationshipRow> {
         use crate::property_graph::catalog::RelTypeId;
-        use crate::property_graph::storage::adjacency::RelationshipRow;
+        use crate::property_graph::query::runtime::WorkKind;
+        use crate::property_graph::storage::adjacency::{RangeDescriptor, RelationshipRow};
+        use crate::property_graph::storage::tree::directory::DirectoryCursor;
+        use crate::property_graph::storage::tree::{Key, TreeKind};
         use crate::property_graph::{NodeId, RelId};
 
         let directory = tempfile::tempdir().expect("store directory");
@@ -3758,14 +4204,39 @@ pub(crate) mod tests {
         let control = QueryControl::Cancel(CancelToken::new());
         let mut runtime =
             RuntimeContext::new(&lease, &control, &memory, RuntimeLimits::default()).unwrap();
+        let capability = NativeReadCapability::admit(&lease, &runtime).unwrap();
         let mut initial = TreeResources::for_query(&mut runtime).unwrap();
-        let source = NativeQuerySource::new(&lease, &memory, &initial, 8).unwrap();
-        let catalog = NativeCatalog::open(&source, lease.bundle(), &memory, &mut initial).unwrap();
+        let source = NativeQuerySource::new(capability, &initial, 8).unwrap();
+        let catalog = NativeCatalog::open(&source, &mut initial).unwrap();
         drop(initial);
-        let view = GraphReadView::new(&lease, &source, &catalog);
+        let view = GraphReadView::new(&source, &catalog).unwrap();
         let node_a = NodeId::new((1_u128 << 100) + 1).unwrap();
         let node_b = NodeId::new((1_u128 << 100) + 2).unwrap();
         let rel_base = 1_u128 << 110;
+        let root = lease
+            .bundle()
+            .roots()
+            .directory(TreeKind::OutRanges)
+            .unwrap();
+        let mut resources = TreeResources::for_query(&mut runtime).unwrap();
+        let mut ranges = DirectoryCursor::seek(&source, root, None, &mut resources).unwrap();
+        let mut node_descriptors = Vec::new();
+        while let Some(entry) = ranges.next_entry(&mut resources).unwrap() {
+            let Key::Inline(key) = entry.key() else {
+                panic!("persisted adjacency descriptor key must be inline");
+            };
+            let descriptor = RangeDescriptor::decode(root.kind(), key, entry.value()).unwrap();
+            if descriptor.key().node == node_a {
+                node_descriptors.push(descriptor.key());
+            }
+        }
+        assert_eq!(node_descriptors.len(), 2);
+        assert_ne!(
+            node_descriptors.first().unwrap().rel_type,
+            node_descriptors.last().unwrap().rel_type
+        );
+        drop(ranges);
+        drop(resources);
         let dummy = RelationshipRow {
             rel: RelId::new(1).unwrap(),
             source: node_a,
@@ -3782,8 +4253,14 @@ pub(crate) mod tests {
             .unwrap();
         let mut observed = Vec::new();
         loop {
+            let before = runtime.counters().get(WorkKind::AdjacencyEntries);
             let mut output = [dummy];
             let (count, state) = view.expand(&mut cursor, &mut output, &mut runtime).unwrap();
+            let adjacency_work = runtime.counters().get(WorkKind::AdjacencyEntries) - before;
+            assert!(
+                adjacency_work <= 8,
+                "one pull replayed {adjacency_work} physical rows"
+            );
             observed.extend_from_slice(&output[..count]);
             if state == CursorState::Done {
                 break;
@@ -3835,9 +4312,16 @@ pub(crate) mod tests {
         drop(runtime);
         drop(lease);
         store.close().unwrap();
+        observed
     }
 
-    fn caller_cancel_and_clean_control_contract() {
+    #[test]
+    fn native_read_undirected_self_loop_and_parallel_edges_are_exact() {
+        let observed = native_read_undirected_self_loop_and_parallel_edges_are_exact_probe();
+        assert_eq!(observed.len(), 3);
+    }
+
+    fn caller_cancel_and_clean_control_contract() -> (u64, u64) {
         use crate::property_graph::NodeId;
         use crate::property_graph::query::QueryError;
         use crate::property_graph::query::runtime::RuntimeError;
@@ -3864,18 +4348,23 @@ pub(crate) mod tests {
         let control = QueryControl::Cancel(cancel.clone());
         let mut runtime =
             RuntimeContext::new(&lease, &control, &memory, RuntimeLimits::default()).unwrap();
+        let capability = NativeReadCapability::admit(&lease, &runtime).unwrap();
         let mut initial = TreeResources::for_query(&mut runtime).unwrap();
-        let source = NativeQuerySource::new(&lease, &memory, &initial, 8).unwrap();
-        let catalog = NativeCatalog::open(&source, lease.bundle(), &memory, &mut initial).unwrap();
+        let source = NativeQuerySource::new(capability, &initial, 8).unwrap();
+        let catalog = NativeCatalog::open(&source, &mut initial).unwrap();
         drop(initial);
-        let view = GraphReadView::new(&lease, &source, &catalog);
+        let view = GraphReadView::new(&source, &catalog).unwrap();
         cancel.cancel();
-        assert!(matches!(
-            TreeResources::for_query(&mut runtime),
-            Err(TreeError::Runtime(RuntimeError::Value(
-                QueryError::Cancelled
-            )))
-        ));
+        let cancel_fire = {
+            let cancelled = TreeResources::for_query(&mut runtime);
+            u64::from(matches!(
+                cancelled,
+                Err(TreeError::Runtime(RuntimeError::Value(
+                    QueryError::Cancelled
+                )))
+            ))
+        };
+        assert_eq!(cancel_fire, 1);
         drop(view);
         drop(catalog);
         drop(source);
@@ -3890,18 +4379,19 @@ pub(crate) mod tests {
             RuntimeLimits::default(),
         )
         .unwrap();
+        let capability = NativeReadCapability::admit(&lease, &clean).unwrap();
         let mut initial = TreeResources::for_query(&mut clean).unwrap();
-        let source = NativeQuerySource::new(&lease, &clean_memory, &initial, 8).unwrap();
-        let catalog =
-            NativeCatalog::open(&source, lease.bundle(), &clean_memory, &mut initial).unwrap();
+        let source = NativeQuerySource::new(capability, &initial, 8).unwrap();
+        let catalog = NativeCatalog::open(&source, &mut initial).unwrap();
         drop(initial);
-        let view = GraphReadView::new(&lease, &source, &catalog);
+        let view = GraphReadView::new(&source, &catalog).unwrap();
         let mut resources = TreeResources::for_query(&mut clean).unwrap();
-        assert!(
+        let clean_control = u64::from(
             view.lookup_node(NodeId::new((1_u128 << 100) + 1).unwrap(), &mut resources)
                 .unwrap()
-                .is_some()
+                .is_some(),
         );
+        assert_eq!(clean_control, 1);
         drop(resources);
         drop(view);
         drop(catalog);
@@ -3909,9 +4399,10 @@ pub(crate) mod tests {
         drop(clean);
         drop(lease);
         store.close().unwrap();
+        (cancel_fire, clean_control)
     }
 
-    fn scheduled_map_io_fire_and_clean_control_contract() {
+    fn scheduled_map_io_fire_and_clean_control_contract() -> (u64, u64) {
         use crate::property_graph::NodeId;
         use crate::property_graph::storage::tree::directory::TreeError;
 
@@ -3937,11 +4428,12 @@ pub(crate) mod tests {
         let control = QueryControl::Cancel(CancelToken::new());
         let mut runtime =
             RuntimeContext::new(&lease, &control, &memory, RuntimeLimits::default()).unwrap();
+        let capability = NativeReadCapability::admit(&lease, &runtime).unwrap();
         let mut initial = TreeResources::for_query(&mut runtime).unwrap();
-        let source = NativeQuerySource::new(&lease, &memory, &initial, 8).unwrap();
-        let catalog = NativeCatalog::open(&source, lease.bundle(), &memory, &mut initial).unwrap();
+        let source = NativeQuerySource::new(capability, &initial, 8).unwrap();
+        let catalog = NativeCatalog::open(&source, &mut initial).unwrap();
         drop(initial);
-        let view = GraphReadView::new(&lease, &source, &catalog);
+        let view = GraphReadView::new(&source, &catalog).unwrap();
         let scheduled = vfs.arm_next();
         let node = NodeId::new((1_u128 << 100) + 1).unwrap();
         assert!(matches!(
@@ -3969,9 +4461,94 @@ pub(crate) mod tests {
         );
         drop(lease);
         store.close().unwrap();
+        (vfs.fires.load(Ordering::Relaxed), 1)
     }
 
-    pub(crate) fn run_adversarial_probe(seed: u64) -> usize {
+    struct ObserveNativeReadStats<'a> {
+        store: &'a Store,
+        baseline_mapped: u64,
+        baseline_resident: u64,
+        baseline_queries: u64,
+    }
+
+    impl NativeReadConsumer<(u64, u64)> for ObserveNativeReadStats<'_> {
+        fn consume<'s, 'lease, 'm, 'g>(
+            &mut self,
+            view: &crate::property_graph::storage::GraphReadView<'s, 'lease, 'm, 'g>,
+            runtime: &mut RuntimeContext<'lease, 'm, 'g>,
+        ) -> Result<(u64, u64), TreeError> {
+            let mut resources = TreeResources::for_query(runtime)?;
+            let node = NodeId::new((1_u128 << 100) + 1)
+                .map_err(|_| TreeError::Invalid("stats fixture node identity"))?;
+            if view.lookup_node(node, &mut resources)?.is_none() {
+                return Err(TreeError::Invalid("stats fixture node missing"));
+            }
+            drop(resources);
+            let live = self
+                .store
+                .stats()
+                .map_err(|_| TreeError::Invalid("stats unavailable"))?;
+            assert_eq!(live.active_queries, self.baseline_queries + 1);
+            assert!(live.mapped_bytes > self.baseline_mapped);
+            assert!(live.mapped_resident_bytes > self.baseline_resident);
+            Ok((live.mapped_bytes, live.mapped_resident_bytes))
+        }
+    }
+
+    #[cfg_attr(test, test)]
+    fn native_read_stats_track_live_mapping_residency_and_active_query() {
+        let directory = tempfile::tempdir().expect("store directory");
+        let store = Store::open(
+            directory.path(),
+            OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+        )
+        .expect("open store");
+        let identity = StoreInstanceId::new(1_u128 << 80).unwrap();
+        store
+            .install_native_graph_for_test(actual_producer_bundle(
+                &store,
+                directory.path(),
+                identity,
+            ))
+            .unwrap();
+        let baseline = store.stats().unwrap();
+        let live = store
+            .with_native_read(
+                &QueryControl::Cancel(CancelToken::new()),
+                RuntimeLimits::default(),
+                8 * 1024 * 1024,
+                8,
+                ObserveNativeReadStats {
+                    store: &store,
+                    baseline_mapped: baseline.mapped_bytes,
+                    baseline_resident: baseline.mapped_resident_bytes,
+                    baseline_queries: baseline.active_queries,
+                },
+            )
+            .unwrap();
+        assert!(live.0 > baseline.mapped_bytes);
+        assert!(live.1 > baseline.mapped_resident_bytes);
+        let after = store.stats().unwrap();
+        assert_eq!(after.mapped_bytes, baseline.mapped_bytes);
+        assert_eq!(after.mapped_resident_bytes, baseline.mapped_resident_bytes);
+        assert_eq!(after.active_queries, baseline.active_queries);
+        store.close().unwrap();
+    }
+
+    pub(crate) fn run_adversarial_probe(
+        seed: u64,
+    ) -> crate::graph_read_view_test_support::ActualProbeReport {
+        use crate::graph_read_view_test_support::{
+            ActualProbeReport, ObservedRelationship, PathReceipt,
+        };
+        let mut receipts = Vec::new();
+        let mut receipt = |key, fires, clean_controls| {
+            receipts.push(PathReceipt {
+                key,
+                fires,
+                clean_controls,
+            });
+        };
         if seed & 1 == 0 {
             native_read_admission_registers_before_replacement_capture();
             native_read_clone_retains_one_registry_entry_until_final_drop();
@@ -3979,20 +4556,56 @@ pub(crate) mod tests {
             native_read_clone_retains_one_registry_entry_until_final_drop();
             native_read_admission_registers_before_replacement_capture();
         }
+        receipt("property-graph.read-view.admission-capture", 1, 1);
         native_read_old_view_lazily_opens_unmapped_artifact_after_replacement();
+        receipt("property-graph.read-view.old-lazy-open", 1, 1);
         native_read_all_operations_use_one_admitted_bundle();
+        receipt("property-graph.read-view.coherent-reads", 0, 1);
         native_read_cursor_rejects_same_view_memory_different_runtime();
         native_read_cursor_rejects_same_metadata_foreign_admission();
+        receipt("property-graph.read-view.cursor-mismatch", 2, 0);
         native_read_catalog_and_required_refs_cannot_be_substituted();
         native_read_missing_or_corrupt_lazy_file_is_not_absence();
-        scheduled_map_io_fire_and_clean_control_contract();
-        native_read_limits_are_cumulative_and_refused_batch_is_private();
-        caller_cancel_and_clean_control_contract();
+        receipt("property-graph.read-view.source-identity-format", 2, 1);
+        let (io_fires, io_clean) = scheduled_map_io_fire_and_clean_control_contract();
+        receipt("property-graph.read-view.io.fire", io_fires, 0);
+        receipt("property-graph.read-view.io.clean", 0, io_clean);
+        let (memory_fire, memory_clean, work_fire, work_clean) =
+            native_read_limits_are_cumulative_and_refused_batch_is_private_probe();
+        receipt("property-graph.read-view.memory.fire", memory_fire, 0);
+        receipt("property-graph.read-view.memory.clean", 0, memory_clean);
+        receipt("property-graph.read-view.work.fire", work_fire, 0);
+        receipt("property-graph.read-view.work.clean", 0, work_clean);
+        let (cancel_fire, cancel_clean) = caller_cancel_and_clean_control_contract();
+        receipt(
+            "property-graph.read-view.caller-cancel.fire",
+            cancel_fire,
+            0,
+        );
+        receipt(
+            "property-graph.read-view.caller-cancel.clean",
+            0,
+            cancel_clean,
+        );
         native_read_close_cancels_and_drains_current_and_retired_leases();
+        receipt("property-graph.read-view.close-first-drain", 1, 1);
         native_read_drop_cancels_without_destroying_borrowed_mapping();
+        receipt("property-graph.read-view.release", 1, 1);
         native_prepared_artifacts_retain_exact_base_source_and_abort_owners();
+        receipt("property-graph.read-view.preparation-abort", 1, 1);
         native_read_every_edge_path_checks_both_endpoint_states();
-        native_read_undirected_self_loop_and_parallel_edges_are_exact();
-        15
+        let relationships = native_read_undirected_self_loop_and_parallel_edges_are_exact_probe()
+            .into_iter()
+            .map(|row| ObservedRelationship {
+                rel: row.rel.get(),
+                source: row.source.get(),
+                target: row.target.get(),
+                relationship_type: row.relationship_type.get(),
+            })
+            .collect();
+        ActualProbeReport {
+            receipts,
+            relationships,
+        }
     }
 }
