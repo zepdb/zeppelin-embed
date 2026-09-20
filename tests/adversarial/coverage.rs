@@ -204,6 +204,15 @@ pub const REQUIRED_GRAPH_SMOKE_COVERAGE: &[&str] = &[
     "property-graph.runtime.clock.final",
     "property-graph.runtime.same-seed-control",
     "property-graph.runtime.release",
+    "property-graph.query-storage.workspace",
+    "property-graph.query-storage.counters",
+    "property-graph.query-storage.owner-mismatch",
+    "property-graph.query-storage.copy-limit.fire",
+    "property-graph.query-storage.cancel.fire",
+    "property-graph.query-storage.memory.fire",
+    "property-graph.query-storage.same-seed-control",
+    "property-graph.query-storage.oracle.can-fire",
+    "property-graph.query-storage.release",
 ];
 
 /// Legacy product and fault paths required by every default smoke matrix.

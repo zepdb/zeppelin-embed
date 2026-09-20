@@ -2918,6 +2918,7 @@ fn run_program_for_with_clock(
         super::graph_relational::probe(seed, &mut coverage)?;
         super::graph_lowering::probe(seed, &mut coverage)?;
         super::graph_search_lowering::probe(seed, &mut coverage)?;
+        super::graph_query_storage::probe(seed, &mut coverage)?;
         super::graph_adjacency::probe(seed, &mut coverage)?;
         super::graph_adjacency_store::probe(seed, &mut coverage)?;
         super::graph_staging::probe(seed, &mut coverage)?;

@@ -3,7 +3,7 @@
 //! chunks under the source owner's lease/cache and shared capacity reservation.
 
 use super::payload::{CHUNK_BYTES, PayloadRef};
-use super::tree::directory::{BlockSource, TreeError, TreeResources};
+use super::tree::directory::{BlockSource, NativeReadEvent, TreeError, TreeResources};
 use crate::property_graph::{GraphGeneration, StoreInstanceId};
 use std::cmp::Ordering;
 
@@ -161,15 +161,15 @@ impl<'a, S: BlockSource> PayloadSlice<'a, S> {
             if count == 0 {
                 return Err(TreeError::Invalid("short payload window"));
             }
-            resources.step(count as u64)?;
-            output
+            let target = output
                 .get_mut(copied..copied + count)
-                .ok_or(TreeError::Memory)?
-                .copy_from_slice(
-                    bytes
-                        .get(..count)
-                        .ok_or(TreeError::Invalid("payload copy span"))?,
-                );
+                .ok_or(TreeError::Memory)?;
+            let source = bytes
+                .get(..count)
+                .ok_or(TreeError::Invalid("payload copy span"))?;
+            resources.step(count as u64)?;
+            resources.read_event(NativeReadEvent::CopiedBytes(count as u64))?;
+            target.copy_from_slice(source);
             copied += count;
         }
         resources.step(0)?;
@@ -275,15 +275,16 @@ impl<'a, S: BlockSource> PayloadCursor<'a, S> {
             if count == 0 {
                 return Err(TreeError::Invalid("short fixed field"));
             }
-            resources.step(count as u64)?;
-            output
+            let target = output
                 .get_mut(copied..copied + count)
-                .ok_or(TreeError::Memory)?
-                .copy_from_slice(
-                    self.cache
-                        .get(start..start + count)
-                        .ok_or(TreeError::Invalid("cached field span"))?,
-                );
+                .ok_or(TreeError::Memory)?;
+            let source = self
+                .cache
+                .get(start..start + count)
+                .ok_or(TreeError::Invalid("cached field span"))?;
+            resources.step(count as u64)?;
+            resources.read_event(NativeReadEvent::CopiedBytes(count as u64))?;
+            target.copy_from_slice(source);
             copied += count;
             self.position += count as u64;
         }

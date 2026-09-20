@@ -1,0 +1,14 @@
+    Checking ze135-scratch-lifetime-after v0.0.0 (/tmp/ze135-scratch-harness-after)
+error[E0506]: cannot assign to `*slot` because it is borrowed
+  --> src/main.rs:15:5
+   |
+11 |         let context = slot.as_mut().ok_or(TreeError::Missing)?;
+   |                       ---- `*slot` is borrowed here
+...
+15 |     *slot = None;
+   |     ^^^^^ `*slot` is assigned to here but it was already borrowed
+16 |     std::hint::black_box(scratch.owned_bytes());
+   |                          ------- borrow later used here
+
+For more information about this error, try `rustc --explain E0506`.
+error: could not compile `ze135-scratch-lifetime-after` (bin "ze135-scratch-lifetime-after") due to 1 previous error

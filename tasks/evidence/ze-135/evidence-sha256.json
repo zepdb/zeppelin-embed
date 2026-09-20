@@ -1,0 +1,76 @@
+{
+  "files": [
+    {
+      "path": "tasks/evidence/ze-135/README.md",
+      "sha256": "bdc32afac864908e04a5a66888361503c49a58dce3c374f7107047b23a38465e"
+    },
+    {
+      "path": "tasks/evidence/ze-135/nonescape/negative.rs",
+      "sha256": "d0bb13a5b3fdf8d062a19cbc1958073a947e0d5d7a332514e4fdf2c644ba6a20"
+    },
+    {
+      "path": "tasks/evidence/ze-135/nonescape/positive_nonescape.rs",
+      "sha256": "bd40fcd9f2475017ce060bdf69817c2cab0c28b23b6e4079821ab24bf9b6fd2a"
+    },
+    {
+      "path": "tasks/evidence/ze-135/nonescape/positive_resource_reuse.rs",
+      "sha256": "d71bed2c44f21b199cfeca26677668581ac2dff9e24744e4d35f108dc223b83b"
+    },
+    {
+      "path": "tasks/evidence/ze-135/owned-paths.json",
+      "sha256": "1daed96d8cbe1e3914943a9916abbaafc1328ccdf242833654f6fccfafd6447b"
+    },
+    {
+      "path": "tasks/evidence/ze-135/raw/final-clippy-core.log",
+      "sha256": "8c233a54790c4800d3dd585436af679aa838da259bfdb129412e2d51cdb75cdc"
+    },
+    {
+      "path": "tasks/evidence/ze-135/raw/final-clippy-pg19.log",
+      "sha256": "7b3a6a2bf18fcf128ccb6cc2c55b863c8089e65efbb88bf8fbc2654ee2aea264"
+    },
+    {
+      "path": "tasks/evidence/ze-135/raw/final-diff-check.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "tasks/evidence/ze-135/raw/final-format.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "tasks/evidence/ze-135/raw/final-pg19.log",
+      "sha256": "6d1b1235ea906eccd7f92a47285dcc6b0785f6b29fdab3e123d15626eb7d0eae"
+    },
+    {
+      "path": "tasks/evidence/ze-135/raw/final-preservation.log",
+      "sha256": "bf031e9b963595cc0a368c815660b29bf1d428036bb00ed3dff5fb197f0ea568"
+    },
+    {
+      "path": "tasks/evidence/ze-135/raw/final-query-storage.log",
+      "sha256": "cbcd83b4e62f52ae63f606f55eb1cce79880ad616a50067f24812beb1784fbc5"
+    },
+    {
+      "path": "tasks/evidence/ze-135/raw/final-scratch-owner.log",
+      "sha256": "e7a4537d269037ad44aebf91ab3c63db5eae39059d80c194a79332a85cc5a3ee"
+    },
+    {
+      "path": "tasks/evidence/ze-135/raw/final-storage-prepare.log",
+      "sha256": "fbe3f5d00dfbe93b3259bb458636ef76ad96d92791a3af5227ec5f177deb43f4"
+    },
+    {
+      "path": "tasks/evidence/ze-135/raw/nonescape-after-e0506.log",
+      "sha256": "a35d452fb60a31b28df2122ec3e8aa9af889f50b4e58de27c1b80e11081019e9"
+    },
+    {
+      "path": "tasks/evidence/ze-135/raw/nonescape-before-green.log",
+      "sha256": "639c1817289c7bfb7f756fbc73540438abc12db1e49185b5ba63d2fa5021176f"
+    },
+    {
+      "path": "tasks/evidence/ze-135/raw/nonescape-positive-green.log",
+      "sha256": "e01b3787d72884d84e0ea2003c9afd353c4d28ccae43998d7dee35009b2fe7f5"
+    },
+    {
+      "path": "tasks/evidence/ze-135/source-sha256.json",
+      "sha256": "9f4cdff8117a221d1b145f981c57b197e8345828fd756ab4d0dbe505c055ce6a"
+    }
+  ]
+}

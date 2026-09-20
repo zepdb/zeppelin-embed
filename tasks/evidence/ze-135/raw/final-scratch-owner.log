@@ -1,0 +1,7 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID d3c131b8-b73e-4e6c-bc62-c133088b4dfc with nextest profile: default
+    Starting 1 test across 1 binary (576 tests skipped)
+        PASS [   0.008s] (1/1) zeppelin-embed property_graph::storage::adjacency::range::tests::query_range_scratch_rejects_same_memory_context_without_touching_backing
+────────────
+     Summary [   0.008s] 1 test run: 1 passed, 576 skipped

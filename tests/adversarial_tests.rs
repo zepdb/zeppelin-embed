@@ -19027,6 +19027,43 @@ fn one_runner_episode_reaches_completed_owner_controls() {
     }
 }
 
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn query_storage_probe_reaches_actual_faults_and_same_seed_controls() {
+    for seed in [0, 1, 135, u64::MAX] {
+        let mut coverage = adversarial::coverage::CoverageRegistry::default();
+        let report = adversarial::graph_query_storage::probe(seed, &mut coverage)
+            .expect("PG19 actual query storage resources");
+        assert_eq!(
+            (
+                report.comparisons,
+                report.fault_fires,
+                report.clean_controls
+            ),
+            (2, 3, 3)
+        );
+        for key in adversarial::graph_query_storage::REQUIRED_COVERAGE {
+            assert!(coverage.count(key) > 0, "missing PG19 path {key}");
+        }
+        eprintln!("PG19 seed={seed} {report:?}");
+    }
+}
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn one_runner_episode_reaches_required_query_storage_contracts() {
+    let root = tempfile::tempdir().expect("query storage runner artifacts");
+    let outcome = adversarial::runner::run_program(135, FaultProfile::None, root.path())
+        .expect("actual runner episode");
+    assert!(outcome.violations.is_empty(), "{:?}", outcome.violations);
+    for key in adversarial::graph_query_storage::REQUIRED_COVERAGE {
+        assert!(
+            outcome.coverage.count(key) > 0,
+            "actual runner omitted {key}"
+        );
+    }
+}
+
 #[cfg(feature = "graph-result-test-support")]
 #[test]
 fn property_graph_response_probe_checks_real_owners_and_paired_faults() {

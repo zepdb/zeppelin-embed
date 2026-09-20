@@ -5,12 +5,15 @@ use super::{
     Direction, MAX_BASE_ENTRIES, MAX_DELTA_RUNS, MAX_PENDING_ENTRIES, RangeKey, UpperBound,
 };
 use super::{Edge, Error, MAX_MERGED_ENTRIES, MERGE_STATE_BYTES, Merged, Work};
+use crate::property_graph::query::resources::{QueryArena, QueryMemory, QueryReservation};
+use crate::property_graph::query::runtime::{RuntimeError, WorkKind};
 use crate::property_graph::storage::artifact::{self, BlockKind, PhysicalRef};
 use crate::property_graph::storage::memory::{StorageBuffer, StorageMemory, StorageReservation};
 use crate::property_graph::storage::tree::Key;
 use crate::property_graph::storage::tree::directory::{
     BlockSource, DirectoryEntry, DirectoryRoot, TreeResources,
 };
+use crate::property_graph::storage::tree::directory::{NativeReadEvent, QueryOwner};
 use crate::property_graph::storage::tree::{TreeKind, directory::TreeError};
 use crate::property_graph::{GraphGeneration, StoreInstanceId};
 use crate::property_graph::{NodeId, RelId, catalog::RelTypeId};
@@ -33,10 +36,46 @@ pub struct RangeDescriptor {
 
 /// Reusable, fully charged merge output and fixed kernel state for one range.
 /// This preparation owner does not establish a query view or source admission.
+enum RangeEdges<'a> {
+    Preparation(StorageBuffer<'a, Edge>),
+    Query(QueryArena<'a, 'a, Edge>),
+}
+impl RangeEdges<'_> {
+    fn as_mut_slice(&mut self) -> &mut [Edge] {
+        match self {
+            Self::Preparation(edges) => edges.as_mut_slice(),
+            Self::Query(edges) => edges.as_mut_slice(),
+        }
+    }
+    fn owned_bytes(&self) -> usize {
+        match self {
+            Self::Preparation(edges) => edges.owned_bytes(),
+            Self::Query(edges) => edges.reserved_bytes(),
+        }
+    }
+}
+enum RangeOwner<'a> {
+    Preparation(&'a StorageMemory<'a>),
+    Query(QueryOwner<'a>),
+}
+enum RangeCharge<'a> {
+    Preparation(StorageReservation<'a>),
+    Query(QueryReservation<'a, 'a>),
+}
+impl RangeCharge<'_> {
+    fn bytes(&self) -> usize {
+        match self {
+            Self::Preparation(charge) => charge.bytes(),
+            Self::Query(charge) => charge.bytes(),
+        }
+    }
+}
+/// Reusable, fully charged merge output and fixed kernel state for one range.
 pub struct RangeScratch<'a> {
-    edges: StorageBuffer<'a, Edge>,
-    memory: &'a StorageMemory<'a>,
-    charge: StorageReservation<'a>,
+    // Free backing before its capacity reservation (field drop order).
+    edges: RangeEdges<'a>,
+    owner: RangeOwner<'a>,
+    charge: RangeCharge<'a>,
 }
 impl<'a> RangeScratch<'a> {
     /// Admit all backing before initializing it, with bounded control polls.
@@ -45,7 +84,9 @@ impl<'a> RangeScratch<'a> {
         r: &mut TreeResources<'_>,
     ) -> Result<Self, TreeError> {
         r.require_preparation(memory)?;
-        let charge = memory.reserve(std::mem::size_of::<Self>() + MERGE_STATE_BYTES)?;
+        let charge = RangeCharge::Preparation(
+            memory.reserve(std::mem::size_of::<Self>() + MERGE_STATE_BYTES)?,
+        );
         let mut edges = StorageBuffer::new(memory, MAX_MERGED_ENTRIES)?;
         let empty = Edge {
             rel: RelId::new(1).map_err(|_| invalid("adjacency scratch identity"))?,
@@ -57,14 +98,65 @@ impl<'a> RangeScratch<'a> {
         }
         r.step(0)?;
         Ok(Self {
-            edges,
-            memory,
+            edges: RangeEdges::Preparation(edges),
+            owner: RangeOwner::Preparation(memory),
+            charge,
+        })
+    }
+    /// Reserve fixed query backing through the exact runtime memory owner before
+    /// initializing any edge slot. A failure drops every acquired reservation.
+    pub fn for_query<'g>(
+        memory: &'a QueryMemory<'g>,
+        r: &mut TreeResources<'a>,
+    ) -> Result<Self, TreeError>
+    where
+        'g: 'a,
+    {
+        r.step(0)?;
+        let memory: &'a QueryMemory<'a> = memory;
+        let owner = r.query_owner(memory)?;
+        let control_bytes = std::mem::size_of::<Self>()
+            .checked_sub(std::mem::size_of::<QueryArena<'_, '_, Edge>>())
+            .and_then(|bytes| bytes.checked_add(MERGE_STATE_BYTES))
+            .ok_or(TreeError::Runtime(RuntimeError::Memory(
+                crate::property_graph::query::resources::MemoryError::Limit,
+            )))?;
+        let charge = RangeCharge::Query(
+            memory
+                .reserve(control_bytes)
+                .map_err(RuntimeError::Memory)
+                .map_err(TreeError::Runtime)?,
+        );
+        let mut edges = QueryArena::new(memory, MAX_MERGED_ENTRIES)
+            .map_err(RuntimeError::Memory)
+            .map_err(TreeError::Runtime)?;
+        let empty = Edge {
+            rel: RelId::new(1).map_err(|_| invalid("adjacency scratch identity"))?,
+            neighbor: NodeId::new(1).map_err(|_| invalid("adjacency scratch identity"))?,
+        };
+        for _ in 0..MAX_MERGED_ENTRIES {
+            r.step(std::mem::size_of::<Edge>() as u64)?;
+            edges
+                .push(empty)
+                .map_err(RuntimeError::Memory)
+                .map_err(TreeError::Runtime)?;
+        }
+        r.step(0)?;
+        Ok(Self {
+            edges: RangeEdges::Query(edges),
+            owner: RangeOwner::Query(owner),
             charge,
         })
     }
     /// Complete actual backing, descriptor and kernel-state reservation.
     pub fn owned_bytes(&self) -> usize {
         self.edges.owned_bytes() + self.charge.bytes()
+    }
+    pub(super) fn require_owner(&self, r: &TreeResources<'_>) -> Result<(), TreeError> {
+        match self.owner {
+            RangeOwner::Preparation(memory) => r.require_preparation(memory),
+            RangeOwner::Query(owner) => r.require_query_owner(owner),
+        }
     }
 }
 
@@ -100,6 +192,7 @@ pub fn validate_range<'a>(
     scratch: &'a mut RangeScratch<'_>,
     r: &mut TreeResources<'_>,
 ) -> Result<ValidatedRange<'a>, TreeError> {
+    scratch.require_owner(r)?;
     entry.require_root(root)?;
     r.step((40 + RANGE_DESCRIPTOR_BYTES) as u64)?;
     let Key::Inline(key) = entry.key() else {
@@ -130,7 +223,7 @@ pub(super) fn validate_descriptor<'a>(
     scratch: &'a mut RangeScratch<'_>,
     r: &mut TreeResources<'_>,
 ) -> Result<ValidatedRange<'a>, TreeError> {
-    r.require_preparation(scratch.memory)?;
+    scratch.require_owner(r)?;
     let base = resolve(source, store, generation, descriptor.base, r)?;
     let mut runs: [&[u8]; MAX_DELTA_RUNS] = [&[]; MAX_DELTA_RUNS];
     let mut count = 0;
@@ -193,11 +286,20 @@ fn resolve<'a>(
 }
 
 pub(super) fn checkpoint(r: &mut TreeResources<'_>, work: Work) -> Result<(), TreeError> {
-    r.step(match work {
+    let units = match work {
         Work::HeaderBytes(n) | Work::EntryBytes(n) | Work::CopyBytes(n) => n as u64,
         Work::Compare => 1,
         Work::Finish => 0,
-    })
+    };
+    r.step(units)?;
+    match work {
+        Work::EntryBytes(_) => r.read_event(NativeReadEvent::AdjacencyEntry),
+        Work::CopyBytes(bytes) => r
+            .read_event(NativeReadEvent::CopiedBytes(u64::try_from(bytes).map_err(
+                |_| TreeError::Runtime(RuntimeError::Limit(WorkKind::CopiedBytes)),
+            )?)),
+        Work::HeaderBytes(_) | Work::Compare | Work::Finish => Ok(()),
+    }
 }
 pub(super) fn map_error(error: Error<TreeError>) -> TreeError {
     match error {
@@ -416,4 +518,137 @@ fn put(bytes: &mut [u8], offset: usize, value: &[u8]) -> Result<(), TreeError> {
 }
 fn invalid(message: &'static str) -> TreeError {
     TreeError::Invalid(message)
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::lifecycle::{CancelToken, OpenOptions, QueryControl, SnapshotLease, Store};
+    use crate::property_graph::query::runtime::{
+        RetainedView, RuntimeContext, RuntimeLimits, WorkCounters,
+    };
+    use crate::property_graph::query::{QueryError, QueryView};
+    use crate::property_graph::resources::GraphResources;
+    use crate::property_graph::storage::artifact::{ArtifactId, FramedBlock};
+    use std::cell::Cell;
+
+    struct View {
+        token: QueryView,
+        lease: SnapshotLease,
+    }
+    impl RetainedView for View {
+        fn query_view(&self) -> &QueryView {
+            &self.token
+        }
+        fn check_active(&self) -> Result<(), QueryError> {
+            self.lease
+                .check_active()
+                .map_err(|_| QueryError::ReadCancelled)
+        }
+    }
+
+    struct CountingSource(Cell<usize>);
+    impl BlockSource for CountingSource {
+        fn resolve<'a>(
+            &'a self,
+            _: PhysicalRef,
+            _: &mut TreeResources<'_>,
+        ) -> Result<FramedBlock<'a>, TreeError> {
+            self.0.set(self.0.get() + 1);
+            Err(TreeError::Missing)
+        }
+    }
+
+    #[test]
+    fn query_range_scratch_rejects_same_memory_context_without_touching_backing() {
+        let directory = tempfile::tempdir().expect("store fixture");
+        let store = Store::open(
+            directory.path(),
+            OpenOptions::new().with_max_resident_bytes(4 * 1024 * 1024),
+        )
+        .expect("store");
+        let shared = GraphResources::from_store(&store).expect("shared resources");
+        let memory = QueryMemory::new(&shared, 1024 * 1024).expect("query allowance");
+        let retained = View {
+            token: QueryView::new(
+                StoreInstanceId::new(1).expect("store identity"),
+                GraphGeneration::new(0),
+            ),
+            lease: store.snapshot().expect("retained lease"),
+        };
+        let first_control = QueryControl::Cancel(CancelToken::new());
+        let second_control = QueryControl::Cancel(CancelToken::new());
+        let mut first =
+            RuntimeContext::new(&retained, &first_control, &memory, RuntimeLimits::default())
+                .expect("first runtime");
+        let mut second = RuntimeContext::new(
+            &retained,
+            &second_control,
+            &memory,
+            RuntimeLimits::default(),
+        )
+        .expect("second runtime");
+        let second_initial: WorkCounters = second.counters();
+        {
+            let mut first_resources =
+                TreeResources::for_query(&mut first).expect("first resources");
+            let mut second_resources =
+                TreeResources::for_query(&mut second).expect("second resources");
+            let mut scratch =
+                RangeScratch::for_query(&memory, &mut first_resources).expect("first scratch");
+            let initial_edges = scratch.edges.as_mut_slice().to_vec();
+            let second_work = second_resources.work();
+            let query_charge = memory.reserved_bytes();
+            let shared_charge = shared.reserved_bytes().expect("shared charge");
+            let source = CountingSource(Cell::new(0));
+            let base = PhysicalRef {
+                artifact: ArtifactId::new(1).expect("artifact identity"),
+                offset: 96,
+                length: 128,
+                kind: BlockKind::AdjacencyBase,
+                version: 1,
+            };
+            let descriptor = RangeDescriptor::new(
+                RangeKey {
+                    node: NodeId::new(1).expect("node identity"),
+                    rel_type: RelTypeId::new(1).expect("relationship type"),
+                    direction: Direction::Out,
+                    lower: RelId::new(1).expect("relationship identity"),
+                    upper: UpperBound::Infinity,
+                },
+                0,
+                1,
+                base,
+                &[],
+                0,
+            )
+            .expect("shape-valid descriptor");
+            assert!(matches!(
+                validate_descriptor(
+                    &source,
+                    StoreInstanceId::new(1).expect("store identity"),
+                    GraphGeneration::new(0),
+                    descriptor,
+                    0,
+                    &mut scratch,
+                    &mut second_resources,
+                ),
+                Err(TreeError::Invalid("query range scratch owner mismatch"))
+            ));
+            assert_eq!(source.0.get(), 0);
+            assert_eq!(second_resources.work(), second_work);
+            assert_eq!(scratch.edges.as_mut_slice(), initial_edges);
+            assert_eq!(memory.reserved_bytes(), query_charge);
+            assert_eq!(
+                shared.reserved_bytes().expect("shared charge"),
+                shared_charge
+            );
+        }
+        assert_eq!(second.counters(), second_initial);
+
+        drop((first, second));
+        drop(retained);
+        store.close().expect("close");
+    }
 }

@@ -175,10 +175,9 @@ pub(super) fn copy(
             return Err(TreeError::Invalid("short copied key stream"));
         }
         let end = position.checked_add(bytes.len()).ok_or(TreeError::Memory)?;
-        output
-            .get_mut(position..end)
-            .ok_or(TreeError::Memory)?
-            .copy_from_slice(bytes);
+        let target = output.get_mut(position..end).ok_or(TreeError::Memory)?;
+        resources.read_event(NativeReadEvent::CopiedBytes(bytes.len() as u64))?;
+        target.copy_from_slice(bytes);
         position = end;
     }
     Ok(())

@@ -1,0 +1,12 @@
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-135/crates/zeppelin-embed-cypher)
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-135/crates/zeppelin-embed-bench)
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-135/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-135/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.02s
+────────────
+ Nextest run ID e15a44bc-f433-4ada-acd4-93628ec1ceac with nextest profile: default
+    Starting 2 tests across 1 binary (471 tests skipped)
+        PASS [   0.020s] (1/2) zeppelin-embed-workspace-tests::adversarial_tests query_storage_probe_reaches_actual_faults_and_same_seed_controls
+        PASS [   3.766s] (2/2) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_query_storage_contracts
+────────────
+     Summary [   3.767s] 2 tests run: 2 passed, 471 skipped

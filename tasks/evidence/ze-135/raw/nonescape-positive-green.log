@@ -1,0 +1,19 @@
+warning: function `hold` is never used
+ --> src/bin/positive_nonescape.rs:6:4
+  |
+6 | fn hold<'v, 'm, 'g>(
+  |    ^^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `reuse` is never used
+ --> src/bin/positive_resource_reuse.rs:6:4
+  |
+6 | fn reuse<'a, 'v, 'm, 'g>(
+  |    ^^^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `ze135-scratch-lifetime-after` (bin "positive_nonescape") generated 1 warning
+warning: `ze135-scratch-lifetime-after` (bin "positive_resource_reuse") generated 1 warning
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.00s

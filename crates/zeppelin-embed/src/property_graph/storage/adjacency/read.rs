@@ -4,9 +4,10 @@ use super::*;
 use crate::epoch::EmbeddingTower;
 use crate::property_graph::storage::{
     payload::PayloadRef,
-    records::{NodeRecordState, RecordCatalog, RecordShape, verify_node_state, verify_record},
+    records::{NodeRecordState, RecordCatalog, RecordShape, verify_record},
     stream::PayloadSlice,
     tree::{Key, TreeKind, directory::*},
+    view::lookup_node_state,
 };
 use crate::property_graph::{EntityId, MAX_GRAPH_CHANGES};
 
@@ -108,8 +109,12 @@ impl<'a, S: BlockSource, C: RecordCatalog<S>> NativeGraphReader<'a, S, C> {
         }
         let mut count = 0;
         self.visit_relationships(range, r, &mut |row, r| {
+            let target = output.get_mut(count).ok_or(TreeError::Memory)?;
             r.step(std::mem::size_of::<RelationshipRow>() as u64)?;
-            *output.get_mut(count).ok_or(TreeError::Memory)? = row;
+            r.read_event(NativeReadEvent::CopiedBytes(
+                std::mem::size_of::<RelationshipRow>() as u64,
+            ))?;
+            *target = row;
             count += 1;
             Ok(count < output.len())
         })?;
@@ -136,6 +141,7 @@ impl<'a, S: BlockSource, C: RecordCatalog<S>> NativeGraphReader<'a, S, C> {
         scratch: &mut RangeScratch<'_>,
         r: &mut TreeResources<'_>,
     ) -> Result<usize, TreeError> {
+        scratch.require_owner(r)?;
         check_range(query.relationships)?;
         r.step(0)?;
         if output.is_empty() {
@@ -143,8 +149,12 @@ impl<'a, S: BlockSource, C: RecordCatalog<S>> NativeGraphReader<'a, S, C> {
         }
         let mut count = 0;
         self.visit_adjacency(query, scratch, r, &mut |row, r| {
+            let target = output.get_mut(count).ok_or(TreeError::Memory)?;
             r.step(std::mem::size_of::<AdjacencyRow>() as u64)?;
-            *output.get_mut(count).ok_or(TreeError::Memory)? = row;
+            r.read_event(NativeReadEvent::CopiedBytes(
+                std::mem::size_of::<AdjacencyRow>() as u64,
+            ))?;
+            *target = row;
             count += 1;
             Ok(count < output.len())
         })?;
@@ -161,6 +171,7 @@ impl<'a, S: BlockSource, C: RecordCatalog<S>> NativeGraphReader<'a, S, C> {
         scratch: &mut RangeScratch<'_>,
         r: &mut TreeResources<'_>,
     ) -> Result<u64, TreeError> {
+        scratch.require_owner(r)?;
         let query = AdjacencyQuery {
             node,
             direction,
@@ -186,6 +197,7 @@ impl<'a, S: BlockSource, C: RecordCatalog<S>> NativeGraphReader<'a, S, C> {
         scratch: &mut RangeScratch<'_>,
         r: &mut TreeResources<'_>,
     ) -> Result<bool, TreeError> {
+        scratch.require_owner(r)?;
         if removed.len() > MAX_GRAPH_CHANGES {
             return Err(TreeError::Memory);
         }
@@ -272,25 +284,16 @@ impl<'a, S: BlockSource, C: RecordCatalog<S>> NativeGraphReader<'a, S, C> {
         node: NodeId,
         r: &mut TreeResources<'_>,
     ) -> Result<bool, TreeError> {
-        let root = self.roots.directory(TreeKind::Nodes)?;
-        let entry = lookup_entry(self.source, root, &node.get().to_le_bytes(), r)?
-            .ok_or(TreeError::Missing)?;
-        let payload = PayloadRef::decode(entry.value())?;
-        Ok(matches!(
-            verify_node_state(
-                PayloadSlice::new(
-                    self.source,
-                    self.roots.store(),
-                    entry.creation_generation(),
-                    payload
-                ),
-                node,
-                self.catalog,
-                self.document,
-                r
-            )?,
-            NodeRecordState::Live(_)
-        ))
+        let state = lookup_node_state(
+            self.source,
+            self.roots,
+            node,
+            self.catalog,
+            self.document,
+            r,
+        )?
+        .ok_or(TreeError::Missing)?;
+        Ok(matches!(state, NodeRecordState::Live(_)))
     }
     pub(super) fn visible(
         &self,
@@ -386,6 +389,7 @@ impl<'a, S: BlockSource, C: RecordCatalog<S>> NativeGraphReader<'a, S, C> {
             let range = validate_range(self.source, root, entry, self.cutoff, scratch, r)?;
             for edge in range.edges() {
                 r.step(std::mem::size_of::<Edge>() as u64)?;
+                r.read_event(NativeReadEvent::AdjacencyEntry)?;
                 if edge.rel < query.relationships.lower {
                     continue;
                 }

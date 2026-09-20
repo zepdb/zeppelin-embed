@@ -6,6 +6,8 @@ use super::super::memory::{StorageMemory, StorageReservation};
 use super::{Cell, Key, PAGE_BYTES, PageHeader, TreeKind, decode_page, encode_page};
 use crate::format::frame::FormatError;
 use crate::lifecycle::{QueryControl, QueryError};
+use crate::property_graph::query::resources::{QueryMemory, QueryReservation};
+use crate::property_graph::query::runtime::{RuntimeContext, RuntimeError, WorkKind};
 use crate::property_graph::resources::{GraphReservation, GraphResources};
 use crate::property_graph::{GraphGeneration, StoreInstanceId};
 
@@ -28,6 +30,8 @@ pub enum TreeError {
     Memory,
     /// Checked work budget was exhausted.
     Work,
+    /// Exact query runtime rejection, retaining its limit/value/memory kind.
+    Runtime(RuntimeError),
 }
 impl From<FormatError> for TreeError {
     fn from(error: FormatError) -> Self {
@@ -45,6 +49,7 @@ impl std::fmt::Display for TreeError {
             Self::Io(error) => error.fmt(f),
             Self::Memory => f.write_str("graph directory reservation exhausted"),
             Self::Work => f.write_str("graph directory work exhausted"),
+            Self::Runtime(error) => error.fmt(f),
         }
     }
 }
@@ -78,6 +83,7 @@ pub trait BlockSink: BlockSource {
 enum CapacityOwner<'a> {
     Shared(GraphResources),
     Preparation(&'a StorageMemory<'a>),
+    Query(&'a QueryMemory<'a>),
 }
 impl<'a> CapacityOwner<'a> {
     fn reserve(&self, bytes: usize) -> Result<CapacityReservation<'a>, TreeError> {
@@ -88,26 +94,93 @@ impl<'a> CapacityOwner<'a> {
             Self::Preparation(memory) => {
                 Ok(CapacityReservation::Preparation(memory.reserve(bytes)?))
             }
+            Self::Query(memory) => Ok(CapacityReservation::Query(
+                memory
+                    .reserve(bytes)
+                    .map_err(RuntimeError::Memory)
+                    .map_err(TreeError::Runtime)?,
+            )),
         }
     }
 }
 enum CapacityReservation<'a> {
     Shared(GraphReservation),
     Preparation(StorageReservation<'a>),
+    Query(QueryReservation<'a, 'a>),
 }
 impl CapacityReservation<'_> {
     fn bytes(&self) -> usize {
         match self {
             Self::Shared(charge) => charge.bytes() as usize,
             Self::Preparation(charge) => charge.bytes(),
+            Self::Query(charge) => charge.bytes(),
         }
     }
 }
 
+trait QueryRuntime {
+    fn checkpoint(&self) -> Result<(), RuntimeError>;
+    fn charge(&mut self, kind: WorkKind, units: u64) -> Result<(), RuntimeError>;
+}
+impl QueryRuntime for RuntimeContext<'_, '_, '_> {
+    fn checkpoint(&self) -> Result<(), RuntimeError> {
+        RuntimeContext::checkpoint(self)
+    }
+    fn charge(&mut self, kind: WorkKind, units: u64) -> Result<(), RuntimeError> {
+        RuntimeContext::charge(self, kind, units)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum NativeReadEvent {
+    Lookup,
+    Scan,
+    AdjacencyEntry,
+    CopiedBytes(u64),
+}
+impl NativeReadEvent {
+    const fn work(self) -> (WorkKind, u64) {
+        match self {
+            Self::Lookup => (WorkKind::Lookups, 1),
+            Self::Scan => (WorkKind::Scans, 1),
+            Self::AdjacencyEntry => (WorkKind::AdjacencyEntries, 1),
+            Self::CopiedBytes(bytes) => (WorkKind::CopiedBytes, bytes),
+        }
+    }
+}
+
+enum TreeControl<'a> {
+    Direct {
+        control: &'a QueryControl,
+        limit: u64,
+    },
+    Query {
+        context: &'a mut dyn QueryRuntime,
+        identity: usize,
+    },
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct QueryOwner<'a> {
+    memory: &'a QueryMemory<'a>,
+    context: usize,
+}
+impl QueryOwner<'_> {
+    fn same_owner(self, other: QueryOwner<'_>) -> bool {
+        std::ptr::eq(self.memory, other.memory) && self.context == other.context
+    }
+}
+
+#[derive(Clone, Copy)]
+enum CursorOwner<'a> {
+    Direct,
+    Preparation(&'a StorageMemory<'a>),
+    Query(QueryOwner<'a>),
+}
+
 /// Required operation control and checked work accounting.
 pub struct TreeResources<'a> {
-    control: &'a QueryControl,
-    limit: u64,
+    control: TreeControl<'a>,
     work: u64,
     owner: CapacityOwner<'a>,
     workspace: CapacityReservation<'a>,
@@ -122,8 +195,10 @@ impl<'a> TreeResources<'a> {
         control.checkpoint().map_err(TreeError::Control)?;
         let workspace = shared.reserve(STACK_BYTES).map_err(|_| TreeError::Memory)?;
         Ok(Self {
-            control,
-            limit: work_limit,
+            control: TreeControl::Direct {
+                control,
+                limit: work_limit,
+            },
             work: 0,
             owner: CapacityOwner::Shared(shared.clone()),
             workspace: CapacityReservation::Shared(workspace),
@@ -134,8 +209,31 @@ impl<'a> TreeResources<'a> {
         let owner = CapacityOwner::Preparation(memory);
         let workspace = owner.reserve(STACK_BYTES)?;
         Ok(Self {
-            control: memory.control(),
-            limit: work_limit,
+            control: TreeControl::Direct {
+                control: memory.control(),
+                limit: work_limit,
+            },
+            work: 0,
+            owner,
+            workspace,
+        })
+    }
+    /// Reserves tree workspace through the exact query memory and retains the
+    /// same cumulative runtime context for close-first checkpoints.
+    pub fn for_query<'v, 'm, 'g>(
+        context: &'a mut RuntimeContext<'v, 'm, 'g>,
+    ) -> Result<Self, TreeError>
+    where
+        'm: 'a,
+        'g: 'a,
+    {
+        context.checkpoint().map_err(TreeError::Runtime)?;
+        let memory: &'a QueryMemory<'a> = context.memory();
+        let identity = std::ptr::from_ref(context).cast::<()>() as usize;
+        let owner = CapacityOwner::Query(memory);
+        let workspace = owner.reserve(STACK_BYTES)?;
+        Ok(Self {
+            control: TreeControl::Query { context, identity },
             work: 0,
             owner,
             workspace,
@@ -147,18 +245,93 @@ impl<'a> TreeResources<'a> {
             _ => Err(TreeError::Invalid("storage preparation owner mismatch")),
         }
     }
+    pub(crate) fn require_query(&self, memory: &QueryMemory<'_>) -> Result<(), TreeError> {
+        match &self.owner {
+            CapacityOwner::Query(owner) if std::ptr::eq(*owner, memory) => Ok(()),
+            _ => Err(TreeError::Invalid("query memory owner mismatch")),
+        }
+    }
+    pub(crate) fn query_owner(
+        &self,
+        memory: &QueryMemory<'_>,
+    ) -> Result<QueryOwner<'a>, TreeError> {
+        self.require_query(memory)?;
+        match self.cursor_owner()? {
+            CursorOwner::Query(owner) => Ok(owner),
+            _ => Err(TreeError::Invalid("query memory owner mismatch")),
+        }
+    }
+    pub(crate) fn require_query_owner(&self, expected: QueryOwner<'_>) -> Result<(), TreeError> {
+        match self.cursor_owner()? {
+            CursorOwner::Query(actual) if expected.same_owner(actual) => Ok(()),
+            _ => Err(TreeError::Invalid("query range scratch owner mismatch")),
+        }
+    }
+    fn cursor_owner(&self) -> Result<CursorOwner<'a>, TreeError> {
+        match (&self.owner, &self.control) {
+            (CapacityOwner::Shared(_), TreeControl::Direct { .. }) => Ok(CursorOwner::Direct),
+            (CapacityOwner::Preparation(memory), TreeControl::Direct { .. }) => {
+                Ok(CursorOwner::Preparation(memory))
+            }
+            (
+                CapacityOwner::Query(memory),
+                TreeControl::Query {
+                    identity: context, ..
+                },
+            ) => Ok(CursorOwner::Query(QueryOwner {
+                memory,
+                context: *context,
+            })),
+            _ => Err(TreeError::Invalid("tree resource owner mismatch")),
+        }
+    }
+    fn require_cursor_owner(&self, expected: CursorOwner<'_>) -> Result<(), TreeError> {
+        let actual = self.cursor_owner()?;
+        match (expected, actual) {
+            (CursorOwner::Direct, CursorOwner::Direct) => Ok(()),
+            (CursorOwner::Preparation(expected), CursorOwner::Preparation(actual))
+                if std::ptr::eq(expected, actual) =>
+            {
+                Ok(())
+            }
+            (CursorOwner::Query(expected), CursorOwner::Query(actual))
+                if expected.same_owner(actual) =>
+            {
+                Ok(())
+            }
+            (CursorOwner::Query(_), _) => Err(TreeError::Invalid("query cursor owner mismatch")),
+            _ => Err(TreeError::Invalid("storage cursor owner mismatch")),
+        }
+    }
     /// Conservative fixed operation workspace, separately from retained heap.
     pub fn reserved_bytes(&self) -> u64 {
         self.workspace.bytes() as u64
     }
     /// Poll before work and charge its complete checked amount.
     pub fn step(&mut self, units: u64) -> Result<(), TreeError> {
-        self.control.checkpoint().map_err(TreeError::Control)?;
+        match &mut self.control {
+            TreeControl::Direct { control, .. } => {
+                control.checkpoint().map_err(TreeError::Control)?;
+            }
+            TreeControl::Query { context, .. } => {
+                context.checkpoint().map_err(TreeError::Runtime)?;
+            }
+        }
         let next = self.work.checked_add(units).ok_or(TreeError::Work)?;
-        if next > self.limit {
+        if matches!(
+            self.control,
+            TreeControl::Direct { limit, .. } if next > limit
+        ) {
             return Err(TreeError::Work);
         }
         self.work = next;
+        Ok(())
+    }
+    pub(crate) fn read_event(&mut self, event: NativeReadEvent) -> Result<(), TreeError> {
+        if let TreeControl::Query { context, .. } = &mut self.control {
+            let (kind, units) = event.work();
+            context.charge(kind, units).map_err(TreeError::Runtime)?;
+        }
         Ok(())
     }
     /// Exact charged work, including work completed before an error.
@@ -574,6 +747,7 @@ fn lookup_probe(
         .get_mut(..entry.value.len())
         .ok_or(TreeError::Memory)?;
     resources.step(entry.value.len() as u64)?;
+    resources.read_event(NativeReadEvent::CopiedBytes(entry.value.len() as u64))?;
     target.copy_from_slice(entry.value);
     resources.step(0)?;
     Ok(Some(entry.value.len()))
@@ -594,6 +768,7 @@ fn lookup_probe_entry<'a>(
     resources: &mut TreeResources<'_>,
 ) -> Result<Option<DirectoryEntry<'a>>, TreeError> {
     resources.step(1)?;
+    resources.read_event(NativeReadEvent::Lookup)?;
     key.validate(source, root, resources)?;
     let mut path = Path::new();
     find_path(source, root, key, &mut path, None, resources)?;
@@ -1384,6 +1559,7 @@ pub fn lookup_predecessor<'a>(
     key: &[u8],
     resources: &mut TreeResources<'_>,
 ) -> Result<Option<DirectoryEntry<'a>>, TreeError> {
+    resources.read_event(NativeReadEvent::Lookup)?;
     let mut cursor = DirectoryCursor::seek(source, root, Some(key), resources)?;
     if cursor.exhausted {
         resources.step(0)?;
@@ -1422,6 +1598,7 @@ pub struct DirectoryCursor<'a, 'm, S> {
     leaf_count: usize,
     exhausted: bool,
     failed: bool,
+    owner: CursorOwner<'m>,
     reservation: CapacityReservation<'m>,
 }
 impl<'a, 'm, S: BlockSource> DirectoryCursor<'a, 'm, S> {
@@ -1433,10 +1610,12 @@ impl<'a, 'm, S: BlockSource> DirectoryCursor<'a, 'm, S> {
         lower: Option<&[u8]>,
         resources: &mut TreeResources<'m>,
     ) -> Result<Self, TreeError> {
+        resources.read_event(NativeReadEvent::Scan)?;
         resources.step(1)?;
         if let Some(key) = lower {
             validate_key(source, root, Key::Inline(key), resources)?;
         }
+        let owner = resources.cursor_owner()?;
         let reservation = resources.owner.reserve(std::mem::size_of::<Self>())?;
         let mut cursor = Self {
             source,
@@ -1446,6 +1625,7 @@ impl<'a, 'm, S: BlockSource> DirectoryCursor<'a, 'm, S> {
             leaf_count: 0,
             exhausted: root.reference.is_none(),
             failed: false,
+            owner,
             reservation,
         };
         if cursor.exhausted {
@@ -1515,11 +1695,12 @@ impl<'a, 'm, S: BlockSource> DirectoryCursor<'a, 'm, S> {
             return Err(TreeError::Memory);
         }
         keys::copy(self.source, self.root, entry.key, key_output, resources)?;
-        resources.step(entry.value.len() as u64)?;
-        value_output
+        let target = value_output
             .get_mut(..entry.value.len())
-            .ok_or(TreeError::Memory)?
-            .copy_from_slice(entry.value);
+            .ok_or(TreeError::Memory)?;
+        resources.step(entry.value.len() as u64)?;
+        resources.read_event(NativeReadEvent::CopiedBytes(entry.value.len() as u64))?;
+        target.copy_from_slice(entry.value);
         resources.step(0)?;
         Ok(Some((key_length, entry.value.len())))
     }
@@ -1543,6 +1724,7 @@ impl<'a, 'm, S: BlockSource> DirectoryCursor<'a, 'm, S> {
         &mut self,
         resources: &mut TreeResources<'_>,
     ) -> Result<Option<DirectoryEntry<'a>>, TreeError> {
+        resources.require_cursor_owner(self.owner)?;
         resources.step(1)?;
         if self.exhausted {
             return Ok(None);

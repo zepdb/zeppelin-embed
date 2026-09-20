@@ -17,6 +17,8 @@ pub mod stream;
 /// Lossless logical records and their required semantic validation hooks.
 pub mod records;
 
+mod view;
+
 /// Combined private storage capacity inside the authentic writer/store owner.
 pub mod memory;
 

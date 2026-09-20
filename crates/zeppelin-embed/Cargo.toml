@@ -130,6 +130,10 @@ name = "graph_query_runtime_control"
 required-features = ["graph-cypher"]
 
 [[test]]
+name = "graph_query_storage"
+required-features = ["graph-cypher"]
+
+[[test]]
 name = "graph_query_values"
 required-features = ["graph-cypher"]
 

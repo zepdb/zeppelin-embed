@@ -1055,6 +1055,388 @@ fn property_only_with_detach_preserves_adjacency_then_raw_cleanup_is_paired() {
             );
             assert!(cursor.next_entry(&mut r).unwrap().is_none());
         }
+        p3.finish(&mut r).unwrap();
+        let packs: [&dyn FinalPacks; 3] = [&p1, &p2, &p3];
+        let pack_count = packs.iter().map(|pack| pack.len()).sum();
+        let mut frozen_bytes = ChargedVec::new(&shared, pack_count);
+        for pack in packs {
+            for index in 0..pack.len() {
+                let artifact = pack.artifact(index).unwrap();
+                let length = artifact.bytes().len();
+                let charge = shared.reserve(length).unwrap();
+                let mut bytes = Vec::new();
+                bytes.try_reserve_exact(length).unwrap();
+                bytes.extend_from_slice(artifact.bytes());
+                frozen_bytes.values.push(ExternalBytes {
+                    bytes,
+                    identity: artifact.identity(),
+                    _charge: charge,
+                });
+            }
+        }
+        let mut frozen_frames = ChargedVec::new(&shared, frozen_bytes.values.len());
+        for file in &frozen_bytes.values {
+            frozen_frames.values.push(
+                decode(
+                    ContainerKind::Object,
+                    Some((file.identity.store, file.identity.artifact)),
+                    &file.bytes,
+                )
+                .unwrap(),
+            );
+        }
+        let frozen = Frozen {
+            previous: &Missing,
+            frames: &frozen_frames.values,
+        };
+        struct QueryViewLease {
+            token: zeppelin_embed::property_graph::query::QueryView,
+            lease: zeppelin_embed::lifecycle::SnapshotLease,
+        }
+        impl zeppelin_embed::property_graph::query::runtime::RetainedView for QueryViewLease {
+            fn query_view(&self) -> &zeppelin_embed::property_graph::query::QueryView {
+                &self.token
+            }
+            fn check_active(
+                &self,
+            ) -> Result<(), zeppelin_embed::property_graph::query::QueryError> {
+                self.lease
+                    .check_active()
+                    .map_err(|_| zeppelin_embed::property_graph::query::QueryError::ReadCancelled)
+            }
+        }
+        let retained = QueryViewLease {
+            token: zeppelin_embed::property_graph::query::QueryView::new(
+                c3.roots().store(),
+                c3.roots().generation(),
+            ),
+            lease: store.snapshot().unwrap(),
+        };
+        let query_control = QueryControl::Cancel(CancelToken::new());
+        let query_memory = zeppelin_embed::property_graph::query::resources::QueryMemory::new(
+            &shared,
+            24 * 1024 * 1024,
+        )
+        .unwrap();
+        let accounting_query = AdjacencyQuery {
+            node: a,
+            direction: Direction::Out,
+            relationship_type: Some(RelTypeId::new(1).unwrap()),
+            relationships: RelationshipRange {
+                lower: rels[0],
+                upper: UpperBound::Infinity,
+            },
+        };
+        let identity_root = c3.roots().directory(TreeKind::OutRanges).unwrap();
+        let identity_entry = {
+            let mut cursor = DirectoryCursor::seek(&frozen, identity_root, None, &mut r).unwrap();
+            cursor.next_entry(&mut r).unwrap().unwrap()
+        };
+        let identity_before = query_memory.reserved_bytes();
+        {
+            use zeppelin_embed::property_graph::query::runtime::WorkCounters;
+            let mut first = zeppelin_embed::property_graph::query::runtime::RuntimeContext::new(
+                &retained,
+                &query_control,
+                &query_memory,
+                zeppelin_embed::property_graph::query::runtime::RuntimeLimits::default(),
+            )
+            .unwrap();
+            let mut second = zeppelin_embed::property_graph::query::runtime::RuntimeContext::new(
+                &retained,
+                &query_control,
+                &query_memory,
+                zeppelin_embed::property_graph::query::runtime::RuntimeLimits::default(),
+            )
+            .unwrap();
+            let second_initial: WorkCounters = second.counters();
+            {
+                let mut first_resources = TreeResources::for_query(&mut first).unwrap();
+                let mut second_resources = TreeResources::for_query(&mut second).unwrap();
+                let mut scratch =
+                    RangeScratch::for_query(&query_memory, &mut first_resources).unwrap();
+                let second_work = second_resources.work();
+                let query_charge = query_memory.reserved_bytes();
+                let shared_charge = shared.reserved_bytes().unwrap();
+                assert!(matches!(
+                    validate_range(
+                        &frozen,
+                        identity_root,
+                        identity_entry,
+                        c3.sequence(),
+                        &mut scratch,
+                        &mut second_resources,
+                    ),
+                    Err(TreeError::Invalid("query range scratch owner mismatch"))
+                ));
+                let identity_reader =
+                    NativeGraphReader::new(&frozen, c3.roots(), c3.sequence(), &catalog2, None);
+                let sentinel = RelId::new(u128::MAX).unwrap();
+                let mut refused = [AdjacencyRow {
+                    relationship_type: RelTypeId::new(1).unwrap(),
+                    edge: Edge {
+                        rel: sentinel,
+                        neighbor: b,
+                    },
+                }];
+                assert!(matches!(
+                    identity_reader.expand(
+                        accounting_query,
+                        &mut refused,
+                        &mut scratch,
+                        &mut second_resources,
+                    ),
+                    Err(TreeError::Invalid("query range scratch owner mismatch"))
+                ));
+                assert_eq!(refused[0].edge.rel, sentinel);
+                let mut empty = [];
+                assert!(matches!(
+                    identity_reader.expand(
+                        accounting_query,
+                        &mut empty,
+                        &mut scratch,
+                        &mut second_resources,
+                    ),
+                    Err(TreeError::Invalid("query range scratch owner mismatch"))
+                ));
+                assert_eq!(second_resources.work(), second_work);
+                assert_eq!(query_memory.reserved_bytes(), query_charge);
+                assert_eq!(shared.reserved_bytes().unwrap(), shared_charge);
+                validate_range(
+                    &frozen,
+                    identity_root,
+                    identity_entry,
+                    c3.sequence(),
+                    &mut scratch,
+                    &mut first_resources,
+                )
+                .unwrap();
+            }
+            assert_eq!(second.counters(), second_initial);
+        }
+        assert_eq!(query_memory.reserved_bytes(), identity_before);
+        let mut context = zeppelin_embed::property_graph::query::runtime::RuntimeContext::new(
+            &retained,
+            &query_control,
+            &query_memory,
+            zeppelin_embed::property_graph::query::runtime::RuntimeLimits::default(),
+        )
+        .unwrap();
+        let mut query_resources = TreeResources::for_query(&mut context).unwrap();
+        let mut query_scratch =
+            RangeScratch::for_query(&query_memory, &mut query_resources).unwrap();
+        let query_reader =
+            NativeGraphReader::new(&frozen, c3.roots(), c3.sequence(), &catalog2, None);
+        let mut output = [AdjacencyRow {
+            relationship_type: RelTypeId::new(1).unwrap(),
+            edge: Edge {
+                rel: rels[2],
+                neighbor: b,
+            },
+        }];
+        assert_eq!(
+            query_reader
+                .expand(
+                    accounting_query,
+                    &mut output,
+                    &mut query_scratch,
+                    &mut query_resources,
+                )
+                .unwrap(),
+            0,
+            "the surviving raw edge is hidden by its tombstoned endpoint"
+        );
+        drop(query_scratch);
+        drop(query_resources);
+        use zeppelin_embed::property_graph::query::runtime::WorkKind;
+        assert_eq!(
+            context.counters().get(WorkKind::AdjacencyEntries),
+            16,
+            "3 base plus 2 delete entries are visited in decode and both merge walks, then the one merged survivor is examined before liveness"
+        );
+        assert_eq!(context.counters().get(WorkKind::Scans), 2);
+        assert_eq!(context.counters().get(WorkKind::Lookups), 4);
+        assert_eq!(
+            context.counters().get(WorkKind::CopiedBytes),
+            644,
+            "one merged Edge plus the exact relationship/live-node/tombstone record fields; no filtered output row"
+        );
+        let limited_before = query_memory.reserved_bytes();
+        let adjacency_limits =
+            zeppelin_embed::property_graph::query::runtime::RuntimeLimits::default()
+                .with_limit(WorkKind::AdjacencyEntries, 15)
+                .unwrap();
+        let mut limited = zeppelin_embed::property_graph::query::runtime::RuntimeContext::new(
+            &retained,
+            &query_control,
+            &query_memory,
+            adjacency_limits,
+        )
+        .unwrap();
+        {
+            let mut resources = TreeResources::for_query(&mut limited).unwrap();
+            let mut scratch = RangeScratch::for_query(&query_memory, &mut resources).unwrap();
+            let sentinel = RelId::new(u128::MAX).unwrap();
+            let mut refused = [AdjacencyRow {
+                relationship_type: RelTypeId::new(1).unwrap(),
+                edge: Edge {
+                    rel: sentinel,
+                    neighbor: b,
+                },
+            }];
+            assert!(matches!(
+                query_reader.expand(accounting_query, &mut refused, &mut scratch, &mut resources,),
+                Err(TreeError::Runtime(
+                    zeppelin_embed::property_graph::query::runtime::RuntimeError::Limit(
+                        WorkKind::AdjacencyEntries
+                    )
+                ))
+            ));
+            assert_eq!(refused[0].edge.rel, sentinel);
+        }
+        assert_eq!(
+            limited.counters().get(WorkKind::AdjacencyEntries),
+            15,
+            "the sixteenth actual merged-edge examination is refused"
+        );
+        assert_eq!(limited.counters().get(WorkKind::CopiedBytes), 32);
+        drop(limited);
+        assert_eq!(query_memory.reserved_bytes(), limited_before);
+
+        let copy_limits = zeppelin_embed::property_graph::query::runtime::RuntimeLimits::default()
+            .with_limit(WorkKind::CopiedBytes, 643)
+            .unwrap();
+        let mut limited = zeppelin_embed::property_graph::query::runtime::RuntimeContext::new(
+            &retained,
+            &query_control,
+            &query_memory,
+            copy_limits,
+        )
+        .unwrap();
+        {
+            let mut resources = TreeResources::for_query(&mut limited).unwrap();
+            let mut scratch = RangeScratch::for_query(&query_memory, &mut resources).unwrap();
+            let sentinel = RelId::new(u128::MAX).unwrap();
+            let mut refused = [AdjacencyRow {
+                relationship_type: RelTypeId::new(1).unwrap(),
+                edge: Edge {
+                    rel: sentinel,
+                    neighbor: b,
+                },
+            }];
+            assert!(matches!(
+                query_reader.expand(accounting_query, &mut refused, &mut scratch, &mut resources,),
+                Err(TreeError::Runtime(
+                    zeppelin_embed::property_graph::query::runtime::RuntimeError::Limit(
+                        WorkKind::CopiedBytes
+                    )
+                ))
+            ));
+            assert_eq!(refused[0].edge.rel, sentinel);
+        }
+        assert_eq!(
+            limited.counters().get(WorkKind::CopiedBytes),
+            636,
+            "the next actual eight-byte field would reach 644 and is refused before copying"
+        );
+        drop(limited);
+        assert_eq!(query_memory.reserved_bytes(), limited_before);
+        let old_catalog = Catalog {
+            base: base1.identity,
+            symbols: &base1.symbols,
+        };
+        let old_reader = NativeGraphReader::new(&frozen, roots1, c1.sequence(), &old_catalog, None);
+        let before_count = context.counters().get(WorkKind::CopiedBytes);
+        let mut query_resources = TreeResources::for_query(&mut context).unwrap();
+        assert_eq!(
+            old_reader.relationship_count(&mut query_resources).unwrap(),
+            3
+        );
+        drop(query_resources);
+        let after_count = context.counters().get(WorkKind::CopiedBytes);
+        let mut query_resources = TreeResources::for_query(&mut context).unwrap();
+        let mut copied_rows = [RelationshipRow {
+            rel: rels[0],
+            source: a,
+            target: b,
+            relationship_type: RelTypeId::new(1).unwrap(),
+        }; 3];
+        assert_eq!(
+            old_reader
+                .scan_relationships(
+                    RelationshipRange {
+                        lower: rels[0],
+                        upper: UpperBound::Infinity,
+                    },
+                    &mut copied_rows,
+                    &mut query_resources,
+                )
+                .unwrap(),
+            3
+        );
+        drop(query_resources);
+        let scan_delta = context
+            .counters()
+            .get(WorkKind::CopiedBytes)
+            .checked_sub(after_count)
+            .unwrap();
+        let count_delta = after_count.checked_sub(before_count).unwrap();
+        assert_eq!(
+            scan_delta,
+            count_delta + 3 * std::mem::size_of::<RelationshipRow>() as u64,
+            "the otherwise identical scan charges exactly its three actual output assignments"
+        );
+        let row_bytes = std::mem::size_of::<RelationshipRow>() as u64;
+        let refusal_limit = count_delta + 3 * row_bytes - 1;
+        let refusal_limits =
+            zeppelin_embed::property_graph::query::runtime::RuntimeLimits::default()
+                .with_limit(WorkKind::CopiedBytes, refusal_limit)
+                .unwrap();
+        let refusal_before = query_memory.reserved_bytes();
+        let mut refusal = zeppelin_embed::property_graph::query::runtime::RuntimeContext::new(
+            &retained,
+            &query_control,
+            &query_memory,
+            refusal_limits,
+        )
+        .unwrap();
+        {
+            let mut resources = TreeResources::for_query(&mut refusal).unwrap();
+            let sentinel = RelId::new(u128::MAX).unwrap();
+            let mut partial = [RelationshipRow {
+                rel: sentinel,
+                source: a,
+                target: b,
+                relationship_type: RelTypeId::new(1).unwrap(),
+            }; 3];
+            assert!(matches!(
+                old_reader.scan_relationships(
+                    RelationshipRange {
+                        lower: rels[0],
+                        upper: UpperBound::Infinity,
+                    },
+                    &mut partial,
+                    &mut resources,
+                ),
+                Err(TreeError::Runtime(
+                    zeppelin_embed::property_graph::query::runtime::RuntimeError::Limit(
+                        WorkKind::CopiedBytes
+                    )
+                ))
+            ));
+            assert_eq!([partial[0].rel, partial[1].rel], [rels[0], rels[1]]);
+            assert_eq!(
+                partial[2].rel, sentinel,
+                "the refused third copy cannot mutate caller-private backing"
+            );
+        }
+        assert_eq!(
+            refusal.counters().get(WorkKind::CopiedBytes),
+            count_delta + 2 * row_bytes,
+            "the rejected output copy is not charged"
+        );
+        drop(refusal);
+        assert_eq!(query_memory.reserved_bytes(), refusal_before);
         assert_eq!(
             NativeGraphReader::new(
                 &p1,

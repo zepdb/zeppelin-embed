@@ -1,0 +1,17 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID e64c69f4-117c-4358-a897-1fb8c66f5350 with nextest profile: default
+    Starting 10 tests across 1 binary
+        PASS [   0.015s] ( 1/10) zeppelin-embed::graph_storage_prepare authentic_staged_batch_prepares_native_directories_inside_one_memory_owner
+        PASS [   0.080s] ( 2/10) zeppelin-embed::graph_storage_prepare authentic_native_graph_candidate_pairs_same_batch_self_and_parallel_edges
+        PASS [   0.114s] ( 3/10) zeppelin-embed::graph_storage_prepare native_adjacency::actual_native_producer_consolidates_before_ninth_run
+        PASS [   0.028s] ( 4/10) zeppelin-embed::graph_storage_prepare native_adjacency::native_candidate_faults_after_out_before_in_return_no_candidate
+        PASS [   0.066s] ( 5/10) zeppelin-embed::graph_storage_prepare native_adjacency::property_only_with_detach_preserves_adjacency_then_raw_cleanup_is_paired
+        PASS [   0.471s] ( 6/10) zeppelin-embed::graph_storage_prepare native_index_preparation_sorts_chunk_spanning_arrays_in_the_shared_participant
+        PASS [   0.042s] ( 7/10) zeppelin-embed::graph_storage_prepare staged_updates_detach_delete_and_recreate_preserve_old_roots_and_permanent_fences
+        PASS [   1.778s] ( 8/10) zeppelin-embed::graph_storage_prepare native_adjacency::actual_native_producer_refuses_large_batch_at_unchanged_work_limit
+        PASS [  26.917s] ( 9/10) zeppelin-embed::graph_storage_prepare native_adjacency::actual_native_producer_consolidates_before_2049_pending_entries
+        SLOW [> 60.000s] (─────) zeppelin-embed::graph_storage_prepare native_adjacency::actual_native_producer_splits_4097_edges_from_bounded_batches
+        PASS [  74.014s] (10/10) zeppelin-embed::graph_storage_prepare native_adjacency::actual_native_producer_splits_4097_edges_from_bounded_batches
+────────────
+     Summary [  74.095s] 10 tests run: 10 passed (1 slow), 0 skipped

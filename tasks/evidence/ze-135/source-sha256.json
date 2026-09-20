@@ -1,0 +1,69 @@
+{
+  "parent": "3c2fba32e72a03efdfa50f9ad7a51cdd2e8bcd72",
+  "files": [
+    {
+      "path": "crates/zeppelin-embed/Cargo.toml",
+      "sha256": "c0878d423bf5daa37df23a873d77b8c7fbd3fa8cf60eb050df8fe09f516ebcdf"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/query/resources.rs",
+      "sha256": "d511fe7c801e6c447046a18c8f13c3b2e31f1d9c1085aed8193718dd2afd7e90"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/mod.rs",
+      "sha256": "6c8a032ace77099b2bf0005b0710014ddc93114b89db22bdf0086a6c869d0bc0"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/view.rs",
+      "sha256": "d5405c3669655f1fb59f660a1087b98ca315c00c95a2ed8bc58a2243ef14ae68"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/stream.rs",
+      "sha256": "e119a8a261d1a07ea127fb755b9a01e21f4e39c923f3f0c7988b9140c35aebf5"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/tree/directory.rs",
+      "sha256": "e4511fa9a7cef72ec5fef1a048a25bc3f6084e066fbb8f08ccceb61c9bf29105"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/tree/directory/keys.rs",
+      "sha256": "391a8eb4582fc1d22e1a47cd9a833540b93df173a25360a211e5caf1f0c7c2c6"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/adjacency/range.rs",
+      "sha256": "f40d8a392d9132d0c01e7300a0a6e87589a662f3266c6416e8a649ae2e2c21eb"
+    },
+    {
+      "path": "crates/zeppelin-embed/src/property_graph/storage/adjacency/read.rs",
+      "sha256": "ff1aca3c7623bdf704fff1475baf4cf657cbcb52fb37e317b16bdd75e2797290"
+    },
+    {
+      "path": "crates/zeppelin-embed/tests/graph_query_storage.rs",
+      "sha256": "83321f5927fd03526bd4fc5a370d3892afce732df3699fe1c0fac85183cdcc4d"
+    },
+    {
+      "path": "crates/zeppelin-embed/tests/graph_storage_prepare/native_adjacency.rs",
+      "sha256": "ccc93ec9a3bfee1ba8240b07f977ea4f3f03a123410519e9204befb763e9e56f"
+    },
+    {
+      "path": "tests/adversarial/graph_query_storage.rs",
+      "sha256": "5d0a250cf3164528dc886ec919bb41841a9c513616a5b38026be67030cb5848d"
+    },
+    {
+      "path": "tests/adversarial/mod.rs",
+      "sha256": "b698684ca189db5328f859bf438583e51567e1d9f0b2de72197ec309c46f81ef"
+    },
+    {
+      "path": "tests/adversarial/coverage.rs",
+      "sha256": "bf39da35dd3536f4af4f342e4a946121310dc090fcd0d37b7dc5fd6e2ffd576f"
+    },
+    {
+      "path": "tests/adversarial/runner.rs",
+      "sha256": "0412c851e68be730364032bac7a8d9ddf6a528006228df4b6d8595f4e771df65"
+    },
+    {
+      "path": "tests/adversarial_tests.rs",
+      "sha256": "dcbc56a8c7e52add571476c30a88021355f4562291f084b15af29a44e81feeee"
+    }
+  ]
+}
