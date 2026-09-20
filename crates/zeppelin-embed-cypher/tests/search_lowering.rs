@@ -87,6 +87,84 @@ fn text_call_lowers_to_one_typed_eager_source() {
     });
 }
 
+fn operator_depends_on(
+    description: PlanDescription<'_>,
+    root: PlanNodeId,
+    wanted: PlanNodeId,
+) -> bool {
+    if root == wanted {
+        return true;
+    }
+    description
+        .operators
+        .get(root.0 as usize)
+        .is_some_and(|operator| {
+            operator
+                .inputs
+                .iter()
+                .any(|input| operator_depends_on(description, *input, wanted))
+        })
+}
+
+#[test]
+fn direct_vector_search_yield_feeds_following_match_in_one_validated_plan() {
+    with_memory(|memory, context| {
+        compile_read_in(
+            "CALL ze.vector_search([1,2],20,'auto') YIELD node AS chunk,distance MATCH (chunk)-[:FROM_MEETING]->(meeting) RETURN chunk,meeting,distance ORDER BY distance,ze.node_id(chunk)",
+            &[],
+            CompileLimits::default(),
+            memory,
+            context,
+            |read, _| {
+                let description = read.plan().description();
+                assert_eq!(description.eager_searches, &[PlanNodeId(1)]);
+                let search_id = description.eager_searches[0];
+                let OperatorKind::Search {
+                    request: SearchRequest::Vector { mode, .. },
+                    outputs,
+                    ..
+                } = description.operators[search_id.0 as usize].kind
+                else {
+                    panic!("expected vector search")
+                };
+                assert_eq!(mode, SearchMode::Auto);
+                assert_eq!(outputs.node, Some(SlotId(0)));
+                assert_eq!(outputs.distance, Some(SlotId(1)));
+                let chunk = outputs.node.unwrap();
+                let expand = description
+                    .operators
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, operator)| match operator.kind {
+                        OperatorKind::Expand { source, node, .. } if source == chunk => {
+                            Some((PlanNodeId(index as u32), node))
+                        }
+                        _ => None,
+                    })
+                    .unwrap();
+                assert!(operator_depends_on(description, expand.0, search_id));
+                assert!(operator_depends_on(description, description.root, expand.0));
+                assert_eq!(
+                    read.columns()
+                        .iter()
+                        .map(|column| column.name)
+                        .collect::<Vec<_>>(),
+                    ["chunk", "meeting", "distance"]
+                );
+                let root = read.plan().facts(description.root).unwrap();
+                assert!(root.ordered());
+                assert!(read
+                    .columns()
+                    .iter()
+                    .any(|column| column.name == "meeting" && column.kinds == ValueKinds::NODE));
+                assert!(root.slot(expand.1).is_none());
+                Ok(())
+            },
+        )
+        .unwrap();
+    });
+}
+
 fn expression_contains_slot(description: PlanDescription<'_>, root: ExprId) -> bool {
     let Some(expression) = description.expressions.get(root.0 as usize) else {
         return true;
@@ -191,6 +269,10 @@ fn omitted_empty_and_global_eligibility_remain_distinct_plans() {
                 "MATCH (n) WITH collect(DISTINCT n) AS eligible CALL ze.text_search('x',1,eligible) YIELD node RETURN node",
                 "global",
             ),
+            (
+                "MATCH (n) WITH collect(DISTINCT n) AS eligible WITH eligible AS domain CALL ze.text_search('x',1,domain) YIELD node RETURN node",
+                "global-alias",
+            ),
         ] {
             compile_read_in(
                 query,
@@ -222,16 +304,26 @@ fn omitted_empty_and_global_eligibility_remain_distinct_plans() {
                                 OperatorKind::Unit
                             ));
                         }
-                        "global" => {
+                        "global" | "global-alias" => {
                             let eligible = eligible.unwrap();
-                            assert!(matches!(
-                                plan.expressions[eligible.0 as usize],
-                                Expression::Slot(_)
-                            ));
+                            let Expression::Slot(slot) = plan.expressions[eligible.0 as usize]
+                            else {
+                                panic!("global eligibility must retain its current slot")
+                            };
+                            let input = search.inputs[0];
                             assert!(!matches!(
-                                plan.operators[search.inputs[0].0 as usize].kind,
+                                plan.operators[input.0 as usize].kind,
                                 OperatorKind::Unit
                             ));
+                            let input_facts = read.plan().facts(input).unwrap();
+                            assert!(input_facts.singleton());
+                            assert_eq!(input_facts.slot(slot), Some(ValueKinds::LIST));
+                            if expected == "global-alias" {
+                                assert!(matches!(
+                                    plan.operators[input.0 as usize].kind,
+                                    OperatorKind::With(_)
+                                ));
+                            }
                         }
                         _ => panic!("unknown eligibility case"),
                     }

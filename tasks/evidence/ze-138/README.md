@@ -19,7 +19,7 @@ Final changed-path spot hashes before commit:
 ```text
 0fb79413142d2410cf62e6805ce27ec21bc365f47d520d596a954b2a48f2ecc0  crates/zeppelin-embed-cypher/src/lowering/search.rs
 59897f41a0eaa4d9ac0edecdafe5c5c9be35d970928b9f49b5506700a9f2bf06  crates/zeppelin-embed/src/property_graph/query/plan/validate.rs
-185838bc173abc1b4e20fb9b9db615bd6ea86d64beba7c190b2025f90fe0e919  crates/zeppelin-embed-cypher/tests/search_lowering.rs
+74bf76e2ec4cb2503391fe124ffba3c443d7eda44fa1079e004eb1eab65e3761  crates/zeppelin-embed-cypher/tests/search_lowering.rs
 ec54dd4dfddd25be9822a93e8b40115a4378b3e8706e0a7b841bef0147676d2b  tests/adversarial/graph_search_lowering.rs
 5771fc32c77813f26f35db1a61b6e08eb9c1e179b4c97fe9c0ad0ea69a147eb0  tests/adversarial-oracle/src/graph_search_lowering.rs
 ```
@@ -37,12 +37,37 @@ cargo 1.93.0 (083ac5135 2025-12-15)
 
 ## Literal RED to GREEN
 
-The core representation test was written before the new types. Its first
-compile failed because `SearchOutputs`, the four lossless modes, and the typed
-`outputs` field did not exist. The first direct compiler test was also written
-before lowering and failed with `Unsupported: CALL requires search lowering`.
-After the smallest representation, binder, and lowerer slices, the terminal
-focused commands were:
+The core representation test was written before the new types. Its literal RED
+receipt was:
+
+```text
+cargo test -p zeppelin-embed --features graph-cypher --test graph_query_plan \
+  search_plans_preserve_request_intent_and_nullable_hybrid_outputs \
+  -- --exact --test-threads=1
+exit: 101
+error[E0432]: unresolved import ... SearchOutputs
+error[E0599]: no variant or associated item named `Default` found for enum `SearchMode`
+error[E0559]: variant `OperatorKind::Search` has no field named `outputs`
+```
+
+After the core representation compiled, the direct compiler test was added
+before CALL lowering. Its literal RED receipt was:
+
+```text
+cargo test -p zeppelin-embed-cypher --test search_lowering \
+  text_call_lowers_to_one_typed_eager_source -- --exact --test-threads=1
+exit: 101
+test text_call_lowers_to_one_typed_eager_source ... FAILED
+called `Result::unwrap()` on an `Err` value: ParseError {
+  kind: SearchContext,
+  message: "CALL requires search lowering (ZE-58)",
+  ...
+}
+```
+
+The intended test names, commands, process results, and failing compiler seams
+above were captured before their production slices. After the smallest
+representation, binder, and lowerer slices, the terminal focused commands were:
 
 ```text
 env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail \
@@ -54,7 +79,7 @@ env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-
   -p zeppelin-embed-cypher --test binding --test read_lowering \
   --test lowering_semantics --test search_lowering \
   --test lowering_allocation --test runtime_lowering
-Summary: 52 tests run: 52 passed, 0 skipped
+Summary: 53 tests run: 53 passed, 0 skipped
 
 env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail \
   --features graph-cypher --test adversarial_tests \
@@ -63,7 +88,7 @@ Summary: 4 tests run: 4 passed, 469 skipped
 ```
 
 The matching serial libtest runs used `-- --test-threads=1`: core 33/33;
-Cypher binder/lowerer/allocation/runtime 52/52; PG11 1/1; PG17 plus PG20
+Cypher binder/lowerer/allocation/runtime 53/53; PG11 1/1; PG17 plus PG20
 2/2; and the PG20 runner episode 1/1. The higher-ranked callback compile-fail
 test also passed:
 
@@ -76,10 +101,13 @@ The tests cover all 21 nonempty legal YIELD subsets, exact aliases and slots,
 nullable hybrid components, four request modes, omitted/empty/global
 eligibility, two independent searches, Cartesian joins, eager source order,
 LIMIT 0, projection, literal and parameter aliases, arithmetic, grouping,
-`size`, list indexing, and nested invariant lists. Aggregate-derived values and
-entity/property reads remain outside independently reconstructable request
-arguments; global `collect(DISTINCT node)` eligibility retains its current
-singleton aggregate input instead.
+`size`, list indexing, and nested invariant lists. A complete validated
+`CALL vector_search ... YIELD ... MATCH ... RETURN ... ORDER BY` plan proves
+that the yielded node feeds the following expansion. Both direct and
+singleton-WITH-aliased `collect(DISTINCT node)` eligibility retain a reachable
+current-scope LIST slot on a singleton non-Unit input in the final `GraphPlan`.
+Aggregate-derived values and entity/property reads remain outside independently
+reconstructable request arguments.
 
 ## Allocation and control observations
 
@@ -103,6 +131,27 @@ the consumer, and restored all owners. The existing cumulative work counter
 tests stayed green.
 
 ## PG20 seeded probe
+
+Before any ZE-138 production change, the existing complete-plan changed-path
+probe was run from a detached worktree at the exact base source, then the
+scratch worktree was removed:
+
+```text
+git worktree add --detach /tmp/ze138-baseline-a3ecc948 \
+  a3ecc9483723967f5a70fbbf47909b57d3399018
+env NEXTEST_RETRIES=0 cargo nextest run -j 4 \
+  --status-level fail --final-status-level fail --features graph-cypher \
+  --test adversarial_tests \
+  -E 'test(=property_graph_lowering_probe_checks_complete_plans_and_inflight_faults)'
+Nextest run ID 4a272f92-8c49-4415-967e-a6acbd5e2416
+Summary: 1 test run: 1 passed, 470 skipped
+git worktree remove /tmp/ze138-baseline-a3ecc948
+```
+
+This is the honest pre-change PG17 lowerer control; PG20 did not exist at that
+source and is not claimed to have run there. The terminal after-change command
+runs both unchanged PG17 and the new PG20, plus unchanged PG11 and the actual
+runner registration, as the four-test receipt recorded above.
 
 PG20 is registered additively under `property-graph.search-lowering.*`. Its
 oracle imports no engine/compiler type and compares primitive mode,
@@ -134,7 +183,9 @@ and the exact hunk was restored before the next mutation:
 | omit second eager source | generated plan rejected with `Plan(Search)`; exit 101 |
 | omit independent Cartesian Join | generated plan rejected with `Plan(Scope)`; exit 101 |
 
-The terminal restored `search_lowering` suite passed 7/7. Immediately after
+The immediate restored `search_lowering` suite passed 7/7; after the Spec-review
+application-shape and eligibility-alias additions, the terminal suite passed
+8/8. Immediately after
 restoration and before formatting, the two mutated production files exactly
 matched their clean checkpoint hashes:
 
@@ -173,3 +224,14 @@ The supplied `/tmp/ze-138-preservation.json` was rehashed mechanically:
 `entries=45 mismatches=0`. PG18 and PG19 probe files were not edited. Per the
 ZE-118 boundary, no broad campaign, coverage rebaseline, size gate, TCK, ABI,
 or ranking claim was run for this compiler-only ticket.
+
+## Main integration inventory reconciliation
+
+ZE-133 landed before ZE-138 on main and contributed 19 PG18 keys plus exact
+feature-mode inventory assertions. The additive ZE-138 cherry-pick retained
+both PG18 and PG20 registrations, so the assertions initially remained at
+166 graph-only and 178 with the 12-key PG16 hook. Integrated run
+`29194cea-f426-4ed5-a6ee-c9b248e6eaf5` was the intended RED: it observed
+177 versus 166. The reconciled exact totals are 177 and 189. The subsequent
+graph-only and hook-enabled focused registry runs are recorded in the root
+integration receipt; no key or feature gate was removed.
