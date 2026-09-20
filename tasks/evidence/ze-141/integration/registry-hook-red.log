@@ -1,0 +1,49 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID 1a7e4fac-bc7a-4996-9bbc-74ea2104e967 with nextest profile: default
+    Starting 1 test across 1 binary (480 tests skipped)
+        FAIL [   0.008s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests native_graph_runner_keys_are_active_with_graph_feature
+  stdout ───
+
+    running 1 test
+    test native_graph_runner_keys_are_active_with_graph_feature ... FAILED
+
+    failures:
+
+    failures:
+        native_graph_runner_keys_are_active_with_graph_feature
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 480 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'native_graph_runner_keys_are_active_with_graph_feature' (35886159) panicked at tests/adversarial_tests.rs:19166:5:
+    assertion `left == right` failed
+      left: 206
+     right: 198
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.008s] 1 test run: 0 passed, 1 failed, 480 skipped
+        FAIL [   0.008s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests native_graph_runner_keys_are_active_with_graph_feature
+  stdout ───
+
+    running 1 test
+    test native_graph_runner_keys_are_active_with_graph_feature ... FAILED
+
+    failures:
+
+    failures:
+        native_graph_runner_keys_are_active_with_graph_feature
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 480 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'native_graph_runner_keys_are_active_with_graph_feature' (35886159) panicked at tests/adversarial_tests.rs:19166:5:
+    assertion `left == right` failed
+      left: 206
+     right: 198
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

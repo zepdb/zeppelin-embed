@@ -1,0 +1,8 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID c080bee9-c37d-4bd2-bf50-d51bbb2ecc93 with nextest profile: default
+    Starting 2 tests across 1 binary (479 tests skipped)
+        PASS [   1.005s] (1/2) zeppelin-embed-workspace-tests::adversarial_tests property_graph_native_response_probe_checks_conversion_and_paired_faults
+        PASS [  20.496s] (2/2) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_native_response_contracts
+────────────
+     Summary [  20.497s] 2 tests run: 2 passed, 479 skipped

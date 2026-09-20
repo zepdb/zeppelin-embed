@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed-adversarial-oracle v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/tests/adversarial-oracle)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.40s
+────────────
+ Nextest run ID 55009d4f-056f-467b-b6a7-92d6c424c93c with nextest profile: default
+    Starting 1 test across 9 binaries (155 tests skipped)
+        PASS [   0.007s] (1/1) zeppelin-embed-adversarial-oracle graph_response::tests::graph_response_oracle_rejects_missing_fires_extra_owner_and_changed_commit
+────────────
+     Summary [   0.007s] 1 test run: 1 passed, 155 skipped

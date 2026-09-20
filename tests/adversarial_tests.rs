@@ -19165,7 +19165,7 @@ fn native_graph_runner_keys_are_active_with_graph_feature() {
     #[cfg(feature = "graph-result-test-support")]
     assert_eq!(
         adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        198
+        206
     );
 }
 

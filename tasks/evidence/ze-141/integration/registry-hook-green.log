@@ -1,0 +1,9 @@
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.16s
+────────────
+ Nextest run ID df39392b-1ce4-447c-a293-e23bec05af1d with nextest profile: default
+    Starting 1 test across 1 binary (480 tests skipped)
+        PASS [   0.009s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests native_graph_runner_keys_are_active_with_graph_feature
+────────────
+     Summary [   0.009s] 1 test run: 1 passed, 480 skipped
