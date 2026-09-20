@@ -1,9 +1,10 @@
 use super::{MemoryError, QueryArena, QueryMemory, QueryReservation};
 use crate::property_graph::query::{
-    ValueContext,
+    QueryValue, ValueContext,
+    list::Backing,
     plan::{
-        GraphPlan, NodeFacts, PlanBacking, PlanDescription, PlanFootprint, RetainedRegion,
-        VALIDATION_SCRATCH_BYTES,
+        GraphPlan, NodeFacts, ParameterBinding, PlanBacking, PlanDescription, PlanFootprint,
+        RetainedRegion, VALIDATION_SCRATCH_BYTES,
     },
 };
 use std::marker::PhantomData;
@@ -372,6 +373,24 @@ impl<'p, 'plan, 'facts> RuntimePlan<'p, 'plan, 'facts, '_, '_, '_> {
     pub(crate) fn belongs_to(&self, memory: &QueryMemory<'_>) -> bool {
         std::ptr::eq(self.inputs._backing.memory, memory)
     }
+    #[allow(
+        dead_code,
+        reason = "ZE-145's parameter proof is consumed with its later evaluator integration"
+    )]
+    pub(crate) fn validate_parameter_inputs(
+        &self,
+        bindings: &[ParameterBinding<'_>],
+        context: &mut ValueContext<'_>,
+    ) -> Result<(), MemoryError> {
+        self.inputs.verify_span(bindings, context)?;
+        for binding in bindings {
+            self.inputs.verify_span(binding.name.as_bytes(), context)?;
+            verify_parameter_value(&self.inputs, binding.value, context)?;
+        }
+        self.plan
+            .validate_parameters(bindings, context)
+            .map_err(MemoryError::Plan)
+    }
     /// Returns the original immutable plan; no new structural facts are inferred.
     pub const fn plan(&self) -> &'p GraphPlan<'plan, 'facts> {
         self.plan
@@ -379,5 +398,49 @@ impl<'p, 'plan, 'facts> RuntimePlan<'p, 'plan, 'facts, '_, '_, '_> {
     /// Actual retained backing union, including shared existing query arenas.
     pub const fn backing_bytes(&self) -> usize {
         self.inputs.backing_bytes
+    }
+}
+
+#[allow(
+    dead_code,
+    reason = "ZE-145's recursive parameter proof is consumed with its later evaluator integration"
+)]
+fn verify_parameter_value(
+    inputs: &QueryInputs<'_, '_, '_>,
+    value: QueryValue<'_>,
+    context: &mut ValueContext<'_>,
+) -> Result<(), MemoryError> {
+    context.step()?;
+    value.validate(context)?;
+    match value {
+        QueryValue::String(value) => inputs.verify_span(value.as_bytes(), context),
+        QueryValue::List(list) => match list.backing() {
+            Backing::Values(values) => {
+                inputs.verify_span(values, context)?;
+                for value in values {
+                    verify_parameter_value(inputs, *value, context)?;
+                }
+                Ok(())
+            }
+            Backing::Strings(values) => {
+                inputs.verify_span(values, context)?;
+                for value in values {
+                    inputs.verify_span(value.as_bytes(), context)?;
+                }
+                Ok(())
+            }
+            Backing::Bools(values) => inputs.verify_span(values, context),
+            Backing::Integers(values) => inputs.verify_span(values, context),
+            Backing::Floats(values) => inputs.verify_span(values, context),
+            Backing::Nodes(values) => inputs.verify_span(values, context),
+            Backing::Relationships(values) => inputs.verify_span(values, context),
+            Backing::Arena { .. } => Err(MemoryError::UnprovedInput),
+        },
+        QueryValue::Null
+        | QueryValue::Bool(_)
+        | QueryValue::I64(_)
+        | QueryValue::F64(_)
+        | QueryValue::NodeRef(_)
+        | QueryValue::RelRef(_) => Ok(()),
     }
 }

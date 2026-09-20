@@ -1095,6 +1095,7 @@ pub(crate) mod tests {
         clippy::unwrap_used
     )]
 
+    mod expression_tests;
     mod retrieval;
 
     mod tempfile {

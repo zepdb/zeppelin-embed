@@ -19,7 +19,7 @@ pub struct QueryList<'a> {
     bytes: usize,
 }
 #[derive(Clone, Copy, Debug)]
-enum Backing<'a> {
+pub(super) enum Backing<'a> {
     Values(&'a [QueryValue<'a>]),
     Nodes(&'a [NodeId]),
     Relationships(&'a [RelId]),
@@ -37,6 +37,37 @@ pub(super) trait ListArena: std::fmt::Debug {
     fn value(&self, index: usize) -> Option<QueryValue<'_>>;
 }
 impl<'a> QueryList<'a> {
+    #[allow(
+        dead_code,
+        reason = "ZE-145's retained parameter proof is consumed with its later evaluator integration"
+    )]
+    pub(super) const fn backing(self) -> Backing<'a> {
+        self.values
+    }
+
+    #[allow(
+        dead_code,
+        reason = "ZE-145's scratch-list adoption is consumed with its later evaluator integration"
+    )]
+    pub(super) fn arena_descriptor(
+        self,
+        expected: &dyn ListArena,
+    ) -> Option<(usize, usize, usize, u8, usize, bool)> {
+        let Backing::Arena { source, start, len } = self.values else {
+            return None;
+        };
+        if !std::ptr::eq(source, expected) {
+            return None;
+        }
+        Some((
+            start,
+            len,
+            self.elements,
+            self.depth,
+            self.bytes,
+            self.view.is_some(),
+        ))
+    }
     pub(super) fn arena(
         source: &'a dyn ListArena,
         start: usize,

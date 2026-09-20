@@ -1,6 +1,7 @@
 //! Exact read-only catalog bound to one admitted native bundle.
 
 use super::source::NativeQuerySource;
+use crate::property_graph::GraphName;
 use crate::property_graph::catalog::{
     CatalogError, CatalogImage, GraphInterpretation, Symbol, SymbolEntry, SymbolHighWaters,
     SymbolKind,
@@ -123,6 +124,33 @@ impl<'a, 'm, 'g> NativeCatalog<'a, 'm, 'g> {
         self.lease_token == source.lease().token()
             && self.runtime == source.runtime()
             && std::ptr::eq(self.memory, source.memory())
+    }
+
+    pub(super) fn lookup(
+        &self,
+        kind: SymbolKind,
+        name: GraphName<'_>,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<Option<Symbol>, TreeError> {
+        self.image
+            .symbols
+            .lookup(kind, name, &mut || {
+                resources.step(1).map_err(|_| CatalogError::Cancelled)
+            })
+            .map_err(|error| catalog_error(error, resources))
+    }
+
+    pub(super) fn name(
+        &self,
+        symbol: Symbol,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<Option<GraphName<'a>>, TreeError> {
+        self.image
+            .symbols
+            .name(symbol, &mut || {
+                resources.step(1).map_err(|_| CatalogError::Cancelled)
+            })
+            .map_err(|error| catalog_error(error, resources))
     }
 }
 

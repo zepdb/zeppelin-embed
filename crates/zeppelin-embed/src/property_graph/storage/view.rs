@@ -23,6 +23,8 @@ mod catalog;
 #[cfg(feature = "graph-cypher")]
 mod cursor;
 #[cfg(feature = "graph-cypher")]
+mod expression;
+#[cfg(feature = "graph-cypher")]
 mod mapping;
 #[cfg(feature = "graph-cypher")]
 mod preparation_source;

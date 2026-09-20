@@ -1,6 +1,8 @@
 //! Typed graph query semantics, separate from lossless replay identity.
 
 mod context;
+#[cfg(feature = "graph-cypher")]
+pub(crate) mod expression;
 mod grouping;
 mod id_text;
 mod list;

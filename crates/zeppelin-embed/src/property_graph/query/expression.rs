@@ -1,0 +1,1065 @@
+//! Crate-private scalar evaluation over one admitted native query owner.
+
+#![allow(
+    dead_code,
+    reason = "ZE-145's crate-private evaluator is consumed by the later ZE-50/51 integration"
+)]
+
+use super::list::ListArena;
+use super::plan::{
+    BinaryExpression, ExprId, Expression, Literal, MAX_PLAN_DEPTH, ParameterBinding,
+    PlanDescription, PlanError, UnaryExpression,
+};
+use super::relational::Schema;
+use super::resources::{MemoryError, QueryArena, QueryMemory, RuntimePlan};
+use super::runtime::{RowBatch, RuntimeContext, RuntimeError, WorkKind};
+use super::{
+    MAX_LIST_DEPTH, MAX_LIST_ELEMENTS, MAX_QUERY_BYTES, QueryList, QueryValue, QueryView, Truth,
+};
+use crate::property_graph::catalog::{Symbol, SymbolKind};
+use crate::property_graph::storage::payload::CHUNK_BYTES;
+use crate::property_graph::storage::stream::{PayloadCursor, PayloadSlice};
+use crate::property_graph::storage::tree::directory::{
+    BlockSource, NativeReadEvent, TreeError, TreeResources,
+};
+use crate::property_graph::storage::{GraphReadView, TextPayloadReader};
+use crate::property_graph::{GraphName, NodeId, RelId};
+use std::marker::PhantomData;
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Default)]
+struct TestPollControl {
+    remaining: Option<usize>,
+    cancel: Option<crate::lifecycle::CancelToken>,
+}
+
+#[cfg(not(any(test, feature = "test-support")))]
+#[derive(Default)]
+struct TestPollControl;
+
+impl TestPollControl {
+    #[cfg(any(test, feature = "test-support"))]
+    fn arm_cancel(&mut self, polls: usize, cancel: crate::lifecycle::CancelToken) {
+        self.remaining = Some(polls);
+        self.cancel = Some(cancel);
+    }
+
+    fn poll(&mut self) {
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(remaining) = &mut self.remaining {
+            if *remaining == 0 {
+                if let Some(cancel) = self.cancel.take() {
+                    cancel.cancel();
+                }
+                self.remaining = None;
+            } else {
+                *remaining -= 1;
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ExpressionCapacity {
+    pub(crate) cells: usize,
+    pub(crate) string_bytes: usize,
+}
+
+#[derive(Clone, Copy)]
+enum ScratchCell {
+    Null,
+    Bool(bool),
+    I64(i64),
+    F64(f64),
+    String {
+        start: usize,
+        len: usize,
+    },
+    Node(NodeId),
+    Relationship(RelId),
+    List {
+        start: usize,
+        len: usize,
+        elements: usize,
+        depth: u8,
+        bytes: usize,
+        entities: bool,
+    },
+}
+
+#[derive(Debug)]
+pub(crate) enum ExpressionFailure {
+    Runtime(RuntimeError),
+    Plan(PlanError),
+    Tree(TreeError),
+}
+
+impl std::fmt::Display for ExpressionFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Runtime(error) => error.fmt(formatter),
+            Self::Plan(error) => error.fmt(formatter),
+            Self::Tree(error) => error.fmt(formatter),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ExpressionError {
+    pub(crate) expression: ExprId,
+    pub(crate) failure: ExpressionFailure,
+}
+
+impl std::fmt::Display for ExpressionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "graph expression {} failed: {}",
+            self.expression.0, self.failure
+        )
+    }
+}
+
+impl std::error::Error for ExpressionError {}
+
+impl From<RuntimeError> for ExpressionFailure {
+    fn from(error: RuntimeError) -> Self {
+        Self::Runtime(error)
+    }
+}
+
+impl From<PlanError> for ExpressionFailure {
+    fn from(error: PlanError) -> Self {
+        Self::Plan(error)
+    }
+}
+
+impl From<TreeError> for ExpressionFailure {
+    fn from(error: TreeError) -> Self {
+        Self::Tree(error)
+    }
+}
+
+impl From<super::QueryError> for ExpressionFailure {
+    fn from(error: super::QueryError) -> Self {
+        RuntimeError::Value(error).into()
+    }
+}
+
+impl From<MemoryError> for ExpressionFailure {
+    fn from(error: MemoryError) -> Self {
+        RuntimeError::Memory(error).into()
+    }
+}
+
+struct ScratchArenas<'v, 'm, 'g> {
+    view: &'v QueryView,
+    cells: QueryArena<'m, 'g, ScratchCell>,
+    bytes: QueryArena<'m, 'g, u8>,
+}
+
+impl std::fmt::Debug for ScratchArenas<'_, '_, '_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NativeExpressionScratch")
+            .finish_non_exhaustive()
+    }
+}
+
+impl ListArena for ScratchArenas<'_, '_, '_> {
+    fn value(&self, index: usize) -> Option<QueryValue<'_>> {
+        self.cells
+            .as_slice()
+            .get(index)
+            .copied()
+            .and_then(|cell| self.value(cell))
+    }
+}
+
+impl<'v, 'm, 'g> ScratchArenas<'v, 'm, 'g> {
+    fn value<'a>(&'a self, cell: ScratchCell) -> Option<QueryValue<'a>> {
+        Some(match cell {
+            ScratchCell::Null => QueryValue::Null,
+            ScratchCell::Bool(value) => QueryValue::Bool(value),
+            ScratchCell::I64(value) => QueryValue::I64(value),
+            ScratchCell::F64(value) => QueryValue::F64(value),
+            ScratchCell::Node(id) => self.view.node(id),
+            ScratchCell::Relationship(id) => self.view.relationship(id),
+            ScratchCell::String { start, len } => {
+                let bytes = self.bytes.as_slice().get(start..start.checked_add(len)?)?;
+                // SAFETY: every String cell is installed only after copying an
+                // already validated UTF-8 value or a canonical UTF-8 field.
+                QueryValue::String(unsafe { std::str::from_utf8_unchecked(bytes) })
+            }
+            ScratchCell::List {
+                start,
+                len,
+                elements,
+                depth,
+                bytes,
+                entities,
+            } => QueryValue::List(QueryList::arena(
+                self,
+                start,
+                len,
+                elements,
+                depth,
+                bytes,
+                entities.then_some(self.view),
+            )),
+        })
+    }
+
+    fn truncate(&mut self, cells: usize, bytes: usize) {
+        self.cells.truncate(cells);
+        self.bytes.truncate(bytes);
+    }
+
+    fn copy_value(
+        &mut self,
+        value: QueryValue<'_>,
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+        test_poll: &mut TestPollControl,
+        depth: u8,
+    ) -> Result<ScratchCell, ExpressionFailure> {
+        context.values().step()?;
+        value.validate(context.values())?;
+        Ok(match value {
+            QueryValue::Null => ScratchCell::Null,
+            QueryValue::Bool(value) => {
+                context.charge(WorkKind::CopiedBytes, 1)?;
+                ScratchCell::Bool(value)
+            }
+            QueryValue::I64(value) => {
+                context.charge(WorkKind::CopiedBytes, 8)?;
+                ScratchCell::I64(value)
+            }
+            QueryValue::F64(value) => {
+                context.charge(WorkKind::CopiedBytes, 8)?;
+                ScratchCell::F64(value)
+            }
+            QueryValue::NodeRef(value) => {
+                context.charge(WorkKind::CopiedBytes, 16)?;
+                ScratchCell::Node(value.id())
+            }
+            QueryValue::RelRef(value) => {
+                context.charge(WorkKind::CopiedBytes, 16)?;
+                ScratchCell::Relationship(value.id())
+            }
+            QueryValue::String(value) => self.copy_bytes(value.as_bytes(), context, test_poll)?,
+            QueryValue::List(list) => {
+                if depth >= MAX_LIST_DEPTH {
+                    return Err(super::QueryError::ListLimit.into());
+                }
+                let start = self.reserve_list(list.len(), || {
+                    test_poll.poll();
+                    context.values().step()?;
+                    Ok(())
+                })?;
+                for index in 0..list.len() {
+                    let child = self.copy_value(
+                        list.get(index).ok_or(super::QueryError::ListLimit)?,
+                        context,
+                        test_poll,
+                        depth + 1,
+                    )?;
+                    *self
+                        .cells
+                        .as_mut_slice()
+                        .get_mut(start + index)
+                        .ok_or(RuntimeError::Batch)? = child;
+                }
+                self.finish_list(start, list.len(), || {
+                    test_poll.poll();
+                    context.values().step()?;
+                    Ok(())
+                })?
+            }
+        })
+    }
+
+    fn copy_bytes(
+        &mut self,
+        value: &[u8],
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+        test_poll: &mut TestPollControl,
+    ) -> Result<ScratchCell, ExpressionFailure> {
+        self.check_bytes(value.len())?;
+        let start = self.bytes.len();
+        for chunk in value.chunks(CHUNK_BYTES) {
+            test_poll.poll();
+            context.checkpoint()?;
+            context.charge(WorkKind::CopiedBytes, chunk.len() as u64)?;
+            self.bytes.extend_copy(chunk)?;
+        }
+        Ok(ScratchCell::String {
+            start,
+            len: value.len(),
+        })
+    }
+
+    fn copy_native_bytes(
+        &mut self,
+        value: &[u8],
+        resources: &mut TreeResources<'_>,
+        test_poll: &mut TestPollControl,
+    ) -> Result<ScratchCell, ExpressionFailure> {
+        self.check_bytes(value.len())?;
+        let start = self.bytes.len();
+        for chunk in value.chunks(CHUNK_BYTES) {
+            test_poll.poll();
+            resources.step(1)?;
+            resources.read_event(NativeReadEvent::CopiedBytes(chunk.len() as u64))?;
+            self.bytes.extend_copy(chunk)?;
+        }
+        Ok(ScratchCell::String {
+            start,
+            len: value.len(),
+        })
+    }
+
+    fn copy_payload<S: BlockSource>(
+        &mut self,
+        value: PayloadSlice<'_, S>,
+        resources: &mut TreeResources<'_>,
+        test_poll: &mut TestPollControl,
+    ) -> Result<ScratchCell, ExpressionFailure> {
+        let len = usize::try_from(value.len()).map_err(|_| RuntimeError::Batch)?;
+        self.check_bytes(len)?;
+        let start = self.bytes.len();
+        let mut copied = 0_usize;
+        let mut buffer = [0_u8; CHUNK_BYTES];
+        while copied < len {
+            test_poll.poll();
+            let count = (len - copied).min(buffer.len());
+            let output = buffer.get_mut(..count).ok_or(RuntimeError::Batch)?;
+            if value.read_at(copied as u64, output, resources)? != count {
+                return Err(TreeError::Invalid("short expression payload copy").into());
+            }
+            resources.read_event(NativeReadEvent::CopiedBytes(count as u64))?;
+            self.bytes.extend_copy(output)?;
+            copied += count;
+        }
+        Ok(ScratchCell::String { start, len })
+    }
+
+    fn copy_text_reader<S: BlockSource>(
+        &mut self,
+        value: &TextPayloadReader<'_, S>,
+        resources: &mut TreeResources<'_>,
+        test_poll: &mut TestPollControl,
+    ) -> Result<ScratchCell, ExpressionFailure> {
+        let len = usize::try_from(value.len()).map_err(|_| RuntimeError::Batch)?;
+        self.check_bytes(len)?;
+        let start = self.bytes.len();
+        let mut copied = 0_usize;
+        let mut buffer = [0_u8; CHUNK_BYTES];
+        while copied < len {
+            test_poll.poll();
+            let count = (len - copied).min(buffer.len());
+            let output = buffer.get_mut(..count).ok_or(RuntimeError::Batch)?;
+            if value.read_at(copied as u64, output, resources)? != count {
+                return Err(TreeError::Invalid("short stored-text expression copy").into());
+            }
+            resources.read_event(NativeReadEvent::CopiedBytes(count as u64))?;
+            self.bytes.extend_copy(output)?;
+            copied += count;
+        }
+        Ok(ScratchCell::String { start, len })
+    }
+
+    fn check_bytes(&self, additional: usize) -> Result<(), ExpressionFailure> {
+        if self
+            .bytes
+            .len()
+            .checked_add(additional)
+            .is_none_or(|length| length > self.bytes.capacity())
+        {
+            return Err(RuntimeError::Batch.into());
+        }
+        Ok(())
+    }
+
+    fn reserve_list(
+        &mut self,
+        len: usize,
+        mut step: impl FnMut() -> Result<(), ExpressionFailure>,
+    ) -> Result<usize, ExpressionFailure> {
+        if self
+            .cells
+            .len()
+            .checked_add(len)
+            .is_none_or(|length| length > self.cells.capacity())
+        {
+            return Err(RuntimeError::Batch.into());
+        }
+        let start = self.cells.len();
+        for _ in 0..len {
+            step()?;
+            self.cells.push(ScratchCell::Null)?;
+        }
+        Ok(start)
+    }
+
+    fn finish_list(
+        &self,
+        start: usize,
+        len: usize,
+        mut step: impl FnMut() -> Result<(), ExpressionFailure>,
+    ) -> Result<ScratchCell, ExpressionFailure> {
+        let values = self
+            .cells
+            .as_slice()
+            .get(start..start.checked_add(len).ok_or(RuntimeError::Batch)?)
+            .ok_or(RuntimeError::Batch)?;
+        let mut elements = len;
+        let mut depth = 1_u8;
+        let mut bytes = len
+            .checked_mul(std::mem::size_of::<ScratchCell>())
+            .ok_or(super::QueryError::ListLimit)?;
+        let mut entities = false;
+        for value in values {
+            step()?;
+            match *value {
+                ScratchCell::String { len, .. } => {
+                    bytes = bytes.checked_add(len).ok_or(super::QueryError::ListLimit)?;
+                }
+                ScratchCell::Node(_) | ScratchCell::Relationship(_) => entities = true,
+                ScratchCell::List {
+                    elements: nested_elements,
+                    depth: nested_depth,
+                    bytes: nested_bytes,
+                    entities: nested_entities,
+                    ..
+                } => {
+                    elements = elements
+                        .checked_add(nested_elements)
+                        .ok_or(super::QueryError::ListLimit)?;
+                    depth = depth.max(
+                        nested_depth
+                            .checked_add(1)
+                            .ok_or(super::QueryError::ListLimit)?,
+                    );
+                    bytes = bytes
+                        .checked_add(nested_bytes)
+                        .ok_or(super::QueryError::ListLimit)?;
+                    entities |= nested_entities;
+                }
+                ScratchCell::Null
+                | ScratchCell::Bool(_)
+                | ScratchCell::I64(_)
+                | ScratchCell::F64(_) => {}
+            }
+        }
+        if elements > MAX_LIST_ELEMENTS || depth > MAX_LIST_DEPTH || bytes > MAX_QUERY_BYTES {
+            return Err(super::QueryError::ListLimit.into());
+        }
+        Ok(ScratchCell::List {
+            start,
+            len,
+            elements,
+            depth,
+            bytes,
+            entities,
+        })
+    }
+
+    fn adopt(&self, value: QueryValue<'_>) -> Result<ScratchCell, ExpressionFailure> {
+        Ok(match value {
+            QueryValue::Null => ScratchCell::Null,
+            QueryValue::Bool(value) => ScratchCell::Bool(value),
+            QueryValue::I64(value) => ScratchCell::I64(value),
+            QueryValue::F64(value) => ScratchCell::F64(value),
+            QueryValue::NodeRef(value) => ScratchCell::Node(value.id()),
+            QueryValue::RelRef(value) => ScratchCell::Relationship(value.id()),
+            QueryValue::String(value) => {
+                let base = self.bytes.as_slice().as_ptr() as usize;
+                let pointer = value.as_ptr() as usize;
+                let start = pointer.checked_sub(base).ok_or(RuntimeError::Batch)?;
+                if start
+                    .checked_add(value.len())
+                    .is_none_or(|end| end > self.bytes.len())
+                {
+                    return Err(RuntimeError::Batch.into());
+                }
+                ScratchCell::String {
+                    start,
+                    len: value.len(),
+                }
+            }
+            QueryValue::List(list) => {
+                let (start, len, elements, depth, bytes, entities) =
+                    list.arena_descriptor(self).ok_or(RuntimeError::Batch)?;
+                ScratchCell::List {
+                    start,
+                    len,
+                    elements,
+                    depth,
+                    bytes,
+                    entities,
+                }
+            }
+        })
+    }
+}
+
+pub(crate) struct NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
+    description: PlanDescription<'plan>,
+    memory: *const QueryMemory<'g>,
+    parameters: QueryArena<'m, 'g, ScratchCell>,
+    scratch: ScratchArenas<'v, 'm, 'g>,
+    parameter_cells: usize,
+    parameter_bytes: usize,
+    output: Option<ScratchCell>,
+    test_poll: TestPollControl,
+    _runtime_plan: PhantomData<&'r ()>,
+}
+
+impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
+    pub(crate) fn new<'p, 'facts, 'a>(
+        plan: &'r RuntimePlan<'p, 'plan, 'facts, 'm, 'g, 'a>,
+        bindings: &[ParameterBinding<'_>],
+        capacity: ExpressionCapacity,
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+    ) -> Result<Self, ExpressionFailure> {
+        if !plan.belongs_to(context.memory()) {
+            return Err(RuntimeError::Batch.into());
+        }
+        plan.validate_parameter_inputs(bindings, context.values())?;
+        let description = plan.plan().description();
+        let mut result = Self {
+            description,
+            memory: context.memory(),
+            parameters: QueryArena::new(context.memory(), bindings.len())?,
+            scratch: ScratchArenas {
+                view: context.view(),
+                cells: QueryArena::new(context.memory(), capacity.cells)?,
+                bytes: QueryArena::new(context.memory(), capacity.string_bytes)?,
+            },
+            parameter_cells: 0,
+            parameter_bytes: 0,
+            output: None,
+            test_poll: TestPollControl::default(),
+            _runtime_plan: PhantomData,
+        };
+        for declaration in description.parameters {
+            let binding = bindings
+                .iter()
+                .find(|binding| binding.name == declaration.name)
+                .ok_or(PlanError::Parameter)?;
+            let value =
+                result
+                    .scratch
+                    .copy_value(binding.value, context, &mut result.test_poll, 0)?;
+            result.parameters.push(value)?;
+        }
+        result.parameter_cells = result.scratch.cells.len();
+        result.parameter_bytes = result.scratch.bytes.len();
+        Ok(result)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn cancel_after_scratch_polls(
+        &mut self,
+        polls: usize,
+        cancel: crate::lifecycle::CancelToken,
+    ) {
+        self.test_poll.arm_cancel(polls, cancel);
+    }
+
+    pub(crate) fn evaluate<'a>(
+        &'a mut self,
+        expression: ExprId,
+        schema: &Schema<'_, '_>,
+        input: &RowBatch<'v, 'm, 'g>,
+        row: usize,
+        view: &GraphReadView<'_, 'v, 'm, 'g>,
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+    ) -> Result<QueryValue<'a>, ExpressionError> {
+        self.reset();
+        let result: Result<ScratchCell, ExpressionFailure> = (|| {
+            view.validate_expression_owner(context)?;
+            if self.memory != context.memory() as *const _
+                || !std::ptr::eq(self.scratch.view, context.view())
+                || !input.belongs_to(context)
+                || input.columns() != schema.slots().len()
+                || row >= input.rows()
+            {
+                return Err(RuntimeError::Batch.into());
+            }
+            self.evaluate_inner(expression, schema, input, row, view, context, 0)
+        })();
+        match result {
+            Ok(value) => {
+                self.output = Some(value);
+                self.scratch.value(value).ok_or(ExpressionError {
+                    expression,
+                    failure: ExpressionFailure::Runtime(RuntimeError::Batch),
+                })
+            }
+            Err(failure) => {
+                self.reset();
+                Err(ExpressionError {
+                    expression,
+                    failure,
+                })
+            }
+        }
+    }
+
+    fn reset(&mut self) {
+        self.output = None;
+        self.scratch
+            .truncate(self.parameter_cells, self.parameter_bytes);
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the scalar boundary keeps every authentic owner explicit"
+    )]
+    fn evaluate_inner(
+        &mut self,
+        expression_id: ExprId,
+        schema: &Schema<'_, '_>,
+        input: &RowBatch<'v, 'm, 'g>,
+        row: usize,
+        view: &GraphReadView<'_, 'v, 'm, 'g>,
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+        depth: usize,
+    ) -> Result<ScratchCell, ExpressionFailure> {
+        if depth >= MAX_PLAN_DEPTH {
+            return Err(PlanError::Limit.into());
+        }
+        context.charge(WorkKind::Expressions, 1)?;
+        let expression = *self
+            .description
+            .expressions
+            .get(expression_id.0 as usize)
+            .ok_or(PlanError::Reference)?;
+        Ok(match expression {
+            Expression::Aggregate { .. } => return Err(PlanError::Aggregate.into()),
+            Expression::Literal(Literal::Null) => ScratchCell::Null,
+            Expression::Literal(Literal::Bool(value)) => ScratchCell::Bool(value),
+            Expression::Literal(Literal::I64(value)) => ScratchCell::I64(value),
+            Expression::Literal(Literal::F64(value)) => ScratchCell::F64(value),
+            Expression::Literal(Literal::String(value)) => {
+                self.scratch
+                    .copy_bytes(value.as_bytes(), context, &mut self.test_poll)?
+            }
+            Expression::Parameter(id) => self
+                .parameters
+                .as_slice()
+                .get(id.0 as usize)
+                .copied()
+                .ok_or(PlanError::Parameter)?,
+            Expression::Slot(slot) => self.scratch.copy_value(
+                input
+                    .value(row, schema.column(slot)?)
+                    .ok_or(RuntimeError::Batch)?,
+                context,
+                &mut self.test_poll,
+                0,
+            )?,
+            Expression::List(items) => {
+                let start = self.scratch.reserve_list(items.len(), || {
+                    self.test_poll.poll();
+                    context.values().step()?;
+                    Ok(())
+                })?;
+                for (index, item) in items.iter().enumerate() {
+                    let value =
+                        self.evaluate_inner(*item, schema, input, row, view, context, depth + 1)?;
+                    *self
+                        .scratch
+                        .cells
+                        .as_mut_slice()
+                        .get_mut(start + index)
+                        .ok_or(RuntimeError::Batch)? = value;
+                }
+                self.scratch.finish_list(start, items.len(), || {
+                    self.test_poll.poll();
+                    context.values().step()?;
+                    Ok(())
+                })?
+            }
+            Expression::Property { entity, name } => {
+                let receiver =
+                    self.evaluate_inner(entity, schema, input, row, view, context, depth + 1)?;
+                self.property(receiver, name, view, context)?
+            }
+            Expression::HasLabel { entity, label } => {
+                let receiver =
+                    self.evaluate_inner(entity, schema, input, row, view, context, depth + 1)?;
+                self.has_label(receiver, label, view, context)?
+            }
+            Expression::Unary { operation, operand } => {
+                let operand =
+                    self.evaluate_inner(operand, schema, input, row, view, context, depth + 1)?;
+                self.unary(operation, operand, view, context)?
+            }
+            Expression::Binary {
+                operation,
+                left,
+                right,
+            } => {
+                let left =
+                    self.evaluate_inner(left, schema, input, row, view, context, depth + 1)?;
+                let right =
+                    self.evaluate_inner(right, schema, input, row, view, context, depth + 1)?;
+                self.binary(operation, left, right, context)?
+            }
+        })
+    }
+
+    fn unary(
+        &mut self,
+        operation: UnaryExpression,
+        operand: ScratchCell,
+        view: &GraphReadView<'_, 'v, 'm, 'g>,
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+    ) -> Result<ScratchCell, ExpressionFailure> {
+        let value = self.scratch.value(operand).ok_or(RuntimeError::Batch)?;
+        Ok(match operation {
+            UnaryExpression::Not => truth_cell(value.truth()?.not()),
+            UnaryExpression::Positive => scalar_cell(value.positive()?)?,
+            UnaryExpression::Negate => scalar_cell(value.negate()?)?,
+            UnaryExpression::IsNull => ScratchCell::Bool(matches!(value, QueryValue::Null)),
+            UnaryExpression::IsNotNull => ScratchCell::Bool(!matches!(value, QueryValue::Null)),
+            UnaryExpression::Size => self.scratch.adopt(value.size(context.values())?)?,
+            UnaryExpression::Labels => self.labels(operand, view, context)?,
+            UnaryExpression::RelType => self.relationship_type(operand, view, context)?,
+            UnaryExpression::StoredText => self.stored_text(operand, view, context)?,
+            UnaryExpression::NodeIdText => {
+                let mut output = [0_u8; 32];
+                let value = value.node_id_text(&mut output, context.values())?;
+                self.scratch
+                    .copy_value(value, context, &mut self.test_poll, 0)?
+            }
+            UnaryExpression::RelIdText => {
+                let mut output = [0_u8; 32];
+                let value = value.relationship_id_text(&mut output, context.values())?;
+                self.scratch
+                    .copy_value(value, context, &mut self.test_poll, 0)?
+            }
+        })
+    }
+
+    fn binary(
+        &self,
+        operation: BinaryExpression,
+        left: ScratchCell,
+        right: ScratchCell,
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+    ) -> Result<ScratchCell, ExpressionFailure> {
+        let left = self.scratch.value(left).ok_or(RuntimeError::Batch)?;
+        let right = self.scratch.value(right).ok_or(RuntimeError::Batch)?;
+        Ok(match operation {
+            BinaryExpression::And => truth_cell(left.truth()?.and(right.truth()?)),
+            BinaryExpression::Or => truth_cell(left.truth()?.or(right.truth()?)),
+            BinaryExpression::Xor => truth_cell(left.truth()?.xor(right.truth()?)),
+            BinaryExpression::Comparison(operation) => {
+                truth_cell(left.predicate(right, operation, context.values())?)
+            }
+            BinaryExpression::Arithmetic(operation) => {
+                scalar_cell(left.arithmetic(right, operation)?)?
+            }
+            BinaryExpression::String(operation) => {
+                truth_cell(left.string_predicate(right, operation, context.values())?)
+            }
+            BinaryExpression::In => truth_cell(left.in_list(right, context.values())?),
+            BinaryExpression::Index => self.scratch.adopt(left.index(right, context.values())?)?,
+        })
+    }
+
+    fn property(
+        &mut self,
+        receiver: ScratchCell,
+        name: GraphName<'_>,
+        view: &GraphReadView<'_, 'v, 'm, 'g>,
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+    ) -> Result<ScratchCell, ExpressionFailure> {
+        let receiver = self.scratch.value(receiver).ok_or(RuntimeError::Batch)?;
+        receiver.validate(context.values())?;
+        let entity = match receiver {
+            QueryValue::Null => return Ok(ScratchCell::Null),
+            QueryValue::NodeRef(node) => (Some(node.id()), None),
+            QueryValue::RelRef(relationship) => (None, Some(relationship.id())),
+            _ => return Err(super::QueryError::Type.into()),
+        };
+        let mut resources = TreeResources::for_query(context)?;
+        let payload = if let Some(node) = entity.0 {
+            let record = view
+                .lookup_node(node, &mut resources)?
+                .ok_or(TreeError::Invalid("expression node is absent or deleted"))?;
+            let Some(Symbol::Property(key)) =
+                view.expression_symbol(SymbolKind::Property, name, &mut resources)?
+            else {
+                return Ok(ScratchCell::Null);
+            };
+            view.node_property(&record, key, &mut resources)?
+        } else {
+            let relationship = entity.1.ok_or(super::QueryError::Type)?;
+            let record = view
+                .lookup_relationship(relationship, &mut resources)?
+                .ok_or(TreeError::Invalid(
+                    "expression relationship is absent, deleted, or hidden",
+                ))?;
+            let Some(Symbol::Property(key)) =
+                view.expression_symbol(SymbolKind::Property, name, &mut resources)?
+            else {
+                return Ok(ScratchCell::Null);
+            };
+            view.relationship_property(&record, key, &mut resources)?
+        };
+        match payload {
+            None => Ok(ScratchCell::Null),
+            Some(payload) => self.decode_property(payload, &mut resources),
+        }
+    }
+
+    fn has_label(
+        &self,
+        receiver: ScratchCell,
+        label: GraphName<'_>,
+        view: &GraphReadView<'_, 'v, 'm, 'g>,
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+    ) -> Result<ScratchCell, ExpressionFailure> {
+        let receiver = self.scratch.value(receiver).ok_or(RuntimeError::Batch)?;
+        receiver.validate(context.values())?;
+        let node = match receiver {
+            QueryValue::Null => return Ok(ScratchCell::Null),
+            QueryValue::NodeRef(node) => node.id(),
+            _ => return Err(super::QueryError::Type.into()),
+        };
+        let mut resources = TreeResources::for_query(context)?;
+        let record = view
+            .lookup_node(node, &mut resources)?
+            .ok_or(TreeError::Invalid("expression node is absent or deleted"))?;
+        let Some(Symbol::Label(label)) =
+            view.expression_symbol(SymbolKind::Label, label, &mut resources)?
+        else {
+            return Ok(ScratchCell::Bool(false));
+        };
+        let crate::property_graph::storage::records::RecordShape::Node { labels, .. } =
+            record.record().shape()
+        else {
+            return Err(TreeError::Invalid("node expression record role").into());
+        };
+        for index in 0..labels {
+            resources.step(1)?;
+            if record.record().label(index, &mut resources)? == label {
+                return Ok(ScratchCell::Bool(true));
+            }
+        }
+        Ok(ScratchCell::Bool(false))
+    }
+
+    fn labels(
+        &mut self,
+        receiver: ScratchCell,
+        view: &GraphReadView<'_, 'v, 'm, 'g>,
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+    ) -> Result<ScratchCell, ExpressionFailure> {
+        let receiver = self.scratch.value(receiver).ok_or(RuntimeError::Batch)?;
+        receiver.validate(context.values())?;
+        let node = match receiver {
+            QueryValue::Null => return Ok(ScratchCell::Null),
+            QueryValue::NodeRef(node) => node.id(),
+            _ => return Err(super::QueryError::Type.into()),
+        };
+        let mut resources = TreeResources::for_query(context)?;
+        let record = view
+            .lookup_node(node, &mut resources)?
+            .ok_or(TreeError::Invalid("expression node is absent or deleted"))?;
+        let crate::property_graph::storage::records::RecordShape::Node { labels, .. } =
+            record.record().shape()
+        else {
+            return Err(TreeError::Invalid("node expression record role").into());
+        };
+        let len = usize::try_from(labels).map_err(|_| RuntimeError::Batch)?;
+        let start = self.scratch.reserve_list(len, || {
+            self.test_poll.poll();
+            resources.step(1)?;
+            Ok(())
+        })?;
+        for index in 0..labels {
+            let label = record.record().label(index, &mut resources)?;
+            let name = view
+                .expression_symbol_name(Symbol::Label(label), &mut resources)?
+                .ok_or(TreeError::Invalid("native label symbol is unnamed"))?;
+            let value = self.scratch.copy_native_bytes(
+                name.as_str().as_bytes(),
+                &mut resources,
+                &mut self.test_poll,
+            )?;
+            *self
+                .scratch
+                .cells
+                .as_mut_slice()
+                .get_mut(start + index as usize)
+                .ok_or(RuntimeError::Batch)? = value;
+        }
+        self.scratch.finish_list(start, len, || {
+            self.test_poll.poll();
+            resources.step(1)?;
+            Ok(())
+        })
+    }
+
+    fn relationship_type(
+        &mut self,
+        receiver: ScratchCell,
+        view: &GraphReadView<'_, 'v, 'm, 'g>,
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+    ) -> Result<ScratchCell, ExpressionFailure> {
+        let receiver = self.scratch.value(receiver).ok_or(RuntimeError::Batch)?;
+        receiver.validate(context.values())?;
+        let relationship = match receiver {
+            QueryValue::Null => return Ok(ScratchCell::Null),
+            QueryValue::RelRef(relationship) => relationship.id(),
+            _ => return Err(super::QueryError::Type.into()),
+        };
+        let mut resources = TreeResources::for_query(context)?;
+        let record = view
+            .lookup_relationship(relationship, &mut resources)?
+            .ok_or(TreeError::Invalid(
+                "expression relationship is absent, deleted, or hidden",
+            ))?;
+        let name = view
+            .expression_symbol_name(
+                Symbol::RelationshipType(record.row().relationship_type),
+                &mut resources,
+            )?
+            .ok_or(TreeError::Invalid(
+                "native relationship type symbol is unnamed",
+            ))?;
+        self.scratch.copy_native_bytes(
+            name.as_str().as_bytes(),
+            &mut resources,
+            &mut self.test_poll,
+        )
+    }
+
+    fn stored_text(
+        &mut self,
+        receiver: ScratchCell,
+        view: &GraphReadView<'_, 'v, 'm, 'g>,
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+    ) -> Result<ScratchCell, ExpressionFailure> {
+        let receiver = self.scratch.value(receiver).ok_or(RuntimeError::Batch)?;
+        receiver.validate(context.values())?;
+        let node = match receiver {
+            QueryValue::Null => return Ok(ScratchCell::Null),
+            QueryValue::NodeRef(node) => node.id(),
+            _ => return Err(super::QueryError::Type.into()),
+        };
+        let mut resources = TreeResources::for_query(context)?;
+        match view.stored_text(node, &mut resources)? {
+            None => Ok(ScratchCell::Null),
+            Some(text) => self
+                .scratch
+                .copy_text_reader(&text, &mut resources, &mut self.test_poll),
+        }
+    }
+
+    fn decode_property<S: BlockSource>(
+        &mut self,
+        value: PayloadSlice<'_, S>,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<ScratchCell, ExpressionFailure> {
+        let mut cursor = PayloadCursor::new(value);
+        let tag = u8::from_le_bytes(cursor.read_array(resources)?);
+        let result = match tag {
+            1 => {
+                let value = cursor.blob(resources)?;
+                self.scratch
+                    .copy_payload(value, resources, &mut self.test_poll)?
+            }
+            2 => match u8::from_le_bytes(cursor.read_array(resources)?) {
+                0 => ScratchCell::Bool(false),
+                1 => ScratchCell::Bool(true),
+                _ => return Err(TreeError::Invalid("canonical expression boolean").into()),
+            },
+            3 => ScratchCell::I64(i64::from_le_bytes(cursor.read_array(resources)?)),
+            4 => ScratchCell::F64(f64::from_bits(u64::from_le_bytes(
+                cursor.read_array(resources)?,
+            ))),
+            5..=9 => {
+                let count = u64::from_le_bytes(cursor.read_array(resources)?);
+                let len = usize::try_from(count).map_err(|_| RuntimeError::Batch)?;
+                if len > MAX_LIST_ELEMENTS || (tag == 5 && len != 0) {
+                    return Err(TreeError::Invalid("canonical expression list count").into());
+                }
+                let start = self.scratch.reserve_list(len, || {
+                    self.test_poll.poll();
+                    resources.step(1)?;
+                    Ok(())
+                })?;
+                for index in 0..len {
+                    resources.step(1)?;
+                    let child = match tag {
+                        6 => {
+                            let value = cursor.blob(resources)?;
+                            self.scratch
+                                .copy_payload(value, resources, &mut self.test_poll)?
+                        }
+                        7 => match u8::from_le_bytes(cursor.read_array(resources)?) {
+                            0 => ScratchCell::Bool(false),
+                            1 => ScratchCell::Bool(true),
+                            _ => {
+                                return Err(TreeError::Invalid(
+                                    "canonical expression list boolean",
+                                )
+                                .into());
+                            }
+                        },
+                        8 => ScratchCell::I64(i64::from_le_bytes(cursor.read_array(resources)?)),
+                        9 => ScratchCell::F64(f64::from_bits(u64::from_le_bytes(
+                            cursor.read_array(resources)?,
+                        ))),
+                        _ => {
+                            return Err(
+                                TreeError::Invalid("nonempty untyped expression list").into()
+                            );
+                        }
+                    };
+                    *self
+                        .scratch
+                        .cells
+                        .as_mut_slice()
+                        .get_mut(start + index)
+                        .ok_or(RuntimeError::Batch)? = child;
+                }
+                self.scratch.finish_list(start, len, || {
+                    self.test_poll.poll();
+                    resources.step(1)?;
+                    Ok(())
+                })?
+            }
+            _ => return Err(TreeError::Invalid("canonical expression property tag").into()),
+        };
+        cursor.finish(resources)?;
+        Ok(result)
+    }
+}
+
+fn scalar_cell(value: QueryValue<'_>) -> Result<ScratchCell, ExpressionFailure> {
+    Ok(match value {
+        QueryValue::Null => ScratchCell::Null,
+        QueryValue::Bool(value) => ScratchCell::Bool(value),
+        QueryValue::I64(value) => ScratchCell::I64(value),
+        QueryValue::F64(value) => ScratchCell::F64(value),
+        QueryValue::String(_)
+        | QueryValue::List(_)
+        | QueryValue::NodeRef(_)
+        | QueryValue::RelRef(_) => return Err(super::QueryError::Type.into()),
+    })
+}
+
+const fn truth_cell(value: Truth) -> ScratchCell {
+    match value {
+        Truth::False => ScratchCell::Bool(false),
+        Truth::Unknown => ScratchCell::Null,
+        Truth::True => ScratchCell::Bool(true),
+    }
+}
