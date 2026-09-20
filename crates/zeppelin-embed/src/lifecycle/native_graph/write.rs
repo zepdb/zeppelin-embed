@@ -1,0 +1,1465 @@
+use super::base::NativeAdmittedBase;
+use super::persistence::{
+    NativeWal, artifact_descriptor, catalog_payload, encode_framed, next_artifact,
+    publish_root_selector, write_new_full, zeroed,
+};
+use super::{
+    NativeGraphBundle, NativeGraphBundleInput, NativeGraphError, NativeGraphPublication,
+    NativeReadLease,
+};
+use crate::property_graph::catalog::SymbolEntry;
+use crate::property_graph::resources::{GraphReservation, GraphResources};
+use crate::property_graph::staging::{
+    ItemReceipt, ResultLayout, ResultMaterializer, ResultRegistration, StageError, StagedBatch,
+    WriteLimits, WriteMemory, WritePhase, stage_structured_with_results,
+};
+use crate::property_graph::storage::artifact::{ArtifactIdentity, Block, BlockKind, ContainerKind};
+use crate::property_graph::storage::memory::{StorageBuffer, StorageMemory};
+use crate::property_graph::storage::participant::BatchCatalog;
+use crate::property_graph::storage::payload::PayloadRef;
+use crate::property_graph::storage::prepared::PackLimits;
+use crate::property_graph::storage::records::{RecordCatalog, verify_record};
+use crate::property_graph::storage::stream::PayloadSlice;
+use crate::property_graph::storage::tree::TreeKind;
+use crate::property_graph::storage::tree::directory::{
+    BlockSource, GraphRoots, TreeError, lookup_entry,
+};
+use crate::property_graph::storage::{
+    GraphPreparation, NativePreparationCatalog, NativePreparationSource, PreparedGraphArtifacts,
+};
+use crate::property_graph::wal::{
+    BatchId, Change, CommitState, Envelope, EnvelopeKind, HighWaters, InventoryChange,
+    InventoryState, MAX_ENVELOPE_BYTES, Membership, Mutation, NativeCheckpoint, ReferenceList,
+    RequiredRef, STACK_RESERVATION_BYTES, WalGraphRoots, WalResources, encode_checkpoint,
+    encode_envelope, encode_header,
+};
+use crate::property_graph::{BatchDisposition, EntityId, GraphGeneration};
+use crate::vfs::SyncKind;
+use std::cell::{Cell, RefCell};
+use std::sync::Arc;
+
+pub(super) struct NativeWriter {
+    pub(super) wal: NativeWal,
+    pub(super) complete_envelopes: u64,
+    pub(super) stopped: bool,
+    pub(super) checkpoint_failed: bool,
+    pub(super) protected: Vec<crate::property_graph::wal::ArtifactDescriptor>,
+    _protected_charge: GraphReservation,
+}
+
+impl NativeWriter {
+    const MAX_PROTECTED_DESCRIPTORS: usize = 8_192;
+
+    pub(super) fn new(
+        wal: NativeWal,
+        resources: &GraphResources,
+    ) -> Result<Self, NativeGraphError> {
+        let bytes = Self::MAX_PROTECTED_DESCRIPTORS
+            .checked_mul(std::mem::size_of::<
+                crate::property_graph::wal::ArtifactDescriptor,
+            >())
+            .ok_or(NativeGraphError::Invalid("protected descriptor capacity"))?;
+        let mut charge = resources.reserve(bytes)?;
+        let mut protected = Vec::new();
+        #[cfg(feature = "allocation-audit")]
+        let reserved = crate::allocation_audit::attributed(|| {
+            protected.try_reserve_exact(Self::MAX_PROTECTED_DESCRIPTORS)
+        });
+        #[cfg(not(feature = "allocation-audit"))]
+        let reserved = protected.try_reserve_exact(Self::MAX_PROTECTED_DESCRIPTORS);
+        reserved.map_err(|_| NativeGraphError::Invalid("protected descriptor allocation"))?;
+        charge.resize(
+            protected
+                .capacity()
+                .checked_mul(std::mem::size_of::<
+                    crate::property_graph::wal::ArtifactDescriptor,
+                >())
+                .ok_or(NativeGraphError::Invalid("protected descriptor capacity"))?,
+        )?;
+        Ok(Self {
+            wal,
+            complete_envelopes: 0,
+            stopped: false,
+            checkpoint_failed: false,
+            protected,
+            _protected_charge: charge,
+        })
+    }
+
+    fn can_protect(&self, additional: usize) -> Result<(), NativeGraphError> {
+        if self
+            .protected
+            .len()
+            .checked_add(additional)
+            .is_none_or(|needed| needed > self.protected.capacity())
+        {
+            return Err(NativeGraphError::Invalid(
+                "protected descriptor capacity exhausted",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn commit_state(bundle: &NativeGraphBundle) -> CommitState<'_> {
+    CommitState {
+        store: bundle.base().store,
+        generation: bundle.base().generation,
+        sequence: bundle.sequence(),
+        graph: bundle.wal_roots(),
+        catalog: bundle.catalog(),
+        vector: bundle.vector(),
+        text: bundle.text(),
+        reclaim: bundle.reclaim(),
+        high_waters: bundle.high_waters(),
+        prepared_inventories: ReferenceList::Values(bundle.prepared_inventories()),
+    }
+}
+
+fn checkpoint_current(
+    store: &crate::lifecycle::Store,
+    writer: &mut NativeWriter,
+    admitted: &Arc<NativeGraphBundle>,
+    resources: &GraphResources,
+    control: &crate::lifecycle::QueryControl,
+) -> Result<(), NativeGraphError> {
+    let result = checkpoint_current_inner(store, writer, admitted, resources, control);
+    if result.is_err() {
+        writer.checkpoint_failed = true;
+    }
+    result
+}
+
+fn checkpoint_current_inner(
+    store: &crate::lifecycle::Store,
+    writer: &mut NativeWriter,
+    admitted: &Arc<NativeGraphBundle>,
+    resources: &GraphResources,
+    control: &crate::lifecycle::QueryControl,
+) -> Result<(), NativeGraphError> {
+    control
+        .checkpoint()
+        .map_err(|_| NativeGraphError::Stage(StageError::Cancelled))?;
+    let first_sequence = admitted
+        .sequence()
+        .checked_add(1)
+        .ok_or(NativeGraphError::IdentityExhausted)?;
+    let wal_identity = crate::property_graph::storage::allocation::fresh_store_identity(
+        &mut crate::property_graph::storage::allocation::OsEntropy,
+    )
+    .map_err(|source| io(admitted.directory(), source))?
+    .get();
+    let wal_path = admitted
+        .directory()
+        .join(format!("graph-wal-{wal_identity:032x}.ze"));
+    let mut header = [0_u8; crate::property_graph::wal::HEADER_BYTES];
+    let header_bytes = encode_header(admitted.base().store, first_sequence, &mut header)?;
+
+    let checkpoint = NativeCheckpoint {
+        wal_identity,
+        first_sequence,
+        applied_sequence: admitted.sequence(),
+        state: commit_state(admitted),
+    };
+    let checkpoint_memory = WriteMemory::new(resources, WriteLimits::default())?;
+    let storage = StorageMemory::new(&checkpoint_memory, control, 32 * 1024 * 1024)?;
+    let payload_capacity = admitted
+        .prepared_inventories()
+        .len()
+        .checked_mul(128)
+        .and_then(|bytes| bytes.checked_add(16 * 1024))
+        .ok_or(NativeGraphError::IdentityExhausted)?;
+    let mut payload = zeroed(&storage, control, payload_capacity)?;
+    let work = u64::try_from(payload.as_slice().len())
+        .ok()
+        .and_then(|bytes| bytes.checked_mul(4))
+        .ok_or(NativeGraphError::Invalid("checkpoint work bound"))?;
+    let mut cancelled = || control.checkpoint().is_err();
+    let mut wal_resources = WalResources::new(work, STACK_RESERVATION_BYTES, &mut cancelled)?;
+    let payload_bytes = encode_checkpoint(checkpoint, payload.as_mut_slice(), &mut wal_resources)?;
+    let payload = payload
+        .as_slice()
+        .get(..payload_bytes)
+        .ok_or(NativeGraphError::Invalid("checkpoint extent"))?;
+
+    let root_serial = store.native_graph.burn_creation_serial()?;
+    let root_identity = ArtifactIdentity {
+        store: admitted.base().store,
+        artifact: next_artifact(&mut crate::property_graph::storage::allocation::OsEntropy)?,
+        generation: admitted.base().generation,
+        creation_serial: root_serial,
+    };
+    let (root_bytes, root_envelope) = encode_framed(
+        &storage,
+        control,
+        ContainerKind::RootEnvelope,
+        root_identity,
+        &[Block {
+            kind: BlockKind::CheckpointPayload,
+            payload: &payload,
+        }],
+    )?;
+    let next = NativeGraphBundle::checkpoint_transition(store, resources, admitted, root_envelope)?;
+    let root_path = crate::property_graph::storage::allocation::artifact_path(
+        admitted.directory(),
+        root_identity.artifact,
+    );
+    let result = (|| {
+        write_new_full(
+            admitted.vfs(),
+            admitted.directory(),
+            &wal_path,
+            header
+                .get(..header_bytes)
+                .ok_or(NativeGraphError::Invalid("native WAL header"))?,
+        )?;
+        write_new_full(
+            admitted.vfs(),
+            admitted.directory(),
+            &root_path,
+            root_bytes.as_slice(),
+        )?;
+        let handle = admitted
+            .vfs()
+            .open_append(&wal_path)
+            .map_err(|source| io(&wal_path, source))?;
+        let next_wal = NativeWal {
+            handle,
+            path: wal_path.clone(),
+            identity: wal_identity,
+            first_sequence,
+            bytes: header_bytes,
+        };
+        let failure_path = wal_path.clone();
+        publish_root_selector(admitted.vfs(), admitted.directory(), root_envelope)?;
+        store
+            .native_graph
+            .publish_transition(admitted, next)
+            .map_err(|_| NativeGraphError::CommitIndeterminate {
+                stage: "checkpoint publication",
+                path: failure_path,
+                source: None,
+            })?;
+        writer.wal = next_wal;
+        writer.complete_envelopes = 0;
+        writer.checkpoint_failed = false;
+        writer.protected.clear();
+        Ok(())
+    })();
+    if result.is_err() {
+        writer.checkpoint_failed = true;
+    }
+    result
+}
+
+impl NativeGraphPublication {
+    pub(super) fn initialize_writer(
+        &self,
+        writer: NativeWriter,
+        initial_serial: u64,
+    ) -> Result<(), NativeGraphError> {
+        let mut slot = self.writer.lock().map_err(|_| {
+            NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
+                component: "native graph writer",
+            })
+        })?;
+        if slot.is_some() {
+            return Err(NativeGraphError::Invalid(
+                "native graph writer already initialized",
+            ));
+        }
+        let mut state = self.state.lock().map_err(|_| {
+            NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
+                component: "native graph publication",
+            })
+        })?;
+        if state.creation_serial_fence != 0 {
+            return Err(NativeGraphError::Invalid(
+                "native graph creation serial already initialized",
+            ));
+        }
+        state.creation_serial_fence = initial_serial;
+        *slot = Some(writer);
+        Ok(())
+    }
+}
+
+pub(crate) struct ReceiptRegistration(Box<[ItemReceipt]>);
+
+impl std::ops::Deref for ReceiptRegistration {
+    type Target = [ItemReceipt];
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+/// Result backing and actual accounting move together, with no callback after
+/// commit. A binding may borrow its prepared arenas for the owner's lifetime.
+pub(crate) struct NativePreparedResult<R> {
+    registration: R,
+    core: Vec<u8>,
+    abi: Vec<u8>,
+    _charges: [GraphReservation; 3],
+}
+impl<R> NativePreparedResult<R> {
+    fn from_materialized(value: crate::property_graph::staging::MaterializedBatch<'_, R>) -> Self {
+        let (_batch, registration, core, abi, charges) = value.into_prepared_parts();
+        Self {
+            registration,
+            core,
+            abi,
+            _charges: charges,
+        }
+    }
+    pub(super) fn core_bytes(&self) -> &[u8] {
+        &self.core
+    }
+    pub(super) fn abi_bytes(&self) -> &[u8] {
+        &self.abi
+    }
+}
+impl<R> std::ops::Deref for NativePreparedResult<R> {
+    type Target = R;
+    fn deref(&self) -> &R {
+        &self.registration
+    }
+}
+
+impl ResultRegistration for ReceiptRegistration {
+    fn capacity_bytes(&self) -> usize {
+        self.0.len() * std::mem::size_of::<ItemReceipt>()
+    }
+}
+
+struct ReceiptMaterializer;
+
+impl ResultMaterializer for ReceiptMaterializer {
+    type Registration = ReceiptRegistration;
+
+    fn layout(
+        &mut self,
+        receipt_count: usize,
+        control: &mut crate::property_graph::staging::WriteControl<'_>,
+    ) -> Result<ResultLayout, StageError> {
+        control(WritePhase::CoreResult)?;
+        Ok(ResultLayout {
+            rows: receipt_count,
+            core_bytes: 0,
+            abi_bytes: 0,
+            registry_bytes: receipt_count
+                .checked_mul(std::mem::size_of::<ItemReceipt>())
+                .ok_or(StageError::Limit)?,
+        })
+    }
+
+    fn materialize(
+        &mut self,
+        receipts: &[ItemReceipt],
+        _: &mut [u8],
+        _: &mut [u8],
+        control: &mut crate::property_graph::staging::WriteControl<'_>,
+    ) -> Result<Self::Registration, StageError> {
+        control(WritePhase::AbiResult)?;
+        let mut copied = Vec::new();
+        copied.try_reserve_exact(receipts.len()).map_err(|_| {
+            StageError::Memory(crate::lifecycle::StoreError::AllocationFailed {
+                needed: (receipts.len() * std::mem::size_of::<ItemReceipt>()) as u64,
+                component: "native graph result registration",
+            })
+        })?;
+        copied.extend_from_slice(receipts);
+        Ok(ReceiptRegistration(copied.into_boxed_slice()))
+    }
+}
+
+fn checkpoint(control: &crate::lifecycle::QueryControl, _: WritePhase) -> Result<(), StageError> {
+    control.checkpoint().map_err(|_| StageError::Cancelled)
+}
+
+fn io(path: &std::path::Path, source: std::io::Error) -> NativeGraphError {
+    NativeGraphError::Io {
+        path: path.to_path_buf(),
+        source,
+    }
+}
+
+fn encode_descriptor(
+    output: &mut [u8],
+    offset: usize,
+    descriptor: crate::property_graph::wal::ArtifactDescriptor,
+) -> Result<(), NativeGraphError> {
+    let end = offset
+        .checked_add(64)
+        .ok_or(NativeGraphError::Invalid("prepared inventory descriptor"))?;
+    let target = output
+        .get_mut(offset..end)
+        .ok_or(NativeGraphError::Invalid("prepared inventory descriptor"))?;
+    target
+        .get_mut(0..16)
+        .ok_or(NativeGraphError::Invalid("encoded field extent"))?
+        .copy_from_slice(&descriptor.store.get().to_le_bytes());
+    target
+        .get_mut(16..32)
+        .ok_or(NativeGraphError::Invalid("encoded field extent"))?
+        .copy_from_slice(&descriptor.artifact.get().to_le_bytes());
+    target
+        .get_mut(32..40)
+        .ok_or(NativeGraphError::Invalid("encoded field extent"))?
+        .copy_from_slice(&descriptor.generation.get().to_le_bytes());
+    target
+        .get_mut(40..48)
+        .ok_or(NativeGraphError::Invalid("encoded field extent"))?
+        .copy_from_slice(&descriptor.serial.to_le_bytes());
+    target
+        .get_mut(48..52)
+        .ok_or(NativeGraphError::Invalid("encoded field extent"))?
+        .copy_from_slice(&descriptor.bytes.to_le_bytes());
+    target
+        .get_mut(52..54)
+        .ok_or(NativeGraphError::Invalid("encoded field extent"))?
+        .copy_from_slice(&descriptor.family.to_le_bytes());
+    target
+        .get_mut(54..56)
+        .ok_or(NativeGraphError::Invalid("encoded field extent"))?
+        .copy_from_slice(&descriptor.version.to_le_bytes());
+    target
+        .get_mut(56..64)
+        .ok_or(NativeGraphError::Invalid("encoded field extent"))?
+        .copy_from_slice(&descriptor.checksum.to_le_bytes());
+    Ok(())
+}
+
+fn inventory_payload<'a>(
+    memory: &'a StorageMemory<'a>,
+    control: &crate::lifecycle::QueryControl,
+    prepared: &[InventoryChange],
+    catalog: Option<crate::property_graph::wal::ArtifactDescriptor>,
+) -> Result<StorageBuffer<'a, u8>, NativeGraphError> {
+    let count = prepared
+        .len()
+        .checked_add(usize::from(catalog.is_some()))
+        .ok_or(NativeGraphError::Invalid("prepared inventory count"))?;
+    let length = count
+        .checked_mul(64)
+        .and_then(|bytes| bytes.checked_add(16))
+        .ok_or(NativeGraphError::Invalid("prepared inventory length"))?;
+    let mut payload_owner = zeroed(memory, control, length)?;
+    let payload = payload_owner.as_mut_slice();
+    payload
+        .get_mut(0..4)
+        .ok_or(NativeGraphError::Invalid("encoded field extent"))?
+        .copy_from_slice(b"ZGCP");
+    payload
+        .get_mut(4..6)
+        .ok_or(NativeGraphError::Invalid("encoded field extent"))?
+        .copy_from_slice(&2_u16.to_le_bytes());
+    payload
+        .get_mut(6..8)
+        .ok_or(NativeGraphError::Invalid("encoded field extent"))?
+        .copy_from_slice(&1_u16.to_le_bytes());
+    payload
+        .get_mut(8..12)
+        .ok_or(NativeGraphError::Invalid("encoded field extent"))?
+        .copy_from_slice(
+            &u32::try_from(count)
+                .map_err(|_| NativeGraphError::Invalid("prepared inventory count"))?
+                .to_le_bytes(),
+        );
+    for (index, change) in prepared.iter().enumerate() {
+        encode_descriptor(payload, 16 + index * 64, change.object)?;
+    }
+    if let Some(catalog) = catalog {
+        encode_descriptor(payload, 16 + prepared.len() * 64, catalog)?;
+    }
+    Ok(payload_owner)
+}
+
+fn required_for_block(
+    block: crate::property_graph::storage::artifact::PhysicalRef,
+    prepared: &[InventoryChange],
+    admitted: WalGraphRoots,
+) -> Result<RequiredRef, NativeGraphError> {
+    if let Some(object) = prepared
+        .iter()
+        .find(|change| change.object.artifact == block.artifact)
+        .map(|change| change.object)
+    {
+        return Ok(RequiredRef { object, block });
+    }
+    admitted
+        .slots
+        .into_iter()
+        .flatten()
+        .find(|required| required.block == block)
+        .ok_or(NativeGraphError::Invalid(
+            "native root has no immutable descriptor",
+        ))
+}
+
+fn wal_roots(
+    roots: GraphRoots,
+    prepared: &[InventoryChange],
+    admitted: WalGraphRoots,
+) -> Result<WalGraphRoots, NativeGraphError> {
+    let mut output = WalGraphRoots::default();
+    for (slot, block) in roots.references().into_iter().enumerate() {
+        if let Some(block) = block {
+            *output
+                .slots
+                .get_mut(slot)
+                .ok_or(NativeGraphError::Invalid("root slot"))? =
+                Some(required_for_block(block, prepared, admitted)?);
+        }
+    }
+    Ok(output)
+}
+
+fn canonical_required<S: BlockSource, C: RecordCatalog<S>>(
+    source: &S,
+    roots: GraphRoots,
+    entity: EntityId,
+    catalog: &C,
+    document: Option<&crate::epoch::EmbeddingTower>,
+    prepared: &[InventoryChange],
+    resources: &mut crate::property_graph::storage::tree::directory::TreeResources<'_>,
+) -> Result<RequiredRef, NativeGraphError> {
+    let (kind, key) = match entity {
+        EntityId::Node(id) => (TreeKind::Nodes, id.get()),
+        EntityId::Relationship(id) => (TreeKind::Relationships, id.get()),
+    };
+    let directory = roots.directory(kind)?;
+    let entry = lookup_entry(source, directory, &key.to_le_bytes(), resources)?
+        .ok_or(NativeGraphError::Invalid("prepared live record is absent"))?;
+    let record_ref = PayloadRef::decode(entry.value())?;
+    let record = verify_record(
+        PayloadSlice::new(
+            source,
+            roots.store(),
+            entry.creation_generation(),
+            record_ref,
+        ),
+        entity,
+        catalog,
+        document,
+        resources,
+    )?;
+    let canonical = record
+        .required_payloads()
+        .first()
+        .ok_or(NativeGraphError::Invalid("canonical payload"))?
+        .reference();
+    let object = prepared
+        .iter()
+        .find(|change| change.object.artifact == canonical.artifact)
+        .map(|change| change.object)
+        .ok_or(NativeGraphError::Invalid(
+            "prepared canonical has no immutable descriptor",
+        ))?;
+    Ok(RequiredRef {
+        object,
+        block: canonical,
+    })
+}
+
+#[derive(Clone, Copy)]
+struct SupplementalArtifact<'a> {
+    identity: ArtifactIdentity,
+    bytes: &'a [u8],
+    required: RequiredRef,
+}
+
+pub(super) struct NativeCommittedTransition<'a> {
+    admitted: Arc<NativeGraphBundle>,
+    next: Arc<NativeGraphBundle>,
+    encoded: &'a [u8],
+}
+
+impl<'a> NativeCommittedTransition<'a> {
+    const fn wal_bytes(&self) -> &[u8] {
+        self.encoded
+    }
+
+    pub(super) fn into_publication(self) -> (Arc<NativeGraphBundle>, Arc<NativeGraphBundle>) {
+        (self.admitted, self.next)
+    }
+}
+
+fn artifact_control_error(
+    error: crate::property_graph::storage::artifact::ArtifactControlError<TreeError>,
+) -> NativeGraphError {
+    match error {
+        crate::property_graph::storage::artifact::ArtifactControlError::Control(error) => {
+            NativeGraphError::Read(error)
+        }
+        crate::property_graph::storage::artifact::ArtifactControlError::Format(error) => {
+            NativeGraphError::Read(TreeError::Format(error))
+        }
+    }
+}
+
+fn verify_supplemental(
+    artifact: SupplementalArtifact<'_>,
+    resources: &mut crate::property_graph::storage::tree::directory::TreeResources<'_>,
+) -> Result<(), NativeGraphError> {
+    let descriptor = artifact_descriptor(artifact.identity, ContainerKind::Object, artifact.bytes)?;
+    let frame = crate::property_graph::storage::artifact::decode_with_control(
+        ContainerKind::Object,
+        Some((artifact.identity.store, artifact.identity.artifact)),
+        artifact.bytes,
+        &mut |bytes| resources.step(bytes as u64),
+    )
+    .map_err(artifact_control_error)?;
+    if descriptor != artifact.required.object
+        || frame
+            .reference(0)
+            .map_err(|_| NativeGraphError::Invalid("supplemental artifact block"))?
+            != artifact.required.block
+    {
+        return Err(NativeGraphError::Invalid(
+            "supplemental artifact descriptor mismatch",
+        ));
+    }
+    Ok(())
+}
+
+fn verify_prepared_inventory(
+    artifact: SupplementalArtifact<'_>,
+    prepared: &[InventoryChange],
+    catalog: Option<crate::property_graph::wal::ArtifactDescriptor>,
+    resources: &mut crate::property_graph::storage::tree::directory::TreeResources<'_>,
+) -> Result<(), NativeGraphError> {
+    verify_supplemental(artifact, resources)?;
+    let frame = crate::property_graph::storage::artifact::decode_with_control(
+        ContainerKind::Object,
+        Some((artifact.identity.store, artifact.identity.artifact)),
+        artifact.bytes,
+        &mut |bytes| resources.step(bytes as u64),
+    )
+    .map_err(artifact_control_error)?;
+    let payload = frame
+        .resolve_framed_block(artifact.required.block)
+        .map_err(|_| NativeGraphError::Invalid("prepared inventory block"))?;
+    let count = prepared
+        .len()
+        .checked_add(usize::from(catalog.is_some()))
+        .ok_or(NativeGraphError::Invalid("prepared inventory count"))?;
+    let expected_length = count
+        .checked_mul(64)
+        .and_then(|bytes| bytes.checked_add(16))
+        .ok_or(NativeGraphError::Invalid("prepared inventory length"))?;
+    if payload.len() != expected_length
+        || payload.get(..4) != Some(b"ZGCP".as_slice())
+        || payload.get(4..6) != Some(2_u16.to_le_bytes().as_slice())
+        || payload.get(6..8) != Some(1_u16.to_le_bytes().as_slice())
+        || payload.get(8..12)
+            != Some(
+                u32::try_from(count)
+                    .map_err(|_| NativeGraphError::Invalid("prepared inventory count"))?
+                    .to_le_bytes()
+                    .as_slice(),
+            )
+        || payload.get(12..16) != Some([0_u8; 4].as_slice())
+    {
+        return Err(NativeGraphError::Invalid("prepared inventory contents"));
+    }
+    for (index, descriptor) in prepared
+        .iter()
+        .map(|change| change.object)
+        .chain(catalog)
+        .enumerate()
+    {
+        resources.step(1)?;
+        let mut encoded = [0_u8; 64];
+        encode_descriptor(&mut encoded, 0, descriptor)?;
+        let start = 16_usize
+            .checked_add(
+                index
+                    .checked_mul(64)
+                    .ok_or(NativeGraphError::Invalid("prepared inventory offset"))?,
+            )
+            .ok_or(NativeGraphError::Invalid("prepared inventory offset"))?;
+        if payload.get(start..start + 64) != Some(encoded.as_slice()) {
+            return Err(NativeGraphError::Invalid("prepared inventory descriptor"));
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_committed_transition<'p, 'source, 'a, 'b, S, F, C>(
+    store: &crate::lifecycle::Store,
+    shared: &GraphResources,
+    lease: &'p NativeReadLease,
+    batch: &'p StagedBatch<'_>,
+    prepared: &'p PreparedGraphArtifacts<'source, 'a, 'b, S, F>,
+    final_roots: GraphRoots,
+    catalog: &C,
+    catalog_artifact: Option<SupplementalArtifact<'p>>,
+    catalog_ref: RequiredRef,
+    inventory_artifact: SupplementalArtifact<'p>,
+    batch_id: BatchId,
+    output: &'p mut [u8],
+    tree_resources: &mut crate::property_graph::storage::tree::directory::TreeResources<'_>,
+    wal_resources: &mut WalResources<'_>,
+) -> Result<NativeCommittedTransition<'p>, NativeGraphError>
+where
+    S: BlockSource,
+    F: FnMut() -> Result<ArtifactIdentity, TreeError>,
+    C: RecordCatalog<crate::property_graph::storage::prepared::PreparedObjects<'a, 'b, S, F>>,
+{
+    let admitted = lease.bundle();
+    let candidate = prepared.candidate();
+    let expected_generation = GraphGeneration::new(
+        admitted
+            .base()
+            .generation
+            .get()
+            .checked_add(1)
+            .ok_or(NativeGraphError::IdentityExhausted)?,
+    );
+    let expected_sequence = admitted
+        .sequence()
+        .checked_add(1)
+        .ok_or(NativeGraphError::IdentityExhausted)?;
+    if !prepared.matches_base(lease)
+        || prepared.expected_root_envelope() != admitted.root_envelope()
+        || prepared.membership_changes().len() != batch.deltas().len()
+        || batch.base() != admitted.base()
+        || candidate.expected_base() != admitted.base()
+        || candidate.expected_sequence() != admitted.sequence()
+        || candidate.expected_roots() != admitted.wal_roots()
+        || candidate.expected_catalog() != admitted.catalog()
+        || candidate.expected_vector() != admitted.vector()
+        || candidate.expected_text() != admitted.text()
+        || candidate.expected_reclaim() != admitted.reclaim()
+        || candidate.expected_high_waters() != admitted.high_waters()
+        || candidate.expected_prepared_inventories() != admitted.prepared_inventories()
+        || candidate.target_generation() != expected_generation
+        || candidate.sequence() != expected_sequence
+        || candidate.roots().generation() != expected_generation
+        || final_roots != candidate.roots()
+    {
+        return Err(NativeGraphError::Invalid(
+            "prepared committed transition facts",
+        ));
+    }
+    if let Some(artifact) = catalog_artifact {
+        verify_supplemental(artifact, tree_resources)?;
+        if artifact.required != catalog_ref {
+            return Err(NativeGraphError::Invalid("prepared catalog reference"));
+        }
+    } else if catalog_ref != admitted.catalog() {
+        return Err(NativeGraphError::Invalid("borrowed catalog reference"));
+    }
+    verify_prepared_inventory(
+        inventory_artifact,
+        prepared.inventory(),
+        catalog_artifact.map(|artifact| artifact.required.object),
+        tree_resources,
+    )?;
+
+    let roots = final_roots;
+    let graph = wal_roots(roots, prepared.inventory(), admitted.wal_roots())?;
+    let sparse = prepared.sparse_roots();
+    // Until ZE-46 folds allocation inventories, retain every previous inventory
+    // in the checked WAL/checkpoint state. A checkpoint cannot forget them.
+    let reference_count = admitted
+        .prepared_inventories()
+        .len()
+        .checked_add(1)
+        .filter(|count| *count <= NativeWriter::MAX_PROTECTED_DESCRIPTORS)
+        .ok_or(NativeGraphError::Invalid(
+            "prepared inventory capacity exhausted",
+        ))?;
+    let mut prepared_refs = StorageBuffer::new(prepared.objects().memory(), reference_count)?;
+    prepared_refs.extend_from_slice(admitted.prepared_inventories())?;
+    prepared_refs.push(inventory_artifact.required)?;
+    let high = batch.high_waters();
+    let state = CommitState {
+        store: admitted.base().store,
+        generation: expected_generation,
+        sequence: expected_sequence,
+        graph,
+        catalog: catalog_ref,
+        vector: sparse.vector,
+        text: sparse.text,
+        reclaim: admitted.reclaim(),
+        high_waters: HighWaters {
+            node: high.node,
+            relationship: high.relationship,
+            symbols: [
+                high.symbols.label,
+                high.symbols.relationship_type,
+                high.symbols.property,
+                high.symbols.namespace,
+            ],
+            creation_serial: inventory_artifact.identity.creation_serial,
+        },
+        prepared_inventories: ReferenceList::Values(prepared_refs.as_slice()),
+    };
+    let change_capacity = batch
+        .deltas()
+        .len()
+        .checked_add(prepared.inventory().len())
+        .and_then(|count| count.checked_add(2))
+        .ok_or(NativeGraphError::Invalid("WAL change count"))?;
+    let mut changes = StorageBuffer::new(prepared.objects().memory(), change_capacity)?;
+    for (ordinal, delta) in batch.deltas().iter().enumerate() {
+        let membership = prepared
+            .membership_changes()
+            .get(ordinal)
+            .ok_or(NativeGraphError::Invalid("sparse membership ordinal"))?;
+        if membership.ordinal as usize != ordinal {
+            return Err(NativeGraphError::Invalid("sparse membership order"));
+        }
+        let fields = delta.provenance().fields();
+        let membership_value = match fields.incarnation {
+            EntityId::Node(node)
+                if membership.node == Some(node) && membership.membership.is_some() =>
+            {
+                membership.membership.ok_or(NativeGraphError::Invalid(
+                    "node sparse membership is absent",
+                ))?
+            }
+            EntityId::Relationship(_)
+                if membership.node.is_none() && membership.membership.is_none() =>
+            {
+                Membership::default()
+            }
+            _ => return Err(NativeGraphError::Invalid("sparse membership identity")),
+        };
+        let canonical = if delta.canonical().is_some() {
+            Some(canonical_required(
+                prepared.objects(),
+                roots,
+                fields.incarnation,
+                catalog,
+                admitted.document(),
+                prepared.inventory(),
+                tree_resources,
+            )?)
+        } else {
+            None
+        };
+        changes.push(Change::Mutation(Mutation {
+            provenance_version: 1,
+            provenance: fields,
+            live: canonical.is_some(),
+            canonical,
+            membership: membership_value,
+        }))?;
+    }
+    for change in prepared.inventory() {
+        changes.push(Change::Inventory(*change))?;
+    }
+    if let Some(catalog) = catalog_artifact {
+        changes.push(Change::Inventory(InventoryChange {
+            object: catalog.required.object,
+            state: InventoryState::Prepared,
+        }))?;
+    }
+    changes.push(Change::Inventory(InventoryChange {
+        object: inventory_artifact.required.object,
+        state: InventoryState::Prepared,
+    }))?;
+    for (index, change) in changes.as_slice().iter().enumerate() {
+        let Change::Inventory(change) = change else {
+            continue;
+        };
+        let descriptor = change.object;
+        let duplicate = changes.as_slice().get(..index).ok_or(NativeGraphError::Invalid("inventory prefix"))?.iter().any(|previous| {
+            matches!(previous, Change::Inventory(previous) if previous.object.artifact == descriptor.artifact || previous.object.serial == descriptor.serial)
+        });
+        if descriptor.store != admitted.base().store
+            || descriptor.generation != expected_generation
+            || descriptor.serial == 0
+            || duplicate
+        {
+            return Err(NativeGraphError::Invalid(
+                "committed transition descriptor union",
+            ));
+        }
+    }
+    let base_state = commit_state(admitted);
+    let encoded_length = encode_envelope(
+        base_state,
+        Envelope {
+            batch: batch_id,
+            kind: EnvelopeKind::Mutation,
+            changes: changes.as_slice(),
+            state,
+        },
+        output,
+        wal_resources,
+    )?;
+    let _input_charge = shared.reserve(
+        reference_count
+            .checked_mul(std::mem::size_of::<RequiredRef>())
+            .ok_or(NativeGraphError::IdentityExhausted)?,
+    )?;
+    let next = NativeGraphBundle::assemble_committed(
+        store,
+        shared,
+        admitted,
+        NativeGraphBundleInput {
+            base: crate::property_graph::staging::BaseIdentity {
+                store: admitted.base().store,
+                generation: expected_generation,
+                roots: admitted.base().roots,
+            },
+            root_envelope: prepared.expected_root_envelope(),
+            roots,
+            wal_roots: graph,
+            sequence: expected_sequence,
+            catalog: catalog_ref,
+            vector: sparse.vector,
+            text: sparse.text,
+            reclaim: admitted.reclaim(),
+            high_waters: state.high_waters,
+            prepared_inventories: prepared_refs.as_slice().to_vec(),
+            lexical: admitted.lexical(),
+            document: admitted.document().cloned(),
+        },
+    )?;
+    Ok(NativeCommittedTransition {
+        admitted: Arc::clone(admitted),
+        next,
+        encoded: output
+            .get(..encoded_length)
+            .ok_or(NativeGraphError::Invalid("encoded WAL extent"))?,
+    })
+}
+
+impl crate::lifecycle::Store {
+    pub(crate) fn apply_native_graph(
+        &self,
+        requests: &[crate::property_graph::staging::StructuredWrite<'_, '_>],
+        control: &crate::lifecycle::QueryControl,
+    ) -> Result<NativePreparedResult<ReceiptRegistration>, NativeGraphError> {
+        let mut materializer = ReceiptMaterializer;
+        self.apply_native_graph_with_materializer(requests, control, &mut materializer)
+    }
+
+    pub(super) fn apply_native_graph_with_materializer<M: ResultMaterializer>(
+        &self,
+        requests: &[crate::property_graph::staging::StructuredWrite<'_, '_>],
+        control: &crate::lifecycle::QueryControl,
+        materializer: &mut M,
+    ) -> Result<NativePreparedResult<M::Registration>, NativeGraphError> {
+        self.apply_native_graph_with_materializer_inner(requests, control, materializer, true)
+    }
+
+    fn apply_native_graph_with_materializer_inner<M: ResultMaterializer>(
+        &self,
+        requests: &[crate::property_graph::staging::StructuredWrite<'_, '_>],
+        control: &crate::lifecycle::QueryControl,
+        materializer: &mut M,
+        mut allow_pending_checkpoint: bool,
+    ) -> Result<NativePreparedResult<M::Registration>, NativeGraphError> {
+        loop {
+            let mut writer_slot = self.native_graph.writer.lock().map_err(|_| {
+                NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
+                    component: "native graph writer",
+                })
+            })?;
+            let writer = writer_slot
+                .as_mut()
+                .ok_or(NativeGraphError::Invalid("native graph writer is absent"))?;
+            if writer.stopped {
+                return Err(NativeGraphError::WritesStopped);
+            }
+
+            let lease = self.admit_native_read()?;
+            let admitted = Arc::clone(lease.bundle());
+            let shared = GraphResources::from_store(self)?;
+            let write_memory = WriteMemory::new(&shared, WriteLimits::default())?;
+            let storage = StorageMemory::new(&write_memory, control, 32 * 1024 * 1024)?;
+            let source = NativePreparationSource::new(&lease, &storage, 64)?;
+            let mut base_resources = source.resources(64 * 1024 * 1024)?;
+            let resources_cell = RefCell::new(&mut base_resources);
+            let first_storage_error = Cell::new(None);
+            let base = NativeAdmittedBase::new(
+                &lease,
+                &source,
+                &storage,
+                requests,
+                &resources_cell,
+                &first_storage_error,
+            )?;
+            let mut write_control = |phase| checkpoint(control, phase);
+            let staged = stage_structured_with_results(
+                &base,
+                requests,
+                &write_memory,
+                materializer,
+                &mut write_control,
+            );
+            if let Some(error) = base.take_error() {
+                return Err(NativeGraphError::Stage(StageError::NativeStorage(error)));
+            }
+            let materialized = staged?;
+            let staged_batch = materialized.batch();
+            if staged_batch.disposition() != BatchDisposition::Changed {
+                return Ok(NativePreparedResult::from_materialized(materialized));
+            }
+            if writer.checkpoint_failed {
+                return Err(NativeGraphError::CheckpointRequired);
+            }
+            let committed_tail = writer
+                .wal
+                .bytes
+                .checked_sub(crate::property_graph::wal::HEADER_BYTES)
+                .ok_or(NativeGraphError::Invalid("native WAL byte accounting"))?;
+            if writer.complete_envelopes >= 64 || committed_tail >= MAX_ENVELOPE_BYTES {
+                checkpoint_current(self, writer, &admitted, &shared, control)?;
+                continue;
+            }
+
+            let target_generation = GraphGeneration::new(
+                admitted
+                    .base()
+                    .generation
+                    .get()
+                    .checked_add(1)
+                    .ok_or(NativeGraphError::IdentityExhausted)?,
+            );
+            let source = base.source();
+            let mut resources_guard = base.resources()?;
+            let resources = &mut **resources_guard;
+            let store_identity = admitted.base().store;
+            let identity_source = || {
+                let creation_serial = self
+                    .native_graph
+                    .burn_creation_serial()
+                    .map_err(|_| TreeError::Invalid("native creation serial unavailable"))?;
+                let mut entropy = crate::property_graph::storage::allocation::OsEntropy;
+                let value =
+                    crate::property_graph::storage::allocation::fresh_store_identity(&mut entropy)
+                        .map_err(TreeError::Io)?;
+                Ok(ArtifactIdentity {
+                    store: store_identity,
+                    artifact: crate::property_graph::storage::artifact::ArtifactId::new(
+                        value.get(),
+                    )?,
+                    generation: target_generation,
+                    creation_serial,
+                })
+            };
+            let prepared_result = GraphPreparation::new(
+                source,
+                target_generation,
+                identity_source,
+                PackLimits::default(),
+                &self.tokenizer,
+                resources,
+            )?
+            .prepare(staged_batch, resources);
+            let prepared = prepared_result.map_err(|failure| {
+                let (error, _, _) = failure.into_parts();
+                NativeGraphError::Read(error)
+            })?;
+            if !prepared.matches_base(&lease) {
+                return Err(NativeGraphError::Invalid("prepared native base changed"));
+            }
+
+            let catalog = NativePreparationCatalog::open(source, resources)?;
+            let batch_catalog = BatchCatalog {
+                base: &catalog,
+                additions: staged_batch.symbols(),
+            };
+            let total_symbols = catalog
+                .symbol_entries()
+                .len()
+                .checked_add(staged_batch.symbols().len())
+                .ok_or(NativeGraphError::Invalid("catalog symbol count"))?;
+            let mut merged = StorageBuffer::<SymbolEntry<'_>>::new(&storage, total_symbols)?;
+            for entry in catalog
+                .symbol_entries()
+                .iter()
+                .chain(staged_batch.symbols())
+            {
+                merged.push(*entry)?;
+            }
+
+            let prepared_max_serial = prepared
+                .inventory()
+                .iter()
+                .map(|change| change.object.serial)
+                .max()
+                .unwrap_or(self.native_graph.serial_fence()?);
+            let high = staged_batch.high_waters();
+            let high_symbols = [
+                high.symbols.label,
+                high.symbols.relationship_type,
+                high.symbols.property,
+                high.symbols.namespace,
+            ];
+            let catalog_changed = !staged_batch.symbols().is_empty()
+                || high.node != admitted.high_waters().node
+                || high.relationship != admitted.high_waters().relationship
+                || high_symbols != admitted.high_waters().symbols;
+            let (catalog_artifact, catalog_ref, catalog_floor) = if catalog_changed {
+                let catalog_serial = self.native_graph.burn_creation_serial()?;
+                if catalog_serial <= prepared_max_serial {
+                    return Err(NativeGraphError::Invalid("catalog creation serial order"));
+                }
+                let catalog_identity = ArtifactIdentity {
+                    store: store_identity,
+                    artifact: next_artifact(
+                        &mut crate::property_graph::storage::allocation::OsEntropy,
+                    )?,
+                    generation: target_generation,
+                    creation_serial: catalog_serial,
+                };
+                let payload = catalog_payload(
+                    &storage,
+                    control,
+                    store_identity,
+                    admitted.lexical(),
+                    admitted.document(),
+                    high.node,
+                    high.relationship,
+                    merged.as_slice(),
+                    high.symbols,
+                )?;
+                let (bytes, required) = encode_framed(
+                    &storage,
+                    control,
+                    ContainerKind::Object,
+                    catalog_identity,
+                    &[Block {
+                        kind: BlockKind::CommitParticipant,
+                        payload: payload.as_slice(),
+                    }],
+                )?;
+                (Some((catalog_identity, bytes)), required, catalog_serial)
+            } else {
+                (None, admitted.catalog(), prepared_max_serial)
+            };
+
+            let inventory_serial = self.native_graph.burn_creation_serial()?;
+            if inventory_serial <= catalog_floor {
+                return Err(NativeGraphError::Invalid("inventory creation serial order"));
+            }
+            let inventory_identity = ArtifactIdentity {
+                store: store_identity,
+                artifact: next_artifact(
+                    &mut crate::property_graph::storage::allocation::OsEntropy,
+                )?,
+                generation: target_generation,
+                creation_serial: inventory_serial,
+            };
+            let inventory_payload = inventory_payload(
+                &storage,
+                control,
+                prepared.inventory(),
+                catalog_artifact.as_ref().map(|_| catalog_ref.object),
+            )?;
+            let (inventory_bytes, inventory_ref) = encode_framed(
+                &storage,
+                control,
+                ContainerKind::Object,
+                inventory_identity,
+                &[Block {
+                    kind: BlockKind::CommitParticipant,
+                    payload: inventory_payload.as_slice(),
+                }],
+            )?;
+
+            let protected_start = prepared
+                .inventory()
+                .len()
+                .checked_add(usize::from(catalog_artifact.is_some()))
+                .and_then(|count| count.checked_add(1))
+                .ok_or(NativeGraphError::Invalid("protected descriptor count"))?;
+            writer.can_protect(protected_start)?;
+            let batch = BatchId::new(
+                crate::property_graph::storage::allocation::fresh_store_identity(
+                    &mut crate::property_graph::storage::allocation::OsEntropy,
+                )
+                .map_err(|source| io(&writer.wal.path, source))?
+                .get(),
+            )?;
+            let mut envelope_bytes = zeroed(&storage, control, MAX_ENVELOPE_BYTES)?;
+            let mut cancelled = || control.checkpoint().is_err();
+            let mut wal_resources = WalResources::new(
+                (MAX_ENVELOPE_BYTES as u64) * 4,
+                STACK_RESERVATION_BYTES,
+                &mut cancelled,
+            )?;
+            let catalog_supplement =
+                catalog_artifact
+                    .as_ref()
+                    .map(|(identity, bytes)| SupplementalArtifact {
+                        identity: *identity,
+                        bytes: bytes.as_slice(),
+                        required: catalog_ref,
+                    });
+            let inventory_supplement = SupplementalArtifact {
+                identity: inventory_identity,
+                bytes: inventory_bytes.as_slice(),
+                required: inventory_ref,
+            };
+            let mut supplemental = StorageBuffer::new(&storage, 2)?;
+            if let Some(catalog) = catalog_supplement {
+                supplemental.push(InventoryChange {
+                    object: catalog.required.object,
+                    state: InventoryState::Prepared,
+                })?;
+            }
+            supplemental.push(InventoryChange {
+                object: inventory_ref.object,
+                state: InventoryState::Prepared,
+            })?;
+            let _supplemental_registration = lease.register_prepared(supplemental.as_slice())?;
+            #[allow(unused_mut)]
+            let mut final_roots = prepared.candidate().roots();
+            #[cfg(any(test, feature = "test-support"))]
+            if self
+                .native_graph
+                .substitute_old_out
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+            {
+                let old = admitted.roots().for_generation(target_generation)?;
+                final_roots.replace(old.directory(TreeKind::OutRanges)?)?;
+            }
+            let transition = prepare_committed_transition(
+                self,
+                &shared,
+                &lease,
+                staged_batch,
+                &prepared,
+                final_roots,
+                &batch_catalog,
+                catalog_supplement,
+                catalog_ref,
+                inventory_supplement,
+                batch,
+                envelope_bytes.as_mut_slice(),
+                resources,
+                &mut wal_resources,
+            )?;
+
+            let tail_bytes = writer
+                .wal
+                .bytes
+                .checked_sub(crate::property_graph::wal::HEADER_BYTES)
+                .ok_or(NativeGraphError::Invalid("native WAL byte accounting"))?;
+            let pending_tail_bytes = tail_bytes
+                .checked_add(transition.wal_bytes().len())
+                .ok_or(NativeGraphError::IdentityExhausted)?;
+            if pending_tail_bytes > MAX_ENVELOPE_BYTES {
+                if !allow_pending_checkpoint {
+                    return Err(NativeGraphError::Invalid(
+                        "single native WAL envelope exceeds tail bound",
+                    ));
+                }
+                checkpoint_current(self, writer, &admitted, &shared, control)?;
+                allow_pending_checkpoint = false;
+                continue;
+            }
+
+            let next_wal_bytes = writer
+                .wal
+                .bytes
+                .checked_add(transition.wal_bytes().len())
+                .ok_or(NativeGraphError::IdentityExhausted)?;
+            let next_complete_envelopes = writer
+                .complete_envelopes
+                .checked_add(1)
+                .ok_or(NativeGraphError::IdentityExhausted)?;
+
+            for change in prepared.inventory() {
+                writer.protected.push(change.object);
+            }
+            if let Some(catalog) = catalog_supplement {
+                writer.protected.push(catalog.required.object);
+            }
+            writer.protected.push(inventory_ref.object);
+
+            let directory = admitted.directory();
+            for index in 0..prepared.objects().len() {
+                let object = prepared.objects().artifact(index)?;
+                let path = crate::property_graph::storage::allocation::artifact_path(
+                    directory,
+                    object.identity().artifact,
+                );
+                admitted
+                    .vfs()
+                    .create_new(&path, object.bytes())
+                    .map_err(|source| io(&path, source))?;
+                admitted
+                    .vfs()
+                    .sync(&path, SyncKind::Full)
+                    .map_err(|source| io(&path, source))?;
+            }
+            if let Some((identity, bytes)) = &catalog_artifact {
+                let path = crate::property_graph::storage::allocation::artifact_path(
+                    directory,
+                    identity.artifact,
+                );
+                admitted
+                    .vfs()
+                    .create_new(&path, bytes.as_slice())
+                    .map_err(|source| io(&path, source))?;
+                admitted
+                    .vfs()
+                    .sync(&path, SyncKind::Full)
+                    .map_err(|source| io(&path, source))?;
+            }
+            let inventory_path = crate::property_graph::storage::allocation::artifact_path(
+                directory,
+                inventory_identity.artifact,
+            );
+            admitted
+                .vfs()
+                .create_new(&inventory_path, inventory_bytes.as_slice())
+                .map_err(|source| io(&inventory_path, source))?;
+            admitted
+                .vfs()
+                .sync(&inventory_path, SyncKind::Full)
+                .map_err(|source| io(&inventory_path, source))?;
+            admitted
+                .vfs()
+                .sync(directory, SyncKind::Full)
+                .map_err(|source| io(directory, source))?;
+
+            control
+                .checkpoint()
+                .map_err(|_| NativeGraphError::Stage(StageError::Cancelled))?;
+            let failure_path = writer.wal.path.clone();
+            if let Err(source) = writer.wal.handle.append(transition.wal_bytes()) {
+                writer.stopped = true;
+                let _ = self.native_graph.stop_admissions();
+                return Err(NativeGraphError::CommitIndeterminate {
+                    stage: "WAL append",
+                    path: failure_path,
+                    source: Some(source),
+                });
+            }
+            writer.wal.bytes = next_wal_bytes;
+            if let Err(source) = writer.wal.handle.sync(SyncKind::Full) {
+                writer.stopped = true;
+                let _ = self.native_graph.stop_admissions();
+                return Err(NativeGraphError::CommitIndeterminate {
+                    stage: "WAL Full sync",
+                    path: failure_path,
+                    source: Some(source),
+                });
+            }
+            let expose = || {
+                if self
+                    .native_graph
+                    .publish_committed_transition(transition)
+                    .is_err()
+                {
+                    writer.stopped = true;
+                    let _ = self.native_graph.stop_admissions();
+                    return Err(NativeGraphError::CommitIndeterminate {
+                        stage: "bundle publication",
+                        path: failure_path,
+                        source: None,
+                    });
+                }
+                writer.complete_envelopes = next_complete_envelopes;
+                Ok(())
+            };
+            #[cfg(all(feature = "allocation-audit", any(test, feature = "test-support")))]
+            {
+                let ((result, denied), audit) = crate::allocation_audit::audit_engine_path(|| {
+                    crate::allocation_audit::fail_attributed_allocation(1, expose)
+                });
+                result?;
+                let ((result, handoff_denied), handoff) =
+                    crate::allocation_audit::audit_engine_path(|| {
+                        crate::allocation_audit::fail_attributed_allocation(1, || {
+                            NativePreparedResult::from_materialized(materialized)
+                        })
+                    });
+                self.native_graph.commit_allocations.store(
+                    audit.allocations + handoff.allocations,
+                    std::sync::atomic::Ordering::Release,
+                );
+                self.native_graph.commit_allocation_denials.store(
+                    denied + handoff_denied,
+                    std::sync::atomic::Ordering::Release,
+                );
+                return Ok(result);
+            }
+            #[cfg(not(all(feature = "allocation-audit", any(test, feature = "test-support"))))]
+            {
+                expose()?;
+                return Ok(NativePreparedResult::from_materialized(materialized));
+            }
+        }
+    }
+
+    pub(crate) fn checkpoint_native_graph(
+        &self,
+        control: &crate::lifecycle::QueryControl,
+    ) -> Result<(), NativeGraphError> {
+        let mut writer_slot = self.native_graph.writer.lock().map_err(|_| {
+            NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
+                component: "native graph writer",
+            })
+        })?;
+        let writer = writer_slot
+            .as_mut()
+            .ok_or(NativeGraphError::Invalid("native graph writer is absent"))?;
+        if writer.stopped {
+            return Err(NativeGraphError::WritesStopped);
+        }
+        let lease = self.admit_native_read()?;
+        let admitted = Arc::clone(lease.bundle());
+        let resources = GraphResources::from_store(self)?;
+        checkpoint_current(self, writer, &admitted, &resources, control)
+    }
+
+    pub(crate) fn admit_native_graph_maintenance(
+        &self,
+    ) -> Result<super::NativeMaintenanceAdmission, NativeGraphError> {
+        let writer_slot = self.native_graph.writer.lock().map_err(|_| {
+            NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
+                component: "native graph writer",
+            })
+        })?;
+        let writer = writer_slot
+            .as_ref()
+            .ok_or(NativeGraphError::Invalid("native graph writer is absent"))?;
+        if writer.stopped {
+            return Err(NativeGraphError::WritesStopped);
+        }
+        let lease = self.admit_native_read()?;
+        Ok(super::NativeMaintenanceAdmission {
+            lease,
+            serial_fence: self.native_graph.serial_fence()?,
+        })
+    }
+
+    pub(crate) fn commit_native_graph_maintenance(
+        &self,
+        admission: &super::NativeMaintenanceAdmission,
+        control: &crate::lifecycle::QueryControl,
+    ) -> Result<(), NativeGraphError> {
+        let mut writer_slot = self.native_graph.writer.lock().map_err(|_| {
+            NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
+                component: "native graph writer",
+            })
+        })?;
+        let writer = writer_slot
+            .as_mut()
+            .ok_or(NativeGraphError::Invalid("native graph writer is absent"))?;
+        if writer.stopped {
+            return Err(NativeGraphError::WritesStopped);
+        }
+        if !self
+            .native_graph
+            .is_current_at_serial(admission.lease.bundle(), admission.serial_fence)?
+        {
+            return Err(NativeGraphError::StalePreparation);
+        }
+        let admitted = Arc::clone(admission.lease.bundle());
+        let resources = GraphResources::from_store(self)?;
+        checkpoint_current(self, writer, &admitted, &resources, control)
+    }
+}

@@ -24,6 +24,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::Instant;
 
+mod base;
+mod persistence;
+mod write;
+
 const MAX_NATIVE_READ_LEASES: usize = 1024;
 const MAX_NATIVE_READ_MAPPINGS: usize = MAX_NATIVE_READ_LEASES * 16;
 const MAX_NATIVE_PREPARATIONS: usize = MAX_NATIVE_READ_LEASES;
@@ -37,6 +41,23 @@ pub(crate) enum NativeGraphError {
     LeaseLimit,
     IdentityExhausted,
     Read(crate::property_graph::storage::tree::directory::TreeError),
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    Catalog(crate::property_graph::catalog::CatalogError),
+    Wal(crate::property_graph::wal::WalError),
+    Stage(crate::property_graph::staging::StageError),
+    CommitIndeterminate {
+        stage: &'static str,
+        path: PathBuf,
+        source: Option<std::io::Error>,
+    },
+    WritesStopped,
+    ReadAdmissionsStopped,
+    CheckpointRequired,
+    StalePreparation,
+    StoreInitializationIncomplete,
 }
 
 impl From<StoreError> for NativeGraphError {
@@ -54,6 +75,34 @@ impl std::fmt::Display for NativeGraphError {
             Self::LeaseLimit => f.write_str("native graph read lease capacity exhausted"),
             Self::IdentityExhausted => f.write_str("native graph read identity exhausted"),
             Self::Read(error) => error.fmt(f),
+            Self::Io { path, source } => write!(f, "{}: {source}", path.display()),
+            Self::Catalog(error) => error.fmt(f),
+            Self::Wal(error) => error.fmt(f),
+            Self::Stage(error) => error.fmt(f),
+            Self::CommitIndeterminate {
+                stage,
+                path,
+                source,
+            } => {
+                write!(
+                    f,
+                    "native graph commit is indeterminate at {stage}: {}",
+                    path.display()
+                )?;
+                if let Some(source) = source {
+                    write!(f, ": {source}")?;
+                }
+                Ok(())
+            }
+            Self::WritesStopped => f.write_str("native graph writes require recovery"),
+            Self::ReadAdmissionsStopped => {
+                f.write_str("native graph read admissions require recovery")
+            }
+            Self::CheckpointRequired => f.write_str("native graph checkpoint retry is required"),
+            Self::StalePreparation => f.write_str("native graph maintenance preparation is stale"),
+            Self::StoreInitializationIncomplete => {
+                f.write_str("native graph store initialization is incomplete")
+            }
         }
     }
 }
@@ -63,6 +112,24 @@ impl std::error::Error for NativeGraphError {}
 impl From<crate::property_graph::storage::tree::directory::TreeError> for NativeGraphError {
     fn from(error: crate::property_graph::storage::tree::directory::TreeError) -> Self {
         Self::Read(error)
+    }
+}
+
+impl From<crate::property_graph::catalog::CatalogError> for NativeGraphError {
+    fn from(error: crate::property_graph::catalog::CatalogError) -> Self {
+        Self::Catalog(error)
+    }
+}
+
+impl From<crate::property_graph::wal::WalError> for NativeGraphError {
+    fn from(error: crate::property_graph::wal::WalError) -> Self {
+        Self::Wal(error)
+    }
+}
+
+impl From<crate::property_graph::staging::StageError> for NativeGraphError {
+    fn from(error: crate::property_graph::staging::StageError) -> Self {
+        Self::Stage(error)
     }
 }
 
@@ -166,6 +233,132 @@ impl NativeGraphBundle {
             vfs: Arc::clone(&store.vfs),
             _charge: charge,
         }))
+    }
+
+    fn assemble_committed(
+        store: &Store,
+        resources: &GraphResources,
+        admitted: &Arc<Self>,
+        input: NativeGraphBundleInput,
+    ) -> Result<Arc<Self>, NativeGraphError> {
+        let expected_generation = admitted
+            .base
+            .generation
+            .get()
+            .checked_add(1)
+            .ok_or(NativeGraphError::IdentityExhausted)?;
+        let expected_sequence = admitted
+            .sequence
+            .checked_add(1)
+            .ok_or(NativeGraphError::IdentityExhausted)?;
+        if input.base.store != admitted.base.store
+            || input.base.generation.get() != expected_generation
+            || input.base.roots != admitted.base.roots
+            || input.root_envelope != admitted.root_envelope
+            || input.roots.store() != input.base.store
+            || input.roots.generation() != input.base.generation
+            || input.sequence != expected_sequence
+            || input.root_envelope.object.generation > input.base.generation
+        {
+            return Err(NativeGraphError::Invalid(
+                "unproved native committed transition",
+            ));
+        }
+        for (root, required) in input
+            .roots
+            .references()
+            .into_iter()
+            .zip(input.wal_roots.slots)
+        {
+            if root != required.map(|value| value.block) {
+                return Err(NativeGraphError::Invalid(
+                    "committed transition root mismatch",
+                ));
+            }
+            if let Some(required) = required {
+                validate_object_ref(input.base, required)?;
+            }
+        }
+        for required in [Some(input.catalog), input.vector, input.text, input.reclaim]
+            .into_iter()
+            .flatten()
+            .chain(input.prepared_inventories.iter().copied())
+        {
+            validate_object_ref(input.base, required)?;
+        }
+        let metadata_bytes = bundle_owned_bytes(&input, &store.directory)?;
+        let charge = resources.reserve(metadata_bytes)?;
+        let mut directory = PathBuf::new();
+        directory
+            .try_reserve(store.directory.as_os_str().len())
+            .map_err(|_| {
+                NativeGraphError::Store(StoreError::AllocationFailed {
+                    needed: store.directory.as_os_str().len() as u64,
+                    component: "native graph bundle path",
+                })
+            })?;
+        directory.push(&store.directory);
+        Ok(Arc::new(Self {
+            base: input.base,
+            root_envelope: input.root_envelope,
+            roots: input.roots,
+            wal_roots: input.wal_roots,
+            sequence: input.sequence,
+            catalog: input.catalog,
+            vector: input.vector,
+            text: input.text,
+            reclaim: input.reclaim,
+            high_waters: input.high_waters,
+            prepared_inventories: input.prepared_inventories,
+            lexical: input.lexical,
+            document: input.document,
+            directory,
+            vfs: Arc::clone(&store.vfs),
+            _charge: charge,
+        }))
+    }
+
+    fn checkpoint_transition(
+        store: &Store,
+        resources: &GraphResources,
+        admitted: &Arc<Self>,
+        root_envelope: RequiredRef,
+    ) -> Result<Arc<Self>, NativeGraphError> {
+        if root_envelope.object.store != admitted.base.store
+            || root_envelope.object.generation != admitted.base.generation
+            || root_envelope.object.family != FormatFamily::NativeGraphRoot.id()
+            || root_envelope.object.version != 1
+            || root_envelope.block.artifact != root_envelope.object.artifact
+            || root_envelope.block.kind != BlockKind::CheckpointPayload
+            || root_envelope.block.version != 1
+        {
+            return Err(NativeGraphError::Invalid(
+                "unproved native checkpoint transition",
+            ));
+        }
+        Self::install(
+            store,
+            resources,
+            NativeGraphBundleInput {
+                base: BaseIdentity {
+                    store: admitted.base.store,
+                    generation: admitted.base.generation,
+                    roots: Some(root_envelope.object.artifact),
+                },
+                root_envelope,
+                roots: admitted.roots,
+                wal_roots: admitted.wal_roots,
+                sequence: admitted.sequence,
+                catalog: admitted.catalog,
+                vector: admitted.vector,
+                text: admitted.text,
+                reclaim: admitted.reclaim,
+                high_waters: admitted.high_waters,
+                prepared_inventories: admitted.prepared_inventories.clone(),
+                lexical: admitted.lexical,
+                document: admitted.document.clone(),
+            },
+        )
     }
 
     pub(crate) const fn base(&self) -> BaseIdentity {
@@ -368,7 +561,9 @@ struct PublicationState {
     next_token: u64,
     next_mapping_token: u64,
     next_preparation_token: u64,
+    creation_serial_fence: u64,
     closing: bool,
+    admissions_stopped: bool,
     #[cfg(any(test, feature = "test-support"))]
     admission_hook: Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>,
 }
@@ -378,6 +573,15 @@ pub(crate) struct NativeGraphPublication {
     changed: Condvar,
     accounting: Arc<super::stats::Accounting>,
     _charge: super::stats::AccountedCounter,
+    writer: Mutex<Option<write::NativeWriter>>,
+    #[cfg(any(test, feature = "test-support"))]
+    fail_next_publication: AtomicBool,
+    #[cfg(any(test, feature = "test-support"))]
+    substitute_old_out: AtomicBool,
+    #[cfg(all(feature = "allocation-audit", any(test, feature = "test-support")))]
+    commit_allocations: std::sync::atomic::AtomicU64,
+    #[cfg(all(feature = "allocation-audit", any(test, feature = "test-support")))]
+    commit_allocation_denials: std::sync::atomic::AtomicU64,
 }
 
 impl NativeGraphPublication {
@@ -461,13 +665,24 @@ impl NativeGraphPublication {
                 next_token: 1,
                 next_mapping_token: 1,
                 next_preparation_token: 1,
+                creation_serial_fence: 0,
                 closing: false,
+                admissions_stopped: false,
                 #[cfg(any(test, feature = "test-support"))]
                 admission_hook: None,
             }),
             changed: Condvar::new(),
             accounting: Arc::clone(accounting),
             _charge: charge,
+            writer: Mutex::new(None),
+            #[cfg(any(test, feature = "test-support"))]
+            fail_next_publication: AtomicBool::new(false),
+            #[cfg(any(test, feature = "test-support"))]
+            substitute_old_out: AtomicBool::new(false),
+            #[cfg(all(feature = "allocation-audit", any(test, feature = "test-support")))]
+            commit_allocations: std::sync::atomic::AtomicU64::new(u64::MAX),
+            #[cfg(all(feature = "allocation-audit", any(test, feature = "test-support")))]
+            commit_allocation_denials: std::sync::atomic::AtomicU64::new(u64::MAX),
         }))
     }
 
@@ -581,6 +796,20 @@ impl NativeGraphPublication {
         Ok((count, resident))
     }
 
+    pub(crate) fn drain_writer_for_close(&self) -> Result<(), StoreError> {
+        let mut writer = self
+            .writer
+            .lock()
+            .map_err(|_| StoreError::Synchronization {
+                component: "native graph writer",
+            })?;
+        if let Some(writer) = writer.as_mut() {
+            writer.stopped = true;
+        }
+        drop(writer.take());
+        Ok(())
+    }
+
     fn install(&self, bundle: Arc<NativeGraphBundle>) -> Result<(), NativeGraphError> {
         let mut state = self.state.lock().map_err(|_| {
             NativeGraphError::Store(StoreError::Synchronization {
@@ -591,6 +820,92 @@ impl NativeGraphPublication {
             return Err(NativeGraphError::Store(StoreError::Closing));
         }
         state.current = Some(bundle);
+        Ok(())
+    }
+
+    fn is_current_at_serial(
+        &self,
+        bundle: &Arc<NativeGraphBundle>,
+        serial_fence: u64,
+    ) -> Result<bool, NativeGraphError> {
+        let state = self.state.lock().map_err(|_| {
+            NativeGraphError::Store(StoreError::Synchronization {
+                component: "native graph publication",
+            })
+        })?;
+        Ok(state.creation_serial_fence == serial_fence
+            && state
+                .current
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, bundle)))
+    }
+
+    fn burn_creation_serial(&self) -> Result<u64, NativeGraphError> {
+        let mut state = self.state.lock().map_err(|_| {
+            NativeGraphError::Store(StoreError::Synchronization {
+                component: "native graph publication",
+            })
+        })?;
+        state.creation_serial_fence = state
+            .creation_serial_fence
+            .checked_add(1)
+            .ok_or(NativeGraphError::IdentityExhausted)?;
+        Ok(state.creation_serial_fence)
+    }
+
+    fn serial_fence(&self) -> Result<u64, NativeGraphError> {
+        let state = self.state.lock().map_err(|_| {
+            NativeGraphError::Store(StoreError::Synchronization {
+                component: "native graph publication",
+            })
+        })?;
+        Ok(state.creation_serial_fence)
+    }
+
+    fn publish_transition(
+        &self,
+        admitted: &Arc<NativeGraphBundle>,
+        next: Arc<NativeGraphBundle>,
+    ) -> Result<(), NativeGraphError> {
+        #[cfg(any(test, feature = "test-support"))]
+        if self.fail_next_publication.swap(false, Ordering::AcqRel) {
+            return Err(NativeGraphError::Invalid(
+                "scheduled native graph publication failure",
+            ));
+        }
+        let mut state = self.state.lock().map_err(|_| {
+            NativeGraphError::Store(StoreError::Synchronization {
+                component: "native graph publication",
+            })
+        })?;
+        let current = state
+            .current
+            .as_ref()
+            .ok_or(NativeGraphError::NotInstalled)?;
+        if !Arc::ptr_eq(current, admitted) {
+            return Err(NativeGraphError::Invalid(
+                "stale native committed transition",
+            ));
+        }
+        state.current = Some(next);
+        Ok(())
+    }
+
+    fn publish_committed_transition(
+        &self,
+        transition: write::NativeCommittedTransition<'_>,
+    ) -> Result<(), NativeGraphError> {
+        let (admitted, next) = transition.into_publication();
+        self.publish_transition(&admitted, next)
+    }
+
+    fn stop_admissions(&self) -> Result<(), NativeGraphError> {
+        let mut state = self.state.lock().map_err(|_| {
+            NativeGraphError::Store(StoreError::Synchronization {
+                component: "native graph publication",
+            })
+        })?;
+        state.admissions_stopped = true;
         Ok(())
     }
 
@@ -605,6 +920,9 @@ impl NativeGraphPublication {
         })?;
         if state.closing {
             return Err(NativeGraphError::Store(StoreError::Closing));
+        }
+        if state.admissions_stopped {
+            return Err(NativeGraphError::ReadAdmissionsStopped);
         }
         let bundle = Arc::clone(
             state
@@ -652,6 +970,11 @@ impl NativeGraphPublication {
         &self,
         resources: &GraphResources,
     ) -> Result<NativeProtectedRoots, NativeGraphError> {
+        let writer = self.writer.lock().map_err(|_| {
+            NativeGraphError::Store(StoreError::Synchronization {
+                component: "native graph writer",
+            })
+        })?;
         let state = self.state.lock().map_err(|_| {
             NativeGraphError::Store(StoreError::Synchronization {
                 component: "native graph publication",
@@ -665,6 +988,12 @@ impl NativeGraphPublication {
             .iter()
             .flatten()
             .try_fold(0_usize, |total, entry| total.checked_add(entry.length))
+            .and_then(|total| {
+                writer
+                    .as_ref()
+                    .and_then(|writer| total.checked_add(writer.protected.len()))
+                    .or_else(|| writer.is_none().then_some(total))
+            })
             .ok_or(NativeGraphError::LeaseLimit)?;
         let bytes = capacity
             .checked_mul(std::mem::size_of::<Arc<NativeGraphBundle>>())
@@ -720,6 +1049,9 @@ impl NativeGraphPublication {
             };
             prepared.extend(changes.iter().map(|change| change.object));
         }
+        if let Some(writer) = writer.as_ref() {
+            prepared.extend(writer.protected.iter().copied());
+        }
         let actual = bundles
             .capacity()
             .checked_mul(std::mem::size_of::<Arc<NativeGraphBundle>>())
@@ -735,6 +1067,12 @@ impl NativeGraphPublication {
         Ok(NativeProtectedRoots {
             bundles,
             prepared,
+            wal: writer.as_ref().map(|writer| NativeProtectedWal {
+                identity: writer.wal.identity,
+                first_sequence: writer.wal.first_sequence,
+                bytes: writer.wal.bytes,
+            }),
+            serial_fence: state.creation_serial_fence,
             _charge: charge,
         })
     }
@@ -978,7 +1316,21 @@ impl RetainedView for NativeReadLease {
 pub(crate) struct NativeProtectedRoots {
     bundles: Vec<Arc<NativeGraphBundle>>,
     prepared: Vec<ArtifactDescriptor>,
+    wal: Option<NativeProtectedWal>,
+    serial_fence: u64,
     _charge: GraphReservation,
+}
+
+pub(crate) struct NativeMaintenanceAdmission {
+    lease: NativeReadLease,
+    serial_fence: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct NativeProtectedWal {
+    identity: u128,
+    first_sequence: u64,
+    bytes: usize,
 }
 
 impl NativeProtectedRoots {
@@ -993,9 +1345,24 @@ impl NativeProtectedRoots {
     fn contains_prepared(&self, object: ArtifactDescriptor) -> bool {
         self.prepared.contains(&object)
     }
+
+    fn wal(&self) -> Option<NativeProtectedWal> {
+        self.wal
+    }
+
+    fn serial_fence(&self) -> u64 {
+        self.serial_fence
+    }
 }
 
 impl Store {
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn fail_next_native_graph_publication_for_test(&self) {
+        self.native_graph
+            .fail_next_publication
+            .store(true, Ordering::Release);
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn install_native_graph_for_test(
         &self,
@@ -1023,6 +1390,7 @@ impl Store {
             StoreState::Closing => return Err(NativeGraphError::Store(StoreError::Closing)),
             StoreState::Closed => return Err(NativeGraphError::Store(StoreError::Closed)),
         }
+        drop(state);
         let resources = GraphResources::from_store(self)?;
         let charge = resources
             .reserve(std::mem::size_of::<NativeReadOwner>() + 2 * std::mem::size_of::<usize>())?;
@@ -1040,6 +1408,7 @@ impl Store {
             StoreState::Closing => return Err(NativeGraphError::Store(StoreError::Closing)),
             StoreState::Closed => return Err(NativeGraphError::Store(StoreError::Closed)),
         }
+        drop(state);
         let resources = GraphResources::from_store(self)?;
         self.native_graph.capture(&resources)
     }
@@ -1096,6 +1465,7 @@ pub(crate) mod tests {
     )]
 
     mod expression_tests;
+    pub(crate) mod publication;
     mod retrieval;
     mod sparse;
 

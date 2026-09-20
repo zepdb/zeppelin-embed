@@ -359,6 +359,24 @@ impl<'source, 'lease, 'm> NativePreparationCatalog<'source, 'lease, 'm> {
     pub(crate) fn owns(&self, source: &NativePreparationSource<'_, '_>) -> bool {
         std::ptr::eq(self.source, source)
     }
+
+    pub(crate) fn symbol_entries(&self) -> &[SymbolEntry<'source>] {
+        self.image.symbols.entries()
+    }
+
+    pub(crate) fn lookup_symbol(
+        &self,
+        kind: SymbolKind,
+        name: crate::property_graph::GraphName<'_>,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<Option<Symbol>, TreeError> {
+        self.image
+            .symbols
+            .lookup(kind, name, &mut || {
+                resources.step(1).map_err(|_| CatalogError::Cancelled)
+            })
+            .map_err(|error| catalog_error(error, resources))
+    }
 }
 
 fn catalog_error(error: CatalogError, resources: &mut TreeResources<'_>) -> TreeError {

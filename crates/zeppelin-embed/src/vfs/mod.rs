@@ -54,6 +54,14 @@ pub trait Vfs: Send + Sync {
     /// Admits a store directory, creating missing ancestors when requested,
     /// and reports whether the resulting path is a directory.
     fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool>;
+    /// Exclusively creates one directory. Existing paths are preserved and
+    /// reported as `AlreadyExists`; no ancestor is adopted implicitly.
+    fn create_directory(&self, _path: &Path) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "VFS does not support exclusive directory creation",
+        ))
+    }
     /// Opens an existing path and returns its byte length.
     fn open(&self, path: &Path) -> std::io::Result<u64>;
     /// Opens an existing path as an owned file suitable for memory mapping.
@@ -133,6 +141,10 @@ impl Vfs for StdVfs {
             std::fs::create_dir_all(path)?;
         }
         Ok(std::fs::metadata(path)?.is_dir())
+    }
+
+    fn create_directory(&self, path: &Path) -> std::io::Result<()> {
+        std::fs::create_dir(path)
     }
 
     fn open(&self, path: &Path) -> std::io::Result<u64> {

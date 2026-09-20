@@ -138,6 +138,42 @@ pub(super) fn state_read<'a>(
     )?;
     Ok(state)
 }
+
+pub(crate) fn encode_commit_state(
+    state: CommitState<'_>,
+    output: &mut [u8],
+    resources: &mut WalResources<'_>,
+) -> Result<usize, WalError> {
+    let mut measured = Writer {
+        bytes: None,
+        pos: 0,
+    };
+    state_write(state, &mut measured, resources)?;
+    if output.len() < measured.pos {
+        return Err(WalError::Capacity);
+    }
+    let mut writer = Writer {
+        bytes: Some(output),
+        pos: 0,
+    };
+    state_write(state, &mut writer, resources)?;
+    Ok(writer.pos)
+}
+
+pub(crate) fn decode_commit_state<'a>(
+    input: &'a [u8],
+    resources: &mut WalResources<'_>,
+) -> Result<CommitState<'a>, WalError> {
+    let mut reader = Reader {
+        bytes: input,
+        pos: 0,
+    };
+    let state = state_read(&mut reader, resources)?;
+    if reader.pos != input.len() {
+        return Err(WalError::Malformed);
+    }
+    Ok(state)
+}
 /// Writes the required graph WAL file header. Existing family11 bytes are unchanged.
 pub fn encode_header(
     store: StoreInstanceId,

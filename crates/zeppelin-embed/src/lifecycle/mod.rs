@@ -2580,6 +2580,82 @@ fn cleanup_open_orphans(
 }
 
 impl Store {
+    #[cfg(feature = "graph-cypher")]
+    pub(crate) fn new_native_graph_owner(
+        path: &Path,
+        options: OpenOptions,
+        vfs: Arc<dyn crate::vfs::Vfs>,
+        clock: Arc<dyn MonotonicClock>,
+    ) -> Result<Self, StoreError> {
+        if options.access_mode != AccessMode::ReadWrite {
+            return Err(StoreError::ReadOnly);
+        }
+        crate::kernels::initialize().map_err(StoreError::Kernel)?;
+        let durability_policy = DurabilityPolicy::new(options.durability_mode, options.commit_tier)
+            .map_err(StoreError::Durability)?;
+        let accounting = Arc::new(stats::Accounting::new(
+            options.max_resident_bytes,
+            options.max_temp_bytes,
+        ));
+        let writer_lock = acquire_writer_lock(path, AccessMode::ReadWrite)?;
+        let tokenizer = crate::fts::tokenizer::Analyzer::new(
+            options
+                .tokenizer
+                .clone()
+                .unwrap_or_else(crate::fts::tokenizer::TokenizerConfig::text_default),
+        )
+        .map_err(StoreError::Tokenizer)?;
+        let native_graph = native_graph::NativeGraphPublication::new(&accounting)?;
+        #[cfg(test)]
+        let teardown_probe = Arc::new(close::TeardownProbe::new());
+        Ok(Self {
+            directory: path.to_path_buf(),
+            vfs,
+            clock,
+            state: Mutex::new(StoreState::Open),
+            state_changed: Condvar::new(),
+            background: Mutex::new(None),
+            query_pool: Mutex::new(None),
+            lexical_worker: Mutex::new(None),
+            native_graph,
+            snapshot: RwLock::new(None),
+            active: Mutex::new(None),
+            wal_writer: Mutex::new(None),
+            writer_lock: Mutex::new(writer_lock),
+            maintenance: Mutex::new(()),
+            health_state: Mutex::new(crate::diag::HealthState::default()),
+            durability_policy,
+            reader_drain_timeout: options.reader_drain_timeout,
+            accounting,
+            active_queries: AtomicU64::new(0),
+            #[cfg(any(test, feature = "test-support"))]
+            text_materialization_work: materialize::TestMaterializationWork::default(),
+            epoch: options.epoch,
+            epoch_alias: crate::epoch::EpochAliasCell::new(None),
+            tokenizer,
+            schema: options
+                .schema
+                .unwrap_or_else(crate::meta::Schema::timestamp_only),
+            lexical_index_cache: LexicalIndexCache::new(),
+            #[cfg(any(test, feature = "test-support"))]
+            ingest_retention_fault_controller: None,
+            #[cfg(any(test, feature = "test-support"))]
+            hybrid_leg_fault: Mutex::new(None),
+            #[cfg(any(test, feature = "test-support"))]
+            hybrid_execution_receipt: Mutex::new(None),
+            #[cfg(any(test, feature = "test-support"))]
+            metadata_test_controller: None,
+            #[cfg(any(test, feature = "test-support"))]
+            vector_fault_controller: None,
+            #[cfg(any(test, feature = "test-support"))]
+            kernel_fault_controller: None,
+            #[cfg(any(test, feature = "test-support"))]
+            vector_seal_scheme: None,
+            #[cfg(test)]
+            teardown_probe,
+        })
+    }
+
     /// Opens a store directory with the requested access and durability policy.
     pub fn open(path: impl AsRef<Path>, options: OpenOptions) -> Result<Self, StoreError> {
         Self::open_with_infrastructure(

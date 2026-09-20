@@ -311,6 +311,8 @@ pub struct Envelope<'a> {
 mod codec;
 mod framing;
 pub use framing::{encode_envelope, encode_header};
+mod checkpoint;
+pub(crate) use checkpoint::{NativeCheckpoint, decode_checkpoint, encode_checkpoint};
 /// Metadata-only binding reused by the native storage participant. The retained
 /// artifact owner still admits complete bytes/checksum and the coherent lease.
 pub(crate) fn validate_graph_root_reference(

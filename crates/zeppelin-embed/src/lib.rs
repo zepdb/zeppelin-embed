@@ -88,6 +88,15 @@ pub mod graph_read_view_test_support {
     }
 }
 
+#[cfg(all(feature = "graph-cypher", feature = "test-support"))]
+#[doc(hidden)]
+pub mod graph_publication_test_support {
+    /// Runs only the directed production coordinator paths and returns observed receipts.
+    pub fn run_actual_probe(seed: u64) -> crate::graph_read_view_test_support::ActualProbeReport {
+        crate::lifecycle::native_graph::tests::publication::run_actual_probe(seed)
+    }
+}
+
 /// Query diagnostics and health reporting.
 pub mod diag;
 /// Epoch identity and migration.

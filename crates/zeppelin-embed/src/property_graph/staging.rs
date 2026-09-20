@@ -90,6 +90,8 @@ pub enum StageError {
     Catalog(catalog::CatalogError),
     /// Shared store memory accounting or backing allocation failed.
     Memory(crate::lifecycle::StoreError),
+    /// Exact native storage lookup/stream failure from the admitted base.
+    NativeStorage(crate::property_graph::storage::tree::directory::TreeError),
 }
 impl std::fmt::Display for StageError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -98,6 +100,7 @@ impl std::fmt::Display for StageError {
             Self::Canonical(e) => e.fmt(f),
             Self::Catalog(e) => e.fmt(f),
             Self::Memory(e) => e.fmt(f),
+            Self::NativeStorage(e) => e.fmt(f),
             other => write!(f, "graph staging rejected: {other:?}"),
         }
     }
@@ -121,6 +124,11 @@ impl From<catalog::CatalogError> for StageError {
 impl From<crate::lifecycle::StoreError> for StageError {
     fn from(e: crate::lifecycle::StoreError) -> Self {
         Self::Memory(e)
+    }
+}
+impl From<crate::property_graph::storage::tree::directory::TreeError> for StageError {
+    fn from(e: crate::property_graph::storage::tree::directory::TreeError) -> Self {
+        Self::NativeStorage(e)
     }
 }
 /// Limits may only tighten the accepted bounded profile.

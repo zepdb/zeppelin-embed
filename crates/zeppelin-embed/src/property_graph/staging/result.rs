@@ -52,7 +52,7 @@ pub struct MaterializedBatch<'a, R> {
     abi: Arena<'a, u8>,
     _registration_charge: WriteReservation<'a>,
 }
-impl<R> MaterializedBatch<'_, R> {
+impl<'a, R> MaterializedBatch<'a, R> {
     /// Private graph/search delta awaiting coordinator publication.
     pub const fn batch(&self) -> &StagedBatch<'_> {
         &self.batch
@@ -68,6 +68,32 @@ impl<R> MaterializedBatch<'_, R> {
     /// Retained real registry token; its semantics belong to the binding adapter.
     pub const fn registration(&self) -> &R {
         &self.registration
+    }
+
+    /// Moves already materialized backing and its actual shared charges.
+    /// This transfer performs no allocation, callback, or fallible work.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn into_prepared_parts(
+        self,
+    ) -> (
+        StagedBatch<'a>,
+        R,
+        Vec<u8>,
+        Vec<u8>,
+        [super::super::resources::GraphReservation; 3],
+    ) {
+        let (core, core_charge) = self.core.into_parts();
+        let (abi, abi_charge) = self.abi.into_parts();
+        let (core_charge, _core_local) = core_charge.split();
+        let (abi_charge, _abi_local) = abi_charge.split();
+        let (registry_charge, _registry_local) = self._registration_charge.split();
+        (
+            self.batch,
+            self.registration,
+            core,
+            abi,
+            [core_charge, abi_charge, registry_charge],
+        )
     }
 }
 /// Prepares both arenas and registration before returning any private receipt.

@@ -146,3 +146,6 @@ pub mod graph_mutation_lowering;
 
 #[cfg(feature = "graph-cypher")]
 pub mod graph_read_view;
+
+#[cfg(feature = "graph-cypher")]
+pub mod graph_publication;

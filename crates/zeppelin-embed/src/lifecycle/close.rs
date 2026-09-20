@@ -201,7 +201,10 @@ impl Store {
         let background_result = stopped_background.map_or(Ok(()), |thread| thread.stop_and_join());
 
         #[cfg(feature = "graph-cypher")]
-        let native_graph_result = self.native_graph.drain_and_clear(reader_deadline);
+        let native_graph_result = self
+            .native_graph
+            .drain_writer_for_close()
+            .and_then(|()| self.native_graph.drain_and_clear(reader_deadline));
         #[cfg(not(feature = "graph-cypher"))]
         let native_graph_result = Ok(());
 
