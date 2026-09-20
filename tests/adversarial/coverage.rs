@@ -47,6 +47,8 @@ pub const REQUIRED_GRAPH_SMOKE_COVERAGE: &[&str] = &[
     "property-graph.read-view.caller-cancel.fire",
     "property-graph.read-view.caller-cancel.clean",
     "property-graph.read-view.close-first-drain",
+    "property-graph.read-view.close-drain-last-owner",
+    "property-graph.read-view.close-drop-last-owner",
     "property-graph.read-view.preparation-abort",
     "property-graph.read-view.oracle.can-fire",
     "property-graph.read-view.release",

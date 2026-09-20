@@ -121,3 +121,33 @@ property-graph.read-view.close-drop-last-owner
 No full/workspace/adversarial execution, coverage, fuzz, soak, performance,
 release, FFI, or platform qualification was run. Those broader obligations
 remain with ZE-118.
+
+## Main integration
+
+Root independently reviewed the two cancellation walks and complete bounded
+real-store fixtures, then cherry-picked source commit
+`d92437c42af531ebb1127a8c690f035318e4ede3` as
+`478f07c` on main. The earlier source SHA7dac9bc differs only by commit-message
+wrapping; the source/evidence trees are identical.
+
+Root added exactly the two new close-owner keys to both existing runner
+registries. The existing native probe, adapter and runner callsite are reused.
+
+On the integrated main source, nextest run
+`9eb039dd-f8c3-44fc-b1e9-92aa02346cdb` passed all three new close-owner checks,
+666 skipped and no retries; `main-focused.log` records the command output.
+The same named filter from the plan selected only the two race tests and poison
+policy test, using graph-cypher, -j4 and --retries0.
+
+Both actual registered-consumer commands passed after registration:
+
+```text
+cargo check -j4 -p zeppelin-embed-workspace-tests --test adversarial_tests
+cargo check -j4 -p zeppelin-embed-workspace-tests --test adversarial_tests --features graph-cypher
+```
+
+Raw outputs are `main-consumer-default.log` and `main-consumer-graph.log`.
+These are compilation results, not adversarial campaign execution.
+Root confirmed strict-Clippy error lines match the pre-change baseline exactly;
+strict qualification remains unresolved and linked to ZE-118. Main inherited
+files remained byte-identical to the integration snapshot. No broad suite ran.
