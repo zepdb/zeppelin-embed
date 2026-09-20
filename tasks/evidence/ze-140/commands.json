@@ -1,0 +1,347 @@
+{
+  "source_commit": "18457d5934a04e81abee7731fee078b3edf5ece7",
+  "source_tree": "1cdf7ffa6d08154684a1d99e4f722aacd4547a9e",
+  "source_diff_sha256": "a2a4e3bf3982b9c765a40e7a1b413343d467ff212ed3e162f1947c40e055809d",
+  "base_commit": "d406d34f354ca617e360ca0b46d56d85c38bd76c",
+  "baselines": [
+    {
+      "name": "core-plan",
+      "source_commit": "d406d34f354ca617e360ca0b46d56d85c38bd76c",
+      "command": "env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed --features graph-cypher --test graph_query_plan",
+      "exit": 0,
+      "run_id": "628e8dde-c3fd-4e9d-ad83-e50cb2353e4c",
+      "result": "26 tests run: 26 passed, 0 skipped",
+      "raw_log": "base-core.log",
+      "raw_log_sha256": "9aa6b947428ab0685c90d97d3b6a6b71346709984a6e36526673595db5fc9061"
+    },
+    {
+      "name": "compiler",
+      "source_commit": "d406d34f354ca617e360ca0b46d56d85c38bd76c",
+      "command": "env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed-cypher --test binding --test read_lowering --test lowering_semantics --test search_lowering --test lowering_allocation --test runtime_lowering",
+      "exit": 0,
+      "run_id": "67290b1d-b05b-422e-9927-e13b053df429",
+      "result": "53 tests run: 53 passed, 0 skipped",
+      "raw_log": "base-compiler.log",
+      "raw_log_sha256": "f8868b72ccd85cb30c559a56ff6cc73e48f859cc2e48fc03cc2da8ef1c37782b"
+    },
+    {
+      "name": "adversarial",
+      "source_commit": "d406d34f354ca617e360ca0b46d56d85c38bd76c",
+      "command": "env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed-workspace-tests --features graph-cypher --test adversarial_tests -E 'test(=property_graph_binding_probe_preserves_profile_types_and_faults) | test(=property_graph_lowering_probe_checks_complete_plans_and_inflight_faults) | test(=property_graph_search_lowering_probe_checks_typed_plans_and_inflight_faults)'",
+      "exit": 0,
+      "run_id": "327b754a-0763-4db9-a8c5-2f5ec0f29ee3",
+      "result": "3 tests run: 3 passed, 472 skipped",
+      "raw_log": "base-adversarial.log",
+      "raw_log_sha256": "9a5f2643bb6fa9aebe726ef45a074d49299a245492104a74ecf5d6cde6a9ab24"
+    }
+  ],
+  "final_command_driver": "tasks/evidence/ze-140/final-command-driver.py",
+  "final_command_driver_sha256": "fbcb44807f7baafae17f2ef7d78568c099cdd318cffa74038e159cccec1bfa9e",
+  "final_raw_log": "tasks/evidence/ze-140/final-command-raw.log",
+  "final_raw_log_sha256": "7314f955e1cbf81da4408be20b5ae06c9bf739ca7075b2ab74797dd1c2eef529",
+  "final_commands": [
+    {
+      "index": 1,
+      "name": "core-plan",
+      "command": "env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed --features graph-cypher --test graph_query_plan",
+      "expected_exit": 0,
+      "exit": 0,
+      "output_sha256": "b7adac1ae3b3e648129abcae46d8479a136e1029faa8c542074217740ed2bc21",
+      "run_ids": [
+        "dc0c3962-2847-4b03-86bb-baf9319ec273"
+      ],
+      "required_output": [
+        "27 tests run: 27 passed, 0 skipped"
+      ],
+      "missing_required_output": [],
+      "observed_fmt_paths": [],
+      "passed": true,
+      "raw_log": "final-command-raw.log"
+    },
+    {
+      "index": 2,
+      "name": "compiler",
+      "command": "env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed-cypher --test binding --test mutation_lowering --test read_lowering --test lowering_semantics --test search_lowering --test lowering_allocation --test runtime_lowering",
+      "expected_exit": 0,
+      "exit": 0,
+      "output_sha256": "6ab50a433dd3b429e60fa6edfe5113ec88354c8db7a9a2e55570fbcfbc0661f6",
+      "run_ids": [
+        "f55912b6-943b-42e0-b4e7-6d0afb9b4efd"
+      ],
+      "required_output": [
+        "69 tests run: 69 passed, 0 skipped"
+      ],
+      "missing_required_output": [],
+      "observed_fmt_paths": [],
+      "passed": true,
+      "raw_log": "final-command-raw.log"
+    },
+    {
+      "index": 3,
+      "name": "graph-adversarial",
+      "command": "env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed-workspace-tests --features graph-cypher --test adversarial_tests -E 'test(=property_graph_binding_probe_preserves_profile_types_and_faults) | test(=property_graph_lowering_probe_checks_complete_plans_and_inflight_faults) | test(=property_graph_search_lowering_probe_checks_typed_plans_and_inflight_faults) | test(=property_graph_mutation_lowering_probe_checks_typed_plans_and_inflight_faults) | test(=one_runner_episode_reaches_required_mutation_lowering_contracts) | test(=native_graph_runner_keys_are_active_with_graph_feature) | test(=graph_response_runner_keys_are_absent_without_test_hook)'",
+      "expected_exit": 0,
+      "exit": 0,
+      "output_sha256": "9615de5ee0ff4b767ebe5fade60b732b22583f4ccc7f07dfc12d8415f16c5cf4",
+      "run_ids": [
+        "3459e631-459a-44d0-aaa1-e7121d4640ae"
+      ],
+      "required_output": [
+        "7 tests run: 7 passed, 470 skipped"
+      ],
+      "missing_required_output": [],
+      "observed_fmt_paths": [],
+      "passed": true,
+      "raw_log": "final-command-raw.log"
+    },
+    {
+      "index": 4,
+      "name": "hook-registry-controls",
+      "command": "env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed-workspace-tests --features graph-result-test-support --test adversarial_tests -E 'test(=native_graph_runner_keys_are_active_with_graph_feature) | test(=graph_response_runner_keys_are_active_with_test_hook)'",
+      "expected_exit": 0,
+      "exit": 0,
+      "output_sha256": "6c4848300438f5d0dd6fbadb588ed14495a979eaff657463e24ca5f0b291d01d",
+      "run_ids": [
+        "b42e8388-c365-4af9-ad2d-12c03227ff40"
+      ],
+      "required_output": [
+        "2 tests run: 2 passed, 477 skipped"
+      ],
+      "missing_required_output": [],
+      "observed_fmt_paths": [],
+      "passed": true,
+      "raw_log": "final-command-raw.log"
+    },
+    {
+      "index": 5,
+      "name": "no-graph-registry-control",
+      "command": "env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed-workspace-tests --no-default-features --test adversarial_tests -E 'test(=native_graph_runner_keys_are_absent_without_graph_feature)'",
+      "expected_exit": 0,
+      "exit": 0,
+      "output_sha256": "2d43451b5e532174cbfa49dff3af1db8d402acd9ec3452d17442cf9113080a0d",
+      "run_ids": [
+        "20601818-6204-4a29-a6fd-19feb7fcbfe3"
+      ],
+      "required_output": [
+        "1 test run: 1 passed, 433 skipped"
+      ],
+      "missing_required_output": [],
+      "observed_fmt_paths": [],
+      "passed": true,
+      "raw_log": "final-command-raw.log"
+    },
+    {
+      "index": 6,
+      "name": "documentation",
+      "command": "cargo test -p zeppelin-embed-cypher --doc -- --test-threads=1",
+      "expected_exit": 0,
+      "exit": 0,
+      "output_sha256": "707508bee7b4b17c480e46c16e702aa294ebe95d8df200089d3d4ca5c6b46508",
+      "run_ids": [],
+      "required_output": [
+        "test result: ok. 1 passed; 0 failed",
+        "test result: ok. 5 passed; 0 failed"
+      ],
+      "missing_required_output": [],
+      "observed_fmt_paths": [],
+      "passed": true,
+      "raw_log": "final-command-raw.log"
+    },
+    {
+      "index": 7,
+      "name": "serial-compiler-isolation",
+      "command": "cargo test -p zeppelin-embed-cypher --test mutation_lowering --test lowering_allocation --test runtime_lowering -- --test-threads=1",
+      "expected_exit": 0,
+      "exit": 0,
+      "output_sha256": "7658a4c6e855fbefd22fb212fe7517d182fe0d565f1dc1c1f7f47dfac0361e5b",
+      "run_ids": [],
+      "required_output": [
+        "test result: ok. 3 passed; 0 failed",
+        "test result: ok. 12 passed; 0 failed",
+        "test result: ok. 7 passed; 0 failed"
+      ],
+      "missing_required_output": [],
+      "observed_fmt_paths": [],
+      "passed": true,
+      "raw_log": "final-command-raw.log"
+    },
+    {
+      "index": 8,
+      "name": "pg21-fixed-seeds",
+      "command": "cargo test -p zeppelin-embed-workspace-tests --features graph-cypher --test adversarial_tests property_graph_mutation_lowering_probe_checks_typed_plans_and_inflight_faults -- --exact --test-threads=1 --nocapture",
+      "expected_exit": 0,
+      "exit": 0,
+      "output_sha256": "98aff443d6ea63af11e5fb195425f711cc2cdebb9554f573b99eb8512e015211",
+      "run_ids": [],
+      "required_output": [
+        "PG21 seed=0 ProbeReport { observations: 6, orientations: 2",
+        "PG21 seed=1 ProbeReport { observations: 6, orientations: 2",
+        "PG21 seed=140 ProbeReport { observations: 6, orientations: 2",
+        "PG21 seed=18446744073709551615 ProbeReport { observations: 6, orientations: 2"
+      ],
+      "missing_required_output": [],
+      "observed_fmt_paths": [],
+      "passed": true,
+      "raw_log": "final-command-raw.log"
+    },
+    {
+      "index": 9,
+      "name": "allocator-accounting",
+      "command": "cargo test -p zeppelin-embed-cypher --test lowering_allocation mutation_lowering_real_allocator_fail_at_each_site_releases_all_backing -- --exact --test-threads=1 --nocapture",
+      "expected_exit": 0,
+      "exit": 0,
+      "output_sha256": "cee61d6614241bc6189c29cf8751da6f3e0ee8e8ace5d6dc8bec510364ab0d31",
+      "run_ids": [],
+      "required_output": [
+        "mutation_allocator_sites="
+      ],
+      "missing_required_output": [],
+      "observed_fmt_paths": [],
+      "passed": true,
+      "raw_log": "final-command-raw.log"
+    },
+    {
+      "index": 10,
+      "name": "close-boundary",
+      "command": "cargo test -p zeppelin-embed-cypher --test runtime_lowering compiled_mutation_lowering_late_checkpoint_preserves_close_before_cancel -- --exact --test-threads=1 --nocapture",
+      "expected_exit": 0,
+      "exit": 0,
+      "output_sha256": "1978a8aa56a2377dd178e41b42b22b33b75797c0af13af0d62cf473460a1bece",
+      "run_ids": [],
+      "required_output": [
+        "binder_poll=",
+        "first_lowering_poll=",
+        "consumer_poll=",
+        "fire="
+      ],
+      "missing_required_output": [],
+      "observed_fmt_paths": [],
+      "passed": true,
+      "raw_log": "final-command-raw.log"
+    },
+    {
+      "index": 11,
+      "name": "core-clippy",
+      "command": "cargo clippy -p zeppelin-embed --features graph-cypher --test graph_query_plan -- -D warnings",
+      "expected_exit": 0,
+      "exit": 0,
+      "output_sha256": "8c233a54790c4800d3dd585436af679aa838da259bfdb129412e2d51cdb75cdc",
+      "run_ids": [],
+      "required_output": [],
+      "missing_required_output": [],
+      "observed_fmt_paths": [],
+      "passed": true,
+      "raw_log": "final-command-raw.log"
+    },
+    {
+      "index": 12,
+      "name": "compiler-clippy",
+      "command": "cargo clippy -p zeppelin-embed-cypher --lib --test binding --test mutation_lowering --test read_lowering --test lowering_semantics --test search_lowering --test lowering_allocation --test runtime_lowering --no-deps -- -D warnings",
+      "expected_exit": 0,
+      "exit": 0,
+      "output_sha256": "671baab58dd150623ca41122b5e31c3195588969fd48779d4806f0eb8ed6923f",
+      "run_ids": [],
+      "required_output": [],
+      "missing_required_output": [],
+      "observed_fmt_paths": [],
+      "passed": true,
+      "raw_log": "final-command-raw.log"
+    },
+    {
+      "index": 13,
+      "name": "adversarial-clippy",
+      "command": "cargo clippy -p zeppelin-embed-workspace-tests --features graph-cypher --test adversarial_tests -- -D warnings",
+      "expected_exit": 0,
+      "exit": 0,
+      "output_sha256": "736e2582f563605dd272e5fb977840b0c0767377d27b6940c440caf75eec7157",
+      "run_ids": [],
+      "required_output": [],
+      "missing_required_output": [],
+      "observed_fmt_paths": [],
+      "passed": true,
+      "raw_log": "final-command-raw.log"
+    },
+    {
+      "index": 14,
+      "name": "workspace-fmt-boundary",
+      "command": "cargo fmt --all --check",
+      "expected_exit": 1,
+      "exit": 1,
+      "output_sha256": "f772798dc2648f6fbaa2278a516af63d55de0c71b496d0ce1dd92018f7be627d",
+      "run_ids": [],
+      "required_output": [
+        "crates/zeppelin-embed/src/property_graph/storage/records.rs"
+      ],
+      "missing_required_output": [],
+      "observed_fmt_paths": [
+        "/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed/src/property_graph/storage/records.rs"
+      ],
+      "passed": true,
+      "raw_log": "final-command-raw.log"
+    },
+    {
+      "index": 15,
+      "name": "owned-rustfmt",
+      "command": "rustfmt --edition 2024 --check crates/zeppelin-embed-cypher/src/lib.rs crates/zeppelin-embed-cypher/src/lowering/mod.rs crates/zeppelin-embed-cypher/src/lowering/mutation.rs crates/zeppelin-embed-cypher/tests/binding.rs crates/zeppelin-embed-cypher/tests/lowering_allocation.rs crates/zeppelin-embed-cypher/tests/mutation_lowering.rs crates/zeppelin-embed-cypher/tests/runtime_lowering.rs crates/zeppelin-embed/src/property_graph/query/plan/mod.rs crates/zeppelin-embed/src/property_graph/query/plan/mutation.rs crates/zeppelin-embed/tests/graph_query_plan.rs tests/adversarial-oracle/src/graph_mutation_lowering.rs tests/adversarial-oracle/src/lib.rs tests/adversarial/coverage.rs tests/adversarial/graph_mutation_lowering.rs tests/adversarial/mod.rs tests/adversarial/runner.rs tests/adversarial_tests.rs",
+      "expected_exit": 0,
+      "exit": 0,
+      "output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "run_ids": [],
+      "required_output": [],
+      "missing_required_output": [],
+      "observed_fmt_paths": [],
+      "passed": true,
+      "raw_log": "final-command-raw.log"
+    },
+    {
+      "index": 16,
+      "name": "diff-check",
+      "command": "git diff --check",
+      "expected_exit": 0,
+      "exit": 0,
+      "output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "run_ids": [],
+      "required_output": [],
+      "missing_required_output": [],
+      "observed_fmt_paths": [],
+      "passed": true,
+      "raw_log": "final-command-raw.log"
+    }
+  ],
+  "mutant_driver": "tasks/evidence/ze-140/mutant-driver.py",
+  "mutant_driver_sha256": "023560bbbead8b2a6135645f2bd48199a51d49f94f7aac3d7420d931d7b8ff15",
+  "mutant_raw_log": "tasks/evidence/ze-140/mutant-raw.log",
+  "mutant_raw_log_sha256": "f238c30416197873138ebdaafa4b8ae8c44d60af5e095c6f32d2c6e9198df0be",
+  "mutant_receipts": "tasks/evidence/ze-140/mutant-receipts.json",
+  "mutant_receipts_sha256": "610b42f8af02bf3e36bcd203fbe75fd27e8deac4d7f7431d56aff5f0e047154f",
+  "allowed_paths": [
+    "crates/zeppelin-embed-cypher/src/lib.rs",
+    "crates/zeppelin-embed-cypher/src/lowering/mod.rs",
+    "crates/zeppelin-embed-cypher/src/lowering/mutation.rs",
+    "crates/zeppelin-embed-cypher/tests/binding.rs",
+    "crates/zeppelin-embed-cypher/tests/lowering_allocation.rs",
+    "crates/zeppelin-embed-cypher/tests/mutation_lowering.rs",
+    "crates/zeppelin-embed-cypher/tests/runtime_lowering.rs",
+    "crates/zeppelin-embed/src/property_graph/query/plan/mod.rs",
+    "crates/zeppelin-embed/src/property_graph/query/plan/mutation.rs",
+    "crates/zeppelin-embed/tests/graph_query_plan.rs",
+    "tests/adversarial-oracle/src/graph_mutation_lowering.rs",
+    "tests/adversarial-oracle/src/lib.rs",
+    "tests/adversarial/coverage.rs",
+    "tests/adversarial/graph_mutation_lowering.rs",
+    "tests/adversarial/mod.rs",
+    "tests/adversarial/runner.rs",
+    "tests/adversarial_tests.rs",
+    "tasks/evidence/ze-140/README.md",
+    "tasks/evidence/ze-140/base-core.log",
+    "tasks/evidence/ze-140/base-compiler.log",
+    "tasks/evidence/ze-140/base-adversarial.log",
+    "tasks/evidence/ze-140/commands.json",
+    "tasks/evidence/ze-140/mutant-driver.py",
+    "tasks/evidence/ze-140/mutant-raw.log",
+    "tasks/evidence/ze-140/mutant-receipts.json",
+    "tasks/evidence/ze-140/final-command-driver.py",
+    "tasks/evidence/ze-140/final-command-raw.log",
+    "tasks/evidence/ze-140/final-command-receipts.json"
+  ]
+}

@@ -1,0 +1,790 @@
+===== MUTANT 1: relationship-before-fresh-right-endpoint =====
+MUTATION_COMMAND: checked_replace crates/zeppelin-embed-cypher/src/lowering/mutation.rs --before-sha256 cb68c7faf4b052cb5be1ff2dc126eeffcfbf3e554da8022e5fc0743805557547 --old "                self.ensure_created_node(bound, right_id, right)?;\n                self.create_relationship(bound, left_id, relationship_id, right_id, relationship)?;\n" --new "                self.create_relationship(bound, left_id, relationship_id, right_id, relationship)?;\n                self.ensure_created_node(bound, right_id, right)?;\n"
+BEFORE_SHA256: cb68c7faf4b052cb5be1ff2dc126eeffcfbf3e554da8022e5fc0743805557547
+MUTANT_SHA256: 1c570c5e0dee129c2982ff4ce2ccd89bac362872b9f8e904c480c71a904fd07c
+RED_COMMAND: env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed-cypher --test mutation_lowering -E 'test(=create_endpoint_dependencies_preserve_textual_property_order)'
+RED_EXIT: 100
+RED_OUTPUT_BEGIN
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.49s
+────────────
+ Nextest run ID 67447d23-a587-40d9-a73f-9b26d765c1b9 with nextest profile: default
+    Starting 1 test across 1 binary (11 tests skipped)
+        FAIL [   0.013s] (1/1) zeppelin-embed-cypher::mutation_lowering create_endpoint_dependencies_preserve_textual_property_order
+  stdout ───
+
+    running 1 test
+    test create_endpoint_dependencies_preserve_textual_property_order ... FAILED
+
+    failures:
+
+    failures:
+        create_endpoint_dependencies_preserve_textual_property_order
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'create_endpoint_dependencies_preserve_textual_property_order' (35841653) panicked at crates/zeppelin-embed-cypher/tests/mutation_lowering.rs:288:10:
+    called `Result::unwrap()` on an `Err` value: ParseError { kind: Plan(Scope), span: Span { start: 0, end: 0 }, message: "generated read plan rejected" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.013s] 1 test run: 0 passed, 1 failed, 11 skipped
+        FAIL [   0.013s] (1/1) zeppelin-embed-cypher::mutation_lowering create_endpoint_dependencies_preserve_textual_property_order
+  stdout ───
+
+    running 1 test
+    test create_endpoint_dependencies_preserve_textual_property_order ... FAILED
+
+    failures:
+
+    failures:
+        create_endpoint_dependencies_preserve_textual_property_order
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'create_endpoint_dependencies_preserve_textual_property_order' (35841653) panicked at crates/zeppelin-embed-cypher/tests/mutation_lowering.rs:288:10:
+    called `Result::unwrap()` on an `Err` value: ParseError { kind: Plan(Scope), span: Span { start: 0, end: 0 }, message: "generated read plan rejected" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed
+RED_OUTPUT_END
+INTENDED_ASSERTION: Plan(Scope)
+INTENDED_ASSERTION_FIRED: true
+RESTORED_SHA256: cb68c7faf4b052cb5be1ff2dc126eeffcfbf3e554da8022e5fc0743805557547
+GREEN_COMMAND: env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed-cypher --test mutation_lowering -E 'test(=create_endpoint_dependencies_preserve_textual_property_order)'
+GREEN_EXIT: 0
+GREEN_OUTPUT_BEGIN
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.49s
+────────────
+ Nextest run ID 0936ac23-9d79-4d1e-b1d3-039b589289d3 with nextest profile: default
+    Starting 1 test across 1 binary (11 tests skipped)
+────────────
+     Summary [   0.016s] 1 test run: 1 passed, 11 skipped
+GREEN_OUTPUT_END
+
+===== MUTANT 2: swap-incoming-source-target =====
+MUTATION_COMMAND: checked_replace crates/zeppelin-embed-cypher/src/lowering/mutation.rs --before-sha256 cb68c7faf4b052cb5be1ff2dc126eeffcfbf3e554da8022e5fc0743805557547 --old "            crate::Direction::Incoming => (right, left)," --new "            crate::Direction::Incoming => (left, right),"
+BEFORE_SHA256: cb68c7faf4b052cb5be1ff2dc126eeffcfbf3e554da8022e5fc0743805557547
+MUTANT_SHA256: 895ec51de7609cf9a60083af08c0c62d3b46dedd4abc51039eb31e16ba58f7fa
+RED_COMMAND: env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed-cypher --test mutation_lowering -E 'test(=create_lowers_all_shapes_slots_names_and_directions)'
+RED_EXIT: 100
+RED_OUTPUT_BEGIN
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.49s
+────────────
+ Nextest run ID 2830cd52-3505-4c41-bbf9-76894bf3fe36 with nextest profile: default
+    Starting 1 test across 1 binary (11 tests skipped)
+        FAIL [   0.013s] (1/1) zeppelin-embed-cypher::mutation_lowering create_lowers_all_shapes_slots_names_and_directions
+  stdout ───
+
+    running 1 test
+    test create_lowers_all_shapes_slots_names_and_directions ... FAILED
+
+    failures:
+
+    failures:
+        create_lowers_all_shapes_slots_names_and_directions
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'create_lowers_all_shapes_slots_names_and_directions' (35842580) panicked at crates/zeppelin-embed-cypher/tests/mutation_lowering.rs:617:13:
+    assertion `left == right` failed: CREATE (a)<-[r:`τύπος`]-(b) RETURN a,r,b
+      left: [CreateNode { output: 0, labels: [] }, CreateNode { output: 2, labels: [] }, CreateRelationship { output: 1, source: Slot(0), target: Slot(2), relationship_type: "τύπος" }]
+     right: [CreateNode { output: 0, labels: [] }, CreateNode { output: 2, labels: [] }, CreateRelationship { output: 1, source: Slot(2), target: Slot(0), relationship_type: "τύπος" }]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.014s] 1 test run: 0 passed, 1 failed, 11 skipped
+        FAIL [   0.013s] (1/1) zeppelin-embed-cypher::mutation_lowering create_lowers_all_shapes_slots_names_and_directions
+  stdout ───
+
+    running 1 test
+    test create_lowers_all_shapes_slots_names_and_directions ... FAILED
+
+    failures:
+
+    failures:
+        create_lowers_all_shapes_slots_names_and_directions
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'create_lowers_all_shapes_slots_names_and_directions' (35842580) panicked at crates/zeppelin-embed-cypher/tests/mutation_lowering.rs:617:13:
+    assertion `left == right` failed: CREATE (a)<-[r:`τύπος`]-(b) RETURN a,r,b
+      left: [CreateNode { output: 0, labels: [] }, CreateNode { output: 2, labels: [] }, CreateRelationship { output: 1, source: Slot(0), target: Slot(2), relationship_type: "τύπος" }]
+     right: [CreateNode { output: 0, labels: [] }, CreateNode { output: 2, labels: [] }, CreateRelationship { output: 1, source: Slot(2), target: Slot(0), relationship_type: "τύπος" }]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed
+RED_OUTPUT_END
+INTENDED_ASSERTION: CreateRelationship
+INTENDED_ASSERTION_FIRED: true
+RESTORED_SHA256: cb68c7faf4b052cb5be1ff2dc126eeffcfbf3e554da8022e5fc0743805557547
+GREEN_COMMAND: env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed-cypher --test mutation_lowering -E 'test(=create_lowers_all_shapes_slots_names_and_directions)'
+GREEN_EXIT: 0
+GREEN_OUTPUT_BEGIN
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.48s
+────────────
+ Nextest run ID 123f608e-5890-4e17-a7c6-313265dca945 with nextest profile: default
+    Starting 1 test across 1 binary (11 tests skipped)
+────────────
+     Summary [   0.014s] 1 test run: 1 passed, 11 skipped
+GREEN_OUTPUT_END
+
+===== MUTANT 3: right-property-before-relationship =====
+MUTATION_COMMAND: checked_replace crates/zeppelin-embed-cypher/src/lowering/mutation.rs --before-sha256 cb68c7faf4b052cb5be1ff2dc126eeffcfbf3e554da8022e5fc0743805557547 --old "                self.create_relationship(bound, left_id, relationship_id, right_id, relationship)?;\n                self.inline_properties(bound, relationship_id, relationship)?;\n                self.inline_properties(bound, right_id, right)?;\n" --new "                self.inline_properties(bound, right_id, right)?;\n                self.create_relationship(bound, left_id, relationship_id, right_id, relationship)?;\n                self.inline_properties(bound, relationship_id, relationship)?;\n"
+BEFORE_SHA256: cb68c7faf4b052cb5be1ff2dc126eeffcfbf3e554da8022e5fc0743805557547
+MUTANT_SHA256: c9a6db7cc0b1e41de898e2bc865a60d284970b6d3c4ce4c113d92768a752c827
+RED_COMMAND: env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed-cypher --test mutation_lowering -E 'test(=create_endpoint_dependencies_preserve_textual_property_order)'
+RED_EXIT: 100
+RED_OUTPUT_BEGIN
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.49s
+────────────
+ Nextest run ID 08cd2f41-26e6-4465-a06d-01647df50f80 with nextest profile: default
+    Starting 1 test across 1 binary (11 tests skipped)
+        FAIL [   0.014s] (1/1) zeppelin-embed-cypher::mutation_lowering create_endpoint_dependencies_preserve_textual_property_order
+  stdout ───
+
+    running 1 test
+    test create_endpoint_dependencies_preserve_textual_property_order ... FAILED
+
+    failures:
+
+    failures:
+        create_endpoint_dependencies_preserve_textual_property_order
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'create_endpoint_dependencies_preserve_textual_property_order' (35843503) panicked at crates/zeppelin-embed-cypher/tests/mutation_lowering.rs:288:10:
+    called `Result::unwrap()` on an `Err` value: ParseError { kind: Plan(Scope), span: Span { start: 0, end: 0 }, message: "generated read plan rejected" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.015s] 1 test run: 0 passed, 1 failed, 11 skipped
+        FAIL [   0.014s] (1/1) zeppelin-embed-cypher::mutation_lowering create_endpoint_dependencies_preserve_textual_property_order
+  stdout ───
+
+    running 1 test
+    test create_endpoint_dependencies_preserve_textual_property_order ... FAILED
+
+    failures:
+
+    failures:
+        create_endpoint_dependencies_preserve_textual_property_order
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'create_endpoint_dependencies_preserve_textual_property_order' (35843503) panicked at crates/zeppelin-embed-cypher/tests/mutation_lowering.rs:288:10:
+    called `Result::unwrap()` on an `Err` value: ParseError { kind: Plan(Scope), span: Span { start: 0, end: 0 }, message: "generated read plan rejected" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed
+RED_OUTPUT_END
+INTENDED_ASSERTION: Plan(Scope)
+INTENDED_ASSERTION_FIRED: true
+RESTORED_SHA256: cb68c7faf4b052cb5be1ff2dc126eeffcfbf3e554da8022e5fc0743805557547
+GREEN_COMMAND: env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed-cypher --test mutation_lowering -E 'test(=create_endpoint_dependencies_preserve_textual_property_order)'
+GREEN_EXIT: 0
+GREEN_OUTPUT_BEGIN
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.49s
+────────────
+ Nextest run ID 88c83527-d4eb-47e3-b4f6-fa14c17757af with nextest profile: default
+    Starting 1 test across 1 binary (11 tests skipped)
+────────────
+     Summary [   0.011s] 1 test run: 1 passed, 11 skipped
+GREEN_OUTPUT_END
+
+===== MUTANT 4: omit-eager-barrier =====
+MUTATION_COMMAND: checked_replace crates/zeppelin-embed-cypher/src/lowering/mutation.rs --before-sha256 cb68c7faf4b052cb5be1ff2dc126eeffcfbf3e554da8022e5fc0743805557547 --old "        let eager = self.operator(DraftOp::Eager, &[current], clause.span)?;" --new "        let eager = current;"
+BEFORE_SHA256: cb68c7faf4b052cb5be1ff2dc126eeffcfbf3e554da8022e5fc0743805557547
+MUTANT_SHA256: c17096a8ac1474bfeeeb274ad9c4276acbd6ed5f3749ea5c8668d1fe707adc3e
+RED_COMMAND: env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed-cypher --test mutation_lowering -E 'test(=mutation_clauses_keep_immediate_eager_and_downstream_projections)'
+RED_EXIT: 100
+RED_OUTPUT_BEGIN
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed-cypher)
+warning: variant `Eager` is never constructed
+   --> crates/zeppelin-embed-cypher/src/lowering/mod.rs:296:5
+    |
+294 | enum DraftOp {
+    |      ------- variant in this enum
+295 |     Unit,
+296 |     Eager,
+    |     ^^^^^
+    |
+    = note: `DraftOp` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `zeppelin-embed-cypher` (lib) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.53s
+────────────
+ Nextest run ID 0d39a905-0dbd-4320-885f-dd2342c3b495 with nextest profile: default
+    Starting 1 test across 1 binary (11 tests skipped)
+        FAIL [   0.010s] (1/1) zeppelin-embed-cypher::mutation_lowering mutation_clauses_keep_immediate_eager_and_downstream_projections
+  stdout ───
+
+    running 1 test
+    test mutation_clauses_keep_immediate_eager_and_downstream_projections ... FAILED
+
+    failures:
+
+    failures:
+        mutation_clauses_keep_immediate_eager_and_downstream_projections
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'mutation_clauses_keep_immediate_eager_and_downstream_projections' (35844583) panicked at crates/zeppelin-embed-cypher/tests/mutation_lowering.rs:796:10:
+    called `Result::unwrap()` on an `Err` value: ParseError { kind: Plan(Barrier), span: Span { start: 0, end: 0 }, message: "generated read plan rejected" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.010s] 1 test run: 0 passed, 1 failed, 11 skipped
+        FAIL [   0.010s] (1/1) zeppelin-embed-cypher::mutation_lowering mutation_clauses_keep_immediate_eager_and_downstream_projections
+  stdout ───
+
+    running 1 test
+    test mutation_clauses_keep_immediate_eager_and_downstream_projections ... FAILED
+
+    failures:
+
+    failures:
+        mutation_clauses_keep_immediate_eager_and_downstream_projections
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'mutation_clauses_keep_immediate_eager_and_downstream_projections' (35844583) panicked at crates/zeppelin-embed-cypher/tests/mutation_lowering.rs:796:10:
+    called `Result::unwrap()` on an `Err` value: ParseError { kind: Plan(Barrier), span: Span { start: 0, end: 0 }, message: "generated read plan rejected" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed
+RED_OUTPUT_END
+INTENDED_ASSERTION: Plan(Barrier)
+INTENDED_ASSERTION_FIRED: true
+RESTORED_SHA256: cb68c7faf4b052cb5be1ff2dc126eeffcfbf3e554da8022e5fc0743805557547
+GREEN_COMMAND: env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed-cypher --test mutation_lowering -E 'test(=mutation_clauses_keep_immediate_eager_and_downstream_projections)'
+GREEN_EXIT: 0
+GREEN_OUTPUT_BEGIN
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.58s
+────────────
+ Nextest run ID 315bf50c-6dd3-4f56-9c7a-4ca96ecdc6f3 with nextest profile: default
+    Starting 1 test across 1 binary (11 tests skipped)
+────────────
+     Summary [   0.010s] 1 test run: 1 passed, 11 skipped
+GREEN_OUTPUT_END
+
+===== MUTANT 5: reverse-label-present-bit =====
+MUTATION_COMMAND: checked_replace crates/zeppelin-embed-cypher/src/lowering/mutation.rs --before-sha256 cb68c7faf4b052cb5be1ff2dc126eeffcfbf3e554da8022e5fc0743805557547 --old "                    let present = matches!(item.kind, NodeKind::SetLabels { .. });" --new "                    let present = !matches!(item.kind, NodeKind::SetLabels { .. });"
+BEFORE_SHA256: cb68c7faf4b052cb5be1ff2dc126eeffcfbf3e554da8022e5fc0743805557547
+MUTANT_SHA256: d3d6b754524d2fada5344652d2f7dc8060ba06c7c38b8e1ab7784659838924c3
+RED_COMMAND: env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed-cypher --test mutation_lowering -E 'test(=mutation_items_preserve_set_remove_delete_and_detach_order)'
+RED_EXIT: 100
+RED_OUTPUT_BEGIN
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.54s
+────────────
+ Nextest run ID cf150591-d4e8-41c6-bbbf-3f8b603f036e with nextest profile: default
+    Starting 1 test across 1 binary (11 tests skipped)
+        FAIL [   0.010s] (1/1) zeppelin-embed-cypher::mutation_lowering mutation_items_preserve_set_remove_delete_and_detach_order
+  stdout ───
+
+    running 1 test
+    test mutation_items_preserve_set_remove_delete_and_detach_order ... FAILED
+
+    failures:
+
+    failures:
+        mutation_items_preserve_set_remove_delete_and_detach_order
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'mutation_items_preserve_set_remove_delete_and_detach_order' (35845806) panicked at crates/zeppelin-embed-cypher/tests/mutation_lowering.rs:645:9:
+    assertion `left == right` failed
+      left: [SetProperty { entity: Slot(0), name: "p", value: I64(1) }, SetProperty { entity: Slot(1), name: "q", value: Null }, SetLabel { entity: Slot(0), label: "A", present: false }, SetLabel { entity: Slot(0), label: "B", present: false }, SetLabel { entity: Slot(0), label: "A", present: false }, RemoveProperty { entity: Slot(0), name: "p" }, RemoveProperty { entity: Slot(1), name: "q" }, SetLabel { entity: Slot(0), label: "A", present: true }, SetLabel { entity: Slot(0), label: "B", present: true }, Delete { entity: Slot(1), detach: false }, Delete { entity: Slot(0), detach: false }, Delete { entity: Slot(2), detach: true }, Delete { entity: Slot(1), detach: true }]
+     right: [SetProperty { entity: Slot(0), name: "p", value: I64(1) }, SetProperty { entity: Slot(1), name: "q", value: Null }, SetLabel { entity: Slot(0), label: "A", present: true }, SetLabel { entity: Slot(0), label: "B", present: true }, SetLabel { entity: Slot(0), label: "A", present: true }, RemoveProperty { entity: Slot(0), name: "p" }, RemoveProperty { entity: Slot(1), name: "q" }, SetLabel { entity: Slot(0), label: "A", present: false }, SetLabel { entity: Slot(0), label: "B", present: false }, Delete { entity: Slot(1), detach: false }, Delete { entity: Slot(0), detach: false }, Delete { entity: Slot(2), detach: true }, Delete { entity: Slot(1), detach: true }]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.011s] 1 test run: 0 passed, 1 failed, 11 skipped
+        FAIL [   0.010s] (1/1) zeppelin-embed-cypher::mutation_lowering mutation_items_preserve_set_remove_delete_and_detach_order
+  stdout ───
+
+    running 1 test
+    test mutation_items_preserve_set_remove_delete_and_detach_order ... FAILED
+
+    failures:
+
+    failures:
+        mutation_items_preserve_set_remove_delete_and_detach_order
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'mutation_items_preserve_set_remove_delete_and_detach_order' (35845806) panicked at crates/zeppelin-embed-cypher/tests/mutation_lowering.rs:645:9:
+    assertion `left == right` failed
+      left: [SetProperty { entity: Slot(0), name: "p", value: I64(1) }, SetProperty { entity: Slot(1), name: "q", value: Null }, SetLabel { entity: Slot(0), label: "A", present: false }, SetLabel { entity: Slot(0), label: "B", present: false }, SetLabel { entity: Slot(0), label: "A", present: false }, RemoveProperty { entity: Slot(0), name: "p" }, RemoveProperty { entity: Slot(1), name: "q" }, SetLabel { entity: Slot(0), label: "A", present: true }, SetLabel { entity: Slot(0), label: "B", present: true }, Delete { entity: Slot(1), detach: false }, Delete { entity: Slot(0), detach: false }, Delete { entity: Slot(2), detach: true }, Delete { entity: Slot(1), detach: true }]
+     right: [SetProperty { entity: Slot(0), name: "p", value: I64(1) }, SetProperty { entity: Slot(1), name: "q", value: Null }, SetLabel { entity: Slot(0), label: "A", present: true }, SetLabel { entity: Slot(0), label: "B", present: true }, SetLabel { entity: Slot(0), label: "A", present: true }, RemoveProperty { entity: Slot(0), name: "p" }, RemoveProperty { entity: Slot(1), name: "q" }, SetLabel { entity: Slot(0), label: "A", present: false }, SetLabel { entity: Slot(0), label: "B", present: false }, Delete { entity: Slot(1), detach: false }, Delete { entity: Slot(0), detach: false }, Delete { entity: Slot(2), detach: true }, Delete { entity: Slot(1), detach: true }]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed
+RED_OUTPUT_END
+INTENDED_ASSERTION: SetLabel
+INTENDED_ASSERTION_FIRED: true
+RESTORED_SHA256: cb68c7faf4b052cb5be1ff2dc126eeffcfbf3e554da8022e5fc0743805557547
+GREEN_COMMAND: env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed-cypher --test mutation_lowering -E 'test(=mutation_items_preserve_set_remove_delete_and_detach_order)'
+GREEN_EXIT: 0
+GREEN_OUTPUT_BEGIN
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.51s
+────────────
+ Nextest run ID 54817667-011a-4d9a-9093-582b2b805199 with nextest profile: default
+    Starting 1 test across 1 binary (11 tests skipped)
+────────────
+     Summary [   0.010s] 1 test run: 1 passed, 11 skipped
+GREEN_OUTPUT_END
+
+===== MUTANT 6: rhs-through-invariant-alias-lowering =====
+MUTATION_COMMAND: checked_replace crates/zeppelin-embed-cypher/src/lowering/mutation.rs --before-sha256 cb68c7faf4b052cb5be1ff2dc126eeffcfbf3e554da8022e5fc0743805557547 --old "        self.lower_expression(bound, id, span)" --new "        self.lower_invariant_expression(bound, id, span)"
+BEFORE_SHA256: cb68c7faf4b052cb5be1ff2dc126eeffcfbf3e554da8022e5fc0743805557547
+MUTANT_SHA256: 2ffde68b70deca5d5bbcbb0793edddc0fad419f8c3278bc61c03ec776fa915e9
+RED_COMMAND: env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed-cypher --test mutation_lowering -E 'test(=mutation_rhs_keeps_fresh_properties_and_frozen_alias_slots)'
+RED_EXIT: 100
+RED_OUTPUT_BEGIN
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.52s
+────────────
+ Nextest run ID 5a79fb6d-3020-4fb4-8705-7eac01e4a8db with nextest profile: default
+    Starting 1 test across 1 binary (11 tests skipped)
+        FAIL [   0.010s] (1/1) zeppelin-embed-cypher::mutation_lowering mutation_rhs_keeps_fresh_properties_and_frozen_alias_slots
+  stdout ───
+
+    running 1 test
+    test mutation_rhs_keeps_fresh_properties_and_frozen_alias_slots ... FAILED
+
+    failures:
+
+    failures:
+        mutation_rhs_keeps_fresh_properties_and_frozen_alias_slots
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'mutation_rhs_keeps_fresh_properties_and_frozen_alias_slots' (35846739) panicked at crates/zeppelin-embed-cypher/tests/mutation_lowering.rs:811:10:
+    called `Result::unwrap()` on an `Err` value: ParseError { kind: BindingInvariant, span: Span { start: 32, end: 41 }, message: "row-dependent search expression" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.010s] 1 test run: 0 passed, 1 failed, 11 skipped
+        FAIL [   0.010s] (1/1) zeppelin-embed-cypher::mutation_lowering mutation_rhs_keeps_fresh_properties_and_frozen_alias_slots
+  stdout ───
+
+    running 1 test
+    test mutation_rhs_keeps_fresh_properties_and_frozen_alias_slots ... FAILED
+
+    failures:
+
+    failures:
+        mutation_rhs_keeps_fresh_properties_and_frozen_alias_slots
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'mutation_rhs_keeps_fresh_properties_and_frozen_alias_slots' (35846739) panicked at crates/zeppelin-embed-cypher/tests/mutation_lowering.rs:811:10:
+    called `Result::unwrap()` on an `Err` value: ParseError { kind: BindingInvariant, span: Span { start: 32, end: 41 }, message: "row-dependent search expression" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed
+RED_OUTPUT_END
+INTENDED_ASSERTION: row-dependent search expression
+INTENDED_ASSERTION_FIRED: true
+RESTORED_SHA256: cb68c7faf4b052cb5be1ff2dc126eeffcfbf3e554da8022e5fc0743805557547
+GREEN_COMMAND: env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed-cypher --test mutation_lowering -E 'test(=mutation_rhs_keeps_fresh_properties_and_frozen_alias_slots)'
+GREEN_EXIT: 0
+GREEN_OUTPUT_BEGIN
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.54s
+────────────
+ Nextest run ID 761bad6f-108b-4a24-b75d-80277ef9d150 with nextest profile: default
+    Starting 1 test across 1 binary (11 tests skipped)
+────────────
+     Summary [   0.010s] 1 test run: 1 passed, 11 skipped
+GREEN_OUTPUT_END
+
+===== MUTANT 7: restore-node-only-detach-validation =====
+MUTATION_COMMAND: checked_replace crates/zeppelin-embed/src/property_graph/query/plan/mutation.rs --before-sha256 45d08e1888198bc796635a114809b0e7cfe22027b2eb9718f7536fca7f536889 --old "            Mutation::Delete {\n                entity: receiver, ..\n            } => entity(\n                description,\n                receiver,\n                output,\n                seen,\n                context,\n                ValueKinds::NODE\n                    .union(ValueKinds::REL)\n                    .union(ValueKinds::NULL),\n            )?,\n" --new "            Mutation::Delete {\n                entity: receiver,\n                detach,\n            } => {\n                let kinds = if detach {\n                    ValueKinds::NODE.union(ValueKinds::NULL)\n                } else {\n                    ValueKinds::NODE\n                        .union(ValueKinds::REL)\n                        .union(ValueKinds::NULL)\n                };\n                entity(description, receiver, output, seen, context, kinds)?;\n            }\n"
+BEFORE_SHA256: 45d08e1888198bc796635a114809b0e7cfe22027b2eb9718f7536fca7f536889
+MUTANT_SHA256: 55f214b7d19e58149e32645d53e6e222404105e5d2281dce7f9ce5dead7da520
+RED_COMMAND: env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed --features graph-cypher --test graph_query_plan -E 'test(=detach_delete_accepts_node_relationship_and_null_targets)'
+RED_EXIT: 100
+RED_OUTPUT_BEGIN
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.89s
+────────────
+ Nextest run ID 9aae6431-a5bf-4e15-8623-027403c39a7b with nextest profile: default
+    Starting 1 test across 1 binary (26 tests skipped)
+        FAIL [   0.009s] (1/1) zeppelin-embed::graph_query_plan detach_delete_accepts_node_relationship_and_null_targets
+  stdout ───
+
+    running 1 test
+    test detach_delete_accepts_node_relationship_and_null_targets ... FAILED
+
+    failures:
+
+    failures:
+        detach_delete_accepts_node_relationship_and_null_targets
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'detach_delete_accepts_node_relationship_and_null_targets' (35848183) panicked at crates/zeppelin-embed/tests/graph_query_plan.rs:890:9:
+    assertion `left == right` failed
+      left: Err(Type)
+     right: Ok(())
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.010s] 1 test run: 0 passed, 1 failed, 26 skipped
+        FAIL [   0.009s] (1/1) zeppelin-embed::graph_query_plan detach_delete_accepts_node_relationship_and_null_targets
+  stdout ───
+
+    running 1 test
+    test detach_delete_accepts_node_relationship_and_null_targets ... FAILED
+
+    failures:
+
+    failures:
+        detach_delete_accepts_node_relationship_and_null_targets
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'detach_delete_accepts_node_relationship_and_null_targets' (35848183) panicked at crates/zeppelin-embed/tests/graph_query_plan.rs:890:9:
+    assertion `left == right` failed
+      left: Err(Type)
+     right: Ok(())
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed
+RED_OUTPUT_END
+INTENDED_ASSERTION: left: Err(Type)
+INTENDED_ASSERTION_FIRED: true
+RESTORED_SHA256: 45d08e1888198bc796635a114809b0e7cfe22027b2eb9718f7536fca7f536889
+GREEN_COMMAND: env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed --features graph-cypher --test graph_query_plan -E 'test(=detach_delete_accepts_node_relationship_and_null_targets)'
+GREEN_EXIT: 0
+GREEN_OUTPUT_BEGIN
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.97s
+────────────
+ Nextest run ID 28e1714d-a21f-4036-8f61-c1357f63cd6c with nextest profile: default
+    Starting 1 test across 1 binary (26 tests skipped)
+────────────
+     Summary [   0.012s] 1 test run: 1 passed, 26 skipped
+GREEN_OUTPUT_END
+
+===== MUTANT 8: force-dynamic-deleted-flag-false =====
+MUTATION_COMMAND: checked_replace crates/zeppelin-embed-cypher/src/lowering/mod.rs --before-sha256 edb1465e736035f160cff29635e51db15dd98dc21139f10e24b2e567ae0ed438 --old "                bound.requires_deleted_runtime_validation()," --new "                false,"
+BEFORE_SHA256: edb1465e736035f160cff29635e51db15dd98dc21139f10e24b2e567ae0ed438
+MUTANT_SHA256: 5a6a1f161a67c8caa2e4c7db99bb8dac90eb69306b5be8b598ec73d37e79a899
+RED_COMMAND: env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed-cypher --test mutation_lowering -E 'test(=mutation_deleted_boundaries_keep_static_errors_and_dynamic_obligation)'
+RED_EXIT: 100
+RED_OUTPUT_BEGIN
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed)
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.72s
+────────────
+ Nextest run ID ff59da05-2377-4afc-80f7-3097f10a68e3 with nextest profile: default
+    Starting 1 test across 1 binary (11 tests skipped)
+        FAIL [   0.009s] (1/1) zeppelin-embed-cypher::mutation_lowering mutation_deleted_boundaries_keep_static_errors_and_dynamic_obligation
+  stdout ───
+
+    running 1 test
+    test mutation_deleted_boundaries_keep_static_errors_and_dynamic_obligation ... FAILED
+
+    failures:
+
+    failures:
+        mutation_deleted_boundaries_keep_static_errors_and_dynamic_obligation
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'mutation_deleted_boundaries_keep_static_errors_and_dynamic_obligation' (35849574) panicked at crates/zeppelin-embed-cypher/tests/mutation_lowering.rs:930:13:
+    OPTIONAL MATCH (n) DELETE n RETURN n
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.010s] 1 test run: 0 passed, 1 failed, 11 skipped
+        FAIL [   0.009s] (1/1) zeppelin-embed-cypher::mutation_lowering mutation_deleted_boundaries_keep_static_errors_and_dynamic_obligation
+  stdout ───
+
+    running 1 test
+    test mutation_deleted_boundaries_keep_static_errors_and_dynamic_obligation ... FAILED
+
+    failures:
+
+    failures:
+        mutation_deleted_boundaries_keep_static_errors_and_dynamic_obligation
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'mutation_deleted_boundaries_keep_static_errors_and_dynamic_obligation' (35849574) panicked at crates/zeppelin-embed-cypher/tests/mutation_lowering.rs:930:13:
+    OPTIONAL MATCH (n) DELETE n RETURN n
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed
+RED_OUTPUT_END
+INTENDED_ASSERTION: OPTIONAL MATCH (n) DELETE n RETURN n
+INTENDED_ASSERTION_FIRED: true
+RESTORED_SHA256: edb1465e736035f160cff29635e51db15dd98dc21139f10e24b2e567ae0ed438
+GREEN_COMMAND: env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed-cypher --test mutation_lowering -E 'test(=mutation_deleted_boundaries_keep_static_errors_and_dynamic_obligation)'
+GREEN_EXIT: 0
+GREEN_OUTPUT_BEGIN
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.14s
+────────────
+ Nextest run ID 6362e749-0568-4f12-9bee-05c3e7f156c5 with nextest profile: default
+    Starting 1 test across 1 binary (11 tests skipped)
+────────────
+     Summary [   0.011s] 1 test run: 1 passed, 11 skipped
+GREEN_OUTPUT_END
+
+===== MUTANT 9: omit-mutation-arena-owner =====
+MUTATION_COMMAND: checked_replace crates/zeppelin-embed-cypher/src/lowering/mod.rs --before-sha256 edb1465e736035f160cff29635e51db15dd98dc21139f10e24b2e567ae0ed438 --old "            RetainedAllocation::arena(&mutations).map_err(memory_error)?,\n" --new ""
+BEFORE_SHA256: edb1465e736035f160cff29635e51db15dd98dc21139f10e24b2e567ae0ed438
+MUTANT_SHA256: cb421f43cb6f03863fcf4d767de03e273684f3926ea9a383ddd1fea49fe86609
+RED_COMMAND: env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed-cypher --test mutation_lowering -E 'test(=mutation_owner_inventory_proves_full_capacity_and_facts)'
+RED_EXIT: 100
+RED_OUTPUT_BEGIN
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.19s
+────────────
+ Nextest run ID 2b3cd736-87ba-49cf-9b7f-b7f27f44ca9b with nextest profile: default
+    Starting 1 test across 1 binary (11 tests skipped)
+        FAIL [   0.012s] (1/1) zeppelin-embed-cypher::mutation_lowering mutation_owner_inventory_proves_full_capacity_and_facts
+  stdout ───
+
+    running 1 test
+    test mutation_owner_inventory_proves_full_capacity_and_facts ... FAILED
+
+    failures:
+
+    failures:
+        mutation_owner_inventory_proves_full_capacity_and_facts
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'mutation_owner_inventory_proves_full_capacity_and_facts' (35850541) panicked at crates/zeppelin-embed-cypher/tests/mutation_lowering.rs:1065:17:
+    assertion `left == right` failed
+      left: 34
+     right: 35
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.013s] 1 test run: 0 passed, 1 failed, 11 skipped
+        FAIL [   0.012s] (1/1) zeppelin-embed-cypher::mutation_lowering mutation_owner_inventory_proves_full_capacity_and_facts
+  stdout ───
+
+    running 1 test
+    test mutation_owner_inventory_proves_full_capacity_and_facts ... FAILED
+
+    failures:
+
+    failures:
+        mutation_owner_inventory_proves_full_capacity_and_facts
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'mutation_owner_inventory_proves_full_capacity_and_facts' (35850541) panicked at crates/zeppelin-embed-cypher/tests/mutation_lowering.rs:1065:17:
+    assertion `left == right` failed
+      left: 34
+     right: 35
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed
+RED_OUTPUT_END
+INTENDED_ASSERTION: left: 34
+INTENDED_ASSERTION_FIRED: true
+RESTORED_SHA256: edb1465e736035f160cff29635e51db15dd98dc21139f10e24b2e567ae0ed438
+GREEN_COMMAND: env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed-cypher --test mutation_lowering -E 'test(=mutation_owner_inventory_proves_full_capacity_and_facts)'
+GREEN_EXIT: 0
+GREEN_OUTPUT_BEGIN
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.18s
+────────────
+ Nextest run ID 01aab14a-1e0d-4c37-980f-4209572ac5fb with nextest profile: default
+    Starting 1 test across 1 binary (11 tests skipped)
+────────────
+     Summary [   0.014s] 1 test run: 1 passed, 11 skipped
+GREEN_OUTPUT_END
+
+===== MUTANT 10: omit-mutation-span-owner =====
+MUTATION_COMMAND: checked_replace crates/zeppelin-embed-cypher/src/lowering/mod.rs --before-sha256 edb1465e736035f160cff29635e51db15dd98dc21139f10e24b2e567ae0ed438 --old "            RetainedAllocation::arena(&self.mutation_spans.arena).map_err(memory_error)?," --new "            RetainedAllocation::arena(&mutations).map_err(memory_error)?,"
+BEFORE_SHA256: edb1465e736035f160cff29635e51db15dd98dc21139f10e24b2e567ae0ed438
+MUTANT_SHA256: 2cb4a07bc24d93d558a319e717992295bde3f8a837146a324ffd2fc18eb1f741
+RED_COMMAND: env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed-cypher --test mutation_lowering -E 'test(=mutation_owner_inventory_proves_full_capacity_and_facts)'
+RED_EXIT: 100
+RED_OUTPUT_BEGIN
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.15s
+────────────
+ Nextest run ID 6e9c6713-49e7-4c96-a9e1-e6b81c0e332e with nextest profile: default
+    Starting 1 test across 1 binary (11 tests skipped)
+        FAIL [   0.009s] (1/1) zeppelin-embed-cypher::mutation_lowering mutation_owner_inventory_proves_full_capacity_and_facts
+  stdout ───
+
+    running 1 test
+    test mutation_owner_inventory_proves_full_capacity_and_facts ... FAILED
+
+    failures:
+
+    failures:
+        mutation_owner_inventory_proves_full_capacity_and_facts
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'mutation_owner_inventory_proves_full_capacity_and_facts' (35851613) panicked at crates/zeppelin-embed-cypher/tests/mutation_lowering.rs:1094:22:
+    called `Result::unwrap()` on an `Err` value: UnprovedInput
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.010s] 1 test run: 0 passed, 1 failed, 11 skipped
+        FAIL [   0.009s] (1/1) zeppelin-embed-cypher::mutation_lowering mutation_owner_inventory_proves_full_capacity_and_facts
+  stdout ───
+
+    running 1 test
+    test mutation_owner_inventory_proves_full_capacity_and_facts ... FAILED
+
+    failures:
+
+    failures:
+        mutation_owner_inventory_proves_full_capacity_and_facts
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'mutation_owner_inventory_proves_full_capacity_and_facts' (35851613) panicked at crates/zeppelin-embed-cypher/tests/mutation_lowering.rs:1094:22:
+    called `Result::unwrap()` on an `Err` value: UnprovedInput
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed
+RED_OUTPUT_END
+INTENDED_ASSERTION: UnprovedInput
+INTENDED_ASSERTION_FIRED: true
+RESTORED_SHA256: edb1465e736035f160cff29635e51db15dd98dc21139f10e24b2e567ae0ed438
+GREEN_COMMAND: env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed-cypher --test mutation_lowering -E 'test(=mutation_owner_inventory_proves_full_capacity_and_facts)'
+GREEN_EXIT: 0
+GREEN_OUTPUT_BEGIN
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.16s
+────────────
+ Nextest run ID 0f263da3-b751-46e0-afbd-4ea2432e0c2d with nextest profile: default
+    Starting 1 test across 1 binary (11 tests skipped)
+────────────
+     Summary [   0.010s] 1 test run: 1 passed, 11 skipped
+GREEN_OUTPUT_END
+
+===== MUTANT 11: omit-final-mutation-capacity =====
+MUTATION_COMMAND: checked_replace crates/zeppelin-embed-cypher/src/lowering/mod.rs --before-sha256 edb1465e736035f160cff29635e51db15dd98dc21139f10e24b2e567ae0ed438 --old "        let mut mutations = QueryArena::new(memory, self.mutations.len()).map_err(memory_error)?;\n" --new "        let mut mutations = QueryArena::new(memory, self.mutations.len().saturating_sub(1))\n            .map_err(memory_error)?;\n"
+BEFORE_SHA256: edb1465e736035f160cff29635e51db15dd98dc21139f10e24b2e567ae0ed438
+MUTANT_SHA256: 894c242110c8705675f2193b0a07bf86f506aed51e14cee267ef18187ca7adc9
+RED_COMMAND: env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed-cypher --test lowering_allocation -E 'test(=mutation_lowering_real_allocator_fail_at_each_site_releases_all_backing)'
+RED_EXIT: 100
+RED_OUTPUT_BEGIN
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.76s
+────────────
+ Nextest run ID 6e40f185-ea72-4ab7-9f0f-785e6af77d86 with nextest profile: default
+    Starting 1 test across 1 binary (2 tests skipped)
+        FAIL [   0.014s] (1/1) zeppelin-embed-cypher::lowering_allocation mutation_lowering_real_allocator_fail_at_each_site_releases_all_backing
+  stdout ───
+
+    running 1 test
+    test mutation_lowering_real_allocator_fail_at_each_site_releases_all_backing ... FAILED
+
+    failures:
+
+    failures:
+        mutation_lowering_real_allocator_fail_at_each_site_releases_all_backing
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'mutation_lowering_real_allocator_fail_at_each_site_releases_all_backing' (35852537) panicked at crates/zeppelin-embed-cypher/tests/lowering_allocation.rs:288:16:
+    called `Result::unwrap()` on an `Err` value: ParseError { kind: Resource(Memory), span: Span { start: 0, end: 0 }, message: "read lowering reservation" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.015s] 1 test run: 0 passed, 1 failed, 2 skipped
+        FAIL [   0.014s] (1/1) zeppelin-embed-cypher::lowering_allocation mutation_lowering_real_allocator_fail_at_each_site_releases_all_backing
+  stdout ───
+
+    running 1 test
+    test mutation_lowering_real_allocator_fail_at_each_site_releases_all_backing ... FAILED
+
+    failures:
+
+    failures:
+        mutation_lowering_real_allocator_fail_at_each_site_releases_all_backing
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'mutation_lowering_real_allocator_fail_at_each_site_releases_all_backing' (35852537) panicked at crates/zeppelin-embed-cypher/tests/lowering_allocation.rs:288:16:
+    called `Result::unwrap()` on an `Err` value: ParseError { kind: Resource(Memory), span: Span { start: 0, end: 0 }, message: "read lowering reservation" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed
+RED_OUTPUT_END
+INTENDED_ASSERTION: read lowering reservation
+INTENDED_ASSERTION_FIRED: true
+RESTORED_SHA256: edb1465e736035f160cff29635e51db15dd98dc21139f10e24b2e567ae0ed438
+GREEN_COMMAND: env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed-cypher --test lowering_allocation -E 'test(=mutation_lowering_real_allocator_fail_at_each_site_releases_all_backing)'
+GREEN_EXIT: 0
+GREEN_OUTPUT_BEGIN
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.76s
+────────────
+ Nextest run ID c08b50f3-3f97-4ba3-9bc7-9a6c2a5db946 with nextest profile: default
+    Starting 1 test across 1 binary (2 tests skipped)
+────────────
+     Summary [   0.072s] 1 test run: 1 passed, 2 skipped
+GREEN_OUTPUT_END
+
+ALL_MUTANTS_RESTORED: 11/11

@@ -1,0 +1,15 @@
+worktree: /tmp/ze-140-base-final
+source_commit: d406d34f354ca617e360ca0b46d56d85c38bd76c
+source_status_before: <clean>
+command: env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed-cypher --test binding --test read_lowering --test lowering_semantics --test search_lowering --test lowering_allocation --test runtime_lowering
+raw_output_begin
+   Compiling zeppelin-embed v0.4.2 (/private/tmp/ze-140-base-final/crates/zeppelin-embed)
+   Compiling zeppelin-embed-cypher v0.4.2 (/private/tmp/ze-140-base-final/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.45s
+────────────
+ Nextest run ID 67290b1d-b05b-422e-9927-e13b053df429 with nextest profile: default
+    Starting 53 tests across 6 binaries
+────────────
+     Summary [   0.666s] 53 tests run: 53 passed, 0 skipped
+raw_output_end
+exit_code: 0
