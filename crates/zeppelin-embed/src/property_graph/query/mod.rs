@@ -14,6 +14,14 @@ mod pattern;
 pub mod pattern_test_support {
     pub use super::pattern::test_support::{ProbeReport, run_actual_probe};
 }
+
+#[cfg(all(feature = "graph-cypher", feature = "test-support"))]
+/// Tooling-only native relational directed probes.
+pub mod native_relational_test_support {
+    pub use super::pattern::relational::test_support::{
+        NativeRelationalProbeReport, run_actual_probe,
+    };
+}
 /// Typed DAG validation, separate from execution and admission.
 pub mod plan;
 mod property;

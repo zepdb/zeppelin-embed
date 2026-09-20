@@ -108,3 +108,16 @@ The following narrow build matrix passed. Full output is in
 The build matrix completed with existing warnings and no errors. No broad,
 full-workspace, adversarial, performance, or platform qualification was run;
 those were outside the frozen ZE-154 execution scope.
+
+## Main integration
+
+Root cherry-picked the reviewed implementation onto main, preserving the
+already-integrated identical cancellation observer, then registered the actual
+native-relational probe and its ten receipt keys in the shared runner.
+
+The frozen integrated selection passed 18/18 in nextest run
+`7d0b5aac-dcee-45f8-8566-6fe80ce4f154` with 667 tests skipped. The registered
+adversarial consumer compiled successfully under default, graph-cypher, and
+graph-result-test-support features. Raw output is in `main-focused.log` and
+the three `main-consumer-*.log` files. These are focused execution and actual
+consumer compile checks; the broad adversarial campaign remains deferred.

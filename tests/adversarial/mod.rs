@@ -155,4 +155,6 @@ pub mod graph_publication;
 #[cfg(feature = "graph-cypher")]
 pub mod graph_pattern;
 #[cfg(feature = "graph-cypher")]
+pub mod graph_native_relational;
+#[cfg(feature = "graph-cypher")]
 pub mod graph_recovery;
