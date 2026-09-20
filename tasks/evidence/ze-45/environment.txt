@@ -1,0 +1,27 @@
+captured_utc=2026-09-20T03:36:33Z
+Darwin Anups-MacBook-Pro.local 27.0.0 Darwin Kernel Version 27.0.0: Tue Jul 14 21:42:16 PDT 2026; root:xnu-13432.0.94.501.4~1/RELEASE_ARM64_T6031 arm64
+ProductName:		macOS
+ProductVersion:		27.0
+BuildVersion:		26A5388g
+hardware_model=Mac15,9
+hardware_memory_bytes=137438953472
+hardware_physical_cpus=16
+hardware_performance_cpus=12
+hardware_efficiency_cpus=4
+rustc 1.93.0 (254b59607 2026-01-19)
+binary: rustc
+commit-hash: 254b59607d4417e9dffbc307138ae5c86280fe4c
+commit-date: 2026-01-19
+host: aarch64-apple-darwin
+release: 1.93.0
+LLVM version: 21.1.8
+cargo 1.93.0 (083ac5135 2025-12-15)
+cargo-nextest 0.9.145 (00af4550e 2026-09-16)
+release: 0.9.145
+commit-hash: 00af4550ec3b3b9f0e574b897b06acb95d325ba2
+commit-date: 2026-09-16
+host: aarch64-apple-darwin
+nextest_config_sha256=2a06cdd38da0a15c714e7df3a4bc331122ed001781c0987fee109321b418ecab
+target_triple=aarch64-apple-darwin
+worktree=/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-45
+product_commit=ef2eca09f9ccf6c54ec6cba9daf52b9621f693eb

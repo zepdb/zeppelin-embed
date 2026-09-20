@@ -1,0 +1,10 @@
+command: cargo nextest run --release --profile default -j 4 --retries 0 -p zeppelin-embed --features graph-cypher --lib -E 'test(expansion_resume_crosses_real_split_and_type_boundary_with_bounded_work)' --no-capture
+nextest_run_id: 19441e6a-da96-4a59-9118-bd70165695cb
+result: PASS
+selected: 1
+passed: 1
+failed: 0
+skipped: 604
+test_time_seconds: 16.90
+observed: 27 incremental producer preparations after the initial generation; persisted same-node/same-direction/same-type physical split; exact 5,405 rows; capacities 1, 2, and 256; 25 pulls; cumulative bounded adjacency work.
+note: This is the final GREEN. review-physical-split-green.log is historical failure evidence and is not a passing result.

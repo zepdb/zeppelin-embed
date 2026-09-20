@@ -1,0 +1,23 @@
+    Checking zeppelin-embed v0.4.2 (/private/tmp/ze45-lifetime-positive-current.BnLbTA/crates/zeppelin-embed)
+warning: function `copy_inside_scope` is never used
+ --> /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-45/tasks/evidence/ze-45/lifetime/positive.rs:8:4
+  |
+8 | fn copy_inside_scope<'s, 'lease, 'm, 'g>(
+  |    ^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `inspect_preparation_source` is never used
+  --> /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-45/tasks/evidence/ze-45/lifetime/positive.rs:33:4
+   |
+33 | fn inspect_preparation_source<'lease, 'memory>(
+   |    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `transfer_finished_preparation` is never used
+  --> /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-45/tasks/evidence/ze-45/lifetime/positive.rs:39:4
+   |
+39 | fn transfer_finished_preparation<'source, 'memory, 'base, S, F>(
+   |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `zeppelin-embed` (lib) generated 3 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.95s

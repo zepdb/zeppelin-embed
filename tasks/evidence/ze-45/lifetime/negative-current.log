@@ -1,0 +1,124 @@
+    Checking zeppelin-embed v0.4.2 (/private/tmp/ze45-lifetime-negative-current.iRhuZb/crates/zeppelin-embed)
+error: lifetime may not live long enough
+  --> /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-45/tasks/evidence/ze-45/lifetime/negative.rs:16:5
+   |
+11 | fn node_cannot_escape<'s, 'lease, 'm, 'g>(
+   |                       -- lifetime `'s` defined here
+...
+16 |     view.lookup_node(node, resources)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ returning this value requires that `'s` must outlive `'static`
+
+error: lifetime may not live long enough
+  --> /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-45/tasks/evidence/ze-45/lifetime/negative.rs:23:5
+   |
+19 | fn cursor_cannot_outlive_admission<'s, 'lease, 'm, 'g>(
+   |                                    -- lifetime `'s` defined here
+...
+23 |     view.node_cursor(LabelSelection::All, runtime)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ returning this value requires that `'s` must outlive `'static`
+
+error: lifetime may not live long enough
+  --> /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-45/tasks/evidence/ze-45/lifetime/negative.rs:23:5
+   |
+19 | fn cursor_cannot_outlive_admission<'s, 'lease, 'm, 'g>(
+   |                                        ------ lifetime `'lease` defined here
+...
+23 |     view.node_cursor(LabelSelection::All, runtime)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ returning this value requires that `'lease` must outlive `'static`
+
+error: lifetime may not live long enough
+  --> /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-45/tasks/evidence/ze-45/lifetime/negative.rs:23:5
+   |
+19 | fn cursor_cannot_outlive_admission<'s, 'lease, 'm, 'g>(
+   |                                                -- lifetime `'m` defined here
+...
+23 |     view.node_cursor(LabelSelection::All, runtime)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ returning this value requires that `'m` must outlive `'static`
+
+error: lifetime may not live long enough
+  --> /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-45/tasks/evidence/ze-45/lifetime/negative.rs:23:5
+   |
+19 | fn cursor_cannot_outlive_admission<'s, 'lease, 'm, 'g>(
+   |                                                    -- lifetime `'g` defined here
+...
+23 |     view.node_cursor(LabelSelection::All, runtime)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ returning this value requires that `'g` must outlive `'static`
+
+help: the following changes may resolve your lifetime errors
+  |
+  = help: replace `'s` with `'static`
+  = help: replace `'lease` with `'static`
+  = help: replace `'m` with `'static`
+  = help: replace `'g` with `'static`
+
+error: lifetime may not live long enough
+  --> /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-45/tasks/evidence/ze-45/lifetime/negative.rs:31:5
+   |
+26 | fn text_cannot_outlive_source<'s, 'lease, 'm, 'g>(
+   |                               -- lifetime `'s` defined here
+...
+31 |     view.stored_text(node, resources)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ returning this value requires that `'s` must outlive `'static`
+
+error: lifetime may not live long enough
+  --> /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-45/tasks/evidence/ze-45/lifetime/negative.rs:39:5
+   |
+34 | fn relationship_cannot_outlive_source<'s, 'lease, 'm, 'g>(
+   |                                       -- lifetime `'s` defined here
+...
+39 |     view.lookup_relationship(relationship, resources)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ returning this value requires that `'s` must outlive `'static`
+
+error[E0506]: cannot assign to `*source` because it is borrowed
+  --> /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-45/tasks/evidence/ze-45/lifetime/negative.rs:47:5
+   |
+46 |     let view = GraphReadView::new(source.as_ref().unwrap(), catalog).unwrap();
+   |                                   ------ `*source` is borrowed here
+47 |     *source = None;
+   |     ^^^^^^^ `*source` is assigned to here but it was already borrowed
+48 |     std::hint::black_box(view.sequence());
+   |                          ---- borrow later used here
+
+error: lifetime may not live long enough
+  --> /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-45/tasks/evidence/ze-45/lifetime/negative.rs:58:5
+   |
+51 | fn prepared_cannot_outlive_source<'short, 'memory, 'base, S, F>(
+   |                                   ------ lifetime `'short` defined here
+...
+58 |     prepared
+   |     ^^^^^^^^ returning this value requires that `'short` must outlive `'static`
+
+error: lifetime may not live long enough
+  --> /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-45/tasks/evidence/ze-45/lifetime/negative.rs:64:5
+   |
+61 | fn preparation_source_cannot_outlive_storage<'lease, 'memory>(
+   |                                                      ------- lifetime `'memory` defined here
+...
+64 |     source
+   |     ^^^^^^ returning this value requires that `'memory` must outlive `'static`
+
+error: lifetime may not live long enough
+  --> /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-45/tasks/evidence/ze-45/lifetime/negative.rs:71:5
+   |
+67 | fn memory_is_part_of_the_source_owner<'lease, 'm, 'g>(
+   |                                               -- lifetime `'m` defined here
+...
+71 |     source
+   |     ^^^^^^ returning this value requires that `'m` must outlive `'static`
+
+error: lifetime may not live long enough
+  --> /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-45/tasks/evidence/ze-45/lifetime/negative.rs:71:5
+   |
+67 | fn memory_is_part_of_the_source_owner<'lease, 'm, 'g>(
+   |                                                   -- lifetime `'g` defined here
+...
+71 |     source
+   |     ^^^^^^ returning this value requires that `'g` must outlive `'static`
+
+help: the following changes may resolve your lifetime errors
+  |
+  = help: replace `'m` with `'static`
+  = help: replace `'g` with `'static`
+
+For more information about this error, try `rustc --explain E0506`.
+error: could not compile `zeppelin-embed` (lib) due to 12 previous errors

@@ -1,0 +1,31 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID 5abe7001-4ad9-4388-b18a-839338d9361a with nextest profile: default
+    Starting 25 tests across 1 binary (580 tests skipped)
+        PASS [   0.009s] ( 1/25) zeppelin-embed lifecycle::native_graph::tests::native_read_admission_registers_before_replacement_capture
+        PASS [   0.012s] ( 2/25) zeppelin-embed lifecycle::native_graph::tests::native_preparation_coordinator_owns_admitted_source_and_finalization
+        PASS [   0.014s] ( 3/25) zeppelin-embed lifecycle::native_graph::tests::native_prepared_artifacts_reject_foreign_or_stale_base
+        PASS [   0.015s] ( 4/25) zeppelin-embed lifecycle::native_graph::tests::native_prepared_artifacts_retain_exact_base_source_and_abort_owners
+        PASS [   0.007s] ( 5/25) zeppelin-embed lifecycle::native_graph::tests::native_read_clone_retains_one_registry_entry_until_final_drop
+        PASS [   0.008s] ( 6/25) zeppelin-embed lifecycle::native_graph::tests::native_read_close_cancels_and_drains_current_and_retired_leases
+        PASS [   0.008s] ( 7/25) zeppelin-embed lifecycle::native_graph::tests::native_read_cursor_rejects_same_metadata_foreign_admission
+        PASS [   0.028s] ( 8/25) zeppelin-embed lifecycle::native_graph::tests::native_read_capability_rejects_foreign_runtime_before_source_construction
+        PASS [   0.031s] ( 9/25) zeppelin-embed lifecycle::native_graph::tests::native_read_catalog_and_required_refs_cannot_be_substituted
+        PASS [   0.008s] (10/25) zeppelin-embed lifecycle::native_graph::tests::native_read_cursor_rejects_same_view_memory_different_runtime
+        PASS [   0.008s] (11/25) zeppelin-embed lifecycle::native_graph::tests::native_read_drop_cancels_without_destroying_borrowed_mapping
+        PASS [   0.046s] (12/25) zeppelin-embed lifecycle::native_graph::tests::native_read_all_operations_use_one_admitted_bundle
+        PASS [   0.034s] (13/25) zeppelin-embed lifecycle::native_graph::tests::native_read_limits_are_cumulative_and_refused_batch_is_private
+        PASS [   0.008s] (14/25) zeppelin-embed lifecycle::native_graph::tests::native_read_missing_or_corrupt_lazy_file_is_not_absence
+        PASS [   0.072s] (15/25) zeppelin-embed lifecycle::native_graph::tests::native_read_every_edge_path_checks_both_endpoint_states
+        PASS [   0.032s] (16/25) zeppelin-embed lifecycle::native_graph::tests::native_read_path_accounting_releases_transient_capacity
+        PASS [   0.109s] (17/25) zeppelin-embed lifecycle::native_graph::tests::native_read_graph_only_optional_payloads_and_full_width_ids
+        PASS [   0.073s] (18/25) zeppelin-embed lifecycle::native_graph::tests::native_read_old_view_lazily_opens_unmapped_artifact_after_replacement
+        PASS [   0.008s] (19/25) zeppelin-embed lifecycle::native_graph::tests::native_read_scoped_consumer_retains_one_catalog_and_bundle
+        PASS [   0.033s] (20/25) zeppelin-embed lifecycle::native_graph::tests::native_read_pull_consumer_resumes_and_materializes_same_view
+        PASS [   0.032s] (21/25) zeppelin-embed lifecycle::native_graph::tests::native_read_stats_track_live_mapping_residency_and_active_query
+        PASS [   0.007s] (22/25) zeppelin-embed property_graph::query::runtime::native_read_identity_tests::native_read_runtime_identity_exhaustion_never_reuses_a_stamp
+        PASS [   0.042s] (23/25) zeppelin-embed lifecycle::native_graph::tests::native_read_undirected_self_loop_and_parallel_edges_are_exact
+        PASS [   0.256s] (24/25) zeppelin-embed lifecycle::native_graph::tests::native_read_label_scan_uses_selected_membership_index
+        PASS [   2.429s] (25/25) zeppelin-embed lifecycle::native_graph::tests::native_read_scan_resume_preserves_interleaved_types_and_max_ids
+────────────
+     Summary [   2.585s] 25 tests run: 25 passed, 580 skipped

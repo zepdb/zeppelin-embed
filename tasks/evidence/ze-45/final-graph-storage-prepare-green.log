@@ -1,0 +1,9 @@
+command: cargo nextest run --profile default -j 4 --retries 0 -p zeppelin-embed --features graph-cypher --test graph_storage_prepare
+nextest_run_id: 395885e6-e956-4c0d-bfc1-99d64b5588ae
+result: PASS
+selected: 10
+passed: 10
+failed: 0
+skipped: 0
+time_seconds: 73.086
+slow_case: actual_native_producer_splits_4097_edges_from_bounded_batches passed in 73.005s

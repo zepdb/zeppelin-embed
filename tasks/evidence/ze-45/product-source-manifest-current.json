@@ -1,0 +1,279 @@
+{
+  "base": "3a0ac9dc6e9419a3709e5304ade721915cbf5991",
+  "candidate": "ef2eca09f9ccf6c54ec6cba9daf52b9621f693eb",
+  "cargo_lock": {
+    "sha256": "70e71ac67900f8572980173807399f4d04c0bf2b5a48b054a4a2783986b6f2a9",
+    "unchanged": true
+  },
+  "committed_candidates": [
+    "092af38984929306b93cb698830062011d7f9cd1",
+    "ebb5f411ce908fa4c6e100a7f89e9d82c0b5f250"
+  ],
+  "created_utc": "2026-09-20T06:56:05.445059+00:00",
+  "deferred": [
+    "adversarial runner and campaigns",
+    "workspace/full suites",
+    "coverage",
+    "fuzz",
+    "size",
+    "soak",
+    "performance corpus",
+    "Windows and packaging"
+  ],
+  "file_count": 36,
+  "files": [
+    {
+      "base_sha256": "c0878d423bf5daa37df23a873d77b8c7fbd3fa8cf60eb050df8fe09f516ebcdf",
+      "bytes": 3359,
+      "path": "crates/zeppelin-embed/Cargo.toml",
+      "sha256": "e7bdf0f6abb8650840d1f13c4fd717e21d02133c5165718c0103cf68df999a8d",
+      "status": "M"
+    },
+    {
+      "base_sha256": "b9d41337c5815b23dd67f570dae76ba8afd3c08925a2595f4fe750fbb912f97b",
+      "bytes": 6341,
+      "path": "crates/zeppelin-embed/src/lib.rs",
+      "sha256": "0cf8cd61ef8a15210b4485ea9d27f437fe22a6a948a27fd65b0d2a6ae952405b",
+      "status": "M"
+    },
+    {
+      "base_sha256": "9b5d89ecff96e8de1e9fe64e358b03ba58a9588da66eb87abc5eceb97d449f9f",
+      "bytes": 13355,
+      "path": "crates/zeppelin-embed/src/lifecycle/close.rs",
+      "sha256": "dd2a8ded777e5e0a3a9d3f3678e395dcf9647236edefa9f635eec10a2476f6d9",
+      "status": "M"
+    },
+    {
+      "base_sha256": "c3c98e27645e0f14eca88e8aaca995142e39f8274d980175431d2f102f363907",
+      "bytes": 361875,
+      "path": "crates/zeppelin-embed/src/lifecycle/mod.rs",
+      "sha256": "2de8968549617c460b7b02bff4d293ad864c202d2ff327df25730b8b8156d1ae",
+      "status": "M"
+    },
+    {
+      "base_sha256": null,
+      "bytes": 216299,
+      "path": "crates/zeppelin-embed/src/lifecycle/native_graph.rs",
+      "sha256": "33ffaffda636732514dc08314e5401ded44233f7f3e1a6e0749869ff5ef6adb8",
+      "status": "A"
+    },
+    {
+      "base_sha256": "844abc00bad7a334dbec723fea055baad17930c4e03d20f1351af01821c68fee",
+      "bytes": 44809,
+      "path": "crates/zeppelin-embed/src/lifecycle/stats.rs",
+      "sha256": "979489dd7b897b53457b1fceebc3ba5fbb4b20c7fc21e667c41bb3451c27e214",
+      "status": "M"
+    },
+    {
+      "base_sha256": "d511fe7c801e6c447046a18c8f13c3b2e31f1d9c1085aed8193718dd2afd7e90",
+      "bytes": 12448,
+      "path": "crates/zeppelin-embed/src/property_graph/query/resources.rs",
+      "sha256": "abbb6e94bd8b34e83dcd882ce602758e654c7be34878ba4ed8cc614795c38d36",
+      "status": "M"
+    },
+    {
+      "base_sha256": "fa447d95059cca0c86e15b61adf65eda88fe2a3f13182f9f04b8bbd1bcd0057a",
+      "bytes": 11691,
+      "path": "crates/zeppelin-embed/src/property_graph/query/runtime.rs",
+      "sha256": "609f9ef67e6f72fc0bc492067c9c9bd7aff835b5b87b6135abbe0e6d62bebfd0",
+      "status": "M"
+    },
+    {
+      "base_sha256": "2a16417a4d006cc441c85f776971fb3fd18584572b44381a986bc3ae1216800f",
+      "bytes": 7915,
+      "path": "crates/zeppelin-embed/src/property_graph/staging/memory.rs",
+      "sha256": "1e2d2a55cf525339acea133c9ac4e94204cb57552b829f69f44e641fa98555fd",
+      "status": "M"
+    },
+    {
+      "base_sha256": "3101ae7a7df8e8c18aa6e1f4db52e321804c0242682a8aec4dfc8d79a865f695",
+      "bytes": 9256,
+      "path": "crates/zeppelin-embed/src/property_graph/storage/adjacency/merge.rs",
+      "sha256": "e967094a4a25ecf567f002f2bb6737e062326952c1428334e5374a6e455f80fb",
+      "status": "M"
+    },
+    {
+      "base_sha256": "ce8c166d1b2aa8fb9b43adbda136222c73d011cb77e253139e9d14a372661b2f",
+      "bytes": 7820,
+      "path": "crates/zeppelin-embed/src/property_graph/storage/adjacency/mod.rs",
+      "sha256": "963861f1f2ee36968dd497c684b6ec6dfd7840d288a59ab28505b397ae78a4aa",
+      "status": "M"
+    },
+    {
+      "base_sha256": "464fd42dcf65d229d4ecabc5222d180cee5d3b897806f01c70981ca1584f8e88",
+      "bytes": 14182,
+      "path": "crates/zeppelin-embed/src/property_graph/storage/adjacency/prepare.rs",
+      "sha256": "8e58c401df324a281d5aaa5990d69f87fda04de7157ffb86a5819ed2f887a94d",
+      "status": "M"
+    },
+    {
+      "base_sha256": "f40d8a392d9132d0c01e7300a0a6e87589a662f3266c6416e8a649ae2e2c21eb",
+      "bytes": 24961,
+      "path": "crates/zeppelin-embed/src/property_graph/storage/adjacency/range.rs",
+      "sha256": "959dbe2811535475a00ac895ec070e31b672e0352dad5c5da0939edca5042e7c",
+      "status": "M"
+    },
+    {
+      "base_sha256": "ff1aca3c7623bdf704fff1475baf4cf657cbcb52fb37e317b16bdd75e2797290",
+      "bytes": 24699,
+      "path": "crates/zeppelin-embed/src/property_graph/storage/adjacency/read.rs",
+      "sha256": "4a9c6f9a76a7204c49311811cc8559b467cc078179002953bb04d6a6801310c3",
+      "status": "M"
+    },
+    {
+      "base_sha256": "75d85e90ef93b54dedeae2bb8445f874362dcc8e346ca6d6adc07a5fe15a784b",
+      "bytes": 29910,
+      "path": "crates/zeppelin-embed/src/property_graph/storage/artifact.rs",
+      "sha256": "97819aee407b061c842f58f89cdbb565ee1d2ec604612c0e0acce267cad38f22",
+      "status": "M"
+    },
+    {
+      "base_sha256": "6315bb2cbe05aa714105730942f2cf70a7619cc521713ae86db3e4210c03cf12",
+      "bytes": 14550,
+      "path": "crates/zeppelin-embed/src/property_graph/storage/artifact/private.rs",
+      "sha256": "805d057e9ff7dbacbf93e1d1d790df0d50d4cc51367f0991f68f555be8f80cc4",
+      "status": "M"
+    },
+    {
+      "base_sha256": "3fc72c2822d4b66053c6745e3bcdda6439de764e75356259c9816132de134fb1",
+      "bytes": 7053,
+      "path": "crates/zeppelin-embed/src/property_graph/storage/memory.rs",
+      "sha256": "cf0790cd541e45583304554eb45087865122ecbe8d2e8565c5198a58a935cb03",
+      "status": "M"
+    },
+    {
+      "base_sha256": "6c8a032ace77099b2bf0005b0710014ddc93114b89db22bdf0086a6c869d0bc0",
+      "bytes": 1425,
+      "path": "crates/zeppelin-embed/src/property_graph/storage/mod.rs",
+      "sha256": "300b86edb49e33c7c23d9f952f880c8dd04f8ba3a531be71966be3d4c0dccfae",
+      "status": "M"
+    },
+    {
+      "base_sha256": "44ff1889e8e467043eb786228e0627ebeb07cf671c32e102be963d0de967c628",
+      "bytes": 9762,
+      "path": "crates/zeppelin-embed/src/property_graph/storage/prepared.rs",
+      "sha256": "d2d867c5cfb09cb46e957849b03a15c003a27c32d42b440d4bb77f01b04b4371",
+      "status": "M"
+    },
+    {
+      "base_sha256": "06e80ff6160a32470ea381c19d7e96851f1136fc2cc3e4e35336ca8b9a03d899",
+      "bytes": 14560,
+      "path": "crates/zeppelin-embed/src/property_graph/storage/records.rs",
+      "sha256": "51c9d84030c41b6e0dff5d9ff7195dcb7210ccca5d72eda7f363a2a53004c538",
+      "status": "M"
+    },
+    {
+      "base_sha256": "e4511fa9a7cef72ec5fef1a048a25bc3f6084e066fbb8f08ccceb61c9bf29105",
+      "bytes": 68692,
+      "path": "crates/zeppelin-embed/src/property_graph/storage/tree/directory.rs",
+      "sha256": "84208b6362c49c04c083d114a4e69efa6bd6887cf1a8fcf850f934a8dab303ad",
+      "status": "M"
+    },
+    {
+      "base_sha256": "0ff498a3abb0c614ad210e8386dd98bc8a0ee7374b06b0a9e106b79957000d11",
+      "bytes": 33864,
+      "path": "crates/zeppelin-embed/src/property_graph/storage/view.rs",
+      "sha256": "274ef9ef6477f4e0091c3a0adadc07cbbaea92d849c3c2baf28dfdddbfab9217",
+      "status": "M"
+    },
+    {
+      "base_sha256": null,
+      "bytes": 6399,
+      "path": "crates/zeppelin-embed/src/property_graph/storage/view/catalog.rs",
+      "sha256": "ecb44e6cb878bf65ecbd82cba30b983700d9473463cbbcbcd4c8597bcdb4f029",
+      "status": "A"
+    },
+    {
+      "base_sha256": null,
+      "bytes": 18708,
+      "path": "crates/zeppelin-embed/src/property_graph/storage/view/cursor.rs",
+      "sha256": "d9e0f6e4152f8dada5529aff8f4fe4bb24cb69f6a9c21aad09122fa0298e0651",
+      "status": "A"
+    },
+    {
+      "base_sha256": null,
+      "bytes": 4455,
+      "path": "crates/zeppelin-embed/src/property_graph/storage/view/mapping.rs",
+      "sha256": "d571b2a75c04c0083c759f3bf9dba8bc1224e129232e7968cbf2407688e6843d",
+      "status": "A"
+    },
+    {
+      "base_sha256": null,
+      "bytes": 14091,
+      "path": "crates/zeppelin-embed/src/property_graph/storage/view/preparation_source.rs",
+      "sha256": "d07170d1b5093288fee8d119248d9947f7c55e3dfb19600df7f1c6a8707fa6bb",
+      "status": "A"
+    },
+    {
+      "base_sha256": null,
+      "bytes": 13399,
+      "path": "crates/zeppelin-embed/src/property_graph/storage/view/prepared.rs",
+      "sha256": "a89b00cb26486ca68229b3b007f77be3e564ca19e39340ccc3f76b775c0ee03b",
+      "status": "A"
+    },
+    {
+      "base_sha256": null,
+      "bytes": 9482,
+      "path": "crates/zeppelin-embed/src/property_graph/storage/view/source.rs",
+      "sha256": "bc590179849795727427dc40bd309b9a744ffd6064ee77825715f7c1d8e735db",
+      "status": "A"
+    },
+    {
+      "base_sha256": null,
+      "bytes": 252,
+      "path": "crates/zeppelin-embed/tests/graph_read_view.rs",
+      "sha256": "a72eaafcaece77282fa9ffb110b70537f5265317dd7599a259a7d7338b64b5d9",
+      "status": "A"
+    },
+    {
+      "base_sha256": "22f1c7785ff541d668cb666b80c0d9690218ef6cfa04d75c816bfc161e3e900f",
+      "bytes": 7566,
+      "path": "scripts/check-graph-feature-boundary.sh",
+      "sha256": "38eea2c89974c8eafc69770158f799d350d3e3cb966097d0357581c00d4a3e90",
+      "status": "M"
+    },
+    {
+      "base_sha256": "371cba222a652aa1e3c2661134b1dbcfa220cbc696c1ee84d8d1924ed0feb067",
+      "bytes": 22072,
+      "path": "tests/adversarial-oracle/src/graph_adjacency_store.rs",
+      "sha256": "5c8d5d612595debdd945b893cbb47062b1d2446ad554e4fecb320ec83d005c61",
+      "status": "M"
+    },
+    {
+      "base_sha256": "fa27e80df497a775f999f93bfda212965c91b9aeb39d240907ac5a7bd327e193",
+      "bytes": 15136,
+      "path": "tests/adversarial/coverage.rs",
+      "sha256": "7b90216b7c4a5aa599505df2c8afb3198363122abbc8bb6d5a3e30c80390fc20",
+      "status": "M"
+    },
+    {
+      "base_sha256": null,
+      "bytes": 4842,
+      "path": "tests/adversarial/graph_read_view.rs",
+      "sha256": "609fa8c1456e91775b4749c1d0d3b1c3e10cfa2496e64c0d67d7466fac625eb1",
+      "status": "A"
+    },
+    {
+      "base_sha256": "86a9609b7d48ce065b983fdc561071e3f42aaa64a47cadcb6265392b9fde05e4",
+      "bytes": 3205,
+      "path": "tests/adversarial/mod.rs",
+      "sha256": "3108e8f07dc6c3ab0773f2f97dea7fd18f214c8e10e88caa9009e3ee0e06f541",
+      "status": "M"
+    },
+    {
+      "base_sha256": "3fc6b62779487e6c77998bfc38936828acc9da51d673a49d2ad81f0aaf6626b2",
+      "bytes": 762099,
+      "path": "tests/adversarial/runner.rs",
+      "sha256": "7f29c1fb3ad7eb6100220e7510708ba1aa6af79797050b72f6a0a6abf23c2c81",
+      "status": "M"
+    },
+    {
+      "base_sha256": "c57bb044caaf0bac2a9255f0993a99e1fa63450020ba6f9468c08e7f613f01fc",
+      "bytes": 744979,
+      "path": "tests/adversarial_tests.rs",
+      "sha256": "19b14a92b59e014d268f3fb3aab730c4e9e641ac383c97e8cc30f5e7ff50232a",
+      "status": "M"
+    }
+  ],
+  "working_head": "ef2eca09f9ccf6c54ec6cba9daf52b9621f693eb"
+}
