@@ -133,7 +133,7 @@ impl GraphResultRegistry {
     pub(super) fn prepare_with<'v, 'm, 'g>(
         &'static self,
         context: &mut RuntimeContext<'v, 'm, 'g>,
-        counts: [usize; 14],
+        counts: PoolCounts,
         metadata: ResponseMetadata,
         initializer_controls: usize,
         initialize: impl FnOnce(
@@ -143,28 +143,12 @@ impl GraphResultRegistry {
         ) -> Result<ZeGraphResponse, OwnerError>,
     ) -> Result<PreparedResponse<'m, 'g>, OwnerError> {
         context.checkpoint()?;
-        let [
-            _,
-            _,
-            _,
-            _,
-            _,
-            _,
-            _,
-            _,
-            column_count,
-            cell_count,
-            _,
-            _,
-            _,
-            work_count,
-        ] = counts;
         if metadata.row_count > 65536
-            || column_count > 256
-            || metadata.row_count.checked_mul(column_count) != Some(cell_count)
+            || counts.columns > 256
+            || metadata.row_count.checked_mul(counts.columns) != Some(counts.cells)
             || (metadata.global_work.start as usize)
                 .checked_add(metadata.global_work.count as usize)
-                .is_none_or(|end| end > work_count)
+                .is_none_or(|end| end > counts.work)
         {
             return Err(OwnerError::InvalidShape);
         }

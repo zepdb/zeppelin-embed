@@ -1,9 +1,9 @@
    Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/crates/zeppelin-embed-ffi)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.50s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.61s
 ────────────
- Nextest run ID a0697fc7-a512-4faf-8ea8-732825f86884 with nextest profile: default
+ Nextest run ID a1c83454-f15a-4367-812f-1d4ea5aae2a3 with nextest profile: default
     Starting 1 test across 1 binary (33 tests skipped)
-        FAIL [   0.034s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans
+        FAIL [   0.014s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans
   stdout ───
 
     running 1 test
@@ -19,15 +19,15 @@
   stderr ───
     ZE-141 empty prepare final checkpoint ordinal=4
 
-    thread 'graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans' (35590822) panicked at crates/zeppelin-embed-ffi/src/graph_result/conversion/tests.rs:1518:5:
+    thread 'graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans' (35745555) panicked at crates/zeppelin-embed-ffi/src/graph_result/conversion/tests.rs:1684:5:
     assertion `left == right` failed
       left: 4
      right: 5
     note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 
 ────────────
-     Summary [   0.036s] 1 test run: 0 passed, 1 failed, 33 skipped
-        FAIL [   0.034s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans
+     Summary [   0.014s] 1 test run: 0 passed, 1 failed, 33 skipped
+        FAIL [   0.014s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans
   stdout ───
 
     running 1 test
@@ -43,7 +43,7 @@
   stderr ───
     ZE-141 empty prepare final checkpoint ordinal=4
 
-    thread 'graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans' (35590822) panicked at crates/zeppelin-embed-ffi/src/graph_result/conversion/tests.rs:1518:5:
+    thread 'graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans' (35745555) panicked at crates/zeppelin-embed-ffi/src/graph_result/conversion/tests.rs:1684:5:
     assertion `left == right` failed
       left: 4
      right: 5

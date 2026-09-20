@@ -28,6 +28,7 @@ struct CheckpointView {
     lease: SnapshotLease,
     cancellation: CancelToken,
     cancel_at: Cell<usize>,
+    close_at: Cell<usize>,
     polls: Cell<usize>,
 }
 impl RetainedView for CheckpointView {
@@ -42,6 +43,9 @@ impl RetainedView for CheckpointView {
         self.polls.set(next);
         if next == self.cancel_at.get() {
             self.cancellation.cancel();
+        }
+        if next == self.close_at.get() {
+            return Err(QueryError::ReadCancelled);
         }
         Ok(())
     }
@@ -59,6 +63,15 @@ fn with_checkpoint_memory<T>(
     cancel_at: usize,
     test: impl FnOnce(&mut RuntimeContext<'_, '_, '_>, &CheckpointView) -> T,
 ) -> T {
+    with_checkpoint_limits(memory_limit, cancel_at, RuntimeLimits::default(), test)
+}
+
+fn with_checkpoint_limits<T>(
+    memory_limit: usize,
+    cancel_at: usize,
+    limits: RuntimeLimits,
+    test: impl FnOnce(&mut RuntimeContext<'_, '_, '_>, &CheckpointView) -> T,
+) -> T {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(
         dir.path(),
@@ -73,11 +86,11 @@ fn with_checkpoint_memory<T>(
         lease: store.snapshot().unwrap(),
         cancellation: cancellation.clone(),
         cancel_at: Cell::new(0),
+        close_at: Cell::new(0),
         polls: Cell::new(0),
     };
     let control = QueryControl::Cancel(cancellation);
-    let mut context =
-        RuntimeContext::new(&view, &control, &memory, RuntimeLimits::default()).unwrap();
+    let mut context = RuntimeContext::new(&view, &control, &memory, limits).unwrap();
     view.polls.set(0);
     view.cancel_at.set(cancel_at);
     test(&mut context, &view)
@@ -86,6 +99,13 @@ fn with_checkpoint_memory<T>(
 struct NativeSource<'a> {
     input: ResultInput<'a>,
     calls: Cell<usize>,
+}
+
+struct ErrorSource(SourceError);
+impl ResultSource for ErrorSource {
+    fn result_input(&self) -> Result<ResultInput<'_>, SourceError> {
+        Err(self.0)
+    }
 }
 impl ResultSource for NativeSource<'_> {
     fn result_input(&self) -> Result<ResultInput<'_>, SourceError> {
@@ -956,6 +976,113 @@ fn graph_result_native_reports_receipts_outcomes_are_lossless() {
             Err(ConversionError::Completed(CompletedError::Utf8))
         ));
         assert_eq!(context.memory().reserved_bytes(), baseline);
+
+        let missing = EntityId::Node(NodeId::new(91).unwrap());
+        let deleted = EntityId::Relationship(RelId::new(92).unwrap());
+        for expected in [
+            SourceError::Missing(missing),
+            SourceError::Deleted(deleted),
+            SourceError::Storage,
+        ] {
+            let error = match prepare_native(&REGISTRY, &ErrorSource(expected), context) {
+                Err(error) => error,
+                Ok(_) => panic!("native source error must be retained"),
+            };
+            assert!(matches!(
+                error,
+                ConversionError::Completed(CompletedError::Source(observed))
+                    if observed == expected
+            ));
+            assert_eq!(context.memory().reserved_bytes(), baseline);
+        }
+
+        let malformed_string = [Value::String(Span::new(u32::MAX, 2))];
+        let cyclic_list = [Value::List {
+            children: Span::new(0, 1),
+            element: ListKind::Query,
+        }];
+        let cyclic_child = [ValueIndex(0)];
+        let scalar = [Value::I64(1)];
+        let column = [Column {
+            name: Span::new(0, 0),
+            kinds: ValueKinds::I64,
+        }];
+        let invalid_cell = [ValueIndex(1)];
+        let mut contradictory_report = report_fixture(
+            0,
+            SearchKind::Vector,
+            None,
+            Some(ActualTier::Exact),
+            ScorePrecision::Original,
+            CandidateCoverage::Exact,
+            LegState::Nonempty,
+            LegState::NotRequested,
+            (None, None, None),
+            context.counters(),
+        );
+        contradictory_report.lexical_leg = LegState::Nonempty;
+        let contradictory_reports = [contradictory_report];
+        for (pools, outcome, rows) in [
+            (
+                Pools {
+                    values: &malformed_string,
+                    bytes: b"x",
+                    ..Pools::default()
+                },
+                Outcome::Read,
+                0,
+            ),
+            (
+                Pools {
+                    values: &cyclic_list,
+                    children: &cyclic_child,
+                    ..Pools::default()
+                },
+                Outcome::Read,
+                0,
+            ),
+            (
+                Pools {
+                    values: &scalar,
+                    columns: &column,
+                    cells: &invalid_cell,
+                    ..Pools::default()
+                },
+                Outcome::Read,
+                1,
+            ),
+            (
+                Pools::default(),
+                Outcome::Committed {
+                    changed: context.view().generation(),
+                },
+                0,
+            ),
+            (
+                Pools {
+                    reports: &contradictory_reports,
+                    ..Pools::default()
+                },
+                Outcome::Read,
+                0,
+            ),
+        ] {
+            let malformed = NativeSource {
+                input: ResultInput {
+                    view: context.view(),
+                    pools,
+                    rows,
+                    outcome,
+                },
+                calls: Cell::new(0),
+            };
+            assert!(matches!(
+                prepare_native(&REGISTRY, &malformed, context),
+                Err(ConversionError::Completed(CompletedError::Shape))
+            ));
+            assert_eq!(malformed.calls.get(), 1);
+            assert_eq!(context.memory().reserved_bytes(), baseline);
+        }
     });
 }
 
@@ -1035,6 +1162,44 @@ fn graph_result_native_context_identity_and_source_snapshot_are_single() {
         let mapped = unsafe { output_slice(output.pool.values, output.pool.value_count) };
         assert_eq!(mapped[0].integer, 17);
         REGISTRY.free(&mut output).unwrap();
+
+        let before = context.counters().get(WorkKind::Lookups);
+        context.charge(WorkKind::Lookups, 37).unwrap();
+        let carry = NativeSource {
+            input: ResultInput {
+                view: context.view(),
+                pools: Pools::default(),
+                rows: 0,
+                outcome: Outcome::Read,
+            },
+            calls: Cell::new(0),
+        };
+        let mut output = convert(context, &carry, 0);
+        let work = unsafe { output_slice(output.work, output.work_count) };
+        assert_eq!(work[WorkKind::Lookups as usize].value, before + 37);
+        REGISTRY.free(&mut output).unwrap();
+    });
+
+    with_checkpoint_context(0, |context, view| {
+        let source = NativeSource {
+            input: ResultInput {
+                view: context.view(),
+                pools: Pools::default(),
+                rows: 0,
+                outcome: Outcome::Read,
+            },
+            calls: Cell::new(0),
+        };
+        view.polls.set(0);
+        view.cancel_at.set(1);
+        view.close_at.set(1);
+        assert!(matches!(
+            prepare_native(&REGISTRY, &source, context),
+            Err(ConversionError::Completed(CompletedError::Runtime(
+                RuntimeError::Value(QueryError::ReadCancelled)
+            )))
+        ));
+        assert_eq!(source.calls.get(), 0);
     });
 }
 
@@ -1360,6 +1525,7 @@ fn graph_result_native_geometry_limits_and_real_overlap_reject() {
         lease: store.snapshot().unwrap(),
         cancellation: cancellation.clone(),
         cancel_at: Cell::new(0),
+        close_at: Cell::new(0),
         polls: Cell::new(0),
     };
     let control = QueryControl::Cancel(cancellation);
@@ -1536,6 +1702,320 @@ fn graph_result_native_every_allocation_and_copy_checkpoint_cleans() {
         assert_eq!(view.polls.get(), final_checkpoint);
         assert_eq!(context.memory().reserved_bytes(), baseline);
     });
+
+    #[derive(Debug)]
+    struct FailedRun {
+        driver: RuntimeError,
+        conversion: Option<ConversionError>,
+        counters: WorkCounters,
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(
+        dir.path(),
+        OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+    )
+    .unwrap();
+    let resources = GraphResources::from_store(&store).unwrap();
+    let shared_baseline = resources.reserved_bytes().unwrap();
+    let payload_len = 70 * 1024;
+    let node_count = 65536 / size_of::<ZeGraphNode>() + 1;
+    assert!(node_count * size_of::<ZeGraphNode>() > 65536);
+    let run = |cancel_at: usize, close_at: usize, limits: RuntimeLimits| {
+        let memory = QueryMemory::new(&resources, 24 * 1024 * 1024).unwrap();
+        let cancellation = CancelToken::new();
+        let view = CheckpointView {
+            token: QueryView::new(StoreInstanceId::new(143).unwrap(), GraphGeneration::new(0)),
+            lease: store.snapshot().unwrap(),
+            cancellation: cancellation.clone(),
+            cancel_at: Cell::new(0),
+            close_at: Cell::new(0),
+            polls: Cell::new(0),
+        };
+        let control = QueryControl::Cancel(cancellation);
+        let mut context = RuntimeContext::new(&view, &control, &memory, limits).unwrap();
+        let mut bytes = QueryArena::new(context.memory(), payload_len + 4096).unwrap();
+        for _ in 0..payload_len {
+            bytes.push(b'z').unwrap();
+        }
+        let mut nodes = QueryArena::new(context.memory(), node_count).unwrap();
+        for ordinal in 0..node_count {
+            nodes
+                .push(Node {
+                    id: NodeId::new(ordinal as u128 + 1).unwrap(),
+                    revision: GraphRevision::new(1).unwrap(),
+                    generation: context.view().generation(),
+                    key: None,
+                    labels: Span::new(0, 0),
+                    properties: Span::new(0, 0),
+                    text: None,
+                    vector: None,
+                })
+                .unwrap();
+        }
+        let source = NativeSource {
+            input: ResultInput {
+                view: context.view(),
+                pools: Pools {
+                    bytes: bytes.as_slice(),
+                    nodes: nodes.as_slice(),
+                    ..Pools::default()
+                },
+                rows: 0,
+                outcome: Outcome::Read,
+            },
+            calls: Cell::new(0),
+        };
+        let baseline = context.memory().reserved_bytes();
+        let result = with_plan(&mut context, |plan, context| {
+            view.polls.set(0);
+            view.cancel_at.set(cancel_at);
+            view.close_at.set(close_at);
+            let error = RefCell::new(None);
+            let mut completion = Convert {
+                source: &source,
+                error: &error,
+            };
+            let mut pull = Rows {
+                count: 0,
+                done: false,
+            };
+            match execute_in(
+                context,
+                plan,
+                &mut pull,
+                &mut completion,
+                ExecutionCapacity {
+                    batch_rows: 1,
+                    result_rows: 1,
+                    ..ExecutionCapacity::default()
+                },
+            ) {
+                Ok(execution) => {
+                    let counters = execution.counters;
+                    drop(finalize_native(execution));
+                    Ok(counters)
+                }
+                Err(failure) => Err(FailedRun {
+                    driver: failure.error,
+                    conversion: error.into_inner(),
+                    counters: failure.counters,
+                }),
+            }
+        });
+        assert_eq!(context.memory().reserved_bytes(), baseline);
+        let polls = view.polls.get();
+        drop(nodes);
+        drop(bytes);
+        drop(context);
+        drop(memory);
+        assert_eq!(resources.reserved_bytes().unwrap(), shared_baseline);
+        (polls, result)
+    };
+
+    let (clean_polls, clean_result) = run(0, 0, RuntimeLimits::default());
+    let clean_counters = clean_result.unwrap();
+    assert!(clean_polls > node_count);
+    let mut expected_prefixes = std::collections::BTreeSet::from([0_u64]);
+    let mut prefix = 0_u64;
+    for (element_size, count) in [
+        (1, payload_len),
+        (size_of::<Node>(), node_count),
+        (1, payload_len),
+        (size_of::<ZeGraphNode>(), node_count),
+        (size_of::<ZeGraphWorkCounter>(), GLOBAL_WORK_COUNT),
+    ] {
+        let chunk_elements = (65536 / element_size).max(1);
+        let mut remaining = count;
+        while remaining != 0 {
+            let chunk = remaining.min(chunk_elements);
+            prefix += (chunk * element_size) as u64;
+            expected_prefixes.insert(prefix);
+            remaining -= chunk;
+        }
+    }
+    assert_eq!(clean_counters.get(WorkKind::CopiedBytes), prefix);
+    let mut observed_prefixes = std::collections::BTreeSet::new();
+    for ordinal in 1..=clean_polls {
+        let (polls, failure) = run(ordinal, 0, RuntimeLimits::default());
+        assert_eq!(polls, ordinal);
+        let failure = failure.expect_err("every observed checkpoint must cancel");
+        assert!(
+            matches!(failure.driver, RuntimeError::Value(QueryError::Cancelled))
+                || matches!(
+                    failure.conversion,
+                    Some(ConversionError::Completed(CompletedError::Runtime(
+                        RuntimeError::Value(QueryError::Cancelled)
+                    ))) | Some(ConversionError::Owner(OwnerError::Runtime(
+                        RuntimeError::Value(QueryError::Cancelled)
+                    )))
+                ),
+            "checkpoint {ordinal} returned {failure:?}"
+        );
+        observed_prefixes.insert(failure.counters.get(WorkKind::CopiedBytes));
+    }
+    assert_eq!(observed_prefixes, expected_prefixes);
+    eprintln!(
+        "ZE-141 checkpoint sweep polls={clean_polls} node_descriptors={node_count} copied_prefixes={expected_prefixes:?}"
+    );
+
+    let native_bytes = payload_len + node_count * size_of::<Node>();
+    let native_limit = RuntimeLimits::default()
+        .with_limit(WorkKind::CopiedBytes, 65535)
+        .unwrap();
+    let (_, native_failure) = run(0, 0, native_limit);
+    let native_failure = native_failure.expect_err("native copied-work seam must refuse");
+    assert!(matches!(
+        native_failure.conversion,
+        Some(ConversionError::Completed(CompletedError::Runtime(
+            RuntimeError::Limit(WorkKind::CopiedBytes)
+        )))
+    ));
+    assert_eq!(native_failure.counters.get(WorkKind::CopiedBytes), 0);
+
+    let c_limit = RuntimeLimits::default()
+        .with_limit(WorkKind::CopiedBytes, native_bytes as u64)
+        .unwrap();
+    let (_, c_failure) = run(0, 0, c_limit);
+    let c_failure = c_failure.expect_err("first C copied-work chunk must refuse");
+    assert!(matches!(
+        c_failure.conversion,
+        Some(ConversionError::Owner(OwnerError::Runtime(
+            RuntimeError::Limit(WorkKind::CopiedBytes)
+        )))
+    ));
+    assert_eq!(
+        c_failure.counters.get(WorkKind::CopiedBytes),
+        native_bytes as u64
+    );
+
+    let (_, close_failure) = run(clean_polls, clean_polls, RuntimeLimits::default());
+    let close_failure = close_failure.expect_err("final close/cancel must refuse");
+    assert!(close_failure.conversion.is_none());
+    assert!(matches!(
+        close_failure.driver,
+        RuntimeError::Value(QueryError::ReadCancelled)
+    ));
+    assert_eq!(
+        close_failure.counters.get(WorkKind::CompletedBytes),
+        size_of::<zeppelin_embed::property_graph::query::completed::CompletedGraphResult>() as u64
+            + native_bytes as u64
+    );
+
+    with_checkpoint_limits(
+        24 * 1024 * 1024,
+        0,
+        RuntimeLimits::default()
+            .with_limit(WorkKind::CopiedBytes, 0)
+            .unwrap(),
+        |context, _| {
+            let source = NativeSource {
+                input: ResultInput {
+                    view: context.view(),
+                    pools: Pools::default(),
+                    rows: 0,
+                    outcome: Outcome::Read,
+                },
+                calls: Cell::new(0),
+            };
+            let baseline = context.memory().reserved_bytes();
+            assert!(matches!(
+                prepare_native(&REGISTRY, &source, context),
+                Err(ConversionError::Owner(OwnerError::Runtime(
+                    RuntimeError::Limit(WorkKind::CopiedBytes)
+                )))
+            ));
+            assert_eq!(context.counters().get(WorkKind::CopiedBytes), 0);
+            assert_eq!(context.memory().reserved_bytes(), baseline);
+        },
+    );
+
+    let represented_native =
+        size_of::<zeppelin_embed::property_graph::query::completed::CompletedGraphResult>() as u64;
+    let represented_c = (GLOBAL_WORK_COUNT * size_of::<ZeGraphWorkCounter>()) as u64;
+    for (kind, limit, completed_bytes) in [
+        (WorkKind::CompletedBytes, represented_native - 1, 0),
+        (
+            WorkKind::CompletedAbiBytes,
+            represented_c - 1,
+            represented_native,
+        ),
+    ] {
+        let limits = RuntimeLimits::default().with_limit(kind, limit).unwrap();
+        with_checkpoint_limits(24 * 1024 * 1024, 0, limits, |context, _| {
+            let source = NativeSource {
+                input: ResultInput {
+                    view: context.view(),
+                    pools: Pools::default(),
+                    rows: 0,
+                    outcome: Outcome::Read,
+                },
+                calls: Cell::new(0),
+            };
+            let baseline = context.memory().reserved_bytes();
+            let failure = with_plan(context, |plan, context| {
+                let error = RefCell::new(None);
+                let mut completion = Convert {
+                    source: &source,
+                    error: &error,
+                };
+                let mut pull = Rows {
+                    count: 0,
+                    done: false,
+                };
+                let failure = match execute_in(
+                    context,
+                    plan,
+                    &mut pull,
+                    &mut completion,
+                    ExecutionCapacity {
+                        batch_rows: 1,
+                        result_rows: 1,
+                        ..ExecutionCapacity::default()
+                    },
+                ) {
+                    Err(failure) => failure,
+                    Ok(_) => panic!("final completed-byte charge must refuse"),
+                };
+                assert!(error.into_inner().is_none());
+                failure
+            });
+            assert!(matches!(failure.error, RuntimeError::Limit(observed) if observed == kind));
+            assert_eq!(
+                failure.counters.get(WorkKind::CompletedBytes),
+                completed_bytes
+            );
+            assert_eq!(failure.counters.get(WorkKind::CompletedAbiBytes), 0);
+            assert_eq!(context.memory().reserved_bytes(), baseline);
+        });
+    }
+
+    use std::time::Duration;
+    use zeppelin_embed::lifecycle::Deadline;
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(
+        dir.path(),
+        OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+    )
+    .unwrap();
+    let resources = GraphResources::from_store(&store).unwrap();
+    let memory = QueryMemory::new(&resources, 24 * 1024 * 1024).unwrap();
+    let deadline = Deadline::after(Duration::ZERO).unwrap();
+    let view = CheckpointView {
+        token: QueryView::new(StoreInstanceId::new(144).unwrap(), GraphGeneration::new(0)),
+        lease: store.snapshot().unwrap(),
+        cancellation: CancelToken::new(),
+        cancel_at: Cell::new(0),
+        close_at: Cell::new(0),
+        polls: Cell::new(0),
+    };
+    let control = QueryControl::Deadline(deadline);
+    let baseline = memory.reserved_bytes();
+    assert!(matches!(
+        RuntimeContext::new(&view, &control, &memory, RuntimeLimits::default()),
+        Err(RuntimeError::Value(QueryError::Timeout))
+    ));
+    assert_eq!(memory.reserved_bytes(), baseline);
 }
 
 #[test]

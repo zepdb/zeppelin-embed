@@ -9,7 +9,23 @@ use super::*;
 
 #[test]
 fn graph_result_layout_aligns_every_typed_pool_and_rejects_oversize() {
-    let plan = ArenaLayout::new([1, 1, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]).unwrap();
+    let plan = ArenaLayout::new(PoolCounts {
+        values: 1,
+        children: 1,
+        bytes: 3,
+        nodes: 1,
+        relationships: 1,
+        properties: 1,
+        names: 1,
+        vectors: 1,
+        columns: 1,
+        cells: 1,
+        receipts: 1,
+        reports: 1,
+        diagnostics: 1,
+        work: 1,
+    })
+    .unwrap();
     // Independently worked C-layout oracle, including the byte-to-node gap.
     assert_eq!(
         plan.offsets,
@@ -19,11 +35,15 @@ fn graph_result_layout_aligns_every_typed_pool_and_rejects_oversize() {
     );
     assert_eq!(plan.layout.size(), 624);
     assert_eq!(plan.layout.align(), 8);
-    let mut huge = [0; 14];
-    huge[0] = usize::MAX;
+    let huge = PoolCounts {
+        values: usize::MAX,
+        ..PoolCounts::default()
+    };
     assert!(matches!(ArenaLayout::new(huge), Err(OwnerError::Limit)));
-    let mut too_big = [0; 14];
-    too_big[2] = 4 * 1024 * 1024 + 1;
+    let too_big = PoolCounts {
+        bytes: 4 * 1024 * 1024 + 1,
+        ..PoolCounts::default()
+    };
     assert!(matches!(ArenaLayout::new(too_big), Err(OwnerError::Limit)));
 }
 

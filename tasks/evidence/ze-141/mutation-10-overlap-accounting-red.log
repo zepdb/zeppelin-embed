@@ -1,9 +1,9 @@
    Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/crates/zeppelin-embed-ffi)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.51s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.57s
 ────────────
- Nextest run ID 141d91a7-7ff8-41ce-82b3-ab4b258cd38b with nextest profile: default
+ Nextest run ID ed926ffa-6452-4330-ab29-678a022f43cc with nextest profile: default
     Starting 1 test across 1 binary (33 tests skipped)
-        FAIL [   0.021s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_geometry_limits_and_real_overlap_reject
+        FAIL [   0.010s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_geometry_limits_and_real_overlap_reject
   stdout ───
 
     running 1 test
@@ -18,13 +18,13 @@
 
   stderr ───
 
-    thread 'graph_result::conversion::tests::graph_result_native_geometry_limits_and_real_overlap_reject' (35589946) panicked at crates/zeppelin-embed-ffi/src/graph_result/conversion/tests.rs:1197:9:
+    thread 'graph_result::conversion::tests::graph_result_native_geometry_limits_and_real_overlap_reject' (35744656) panicked at crates/zeppelin-embed-ffi/src/graph_result/conversion/tests.rs:1362:9:
     assertion failed: owner.reserved_bytes() > owner.allocation_bytes()
     note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 
 ────────────
-     Summary [   0.023s] 1 test run: 0 passed, 1 failed, 33 skipped
-        FAIL [   0.021s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_geometry_limits_and_real_overlap_reject
+     Summary [   0.010s] 1 test run: 0 passed, 1 failed, 33 skipped
+        FAIL [   0.010s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_geometry_limits_and_real_overlap_reject
   stdout ───
 
     running 1 test
@@ -39,7 +39,7 @@
 
   stderr ───
 
-    thread 'graph_result::conversion::tests::graph_result_native_geometry_limits_and_real_overlap_reject' (35589946) panicked at crates/zeppelin-embed-ffi/src/graph_result/conversion/tests.rs:1197:9:
+    thread 'graph_result::conversion::tests::graph_result_native_geometry_limits_and_real_overlap_reject' (35744656) panicked at crates/zeppelin-embed-ffi/src/graph_result/conversion/tests.rs:1362:9:
     assertion failed: owner.reserved_bytes() > owner.allocation_bytes()
     note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 

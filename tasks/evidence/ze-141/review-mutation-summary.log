@@ -1,0 +1,19 @@
+mutations=15
+01-id-high-half red=100 green=0 restored=true
+02-f64-bits red=100 green=0 restored=true
+03-presence-bits red=100 green=0 restored=true
+04-empty-list-tag red=100 green=0 restored=true
+05-receipt-disposition red=100 green=0 restored=true
+06-report-work-range red=100 green=0 restored=true
+07-completed-abi-counter red=100 green=0 restored=true
+08-peak-counter red=100 green=0 restored=true
+09-copied-byte-charge red=100 green=0 restored=true
+10-overlap-accounting red=100 green=0 restored=true
+11-post-registration-checkpoint red=100 green=0 restored=true
+12-finalizer-allocation red=100 green=0 restored=true
+13-native-probe-route red=100 green=0 restored=true
+14-c-allocation-receipt red=100 green=0 restored=true
+15-native-memory-pairs red=100 green=0 restored=true
+all_red_100=true
+all_green_0=true
+all_restored=true

@@ -68,12 +68,50 @@ impl std::fmt::Display for OwnerError {
 }
 impl std::error::Error for OwnerError {}
 
+#[derive(Clone, Copy, Default)]
+struct PoolCounts {
+    values: usize,
+    children: usize,
+    bytes: usize,
+    nodes: usize,
+    relationships: usize,
+    properties: usize,
+    names: usize,
+    vectors: usize,
+    columns: usize,
+    cells: usize,
+    receipts: usize,
+    reports: usize,
+    diagnostics: usize,
+    work: usize,
+}
+impl PoolCounts {
+    const fn ordered(self) -> [usize; 14] {
+        [
+            self.values,
+            self.children,
+            self.bytes,
+            self.nodes,
+            self.relationships,
+            self.properties,
+            self.names,
+            self.vectors,
+            self.columns,
+            self.cells,
+            self.receipts,
+            self.reports,
+            self.diagnostics,
+            self.work,
+        ]
+    }
+}
+
 struct ArenaLayout {
     layout: Layout,
     offsets: [usize; 14],
 }
 impl ArenaLayout {
-    fn new(counts: [usize; 14]) -> Result<Self, OwnerError> {
+    fn new(counts: PoolCounts) -> Result<Self, OwnerError> {
         let elements = [
             Layout::new::<ZeGraphValue>(),
             Layout::new::<u32>(),
@@ -92,7 +130,9 @@ impl ArenaLayout {
         ];
         let mut layout = Layout::from_size_align(0, 1).map_err(|_| OwnerError::Limit)?;
         let mut offsets = [0; 14];
-        for ((element, count), offset) in elements.into_iter().zip(counts).zip(&mut offsets) {
+        for ((element, count), offset) in
+            elements.into_iter().zip(counts.ordered()).zip(&mut offsets)
+        {
             let size = element.size().checked_mul(count).ok_or(OwnerError::Limit)?;
             let array =
                 Layout::from_size_align(size, element.align()).map_err(|_| OwnerError::Limit)?;
@@ -146,23 +186,23 @@ pub struct ResponseParts<'a> {
     pub work: &'a [ZeGraphWorkCounter],
 }
 impl ResponseParts<'_> {
-    fn counts(&self) -> [usize; 14] {
-        [
-            self.values.len(),
-            self.children.len(),
-            self.bytes.len(),
-            self.nodes.len(),
-            self.relationships.len(),
-            self.properties.len(),
-            self.names.len(),
-            self.vectors.len(),
-            self.columns.len(),
-            self.cells.len(),
-            self.receipts.len(),
-            self.reports.len(),
-            self.diagnostics.len(),
-            self.work.len(),
-        ]
+    fn counts(&self) -> PoolCounts {
+        PoolCounts {
+            values: self.values.len(),
+            children: self.children.len(),
+            bytes: self.bytes.len(),
+            nodes: self.nodes.len(),
+            relationships: self.relationships.len(),
+            properties: self.properties.len(),
+            names: self.names.len(),
+            vectors: self.vectors.len(),
+            columns: self.columns.len(),
+            cells: self.cells.len(),
+            receipts: self.receipts.len(),
+            reports: self.reports.len(),
+            diagnostics: self.diagnostics.len(),
+            work: self.work.len(),
+        }
     }
 }
 /// Fixed response metadata. Coordinator/admission authenticity is external.
@@ -278,60 +318,14 @@ impl AlignedArena {
         Ok(pointer)
     }
 
-    // The checked ArenaLayout fixes the typed offset and total extent. The
-    // mapper is infallible and allocation-free, so every charged chunk is
-    // initialized before another fallible operation can run.
-    unsafe fn map<T, U>(
-        &self,
-        offset: usize,
-        source: &[U],
-        context: &mut RuntimeContext<'_, '_, '_>,
-        mapper: impl Fn(usize, &U) -> T,
-    ) -> Result<*const T, OwnerError> {
-        if source.is_empty() {
-            return Ok(std::ptr::null());
-        }
-        let element_size = std::mem::size_of::<T>();
-        if element_size == 0 {
-            return Err(OwnerError::Limit);
-        }
-        let bytes = element_size
-            .checked_mul(source.len())
-            .ok_or(OwnerError::Limit)?;
-        if offset
-            .checked_add(bytes)
-            .is_none_or(|end| end > self.layout.size())
-            || unsafe { self.pointer.as_ptr().add(offset) }.align_offset(std::mem::align_of::<T>())
-                != 0
-        {
-            return Err(OwnerError::Limit);
-        }
-        let pointer = unsafe { self.pointer.as_ptr().add(offset).cast::<T>() };
-        let chunk_elements = (65536 / element_size).max(1);
-        let mut initialized = 0;
-        for chunk in source.chunks(chunk_elements) {
-            let chunk_bytes = element_size
-                .checked_mul(chunk.len())
-                .ok_or(OwnerError::Limit)?;
-            context.charge(WorkKind::CopiedBytes, chunk_bytes as u64)?;
-            for item in chunk {
-                unsafe {
-                    pointer.add(initialized).write(mapper(initialized, item));
-                }
-                initialized += 1;
-            }
-        }
-        Ok(pointer)
-    }
-
-    // Same proof as map, for fixed metadata rows synthesized from checked
-    // geometry rather than a source slice.
-    unsafe fn generate<T>(
+    // The checked ArenaLayout fixes the typed offset and total extent. Each
+    // infallible writer consumes a charged chunk before the next fallible step.
+    unsafe fn write_chunks<T>(
         &self,
         offset: usize,
         count: usize,
         context: &mut RuntimeContext<'_, '_, '_>,
-        mapper: impl Fn(usize) -> T,
+        mut writer: impl FnMut(*mut T, std::ops::Range<usize>),
     ) -> Result<*const T, OwnerError> {
         if count == 0 {
             return Ok(std::ptr::null());
@@ -353,18 +347,53 @@ impl AlignedArena {
         let chunk_elements = (65536 / element_size).max(1);
         let mut initialized = 0;
         while initialized < count {
-            let length = (count - initialized).min(chunk_elements);
-            let chunk_bytes = element_size.checked_mul(length).ok_or(OwnerError::Limit)?;
+            let end = initialized.saturating_add(chunk_elements).min(count);
+            let chunk_bytes = element_size
+                .checked_mul(end - initialized)
+                .ok_or(OwnerError::Limit)?;
             context.charge(WorkKind::CopiedBytes, chunk_bytes as u64)?;
-            let end = initialized + length;
-            while initialized < end {
-                unsafe {
-                    pointer.add(initialized).write(mapper(initialized));
-                }
-                initialized += 1;
-            }
+            writer(pointer, initialized..end);
+            initialized = end;
         }
         Ok(pointer)
+    }
+
+    // The mapper is infallible and allocation-free; source length is the exact
+    // initialized range passed to the shared checked writer.
+    unsafe fn map<T, U>(
+        &self,
+        offset: usize,
+        source: &[U],
+        context: &mut RuntimeContext<'_, '_, '_>,
+        mapper: impl Fn(usize, &U) -> T,
+    ) -> Result<*const T, OwnerError> {
+        unsafe {
+            self.write_chunks(offset, source.len(), context, |pointer: *mut T, range| {
+                for index in range {
+                    pointer
+                        .add(index)
+                        .write(mapper(index, source.get_unchecked(index)));
+                }
+            })
+        }
+    }
+
+    // Same proof as map, for fixed metadata rows synthesized from checked
+    // geometry rather than a source slice.
+    unsafe fn generate<T>(
+        &self,
+        offset: usize,
+        count: usize,
+        context: &mut RuntimeContext<'_, '_, '_>,
+        mapper: impl Fn(usize) -> T,
+    ) -> Result<*const T, OwnerError> {
+        unsafe {
+            self.write_chunks(offset, count, context, |pointer: *mut T, range| {
+                for index in range {
+                    pointer.add(index).write(mapper(index));
+                }
+            })
+        }
     }
 }
 impl Drop for AlignedArena {

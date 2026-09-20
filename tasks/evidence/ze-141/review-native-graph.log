@@ -1,0 +1,66 @@
+warning: ignoring --test-threads because --no-capture is specified
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/crates/zeppelin-embed-ffi)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.46s
+────────────
+ Nextest run ID 631f86b6-56a0-4815-8a0e-d1fafe949273 with nextest profile: default
+    Starting 7 tests across 1 binary (27 tests skipped)
+       START [         ] (1/7) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_all_pools_match_literal_field_oracle
+
+running 1 test
+test graph_result::conversion::tests::graph_result_native_all_pools_match_literal_field_oracle ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+        PASS [   0.014s] (1/7) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_all_pools_match_literal_field_oracle
+       START [         ] (2/7) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_context_identity_and_source_snapshot_are_single
+
+running 1 test
+test graph_result::conversion::tests::graph_result_native_context_identity_and_source_snapshot_are_single ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+        PASS [   0.011s] (2/7) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_context_identity_and_source_snapshot_are_single
+       START [         ] (3/7) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters
+
+running 1 test
+test graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+        PASS [   0.009s] (3/7) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters
+       START [         ] (4/7) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans
+
+running 1 test
+test graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans ... ZE-141 empty prepare final checkpoint ordinal=5
+ZE-141 checkpoint sweep polls=652 node_descriptors=631 copied_prefixes={0, 65536, 71680, 132256, 197792, 203936, 269456, 269560, 270112}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.57s
+
+        PASS [   0.577s] (4/7) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans
+       START [         ] (5/7) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_geometry_limits_and_real_overlap_reject
+
+running 1 test
+test graph_result::conversion::tests::graph_result_native_geometry_limits_and_real_overlap_reject ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.01s
+
+        PASS [   0.017s] (5/7) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_geometry_limits_and_real_overlap_reject
+       START [         ] (6/7) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_private_drop_and_source_independence_are_heap_flat
+
+running 1 test
+test graph_result::conversion::tests::graph_result_native_private_drop_and_source_independence_are_heap_flat ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+        PASS [   0.008s] (6/7) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_private_drop_and_source_independence_are_heap_flat
+       START [         ] (7/7) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_reports_receipts_outcomes_are_lossless
+
+running 1 test
+test graph_result::conversion::tests::graph_result_native_reports_receipts_outcomes_are_lossless ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+        PASS [   0.007s] (7/7) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_reports_receipts_outcomes_are_lossless
+────────────
+     Summary [   0.644s] 7 tests run: 7 passed, 27 skipped

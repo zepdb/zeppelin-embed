@@ -52,3 +52,16 @@
 
 ────────────
      Summary [   0.035s] 4 tests run: 4 passed, 30 skipped
+
+ZE-141 follow-up review measurements
+checkpoint_sweep_polls=652
+source_payload_bytes=71680
+c_node_descriptors=631
+copied_prefixes=0,65536,71680,132256,197792,203936,269456,269560,270112
+pg16_seeds=0,1,141,18446744073709551615
+pg16_native_cases_per_seed=15
+pg16_native_fault_fires_per_seed=7
+pg16_native_clean_controls_per_seed=7
+pg16_source_memory_limit=76382
+pg16_native_copy_memory_limit=242271
+pg16_native_copy_prefix=80

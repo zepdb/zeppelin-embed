@@ -1,0 +1,26 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.02s
+────────────
+ Nextest run ID 304a2008-384d-465e-b8ca-2b9d011d8ef5 with nextest profile: default
+    Starting 20 tests across 1 binary (14 tests skipped)
+        PASS [   0.009s] ( 1/20) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters
+        PASS [   0.009s] ( 2/20) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_all_pools_match_literal_field_oracle
+        PASS [   0.010s] ( 3/20) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_context_identity_and_source_snapshot_are_single
+        PASS [   0.009s] ( 4/20) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_reports_receipts_outcomes_are_lossless
+        PASS [   0.010s] ( 5/20) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_private_drop_and_source_independence_are_heap_flat
+        PASS [   0.008s] ( 6/20) zeppelin-embed-ffi graph_result::registration::tests::graph_result_gate_poison_busy_and_registry_bound_are_precommit_errors
+        PASS [   0.008s] ( 7/20) zeppelin-embed-ffi graph_result::registration::tests::graph_result_token_exhaustion_precedes_allocation_or_exposure
+        PASS [   0.020s] ( 8/20) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_geometry_limits_and_real_overlap_reject
+        PASS [   0.007s] ( 9/20) zeppelin-embed-ffi graph_result::tests::graph_result_cross_registry_empty_owner_cannot_steal_another_allocation
+        PASS [   0.009s] (10/20) zeppelin-embed-ffi graph_result::tests::graph_result_actual_allocator_failures_and_expose_free_have_exact_heap_accounting
+        PASS [   0.009s] (11/20) zeppelin-embed-ffi graph_result::tests::graph_result_concurrent_free_publication_and_abort_have_one_owner
+        PASS [   0.008s] (12/20) zeppelin-embed-ffi graph_result::tests::graph_result_known_commit_survives_unwind_and_unknown_attempt_retains_no_ids
+        PASS [   0.009s] (13/20) zeppelin-embed-ffi graph_result::tests::graph_result_every_authoritative_field_mutation_and_foreign_geometry_is_rejected
+        PASS [   0.009s] (14/20) zeppelin-embed-ffi graph_result::tests::graph_result_free_rejects_returned_root_inside_authoritative_arena
+        PASS [   0.008s] (15/20) zeppelin-embed-ffi graph_result::tests::graph_result_layout_aligns_every_typed_pool_and_rejects_oversize
+        PASS [   0.008s] (16/20) zeppelin-embed-ffi graph_result::tests::graph_result_owned_pools_outlive_temporary_owners_and_lifecycle_fixture
+        PASS [   0.008s] (17/20) zeppelin-embed-ffi graph_result::tests::graph_result_real_aligned_owner_publishes_and_frees_without_source_lifetime
+        PASS [   0.008s] (18/20) zeppelin-embed-ffi graph_result::tests::graph_result_shape_capacity_work_and_registry_lookup_bounds_are_real
+        PASS [   0.015s] (19/20) zeppelin-embed-ffi graph_result::tests::graph_result_seeded_cancel_sites_can_fire_and_same_seed_control_finishes
+        PASS [   0.636s] (20/20) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans
+────────────
+     Summary [   0.636s] 20 tests run: 20 passed, 14 skipped

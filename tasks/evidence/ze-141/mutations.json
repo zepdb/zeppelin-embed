@@ -1,7 +1,7 @@
 [
   {
     "before_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "4fd726f41db0ea9dd5f3b4ae00e504c21330753db6e362ee3cf6e2d2883f0e64"
     },
     "command": [
       "cargo",
@@ -25,17 +25,17 @@
     "green_exit_status": 0,
     "key": "01-id-high-half",
     "mutant_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "76aa56f158a4315971807fa88d7700c5a92f65a076e3909b19456d0ac960695a"
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "39c88135ef3884ee6c79fad4d658460c5aa7d022460eba7d99ff9be3cc96f4a4"
     },
     "red_exit_status": 100,
     "replacement_count": 1,
     "restored_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "4fd726f41db0ea9dd5f3b4ae00e504c21330753db6e362ee3cf6e2d2883f0e64"
     }
   },
   {
     "before_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "4fd726f41db0ea9dd5f3b4ae00e504c21330753db6e362ee3cf6e2d2883f0e64"
     },
     "command": [
       "cargo",
@@ -59,17 +59,17 @@
     "green_exit_status": 0,
     "key": "02-f64-bits",
     "mutant_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "d60004861201dc2e13b63e23b5f7792ebceeda5a3407fd35e5e83d385ee5986e"
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "b10104cb96914b6bb712236e699297adf36b28d20691418feffe200c2f994564"
     },
     "red_exit_status": 100,
     "replacement_count": 1,
     "restored_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "4fd726f41db0ea9dd5f3b4ae00e504c21330753db6e362ee3cf6e2d2883f0e64"
     }
   },
   {
     "before_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "4fd726f41db0ea9dd5f3b4ae00e504c21330753db6e362ee3cf6e2d2883f0e64"
     },
     "command": [
       "cargo",
@@ -93,17 +93,17 @@
     "green_exit_status": 0,
     "key": "03-presence-bits",
     "mutant_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "76284cee6ab48b6f1baeb0b80be6b3b0b009339370c57306fc900c581951239d"
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "8879085b4050126ca7a79e470384b5f007c9509f838e42d14ffeff48cd3ce777"
     },
     "red_exit_status": 100,
     "replacement_count": 2,
     "restored_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "4fd726f41db0ea9dd5f3b4ae00e504c21330753db6e362ee3cf6e2d2883f0e64"
     }
   },
   {
     "before_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "4fd726f41db0ea9dd5f3b4ae00e504c21330753db6e362ee3cf6e2d2883f0e64"
     },
     "command": [
       "cargo",
@@ -127,17 +127,17 @@
     "green_exit_status": 0,
     "key": "04-empty-list-tag",
     "mutant_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "535d8d916630afe88e9cce7a406419b4c27ccc3c7ce1353b1d252893b4f7edc2"
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "9fd478584bacb7dca9f3044f315c2e29b781f00beb84729b8792d5927d3374da"
     },
     "red_exit_status": 100,
     "replacement_count": 1,
     "restored_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "4fd726f41db0ea9dd5f3b4ae00e504c21330753db6e362ee3cf6e2d2883f0e64"
     }
   },
   {
     "before_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "4fd726f41db0ea9dd5f3b4ae00e504c21330753db6e362ee3cf6e2d2883f0e64"
     },
     "command": [
       "cargo",
@@ -161,17 +161,17 @@
     "green_exit_status": 0,
     "key": "05-receipt-disposition",
     "mutant_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "06bc1df1c8cf595371ba2382d49a6a4b8a8882cba89a4b2ca7d38b7095c17803"
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "84dd418b8e0889c4c7c49d00e04a91e7efd66a671ab8eb87c4aab5a3c84a08cf"
     },
     "red_exit_status": 100,
     "replacement_count": 1,
     "restored_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "4fd726f41db0ea9dd5f3b4ae00e504c21330753db6e362ee3cf6e2d2883f0e64"
     }
   },
   {
     "before_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "4fd726f41db0ea9dd5f3b4ae00e504c21330753db6e362ee3cf6e2d2883f0e64"
     },
     "command": [
       "cargo",
@@ -195,17 +195,17 @@
     "green_exit_status": 0,
     "key": "06-report-work-range",
     "mutant_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "4b3c28fe9229ee802cb0701dc6fd49df2c875fa776303173e3999f3ca156aa8d"
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "cb7bd35f6b2f420eb511e613f07eb3320957dacd36ec11a26f578acd6665d1fa"
     },
     "red_exit_status": 100,
     "replacement_count": 1,
     "restored_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "4fd726f41db0ea9dd5f3b4ae00e504c21330753db6e362ee3cf6e2d2883f0e64"
     }
   },
   {
     "before_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "4fd726f41db0ea9dd5f3b4ae00e504c21330753db6e362ee3cf6e2d2883f0e64"
     },
     "command": [
       "cargo",
@@ -229,17 +229,17 @@
     "green_exit_status": 0,
     "key": "07-completed-abi-counter",
     "mutant_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "9060bcaa42b901786a8466d12e0cf4d0439b4c8c4b552451095fef81e21bd731"
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "fe855b99a237861fbc6f4291727f9f4dfe112fba32ae0eb7389f0c52c97d6eb7"
     },
     "red_exit_status": 100,
     "replacement_count": 1,
     "restored_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "4fd726f41db0ea9dd5f3b4ae00e504c21330753db6e362ee3cf6e2d2883f0e64"
     }
   },
   {
     "before_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "4fd726f41db0ea9dd5f3b4ae00e504c21330753db6e362ee3cf6e2d2883f0e64"
     },
     "command": [
       "cargo",
@@ -263,17 +263,17 @@
     "green_exit_status": 0,
     "key": "08-peak-counter",
     "mutant_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "f24f57a33cd404d521de6e0301404f5eda2b7b734ffd5d65c630972211a42775"
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "8fdce7a5ac75a56149ef98b903231f7b044f7ffe9371950764f0da7d0301609f"
     },
     "red_exit_status": 100,
     "replacement_count": 1,
     "restored_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "4fd726f41db0ea9dd5f3b4ae00e504c21330753db6e362ee3cf6e2d2883f0e64"
     }
   },
   {
     "before_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result.rs": "ece05cad3ecab3514a882ccf54b60844f356369c4d1401fa0daad8ab22fb4ff5"
+      "crates/zeppelin-embed-ffi/src/graph_result.rs": "0a5d60e2cbce73fd880f350e2108cc4fde89646a6ca54ed97160718123c00799"
     },
     "command": [
       "cargo",
@@ -291,23 +291,23 @@
       "graph-cypher",
       "--lib",
       "-E",
-      "test(=graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters)"
+      "test(=graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters) | test(=graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans)"
     ],
-    "expected_assertion": "known copied-byte delta rejects a removed direct-map chunk charge",
+    "expected_assertion": "known copied-byte delta and C-stage work refusal both reject a removed direct-map chunk charge",
     "green_exit_status": 0,
     "key": "09-copied-byte-charge",
     "mutant_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result.rs": "89fa66fcc35a5ac4e3eda5c4bb792c9ed190095d3d4ee614f3cd92d655808c2f"
+      "crates/zeppelin-embed-ffi/src/graph_result.rs": "fa9726f48b544725a311605d7d3b1c0db4edd521eb38d621505af8bc79ac6090"
     },
     "red_exit_status": 100,
     "replacement_count": 1,
     "restored_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result.rs": "ece05cad3ecab3514a882ccf54b60844f356369c4d1401fa0daad8ab22fb4ff5"
+      "crates/zeppelin-embed-ffi/src/graph_result.rs": "0a5d60e2cbce73fd880f350e2108cc4fde89646a6ca54ed97160718123c00799"
     }
   },
   {
     "before_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result/registration.rs": "02aafc1d63ea8dee61b1b6ca27b96d79c8f7ffc7d7fde441404cbc9b77ab8031"
+      "crates/zeppelin-embed-ffi/src/graph_result/registration.rs": "9a36e5a0018051ff3916380c5e4d6c38d52eb8bda3a42147e260c2494be631f9"
     },
     "command": [
       "cargo",
@@ -331,17 +331,17 @@
     "green_exit_status": 0,
     "key": "10-overlap-accounting",
     "mutant_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result/registration.rs": "de302c05dc2f2e2d86c9f9886b3a038f3c1fa1d55c5ae09abd8456fb37aeddfb"
+      "crates/zeppelin-embed-ffi/src/graph_result/registration.rs": "bbda42ae22368fc057915550a69b15d5a4065b186ad2db4bf2571894d458de45"
     },
     "red_exit_status": 100,
     "replacement_count": 1,
     "restored_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result/registration.rs": "02aafc1d63ea8dee61b1b6ca27b96d79c8f7ffc7d7fde441404cbc9b77ab8031"
+      "crates/zeppelin-embed-ffi/src/graph_result/registration.rs": "9a36e5a0018051ff3916380c5e4d6c38d52eb8bda3a42147e260c2494be631f9"
     }
   },
   {
     "before_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result/registration.rs": "02aafc1d63ea8dee61b1b6ca27b96d79c8f7ffc7d7fde441404cbc9b77ab8031"
+      "crates/zeppelin-embed-ffi/src/graph_result/registration.rs": "9a36e5a0018051ff3916380c5e4d6c38d52eb8bda3a42147e260c2494be631f9"
     },
     "command": [
       "cargo",
@@ -365,17 +365,17 @@
     "green_exit_status": 0,
     "key": "11-post-registration-checkpoint",
     "mutant_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result/registration.rs": "01654f3d489cb5d95cdf0b61b31115aca7cc463e265d43b737b72a9b44ef6686"
+      "crates/zeppelin-embed-ffi/src/graph_result/registration.rs": "9b7dfb217b9884ba29fbf123420b5b530dd6c3eb2fc26b3b5e92a25d7c39bba6"
     },
     "red_exit_status": 100,
     "replacement_count": 1,
     "restored_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result/registration.rs": "02aafc1d63ea8dee61b1b6ca27b96d79c8f7ffc7d7fde441404cbc9b77ab8031"
+      "crates/zeppelin-embed-ffi/src/graph_result/registration.rs": "9a36e5a0018051ff3916380c5e4d6c38d52eb8bda3a42147e260c2494be631f9"
     }
   },
   {
     "before_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "4fd726f41db0ea9dd5f3b4ae00e504c21330753db6e362ee3cf6e2d2883f0e64"
     },
     "command": [
       "cargo",
@@ -399,17 +399,17 @@
     "green_exit_status": 0,
     "key": "12-finalizer-allocation",
     "mutant_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "3aef1996095b5c8e523fae430efd775026a66ac00585861aeafda976863d4553"
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "e37cdb96fff9db6c3892f1d89fa8eec3195c06e181bdea0a053c57324873b4e6"
     },
     "red_exit_status": 100,
     "replacement_count": 1,
     "restored_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "a716f5315ce38bcc77158eb153c623f95f65c641f1c370b6943d821d4aa75601"
+      "crates/zeppelin-embed-ffi/src/graph_result/conversion.rs": "4fd726f41db0ea9dd5f3b4ae00e504c21330753db6e362ee3cf6e2d2883f0e64"
     }
   },
   {
     "before_sha256": {
-      "tests/adversarial/graph_response.rs": "ff92b3005c0701837f07bc86ab855076b038711f98006c214f1d0ed2dfc47d2a"
+      "tests/adversarial/graph_response.rs": "6f6a96efbed2d121f55177fac7c071d67d747e16775bf3dc2e591b1229d3c74b"
     },
     "command": [
       "cargo",
@@ -434,17 +434,17 @@
     "green_exit_status": 0,
     "key": "13-native-probe-route",
     "mutant_sha256": {
-      "tests/adversarial/graph_response.rs": "3ff69f51443a501a005c0c704c89c2004e6bfd8ba5a67a06d6c92061632dbf72"
+      "tests/adversarial/graph_response.rs": "bb72c93da3f79dcd06f2f7bc72c6bbdca1eb6ff692f894467e7402d2391ac305"
     },
     "red_exit_status": 100,
     "replacement_count": 1,
     "restored_sha256": {
-      "tests/adversarial/graph_response.rs": "ff92b3005c0701837f07bc86ab855076b038711f98006c214f1d0ed2dfc47d2a"
+      "tests/adversarial/graph_response.rs": "6f6a96efbed2d121f55177fac7c071d67d747e16775bf3dc2e591b1229d3c74b"
     }
   },
   {
     "before_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result.rs": "ece05cad3ecab3514a882ccf54b60844f356369c4d1401fa0daad8ab22fb4ff5"
+      "crates/zeppelin-embed-ffi/src/graph_result.rs": "0a5d60e2cbce73fd880f350e2108cc4fde89646a6ca54ed97160718123c00799"
     },
     "command": [
       "cargo",
@@ -469,12 +469,47 @@
     "green_exit_status": 0,
     "key": "14-c-allocation-receipt",
     "mutant_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result.rs": "0ff0f38ebfce8d9facfa8eda870e14b1dcbc748b3c8fb2e29d50bd9be1250805"
+      "crates/zeppelin-embed-ffi/src/graph_result.rs": "0dc9879b6215f4ea1d4af885628fa5ec2e47f1be6d245fd4480c5a8d6c5099c5"
     },
     "red_exit_status": 100,
     "replacement_count": 1,
     "restored_sha256": {
-      "crates/zeppelin-embed-ffi/src/graph_result.rs": "ece05cad3ecab3514a882ccf54b60844f356369c4d1401fa0daad8ab22fb4ff5"
+      "crates/zeppelin-embed-ffi/src/graph_result.rs": "0a5d60e2cbce73fd880f350e2108cc4fde89646a6ca54ed97160718123c00799"
+    }
+  },
+  {
+    "before_sha256": {
+      "tests/adversarial/graph_response.rs": "6f6a96efbed2d121f55177fac7c071d67d747e16775bf3dc2e591b1229d3c74b"
+    },
+    "command": [
+      "cargo",
+      "nextest",
+      "run",
+      "--profile",
+      "default",
+      "-j",
+      "4",
+      "--retries",
+      "0",
+      "-p",
+      "zeppelin-embed-workspace-tests",
+      "--features",
+      "graph-result-test-support",
+      "--test",
+      "adversarial_tests",
+      "-E",
+      "test(=property_graph_native_response_probe_checks_conversion_and_paired_faults)"
+    ],
+    "expected_assertion": "four-seed probe requires genuine source-owner and native-copy memory refusal pairs",
+    "green_exit_status": 0,
+    "key": "15-native-memory-pairs",
+    "mutant_sha256": {
+      "tests/adversarial/graph_response.rs": "2aede77b38564b7c74ebece02d08ba01eeef1b786ab36e3d53c4d48c53f65250"
+    },
+    "red_exit_status": 100,
+    "replacement_count": 1,
+    "restored_sha256": {
+      "tests/adversarial/graph_response.rs": "6f6a96efbed2d121f55177fac7c071d67d747e16775bf3dc2e591b1229d3c74b"
     }
   }
 ]

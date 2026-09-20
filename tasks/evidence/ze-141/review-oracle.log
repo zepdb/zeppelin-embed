@@ -1,0 +1,7 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s
+────────────
+ Nextest run ID febd498b-9e03-4f4f-aaf5-726eb9215998 with nextest profile: default
+    Starting 1 test across 1 binary (95 tests skipped)
+        PASS [   0.008s] (1/1) zeppelin-embed-adversarial-oracle graph_response::tests::graph_response_oracle_rejects_missing_fires_extra_owner_and_changed_commit
+────────────
+     Summary [   0.009s] 1 test run: 1 passed, 95 skipped

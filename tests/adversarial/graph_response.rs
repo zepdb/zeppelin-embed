@@ -6,7 +6,8 @@ use std::cell::Cell;
 use std::num::NonZeroU64;
 use std::sync::{Arc, Barrier};
 use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, SnapshotLease, Store};
-use zeppelin_embed::property_graph::query::resources::{MemoryError, QueryMemory};
+use zeppelin_embed::property_graph::query::completed::Value;
+use zeppelin_embed::property_graph::query::resources::{MemoryError, QueryArena, QueryMemory};
 use zeppelin_embed::property_graph::query::runtime::{
     RetainedView, RuntimeContext, RuntimeError, RuntimeLimits, WorkKind,
 };
@@ -53,6 +54,9 @@ pub struct ProbeReport {
     pub native_cases: usize,
     pub native_fault_fires: usize,
     pub native_clean_controls: usize,
+    pub native_source_memory_limit: usize,
+    pub native_copy_memory_limit: usize,
+    pub native_copy_prefix: u64,
 }
 struct View {
     token: QueryView,
@@ -660,6 +664,91 @@ fn native_probe(
     report.native_fault_fires += 1;
     report.native_clean_controls += usize::from(clean_succeeded);
     report.native_cases += 2;
+
+    native_memory_pairs(case, &clean, report)?;
+    Ok(())
+}
+
+fn native_memory_pairs(
+    case: NativeConversionCase<'_>,
+    clean: &NativeConversionObservation,
+    report: &mut ProbeReport,
+) -> Result<(), String> {
+    let context_baseline = context(24 * 1024 * 1024, u64::MAX, 0, |context, _| {
+        Ok(context.memory().reserved_bytes())
+    })?;
+    let source_reservation = case
+        .payload
+        .len()
+        .checked_add(4096)
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<QueryArena<'_, '_, u8>>()))
+        .ok_or("source-owner reservation overflow")?;
+    let source_limit = context_baseline
+        .checked_add(source_reservation)
+        .and_then(|bytes| bytes.checked_sub(1))
+        .ok_or("source-owner refusal limit overflow")?;
+    let source_memory = context(source_limit, u64::MAX, 0, |context, _| {
+        run_native_conversion_case(context, case)
+            .err()
+            .ok_or_else(|| "source-owner memory refusal did not fire".into())
+    })?;
+    let clean_succeeded = native_clean(case).is_ok();
+    oracle::check_native_memory_failure(
+        0,
+        0,
+        stage_code(source_memory.stage),
+        refusal_code(source_memory.refusal),
+        source_memory.source_calls,
+        source_memory.copied_bytes,
+        source_memory.allocation_matching_sites,
+        source_memory.allocation_fires,
+        source_memory.query_charge_restored,
+        clean_succeeded,
+    )?;
+    report.native_fault_fires += 1;
+    report.native_clean_controls += usize::from(clean_succeeded);
+    report.native_cases += 2;
+    report.native_source_memory_limit = source_limit;
+
+    let expected_native_prefix = (5 * std::mem::size_of::<Value>()) as u64;
+    let clean_peak =
+        usize::try_from(clean.peak_query_bytes).map_err(|_| "native peak does not fit usize")?;
+    let mut native_memory = None;
+    let mut limit = source_limit.saturating_add(1);
+    while limit < clean_peak {
+        let attempt = context(limit, u64::MAX, 0, |context, _| {
+            Ok(run_native_conversion_case(context, case))
+        })?;
+        if let Err(failure) = attempt
+            && failure.stage == NativeConversionStage::Native
+            && failure.refusal == NativeConversionRefusal::Memory
+            && failure.source_calls == 1
+            && failure.copied_bytes == expected_native_prefix
+        {
+            native_memory = Some(failure);
+            break;
+        }
+        limit = limit.saturating_add(1024);
+    }
+    let native_memory = native_memory.ok_or("native-copy memory refusal did not fire")?;
+    let clean_succeeded = native_clean(case).is_ok();
+    oracle::check_native_memory_failure(
+        1,
+        expected_native_prefix,
+        stage_code(native_memory.stage),
+        refusal_code(native_memory.refusal),
+        native_memory.source_calls,
+        native_memory.copied_bytes,
+        native_memory.allocation_matching_sites,
+        native_memory.allocation_fires,
+        native_memory.query_charge_restored,
+        clean_succeeded,
+    )?;
+    report.native_fault_fires += 1;
+    report.native_clean_controls += usize::from(clean_succeeded);
+    report.native_cases += 2;
+    report.native_copy_memory_limit = limit;
+    report.native_copy_prefix = native_memory.copied_bytes;
     Ok(())
 }
 

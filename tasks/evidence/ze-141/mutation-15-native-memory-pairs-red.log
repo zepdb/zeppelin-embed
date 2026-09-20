@@ -1,0 +1,50 @@
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.96s
+────────────
+ Nextest run ID 1af367d9-c9d0-4e25-a45b-0ed2bf5ffed7 with nextest profile: default
+    Starting 1 test across 1 binary (474 tests skipped)
+        FAIL [   0.072s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests property_graph_native_response_probe_checks_conversion_and_paired_faults
+  stdout ───
+
+    running 1 test
+    test property_graph_native_response_probe_checks_conversion_and_paired_faults ... FAILED
+
+    failures:
+
+    failures:
+        property_graph_native_response_probe_checks_conversion_and_paired_faults
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 474 filtered out; finished in 0.06s
+
+  stderr ───
+
+    thread 'property_graph_native_response_probe_checks_conversion_and_paired_faults' (35752077) panicked at tests/adversarial_tests.rs:19074:9:
+    assertion `left == right` failed
+      left: 5
+     right: 7
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.073s] 1 test run: 0 passed, 1 failed, 474 skipped
+        FAIL [   0.072s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests property_graph_native_response_probe_checks_conversion_and_paired_faults
+  stdout ───
+
+    running 1 test
+    test property_graph_native_response_probe_checks_conversion_and_paired_faults ... FAILED
+
+    failures:
+
+    failures:
+        property_graph_native_response_probe_checks_conversion_and_paired_faults
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 474 filtered out; finished in 0.06s
+
+  stderr ───
+
+    thread 'property_graph_native_response_probe_checks_conversion_and_paired_faults' (35752077) panicked at tests/adversarial_tests.rs:19074:9:
+    assertion `left == right` failed
+      left: 5
+     right: 7
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

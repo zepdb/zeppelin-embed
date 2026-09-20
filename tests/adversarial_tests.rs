@@ -19108,8 +19108,8 @@ fn property_graph_native_response_probe_checks_conversion_and_paired_faults() {
         let report = adversarial::graph_response::probe(seed, &mut coverage)
             .expect("PG16 native conversion and independent primitive oracle");
         assert_eq!(report.native_fault_fires, report.native_clean_controls);
-        assert_eq!(report.native_fault_fires, 5);
-        assert!(report.native_cases >= 11);
+        assert_eq!(report.native_fault_fires, 7);
+        assert_eq!(report.native_cases, 15);
         for key in &adversarial::graph_response::REQUIRED_COVERAGE[12..] {
             assert!(coverage.count(key) > 0, "missing native PG16 path {key}");
         }

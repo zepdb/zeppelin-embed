@@ -1,0 +1,27 @@
+warning: ignoring --test-threads because --no-capture is specified
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID 8f073cad-8576-4363-8546-9b0ebd83a64c with nextest profile: default
+    Starting 2 tests across 1 binary (473 tests skipped)
+       START [         ] (1/2) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_native_response_contracts
+
+running 1 test
+test one_runner_episode_reaches_required_native_response_contracts ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 474 filtered out; finished in 3.79s
+
+        PASS [   3.802s] (1/2) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_native_response_contracts
+       START [         ] (2/2) zeppelin-embed-workspace-tests::adversarial_tests property_graph_native_response_probe_checks_conversion_and_paired_faults
+
+running 1 test
+test property_graph_native_response_probe_checks_conversion_and_paired_faults ... PG16 native seed=0 ProbeReport { cases: 16, fault_fires: 6, clean_controls: 6, native_cases: 15, native_fault_fires: 7, native_clean_controls: 7, native_source_memory_limit: 76382, native_copy_memory_limit: 242271, native_copy_prefix: 80 }
+PG16 native seed=1 ProbeReport { cases: 16, fault_fires: 6, clean_controls: 6, native_cases: 15, native_fault_fires: 7, native_clean_controls: 7, native_source_memory_limit: 76382, native_copy_memory_limit: 242271, native_copy_prefix: 80 }
+PG16 native seed=141 ProbeReport { cases: 16, fault_fires: 6, clean_controls: 6, native_cases: 15, native_fault_fires: 7, native_clean_controls: 7, native_source_memory_limit: 76382, native_copy_memory_limit: 242271, native_copy_prefix: 80 }
+PG16 native seed=18446744073709551615 ProbeReport { cases: 16, fault_fires: 6, clean_controls: 6, native_cases: 15, native_fault_fires: 7, native_clean_controls: 7, native_source_memory_limit: 76382, native_copy_memory_limit: 242271, native_copy_prefix: 80 }
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 474 filtered out; finished in 1.01s
+
+        PASS [   1.021s] (2/2) zeppelin-embed-workspace-tests::adversarial_tests property_graph_native_response_probe_checks_conversion_and_paired_faults
+────────────
+     Summary [   4.824s] 2 tests run: 2 passed, 473 skipped

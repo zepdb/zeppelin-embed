@@ -106,6 +106,10 @@ pub struct NativeConversionFailure {
     pub allocation_fires: usize,
     /// Whether every query charge returned to the entry baseline.
     pub query_charge_restored: bool,
+    /// Source observations completed before refusal; native copy requires one.
+    pub source_calls: usize,
+    /// Exact whole copied-byte chunks consumed before the refused charge.
+    pub copied_bytes: u64,
 }
 
 /// Primitive observation made after actual finalize/expose and before free.
@@ -207,6 +211,7 @@ pub fn run_native_conversion_case(
     let baseline = context.memory().reserved_bytes();
     let result = run_case(context, case);
     let restored = context.memory().reserved_bytes() == baseline;
+    let copied_bytes = context.counters().get(WorkKind::CopiedBytes);
     match result {
         Ok(mut observation) => {
             observation.query_charge_restored = restored;
@@ -214,6 +219,7 @@ pub fn run_native_conversion_case(
         }
         Err(mut failure) => {
             failure.query_charge_restored = restored;
+            failure.copied_bytes = copied_bytes;
             Err(failure)
         }
     }
@@ -392,8 +398,15 @@ fn run_case(
                 result_rows: 1,
                 ..ExecutionCapacity::default()
             },
-        )
-        .map_err(|driver| map_driver_failure(driver, error.into_inner()))?;
+        );
+        let execution = match execution {
+            Ok(execution) => execution,
+            Err(driver) => {
+                let mut failure = map_driver_failure(driver, error.into_inner());
+                failure.source_calls = source.calls.get();
+                return Err(failure);
+            }
+        };
         let peak_query_bytes = execution.peak_query_bytes as u64;
         let finalized = finalize_native(execution);
         let (owner, successful) = finalized.into_parts();
@@ -641,5 +654,7 @@ fn failure(
         allocation_matching_sites: allocation.matching_sites,
         allocation_fires: allocation.fires,
         query_charge_restored: false,
+        source_calls: 0,
+        copied_bytes: 0,
     }
 }

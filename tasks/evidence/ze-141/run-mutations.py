@@ -53,6 +53,10 @@ def hash_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def normalized_log(value: bytes) -> bytes:
+    return b"\n".join(line.rstrip() for line in value.split(b"\n"))
+
+
 @dataclass(frozen=True)
 class Replacement:
     path: str
@@ -172,15 +176,26 @@ MUTATIONS = [
     ),
     Mutation(
         "09-copied-byte-charge",
-        "known copied-byte delta rejects a removed direct-map chunk charge",
+        "known copied-byte delta and C-stage work refusal both reject a removed direct-map chunk charge",
         (
             Replacement(
                 ARENA,
-                "        while initialized < count {\n            let length = (count - initialized).min(chunk_elements);\n            let chunk_bytes = element_size.checked_mul(length).ok_or(OwnerError::Limit)?;\n            context.charge(WorkKind::CopiedBytes, chunk_bytes as u64)?;\n            let end = initialized + length;",
-                "        while initialized < count {\n            let length = (count - initialized).min(chunk_elements);\n            let chunk_bytes = element_size.checked_mul(length).ok_or(OwnerError::Limit)?;\n            let _ = chunk_bytes;\n            let end = initialized + length;",
+                "            context.charge(WorkKind::CopiedBytes, chunk_bytes as u64)?;\n            writer(pointer, initialized..end);",
+                "            let _ = chunk_bytes;\n            writer(pointer, initialized..end);",
             ),
         ),
-        tuple(ffi_test("graph_result_native_driver_finalizes_all_23_exact_counters")),
+        tuple(
+            NEXTEST
+            + [
+                "-p",
+                "zeppelin-embed-ffi",
+                "--features",
+                "graph-cypher",
+                "--lib",
+                "-E",
+                "test(=graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters) | test(=graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans)",
+            ]
+        ),
     ),
     Mutation(
         "10-overlap-accounting",
@@ -266,6 +281,30 @@ MUTATIONS = [
             ]
         ),
     ),
+    Mutation(
+        "15-native-memory-pairs",
+        "four-seed probe requires genuine source-owner and native-copy memory refusal pairs",
+        (
+            Replacement(
+                PROBE,
+                "    native_memory_pairs(case, &clean, report)?;\n",
+                "",
+            ),
+        ),
+        tuple(
+            NEXTEST
+            + [
+                "-p",
+                "zeppelin-embed-workspace-tests",
+                "--features",
+                "graph-result-test-support",
+                "--test",
+                "adversarial_tests",
+                "-E",
+                "test(=property_graph_native_response_probe_checks_conversion_and_paired_faults)",
+            ]
+        ),
+    ),
 ]
 
 
@@ -295,14 +334,15 @@ def main() -> None:
         try:
             for replacement in mutation.replacements:
                 path = ROOT / replacement.path
-                data = originals.setdefault(replacement.path, path.read_bytes())
+                originals.setdefault(replacement.path, path.read_bytes())
+                data = path.read_bytes()
                 text = data.decode()
                 actual = text.count(replacement.before)
                 if actual != replacement.count:
                     raise RuntimeError(
                         f"{mutation.key}: {replacement.path}: expected {replacement.count} occurrences, found {actual}"
                     )
-                before_hashes[replacement.path] = hash_bytes(data)
+                before_hashes.setdefault(replacement.path, hash_bytes(originals[replacement.path]))
                 changed = text.replace(replacement.before, replacement.after, replacement.count).encode()
                 path.write_bytes(changed)
                 mutant_hashes[replacement.path] = hash_bytes(changed)
@@ -316,7 +356,9 @@ def main() -> None:
                 timeout=180,
                 check=False,
             )
-            (EVIDENCE / f"mutation-{mutation.key}-red.log").write_bytes(red.stdout)
+            (EVIDENCE / f"mutation-{mutation.key}-red.log").write_bytes(
+                normalized_log(red.stdout)
+            )
             if red.returncode == 0:
                 raise RuntimeError(f"{mutation.key}: semantic mutant survived")
         finally:
@@ -336,7 +378,9 @@ def main() -> None:
             timeout=180,
             check=False,
         )
-        (EVIDENCE / f"mutation-{mutation.key}-green.log").write_bytes(green.stdout)
+        (EVIDENCE / f"mutation-{mutation.key}-green.log").write_bytes(
+            normalized_log(green.stdout)
+        )
         if green.returncode != 0:
             raise RuntimeError(f"{mutation.key}: restored GREEN failed")
         records.append(

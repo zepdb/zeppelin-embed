@@ -186,6 +186,38 @@ pub fn check_native_failure(
     }
     Ok(())
 }
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "source/native memory refusal receipts are compared as independent primitives"
+)]
+pub fn check_native_memory_failure(
+    expected_source_calls: usize,
+    expected_copied_bytes: u64,
+    observed_stage: u32,
+    observed_refusal: u32,
+    source_calls: usize,
+    copied_bytes: u64,
+    matching_sites: usize,
+    fires: usize,
+    charge_restored: bool,
+    clean_succeeded: bool,
+) -> Result<(), String> {
+    if observed_stage != 0
+        || observed_refusal != 4
+        || source_calls != expected_source_calls
+        || copied_bytes != expected_copied_bytes
+        || matching_sites != 0
+        || fires != 0
+        || !charge_restored
+        || !clean_succeeded
+    {
+        return Err(format!(
+            "PG16 native memory refusal mismatch: stage={observed_stage}/0 refusal={observed_refusal}/4 source_calls={source_calls}/{expected_source_calls} copied={copied_bytes}/{expected_copied_bytes} matches={matching_sites}/0 fires={fires}/0 restored={charge_restored} clean={clean_succeeded}"
+        ));
+    }
+    Ok(())
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,5 +283,7 @@ mod tests {
         }
         assert!(check_native_failure(1, 3, 2, 1, 3, 2, 1, true, true).is_ok());
         assert!(check_native_failure(1, 3, 2, 1, 3, 2, 0, true, true).is_err());
+        assert!(check_native_memory_failure(0, 0, 0, 4, 0, 0, 0, 0, true, true).is_ok());
+        assert!(check_native_memory_failure(1, 200, 0, 4, 1, 199, 0, 0, true, true).is_err());
     }
 }

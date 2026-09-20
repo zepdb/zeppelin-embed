@@ -34,3 +34,7 @@ release: 0.9.145
 commit-hash: 00af4550ec3b3b9f0e574b897b06acb95d325ba2
 commit-date: 2026-09-16
 host: aarch64-apple-darwin
+followup_review_base=65fbbbe853a89ca9e1342bb2be0182b48531fac2
+spec_review_sha256=b2f54cf97f1c3d1137b6293e4a06bb28f202944c0c9a5b064c6c4e1bf6dc7c79
+standards_review_sha256=7a00e73789add1cfc6cdb13a1785b6c5829f3c52e590c94937020321be31037a
+followup_scope=focused review remediation; no broad qualification

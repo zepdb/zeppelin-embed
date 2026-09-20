@@ -1,0 +1,12 @@
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.94s
+────────────
+ Nextest run ID 3f507ba3-7601-4c9e-be1f-6661fbd79970 with nextest profile: default
+    Starting 4 tests across 1 binary (471 tests skipped)
+        PASS [   0.023s] (1/4) zeppelin-embed-workspace-tests::adversarial_tests completed_owner_probe_preserves_bits_bags_and_real_fault_controls
+        PASS [   1.016s] (2/4) zeppelin-embed-workspace-tests::adversarial_tests property_graph_response_probe_checks_real_owners_and_paired_faults
+        PASS [   3.673s] (3/4) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_graph_response_contracts
+        PASS [   4.044s] (4/4) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_completed_owner_controls
+────────────
+     Summary [   4.045s] 4 tests run: 4 passed, 471 skipped

@@ -131,7 +131,7 @@ impl From<RuntimeError> for ConversionError {
 
 #[derive(Clone, Copy)]
 struct NativeGeometry {
-    counts: [usize; 14],
+    counts: PoolCounts,
     report_work_starts: [u32; MAX_REPORTS],
 }
 impl NativeGeometry {
@@ -159,22 +159,22 @@ impl NativeGeometry {
             *start = u32::try_from(value).map_err(|_| OwnerError::Limit)?;
         }
         Ok(Self {
-            counts: [
-                pools.values.len(),
-                pools.children.len(),
-                pools.bytes.len(),
-                pools.nodes.len(),
-                pools.relationships.len(),
-                pools.properties.len(),
-                pools.names.len(),
-                pools.vectors.len(),
-                pools.columns.len(),
-                pools.cells.len(),
-                pools.receipts.len(),
-                pools.reports.len(),
-                0,
-                work_count,
-            ],
+            counts: PoolCounts {
+                values: pools.values.len(),
+                children: pools.children.len(),
+                bytes: pools.bytes.len(),
+                nodes: pools.nodes.len(),
+                relationships: pools.relationships.len(),
+                properties: pools.properties.len(),
+                names: pools.names.len(),
+                vectors: pools.vectors.len(),
+                columns: pools.columns.len(),
+                cells: pools.cells.len(),
+                receipts: pools.receipts.len(),
+                reports: pools.reports.len(),
+                diagnostics: 0,
+                work: work_count,
+            },
             report_work_starts,
         })
     }
@@ -681,7 +681,7 @@ fn fill_native(
     root.diagnostics = std::ptr::null();
     root.diagnostic_count = 0;
     let reports = pools.reports;
-    let [_, _, _, _, _, _, _, _, _, _, _, _, _, work_count] = initializer.geometry.counts;
+    let work_count = initializer.geometry.counts.work;
     root.work = unsafe {
         arena.generate(off_work, work_count, context, |index| {
             if index < REPORT_WORK_COUNT {
