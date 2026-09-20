@@ -3,6 +3,10 @@ use crate::lifecycle::stats::{AccountedCounter, Accounting, AllocationComponent}
 use crate::lifecycle::{Store, StoreError};
 use std::sync::Arc;
 
+pub use crate::lifecycle::stats::{
+    AllocationInterval, AllocationIntervalError, AllocationIntervalSnapshot,
+};
+
 /// Hard aggregate graph ceiling; all participants share the store's allowance.
 pub const MAX_GRAPH_RESIDENT_BYTES: u64 = 256 * 1024 * 1024;
 
@@ -37,6 +41,12 @@ impl GraphResources {
     /// This includes short-lived overlap and is not periodic process-RSS sampling.
     pub fn peak_reserved_bytes(&self) -> Result<u64, StoreError> {
         self.accounting.resident_peak_bytes()
+    }
+    /// Begins one exact shared-reservation observation on this store owner.
+    /// Existing live reservations are included. The guard owns no Store or
+    /// graph admission and a second observation returns a typed busy error.
+    pub fn begin_allocation_interval(&self) -> Result<AllocationInterval, AllocationIntervalError> {
+        self.accounting.begin_allocation_interval()
     }
     /// Reserves anonymous participant capacity before allocating or adopting it.
     /// The participant owns the backing and must reconcile actual capacity;

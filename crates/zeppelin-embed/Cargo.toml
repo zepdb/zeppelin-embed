@@ -110,6 +110,10 @@ name = "graph_key_lifecycle"
 required-features = ["graph-cypher"]
 
 [[test]]
+name = "graph_memory_intervals"
+required-features = ["graph-cypher"]
+
+[[test]]
 name = "graph_query_allocation"
 required-features = ["graph-cypher"]
 

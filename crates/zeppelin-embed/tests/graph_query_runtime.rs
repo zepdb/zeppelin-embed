@@ -1,14 +1,14 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
 use zeppelin_embed::lifecycle::{OpenOptions, Store, StoreError};
-use zeppelin_embed::property_graph::resources::GraphResources;
+use zeppelin_embed::property_graph::resources::{GraphResources, MAX_GRAPH_RESIDENT_BYTES};
 
 #[test]
 fn graph_resources_share_store_reservations_and_record_transient_peak() {
     let root = tempfile::tempdir().expect("store fixture");
     let store = Store::open(
         root.path(),
-        OpenOptions::new().with_max_resident_bytes(65_536),
+        OpenOptions::new().with_max_resident_bytes(MAX_GRAPH_RESIDENT_BYTES),
     )
     .expect("bounded store");
     let resources = GraphResources::from_store(&store).expect("same accounting");
@@ -25,7 +25,7 @@ fn graph_resources_share_store_reservations_and_record_transient_peak() {
     let peak = resources.peak_reserved_bytes().expect("peak");
     assert!(peak >= baseline + 192);
     assert!(matches!(
-        first.resize(65_536),
+        first.resize(MAX_GRAPH_RESIDENT_BYTES as usize),
         Err(StoreError::BudgetExceeded { .. })
     ));
     assert_eq!(first.bytes(), 128);
@@ -46,7 +46,7 @@ fn query_arena_charges_actual_capacity_overlap_and_releases_on_failure() {
     let root = tempfile::tempdir().expect("store fixture");
     let store = Store::open(
         root.path(),
-        OpenOptions::new().with_max_resident_bytes(65_536),
+        OpenOptions::new().with_max_resident_bytes(MAX_GRAPH_RESIDENT_BYTES),
     )
     .expect("bounded store");
     let shared = GraphResources::from_store(&store).expect("shared resources");

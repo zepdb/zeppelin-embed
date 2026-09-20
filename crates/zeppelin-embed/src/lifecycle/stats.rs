@@ -6,6 +6,13 @@ use std::sync::{Arc, Mutex};
 use super::budget::Budgets;
 use super::{Store, StoreError, StoreState};
 
+#[cfg(feature = "graph-cypher")]
+mod allocation_interval;
+#[cfg(feature = "graph-cypher")]
+pub use allocation_interval::{
+    AllocationInterval, AllocationIntervalError, AllocationIntervalSnapshot,
+};
+
 #[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub(crate) enum AllocationComponent {
@@ -47,6 +54,10 @@ struct AccountingState {
     mapped_bytes: u64,
     scans_by_reason: [u64; crate::planner::SCAN_REASON_COUNTER_COUNT],
     graph_segments_served: u64,
+    #[cfg(feature = "graph-cypher")]
+    allocation_interval_owner: u64,
+    #[cfg(feature = "graph-cypher")]
+    allocation_interval: Option<allocation_interval::AllocationIntervalState>,
 }
 
 pub(crate) struct Accounting {
@@ -70,6 +81,10 @@ impl Accounting {
                 mapped_bytes: 0,
                 scans_by_reason: [0; crate::planner::SCAN_REASON_COUNTER_COUNT],
                 graph_segments_served: 0,
+                #[cfg(feature = "graph-cypher")]
+                allocation_interval_owner: 0,
+                #[cfg(feature = "graph-cypher")]
+                allocation_interval: None,
             }),
         }
     }
@@ -116,6 +131,10 @@ impl Accounting {
         )?;
         state.resident_owned_bytes = resident;
         state.resident_peak_bytes = state.resident_peak_bytes.max(resident);
+        #[cfg(feature = "graph-cypher")]
+        if let Some(interval) = state.allocation_interval.as_mut() {
+            interval.peak_reserved_bytes = interval.peak_reserved_bytes.max(resident);
+        }
         match component {
             AllocationComponent::Snapshot => {
                 state.snapshot_bytes = state.snapshot_bytes.saturating_add(bytes);
