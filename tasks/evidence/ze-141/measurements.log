@@ -65,3 +65,11 @@ pg16_native_clean_controls_per_seed=7
 pg16_source_memory_limit=76382
 pg16_native_copy_memory_limit=242271
 pg16_native_copy_prefix=80
+
+ZE-141 final spec review measurements
+final_deadline_poll=652
+final_deadline_completed_bytes=132760
+final_deadline_completed_abi_bytes=137856
+final_deadline_copied_bytes=270112
+early_deadline_completed_abi_bytes=0
+present_empty_vector_refusal=shape

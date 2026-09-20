@@ -1,0 +1,27 @@
+warning: ignoring --test-threads because --no-capture is specified
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/crates/zeppelin-embed-ffi)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.64s
+────────────
+ Nextest run ID 26684227-5b7a-481c-bdd2-798f0a197eb7 with nextest profile: default
+    Starting 2 tests across 1 binary (33 tests skipped)
+       START [         ] (1/2) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans
+
+running 1 test
+test graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans ... ZE-141 empty prepare final checkpoint ordinal=5
+ZE-141 checkpoint sweep polls=652 node_descriptors=631 copied_prefixes={0, 65536, 71680, 132256, 197792, 203936, 269456, 269560, 270112}
+ZE-141 final deadline poll=652 completed_bytes=132760 completed_abi_bytes=137856 copied_bytes=270112
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 34 filtered out; finished in 2.57s
+
+        PASS [   2.583s] (1/2) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans
+       START [         ] (2/2) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_reports_receipts_outcomes_are_lossless
+
+running 1 test
+test graph_result::conversion::tests::graph_result_native_reports_receipts_outcomes_are_lossless ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
+
+        PASS [   0.009s] (2/2) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_reports_receipts_outcomes_are_lossless
+────────────
+     Summary [   2.592s] 2 tests run: 2 passed, 33 skipped

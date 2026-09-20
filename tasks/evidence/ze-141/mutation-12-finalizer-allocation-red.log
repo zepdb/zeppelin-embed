@@ -1,9 +1,9 @@
    Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/crates/zeppelin-embed-ffi)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.49s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.52s
 ────────────
- Nextest run ID da8a00b9-883b-46be-998b-5046e0ae4ccb with nextest profile: default
-    Starting 1 test across 1 binary (33 tests skipped)
-     SIGABRT [   0.013s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters
+ Nextest run ID bf6e74de-1bb7-4c5c-aa4e-15ac555dcadf with nextest profile: default
+    Starting 1 test across 1 binary (34 tests skipped)
+     SIGABRT [   0.020s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters
   stdout ───
 
     running 1 test
@@ -16,8 +16,8 @@
     (test aborted with signal 6: SIGABRT)
 
 ────────────
-     Summary [   0.014s] 1 test run: 0 passed, 1 failed, 33 skipped
-     SIGABRT [   0.013s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters
+     Summary [   0.021s] 1 test run: 0 passed, 1 failed, 34 skipped
+     SIGABRT [   0.020s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters
   stdout ───
 
     running 1 test

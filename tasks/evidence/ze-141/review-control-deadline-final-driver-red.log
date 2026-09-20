@@ -1,0 +1,31 @@
+warning: ignoring --test-threads because --no-capture is specified
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/crates/zeppelin-embed-ffi)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.55s
+────────────
+ Nextest run ID f8078d40-e2c5-43fc-93e1-36bc364c7e9a with nextest profile: default
+    Starting 1 test across 1 binary (34 tests skipped)
+       START [         ] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans
+
+running 1 test
+test graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans ... ZE-141 empty prepare final checkpoint ordinal=5
+ZE-141 checkpoint sweep polls=652 node_descriptors=631 copied_prefixes={0, 65536, 71680, 132256, 197792, 203936, 269456, 269560, 270112}
+
+thread 'graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans' (35808615) panicked at crates/zeppelin-embed-ffi/src/graph_result/conversion/tests.rs:2022:5:
+assertion `left == right` failed
+  left: 0
+ right: 137856
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 34 filtered out; finished in 2.59s
+
+        FAIL [   2.604s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans
+────────────
+     Summary [   2.605s] 1 test run: 0 passed, 1 failed, 34 skipped
+        FAIL [   2.604s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans
+error: test run failed

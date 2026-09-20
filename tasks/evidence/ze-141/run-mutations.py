@@ -176,7 +176,7 @@ MUTATIONS = [
     ),
     Mutation(
         "09-copied-byte-charge",
-        "known copied-byte delta and C-stage work refusal both reject a removed direct-map chunk charge",
+        "known copied-byte delta and dedicated C-stage work refusal both reject a removed direct-map chunk charge",
         (
             Replacement(
                 ARENA,
@@ -193,7 +193,7 @@ MUTATIONS = [
                 "graph-cypher",
                 "--lib",
                 "-E",
-                "test(=graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters) | test(=graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans)",
+                "test(=graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters) | test(=graph_result::conversion::tests::graph_result_native_c_copy_work_limit_rejects_missing_charge)",
             ]
         ),
     ),

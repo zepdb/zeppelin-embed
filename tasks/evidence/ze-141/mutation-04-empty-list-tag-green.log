@@ -1,8 +1,8 @@
    Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/crates/zeppelin-embed-ffi)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.51s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.56s
 ────────────
- Nextest run ID b378834c-b1ba-4e22-9d45-b4b80eb97f3f with nextest profile: default
-    Starting 1 test across 1 binary (33 tests skipped)
-        PASS [   0.009s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_all_pools_match_literal_field_oracle
+ Nextest run ID e1e3b0ae-66d2-4829-86d1-11f4507199a9 with nextest profile: default
+    Starting 1 test across 1 binary (34 tests skipped)
+        PASS [   0.010s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_all_pools_match_literal_field_oracle
 ────────────
-     Summary [   0.009s] 1 test run: 1 passed, 33 skipped
+     Summary [   0.010s] 1 test run: 1 passed, 34 skipped

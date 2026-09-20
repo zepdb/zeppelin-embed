@@ -1,10 +1,10 @@
    Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/crates/zeppelin-embed-ffi)
    Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/tests)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.07s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.25s
 ────────────
- Nextest run ID 5419b04d-e988-4962-af23-6c4da02d71d8 with nextest profile: default
+ Nextest run ID 8aab507a-3be0-48eb-bf42-d928c67af303 with nextest profile: default
     Starting 1 test across 1 binary (474 tests skipped)
-        FAIL [   3.678s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_native_response_contracts
+        FAIL [   3.647s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_native_response_contracts
   stdout ───
 
     running 1 test
@@ -15,17 +15,17 @@
     failures:
         one_runner_episode_reaches_required_native_response_contracts
 
-    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 474 filtered out; finished in 3.67s
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 474 filtered out; finished in 3.63s
 
   stderr ───
 
-    thread 'one_runner_episode_reaches_required_native_response_contracts' (35748062) panicked at tests/adversarial_tests.rs:19091:9:
+    thread 'one_runner_episode_reaches_required_native_response_contracts' (35823521) panicked at tests/adversarial_tests.rs:19091:9:
     actual runner omitted property-graph.response.native-map
     note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 
 ────────────
-     Summary [   3.679s] 1 test run: 0 passed, 1 failed, 474 skipped
-        FAIL [   3.678s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_native_response_contracts
+     Summary [   3.648s] 1 test run: 0 passed, 1 failed, 474 skipped
+        FAIL [   3.647s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests one_runner_episode_reaches_required_native_response_contracts
   stdout ───
 
     running 1 test
@@ -36,11 +36,11 @@
     failures:
         one_runner_episode_reaches_required_native_response_contracts
 
-    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 474 filtered out; finished in 3.67s
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 474 filtered out; finished in 3.63s
 
   stderr ───
 
-    thread 'one_runner_episode_reaches_required_native_response_contracts' (35748062) panicked at tests/adversarial_tests.rs:19091:9:
+    thread 'one_runner_episode_reaches_required_native_response_contracts' (35823521) panicked at tests/adversarial_tests.rs:19091:9:
     actual runner omitted property-graph.response.native-map
     note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 

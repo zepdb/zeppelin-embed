@@ -1,10 +1,10 @@
    Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/crates/zeppelin-embed-ffi)
    Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/tests)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.08s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.12s
 ────────────
- Nextest run ID acefe709-78d2-4590-81c0-0523d3820e10 with nextest profile: default
+ Nextest run ID e9c29dec-cb9f-443c-b89a-2f182c38b5fc with nextest profile: default
     Starting 1 test across 1 binary (474 tests skipped)
-        FAIL [   0.021s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests property_graph_native_response_probe_checks_conversion_and_paired_faults
+        FAIL [   0.019s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests property_graph_native_response_probe_checks_conversion_and_paired_faults
   stdout ───
 
     running 1 test
@@ -19,13 +19,13 @@
 
   stderr ───
 
-    thread 'property_graph_native_response_probe_checks_conversion_and_paired_faults' (35749949) panicked at tests/adversarial_tests.rs:19072:14:
+    thread 'property_graph_native_response_probe_checks_conversion_and_paired_faults' (35825399) panicked at tests/adversarial_tests.rs:19072:14:
     PG16 native conversion and independent primitive oracle: "PG16 unproved Allocation(1): refusal=Accepted matches=0 fires=0 charge_restored=true clean=false"
     note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 
 ────────────
-     Summary [   0.022s] 1 test run: 0 passed, 1 failed, 474 skipped
-        FAIL [   0.021s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests property_graph_native_response_probe_checks_conversion_and_paired_faults
+     Summary [   0.020s] 1 test run: 0 passed, 1 failed, 474 skipped
+        FAIL [   0.019s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests property_graph_native_response_probe_checks_conversion_and_paired_faults
   stdout ───
 
     running 1 test
@@ -40,7 +40,7 @@
 
   stderr ───
 
-    thread 'property_graph_native_response_probe_checks_conversion_and_paired_faults' (35749949) panicked at tests/adversarial_tests.rs:19072:14:
+    thread 'property_graph_native_response_probe_checks_conversion_and_paired_faults' (35825399) panicked at tests/adversarial_tests.rs:19072:14:
     PG16 native conversion and independent primitive oracle: "PG16 unproved Allocation(1): refusal=Accepted matches=0 fires=0 charge_restored=true clean=false"
     note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 

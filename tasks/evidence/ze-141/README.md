@@ -22,8 +22,10 @@ only under `graph-result-test-support`.
   `85d7708488e50193b7c6fd8f4aaa976de23045cebb26ba71665ebe91fac1ad91`.
 - The follow-up [spec review](spec-review.md), SHA256
   `b2f54cf97f1c3d1137b6293e4a06bb28f202944c0c9a5b064c6c4e1bf6dc7c79`,
-  and [standards review](standards-review.md), SHA256
+  [standards review](standards-review.md), SHA256
   `7a00e73789add1cfc6cdb13a1785b6c5829f3c52e590c94937020321be31037a`,
+  and [final spec review](spec-review-final.md), SHA256
+  `7d14cce3f17a99cfe113198d60608095678f7020c8a5b37316f8ca4ec8bce39f`,
   are preserved verbatim. All findings were accepted and remediated.
 - [source-before-sha256.json](source-before-sha256.json), SHA256
   `05276a143af6ee57ea2e2cae8e300e2a4d50ccb4caa163ecf17f8e8743c9d15c`,
@@ -58,8 +60,9 @@ allocation sites, and the source/native memory-refusal pairs. The mutation
 harness saves each original once while applying later replacements to the
 current mutated bytes. Mutation 03 therefore composes both presence edits and
 kills both the all-pools and report tests. Mutation 09 removes the shared C
-chunk charge and kills both the known-byte-delta and C-stage work-refusal
-assertions. [mutations.json](mutations.json) records each replacement, command,
+chunk charge and runs the known-byte-delta test beside a dedicated C-stage
+work-refusal test; its raw RED shows both intended assertions fail.
+[mutations.json](mutations.json) records each replacement, command,
 RED/GREEN exit status, and exact before/mutant/restored SHA256. Every RED exited
 100, every restored GREEN exited 0, and all 15 restorations matched their
 pre-mutation hashes. The retained-`Vec` finalizer mutant aborted only its
@@ -93,11 +96,15 @@ output is in [measurements.log](measurements.log).
   64 KiB, and the exact CopiedBytes prefixes `{0, 65536, 71680, 132256,
   197792, 203936, 269456, 269560, 270112}`. It separately proves native and C
   copied-work refusal, both final completed-byte charges, deadline timeout, and
-  final close-over-cancel cleanup after registration.
+  final close-over-cancel cleanup after registration. The deadline is armed
+  through the real control and expires at poll 652 after both final byte charges:
+  CompletedBytes 132,760 and CompletedAbiBytes 137,856. A one-checkpoint-early
+  control fails with CompletedAbiBytes still zero, proving the terminal boundary.
 - Typed rejection tests preserve Missing, Deleted, Storage, a malformed byte
-  range, a self-referential list cycle, an invalid cell, committed-generation and
-  vector-report contradictions, prior work, and real close-over-cancel
-  precedence with zero owner exposure and exact refunds.
+  range, a self-referential list cycle, an invalid cell, an explicit
+  present-empty vector distinct from absent/nonempty vectors,
+  committed-generation and vector-report contradictions, prior work, and real
+  close-over-cancel precedence with zero owner exposure and exact refunds.
 - Each directed PG16 seed `0`, `1`, `141`, and `u64::MAX` performs 15 native
   cases, fires seven real paired faults, completes seven byte-identical clean
   controls, and reaches all eight additive native coverage keys. Source-owner
@@ -119,15 +126,16 @@ geometry with the private named `PoolCounts` type; no public interface changed.
 All commands used nextest profile `default`, four jobs, zero retries, and the
 repository's configured single libtest thread.
 
-- Native FFI tests, graph-only: 7 passed, 27 skipped; the follow-up run includes
-  the complete 652-checkpoint sweep and typed rejection/context cases.
-- Native FFI tests with allocation hook: 7 passed, 27 skipped.
+- Native FFI tests, graph-only: 8 passed, 27 skipped; the final review run
+  includes the complete 652-checkpoint sweep, registered-owner deadline cleanup,
+  dedicated C copied-work refusal, and typed rejection/context cases.
+- Native FFI tests with allocation hook: 8 passed, 27 skipped.
 - Native direct probe, canonical runner, and active-key gate: 3 passed, 472
   skipped initially; the follow-up direct probe and canonical runner rerun passed
   2 tests with 473 skipped.
 - Independent graph-response oracle: 1 passed, 95 skipped.
 - Hook-absence boundary: 1 passed, 470 skipped.
-- Existing and new FFI graph-result regression: 20 passed, 14 skipped.
+- Existing and new FFI graph-result regression: 21 passed, 14 skipped.
 - Core completed-result and compiled-context regression: 19 passed.
 - Existing PG15/PG16 direct and runner controls: 4 passed, 471 skipped, including
   a follow-up rerun after the adversarial changes.
@@ -137,7 +145,11 @@ repository's configured single libtest thread.
 - FFI no-default and graph-only library checks passed.
 - Targeted format check and `git diff --check` passed.
 
-Terminal logs and their hashes are listed in `log-sha256.txt`. No broad
+Two final-review can-fire controls also pass their protocol: the early-deadline
+and absent-vector substitutions each exit RED 100, exact source restoration is
+verified, and the restored pair exits GREEN 0. See
+[review-final-gap-controls.json](review-final-gap-controls.json). Terminal logs
+and their hashes are listed in `log-sha256.txt`. No broad
 workspace suite, full adversarial campaign, coverage campaign, sanitizer,
 benchmark, fuzz, size, minimum-OS, Intel, Windows, or release-artifact gate was
 run.

@@ -1,9 +1,9 @@
    Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/crates/zeppelin-embed-ffi)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.52s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.61s
 ────────────
- Nextest run ID 60012365-29c1-43fe-999c-dd1ff6280d2e with nextest profile: default
-    Starting 1 test across 1 binary (33 tests skipped)
-        FAIL [   0.014s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters
+ Nextest run ID ec702221-7e94-40fe-9777-dd15f76da1a4 with nextest profile: default
+    Starting 1 test across 1 binary (34 tests skipped)
+        FAIL [   0.010s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters
   stdout ───
 
     running 1 test
@@ -14,19 +14,19 @@
     failures:
         graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters
 
-    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
 
   stderr ───
 
-    thread 'graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters' (35741570) panicked at crates/zeppelin-embed-ffi/src/graph_result/conversion/tests.rs:1255:9:
+    thread 'graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters' (35817237) panicked at crates/zeppelin-embed-ffi/src/graph_result/conversion/tests.rs:1287:9:
     assertion `left == right` failed
       left: 520
      right: 511
     note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 
 ────────────
-     Summary [   0.014s] 1 test run: 0 passed, 1 failed, 33 skipped
-        FAIL [   0.014s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters
+     Summary [   0.010s] 1 test run: 0 passed, 1 failed, 34 skipped
+        FAIL [   0.010s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters
   stdout ───
 
     running 1 test
@@ -37,11 +37,11 @@
     failures:
         graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters
 
-    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
 
   stderr ───
 
-    thread 'graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters' (35741570) panicked at crates/zeppelin-embed-ffi/src/graph_result/conversion/tests.rs:1255:9:
+    thread 'graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters' (35817237) panicked at crates/zeppelin-embed-ffi/src/graph_result/conversion/tests.rs:1287:9:
     assertion `left == right` failed
       left: 520
      right: 511

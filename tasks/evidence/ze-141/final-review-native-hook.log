@@ -1,0 +1,15 @@
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/crates/zeppelin-embed-ffi)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.70s
+────────────
+ Nextest run ID 78e17e62-c66c-425d-9287-777c4e034a2a with nextest profile: default
+    Starting 8 tests across 1 binary (27 tests skipped)
+        PASS [   0.011s] (1/8) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters
+        PASS [   0.011s] (2/8) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_all_pools_match_literal_field_oracle
+        PASS [   0.011s] (3/8) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_c_copy_work_limit_rejects_missing_charge
+        PASS [   0.011s] (4/8) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_context_identity_and_source_snapshot_are_single
+        PASS [   0.009s] (5/8) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_reports_receipts_outcomes_are_lossless
+        PASS [   0.010s] (6/8) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_private_drop_and_source_independence_are_heap_flat
+        PASS [   0.019s] (7/8) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_geometry_limits_and_real_overlap_reject
+        PASS [   2.590s] (8/8) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans
+────────────
+     Summary [   2.601s] 8 tests run: 8 passed, 27 skipped

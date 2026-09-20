@@ -1,9 +1,9 @@
    Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/crates/zeppelin-embed-ffi)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.61s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.62s
 ────────────
- Nextest run ID a1c83454-f15a-4367-812f-1d4ea5aae2a3 with nextest profile: default
-    Starting 1 test across 1 binary (33 tests skipped)
-        FAIL [   0.014s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans
+ Nextest run ID eafcce09-131e-410d-a54a-ef2382c9922b with nextest profile: default
+    Starting 1 test across 1 binary (34 tests skipped)
+        FAIL [   0.023s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans
   stdout ───
 
     running 1 test
@@ -14,20 +14,20 @@
     failures:
         graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans
 
-    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.01s
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.02s
 
   stderr ───
     ZE-141 empty prepare final checkpoint ordinal=4
 
-    thread 'graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans' (35745555) panicked at crates/zeppelin-embed-ffi/src/graph_result/conversion/tests.rs:1684:5:
+    thread 'graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans' (35821063) panicked at crates/zeppelin-embed-ffi/src/graph_result/conversion/tests.rs:1718:5:
     assertion `left == right` failed
       left: 4
      right: 5
     note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 
 ────────────
-     Summary [   0.014s] 1 test run: 0 passed, 1 failed, 33 skipped
-        FAIL [   0.014s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans
+     Summary [   0.023s] 1 test run: 0 passed, 1 failed, 34 skipped
+        FAIL [   0.023s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans
   stdout ───
 
     running 1 test
@@ -38,12 +38,12 @@
     failures:
         graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans
 
-    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.01s
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.02s
 
   stderr ───
     ZE-141 empty prepare final checkpoint ordinal=4
 
-    thread 'graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans' (35745555) panicked at crates/zeppelin-embed-ffi/src/graph_result/conversion/tests.rs:1684:5:
+    thread 'graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans' (35821063) panicked at crates/zeppelin-embed-ffi/src/graph_result/conversion/tests.rs:1718:5:
     assertion `left == right` failed
       left: 4
      right: 5

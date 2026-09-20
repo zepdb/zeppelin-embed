@@ -1,9 +1,9 @@
    Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/crates/zeppelin-embed-ffi)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.52s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.62s
 ────────────
- Nextest run ID 5e97a422-1386-495a-99d9-937ca4318641 with nextest profile: default
-    Starting 2 tests across 1 binary (32 tests skipped)
-        PASS [   0.010s] (1/2) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters
-        PASS [   0.591s] (2/2) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans
+ Nextest run ID cdaa60aa-3aae-4c5a-a013-025a2f7af722 with nextest profile: default
+    Starting 2 tests across 1 binary (33 tests skipped)
+        PASS [   0.010s] (1/2) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_c_copy_work_limit_rejects_missing_charge
+        PASS [   0.010s] (2/2) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters
 ────────────
-     Summary [   0.592s] 2 tests run: 2 passed, 32 skipped
+     Summary [   0.010s] 2 tests run: 2 passed, 33 skipped

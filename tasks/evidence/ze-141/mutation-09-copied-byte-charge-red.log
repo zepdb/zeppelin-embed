@@ -8,11 +8,11 @@ warning: unused variable: `context`
     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
 
 warning: `zeppelin-embed-ffi` (lib test) generated 1 warning (run `cargo fix --lib -p zeppelin-embed-ffi --tests` to apply 1 suggestion)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.50s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.55s
 ────────────
- Nextest run ID 66186884-c669-4001-bcf5-51a77877f573 with nextest profile: default
-    Starting 2 tests across 1 binary (32 tests skipped)
-        FAIL [   0.009s] (1/2) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters
+ Nextest run ID 16e8a244-0db8-4315-8e05-da076b0fc25c with nextest profile: default
+    Starting 2 tests across 1 binary (33 tests skipped)
+        FAIL [   0.010s] (1/2) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters
   stdout ───
 
     running 1 test
@@ -23,41 +23,39 @@ warning: `zeppelin-embed-ffi` (lib test) generated 1 warning (run `cargo fix --l
     failures:
         graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters
 
-    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
 
   stderr ───
 
-    thread 'graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters' (35743472) panicked at crates/zeppelin-embed-ffi/src/graph_result/conversion/tests.rs:1257:9:
+    thread 'graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters' (35819234) panicked at crates/zeppelin-embed-ffi/src/graph_result/conversion/tests.rs:1289:9:
     assertion `left == right` failed
       left: 23
      right: 575
     note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 
-        FAIL [   0.012s] (2/2) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans
+        FAIL [   0.010s] (2/2) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_c_copy_work_limit_rejects_missing_charge
   stdout ───
 
     running 1 test
-    test graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans ... FAILED
+    test graph_result::conversion::tests::graph_result_native_c_copy_work_limit_rejects_missing_charge ... FAILED
 
     failures:
 
     failures:
-        graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans
+        graph_result::conversion::tests::graph_result_native_c_copy_work_limit_rejects_missing_charge
 
-    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.01s
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
 
   stderr ───
-    ZE-141 empty prepare final checkpoint ordinal=4
 
-    thread 'graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans' (35743471) panicked at crates/zeppelin-embed-ffi/src/graph_result/conversion/tests.rs:1684:5:
-    assertion `left == right` failed
-      left: 4
-     right: 5
+    thread 'graph_result::conversion::tests::graph_result_native_c_copy_work_limit_rejects_missing_charge' (35819233) panicked at crates/zeppelin-embed-ffi/src/graph_result/conversion/tests.rs:2053:13:
+    assertion failed: matches!(prepare_native(&REGISTRY, &source, context),
+        Err(ConversionError::Owner(OwnerError::Runtime(RuntimeError::Limit(WorkKind::CopiedBytes)))))
     note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 
 ────────────
-     Summary [   0.012s] 2 tests run: 0 passed, 2 failed, 32 skipped
-        FAIL [   0.009s] (1/2) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters
+     Summary [   0.011s] 2 tests run: 0 passed, 2 failed, 33 skipped
+        FAIL [   0.010s] (1/2) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters
   stdout ───
 
     running 1 test
@@ -68,36 +66,34 @@ warning: `zeppelin-embed-ffi` (lib test) generated 1 warning (run `cargo fix --l
     failures:
         graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters
 
-    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
 
   stderr ───
 
-    thread 'graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters' (35743472) panicked at crates/zeppelin-embed-ffi/src/graph_result/conversion/tests.rs:1257:9:
+    thread 'graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters' (35819234) panicked at crates/zeppelin-embed-ffi/src/graph_result/conversion/tests.rs:1289:9:
     assertion `left == right` failed
       left: 23
      right: 575
     note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 
-        FAIL [   0.012s] (2/2) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans
+        FAIL [   0.010s] (2/2) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_c_copy_work_limit_rejects_missing_charge
   stdout ───
 
     running 1 test
-    test graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans ... FAILED
+    test graph_result::conversion::tests::graph_result_native_c_copy_work_limit_rejects_missing_charge ... FAILED
 
     failures:
 
     failures:
-        graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans
+        graph_result::conversion::tests::graph_result_native_c_copy_work_limit_rejects_missing_charge
 
-    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.01s
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
 
   stderr ───
-    ZE-141 empty prepare final checkpoint ordinal=4
 
-    thread 'graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans' (35743471) panicked at crates/zeppelin-embed-ffi/src/graph_result/conversion/tests.rs:1684:5:
-    assertion `left == right` failed
-      left: 4
-     right: 5
+    thread 'graph_result::conversion::tests::graph_result_native_c_copy_work_limit_rejects_missing_charge' (35819233) panicked at crates/zeppelin-embed-ffi/src/graph_result/conversion/tests.rs:2053:13:
+    assertion failed: matches!(prepare_native(&REGISTRY, &source, context),
+        Err(ConversionError::Owner(OwnerError::Runtime(RuntimeError::Limit(WorkKind::CopiedBytes)))))
     note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 
 error: test run failed

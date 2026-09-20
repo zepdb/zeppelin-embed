@@ -1,8 +1,8 @@
    Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/crates/zeppelin-embed-ffi)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.60s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.66s
 ────────────
- Nextest run ID f7c1916f-77d8-4c17-9373-2313e6d5debe with nextest profile: default
-    Starting 1 test across 1 binary (33 tests skipped)
-        PASS [   0.019s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_geometry_limits_and_real_overlap_reject
+ Nextest run ID 543cdf29-a718-4132-984b-f357b4d14176 with nextest profile: default
+    Starting 1 test across 1 binary (34 tests skipped)
+        PASS [   0.020s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_geometry_limits_and_real_overlap_reject
 ────────────
-     Summary [   0.019s] 1 test run: 1 passed, 33 skipped
+     Summary [   0.020s] 1 test run: 1 passed, 34 skipped

@@ -1,0 +1,75 @@
+warning: ignoring --test-threads because --no-capture is specified
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/crates/zeppelin-embed-ffi)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.47s
+────────────
+ Nextest run ID 22547f0b-9178-4c54-bbd7-838dd0609cf0 with nextest profile: default
+    Starting 8 tests across 1 binary (27 tests skipped)
+       START [         ] (1/8) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_all_pools_match_literal_field_oracle
+
+running 1 test
+test graph_result::conversion::tests::graph_result_native_all_pools_match_literal_field_oracle ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
+
+        PASS [   0.015s] (1/8) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_all_pools_match_literal_field_oracle
+       START [         ] (2/8) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_c_copy_work_limit_rejects_missing_charge
+
+running 1 test
+test graph_result::conversion::tests::graph_result_native_c_copy_work_limit_rejects_missing_charge ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
+
+        PASS [   0.010s] (2/8) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_c_copy_work_limit_rejects_missing_charge
+       START [         ] (3/8) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_context_identity_and_source_snapshot_are_single
+
+running 1 test
+test graph_result::conversion::tests::graph_result_native_context_identity_and_source_snapshot_are_single ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
+
+        PASS [   0.009s] (3/8) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_context_identity_and_source_snapshot_are_single
+       START [         ] (4/8) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters
+
+running 1 test
+test graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
+
+        PASS [   0.009s] (4/8) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_driver_finalizes_all_23_exact_counters
+       START [         ] (5/8) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans
+
+running 1 test
+test graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans ... ZE-141 empty prepare final checkpoint ordinal=5
+ZE-141 checkpoint sweep polls=652 node_descriptors=631 copied_prefixes={0, 65536, 71680, 132256, 197792, 203936, 269456, 269560, 270112}
+ZE-141 final deadline poll=652 completed_bytes=132760 completed_abi_bytes=137856 copied_bytes=270112
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 34 filtered out; finished in 2.57s
+
+        PASS [   2.575s] (5/8) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_every_allocation_and_copy_checkpoint_cleans
+       START [         ] (6/8) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_geometry_limits_and_real_overlap_reject
+
+running 1 test
+test graph_result::conversion::tests::graph_result_native_geometry_limits_and_real_overlap_reject ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.01s
+
+        PASS [   0.017s] (6/8) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_geometry_limits_and_real_overlap_reject
+       START [         ] (7/8) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_private_drop_and_source_independence_are_heap_flat
+
+running 1 test
+test graph_result::conversion::tests::graph_result_native_private_drop_and_source_independence_are_heap_flat ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
+
+        PASS [   0.008s] (7/8) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_private_drop_and_source_independence_are_heap_flat
+       START [         ] (8/8) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_reports_receipts_outcomes_are_lossless
+
+running 1 test
+test graph_result::conversion::tests::graph_result_native_reports_receipts_outcomes_are_lossless ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
+
+        PASS [   0.007s] (8/8) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_reports_receipts_outcomes_are_lossless
+────────────
+     Summary [   2.650s] 8 tests run: 8 passed, 27 skipped

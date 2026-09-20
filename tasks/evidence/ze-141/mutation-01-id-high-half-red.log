@@ -1,9 +1,9 @@
    Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-141/crates/zeppelin-embed-ffi)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.54s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.50s
 ────────────
- Nextest run ID 34278917-5e3d-44ca-bddb-b741e1871786 with nextest profile: default
-    Starting 1 test across 1 binary (33 tests skipped)
-        FAIL [   0.014s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_all_pools_match_literal_field_oracle
+ Nextest run ID 8fdf672b-c89c-4e6d-ada0-d9b688179b46 with nextest profile: default
+    Starting 1 test across 1 binary (34 tests skipped)
+        FAIL [   0.011s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_all_pools_match_literal_field_oracle
   stdout ───
 
     running 1 test
@@ -14,19 +14,19 @@
     failures:
         graph_result::conversion::tests::graph_result_native_all_pools_match_literal_field_oracle
 
-    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
 
   stderr ───
 
-    thread 'graph_result::conversion::tests::graph_result_native_all_pools_match_literal_field_oracle' (35735826) panicked at crates/zeppelin-embed-ffi/src/graph_result/conversion/tests.rs:476:9:
+    thread 'graph_result::conversion::tests::graph_result_native_all_pools_match_literal_field_oracle' (35811454) panicked at crates/zeppelin-embed-ffi/src/graph_result/conversion/tests.rs:490:9:
     assertion `left == right` failed
       left: (0, 7)
      right: (1, 7)
     note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 
 ────────────
-     Summary [   0.015s] 1 test run: 0 passed, 1 failed, 33 skipped
-        FAIL [   0.014s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_all_pools_match_literal_field_oracle
+     Summary [   0.011s] 1 test run: 0 passed, 1 failed, 34 skipped
+        FAIL [   0.011s] (1/1) zeppelin-embed-ffi graph_result::conversion::tests::graph_result_native_all_pools_match_literal_field_oracle
   stdout ───
 
     running 1 test
@@ -37,11 +37,11 @@
     failures:
         graph_result::conversion::tests::graph_result_native_all_pools_match_literal_field_oracle
 
-    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
 
   stderr ───
 
-    thread 'graph_result::conversion::tests::graph_result_native_all_pools_match_literal_field_oracle' (35735826) panicked at crates/zeppelin-embed-ffi/src/graph_result/conversion/tests.rs:476:9:
+    thread 'graph_result::conversion::tests::graph_result_native_all_pools_match_literal_field_oracle' (35811454) panicked at crates/zeppelin-embed-ffi/src/graph_result/conversion/tests.rs:490:9:
     assertion `left == right` failed
       left: (0, 7)
      right: (1, 7)
