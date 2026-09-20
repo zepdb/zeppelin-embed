@@ -3,6 +3,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread::JoinHandle;
+use std::time::Instant;
 
 use super::{Store, StoreError, StoreState};
 
@@ -187,6 +188,7 @@ impl Store {
             }
         }
         drop(state);
+        let reader_deadline = Instant::now().checked_add(self.reader_drain_timeout);
 
         let mut background = self
             .background
@@ -198,6 +200,11 @@ impl Store {
         drop(background);
         let background_result = stopped_background.map_or(Ok(()), |thread| thread.stop_and_join());
 
+        #[cfg(feature = "graph-cypher")]
+        let native_graph_result = self.native_graph.drain_and_clear(reader_deadline);
+        #[cfg(not(feature = "graph-cypher"))]
+        let native_graph_result = Ok(());
+
         let mut snapshot = self
             .snapshot
             .write()
@@ -207,7 +214,10 @@ impl Store {
         let released_snapshot = snapshot.take();
         drop(snapshot);
         if let Some(snapshot) = released_snapshot.as_ref() {
-            snapshot.drain_readers(self.reader_drain_timeout)?;
+            let remaining = reader_deadline
+                .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+                .unwrap_or_default();
+            snapshot.drain_readers(remaining)?;
         }
         let mut query_pool = self
             .query_pool
@@ -279,6 +289,7 @@ impl Store {
         *state = StoreState::Closed;
         self.state_changed.notify_all();
         background_result
+            .and(native_graph_result)
             .and(query_pool_result)
             .and(lexical_worker_result)
             .and(lexical_cache_result)
@@ -304,6 +315,9 @@ impl Store {
         if let Some(mut background) = background_slot.take() {
             background.stop_best_effort();
         }
+
+        #[cfg(feature = "graph-cypher")]
+        self.native_graph.cancel_and_clear_best_effort();
 
         let snapshot_slot = match self.snapshot.get_mut() {
             Ok(snapshot) => snapshot,

@@ -19160,13 +19160,42 @@ fn native_graph_runner_keys_are_active_with_graph_feature() {
     #[cfg(not(feature = "graph-result-test-support"))]
     assert_eq!(
         adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        200
+        217
     );
     #[cfg(feature = "graph-result-test-support")]
     assert_eq!(
         adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        220
+        237
     );
+}
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn native_read_view_probe_reaches_actual_faults_and_same_seed_controls() {
+    for seed in [0, 1, 45, u64::MAX] {
+        let mut coverage = adversarial::coverage::CoverageRegistry::default();
+        let report = adversarial::graph_read_view::probe(seed, &mut coverage)
+            .expect("ZE-45 controlled read-view boundary probe");
+        assert_eq!(report.actual_paths, 15);
+        for key in adversarial::graph_read_view::REQUIRED_COVERAGE {
+            assert_eq!(coverage.count(key), 1, "missing ZE-45 path {key}");
+        }
+    }
+}
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn one_runner_episode_reaches_required_native_read_view_contracts() {
+    let root = tempfile::tempdir().expect("ZE-45 runner artifacts");
+    let outcome = adversarial::runner::run_program(45, FaultProfile::None, root.path())
+        .expect("ZE-45 actual runner episode");
+    assert!(outcome.violations.is_empty(), "{:?}", outcome.violations);
+    for key in adversarial::graph_read_view::REQUIRED_COVERAGE {
+        assert!(
+            outcome.coverage.count(key) > 0,
+            "actual runner omitted {key}"
+        );
+    }
 }
 
 #[cfg(all(feature = "graph-cypher", not(feature = "graph-result-test-support")))]

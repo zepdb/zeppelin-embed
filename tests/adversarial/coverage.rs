@@ -2,6 +2,23 @@ use std::collections::BTreeMap;
 
 /// Native property-graph paths required when the graph feature is selected.
 pub const REQUIRED_GRAPH_SMOKE_COVERAGE: &[&str] = &[
+    "property-graph.read-view.admission-capture",
+    "property-graph.read-view.old-lazy-open",
+    "property-graph.read-view.coherent-reads",
+    "property-graph.read-view.cursor-mismatch",
+    "property-graph.read-view.source-identity-format",
+    "property-graph.read-view.io.fire",
+    "property-graph.read-view.io.clean",
+    "property-graph.read-view.memory.fire",
+    "property-graph.read-view.memory.clean",
+    "property-graph.read-view.work.fire",
+    "property-graph.read-view.work.clean",
+    "property-graph.read-view.caller-cancel.fire",
+    "property-graph.read-view.caller-cancel.clean",
+    "property-graph.read-view.close-first-drain",
+    "property-graph.read-view.preparation-abort",
+    "property-graph.read-view.oracle.can-fire",
+    "property-graph.read-view.release",
     "property-graph.directories.native-history",
     "property-graph.directories.old-root",
     "property-graph.directories.reopen",

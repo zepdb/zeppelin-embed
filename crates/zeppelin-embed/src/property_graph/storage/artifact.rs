@@ -167,6 +167,7 @@ pub struct ArtifactFrame<'a> {
     kind: ContainerKind,
     directory: usize,
     count: usize,
+    file_checksum: u64,
 }
 impl ArtifactFrame<'_> {
     /// Returns the validated store/object identity.
@@ -506,6 +507,7 @@ pub fn decode_with_control<'a, E>(
         kind,
         directory,
         count,
+        file_checksum: expected_checksum,
     };
     let mut next = HEADER_BYTES;
     for index in 0..count {
@@ -732,6 +734,8 @@ pub struct FramedBlock<'a> {
     identity: ArtifactIdentity,
     reference: PhysicalRef,
     payload: &'a [u8],
+    file_length: usize,
+    file_checksum: u64,
 }
 impl<'a> FramedBlock<'a> {
     /// Complete identity of the containing immutable artifact.
@@ -745,6 +749,14 @@ impl<'a> FramedBlock<'a> {
     /// Inner payload, excluding the block header.
     pub const fn payload(self) -> &'a [u8] {
         self.payload
+    }
+    /// Complete validated container length for exact required descriptors.
+    pub const fn file_length(self) -> usize {
+        self.file_length
+    }
+    /// Complete validated container checksum from the admitted trailer.
+    pub const fn file_checksum(self) -> u64 {
+        self.file_checksum
     }
 }
 impl<'a> ArtifactFrame<'a> {
@@ -761,6 +773,8 @@ impl<'a> ArtifactFrame<'a> {
             identity: self.identity,
             reference,
             payload,
+            file_length: self.bytes.len(),
+            file_checksum: self.file_checksum,
         })
     }
 }

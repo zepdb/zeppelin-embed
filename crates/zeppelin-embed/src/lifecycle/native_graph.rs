@@ -1,0 +1,3998 @@
+//! Writes-owned native graph admission and retained-root registration.
+
+#![allow(
+    dead_code,
+    reason = "the admitted read seam is intentionally crate-private until ZE-50 consumes it"
+)]
+
+use super::{Store, StoreError, StoreState};
+use crate::epoch::EmbeddingTower;
+use crate::format::FormatFamily;
+use crate::fts::tokenizer::TokenizerEpoch;
+use crate::property_graph::query::QueryView;
+use crate::property_graph::query::runtime::RetainedView;
+use crate::property_graph::resources::{GraphReservation, GraphResources};
+use crate::property_graph::staging::BaseIdentity;
+use crate::property_graph::storage::artifact::{BlockKind, PhysicalRef};
+use crate::property_graph::storage::tree::directory::GraphRoots;
+use crate::property_graph::wal::{HighWaters, RequiredRef, WalGraphRoots};
+use crate::vfs::Vfs;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, Weak};
+use std::time::Instant;
+
+const MAX_NATIVE_READ_LEASES: usize = 1024;
+
+/// Native lifecycle rejection, kept separate from tree/query data errors.
+#[derive(Debug)]
+pub(crate) enum NativeGraphError {
+    Store(StoreError),
+    Invalid(&'static str),
+    NotInstalled,
+    LeaseLimit,
+    IdentityExhausted,
+    Read(crate::property_graph::storage::tree::directory::TreeError),
+}
+
+impl From<StoreError> for NativeGraphError {
+    fn from(error: StoreError) -> Self {
+        Self::Store(error)
+    }
+}
+
+impl std::fmt::Display for NativeGraphError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Store(error) => error.fmt(f),
+            Self::Invalid(reason) => write!(f, "invalid native graph bundle: {reason}"),
+            Self::NotInstalled => f.write_str("native graph bundle is not installed"),
+            Self::LeaseLimit => f.write_str("native graph read lease capacity exhausted"),
+            Self::IdentityExhausted => f.write_str("native graph read identity exhausted"),
+            Self::Read(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for NativeGraphError {}
+
+impl From<crate::property_graph::storage::tree::directory::TreeError> for NativeGraphError {
+    fn from(error: crate::property_graph::storage::tree::directory::TreeError) -> Self {
+        Self::Read(error)
+    }
+}
+
+pub(crate) trait NativeReadConsumer<T> {
+    fn consume<'s, 'lease, 'm, 'g>(
+        &mut self,
+        view: &crate::property_graph::storage::GraphReadView<'s, 'lease, 'm, 'g>,
+        runtime: &mut crate::property_graph::query::runtime::RuntimeContext<'lease, 'm, 'g>,
+    ) -> Result<T, crate::property_graph::storage::tree::directory::TreeError>;
+}
+
+/// Complete metadata transferred only by the writes/recovery owner. Tests use
+/// the same value through the controlled installer; it has no publish method.
+pub(crate) struct NativeGraphBundleInput {
+    pub(crate) base: BaseIdentity,
+    pub(crate) root_envelope: RequiredRef,
+    pub(crate) roots: GraphRoots,
+    pub(crate) wal_roots: WalGraphRoots,
+    pub(crate) sequence: u64,
+    pub(crate) catalog: RequiredRef,
+    pub(crate) vector: Option<RequiredRef>,
+    pub(crate) text: Option<RequiredRef>,
+    pub(crate) reclaim: Option<RequiredRef>,
+    pub(crate) high_waters: HighWaters,
+    pub(crate) prepared_inventories: Vec<RequiredRef>,
+    pub(crate) lexical: TokenizerEpoch,
+    pub(crate) document: Option<EmbeddingTower>,
+}
+
+/// One immutable coherent native generation. It retains the exact VFS and root
+/// directory selected during installation, so old lazy opens never consult the
+/// replacement bundle.
+pub(crate) struct NativeGraphBundle {
+    base: BaseIdentity,
+    root_envelope: RequiredRef,
+    roots: GraphRoots,
+    wal_roots: WalGraphRoots,
+    sequence: u64,
+    catalog: RequiredRef,
+    vector: Option<RequiredRef>,
+    text: Option<RequiredRef>,
+    reclaim: Option<RequiredRef>,
+    high_waters: HighWaters,
+    prepared_inventories: Vec<RequiredRef>,
+    lexical: TokenizerEpoch,
+    document: Option<EmbeddingTower>,
+    directory: PathBuf,
+    vfs: Arc<dyn Vfs>,
+    _charge: GraphReservation,
+}
+
+impl NativeGraphBundle {
+    fn install(
+        store: &Store,
+        resources: &GraphResources,
+        input: NativeGraphBundleInput,
+    ) -> Result<Arc<Self>, NativeGraphError> {
+        validate_bundle(&input)?;
+        let metadata_bytes = bundle_owned_bytes(&input, &store.directory)?;
+        let charge = resources.reserve(metadata_bytes)?;
+        let mut directory = PathBuf::new();
+        directory
+            .try_reserve(store.directory.as_os_str().len())
+            .map_err(|_| {
+                NativeGraphError::Store(StoreError::AllocationFailed {
+                    needed: store.directory.as_os_str().len() as u64,
+                    component: "native graph bundle path",
+                })
+            })?;
+        directory.push(&store.directory);
+        let NativeGraphBundleInput {
+            base,
+            root_envelope,
+            roots,
+            wal_roots,
+            sequence,
+            catalog,
+            vector,
+            text,
+            reclaim,
+            high_waters,
+            prepared_inventories,
+            lexical,
+            document,
+        } = input;
+        Ok(Arc::new(Self {
+            base,
+            root_envelope,
+            roots,
+            wal_roots,
+            sequence,
+            catalog,
+            vector,
+            text,
+            reclaim,
+            high_waters,
+            prepared_inventories,
+            lexical,
+            document,
+            directory,
+            vfs: Arc::clone(&store.vfs),
+            _charge: charge,
+        }))
+    }
+
+    pub(crate) const fn base(&self) -> BaseIdentity {
+        self.base
+    }
+
+    pub(crate) const fn root_envelope(&self) -> RequiredRef {
+        self.root_envelope
+    }
+
+    pub(crate) const fn roots(&self) -> GraphRoots {
+        self.roots
+    }
+
+    pub(crate) const fn wal_roots(&self) -> WalGraphRoots {
+        self.wal_roots
+    }
+
+    pub(crate) const fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    pub(crate) const fn catalog(&self) -> RequiredRef {
+        self.catalog
+    }
+
+    pub(crate) const fn high_waters(&self) -> HighWaters {
+        self.high_waters
+    }
+
+    pub(crate) const fn lexical(&self) -> TokenizerEpoch {
+        self.lexical
+    }
+
+    pub(crate) fn document(&self) -> Option<&EmbeddingTower> {
+        self.document.as_ref()
+    }
+
+    pub(crate) fn directory(&self) -> &Path {
+        &self.directory
+    }
+
+    pub(crate) fn vfs(&self) -> &dyn Vfs {
+        self.vfs.as_ref()
+    }
+
+    fn contains(&self, reference: RequiredRef) -> bool {
+        self.root_envelope == reference
+            || self.catalog == reference
+            || self.vector == Some(reference)
+            || self.text == Some(reference)
+            || self.reclaim == Some(reference)
+            || self.wal_roots.slots.contains(&Some(reference))
+            || self.prepared_inventories.contains(&reference)
+    }
+
+    pub(crate) fn required_object(&self, reference: PhysicalRef) -> Option<RequiredRef> {
+        self.wal_roots
+            .slots
+            .into_iter()
+            .flatten()
+            .chain([self.catalog])
+            .chain(self.vector)
+            .chain(self.text)
+            .chain(self.reclaim)
+            .chain(self.prepared_inventories.iter().copied())
+            .find(|required| required.block == reference)
+    }
+}
+
+fn bundle_owned_bytes(
+    input: &NativeGraphBundleInput,
+    directory: &Path,
+) -> Result<usize, NativeGraphError> {
+    let prepared = input
+        .prepared_inventories
+        .capacity()
+        .checked_mul(std::mem::size_of::<RequiredRef>())
+        .ok_or(NativeGraphError::Invalid(
+            "prepared inventory capacity overflow",
+        ))?;
+    let document = input.document.as_ref().map_or(0, |document| {
+        document.model_id.capacity()
+            + document.model_version.capacity()
+            + document.weights_digest.capacity()
+            + document.prompt_prefix.capacity()
+            + document.os_build.as_ref().map_or(0, String::capacity)
+    });
+    std::mem::size_of::<NativeGraphBundle>()
+        .checked_add(2 * std::mem::size_of::<usize>())
+        .and_then(|bytes| bytes.checked_add(directory.as_os_str().len()))
+        .and_then(|bytes| bytes.checked_add(prepared))
+        .and_then(|bytes| bytes.checked_add(document))
+        .ok_or(NativeGraphError::Invalid("bundle capacity overflow"))
+}
+
+fn validate_bundle(input: &NativeGraphBundleInput) -> Result<(), NativeGraphError> {
+    let base = input.base;
+    if base.store != input.roots.store()
+        || base.generation != input.roots.generation()
+        || base.roots != Some(input.root_envelope.object.artifact)
+        || input.root_envelope.object.store != base.store
+        || input.root_envelope.object.generation != base.generation
+        || input.root_envelope.object.family != FormatFamily::NativeGraphRoot.id()
+        || input.root_envelope.object.version != 1
+        || input.root_envelope.block.artifact != input.root_envelope.object.artifact
+        || input.root_envelope.block.kind != BlockKind::CheckpointPayload
+        || input.root_envelope.block.version != 1
+    {
+        return Err(NativeGraphError::Invalid("root envelope identity"));
+    }
+    for (root, required) in input
+        .roots
+        .references()
+        .into_iter()
+        .zip(input.wal_roots.slots)
+    {
+        if root != required.map(|required| required.block) {
+            return Err(NativeGraphError::Invalid("WAL/native root mismatch"));
+        }
+        if let Some(required) = required {
+            validate_object_ref(base, required)?;
+            if required.block.kind != BlockKind::TreePage {
+                return Err(NativeGraphError::Invalid("native root role"));
+            }
+        }
+    }
+    validate_object_ref(base, input.catalog)?;
+    if input.catalog.block.kind != BlockKind::CommitParticipant {
+        return Err(NativeGraphError::Invalid("catalog role"));
+    }
+    for reference in input
+        .vector
+        .into_iter()
+        .chain(input.text)
+        .chain(input.reclaim)
+        .chain(input.prepared_inventories.iter().copied())
+    {
+        validate_object_ref(base, reference)?;
+        if reference.block.kind != BlockKind::CommitParticipant {
+            return Err(NativeGraphError::Invalid("participant role"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_object_ref(base: BaseIdentity, reference: RequiredRef) -> Result<(), NativeGraphError> {
+    if reference.object.store != base.store
+        || reference.object.generation > base.generation
+        || reference.object.family != FormatFamily::NativeGraphObject.id()
+        || reference.object.version != 1
+        || reference.block.artifact != reference.object.artifact
+        || reference.block.version != 1
+    {
+        return Err(NativeGraphError::Invalid("required object identity"));
+    }
+    Ok(())
+}
+
+struct RegistryEntry {
+    token: u64,
+    owner: Weak<NativeReadOwner>,
+}
+
+struct PublicationState {
+    current: Option<Arc<NativeGraphBundle>>,
+    leases: Vec<Option<RegistryEntry>>,
+    next_token: u64,
+    closing: bool,
+    #[cfg(any(test, feature = "test-support"))]
+    admission_hook: Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>,
+}
+
+pub(crate) struct NativeGraphPublication {
+    state: Mutex<PublicationState>,
+    changed: Condvar,
+    _charge: super::stats::AccountedCounter,
+}
+
+impl NativeGraphPublication {
+    pub(crate) fn new(accounting: &Arc<super::stats::Accounting>) -> Result<Arc<Self>, StoreError> {
+        let mut charge = super::stats::AccountedCounter::new(
+            accounting,
+            super::stats::AllocationComponent::Temporary,
+        )?;
+        let lease_bytes = MAX_NATIVE_READ_LEASES
+            .checked_mul(std::mem::size_of::<Option<RegistryEntry>>())
+            .ok_or(StoreError::AllocationFailed {
+                needed: u64::MAX,
+                component: "native graph registry",
+            })?;
+        let bytes = std::mem::size_of::<Self>()
+            .checked_add(2 * std::mem::size_of::<usize>())
+            .and_then(|bytes| bytes.checked_add(lease_bytes))
+            .ok_or(StoreError::AllocationFailed {
+                needed: u64::MAX,
+                component: "native graph registry",
+            })?;
+        charge.set(bytes)?;
+        let mut leases = Vec::new();
+        #[cfg(feature = "allocation-audit")]
+        let reserved = crate::allocation_audit::attributed(|| {
+            leases.try_reserve_exact(MAX_NATIVE_READ_LEASES)
+        });
+        #[cfg(not(feature = "allocation-audit"))]
+        let reserved = leases.try_reserve_exact(MAX_NATIVE_READ_LEASES);
+        reserved.map_err(|_| StoreError::AllocationFailed {
+            needed: lease_bytes as u64,
+            component: "native graph registry",
+        })?;
+        leases.resize_with(MAX_NATIVE_READ_LEASES, || None);
+        Ok(Arc::new(Self {
+            state: Mutex::new(PublicationState {
+                current: None,
+                leases,
+                next_token: 1,
+                closing: false,
+                #[cfg(any(test, feature = "test-support"))]
+                admission_hook: None,
+            }),
+            changed: Condvar::new(),
+            _charge: charge,
+        }))
+    }
+
+    fn install(&self, bundle: Arc<NativeGraphBundle>) -> Result<(), NativeGraphError> {
+        let mut state = self.state.lock().map_err(|_| {
+            NativeGraphError::Store(StoreError::Synchronization {
+                component: "native graph publication",
+            })
+        })?;
+        if state.closing {
+            return Err(NativeGraphError::Store(StoreError::Closing));
+        }
+        state.current = Some(bundle);
+        Ok(())
+    }
+
+    fn admit(
+        self: &Arc<Self>,
+        charge: GraphReservation,
+    ) -> Result<NativeReadLease, NativeGraphError> {
+        let mut state = self.state.lock().map_err(|_| {
+            NativeGraphError::Store(StoreError::Synchronization {
+                component: "native graph publication",
+            })
+        })?;
+        if state.closing {
+            return Err(NativeGraphError::Store(StoreError::Closing));
+        }
+        let bundle = Arc::clone(
+            state
+                .current
+                .as_ref()
+                .ok_or(NativeGraphError::NotInstalled)?,
+        );
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some((entered, release)) = state.admission_hook.take() {
+            entered.wait();
+            release.wait();
+        }
+        let slot = state
+            .leases
+            .iter()
+            .position(Option::is_none)
+            .ok_or(NativeGraphError::LeaseLimit)?;
+        let token = state.next_token;
+        state.next_token = state
+            .next_token
+            .checked_add(1)
+            .ok_or(NativeGraphError::IdentityExhausted)?;
+        let owner = Arc::new(NativeReadOwner {
+            view: QueryView::new(bundle.base.store, bundle.base.generation),
+            bundle,
+            _charge: charge,
+            cancelled: AtomicBool::new(false),
+            registration: NativeReadRegistration {
+                publication: Arc::downgrade(self),
+                slot,
+                token,
+            },
+        });
+        *state
+            .leases
+            .get_mut(slot)
+            .ok_or(NativeGraphError::LeaseLimit)? = Some(RegistryEntry {
+            token,
+            owner: Arc::downgrade(&owner),
+        });
+        Ok(NativeReadLease { owner })
+    }
+
+    fn capture(
+        &self,
+        resources: &GraphResources,
+    ) -> Result<NativeProtectedRoots, NativeGraphError> {
+        let state = self.state.lock().map_err(|_| {
+            NativeGraphError::Store(StoreError::Synchronization {
+                component: "native graph publication",
+            })
+        })?;
+        let capacity = 1_usize
+            .checked_add(state.leases.iter().filter(|entry| entry.is_some()).count())
+            .ok_or(NativeGraphError::LeaseLimit)?;
+        let bytes = capacity
+            .checked_mul(std::mem::size_of::<Arc<NativeGraphBundle>>())
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<NativeProtectedRoots>()))
+            .ok_or(NativeGraphError::LeaseLimit)?;
+        let mut charge = resources.reserve(bytes)?;
+        let mut bundles = Vec::new();
+        #[cfg(feature = "allocation-audit")]
+        let reserved = crate::allocation_audit::attributed(|| bundles.try_reserve_exact(capacity));
+        #[cfg(not(feature = "allocation-audit"))]
+        let reserved = bundles.try_reserve_exact(capacity);
+        reserved.map_err(|_| {
+            NativeGraphError::Store(StoreError::AllocationFailed {
+                needed: bytes as u64,
+                component: "native graph protected roots",
+            })
+        })?;
+        if let Some(current) = state.current.as_ref() {
+            bundles.push(Arc::clone(current));
+        }
+        for entry in state.leases.iter().flatten() {
+            if let Some(owner) = entry.owner.upgrade()
+                && !bundles
+                    .iter()
+                    .any(|bundle| Arc::ptr_eq(bundle, &owner.bundle))
+            {
+                bundles.push(Arc::clone(&owner.bundle));
+            }
+        }
+        let actual = bundles
+            .capacity()
+            .checked_mul(std::mem::size_of::<Arc<NativeGraphBundle>>())
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<NativeProtectedRoots>()))
+            .ok_or(NativeGraphError::LeaseLimit)?;
+        charge.resize(actual)?;
+        Ok(NativeProtectedRoots {
+            bundles,
+            _charge: charge,
+        })
+    }
+
+    pub(crate) fn drain_and_clear(&self, deadline: Option<Instant>) -> Result<(), StoreError> {
+        let mut state = self.state.lock().map_err(|_| StoreError::Synchronization {
+            component: "native graph publication",
+        })?;
+        state.closing = true;
+        self.changed.notify_all();
+        while state.leases.iter().any(Option::is_some) {
+            let Some(deadline) = deadline else {
+                break;
+            };
+            let now = Instant::now();
+            if now >= deadline {
+                break;
+            }
+            let waited = self
+                .changed
+                .wait_timeout(state, deadline.saturating_duration_since(now))
+                .map_err(|_| StoreError::Synchronization {
+                    component: "native graph publication",
+                })?;
+            state = waited.0;
+        }
+        if state.leases.iter().any(Option::is_some) {
+            for entry in state.leases.iter().flatten() {
+                if let Some(owner) = entry.owner.upgrade() {
+                    owner.cancelled.store(true, Ordering::Release);
+                }
+            }
+            self.changed.notify_all();
+        }
+        while state.leases.iter().any(Option::is_some) {
+            state = self
+                .changed
+                .wait(state)
+                .map_err(|_| StoreError::Synchronization {
+                    component: "native graph publication",
+                })?;
+        }
+        drop(state.current.take());
+        Ok(())
+    }
+
+    pub(crate) fn cancel_and_clear_best_effort(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.closing = true;
+        for entry in state.leases.iter().flatten() {
+            if let Some(owner) = entry.owner.upgrade() {
+                owner.cancelled.store(true, Ordering::Release);
+            }
+        }
+        drop(state.current.take());
+        self.changed.notify_all();
+    }
+}
+
+struct NativeReadRegistration {
+    publication: Weak<NativeGraphPublication>,
+    slot: usize,
+    token: u64,
+}
+
+impl Drop for NativeReadRegistration {
+    fn drop(&mut self) {
+        let Some(publication) = self.publication.upgrade() else {
+            return;
+        };
+        let mut state = publication
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state
+            .leases
+            .get(self.slot)
+            .and_then(Option::as_ref)
+            .is_some_and(|entry| entry.token == self.token)
+            && let Some(slot) = state.leases.get_mut(self.slot)
+        {
+            *slot = None;
+        }
+        drop(state);
+        publication.changed.notify_all();
+    }
+}
+
+struct NativeReadOwner {
+    // Drop order matters: protected bytes and query identity disappear before
+    // the final registration removal wakes a close waiter.
+    bundle: Arc<NativeGraphBundle>,
+    view: QueryView,
+    _charge: GraphReservation,
+    cancelled: AtomicBool,
+    registration: NativeReadRegistration,
+}
+
+pub(crate) struct NativeReadLease {
+    owner: Arc<NativeReadOwner>,
+}
+
+impl Clone for NativeReadLease {
+    fn clone(&self) -> Self {
+        Self {
+            owner: Arc::clone(&self.owner),
+        }
+    }
+}
+
+impl NativeReadLease {
+    pub(crate) fn bundle(&self) -> &Arc<NativeGraphBundle> {
+        &self.owner.bundle
+    }
+
+    pub(crate) fn token(&self) -> u64 {
+        self.owner.registration.token
+    }
+
+    pub(crate) fn check_active(&self) -> Result<(), crate::property_graph::query::QueryError> {
+        if self.owner.cancelled.load(Ordering::Acquire) {
+            Err(crate::property_graph::query::QueryError::ReadCancelled)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl RetainedView for NativeReadLease {
+    fn query_view(&self) -> &QueryView {
+        &self.owner.view
+    }
+
+    fn check_active(&self) -> Result<(), crate::property_graph::query::QueryError> {
+        Self::check_active(self)
+    }
+}
+
+pub(crate) struct NativeProtectedRoots {
+    bundles: Vec<Arc<NativeGraphBundle>>,
+    _charge: GraphReservation,
+}
+
+impl NativeProtectedRoots {
+    fn contains(&self, reference: RequiredRef) -> bool {
+        self.bundles.iter().any(|bundle| bundle.contains(reference))
+    }
+
+    fn bundle_count(&self) -> usize {
+        self.bundles.len()
+    }
+}
+
+impl Store {
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn install_native_graph_for_test(
+        &self,
+        input: NativeGraphBundleInput,
+    ) -> Result<(), NativeGraphError> {
+        let resources = GraphResources::from_store(self)?;
+        let bundle = NativeGraphBundle::install(self, &resources, input)?;
+        let state = self.state.lock().map_err(|_| {
+            NativeGraphError::Store(StoreError::Synchronization { component: "state" })
+        })?;
+        match *state {
+            StoreState::Open => {}
+            StoreState::Closing => return Err(NativeGraphError::Store(StoreError::Closing)),
+            StoreState::Closed => return Err(NativeGraphError::Store(StoreError::Closed)),
+        }
+        self.native_graph.install(bundle)
+    }
+
+    pub(crate) fn admit_native_read(&self) -> Result<NativeReadLease, NativeGraphError> {
+        let state = self.state.lock().map_err(|_| {
+            NativeGraphError::Store(StoreError::Synchronization { component: "state" })
+        })?;
+        match *state {
+            StoreState::Open => {}
+            StoreState::Closing => return Err(NativeGraphError::Store(StoreError::Closing)),
+            StoreState::Closed => return Err(NativeGraphError::Store(StoreError::Closed)),
+        }
+        let resources = GraphResources::from_store(self)?;
+        let charge = resources
+            .reserve(std::mem::size_of::<NativeReadOwner>() + 2 * std::mem::size_of::<usize>())?;
+        self.native_graph.admit(charge)
+    }
+
+    pub(crate) fn capture_native_read_roots(
+        &self,
+    ) -> Result<NativeProtectedRoots, NativeGraphError> {
+        let state = self.state.lock().map_err(|_| {
+            NativeGraphError::Store(StoreError::Synchronization { component: "state" })
+        })?;
+        match *state {
+            StoreState::Open => {}
+            StoreState::Closing => return Err(NativeGraphError::Store(StoreError::Closing)),
+            StoreState::Closed => return Err(NativeGraphError::Store(StoreError::Closed)),
+        }
+        let resources = GraphResources::from_store(self)?;
+        self.native_graph.capture(&resources)
+    }
+
+    pub(crate) fn with_native_read<T, C: NativeReadConsumer<T>>(
+        &self,
+        control: &crate::lifecycle::QueryControl,
+        limits: crate::property_graph::query::runtime::RuntimeLimits,
+        memory_limit: usize,
+        source_slots: usize,
+        mut consumer: C,
+    ) -> Result<T, NativeGraphError> {
+        use crate::property_graph::query::resources::QueryMemory;
+        use crate::property_graph::query::runtime::{RuntimeContext, RuntimeError};
+        use crate::property_graph::storage::tree::directory::TreeResources;
+        use crate::property_graph::storage::{GraphReadView, NativeCatalog, NativeQuerySource};
+
+        let lease = self.admit_native_read()?;
+        let shared = GraphResources::from_store(self)?;
+        let memory = QueryMemory::new(&shared, memory_limit)
+            .map_err(RuntimeError::Memory)
+            .map_err(crate::property_graph::storage::tree::directory::TreeError::Runtime)?;
+        let mut runtime = RuntimeContext::new(&lease, control, &memory, limits)
+            .map_err(crate::property_graph::storage::tree::directory::TreeError::Runtime)?;
+        let mut resources = TreeResources::for_query(&mut runtime)?;
+        let source = NativeQuerySource::new(&lease, &memory, &resources, source_slots)?;
+        let catalog = NativeCatalog::open(&source, lease.bundle(), &memory, &mut resources)?;
+        drop(resources);
+        let view = GraphReadView::new(&lease, &source, &catalog);
+        let result = consumer.consume(&view, &mut runtime)?;
+        runtime
+            .checkpoint()
+            .map_err(crate::property_graph::storage::tree::directory::TreeError::Runtime)?;
+        Ok(result)
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod tests {
+    #![allow(
+        dead_code,
+        clippy::drop_non_drop,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::panic,
+        clippy::unwrap_used
+    )]
+
+    mod tempfile {
+        use std::path::{Path, PathBuf};
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+
+        pub(super) struct TempDir(PathBuf);
+
+        impl TempDir {
+            pub(super) fn path(&self) -> &Path {
+                &self.0
+            }
+        }
+
+        impl Drop for TempDir {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        pub(super) fn tempdir() -> std::io::Result<TempDir> {
+            let ordinal = NEXT.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir()
+                .join(format!("zeppelin-ze45-{}-{ordinal}", std::process::id()));
+            std::fs::create_dir(&path)?;
+            Ok(TempDir(path))
+        }
+    }
+
+    use super::*;
+    use crate::epoch::{ComputeUnits, EmbeddingRuntime, Normalization};
+    use crate::fts::tokenizer::{TokenizerConfig, TokenizerEpoch};
+    use crate::lifecycle::{
+        CancelToken, Deadline, ManualMonotonicClock, OpenOptions, QueryControl, Store,
+        StoreTestDependencies,
+    };
+    use crate::property_graph::catalog::{
+        CatalogDeclaration, CatalogImage, GraphInterpretation, SymbolCatalog, SymbolHighWaters,
+    };
+    use crate::property_graph::query::resources::QueryMemory;
+    use crate::property_graph::query::runtime::{RuntimeContext, RuntimeLimits};
+    use crate::property_graph::resources::GraphResources;
+    use crate::property_graph::staging::BaseIdentity;
+    use crate::property_graph::staging::{
+        AdmittedBase, BaseEntity, BaseKeyState, HighWaters as StageHighWaters, StageError,
+        StructuredOperation, StructuredWrite, WriteControl, WriteImage, WriteLimits, WriteMemory,
+        stage_structured,
+    };
+    use crate::property_graph::storage::adjacency::{NativeGraphBase, prepare_native_graph};
+    use crate::property_graph::storage::allocation::artifact_path;
+    use crate::property_graph::storage::artifact::{
+        self, ArtifactId, ArtifactIdentity, Block, BlockKind, ContainerKind, PhysicalRef,
+    };
+    use crate::property_graph::storage::memory::StorageMemory;
+    use crate::property_graph::storage::participant::{DirectoryBase, PreparationCatalog};
+    use crate::property_graph::storage::prepared::{PackLimits, PreparedObjects};
+    use crate::property_graph::storage::records::RecordCatalog;
+    use crate::property_graph::storage::stream::PayloadSlice;
+    use crate::property_graph::storage::tree::directory::GraphRoots;
+    use crate::property_graph::storage::tree::directory::{BlockSource, TreeResources};
+    use crate::property_graph::storage::{
+        CursorState, DirectionSelection, GraphReadView, LabelSelection, NativeCatalog,
+        NativeQuerySource, NodeCursor, PreparedGraphArtifacts, RelationshipTypeSelection,
+    };
+    use crate::property_graph::wal::{ArtifactDescriptor, HighWaters, RequiredRef, WalGraphRoots};
+    use crate::property_graph::{
+        ApplicationKey, CanonicalContents, EntityId, EntityKind, GraphGeneration, GraphName,
+        GraphRevision, NodeRef, PropertyValue, StoreInstanceId, with_local_refs,
+    };
+    use crate::vfs::{CountingVfs, StdVfs, SyncKind, Vfs, VfsFile};
+    use std::fs::File;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    struct ScheduledMapVfs {
+        calls: AtomicU64,
+        fail_at: AtomicU64,
+        fires: AtomicU64,
+    }
+
+    impl ScheduledMapVfs {
+        fn new() -> Self {
+            Self {
+                calls: AtomicU64::new(0),
+                fail_at: AtomicU64::new(0),
+                fires: AtomicU64::new(0),
+            }
+        }
+
+        fn arm_next(&self) -> u64 {
+            let scheduled = self.calls.load(Ordering::Relaxed) + 1;
+            self.fail_at.store(scheduled, Ordering::Relaxed);
+            scheduled
+        }
+
+        fn disarm(&self) {
+            self.fail_at.store(0, Ordering::Relaxed);
+        }
+    }
+
+    impl Vfs for ScheduledMapVfs {
+        fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
+            StdVfs.ensure_directory(path, create)
+        }
+
+        fn open(&self, path: &Path) -> std::io::Result<u64> {
+            StdVfs.open(path)
+        }
+
+        fn open_for_map(&self, path: &Path) -> std::io::Result<File> {
+            let call = self.calls.fetch_add(1, Ordering::Relaxed) + 1;
+            if self.fail_at.load(Ordering::Relaxed) == call {
+                self.fires.fetch_add(1, Ordering::Relaxed);
+                return Err(std::io::Error::other("scheduled ZE-45 map-open fault"));
+            }
+            StdVfs.open_for_map(path)
+        }
+
+        fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+            StdVfs.read(path)
+        }
+
+        fn read_range(&self, path: &Path, offset: u64, length: usize) -> std::io::Result<Vec<u8>> {
+            StdVfs.read_range(path, offset, length)
+        }
+
+        fn write(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+            StdVfs.write(path, bytes)
+        }
+
+        fn create_new(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+            StdVfs.create_new(path, bytes)
+        }
+
+        fn open_append(&self, path: &Path) -> std::io::Result<Box<dyn VfsFile>> {
+            StdVfs.open_append(path)
+        }
+
+        fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+            StdVfs.rename(from, to)
+        }
+
+        fn sync(&self, path: &Path, kind: SyncKind) -> std::io::Result<()> {
+            StdVfs.sync(path, kind)
+        }
+
+        fn list(&self, directory: &Path) -> std::io::Result<Vec<PathBuf>> {
+            StdVfs.list(directory)
+        }
+
+        fn delete(&self, path: &Path) -> std::io::Result<()> {
+            StdVfs.delete(path)
+        }
+    }
+
+    fn required(
+        store: StoreInstanceId,
+        generation: GraphGeneration,
+        artifact: u128,
+        kind: BlockKind,
+        family: ContainerKind,
+    ) -> RequiredRef {
+        let artifact = ArtifactId::new(artifact).unwrap();
+        RequiredRef {
+            object: ArtifactDescriptor {
+                store,
+                artifact,
+                generation,
+                serial: artifact.get() as u64,
+                bytes: 128,
+                family: match family {
+                    ContainerKind::Object => 17,
+                    ContainerKind::RootEnvelope => 18,
+                },
+                version: 1,
+                checksum: artifact.get() as u64,
+            },
+            block: PhysicalRef {
+                artifact,
+                offset: 96,
+                length: 32,
+                kind,
+                version: 1,
+            },
+        }
+    }
+
+    fn bundle(store: StoreInstanceId, generation: u64, artifact: u128) -> NativeGraphBundleInput {
+        let generation = GraphGeneration::new(generation);
+        let root_envelope = required(
+            store,
+            generation,
+            artifact,
+            BlockKind::CheckpointPayload,
+            ContainerKind::RootEnvelope,
+        );
+        let catalog = required(
+            store,
+            generation,
+            artifact + 1,
+            BlockKind::CommitParticipant,
+            ContainerKind::Object,
+        );
+        NativeGraphBundleInput {
+            base: BaseIdentity {
+                store,
+                generation,
+                roots: Some(root_envelope.object.artifact),
+            },
+            root_envelope,
+            roots: GraphRoots::from_references(store, generation, [None; 8]).unwrap(),
+            wal_roots: WalGraphRoots::default(),
+            sequence: generation.get(),
+            catalog,
+            vector: None,
+            text: None,
+            reclaim: None,
+            high_waters: HighWaters::default(),
+            prepared_inventories: Vec::new(),
+            lexical: TokenizerEpoch::of(&TokenizerConfig::text_default()),
+            document: None,
+        }
+    }
+
+    fn install_catalog_file(
+        directory: &Path,
+        store: StoreInstanceId,
+        generation: GraphGeneration,
+        artifact_value: u128,
+    ) -> RequiredRef {
+        let mut checkpoint = || Ok(());
+        let symbols =
+            SymbolCatalog::reconstruct(&[], SymbolHighWaters::default(), 0, 0, &mut checkpoint)
+                .unwrap();
+        let image = CatalogImage {
+            declaration: CatalogDeclaration {
+                store,
+                node_high_water: 0,
+                relationship_high_water: 0,
+                interpretation: GraphInterpretation::new(
+                    TokenizerEpoch::of(&TokenizerConfig::text_default()),
+                    None,
+                )
+                .unwrap(),
+            },
+            symbols,
+        };
+        let inner_length = image.encoded_len(&mut checkpoint).unwrap();
+        let mut participant = vec![0; 8 + inner_length];
+        participant[..4].copy_from_slice(b"ZGCP");
+        participant[4..6].copy_from_slice(&1_u16.to_le_bytes());
+        participant[6..8].copy_from_slice(&1_u16.to_le_bytes());
+        image
+            .encode_into(&mut participant[8..], &mut checkpoint)
+            .unwrap();
+        let artifact = ArtifactId::new(artifact_value).unwrap();
+        let blocks = [Block {
+            kind: BlockKind::CommitParticipant,
+            payload: &participant,
+        }];
+        let mut bytes = vec![0; artifact::encoded_len(ContainerKind::Object, &blocks).unwrap()];
+        artifact::encode_into(
+            ContainerKind::Object,
+            ArtifactIdentity {
+                store,
+                artifact,
+                generation,
+                creation_serial: 9,
+            },
+            &blocks,
+            &mut bytes,
+        )
+        .unwrap();
+        let frame =
+            artifact::decode(ContainerKind::Object, Some((store, artifact)), &bytes).unwrap();
+        let block = frame.reference(0).unwrap();
+        let checksum = u64::from_le_bytes(*bytes[bytes.len() - 8..].first_chunk::<8>().unwrap());
+        let required = RequiredRef {
+            object: ArtifactDescriptor {
+                store,
+                artifact,
+                generation,
+                serial: 9,
+                bytes: bytes.len() as u32,
+                family: 17,
+                version: 1,
+                checksum,
+            },
+            block,
+        };
+        std::fs::write(artifact_path(directory, artifact), bytes).unwrap();
+        required
+    }
+
+    struct EmptyProducerBase {
+        identity: BaseIdentity,
+        high_waters: StageHighWaters,
+        document: Option<EmbeddingTower>,
+    }
+
+    impl AdmittedBase for EmptyProducerBase {
+        fn identity(&self) -> BaseIdentity {
+            self.identity
+        }
+
+        fn high_waters(&self) -> StageHighWaters {
+            self.high_waters
+        }
+
+        fn interpretation(&self) -> GraphInterpretation<'_> {
+            GraphInterpretation::new(
+                TokenizerEpoch::of(&TokenizerConfig::text_default()),
+                self.document.as_ref(),
+            )
+            .unwrap()
+        }
+
+        fn key(
+            &self,
+            _: ApplicationKey<'_>,
+            _: &mut WriteControl<'_>,
+        ) -> Result<BaseKeyState<'_>, StageError> {
+            Ok(BaseKeyState::NeverUsed)
+        }
+
+        fn entity(
+            &self,
+            _: EntityId,
+            _: &mut WriteControl<'_>,
+        ) -> Result<Option<BaseEntity<'_>>, StageError> {
+            Ok(None)
+        }
+
+        fn has_live_incident(
+            &self,
+            _: crate::property_graph::NodeId,
+            _: &[crate::property_graph::RelId],
+            _: &mut WriteControl<'_>,
+        ) -> Result<bool, StageError> {
+            Ok(false)
+        }
+
+        fn property(
+            &self,
+            _: EntityId,
+            _: GraphName<'_>,
+            _: &mut WriteControl<'_>,
+        ) -> Result<Option<PropertyValue<'_>>, StageError> {
+            Ok(None)
+        }
+
+        fn stored_text(
+            &self,
+            _: crate::property_graph::NodeId,
+            _: &mut WriteControl<'_>,
+        ) -> Result<Option<&str>, StageError> {
+            Ok(None)
+        }
+
+        fn symbol(
+            &self,
+            _: crate::property_graph::catalog::SymbolKind,
+            _: GraphName<'_>,
+            _: &mut WriteControl<'_>,
+        ) -> Result<Option<crate::property_graph::catalog::Symbol>, StageError> {
+            Ok(None)
+        }
+    }
+
+    struct MissingProducerSource;
+    impl BlockSource for MissingProducerSource {
+        fn resolve<'a>(
+            &'a self,
+            _: PhysicalRef,
+            _: &mut TreeResources<'_>,
+        ) -> Result<
+            artifact::FramedBlock<'a>,
+            crate::property_graph::storage::tree::directory::TreeError,
+        > {
+            Err(crate::property_graph::storage::tree::directory::TreeError::Missing)
+        }
+    }
+
+    struct FixtureFileSource {
+        store: StoreInstanceId,
+        objects: Vec<(ArtifactId, Vec<u8>)>,
+    }
+
+    impl FixtureFileSource {
+        fn one(directory: &Path, required: RequiredRef) -> Self {
+            Self {
+                store: required.object.store,
+                objects: vec![(
+                    required.object.artifact,
+                    std::fs::read(artifact_path(directory, required.object.artifact)).unwrap(),
+                )],
+            }
+        }
+    }
+
+    impl BlockSource for FixtureFileSource {
+        fn resolve<'a>(
+            &'a self,
+            reference: PhysicalRef,
+            resources: &mut TreeResources<'_>,
+        ) -> Result<
+            artifact::FramedBlock<'a>,
+            crate::property_graph::storage::tree::directory::TreeError,
+        > {
+            resources.step(1)?;
+            let bytes = self
+                .objects
+                .iter()
+                .find(|(artifact, _)| *artifact == reference.artifact)
+                .map(|(_, bytes)| bytes.as_slice())
+                .ok_or(crate::property_graph::storage::tree::directory::TreeError::Missing)?;
+            let frame = artifact::decode(
+                ContainerKind::Object,
+                Some((self.store, reference.artifact)),
+                bytes,
+            )?;
+            frame.framed_block(reference).map_err(Into::into)
+        }
+    }
+
+    struct EmptyPreparationCatalog(BaseIdentity);
+    impl<S: BlockSource> RecordCatalog<S> for EmptyPreparationCatalog {
+        fn resolve(
+            &self,
+            _: crate::property_graph::catalog::SymbolKind,
+            _: PayloadSlice<'_, S>,
+            _: &mut TreeResources<'_>,
+        ) -> Result<
+            crate::property_graph::catalog::Symbol,
+            crate::property_graph::storage::tree::directory::TreeError,
+        > {
+            Err(
+                crate::property_graph::storage::tree::directory::TreeError::Invalid(
+                    "unexpected base catalog lookup",
+                ),
+            )
+        }
+    }
+    impl<S: BlockSource> PreparationCatalog<S> for EmptyPreparationCatalog {
+        fn base_identity(&self) -> BaseIdentity {
+            self.0
+        }
+    }
+
+    fn write_framed_file(
+        directory: &Path,
+        kind: ContainerKind,
+        identity: ArtifactIdentity,
+        blocks: &[Block<'_>],
+    ) -> RequiredRef {
+        let mut bytes = vec![0; artifact::encoded_len(kind, blocks).unwrap()];
+        artifact::encode_into(kind, identity, blocks, &mut bytes).unwrap();
+        let frame =
+            artifact::decode(kind, Some((identity.store, identity.artifact)), &bytes).unwrap();
+        let block = frame.reference(0).unwrap();
+        let checksum = u64::from_le_bytes(*bytes[bytes.len() - 8..].first_chunk::<8>().unwrap());
+        let required = RequiredRef {
+            object: ArtifactDescriptor {
+                store: identity.store,
+                artifact: identity.artifact,
+                generation: identity.generation,
+                serial: identity.creation_serial,
+                bytes: bytes.len() as u32,
+                family: match kind {
+                    ContainerKind::Object => 17,
+                    ContainerKind::RootEnvelope => 18,
+                },
+                version: 1,
+                checksum,
+            },
+            block,
+        };
+        std::fs::write(artifact_path(directory, identity.artifact), bytes).unwrap();
+        required
+    }
+
+    fn write_catalog_with_symbols(
+        directory: &Path,
+        identity: ArtifactIdentity,
+        staged: &crate::property_graph::staging::StagedBatch<'_>,
+        document: Option<&EmbeddingTower>,
+    ) -> RequiredRef {
+        let mut checkpoint = || Ok(());
+        let allowance = std::mem::size_of_val(staged.symbols());
+        let symbols = SymbolCatalog::reconstruct(
+            staged.symbols(),
+            staged.high_waters().symbols,
+            staged.symbols().len(),
+            allowance,
+            &mut checkpoint,
+        )
+        .unwrap();
+        let image = CatalogImage {
+            declaration: CatalogDeclaration {
+                store: identity.store,
+                node_high_water: staged.high_waters().node,
+                relationship_high_water: staged.high_waters().relationship,
+                interpretation: GraphInterpretation::new(
+                    TokenizerEpoch::of(&TokenizerConfig::text_default()),
+                    document,
+                )
+                .unwrap(),
+            },
+            symbols,
+        };
+        let inner_length = image.encoded_len(&mut checkpoint).unwrap();
+        let mut participant = vec![0; 8 + inner_length];
+        participant[..4].copy_from_slice(b"ZGCP");
+        participant[4..6].copy_from_slice(&1_u16.to_le_bytes());
+        participant[6..8].copy_from_slice(&1_u16.to_le_bytes());
+        image
+            .encode_into(&mut participant[8..], &mut checkpoint)
+            .unwrap();
+        write_framed_file(
+            directory,
+            ContainerKind::Object,
+            identity,
+            &[Block {
+                kind: BlockKind::CommitParticipant,
+                payload: &participant,
+            }],
+        )
+    }
+
+    fn actual_producer_bundle_with_extra_nodes(
+        store: &Store,
+        directory: &Path,
+        identity: StoreInstanceId,
+        extra_nodes: usize,
+        with_vector: bool,
+        extra_relationships: usize,
+        max_ids: bool,
+    ) -> NativeGraphBundleInput {
+        let shared = GraphResources::from_store(store).unwrap();
+        let writer = WriteMemory::new(&shared, WriteLimits::default()).unwrap();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let storage = StorageMemory::new(&writer, &control, 32 * 1024 * 1024).unwrap();
+        let base = BaseIdentity {
+            store: identity,
+            generation: GraphGeneration::new(0),
+            roots: None,
+        };
+        let document = with_vector.then(|| EmbeddingTower {
+            model_id: "ze45-document".into(),
+            model_version: "1".into(),
+            weights_digest: vec![0x45, 0xa5],
+            dims: 2,
+            normalization: Normalization::None,
+            prompt_prefix: "doc: ".into(),
+            max_tokens: 32,
+            runtime: EmbeddingRuntime::CpuReference,
+            compute_units: ComputeUnits::Cpu,
+            os_build: None,
+        });
+        let node_count = 2_u128 + extra_nodes as u128;
+        let relationship_count = 3_u128 + extra_relationships as u128;
+        let admitted = EmptyProducerBase {
+            identity: base,
+            high_waters: StageHighWaters {
+                node: if max_ids {
+                    u128::MAX - node_count
+                } else {
+                    1_u128 << 100
+                },
+                relationship: if max_ids {
+                    u128::MAX - relationship_count
+                } else {
+                    1_u128 << 110
+                },
+                ..StageHighWaters::default()
+            },
+            document: document.clone(),
+        };
+        let label = GraphName::new("Label").unwrap();
+        let rel_type = GraphName::new("R").unwrap();
+        let alternate_rel_type = GraphName::new("S").unwrap();
+        let namespace = "app";
+        let extra_keys = (0..extra_nodes)
+            .map(|index| format!("bulk-{index:04}"))
+            .collect::<Vec<_>>();
+        let extra_relationship_keys = (0..extra_relationships)
+            .map(|index| format!("bulk-rel-{index:04}"))
+            .collect::<Vec<_>>();
+        with_local_refs(|refs| {
+            let mut labels_a = [label];
+            let coordinates = [f32::from_bits(0x3f80_0001), f32::from_bits(0x8000_0000)];
+            let embedding = document.as_ref().map(|document| {
+                crate::property_graph::CanonicalEmbedding::new(document, &coordinates).unwrap()
+            });
+            let node_a = CanonicalContents::node(&mut labels_a, &mut [], Some(""), None).unwrap();
+            let node_b = CanonicalContents::node(&mut [], &mut [], None, embedding).unwrap();
+            let mut requests = Vec::with_capacity(5 + extra_nodes + extra_relationships);
+            requests.push(StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, namespace, "a").unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&node_a)),
+            });
+            requests.push(StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, namespace, "b").unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&node_b)),
+            });
+            for key in &extra_keys {
+                requests.push(StructuredWrite {
+                    key: ApplicationKey::new(EntityKind::Node, namespace, key).unwrap(),
+                    revision: GraphRevision::new(1).unwrap(),
+                    operation: StructuredOperation::Create,
+                    image: Some(WriteImage::Node(&node_b)),
+                });
+            }
+            requests.push(StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Relationship, namespace, "ab1").unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Relationship {
+                    source: NodeRef::Local(refs.node(0).unwrap()),
+                    target: NodeRef::Local(refs.node(1).unwrap()),
+                    relationship_type: rel_type,
+                    properties: &[],
+                }),
+            });
+            for key in &extra_relationship_keys {
+                requests.push(StructuredWrite {
+                    key: ApplicationKey::new(EntityKind::Relationship, namespace, key).unwrap(),
+                    revision: GraphRevision::new(1).unwrap(),
+                    operation: StructuredOperation::Create,
+                    image: Some(WriteImage::Relationship {
+                        source: NodeRef::Local(refs.node(0).unwrap()),
+                        target: NodeRef::Local(refs.node(1).unwrap()),
+                        relationship_type: rel_type,
+                        properties: &[],
+                    }),
+                });
+            }
+            requests.push(StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Relationship, namespace, "self").unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Relationship {
+                    source: NodeRef::Local(refs.node(0).unwrap()),
+                    target: NodeRef::Local(refs.node(0).unwrap()),
+                    relationship_type: alternate_rel_type,
+                    properties: &[],
+                }),
+            });
+            requests.push(StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Relationship, namespace, "ab2").unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Relationship {
+                    source: NodeRef::Local(refs.node(0).unwrap()),
+                    target: NodeRef::Local(refs.node(1).unwrap()),
+                    relationship_type: rel_type,
+                    properties: &[],
+                }),
+            });
+            let staged = stage_structured(&admitted, &requests, &writer, &mut |_| Ok(())).unwrap();
+            let target_generation = GraphGeneration::new(1);
+            let mut next_artifact = 1_000_u128;
+            let mut next_serial = 1_u64;
+            let mut resources = TreeResources::for_prepare(&storage, u64::MAX).unwrap();
+            let mut objects = PreparedObjects::new(
+                &MissingProducerSource,
+                || {
+                    let artifact = ArtifactId::new(next_artifact)?;
+                    let creation_serial = next_serial;
+                    next_artifact += 1;
+                    next_serial += 1;
+                    Ok(ArtifactIdentity {
+                        store: identity,
+                        artifact,
+                        generation: target_generation,
+                        creation_serial,
+                    })
+                },
+                identity,
+                target_generation,
+                PackLimits::default(),
+                &storage,
+                &mut resources,
+            )
+            .unwrap();
+            let base_catalog_artifact = ArtifactId::new(999).unwrap();
+            let committed = crate::property_graph::wal::CommitState {
+                store: identity,
+                generation: GraphGeneration::new(0),
+                sequence: 40,
+                graph: WalGraphRoots::default(),
+                catalog: required(
+                    identity,
+                    GraphGeneration::new(0),
+                    base_catalog_artifact.get(),
+                    BlockKind::CommitParticipant,
+                    ContainerKind::Object,
+                ),
+                vector: None,
+                text: None,
+                reclaim: None,
+                high_waters: HighWaters::default(),
+                prepared_inventories: crate::property_graph::wal::ReferenceList::Values(&[]),
+            };
+            let candidate = prepare_native_graph(
+                &mut objects,
+                &staged,
+                NativeGraphBase {
+                    directories: DirectoryBase {
+                        identity: base,
+                        roots: GraphRoots::from_references(
+                            identity,
+                            GraphGeneration::new(0),
+                            [None; 8],
+                        )
+                        .unwrap(),
+                    },
+                    committed,
+                },
+                &EmptyPreparationCatalog(base),
+                document.as_ref(),
+                &storage,
+                &mut resources,
+            )
+            .unwrap();
+            let roots = candidate.roots();
+            let sequence = candidate.sequence();
+            objects.finish(&mut resources).unwrap();
+            let mut descriptors = Vec::new();
+            for index in 0..objects.len() {
+                let object = objects.artifact(index).unwrap();
+                let bytes = object.bytes();
+                let checksum =
+                    u64::from_le_bytes(*bytes[bytes.len() - 8..].first_chunk::<8>().unwrap());
+                descriptors.push(ArtifactDescriptor {
+                    store: identity,
+                    artifact: object.identity().artifact,
+                    generation: object.identity().generation,
+                    serial: object.identity().creation_serial,
+                    bytes: bytes.len() as u32,
+                    family: 17,
+                    version: 1,
+                    checksum,
+                });
+                std::fs::write(artifact_path(directory, object.identity().artifact), bytes)
+                    .unwrap();
+            }
+            let mut wal_roots = WalGraphRoots::default();
+            for (slot, reference) in roots.references().into_iter().enumerate() {
+                if let Some(block) = reference {
+                    let descriptor = *descriptors
+                        .iter()
+                        .find(|descriptor| descriptor.artifact == block.artifact)
+                        .unwrap();
+                    wal_roots.slots[slot] = Some(RequiredRef {
+                        object: descriptor,
+                        block,
+                    });
+                }
+            }
+            let catalog_identity = ArtifactIdentity {
+                store: identity,
+                artifact: ArtifactId::new(8_001).unwrap(),
+                generation: target_generation,
+                creation_serial: next_serial,
+            };
+            next_serial += 1;
+            let catalog =
+                write_catalog_with_symbols(directory, catalog_identity, &staged, document.as_ref());
+            let root_identity = ArtifactIdentity {
+                store: identity,
+                artifact: ArtifactId::new(8_002).unwrap(),
+                generation: target_generation,
+                creation_serial: next_serial,
+            };
+            let root_envelope = write_framed_file(
+                directory,
+                ContainerKind::RootEnvelope,
+                root_identity,
+                &[Block {
+                    kind: BlockKind::CheckpointPayload,
+                    payload: b"controlled-fixture-root",
+                }],
+            );
+            NativeGraphBundleInput {
+                base: BaseIdentity {
+                    store: identity,
+                    generation: target_generation,
+                    roots: Some(root_identity.artifact),
+                },
+                root_envelope,
+                roots,
+                wal_roots,
+                sequence,
+                catalog,
+                vector: None,
+                text: None,
+                reclaim: None,
+                high_waters: HighWaters {
+                    node: staged.high_waters().node,
+                    relationship: staged.high_waters().relationship,
+                    symbols: [
+                        staged.high_waters().symbols.label,
+                        staged.high_waters().symbols.relationship_type,
+                        staged.high_waters().symbols.property,
+                        staged.high_waters().symbols.namespace,
+                    ],
+                    creation_serial: next_serial,
+                },
+                prepared_inventories: Vec::new(),
+                lexical: TokenizerEpoch::of(&TokenizerConfig::text_default()),
+                document: document.clone(),
+            }
+        })
+    }
+
+    fn actual_producer_bundle(
+        store: &Store,
+        directory: &Path,
+        identity: StoreInstanceId,
+    ) -> NativeGraphBundleInput {
+        actual_producer_bundle_with_extra_nodes(store, directory, identity, 0, false, 0, false)
+    }
+
+    fn tombstoned_endpoint_bundle(
+        store: &Store,
+        directory: &Path,
+        admitted: &NativeGraphBundleInput,
+        node: crate::property_graph::NodeId,
+    ) -> NativeGraphBundleInput {
+        use crate::property_graph::storage::records::{prepare_node_tombstone, prepare_provenance};
+        use crate::property_graph::storage::tree::TreeKind;
+        use crate::property_graph::storage::tree::directory::{TreeScratch, insert};
+        use crate::property_graph::{
+            ExpectedGraphState, GraphDeleteMode, GraphOperation, OperationFields,
+            OperationProvenance,
+        };
+
+        let source = FixtureFileSource::one(
+            directory,
+            admitted.wal_roots.slots[TreeKind::Nodes as usize - 1].unwrap(),
+        );
+        let shared = GraphResources::from_store(store).unwrap();
+        let writer = WriteMemory::new(&shared, WriteLimits::default()).unwrap();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let storage = StorageMemory::new(&writer, &control, 32 * 1024 * 1024).unwrap();
+        let target_generation = GraphGeneration::new(admitted.base.generation.get() + 1);
+        let mut next_artifact = 9_000_u128;
+        let mut next_serial = admitted.high_waters.creation_serial + 1;
+        let mut resources = TreeResources::for_prepare(&storage, u64::MAX).unwrap();
+        let mut objects = PreparedObjects::new(
+            &source,
+            || {
+                let identity = ArtifactIdentity {
+                    store: admitted.base.store,
+                    artifact: ArtifactId::new(next_artifact)?,
+                    generation: target_generation,
+                    creation_serial: next_serial,
+                };
+                next_artifact += 1;
+                next_serial += 1;
+                Ok(identity)
+            },
+            admitted.base.store,
+            target_generation,
+            PackLimits::default(),
+            &storage,
+            &mut resources,
+        )
+        .unwrap();
+        let provenance = prepare_provenance(
+            &mut objects,
+            admitted.base.store,
+            target_generation,
+            OperationProvenance::from_fields(
+                Some(1),
+                OperationFields {
+                    operation: GraphOperation::CypherEdit,
+                    key: None,
+                    requested_revision: GraphRevision::new(2).unwrap(),
+                    installed_revision: GraphRevision::new(2).unwrap(),
+                    expected: ExpectedGraphState::Entity(EntityId::Node(node)),
+                    incarnation: EntityId::Node(node),
+                    delete_mode: Some(GraphDeleteMode::Detach),
+                    original_generation: admitted.base.generation,
+                },
+            )
+            .unwrap(),
+            &storage,
+            &mut resources,
+        )
+        .unwrap();
+        let tombstone = prepare_node_tombstone(
+            &mut objects,
+            admitted.base.store,
+            target_generation,
+            node,
+            provenance,
+            &mut resources,
+        )
+        .unwrap();
+        let mut value = [0_u8; 48];
+        tombstone.encode_into(&mut value).unwrap();
+        let mut scratch = TreeScratch::for_prepare(&storage).unwrap();
+        let mut roots = admitted.roots.for_generation(target_generation).unwrap();
+        let nodes = insert(
+            &mut objects,
+            roots.directory(TreeKind::Nodes).unwrap(),
+            &node.get().to_le_bytes(),
+            &value,
+            target_generation,
+            &mut scratch,
+            &mut resources,
+        )
+        .unwrap();
+        roots.replace(nodes).unwrap();
+        objects.finish(&mut resources).unwrap();
+        let mut descriptors = Vec::new();
+        for index in 0..objects.len() {
+            let object = objects.artifact(index).unwrap();
+            let bytes = object.bytes();
+            let checksum =
+                u64::from_le_bytes(*bytes[bytes.len() - 8..].first_chunk::<8>().unwrap());
+            descriptors.push(ArtifactDescriptor {
+                store: admitted.base.store,
+                artifact: object.identity().artifact,
+                generation: target_generation,
+                serial: object.identity().creation_serial,
+                bytes: bytes.len() as u32,
+                family: 17,
+                version: 1,
+                checksum,
+            });
+            std::fs::write(artifact_path(directory, object.identity().artifact), bytes).unwrap();
+        }
+        let mut wal_roots = admitted.wal_roots;
+        let node_root = roots.references()[TreeKind::Nodes as usize - 1].unwrap();
+        wal_roots.slots[TreeKind::Nodes as usize - 1] = Some(RequiredRef {
+            object: *descriptors
+                .iter()
+                .find(|descriptor| descriptor.artifact == node_root.artifact)
+                .unwrap(),
+            block: node_root,
+        });
+        let root_identity = ArtifactIdentity {
+            store: admitted.base.store,
+            artifact: ArtifactId::new(9_999).unwrap(),
+            generation: target_generation,
+            creation_serial: 9_999,
+        };
+        let root_envelope = write_framed_file(
+            directory,
+            ContainerKind::RootEnvelope,
+            root_identity,
+            &[Block {
+                kind: BlockKind::CheckpointPayload,
+                payload: b"controlled-tombstone-root",
+            }],
+        );
+        NativeGraphBundleInput {
+            base: BaseIdentity {
+                store: admitted.base.store,
+                generation: target_generation,
+                roots: Some(root_identity.artifact),
+            },
+            root_envelope,
+            roots,
+            wal_roots,
+            sequence: admitted.sequence + 1,
+            catalog: admitted.catalog,
+            vector: admitted.vector,
+            text: admitted.text,
+            reclaim: admitted.reclaim,
+            high_waters: HighWaters {
+                creation_serial: 9_999,
+                ..admitted.high_waters
+            },
+            prepared_inventories: admitted.prepared_inventories.clone(),
+            lexical: admitted.lexical,
+            document: admitted.document.clone(),
+        }
+    }
+
+    struct NativeNodePull<'view, 'source, 'lease, 'm, 'g> {
+        view: &'view GraphReadView<'source, 'lease, 'm, 'g>,
+        cursor: Option<NodeCursor<'source, 'm, 'g>>,
+        nodes: Option<[crate::property_graph::NodeId; 2]>,
+        emitted: usize,
+        materialized: bool,
+    }
+
+    impl<'view, 'source, 'lease, 'm, 'g>
+        crate::property_graph::query::runtime::PullOperator<'lease, 'm, 'g>
+        for NativeNodePull<'view, 'source, 'lease, 'm, 'g>
+    {
+        fn node(&self) -> crate::property_graph::query::plan::PlanNodeId {
+            crate::property_graph::query::plan::PlanNodeId(1)
+        }
+
+        fn prepare_search(
+            &mut self,
+            _: crate::property_graph::query::plan::PlanNodeId,
+            _: &mut RuntimeContext<'lease, 'm, 'g>,
+        ) -> Result<(), crate::property_graph::query::runtime::RuntimeError> {
+            Err(crate::property_graph::query::runtime::RuntimeError::Batch)
+        }
+
+        fn pull(
+            &mut self,
+            context: &mut RuntimeContext<'lease, 'm, 'g>,
+            output: &mut crate::property_graph::query::runtime::RowBatch<'lease, 'm, 'g>,
+        ) -> Result<
+            crate::property_graph::query::runtime::PullState,
+            crate::property_graph::query::runtime::RuntimeError,
+        > {
+            use crate::property_graph::query::runtime::{PullState, RuntimeError, WorkKind};
+            let placeholder =
+                crate::property_graph::NodeId::new(1).map_err(|_| RuntimeError::Batch)?;
+            if self.nodes.is_none() {
+                let mut nodes = [placeholder; 2];
+                let cursor = self.cursor.as_mut().ok_or(RuntimeError::Batch)?;
+                let (count, state) = self
+                    .view
+                    .scan_nodes(cursor, &mut nodes, context)
+                    .map_err(|_| RuntimeError::Batch)?;
+                if count != nodes.len() || state != CursorState::More {
+                    return Err(RuntimeError::Batch);
+                }
+                self.nodes = Some(nodes);
+            }
+            if self.emitted > 0 && !self.materialized {
+                let mut tail = [placeholder];
+                let cursor = self.cursor.as_mut().ok_or(RuntimeError::Batch)?;
+                let (count, state) = self
+                    .view
+                    .scan_nodes(cursor, &mut tail, context)
+                    .map_err(|_| RuntimeError::Batch)?;
+                if count != 0 || state != CursorState::Done {
+                    return Err(RuntimeError::Batch);
+                }
+                self.cursor = None;
+                let first = self
+                    .nodes
+                    .as_ref()
+                    .and_then(|nodes| nodes.first())
+                    .copied()
+                    .ok_or(RuntimeError::Batch)?;
+                let mut resources =
+                    TreeResources::for_query(context).map_err(|_| RuntimeError::Batch)?;
+                if self
+                    .view
+                    .lookup_node(first, &mut resources)
+                    .map_err(|_| RuntimeError::Batch)?
+                    .is_none()
+                {
+                    return Err(RuntimeError::Batch);
+                }
+                let text = self
+                    .view
+                    .stored_text(first, &mut resources)
+                    .map_err(|_| RuntimeError::Batch)?
+                    .ok_or(RuntimeError::Batch)?;
+                if text
+                    .read_at(0, &mut [], &mut resources)
+                    .map_err(|_| RuntimeError::Batch)?
+                    != 0
+                {
+                    return Err(RuntimeError::Batch);
+                }
+                self.materialized = true;
+            }
+            let count = output.capacity().min(257 - self.emitted);
+            for index in 0..count {
+                let node = self
+                    .nodes
+                    .as_ref()
+                    .and_then(|nodes| nodes.get((self.emitted + index) % nodes.len()))
+                    .copied()
+                    .ok_or(RuntimeError::Batch)?;
+                context.charge(WorkKind::OperatorRows, 1)?;
+                output.push_row(&[context.view().node(node)], context)?;
+            }
+            self.emitted += count;
+            Ok(if self.emitted == 257 {
+                PullState::Done
+            } else {
+                PullState::More
+            })
+        }
+    }
+
+    struct FreezeNodeSummary;
+
+    impl<'m, 'g> crate::property_graph::query::runtime::Completion<'m, 'g> for FreezeNodeSummary {
+        type Output = (
+            usize,
+            crate::property_graph::NodeId,
+            crate::property_graph::NodeId,
+        );
+
+        fn complete<'v>(
+            &mut self,
+            rows: &crate::property_graph::query::runtime::PreparedRows<'v, 'm, 'g>,
+            _: &mut RuntimeContext<'v, 'm, 'g>,
+        ) -> Result<
+            crate::property_graph::query::runtime::FrozenOutput<Self::Output>,
+            crate::property_graph::query::runtime::RuntimeError,
+        > {
+            use crate::property_graph::query::QueryValue;
+            use crate::property_graph::query::runtime::{FrozenOutput, RuntimeError};
+            let first = match rows.value(0, 0) {
+                Some(QueryValue::NodeRef(node)) => node.id(),
+                _ => return Err(RuntimeError::Batch),
+            };
+            let last = match rows.value(rows.rows().saturating_sub(1), 0) {
+                Some(QueryValue::NodeRef(node)) => node.id(),
+                _ => return Err(RuntimeError::Batch),
+            };
+            FrozenOutput::new(
+                (rows.rows(), first, last),
+                rows.rows(),
+                2 * std::mem::size_of::<crate::property_graph::NodeId>(),
+                0,
+            )
+        }
+    }
+
+    #[cfg_attr(test, test)]
+    fn native_read_admission_registers_before_replacement_capture() {
+        let directory = tempfile::tempdir().expect("store directory");
+        let store = Arc::new(
+            Store::open(
+                directory.path(),
+                OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+            )
+            .expect("open store"),
+        );
+        let identity = StoreInstanceId::new(1_u128 << 96).unwrap();
+        let old = bundle(identity, 1, 11);
+        let old_root = old.root_envelope;
+        store.install_native_graph_for_test(old).unwrap();
+
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        store.native_graph.state.lock().unwrap().admission_hook =
+            Some((Arc::clone(&entered), Arc::clone(&release)));
+        let read_store = Arc::clone(&store);
+        let admitted = std::thread::spawn(move || read_store.admit_native_read().unwrap());
+        entered.wait();
+
+        let replace_store = Arc::clone(&store);
+        let replacement = std::thread::spawn(move || {
+            replace_store
+                .install_native_graph_for_test(bundle(identity, 2, 21))
+                .unwrap();
+            replace_store.capture_native_read_roots().unwrap()
+        });
+        release.wait();
+        let lease = admitted.join().unwrap();
+        let captured = replacement.join().unwrap();
+
+        assert!(captured.contains(old_root));
+        assert_eq!(captured.bundle_count(), 2);
+        drop(lease);
+        drop(captured);
+        store.close().unwrap();
+    }
+
+    #[cfg_attr(test, test)]
+    fn native_read_clone_retains_one_registry_entry_until_final_drop() {
+        let directory = tempfile::tempdir().expect("store directory");
+        let store = Store::open(
+            directory.path(),
+            OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+        )
+        .expect("open store");
+        let identity = StoreInstanceId::new(1_u128 << 95).unwrap();
+        store
+            .install_native_graph_for_test(bundle(identity, 1, 31))
+            .unwrap();
+        let resources = GraphResources::from_store(&store).unwrap();
+        let installed = resources.reserved_bytes().unwrap();
+
+        let first = store.admit_native_read().unwrap();
+        let first_clone = first.clone();
+        let second = store.admit_native_read().unwrap();
+        assert_eq!(first.token(), first_clone.token());
+        assert_ne!(first.token(), second.token());
+        assert_eq!(
+            store
+                .native_graph
+                .state
+                .lock()
+                .unwrap()
+                .leases
+                .iter()
+                .flatten()
+                .count(),
+            2
+        );
+        let admitted = resources.reserved_bytes().unwrap();
+        assert!(admitted > installed);
+
+        drop(first);
+        assert_eq!(
+            store
+                .native_graph
+                .state
+                .lock()
+                .unwrap()
+                .leases
+                .iter()
+                .flatten()
+                .count(),
+            2
+        );
+        drop(first_clone);
+        assert_eq!(
+            store
+                .native_graph
+                .state
+                .lock()
+                .unwrap()
+                .leases
+                .iter()
+                .flatten()
+                .count(),
+            1
+        );
+        drop(second);
+        assert_eq!(resources.reserved_bytes().unwrap(), installed);
+        store.close().unwrap();
+    }
+
+    #[cfg_attr(test, test)]
+    fn native_read_old_view_lazily_opens_unmapped_artifact_after_replacement() {
+        let directory = tempfile::tempdir().expect("store directory");
+        let vfs = Arc::new(CountingVfs::new(StdVfs));
+        let store = Store::open_with_test_dependencies(
+            directory.path(),
+            OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+            StoreTestDependencies::new(vfs.clone(), Arc::new(ManualMonotonicClock::new())),
+        )
+        .expect("open store");
+        let identity = StoreInstanceId::new(1_u128 << 94).unwrap();
+        let generation = GraphGeneration::new(1);
+        let artifact_id = ArtifactId::new((1_u128 << 80) + 45).unwrap();
+        let blocks = [Block {
+            kind: BlockKind::CommitParticipant,
+            payload: b"retained-old-generation",
+        }];
+        let mut bytes = vec![0; artifact::encoded_len(ContainerKind::Object, &blocks).unwrap()];
+        artifact::encode_into(
+            ContainerKind::Object,
+            ArtifactIdentity {
+                store: identity,
+                artifact: artifact_id,
+                generation,
+                creation_serial: 7,
+            },
+            &blocks,
+            &mut bytes,
+        )
+        .unwrap();
+        let reference =
+            artifact::decode(ContainerKind::Object, Some((identity, artifact_id)), &bytes)
+                .unwrap()
+                .reference(0)
+                .unwrap();
+        let checksum = u64::from_le_bytes(*bytes[bytes.len() - 8..].first_chunk::<8>().unwrap());
+        let required = RequiredRef {
+            object: ArtifactDescriptor {
+                store: identity,
+                artifact: artifact_id,
+                generation,
+                serial: 7,
+                bytes: bytes.len() as u32,
+                family: 17,
+                version: 1,
+                checksum,
+            },
+            block: reference,
+        };
+        let old_path = artifact_path(directory.path(), artifact_id);
+        std::fs::write(&old_path, bytes).unwrap();
+
+        let mut old = bundle(identity, 1, 41);
+        old.high_waters.creation_serial = 7;
+        old.vector = Some(required);
+        store.install_native_graph_for_test(old).unwrap();
+        let lease = store.admit_native_read().unwrap();
+        let opens_before_scope = vfs.open_for_map_calls();
+
+        let shared = GraphResources::from_store(&store).unwrap();
+        let memory = QueryMemory::new(&shared, 2 * 1024 * 1024).unwrap();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let mut runtime =
+            RuntimeContext::new(&lease, &control, &memory, RuntimeLimits::default()).unwrap();
+        let mut resources = TreeResources::for_query(&mut runtime).unwrap();
+        let source = NativeQuerySource::new(&lease, &memory, &resources, 2).unwrap();
+        assert_eq!(vfs.open_for_map_calls(), opens_before_scope);
+
+        store
+            .install_native_graph_for_test(bundle(identity, 2, 51))
+            .unwrap();
+        let protected = store.capture_native_read_roots().unwrap();
+        if !protected.contains(required) {
+            std::fs::remove_file(&old_path).unwrap();
+        }
+        drop(protected);
+        let resolved = source.resolve(reference, &mut resources).unwrap();
+        assert_eq!(resolved.payload(), b"retained-old-generation");
+        assert_eq!(vfs.open_for_map_calls(), opens_before_scope + 1);
+        drop(source);
+        drop(resources);
+        drop(runtime);
+        drop(lease);
+        store.close().unwrap();
+    }
+
+    #[cfg_attr(test, test)]
+    fn native_read_missing_or_corrupt_lazy_file_is_not_absence() {
+        let directory = tempfile::tempdir().expect("store directory");
+        let store = Store::open(
+            directory.path(),
+            OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+        )
+        .expect("open store");
+        let identity = StoreInstanceId::new(1_u128 << 87).unwrap();
+        let generation = GraphGeneration::new(1);
+        let artifact_id = ArtifactId::new((1_u128 << 81) + 45).unwrap();
+        let blocks = [Block {
+            kind: BlockKind::PayloadChunk,
+            payload: b"required-lazy-file",
+        }];
+        let mut bytes = vec![0; artifact::encoded_len(ContainerKind::Object, &blocks).unwrap()];
+        artifact::encode_into(
+            ContainerKind::Object,
+            ArtifactIdentity {
+                store: identity,
+                artifact: artifact_id,
+                generation,
+                creation_serial: 7,
+            },
+            &blocks,
+            &mut bytes,
+        )
+        .unwrap();
+        let reference =
+            artifact::decode(ContainerKind::Object, Some((identity, artifact_id)), &bytes)
+                .unwrap()
+                .reference(0)
+                .unwrap();
+        let path = artifact_path(directory.path(), artifact_id);
+        std::fs::write(&path, &bytes).unwrap();
+        let mut installed = bundle(identity, 1, 161);
+        installed.high_waters.creation_serial = 7;
+        store.install_native_graph_for_test(installed).unwrap();
+        let lease = store.admit_native_read().unwrap();
+        let shared = GraphResources::from_store(&store).unwrap();
+        let memory = QueryMemory::new(&shared, 2 * 1024 * 1024).unwrap();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let mut runtime =
+            RuntimeContext::new(&lease, &control, &memory, RuntimeLimits::default()).unwrap();
+        let mut resources = TreeResources::for_query(&mut runtime).unwrap();
+        let source = NativeQuerySource::new(&lease, &memory, &resources, 2).unwrap();
+
+        std::fs::remove_file(&path).unwrap();
+        assert!(matches!(
+            source.resolve(reference, &mut resources),
+            Err(crate::property_graph::storage::tree::directory::TreeError::Io(_))
+        ));
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0x80;
+        std::fs::write(&path, bytes).unwrap();
+        assert!(matches!(
+            source.resolve(reference, &mut resources),
+            Err(crate::property_graph::storage::tree::directory::TreeError::Format(_))
+        ));
+        drop(source);
+        drop(resources);
+        drop(runtime);
+        drop(lease);
+        store.close().unwrap();
+    }
+
+    #[cfg_attr(test, test)]
+    fn native_read_drop_cancels_without_destroying_borrowed_mapping() {
+        let directory = tempfile::tempdir().expect("store directory");
+        let store = Store::open(
+            directory.path(),
+            OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+        )
+        .expect("open store");
+        let identity = StoreInstanceId::new(1_u128 << 85).unwrap();
+        let generation = GraphGeneration::new(1);
+        let artifact_id = ArtifactId::new((1_u128 << 82) + 45).unwrap();
+        let blocks = [Block {
+            kind: BlockKind::PayloadChunk,
+            payload: b"mapping-survives-store-drop",
+        }];
+        let mut bytes = vec![0; artifact::encoded_len(ContainerKind::Object, &blocks).unwrap()];
+        artifact::encode_into(
+            ContainerKind::Object,
+            ArtifactIdentity {
+                store: identity,
+                artifact: artifact_id,
+                generation,
+                creation_serial: 7,
+            },
+            &blocks,
+            &mut bytes,
+        )
+        .unwrap();
+        let reference =
+            artifact::decode(ContainerKind::Object, Some((identity, artifact_id)), &bytes)
+                .unwrap()
+                .reference(0)
+                .unwrap();
+        std::fs::write(artifact_path(directory.path(), artifact_id), bytes).unwrap();
+        let mut installed = bundle(identity, 1, 201);
+        installed.high_waters.creation_serial = 7;
+        store.install_native_graph_for_test(installed).unwrap();
+        let lease = store.admit_native_read().unwrap();
+        let shared = GraphResources::from_store(&store).unwrap();
+        let memory = QueryMemory::new(&shared, 2 * 1024 * 1024).unwrap();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let mut runtime =
+            RuntimeContext::new(&lease, &control, &memory, RuntimeLimits::default()).unwrap();
+        let mut resources = TreeResources::for_query(&mut runtime).unwrap();
+        let source = NativeQuerySource::new(&lease, &memory, &resources, 2).unwrap();
+        let borrowed = source.resolve(reference, &mut resources).unwrap();
+        drop(store);
+        assert_eq!(borrowed.payload(), b"mapping-survives-store-drop");
+        assert!(matches!(
+            source.resolve(reference, &mut resources),
+            Err(
+                crate::property_graph::storage::tree::directory::TreeError::Runtime(
+                    crate::property_graph::query::runtime::RuntimeError::Value(
+                        crate::property_graph::query::QueryError::ReadCancelled
+                    )
+                )
+            )
+        ));
+        drop(source);
+        drop(resources);
+        drop(runtime);
+        drop(lease);
+    }
+
+    #[cfg_attr(test, test)]
+    fn native_read_catalog_and_required_refs_cannot_be_substituted() {
+        let directory = tempfile::tempdir().expect("store directory");
+        let store = Store::open(
+            directory.path(),
+            OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+        )
+        .expect("open store");
+        let identity = StoreInstanceId::new(1_u128 << 86).unwrap();
+        let mut wrong_store = bundle(identity, 1, 171);
+        wrong_store.catalog.object.store = StoreInstanceId::new(identity.get() + 1).unwrap();
+        assert!(matches!(
+            store.install_native_graph_for_test(wrong_store),
+            Err(NativeGraphError::Invalid("required object identity"))
+        ));
+        let mut wrong_role = bundle(identity, 1, 181);
+        wrong_role.root_envelope.block.kind = BlockKind::TreePage;
+        assert!(matches!(
+            store.install_native_graph_for_test(wrong_role),
+            Err(NativeGraphError::Invalid("root envelope identity"))
+        ));
+        let mut wrong_root = bundle(identity, 1, 191);
+        wrong_root.wal_roots.slots[0] = Some(wrong_root.catalog);
+        assert!(matches!(
+            store.install_native_graph_for_test(wrong_root),
+            Err(NativeGraphError::Invalid("WAL/native root mismatch"))
+        ));
+
+        let mut wrong_required = actual_producer_bundle(&store, directory.path(), identity);
+        let required = wrong_required
+            .wal_roots
+            .slots
+            .iter_mut()
+            .flatten()
+            .next()
+            .expect("actual producer root");
+        required.object.checksum ^= 1;
+        store.install_native_graph_for_test(wrong_required).unwrap();
+        let lease = store.admit_native_read().unwrap();
+        let shared = GraphResources::from_store(&store).unwrap();
+        let memory = QueryMemory::new(&shared, 4 * 1024 * 1024).unwrap();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let mut runtime =
+            RuntimeContext::new(&lease, &control, &memory, RuntimeLimits::default()).unwrap();
+        let mut resources = TreeResources::for_query(&mut runtime).unwrap();
+        let source = NativeQuerySource::new(&lease, &memory, &resources, 8).unwrap();
+        let catalog =
+            NativeCatalog::open(&source, lease.bundle(), &memory, &mut resources).unwrap();
+        let view = GraphReadView::new(&lease, &source, &catalog);
+        let node = crate::property_graph::NodeId::new((1_u128 << 100) + 1).unwrap();
+        assert!(matches!(
+            view.lookup_node(node, &mut resources),
+            Err(
+                crate::property_graph::storage::tree::directory::TreeError::Invalid(
+                    "native graph required descriptor mismatch"
+                )
+            )
+        ));
+        drop(view);
+        drop(catalog);
+        drop(source);
+        drop(resources);
+        drop(runtime);
+        drop(lease);
+        store.close().unwrap();
+    }
+
+    #[cfg_attr(test, test)]
+    fn native_read_close_cancels_and_drains_current_and_retired_leases() {
+        let directory = tempfile::tempdir().expect("store directory");
+        let store = Arc::new(
+            Store::open(
+                directory.path(),
+                OpenOptions::new()
+                    .with_max_resident_bytes(256 * 1024 * 1024)
+                    .with_reader_drain_timeout(Duration::ZERO),
+            )
+            .expect("open store"),
+        );
+        let identity = StoreInstanceId::new(1_u128 << 93).unwrap();
+        store
+            .install_native_graph_for_test(bundle(identity, 1, 61))
+            .unwrap();
+        let retired = store.admit_native_read().unwrap();
+        store
+            .install_native_graph_for_test(bundle(identity, 2, 71))
+            .unwrap();
+        let current = store.admit_native_read().unwrap();
+        let shared = GraphResources::from_store(&store).unwrap();
+        let cancellation_memory = QueryMemory::new(&shared, 2 * 1024 * 1024).unwrap();
+        let deadline_memory = QueryMemory::new(&shared, 2 * 1024 * 1024).unwrap();
+        let publication = Arc::clone(&store.native_graph);
+        let closing_store = Arc::clone(&store);
+        let (done_tx, done_rx) = mpsc::channel();
+        let closer = std::thread::spawn(move || {
+            let result = closing_store.close();
+            done_tx.send(result).expect("report close result");
+        });
+
+        let mut state = publication.state.lock().unwrap();
+        while retired.check_active().is_ok() || current.check_active().is_ok() {
+            state = publication.changed.wait(state).unwrap();
+        }
+        drop(state);
+        assert!(
+            done_rx.try_recv().is_err(),
+            "close returned before leases drained"
+        );
+        assert!(matches!(
+            store.admit_native_read(),
+            Err(NativeGraphError::Store(
+                StoreError::Closing | StoreError::Closed
+            ))
+        ));
+        let caller_cancel = CancelToken::new();
+        caller_cancel.cancel();
+        assert!(matches!(
+            RuntimeContext::new(
+                &retired,
+                &QueryControl::Cancel(caller_cancel),
+                &cancellation_memory,
+                RuntimeLimits::default()
+            ),
+            Err(crate::property_graph::query::runtime::RuntimeError::Value(
+                crate::property_graph::query::QueryError::ReadCancelled
+            ))
+        ));
+        let deadline_clock = Arc::new(ManualMonotonicClock::new());
+        let expired = Deadline::after_with_test_clock(Duration::ZERO, deadline_clock).unwrap();
+        assert!(matches!(
+            RuntimeContext::new(
+                &retired,
+                &QueryControl::Deadline(expired),
+                &deadline_memory,
+                RuntimeLimits::default()
+            ),
+            Err(crate::property_graph::query::runtime::RuntimeError::Value(
+                crate::property_graph::query::QueryError::ReadCancelled
+            ))
+        ));
+        drop(retired);
+        assert!(
+            done_rx.try_recv().is_err(),
+            "one retired lease remained live"
+        );
+        drop(current);
+        done_rx.recv().expect("close result").unwrap();
+        closer.join().unwrap();
+    }
+
+    fn prepared_artifact_contract() {
+        let directory = tempfile::tempdir().expect("store directory");
+        let store = Store::open(
+            directory.path(),
+            OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+        )
+        .expect("open store");
+        let identity = StoreInstanceId::new(1_u128 << 88).unwrap();
+        let installed = bundle(identity, 1, 141);
+        let base_identity = installed.base;
+        let base_roots = installed.roots;
+        let base_sequence = installed.sequence;
+        let base_wal_roots = installed.wal_roots;
+        let base_catalog = installed.catalog;
+        store.install_native_graph_for_test(installed).unwrap();
+        let lease = store.admit_native_read().unwrap();
+
+        let shared = GraphResources::from_store(&store).unwrap();
+        let writer = WriteMemory::new(&shared, WriteLimits::default()).unwrap();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let storage = StorageMemory::new(&writer, &control, 32 * 1024 * 1024).unwrap();
+        let admitted = EmptyProducerBase {
+            identity: base_identity,
+            high_waters: StageHighWaters::default(),
+            document: None,
+        };
+        let mut labels = [];
+        let mut properties = [];
+        let contents =
+            CanonicalContents::node(&mut labels, &mut properties, Some("prepared"), None).unwrap();
+        let requests = [StructuredWrite {
+            key: ApplicationKey::new(EntityKind::Node, "app", "prepared").unwrap(),
+            revision: GraphRevision::new(1).unwrap(),
+            operation: StructuredOperation::Create,
+            image: Some(WriteImage::Node(&contents)),
+        }];
+        let staged = stage_structured(&admitted, &requests, &writer, &mut |_| Ok(())).unwrap();
+        let mut resources = TreeResources::for_prepare(&storage, 1_000_000).unwrap();
+        let mut next = 9_000_u128;
+        let mut objects = PreparedObjects::new(
+            &MissingProducerSource,
+            || {
+                let artifact = ArtifactId::new(next)?;
+                next += 1;
+                Ok(ArtifactIdentity {
+                    store: identity,
+                    artifact,
+                    generation: GraphGeneration::new(2),
+                    creation_serial: next as u64,
+                })
+            },
+            identity,
+            GraphGeneration::new(2),
+            PackLimits::default(),
+            &storage,
+            &mut resources,
+        )
+        .unwrap();
+        let committed = crate::property_graph::wal::CommitState {
+            store: identity,
+            generation: GraphGeneration::new(1),
+            sequence: base_sequence,
+            graph: base_wal_roots,
+            catalog: base_catalog,
+            vector: None,
+            text: None,
+            reclaim: None,
+            high_waters: HighWaters::default(),
+            prepared_inventories: crate::property_graph::wal::ReferenceList::Values(&[]),
+        };
+        let candidate = prepare_native_graph(
+            &mut objects,
+            &staged,
+            NativeGraphBase {
+                directories: DirectoryBase {
+                    identity: base_identity,
+                    roots: base_roots,
+                },
+                committed,
+            },
+            &EmptyPreparationCatalog(base_identity),
+            None,
+            &storage,
+            &mut resources,
+        )
+        .unwrap();
+        objects.finish(&mut resources).unwrap();
+        let artifacts = PreparedGraphArtifacts::new(candidate, objects, lease.clone())
+            .unwrap_or_else(|_| panic!("exact retained base must be accepted"));
+        store
+            .install_native_graph_for_test(bundle(identity, 2, 151))
+            .unwrap();
+        assert_eq!(artifacts.candidate().expected_base(), base_identity);
+        assert_eq!(artifacts.candidate().expected_sequence(), base_sequence);
+        assert_eq!(artifacts.candidate().expected_roots(), base_wal_roots);
+        assert!(
+            artifacts
+                .candidate()
+                .roots()
+                .references()
+                .iter()
+                .any(Option::is_some)
+        );
+        assert!(artifacts.candidate().sequence() > base_sequence);
+        assert!(!artifacts.objects().is_empty());
+        assert_eq!(
+            artifacts.abort_inventory().count(),
+            artifacts.objects().len()
+        );
+        let (_candidate, _objects, retained) = artifacts.into_parts();
+        assert_eq!(retained.bundle().base(), base_identity);
+        drop(retained);
+
+        let foreign = store.admit_native_read().unwrap();
+        let mut next_foreign = 9_100_u128;
+        let mut foreign_objects = PreparedObjects::new(
+            &MissingProducerSource,
+            || {
+                let artifact = ArtifactId::new(next_foreign)?;
+                next_foreign += 1;
+                Ok(ArtifactIdentity {
+                    store: identity,
+                    artifact,
+                    generation: GraphGeneration::new(2),
+                    creation_serial: next_foreign as u64,
+                })
+            },
+            identity,
+            GraphGeneration::new(2),
+            PackLimits::default(),
+            &storage,
+            &mut resources,
+        )
+        .unwrap();
+        let foreign_candidate = prepare_native_graph(
+            &mut foreign_objects,
+            &staged,
+            NativeGraphBase {
+                directories: DirectoryBase {
+                    identity: base_identity,
+                    roots: base_roots,
+                },
+                committed,
+            },
+            &EmptyPreparationCatalog(base_identity),
+            None,
+            &storage,
+            &mut resources,
+        )
+        .unwrap();
+        let failure = match PreparedGraphArtifacts::new(foreign_candidate, foreign_objects, foreign)
+        {
+            Ok(_) => panic!("foreign/unfinalized base was accepted"),
+            Err(failure) => failure,
+        };
+        assert!(matches!(
+            failure.error(),
+            crate::property_graph::storage::tree::directory::TreeError::Invalid(
+                "prepared native graph base mismatch"
+            )
+        ));
+        let (_error, failed_objects, foreign) = failure.into_parts();
+        assert!(!failed_objects.is_empty());
+        assert_eq!(
+            failed_objects.abort_inventory().count(),
+            failed_objects.len()
+        );
+        assert_eq!(foreign.bundle().base().generation, GraphGeneration::new(2));
+        drop(foreign);
+        drop(lease);
+        store.close().unwrap();
+    }
+
+    fn prepared_failure_ownership_contract() {
+        use crate::property_graph::storage::tree::directory::{BlockSink, TreeError};
+
+        let directory = tempfile::tempdir().expect("store directory");
+        let store = Store::open(
+            directory.path(),
+            OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+        )
+        .expect("open store");
+        let identity = StoreInstanceId::new(1_u128 << 87).unwrap();
+        let generation = GraphGeneration::new(1);
+        let shared = GraphResources::from_store(&store).unwrap();
+        let writer = WriteMemory::new(&shared, WriteLimits::default()).unwrap();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let storage = StorageMemory::new(&writer, &control, 32 * 1024 * 1024).unwrap();
+        let baseline = storage.reserved_bytes();
+
+        {
+            let mut resources = TreeResources::for_prepare(&storage, u64::MAX).unwrap();
+            let mut objects = PreparedObjects::new(
+                &MissingProducerSource,
+                || {
+                    Err(TreeError::Io(std::io::Error::other(
+                        "injected pack creation",
+                    )))
+                },
+                identity,
+                generation,
+                PackLimits::default(),
+                &storage,
+                &mut resources,
+            )
+            .unwrap();
+            assert!(matches!(
+                objects.append(
+                    BlockKind::PayloadChunk,
+                    generation,
+                    b"creation",
+                    &mut resources
+                ),
+                Err(TreeError::Io(_))
+            ));
+            assert_eq!(objects.abort_inventory().count(), 0);
+            assert!(
+                objects.artifact(0).is_err(),
+                "no candidate artifact escaped"
+            );
+        }
+        assert_eq!(storage.reserved_bytes(), baseline);
+
+        {
+            let mut next = 20_000_u128;
+            let mut setup = TreeResources::for_prepare(&storage, u64::MAX).unwrap();
+            let mut objects = PreparedObjects::new(
+                &MissingProducerSource,
+                || {
+                    let artifact = ArtifactId::new(next)?;
+                    next += 1;
+                    Ok(ArtifactIdentity {
+                        store: identity,
+                        artifact,
+                        generation,
+                        creation_serial: next as u64,
+                    })
+                },
+                identity,
+                generation,
+                PackLimits::default(),
+                &storage,
+                &mut setup,
+            )
+            .unwrap();
+            objects
+                .append(BlockKind::PayloadChunk, generation, b"seed", &mut setup)
+                .unwrap();
+            drop(setup);
+            let mut injected = TreeResources::for_prepare(&storage, 1).unwrap();
+            assert!(matches!(
+                objects.append(BlockKind::PayloadChunk, generation, b"x", &mut injected),
+                Err(TreeError::Work)
+            ));
+            assert_eq!(objects.abort_inventory().count(), 1);
+            assert!(
+                objects.artifact(0).is_err(),
+                "append failure exposed no candidate"
+            );
+        }
+        assert_eq!(storage.reserved_bytes(), baseline);
+
+        {
+            let mut next = 21_000_u128;
+            let mut setup = TreeResources::for_prepare(&storage, u64::MAX).unwrap();
+            let mut objects = PreparedObjects::new(
+                &MissingProducerSource,
+                || {
+                    let artifact = ArtifactId::new(next)?;
+                    next += 1;
+                    Ok(ArtifactIdentity {
+                        store: identity,
+                        artifact,
+                        generation,
+                        creation_serial: next as u64,
+                    })
+                },
+                identity,
+                generation,
+                PackLimits::default(),
+                &storage,
+                &mut setup,
+            )
+            .unwrap();
+            objects
+                .append(BlockKind::PayloadChunk, generation, b"seal", &mut setup)
+                .unwrap();
+            drop(setup);
+            let mut injected = TreeResources::for_prepare(&storage, 0).unwrap();
+            assert!(matches!(
+                objects.finish(&mut injected),
+                Err(TreeError::Work)
+            ));
+            assert_eq!(objects.abort_inventory().count(), 1);
+            assert!(
+                objects.artifact(0).is_err(),
+                "seal failure exposed no candidate"
+            );
+        }
+        assert_eq!(storage.reserved_bytes(), baseline);
+        drop(storage);
+        drop(writer);
+        store.close().unwrap();
+    }
+
+    #[cfg_attr(test, test)]
+    fn native_prepared_artifacts_retain_exact_base_source_and_abort_owners() {
+        prepared_artifact_contract();
+        prepared_failure_ownership_contract();
+    }
+
+    #[cfg_attr(test, test)]
+    fn native_prepared_artifacts_reject_foreign_or_stale_base() {
+        prepared_artifact_contract();
+    }
+
+    struct ReplaceDuringScopedRead<'a> {
+        store: &'a Store,
+        replacement: Option<NativeGraphBundleInput>,
+    }
+
+    impl NativeReadConsumer<u64> for ReplaceDuringScopedRead<'_> {
+        fn consume<'s, 'lease, 'm, 'g>(
+            &mut self,
+            view: &crate::property_graph::storage::GraphReadView<'s, 'lease, 'm, 'g>,
+            _runtime: &mut RuntimeContext<'lease, 'm, 'g>,
+        ) -> Result<u64, crate::property_graph::storage::tree::directory::TreeError> {
+            let before = view.sequence();
+            let replacement = self.replacement.take().ok_or(
+                crate::property_graph::storage::tree::directory::TreeError::Invalid(
+                    "missing replacement bundle",
+                ),
+            )?;
+            self.store
+                .install_native_graph_for_test(replacement)
+                .map_err(|_| {
+                    crate::property_graph::storage::tree::directory::TreeError::Invalid(
+                        "controlled replacement failed",
+                    )
+                })?;
+            if view.sequence() != before {
+                return Err(
+                    crate::property_graph::storage::tree::directory::TreeError::Invalid(
+                        "scoped read changed bundle",
+                    ),
+                );
+            }
+            Ok(before)
+        }
+    }
+
+    #[cfg_attr(test, test)]
+    fn native_read_scoped_consumer_retains_one_catalog_and_bundle() {
+        let directory = tempfile::tempdir().expect("store directory");
+        let store = Store::open(
+            directory.path(),
+            OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+        )
+        .expect("open store");
+        let identity = StoreInstanceId::new(1_u128 << 92).unwrap();
+        let mut old = bundle(identity, 1, 81);
+        old.catalog = install_catalog_file(directory.path(), identity, GraphGeneration::new(1), 91);
+        old.high_waters.creation_serial = 9;
+        store.install_native_graph_for_test(old).unwrap();
+        let mut replacement = bundle(identity, 2, 101);
+        replacement.catalog =
+            install_catalog_file(directory.path(), identity, GraphGeneration::new(2), 111);
+        replacement.high_waters.creation_serial = 9;
+        let control = QueryControl::Cancel(CancelToken::new());
+        let observed = store
+            .with_native_read(
+                &control,
+                RuntimeLimits::default(),
+                2 * 1024 * 1024,
+                4,
+                ReplaceDuringScopedRead {
+                    store: &store,
+                    replacement: Some(replacement),
+                },
+            )
+            .unwrap();
+        assert_eq!(observed, 1);
+        store.close().unwrap();
+    }
+
+    #[cfg_attr(test, test)]
+    fn native_read_cursor_rejects_same_view_memory_different_runtime() {
+        use crate::property_graph::catalog::RelTypeId;
+        use crate::property_graph::storage::adjacency::RelationshipRow;
+        use crate::property_graph::{NodeId, RelId};
+
+        let directory = tempfile::tempdir().expect("store directory");
+        let store = Store::open(
+            directory.path(),
+            OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+        )
+        .expect("open store");
+        let identity = StoreInstanceId::new(1_u128 << 91).unwrap();
+        let mut installed = bundle(identity, 1, 121);
+        installed.catalog =
+            install_catalog_file(directory.path(), identity, GraphGeneration::new(1), 131);
+        installed.high_waters.creation_serial = 9;
+        store.install_native_graph_for_test(installed).unwrap();
+        let lease = store.admit_native_read().unwrap();
+        let shared = GraphResources::from_store(&store).unwrap();
+        let memory = QueryMemory::new(&shared, 2 * 1024 * 1024).unwrap();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let mut runtime_a =
+            RuntimeContext::new(&lease, &control, &memory, RuntimeLimits::default()).unwrap();
+        let mut initial = TreeResources::for_query(&mut runtime_a).unwrap();
+        let source = NativeQuerySource::new(&lease, &memory, &initial, 4).unwrap();
+        let catalog = NativeCatalog::open(&source, lease.bundle(), &memory, &mut initial).unwrap();
+        drop(initial);
+        let view = GraphReadView::new(&lease, &source, &catalog);
+        let mut foreign = view
+            .relationship_cursor(RelationshipTypeSelection::All, &mut runtime_a)
+            .unwrap();
+        let before = runtime_a.counters();
+        let mut runtime_b =
+            RuntimeContext::new(&lease, &control, &memory, RuntimeLimits::default()).unwrap();
+        let dummy = RelationshipRow {
+            rel: RelId::new(1).unwrap(),
+            source: NodeId::new(1).unwrap(),
+            target: NodeId::new(1).unwrap(),
+            relationship_type: RelTypeId::new(1).unwrap(),
+        };
+        let mut output = [dummy];
+        assert!(matches!(
+            view.scan_relationships(&mut foreign, &mut output, &mut runtime_b),
+            Err(
+                crate::property_graph::storage::tree::directory::TreeError::Invalid(
+                    "relationship cursor owner mismatch"
+                )
+            )
+        ));
+        assert_eq!(runtime_a.counters(), before);
+
+        let mut fresh = view
+            .relationship_cursor(RelationshipTypeSelection::Any(&[]), &mut runtime_a)
+            .unwrap();
+        assert_eq!(
+            view.scan_relationships(&mut fresh, &mut output, &mut runtime_a)
+                .unwrap(),
+            (0, CursorState::Done)
+        );
+        drop(fresh);
+        drop(foreign);
+        drop(view);
+        drop(catalog);
+        drop(source);
+        drop(runtime_b);
+        drop(runtime_a);
+        drop(lease);
+        store.close().unwrap();
+    }
+
+    #[cfg_attr(test, test)]
+    fn native_read_cursor_rejects_same_metadata_foreign_admission() {
+        use crate::property_graph::catalog::RelTypeId;
+        use crate::property_graph::storage::adjacency::RelationshipRow;
+        use crate::property_graph::{NodeId, RelId};
+
+        let directory = tempfile::tempdir().expect("store directory");
+        let store = Store::open(
+            directory.path(),
+            OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+        )
+        .expect("open store");
+        let identity = StoreInstanceId::new(1_u128 << 84).unwrap();
+        let mut installed = bundle(identity, 1, 211);
+        installed.catalog =
+            install_catalog_file(directory.path(), identity, GraphGeneration::new(1), 221);
+        installed.high_waters.creation_serial = 9;
+        store.install_native_graph_for_test(installed).unwrap();
+        let first = store.admit_native_read().unwrap();
+        let second = store.admit_native_read().unwrap();
+        assert_ne!(first.token(), second.token());
+        let shared = GraphResources::from_store(&store).unwrap();
+        let memory = QueryMemory::new(&shared, 4 * 1024 * 1024).unwrap();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let mut runtime_a =
+            RuntimeContext::new(&first, &control, &memory, RuntimeLimits::default()).unwrap();
+        let mut initial_a = TreeResources::for_query(&mut runtime_a).unwrap();
+        let source_a = NativeQuerySource::new(&first, &memory, &initial_a, 4).unwrap();
+        let catalog_a =
+            NativeCatalog::open(&source_a, first.bundle(), &memory, &mut initial_a).unwrap();
+        drop(initial_a);
+        let view_a = GraphReadView::new(&first, &source_a, &catalog_a);
+        let mut cursor = view_a
+            .relationship_cursor(RelationshipTypeSelection::All, &mut runtime_a)
+            .unwrap();
+
+        let mut runtime_b =
+            RuntimeContext::new(&second, &control, &memory, RuntimeLimits::default()).unwrap();
+        let mut initial_b = TreeResources::for_query(&mut runtime_b).unwrap();
+        let source_b = NativeQuerySource::new(&second, &memory, &initial_b, 4).unwrap();
+        let catalog_b =
+            NativeCatalog::open(&source_b, second.bundle(), &memory, &mut initial_b).unwrap();
+        drop(initial_b);
+        let view_b = GraphReadView::new(&second, &source_b, &catalog_b);
+        let before = runtime_a.counters();
+        let dummy = RelationshipRow {
+            rel: RelId::new(1).unwrap(),
+            source: NodeId::new(1).unwrap(),
+            target: NodeId::new(1).unwrap(),
+            relationship_type: RelTypeId::new(1).unwrap(),
+        };
+        let mut output = [dummy];
+        assert!(matches!(
+            view_b.scan_relationships(&mut cursor, &mut output, &mut runtime_a),
+            Err(
+                crate::property_graph::storage::tree::directory::TreeError::Invalid(
+                    "relationship cursor owner mismatch"
+                )
+            )
+        ));
+        assert_eq!(runtime_a.counters(), before);
+        drop(cursor);
+        drop(view_b);
+        drop(catalog_b);
+        drop(source_b);
+        drop(view_a);
+        drop(catalog_a);
+        drop(source_a);
+        drop(runtime_b);
+        drop(runtime_a);
+        drop(second);
+        drop(first);
+        store.close().unwrap();
+    }
+
+    fn actual_producer_read_contract() {
+        use crate::property_graph::catalog::{LabelId, RelTypeId};
+        use crate::property_graph::storage::adjacency::RelationshipRow;
+        use crate::property_graph::storage::records::RecordShape;
+        use crate::property_graph::{NodeId, RelId};
+
+        let directory = tempfile::tempdir().expect("store directory");
+        let store = Store::open(
+            directory.path(),
+            OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+        )
+        .expect("open store");
+        let identity = StoreInstanceId::new(1_u128 << 90).unwrap();
+        let installed = actual_producer_bundle(&store, directory.path(), identity);
+        assert_eq!(installed.sequence, 41);
+        store.install_native_graph_for_test(installed).unwrap();
+        let lease = store.admit_native_read().unwrap();
+        let shared = GraphResources::from_store(&store).unwrap();
+        let memory = QueryMemory::new(&shared, 8 * 1024 * 1024).unwrap();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let mut runtime =
+            RuntimeContext::new(&lease, &control, &memory, RuntimeLimits::default()).unwrap();
+        let mut initial = TreeResources::for_query(&mut runtime).unwrap();
+        let source = NativeQuerySource::new(&lease, &memory, &initial, 8).unwrap();
+        let catalog = NativeCatalog::open(&source, lease.bundle(), &memory, &mut initial).unwrap();
+        drop(initial);
+        let view = GraphReadView::new(&lease, &source, &catalog);
+        store
+            .install_native_graph_for_test(bundle(identity, 2, 231))
+            .unwrap();
+        assert_eq!(view.sequence(), 41);
+        let node_a = NodeId::new((1_u128 << 100) + 1).unwrap();
+        let node_b = NodeId::new((1_u128 << 100) + 2).unwrap();
+        let rel_base = 1_u128 << 110;
+        {
+            let mut resources = TreeResources::for_query(&mut runtime).unwrap();
+            let first = view.lookup_node(node_a, &mut resources).unwrap().unwrap();
+            assert_eq!(
+                first.record().shape(),
+                RecordShape::Node {
+                    id: node_a,
+                    labels: 1,
+                }
+            );
+            assert!(first.record().canonical().stored_text().unwrap().is_empty());
+            assert!(first.record().canonical().stored_vector().is_none());
+            let second = view.lookup_node(node_b, &mut resources).unwrap().unwrap();
+            assert!(second.record().canonical().stored_text().is_none());
+            assert!(second.record().canonical().stored_vector().is_none());
+            let empty_text = view.stored_text(node_a, &mut resources).unwrap().unwrap();
+            assert_eq!(empty_text.len(), 0);
+            assert_eq!(empty_text.read_at(0, &mut [], &mut resources).unwrap(), 0);
+            assert!(view.stored_text(node_b, &mut resources).unwrap().is_none());
+            assert!(
+                view.vector_payload(node_a, &mut resources)
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                view.lookup_node(NodeId::new(u128::MAX).unwrap(), &mut resources)
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(matches!(
+                view.stored_text(NodeId::new(u128::MAX).unwrap(), &mut resources),
+                Err(
+                    crate::property_graph::storage::tree::directory::TreeError::Invalid(
+                        "stored text entity is absent or deleted"
+                    )
+                )
+            ));
+        }
+
+        let label = LabelId::new(1).unwrap();
+        let mut nodes = view
+            .node_cursor(LabelSelection::AllOf(&[label, label]), &mut runtime)
+            .unwrap();
+        let mut node_rows = Vec::new();
+        loop {
+            let mut output = [node_b];
+            let (count, state) = view
+                .scan_nodes(&mut nodes, &mut output, &mut runtime)
+                .unwrap();
+            node_rows.extend_from_slice(&output[..count]);
+            if state == CursorState::Done {
+                break;
+            }
+        }
+        assert_eq!(node_rows, vec![node_a]);
+        drop(nodes);
+
+        let dummy = RelationshipRow {
+            rel: RelId::new(1).unwrap(),
+            source: node_a,
+            target: node_b,
+            relationship_type: RelTypeId::new(1).unwrap(),
+        };
+        let expected = vec![
+            RelationshipRow {
+                rel: RelId::new(rel_base + 1).unwrap(),
+                source: node_a,
+                target: node_b,
+                relationship_type: RelTypeId::new(1).unwrap(),
+            },
+            RelationshipRow {
+                rel: RelId::new(rel_base + 2).unwrap(),
+                source: node_a,
+                target: node_a,
+                relationship_type: RelTypeId::new(2).unwrap(),
+            },
+            RelationshipRow {
+                rel: RelId::new(rel_base + 3).unwrap(),
+                source: node_a,
+                target: node_b,
+                relationship_type: RelTypeId::new(1).unwrap(),
+            },
+        ];
+        for capacity in [1_usize, 2, 256] {
+            let mut cursor = view
+                .relationship_cursor(
+                    RelationshipTypeSelection::Any(&[
+                        RelTypeId::new(2).unwrap(),
+                        RelTypeId::new(1).unwrap(),
+                        RelTypeId::new(2).unwrap(),
+                    ]),
+                    &mut runtime,
+                )
+                .unwrap();
+            let mut observed = Vec::new();
+            loop {
+                let mut output = vec![dummy; capacity];
+                let (count, state) = view
+                    .scan_relationships(&mut cursor, &mut output, &mut runtime)
+                    .unwrap();
+                observed.extend_from_slice(&output[..count]);
+                if state == CursorState::Done {
+                    break;
+                }
+            }
+            assert_eq!(observed, expected);
+            drop(cursor);
+        }
+        drop(view);
+        drop(catalog);
+        drop(source);
+        drop(runtime);
+        drop(lease);
+        store.close().unwrap();
+    }
+
+    fn actual_vector_contract() {
+        use crate::property_graph::NodeId;
+
+        let directory = tempfile::tempdir().expect("store directory");
+        let store = Store::open(
+            directory.path(),
+            OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+        )
+        .expect("open store");
+        let identity = StoreInstanceId::new(1_u128 << 85).unwrap();
+        let installed = actual_producer_bundle_with_extra_nodes(
+            &store,
+            directory.path(),
+            identity,
+            0,
+            true,
+            0,
+            false,
+        );
+        assert!(
+            installed.vector.is_none(),
+            "no dummy vector-index participant"
+        );
+        store.install_native_graph_for_test(installed).unwrap();
+        let lease = store.admit_native_read().unwrap();
+        let shared = GraphResources::from_store(&store).unwrap();
+        let memory = QueryMemory::new(&shared, 8 * 1024 * 1024).unwrap();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let mut runtime =
+            RuntimeContext::new(&lease, &control, &memory, RuntimeLimits::default()).unwrap();
+        let mut initial = TreeResources::for_query(&mut runtime).unwrap();
+        let source = NativeQuerySource::new(&lease, &memory, &initial, 8).unwrap();
+        let catalog = NativeCatalog::open(&source, lease.bundle(), &memory, &mut initial).unwrap();
+        drop(initial);
+        let view = GraphReadView::new(&lease, &source, &catalog);
+        let node_a = NodeId::new((1_u128 << 100) + 1).unwrap();
+        let node_b = NodeId::new((1_u128 << 100) + 2).unwrap();
+        let mut resources = TreeResources::for_query(&mut runtime).unwrap();
+        assert!(
+            view.vector_payload(node_a, &mut resources)
+                .unwrap()
+                .is_none()
+        );
+        let vector = view
+            .vector_payload(node_b, &mut resources)
+            .unwrap()
+            .expect("declared vector");
+        assert_eq!(vector.dimensions(), 2);
+        assert_eq!(
+            vector.coordinate(0, &mut resources).unwrap().to_bits(),
+            0x3f80_0001
+        );
+        assert_eq!(
+            vector.coordinate(1, &mut resources).unwrap().to_bits(),
+            0x8000_0000
+        );
+        drop(resources);
+        drop(view);
+        drop(catalog);
+        drop(source);
+        drop(runtime);
+        drop(lease);
+        store.close().unwrap();
+    }
+
+    fn actual_max_identity_and_split_contract() {
+        use crate::property_graph::catalog::RelTypeId;
+        use crate::property_graph::storage::adjacency::exact_split_fixture;
+        use crate::property_graph::{NodeId, RelId};
+
+        let directory = tempfile::tempdir().expect("store directory");
+        let store = Store::open(
+            directory.path(),
+            OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+        )
+        .expect("open store");
+        let identity = StoreInstanceId::new(1_u128 << 84).unwrap();
+        let installed = actual_producer_bundle_with_extra_nodes(
+            &store,
+            directory.path(),
+            identity,
+            0,
+            false,
+            0,
+            true,
+        );
+        store.install_native_graph_for_test(installed).unwrap();
+        let lease = store.admit_native_read().unwrap();
+        let shared = GraphResources::from_store(&store).unwrap();
+        let memory = QueryMemory::new(&shared, 24 * 1024 * 1024).unwrap();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let mut runtime =
+            RuntimeContext::new(&lease, &control, &memory, RuntimeLimits::default()).unwrap();
+        let mut initial = TreeResources::for_query(&mut runtime).unwrap();
+        let source = NativeQuerySource::new(&lease, &memory, &initial, 16).unwrap();
+        let catalog = NativeCatalog::open(&source, lease.bundle(), &memory, &mut initial).unwrap();
+        drop(initial);
+        let view = GraphReadView::new(&lease, &source, &catalog);
+        let node_a = NodeId::new(u128::MAX - 1).unwrap();
+        let node_b = NodeId::new(u128::MAX).unwrap();
+        let max_relationship = RelId::new(u128::MAX).unwrap();
+        let relationship_type = RelTypeId::new(1).unwrap();
+        let mut resources = TreeResources::for_query(&mut runtime).unwrap();
+
+        assert!(view.lookup_node(node_a, &mut resources).unwrap().is_some());
+        assert!(view.lookup_node(node_b, &mut resources).unwrap().is_some());
+        let row = view
+            .lookup_relationship(max_relationship, &mut resources)
+            .unwrap()
+            .expect("u128::MAX relationship is live");
+        assert_eq!(row.rel, max_relationship);
+        assert_eq!(row.source, node_a);
+        assert_eq!(row.target, node_b);
+        assert_eq!(row.relationship_type, relationship_type);
+        drop(resources);
+
+        let dummy = crate::property_graph::storage::adjacency::RelationshipRow {
+            rel: RelId::new(1).unwrap(),
+            source: NodeId::new(1).unwrap(),
+            target: NodeId::new(1).unwrap(),
+            relationship_type,
+        };
+        let expected = [
+            RelId::new(u128::MAX - 2).unwrap(),
+            RelId::new(u128::MAX - 1).unwrap(),
+            max_relationship,
+        ];
+        for capacity in [1_usize, 2, 256] {
+            let mut cursor = view
+                .relationship_cursor(RelationshipTypeSelection::All, &mut runtime)
+                .unwrap();
+            let mut observed = Vec::new();
+            loop {
+                let mut output = vec![dummy; capacity];
+                let (count, state) = view
+                    .scan_relationships(&mut cursor, &mut output, &mut runtime)
+                    .unwrap();
+                observed.extend(output[..count].iter().map(|row| row.rel));
+                if state == CursorState::Done {
+                    break;
+                }
+            }
+            assert_eq!(observed, expected);
+            drop(cursor);
+        }
+        exact_split_fixture();
+
+        drop(view);
+        drop(catalog);
+        drop(source);
+        drop(runtime);
+        drop(lease);
+        store.close().unwrap();
+    }
+
+    fn actual_directory_depth_contract() {
+        use crate::property_graph::storage::tree::{TreeKind, decode_page};
+
+        let directory = tempfile::tempdir().expect("store directory");
+        let store = Store::open(
+            directory.path(),
+            OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+        )
+        .expect("open store");
+        let identity = StoreInstanceId::new(1_u128 << 83).unwrap();
+        let installed = actual_producer_bundle_with_extra_nodes(
+            &store,
+            directory.path(),
+            identity,
+            320,
+            false,
+            0,
+            false,
+        );
+        store.install_native_graph_for_test(installed).unwrap();
+        let lease = store.admit_native_read().unwrap();
+        let shared = GraphResources::from_store(&store).unwrap();
+        let memory = QueryMemory::new(&shared, 8 * 1024 * 1024).unwrap();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let mut runtime =
+            RuntimeContext::new(&lease, &control, &memory, RuntimeLimits::default()).unwrap();
+        let mut resources = TreeResources::for_query(&mut runtime).unwrap();
+        let source = NativeQuerySource::new(&lease, &memory, &resources, 16).unwrap();
+        let root = lease.bundle().roots().directory(TreeKind::Nodes).unwrap();
+        let block = source
+            .resolve(
+                root.reference().expect("nonempty node root"),
+                &mut resources,
+            )
+            .unwrap();
+        assert!(
+            decode_page(TreeKind::Nodes, block.payload())
+                .unwrap()
+                .header()
+                .level
+                > 0,
+            "actual node directory must exceed one leaf"
+        );
+        drop(resources);
+        drop(source);
+        drop(runtime);
+        drop(lease);
+        store.close().unwrap();
+    }
+
+    #[cfg_attr(test, test)]
+    fn native_read_all_operations_use_one_admitted_bundle() {
+        actual_producer_read_contract();
+    }
+
+    #[cfg_attr(test, test)]
+    fn native_read_graph_only_optional_payloads_and_full_width_ids() {
+        actual_producer_read_contract();
+        actual_vector_contract();
+        actual_max_identity_and_split_contract();
+    }
+
+    #[cfg_attr(test, test)]
+    fn native_read_scan_resume_preserves_interleaved_types_and_max_ids() {
+        actual_producer_read_contract();
+        actual_max_identity_and_split_contract();
+        actual_directory_depth_contract();
+    }
+
+    #[cfg_attr(test, test)]
+    fn native_read_pull_consumer_resumes_and_materializes_same_view() {
+        use crate::property_graph::NodeId;
+        use crate::property_graph::query::plan::{
+            NodeFacts, Operator, OperatorKind, PlanBacking, PlanDescription, PlanFootprint,
+            PlanNodeId, RetainedRegion, SlotId, VALIDATION_SCRATCH_BYTES,
+        };
+        use crate::property_graph::query::resources::{
+            QueryArena, QueryInputs, RetainedAllocation, RetentionInventory,
+        };
+        use crate::property_graph::query::runtime::{ArenaCapacity, ExecutionCapacity, execute_in};
+
+        let directory = tempfile::tempdir().expect("store directory");
+        let store = Store::open(
+            directory.path(),
+            OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+        )
+        .expect("open store");
+        let identity = StoreInstanceId::new(1_u128 << 86).unwrap();
+        store
+            .install_native_graph_for_test(actual_producer_bundle(
+                &store,
+                directory.path(),
+                identity,
+            ))
+            .unwrap();
+        let lease = store.admit_native_read().unwrap();
+        let shared = GraphResources::from_store(&store).unwrap();
+        let memory = QueryMemory::new(&shared, 16 * 1024 * 1024).unwrap();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let mut runtime =
+            RuntimeContext::new(&lease, &control, &memory, RuntimeLimits::default()).unwrap();
+        let mut initial = TreeResources::for_query(&mut runtime).unwrap();
+        let source = NativeQuerySource::new(&lease, &memory, &initial, 16).unwrap();
+        let catalog = NativeCatalog::open(&source, lease.bundle(), &memory, &mut initial).unwrap();
+        drop(initial);
+        let view = GraphReadView::new(&lease, &source, &catalog);
+
+        let mut plan_scratch = memory.reserve_external_capacity().unwrap();
+        plan_scratch
+            .reserve_additional(
+                VALIDATION_SCRATCH_BYTES
+                    + std::mem::size_of::<[RetainedRegion; 3]>()
+                    + std::mem::size_of::<PlanDescription<'_>>(),
+            )
+            .unwrap();
+        let mut operators = QueryArena::new(&memory, 2).unwrap();
+        let scan_inputs = [PlanNodeId(0)];
+        operators
+            .push(Operator {
+                inputs: &[],
+                kind: OperatorKind::Unit,
+            })
+            .unwrap();
+        operators
+            .push(Operator {
+                inputs: &scan_inputs,
+                kind: OperatorKind::ScanNodes {
+                    output: SlotId(7),
+                    label: None,
+                },
+            })
+            .unwrap();
+        let mut facts = QueryArena::new(&memory, 16).unwrap();
+        facts.push(NodeFacts::default()).unwrap();
+        facts.push(NodeFacts::default()).unwrap();
+        let fact_bytes = facts.heap_bytes();
+        let mut regions = [
+            RetainedRegion::declared(
+                operators.as_slice().as_ptr() as usize,
+                operators.heap_bytes(),
+            )
+            .unwrap(),
+            RetainedRegion::declared(facts.as_slice().as_ptr() as usize, fact_bytes).unwrap(),
+            RetainedRegion::slice(&scan_inputs).unwrap(),
+        ];
+        regions.sort();
+        let (plan, facts_owner) = facts
+            .validate_plan(
+                PlanDescription {
+                    operators: operators.as_slice(),
+                    expressions: &[],
+                    parameters: &[],
+                    root: PlanNodeId(1),
+                    eager_searches: &[],
+                },
+                PlanFootprint::declared(memory.reserved_bytes()),
+                PlanBacking::new(&regions, std::mem::size_of_val(&regions)).unwrap(),
+                runtime.values(),
+            )
+            .unwrap();
+        let owners = [
+            RetainedAllocation::arena(&operators).unwrap(),
+            facts_owner,
+            RetainedAllocation::array(&scan_inputs).unwrap(),
+        ];
+        let admitted = QueryInputs::reserve(
+            &memory,
+            RetentionInventory::array(&owners),
+            runtime.values(),
+        )
+        .unwrap()
+        .admit_plan(&plan, runtime.values())
+        .unwrap();
+
+        let cursor = view.node_cursor(LabelSelection::All, &mut runtime).unwrap();
+        let mut pull = NativeNodePull {
+            view: &view,
+            cursor: Some(cursor),
+            nodes: None,
+            emitted: 0,
+            materialized: false,
+        };
+        let result = execute_in(
+            &mut runtime,
+            &admitted,
+            &mut pull,
+            &mut FreezeNodeSummary,
+            ExecutionCapacity {
+                batch_rows: 256,
+                result_rows: 257,
+                batch_payload_bytes: 256 * 16,
+                result_payload_bytes: 257 * 16,
+                batch: ArenaCapacity::default(),
+                result: ArenaCapacity::default(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            result.output,
+            (
+                257,
+                NodeId::new((1_u128 << 100) + 1).unwrap(),
+                NodeId::new((1_u128 << 100) + 1).unwrap(),
+            )
+        );
+        assert!(
+            result
+                .counters
+                .get(crate::property_graph::query::runtime::WorkKind::OperatorRows)
+                > 256
+        );
+
+        drop(pull);
+        drop(admitted);
+        drop(plan);
+        drop(facts);
+        drop(operators);
+        drop(plan_scratch);
+        drop(view);
+        drop(catalog);
+        drop(source);
+        drop(runtime);
+        drop(lease);
+        store.close().unwrap();
+    }
+
+    #[cfg_attr(test, test)]
+    fn native_read_every_edge_path_checks_both_endpoint_states() {
+        use crate::property_graph::catalog::RelTypeId;
+        use crate::property_graph::storage::adjacency::RelationshipRow;
+        use crate::property_graph::{NodeId, RelId};
+
+        let directory = tempfile::tempdir().expect("store directory");
+        let store = Store::open(
+            directory.path(),
+            OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+        )
+        .expect("open store");
+        let identity = StoreInstanceId::new(1_u128 << 88).unwrap();
+        let node_a = NodeId::new((1_u128 << 100) + 1).unwrap();
+        let node_b = NodeId::new((1_u128 << 100) + 2).unwrap();
+        let installed = actual_producer_bundle(&store, directory.path(), identity);
+        let tombstoned = tombstoned_endpoint_bundle(&store, directory.path(), &installed, node_b);
+        store.install_native_graph_for_test(installed).unwrap();
+        let old = store.admit_native_read().unwrap();
+        store.install_native_graph_for_test(tombstoned).unwrap();
+
+        let shared = GraphResources::from_store(&store).unwrap();
+        let old_memory = QueryMemory::new(&shared, 8 * 1024 * 1024).unwrap();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let mut old_runtime =
+            RuntimeContext::new(&old, &control, &old_memory, RuntimeLimits::default()).unwrap();
+        let mut old_initial = TreeResources::for_query(&mut old_runtime).unwrap();
+        let old_source = NativeQuerySource::new(&old, &old_memory, &old_initial, 8).unwrap();
+        let old_catalog =
+            NativeCatalog::open(&old_source, old.bundle(), &old_memory, &mut old_initial).unwrap();
+        drop(old_initial);
+        let old_view = GraphReadView::new(&old, &old_source, &old_catalog);
+
+        let rel = RelId::new((1_u128 << 110) + 1).unwrap();
+        let expected = RelationshipRow {
+            rel,
+            source: node_a,
+            target: node_b,
+            relationship_type: RelTypeId::new(1).unwrap(),
+        };
+        let mut old_resources = TreeResources::for_query(&mut old_runtime).unwrap();
+        assert_eq!(
+            old_view
+                .lookup_relationship(rel, &mut old_resources)
+                .unwrap(),
+            Some(expected)
+        );
+        drop(old_resources);
+
+        let tombstone_lease = store.admit_native_read().unwrap();
+        let tombstone_memory = QueryMemory::new(&shared, 8 * 1024 * 1024).unwrap();
+        let mut tombstone_runtime = RuntimeContext::new(
+            &tombstone_lease,
+            &control,
+            &tombstone_memory,
+            RuntimeLimits::default(),
+        )
+        .unwrap();
+        let mut tombstone_initial = TreeResources::for_query(&mut tombstone_runtime).unwrap();
+        let tombstone_source =
+            NativeQuerySource::new(&tombstone_lease, &tombstone_memory, &tombstone_initial, 12)
+                .unwrap();
+        let tombstone_catalog = NativeCatalog::open(
+            &tombstone_source,
+            tombstone_lease.bundle(),
+            &tombstone_memory,
+            &mut tombstone_initial,
+        )
+        .unwrap();
+        drop(tombstone_initial);
+        let tombstone_view =
+            GraphReadView::new(&tombstone_lease, &tombstone_source, &tombstone_catalog);
+        let mut tombstone_resources = TreeResources::for_query(&mut tombstone_runtime).unwrap();
+        assert_eq!(
+            tombstone_view
+                .lookup_relationship(rel, &mut tombstone_resources)
+                .unwrap(),
+            None,
+            "tombstoned far endpoint hides rather than corrupts the relationship",
+        );
+        drop(tombstone_resources);
+        let sentinel = RelationshipRow {
+            rel: RelId::new(1).unwrap(),
+            source: NodeId::new(1).unwrap(),
+            target: NodeId::new(1).unwrap(),
+            relationship_type: RelTypeId::new(1).unwrap(),
+        };
+        let self_row = RelationshipRow {
+            rel: RelId::new((1_u128 << 110) + 2).unwrap(),
+            source: node_a,
+            target: node_a,
+            relationship_type: RelTypeId::new(2).unwrap(),
+        };
+        let mut scan = tombstone_view
+            .relationship_cursor(RelationshipTypeSelection::All, &mut tombstone_runtime)
+            .unwrap();
+        let mut tombstone_output = [sentinel; 4];
+        let (count, state) = tombstone_view
+            .scan_relationships(&mut scan, &mut tombstone_output, &mut tombstone_runtime)
+            .unwrap();
+        assert_eq!((count, state), (1, CursorState::Done));
+        assert_eq!(&tombstone_output[..count], &[self_row]);
+        drop(scan);
+        let mut expansion = tombstone_view
+            .expansion_cursor(
+                node_a,
+                DirectionSelection::Out,
+                RelationshipTypeSelection::All,
+                &mut tombstone_runtime,
+            )
+            .unwrap();
+        let (count, state) = tombstone_view
+            .expand(
+                &mut expansion,
+                &mut tombstone_output,
+                &mut tombstone_runtime,
+            )
+            .unwrap();
+        assert_eq!((count, state), (1, CursorState::Done));
+        assert_eq!(&tombstone_output[..count], &[self_row]);
+        drop(expansion);
+        drop(tombstone_view);
+        drop(tombstone_catalog);
+        drop(tombstone_source);
+        drop(tombstone_runtime);
+        drop(tombstone_lease);
+
+        let mut missing_endpoint = actual_producer_bundle(&store, directory.path(), identity);
+        let mut references = missing_endpoint.roots.references();
+        references[0] = None;
+        missing_endpoint.roots =
+            GraphRoots::from_references(identity, missing_endpoint.base.generation, references)
+                .unwrap();
+        missing_endpoint.wal_roots.slots[0] = None;
+        store
+            .install_native_graph_for_test(missing_endpoint)
+            .unwrap();
+
+        let current = store.admit_native_read().unwrap();
+        let current_memory = QueryMemory::new(&shared, 8 * 1024 * 1024).unwrap();
+        let mut current_runtime = RuntimeContext::new(
+            &current,
+            &control,
+            &current_memory,
+            RuntimeLimits::default(),
+        )
+        .unwrap();
+        let mut current_initial = TreeResources::for_query(&mut current_runtime).unwrap();
+        let current_source =
+            NativeQuerySource::new(&current, &current_memory, &current_initial, 8).unwrap();
+        let current_catalog = NativeCatalog::open(
+            &current_source,
+            current.bundle(),
+            &current_memory,
+            &mut current_initial,
+        )
+        .unwrap();
+        drop(current_initial);
+        let current_view = GraphReadView::new(&current, &current_source, &current_catalog);
+        let mut current_resources = TreeResources::for_query(&mut current_runtime).unwrap();
+        assert!(matches!(
+            current_view.lookup_relationship(rel, &mut current_resources),
+            Err(crate::property_graph::storage::tree::directory::TreeError::Missing)
+        ));
+        drop(current_resources);
+
+        let mut scan = current_view
+            .relationship_cursor(RelationshipTypeSelection::All, &mut current_runtime)
+            .unwrap();
+        let mut output = [sentinel];
+        assert!(matches!(
+            current_view.scan_relationships(&mut scan, &mut output, &mut current_runtime),
+            Err(crate::property_graph::storage::tree::directory::TreeError::Missing)
+        ));
+        assert_eq!(output, [sentinel]);
+        drop(scan);
+
+        let mut expansion = current_view
+            .expansion_cursor(
+                node_a,
+                DirectionSelection::Out,
+                RelationshipTypeSelection::All,
+                &mut current_runtime,
+            )
+            .unwrap();
+        assert!(matches!(
+            current_view.expand(&mut expansion, &mut output, &mut current_runtime),
+            Err(crate::property_graph::storage::tree::directory::TreeError::Missing)
+        ));
+        assert_eq!(output, [sentinel]);
+
+        drop(expansion);
+        drop(current_view);
+        drop(current_catalog);
+        drop(current_source);
+        drop(current_runtime);
+        drop(current);
+        drop(old_view);
+        drop(old_catalog);
+        drop(old_source);
+        drop(old_runtime);
+        drop(old);
+        store.close().unwrap();
+    }
+
+    #[cfg_attr(test, test)]
+    fn native_read_limits_are_cumulative_and_refused_batch_is_private() {
+        use crate::property_graph::catalog::RelTypeId;
+        use crate::property_graph::query::runtime::{RuntimeError, WorkKind};
+        use crate::property_graph::storage::adjacency::RelationshipRow;
+        use crate::property_graph::storage::tree::directory::TreeError;
+        use crate::property_graph::{NodeId, RelId};
+
+        let directory = tempfile::tempdir().expect("store directory");
+        let store = Store::open(
+            directory.path(),
+            OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+        )
+        .expect("open store");
+        let identity = StoreInstanceId::new(1_u128 << 87).unwrap();
+        store
+            .install_native_graph_for_test(actual_producer_bundle(
+                &store,
+                directory.path(),
+                identity,
+            ))
+            .unwrap();
+        let lease = store.admit_native_read().unwrap();
+        let shared = GraphResources::from_store(&store).unwrap();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let node = NodeId::new((1_u128 << 100) + 1).unwrap();
+
+        let memory = QueryMemory::new(&shared, 8 * 1024 * 1024).unwrap();
+        let mut runtime =
+            RuntimeContext::new(&lease, &control, &memory, RuntimeLimits::default()).unwrap();
+        let mut initial = TreeResources::for_query(&mut runtime).unwrap();
+        let source = NativeQuerySource::new(&lease, &memory, &initial, 8).unwrap();
+        let catalog = NativeCatalog::open(&source, lease.bundle(), &memory, &mut initial).unwrap();
+        drop(initial);
+        let view = GraphReadView::new(&lease, &source, &catalog);
+        let before = runtime.counters().get(WorkKind::Lookups);
+        let mut resources = TreeResources::for_query(&mut runtime).unwrap();
+        assert!(view.lookup_node(node, &mut resources).unwrap().is_some());
+        drop(resources);
+        let after_one = runtime.counters().get(WorkKind::Lookups);
+        let mut resources = TreeResources::for_query(&mut runtime).unwrap();
+        assert!(view.lookup_node(node, &mut resources).unwrap().is_some());
+        drop(resources);
+        let after_two = runtime.counters().get(WorkKind::Lookups);
+        assert!(after_one > before);
+        assert_eq!(after_two - after_one, after_one - before);
+        drop(view);
+        drop(catalog);
+        drop(source);
+        drop(runtime);
+        assert_eq!(
+            memory.reserved_bytes(),
+            std::mem::size_of::<QueryMemory<'_>>()
+        );
+
+        let limited_memory = QueryMemory::new(&shared, 8 * 1024 * 1024).unwrap();
+        let limits = RuntimeLimits::default()
+            .with_limit(WorkKind::CopiedBytes, 0)
+            .unwrap();
+        let mut limited = RuntimeContext::new(&lease, &control, &limited_memory, limits).unwrap();
+        let mut initial = TreeResources::for_query(&mut limited).unwrap();
+        let limited_source = NativeQuerySource::new(&lease, &limited_memory, &initial, 8).unwrap();
+        let limited_catalog = NativeCatalog::open(
+            &limited_source,
+            lease.bundle(),
+            &limited_memory,
+            &mut initial,
+        )
+        .unwrap();
+        drop(initial);
+        let limited_view = GraphReadView::new(&lease, &limited_source, &limited_catalog);
+        let mut cursor = limited_view
+            .relationship_cursor(RelationshipTypeSelection::All, &mut limited)
+            .unwrap();
+        let sentinel = RelationshipRow {
+            rel: RelId::new(1).unwrap(),
+            source: NodeId::new(1).unwrap(),
+            target: NodeId::new(1).unwrap(),
+            relationship_type: RelTypeId::new(1).unwrap(),
+        };
+        let mut output = [sentinel];
+        assert!(matches!(
+            limited_view.scan_relationships(&mut cursor, &mut output, &mut limited),
+            Err(TreeError::Runtime(RuntimeError::Limit(
+                WorkKind::CopiedBytes
+            )))
+        ));
+        assert_eq!(output, [sentinel]);
+        assert_eq!(limited.counters().get(WorkKind::CopiedBytes), 0);
+        drop(cursor);
+        drop(limited_view);
+        drop(limited_catalog);
+        drop(limited_source);
+        drop(limited);
+        assert_eq!(
+            limited_memory.reserved_bytes(),
+            std::mem::size_of::<QueryMemory<'_>>()
+        );
+
+        let refused = QueryMemory::new(&shared, std::mem::size_of::<QueryMemory<'_>>()).unwrap();
+        let baseline = refused.reserved_bytes();
+        assert!(matches!(
+            RuntimeContext::new(&lease, &control, &refused, RuntimeLimits::default()),
+            Err(RuntimeError::Memory(
+                crate::property_graph::query::resources::MemoryError::Limit
+            ))
+        ));
+        assert_eq!(refused.reserved_bytes(), baseline);
+
+        drop(lease);
+        store.close().unwrap();
+    }
+
+    #[cfg_attr(test, test)]
+    fn native_read_undirected_self_loop_and_parallel_edges_are_exact() {
+        use crate::property_graph::catalog::RelTypeId;
+        use crate::property_graph::storage::adjacency::RelationshipRow;
+        use crate::property_graph::{NodeId, RelId};
+
+        let directory = tempfile::tempdir().expect("store directory");
+        let store = Store::open(
+            directory.path(),
+            OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+        )
+        .expect("open store");
+        let identity = StoreInstanceId::new(1_u128 << 89).unwrap();
+        let installed = actual_producer_bundle(&store, directory.path(), identity);
+        store.install_native_graph_for_test(installed).unwrap();
+        let lease = store.admit_native_read().unwrap();
+        let shared = GraphResources::from_store(&store).unwrap();
+        let memory = QueryMemory::new(&shared, 8 * 1024 * 1024).unwrap();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let mut runtime =
+            RuntimeContext::new(&lease, &control, &memory, RuntimeLimits::default()).unwrap();
+        let mut initial = TreeResources::for_query(&mut runtime).unwrap();
+        let source = NativeQuerySource::new(&lease, &memory, &initial, 8).unwrap();
+        let catalog = NativeCatalog::open(&source, lease.bundle(), &memory, &mut initial).unwrap();
+        drop(initial);
+        let view = GraphReadView::new(&lease, &source, &catalog);
+        let node_a = NodeId::new((1_u128 << 100) + 1).unwrap();
+        let node_b = NodeId::new((1_u128 << 100) + 2).unwrap();
+        let rel_base = 1_u128 << 110;
+        let dummy = RelationshipRow {
+            rel: RelId::new(1).unwrap(),
+            source: node_a,
+            target: node_b,
+            relationship_type: RelTypeId::new(1).unwrap(),
+        };
+        let mut cursor = view
+            .expansion_cursor(
+                node_a,
+                DirectionSelection::Undirected,
+                RelationshipTypeSelection::All,
+                &mut runtime,
+            )
+            .unwrap();
+        let mut observed = Vec::new();
+        loop {
+            let mut output = [dummy];
+            let (count, state) = view.expand(&mut cursor, &mut output, &mut runtime).unwrap();
+            observed.extend_from_slice(&output[..count]);
+            if state == CursorState::Done {
+                break;
+            }
+        }
+        assert_eq!(
+            observed,
+            vec![
+                RelationshipRow {
+                    rel: RelId::new(rel_base + 1).unwrap(),
+                    source: node_a,
+                    target: node_b,
+                    relationship_type: RelTypeId::new(1).unwrap(),
+                },
+                RelationshipRow {
+                    rel: RelId::new(rel_base + 3).unwrap(),
+                    source: node_a,
+                    target: node_b,
+                    relationship_type: RelTypeId::new(1).unwrap(),
+                },
+                RelationshipRow {
+                    rel: RelId::new(rel_base + 2).unwrap(),
+                    source: node_a,
+                    target: node_a,
+                    relationship_type: RelTypeId::new(2).unwrap(),
+                },
+            ]
+        );
+        drop(cursor);
+        let mut empty = view
+            .expansion_cursor(
+                node_a,
+                DirectionSelection::Undirected,
+                RelationshipTypeSelection::Any(&[]),
+                &mut runtime,
+            )
+            .unwrap();
+        let mut untouched = [dummy];
+        assert_eq!(
+            view.expand(&mut empty, &mut untouched, &mut runtime)
+                .unwrap(),
+            (0, CursorState::Done)
+        );
+        assert_eq!(untouched, [dummy]);
+        drop(empty);
+        drop(view);
+        drop(catalog);
+        drop(source);
+        drop(runtime);
+        drop(lease);
+        store.close().unwrap();
+    }
+
+    fn caller_cancel_and_clean_control_contract() {
+        use crate::property_graph::NodeId;
+        use crate::property_graph::query::QueryError;
+        use crate::property_graph::query::runtime::RuntimeError;
+        use crate::property_graph::storage::tree::directory::TreeError;
+
+        let directory = tempfile::tempdir().expect("store directory");
+        let store = Store::open(
+            directory.path(),
+            OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+        )
+        .expect("open store");
+        let identity = StoreInstanceId::new(1_u128 << 82).unwrap();
+        store
+            .install_native_graph_for_test(actual_producer_bundle(
+                &store,
+                directory.path(),
+                identity,
+            ))
+            .unwrap();
+        let lease = store.admit_native_read().unwrap();
+        let shared = GraphResources::from_store(&store).unwrap();
+        let memory = QueryMemory::new(&shared, 8 * 1024 * 1024).unwrap();
+        let cancel = CancelToken::new();
+        let control = QueryControl::Cancel(cancel.clone());
+        let mut runtime =
+            RuntimeContext::new(&lease, &control, &memory, RuntimeLimits::default()).unwrap();
+        let mut initial = TreeResources::for_query(&mut runtime).unwrap();
+        let source = NativeQuerySource::new(&lease, &memory, &initial, 8).unwrap();
+        let catalog = NativeCatalog::open(&source, lease.bundle(), &memory, &mut initial).unwrap();
+        drop(initial);
+        let view = GraphReadView::new(&lease, &source, &catalog);
+        cancel.cancel();
+        assert!(matches!(
+            TreeResources::for_query(&mut runtime),
+            Err(TreeError::Runtime(RuntimeError::Value(
+                QueryError::Cancelled
+            )))
+        ));
+        drop(view);
+        drop(catalog);
+        drop(source);
+        drop(runtime);
+
+        let clean_memory = QueryMemory::new(&shared, 8 * 1024 * 1024).unwrap();
+        let clean_control = QueryControl::Cancel(CancelToken::new());
+        let mut clean = RuntimeContext::new(
+            &lease,
+            &clean_control,
+            &clean_memory,
+            RuntimeLimits::default(),
+        )
+        .unwrap();
+        let mut initial = TreeResources::for_query(&mut clean).unwrap();
+        let source = NativeQuerySource::new(&lease, &clean_memory, &initial, 8).unwrap();
+        let catalog =
+            NativeCatalog::open(&source, lease.bundle(), &clean_memory, &mut initial).unwrap();
+        drop(initial);
+        let view = GraphReadView::new(&lease, &source, &catalog);
+        let mut resources = TreeResources::for_query(&mut clean).unwrap();
+        assert!(
+            view.lookup_node(NodeId::new((1_u128 << 100) + 1).unwrap(), &mut resources)
+                .unwrap()
+                .is_some()
+        );
+        drop(resources);
+        drop(view);
+        drop(catalog);
+        drop(source);
+        drop(clean);
+        drop(lease);
+        store.close().unwrap();
+    }
+
+    fn scheduled_map_io_fire_and_clean_control_contract() {
+        use crate::property_graph::NodeId;
+        use crate::property_graph::storage::tree::directory::TreeError;
+
+        let directory = tempfile::tempdir().expect("store directory");
+        let vfs = Arc::new(ScheduledMapVfs::new());
+        let store = Store::open_with_test_dependencies(
+            directory.path(),
+            OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+            StoreTestDependencies::new(vfs.clone(), Arc::new(ManualMonotonicClock::new())),
+        )
+        .expect("open store");
+        let identity = StoreInstanceId::new(1_u128 << 81).unwrap();
+        store
+            .install_native_graph_for_test(actual_producer_bundle(
+                &store,
+                directory.path(),
+                identity,
+            ))
+            .unwrap();
+        let lease = store.admit_native_read().unwrap();
+        let shared = GraphResources::from_store(&store).unwrap();
+        let memory = QueryMemory::new(&shared, 8 * 1024 * 1024).unwrap();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let mut runtime =
+            RuntimeContext::new(&lease, &control, &memory, RuntimeLimits::default()).unwrap();
+        let mut initial = TreeResources::for_query(&mut runtime).unwrap();
+        let source = NativeQuerySource::new(&lease, &memory, &initial, 8).unwrap();
+        let catalog = NativeCatalog::open(&source, lease.bundle(), &memory, &mut initial).unwrap();
+        drop(initial);
+        let view = GraphReadView::new(&lease, &source, &catalog);
+        let scheduled = vfs.arm_next();
+        let node = NodeId::new((1_u128 << 100) + 1).unwrap();
+        assert!(matches!(
+            view.lookup_node(
+                node,
+                &mut TreeResources::for_query(&mut runtime).unwrap()
+            ),
+            Err(TreeError::Io(error)) if error.kind() == std::io::ErrorKind::Other
+        ));
+        assert_eq!(vfs.calls.load(Ordering::Relaxed), scheduled);
+        assert_eq!(vfs.fires.load(Ordering::Relaxed), 1);
+
+        vfs.disarm();
+        let mut clean = TreeResources::for_query(&mut runtime).unwrap();
+        assert!(view.lookup_node(node, &mut clean).unwrap().is_some());
+        drop(clean);
+        assert_eq!(vfs.fires.load(Ordering::Relaxed), 1);
+        drop(view);
+        drop(catalog);
+        drop(source);
+        drop(runtime);
+        assert_eq!(
+            memory.reserved_bytes(),
+            std::mem::size_of::<QueryMemory<'_>>()
+        );
+        drop(lease);
+        store.close().unwrap();
+    }
+
+    pub(crate) fn run_adversarial_probe(seed: u64) -> usize {
+        if seed & 1 == 0 {
+            native_read_admission_registers_before_replacement_capture();
+            native_read_clone_retains_one_registry_entry_until_final_drop();
+        } else {
+            native_read_clone_retains_one_registry_entry_until_final_drop();
+            native_read_admission_registers_before_replacement_capture();
+        }
+        native_read_old_view_lazily_opens_unmapped_artifact_after_replacement();
+        native_read_all_operations_use_one_admitted_bundle();
+        native_read_cursor_rejects_same_view_memory_different_runtime();
+        native_read_cursor_rejects_same_metadata_foreign_admission();
+        native_read_catalog_and_required_refs_cannot_be_substituted();
+        native_read_missing_or_corrupt_lazy_file_is_not_absence();
+        scheduled_map_io_fire_and_clean_control_contract();
+        native_read_limits_are_cumulative_and_refused_batch_is_private();
+        caller_cancel_and_clean_control_contract();
+        native_read_close_cancels_and_drains_current_and_retired_leases();
+        native_read_drop_cancels_without_destroying_borrowed_mapping();
+        native_prepared_artifacts_retain_exact_base_source_and_abort_owners();
+        native_read_every_edge_path_checks_both_endpoint_states();
+        native_read_undirected_self_loop_and_parallel_edges_are_exact();
+        15
+    }
+}

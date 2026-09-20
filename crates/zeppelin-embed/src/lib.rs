@@ -40,6 +40,26 @@ mod allocation_audit;
 #[doc(hidden)]
 pub mod adversarial_test_support;
 
+#[cfg(all(feature = "graph-cypher", feature = "test-support"))]
+#[doc(hidden)]
+pub mod graph_read_view_test_support {
+    /// Confirms that the controlled fixture boundary is linked only into a
+    /// test-support build. Behavioral acceptance remains on the internal scoped
+    /// adapter so no installer or read capability becomes a shipping API.
+    pub fn controlled_boundary_is_available() -> bool {
+        std::mem::size_of::<crate::lifecycle::native_graph::NativeReadLease>() > 0
+            && std::mem::size_of::<crate::property_graph::storage::GraphReadView<'_, '_, '_, '_>>()
+                > 0
+    }
+
+    /// Runs the real controlled native adapter, fault, lifetime and release paths.
+    /// Panics are retained as test failures; the shipping graph feature has no
+    /// installer or fixture surface because this module requires test-support.
+    pub fn run_actual_probe(seed: u64) -> usize {
+        crate::lifecycle::native_graph::tests::run_adversarial_probe(seed)
+    }
+}
+
 /// Query diagnostics and health reporting.
 pub mod diag;
 /// Epoch identity and migration.

@@ -9,6 +9,8 @@ mod range;
 mod read;
 use crate::property_graph::{NodeId, RelId, catalog::RelTypeId};
 pub use codec::{encode_base, encode_delta};
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use merge::exact_split_fixture;
 pub use merge::{MERGE_STATE_BYTES, Merged, Partition, merge};
 pub use prepare::{NativeGraphBase, NativeGraphCandidate, prepare_native_graph};
 pub use range::{

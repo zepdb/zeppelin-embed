@@ -18,6 +18,16 @@ pub mod stream;
 pub mod records;
 
 mod view;
+#[cfg(feature = "graph-cypher")]
+#[allow(
+    unused_imports,
+    reason = "crate-private ZE-45 interface is consumed by ZE-50 after this dependency lands"
+)]
+pub(crate) use view::{
+    CursorState, DirectionSelection, ExpandCursor, GraphReadView, LabelSelection, NativeCatalog,
+    NativeQuerySource, NodeCursor, NodeView, PreparedGraphArtifacts, PreparedGraphFailure,
+    RelationshipTypeSelection, TextPayloadReader,
+};
 
 /// Combined private storage capacity inside the authentic writer/store owner.
 pub mod memory;

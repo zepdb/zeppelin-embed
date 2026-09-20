@@ -7,7 +7,9 @@ use super::{Cell, Key, PAGE_BYTES, PageHeader, TreeKind, decode_page, encode_pag
 use crate::format::frame::FormatError;
 use crate::lifecycle::{QueryControl, QueryError};
 use crate::property_graph::query::resources::{QueryMemory, QueryReservation};
-use crate::property_graph::query::runtime::{RuntimeContext, RuntimeError, WorkKind};
+use crate::property_graph::query::runtime::{
+    RuntimeContext, RuntimeError, RuntimeInstanceId, WorkKind,
+};
 use crate::property_graph::resources::{GraphReservation, GraphResources};
 use crate::property_graph::{GraphGeneration, StoreInstanceId};
 
@@ -156,17 +158,17 @@ enum TreeControl<'a> {
     },
     Query {
         context: &'a mut dyn QueryRuntime,
-        identity: usize,
+        identity: RuntimeInstanceId,
     },
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct QueryOwner<'a> {
-    memory: &'a QueryMemory<'a>,
-    context: usize,
+pub(crate) struct QueryOwner<'m, 'g> {
+    memory: &'m QueryMemory<'g>,
+    context: RuntimeInstanceId,
 }
-impl QueryOwner<'_> {
-    fn same_owner(self, other: QueryOwner<'_>) -> bool {
+impl QueryOwner<'_, '_> {
+    fn same_owner(self, other: QueryOwner<'_, '_>) -> bool {
         std::ptr::eq(self.memory, other.memory) && self.context == other.context
     }
 }
@@ -175,7 +177,7 @@ impl QueryOwner<'_> {
 enum CursorOwner<'a> {
     Direct,
     Preparation(&'a StorageMemory<'a>),
-    Query(QueryOwner<'a>),
+    Query(QueryOwner<'a, 'a>),
 }
 
 /// Required operation control and checked work accounting.
@@ -229,7 +231,7 @@ impl<'a> TreeResources<'a> {
     {
         context.checkpoint().map_err(TreeError::Runtime)?;
         let memory: &'a QueryMemory<'a> = context.memory();
-        let identity = std::ptr::from_ref(context).cast::<()>() as usize;
+        let identity = context.identity();
         let owner = CapacityOwner::Query(memory);
         let workspace = owner.reserve(STACK_BYTES)?;
         Ok(Self {
@@ -251,17 +253,23 @@ impl<'a> TreeResources<'a> {
             _ => Err(TreeError::Invalid("query memory owner mismatch")),
         }
     }
-    pub(crate) fn query_owner(
+    pub(crate) fn query_owner<'m, 'g>(
         &self,
-        memory: &QueryMemory<'_>,
-    ) -> Result<QueryOwner<'a>, TreeError> {
+        memory: &'m QueryMemory<'g>,
+    ) -> Result<QueryOwner<'m, 'g>, TreeError> {
         self.require_query(memory)?;
         match self.cursor_owner()? {
-            CursorOwner::Query(owner) => Ok(owner),
+            CursorOwner::Query(owner) => Ok(QueryOwner {
+                memory,
+                context: owner.context,
+            }),
             _ => Err(TreeError::Invalid("query memory owner mismatch")),
         }
     }
-    pub(crate) fn require_query_owner(&self, expected: QueryOwner<'_>) -> Result<(), TreeError> {
+    pub(crate) fn require_query_owner(
+        &self,
+        expected: QueryOwner<'_, '_>,
+    ) -> Result<(), TreeError> {
         match self.cursor_owner()? {
             CursorOwner::Query(actual) if expected.same_owner(actual) => Ok(()),
             _ => Err(TreeError::Invalid("query range scratch owner mismatch")),

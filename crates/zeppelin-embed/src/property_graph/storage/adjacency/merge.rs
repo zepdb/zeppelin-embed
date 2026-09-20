@@ -157,6 +157,60 @@ pub fn merge<'a, E>(
         watermark: cutoff,
     })
 }
+
+#[cfg(any(test, feature = "test-support"))]
+#[allow(clippy::indexing_slicing, clippy::unwrap_used)]
+pub(crate) fn exact_split_fixture() {
+    let lower = RelId::new(u128::MAX - MAX_BASE_ENTRIES as u128).unwrap();
+    let maximum = RelId::new(u128::MAX).unwrap();
+    let key = RangeKey {
+        node: NodeId::new(u128::MAX).unwrap(),
+        rel_type: RelTypeId::new(u64::MAX).unwrap(),
+        direction: Direction::Out,
+        lower,
+        upper: UpperBound::Infinity,
+    };
+    let base_edges = (0..MAX_BASE_ENTRIES)
+        .map(|offset| Edge {
+            rel: RelId::new(lower.get() + offset as u128).unwrap(),
+            neighbor: NodeId::new(u128::MAX - offset as u128).unwrap(),
+        })
+        .collect::<Vec<_>>();
+    let mut base = vec![0; HEADER_BYTES + MAX_BASE_ENTRIES * 32];
+    super::encode_base(key, 40, &base_edges, &mut base, &mut |_| Ok::<_, ()>(())).unwrap();
+    let mut delta = vec![0; HEADER_BYTES + 40];
+    super::encode_delta(
+        key,
+        41,
+        &[DeltaEntry {
+            edge: Edge {
+                rel: maximum,
+                neighbor: NodeId::new(1).unwrap(),
+            },
+            action: Action::Insert,
+        }],
+        &mut delta,
+        &mut |_| Ok::<_, ()>(()),
+    )
+    .unwrap();
+    let mut output = vec![base_edges[0]; MAX_BASE_ENTRIES + 1];
+    let merged = merge(key, 40, 41, &base, &[&delta], &mut output, &mut |_| {
+        Ok::<_, ()>(())
+    })
+    .unwrap();
+    assert_eq!(merged.edges().len(), MAX_BASE_ENTRIES + 1);
+    assert_eq!(merged.edges().last().unwrap().rel, maximum);
+    assert_eq!(merged.partitions().len(), 2);
+    assert_eq!(merged.partitions()[0].end, MAX_BASE_ENTRIES);
+    assert_eq!(
+        merged.partitions()[0].key.upper,
+        UpperBound::Exclusive(maximum)
+    );
+    assert_eq!(merged.partitions()[1].key.lower, maximum);
+    assert_eq!(merged.partitions()[1].start, MAX_BASE_ENTRIES);
+    assert_eq!(merged.partitions()[1].end, MAX_BASE_ENTRIES + 1);
+}
+
 fn walk<E>(
     runs: &[Option<Run<'_>>; MAX_DELTA_RUNS + 1],
     c: &mut impl FnMut(Work) -> Result<(), E>,

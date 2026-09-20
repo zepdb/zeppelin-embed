@@ -171,6 +171,8 @@ fn bind_base(
                 || identity.artifact != object.artifact
                 || identity.generation != object.generation
                 || identity.creation_serial != object.serial
+                || block.file_length() != object.bytes as usize
+                || block.file_checksum() != object.checksum
             {
                 return Err(invalid("native WAL root source identity mismatch"));
             }

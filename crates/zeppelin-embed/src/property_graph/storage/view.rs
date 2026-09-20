@@ -1,4 +1,8 @@
 //! Private source-bound record leaves shared by native query components.
+#![allow(
+    dead_code,
+    reason = "the scoped native view is intentionally crate-private until ZE-50 consumes it"
+)]
 use super::{
     payload::PayloadRef,
     records::{NodeRecordState, RecordCatalog, verify_node_state},
@@ -9,7 +13,291 @@ use super::{
     },
 };
 use crate::epoch::EmbeddingTower;
-use crate::property_graph::NodeId;
+use crate::lifecycle::native_graph::NativeReadLease;
+use crate::property_graph::{NodeId, RelId};
+
+#[cfg(feature = "graph-cypher")]
+mod catalog;
+#[cfg(feature = "graph-cypher")]
+mod cursor;
+#[cfg(feature = "graph-cypher")]
+mod mapping;
+#[cfg(feature = "graph-cypher")]
+mod prepared;
+#[cfg(feature = "graph-cypher")]
+mod source;
+
+#[cfg(feature = "graph-cypher")]
+pub(crate) use catalog::NativeCatalog;
+#[cfg(feature = "graph-cypher")]
+pub(crate) use cursor::{
+    CursorState, DirectionSelection, ExpandCursor, LabelSelection, NodeCursor, RelCursor,
+    RelationshipTypeSelection,
+};
+#[cfg(feature = "graph-cypher")]
+pub(crate) use prepared::{PreparedGraphArtifacts, PreparedGraphFailure};
+#[cfg(feature = "graph-cypher")]
+pub(crate) use source::NativeQuerySource;
+
+/// Source-bound live node returned only inside one admitted read scope.
+pub(crate) struct NodeView<'a, S: BlockSource> {
+    record: super::records::RecordView<'a, S>,
+}
+
+impl<'a, S: BlockSource> NodeView<'a, S> {
+    pub(crate) const fn record(&self) -> &super::records::RecordView<'a, S> {
+        &self.record
+    }
+}
+
+pub(crate) struct TextPayloadReader<'a, S: BlockSource> {
+    payload: PayloadSlice<'a, S>,
+}
+
+impl<'a, S: BlockSource> TextPayloadReader<'a, S> {
+    pub(crate) const fn len(&self) -> u64 {
+        self.payload.len()
+    }
+
+    pub(crate) fn read_at(
+        &self,
+        offset: u64,
+        output: &mut [u8],
+        resources: &mut TreeResources<'_>,
+    ) -> Result<usize, TreeError> {
+        if output.len() > super::payload::CHUNK_BYTES {
+            return Err(TreeError::Invalid("text payload read exceeds 64 KiB"));
+        }
+        self.payload.read_at(offset, output, resources)
+    }
+}
+
+/// One coherent internal adapter. Its roots, cutoff, catalog and source all
+/// originate from `lease`; callers cannot supply them independently.
+pub(crate) struct GraphReadView<'s, 'lease, 'm, 'g> {
+    lease: &'lease NativeReadLease,
+    source: &'s NativeQuerySource<'lease, 'm, 'g>,
+    catalog: &'s NativeCatalog<'s, 'm, 'g>,
+}
+
+impl<'s, 'lease, 'm, 'g> GraphReadView<'s, 'lease, 'm, 'g> {
+    pub(crate) const fn new(
+        lease: &'lease NativeReadLease,
+        source: &'s NativeQuerySource<'lease, 'm, 'g>,
+        catalog: &'s NativeCatalog<'s, 'm, 'g>,
+    ) -> Self {
+        Self {
+            lease,
+            source,
+            catalog,
+        }
+    }
+
+    pub(crate) fn sequence(&self) -> u64 {
+        self.lease.bundle().sequence()
+    }
+
+    pub(crate) fn lookup_node(
+        &self,
+        node: NodeId,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<Option<NodeView<'s, NativeQuerySource<'lease, 'm, 'g>>>, TreeError> {
+        self.lease
+            .check_active()
+            .map_err(crate::property_graph::query::runtime::RuntimeError::Value)
+            .map_err(TreeError::Runtime)?;
+        match lookup_node_state(
+            self.source,
+            self.lease.bundle().roots(),
+            node,
+            self.catalog,
+            self.lease.bundle().document(),
+            resources,
+        )? {
+            Some(NodeRecordState::Live(record)) => Ok(Some(NodeView { record })),
+            Some(NodeRecordState::Tombstone(_)) | None => Ok(None),
+        }
+    }
+
+    pub(crate) fn lookup_relationship(
+        &self,
+        relationship: RelId,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<Option<super::adjacency::RelationshipRow>, TreeError> {
+        self.lease
+            .check_active()
+            .map_err(crate::property_graph::query::runtime::RuntimeError::Value)
+            .map_err(TreeError::Runtime)?;
+        super::adjacency::NativeGraphReader::new(
+            self.source,
+            self.lease.bundle().roots(),
+            self.lease.bundle().sequence(),
+            self.catalog,
+            self.lease.bundle().document(),
+        )
+        .relationship(relationship, resources)
+    }
+
+    pub(crate) fn node_property(
+        &self,
+        node: &NodeView<'s, NativeQuerySource<'lease, 'm, 'g>>,
+        key: crate::property_graph::catalog::PropertyKeyId,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<Option<PayloadSlice<'s, NativeQuerySource<'lease, 'm, 'g>>>, TreeError> {
+        self.lease
+            .check_active()
+            .map_err(crate::property_graph::query::runtime::RuntimeError::Value)
+            .map_err(TreeError::Runtime)?;
+        node.record.property(key, resources)
+    }
+
+    pub(crate) fn stored_text(
+        &self,
+        node: NodeId,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<Option<TextPayloadReader<'s, NativeQuerySource<'lease, 'm, 'g>>>, TreeError> {
+        let record = self
+            .lookup_node(node, resources)?
+            .ok_or(TreeError::Invalid(
+                "stored text entity is absent or deleted",
+            ))?;
+        Ok(record
+            .record
+            .canonical()
+            .stored_text()
+            .map(|payload| TextPayloadReader { payload }))
+    }
+
+    pub(crate) fn vector_payload(
+        &self,
+        node: NodeId,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<
+        Option<super::records::StoredVector<'s, NativeQuerySource<'lease, 'm, 'g>>>,
+        TreeError,
+    > {
+        let record = self
+            .lookup_node(node, resources)?
+            .ok_or(TreeError::Invalid("vector entity is absent or deleted"))?;
+        Ok(record.record.canonical().stored_vector())
+    }
+
+    pub(crate) fn relationship_cursor(
+        &'s self,
+        selection: RelationshipTypeSelection<'_>,
+        runtime: &mut crate::property_graph::query::runtime::RuntimeContext<'lease, 'm, 'g>,
+    ) -> Result<RelCursor<'s, 'm, 'g>, TreeError> {
+        cursor::RelCursor::new(self.lease, selection, runtime)
+    }
+
+    pub(crate) fn node_cursor(
+        &'s self,
+        selection: LabelSelection<'_>,
+        runtime: &mut crate::property_graph::query::runtime::RuntimeContext<'lease, 'm, 'g>,
+    ) -> Result<NodeCursor<'s, 'm, 'g>, TreeError> {
+        cursor::NodeCursor::new(self.lease, selection, runtime)
+    }
+
+    pub(crate) fn scan_nodes(
+        &self,
+        cursor: &mut NodeCursor<'s, 'm, 'g>,
+        output: &mut [NodeId],
+        runtime: &mut crate::property_graph::query::runtime::RuntimeContext<'lease, 'm, 'g>,
+    ) -> Result<(usize, CursorState), TreeError> {
+        cursor.scan(self.lease, self.source, self.catalog, output, runtime)
+    }
+
+    pub(crate) fn scan_relationships(
+        &self,
+        cursor: &mut RelCursor<'s, 'm, 'g>,
+        output: &mut [super::adjacency::RelationshipRow],
+        runtime: &mut crate::property_graph::query::runtime::RuntimeContext<'lease, 'm, 'g>,
+    ) -> Result<(usize, CursorState), TreeError> {
+        cursor.scan(self.lease, self.source, self.catalog, output, runtime)
+    }
+
+    pub(crate) fn expansion_cursor(
+        &'s self,
+        node: NodeId,
+        direction: DirectionSelection,
+        selection: RelationshipTypeSelection<'_>,
+        runtime: &mut crate::property_graph::query::runtime::RuntimeContext<'lease, 'm, 'g>,
+    ) -> Result<ExpandCursor<'s, 'm, 'g>, TreeError> {
+        cursor::ExpandCursor::new(self.lease, node, direction, selection, runtime)
+    }
+
+    pub(crate) fn expand(
+        &self,
+        cursor: &mut ExpandCursor<'s, 'm, 'g>,
+        output: &mut [super::adjacency::RelationshipRow],
+        runtime: &mut crate::property_graph::query::runtime::RuntimeContext<'lease, 'm, 'g>,
+    ) -> Result<(usize, CursorState), TreeError> {
+        cursor.scan(self.lease, self.source, self.catalog, output, runtime)
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the private leaf keeps source, catalog, document, owner, and bounded output explicit"
+)]
+pub(super) fn scan_live_nodes_after<'a, 'lease, 'm, 'g>(
+    source: &'a NativeQuerySource<'lease, 'm, 'g>,
+    roots: GraphRoots,
+    after: Option<NodeId>,
+    labels: &[crate::property_graph::catalog::LabelId],
+    catalog: &impl RecordCatalog<NativeQuerySource<'lease, 'm, 'g>>,
+    document: Option<&EmbeddingTower>,
+    output: &mut crate::property_graph::query::resources::QueryArena<'m, 'g, NodeId>,
+    r: &mut TreeResources<'_>,
+) -> Result<usize, TreeError> {
+    use super::tree::{Key, directory::DirectoryCursor};
+    let root = roots.directory(TreeKind::Nodes)?;
+    let lower = after.map(|node| node.get().to_le_bytes());
+    let mut cursor =
+        DirectoryCursor::seek(source, root, lower.as_ref().map(<[u8; 16]>::as_slice), r)?;
+    while let Some(entry) = cursor.next_entry(r)? {
+        let Key::Inline(key) = entry.key() else {
+            return Err(TreeError::Invalid("overflow node identity"));
+        };
+        let node = NodeId::new(u128::from_le_bytes(
+            key.try_into()
+                .map_err(|_| TreeError::Invalid("node identity width"))?,
+        ))
+        .map_err(|_| TreeError::Invalid("zero node identity"))?;
+        if after == Some(node) {
+            continue;
+        }
+        let Some(NodeRecordState::Live(record)) =
+            lookup_node_state(source, roots, node, catalog, document, r)?
+        else {
+            continue;
+        };
+        let super::records::RecordShape::Node { labels: count, .. } = record.shape() else {
+            return Err(TreeError::Invalid("node directory role"));
+        };
+        let mut matched = true;
+        for wanted in labels {
+            let mut found = false;
+            for index in 0..count {
+                if record.label(index, r)? == *wanted {
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                matched = false;
+                break;
+            }
+        }
+        if matched {
+            output.push(node).map_err(|_| TreeError::Memory)?;
+            if output.len() == output.capacity() {
+                break;
+            }
+        }
+    }
+    Ok(output.len())
+}
 
 /// Resolve and completely verify one node from caller-owned immutable source
 /// bytes. The returned state and every payload view remain bound to `source`;

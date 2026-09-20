@@ -162,11 +162,21 @@ impl<'a> PrivateArtifact<'a> {
                         .as_slice()
                         .get(add(start, 24)?..add(start, reference.length as usize)?)
                         .ok_or(TreeError::Invalid("admitted private block extent"))?;
+                    let trailer = self
+                        .bytes
+                        .as_slice()
+                        .len()
+                        .checked_sub(8)
+                        .ok_or(TreeError::Invalid("admitted private artifact trailer"))?;
+                    let file_checksum =
+                        frame::read_u64("native graph artifact", self.bytes.as_slice(), trailer)?;
                     r.step(0)?;
                     return Ok(FramedBlock {
                         identity: self.identity,
                         reference,
                         payload,
+                        file_length: self.bytes.as_slice().len(),
+                        file_checksum,
                     });
                 }
                 std::cmp::Ordering::Equal => break,
@@ -333,6 +343,15 @@ impl crate::property_graph::storage::tree::directory::BlockSource for OwnedArtif
             kind: ContainerKind::Object,
             directory: self.directory,
             count: self.count,
+            file_checksum: frame::read_u64(
+                "native graph artifact",
+                self.bytes.as_slice(),
+                self.bytes
+                    .as_slice()
+                    .len()
+                    .checked_sub(8)
+                    .ok_or(TreeError::Invalid("owned artifact trailer"))?,
+            )?,
         };
         let block = frame.framed_block(reference)?;
         r.step(0)?;

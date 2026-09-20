@@ -56,7 +56,7 @@ impl RangeEdges<'_> {
 }
 enum RangeOwner<'a> {
     Preparation(&'a StorageMemory<'a>),
-    Query(QueryOwner<'a>),
+    Query(QueryOwner<'a, 'a>),
 }
 enum RangeCharge<'a> {
     Preparation(StorageReservation<'a>),

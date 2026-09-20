@@ -2,6 +2,7 @@
 //! its admitted source/catalog lease; constructing this reader does not admit it.
 use super::*;
 use crate::epoch::EmbeddingTower;
+use crate::property_graph::query::resources::QueryArena;
 use crate::property_graph::storage::{
     payload::PayloadRef,
     records::{NodeRecordState, RecordCatalog, RecordShape, verify_record},
@@ -121,6 +122,44 @@ impl<'a, S: BlockSource, C: RecordCatalog<S>> NativeGraphReader<'a, S, C> {
         r.step(0)?;
         Ok(count)
     }
+    #[allow(dead_code, reason = "used by the crate-private ZE-45 scoped adapter")]
+    pub(crate) fn scan_relationships_after<'m, 'g>(
+        &self,
+        after: Option<RelId>,
+        accepted_types: Option<&[RelTypeId]>,
+        output: &mut QueryArena<'m, 'g, RelationshipRow>,
+        r: &mut TreeResources<'_>,
+    ) -> Result<usize, TreeError> {
+        r.step(0)?;
+        if output.capacity() == 0 {
+            return Err(TreeError::Invalid("zero relationship scan capacity"));
+        }
+        let lower = after.unwrap_or(RelId::new(1).map_err(|_| invalid("minimum relationship"))?);
+        let mut count = 0;
+        self.visit_relationships(
+            RelationshipRange {
+                lower,
+                upper: UpperBound::Infinity,
+            },
+            r,
+            &mut |row, r| {
+                if after == Some(row.rel)
+                    || accepted_types.is_some_and(|types| !types.contains(&row.relationship_type))
+                {
+                    return Ok(true);
+                }
+                r.step(std::mem::size_of::<RelationshipRow>() as u64)?;
+                r.read_event(NativeReadEvent::CopiedBytes(
+                    std::mem::size_of::<RelationshipRow>() as u64,
+                ))?;
+                output.push(row).map_err(|_| TreeError::Memory)?;
+                count += 1;
+                Ok(count < output.capacity())
+            },
+        )?;
+        r.step(0)?;
+        Ok(count)
+    }
     /// Exact observable relationship count; no stale directory-size shortcut.
     pub fn relationship_count(&self, r: &mut TreeResources<'_>) -> Result<u64, TreeError> {
         let mut count = 0u64;
@@ -160,6 +199,47 @@ impl<'a, S: BlockSource, C: RecordCatalog<S>> NativeGraphReader<'a, S, C> {
         })?;
         r.step(0)?;
         Ok(count)
+    }
+    /// Reconstruct one bounded high-level expansion pull without retaining the
+    /// low range cursor/scratch across calls. `skip` is the number of visible
+    /// rows already returned for this exact query. One additional visible row
+    /// is examined to distinguish a full terminal batch from `More`.
+    #[allow(dead_code, reason = "used by the crate-private ZE-45 scoped adapter")]
+    pub(crate) fn expand_after_skip<'m, 'g>(
+        &self,
+        query: AdjacencyQuery,
+        skip: u64,
+        output: &mut QueryArena<'m, 'g, AdjacencyRow>,
+        scratch: &mut RangeScratch<'_>,
+        r: &mut TreeResources<'_>,
+    ) -> Result<(usize, bool), TreeError> {
+        scratch.require_owner(r)?;
+        check_range(query.relationships)?;
+        if output.capacity() == 0 {
+            return Err(TreeError::Invalid("zero expansion capacity"));
+        }
+        let mut visited = 0_u64;
+        let mut count = 0_usize;
+        let mut more = false;
+        self.visit_adjacency(query, scratch, r, &mut |row, r| {
+            if visited < skip {
+                visited = visited.checked_add(1).ok_or(TreeError::Work)?;
+                return Ok(true);
+            }
+            if count == output.capacity() {
+                more = true;
+                return Ok(false);
+            }
+            r.step(std::mem::size_of::<AdjacencyRow>() as u64)?;
+            r.read_event(NativeReadEvent::CopiedBytes(
+                std::mem::size_of::<AdjacencyRow>() as u64,
+            ))?;
+            output.push(row).map_err(|_| TreeError::Memory)?;
+            count += 1;
+            Ok(true)
+        })?;
+        r.step(0)?;
+        Ok((count, more))
     }
     /// Count one physical direction after checking both endpoints. A self-loop
     /// counts once in each direction; undirected execution owns its deduplication.

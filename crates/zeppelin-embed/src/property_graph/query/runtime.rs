@@ -2,6 +2,8 @@
 use super::resources::{MemoryError, QueryMemory, QueryReservation};
 use super::{QueryError, QueryView, ValueContext};
 use crate::lifecycle::QueryControl;
+use std::num::NonZeroU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 mod batch;
 mod driver;
 pub use batch::{ArenaCapacity, RowBatch};
@@ -161,6 +163,8 @@ pub enum RuntimeError {
     Memory(MemoryError),
     /// A pull produced an invalid shape, exceeded fixed batch bounds or mixed owners.
     Batch,
+    /// The process-unique runtime stamp space was exhausted without wrapping.
+    IdentityExhausted,
 }
 impl From<QueryError> for RuntimeError {
     fn from(e: QueryError) -> Self {
@@ -179,14 +183,42 @@ impl std::fmt::Display for RuntimeError {
             Self::Value(e) => e.fmt(f),
             Self::Memory(e) => e.fmt(f),
             Self::Batch => f.write_str("invalid or exhausted flat query batch"),
+            Self::IdentityExhausted => f.write_str("graph query runtime identity exhausted"),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RuntimeInstanceId(NonZeroU64);
+
+impl RuntimeInstanceId {
+    #[cfg(test)]
+    pub(crate) const fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
+static NEXT_RUNTIME_INSTANCE: AtomicU64 = AtomicU64::new(0);
+
+fn allocate_runtime_instance_id(allocator: &AtomicU64) -> Result<RuntimeInstanceId, RuntimeError> {
+    let previous = allocator
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |last| {
+            last.checked_add(1)
+        })
+        .map_err(|_| RuntimeError::IdentityExhausted)?;
+    let issued = previous
+        .checked_add(1)
+        .ok_or(RuntimeError::IdentityExhausted)?;
+    NonZeroU64::new(issued)
+        .map(RuntimeInstanceId)
+        .ok_or(RuntimeError::IdentityExhausted)
 }
 impl std::error::Error for RuntimeError {}
 
 /// One stable retained view, cumulative value/control context and query memory.
 /// No context creation admits a view, starts a worker or allocates a new budget.
 pub struct RuntimeContext<'v, 'm, 'g> {
+    identity: RuntimeInstanceId,
     values: ValueContext<'v>,
     memory: &'m QueryMemory<'g>,
     limits: RuntimeLimits,
@@ -201,9 +233,11 @@ impl<'v, 'm, 'g> RuntimeContext<'v, 'm, 'g> {
         memory: &'m QueryMemory<'g>,
         limits: RuntimeLimits,
     ) -> Result<Self, RuntimeError> {
+        let identity = allocate_runtime_instance_id(&NEXT_RUNTIME_INSTANCE)?;
         let values = ValueContext::retained(view, control, super::MAX_VALUE_WORK)?;
         let charge = memory.reserve(std::mem::size_of::<Self>())?;
         Ok(Self {
+            identity,
             values,
             memory,
             limits,
@@ -262,5 +296,30 @@ impl<'v, 'm, 'g> RuntimeContext<'v, 'm, 'g> {
     /// Stable view identity for intermediate references, not an entity existence proof.
     pub const fn view(&self) -> &'v QueryView {
         self.values.view
+    }
+    /// Ephemeral process identity used only to reject cross-runtime cursor reuse.
+    pub(crate) const fn identity(&self) -> RuntimeInstanceId {
+        self.identity
+    }
+}
+
+#[cfg(test)]
+mod native_read_identity_tests {
+    use super::*;
+    use std::sync::atomic::AtomicU64;
+
+    #[test]
+    fn native_read_runtime_identity_exhaustion_never_reuses_a_stamp() {
+        let allocator = AtomicU64::new(u64::MAX - 1);
+        let last = allocate_runtime_instance_id(&allocator).expect("last runtime stamp");
+        assert_eq!(last.get(), u64::MAX);
+        assert!(matches!(
+            allocate_runtime_instance_id(&allocator),
+            Err(RuntimeError::IdentityExhausted)
+        ));
+        assert_eq!(
+            allocator.load(std::sync::atomic::Ordering::Relaxed),
+            u64::MAX
+        );
     }
 }

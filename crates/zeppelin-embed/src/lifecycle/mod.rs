@@ -10,6 +10,8 @@ pub(crate) mod graph_cache;
 mod hybrid;
 pub mod lock;
 mod materialize;
+#[cfg(feature = "graph-cypher")]
+pub(crate) mod native_graph;
 mod pool;
 pub(crate) mod prepared;
 mod prepared_lexical;
@@ -2426,6 +2428,8 @@ pub struct Store {
     pub(crate) background: Mutex<Option<BackgroundThread>>,
     pub(crate) query_pool: Mutex<Option<Arc<pool::QueryPool>>>,
     pub(crate) lexical_worker: Mutex<Option<Arc<pool::LexicalWorker>>>,
+    #[cfg(feature = "graph-cypher")]
+    pub(crate) native_graph: Arc<native_graph::NativeGraphPublication>,
     pub(crate) snapshot: RwLock<Option<Arc<PublishedSnapshot>>>,
     // Drop order is deliberate: immutable mappings, active buffers, and the
     // WAL descriptor all release before the kernel writer lock.
@@ -2785,6 +2789,8 @@ impl Store {
             AccessMode::ReadWrite => Some(BackgroundThread::start()?),
             AccessMode::ReadOnly => None,
         };
+        #[cfg(feature = "graph-cypher")]
+        let native_graph = native_graph::NativeGraphPublication::new(&accounting)?;
         #[cfg(test)]
         let (snapshot, background, teardown_probe) = {
             let mut snapshot = snapshot;
@@ -2805,6 +2811,8 @@ impl Store {
             background: Mutex::new(background),
             query_pool: Mutex::new(None),
             lexical_worker: Mutex::new(None),
+            #[cfg(feature = "graph-cypher")]
+            native_graph,
             snapshot: RwLock::new(None),
             active: Mutex::new(Some(active)),
             wal_writer: Mutex::new(wal_writer),

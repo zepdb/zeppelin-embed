@@ -177,7 +177,7 @@ impl<'m, 'g> QueryReservation<'m, 'g> {
     pub(crate) const fn bytes(&self) -> usize {
         self.bytes
     }
-    fn resize(&mut self, bytes: usize) -> Result<(), MemoryError> {
+    pub(crate) fn resize(&mut self, bytes: usize) -> Result<(), MemoryError> {
         let remaining = self
             .memory
             .used
