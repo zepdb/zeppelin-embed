@@ -28,17 +28,28 @@ use std::sync::{Arc, Barrier, Mutex};
 
 thread_local! { static VERIFIED_FAULTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) }; }
 
+pub(super) fn reset_verified_faults() {
+    VERIFIED_FAULTS.with(|count| count.set(0));
+}
+
+pub(super) fn take_verified_faults() -> u64 {
+    VERIFIED_FAULTS.with(|count| count.replace(0))
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum DurabilityEvent {
+pub(super) enum DurabilityEvent {
     Create(PathBuf),
+    Write(PathBuf),
+    OpenAppend(PathBuf),
     Append(PathBuf),
     Sync(PathBuf, SyncKind),
     Rename(PathBuf, PathBuf),
+    Delete(PathBuf),
     Published(u64),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum FaultPoint {
+pub(super) enum FaultPoint {
     Create,
     PartialCreate,
     ObjectSync,
@@ -59,10 +70,12 @@ struct FaultSchedule {
 }
 
 #[derive(Default)]
-struct RecordingVfs {
+pub(super) struct RecordingVfs {
     events: Arc<Mutex<Vec<DurabilityEvent>>>,
     wal_sync_gate: Arc<Mutex<Option<(Arc<Barrier>, Arc<Barrier>)>>>,
     faults: Arc<Mutex<FaultSchedule>>,
+    list_calls: AtomicU64,
+    child_calls: AtomicU64,
 }
 
 struct RecordingFile {
@@ -74,7 +87,7 @@ struct RecordingFile {
 }
 
 impl RecordingVfs {
-    fn take(&self) -> Vec<DurabilityEvent> {
+    pub(super) fn take(&self) -> Vec<DurabilityEvent> {
         std::mem::take(&mut *self.events.lock().expect("recording VFS events"))
     }
 
@@ -93,7 +106,7 @@ impl RecordingVfs {
         (entered, release)
     }
 
-    fn arm_fault(&self, point: FaultPoint) {
+    pub(super) fn arm_fault(&self, point: FaultPoint) {
         let mut faults = self.faults.lock().expect("fault schedule");
         assert!(faults.armed.replace(point).is_none());
         faults.fires = 0;
@@ -110,11 +123,18 @@ impl RecordingVfs {
         }
     }
 
-    fn assert_fired_once(&self) {
+    pub(super) fn assert_fired_once(&self) {
         let faults = self.faults.lock().expect("fault schedule");
         assert_eq!(faults.fires, 1);
         assert!(faults.armed.is_none());
         VERIFIED_FAULTS.with(|count| count.set(count.get() + faults.fires));
+    }
+
+    pub(super) fn enumeration_calls(&self) -> (u64, u64) {
+        (
+            self.list_calls.load(Ordering::Relaxed),
+            self.child_calls.load(Ordering::Relaxed),
+        )
     }
 }
 
@@ -218,7 +238,9 @@ impl Vfs for RecordingVfs {
     }
 
     fn write(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-        StdVfs.write(path, bytes)
+        StdVfs.write(path, bytes)?;
+        self.record(DurabilityEvent::Write(path.to_path_buf()));
+        Ok(())
     }
 
     fn create_new(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -244,13 +266,15 @@ impl Vfs for RecordingVfs {
                 "scheduled append-handle open failure",
             ));
         }
-        Ok(Box::new(RecordingFile {
+        let file = Box::new(RecordingFile {
             inner: StdVfs.open_append(path)?,
             path: path.to_path_buf(),
             events: Arc::clone(&self.events),
             wal_sync_gate: Arc::clone(&self.wal_sync_gate),
             faults: Arc::clone(&self.faults),
-        }))
+        });
+        self.record(DurabilityEvent::OpenAppend(path.to_path_buf()));
+        Ok(file)
     }
 
     fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
@@ -275,11 +299,16 @@ impl Vfs for RecordingVfs {
                 ));
             }
             let point = if path.is_dir() {
-                FaultPoint::DirectorySync
+                Some(FaultPoint::DirectorySync)
+            } else if path
+                .extension()
+                .is_some_and(|extension| extension == "zgraph")
+            {
+                Some(FaultPoint::ObjectSync)
             } else {
-                FaultPoint::ObjectSync
+                None
             };
-            if self.fire(point) {
+            if point.is_some_and(|point| self.fire(point)) {
                 return Err(std::io::Error::other("scheduled path Full-sync failure"));
             }
         }
@@ -289,11 +318,23 @@ impl Vfs for RecordingVfs {
     }
 
     fn list(&self, directory: &Path) -> std::io::Result<Vec<PathBuf>> {
+        self.list_calls.fetch_add(1, Ordering::Relaxed);
         StdVfs.list(directory)
     }
 
+    fn for_each_direct_child(
+        &self,
+        directory: &Path,
+        visitor: &mut dyn FnMut(&Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        self.child_calls.fetch_add(1, Ordering::Relaxed);
+        StdVfs.for_each_direct_child(directory, visitor)
+    }
+
     fn delete(&self, path: &Path) -> std::io::Result<()> {
-        StdVfs.delete(path)
+        StdVfs.delete(path)?;
+        self.record(DurabilityEvent::Delete(path.to_path_buf()));
+        Ok(())
     }
 }
 
@@ -2245,9 +2286,9 @@ pub(crate) fn run_actual_probe(
         ),
     ];
     for (name, probe) in paths {
-        VERIFIED_FAULTS.with(|count| count.set(0));
+        reset_verified_faults();
         probe();
-        let fires = VERIFIED_FAULTS.with(std::cell::Cell::get);
+        let fires = take_verified_faults();
         let key = match name {
             "retained" => "property-graph.publication.retained",
             "noop" => "property-graph.publication.noop",

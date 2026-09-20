@@ -12,7 +12,7 @@ use std::os::fd::AsRawFd;
 use std::ptr::NonNull;
 
 #[cfg(unix)]
-pub(super) struct NativeReadonlyMapping {
+pub(crate) struct NativeReadonlyMapping {
     _ownership: NativeMappingOwnership,
     inner: UnixReadonlyMapping,
 }
@@ -31,6 +31,38 @@ impl NativeReadonlyMapping {
         path: &Path,
         lease: &NativeReadLease,
     ) -> Result<Self, TreeError> {
+        let inner = UnixReadonlyMapping::open(file, path, MAX_ARTIFACT_BYTES)?;
+        let ownership = lease
+            .track_mapping(inner.as_bytes())
+            .map_err(|_| TreeError::Memory)?;
+        Ok(Self {
+            _ownership: ownership,
+            inner,
+        })
+    }
+
+    pub(crate) fn open_recovery(
+        file: File,
+        path: &Path,
+        publication: &std::sync::Arc<crate::lifecycle::native_graph::NativeGraphPublication>,
+        maximum: usize,
+    ) -> Result<Self, crate::lifecycle::native_graph::NativeGraphError> {
+        let inner = UnixReadonlyMapping::open(file, path, maximum)?;
+        let ownership = publication.register_mapping(inner.as_bytes())?;
+        Ok(Self {
+            _ownership: ownership,
+            inner,
+        })
+    }
+
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        self.inner.as_bytes()
+    }
+}
+
+#[cfg(unix)]
+impl UnixReadonlyMapping {
+    fn open(file: File, path: &Path, maximum: usize) -> Result<Self, TreeError> {
         let metadata = file.metadata().map_err(TreeError::Io)?;
         if !metadata.file_type().is_file() {
             return Err(TreeError::Invalid(
@@ -39,7 +71,7 @@ impl NativeReadonlyMapping {
         }
         let length = usize::try_from(metadata.len())
             .map_err(|_| TreeError::Invalid("native graph artifact length exceeds usize"))?;
-        if length == 0 || length > MAX_ARTIFACT_BYTES {
+        if length == 0 || length > maximum {
             return Err(TreeError::Invalid(
                 "native graph artifact length is outside bounds",
             ));
@@ -64,27 +96,12 @@ impl NativeReadonlyMapping {
             "mmap returned a null non-failure pointer",
         ))?;
         let _ = path;
-        let inner = UnixReadonlyMapping {
+        Ok(UnixReadonlyMapping {
             _file: file,
             pointer,
             length,
-        };
-        let ownership = lease
-            .track_mapping(inner.as_bytes())
-            .map_err(|_| TreeError::Memory)?;
-        Ok(Self {
-            _ownership: ownership,
-            inner,
         })
     }
-
-    pub(super) fn as_bytes(&self) -> &[u8] {
-        self.inner.as_bytes()
-    }
-}
-
-#[cfg(unix)]
-impl UnixReadonlyMapping {
     fn as_bytes(&self) -> &[u8] {
         // SAFETY: the read-only mapping remains valid for `length` bytes for
         // the entire returned borrow through `&self`.
@@ -102,7 +119,7 @@ impl Drop for UnixReadonlyMapping {
 }
 
 #[cfg(windows)]
-pub(super) struct NativeReadonlyMapping {
+pub(crate) struct NativeReadonlyMapping {
     _ownership: NativeMappingOwnership,
     inner: crate::sys::windows::FileMapping,
 }
@@ -114,21 +131,7 @@ impl NativeReadonlyMapping {
         _path: &Path,
         lease: &NativeReadLease,
     ) -> Result<Self, TreeError> {
-        let metadata = file.metadata().map_err(TreeError::Io)?;
-        if !metadata.file_type().is_file() {
-            return Err(TreeError::Invalid(
-                "native graph artifact is not a regular file",
-            ));
-        }
-        let length = usize::try_from(metadata.len())
-            .map_err(|_| TreeError::Invalid("native graph artifact length exceeds usize"))?;
-        if length == 0 || length > MAX_ARTIFACT_BYTES {
-            return Err(TreeError::Invalid(
-                "native graph artifact length is outside bounds",
-            ));
-        }
-        let inner = crate::sys::windows::FileMapping::from_file(file, metadata.len())
-            .map_err(TreeError::Io)?;
+        let inner = windows_mapping(file, MAX_ARTIFACT_BYTES)?;
         let ownership = lease
             .track_mapping(inner.as_bytes())
             .map_err(|_| TreeError::Memory)?;
@@ -138,7 +141,42 @@ impl NativeReadonlyMapping {
         })
     }
 
-    pub(super) fn as_bytes(&self) -> &[u8] {
+    pub(crate) fn open_recovery(
+        file: File,
+        _path: &Path,
+        publication: &std::sync::Arc<crate::lifecycle::native_graph::NativeGraphPublication>,
+        maximum: usize,
+    ) -> Result<Self, crate::lifecycle::native_graph::NativeGraphError> {
+        let inner = windows_mapping(file, maximum)?;
+        let ownership = publication.register_mapping(inner.as_bytes())?;
+        Ok(Self {
+            _ownership: ownership,
+            inner,
+        })
+    }
+
+    pub(crate) fn as_bytes(&self) -> &[u8] {
         self.inner.as_bytes()
     }
+}
+
+#[cfg(windows)]
+fn windows_mapping(
+    file: File,
+    maximum: usize,
+) -> Result<crate::sys::windows::FileMapping, TreeError> {
+    let metadata = file.metadata().map_err(TreeError::Io)?;
+    if !metadata.file_type().is_file() {
+        return Err(TreeError::Invalid(
+            "native graph artifact is not a regular file",
+        ));
+    }
+    let length = usize::try_from(metadata.len())
+        .map_err(|_| TreeError::Invalid("native graph artifact length exceeds usize"))?;
+    if length == 0 || length > maximum {
+        return Err(TreeError::Invalid(
+            "native graph artifact length is outside bounds",
+        ));
+    }
+    crate::sys::windows::FileMapping::from_file(file, metadata.len()).map_err(TreeError::Io)
 }

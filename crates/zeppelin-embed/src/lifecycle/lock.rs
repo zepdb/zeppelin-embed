@@ -62,6 +62,16 @@ impl StoreLock {
     /// Registry admission happens first so a second same-process owner is
     /// rejected before any lock file is touched.
     pub fn acquire(directory: &Path) -> Result<Self, StoreLockError> {
+        Self::acquire_exclusive(directory, true)
+    }
+
+    /// Acquires exclusive ownership only when the persistent lock already exists.
+    #[cfg(feature = "graph-cypher")]
+    pub(crate) fn acquire_existing(directory: &Path) -> Result<Self, StoreLockError> {
+        Self::acquire_exclusive(directory, false)
+    }
+
+    fn acquire_exclusive(directory: &Path, create: bool) -> Result<Self, StoreLockError> {
         let path = directory.join(STORE_LOCK_FILE);
         let registry_key = store_identity(directory).map_err(|source| StoreLockError::Io {
             path: directory.to_path_buf(),
@@ -74,7 +84,7 @@ impl StoreLock {
                 source: std::io::Error::from(std::io::ErrorKind::WouldBlock),
             });
         }
-        let file = open_lock_file(&path).map_err(|source| StoreLockError::Io {
+        let file = open_lock_file(&path, create).map_err(|source| StoreLockError::Io {
             path: path.clone(),
             source,
         })?;
@@ -198,9 +208,9 @@ fn store_identity(_directory: &Path) -> std::io::Result<StoreKey> {
 
 /// Opens the persistent lock file with the access the platform lock needs.
 #[cfg(not(windows))]
-fn open_lock_file(path: &Path) -> std::io::Result<File> {
+fn open_lock_file(path: &Path, create: bool) -> std::io::Result<File> {
     OpenOptions::new()
-        .create(true)
+        .create(create)
         .truncate(false)
         .read(true)
         .write(true)
@@ -217,11 +227,11 @@ fn open_lock_file(path: &Path) -> std::io::Result<File> {
 /// as ownership lasts. Handles are non-inheritable by default, so a child
 /// process cannot inherit writer ownership either.
 #[cfg(windows)]
-fn open_lock_file(path: &Path) -> std::io::Result<File> {
+fn open_lock_file(path: &Path, create: bool) -> std::io::Result<File> {
     use std::os::windows::fs::OpenOptionsExt as _;
 
     OpenOptions::new()
-        .create(true)
+        .create(create)
         .truncate(false)
         .read(true)
         .write(true)

@@ -95,6 +95,12 @@ pub trait Vfs: Send + Sync {
     fn sync(&self, path: &Path, kind: SyncKind) -> std::io::Result<()>;
     /// Lists direct children of a directory.
     fn list(&self, directory: &Path) -> std::io::Result<Vec<PathBuf>>;
+    /// Visits direct children one at a time without collecting the directory.
+    fn for_each_direct_child(
+        &self,
+        directory: &Path,
+        visitor: &mut dyn FnMut(&Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()>;
     /// Deletes one file.
     fn delete(&self, path: &Path) -> std::io::Result<()>;
 }
@@ -212,6 +218,18 @@ impl Vfs for StdVfs {
             .collect()
     }
 
+    fn for_each_direct_child(
+        &self,
+        directory: &Path,
+        visitor: &mut dyn FnMut(&Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(directory)? {
+            let entry = entry?;
+            visitor(&entry.path())?;
+        }
+        Ok(())
+    }
+
     fn delete(&self, path: &Path) -> std::io::Result<()> {
         std::fs::remove_file(path)
     }
@@ -238,6 +256,7 @@ struct CountingVfsCounters {
     bytes_appended: AtomicU64,
     rename_calls: AtomicU64,
     delete_calls: AtomicU64,
+    enumerate_calls: AtomicU64,
     barrier_sync_calls: AtomicU64,
     full_sync_calls: AtomicU64,
     handle_barrier_sync_calls: AtomicU64,
@@ -387,6 +406,12 @@ impl<V> CountingVfs<V> {
         self.counters.delete_calls.load(Ordering::Relaxed)
     }
 
+    /// Returns observed streaming directory-enumeration calls.
+    #[must_use]
+    pub fn enumerate_calls(&self) -> u64 {
+        self.counters.enumerate_calls.load(Ordering::Relaxed)
+    }
+
     /// Returns path-based barrier synchronization calls.
     #[must_use]
     pub fn barrier_sync_calls(&self) -> u64 {
@@ -429,6 +454,7 @@ impl<V> CountingVfs<V> {
         self.counters.bytes_appended.store(0, Ordering::Relaxed);
         self.counters.rename_calls.store(0, Ordering::Relaxed);
         self.counters.delete_calls.store(0, Ordering::Relaxed);
+        self.counters.enumerate_calls.store(0, Ordering::Relaxed);
         self.counters.barrier_sync_calls.store(0, Ordering::Relaxed);
         self.counters.full_sync_calls.store(0, Ordering::Relaxed);
         self.counters
@@ -542,6 +568,18 @@ impl<V: Vfs> Vfs for CountingVfs<V> {
 
     fn list(&self, directory: &Path) -> std::io::Result<Vec<PathBuf>> {
         self.inner.list(directory)
+    }
+
+    fn for_each_direct_child(
+        &self,
+        directory: &Path,
+        visitor: &mut dyn FnMut(&Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        self.inner.for_each_direct_child(directory, visitor)?;
+        self.counters
+            .enumerate_calls
+            .fetch_add(1, Ordering::Relaxed);
+        Ok(())
     }
 
     fn delete(&self, path: &Path) -> std::io::Result<()> {

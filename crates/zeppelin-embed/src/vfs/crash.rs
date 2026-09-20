@@ -347,6 +347,14 @@ impl<V: Vfs> Vfs for RecordingVfs<V> {
         self.inner.list(directory)
     }
 
+    fn for_each_direct_child(
+        &self,
+        directory: &Path,
+        visitor: &mut dyn FnMut(&Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        self.inner.for_each_direct_child(directory, visitor)
+    }
+
     fn delete(&self, path: &Path) -> std::io::Result<()> {
         let mut operations = self.lock_operations()?;
         self.inner.delete(path)?;
@@ -524,6 +532,29 @@ impl Vfs for MemoryVfs {
             .filter(|path| path.parent() == Some(directory))
             .cloned()
             .collect())
+    }
+
+    fn for_each_direct_child(
+        &self,
+        directory: &Path,
+        visitor: &mut dyn FnMut(&Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        let mut previous: Option<PathBuf> = None;
+        loop {
+            let next = {
+                let files = self.lock_files()?;
+                files
+                    .keys()
+                    .filter(|path| path.parent() == Some(directory))
+                    .filter(|path| previous.as_ref().is_none_or(|value| *path > value))
+                    .next()
+                    .cloned()
+            };
+            let Some(path) = next else { break };
+            visitor(&path)?;
+            previous = Some(path);
+        }
+        Ok(())
     }
 
     fn delete(&self, path: &Path) -> std::io::Result<()> {
@@ -948,6 +979,14 @@ impl Vfs for CrashVfs {
 
     fn list(&self, directory: &Path) -> std::io::Result<Vec<PathBuf>> {
         self.inner.list(directory)
+    }
+
+    fn for_each_direct_child(
+        &self,
+        directory: &Path,
+        visitor: &mut dyn FnMut(&Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        self.inner.for_each_direct_child(directory, visitor)
     }
 
     fn delete(&self, path: &Path) -> std::io::Result<()> {

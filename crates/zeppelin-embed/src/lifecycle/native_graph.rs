@@ -26,6 +26,7 @@ use std::time::Instant;
 
 mod base;
 mod persistence;
+mod recovery;
 mod write;
 
 const MAX_NATIVE_READ_LEASES: usize = 1024;
@@ -187,7 +188,24 @@ impl NativeGraphBundle {
         resources: &GraphResources,
         input: NativeGraphBundleInput,
     ) -> Result<Arc<Self>, NativeGraphError> {
-        validate_bundle(&input)?;
+        Self::install_checked(store, resources, input, false)
+    }
+
+    pub(super) fn install_recovered(
+        store: &Store,
+        resources: &GraphResources,
+        input: NativeGraphBundleInput,
+    ) -> Result<Arc<Self>, NativeGraphError> {
+        Self::install_checked(store, resources, input, true)
+    }
+
+    fn install_checked(
+        store: &Store,
+        resources: &GraphResources,
+        input: NativeGraphBundleInput,
+        historical_checkpoint: bool,
+    ) -> Result<Arc<Self>, NativeGraphError> {
+        validate_bundle(&input, historical_checkpoint)?;
         let metadata_bytes = bundle_owned_bytes(&input, &store.directory)?;
         let charge = resources.reserve(metadata_bytes)?;
         let mut directory = PathBuf::new();
@@ -471,13 +489,20 @@ fn bundle_owned_bytes(
         .ok_or(NativeGraphError::Invalid("bundle capacity overflow"))
 }
 
-fn validate_bundle(input: &NativeGraphBundleInput) -> Result<(), NativeGraphError> {
+fn validate_bundle(
+    input: &NativeGraphBundleInput,
+    historical_checkpoint: bool,
+) -> Result<(), NativeGraphError> {
     let base = input.base;
     if base.store != input.roots.store()
         || base.generation != input.roots.generation()
         || base.roots != Some(input.root_envelope.object.artifact)
         || input.root_envelope.object.store != base.store
-        || input.root_envelope.object.generation != base.generation
+        || if historical_checkpoint {
+            input.root_envelope.object.generation > base.generation
+        } else {
+            input.root_envelope.object.generation != base.generation
+        }
         || input.root_envelope.object.family != FormatFamily::NativeGraphRoot.id()
         || input.root_envelope.object.version != 1
         || input.root_envelope.block.artifact != input.root_envelope.object.artifact
@@ -574,6 +599,7 @@ pub(crate) struct NativeGraphPublication {
     accounting: Arc<super::stats::Accounting>,
     _charge: super::stats::AccountedCounter,
     writer: Mutex<Option<write::NativeWriter>>,
+    read_only: AtomicBool,
     #[cfg(any(test, feature = "test-support"))]
     fail_next_publication: AtomicBool,
     #[cfg(any(test, feature = "test-support"))]
@@ -675,6 +701,7 @@ impl NativeGraphPublication {
             accounting: Arc::clone(accounting),
             _charge: charge,
             writer: Mutex::new(None),
+            read_only: AtomicBool::new(false),
             #[cfg(any(test, feature = "test-support"))]
             fail_next_publication: AtomicBool::new(false),
             #[cfg(any(test, feature = "test-support"))]
@@ -684,6 +711,18 @@ impl NativeGraphPublication {
             #[cfg(all(feature = "allocation-audit", any(test, feature = "test-support")))]
             commit_allocation_denials: std::sync::atomic::AtomicU64::new(u64::MAX),
         }))
+    }
+
+    pub(super) fn mark_read_only(&self) {
+        self.read_only.store(true, Ordering::Release);
+    }
+
+    pub(super) fn require_writable(&self) -> Result<(), NativeGraphError> {
+        if self.read_only.load(Ordering::Acquire) {
+            Err(NativeGraphError::Store(StoreError::ReadOnly))
+        } else {
+            Ok(())
+        }
     }
 
     fn register_prepared(
@@ -723,7 +762,7 @@ impl NativeGraphPublication {
         })
     }
 
-    fn register_mapping(
+    pub(crate) fn register_mapping(
         self: &Arc<Self>,
         range: &[u8],
     ) -> Result<NativeMappingOwnership, NativeGraphError> {
@@ -1466,8 +1505,16 @@ pub(crate) mod tests {
 
     mod expression_tests;
     pub(crate) mod publication;
+    mod recovery;
     mod retrieval;
     mod sparse;
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn run_recovery_probe(
+        seed: u64,
+    ) -> crate::graph_recovery_test_support::RecoveryProbeReport {
+        recovery::run_actual_probe(seed)
+    }
 
     mod tempfile {
         use std::path::{Path, PathBuf};
@@ -1622,6 +1669,14 @@ pub(crate) mod tests {
 
         fn list(&self, directory: &Path) -> std::io::Result<Vec<PathBuf>> {
             StdVfs.list(directory)
+        }
+
+        fn for_each_direct_child(
+            &self,
+            directory: &Path,
+            visitor: &mut dyn FnMut(&Path) -> std::io::Result<()>,
+        ) -> std::io::Result<()> {
+            StdVfs.for_each_direct_child(directory, visitor)
         }
 
         fn delete(&self, path: &Path) -> std::io::Result<()> {

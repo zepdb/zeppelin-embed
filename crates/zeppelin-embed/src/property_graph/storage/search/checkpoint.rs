@@ -6,7 +6,7 @@ use crate::epoch::EmbeddingTower;
 use crate::fts::tokenizer::TokenizerEpoch;
 use crate::property_graph::staging::{NormalizedDelta, StagedBatch};
 use crate::property_graph::storage::artifact::{BlockKind, PhysicalRef};
-use crate::property_graph::storage::memory::StorageMemory;
+use crate::property_graph::storage::memory::{StorageBuffer, StorageMemory};
 use crate::property_graph::storage::payload::PayloadRef;
 use crate::property_graph::storage::records::{NodeRecordState, RecordCatalog, verify_node_state};
 use crate::property_graph::storage::stream::PayloadSlice;
@@ -14,7 +14,9 @@ use crate::property_graph::storage::tree::TreeKind;
 use crate::property_graph::storage::tree::directory::{
     BlockSink, BlockSource, GraphRoots, TreeError, TreeResources, lookup_entry,
 };
-use crate::property_graph::wal::{InventoryChange, RequiredRef};
+use crate::property_graph::wal::{
+    Change, ChangeReader, InventoryChange, RequiredRef, WalError, WalResources,
+};
 use crate::property_graph::{EntityId, NodeId};
 
 /// Logical sparse cutoff with both complete root descriptors.
@@ -341,6 +343,160 @@ pub(crate) fn validate_replay_transition<'a, 'm, S: BlockSource, C: RecordCatalo
     if (expected_text, expected_vector) != (target_text, target_vector) {
         return Err(TreeError::Invalid(
             "sparse replay unexplained active population",
+        ));
+    }
+    Ok((target_text, target_vector))
+}
+
+/// Validates one complete persisted WAL transition directly from its borrowed
+/// mutation frames. The caller retains the immutable WAL bytes for this scope.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "persisted replay validation binds both complete states and owners"
+)]
+pub(crate) fn validate_persisted_replay_transition<'a, 'm, S: BlockSource, C: RecordCatalog<S>>(
+    source: &'a S,
+    base: SparseCheckpoint,
+    base_native: GraphRoots,
+    target_roots: SparseRoots,
+    target_native: GraphRoots,
+    catalog_required: RequiredRef,
+    catalog: &'a C,
+    document: Option<&'a EmbeddingTower>,
+    lexical: TokenizerEpoch,
+    mut changes: ChangeReader<'_>,
+    wal: &mut WalResources<'_>,
+    wal_error: &mut Option<WalError>,
+    memory: &'m StorageMemory<'m>,
+    resources: &mut TreeResources<'_>,
+) -> Result<(u64, u64), TreeError> {
+    let base_empty = base.cutoff == 0 && base.roots == SparseRoots::default();
+    if base.cutoff == 0 && !base_empty {
+        return Err(TreeError::Invalid("sparse replay zero base cutoff"));
+    }
+    let base_view = if base_empty {
+        None
+    } else {
+        Some(SparseView::open(
+            source,
+            base.roots,
+            base_native,
+            catalog_required,
+            catalog,
+            document,
+            lexical,
+            memory,
+            resources,
+        )?)
+    };
+    let target_view = SparseView::open(
+        source,
+        target_roots,
+        target_native,
+        catalog_required,
+        catalog,
+        document,
+        lexical,
+        memory,
+        resources,
+    )?;
+    if target_view.sequence() != base.cutoff.checked_add(1).ok_or(TreeError::Work)?
+        || target_view.generation() != target_native.generation()
+        || base_view.as_ref().is_some_and(|view| {
+            view.sequence() != base.cutoff || target_view.checkpoint() != view.checkpoint()
+        })
+    {
+        return Err(TreeError::Invalid("persisted sparse replay cutoff order"));
+    }
+    let mut expected_text = match &base_view {
+        Some(view) => view.validate_all(Modality::Text, resources)?,
+        None => 0,
+    };
+    let mut expected_vector = match &base_view {
+        Some(view) => view.validate_all(Modality::Vector, resources)?,
+        None => 0,
+    };
+    let mut persisted = StorageBuffer::new(memory, crate::property_graph::MAX_GRAPH_CHANGES)?;
+    let mut ordinal = 0_u32;
+    while let Some(change) = changes.next_change(wal).map_err(|error| {
+        if wal_error.is_none() {
+            *wal_error = Some(error);
+        }
+        TreeError::Invalid("persisted sparse replay change")
+    })? {
+        let Change::Mutation(mutation) = change else {
+            if matches!(
+                change,
+                Change::ReclaimIntent(_) | Change::ReclaimComplete(_)
+            ) {
+                return Err(TreeError::Invalid("persisted sparse reclaim change"));
+            }
+            continue;
+        };
+        let node = match mutation.provenance.incarnation {
+            EntityId::Relationship(_) => {
+                if mutation.membership != crate::property_graph::wal::Membership::default() {
+                    return Err(TreeError::Invalid("persisted relationship membership"));
+                }
+                None
+            }
+            EntityId::Node(node) => {
+                let before_text = match &base_view {
+                    Some(view) => view.lookup(Modality::Text, node, resources)?.is_some(),
+                    None => false,
+                };
+                let before_vector = match &base_view {
+                    Some(view) => view.lookup(Modality::Vector, node, resources)?.is_some(),
+                    None => false,
+                };
+                let after_text = target_view
+                    .lookup(Modality::Text, node, resources)?
+                    .is_some();
+                let after_vector = target_view
+                    .lookup(Modality::Vector, node, resources)?
+                    .is_some();
+                if (
+                    mutation.membership.text_before,
+                    mutation.membership.vector_before,
+                ) != (before_text, before_vector)
+                    || (
+                        mutation.membership.text_after,
+                        mutation.membership.vector_after,
+                    ) != (after_text, after_vector)
+                {
+                    return Err(TreeError::Invalid("persisted sparse analyzed membership"));
+                }
+                expected_text = transition_count(expected_text, before_text, after_text)?;
+                expected_vector = transition_count(expected_vector, before_vector, after_vector)?;
+                Some(node)
+            }
+        };
+        persisted.push(PreparedMembershipChange {
+            ordinal,
+            node,
+            membership: node.map(|_| mutation.membership),
+        })?;
+        ordinal = ordinal.checked_add(1).ok_or(TreeError::Work)?;
+    }
+    if let Some(base_view) = &base_view {
+        base_view.validate_unchanged_membership(
+            &target_view,
+            Modality::Text,
+            persisted.as_slice(),
+            resources,
+        )?;
+        base_view.validate_unchanged_membership(
+            &target_view,
+            Modality::Vector,
+            persisted.as_slice(),
+            resources,
+        )?;
+    }
+    let target_text = target_view.validate_all(Modality::Text, resources)?;
+    let target_vector = target_view.validate_all(Modality::Vector, resources)?;
+    if (expected_text, expected_vector) != (target_text, target_vector) {
+        return Err(TreeError::Invalid(
+            "persisted sparse unexplained active population",
         ));
     }
     Ok((target_text, target_vector))

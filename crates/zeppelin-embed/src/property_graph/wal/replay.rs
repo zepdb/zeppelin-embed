@@ -71,6 +71,7 @@ pub trait ReplayValidator {
         &mut self,
         base: CommitState<'_>,
         target: CommitState<'_>,
+        changes: ChangeReader<'_>,
         r: &mut WalResources<'_>,
     ) -> Result<(), WalError>;
 }
@@ -114,6 +115,82 @@ pub struct Replay<'a> {
     end: Option<ReplayEnd>,
 }
 impl<'a> Replay<'a> {
+    /// Authenticates the selected WAL header and returns its declared first sequence.
+    pub(crate) fn checked_first_sequence(
+        bytes: &[u8],
+        store: StoreInstanceId,
+        r: &mut WalResources<'_>,
+    ) -> Result<u64, WalError> {
+        read_header(bytes, store, r)
+    }
+
+    /// Locates the exact complete envelope boundary for a retained checkpoint
+    /// state while validating every scalar frame in the historical prefix.
+    pub(crate) fn checked_checkpoint_watermark(
+        bytes: &'a [u8],
+        checkpoint: CommitState<'a>,
+        r: &mut WalResources<'_>,
+    ) -> Result<usize, WalError> {
+        use super::codec::*;
+        let first = read_header(bytes, checkpoint.store, r)?;
+        if first
+            == checkpoint
+                .sequence
+                .checked_add(1)
+                .ok_or(WalError::Sequence)?
+        {
+            return Ok(HEADER_BYTES);
+        }
+        if first > checkpoint.sequence {
+            return Err(WalError::Sequence);
+        }
+        let begin = super::framing::read_record(
+            bytes.get(HEADER_BYTES..).ok_or(WalError::Malformed)?,
+            0,
+            None,
+            first,
+            Some(1),
+            r,
+        )?
+        .ok_or(WalError::Malformed)?;
+        let mut rd = Reader {
+            bytes: begin.payload,
+            pos: 24,
+        };
+        let generation = GraphGeneration::new(rd.u64(r)?);
+        let seed = CommitState {
+            generation,
+            sequence: first.checked_sub(1).ok_or(WalError::Sequence)?,
+            high_waters: HighWaters::default(),
+            graph: WalGraphRoots::default(),
+            vector: None,
+            text: None,
+            reclaim: None,
+            prepared_inventories: ReferenceList::Values(&[]),
+            ..checkpoint
+        };
+        let mut replay = Self {
+            bytes,
+            state: seed,
+            offset: HEADER_BYTES,
+            failed: false,
+            end: None,
+        };
+        loop {
+            match replay.next_inner(None, r)? {
+                ReplayStep::Envelope(_) if replay.state.sequence < checkpoint.sequence => {}
+                ReplayStep::Envelope(_) if replay.state.sequence == checkpoint.sequence => {
+                    if !same_state(replay.state, checkpoint, r)? {
+                        return Err(WalError::Participant);
+                    }
+                    return Ok(replay.offset);
+                }
+                ReplayStep::Envelope(_) => return Err(WalError::Sequence),
+                ReplayStep::End(_) => return Err(WalError::Sequence),
+            }
+        }
+    }
+
     /// Checks the exact complete-envelope byte watermark of an admitted
     /// checkpoint, including any still-present historical WAL prefix.
     pub fn at_watermark(
@@ -479,7 +556,18 @@ impl<'a> Replay<'a> {
                     r,
                 )?;
             }
-            validator.state(self.state, state, r)?;
+            let changes = ChangeReader {
+                bytes: bounded
+                    .get(begin.bytes..cursor)
+                    .ok_or(WalError::Malformed)?,
+                state,
+                batch: begin.batch,
+                offset: 0,
+                index: 1,
+                remaining: count,
+                failed: false,
+            };
+            validator.state(self.state, state, changes, r)?;
         }
         r.charge(0)?;
         self.state = state;
@@ -718,6 +806,7 @@ fn read_header(
     }
     Ok(first)
 }
+
 fn same_state(
     left: CommitState<'_>,
     right: CommitState<'_>,

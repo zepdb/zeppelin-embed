@@ -146,6 +146,14 @@ impl Vfs for TruncatingWriteVfs {
         self.inner.list(directory)
     }
 
+    fn for_each_direct_child(
+        &self,
+        directory: &Path,
+        visitor: &mut dyn FnMut(&Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        self.inner.for_each_direct_child(directory, visitor)
+    }
+
     fn delete(&self, path: &Path) -> std::io::Result<()> {
         self.inner.delete(path)
     }

@@ -110,6 +110,7 @@ impl ReplayValidator for FixtureValidator {
         &mut self,
         _: CommitState<'_>,
         _: CommitState<'_>,
+        _: ChangeReader<'_>,
         _: &mut WalResources<'_>,
     ) -> Result<(), WalError> {
         Ok(())
@@ -294,6 +295,7 @@ fn mutation_preserves_complete_provenance_membership_and_atomic_framing() {
             &mut self,
             _: CommitState<'_>,
             _: CommitState<'_>,
+            _: ChangeReader<'_>,
             _: &mut WalResources<'_>,
         ) -> Result<(), WalError> {
             Ok(())
@@ -427,6 +429,7 @@ fn maintenance_keeps_required_proofs_separate_from_missing_deletion_targets() {
             &mut self,
             _: CommitState<'_>,
             _: CommitState<'_>,
+            _: ChangeReader<'_>,
             _: &mut WalResources<'_>,
         ) -> Result<(), WalError> {
             Ok(())
@@ -740,6 +743,7 @@ fn checked_checkpoint_watermark_skips_only_complete_retired_history() {
             &mut self,
             _: CommitState<'_>,
             _: CommitState<'_>,
+            _: ChangeReader<'_>,
             _: &mut WalResources<'_>,
         ) -> Result<(), WalError> {
             Ok(())
@@ -911,6 +915,7 @@ impl ReplayValidator for CarriageValidator<'_> {
         &mut self,
         _: CommitState<'_>,
         _: CommitState<'_>,
+        _: ChangeReader<'_>,
         _: &mut WalResources<'_>,
     ) -> Result<(), WalError> {
         self.visits[5] += 1;
@@ -1522,6 +1527,7 @@ fn missing_middle_extent_is_observed_before_any_batch_escapes() {
             &mut self,
             _: CommitState<'_>,
             _: CommitState<'_>,
+            _: ChangeReader<'_>,
             _: &mut WalResources<'_>,
         ) -> Result<(), WalError> {
             self.state_calls += 1;

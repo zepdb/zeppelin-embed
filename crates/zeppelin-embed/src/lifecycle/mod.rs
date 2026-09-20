@@ -1263,6 +1263,38 @@ impl crate::vfs::Vfs for StorageFaultVfs {
         Ok(paths)
     }
 
+    fn for_each_direct_child(
+        &self,
+        directory: &Path,
+        visitor: &mut dyn FnMut(&Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        let omitted = match self.controller.armed_fault() {
+            Some(StorageTestFault::ListOmission { file_name }) => Some(file_name),
+            _ => None,
+        };
+        let mut fired = false;
+        self.inner.for_each_direct_child(directory, &mut |path| {
+            if omitted.as_ref().is_some_and(|file_name| {
+                path.file_name()
+                    .is_some_and(|name| name == file_name.as_str())
+            }) {
+                fired = true;
+                return Ok(());
+            }
+            visitor(path)
+        })?;
+        if fired && let Some(file_name) = omitted {
+            let _ = self.controller.emit(
+                StorageReceiptSite::OrphanCleanupList,
+                StorageReceiptObserved::Omission {
+                    artifact: file_name,
+                    deletion_observed: false,
+                },
+            );
+        }
+        Ok(())
+    }
+
     fn delete(&self, path: &Path) -> std::io::Result<()> {
         if let Some(StorageTestFault::DeleteOmission { file_name }) = self.controller.armed_fault()
             && path
@@ -2490,6 +2522,69 @@ fn acquire_writer_lock(
     })
 }
 
+fn refuse_native_graph_directory(vfs: &dyn crate::vfs::Vfs, path: &Path) -> Result<(), StoreError> {
+    match vfs.ensure_directory(path, false) {
+        Ok(true) => {}
+        Ok(false) => return Ok(()),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(source) => {
+            return Err(StoreError::Io {
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+    }
+    let mut native = false;
+    vfs.for_each_direct_child(path, &mut |child| {
+        let Some(name) = child.file_name().and_then(|name| name.to_str()) else {
+            return Ok(());
+        };
+        if name == "graph-root.ze"
+            || (name.starts_with("graph-wal-") && name.ends_with(".ze"))
+            || (name.starts_with("graph-") && name.ends_with(".zgraph"))
+            || name.starts_with("graph-root.ze.tmp-")
+        {
+            native = true;
+        }
+        Ok(())
+    })
+    .map_err(|source| StoreError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if native {
+        return Err(StoreError::Io {
+            path: path.to_path_buf(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "native graph directory cannot be opened as a legacy store",
+            ),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(feature = "graph-cypher")]
+fn acquire_native_graph_lock(
+    path: &Path,
+    access_mode: AccessMode,
+    existing: bool,
+) -> Result<Option<StoreLock>, StoreError> {
+    let acquired = match access_mode {
+        AccessMode::ReadWrite if existing => StoreLock::acquire_existing(path),
+        AccessMode::ReadWrite => StoreLock::acquire(path),
+        AccessMode::ReadOnly => StoreLock::acquire_shared(path),
+    };
+    acquired.map(Some).map_err(|error| match error {
+        StoreLockError::Io { path, source } if source.kind() == std::io::ErrorKind::WouldBlock => {
+            StoreError::StoreBusy { path }
+        }
+        StoreLockError::Io { path, source } => {
+            StoreError::Lock(StoreLockError::Io { path, source })
+        }
+    })
+}
+
 fn resolve_open_schema(
     manifest_exists: bool,
     snapshot: &PublishedSnapshot,
@@ -2587,9 +2682,27 @@ impl Store {
         vfs: Arc<dyn crate::vfs::Vfs>,
         clock: Arc<dyn MonotonicClock>,
     ) -> Result<Self, StoreError> {
-        if options.access_mode != AccessMode::ReadWrite {
-            return Err(StoreError::ReadOnly);
-        }
+        Self::new_native_graph_owner_inner(path, options, vfs, clock, false)
+    }
+
+    #[cfg(feature = "graph-cypher")]
+    pub(crate) fn new_native_graph_recovery_owner(
+        path: &Path,
+        options: OpenOptions,
+        vfs: Arc<dyn crate::vfs::Vfs>,
+        clock: Arc<dyn MonotonicClock>,
+    ) -> Result<Self, StoreError> {
+        Self::new_native_graph_owner_inner(path, options, vfs, clock, true)
+    }
+
+    #[cfg(feature = "graph-cypher")]
+    fn new_native_graph_owner_inner(
+        path: &Path,
+        options: OpenOptions,
+        vfs: Arc<dyn crate::vfs::Vfs>,
+        clock: Arc<dyn MonotonicClock>,
+        existing: bool,
+    ) -> Result<Self, StoreError> {
         crate::kernels::initialize().map_err(StoreError::Kernel)?;
         let durability_policy = DurabilityPolicy::new(options.durability_mode, options.commit_tier)
             .map_err(StoreError::Durability)?;
@@ -2597,7 +2710,7 @@ impl Store {
             options.max_resident_bytes,
             options.max_temp_bytes,
         ));
-        let writer_lock = acquire_writer_lock(path, AccessMode::ReadWrite)?;
+        let writer_lock = acquire_native_graph_lock(path, options.access_mode, existing)?;
         let tokenizer = crate::fts::tokenizer::Analyzer::new(
             options
                 .tokenizer
@@ -2733,6 +2846,7 @@ impl Store {
         };
         let durability_policy = DurabilityPolicy::new(options.durability_mode, options.commit_tier)
             .map_err(StoreError::Durability)?;
+        refuse_native_graph_directory(vfs.as_ref(), path)?;
         let accounting = Arc::new(stats::Accounting::new(
             options.max_resident_bytes,
             options.max_temp_bytes,

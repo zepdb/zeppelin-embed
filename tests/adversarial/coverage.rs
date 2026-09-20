@@ -2,6 +2,15 @@ use std::collections::BTreeMap;
 
 /// Native property-graph paths required when the graph feature is selected.
 pub const REQUIRED_GRAPH_SMOKE_COVERAGE: &[&str] = &[
+    "property-graph.recovery.complete-reopen",
+    "property-graph.recovery.refusal",
+    "property-graph.recovery.lost-ack",
+    "property-graph.recovery.torn-tail",
+    "property-graph.recovery.corrupt-missing-artifact",
+    "property-graph.recovery.empty-history",
+    "property-graph.recovery.serial-orphan",
+    "property-graph.recovery.checkpoint",
+    "property-graph.recovery.read-only",
     "property-graph.publication.coherent",
     "property-graph.publication.retained",
     "property-graph.publication.noop",

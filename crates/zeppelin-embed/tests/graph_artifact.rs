@@ -968,6 +968,13 @@ fn failed_create_reports_its_nonce_without_granting_collision_cleanup_ownership(
         fn list(&self, path: &Path) -> std::io::Result<Vec<std::path::PathBuf>> {
             StdVfs.list(path)
         }
+        fn for_each_direct_child(
+            &self,
+            directory: &Path,
+            visitor: &mut dyn FnMut(&Path) -> std::io::Result<()>,
+        ) -> std::io::Result<()> {
+            StdVfs.for_each_direct_child(directory, visitor)
+        }
         fn delete(&self, path: &Path) -> std::io::Result<()> {
             StdVfs.delete(path)
         }

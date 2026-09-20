@@ -26,8 +26,8 @@ mod view;
 pub(crate) use view::{
     CursorState, DirectionSelection, ExpandCursor, GraphPreparation, GraphReadView, LabelSelection,
     NativeCatalog, NativePreparationCatalog, NativePreparationSource, NativeQuerySource,
-    NativeReadCapability, NodeCursor, NodeView, PreparedGraphArtifacts, PreparedGraphFailure,
-    RelView, RelationshipTypeSelection, TextPayloadReader,
+    NativeReadCapability, NativeReadonlyMapping, NodeCursor, NodeView, PreparedGraphArtifacts,
+    PreparedGraphFailure, RelView, RelationshipTypeSelection, TextPayloadReader,
 };
 
 /// Combined private storage capacity inside the authentic writer/store owner.

@@ -149,3 +149,5 @@ pub mod graph_read_view;
 
 #[cfg(feature = "graph-cypher")]
 pub mod graph_publication;
+#[cfg(feature = "graph-cypher")]
+pub mod graph_recovery;

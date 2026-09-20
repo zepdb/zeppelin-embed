@@ -510,6 +510,13 @@ fn segment_writer_surfaces_each_vfs_commit_stage() {
         fn list(&self, _: &Path) -> std::io::Result<Vec<std::path::PathBuf>> {
             Err(std::io::ErrorKind::Other.into())
         }
+        fn for_each_direct_child(
+            &self,
+            _: &Path,
+            _: &mut dyn FnMut(&Path) -> std::io::Result<()>,
+        ) -> std::io::Result<()> {
+            Err(std::io::ErrorKind::Other.into())
+        }
         fn delete(&self, _: &Path) -> std::io::Result<()> {
             Err(std::io::ErrorKind::Other.into())
         }
@@ -582,6 +589,13 @@ impl Vfs for StageVfs {
     }
     fn list(&self, directory: &Path) -> std::io::Result<Vec<std::path::PathBuf>> {
         self.inner.list(directory)
+    }
+    fn for_each_direct_child(
+        &self,
+        directory: &Path,
+        visitor: &mut dyn FnMut(&Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        self.inner.for_each_direct_child(directory, visitor)
     }
     fn delete(&self, path: &Path) -> std::io::Result<()> {
         self.inner.delete(path)

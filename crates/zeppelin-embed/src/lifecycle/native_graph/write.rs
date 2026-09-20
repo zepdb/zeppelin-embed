@@ -86,6 +86,19 @@ impl NativeWriter {
         })
     }
 
+    pub(super) fn resume(
+        wal: NativeWal,
+        resources: &GraphResources,
+        complete_envelopes: u64,
+        protected: &[crate::property_graph::wal::ArtifactDescriptor],
+    ) -> Result<Self, NativeGraphError> {
+        let mut writer = Self::new(wal, resources)?;
+        writer.can_protect(protected.len())?;
+        writer.protected.extend_from_slice(protected);
+        writer.complete_envelopes = complete_envelopes;
+        Ok(writer)
+    }
+
     fn can_protect(&self, additional: usize) -> Result<(), NativeGraphError> {
         if self
             .protected
@@ -956,6 +969,7 @@ impl crate::lifecycle::Store {
         materializer: &mut M,
         mut allow_pending_checkpoint: bool,
     ) -> Result<NativePreparedResult<M::Registration>, NativeGraphError> {
+        self.native_graph.require_writable()?;
         loop {
             let mut writer_slot = self.native_graph.writer.lock().map_err(|_| {
                 NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
@@ -1398,6 +1412,7 @@ impl crate::lifecycle::Store {
         &self,
         control: &crate::lifecycle::QueryControl,
     ) -> Result<(), NativeGraphError> {
+        self.native_graph.require_writable()?;
         let mut writer_slot = self.native_graph.writer.lock().map_err(|_| {
             NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
                 component: "native graph writer",
@@ -1418,6 +1433,7 @@ impl crate::lifecycle::Store {
     pub(crate) fn admit_native_graph_maintenance(
         &self,
     ) -> Result<super::NativeMaintenanceAdmission, NativeGraphError> {
+        self.native_graph.require_writable()?;
         let writer_slot = self.native_graph.writer.lock().map_err(|_| {
             NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
                 component: "native graph writer",
@@ -1441,6 +1457,7 @@ impl crate::lifecycle::Store {
         admission: &super::NativeMaintenanceAdmission,
         control: &crate::lifecycle::QueryControl,
     ) -> Result<(), NativeGraphError> {
+        self.native_graph.require_writable()?;
         let mut writer_slot = self.native_graph.writer.lock().map_err(|_| {
             NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
                 component: "native graph writer",

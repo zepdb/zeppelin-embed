@@ -45,6 +45,8 @@ pub(crate) use cursor::{
     RelationshipTypeSelection,
 };
 #[cfg(feature = "graph-cypher")]
+pub(crate) use mapping::NativeReadonlyMapping;
+#[cfg(feature = "graph-cypher")]
 pub(crate) use preparation_source::{NativePreparationCatalog, NativePreparationSource};
 #[cfg(feature = "graph-cypher")]
 pub(crate) use prepared::{GraphPreparation, PreparedGraphArtifacts, PreparedGraphFailure};
@@ -138,6 +140,14 @@ impl<'s, 'lease, 'm, 'g> GraphReadView<'s, 'lease, 'm, 'g> {
 
     pub(crate) fn sequence(&self) -> u64 {
         self.lease.bundle().sequence()
+    }
+
+    pub(crate) fn store_instance_id(&self) -> crate::property_graph::StoreInstanceId {
+        self.lease.bundle().base().store
+    }
+
+    pub(crate) fn generation(&self) -> crate::property_graph::GraphGeneration {
+        self.lease.bundle().base().generation
     }
 
     pub(crate) fn lookup_node(

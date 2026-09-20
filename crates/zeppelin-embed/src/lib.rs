@@ -97,6 +97,43 @@ pub mod graph_publication_test_support {
     }
 }
 
+#[cfg(all(feature = "graph-cypher", feature = "test-support"))]
+#[doc(hidden)]
+pub mod graph_recovery_test_support {
+    use crate::graph_read_view_test_support::{ObservedRelationship, PathReceipt};
+
+    /// Actual state observed after reopening one real mixed native commit.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct RecoveryState {
+        /// Actual persistent store identity.
+        pub store: u128,
+        /// Actual reopened graph generation.
+        pub generation: u64,
+        /// Actual reopened complete-envelope sequence.
+        pub sequence: u64,
+        /// First created node identity.
+        pub first_node: u128,
+        /// Second created node identity.
+        pub second_node: u128,
+        /// Actual relationship row observed in both directions.
+        pub relationship: ObservedRelationship,
+    }
+
+    /// Receipts emitted only after each directed recovery body completes.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct RecoveryProbeReport {
+        /// Completed path receipts with actual fired/clean counts.
+        pub receipts: Vec<PathReceipt>,
+        /// Actual reopened mixed state.
+        pub state: RecoveryState,
+    }
+
+    /// Runs the nine directed production recovery paths used by ZE-40 acceptance.
+    pub fn run_actual_probe(seed: u64) -> RecoveryProbeReport {
+        crate::lifecycle::native_graph::tests::run_recovery_probe(seed)
+    }
+}
+
 /// Query diagnostics and health reporting.
 pub mod diag;
 /// Epoch identity and migration.

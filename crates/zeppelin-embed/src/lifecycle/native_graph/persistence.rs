@@ -27,9 +27,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use xxhash_rust::xxh3::xxh3_64;
 
-const ROOT_SELECTOR: &str = "graph-root.ze";
+pub(super) const ROOT_SELECTOR: &str = "graph-root.ze";
 const ROOT_SELECTOR_MAGIC: &[u8; 8] = b"ZGROOT01";
-const ROOT_SELECTOR_BYTES: usize = 120;
+pub(super) const ROOT_SELECTOR_BYTES: usize = 120;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum NativeStoreClassification {
@@ -187,7 +187,7 @@ fn u128_at(input: &[u8], start: usize) -> Option<u128> {
         .map(u128::from_le_bytes)
 }
 
-fn decode_root_selector(input: &[u8]) -> Result<RequiredRef, NativeStoreClassification> {
+pub(super) fn decode_root_selector(input: &[u8]) -> Result<RequiredRef, NativeStoreClassification> {
     if input.len() != ROOT_SELECTOR_BYTES || input.get(..8) != Some(ROOT_SELECTOR_MAGIC.as_slice())
     {
         return Err(NativeStoreClassification::Corrupt);
@@ -530,6 +530,11 @@ pub(super) fn create(
     clock: Arc<dyn MonotonicClock>,
     entropy: &mut dyn EntropyProvider,
 ) -> Result<Store, NativeGraphError> {
+    if options.access_mode != crate::lifecycle::AccessMode::ReadWrite {
+        return Err(NativeGraphError::Store(
+            crate::lifecycle::StoreError::ReadOnly,
+        ));
+    }
     let required = crate::lifecycle::durability::DurabilityPolicy::new(
         DurabilityMode::Durable,
         CommitTier::Durable,
@@ -753,6 +758,20 @@ impl Store {
         )
     }
 
+    pub(crate) fn open_native_graph(
+        path: impl AsRef<Path>,
+        options: OpenOptions,
+        document: Option<EmbeddingTower>,
+    ) -> Result<Self, NativeGraphError> {
+        super::recovery::open(
+            path.as_ref(),
+            options,
+            document,
+            Arc::new(crate::vfs::StdVfs),
+            Arc::new(SystemMonotonicClock),
+        )
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn create_native_graph_with_infrastructure(
         path: impl AsRef<Path>,
@@ -763,5 +782,16 @@ impl Store {
         entropy: &mut dyn EntropyProvider,
     ) -> Result<Self, NativeGraphError> {
         create(path.as_ref(), options, document, vfs, clock, entropy)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn open_native_graph_with_infrastructure(
+        path: impl AsRef<Path>,
+        options: OpenOptions,
+        document: Option<EmbeddingTower>,
+        vfs: Arc<dyn Vfs>,
+        clock: Arc<dyn MonotonicClock>,
+    ) -> Result<Self, NativeGraphError> {
+        super::recovery::open(path.as_ref(), options, document, vfs, clock)
     }
 }

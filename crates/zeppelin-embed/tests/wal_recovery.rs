@@ -204,6 +204,14 @@ impl Vfs for InterruptedManifestCommitVfs {
         self.inner.list(directory)
     }
 
+    fn for_each_direct_child(
+        &self,
+        directory: &Path,
+        visitor: &mut dyn FnMut(&Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        self.inner.for_each_direct_child(directory, visitor)
+    }
+
     fn delete(&self, path: &Path) -> std::io::Result<()> {
         self.inner.delete(path)
     }
@@ -270,6 +278,14 @@ impl Vfs for FailNextManifestRenameVfs {
 
     fn list(&self, directory: &Path) -> std::io::Result<Vec<PathBuf>> {
         self.inner.list(directory)
+    }
+
+    fn for_each_direct_child(
+        &self,
+        directory: &Path,
+        visitor: &mut dyn FnMut(&Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        self.inner.for_each_direct_child(directory, visitor)
     }
 
     fn delete(&self, path: &Path) -> std::io::Result<()> {
@@ -382,6 +398,14 @@ impl<V: Vfs> Vfs for BlockingAppendVfs<V> {
         self.inner.list(directory)
     }
 
+    fn for_each_direct_child(
+        &self,
+        directory: &Path,
+        visitor: &mut dyn FnMut(&Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        self.inner.for_each_direct_child(directory, visitor)
+    }
+
     fn delete(&self, path: &Path) -> std::io::Result<()> {
         self.inner.delete(path)
     }
@@ -477,6 +501,14 @@ impl<V: Vfs> Vfs for PayloadPointerVfs<V> {
 
     fn list(&self, directory: &Path) -> std::io::Result<Vec<PathBuf>> {
         self.inner.list(directory)
+    }
+
+    fn for_each_direct_child(
+        &self,
+        directory: &Path,
+        visitor: &mut dyn FnMut(&Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        self.inner.for_each_direct_child(directory, visitor)
     }
 
     fn delete(&self, path: &Path) -> std::io::Result<()> {
@@ -1600,6 +1632,14 @@ impl Vfs for KillPointVfs {
 
     fn list(&self, directory: &Path) -> std::io::Result<Vec<PathBuf>> {
         StdVfs.list(directory)
+    }
+
+    fn for_each_direct_child(
+        &self,
+        directory: &Path,
+        visitor: &mut dyn FnMut(&Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        StdVfs.for_each_direct_child(directory, visitor)
     }
 
     fn delete(&self, path: &Path) -> std::io::Result<()> {

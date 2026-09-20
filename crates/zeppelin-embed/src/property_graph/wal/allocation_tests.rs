@@ -75,6 +75,7 @@ impl ReplayValidator for Carriage {
         &mut self,
         _: CommitState<'_>,
         _: CommitState<'_>,
+        _: ChangeReader<'_>,
         _: &mut WalResources<'_>,
     ) -> Result<(), WalError> {
         Ok(())

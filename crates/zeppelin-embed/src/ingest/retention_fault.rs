@@ -1024,6 +1024,14 @@ impl Vfs for PartialBatchAppendVfs {
         self.inner.list(directory)
     }
 
+    fn for_each_direct_child(
+        &self,
+        directory: &Path,
+        visitor: &mut dyn FnMut(&Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        self.inner.for_each_direct_child(directory, visitor)
+    }
+
     fn delete(&self, path: &Path) -> std::io::Result<()> {
         self.inner.delete(path)
     }
@@ -1087,6 +1095,14 @@ impl Vfs for PurgeUnlinkErrorVfs {
 
     fn list(&self, directory: &Path) -> std::io::Result<Vec<PathBuf>> {
         self.inner.list(directory)
+    }
+
+    fn for_each_direct_child(
+        &self,
+        directory: &Path,
+        visitor: &mut dyn FnMut(&Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        self.inner.for_each_direct_child(directory, visitor)
     }
 
     fn delete(&self, path: &Path) -> std::io::Result<()> {

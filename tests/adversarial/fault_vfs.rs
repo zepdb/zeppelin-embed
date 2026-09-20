@@ -541,6 +541,15 @@ impl<V: Vfs + 'static> Vfs for SimulatedCrashVfs<V> {
         self.inner.list(directory)
     }
 
+    fn for_each_direct_child(
+        &self,
+        directory: &Path,
+        visitor: &mut dyn FnMut(&Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        self.check_live()?;
+        self.inner.for_each_direct_child(directory, visitor)
+    }
+
     fn delete(&self, path: &Path) -> std::io::Result<()> {
         self.check_live()?;
         let bytes = self.inner.read(path)?;
@@ -786,6 +795,14 @@ impl Vfs for ProcessCrashVfs {
 
     fn list(&self, directory: &Path) -> std::io::Result<Vec<PathBuf>> {
         self.inner.list(directory)
+    }
+
+    fn for_each_direct_child(
+        &self,
+        directory: &Path,
+        visitor: &mut dyn FnMut(&Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        self.inner.for_each_direct_child(directory, visitor)
     }
 
     fn delete(&self, path: &Path) -> std::io::Result<()> {
@@ -1645,6 +1662,21 @@ impl<V: Vfs> Vfs for ScheduledVfs<V> {
                 Err(std::io::Error::other("scheduled post-list error"))
             }
             _ => Ok(result),
+        }
+    }
+
+    fn for_each_direct_child(
+        &self,
+        directory: &Path,
+        visitor: &mut dyn FnMut(&Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        match self.action(FaultSite::List, directory)? {
+            Some(FaultMode::SilentDrop) => Ok(()),
+            Some(FaultMode::PostCommitError) => {
+                self.inner.for_each_direct_child(directory, visitor)?;
+                Err(std::io::Error::other("scheduled post-list error"))
+            }
+            _ => self.inner.for_each_direct_child(directory, visitor),
         }
     }
 

@@ -171,6 +171,30 @@ impl Vfs for FaultVfs {
             .collect())
     }
 
+    fn for_each_direct_child(
+        &self,
+        directory: &Path,
+        visitor: &mut dyn FnMut(&Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        let mut previous: Option<PathBuf> = None;
+        loop {
+            let next = {
+                let state = self.lock_state()?;
+                state
+                    .visible
+                    .keys()
+                    .filter(|path| path.parent() == Some(directory))
+                    .filter(|path| previous.as_ref().is_none_or(|value| *path > value))
+                    .next()
+                    .cloned()
+            };
+            let Some(path) = next else { break };
+            visitor(&path)?;
+            previous = Some(path);
+        }
+        Ok(())
+    }
+
     fn delete(&self, path: &Path) -> std::io::Result<()> {
         self.lock_state()?
             .visible
@@ -249,6 +273,21 @@ impl Vfs for FaultImage {
             .filter(|path| path.parent() == Some(directory))
             .cloned()
             .collect())
+    }
+
+    fn for_each_direct_child(
+        &self,
+        directory: &Path,
+        visitor: &mut dyn FnMut(&Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        for path in self
+            .files
+            .keys()
+            .filter(|path| path.parent() == Some(directory))
+        {
+            visitor(path)?;
+        }
+        Ok(())
     }
 
     fn delete(&self, _: &Path) -> std::io::Result<()> {
@@ -424,6 +463,14 @@ impl<V: Vfs> Vfs for BlockingVfs<V> {
 
     fn list(&self, directory: &Path) -> std::io::Result<Vec<PathBuf>> {
         self.inner.list(directory)
+    }
+
+    fn for_each_direct_child(
+        &self,
+        directory: &Path,
+        visitor: &mut dyn FnMut(&Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        self.inner.for_each_direct_child(directory, visitor)
     }
 
     fn delete(&self, path: &Path) -> std::io::Result<()> {
