@@ -1,0 +1,66 @@
+REVIEW_SHA256: 0540c03f317d1bd5a36c45865e634d66898f981a009ed40db7c6ce24cb71f610
+RED_COMMAND: env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed-cypher --test read_lowering -E 'test(=read_lowering_preserves_typed_profile_errors)'
+RED_OUTPUT_BEGIN
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.31s
+────────────
+ Nextest run ID e96713d4-1b25-400f-bbfc-77765c5fe42e with nextest profile: default
+    Starting 1 test across 1 binary (12 tests skipped)
+        FAIL [   0.015s] (1/1) zeppelin-embed-cypher::read_lowering read_lowering_preserves_typed_profile_errors
+  stdout ───
+
+    running 1 test
+    test read_lowering_preserves_typed_profile_errors ... FAILED
+
+    failures:
+
+    failures:
+        read_lowering_preserves_typed_profile_errors
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'read_lowering_preserves_typed_profile_errors' (35909461) panicked at crates/zeppelin-embed-cypher/tests/read_lowering.rs:570:17:
+    assertion `left == right` failed
+      left: "lowering route clause"
+     right: "read lowering clause"
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.016s] 1 test run: 0 passed, 1 failed, 12 skipped
+        FAIL [   0.015s] (1/1) zeppelin-embed-cypher::read_lowering read_lowering_preserves_typed_profile_errors
+  stdout ───
+
+    running 1 test
+    test read_lowering_preserves_typed_profile_errors ... FAILED
+
+    failures:
+
+    failures:
+        read_lowering_preserves_typed_profile_errors
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'read_lowering_preserves_typed_profile_errors' (35909461) panicked at crates/zeppelin-embed-cypher/tests/read_lowering.rs:570:17:
+    assertion `left == right` failed
+      left: "lowering route clause"
+     right: "read lowering clause"
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed
+RED_OUTPUT_END
+RED_EXIT: 100
+GREEN_COMMAND: env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed-cypher --test read_lowering -E 'test(=read_lowering_preserves_typed_profile_errors)'
+GREEN_OUTPUT_BEGIN
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.98s
+────────────
+ Nextest run ID 67bf83c4-9dc3-4dfd-9b41-e5f297c3a518 with nextest profile: default
+    Starting 1 test across 1 binary (12 tests skipped)
+────────────
+     Summary [   0.013s] 1 test run: 1 passed, 12 skipped
+GREEN_OUTPUT_END
+GREEN_EXIT: 0

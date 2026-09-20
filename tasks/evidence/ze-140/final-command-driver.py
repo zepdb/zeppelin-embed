@@ -25,6 +25,7 @@ OWNED_RUST_PATHS = [
     "crates/zeppelin-embed-cypher/tests/binding.rs",
     "crates/zeppelin-embed-cypher/tests/lowering_allocation.rs",
     "crates/zeppelin-embed-cypher/tests/mutation_lowering.rs",
+    "crates/zeppelin-embed-cypher/tests/read_lowering.rs",
     "crates/zeppelin-embed-cypher/tests/runtime_lowering.rs",
     "crates/zeppelin-embed/src/property_graph/query/plan/mod.rs",
     "crates/zeppelin-embed/src/property_graph/query/plan/mutation.rs",

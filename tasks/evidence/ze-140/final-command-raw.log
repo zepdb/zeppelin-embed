@@ -4,13 +4,13 @@ EXPECTED_EXIT: 0
 RAW_OUTPUT_BEGIN
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
 ────────────
- Nextest run ID dc0c3962-2847-4b03-86bb-baf9319ec273 with nextest profile: default
+ Nextest run ID 606c2446-b18d-4376-9f9e-d64d75f88a3a with nextest profile: default
     Starting 27 tests across 1 binary
 ────────────
-     Summary [   0.054s] 27 tests run: 27 passed, 0 skipped
+     Summary [   0.050s] 27 tests run: 27 passed, 0 skipped
 RAW_OUTPUT_END
 EXIT_CODE: 0
-OUTPUT_SHA256: b7adac1ae3b3e648129abcae46d8479a136e1029faa8c542074217740ed2bc21
+OUTPUT_SHA256: 51895e4c6b4ac058e88feb1d6ebab9f9143a0ab8d734f926d7db5ca6af262b17
 REQUIRED_OUTPUT_OBSERVED: True
 COMMAND_PASSED: True
 
@@ -18,15 +18,16 @@ COMMAND_PASSED: True
 COMMAND: env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed-cypher --test binding --test mutation_lowering --test read_lowering --test lowering_semantics --test search_lowering --test lowering_allocation --test runtime_lowering
 EXPECTED_EXIT: 0
 RAW_OUTPUT_BEGIN
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.76s
 ────────────
- Nextest run ID f55912b6-943b-42e0-b4e7-6d0afb9b4efd with nextest profile: default
+ Nextest run ID 55c285f7-d71a-4e5a-a7cf-30d48a3832b7 with nextest profile: default
     Starting 69 tests across 7 binaries
 ────────────
-     Summary [   0.810s] 69 tests run: 69 passed, 0 skipped
+     Summary [   0.736s] 69 tests run: 69 passed, 0 skipped
 RAW_OUTPUT_END
 EXIT_CODE: 0
-OUTPUT_SHA256: 6ab50a433dd3b429e60fa6edfe5113ec88354c8db7a9a2e55570fbcfbc0661f6
+OUTPUT_SHA256: 73ed97a4a8ac4758042c7e02d0bfa8ffeba291ba05d2290cf8d2421ef1cf1b9e
 REQUIRED_OUTPUT_OBSERVED: True
 COMMAND_PASSED: True
 
@@ -34,15 +35,19 @@ COMMAND_PASSED: True
 COMMAND: env NEXTEST_RETRIES=0 cargo nextest run -j 4 --status-level fail --final-status-level fail -p zeppelin-embed-workspace-tests --features graph-cypher --test adversarial_tests -E 'test(=property_graph_binding_probe_preserves_profile_types_and_faults) | test(=property_graph_lowering_probe_checks_complete_plans_and_inflight_faults) | test(=property_graph_search_lowering_probe_checks_typed_plans_and_inflight_faults) | test(=property_graph_mutation_lowering_probe_checks_typed_plans_and_inflight_faults) | test(=one_runner_episode_reaches_required_mutation_lowering_contracts) | test(=native_graph_runner_keys_are_active_with_graph_feature) | test(=graph_response_runner_keys_are_absent_without_test_hook)'
 EXPECTED_EXIT: 0
 RAW_OUTPUT_BEGIN
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed-cypher)
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed-bench)
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.05s
 ────────────
- Nextest run ID 3459e631-459a-44d0-aaa1-e7121d4640ae with nextest profile: default
+ Nextest run ID 2aaa8376-f571-455b-854c-83c823b8fb0b with nextest profile: default
     Starting 7 tests across 1 binary (470 tests skipped)
 ────────────
-     Summary [  21.530s] 7 tests run: 7 passed, 470 skipped
+     Summary [  20.164s] 7 tests run: 7 passed, 470 skipped
 RAW_OUTPUT_END
 EXIT_CODE: 0
-OUTPUT_SHA256: 9615de5ee0ff4b767ebe5fade60b732b22583f4ccc7f07dfc12d8415f16c5cf4
+OUTPUT_SHA256: 11a618836800c5bcdaec30c73dc6a6b4be68059295e1b5b75a8dbb4d1779abf4
 REQUIRED_OUTPUT_OBSERVED: True
 COMMAND_PASSED: True
 
@@ -52,15 +57,15 @@ EXPECTED_EXIT: 0
 RAW_OUTPUT_BEGIN
    Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed-ffi)
    Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/tests)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.03s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.60s
 ────────────
- Nextest run ID b42e8388-c365-4af9-ad2d-12c03227ff40 with nextest profile: default
+ Nextest run ID 65cd86a3-4114-4dc1-bb6f-51c3b29beddd with nextest profile: default
     Starting 2 tests across 1 binary (477 tests skipped)
 ────────────
-     Summary [   0.015s] 2 tests run: 2 passed, 477 skipped
+     Summary [   0.010s] 2 tests run: 2 passed, 477 skipped
 RAW_OUTPUT_END
 EXIT_CODE: 0
-OUTPUT_SHA256: 6c4848300438f5d0dd6fbadb588ed14495a979eaff657463e24ca5f0b291d01d
+OUTPUT_SHA256: 225b426de428c92c18fd9da61f43b96c793e07676b434a6fbe88edc7ea4f00e7
 REQUIRED_OUTPUT_OBSERVED: True
 COMMAND_PASSED: True
 
@@ -70,15 +75,15 @@ EXPECTED_EXIT: 0
 RAW_OUTPUT_BEGIN
    Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed-ffi)
    Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/tests)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.73s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.76s
 ────────────
- Nextest run ID 20601818-6204-4a29-a6fd-19feb7fcbfe3 with nextest profile: default
+ Nextest run ID 039ec089-8381-4789-804b-458997bee8e1 with nextest profile: default
     Starting 1 test across 1 binary (433 tests skipped)
 ────────────
-     Summary [   0.013s] 1 test run: 1 passed, 433 skipped
+     Summary [   0.014s] 1 test run: 1 passed, 433 skipped
 RAW_OUTPUT_END
 EXIT_CODE: 0
-OUTPUT_SHA256: 2d43451b5e532174cbfa49dff3af1db8d402acd9ec3452d17442cf9113080a0d
+OUTPUT_SHA256: 11dfed8503dfefb8a03efecddfa3ac671494b3448775d571d4753f62d2dca8c8
 REQUIRED_OUTPUT_OBSERVED: True
 COMMAND_PASSED: True
 
@@ -102,12 +107,12 @@ test crates/zeppelin-embed-cypher/src/lowering/mutation.rs - lowering::mutation:
 test crates/zeppelin-embed-cypher/src/lowering/mutation.rs - lowering::mutation::compile_mutation_in (line 81) - compile fail ... ok
 test crates/zeppelin-embed-cypher/src/lowering/mutation.rs - lowering::mutation::compile_mutation_in (line 93) - compile fail ... ok
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.44s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.35s
 
-all doctests ran in 0.92s; merged doctests compilation took 0.35s
+all doctests ran in 0.77s; merged doctests compilation took 0.28s
 RAW_OUTPUT_END
 EXIT_CODE: 0
-OUTPUT_SHA256: 707508bee7b4b17c480e46c16e702aa294ebe95d8df200089d3d4ca5c6b46508
+OUTPUT_SHA256: 3037d328abf9282de8333e18b0667f3882564259fdd2f71cebfd26c7ec8686ca
 REQUIRED_OUTPUT_OBSERVED: True
 COMMAND_PASSED: True
 
@@ -141,7 +146,7 @@ test mutation_owner_inventory_proves_full_capacity_and_facts ... ok
 test mutation_rhs_keeps_fresh_properties_and_frozen_alias_slots ... ok
 test mutation_whole_statement_rejects_unsupported_suffixes_and_read_write_search ... ok
 
-test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
      Running tests/runtime_lowering.rs (target/debug/deps/runtime_lowering-f1f8defd2b3ef7e5)
 
@@ -154,11 +159,11 @@ test compiled_read_parser_checkpoint_preserves_close_before_simultaneous_cancel 
 test compiled_read_validation_reports_original_cumulative_work_exhaustion ... ok
 test compiled_search_lowering_late_checkpoint_preserves_close_before_cancel ... ok
 
-test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.13s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.12s
 
 RAW_OUTPUT_END
 EXIT_CODE: 0
-OUTPUT_SHA256: 7658a4c6e855fbefd22fb212fe7517d182fe0d565f1dc1c1f7f47dfac0361e5b
+OUTPUT_SHA256: 9dc6d06fd3f1e38e5926605044f1acb9a5a958671b4912438f7190aa97d81be4
 REQUIRED_OUTPUT_OBSERVED: True
 COMMAND_PASSED: True
 
@@ -168,7 +173,7 @@ EXPECTED_EXIT: 0
 RAW_OUTPUT_BEGIN
    Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed-ffi)
    Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/tests)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.01s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.90s
      Running adversarial_tests.rs (target/debug/deps/adversarial_tests-2b6ca697e0f9c87b)
 
 running 1 test
@@ -182,7 +187,7 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 476 filtered out; fi
 
 RAW_OUTPUT_END
 EXIT_CODE: 0
-OUTPUT_SHA256: 98aff443d6ea63af11e5fb195425f711cc2cdebb9554f573b99eb8512e015211
+OUTPUT_SHA256: b44b8ff16608dd9fc488e45629d3820eaf7c429ae06043b3edef84345045cd40
 REQUIRED_OUTPUT_OBSERVED: True
 COMMAND_PASSED: True
 
@@ -213,14 +218,14 @@ RAW_OUTPUT_BEGIN
      Running tests/runtime_lowering.rs (target/debug/deps/runtime_lowering-f1f8defd2b3ef7e5)
 
 running 1 test
-test compiled_mutation_lowering_late_checkpoint_preserves_close_before_cancel ... mutation_lowering_polls=3259 binder_poll=1736 first_lowering_poll=1737 consumer_poll=3256 fire=2496
+test compiled_mutation_lowering_late_checkpoint_preserves_close_before_cancel ... mutation_lowering_polls=3244 binder_poll=1736 first_lowering_poll=1737 consumer_poll=3241 fire=2488
 ok
 
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.01s
 
 RAW_OUTPUT_END
 EXIT_CODE: 0
-OUTPUT_SHA256: 1978a8aa56a2377dd178e41b42b22b33b75797c0af13af0d62cf473460a1bece
+OUTPUT_SHA256: 5a3796454d7d86dbf2ec47628765a71977ae3326b34211d0988a0d0ba1e0b056
 REQUIRED_OUTPUT_OBSERVED: True
 COMMAND_PASSED: True
 
@@ -228,10 +233,11 @@ COMMAND_PASSED: True
 COMMAND: cargo clippy -p zeppelin-embed --features graph-cypher --test graph_query_plan -- -D warnings
 EXPECTED_EXIT: 0
 RAW_OUTPUT_BEGIN
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.07s
+    Checking zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.84s
 RAW_OUTPUT_END
 EXIT_CODE: 0
-OUTPUT_SHA256: 8c233a54790c4800d3dd585436af679aa838da259bfdb129412e2d51cdb75cdc
+OUTPUT_SHA256: cb3ca74eff51562667c848f6c6af4c594ac2dfe78f2fa6f0b8cb9de091a4c170
 REQUIRED_OUTPUT_OBSERVED: True
 COMMAND_PASSED: True
 
@@ -241,10 +247,10 @@ EXPECTED_EXIT: 0
 RAW_OUTPUT_BEGIN
     Checking zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed)
     Checking zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed-cypher)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.50s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.42s
 RAW_OUTPUT_END
 EXIT_CODE: 0
-OUTPUT_SHA256: 671baab58dd150623ca41122b5e31c3195588969fd48779d4806f0eb8ed6923f
+OUTPUT_SHA256: 8616b564d3fb8c429b7e6ae2b13e98bde398b4a73fdf47ea2269a42687cb7824
 REQUIRED_OUTPUT_OBSERVED: True
 COMMAND_PASSED: True
 
@@ -252,10 +258,14 @@ COMMAND_PASSED: True
 COMMAND: cargo clippy -p zeppelin-embed-workspace-tests --features graph-cypher --test adversarial_tests -- -D warnings
 EXPECTED_EXIT: 0
 RAW_OUTPUT_BEGIN
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
+    Checking zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed-cypher)
+    Checking zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed-bench)
+    Checking zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/crates/zeppelin-embed-ffi)
+    Checking zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed-wt-ze-140/tests)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.21s
 RAW_OUTPUT_END
 EXIT_CODE: 0
-OUTPUT_SHA256: 736e2582f563605dd272e5fb977840b0c0767377d27b6940c440caf75eec7157
+OUTPUT_SHA256: 6eef0d8a06ff5259dd035f1ac256cb1f783a15a5698b93ede11dce213ffa1a31
 REQUIRED_OUTPUT_OBSERVED: True
 COMMAND_PASSED: True
 
@@ -280,7 +290,7 @@ REQUIRED_OUTPUT_OBSERVED: True
 COMMAND_PASSED: True
 
 ===== COMMAND 15: owned-rustfmt =====
-COMMAND: rustfmt --edition 2024 --check crates/zeppelin-embed-cypher/src/lib.rs crates/zeppelin-embed-cypher/src/lowering/mod.rs crates/zeppelin-embed-cypher/src/lowering/mutation.rs crates/zeppelin-embed-cypher/tests/binding.rs crates/zeppelin-embed-cypher/tests/lowering_allocation.rs crates/zeppelin-embed-cypher/tests/mutation_lowering.rs crates/zeppelin-embed-cypher/tests/runtime_lowering.rs crates/zeppelin-embed/src/property_graph/query/plan/mod.rs crates/zeppelin-embed/src/property_graph/query/plan/mutation.rs crates/zeppelin-embed/tests/graph_query_plan.rs tests/adversarial-oracle/src/graph_mutation_lowering.rs tests/adversarial-oracle/src/lib.rs tests/adversarial/coverage.rs tests/adversarial/graph_mutation_lowering.rs tests/adversarial/mod.rs tests/adversarial/runner.rs tests/adversarial_tests.rs
+COMMAND: rustfmt --edition 2024 --check crates/zeppelin-embed-cypher/src/lib.rs crates/zeppelin-embed-cypher/src/lowering/mod.rs crates/zeppelin-embed-cypher/src/lowering/mutation.rs crates/zeppelin-embed-cypher/tests/binding.rs crates/zeppelin-embed-cypher/tests/lowering_allocation.rs crates/zeppelin-embed-cypher/tests/mutation_lowering.rs crates/zeppelin-embed-cypher/tests/read_lowering.rs crates/zeppelin-embed-cypher/tests/runtime_lowering.rs crates/zeppelin-embed/src/property_graph/query/plan/mod.rs crates/zeppelin-embed/src/property_graph/query/plan/mutation.rs crates/zeppelin-embed/tests/graph_query_plan.rs tests/adversarial-oracle/src/graph_mutation_lowering.rs tests/adversarial-oracle/src/lib.rs tests/adversarial/coverage.rs tests/adversarial/graph_mutation_lowering.rs tests/adversarial/mod.rs tests/adversarial/runner.rs tests/adversarial_tests.rs
 EXPECTED_EXIT: 0
 RAW_OUTPUT_BEGIN
 RAW_OUTPUT_END
