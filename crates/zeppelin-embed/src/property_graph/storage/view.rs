@@ -33,6 +33,8 @@ mod prepared;
 #[cfg(feature = "graph-cypher")]
 mod retrieval;
 #[cfg(feature = "graph-cypher")]
+mod search;
+#[cfg(feature = "graph-cypher")]
 mod source;
 
 #[cfg(feature = "graph-cypher")]
@@ -43,7 +45,7 @@ pub(crate) use cursor::{
     RelationshipTypeSelection,
 };
 #[cfg(feature = "graph-cypher")]
-pub(crate) use preparation_source::NativePreparationSource;
+pub(crate) use preparation_source::{NativePreparationCatalog, NativePreparationSource};
 #[cfg(feature = "graph-cypher")]
 pub(crate) use prepared::{GraphPreparation, PreparedGraphArtifacts, PreparedGraphFailure};
 #[cfg(feature = "graph-cypher")]

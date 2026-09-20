@@ -297,19 +297,43 @@ impl<'source, 'lease, 'm> NativePreparationCatalog<'source, 'lease, 'm> {
             .checked_mul(std::mem::size_of::<SymbolEntry<'_>>())
             .ok_or(TreeError::Memory)?;
         let mut descriptors = source.memory().reserve(allowance)?;
+        let mut callback_error = None;
         let image = CatalogImage::decode(encoded, allowance, &mut || {
-            resources.step(1).map_err(|_| CatalogError::Cancelled)
+            resources.step(1).map_err(|error| {
+                if callback_error.is_none() {
+                    callback_error = Some(error);
+                }
+                CatalogError::Cancelled
+            })
         })
-        .map_err(|error| catalog_error(error, resources))?;
+        .map_err(|error| match error {
+            CatalogError::Cancelled => callback_error
+                .take()
+                .unwrap_or(TreeError::Invalid("catalog cancelled")),
+            CatalogError::Capacity | CatalogError::Allocation => TreeError::Memory,
+            _ => TreeError::Invalid("invalid native graph catalog"),
+        })?;
         descriptors.resize(image.symbols.allocated_bytes())?;
         let expected = GraphInterpretation::new(bundle.lexical(), bundle.document())
             .map_err(|_| TreeError::Invalid("invalid admitted catalog interpretation"))?;
+        let mut callback_error = None;
         image
             .declaration
             .validate_for(bundle.base().store, expected, &mut || {
-                resources.step(1).map_err(|_| CatalogError::Cancelled)
+                resources.step(1).map_err(|error| {
+                    if callback_error.is_none() {
+                        callback_error = Some(error);
+                    }
+                    CatalogError::Cancelled
+                })
             })
-            .map_err(|error| catalog_error(error, resources))?;
+            .map_err(|error| match error {
+                CatalogError::Cancelled => callback_error
+                    .take()
+                    .unwrap_or(TreeError::Invalid("catalog cancelled")),
+                CatalogError::Capacity | CatalogError::Allocation => TreeError::Memory,
+                _ => TreeError::Invalid("invalid native graph catalog"),
+            })?;
         let high = bundle.high_waters();
         let [label, relationship_type, property, namespace] = high.symbols;
         if image.declaration.node_high_water != high.node

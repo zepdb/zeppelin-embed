@@ -56,7 +56,9 @@ pub struct RecordView<'a, S: BlockSource> {
     labels: PayloadSlice<'a, S>,
     properties: PayloadSlice<'a, S>,
     canonical_bytes: PayloadSlice<'a, S>,
+    canonical_ref: PayloadRef,
     canonical: CanonicalView<'a, S>,
+    provenance_ref: PayloadRef,
     provenance: StoredProvenance<'a, S>,
 }
 impl<'a, S: BlockSource> RecordView<'a, S> {
@@ -83,6 +85,10 @@ impl<'a, S: BlockSource> RecordView<'a, S> {
     /// Complete checked installing provenance retaining exact key readers.
     pub const fn provenance(&self) -> &StoredProvenance<'a, S> {
         &self.provenance
+    }
+    /// Physical payload descendants already decoded and verified for this record.
+    pub(crate) const fn required_payloads(&self) -> [PayloadRef; 2] {
+        [self.canonical_ref, self.provenance_ref]
     }
     /// Read a complete label by index without materializing the label array.
     pub fn label(&self, index: u32, r: &mut TreeResources<'_>) -> Result<LabelId, TreeError> {
@@ -232,7 +238,9 @@ pub fn verify_record<'a, S: BlockSource>(
         labels,
         properties,
         canonical_bytes,
+        canonical_ref,
         canonical,
+        provenance_ref,
         provenance,
     })
 }

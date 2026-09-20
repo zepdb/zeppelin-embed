@@ -25,9 +25,9 @@ mod view;
 )]
 pub(crate) use view::{
     CursorState, DirectionSelection, ExpandCursor, GraphPreparation, GraphReadView, LabelSelection,
-    NativeCatalog, NativePreparationSource, NativeQuerySource, NativeReadCapability, NodeCursor,
-    NodeView, PreparedGraphArtifacts, PreparedGraphFailure, RelView, RelationshipTypeSelection,
-    TextPayloadReader,
+    NativeCatalog, NativePreparationCatalog, NativePreparationSource, NativeQuerySource,
+    NativeReadCapability, NodeCursor, NodeView, PreparedGraphArtifacts, PreparedGraphFailure,
+    RelView, RelationshipTypeSelection, TextPayloadReader,
 };
 
 /// Combined private storage capacity inside the authentic writer/store owner.
@@ -41,3 +41,7 @@ pub mod inventory;
 
 /// Native directory changes from one authentic normalized writer batch.
 pub mod participant;
+
+/// Sparse text/vector retrieval participants over native graph records.
+#[cfg(feature = "graph-cypher")]
+pub(crate) mod search;

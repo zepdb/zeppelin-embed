@@ -29,6 +29,10 @@ pub enum TreeKind {
     InRanges = 7,
     /// Full unsigned physical artifact nonce.
     ObjectInventory = 8,
+    /// Full unsigned NodeId sparse membership.
+    SparseMembership = 9,
+    /// Complete physical source-manifest reference tuple.
+    SparseSources = 10,
 }
 /// Explicit logical-key representation. Overflow roots are never key bytes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -276,8 +280,20 @@ pub fn compare_inline_keys(
     validate_inline(kind, left)?;
     validate_inline(kind, right)?;
     let order = match kind {
-        TreeKind::Nodes | TreeKind::Relationships | TreeKind::ObjectInventory => {
-            read_u128(left, 0)?.cmp(&read_u128(right, 0)?)
+        TreeKind::Nodes
+        | TreeKind::Relationships
+        | TreeKind::ObjectInventory
+        | TreeKind::SparseMembership => read_u128(left, 0)?.cmp(&read_u128(right, 0)?),
+        TreeKind::SparseSources => {
+            let left = artifact::decode_reference(left)?;
+            let right = artifact::decode_reference(right)?;
+            left.artifact
+                .get()
+                .cmp(&right.artifact.get())
+                .then(left.offset.cmp(&right.offset))
+                .then(left.length.cmp(&right.length))
+                .then((left.kind as u16).cmp(&(right.kind as u16)))
+                .then(left.version.cmp(&right.version))
         }
         TreeKind::Labels | TreeKind::RelationshipTypes => frame::read_u64("graph key", left, 0)?
             .cmp(&frame::read_u64("graph key", right, 0)?)
@@ -307,7 +323,11 @@ pub fn compare_inline_keys(
 
 fn validate_inline(kind: TreeKind, bytes: &[u8]) -> Result<(), FormatError> {
     let valid = match kind {
-        TreeKind::Nodes | TreeKind::Relationships | TreeKind::ObjectInventory => bytes.len() == 16,
+        TreeKind::Nodes
+        | TreeKind::Relationships
+        | TreeKind::ObjectInventory
+        | TreeKind::SparseMembership => bytes.len() == 16,
+        TreeKind::SparseSources => bytes.len() == 32,
         TreeKind::Labels | TreeKind::RelationshipTypes => bytes.len() == 24,
         TreeKind::OutRanges | TreeKind::InRanges => bytes.len() == 40,
         TreeKind::KeyFences => bytes.len() >= 9 && bytes.len() <= MAX_GRAPH_INPUT_BYTES,

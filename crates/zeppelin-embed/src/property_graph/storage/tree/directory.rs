@@ -110,6 +110,20 @@ enum CapacityReservation<'a> {
     Preparation(StorageReservation<'a>),
     Query(QueryReservation<'a, 'a>),
 }
+
+/// Fixed cursor-state charge bound to the same operation owner on every resume.
+pub(crate) struct TreeTraceReservation<'a> {
+    reservation: CapacityReservation<'a>,
+    owner: CursorOwner<'a>,
+}
+impl TreeTraceReservation<'_> {
+    pub(crate) fn require(&self, resources: &TreeResources<'_>) -> Result<(), TreeError> {
+        if self.reservation.bytes() == 0 {
+            return Err(TreeError::Invalid("empty trace reservation"));
+        }
+        resources.require_cursor_owner(self.owner)
+    }
+}
 impl CapacityReservation<'_> {
     fn bytes(&self) -> usize {
         match self {
@@ -123,6 +137,16 @@ impl CapacityReservation<'_> {
 trait QueryRuntime {
     fn checkpoint(&self) -> Result<(), RuntimeError>;
     fn charge(&mut self, kind: WorkKind, units: u64) -> Result<(), RuntimeError>;
+    #[cfg(feature = "graph-cypher")]
+    fn decode_graph_lexical<'m>(
+        &mut self,
+        bytes: &[u8],
+        epoch: crate::fts::tokenizer::TokenizerEpoch,
+        memory: &'m QueryMemory<'m>,
+    ) -> Result<
+        crate::fts::graph_build::DecodedGraphLexical<'m>,
+        crate::fts::graph_build::GraphLexicalError,
+    >;
 }
 impl QueryRuntime for RuntimeContext<'_, '_, '_> {
     fn checkpoint(&self) -> Result<(), RuntimeError> {
@@ -130,6 +154,18 @@ impl QueryRuntime for RuntimeContext<'_, '_, '_> {
     }
     fn charge(&mut self, kind: WorkKind, units: u64) -> Result<(), RuntimeError> {
         RuntimeContext::charge(self, kind, units)
+    }
+    #[cfg(feature = "graph-cypher")]
+    fn decode_graph_lexical<'m>(
+        &mut self,
+        bytes: &[u8],
+        epoch: crate::fts::tokenizer::TokenizerEpoch,
+        memory: &'m QueryMemory<'m>,
+    ) -> Result<
+        crate::fts::graph_build::DecodedGraphLexical<'m>,
+        crate::fts::graph_build::GraphLexicalError,
+    > {
+        crate::fts::graph_build::DecodedGraphLexical::decode_query(bytes, epoch, memory, self)
     }
 }
 
@@ -273,6 +309,41 @@ impl<'a> TreeResources<'a> {
         match self.cursor_owner()? {
             CursorOwner::Query(actual) if expected.same_owner(actual) => Ok(()),
             _ => Err(TreeError::Invalid("query range scratch owner mismatch")),
+        }
+    }
+    pub(crate) fn reserve_trace(
+        &mut self,
+        bytes: usize,
+    ) -> Result<TreeTraceReservation<'a>, TreeError> {
+        if bytes == 0 {
+            return Err(TreeError::Memory);
+        }
+        self.step(0)?;
+        let owner = self.cursor_owner()?;
+        let reservation = self.owner.reserve(bytes)?;
+        Ok(TreeTraceReservation { reservation, owner })
+    }
+    #[cfg(feature = "graph-cypher")]
+    pub(crate) fn decode_graph_lexical<'m>(
+        &mut self,
+        bytes: &[u8],
+        epoch: crate::fts::tokenizer::TokenizerEpoch,
+        memory: &'m QueryMemory<'m>,
+    ) -> Result<
+        crate::fts::graph_build::DecodedGraphLexical<'m>,
+        crate::fts::graph_build::GraphLexicalError,
+    > {
+        use crate::fts::graph_build::GraphLexicalError;
+        self.step(0).map_err(GraphLexicalError::Resource)?;
+        self.require_query(memory)
+            .map_err(GraphLexicalError::Resource)?;
+        match &mut self.control {
+            TreeControl::Query { context, .. } => {
+                context.decode_graph_lexical(bytes, epoch, memory)
+            }
+            TreeControl::Direct { .. } => Err(GraphLexicalError::Resource(TreeError::Invalid(
+                "graph lexical query runtime required",
+            ))),
         }
     }
     fn cursor_owner(&self) -> Result<CursorOwner<'a>, TreeError> {
@@ -497,7 +568,7 @@ fn checked_block<'a>(
     }
     Ok(block)
 }
-const MAX_DEPTH: usize = 64;
+pub(crate) const MAX_DEPTH: usize = 64;
 const INLINE_BYTES: usize = 512;
 
 fn count(bytes: &[u8]) -> Result<usize, TreeError> {
@@ -562,6 +633,30 @@ fn checked_page<'a>(
         }
     }
     Ok(page)
+}
+
+/// Resolve and fully validate one directory page for a bounded descendant trace.
+pub(crate) fn trace_page<'s>(
+    source: &'s impl BlockSource,
+    root: DirectoryRoot,
+    reference: PhysicalRef,
+    lower: Option<Key<'_>>,
+    upper: Option<Key<'_>>,
+    resources: &mut TreeResources<'_>,
+) -> Result<(super::FramedPage<'s>, usize), TreeError> {
+    let block = checked_block(source, root, reference, resources)?;
+    let bytes = block.payload();
+    let page = checked_page(
+        source,
+        root,
+        block.identity(),
+        bytes,
+        lower,
+        upper,
+        resources,
+    )?;
+    let cells = count(bytes)?;
+    Ok((page, cells))
 }
 #[derive(Clone, Copy)]
 struct PathEntry {

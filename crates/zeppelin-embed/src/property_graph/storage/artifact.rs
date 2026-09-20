@@ -118,6 +118,12 @@ pub enum BlockKind {
     AdjacencyBase = 13,
     /// Bounded immutable adjacency delta (ZE-124).
     AdjacencyDelta = 14,
+    /// Sparse retrieval source row table.
+    RetrievalRows = 15,
+    /// Sparse retrieval lexical region.
+    RetrievalLexical = 16,
+    /// Sparse retrieval source live mask.
+    RetrievalLiveRows = 17,
 }
 
 /// Identity and monotone creation metadata covered by the file checksum.
@@ -716,6 +722,9 @@ fn block_kind(value: u16) -> Result<BlockKind, FormatError> {
         12 => Ok(BlockKind::OperationProvenance),
         13 => Ok(BlockKind::AdjacencyBase),
         14 => Ok(BlockKind::AdjacencyDelta),
+        15 => Ok(BlockKind::RetrievalRows),
+        16 => Ok(BlockKind::RetrievalLexical),
+        17 => Ok(BlockKind::RetrievalLiveRows),
         _ => Err(invalid(
             FormatCheck::Family,
             "unknown required graph block kind",

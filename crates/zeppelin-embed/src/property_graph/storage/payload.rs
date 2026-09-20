@@ -36,6 +36,9 @@ impl PayloadRef {
                 | BlockKind::StoredVector
                 | BlockKind::OverflowKey
                 | BlockKind::OperationProvenance
+                | BlockKind::RetrievalRows
+                | BlockKind::RetrievalLexical
+                | BlockKind::RetrievalLiveRows
         ) || length > role_limit(role) as u64
             || (role == BlockKind::OverflowKey
                 && (length < 9 || reference.kind != BlockKind::OverflowKey))
@@ -86,6 +89,9 @@ impl PayloadRef {
             6 => BlockKind::StoredVector,
             7 => BlockKind::OverflowKey,
             12 => BlockKind::OperationProvenance,
+            15 => BlockKind::RetrievalRows,
+            16 => BlockKind::RetrievalLexical,
+            17 => BlockKind::RetrievalLiveRows,
             _ => return Err(TreeError::Invalid("logical payload role")),
         };
         let reference = artifact::decode_reference(
@@ -193,6 +199,42 @@ impl PayloadRef {
             }
         }
         Ok(())
+    }
+    /// Return one checked physical descendant at a time. Index zero is the
+    /// direct payload or extent root; later indexes are exact validated chunks.
+    pub(crate) fn physical_reference_at(
+        self,
+        source: &impl BlockSource,
+        store: StoreInstanceId,
+        generation: GraphGeneration,
+        index: usize,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<Option<PhysicalRef>, TreeError> {
+        let root = self.root(source, store, generation, resources)?;
+        if index == 0 {
+            return Ok(Some(self.reference));
+        }
+        if !self.indirect() {
+            return Ok(None);
+        }
+        let chunk_index = index - 1;
+        let count = (self.length as usize).div_ceil(CHUNK_BYTES);
+        if chunk_index == count {
+            return Ok(None);
+        }
+        if chunk_index > count {
+            return Err(TreeError::Invalid("payload trace beyond exact end"));
+        }
+        let reference = chunk_reference(root.payload(), chunk_index)?;
+        let chunk = resolve(
+            source,
+            reference,
+            store,
+            root.identity().generation,
+            resources,
+        )?;
+        self.check_chunk(chunk_index, chunk.payload())?;
+        Ok(Some(reference))
     }
     fn check_chunk(self, index: usize, bytes: &[u8]) -> Result<(), TreeError> {
         let start = index
@@ -313,6 +355,11 @@ impl PayloadRef {
 fn role_limit(role: BlockKind) -> usize {
     if matches!(role, BlockKind::NodeRecord | BlockKind::RelRecord) {
         MAX_RECORD_BYTES
+    } else if matches!(
+        role,
+        BlockKind::RetrievalRows | BlockKind::RetrievalLexical | BlockKind::RetrievalLiveRows
+    ) {
+        MAX_RECORD_BYTES
     } else {
         MAX_GRAPH_INPUT_BYTES
     }
@@ -329,6 +376,9 @@ fn validate_prepared(role: BlockKind, length: usize) -> Result<(), TreeError> {
                 | BlockKind::StoredVector
                 | BlockKind::OverflowKey
                 | BlockKind::OperationProvenance
+                | BlockKind::RetrievalRows
+                | BlockKind::RetrievalLexical
+                | BlockKind::RetrievalLiveRows
         )
     {
         return Err(TreeError::Invalid(

@@ -79,7 +79,14 @@ pub(super) fn validate_key(
                 .is_some_and(|part| part.iter().any(|byte| *byte != 0))
         };
         let valid = match root.kind {
-            TreeKind::Nodes | TreeKind::Relationships | TreeKind::ObjectInventory => nonzero(0, 16),
+            TreeKind::Nodes
+            | TreeKind::Relationships
+            | TreeKind::ObjectInventory
+            | TreeKind::SparseMembership => nonzero(0, 16),
+            TreeKind::SparseSources => {
+                let reference = crate::property_graph::storage::artifact::decode_reference(bytes)?;
+                reference.kind == BlockKind::CommitParticipant && reference.version == 1
+            }
             TreeKind::Labels | TreeKind::RelationshipTypes => nonzero(0, 8) && nonzero(8, 16),
             TreeKind::OutRanges | TreeKind::InRanges => {
                 nonzero(0, 16) && nonzero(16, 8) && nonzero(24, 16)

@@ -119,9 +119,9 @@ pub fn prepare_directories<'a, S: BlockSink>(
         _charge: charge,
     })
 }
-pub(super) struct BatchCatalog<'a, C> {
-    pub(super) base: &'a C,
-    pub(super) additions: &'a [SymbolEntry<'a>],
+pub(crate) struct BatchCatalog<'a, C> {
+    pub(crate) base: &'a C,
+    pub(crate) additions: &'a [SymbolEntry<'a>],
 }
 impl<S: BlockSource, C: RecordCatalog<S>> RecordCatalog<S> for BatchCatalog<'_, C> {
     fn resolve(
