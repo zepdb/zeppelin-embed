@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed)
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-cypher)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.03s
+────────────
+ Nextest run ID 751a48ac-02d5-4068-8b36-a80854a9041c with nextest profile: default
+    Starting 69 tests across 7 binaries
+────────────
+     Summary [   0.725s] 69 tests run: 69 passed, 0 skipped

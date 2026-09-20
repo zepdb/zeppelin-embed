@@ -1,0 +1,8 @@
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.99s
+────────────
+ Nextest run ID 40d804ff-0c0c-43f1-b164-90e5327b6dcc with nextest profile: default
+    Starting 7 tests across 1 binary (472 tests skipped)
+────────────
+     Summary [  20.194s] 7 tests run: 7 passed, 472 skipped

@@ -1,0 +1,55 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed)
+   Compiling zeppelin-embed-adversarial-oracle v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/tests/adversarial-oracle)
+   Compiling zeppelin-embed-cypher v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-cypher)
+   Compiling zeppelin-embed-bench v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-bench)
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.62s
+────────────
+ Nextest run ID 81bad88b-e28f-4304-ae2f-4488668dbd09 with nextest profile: default
+    Starting 1 test across 1 binary (478 tests skipped)
+        FAIL [   0.015s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests native_graph_runner_keys_are_active_with_graph_feature
+  stdout ───
+
+    running 1 test
+    test native_graph_runner_keys_are_active_with_graph_feature ... FAILED
+
+    failures:
+
+    failures:
+        native_graph_runner_keys_are_active_with_graph_feature
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 478 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'native_graph_runner_keys_are_active_with_graph_feature' (35943592) panicked at tests/adversarial_tests.rs:19161:5:
+    assertion `left == right` failed
+      left: 200
+     right: 186
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.016s] 1 test run: 0 passed, 1 failed, 478 skipped
+        FAIL [   0.015s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests native_graph_runner_keys_are_active_with_graph_feature
+  stdout ───
+
+    running 1 test
+    test native_graph_runner_keys_are_active_with_graph_feature ... FAILED
+
+    failures:
+
+    failures:
+        native_graph_runner_keys_are_active_with_graph_feature
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 478 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'native_graph_runner_keys_are_active_with_graph_feature' (35943592) panicked at tests/adversarial_tests.rs:19161:5:
+    assertion `left == right` failed
+      left: 200
+     right: 186
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed

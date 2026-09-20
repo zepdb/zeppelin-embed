@@ -1,0 +1,7 @@
+   Compiling zeppelin-embed v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.12s
+────────────
+ Nextest run ID fec14301-9e24-4b8a-ba31-1adc095d81ba with nextest profile: default
+    Starting 27 tests across 1 binary
+────────────
+     Summary [   0.050s] 27 tests run: 27 passed, 0 skipped

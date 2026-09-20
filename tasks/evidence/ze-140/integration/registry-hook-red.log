@@ -1,0 +1,51 @@
+   Compiling zeppelin-embed-ffi v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/crates/zeppelin-embed-ffi)
+   Compiling zeppelin-embed-workspace-tests v0.4.2 (/Users/aghatage/Documents/code/zeppelin-embed/tests)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.93s
+────────────
+ Nextest run ID d7a84423-db6a-46f5-8a8e-cbaf2a98a262 with nextest profile: default
+    Starting 1 test across 1 binary (482 tests skipped)
+        FAIL [   0.009s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests native_graph_runner_keys_are_active_with_graph_feature
+  stdout ───
+
+    running 1 test
+    test native_graph_runner_keys_are_active_with_graph_feature ... FAILED
+
+    failures:
+
+    failures:
+        native_graph_runner_keys_are_active_with_graph_feature
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 482 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'native_graph_runner_keys_are_active_with_graph_feature' (35945341) panicked at tests/adversarial_tests.rs:19166:5:
+    assertion `left == right` failed
+      left: 220
+     right: 206
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.009s] 1 test run: 0 passed, 1 failed, 482 skipped
+        FAIL [   0.009s] (1/1) zeppelin-embed-workspace-tests::adversarial_tests native_graph_runner_keys_are_active_with_graph_feature
+  stdout ───
+
+    running 1 test
+    test native_graph_runner_keys_are_active_with_graph_feature ... FAILED
+
+    failures:
+
+    failures:
+        native_graph_runner_keys_are_active_with_graph_feature
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 482 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'native_graph_runner_keys_are_active_with_graph_feature' (35945341) panicked at tests/adversarial_tests.rs:19166:5:
+    assertion `left == right` failed
+      left: 220
+     right: 206
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: test run failed
