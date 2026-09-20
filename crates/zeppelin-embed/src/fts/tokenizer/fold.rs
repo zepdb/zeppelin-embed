@@ -41,6 +41,7 @@
 //! epoch-digest input like everything else here.
 
 use super::fold_table::{FOLD_BLOB, FOLD_KEYS, FOLD_OFFSETS, UNICODE_VERSION};
+use crate::fts::control::{BuildPolicy, GuardedString, LegacyPolicy};
 
 /// The folding rule revision, an epoch-digest input.
 ///
@@ -108,11 +109,30 @@ pub(crate) fn fold_char(value: char, output: &mut String) {
 /// Folds a whole string.
 #[must_use]
 pub(crate) fn fold(input: &str) -> String {
-    let mut output = String::with_capacity(input.len());
-    for value in input.chars() {
-        fold_char(value, &mut output);
+    let mut policy = LegacyPolicy;
+    match fold_controlled(input, &mut policy) {
+        Ok(value) => value.into_parts().0,
+        Err(never) => match never {},
     }
-    output
+}
+
+pub(crate) fn fold_controlled<'m, P: BuildPolicy<'m>>(
+    input: &str,
+    policy: &mut P,
+) -> Result<GuardedString<'m, P::Charge>, P::Error> {
+    let mut output = GuardedString::with_capacity(policy, input.len())?;
+    for raw in input.chars() {
+        policy.step(1)?;
+        let value = punctuation_equivalent(raw);
+        if value.is_ascii() {
+            output.push_char(policy, value.to_ascii_lowercase())?;
+        } else if let Some(folded) = table_fold(value) {
+            output.push_str(policy, folded)?;
+        } else {
+            output.push_char(policy, value)?;
+        }
+    }
+    Ok(output)
 }
 
 /// Returns the character a segmenter should classify `value` as.

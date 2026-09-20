@@ -153,6 +153,607 @@ pub struct SealedSegment {
     postings_per_block: u16,
 }
 
+/// An ordinary sealed segment paired with every backing-allocation charge.
+/// The segment is declared first so all backings drop before their charges.
+pub(crate) struct GraphSealed<'m, C> {
+    sealed: SealedSegment,
+    terms_charge: C,
+    spans_charge: C,
+    blob_charge: C,
+    outer_lengths_charge: C,
+    inner_lengths_charge: C,
+    totals_charge: C,
+    marker: std::marker::PhantomData<&'m ()>,
+}
+
+impl<C: super::control::CapacityCharge> GraphSealed<'_, C> {
+    pub(crate) const fn sealed(&self) -> &SealedSegment {
+        &self.sealed
+    }
+
+    pub(crate) fn owned_bytes(&self) -> usize {
+        self.terms_charge
+            .bytes()
+            .saturating_add(self.spans_charge.bytes())
+            .saturating_add(self.blob_charge.bytes())
+            .saturating_add(self.outer_lengths_charge.bytes())
+            .saturating_add(self.inner_lengths_charge.bytes())
+            .saturating_add(self.totals_charge.bytes())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn actual_capacity_bytes(&self) -> usize {
+        self.sealed
+            .terms
+            .capacity()
+            .saturating_add(self.sealed.blob.capacity())
+            .saturating_add(
+                self.sealed
+                    .spans
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<ListSpan>()),
+            )
+            .saturating_add(
+                self.sealed
+                    .lengths
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<FieldLengths>()),
+            )
+            .saturating_add(
+                self.sealed
+                    .lengths
+                    .iter()
+                    .map(|entry| {
+                        entry
+                            .lengths
+                            .capacity()
+                            .saturating_mul(std::mem::size_of::<u32>())
+                    })
+                    .fold(0_usize, usize::saturating_add),
+            )
+            .saturating_add(
+                self.sealed
+                    .total_lengths
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<u32>()),
+            )
+    }
+}
+
+impl<'m, C> GraphSealed<'m, C> {
+    pub(crate) fn seal_policy<'a, P, I>(
+        row_lengths: &[u32],
+        postings: I,
+        policy: &mut P,
+    ) -> Result<Self, P::Error>
+    where
+        P: super::control::BuildPolicy<'m, Charge = C>,
+        P::Error: From<PostingsError> + From<SealedSegmentError>,
+        I: IntoIterator<Item = (&'a str, &'a [super::postings::OwnedPosting<'m, C>])>,
+        'm: 'a,
+        C: 'a,
+    {
+        use super::control::GuardedVec;
+        policy.checkpoint()?;
+        let row_count = u32::try_from(row_lengths.len())
+            .map_err(|_| P::Error::from(SealedSegmentError::Geometry("row count exceeds u32")))?;
+        let mut terms = GuardedVec::with_capacity(policy, 0)?;
+        let mut spans = GuardedVec::with_capacity(policy, 0)?;
+        let mut blob = GuardedVec::with_capacity(policy, 0)?;
+        let mut inner_lengths = GuardedVec::with_capacity(policy, row_lengths.len())?;
+        let mut totals = GuardedVec::with_capacity(policy, row_lengths.len())?;
+        for length in row_lengths {
+            policy.step(1)?;
+            if *length == 0 {
+                return Err(P::Error::from(SealedSegmentError::Geometry(
+                    "graph lexical row length is zero",
+                )));
+            }
+            inner_lengths.push(*length, policy)?;
+            totals.push(*length, policy)?;
+        }
+        let mut outer_lengths =
+            GuardedVec::with_capacity(policy, usize::from(!row_lengths.is_empty()))?;
+
+        let mut previous_term: Option<&[u8]> = None;
+        for (term, list) in postings {
+            policy.step(1)?;
+            if term.is_empty() || list.is_empty() {
+                return Err(P::Error::from(SealedSegmentError::Geometry(
+                    "graph posting term/list is empty",
+                )));
+            }
+            if let Some(previous) = previous_term
+                && compare_bytes_policy(previous, term.as_bytes(), policy)?
+                    != std::cmp::Ordering::Less
+            {
+                return Err(P::Error::from(SealedSegmentError::Geometry(
+                    "graph terms are not strictly ordered",
+                )));
+            }
+            previous_term = Some(term.as_bytes());
+            let encoded = super::postings::encode_graph_policy(list, row_lengths, policy)?;
+            let summary = super::postings::validate_graph_policy(
+                encoded.bytes.as_slice(),
+                row_count,
+                policy,
+            )?;
+            if encoded.summary != summary {
+                return Err(P::Error::from(SealedSegmentError::Geometry(
+                    "encoded posting-list summary does not match validation",
+                )));
+            }
+            let base = u32::try_from(blob.len()).map_err(|_| {
+                P::Error::from(SealedSegmentError::Geometry("posting blob exceeds u32"))
+            })?;
+            let meta_start = base.checked_add(HEADER_LEN_U32).ok_or_else(|| {
+                P::Error::from(SealedSegmentError::Geometry(
+                    "posting metadata offset overflow",
+                ))
+            })?;
+            let streams =
+                meta_start
+                    .checked_add(summary.block_count.checked_mul(META_LEN_U32).ok_or_else(
+                        || {
+                            P::Error::from(SealedSegmentError::Geometry(
+                                "posting stream offset overflow",
+                            ))
+                        },
+                    )?)
+                    .ok_or_else(|| {
+                        P::Error::from(SealedSegmentError::Geometry(
+                            "posting stream offset overflow",
+                        ))
+                    })?;
+            let term_start = u32::try_from(terms.len()).map_err(|_| {
+                P::Error::from(SealedSegmentError::Geometry("term bytes exceed u32"))
+            })?;
+            terms.extend_from_slice(term.as_bytes(), policy)?;
+            spans.push(
+                ListSpan {
+                    field: super::index::DEFAULT_FIELD,
+                    term_start,
+                    term_len: u32::try_from(term.len()).map_err(|_| {
+                        P::Error::from(SealedSegmentError::Geometry("term length exceeds u32"))
+                    })?,
+                    meta_start,
+                    docids_start: streams,
+                    tfs_start: streams.checked_add(summary.docid_bytes).ok_or_else(|| {
+                        P::Error::from(SealedSegmentError::Geometry("posting tf offset overflow"))
+                    })?,
+                    block_count: summary.block_count,
+                    doc_freq: summary.doc_freq,
+                    overall_max_tf: summary.overall_max_tf,
+                    overall_min_len: summary.overall_min_len,
+                    union_doc_freq: summary.doc_freq,
+                    field_count: 1,
+                },
+                policy,
+            )?;
+            blob.extend_from_slice(encoded.bytes.as_slice(), policy)?;
+        }
+        let (inner_values, inner_lengths_charge) = inner_lengths.into_parts();
+        if !row_lengths.is_empty() {
+            outer_lengths.push(
+                FieldLengths {
+                    field: super::index::DEFAULT_FIELD,
+                    lengths: inner_values,
+                },
+                policy,
+            )?;
+        }
+        let (terms, terms_charge) = terms.into_parts();
+        let (spans, spans_charge) = spans.into_parts();
+        let (blob, blob_charge) = blob.into_parts();
+        let (lengths, outer_lengths_charge) = outer_lengths.into_parts();
+        let (total_lengths, totals_charge) = totals.into_parts();
+        let sealed = SealedSegment {
+            terms,
+            spans,
+            blob,
+            lengths,
+            total_lengths,
+            row_count,
+            postings_per_block: DEFAULT_POSTINGS_PER_BLOCK,
+        };
+        policy.checkpoint()?;
+        Ok(Self {
+            sealed,
+            terms_charge,
+            spans_charge,
+            blob_charge,
+            outer_lengths_charge,
+            inner_lengths_charge,
+            totals_charge,
+            marker: std::marker::PhantomData,
+        })
+    }
+
+    pub(crate) fn encode_region_policy<P>(
+        &self,
+        policy: &mut P,
+    ) -> Result<super::control::GuardedVec<'m, u8, C>, P::Error>
+    where
+        P: super::control::BuildPolicy<'m, Charge = C>,
+        P::Error: From<SealedSegmentError>,
+    {
+        use super::control::GuardedVec;
+        let span_count = u32::try_from(self.sealed.spans.len())
+            .map_err(|_| P::Error::from(SealedSegmentError::Geometry("span count exceeds u32")))?;
+        let field_count = u32::try_from(self.sealed.lengths.len())
+            .map_err(|_| P::Error::from(SealedSegmentError::Geometry("field count exceeds u32")))?;
+        let spans_len = self
+            .sealed
+            .spans
+            .len()
+            .checked_mul(REGION_SPAN_LEN)
+            .ok_or_else(|| P::Error::from(SealedSegmentError::Geometry("span bytes overflow")))?;
+        let fields_len = self
+            .sealed
+            .lengths
+            .len()
+            .checked_mul(REGION_FIELD_HEADER_LEN)
+            .and_then(|value| value.checked_add(self.sealed.total_lengths.len().checked_mul(4)?))
+            .ok_or_else(|| P::Error::from(SealedSegmentError::Geometry("field bytes overflow")))?;
+        let capacity = REGION_HEADER_LEN
+            .checked_add(spans_len)
+            .and_then(|v| v.checked_add(fields_len))
+            .and_then(|v| v.checked_add(self.sealed.terms.len()))
+            .and_then(|v| v.checked_add(self.sealed.blob.len()))
+            .ok_or_else(|| {
+                P::Error::from(SealedSegmentError::Geometry(
+                    "lexical region length overflow",
+                ))
+            })?;
+        let mut bytes = GuardedVec::with_capacity(policy, capacity)?;
+        bytes.extend_from_slice(&REGION_MAGIC, policy)?;
+        #[cfg(test)]
+        super::control::test_stage_probe(super::control::TestStage::RegionEncode);
+        bytes.extend_from_slice(&REGION_VERSION.to_le_bytes(), policy)?;
+        bytes.extend_from_slice(&self.sealed.postings_per_block.to_le_bytes(), policy)?;
+        bytes.extend_from_slice(&self.sealed.row_count.to_le_bytes(), policy)?;
+        bytes.extend_from_slice(&span_count.to_le_bytes(), policy)?;
+        bytes.extend_from_slice(&field_count.to_le_bytes(), policy)?;
+        bytes.extend_from_slice(&0_u32.to_le_bytes(), policy)?;
+        bytes.extend_from_slice(
+            &u64::try_from(self.sealed.terms.len())
+                .unwrap_or(u64::MAX)
+                .to_le_bytes(),
+            policy,
+        )?;
+        bytes.extend_from_slice(
+            &u64::try_from(self.sealed.blob.len())
+                .unwrap_or(u64::MAX)
+                .to_le_bytes(),
+            policy,
+        )?;
+        for span in &self.sealed.spans {
+            for value in [span.field.0, 0] {
+                bytes.extend_from_slice(&value.to_le_bytes(), policy)?;
+            }
+            for value in [
+                span.term_start,
+                span.term_len,
+                span.meta_start,
+                span.docids_start,
+                span.tfs_start,
+                span.block_count,
+                span.doc_freq,
+                span.overall_max_tf,
+            ] {
+                bytes.extend_from_slice(&value.to_le_bytes(), policy)?;
+            }
+            bytes.extend_from_slice(&span.overall_min_len.to_le_bytes(), policy)?;
+            bytes.extend_from_slice(&0_u16.to_le_bytes(), policy)?;
+            bytes.extend_from_slice(&span.union_doc_freq.to_le_bytes(), policy)?;
+            bytes.extend_from_slice(&span.field_count.to_le_bytes(), policy)?;
+        }
+        for entry in &self.sealed.lengths {
+            bytes.extend_from_slice(&entry.field.0.to_le_bytes(), policy)?;
+            bytes.extend_from_slice(&0_u16.to_le_bytes(), policy)?;
+            bytes.extend_from_slice(&self.sealed.row_count.to_le_bytes(), policy)?;
+            for length in &entry.lengths {
+                bytes.extend_from_slice(&length.to_le_bytes(), policy)?;
+            }
+        }
+        bytes.extend_from_slice(&self.sealed.terms, policy)?;
+        bytes.extend_from_slice(&self.sealed.blob, policy)?;
+        Ok(bytes)
+    }
+
+    pub(crate) fn decode_policy<P>(bytes: &[u8], policy: &mut P) -> Result<(Self, u64), P::Error>
+    where
+        P: super::control::BuildPolicy<'m, Charge = C>,
+        P::Error: From<PostingsError> + From<SealedSegmentError>,
+    {
+        use super::control::GuardedVec;
+        policy.checkpoint()?;
+        let mut cursor = RegionCursor::new(bytes);
+        if cursor.take_array::<4>().map_err(P::Error::from)? != REGION_MAGIC {
+            return Err(P::Error::from(SealedSegmentError::Geometry(
+                "magic did not match",
+            )));
+        }
+        if cursor.read_u16().map_err(P::Error::from)? != REGION_VERSION {
+            return Err(P::Error::from(SealedSegmentError::Geometry(
+                "version is not readable",
+            )));
+        }
+        let postings_per_block = cursor.read_u16().map_err(P::Error::from)?;
+        if postings_per_block == 0 {
+            return Err(P::Error::from(SealedSegmentError::Geometry(
+                "postings per block is zero",
+            )));
+        }
+        let row_count = cursor.read_u32().map_err(P::Error::from)?;
+        let span_count =
+            usize::try_from(cursor.read_u32().map_err(P::Error::from)?).map_err(|_| {
+                P::Error::from(SealedSegmentError::Geometry("span count exceeds usize"))
+            })?;
+        let field_count =
+            usize::try_from(cursor.read_u32().map_err(P::Error::from)?).map_err(|_| {
+                P::Error::from(SealedSegmentError::Geometry("field count exceeds usize"))
+            })?;
+        if cursor.read_u32().map_err(P::Error::from)? != 0 {
+            return Err(P::Error::from(SealedSegmentError::Geometry(
+                "header reserved field is nonzero",
+            )));
+        }
+        let terms_len = usize::try_from(cursor.read_u64().map_err(P::Error::from)?)
+            .map_err(|_| P::Error::from(SealedSegmentError::Geometry("term bytes exceed usize")))?;
+        let blob_len =
+            usize::try_from(cursor.read_u64().map_err(P::Error::from)?).map_err(|_| {
+                P::Error::from(SealedSegmentError::Geometry("postings bytes exceed usize"))
+            })?;
+        let rows = usize::try_from(row_count)
+            .map_err(|_| P::Error::from(SealedSegmentError::Geometry("row count exceeds usize")))?;
+        let span_bytes = span_count
+            .checked_mul(REGION_SPAN_LEN)
+            .ok_or_else(|| P::Error::from(SealedSegmentError::Geometry("span bytes overflow")))?;
+        let one_field = REGION_FIELD_HEADER_LEN
+            .checked_add(rows.checked_mul(4).ok_or_else(|| {
+                P::Error::from(SealedSegmentError::Geometry("field bytes overflow"))
+            })?)
+            .ok_or_else(|| P::Error::from(SealedSegmentError::Geometry("field bytes overflow")))?;
+        let required = REGION_HEADER_LEN
+            .checked_add(span_bytes)
+            .and_then(|value| value.checked_add(field_count.checked_mul(one_field)?))
+            .and_then(|value| value.checked_add(terms_len))
+            .and_then(|value| value.checked_add(blob_len))
+            .ok_or_else(|| {
+                P::Error::from(SealedSegmentError::Geometry(
+                    "lexical region length overflow",
+                ))
+            })?;
+        if required != bytes.len() {
+            return Err(P::Error::from(SealedSegmentError::Geometry(
+                "region is truncated",
+            )));
+        }
+        if (row_count == 0
+            && (field_count != 0 || span_count != 0 || terms_len != 0 || blob_len != 0))
+            || (row_count != 0 && field_count != 1)
+        {
+            return Err(P::Error::from(SealedSegmentError::Geometry(
+                "graph lexical region is not the default single field",
+            )));
+        }
+
+        let mut spans = GuardedVec::with_capacity(policy, span_count)?;
+        for _ in 0..span_count {
+            policy.step(1)?;
+            let field = FieldId(cursor.read_u16().map_err(P::Error::from)?);
+            if cursor.read_u16().map_err(P::Error::from)? != 0 {
+                return Err(P::Error::from(SealedSegmentError::Geometry(
+                    "span reserved field is nonzero",
+                )));
+            }
+            let span = ListSpan {
+                field,
+                term_start: cursor.read_u32().map_err(P::Error::from)?,
+                term_len: cursor.read_u32().map_err(P::Error::from)?,
+                meta_start: cursor.read_u32().map_err(P::Error::from)?,
+                docids_start: cursor.read_u32().map_err(P::Error::from)?,
+                tfs_start: cursor.read_u32().map_err(P::Error::from)?,
+                block_count: cursor.read_u32().map_err(P::Error::from)?,
+                doc_freq: cursor.read_u32().map_err(P::Error::from)?,
+                overall_max_tf: cursor.read_u32().map_err(P::Error::from)?,
+                overall_min_len: cursor.read_u16().map_err(P::Error::from)?,
+                union_doc_freq: {
+                    if cursor.read_u16().map_err(P::Error::from)? != 0 {
+                        return Err(P::Error::from(SealedSegmentError::Geometry(
+                            "span trailing reserved field is nonzero",
+                        )));
+                    }
+                    cursor.read_u32().map_err(P::Error::from)?
+                },
+                field_count: cursor.read_u32().map_err(P::Error::from)?,
+            };
+            spans.push(span, policy)?;
+            #[cfg(test)]
+            super::control::test_stage_probe(super::control::TestStage::RegionDecode);
+        }
+        let mut outer_lengths = GuardedVec::with_capacity(policy, field_count)?;
+        let mut inner_lengths = GuardedVec::with_capacity(policy, rows)?;
+        let mut totals = GuardedVec::with_capacity(policy, rows)?;
+        let mut total_tokens = 0_u64;
+        if field_count == 1 {
+            let field = FieldId(cursor.read_u16().map_err(P::Error::from)?);
+            if field != super::index::DEFAULT_FIELD
+                || cursor.read_u16().map_err(P::Error::from)? != 0
+                || cursor.read_u32().map_err(P::Error::from)? != row_count
+            {
+                return Err(P::Error::from(SealedSegmentError::Geometry(
+                    "field header is invalid",
+                )));
+            }
+            for _ in 0..rows {
+                policy.step(1)?;
+                let length = cursor.read_u32().map_err(P::Error::from)?;
+                if length == 0 {
+                    return Err(P::Error::from(SealedSegmentError::Geometry(
+                        "graph lexical row lengths are invalid",
+                    )));
+                }
+                total_tokens = total_tokens.checked_add(u64::from(length)).ok_or_else(|| {
+                    P::Error::from(SealedSegmentError::Geometry("total token count overflow"))
+                })?;
+                inner_lengths.push(length, policy)?;
+                totals.push(length, policy)?;
+            }
+        }
+        let mut terms = GuardedVec::with_capacity(policy, terms_len)?;
+        terms.extend_from_slice(cursor.take(terms_len).map_err(P::Error::from)?, policy)?;
+        let mut blob = GuardedVec::with_capacity(policy, blob_len)?;
+        blob.extend_from_slice(cursor.take(blob_len).map_err(P::Error::from)?, policy)?;
+        cursor.finish().map_err(P::Error::from)?;
+
+        let mut previous: Option<(&[u8], FieldId)> = None;
+        for (index, span) in spans.as_slice().iter().enumerate() {
+            policy.step(1)?;
+            let start = usize::try_from(span.term_start).map_err(|_| {
+                P::Error::from(SealedSegmentError::Geometry("term start exceeds usize"))
+            })?;
+            let end = start
+                .checked_add(usize::try_from(span.term_len).unwrap_or(usize::MAX))
+                .ok_or_else(|| {
+                    P::Error::from(SealedSegmentError::Geometry("term span overflows"))
+                })?;
+            let term = terms.as_slice().get(start..end).ok_or_else(|| {
+                P::Error::from(SealedSegmentError::Geometry("term span is out of bounds"))
+            })?;
+            let out_of_order = if let Some((prior, field)) = previous {
+                match compare_bytes_policy(prior, term, policy)? {
+                    std::cmp::Ordering::Greater => true,
+                    std::cmp::Ordering::Equal => field >= span.field,
+                    std::cmp::Ordering::Less => false,
+                }
+            } else {
+                false
+            };
+            if term.is_empty() || out_of_order {
+                return Err(P::Error::from(SealedSegmentError::Geometry(
+                    "term spans are not strictly ordered",
+                )));
+            }
+            previous = Some((term, span.field));
+            if span.field != super::index::DEFAULT_FIELD
+                || span.field_count != 1
+                || span.union_doc_freq != span.doc_freq
+            {
+                return Err(P::Error::from(SealedSegmentError::Geometry(
+                    "graph lexical posting shape is invalid",
+                )));
+            }
+            let list_start = usize::try_from(span.meta_start)
+                .unwrap_or(usize::MAX)
+                .checked_sub(HEADER_LEN)
+                .ok_or_else(|| {
+                    P::Error::from(SealedSegmentError::Geometry(
+                        "posting header start underflows",
+                    ))
+                })?;
+            let list_end = spans
+                .as_slice()
+                .get(index.saturating_add(1))
+                .map(|next| {
+                    usize::try_from(next.meta_start)
+                        .unwrap_or(usize::MAX)
+                        .checked_sub(HEADER_LEN)
+                })
+                .flatten()
+                .unwrap_or(blob.len());
+            let list = blob.as_slice().get(list_start..list_end).ok_or_else(|| {
+                P::Error::from(SealedSegmentError::Geometry(
+                    "posting list is out of bounds",
+                ))
+            })?;
+            let summary = super::postings::validate_graph_policy(list, row_count, policy)?;
+            let expected_meta = u32::try_from(list_start)
+                .unwrap_or(u32::MAX)
+                .checked_add(HEADER_LEN_U32)
+                .ok_or_else(|| {
+                    P::Error::from(SealedSegmentError::Geometry(
+                        "posting metadata offset overflow",
+                    ))
+                })?;
+            let expected_docids = expected_meta
+                .checked_add(summary.block_count.saturating_mul(META_LEN_U32))
+                .ok_or_else(|| {
+                    P::Error::from(SealedSegmentError::Geometry(
+                        "posting stream offset overflow",
+                    ))
+                })?;
+            if summary.postings_per_block != postings_per_block
+                || span.meta_start != expected_meta
+                || span.docids_start != expected_docids
+                || span.tfs_start != expected_docids.saturating_add(summary.docid_bytes)
+                || span.block_count != summary.block_count
+                || span.doc_freq != summary.doc_freq
+                || span.overall_max_tf != summary.overall_max_tf
+                || span.overall_min_len != summary.overall_min_len
+            {
+                return Err(P::Error::from(SealedSegmentError::Geometry(
+                    "posting-list summary does not match span",
+                )));
+            }
+        }
+        let (inner_values, inner_lengths_charge) = inner_lengths.into_parts();
+        if field_count == 1 {
+            outer_lengths.push(
+                FieldLengths {
+                    field: super::index::DEFAULT_FIELD,
+                    lengths: inner_values,
+                },
+                policy,
+            )?;
+        }
+        let (terms, terms_charge) = terms.into_parts();
+        let (spans, spans_charge) = spans.into_parts();
+        let (blob, blob_charge) = blob.into_parts();
+        let (lengths, outer_lengths_charge) = outer_lengths.into_parts();
+        let (total_lengths, totals_charge) = totals.into_parts();
+        let sealed = SealedSegment {
+            terms,
+            spans,
+            blob,
+            lengths,
+            total_lengths,
+            row_count,
+            postings_per_block,
+        };
+        policy.checkpoint()?;
+        Ok((
+            Self {
+                sealed,
+                terms_charge,
+                spans_charge,
+                blob_charge,
+                outer_lengths_charge,
+                inner_lengths_charge,
+                totals_charge,
+                marker: std::marker::PhantomData,
+            },
+            total_tokens,
+        ))
+    }
+}
+
+fn compare_bytes_policy<'m, P: super::control::BuildPolicy<'m>>(
+    left: &[u8],
+    right: &[u8],
+    policy: &mut P,
+) -> Result<std::cmp::Ordering, P::Error> {
+    for (left, right) in left.iter().zip(right) {
+        policy.step(1)?;
+        let order = left.cmp(right);
+        if order != std::cmp::Ordering::Equal {
+            return Ok(order);
+        }
+    }
+    Ok(left.len().cmp(&right.len()))
+}
+
 impl SealedSegment {
     pub(crate) fn resident_bytes(&self) -> Result<usize, SealedSegmentError> {
         self.resident_bytes_controlled(&mut super::control::WorkCheck::new(|| {

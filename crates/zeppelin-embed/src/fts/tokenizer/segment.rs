@@ -20,6 +20,7 @@
 //! fixture so task 21 can migrate it deliberately.
 
 use super::fold::segmentation_equivalent;
+use crate::fts::control::{BuildPolicy, GuardedVec, LegacyPolicy};
 
 /// One segmented span of the input, addressed by byte offsets.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -62,26 +63,42 @@ fn is_word_character(value: char) -> bool {
 /// Offsets are byte offsets into `text` itself, never into a normalized
 /// copy, so every emitted token can be sliced back to its surface form.
 pub(crate) fn segment(text: &str) -> Vec<Span> {
-    let mut spans = Vec::new();
+    let mut policy = LegacyPolicy;
+    match segment_controlled(text, &mut policy) {
+        Ok(spans) => spans.into_parts().0,
+        Err(never) => match never {},
+    }
+}
+
+pub(crate) fn segment_controlled<'m, P: BuildPolicy<'m>>(
+    text: &str,
+    policy: &mut P,
+) -> Result<GuardedVec<'m, Span, P::Charge>, P::Error> {
+    let mut spans = GuardedVec::with_capacity(policy, 0)?;
     let bytes = text.len();
     let mut characters = text.char_indices().peekable();
 
     while let Some((index, raw)) = characters.next() {
+        policy.step(1)?;
         let value = segmentation_equivalent(raw);
         if is_ideograph(raw) {
             let mut end = index + raw.len_utf8();
             while let Some(&(next_index, next_raw)) = characters.peek() {
+                policy.step(1)?;
                 if !is_ideograph(next_raw) {
                     break;
                 }
                 end = next_index + next_raw.len_utf8();
                 characters.next();
             }
-            spans.push(Span {
-                start: index,
-                end,
-                ideographic: true,
-            });
+            spans.push(
+                Span {
+                    start: index,
+                    end,
+                    ideographic: true,
+                },
+                policy,
+            )?;
             continue;
         }
         if !is_word_character(value) {
@@ -93,6 +110,7 @@ pub(crate) fn segment(text: &str) -> Vec<Span> {
             let Some(&(next_index, next_raw)) = characters.peek() else {
                 break;
             };
+            policy.step(1)?;
             let next = segmentation_equivalent(next_raw);
             if is_word_character(next) {
                 end = next_index + next_raw.len_utf8();
@@ -122,6 +140,7 @@ pub(crate) fn segment(text: &str) -> Vec<Span> {
             let Some(&(next_index, next_raw)) = characters.peek() else {
                 break;
             };
+            policy.step(1)?;
             let next = segmentation_equivalent(next_raw);
             if !is_trailing_symbol(next) {
                 break;
@@ -141,14 +160,18 @@ pub(crate) fn segment(text: &str) -> Vec<Span> {
         }
 
         debug_assert!(end <= bytes, "segment span escaped the input");
-        spans.push(Span {
-            start: index,
-            end,
-            ideographic: false,
-        });
+        spans.push(
+            Span {
+                start: index,
+                end,
+                ideographic: false,
+            },
+            policy,
+        )?;
     }
 
-    spans
+    policy.checkpoint()?;
+    Ok(spans)
 }
 
 /// Splits an ideograph span into overlapping bigram spans.
@@ -156,29 +179,48 @@ pub(crate) fn segment(text: &str) -> Vec<Span> {
 /// A single ideograph yields one unigram span so a one-character query is
 /// still findable.
 pub(crate) fn ideograph_bigrams(text: &str, span: Span) -> Vec<Span> {
-    let Some(slice) = text.get(span.start..span.end) else {
-        return Vec::new();
-    };
-    let boundaries = slice
-        .char_indices()
-        .map(|(index, _)| span.start + index)
-        .chain(std::iter::once(span.end))
-        .collect::<Vec<_>>();
-    if boundaries.len() <= 2 {
-        return vec![span];
+    let mut policy = LegacyPolicy;
+    match ideograph_bigrams_controlled(text, span, &mut policy) {
+        Ok(spans) => spans.into_parts().0,
+        Err(never) => match never {},
     }
-    let mut spans = Vec::with_capacity(boundaries.len().saturating_sub(2));
-    for window in boundaries.windows(3) {
+}
+
+pub(crate) fn ideograph_bigrams_controlled<'m, P: BuildPolicy<'m>>(
+    text: &str,
+    span: Span,
+    policy: &mut P,
+) -> Result<GuardedVec<'m, Span, P::Charge>, P::Error> {
+    let Some(slice) = text.get(span.start..span.end) else {
+        return GuardedVec::with_capacity(policy, 0);
+    };
+    let mut boundaries = GuardedVec::with_capacity(policy, 0)?;
+    for (index, _) in slice.char_indices() {
+        policy.step(1)?;
+        boundaries.push(span.start.saturating_add(index), policy)?;
+    }
+    boundaries.push(span.end, policy)?;
+    if boundaries.len() <= 2 {
+        let mut spans = GuardedVec::with_capacity(policy, 1)?;
+        spans.push(span, policy)?;
+        return Ok(spans);
+    }
+    let mut spans = GuardedVec::with_capacity(policy, boundaries.len().saturating_sub(2))?;
+    for window in boundaries.as_slice().windows(3) {
+        policy.step(1)?;
         let (Some(start), Some(end)) = (window.first(), window.get(2)) else {
             continue;
         };
-        spans.push(Span {
-            start: *start,
-            end: *end,
-            ideographic: true,
-        });
+        spans.push(
+            Span {
+                start: *start,
+                end: *end,
+                ideographic: true,
+            },
+            policy,
+        )?;
     }
-    spans
+    Ok(spans)
 }
 
 #[cfg(test)]

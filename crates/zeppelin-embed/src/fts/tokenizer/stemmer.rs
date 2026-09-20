@@ -17,10 +17,13 @@
 //! stemmer also makes it byte-for-byte pinnable, which is decision criterion
 //! one: an upstream patch release can never silently change our token stream
 //! and invalidate an index (failure class U11).
+
 //!
 //! Stemming is worth this effort: it is +1.3 nDCG@10 on average and +2.8 on
 //! TREC-COVID (`research/02a:265`). It is the single largest analysis-side
 //! lever on the task-13 BEIR gate.
+
+use crate::fts::control::{BuildPolicy, GuardedString, GuardedVec};
 
 /// Marker for a `y` acting as a consonant, per the published algorithm.
 const CONSONANT_Y: char = 'Y';
@@ -237,6 +240,191 @@ pub(crate) fn stem(term: &str) -> String {
     step_5(&mut word, r1, r2);
 
     restore_y(&word)
+}
+
+pub(crate) fn stem_controlled<'m, P: BuildPolicy<'m>>(
+    term: &str,
+    policy: &mut P,
+) -> Result<GuardedString<'m, P::Charge>, P::Error> {
+    let mut count = 0_usize;
+    for _ in term.chars() {
+        policy.step(1)?;
+        count = count.saturating_add(1);
+    }
+    if count <= 2 {
+        return GuardedString::copy_from(policy, term);
+    }
+    if let Some(exception) = exceptional_form(term) {
+        return GuardedString::copy_from(policy, exception);
+    }
+    let mut guarded = GuardedVec::with_capacity(policy, count.saturating_add(1))?;
+    for value in term.chars() {
+        policy.step(1)?;
+        guarded.push(value, policy)?;
+    }
+    if guarded.first() == Some(&'\'') {
+        let _ = guarded.remove_first(policy)?;
+    }
+    let (mut word, word_charge) = guarded.into_parts();
+    if word.first() == Some(&'y')
+        && let Some(first) = word.first_mut()
+    {
+        *first = CONSONANT_Y;
+    }
+    for index in 1..word.len() {
+        policy.step(1)?;
+        let previous_is_vowel = word.get(index - 1).copied().is_some_and(is_vowel);
+        if previous_is_vowel
+            && word.get(index) == Some(&'y')
+            && let Some(slot) = word.get_mut(index)
+        {
+            *slot = CONSONANT_Y;
+        }
+    }
+    let (r1, r2) = regions_controlled(&word, policy)?;
+    step_0(&mut word);
+    step_1a_controlled(&mut word, policy)?;
+    if !invariant_after_step_1a(&word) {
+        step_1b_controlled(&mut word, r1, policy)?;
+        step_1c(&mut word);
+        step_2(&mut word, r1);
+        step_3(&mut word, r1, r2);
+        step_4(&mut word, r2);
+        step_5(&mut word, r1, r2);
+    }
+    let mut output = GuardedString::with_capacity(policy, term.len())?;
+    for value in word.iter() {
+        policy.step(1)?;
+        output.push_char(policy, if *value == CONSONANT_Y { 'y' } else { *value })?;
+    }
+    drop(word);
+    drop(word_charge);
+    Ok(output)
+}
+
+fn regions_controlled<'m, P: BuildPolicy<'m>>(
+    word: &[char],
+    policy: &mut P,
+) -> Result<(usize, usize), P::Error> {
+    let length = word.len();
+    let exceptional = ["gener", "commun", "arsen"]
+        .into_iter()
+        .find(|prefix| starts_with(word, prefix));
+    let r1 = match exceptional {
+        Some(prefix) => prefix.chars().count().min(length),
+        None => region_after_controlled(word, 0, policy)?,
+    };
+    let r2 = region_after_controlled(word, r1, policy)?;
+    Ok((r1, r2))
+}
+
+fn region_after_controlled<'m, P: BuildPolicy<'m>>(
+    word: &[char],
+    from: usize,
+    policy: &mut P,
+) -> Result<usize, P::Error> {
+    let length = word.len();
+    let mut index = from;
+    while index < length {
+        policy.step(1)?;
+        let Some(value) = word.get(index) else {
+            return Ok(length);
+        };
+        if is_vowel(*value) {
+            break;
+        }
+        index = index.saturating_add(1);
+    }
+    while index < length {
+        policy.step(1)?;
+        let Some(value) = word.get(index) else {
+            return Ok(length);
+        };
+        if !is_vowel(*value) {
+            return Ok(index.saturating_add(1).min(length));
+        }
+        index = index.saturating_add(1);
+    }
+    Ok(length)
+}
+
+fn step_1a_controlled<'m, P: BuildPolicy<'m>>(
+    word: &mut Vec<char>,
+    policy: &mut P,
+) -> Result<(), P::Error> {
+    if ends_with(word, "sses") {
+        replace_suffix(word, 4, "ss");
+        return Ok(());
+    }
+    if ends_with(word, "ied") || ends_with(word, "ies") {
+        let replacement = if word.len() > 4 { "i" } else { "ie" };
+        replace_suffix(word, 3, replacement);
+        return Ok(());
+    }
+    if ends_with(word, "us") || ends_with(word, "ss") {
+        return Ok(());
+    }
+    if ends_with(word, "s") {
+        let body = word.len().saturating_sub(1);
+        let mut has_earlier_vowel = false;
+        for value in word.iter().take(body.saturating_sub(1)) {
+            policy.step(1)?;
+            if is_vowel(*value) {
+                has_earlier_vowel = true;
+                break;
+            }
+        }
+        if has_earlier_vowel {
+            word.truncate(body);
+        }
+    }
+    Ok(())
+}
+
+fn step_1b_controlled<'m, P: BuildPolicy<'m>>(
+    word: &mut Vec<char>,
+    r1: usize,
+    policy: &mut P,
+) -> Result<(), P::Error> {
+    for suffix in ["eedly", "eed"] {
+        if ends_with(word, suffix) {
+            let length = suffix.chars().count();
+            if word.len().saturating_sub(length) >= r1 {
+                replace_suffix(word, length, "ee");
+            }
+            return Ok(());
+        }
+    }
+    for suffix in ["ingly", "edly", "ing", "ed"] {
+        if !ends_with(word, suffix) {
+            continue;
+        }
+        let length = suffix.chars().count();
+        let keep = word.len().saturating_sub(length);
+        let mut preceding_has_vowel = false;
+        for value in word.iter().take(keep) {
+            policy.step(1)?;
+            if is_vowel(*value) {
+                preceding_has_vowel = true;
+                break;
+            }
+        }
+        if !preceding_has_vowel {
+            return Ok(());
+        }
+        word.truncate(keep);
+        if ends_with(word, "at") || ends_with(word, "bl") || ends_with(word, "iz") {
+            policy.copy_step(std::mem::size_of::<char>())?;
+            word.push('e');
+        } else if ends_with_double(word) {
+            word.truncate(word.len().saturating_sub(1));
+        } else if is_short_word(word, r1) {
+            policy.copy_step(std::mem::size_of::<char>())?;
+            word.push('e');
+        }
+        return Ok(());
+    }
+    Ok(())
 }
 
 fn restore_y(word: &[char]) -> String {
@@ -472,8 +660,8 @@ fn step_5(word: &mut Vec<char>, r1: usize, r2: usize) {
             return;
         }
         if keep >= r1 {
-            let body: Vec<char> = word.iter().take(keep).copied().collect();
-            if !ends_in_short_syllable(&body) {
+            let body = word.get(..keep).unwrap_or(&[]);
+            if !ends_in_short_syllable(body) {
                 word.truncate(keep);
             }
         }

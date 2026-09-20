@@ -166,6 +166,12 @@ pub struct Posting {
     pub positions: Vec<u32>,
 }
 
+pub(crate) struct OwnedPosting<'m, C> {
+    pub(crate) posting: Posting,
+    pub(crate) _positions_charge: C,
+    pub(crate) marker: std::marker::PhantomData<&'m ()>,
+}
+
 /// An in-memory posting list for one term.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PostingList {
@@ -525,7 +531,7 @@ pub fn encode(
     block_maxima: &[u8],
 ) -> Result<EncodedPostings, PostingsError> {
     encode_versioned(
-        list,
+        list.postings(),
         postings_per_block,
         block_maxima,
         &[],
@@ -550,7 +556,7 @@ pub fn encode_v2(
     impacts: &[BlockImpact],
 ) -> Result<EncodedPostings, PostingsError> {
     encode_versioned(
-        list,
+        list.postings(),
         postings_per_block,
         block_maxima,
         impacts,
@@ -567,7 +573,7 @@ pub(crate) fn encode_v2_controlled<E: From<PostingsError>>(
     work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
 ) -> Result<EncodedPostings, E> {
     encode_versioned(
-        list,
+        list.postings(),
         postings_per_block,
         block_maxima,
         impacts,
@@ -576,9 +582,497 @@ pub(crate) fn encode_v2_controlled<E: From<PostingsError>>(
     )
 }
 
+pub(crate) struct GraphEncoded<'m, C> {
+    pub(crate) bytes: super::control::GuardedVec<'m, u8, C>,
+    pub(crate) summary: GraphListSummary,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) struct GraphListSummary {
+    pub(crate) postings_per_block: u16,
+    pub(crate) block_count: u32,
+    pub(crate) doc_freq: u32,
+    pub(crate) docid_bytes: u32,
+    pub(crate) overall_max_tf: u32,
+    pub(crate) overall_min_len: u16,
+}
+
+pub(crate) fn encode_graph_policy<'m, P>(
+    postings: &[OwnedPosting<'m, P::Charge>],
+    lengths: &[u32],
+    policy: &mut P,
+) -> Result<GraphEncoded<'m, P::Charge>, P::Error>
+where
+    P: super::control::BuildPolicy<'m>,
+    P::Error: From<PostingsError>,
+{
+    use super::control::GuardedVec;
+    let per_block = usize::from(DEFAULT_POSTINGS_PER_BLOCK);
+    let block_count = postings.len().div_ceil(per_block);
+    let mut docids = GuardedVec::with_capacity(policy, 0)?;
+    let mut tfs = GuardedVec::with_capacity(policy, 0)?;
+    let mut positions = GuardedVec::with_capacity(policy, 0)?;
+    let mut metadata = GuardedVec::with_capacity(policy, block_count)?;
+    let mut previous_docid = 0_u32;
+    let mut overall_max_tf = 0_u32;
+    let mut overall_min_len = u16::MAX;
+
+    for (block, chunk) in postings.chunks(per_block).enumerate() {
+        policy.lexical_block()?;
+        let position_count = chunk
+            .iter()
+            .try_fold(0_usize, |total, owned| {
+                total
+                    .checked_add(owned.posting.positions.len())
+                    .ok_or(PostingsError::Truncated {
+                        needed: usize::MAX,
+                        available: total,
+                    })
+            })
+            .map_err(P::Error::from)?;
+        let mut deltas = GuardedVec::with_capacity(policy, chunk.len())?;
+        let mut frequencies = GuardedVec::with_capacity(policy, chunk.len())?;
+        let mut position_deltas = GuardedVec::with_capacity(policy, position_count)?;
+        let mut base = previous_docid;
+        let mut max_tf = 0_u32;
+        let mut min_len = usize::MAX;
+        for (offset, owned) in chunk.iter().enumerate() {
+            let posting = &owned.posting;
+            policy.lexical_posting()?;
+            if posting.tf == 0 || usize::try_from(posting.tf).ok() != Some(posting.positions.len())
+            {
+                return Err(P::Error::from(PostingsError::ZeroTermFrequency));
+            }
+            let delta = if block == 0 && offset == 0 {
+                posting.docid
+            } else {
+                let Some(delta) = posting.docid.checked_sub(base) else {
+                    return Err(P::Error::from(PostingsError::DocidsNotAscending {
+                        docid: posting.docid,
+                    }));
+                };
+                if delta == 0 {
+                    return Err(P::Error::from(PostingsError::DocidsNotAscending {
+                        docid: posting.docid,
+                    }));
+                }
+                delta
+            };
+            deltas.push(delta, policy)?;
+            frequencies.push(posting.tf, policy)?;
+            let mut previous = 0_u32;
+            for (slot, position) in posting.positions.iter().enumerate() {
+                policy.step(1)?;
+                let gap = if slot == 0 {
+                    *position
+                } else {
+                    let Some(gap) = position.checked_sub(previous) else {
+                        return Err(P::Error::from(PostingsError::PositionsNotAscending {
+                            position: *position,
+                        }));
+                    };
+                    if gap == 0 {
+                        return Err(P::Error::from(PostingsError::PositionsNotAscending {
+                            position: *position,
+                        }));
+                    }
+                    gap
+                };
+                position_deltas.push(gap, policy)?;
+                #[cfg(test)]
+                super::control::test_stage_probe(super::control::TestStage::PositionsEncode);
+                previous = *position;
+            }
+            base = posting.docid;
+            max_tf = max_tf.max(posting.tf);
+            let length = usize::try_from(posting.docid)
+                .ok()
+                .and_then(|row| lengths.get(row).copied())
+                .and_then(|value| usize::try_from(value).ok())
+                .unwrap_or(1);
+            min_len = min_len.min(length);
+        }
+        previous_docid = base;
+        let docid_bits = required_bits_policy(deltas.as_slice(), policy)?;
+        let tf_bits = required_bits_policy(frequencies.as_slice(), policy)?;
+        let position_bits = required_bits_policy(position_deltas.as_slice(), policy)?;
+        let meta = BlockMeta {
+            last_docid: base,
+            docids_offset: u32::try_from(docids.len()).unwrap_or(u32::MAX),
+            tfs_offset: u32::try_from(tfs.len()).unwrap_or(u32::MAX),
+            positions_offset: u32::try_from(positions.len()).unwrap_or(u32::MAX),
+            positions_count: u32::try_from(position_deltas.len()).unwrap_or(u32::MAX),
+            count: u16::try_from(chunk.len()).unwrap_or(u16::MAX),
+            docid_bits,
+            tf_bits,
+            position_bits,
+            block_max: 0,
+            max_tf,
+            min_len: u16::try_from(min_len).unwrap_or(u16::MAX),
+        };
+        pack_bits_policy(deltas.as_slice(), docid_bits, &mut docids, policy)?;
+        pack_bits_policy(frequencies.as_slice(), tf_bits, &mut tfs, policy)?;
+        pack_bits_policy(
+            position_deltas.as_slice(),
+            position_bits,
+            &mut positions,
+            policy,
+        )?;
+        metadata.push(meta, policy)?;
+        overall_max_tf = overall_max_tf.max(meta.max_tf);
+        overall_min_len = overall_min_len.min(meta.min_len);
+    }
+
+    let capacity = HEADER_LEN
+        .saturating_add(metadata.len().saturating_mul(BLOCK_META_LEN))
+        .saturating_add(docids.len())
+        .saturating_add(tfs.len())
+        .saturating_add(positions.len());
+    let mut bytes = GuardedVec::with_capacity(policy, capacity)?;
+    bytes.extend_from_slice(&POSTINGS_MAGIC, policy)?;
+    bytes.extend_from_slice(&POSTINGS_VERSION.to_le_bytes(), policy)?;
+    bytes.extend_from_slice(&DEFAULT_POSTINGS_PER_BLOCK.to_le_bytes(), policy)?;
+    bytes.extend_from_slice(
+        &u32::try_from(postings.len())
+            .unwrap_or(u32::MAX)
+            .to_le_bytes(),
+        policy,
+    )?;
+    bytes.extend_from_slice(
+        &u32::try_from(metadata.len())
+            .unwrap_or(u32::MAX)
+            .to_le_bytes(),
+        policy,
+    )?;
+    for meta in metadata.as_slice() {
+        write_meta_policy(meta, &mut bytes, policy)?;
+    }
+    bytes.extend_from_slice(docids.as_slice(), policy)?;
+    bytes.extend_from_slice(tfs.as_slice(), policy)?;
+    bytes.extend_from_slice(positions.as_slice(), policy)?;
+    Ok(GraphEncoded {
+        bytes,
+        summary: GraphListSummary {
+            postings_per_block: DEFAULT_POSTINGS_PER_BLOCK,
+            block_count: u32::try_from(metadata.len()).unwrap_or(u32::MAX),
+            doc_freq: u32::try_from(postings.len()).unwrap_or(u32::MAX),
+            docid_bytes: u32::try_from(docids.len()).unwrap_or(u32::MAX),
+            overall_max_tf,
+            overall_min_len,
+        },
+    })
+}
+
+fn required_bits_policy<'m, P: super::control::BuildPolicy<'m>>(
+    values: &[u32],
+    policy: &mut P,
+) -> Result<u8, P::Error> {
+    let mut maximum = 0_u32;
+    for value in values {
+        policy.step(1)?;
+        maximum = maximum.max(*value);
+    }
+    Ok(if maximum == 0 {
+        0
+    } else {
+        u8::try_from(32 - maximum.leading_zeros()).unwrap_or(32)
+    })
+}
+
+fn pack_bits_policy<'m, P: super::control::BuildPolicy<'m>>(
+    values: &[u32],
+    bits: u8,
+    output: &mut super::control::GuardedVec<'m, u8, P::Charge>,
+    policy: &mut P,
+) -> Result<(), P::Error> {
+    if bits == 0 {
+        return Ok(());
+    }
+    let mut accumulator = 0_u64;
+    let mut filled = 0_u32;
+    for value in values {
+        policy.step(1)?;
+        accumulator |= u64::from(*value) << filled;
+        filled = filled.saturating_add(u32::from(bits));
+        while filled >= 8 {
+            output.push((accumulator & 0xff) as u8, policy)?;
+            accumulator >>= 8;
+            filled -= 8;
+        }
+    }
+    if filled > 0 {
+        output.push((accumulator & 0xff) as u8, policy)?;
+    }
+    Ok(())
+}
+
+fn write_meta_policy<'m, P: super::control::BuildPolicy<'m>>(
+    meta: &BlockMeta,
+    output: &mut super::control::GuardedVec<'m, u8, P::Charge>,
+    policy: &mut P,
+) -> Result<(), P::Error> {
+    for bytes in [
+        meta.last_docid.to_le_bytes(),
+        meta.docids_offset.to_le_bytes(),
+        meta.tfs_offset.to_le_bytes(),
+        meta.positions_offset.to_le_bytes(),
+        meta.positions_count.to_le_bytes(),
+    ] {
+        output.extend_from_slice(&bytes, policy)?;
+    }
+    output.extend_from_slice(&meta.count.to_le_bytes(), policy)?;
+    for byte in [
+        meta.docid_bits,
+        meta.tf_bits,
+        meta.position_bits,
+        meta.block_max,
+    ] {
+        output.push(byte, policy)?;
+    }
+    output.extend_from_slice(&meta.max_tf.to_le_bytes(), policy)?;
+    output.extend_from_slice(&meta.min_len.to_le_bytes(), policy)
+}
+
+pub(crate) fn validate_graph_policy<'m, P>(
+    bytes: &[u8],
+    row_count: u32,
+    policy: &mut P,
+) -> Result<GraphListSummary, P::Error>
+where
+    P: super::control::BuildPolicy<'m>,
+    P::Error: From<PostingsError>,
+{
+    let header = bytes
+        .get(..HEADER_LEN)
+        .ok_or(PostingsError::Truncated {
+            needed: HEADER_LEN,
+            available: bytes.len(),
+        })
+        .map_err(P::Error::from)?;
+    if header.get(..4) != Some(&POSTINGS_MAGIC[..]) {
+        return Err(P::Error::from(PostingsError::BadMagic));
+    }
+    let version = read_u16(header, 4).map_err(P::Error::from)?;
+    if version != POSTINGS_VERSION {
+        return Err(P::Error::from(PostingsError::UnsupportedVersion {
+            found: version,
+        }));
+    }
+    let per_block = read_u16(header, 6).map_err(P::Error::from)?;
+    if per_block == 0 {
+        return Err(P::Error::from(PostingsError::ZeroBlockSize));
+    }
+    let posting_count = read_u32(header, 8).map_err(P::Error::from)?;
+    let block_count = read_u32(header, 12).map_err(P::Error::from)?;
+    let blocks = usize::try_from(block_count).unwrap_or(usize::MAX);
+    let meta_len = blocks
+        .checked_mul(BLOCK_META_LEN)
+        .ok_or(PostingsError::Truncated {
+            needed: usize::MAX,
+            available: bytes.len(),
+        })
+        .map_err(P::Error::from)?;
+    let meta_end = HEADER_LEN
+        .checked_add(meta_len)
+        .ok_or(PostingsError::Truncated {
+            needed: usize::MAX,
+            available: bytes.len(),
+        })
+        .map_err(P::Error::from)?;
+    let metadata = bytes
+        .get(HEADER_LEN..meta_end)
+        .ok_or(PostingsError::Truncated {
+            needed: meta_end,
+            available: bytes.len(),
+        })
+        .map_err(P::Error::from)?;
+    let mut described = 0_u32;
+    let mut docid_bytes = 0_usize;
+    let mut tf_bytes = 0_usize;
+    let mut position_bytes = 0_usize;
+    let mut overall_max_tf = 0_u32;
+    let mut overall_min_len = u16::MAX;
+    for index in 0..blocks {
+        policy.lexical_block()?;
+        let start = index.saturating_mul(BLOCK_META_LEN);
+        let meta = BlockMeta::read(metadata.get(start..).unwrap_or(&[])).map_err(P::Error::from)?;
+        for bits in [meta.docid_bits, meta.tf_bits, meta.position_bits] {
+            if bits > 32 {
+                return Err(P::Error::from(PostingsError::BitWidthTooLarge { bits }));
+            }
+        }
+        if meta.count == 0 || meta.count > per_block {
+            return Err(P::Error::from(PostingsError::InconsistentPostingCount {
+                declared: posting_count,
+                described: described.saturating_add(u32::from(meta.count)),
+            }));
+        }
+        described = described.saturating_add(u32::from(meta.count));
+        let count = usize::from(meta.count);
+        docid_bytes = docid_bytes.max(
+            usize::try_from(meta.docids_offset)
+                .unwrap_or(usize::MAX)
+                .saturating_add(packed_len(count, meta.docid_bits)),
+        );
+        tf_bytes = tf_bytes.max(
+            usize::try_from(meta.tfs_offset)
+                .unwrap_or(usize::MAX)
+                .saturating_add(packed_len(count, meta.tf_bits)),
+        );
+        position_bytes = position_bytes.max(
+            usize::try_from(meta.positions_offset)
+                .unwrap_or(usize::MAX)
+                .saturating_add(packed_len(
+                    usize::try_from(meta.positions_count).unwrap_or(usize::MAX),
+                    meta.position_bits,
+                )),
+        );
+        overall_max_tf = overall_max_tf.max(meta.max_tf);
+        overall_min_len = overall_min_len.min(meta.min_len);
+    }
+    if described != posting_count {
+        return Err(P::Error::from(PostingsError::InconsistentPostingCount {
+            declared: posting_count,
+            described,
+        }));
+    }
+    let streams = bytes
+        .get(meta_end..)
+        .ok_or(PostingsError::Truncated {
+            needed: meta_end,
+            available: bytes.len(),
+        })
+        .map_err(P::Error::from)?;
+    let tf_start = docid_bytes;
+    let position_start = tf_start
+        .checked_add(tf_bytes)
+        .ok_or(PostingsError::Truncated {
+            needed: usize::MAX,
+            available: streams.len(),
+        })
+        .map_err(P::Error::from)?;
+    let end = position_start
+        .checked_add(position_bytes)
+        .ok_or(PostingsError::Truncated {
+            needed: usize::MAX,
+            available: streams.len(),
+        })
+        .map_err(P::Error::from)?;
+    if streams.len() < end {
+        return Err(P::Error::from(PostingsError::Truncated {
+            needed: end,
+            available: streams.len(),
+        }));
+    }
+    let docids = streams.get(..tf_start).unwrap_or(&[]);
+    let tfs = streams.get(tf_start..position_start).unwrap_or(&[]);
+    let positions = streams.get(position_start..end).unwrap_or(&[]);
+    let mut previous_docid = 0_u32;
+    for index in 0..blocks {
+        policy.lexical_block()?;
+        let start = index.saturating_mul(BLOCK_META_LEN);
+        let meta = BlockMeta::read(metadata.get(start..).unwrap_or(&[])).map_err(P::Error::from)?;
+        let docid_stream = docids
+            .get(usize::try_from(meta.docids_offset).unwrap_or(usize::MAX)..)
+            .ok_or(PostingsError::Truncated {
+                needed: usize::MAX,
+                available: docids.len(),
+            })
+            .map_err(P::Error::from)?;
+        let tf_stream = tfs
+            .get(usize::try_from(meta.tfs_offset).unwrap_or(usize::MAX)..)
+            .ok_or(PostingsError::Truncated {
+                needed: usize::MAX,
+                available: tfs.len(),
+            })
+            .map_err(P::Error::from)?;
+        let position_stream = positions
+            .get(usize::try_from(meta.positions_offset).unwrap_or(usize::MAX)..)
+            .ok_or(PostingsError::Truncated {
+                needed: usize::MAX,
+                available: positions.len(),
+            })
+            .map_err(P::Error::from)?;
+        let mut position_cursor = 0_usize;
+        for slot in 0..usize::from(meta.count) {
+            policy.lexical_posting()?;
+            let delta =
+                packed_value_at(docid_stream, meta.docid_bits, slot).map_err(P::Error::from)?;
+            let docid = if index == 0 && slot == 0 {
+                delta
+            } else {
+                if delta == 0 {
+                    return Err(P::Error::from(PostingsError::DocidsNotAscending {
+                        docid: previous_docid,
+                    }));
+                }
+                previous_docid
+                    .checked_add(delta)
+                    .ok_or(PostingsError::DocidsNotAscending {
+                        docid: previous_docid,
+                    })
+                    .map_err(P::Error::from)?
+            };
+            if docid >= row_count {
+                return Err(P::Error::from(PostingsError::DocidsNotAscending { docid }));
+            }
+            previous_docid = docid;
+            let tf = packed_value_at(tf_stream, meta.tf_bits, slot).map_err(P::Error::from)?;
+            if tf == 0 {
+                return Err(P::Error::from(PostingsError::ZeroTermFrequency));
+            }
+            let count = usize::try_from(tf).unwrap_or(usize::MAX);
+            let mut position = 0_u32;
+            for offset in 0..count {
+                policy.step(1)?;
+                let gap = packed_value_at(
+                    position_stream,
+                    meta.position_bits,
+                    position_cursor.saturating_add(offset),
+                )
+                .map_err(P::Error::from)?;
+                if offset > 0 && gap == 0 {
+                    return Err(P::Error::from(PostingsError::PositionsNotAscending {
+                        position,
+                    }));
+                }
+                position = position
+                    .checked_add(gap)
+                    .ok_or(PostingsError::PositionsNotAscending { position })
+                    .map_err(P::Error::from)?;
+                #[cfg(test)]
+                super::control::test_stage_probe(super::control::TestStage::PositionsDecode);
+            }
+            position_cursor = position_cursor
+                .checked_add(count)
+                .ok_or(PostingsError::Truncated {
+                    needed: usize::MAX,
+                    available: usize::try_from(meta.positions_count).unwrap_or(usize::MAX),
+                })
+                .map_err(P::Error::from)?;
+        }
+        if position_cursor != usize::try_from(meta.positions_count).unwrap_or(usize::MAX)
+            || previous_docid != meta.last_docid
+        {
+            return Err(P::Error::from(PostingsError::InconsistentPostingCount {
+                declared: posting_count,
+                described,
+            }));
+        }
+    }
+    Ok(GraphListSummary {
+        postings_per_block: per_block,
+        block_count,
+        doc_freq: posting_count,
+        docid_bytes: u32::try_from(docid_bytes).unwrap_or(u32::MAX),
+        overall_max_tf,
+        overall_min_len,
+    })
+}
+
 /// The one encoder. Version selects only what the reserved bytes carry.
 fn encode_versioned<E: From<PostingsError>>(
-    list: &PostingList,
+    postings: &[Posting],
     postings_per_block: u16,
     block_maxima: &[u8],
     impacts: &[BlockImpact],
@@ -590,7 +1084,6 @@ fn encode_versioned<E: From<PostingsError>>(
         return Err(PostingsError::ZeroBlockSize.into());
     }
     let per_block = usize::from(postings_per_block);
-    let postings = list.postings();
     let block_count = postings.len().div_ceil(per_block);
 
     let mut docid_stream: Vec<u8> = Vec::new();
@@ -1566,11 +2059,20 @@ pub(crate) fn block_impacts_controlled<E>(
     lengths: &[u32],
     work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
 ) -> Result<Vec<BlockImpact>, E> {
+    block_impacts_slice_controlled(list.postings(), postings_per_block, lengths, work)
+}
+
+pub(crate) fn block_impacts_slice_controlled<E>(
+    postings: &[Posting],
+    postings_per_block: u16,
+    lengths: &[u32],
+    work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+) -> Result<Vec<BlockImpact>, E> {
     work.check_now()?;
     if postings_per_block == 0 {
         return Ok(Vec::new());
     }
-    let chunks = list.postings().chunks(usize::from(postings_per_block));
+    let chunks = postings.chunks(usize::from(postings_per_block));
     let mut impacts = Vec::with_capacity(chunks.len());
     for chunk in chunks {
         let mut max_tf = 0_u32;

@@ -65,7 +65,7 @@ impl<'a> StorageMemory<'a> {
     pub(super) const fn resources(&self) -> &'a crate::property_graph::resources::GraphResources {
         self.writer.resources()
     }
-    pub(super) fn reserve(&self, bytes: usize) -> Result<StorageReservation<'_>, TreeError> {
+    pub(crate) fn reserve(&self, bytes: usize) -> Result<StorageReservation<'_>, TreeError> {
         self.control.checkpoint().map_err(TreeError::Control)?;
         let next = self
             .used
@@ -90,16 +90,16 @@ impl<'a> StorageMemory<'a> {
 }
 
 /// Non-extractable participant guard; backing must precede it in drop order.
-pub(super) struct StorageReservation<'a> {
+pub(crate) struct StorageReservation<'a> {
     memory: &'a StorageMemory<'a>,
     writer: WriteReservation<'a>,
     bytes: usize,
 }
 impl StorageReservation<'_> {
-    pub(super) fn bytes(&self) -> usize {
+    pub(crate) fn bytes(&self) -> usize {
         self.bytes
     }
-    pub(super) fn resize(&mut self, bytes: usize) -> Result<(), TreeError> {
+    pub(crate) fn resize(&mut self, bytes: usize) -> Result<(), TreeError> {
         self.memory
             .control
             .checkpoint()

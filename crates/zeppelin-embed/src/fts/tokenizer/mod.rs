@@ -399,6 +399,26 @@ impl Analyzer {
         pipeline::analyze(&self.config, text)
     }
 
+    pub(crate) fn analyze_with_policy<'m, P: super::control::BuildPolicy<'m>>(
+        &self,
+        text: &str,
+        policy: &mut P,
+    ) -> Result<
+        super::control::GuardedVec<'m, pipeline::ControlledToken<'m, P::Charge>, P::Charge>,
+        P::Error,
+    >
+    where
+        P::Error: From<TokenizerError>,
+    {
+        if text.len() > MAX_TEXT_BYTES {
+            return Err(P::Error::from(TokenizerError::TextTooLong {
+                bytes: text.len(),
+                limit: MAX_TEXT_BYTES,
+            }));
+        }
+        pipeline::analyze_with_policy(&self.config, text, policy)
+    }
+
     /// Analyzes bytes, rejecting invalid UTF-8 with a typed error.
     ///
     /// # Errors
@@ -587,6 +607,9 @@ mod tests {
             }
         }
         assert!(tokens.iter().any(|token| token.term == "i-485"));
+        let numeral = analyzer().analyze("\u{2160}");
+        assert_eq!(numeral.len(), 1);
+        assert!(numeral[0].flags.contains(TokenFlags::NO_FUZZY));
     }
 
     #[test]

@@ -16,6 +16,8 @@
 //! `twenty five` matches a document containing `25` and vice versa, with no
 //! query-time expansion — which is the design constraint task 15 restates.
 
+use crate::fts::control::{BuildPolicy, GuardedString};
+
 /// The largest value this filter will spell or parse.
 ///
 /// Bounding the range keeps the emitted variants short and keeps the filter
@@ -98,30 +100,60 @@ pub(crate) fn classify(term: &str) -> Option<NumberWord> {
 /// Returns `None` when the run does not compose into a number, for example
 /// a lone `and` or a trailing connective.
 pub(crate) fn compose(words: &[NumberWord]) -> Option<u64> {
+    match compose_impl(words, || Ok::<(), std::convert::Infallible>(())) {
+        Ok(value) => value,
+        Err(never) => match never {},
+    }
+}
+
+pub(crate) fn compose_controlled<'m, P: BuildPolicy<'m>>(
+    words: &[NumberWord],
+    policy: &mut P,
+) -> Result<Option<u64>, P::Error> {
+    compose_impl(words, || policy.step(1))
+}
+
+fn compose_impl<E>(
+    words: &[NumberWord],
+    mut step: impl FnMut() -> Result<(), E>,
+) -> Result<Option<u64>, E> {
     if words.is_empty() || matches!(words.first(), Some(NumberWord::Connective)) {
-        return None;
+        return Ok(None);
     }
     if matches!(words.last(), Some(NumberWord::Connective)) {
-        return None;
+        return Ok(None);
     }
     let mut total: u64 = 0;
     let mut current: u64 = 0;
     let mut saw_value = false;
     for word in words {
+        step()?;
         match word {
             NumberWord::Unit(value) | NumberWord::Ten(value) => {
-                current = current.checked_add(*value)?;
+                let Some(next) = current.checked_add(*value) else {
+                    return Ok(None);
+                };
+                current = next;
                 saw_value = true;
             }
             NumberWord::Multiplier(scale) => {
                 if !saw_value && *scale >= 1_000 {
-                    return None;
+                    return Ok(None);
                 }
                 let base = if current == 0 { 1 } else { current };
                 if *scale == 100 {
-                    current = base.checked_mul(*scale)?;
+                    let Some(next) = base.checked_mul(*scale) else {
+                        return Ok(None);
+                    };
+                    current = next;
                 } else {
-                    total = total.checked_add(base.checked_mul(*scale)?)?;
+                    let Some(product) = base.checked_mul(*scale) else {
+                        return Ok(None);
+                    };
+                    let Some(next) = total.checked_add(product) else {
+                        return Ok(None);
+                    };
+                    total = next;
                     current = 0;
                 }
                 saw_value = true;
@@ -130,10 +162,12 @@ pub(crate) fn compose(words: &[NumberWord]) -> Option<u64> {
         }
     }
     if !saw_value {
-        return None;
+        return Ok(None);
     }
-    let value = total.checked_add(current)?;
-    (value <= MAX_NUMBER).then_some(value)
+    let Some(value) = total.checked_add(current) else {
+        return Ok(None);
+    };
+    Ok((value <= MAX_NUMBER).then_some(value))
 }
 
 /// Spells a value as the joined word form, for example `25` -> `twentyfive`.
@@ -146,6 +180,110 @@ pub(crate) fn spell_joined(value: u64) -> Option<String> {
     let mut out = String::new();
     spell_into(value, &mut out)?;
     Some(out)
+}
+
+pub(crate) fn spell_joined_controlled<'m, P: BuildPolicy<'m>>(
+    value: u64,
+    policy: &mut P,
+) -> Result<Option<GuardedString<'m, P::Charge>>, P::Error> {
+    if value > MAX_NUMBER {
+        return Ok(None);
+    }
+    let Some(length) = spelled_len(value, policy)? else {
+        return Ok(None);
+    };
+    let mut output = GuardedString::with_capacity(policy, length)?;
+    if spell_into_controlled(value, &mut output, policy)? {
+        Ok(Some(output))
+    } else {
+        Ok(None)
+    }
+}
+
+fn spelled_len<'m, P: BuildPolicy<'m>>(
+    value: u64,
+    policy: &mut P,
+) -> Result<Option<usize>, P::Error> {
+    policy.step(1)?;
+    if value < 20 {
+        return Ok(UNITS
+            .iter()
+            .find(|(_, candidate)| *candidate == value)
+            .map(|(word, _)| word.len()));
+    }
+    if value < 100 {
+        let tens = (value / 10) * 10;
+        let Some((word, _)) = TENS.iter().find(|(_, candidate)| *candidate == tens) else {
+            return Ok(None);
+        };
+        let remainder = value % 10;
+        let tail = if remainder == 0 {
+            Some(0)
+        } else {
+            spelled_len(remainder, policy)?
+        };
+        return Ok(tail.and_then(|tail| word.len().checked_add(tail)));
+    }
+    for (word, scale) in MULTIPLIERS.into_iter().rev() {
+        policy.step(1)?;
+        if value >= scale {
+            let Some(head) = spelled_len(value / scale, policy)? else {
+                return Ok(None);
+            };
+            let remainder = value % scale;
+            let tail = if remainder == 0 {
+                Some(0)
+            } else {
+                spelled_len(remainder, policy)?
+            };
+            return Ok(tail.and_then(|tail| head.checked_add(word.len())?.checked_add(tail)));
+        }
+    }
+    Ok(None)
+}
+
+fn spell_into_controlled<'m, P: BuildPolicy<'m>>(
+    value: u64,
+    output: &mut GuardedString<'m, P::Charge>,
+    policy: &mut P,
+) -> Result<bool, P::Error> {
+    policy.step(1)?;
+    if value < 20 {
+        let Some((word, _)) = UNITS.iter().find(|(_, candidate)| *candidate == value) else {
+            return Ok(false);
+        };
+        output.push_str(policy, word)?;
+        return Ok(true);
+    }
+    if value < 100 {
+        let tens = (value / 10) * 10;
+        let Some((word, _)) = TENS.iter().find(|(_, candidate)| *candidate == tens) else {
+            return Ok(false);
+        };
+        output.push_str(policy, word)?;
+        let remainder = value % 10;
+        return if remainder > 0 {
+            spell_into_controlled(remainder, output, policy)
+        } else {
+            Ok(true)
+        };
+    }
+    for (word, scale) in MULTIPLIERS.into_iter().rev() {
+        policy.step(1)?;
+        if value >= scale {
+            if !spell_into_controlled(value / scale, output, policy)? {
+                return Ok(false);
+            }
+            output.push_str(policy, word)?;
+            let remainder = value % scale;
+            return if remainder > 0 {
+                spell_into_controlled(remainder, output, policy)
+            } else {
+                Ok(true)
+            };
+        }
+    }
+    Ok(false)
 }
 
 fn spell_into(value: u64, out: &mut String) -> Option<()> {
@@ -180,16 +318,36 @@ fn spell_into(value: u64, out: &mut String) -> Option<()> {
 
 /// Parses a bare digit term into a value within range.
 pub(crate) fn parse_digits(term: &str) -> Option<u64> {
-    if term.is_empty() || !term.bytes().all(|byte| byte.is_ascii_digit()) {
+    if term.is_empty() || term.len() > 12 {
         return None;
     }
-    // A long digit run is an identifier, not a number worth spelling.
-    if term.len() > 12 {
+    if !term.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
     term.parse::<u64>()
         .ok()
         .filter(|value| *value <= MAX_NUMBER)
+}
+
+pub(crate) fn parse_digits_controlled<'m, P: BuildPolicy<'m>>(
+    term: &str,
+    policy: &mut P,
+) -> Result<Option<u64>, P::Error> {
+    if term.is_empty() || term.len() > 12 {
+        return Ok(None);
+    }
+    let mut value = 0_u64;
+    for byte in term.bytes() {
+        policy.step(1)?;
+        if !byte.is_ascii_digit() {
+            return Ok(None);
+        }
+        value = value
+            .checked_mul(10)
+            .and_then(|n| n.checked_add(u64::from(byte - b'0')))
+            .unwrap_or(MAX_NUMBER.saturating_add(1));
+    }
+    Ok((value <= MAX_NUMBER).then_some(value))
 }
 
 #[cfg(test)]
