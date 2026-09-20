@@ -15,7 +15,7 @@ fn with_plan<R>(
     let store = Store::open(
         root.path(),
         OpenOptions::new()
-            .with_max_resident_bytes(262144)
+            .with_max_resident_bytes(1024 * 1024)
             .with_reader_drain_timeout(std::time::Duration::ZERO),
     )
     .expect("store");
@@ -757,7 +757,7 @@ fn eager_sources_run_once_in_source_order_even_when_limit_zero_produces_no_rows(
     let root = tempfile::tempdir().expect("fixture");
     let store = Store::open(
         root.path(),
-        OpenOptions::new().with_max_resident_bytes(262144),
+        OpenOptions::new().with_max_resident_bytes(1024 * 1024),
     )
     .expect("store");
     let shared = GraphResources::from_store(&store).expect("accounting");

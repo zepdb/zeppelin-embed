@@ -23,7 +23,7 @@ enum Operation {
 /// Drains its real child on first pull, after the driver's eager obligations,
 /// then executes one blocking kernel and emits bounded batches. Construction
 /// does not pull, evaluate, or suppress any upstream source obligation.
-pub struct BlockingRows<'v, 'm, 'g, O> {
+pub struct BlockingRows<'v, 'm, 'g, O, E = RuntimeError> {
     child: O,
     schema: Schema<'m, 'g>,
     input: Rows<'v, 'm, 'g>,
@@ -37,9 +37,10 @@ pub struct BlockingRows<'v, 'm, 'g, O> {
     output_capacity: StorageCapacity,
     started: bool,
     ready: bool,
+    _error: std::marker::PhantomData<fn() -> E>,
     _control: QueryReservation<'m, 'g>,
 }
-impl<'v, 'm, 'g, O: RowOperator<'v, 'm, 'g>> BlockingRows<'v, 'm, 'g, O> {
+impl<'v, 'm, 'g, O: RowOperator<'v, 'm, 'g, E>, E> BlockingRows<'v, 'm, 'g, O, E> {
     /// Retains genuine independent batch, input storage and operation owners.
     #[allow(
         clippy::too_many_arguments,
@@ -148,19 +149,20 @@ impl<'v, 'm, 'g, O: RowOperator<'v, 'm, 'g>> BlockingRows<'v, 'm, 'g, O> {
             output_capacity: output,
             started: false,
             ready: false,
+            _error: std::marker::PhantomData,
             _control: control,
         })
     }
 }
-impl<'v, 'm, 'g, O: RowOperator<'v, 'm, 'g>> RowOperator<'v, 'm, 'g>
-    for BlockingRows<'v, 'm, 'g, O>
+impl<'v, 'm, 'g, O: RowOperator<'v, 'm, 'g, E>, E: From<RuntimeError>> RowOperator<'v, 'm, 'g, E>
+    for BlockingRows<'v, 'm, 'g, O, E>
 {
     fn schema(&self) -> &Schema<'m, 'g> {
         &self.schema
     }
 }
-impl<'v, 'm, 'g, O: RowOperator<'v, 'm, 'g>> PullOperator<'v, 'm, 'g>
-    for BlockingRows<'v, 'm, 'g, O>
+impl<'v, 'm, 'g, O: RowOperator<'v, 'm, 'g, E>, E: From<RuntimeError>> PullOperator<'v, 'm, 'g, E>
+    for BlockingRows<'v, 'm, 'g, O, E>
 {
     fn node(&self) -> PlanNodeId {
         self.node
@@ -169,17 +171,17 @@ impl<'v, 'm, 'g, O: RowOperator<'v, 'm, 'g>> PullOperator<'v, 'm, 'g>
         &mut self,
         node: PlanNodeId,
         context: &mut RuntimeContext<'v, 'm, 'g>,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<(), E> {
         self.child.prepare_search(node, context)
     }
     fn pull(
         &mut self,
         context: &mut RuntimeContext<'v, 'm, 'g>,
         output: &mut RowBatch<'v, 'm, 'g>,
-    ) -> Result<PullState, RuntimeError> {
+    ) -> Result<PullState, E> {
         context.checkpoint()?;
         if !self.batch.belongs_to(context) || output.columns() != self.schema.slots().len() {
-            return Err(RuntimeError::Batch);
+            return Err(RuntimeError::Batch.into());
         }
         if !self.started {
             self.started = true;
@@ -197,7 +199,7 @@ impl<'v, 'm, 'g, O: RowOperator<'v, 'm, 'g>> PullOperator<'v, 'm, 'g>
                 self.batch.clear();
                 let state = self.child.pull(context, &mut self.batch)?;
                 if state == PullState::More && self.batch.rows() == 0 {
-                    return Err(RuntimeError::Batch);
+                    return Err(RuntimeError::Batch.into());
                 }
                 for row in 0..self.batch.rows() {
                     context.charge(WorkKind::OperatorRows, 1)?;
@@ -207,7 +209,7 @@ impl<'v, 'm, 'g, O: RowOperator<'v, 'm, 'g>> PullOperator<'v, 'm, 'g>
                         |column| self.batch.value(row, column).ok_or(RuntimeError::Batch),
                         context,
                     )?;
-                    input.order.push(raw)?;
+                    input.order.push(raw).map_err(RuntimeError::from)?;
                 }
                 if state == PullState::Done {
                     break;
@@ -228,8 +230,8 @@ impl<'v, 'm, 'g, O: RowOperator<'v, 'm, 'g>> PullOperator<'v, 'm, 'g>
             self.ready = true;
         }
         if !self.ready {
-            return Err(RuntimeError::Batch);
+            return Err(RuntimeError::Batch.into());
         }
-        self.output.pull(context, output)
+        self.output.pull(context, output).map_err(E::from)
     }
 }

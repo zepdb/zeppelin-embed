@@ -20,7 +20,7 @@ pub enum PullState {
 /// Required internal physical-operator adapter, not an application callback.
 /// Implementations charge examined/discarded work and all their owned storage
 /// against this context. They cannot publish results or durable writes here.
-pub trait PullOperator<'v, 'm, 'g> {
+pub trait PullOperator<'v, 'm, 'g, E = RuntimeError> {
     /// Typed operator identity for plan matching and failure diagnostics.
     fn node(&self) -> PlanNodeId;
     /// Executes and retains one eager search report before any row pulling.
@@ -29,13 +29,13 @@ pub trait PullOperator<'v, 'm, 'g> {
         &mut self,
         node: PlanNodeId,
         context: &mut RuntimeContext<'v, 'm, 'g>,
-    ) -> Result<(), RuntimeError>;
+    ) -> Result<(), E>;
     /// Fills a fixed flat batch using the same view, control and memory owner.
     fn pull(
         &mut self,
         context: &mut RuntimeContext<'v, 'm, 'g>,
         output: &mut RowBatch<'v, 'm, 'g>,
-    ) -> Result<PullState, RuntimeError>;
+    ) -> Result<PullState, E>;
 }
 /// Builds a retained operator chain inside the owned execution view. All buffer
 /// capacities belong to the supplied context; construction is fallible and
@@ -60,14 +60,14 @@ pub trait PullOperator<'v, 'm, 'g> {
 ///     }
 /// }
 /// ```
-pub trait OperatorFactory<'m, 'g: 'm> {
+pub trait OperatorFactory<'m, 'g: 'm, E = RuntimeError> {
     /// A concrete chain retaining this execution's view and charged backing.
-    type Operator<'v>: PullOperator<'v, 'm, 'g>;
+    type Operator<'v>: PullOperator<'v, 'm, 'g, E>;
     /// Construct the whole chain, retaining each real buffer charge with its owner.
     fn build<'v>(
         &mut self,
         context: &mut RuntimeContext<'v, 'm, 'g>,
-    ) -> Result<Self::Operator<'v>, RuntimeError>;
+    ) -> Result<Self::Operator<'v>, E>;
 }
 
 /// Explicit fixed capacities, including unused slots, charged before pulling.
@@ -124,7 +124,7 @@ impl PreparedRows<'_, '_, '_> {
 /// Internal typed freeze adapter. Its associated output cannot borrow the fresh
 /// view/rows lifetime. It must retain actual owned buffer reservations, and must
 /// finish fallible copying before success or any later durable commit attempt.
-pub trait Completion<'m, 'g> {
+pub trait Completion<'m, 'g, E = RuntimeError> {
     /// Fully independent copied output with its own capacity ownership.
     type Output;
     /// Runs before the final view-first/control check and while the lease is held.
@@ -132,7 +132,7 @@ pub trait Completion<'m, 'g> {
         &mut self,
         rows: &PreparedRows<'v, 'm, 'g>,
         context: &mut RuntimeContext<'v, 'm, 'g>,
-    ) -> Result<FrozenOutput<Self::Output>, RuntimeError>;
+    ) -> Result<FrozenOutput<Self::Output>, E>;
 }
 /// Freeze result supplied by the internal completion owner. Byte counts are
 /// initialized represented core/ABI bytes, including every in-arena descriptor.
@@ -181,20 +181,20 @@ pub struct Execution<T> {
 }
 /// Failure diagnostic contains no row collection, including after partial pulls.
 #[derive(Debug)]
-pub struct RuntimeFailure {
+pub struct RuntimeFailure<E = RuntimeError> {
     /// Operator/root identity or the eager source which failed.
     pub operator: PlanNodeId,
     /// Typed cause, without partial prepared output.
-    pub error: RuntimeError,
+    pub error: E,
     /// Actual work consumed before failure; failed unconsumed units are absent.
     pub counters: WorkCounters,
 }
-impl std::fmt::Display for RuntimeFailure {
+impl<E: std::fmt::Display> std::fmt::Display for RuntimeFailure<E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "graph operator {}: {}", self.operator.0, self.error)
     }
 }
-impl std::error::Error for RuntimeFailure {}
+impl<E: std::error::Error> std::error::Error for RuntimeFailure<E> {}
 
 /// Drains under one owned retained view, freezes privately, checks close/cancel
 /// one final time, then releases temporary owners and the lease before returning.
@@ -207,9 +207,10 @@ impl std::error::Error for RuntimeFailure {}
 pub fn execute<
     'm,
     'g,
+    E: From<RuntimeError>,
     V: RetainedView,
-    O: for<'v> PullOperator<'v, 'm, 'g>,
-    C: Completion<'m, 'g>,
+    O: for<'v> PullOperator<'v, 'm, 'g, E>,
+    C: Completion<'m, 'g, E>,
 >(
     view: V,
     control: &QueryControl,
@@ -219,12 +220,12 @@ pub fn execute<
     completion: &mut C,
     capacity: ExecutionCapacity,
     limits: RuntimeLimits,
-) -> Result<Execution<C::Output>, RuntimeFailure> {
+) -> Result<Execution<C::Output>, RuntimeFailure<E>> {
     let root = plan.plan().description().root;
     let mut context =
         RuntimeContext::new(&view, control, memory, limits).map_err(|error| RuntimeFailure {
             operator: root,
-            error,
+            error: error.into(),
             counters: WorkCounters::default(),
         })?;
     let _view_charge =
@@ -232,7 +233,7 @@ pub fn execute<
             .reserve(std::mem::size_of::<V>())
             .map_err(|error| RuntimeFailure {
                 operator: root,
-                error: error.into(),
+                error: E::from(error.into()),
                 counters: context.counters(),
             })?;
     drain(&mut context, plan, source, completion, capacity)
@@ -249,9 +250,10 @@ pub fn execute<
 pub fn execute_factory<
     'm,
     'g,
+    E: From<RuntimeError>,
     V: RetainedView,
-    F: OperatorFactory<'m, 'g>,
-    C: Completion<'m, 'g>,
+    F: OperatorFactory<'m, 'g, E>,
+    C: Completion<'m, 'g, E>,
 >(
     view: V,
     control: &QueryControl,
@@ -261,12 +263,12 @@ pub fn execute_factory<
     completion: &mut C,
     capacity: ExecutionCapacity,
     limits: RuntimeLimits,
-) -> Result<Execution<C::Output>, RuntimeFailure> {
+) -> Result<Execution<C::Output>, RuntimeFailure<E>> {
     let root = plan.plan().description().root;
     let mut context =
         RuntimeContext::new(&view, control, memory, limits).map_err(|error| RuntimeFailure {
             operator: root,
-            error,
+            error: error.into(),
             counters: WorkCounters::default(),
         })?;
     let _view_charge =
@@ -274,13 +276,13 @@ pub fn execute_factory<
             .reserve(std::mem::size_of::<V>())
             .map_err(|error| RuntimeFailure {
                 operator: root,
-                error: error.into(),
+                error: E::from(error.into()),
                 counters: context.counters(),
             })?;
     if !plan.belongs_to(memory) {
         return Err(RuntimeFailure {
             operator: root,
-            error: RuntimeError::Batch,
+            error: RuntimeError::Batch.into(),
             counters: context.counters(),
         });
     }
@@ -303,13 +305,20 @@ pub fn execute_factory<
     clippy::result_large_err,
     reason = "allocation-free full failure counters"
 )]
-pub fn execute_in<'v, 'm, 'g, O: PullOperator<'v, 'm, 'g>, C: Completion<'m, 'g>>(
+pub fn execute_in<
+    'v,
+    'm,
+    'g,
+    E: From<RuntimeError>,
+    O: PullOperator<'v, 'm, 'g, E>,
+    C: Completion<'m, 'g, E>,
+>(
     context: &mut RuntimeContext<'v, 'm, 'g>,
     plan: &RuntimePlan<'_, '_, '_, '_, '_, '_>,
     source: &mut O,
     completion: &mut C,
     capacity: ExecutionCapacity,
-) -> Result<Execution<C::Output>, RuntimeFailure> {
+) -> Result<Execution<C::Output>, RuntimeFailure<E>> {
     drain(context, plan, source, completion, capacity)
 }
 
@@ -317,29 +326,36 @@ pub fn execute_in<'v, 'm, 'g, O: PullOperator<'v, 'm, 'g>, C: Completion<'m, 'g>
     clippy::result_large_err,
     reason = "allocation-free full failure counters"
 )]
-fn drain<'v, 'm, 'g, O: PullOperator<'v, 'm, 'g>, C: Completion<'m, 'g>>(
+fn drain<
+    'v,
+    'm,
+    'g,
+    E: From<RuntimeError>,
+    O: PullOperator<'v, 'm, 'g, E>,
+    C: Completion<'m, 'g, E>,
+>(
     context: &mut RuntimeContext<'v, 'm, 'g>,
     plan: &RuntimePlan<'_, '_, '_, '_, '_, '_>,
     source: &mut O,
     completion: &mut C,
     capacity: ExecutionCapacity,
-) -> Result<Execution<C::Output>, RuntimeFailure> {
+) -> Result<Execution<C::Output>, RuntimeFailure<E>> {
     let root = plan.plan().description().root;
     let memory = context.memory();
     let mut diagnostic = root;
-    let result = (|| {
+    let result: Result<C::Output, E> = (|| {
         context.checkpoint()?;
         if !plan.belongs_to(memory)
             || source.node() != root
             || capacity.result_rows > 65536
             || capacity.result_payload_bytes > 4 * 1024 * 1024
         {
-            return Err(RuntimeError::Batch);
+            return Err(RuntimeError::Batch.into());
         }
         let width = plan.plan().facts(root).ok_or(RuntimeError::Batch)?.width();
-        let _driver = memory.reserve(
-            std::mem::size_of::<ExecutionCapacity>() + std::mem::size_of::<WorkCounters>(),
-        )?;
+        let _driver = memory
+            .reserve(std::mem::size_of::<ExecutionCapacity>() + std::mem::size_of::<WorkCounters>())
+            .map_err(|error| E::from(RuntimeError::from(error)))?;
         let mut batch = RowBatch::with_arenas(
             context,
             width,
@@ -369,7 +385,7 @@ fn drain<'v, 'm, 'g, O: PullOperator<'v, 'm, 'g>, C: Completion<'m, 'g>>(
             let state = source.pull(context, &mut batch)?;
             context.checkpoint()?;
             if state == PullState::More && batch.rows() == 0 {
-                return Err(RuntimeError::Batch);
+                return Err(RuntimeError::Batch.into());
             }
             for row in 0..batch.rows() {
                 context.check_work(WorkKind::CompletedRows, 1)?;
@@ -394,7 +410,7 @@ fn drain<'v, 'm, 'g, O: PullOperator<'v, 'm, 'g>, C: Completion<'m, 'g>>(
         context.checkpoint()?;
         let frozen = completion.complete(&prepared, context)?;
         if frozen.rows != prepared.rows() {
-            return Err(RuntimeError::Batch);
+            return Err(RuntimeError::Batch.into());
         }
         context.charge(WorkKind::CompletedBytes, frozen.core_bytes as u64)?;
         context.charge(WorkKind::CompletedAbiBytes, frozen.abi_bytes as u64)?;
@@ -414,3 +430,6 @@ fn drain<'v, 'm, 'g, O: PullOperator<'v, 'm, 'g>, C: Completion<'m, 'g>>(
         }),
     }
 }
+
+#[cfg(all(test, feature = "graph-cypher"))]
+mod error_transport;

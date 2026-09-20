@@ -6,6 +6,7 @@ use super::resources::{QueryArena, QueryReservation};
 use super::runtime::{
     ArenaCapacity, PullOperator, PullState, RowBatch, RuntimeContext, RuntimeError, WorkKind,
 };
+use std::marker::PhantomData;
 mod ordering;
 pub use ordering::OrderKey;
 mod aggregate;
@@ -154,7 +155,7 @@ impl<'v, 'm, 'g> Rows<'v, 'm, 'g> {
 }
 
 /// A physical relational source/operator with an explicit output scope.
-pub trait RowOperator<'v, 'm, 'g>: PullOperator<'v, 'm, 'g> {
+pub trait RowOperator<'v, 'm, 'g, E = RuntimeError>: PullOperator<'v, 'm, 'g, E> {
     /// Checked logical-to-physical schema for this operator's output.
     fn schema(&self) -> &Schema<'m, 'g>;
 }
@@ -221,7 +222,7 @@ pub struct SlotProjection {
 /// Streaming three-valued filter, scoped projection, and offset/limit. Each
 /// instance applies those operations in that order; compose instances to retain
 /// a plan's original stage order. Eager obligations always delegate upstream.
-pub struct MapRows<'v, 'm, 'g, O> {
+pub struct MapRows<'v, 'm, 'g, O, E = RuntimeError> {
     child: O,
     schema: Schema<'m, 'g>,
     columns: QueryArena<'m, 'g, usize>,
@@ -232,9 +233,10 @@ pub struct MapRows<'v, 'm, 'g, O> {
     remaining: Option<u64>,
     next: usize,
     done: bool,
+    _error: PhantomData<fn() -> E>,
     _control: QueryReservation<'m, 'g>,
 }
-impl<'v, 'm, 'g, O: RowOperator<'v, 'm, 'g>> MapRows<'v, 'm, 'g, O> {
+impl<'v, 'm, 'g, O: RowOperator<'v, 'm, 'g, E>, E> MapRows<'v, 'm, 'g, O, E> {
     /// Resolves all slots once, then retains real bounded input backing.
     #[allow(
         clippy::too_many_arguments,
@@ -286,16 +288,21 @@ impl<'v, 'm, 'g, O: RowOperator<'v, 'm, 'g>> MapRows<'v, 'm, 'g, O> {
             remaining: limit,
             next: 0,
             done: false,
+            _error: PhantomData,
             _control: control,
         })
     }
 }
-impl<'v, 'm, 'g, O: RowOperator<'v, 'm, 'g>> RowOperator<'v, 'm, 'g> for MapRows<'v, 'm, 'g, O> {
+impl<'v, 'm, 'g, O: RowOperator<'v, 'm, 'g, E>, E: From<RuntimeError>> RowOperator<'v, 'm, 'g, E>
+    for MapRows<'v, 'm, 'g, O, E>
+{
     fn schema(&self) -> &Schema<'m, 'g> {
         &self.schema
     }
 }
-impl<'v, 'm, 'g, O: RowOperator<'v, 'm, 'g>> PullOperator<'v, 'm, 'g> for MapRows<'v, 'm, 'g, O> {
+impl<'v, 'm, 'g, O: RowOperator<'v, 'm, 'g, E>, E: From<RuntimeError>> PullOperator<'v, 'm, 'g, E>
+    for MapRows<'v, 'm, 'g, O, E>
+{
     fn node(&self) -> PlanNodeId {
         self.node
     }
@@ -303,17 +310,17 @@ impl<'v, 'm, 'g, O: RowOperator<'v, 'm, 'g>> PullOperator<'v, 'm, 'g> for MapRow
         &mut self,
         node: PlanNodeId,
         context: &mut RuntimeContext<'v, 'm, 'g>,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<(), E> {
         self.child.prepare_search(node, context)
     }
     fn pull(
         &mut self,
         context: &mut RuntimeContext<'v, 'm, 'g>,
         output: &mut RowBatch<'v, 'm, 'g>,
-    ) -> Result<PullState, RuntimeError> {
+    ) -> Result<PullState, E> {
         context.checkpoint()?;
         if !self.input.belongs_to(context) || output.columns() != self.schema.slots().len() {
-            return Err(RuntimeError::Batch);
+            return Err(RuntimeError::Batch.into());
         }
         while output.rows() < output.capacity() && self.remaining != Some(0) {
             if self.next == self.input.rows() {
@@ -324,7 +331,7 @@ impl<'v, 'm, 'g, O: RowOperator<'v, 'm, 'g>> PullOperator<'v, 'm, 'g> for MapRow
                 self.next = 0;
                 self.done = self.child.pull(context, &mut self.input)? == PullState::Done;
                 if !self.done && self.input.rows() == 0 {
-                    return Err(RuntimeError::Batch);
+                    return Err(RuntimeError::Batch.into());
                 }
                 if self.input.rows() == 0 {
                     break;
@@ -339,7 +346,8 @@ impl<'v, 'm, 'g, O: RowOperator<'v, 'm, 'g>> PullOperator<'v, 'm, 'g> for MapRow
                     .input
                     .value(row, column)
                     .ok_or(RuntimeError::Batch)?
-                    .truth()?
+                    .truth()
+                    .map_err(RuntimeError::from)?
                     .retained()
             {
                 continue;

@@ -6,11 +6,15 @@ use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU64, Ordering};
 mod batch;
 mod driver;
+#[cfg(feature = "graph-cypher")]
+mod native_error;
 pub use batch::{ArenaCapacity, RowBatch};
 pub use driver::{
     Completion, Execution, ExecutionCapacity, FrozenOutput, OperatorFactory, PreparedRows,
     PullOperator, PullState, RuntimeFailure, execute, execute_factory, execute_in,
 };
+#[cfg(feature = "graph-cypher")]
+pub(crate) use native_error::NativeExecutionError;
 
 /// Required admission-owner adapter. This is not a constructor for GraphReadView.
 /// Its token must remain stable and its actual lease must remain retained until
