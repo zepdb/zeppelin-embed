@@ -16,6 +16,9 @@ pub use canonical::{
 /// Immutable native graph artifact and page framing.
 pub mod storage;
 
+#[cfg(feature = "graph-cypher")]
+pub(crate) mod retrieval;
+
 pub use identity::{
     EntityId, EntityKind, GraphGeneration, GraphRevision, NodeId, RelId, StoreInstanceId,
 };

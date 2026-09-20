@@ -10,6 +10,41 @@ use crate::ingest::{DocumentVersion, GlobalRowId, RowSource};
 use crate::quant::{ExactScoreReuse, RescoreCheckError, rescore_top_k_reusing};
 use crate::segment::reader::SegmentReader;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum VectorValidationError<E> {
+    Data(crate::quant::QuantError),
+    Control(E),
+}
+
+pub(crate) fn validate_vector_coordinates<E>(
+    query: &[f32],
+    maximum: usize,
+    mut visit: impl FnMut(usize) -> Result<(), E>,
+) -> Result<(), VectorValidationError<E>> {
+    if query.is_empty() {
+        return Err(VectorValidationError::Data(
+            crate::quant::QuantError::EmptyVector,
+        ));
+    }
+    if query.len() > maximum {
+        return Err(VectorValidationError::Data(
+            crate::quant::QuantError::DimensionTooLarge {
+                actual: query.len(),
+                maximum,
+            },
+        ));
+    }
+    for (index, value) in query.iter().enumerate() {
+        visit(index).map_err(VectorValidationError::Control)?;
+        if !value.is_finite() {
+            return Err(VectorValidationError::Data(
+                crate::quant::QuantError::NonFinite { index },
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Transform {
     UnrotatedBit4Blocks,

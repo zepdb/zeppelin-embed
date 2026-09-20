@@ -158,6 +158,23 @@ pub enum MaterializationError {
     Storage(StoreError),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct VersionMismatch {
+    pub(crate) expected: DocumentVersion,
+    pub(crate) actual: Option<DocumentVersion>,
+}
+
+pub(crate) fn require_document_version(
+    expected: DocumentVersion,
+    actual: Option<DocumentVersion>,
+) -> Result<(), VersionMismatch> {
+    if actual == Some(expected) {
+        Ok(())
+    } else {
+        Err(VersionMismatch { expected, actual })
+    }
+}
+
 impl std::fmt::Display for MaterializationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -304,13 +321,13 @@ impl QueryMaterializer<'_> {
                 (actual, source)
             }
         };
-        if actual != Some(document) {
-            return Err(MaterializationError::IdentityMismatch {
+        require_document_version(document, actual).map_err(|mismatch| {
+            MaterializationError::IdentityMismatch {
                 row_id,
-                expected: document,
-                actual,
-            });
-        }
+                expected: mismatch.expected,
+                actual: mismatch.actual,
+            }
+        })?;
         let source = source.ok_or(MaterializationError::MissingText { row_id, document })?;
         let mut text = String::new();
         text.try_reserve_exact(source.len()).map_err(|_| {

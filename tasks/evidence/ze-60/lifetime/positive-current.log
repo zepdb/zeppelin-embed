@@ -1,0 +1,16 @@
+   Compiling libc v0.2.189
+    Checking bytemuck v1.25.2
+    Checking byteorder v1.5.0
+    Checking xxhash-rust v0.8.18
+    Checking roaring v0.10.12
+    Checking zeppelin-embed v0.4.2 (/private/tmp/ze60-lifetime-positive-current.z6GNnb/crates/zeppelin-embed)
+warning: function `copy_payload_inside_admission` is never used
+ --> /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-60/tasks/evidence/ze-60/lifetime/positive.rs:5:4
+  |
+5 | fn copy_payload_inside_admission<'view, 's, 'lease, 'm, 'g>(
+  |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `zeppelin-embed` (lib) generated 1 warning
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.10s

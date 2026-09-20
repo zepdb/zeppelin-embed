@@ -1095,6 +1095,8 @@ pub(crate) mod tests {
         clippy::unwrap_used
     )]
 
+    mod retrieval;
+
     mod tempfile {
         use std::path::{Path, PathBuf};
         use std::sync::atomic::{AtomicU64, Ordering};
@@ -1847,7 +1849,7 @@ pub(crate) mod tests {
         )
     }
 
-    fn actual_producer_bundle_with_extra_nodes(
+    fn actual_producer_bundle_with_dimensions(
         store: &Store,
         directory: &Path,
         identity: StoreInstanceId,
@@ -1855,6 +1857,7 @@ pub(crate) mod tests {
         with_vector: bool,
         extra_relationships: usize,
         max_ids: bool,
+        dimensions: usize,
     ) -> NativeGraphBundleInput {
         let shared = GraphResources::from_store(store).unwrap();
         let writer = WriteMemory::new(&shared, WriteLimits::default()).unwrap();
@@ -1869,7 +1872,7 @@ pub(crate) mod tests {
             model_id: "ze45-document".into(),
             model_version: "1".into(),
             weights_digest: vec![0x45, 0xa5],
-            dims: 2,
+            dims: u32::try_from(dimensions).unwrap(),
             normalization: Normalization::None,
             prompt_prefix: "doc: ".into(),
             max_tokens: 32,
@@ -1912,7 +1915,13 @@ pub(crate) mod tests {
                 GraphName::new("weight").unwrap(),
                 PropertyValue::new(PropertyData::I64(-17)).unwrap(),
             )];
-            let coordinates = [f32::from_bits(0x3f80_0001), f32::from_bits(0x8000_0000)];
+            let mut coordinates = vec![0.0_f32; dimensions];
+            if let Some(first) = coordinates.first_mut() {
+                *first = f32::from_bits(0x3f80_0001);
+            }
+            if let Some(second) = coordinates.get_mut(1) {
+                *second = f32::from_bits(0x8000_0000);
+            }
             let embedding = document.as_ref().map(|document| {
                 crate::property_graph::CanonicalEmbedding::new(document, &coordinates).unwrap()
             });
@@ -2149,6 +2158,27 @@ pub(crate) mod tests {
                 document: document.clone(),
             }
         })
+    }
+
+    fn actual_producer_bundle_with_extra_nodes(
+        store: &Store,
+        directory: &Path,
+        identity: StoreInstanceId,
+        extra_nodes: usize,
+        with_vector: bool,
+        extra_relationships: usize,
+        max_ids: bool,
+    ) -> NativeGraphBundleInput {
+        actual_producer_bundle_with_dimensions(
+            store,
+            directory,
+            identity,
+            extra_nodes,
+            with_vector,
+            extra_relationships,
+            max_ids,
+            2,
+        )
     }
 
     fn actual_producer_bundle(

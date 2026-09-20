@@ -1,0 +1,16 @@
+   Compiling libc v0.2.189
+    Checking bytemuck v1.25.2
+    Checking byteorder v1.5.0
+    Checking xxhash-rust v0.8.18
+    Checking roaring v0.10.12
+    Checking zeppelin-embed v0.4.2 (/private/tmp/ze60-lifetime-negative-current.2e5052/crates/zeppelin-embed)
+error: lifetime may not live long enough
+  --> /Users/aghatage/Documents/code/zeppelin-embed-wt-ze-60/tasks/evidence/ze-60/lifetime/negative.rs:13:5
+   |
+ 8 | fn resolved_node_cannot_outlive_admission<'view, 's, 'lease, 'm, 'g>(
+   |                                                  -- lifetime `'s` defined here
+...
+13 |     context.resolve(expected, runtime)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ returning this value requires that `'s` must outlive `'static`
+
+error: could not compile `zeppelin-embed` (lib) due to 1 previous error

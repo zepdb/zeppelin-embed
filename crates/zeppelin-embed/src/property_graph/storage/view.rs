@@ -29,6 +29,8 @@ mod preparation_source;
 #[cfg(feature = "graph-cypher")]
 mod prepared;
 #[cfg(feature = "graph-cypher")]
+mod retrieval;
+#[cfg(feature = "graph-cypher")]
 mod source;
 
 #[cfg(feature = "graph-cypher")]

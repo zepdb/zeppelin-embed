@@ -9,7 +9,7 @@ mod expansion;
 pub(crate) mod graph_cache;
 mod hybrid;
 pub mod lock;
-mod materialize;
+pub(crate) mod materialize;
 #[cfg(feature = "graph-cypher")]
 pub(crate) mod native_graph;
 mod pool;
@@ -5961,7 +5961,7 @@ fn search_pinned(
     >,
 ) -> Result<crate::ingest::SearchOutcome, QueryError> {
     use crate::ingest::{GraphSearchStats, RowSource, SearchOutcome};
-    use crate::quant::{QuantError, prepare_bit4_query};
+    use crate::quant::prepare_bit4_query;
     use crate::scan::{ScanQuery, ScanRequest, ScanRows, ScanStats};
 
     let vector_started = timing_start(clock);
@@ -5972,25 +5972,15 @@ fn search_pinned(
         options.frontier(k, 0)?;
     }
     let query = request.vector();
-    let quantized_query_validation = if query.is_empty() {
-        Err(QuantError::EmptyVector)
-    } else if query.len() > crate::kernels::MAX_DOT_I8_DIMENSION {
-        Err(QuantError::DimensionTooLarge {
-            actual: query.len(),
-            maximum: crate::kernels::MAX_DOT_I8_DIMENSION,
-        })
-    } else if let Some((index, _)) = query
-        .iter()
-        .enumerate()
-        .find(|(_, value)| !value.is_finite())
-    {
-        Err(QuantError::NonFinite { index })
-    } else {
-        Ok(())
-    };
-    quantized_query_validation
-        .map_err(crate::scan::ScanError::Quant)
-        .map_err(QueryError::Scan)?;
+    prepared::validate_vector_coordinates(query, crate::kernels::MAX_DOT_I8_DIMENSION, |_| {
+        Ok::<(), std::convert::Infallible>(())
+    })
+    .map_err(|error| match error {
+        prepared::VectorValidationError::Data(error) => {
+            QueryError::Scan(crate::scan::ScanError::Quant(error))
+        }
+        prepared::VectorValidationError::Control(never) => match never {},
+    })?;
     vector_preparation.validate_binding(query, epoch)?;
     let bit4_query = std::cell::OnceCell::new();
     let int8_query = std::cell::OnceCell::new();
