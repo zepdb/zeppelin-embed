@@ -101,17 +101,17 @@ fn refuse(store: &Store, requests: &[StructuredWrite<'_, '_>], expected: &'stati
     record_verified_fault();
 }
 
-/// Requires a refusal without naming its type, for a case whose classification
-/// is owned by ZE-174. The caller proves the unchanged state separately.
-fn refuse_untyped(store: &Store, requests: &[StructuredWrite<'_, '_>]) {
+/// Applies `requests` and requires a relationship endpoint refusal, which names
+/// a node that no live record answers for.
+fn refuse_endpoint(store: &Store, requests: &[StructuredWrite<'_, '_>]) {
     let error = store
         .apply_native_graph(requests, &control())
         .err()
-        .expect("ZE-36 required a refusal");
-    assert!(!matches!(
-        error,
-        NativeGraphError::CommitIndeterminate { .. }
-    ));
+        .expect("ZE-36 required an endpoint rejection");
+    assert!(
+        matches!(error, NativeGraphError::Stage(StageError::Endpoint)),
+        "ZE-36 expected an endpoint rejection, observed {error}"
+    );
     record_verified_fault();
 }
 
@@ -371,12 +371,10 @@ fn run_ze36_identity_incarnation_fences_refuse_stale_requests() {
     assert_eq!(observe_node(&store, second).map(|node| node.2), Some(3));
 
     // The retired incarnation can neither be written nor deleted again, and
-    // the old delete no longer reaches the fence it once installed. ZE-174
-    // owns the rejection type here: the retired incarnation's tombstone is
-    // decoded as a live record, so the refusal carries an internal storage
-    // error instead of IncarnationConflict. The refusal itself, and the
-    // untouched replacement, are the identity invariant and are proven now.
-    refuse_untyped(
+    // the old delete no longer reaches the fence it once installed. Each
+    // request names an incarnation the key no longer holds, so the fence
+    // answers before revision ordering does.
+    refuse(
         &store,
         &[StructuredWrite {
             key: key(EntityKind::Node, "fenced"),
@@ -384,8 +382,9 @@ fn run_ze36_identity_incarnation_fences_refuse_stale_requests() {
             operation: StructuredOperation::Put(EntityId::Node(first)),
             image: Some(WriteImage::Node(&image)),
         }],
+        "Incarnation",
     );
-    refuse_untyped(
+    refuse(
         &store,
         &[StructuredWrite {
             key: key(EntityKind::Node, "fenced"),
@@ -396,11 +395,34 @@ fn run_ze36_identity_incarnation_fences_refuse_stale_requests() {
             ),
             image: None,
         }],
+        "Incarnation",
     );
-    refuse_untyped(&store, &delete);
+    refuse(&store, &delete, "Incarnation");
     assert_eq!(observe_node(&store, first), None);
     assert_eq!(observe_node(&store, second).map(|node| node.2), Some(3));
     assert!(fence_generation >= 1);
+
+    // A relationship endpoint naming the retired incarnation is refused as an
+    // endpoint, not as an internal decode of its retained tombstone.
+    static NO_PROPERTIES: [GraphProperty<'static>; 0] = [];
+    for (source, target) in [(first, second), (second, first)] {
+        refuse_endpoint(
+            &store,
+            &[StructuredWrite {
+                key: key(EntityKind::Relationship, "fenced-edge"),
+                revision: revision(1),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Relationship {
+                    source: NodeRef::Existing(source),
+                    target: NodeRef::Existing(target),
+                    relationship_type: GraphName::new("LINKS").expect("type"),
+                    properties: &NO_PROPERTIES,
+                }),
+            }],
+        );
+    }
+    assert_eq!(observe_node(&store, first), None);
+    assert_eq!(observe_node(&store, second).map(|node| node.2), Some(3));
 
     // The replacement still accepts its own next revision, so the refusals
     // above changed nothing.

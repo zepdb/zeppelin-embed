@@ -9,7 +9,8 @@ use crate::property_graph::staging::{
 use crate::property_graph::storage::adjacency::{NativeGraphReader, RangeScratch};
 use crate::property_graph::storage::memory::{StorageBuffer, StorageMemory};
 use crate::property_graph::storage::records::{
-    CanonicalShape, RecordView, StoredProvenance, verify_fence_entry, verify_record,
+    CanonicalShape, NodeRecordState, RecordView, StoredProvenance, verify_fence_entry,
+    verify_node_state, verify_record,
 };
 use crate::property_graph::storage::search::{Modality, SparseRoots, SparseView};
 use crate::property_graph::storage::stream::{PayloadCursor, PayloadSlice};
@@ -524,13 +525,19 @@ fn load_record<'source, 'resources, 'm>(
         return Ok(None);
     };
     let payload = crate::property_graph::storage::payload::PayloadRef::decode(entry.value())?;
-    let record = verify_record(
-        PayloadSlice::new(source, roots.store(), entry.creation_generation(), payload),
-        entity,
-        catalog,
-        document,
-        resources,
-    )?;
+    let slice = PayloadSlice::new(source, roots.store(), entry.creation_generation(), payload);
+    // A deleted node retains a checked tombstone under its own identity. Verify
+    // those bytes and their provenance in full, then report the node as not
+    // live; only a live node record answers a request naming this entity.
+    let record = match entity {
+        EntityId::Node(node) => {
+            match verify_node_state(slice, node, catalog, document, resources)? {
+                NodeRecordState::Live(record) => record,
+                NodeRecordState::Tombstone(_) => return Ok(None),
+            }
+        }
+        EntityId::Relationship(_) => verify_record(slice, entity, catalog, document, resources)?,
+    };
     Ok(Some(cached_from_record(
         source,
         &record,
