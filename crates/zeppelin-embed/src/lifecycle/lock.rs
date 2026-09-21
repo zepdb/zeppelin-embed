@@ -3,10 +3,13 @@
 //! Two mechanisms are needed, because neither alone is sufficient:
 //!
 //! * The **process-local registry** provides same-process exclusion. POSIX
-//!   record locks do not conflict between descriptors held by one process, and
-//!   Windows byte-range locks likewise do not conflict with the process that
-//!   already owns them, so without the registry a second `Store` in the same
-//!   process would be admitted.
+//!   record locks do not conflict between descriptors held by one process, so
+//!   without the registry a second `Store` in the same process would be
+//!   admitted. Windows byte-range locks do conflict per handle, even inside
+//!   one process, but the registry is still what keeps the two platforms on
+//!   one contract: it owns exactly one descriptor per store, counts the local
+//!   shared holders, and refuses a conflicting mode before any lock call, so
+//!   admission does not depend on which platform is answering.
 //! * The **persistent `writer.lock`** provides cross-process exclusion and is
 //!   released by the operating system when the holder dies, orderly or not.
 //!
@@ -175,7 +178,7 @@ fn held_stores() -> MutexGuard<'static, BTreeMap<StoreKey, RegistryEntry>> {
 #[cfg(feature = "graph-cypher")]
 #[allow(dead_code)] // Called by the ZE-40 producer seam above.
 fn open_shared_lock_file(path: &Path) -> std::io::Result<File> {
-    let file = OpenOptions::new().read(true).open(path)?;
+    let file = open_shared_lock_handle(path)?;
     if file.metadata()?.is_file() {
         Ok(file)
     } else {
@@ -184,6 +187,33 @@ fn open_shared_lock_file(path: &Path) -> std::io::Result<File> {
             "store lock path is not a regular file",
         ))
     }
+}
+
+/// Read-only handle on the existing lock file; never creates and never writes.
+#[cfg(all(feature = "graph-cypher", not(windows)))]
+fn open_shared_lock_handle(path: &Path) -> std::io::Result<File> {
+    OpenOptions::new().read(true).open(path)
+}
+
+/// Read-only handle that additionally refuses to share deletion.
+///
+/// This is the same reasoning `open_lock_file` already documents, applied to
+/// readers. Rust's default share mode includes `FILE_SHARE_DELETE`, and a
+/// reader-held lock file that anyone may rename or unlink is no protection at
+/// all: a writer would then create a fresh `writer.lock`, take an uncontended
+/// exclusive range on it, and run beside live readers. Sharing read and write
+/// but not deletion keeps the file in place for as long as any reader holds
+/// it, while still admitting the further readers and the eventual writer that
+/// the lock range itself arbitrates. No write access is requested, because
+/// `LockFileEx` needs only `GENERIC_READ`.
+#[cfg(all(feature = "graph-cypher", windows))]
+fn open_shared_lock_handle(path: &Path) -> std::io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+
+    OpenOptions::new()
+        .read(true)
+        .share_mode(crate::sys::windows::FILE_SHARE_READ | crate::sys::windows::FILE_SHARE_WRITE)
+        .open(path)
 }
 
 /// The store directory's stable filesystem identity.
@@ -300,12 +330,24 @@ fn lock_shared(file: &File) -> std::io::Result<()> {
     }
 }
 
-#[cfg(all(feature = "graph-cypher", not(unix)))]
+/// Takes the cross-process lock with `LockFileEx`, non-blocking and shared,
+/// over the same fixed range the exclusive arm uses.
+///
+/// Contention with a live writer arrives as [`std::io::ErrorKind::WouldBlock`];
+/// a permission failure stays a permission failure and is never reported as
+/// contention.
+#[cfg(all(feature = "graph-cypher", windows))]
+#[allow(dead_code)] // Called by the ZE-40 producer seam above.
+fn lock_shared(file: &File) -> std::io::Result<()> {
+    crate::sys::windows::lock_file_shared(file)
+}
+
+#[cfg(all(feature = "graph-cypher", not(any(unix, windows))))]
 #[allow(dead_code)] // Called by the ZE-40 producer seam above.
 fn lock_shared(_: &File) -> std::io::Result<()> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
-        "shared store locks require POSIX file locking",
+        "shared store locks require a supported file-locking platform",
     ))
 }
 

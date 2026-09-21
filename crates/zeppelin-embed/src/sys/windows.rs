@@ -383,7 +383,7 @@ pub(crate) const WRITER_LOCK_OFFSET: u64 = 0x4000_0000;
 /// only the byte-range lock on it matters.
 pub(crate) const WRITER_LOCK_RANGE: u64 = 1;
 
-/// Takes an exclusive, non-blocking byte-range lock on an open lock file.
+/// Takes a non-blocking byte-range lock on an open lock file in `flags` mode.
 ///
 /// Contention is reported as [`io::ErrorKind::WouldBlock`] so the caller can
 /// map it to the typed busy error. Only `ERROR_LOCK_VIOLATION` — the code
@@ -394,7 +394,10 @@ pub(crate) const WRITER_LOCK_RANGE: u64 = 1;
 ///
 /// The lock is released when the last handle to the file closes, which the OS
 /// guarantees on process death as well as on an orderly drop.
-pub(crate) fn lock_file_exclusive(file: &std::fs::File) -> io::Result<()> {
+///
+/// `LockFileEx` requires the handle to carry `GENERIC_READ` or `GENERIC_WRITE`
+/// access, so a read-only handle is sufficient for either mode.
+fn lock_file_range(file: &std::fs::File, flags: DWORD) -> io::Result<()> {
     use std::os::windows::io::AsRawHandle as _;
 
     let mut overlapped = OVERLAPPED {
@@ -413,7 +416,7 @@ pub(crate) fn lock_file_exclusive(file: &std::fs::File) -> io::Result<()> {
     let ok = unsafe {
         LockFileEx(
             file.as_raw_handle().cast(),
-            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+            flags,
             0,
             low,
             0,
@@ -436,6 +439,27 @@ pub(crate) fn lock_file_exclusive(file: &std::fs::File) -> io::Result<()> {
         )),
         _ => Err(error),
     }
+}
+
+/// Takes the exclusive, non-blocking writer lock on an open lock file.
+///
+/// `LOCKFILE_EXCLUSIVE_LOCK` is what makes the range a write lock: it excludes
+/// every other holder, shared or exclusive.
+pub(crate) fn lock_file_exclusive(file: &std::fs::File) -> io::Result<()> {
+    lock_file_range(file, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY)
+}
+
+/// Takes a shared, non-blocking read lock on an open lock file.
+///
+/// Omitting `LOCKFILE_EXCLUSIVE_LOCK` is what makes the range a read lock:
+/// any number of shared holders coexist, and every one of them excludes an
+/// exclusive holder. The handle needs only `GENERIC_READ`, so a read-only
+/// `writer.lock` handle is sufficient and no reader ever needs write access.
+// Called only by the `graph-cypher` read-only store constructor; the default
+// Windows build compiles it without a caller.
+#[allow(dead_code)]
+pub(crate) fn lock_file_shared(file: &std::fs::File) -> io::Result<()> {
+    lock_file_range(file, LOCKFILE_FAIL_IMMEDIATELY)
 }
 
 /// Bytes available to this caller on the volume that actually holds `path`.
@@ -811,6 +835,8 @@ mod tests {
         assert_eq!(super::PAGE_WRITECOPY, 0x08);
         assert_eq!(super::FILE_MAP_READ, 0x0004);
         assert_eq!(super::OPEN_EXISTING, 3);
+        assert_eq!(super::LOCKFILE_FAIL_IMMEDIATELY, 1);
+        assert_eq!(super::LOCKFILE_EXCLUSIVE_LOCK, 2);
         assert_eq!(super::ERROR_ACCESS_DENIED, 5);
         assert_eq!(super::ERROR_LOCK_VIOLATION, 33);
         assert_eq!(super::INVALID_HANDLE_VALUE as isize, -1);
@@ -1068,5 +1094,98 @@ mod tests {
             "a real Win32 error: {error}"
         );
         std::fs::remove_dir_all(&directory).expect("cleanup");
+    }
+}
+
+/// `LockFileEx` shared/exclusive interaction, proved at the FFI boundary.
+///
+/// These tests can only run on Windows; a macOS or Linux host type-checks them
+/// through `cargo check --target x86_64-pc-windows-msvc --all-targets` and
+/// never executes them. Windows byte-range locks conflict per handle even
+/// inside one process, so every participant below is a separate handle and no
+/// second process is needed.
+#[cfg(all(test, windows))]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod lock_tests {
+    use super::{lock_file_exclusive, lock_file_shared};
+    use std::fs::{File, OpenOptions};
+    use std::io;
+    use std::path::PathBuf;
+
+    fn lock_scratch(label: &str) -> PathBuf {
+        let directory = std::env::temp_dir().join(format!(
+            "ze-sys-windows-lock-{label}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&directory).expect("create lock scratch");
+        let path = directory.join("writer.lock");
+        std::fs::write(&path, b"").expect("seed lock file");
+        path
+    }
+
+    fn open_reader(path: &std::path::Path) -> File {
+        File::open(path).expect("open read handle")
+    }
+
+    fn open_writer(path: &std::path::Path) -> File {
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .expect("open write handle")
+    }
+
+    fn contention(error: &io::Error) -> bool {
+        error.kind() == io::ErrorKind::WouldBlock
+    }
+
+    /// Two readers share the range; an exclusive attempt is refused until the
+    /// last reader has gone, not merely until the first one has.
+    #[test]
+    fn two_shared_holders_exclude_a_writer_until_both_release() {
+        let path = lock_scratch("shared-pair");
+
+        let first = open_reader(&path);
+        lock_file_shared(&first).expect("first shared holder");
+        let second = open_reader(&path);
+        lock_file_shared(&second).expect("second shared holder beside the first");
+
+        let writer = open_writer(&path);
+        let blocked = lock_file_exclusive(&writer).expect_err("two readers exclude a writer");
+        assert!(contention(&blocked), "expected WouldBlock, got {blocked}");
+
+        drop(first);
+        let still_blocked =
+            lock_file_exclusive(&writer).expect_err("one surviving reader still excludes a writer");
+        assert!(
+            contention(&still_blocked),
+            "expected WouldBlock, got {still_blocked}"
+        );
+
+        drop(second);
+        lock_file_exclusive(&writer).expect("the last reader's release admits the writer");
+
+        drop(writer);
+        let _ = std::fs::remove_dir_all(path.parent().expect("scratch parent"));
+    }
+
+    /// The exclusion is symmetric: a live exclusive holder refuses a reader.
+    #[test]
+    fn an_exclusive_holder_excludes_a_shared_holder() {
+        let path = lock_scratch("exclusive-first");
+
+        let writer = open_writer(&path);
+        lock_file_exclusive(&writer).expect("exclusive holder");
+
+        let reader = open_reader(&path);
+        let blocked = lock_file_shared(&reader).expect_err("a writer excludes a reader");
+        assert!(contention(&blocked), "expected WouldBlock, got {blocked}");
+
+        drop(writer);
+        lock_file_shared(&reader).expect("the writer's release admits the reader");
+
+        drop(reader);
+        let _ = std::fs::remove_dir_all(path.parent().expect("scratch parent"));
     }
 }

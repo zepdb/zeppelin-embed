@@ -401,6 +401,11 @@ fn native_shared_lock_releases_on_child_exit_and_kill() {
     );
 }
 
+/// Unix-only: it asserts the descriptor's `O_RDONLY` access mode through
+/// `fcntl` and makes the lock file unwritable through a POSIX mode bit.
+/// Windows expresses neither, so the shared-handle contract is proved there by
+/// `sys::windows::lock_tests` instead.
+#[cfg(unix)]
 #[test]
 fn native_shared_lock_never_creates_or_writes_lock_file() {
     use std::os::fd::AsRawFd as _;
