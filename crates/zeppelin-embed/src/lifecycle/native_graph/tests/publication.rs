@@ -877,6 +877,17 @@ pub(super) fn out_rows_for_lease(
     node: NodeId,
     peer: NodeId,
 ) -> Vec<RelationshipRow> {
+    rows_for_lease(store, lease, node, peer, DirectionSelection::Out)
+}
+
+/// Actual expansion rows of `node` in one direction, through the public view.
+pub(super) fn rows_for_lease(
+    store: &Store,
+    lease: &super::super::NativeReadLease,
+    node: NodeId,
+    peer: NodeId,
+    direction: DirectionSelection,
+) -> Vec<RelationshipRow> {
     let shared = crate::property_graph::resources::GraphResources::from_store(store)
         .expect("shared graph resources");
     let memory = QueryMemory::new(&shared, 8 * 1024 * 1024).expect("query memory");
@@ -892,11 +903,11 @@ pub(super) fn out_rows_for_lease(
     let mut cursor = view
         .expansion_cursor(
             node,
-            DirectionSelection::Out,
+            direction,
             RelationshipTypeSelection::All,
             &mut runtime,
         )
-        .expect("OUT cursor");
+        .expect("expansion cursor");
     let sentinel = RelationshipRow {
         rel: RelId::new(u128::MAX).expect("sentinel relationship"),
         source: node,

@@ -217,7 +217,7 @@ fn wal_path(directory: &Path) -> PathBuf {
         .expect("native graph WAL")
 }
 
-fn file_snapshot(directory: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+pub(super) fn file_snapshot(directory: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     std::fs::read_dir(directory)
         .expect("read native graph directory")
         .map(|entry| {
@@ -272,7 +272,7 @@ fn remove_required_and_assert_refused(
     std::fs::write(path, bytes).expect("restore required recovery artifact");
 }
 
-fn native_options() -> OpenOptions {
+pub(super) fn native_options() -> OpenOptions {
     OpenOptions::new()
         .with_durability(DurabilityMode::Durable, CommitTier::Durable)
         .with_max_resident_bytes(256 * 1024 * 1024)
@@ -299,7 +299,7 @@ impl super::super::NativeReadConsumer<Option<(u64, u64, u64)>> for ObserveNode {
     }
 }
 
-fn observe_node(store: &Store, node: NodeId) -> Option<(u64, u64, u64)> {
+pub(super) fn observe_node(store: &Store, node: NodeId) -> Option<(u64, u64, u64)> {
     store
         .with_native_read(
             &QueryControl::Cancel(CancelToken::new()),
@@ -357,7 +357,7 @@ impl super::super::NativeReadConsumer<bool> for ObserveRelationship {
     }
 }
 
-fn relationship_is_visible(store: &Store, relationship: RelId) -> bool {
+pub(super) fn relationship_is_visible(store: &Store, relationship: RelId) -> bool {
     store
         .with_native_read(
             &QueryControl::Cancel(CancelToken::new()),

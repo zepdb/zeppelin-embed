@@ -113,6 +113,89 @@ pub mod graph_publication_test_support {
 
 #[cfg(all(feature = "graph-cypher", feature = "test-support"))]
 #[doc(hidden)]
+pub mod graph_identity_test_support {
+    use crate::graph_read_view_test_support::PathReceipt;
+
+    /// One observed adjacency row, bound to the node the question named.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct ObservedAdjacency {
+        /// Node the expansion was bound to.
+        pub bound_node: u128,
+        /// Exact relationship type identity.
+        pub relationship_type: u64,
+        /// Exact relationship identity.
+        pub rel: u128,
+        /// Other endpoint of that row.
+        pub neighbor: u128,
+    }
+
+    /// Exact outcome of one keyed request. It holds no expected answer.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct ObservedOutcome {
+        /// Key ordinal the request named.
+        pub key: u32,
+        /// Primitive rejection name, absent when the request was admitted.
+        pub rejection: Option<&'static str>,
+        /// Installed or replayed identity; zero on a rejection.
+        pub entity: u128,
+        /// Installed or replayed revision; zero on a rejection.
+        pub revision: u64,
+        /// Original generation for a replay, changed generation otherwise.
+        pub generation: u64,
+        /// Exact replay classification.
+        pub replayed: bool,
+    }
+
+    /// Complete visible rows of one watched expansion after one batch.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct ObservedWatch {
+        /// Batch index this answer follows.
+        pub batch: usize,
+        /// Published generation the reader observed.
+        pub generation: u64,
+        /// Key ordinal whose current incarnation was bound.
+        pub key: u32,
+        /// Whether the expansion was outgoing.
+        pub outgoing: bool,
+        /// Complete rows, in the order the engine returned them.
+        pub rows: Vec<ObservedAdjacency>,
+    }
+
+    /// Actual state observed from one real keyed identity script.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct IdentityState {
+        /// Ordered receipts and rejections of the script.
+        pub outcomes: Vec<ObservedOutcome>,
+        /// Watched expansions after every batch.
+        pub watched: Vec<ObservedWatch>,
+        /// Generation held by a reader admitted before the deletion.
+        pub retained_generation: u64,
+        /// Rows that retained reader still observes after the deletion,
+        /// the recreation and a real reclamation cycle.
+        pub retained_rows: Vec<ObservedAdjacency>,
+        /// Generation observed by a reader admitted after those changes.
+        pub fresh_generation: u64,
+        /// Rows that newly admitted reader observes.
+        pub fresh_rows: Vec<ObservedAdjacency>,
+    }
+
+    /// Receipts emitted only after each directed identity body completes.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct IdentityProbeReport {
+        /// Completed path receipts with actual fired and clean counts.
+        pub receipts: Vec<PathReceipt>,
+        /// Actual state observed from one real script.
+        pub state: IdentityState,
+    }
+
+    /// Runs the directed production identity paths used by ZE-36 acceptance.
+    pub fn run_actual_probe(seed: u64) -> IdentityProbeReport {
+        crate::lifecycle::native_graph::tests::run_identity_probe(seed)
+    }
+}
+
+#[cfg(all(feature = "graph-cypher", feature = "test-support"))]
+#[doc(hidden)]
 pub mod graph_reclaim_test_support {
     use crate::graph_read_view_test_support::{ObservedRelationship, PathReceipt};
 

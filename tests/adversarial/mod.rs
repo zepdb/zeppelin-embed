@@ -156,6 +156,8 @@ pub mod graph_read_view;
 pub mod graph_publication;
 
 #[cfg(feature = "graph-cypher")]
+pub mod graph_identity;
+#[cfg(feature = "graph-cypher")]
 pub mod graph_native_relational;
 #[cfg(feature = "graph-cypher")]
 pub mod graph_pattern;
