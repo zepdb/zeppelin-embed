@@ -703,7 +703,7 @@ fn run_ze46_real_consolidation_preserves_exact_state_and_reopens() {
 }
 
 /// The node directory's raw value for `node`: its physical record reference.
-fn node_directory_value(
+pub(crate) fn node_directory_value(
     store: &Store,
     lease: &super::super::NativeReadLease,
     node: crate::property_graph::NodeId,

@@ -31,6 +31,8 @@ pub(super) mod relational;
 mod source;
 
 #[cfg(test)]
+mod oracle_generation_tests;
+#[cfg(test)]
 mod oracle_tests;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;

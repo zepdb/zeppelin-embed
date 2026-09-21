@@ -35,9 +35,10 @@ use crate::property_graph::{
     ApplicationKey, CanonicalContents, EntityId, EntityKind, GraphName, GraphRevision, NodeRef,
 };
 use std::mem::size_of;
+use std::path::PathBuf;
 
 #[path = "../../../../../../tests/adversarial-oracle/src/graph_pattern.rs"]
-mod oracle;
+pub(super) mod oracle;
 
 use oracle::{Cell, Direction as TinyDirection, Predicate, TinyPattern};
 
@@ -46,44 +47,55 @@ use oracle::{Cell, Direction as TinyDirection, Predicate, TinyPattern};
 // ---------------------------------------------------------------------------
 
 /// One committed tiny graph plus its primitive oracle description.
-struct Fixture {
+pub(super) struct Fixture {
     _directory: tempfile::TempDir,
-    store: Store,
+    path: PathBuf,
+    pub(super) store: Store,
     nodes: Vec<u128>,
     relationships: Vec<u128>,
-    graph: oracle::Graph,
+    pub(super) graph: oracle::Graph,
+}
+
+/// The exact options every oracle fixture opens its native graph with.
+fn fixture_options() -> OpenOptions {
+    OpenOptions::new()
+        .with_durability(DurabilityMode::Durable, CommitTier::Durable)
+        .with_max_resident_bytes(256 * 1024 * 1024)
 }
 
 impl Fixture {
-    fn node(&self, index: usize) -> u128 {
+    pub(super) fn node(&self, index: usize) -> u128 {
         self.nodes[index]
     }
 
-    fn relationship(&self, index: usize) -> u128 {
+    pub(super) fn relationship(&self, index: usize) -> u128 {
         self.relationships[index]
     }
 
-    fn close(self) {
+    /// Closes the store and opens the same directory again, so every later
+    /// observation reads durable bytes rather than the writer's live state.
+    pub(super) fn reopen(&mut self) {
+        self.store.close().expect("close native oracle store");
+        self.store = Store::open_native_graph(&self.path, fixture_options(), None)
+            .expect("reopen native oracle store");
+    }
+
+    pub(super) fn close(self) {
         self.store.close().expect("close native oracle store");
     }
 }
 
 /// Commits `nodes` (label sets) and `edges` (source, target, type) into a real
 /// native graph store and mirrors the committed identities into the oracle.
-fn fixture(
+pub(super) fn fixture(
     namespace: &'static str,
     nodes: &[&[&'static str]],
     edges: &[(usize, usize, &'static str)],
 ) -> Fixture {
     let directory = tempfile::tempdir().expect("native oracle store");
-    let store = Store::create_native_graph(
-        directory.path().join("native"),
-        OpenOptions::new()
-            .with_durability(DurabilityMode::Durable, CommitTier::Durable)
-            .with_max_resident_bytes(256 * 1024 * 1024),
-        None,
-    )
-    .expect("create native graph");
+    let path = directory.path().join("native");
+    let store =
+        Store::create_native_graph(&path, fixture_options(), None).expect("create native graph");
     let keys = (0..nodes.len())
         .map(|index| format!("n{index}"))
         .chain((0..edges.len()).map(|index| format!("e{index}")))
@@ -169,6 +181,7 @@ fn fixture(
     };
     Fixture {
         _directory: directory,
+        path,
         store,
         nodes: committed_nodes,
         relationships: committed_relationships,
@@ -712,7 +725,7 @@ impl NativeReadConsumer<OracleExecution> for OracleConsumer<'_> {
 }
 
 /// Executes one tiny pattern against the real native runtime.
-fn observed(fixture: &Fixture, pattern: &TinyPattern) -> oracle::Bag {
+pub(super) fn observed(fixture: &Fixture, pattern: &TinyPattern) -> oracle::Bag {
     let execution = fixture
         .store
         .with_native_read(
@@ -729,7 +742,7 @@ fn observed(fixture: &Fixture, pattern: &TinyPattern) -> oracle::Bag {
 
 /// Asserts that production and the independent oracle agree exactly, and
 /// returns the shared bag.
-fn agreed(fixture: &Fixture, pattern: &TinyPattern) -> oracle::Bag {
+pub(super) fn agreed(fixture: &Fixture, pattern: &TinyPattern) -> oracle::Bag {
     let expected = oracle::evaluate(&fixture.graph, pattern).expect("oracle evaluation");
     let observed = observed(fixture, pattern);
     assert_eq!(
@@ -743,7 +756,7 @@ fn agreed(fixture: &Fixture, pattern: &TinyPattern) -> oracle::Bag {
 // Tiny pattern helpers
 // ---------------------------------------------------------------------------
 
-fn lookup(output: u32, id: u128) -> TinyPattern {
+pub(super) fn lookup(output: u32, id: u128) -> TinyPattern {
     TinyPattern::LookupNode {
         input: Box::new(TinyPattern::Unit),
         output,
@@ -751,7 +764,7 @@ fn lookup(output: u32, id: u128) -> TinyPattern {
     }
 }
 
-fn scan(output: u32) -> TinyPattern {
+pub(super) fn scan(output: u32) -> TinyPattern {
     TinyPattern::ScanNodes {
         input: Box::new(TinyPattern::Unit),
         output,
@@ -759,7 +772,7 @@ fn scan(output: u32) -> TinyPattern {
     }
 }
 
-fn expand(
+pub(super) fn expand(
     input: TinyPattern,
     source: u32,
     node: u32,
@@ -778,7 +791,7 @@ fn expand(
     }
 }
 
-fn bounded(
+pub(super) fn bounded(
     input: TinyPattern,
     source: u32,
     node: u32,
@@ -801,7 +814,7 @@ fn bounded(
     }
 }
 
-fn row(cells: &[(u32, Cell)]) -> oracle::Row {
+pub(super) fn row(cells: &[(u32, Cell)]) -> oracle::Row {
     let mut row = cells.to_vec();
     row.sort();
     row
