@@ -37,8 +37,10 @@ impl ReplayValidator for SyntacticOnly {
     }
     fn state(
         &mut self,
+        _: EnvelopeKind,
         _: CommitState<'_>,
         _: CommitState<'_>,
+        _: ChangeReader<'_>,
         r: &mut WalResources<'_>,
     ) -> Result<(), WalError> {
         r.charge(1)
