@@ -1946,6 +1946,10 @@ pub(crate) mod tests {
     mod consolidation;
     mod expression_tests;
     mod mapping_slots;
+    // Real second processes re-invoke the unit-test executable, so these live
+    // only in the test binary and never in a `test-support` library build.
+    #[cfg(test)]
+    mod process_lock;
     pub(crate) mod publication;
     mod recovery;
     mod retrieval;

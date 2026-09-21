@@ -191,7 +191,7 @@ fn options() -> OpenOptions {
         .with_max_resident_bytes(256 * 1024 * 1024)
 }
 
-fn pending_reclaim_candidates(
+pub(super) fn pending_reclaim_candidates(
     store: &Store,
     lease: &super::super::NativeReadLease,
 ) -> Vec<ArtifactDescriptor> {
@@ -2525,7 +2525,7 @@ fn seed_crash_history() -> (CrashHistory, Store) {
     )
 }
 
-fn commit_maintenance(
+pub(super) fn commit_maintenance(
     store: &Store,
 ) -> Result<super::super::maintenance::NativeMaintenanceReport, super::super::NativeGraphError> {
     let admission = store
