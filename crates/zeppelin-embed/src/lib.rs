@@ -113,6 +113,47 @@ pub mod graph_publication_test_support {
 
 #[cfg(all(feature = "graph-cypher", feature = "test-support"))]
 #[doc(hidden)]
+pub mod graph_reclaim_test_support {
+    use crate::graph_read_view_test_support::{ObservedRelationship, PathReceipt};
+
+    /// Actual state observed after one real reclaim cycle and a reopen. It
+    /// holds no expected answer and no comparator.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct ReclaimState {
+        /// First created node identity.
+        pub first_node: u128,
+        /// Second created node identity.
+        pub second_node: u128,
+        /// OUT rows of the first node after the cycle and the reopen.
+        pub relationships: Vec<ObservedRelationship>,
+        /// Generation replayed for the original installing request.
+        pub replay_generation: u64,
+        /// Whether that request was classified as an exact replay.
+        pub replayed: bool,
+        /// Bytes physically unlinked by the cycle.
+        pub removed_bytes: u64,
+        /// Summed on-disk lengths of the files the cycle unlinked.
+        pub unlinked_file_bytes: u64,
+    }
+
+    /// Receipts emitted only after each directed reclamation body completes.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct ReclaimProbeReport {
+        /// Completed path receipts with actual fired and clean counts.
+        pub receipts: Vec<PathReceipt>,
+        /// Actual state after a real cycle.
+        pub state: ReclaimState,
+    }
+
+    /// Runs the directed production consolidation and reclamation paths used
+    /// by ZE-46 acceptance.
+    pub fn run_actual_probe(seed: u64) -> ReclaimProbeReport {
+        crate::lifecycle::native_graph::tests::run_reclaim_probe(seed)
+    }
+}
+
+#[cfg(all(feature = "graph-cypher", feature = "test-support"))]
+#[doc(hidden)]
 pub mod graph_recovery_test_support {
     use crate::graph_read_view_test_support::{ObservedRelationship, PathReceipt};
 

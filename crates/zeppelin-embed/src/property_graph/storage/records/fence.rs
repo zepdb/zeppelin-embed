@@ -28,8 +28,10 @@ pub struct FenceView<'a, S: BlockSource> {
     incarnation: EntityId,
     revision: GraphRevision,
     provenance: StoredProvenance<'a, S>,
+    provenance_ref: PayloadRef,
     canonical: Option<CanonicalView<'a, S>>,
     canonical_bytes: Option<PayloadSlice<'a, S>>,
+    canonical_ref: Option<PayloadRef>,
 }
 impl<'a, S: BlockSource> FenceView<'a, S> {
     /// Full original/current incarnation, even when deleted.
@@ -56,6 +58,23 @@ impl<'a, S: BlockSource> FenceView<'a, S> {
     pub const fn canonical_bytes(&self) -> Option<PayloadSlice<'a, S>> {
         self.canonical_bytes
     }
+    pub(crate) const fn required_payloads(&self) -> (PayloadRef, Option<PayloadRef>) {
+        (self.provenance_ref, self.canonical_ref)
+    }
+}
+
+/// Select the authenticated provenance artifact used to bound one fence
+/// semantic read window. Full fence validation still owns every field check.
+pub(crate) fn fence_window_reference(entry: DirectoryEntry<'_>) -> Result<PayloadRef, TreeError> {
+    if entry.value().len() != 144 {
+        return Err(TreeError::Invalid("fence window value extent"));
+    }
+    PayloadRef::decode(
+        entry
+            .value()
+            .get(40..88)
+            .ok_or(TreeError::Invalid("fence window provenance extent"))?,
+    )
 }
 /// Validate exact144-byte layout, its descendants, and the actual leaf key.
 /// A later root generation never relaxes this leaf's descendant generation bound.
@@ -211,13 +230,15 @@ fn verify_value<'a, S: BlockSource>(
     let revision = GraphRevision::new(u64::from_le_bytes(read(bytes, 24)?))
         .map_err(|_| TreeError::Invalid("zero fence revision"))?;
     let original_generation = GraphGeneration::new(u64::from_le_bytes(read(bytes, 32)?));
-    let provenance = PayloadRef::decode(
+    let provenance_ref = PayloadRef::decode(
         bytes
             .get(40..88)
             .ok_or(TreeError::Invalid("fence provenance extent"))?,
     )?;
-    let provenance =
-        verify_provenance(PayloadSlice::new(source, store, generation, provenance), r)?;
+    let provenance = verify_provenance(
+        PayloadSlice::new(source, store, generation, provenance_ref),
+        r,
+    )?;
     native::validate_installing_provenance(
         &provenance,
         incarnation,
@@ -230,20 +251,17 @@ fn verify_value<'a, S: BlockSource>(
     {
         return Err(TreeError::Invalid("fence provenance identity"));
     }
-    let canonical_bytes = match (read::<1>(bytes, 88)?, deleted) {
+    let canonical_ref = match (read::<1>(bytes, 88)?, deleted) {
         ([0], true) if read::<48>(bytes, 96)? == [0; 48] => None,
-        ([1], false) => Some(PayloadSlice::new(
-            source,
-            store,
-            generation,
-            PayloadRef::decode(
-                bytes
-                    .get(96..144)
-                    .ok_or(TreeError::Invalid("fence canonical extent"))?,
-            )?,
-        )),
+        ([1], false) => Some(PayloadRef::decode(
+            bytes
+                .get(96..144)
+                .ok_or(TreeError::Invalid("fence canonical extent"))?,
+        )?),
         _ => return Err(TreeError::Invalid("fence canonical presence")),
     };
+    let canonical_bytes =
+        canonical_ref.map(|reference| PayloadSlice::new(source, store, generation, reference));
     let canonical = match canonical_bytes {
         Some(bytes) => {
             let image = verify_canonical(bytes, document, &mut CatalogVisitor(catalog), r)?;
@@ -274,8 +292,10 @@ fn verify_value<'a, S: BlockSource>(
         incarnation,
         revision,
         provenance,
+        provenance_ref,
         canonical,
         canonical_bytes,
+        canonical_ref,
     })
 }
 struct CatalogVisitor<'a, C>(&'a C);

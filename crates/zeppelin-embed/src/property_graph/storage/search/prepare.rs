@@ -13,9 +13,10 @@ use crate::lifecycle::native_graph::NativeReadLease;
 use crate::property_graph::staging::{BaseIdentity, StagedBatch};
 use crate::property_graph::storage::adjacency::NativeGraphCandidate;
 use crate::property_graph::storage::artifact::{self, BlockKind, PhysicalRef};
+use crate::property_graph::storage::consolidation::RecordRelocation;
 use crate::property_graph::storage::memory::{StorageBuffer, StorageMemory};
 use crate::property_graph::storage::participant::BatchCatalog;
-use crate::property_graph::storage::payload::{PayloadRef, prepare_payload};
+use crate::property_graph::storage::payload::{PayloadRef, prepare_payload, prepare_stream};
 use crate::property_graph::storage::records::{NodeRecordState, RecordCatalog, verify_node_state};
 use crate::property_graph::storage::stream::PayloadSlice;
 use crate::property_graph::storage::tree::{TreeKind, directory::*};
@@ -24,6 +25,15 @@ use crate::property_graph::{EntityId, GraphGeneration, NodeId};
 
 const VECTOR_SOURCE_MAX_ROWS: usize = 1_024;
 const VECTOR_SOURCE_MAX_RESCORE_BYTES: usize = 4 * 1_024 * 1_024;
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static MISS_NEXT_MAINTENANCE_PEER_RETARGET: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn miss_next_maintenance_peer_retarget() {
+    MISS_NEXT_MAINTENANCE_PEER_RETARGET.with(|scheduled| scheduled.set(true));
+}
 
 /// Exact analyzed transition emitted for the WAL mutation at one delta ordinal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -555,6 +565,392 @@ fn install_source<S: BlockSink>(
     Ok(state)
 }
 
+/// Rebinds one indivisible sparse source cohort after a physical native-record
+/// relocation. Immutable lexical/vector payloads and the live mask remain
+/// shared; every live membership in the touched source follows its new manifest.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn relocate_sparse_state<B: BlockSource, S: BlockSink>(
+    source: &B,
+    sink: &mut S,
+    mut state: SparseRootState,
+    modality: Modality,
+    relocation: RecordRelocation,
+    generation: GraphGeneration,
+    sequence: u64,
+    memory: &StorageMemory<'_>,
+    resources: &mut TreeResources<'_>,
+) -> Result<SparseRootState, TreeError> {
+    #[cfg(any(test, feature = "test-support"))]
+    let miss_peer = MISS_NEXT_MAINTENANCE_PEER_RETARGET.with(|scheduled| scheduled.replace(false));
+    #[cfg(not(any(test, feature = "test-support")))]
+    let miss_peer = false;
+    let node_key = relocation.node.get().to_le_bytes();
+    let Some(member_entry) = lookup_entry(source, state.members, &node_key, resources)? else {
+        return Ok(state);
+    };
+    let selected_member = MembershipRow::decode(member_entry.value())?;
+    let source_block = source.resolve(selected_member.source, resources)?;
+    if source_block.reference() != selected_member.source
+        || selected_member.source.kind != BlockKind::CommitParticipant
+    {
+        return Err(TreeError::Invalid("maintenance sparse source reference"));
+    }
+    let manifest = SourceManifest::decode(source_block.payload())?;
+    if manifest.modality != modality
+        || manifest.generation > generation
+        || manifest.sequence >= sequence
+        || selected_member.row >= manifest.rows
+    {
+        return Err(TreeError::Invalid("maintenance sparse source cutoff"));
+    }
+    let mut old_source_key = [0_u8; 32];
+    artifact::encode_reference(selected_member.source, &mut old_source_key)?;
+    let source_entry = lookup_entry(source, state.sources, &old_source_key, resources)?
+        .ok_or(TreeError::Invalid("maintenance sparse source is absent"))?;
+    let source_value = SourceValue::decode(source_entry.value())?;
+    let mask = PayloadSlice::new(
+        source,
+        state.members.store(),
+        source_entry.creation_generation(),
+        source_value.mask,
+    );
+    let table = PayloadSlice::new(
+        source,
+        state.members.store(),
+        manifest.generation,
+        manifest.row_table,
+    );
+    let mut selected_bytes = [0_u8; ROW_BYTES];
+    if table.read_at(
+        u64::from(selected_member.row) * ROW_BYTES as u64,
+        &mut selected_bytes,
+        resources,
+    )? != ROW_BYTES
+    {
+        return Err(TreeError::Invalid("short maintenance sparse selected row"));
+    }
+    let selected_row = SparseRow::decode(&selected_bytes)?;
+    if selected_row.node != relocation.node
+        || selected_row.revision != relocation.revision
+        || selected_row.record != relocation.old_record
+    {
+        return Err(TreeError::Invalid(
+            "maintenance sparse relocation correlation",
+        ));
+    }
+    let mut replacement_record = [0_u8; 48];
+    relocation.new_record.encode_into(&mut replacement_record)?;
+    let patch_start = u64::from(selected_member.row)
+        .checked_mul(ROW_BYTES as u64)
+        .and_then(|offset| offset.checked_add(24))
+        .ok_or(TreeError::Work)?;
+    let patch_end = patch_start.checked_add(48).ok_or(TreeError::Work)?;
+    let table_length = usize::try_from(manifest.row_table.len()).map_err(|_| TreeError::Memory)?;
+    let row_table = prepare_stream(
+        sink,
+        state.members.store(),
+        generation,
+        BlockKind::RetrievalRows,
+        table_length,
+        &mut |offset, output, r| {
+            if table.read_at(offset, output, r)? != output.len() {
+                return Err(TreeError::Invalid("short maintenance sparse row table"));
+            }
+            let output_end = offset
+                .checked_add(output.len() as u64)
+                .ok_or(TreeError::Work)?;
+            let overlap_start = offset.max(patch_start);
+            let overlap_end = output_end.min(patch_end);
+            if overlap_start < overlap_end {
+                let target_start =
+                    usize::try_from(overlap_start - offset).map_err(|_| TreeError::Memory)?;
+                let source_start =
+                    usize::try_from(overlap_start - patch_start).map_err(|_| TreeError::Memory)?;
+                let length =
+                    usize::try_from(overlap_end - overlap_start).map_err(|_| TreeError::Memory)?;
+                output
+                    .get_mut(target_start..target_start + length)
+                    .ok_or(TreeError::Invalid("maintenance sparse patch extent"))?
+                    .copy_from_slice(
+                        replacement_record
+                            .get(source_start..source_start + length)
+                            .ok_or(TreeError::Invalid("maintenance sparse patch source"))?,
+                    );
+            }
+            Ok(())
+        },
+        resources,
+    )?;
+    let manifest_length = match manifest.format {
+        SourceFormat::V1 => SOURCE_V1_BYTES,
+        SourceFormat::V2 => SOURCE_V2_BYTES,
+    };
+    let mut encoded_manifest = [0_u8; SOURCE_V2_BYTES];
+    let encoded_manifest = encoded_manifest
+        .get_mut(..manifest_length)
+        .ok_or(TreeError::Invalid("maintenance sparse manifest extent"))?;
+    SourceManifest {
+        format: manifest.format,
+        modality,
+        generation,
+        sequence,
+        rows: manifest.rows,
+        row_table,
+        lexical: manifest.lexical,
+        vector_index: manifest.vector_index,
+    }
+    .encode(encoded_manifest)?;
+    let new_source = sink.append(
+        BlockKind::CommitParticipant,
+        generation,
+        encoded_manifest,
+        resources,
+    )?;
+
+    let mut scratch = TreeScratch::for_prepare(memory)?;
+    state.sources = remove_checked(
+        sink,
+        DirectoryMutation::new(state.sources, generation, SourceValidator),
+        &old_source_key,
+        &mut scratch,
+        resources,
+    )?;
+    let mut new_source_key = [0_u8; 32];
+    artifact::encode_reference(new_source, &mut new_source_key)?;
+    let mut encoded_source_value = [0_u8; SOURCE_VALUE_BYTES];
+    source_value.encode(&mut encoded_source_value)?;
+    state.sources = insert_checked(
+        sink,
+        DirectoryMutation::new(state.sources, generation, SourceValidator),
+        &new_source_key,
+        &encoded_source_value,
+        &mut scratch,
+        resources,
+    )?;
+
+    let mut observed_selected = false;
+    let mut live_rows = 0_u64;
+    let mut live_length = 0_u64;
+    for ordinal in 0..manifest.rows {
+        let mut bit = [0_u8; 1];
+        if mask.read_at(u64::from(ordinal / 8), &mut bit, resources)? != 1 {
+            return Err(TreeError::Invalid("short maintenance sparse live mask"));
+        }
+        let mut row_bytes = [0_u8; ROW_BYTES];
+        if table.read_at(
+            u64::from(ordinal) * ROW_BYTES as u64,
+            &mut row_bytes,
+            resources,
+        )? != ROW_BYTES
+        {
+            return Err(TreeError::Invalid("short maintenance sparse cohort row"));
+        }
+        let row = SparseRow::decode(&row_bytes)?;
+        if bit.first().copied().unwrap_or(0) & (1_u8 << (ordinal % 8)) == 0 {
+            continue;
+        }
+        let prior = lookup_entry(
+            &*sink,
+            state.members,
+            &row.node.get().to_le_bytes(),
+            resources,
+        )?
+        .ok_or(TreeError::Invalid("maintenance sparse live peer is absent"))?;
+        let prior = MembershipRow::decode(prior.value())?;
+        if prior.source != selected_member.source
+            || prior.row != ordinal
+            || prior.revision != row.revision
+        {
+            return Err(TreeError::Invalid(
+                "maintenance sparse live peer correlation",
+            ));
+        }
+        let mut encoded = [0_u8; MEMBERSHIP_BYTES];
+        MembershipRow {
+            revision: row.revision,
+            source: new_source,
+            row: ordinal,
+        }
+        .encode(&mut encoded)?;
+        if miss_peer && row.node != relocation.node {
+            continue;
+        }
+        state.members = insert_checked(
+            sink,
+            DirectoryMutation::new(state.members, generation, MembershipValidator),
+            &row.node.get().to_le_bytes(),
+            &encoded,
+            &mut scratch,
+            resources,
+        )?;
+        live_rows = live_rows.checked_add(1).ok_or(TreeError::Work)?;
+        if modality == Modality::Text {
+            live_length = live_length
+                .checked_add(u64::from(row.analyzed_length))
+                .ok_or(TreeError::Work)?;
+        }
+        observed_selected |= row.node == relocation.node && ordinal == selected_member.row;
+    }
+    if !observed_selected
+        || live_rows != source_value.live_rows
+        || live_length != source_value.live_length
+    {
+        return Err(TreeError::Invalid("maintenance sparse cohort aggregate"));
+    }
+    Ok(state)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn prepare_sparse_relocated_roots<B: BlockSource, S: BlockSink, C: RecordCatalog<B>>(
+    source: &B,
+    sink: &mut S,
+    active: SparseRoots,
+    base_native: GraphRoots,
+    target_native: GraphRoots,
+    catalog_required: RequiredRef,
+    catalog: &C,
+    document: Option<&crate::epoch::EmbeddingTower>,
+    lexical: crate::fts::tokenizer::TokenizerEpoch,
+    target_sequence: u64,
+    relocations: &[RecordRelocation],
+    memory: &StorageMemory<'_>,
+    resources: &mut TreeResources<'_>,
+) -> Result<SparsePhysicalRoots, TreeError> {
+    if relocations.len() > 1
+        || target_native.store() != base_native.store()
+        || target_native.generation().get()
+            != base_native
+                .generation()
+                .get()
+                .checked_add(1)
+                .ok_or(TreeError::Work)?
+        || target_sequence == 0
+    {
+        return Err(TreeError::Invalid("sparse maintenance relocation target"));
+    }
+    let view = super::view::SparseView::open(
+        source,
+        active,
+        base_native,
+        catalog_required,
+        catalog,
+        document,
+        lexical,
+        memory,
+        resources,
+    )?;
+    if target_sequence != view.sequence().checked_add(1).ok_or(TreeError::Work)? {
+        return Err(TreeError::Invalid("sparse maintenance target cutoff"));
+    }
+    view.validate_all(Modality::Text, resources)?;
+    view.validate_all(Modality::Vector, resources)?;
+    let interpretation_catalog = view.interpretation_catalog();
+    drop(view);
+
+    let generation = target_native.generation();
+    let mut text_state = read_root(
+        source,
+        active.text,
+        Modality::Text,
+        base_native.store(),
+        generation,
+        base_native.generation(),
+        target_sequence - 1,
+        interpretation_catalog,
+        lexical,
+        document,
+        memory,
+        resources,
+    )?;
+    let mut vector_state = if document.is_some() {
+        read_root(
+            source,
+            active.vector,
+            Modality::Vector,
+            base_native.store(),
+            generation,
+            base_native.generation(),
+            target_sequence - 1,
+            interpretation_catalog,
+            lexical,
+            document,
+            memory,
+            resources,
+        )?
+    } else {
+        if active.vector.is_some() {
+            return Err(TreeError::Invalid(
+                "vector sparse root without document space",
+            ));
+        }
+        SparseRootState {
+            members: DirectoryRoot::empty(
+                base_native.store(),
+                TreeKind::SparseMembership,
+                generation,
+            ),
+            sources: DirectoryRoot::empty(base_native.store(), TreeKind::SparseSources, generation),
+            live_rows: 0,
+            live_length: 0,
+            checkpoint: text_state.checkpoint,
+        }
+    };
+    if let Some(relocation) = relocations.first().copied() {
+        text_state = relocate_sparse_state(
+            source,
+            sink,
+            text_state,
+            Modality::Text,
+            relocation,
+            generation,
+            target_sequence,
+            memory,
+            resources,
+        )?;
+        vector_state = relocate_sparse_state(
+            source,
+            sink,
+            vector_state,
+            Modality::Vector,
+            relocation,
+            generation,
+            target_sequence,
+            memory,
+            resources,
+        )?;
+    }
+    let text = append_root(
+        sink,
+        Modality::Text,
+        base_native.store(),
+        generation,
+        target_sequence,
+        interpretation_catalog,
+        lexical,
+        text_state,
+        resources,
+    )?;
+    let vector = document
+        .map(|_| {
+            append_root(
+                sink,
+                Modality::Vector,
+                base_native.store(),
+                generation,
+                target_sequence,
+                interpretation_catalog,
+                lexical,
+                vector_state,
+                resources,
+            )
+        })
+        .transpose()?;
+    Ok(SparsePhysicalRoots {
+        text: Some(text),
+        vector,
+    })
+}
+
 fn append_root<S: BlockSink>(
     sink: &mut S,
     modality: Modality,
@@ -734,7 +1130,7 @@ pub(crate) fn prepare_sparse<'m, S: BlockSink, C: RecordCatalog<S>>(
                     })?;
                 }
             }
-            if let Some(vector) = record.canonical().stored_vector() {
+            if record.canonical().stored_vector().is_some() {
                 vector_after = true;
                 vector_rows.push(PendingRow {
                     node,
@@ -921,7 +1317,7 @@ pub(crate) fn prepare_sparse<'m, S: BlockSink, C: RecordCatalog<S>>(
     })
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 mod tests {
     use super::*;
     use crate::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};

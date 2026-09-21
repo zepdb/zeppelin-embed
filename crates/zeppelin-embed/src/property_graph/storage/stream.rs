@@ -24,6 +24,26 @@ impl<S: BlockSource> Clone for PayloadSlice<'_, S> {
     }
 }
 impl<'a, S: BlockSource> PayloadSlice<'a, S> {
+    fn with_span_at<R>(
+        self,
+        offset: u64,
+        maximum: usize,
+        resources: &mut TreeResources<'_>,
+        callback: impl for<'b, 'r> FnOnce(&'b [u8], &'r mut TreeResources<'_>) -> Result<R, TreeError>,
+    ) -> Result<R, TreeError> {
+        if offset > self.length {
+            return Err(TreeError::Invalid("read beyond payload window"));
+        }
+        self.payload.with_span_at(
+            self.source,
+            self.store,
+            self.generation,
+            self.offset + offset,
+            maximum.min((self.length - offset) as usize),
+            resources,
+            callback,
+        )
+    }
     /// Retain a complete payload under one store/generation source authority.
     pub fn new(
         source: &'a S,
@@ -80,6 +100,56 @@ impl<'a, S: BlockSource> PayloadSlice<'a, S> {
         other: PayloadSlice<'_, T>,
         resources: &mut TreeResources<'_>,
     ) -> Result<Ordering, TreeError> {
+        if self.source.scoped_blocks() || other.source.scoped_blocks() {
+            let end = self.length.min(other.length);
+            let mut position = 0;
+            // TreeResources owns a 256 KiB stack envelope for bounded codecs;
+            // this one-span copy prevents either mapping from escaping.
+            let mut left_copy = [0_u8; CHUNK_BYTES];
+            while position < end {
+                let left_len = self.with_span_at(
+                    position,
+                    (end - position) as usize,
+                    resources,
+                    |bytes, resources| {
+                        let count = bytes.len().min((end - position) as usize);
+                        let target = left_copy.get_mut(..count).ok_or(TreeError::Memory)?;
+                        target.copy_from_slice(
+                            bytes
+                                .get(..count)
+                                .ok_or(TreeError::Invalid("left window extent"))?,
+                        );
+                        resources.read_event(NativeReadEvent::CopiedBytes(count as u64))?;
+                        Ok(count)
+                    },
+                )?;
+                let (compared, order) =
+                    other.with_span_at(position, left_len, resources, |right, resources| {
+                        let count = left_len.min(right.len()).min((end - position) as usize);
+                        if count == 0 {
+                            return Err(TreeError::Invalid("short compared window"));
+                        }
+                        resources.step(count as u64)?;
+                        Ok((
+                            count,
+                            left_copy
+                                .get(..count)
+                                .ok_or(TreeError::Invalid("left copied window"))?
+                                .cmp(
+                                    right
+                                        .get(..count)
+                                        .ok_or(TreeError::Invalid("right window extent"))?,
+                                ),
+                        ))
+                    })?;
+                if order != Ordering::Equal {
+                    return Ok(order);
+                }
+                position += compared as u64;
+            }
+            resources.step(0)?;
+            return Ok(self.length.cmp(&other.length));
+        }
         let end = self.length.min(other.length);
         let mut position = 0;
         while position < end {
@@ -156,20 +226,28 @@ impl<'a, S: BlockSource> PayloadSlice<'a, S> {
         let wanted = output.len().min((self.length - offset) as usize);
         let mut copied = 0;
         while copied < wanted {
-            let bytes = self.span_at(offset + copied as u64, resources)?;
-            let count = bytes.len().min(wanted - copied);
-            if count == 0 {
-                return Err(TreeError::Invalid("short payload window"));
-            }
-            let target = output
-                .get_mut(copied..copied + count)
-                .ok_or(TreeError::Memory)?;
-            let source = bytes
-                .get(..count)
-                .ok_or(TreeError::Invalid("payload copy span"))?;
-            resources.step(count as u64)?;
-            resources.read_event(NativeReadEvent::CopiedBytes(count as u64))?;
-            target.copy_from_slice(source);
+            let count = self.with_span_at(
+                offset + copied as u64,
+                wanted - copied,
+                resources,
+                |bytes, resources| {
+                    let count = bytes.len().min(wanted - copied);
+                    if count == 0 {
+                        return Err(TreeError::Invalid("short payload window"));
+                    }
+                    let target = output
+                        .get_mut(copied..copied + count)
+                        .ok_or(TreeError::Memory)?;
+                    target.copy_from_slice(
+                        bytes
+                            .get(..count)
+                            .ok_or(TreeError::Invalid("payload copy span"))?,
+                    );
+                    resources.step(count as u64)?;
+                    resources.read_event(NativeReadEvent::CopiedBytes(count as u64))?;
+                    Ok(count)
+                },
+            )?;
             copied += count;
         }
         resources.step(0)?;
@@ -181,13 +259,20 @@ impl<'a, S: BlockSource> PayloadSlice<'a, S> {
         let mut state = Utf8State::default();
         let mut position = 0;
         while position < self.length {
-            let bytes = self.span_at(position, resources)?;
-            if bytes.is_empty() {
-                return Err(TreeError::Invalid("short UTF-8 payload"));
-            }
-            resources.step(bytes.len() as u64)?;
-            state.feed(bytes)?;
-            position += bytes.len() as u64;
+            let count = self.with_span_at(
+                position,
+                (self.length - position) as usize,
+                resources,
+                |bytes, resources| {
+                    if bytes.is_empty() {
+                        return Err(TreeError::Invalid("short UTF-8 payload"));
+                    }
+                    resources.step(bytes.len() as u64)?;
+                    state.feed(bytes)?;
+                    Ok(bytes.len())
+                },
+            )?;
+            position += count as u64;
         }
         state.finish()?;
         resources.step(0)
@@ -201,20 +286,27 @@ impl<'a, S: BlockSource> PayloadSlice<'a, S> {
         let end = self.length.min(other.len() as u64);
         let mut position = 0;
         while position < end {
-            let bytes = self.span_at(position, resources)?;
-            let count = bytes.len().min((end - position) as usize);
-            if count == 0 {
-                return Err(TreeError::Invalid("short compared payload"));
-            }
-            resources.step(count as u64)?;
-            let order = bytes
-                .get(..count)
-                .ok_or(TreeError::Invalid("compared payload span"))?
-                .cmp(
-                    other
-                        .get(position as usize..position as usize + count)
-                        .ok_or(TreeError::Invalid("compared input span"))?,
-                );
+            let (count, order) = self.with_span_at(
+                position,
+                (end - position) as usize,
+                resources,
+                |bytes, resources| {
+                    let count = bytes.len().min((end - position) as usize);
+                    if count == 0 {
+                        return Err(TreeError::Invalid("short compared payload"));
+                    }
+                    resources.step(count as u64)?;
+                    let order = bytes
+                        .get(..count)
+                        .ok_or(TreeError::Invalid("compared payload span"))?
+                        .cmp(
+                            other
+                                .get(position as usize..position as usize + count)
+                                .ok_or(TreeError::Invalid("compared input span"))?,
+                        );
+                    Ok((count, order))
+                },
+            )?;
             if order != Ordering::Equal {
                 return Ok(order);
             }
@@ -228,13 +320,15 @@ impl<'a, S: BlockSource> PayloadSlice<'a, S> {
 /// Sequential fixed-field decoder with one borrowed span cache. Reading a byte
 /// does not re-resolve/re-checksum its entire chunk. The caller owns this fixed
 /// stack descriptor inside its operation reservation; no heap is allocated.
-pub struct PayloadCursor<'a, S: BlockSource> {
+pub struct PayloadCursor<'a, 'm, S: BlockSource> {
     source: PayloadSlice<'a, S>,
     position: u64,
     cache_start: u64,
     cache: &'a [u8],
+    copied: Option<super::tree::directory::TreeReadBuffer<'m>>,
+    copied_len: usize,
 }
-impl<'a, S: BlockSource> PayloadCursor<'a, S> {
+impl<'a, 'm, S: BlockSource> PayloadCursor<'a, 'm, S> {
     /// Start at the first byte of one bounded retained payload window.
     pub fn new(source: PayloadSlice<'a, S>) -> Self {
         Self {
@@ -242,7 +336,29 @@ impl<'a, S: BlockSource> PayloadCursor<'a, S> {
             position: 0,
             cache_start: 0,
             cache: &[],
+            copied: None,
+            copied_len: 0,
         }
+    }
+    /// Start a cursor that lazily allocates one charged 64 KiB copied-span
+    /// cache only when its authenticated source requires scoped reads.
+    pub fn new_with_resources(
+        source: PayloadSlice<'a, S>,
+        resources: &mut TreeResources<'m>,
+    ) -> Result<Self, TreeError> {
+        let copied = if source.source.scoped_blocks() {
+            Some(resources.copied_span_buffer(CHUNK_BYTES)?)
+        } else {
+            None
+        };
+        Ok(Self {
+            source,
+            position: 0,
+            cache_start: 0,
+            cache: &[],
+            copied,
+            copied_len: 0,
+        })
     }
     /// Logical bytes consumed, relative to this cursor's original window.
     pub const fn position(&self) -> u64 {
@@ -265,6 +381,34 @@ impl<'a, S: BlockSource> PayloadCursor<'a, S> {
         let mut output = [0; N];
         let mut copied = 0;
         while copied < N {
+            if let Some(cache) = self.copied.as_mut() {
+                let cache_end = self.cache_start + self.copied_len as u64;
+                if self.position < self.cache_start || self.position >= cache_end {
+                    self.copied_len =
+                        self.source
+                            .read_at(self.position, cache.as_mut_slice(), resources)?;
+                    self.cache_start = self.position;
+                }
+                let start = (self.position - self.cache_start) as usize;
+                let count = self.copied_len.saturating_sub(start).min(N - copied);
+                if count == 0 {
+                    return Err(TreeError::Invalid("short fixed field"));
+                }
+                output
+                    .get_mut(copied..copied + count)
+                    .ok_or(TreeError::Memory)?
+                    .copy_from_slice(
+                        cache
+                            .as_slice()
+                            .get(start..start + count)
+                            .ok_or(TreeError::Invalid("copied field span"))?,
+                    );
+                resources.step(count as u64)?;
+                resources.read_event(NativeReadEvent::CopiedBytes(count as u64))?;
+                copied += count;
+                self.position += count as u64;
+                continue;
+            }
             let cache_end = self.cache_start + self.cache.len() as u64;
             if self.position < self.cache_start || self.position >= cache_end {
                 self.cache = self.source.span_at(self.position, resources)?;

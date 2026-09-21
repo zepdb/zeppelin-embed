@@ -6,6 +6,7 @@ use crate::epoch::EmbeddingTower;
 use crate::fts::tokenizer::TokenizerEpoch;
 use crate::property_graph::staging::{NormalizedDelta, StagedBatch};
 use crate::property_graph::storage::artifact::{BlockKind, PhysicalRef};
+use crate::property_graph::storage::consolidation::RecordRelocation;
 use crate::property_graph::storage::memory::{StorageBuffer, StorageMemory};
 use crate::property_graph::storage::payload::PayloadRef;
 use crate::property_graph::storage::records::{NodeRecordState, RecordCatalog, verify_node_state};
@@ -29,9 +30,29 @@ pub(crate) struct SparseCheckpoint {
 /// Private checkpoint descriptors before their owning packs finish.
 pub(crate) struct PreparedSparseCheckpoint {
     physical: SparsePhysicalRoots,
+    base: SparseRoots,
+    base_native: GraphRoots,
+    target_native: GraphRoots,
+    target_sequence: u64,
+    catalog: RequiredRef,
 }
 
 impl PreparedSparseCheckpoint {
+    pub(crate) fn matches(
+        &self,
+        base: SparseRoots,
+        base_native: GraphRoots,
+        target_native: GraphRoots,
+        target_sequence: u64,
+        catalog: RequiredRef,
+    ) -> bool {
+        self.base == base
+            && self.base_native == base_native
+            && self.target_native == target_native
+            && self.target_sequence == target_sequence
+            && self.catalog == catalog
+    }
+
     pub(crate) fn finalize(&self, inventory: &[InventoryChange]) -> Result<SparseRoots, TreeError> {
         fn required(
             block: PhysicalRef,
@@ -134,6 +155,55 @@ pub(crate) fn prepare_sparse_checkpoint<'m, S: BlockSink, C: RecordCatalog<S>>(
             text: Some(text),
             vector,
         },
+        base: active,
+        base_native: native,
+        target_native: native,
+        target_sequence: sequence,
+        catalog: catalog_required,
+    })
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "maintenance binds old population roots to one new graph cutoff"
+)]
+pub(crate) fn prepare_sparse_maintenance<'m, B: BlockSource, S: BlockSink, C: RecordCatalog<B>>(
+    source: &B,
+    sink: &mut S,
+    active: SparseRoots,
+    base_native: GraphRoots,
+    target_native: GraphRoots,
+    catalog_required: RequiredRef,
+    catalog: &C,
+    document: Option<&EmbeddingTower>,
+    lexical: TokenizerEpoch,
+    target_sequence: u64,
+    relocations: &[RecordRelocation],
+    memory: &'m StorageMemory<'m>,
+    resources: &mut TreeResources<'_>,
+) -> Result<PreparedSparseCheckpoint, TreeError> {
+    let physical = super::prepare::prepare_sparse_relocated_roots(
+        source,
+        sink,
+        active,
+        base_native,
+        target_native,
+        catalog_required,
+        catalog,
+        document,
+        lexical,
+        target_sequence,
+        relocations,
+        memory,
+        resources,
+    )?;
+    Ok(PreparedSparseCheckpoint {
+        physical,
+        base: active,
+        base_native,
+        target_native,
+        target_sequence,
+        catalog: catalog_required,
     })
 }
 
@@ -500,4 +570,69 @@ pub(crate) fn validate_persisted_replay_transition<'a, 'm, S: BlockSource, C: Re
         ));
     }
     Ok((target_text, target_vector))
+}
+
+/// Validates a physical-only maintenance transition. Both strict views must
+/// already resolve every native/sparse correlation; this additionally proves
+/// that changed source metadata is an exact record-reference rebind.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn validate_persisted_maintenance_transition<
+    'a,
+    'm,
+    S: BlockSource,
+    C: RecordCatalog<S>,
+>(
+    source: &'a S,
+    base: SparseCheckpoint,
+    base_native: GraphRoots,
+    target_roots: SparseRoots,
+    target_native: GraphRoots,
+    catalog_required: RequiredRef,
+    catalog: &'a C,
+    document: Option<&'a EmbeddingTower>,
+    lexical: TokenizerEpoch,
+    memory: &'m StorageMemory<'m>,
+    resources: &mut TreeResources<'_>,
+) -> Result<(u64, u64), TreeError> {
+    if base.cutoff == 0 || base.roots == SparseRoots::default() {
+        return Err(TreeError::Invalid("sparse maintenance base cutoff"));
+    }
+    let base_view = SparseView::open(
+        source,
+        base.roots,
+        base_native,
+        catalog_required,
+        catalog,
+        document,
+        lexical,
+        memory,
+        resources,
+    )?;
+    let target_view = SparseView::open(
+        source,
+        target_roots,
+        target_native,
+        catalog_required,
+        catalog,
+        document,
+        lexical,
+        memory,
+        resources,
+    )?;
+    if base_view.sequence() != base.cutoff
+        || target_view.sequence() != base.cutoff.checked_add(1).ok_or(TreeError::Work)?
+        || target_view.generation() != target_native.generation()
+        || target_view.checkpoint() != base_view.checkpoint()
+    {
+        return Err(TreeError::Invalid("sparse maintenance cutoff order"));
+    }
+    let text = base_view.validate_maintenance_rebind(&target_view, Modality::Text, resources)?;
+    let vector =
+        base_view.validate_maintenance_rebind(&target_view, Modality::Vector, resources)?;
+    if text != target_view.validate_all(Modality::Text, resources)?
+        || vector != target_view.validate_all(Modality::Vector, resources)?
+    {
+        return Err(TreeError::Invalid("sparse maintenance population changed"));
+    }
+    Ok((text, vector))
 }

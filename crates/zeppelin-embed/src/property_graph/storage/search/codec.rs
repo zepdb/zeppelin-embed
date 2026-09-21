@@ -316,63 +316,41 @@ pub(super) fn validate_catalog_interpretation<S: BlockSource>(
     owner: SparseOwner<'_>,
     resources: &mut TreeResources<'_>,
 ) -> Result<(), TreeError> {
-    owner.check(resources)?;
-    let block = source.resolve(required.block, resources)?;
-    let identity = block.identity();
-    if block.reference() != required.block
-        || required.object.family != FormatFamily::NativeGraphObject.id()
-        || required.object.version != 1
-        || identity.store != required.object.store
-        || identity.artifact != required.object.artifact
-        || identity.generation != required.object.generation
-        || identity.creation_serial != required.object.serial
-        || block.file_length() != required.object.bytes as usize
-        || block.file_checksum() != required.object.checksum
-        || required.block.kind != BlockKind::CommitParticipant
-    {
-        return Err(TreeError::Invalid("sparse historical catalog descriptor"));
-    }
-    let payload = block.payload();
-    if payload.get(..4) != Some(b"ZGCP".as_slice())
-        || read_u16(payload, 4)? != 1
-        || read_u16(payload, 6)? != 1
-    {
-        return Err(TreeError::Invalid(
-            "sparse historical catalog role or version",
-        ));
-    }
-    let encoded = range(payload, 8, payload.len().saturating_sub(8))?;
-    let count = usize::try_from(read_u64(encoded, 104)?).map_err(|_| TreeError::Memory)?;
-    let allowance = count
-        .checked_mul(std::mem::size_of::<
-            crate::property_graph::catalog::SymbolEntry<'_>,
-        >())
-        .ok_or(TreeError::Memory)?;
-    let mut descriptors = owner.reserve(allowance)?;
-    let mut callback_error = None;
-    let image = CatalogImage::decode(encoded, allowance, &mut || {
-        resources.step(1).map_err(|error| {
-            if callback_error.is_none() {
-                callback_error = Some(error);
-            }
-            CatalogError::Cancelled
-        })
-    })
-    .map_err(|error| match error {
-        CatalogError::Cancelled => callback_error
-            .take()
-            .unwrap_or(TreeError::Invalid("historical catalog cancelled")),
-        CatalogError::Capacity => owner.catalog_allocation_error(CatalogAllocation::Capacity),
-        CatalogError::Allocation => owner.catalog_allocation_error(CatalogAllocation::Allocation),
-        _ => TreeError::Invalid("invalid historical sparse catalog"),
-    })?;
-    descriptors.resize(image.symbols.allocated_bytes())?;
-    let interpretation = GraphInterpretation::new(lexical, document)
-        .map_err(|_| TreeError::Invalid("invalid sparse interpretation"))?;
-    let mut callback_error = None;
-    image
-        .declaration
-        .validate_for(store, interpretation, &mut || {
+    source.with_block(required.block, resources, |block, resources| {
+        owner.check(resources)?;
+        let identity = block.identity();
+        if block.reference() != required.block
+            || required.object.family != FormatFamily::NativeGraphObject.id()
+            || required.object.version != 1
+            || identity.store != required.object.store
+            || identity.artifact != required.object.artifact
+            || identity.generation != required.object.generation
+            || identity.creation_serial != required.object.serial
+            || block.file_length() != required.object.bytes as usize
+            || block.file_checksum() != required.object.checksum
+            || required.block.kind != BlockKind::CommitParticipant
+        {
+            return Err(TreeError::Invalid("sparse historical catalog descriptor"));
+        }
+        let payload = block.payload();
+        if payload.get(..4) != Some(b"ZGCP".as_slice())
+            || read_u16(payload, 4)? != 1
+            || read_u16(payload, 6)? != 1
+        {
+            return Err(TreeError::Invalid(
+                "sparse historical catalog role or version",
+            ));
+        }
+        let encoded = range(payload, 8, payload.len().saturating_sub(8))?;
+        let count = usize::try_from(read_u64(encoded, 104)?).map_err(|_| TreeError::Memory)?;
+        let allowance = count
+            .checked_mul(std::mem::size_of::<
+                crate::property_graph::catalog::SymbolEntry<'_>,
+            >())
+            .ok_or(TreeError::Memory)?;
+        let mut descriptors = owner.reserve(allowance)?;
+        let mut callback_error = None;
+        let image = CatalogImage::decode(encoded, allowance, &mut || {
             resources.step(1).map_err(|error| {
                 if callback_error.is_none() {
                     callback_error = Some(error);
@@ -388,8 +366,35 @@ pub(super) fn validate_catalog_interpretation<S: BlockSource>(
             CatalogError::Allocation => {
                 owner.catalog_allocation_error(CatalogAllocation::Allocation)
             }
-            _ => TreeError::Invalid("historical sparse catalog interpretation"),
-        })
+            _ => TreeError::Invalid("invalid historical sparse catalog"),
+        })?;
+        descriptors.resize(image.symbols.allocated_bytes())?;
+        let interpretation = GraphInterpretation::new(lexical, document)
+            .map_err(|_| TreeError::Invalid("invalid sparse interpretation"))?;
+        let mut callback_error = None;
+        image
+            .declaration
+            .validate_for(store, interpretation, &mut || {
+                resources.step(1).map_err(|error| {
+                    if callback_error.is_none() {
+                        callback_error = Some(error);
+                    }
+                    CatalogError::Cancelled
+                })
+            })
+            .map_err(|error| match error {
+                CatalogError::Cancelled => callback_error
+                    .take()
+                    .unwrap_or(TreeError::Invalid("historical catalog cancelled")),
+                CatalogError::Capacity => {
+                    owner.catalog_allocation_error(CatalogAllocation::Capacity)
+                }
+                CatalogError::Allocation => {
+                    owner.catalog_allocation_error(CatalogAllocation::Allocation)
+                }
+                _ => TreeError::Invalid("historical sparse catalog interpretation"),
+            })
+    })
 }
 
 #[derive(Clone, Copy, Debug)]

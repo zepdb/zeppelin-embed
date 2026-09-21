@@ -470,6 +470,46 @@ pub(super) fn validate_vector_index_rows<S: BlockSource, C: RecordCatalog<S>>(
     index: &NativeVectorIndex<'_>,
     resources: &mut TreeResources<'_>,
 ) -> Result<(), TreeError> {
+    let mut validate_record =
+        |record, node, revision, ordinal, resources: &mut TreeResources<'_>| {
+            validate_vector_index_row(
+                PayloadSlice::new(source, store, generation, record),
+                node,
+                revision,
+                ordinal,
+                catalog,
+                document,
+                index,
+                resources,
+            )
+        };
+    validate_vector_index_rows_with(
+        source,
+        store,
+        generation,
+        row_table,
+        rows,
+        index,
+        &mut validate_record,
+        resources,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn validate_vector_index_rows_with<'m, S, F>(
+    source: &S,
+    store: StoreInstanceId,
+    generation: GraphGeneration,
+    row_table: PayloadRef,
+    rows: u32,
+    index: &NativeVectorIndex<'_>,
+    validate_record: &mut F,
+    resources: &mut TreeResources<'m>,
+) -> Result<(), TreeError>
+where
+    S: BlockSource,
+    F: FnMut(PayloadRef, NodeId, u64, u32, &mut TreeResources<'m>) -> Result<(), TreeError>,
+{
     if index.row_count() != rows {
         return Err(TreeError::Invalid("native vector/source row count"));
     }
@@ -488,32 +528,41 @@ pub(super) fn validate_vector_index_rows<S: BlockSource, C: RecordCatalog<S>>(
         if index.identity(ordinal)? != (row.node, row.revision) {
             return Err(TreeError::Invalid("native vector/source identity"));
         }
-        let state = verify_node_state(
-            PayloadSlice::new(source, store, generation, row.record),
-            row.node,
-            catalog,
-            document,
-            resources,
-        )?;
-        let NodeRecordState::Live(record) = state else {
-            return Err(TreeError::Invalid("native vector source record state"));
-        };
-        if record.revision().get() != row.revision {
-            return Err(TreeError::Invalid("native vector/source revision"));
-        }
-        let vector = record
-            .canonical()
-            .stored_vector()
-            .ok_or(TreeError::Invalid("native vector source record"))?;
-        if vector.dimensions() != index.dimensions() {
-            return Err(TreeError::Invalid("native vector/source dimensions"));
-        }
-        for dimension in 0..vector.dimensions() {
-            if vector.coordinate(dimension, resources)?.to_bits()
-                != index.coordinate(ordinal, dimension)?.to_bits()
-            {
-                return Err(TreeError::Invalid("native vector/source coordinate"));
-            }
+        validate_record(row.record, row.node, row.revision, ordinal, resources)?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn validate_vector_index_row<S: BlockSource>(
+    payload: PayloadSlice<'_, S>,
+    node: NodeId,
+    revision: u64,
+    ordinal: u32,
+    catalog: &impl RecordCatalog<S>,
+    document: Option<&crate::epoch::EmbeddingTower>,
+    index: &NativeVectorIndex<'_>,
+    resources: &mut TreeResources<'_>,
+) -> Result<(), TreeError> {
+    let state = verify_node_state(payload, node, catalog, document, resources)?;
+    let NodeRecordState::Live(record) = state else {
+        return Err(TreeError::Invalid("native vector source record state"));
+    };
+    if record.revision().get() != revision {
+        return Err(TreeError::Invalid("native vector/source revision"));
+    }
+    let vector = record
+        .canonical()
+        .stored_vector()
+        .ok_or(TreeError::Invalid("native vector source record"))?;
+    if vector.dimensions() != index.dimensions() {
+        return Err(TreeError::Invalid("native vector/source dimensions"));
+    }
+    for dimension in 0..vector.dimensions() {
+        if vector.coordinate(dimension, resources)?.to_bits()
+            != index.coordinate(ordinal, dimension)?.to_bits()
+        {
+            return Err(TreeError::Invalid("native vector/source coordinate"));
         }
     }
     Ok(())

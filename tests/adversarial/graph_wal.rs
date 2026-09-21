@@ -114,6 +114,7 @@ impl ReplayValidator for Resolver {
     }
     fn state(
         &mut self,
+        _: EnvelopeKind,
         _: CommitState<'_>,
         _: CommitState<'_>,
         _: ChangeReader<'_>,

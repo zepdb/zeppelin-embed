@@ -1886,9 +1886,6 @@ fn native_vector_index_trace_complete_and_owner() {
         let catalog = NativePreparationCatalog::open(&source, &mut resources)
             .expect("trace preparation catalog");
 
-        let mut owner_cursor =
-            super::super::SearchTraceCursor::for_preparation(&source, &catalog, &mut resources)
-                .expect("owner trace cursor");
         let foreign_writer =
             WriteMemory::new(&shared, WriteLimits::default()).expect("foreign trace writer");
         let foreign_control = QueryControl::Cancel(CancelToken::new());
@@ -1900,11 +1897,15 @@ fn native_vector_index_trace_complete_and_owner() {
         let mut foreign_resources = foreign_source
             .resources(u64::MAX)
             .expect("foreign resources");
-        assert!(matches!(
-            owner_cursor.trace(&mut [None], &mut foreign_resources),
-            Err(TreeError::Invalid(_))
-        ));
-        drop(owner_cursor);
+        {
+            let mut owner_cursor =
+                super::super::SearchTraceCursor::for_preparation(&source, &catalog, &mut resources)
+                    .expect("owner trace cursor");
+            assert!(matches!(
+                owner_cursor.trace(&mut [None], &mut foreign_resources),
+                Err(TreeError::Invalid(_))
+            ));
+        }
         drop(foreign_resources);
         drop(foreign_source);
         drop(foreign_memory);

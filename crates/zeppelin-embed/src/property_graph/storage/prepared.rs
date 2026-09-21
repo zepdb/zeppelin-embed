@@ -32,13 +32,13 @@ pub struct PreparedArtifact<'a> {
     identity: ArtifactIdentity,
     bytes: &'a [u8],
 }
-impl PreparedArtifact<'_> {
+impl<'a> PreparedArtifact<'a> {
     /// Store/object/generation/creation serial retained without reinterpretation.
     pub const fn identity(&self) -> ArtifactIdentity {
         self.identity
     }
     /// Complete finalized file image, including framing and checksum trailer.
-    pub const fn bytes(&self) -> &[u8] {
+    pub const fn bytes(&self) -> &'a [u8] {
         self.bytes
     }
 }

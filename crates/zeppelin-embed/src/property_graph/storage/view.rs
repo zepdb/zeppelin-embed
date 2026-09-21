@@ -47,7 +47,9 @@ pub(crate) use cursor::{
 #[cfg(feature = "graph-cypher")]
 pub(crate) use mapping::NativeReadonlyMapping;
 #[cfg(feature = "graph-cypher")]
-pub(crate) use preparation_source::{NativePreparationCatalog, NativePreparationSource};
+pub(crate) use preparation_source::{
+    NativeArtifactWindow, NativePreparationCatalog, NativePreparationSource,
+};
 #[cfg(feature = "graph-cypher")]
 pub(crate) use prepared::{GraphPreparation, PreparedGraphArtifacts, PreparedGraphFailure};
 #[cfg(feature = "graph-cypher")]

@@ -92,7 +92,8 @@ impl<'a, S: BlockSource> RecordView<'a, S> {
     }
     /// Read a complete label by index without materializing the label array.
     pub fn label(&self, index: u32, r: &mut TreeResources<'_>) -> Result<LabelId, TreeError> {
-        let mut c = PayloadCursor::new(self.labels.subslice(u64::from(index) * 8, 8)?);
+        let mut c =
+            PayloadCursor::new_with_resources(self.labels.subslice(u64::from(index) * 8, 8)?, r)?;
         LabelId::new(u64::from_le_bytes(c.read_array(r)?))
             .map_err(|_| TreeError::Invalid("zero native label"))
     }
@@ -141,7 +142,7 @@ pub fn verify_record<'a, S: BlockSource>(
         return Err(TreeError::Invalid("partial native record"));
     }
     let created = source.creation_generation(r)?;
-    let mut c = PayloadCursor::new(source);
+    let mut c = PayloadCursor::new_with_resources(source, r)?;
     let id = u128::from_le_bytes(c.read_array(r)?);
     let (shape, revision, property_bytes) = match source.role() {
         BlockKind::NodeRecord => {
@@ -320,8 +321,10 @@ fn property_row<S: BlockSource>(
     index: u64,
     r: &mut TreeResources<'_>,
 ) -> Result<PropertyRow, TreeError> {
-    let mut c =
-        PayloadCursor::new(rows.subslice(index.checked_mul(24).ok_or(TreeError::Work)?, 24)?);
+    let mut c = PayloadCursor::new_with_resources(
+        rows.subslice(index.checked_mul(24).ok_or(TreeError::Work)?, 24)?,
+        r,
+    )?;
     Ok(PropertyRow {
         key: u64::from_le_bytes(c.read_array(r)?),
         offset: u64::from_le_bytes(c.read_array(r)?),
@@ -350,7 +353,7 @@ fn check_labels<S: BlockSource>(
     labels: PayloadSlice<'_, S>,
     r: &mut TreeResources<'_>,
 ) -> Result<(), TreeError> {
-    let mut c = PayloadCursor::new(labels);
+    let mut c = PayloadCursor::new_with_resources(labels, r)?;
     let mut previous = 0;
     for _ in 0..labels.len() / 8 {
         let id = u64::from_le_bytes(c.read_array(r)?);
@@ -378,7 +381,7 @@ impl<S: BlockSource, C: RecordCatalog<S>> CanonicalVisitor<S> for VerifyIndex<'_
         let (mut low, mut high) = (0, self.labels.len() / 8);
         while low < high {
             let mid = low + (high - low) / 2;
-            let mut c = PayloadCursor::new(self.labels.subslice(mid * 8, 8)?);
+            let mut c = PayloadCursor::new_with_resources(self.labels.subslice(mid * 8, 8)?, r)?;
             let found = u64::from_le_bytes(c.read_array(r)?);
             match found.cmp(&id.get()) {
                 Ordering::Equal => return Ok(()),
@@ -411,7 +414,7 @@ impl<S: BlockSource, C: RecordCatalog<S>> CanonicalVisitor<S> for VerifyIndex<'_
     }
 }
 fn zero_u32<S: BlockSource>(
-    c: &mut PayloadCursor<'_, S>,
+    c: &mut PayloadCursor<'_, '_, S>,
     r: &mut TreeResources<'_>,
 ) -> Result<(), TreeError> {
     if u32::from_le_bytes(c.read_array(r)?) != 0 {
@@ -420,7 +423,7 @@ fn zero_u32<S: BlockSource>(
     Ok(())
 }
 fn revision<S: BlockSource>(
-    c: &mut PayloadCursor<'_, S>,
+    c: &mut PayloadCursor<'_, '_, S>,
     r: &mut TreeResources<'_>,
 ) -> Result<GraphRevision, TreeError> {
     GraphRevision::new(u64::from_le_bytes(c.read_array(r)?))

@@ -291,7 +291,7 @@ pub(super) fn append_column_bytes(
 }
 
 fn stored_byte<S: BlockSource>(
-    cursor: &mut PayloadCursor<'_, S>,
+    cursor: &mut PayloadCursor<'_, '_, S>,
     resources: &mut TreeResources<'_>,
 ) -> Result<u8, NativeResultError> {
     Ok(u8::from_le_bytes(
@@ -303,7 +303,7 @@ fn stored_byte<S: BlockSource>(
 }
 
 fn stored_count<S: BlockSource>(
-    cursor: &mut PayloadCursor<'_, S>,
+    cursor: &mut PayloadCursor<'_, '_, S>,
     resources: &mut TreeResources<'_>,
 ) -> Result<u64, NativeResultError> {
     Ok(u64::from_le_bytes(

@@ -77,6 +77,15 @@ pub struct RangeScratch<'a> {
     owner: RangeOwner<'a>,
     charge: RangeCharge<'a>,
 }
+
+struct ScopedRangeInputs<'a> {
+    // Free backing before releasing its capacity reservation (field drop order).
+    bytes: StorageBuffer<'a, u8>,
+    ends: [usize; MAX_DELTA_RUNS + 2],
+    run_count: usize,
+    _control: StorageReservation<'a>,
+}
+
 impl<'a> RangeScratch<'a> {
     /// Admit all backing before initializing it, with bounded control polls.
     pub fn for_prepare(
@@ -214,7 +223,7 @@ pub fn validate_range<'a>(
     Ok(range)
 }
 
-pub(super) fn validate_descriptor<'a>(
+pub(crate) fn validate_descriptor<'a>(
     source: &impl BlockSource,
     store: StoreInstanceId,
     generation: GraphGeneration,
@@ -224,6 +233,11 @@ pub(super) fn validate_descriptor<'a>(
     r: &mut TreeResources<'_>,
 ) -> Result<ValidatedRange<'a>, TreeError> {
     scratch.require_owner(r)?;
+    if source.scoped_blocks() {
+        return validate_descriptor_scoped(
+            source, store, generation, descriptor, cutoff, scratch, r,
+        );
+    }
     let base = resolve(source, store, generation, descriptor.base, r)?;
     let mut runs: [&[u8]; MAX_DELTA_RUNS] = [&[]; MAX_DELTA_RUNS];
     let mut count = 0;
@@ -232,6 +246,17 @@ pub(super) fn validate_descriptor<'a>(
         count += 1;
     }
     let runs = runs.get(..count).ok_or(invalid("adjacency run extent"))?;
+    validate_descriptor_inputs(descriptor, cutoff, base, runs, scratch, r)
+}
+
+fn validate_descriptor_inputs<'out>(
+    descriptor: RangeDescriptor,
+    cutoff: u64,
+    base: &[u8],
+    runs: &[&[u8]],
+    scratch: &'out mut RangeScratch<'_>,
+    r: &mut TreeResources<'_>,
+) -> Result<ValidatedRange<'out>, TreeError> {
     let merged = super::merge(
         descriptor.key,
         descriptor.watermark,
@@ -264,6 +289,168 @@ pub(super) fn validate_descriptor<'a>(
     }
     r.step(0)?;
     Ok(ValidatedRange { descriptor, merged })
+}
+
+fn validate_descriptor_scoped<'out>(
+    source: &impl BlockSource,
+    store: StoreInstanceId,
+    generation: GraphGeneration,
+    descriptor: RangeDescriptor,
+    cutoff: u64,
+    scratch: &'out mut RangeScratch<'_>,
+    r: &mut TreeResources<'_>,
+) -> Result<ValidatedRange<'out>, TreeError> {
+    let memory = match &scratch.owner {
+        RangeOwner::Preparation(memory) => *memory,
+        RangeOwner::Query(_) => {
+            return Err(invalid(
+                "scoped adjacency inputs require preparation scratch",
+            ));
+        }
+    };
+    r.require_preparation(memory)?;
+
+    let active_delta_count = descriptor.deltas().count();
+    let base_length = scoped_payload_length(
+        descriptor.base(),
+        super::HEADER_BYTES + MAX_BASE_ENTRIES * 32,
+    )?;
+    let mut delta_length = 0usize;
+    for reference in descriptor.deltas() {
+        let length =
+            scoped_payload_length(reference, super::HEADER_BYTES + MAX_PENDING_ENTRIES * 40)?;
+        delta_length = delta_length.checked_add(length).ok_or(TreeError::Memory)?;
+    }
+    let delta_limit = active_delta_count
+        .checked_mul(super::HEADER_BYTES)
+        .and_then(|bytes| bytes.checked_add(MAX_PENDING_ENTRIES * 40))
+        .ok_or(TreeError::Memory)?;
+    if delta_length > delta_limit {
+        return Err(invalid("adjacency scoped delta extent"));
+    }
+    let input_length = base_length
+        .checked_add(delta_length)
+        .ok_or(TreeError::Memory)?;
+    let control_bytes = std::mem::size_of::<ScopedRangeInputs<'_>>()
+        .checked_add(std::mem::size_of::<[&[u8]; MAX_DELTA_RUNS]>())
+        .ok_or(TreeError::Memory)?;
+    let bytes = StorageBuffer::new(memory, input_length)?;
+    let control = memory.reserve(control_bytes)?;
+    let mut inputs = ScopedRangeInputs {
+        bytes,
+        ends: [0; MAX_DELTA_RUNS + 2],
+        run_count: 0,
+        _control: control,
+    };
+
+    let base_end = copy_scoped_input(
+        source,
+        store,
+        generation,
+        descriptor.base(),
+        base_length,
+        &mut inputs.bytes,
+        r,
+    )?;
+    *inputs
+        .ends
+        .get_mut(1)
+        .ok_or(invalid("adjacency scoped base boundary"))? = base_end;
+    for (index, reference) in descriptor.deltas().enumerate() {
+        let expected =
+            scoped_payload_length(reference, super::HEADER_BYTES + MAX_PENDING_ENTRIES * 40)?;
+        let end = copy_scoped_input(
+            source,
+            store,
+            generation,
+            reference,
+            expected,
+            &mut inputs.bytes,
+            r,
+        )?;
+        let boundary = index.checked_add(2).ok_or(TreeError::Memory)?;
+        *inputs
+            .ends
+            .get_mut(boundary)
+            .ok_or(invalid("adjacency scoped run boundary"))? = end;
+        inputs.run_count = inputs.run_count.checked_add(1).ok_or(TreeError::Memory)?;
+    }
+    if inputs.run_count != active_delta_count || inputs.bytes.as_slice().len() != input_length {
+        return Err(invalid("adjacency scoped input extent"));
+    }
+
+    let bytes = inputs.bytes.as_slice();
+    let base_end = *inputs
+        .ends
+        .get(1)
+        .ok_or(invalid("adjacency scoped base boundary"))?;
+    let base = bytes
+        .get(..base_end)
+        .ok_or(invalid("adjacency scoped base extent"))?;
+    let mut run_views: [&[u8]; MAX_DELTA_RUNS] = [&[]; MAX_DELTA_RUNS];
+    for index in 0..inputs.run_count {
+        let start = *inputs
+            .ends
+            .get(index.checked_add(1).ok_or(TreeError::Memory)?)
+            .ok_or(invalid("adjacency scoped run start"))?;
+        let end = *inputs
+            .ends
+            .get(index.checked_add(2).ok_or(TreeError::Memory)?)
+            .ok_or(invalid("adjacency scoped run end"))?;
+        *run_views
+            .get_mut(index)
+            .ok_or(invalid("adjacency scoped run count"))? = bytes
+            .get(start..end)
+            .ok_or(invalid("adjacency scoped run extent"))?;
+    }
+    let runs = run_views
+        .get(..inputs.run_count)
+        .ok_or(invalid("adjacency scoped run count"))?;
+    let validated = validate_descriptor_inputs(descriptor, cutoff, base, runs, scratch, r)?;
+    drop(inputs);
+    Ok(validated)
+}
+
+fn scoped_payload_length(reference: PhysicalRef, maximum: usize) -> Result<usize, TreeError> {
+    const BLOCK_FRAME_BYTES: usize = 24;
+    let length = usize::try_from(reference.length)
+        .map_err(|_| invalid("adjacency scoped reference length"))?
+        .checked_sub(BLOCK_FRAME_BYTES)
+        .ok_or(invalid("adjacency scoped reference length"))?;
+    if length < super::HEADER_BYTES || length > maximum {
+        return Err(invalid("adjacency scoped payload extent"));
+    }
+    Ok(length)
+}
+
+fn copy_scoped_input(
+    source: &impl BlockSource,
+    store: StoreInstanceId,
+    generation: GraphGeneration,
+    reference: PhysicalRef,
+    expected_length: usize,
+    output: &mut StorageBuffer<'_, u8>,
+    r: &mut TreeResources<'_>,
+) -> Result<usize, TreeError> {
+    r.step(1)?;
+    source.with_block(reference, r, |block, r| {
+        if block.reference() != reference
+            || block.identity().store != store
+            || block.identity().artifact != reference.artifact
+            || block.identity().generation.get() > generation.get()
+        {
+            return Err(invalid("adjacency reference identity/generation"));
+        }
+        if block.payload().len() != expected_length {
+            return Err(invalid("adjacency scoped payload length"));
+        }
+        for chunk in block.payload().chunks(super::HEADER_BYTES) {
+            checkpoint(r, Work::CopyBytes(chunk.len()))?;
+            output.extend_from_slice(chunk)?;
+        }
+        Ok(())
+    })?;
+    Ok(output.as_slice().len())
 }
 
 fn resolve<'a>(

@@ -67,6 +67,31 @@ pub trait BlockSource {
         reference: PhysicalRef,
         resources: &mut TreeResources<'_>,
     ) -> Result<FramedBlock<'a>, TreeError>;
+
+    /// Run one checked read while its backing is scoped to the callback. The
+    /// owned result cannot retain the framed block's mapping lifetime.
+    /// `Self: Sized` keeps the trait usable as `dyn BlockSource`.
+    fn with_block<R>(
+        &self,
+        reference: PhysicalRef,
+        resources: &mut TreeResources<'_>,
+        callback: impl for<'a, 'r> FnOnce(
+            FramedBlock<'a>,
+            &'r mut TreeResources<'_>,
+        ) -> Result<R, TreeError>,
+    ) -> Result<R, TreeError>
+    where
+        Self: Sized,
+    {
+        let block = self.resolve(reference, resources)?;
+        callback(block, resources)
+    }
+
+    /// Whether trace-native consumers must use scoped copied spans rather than
+    /// retaining a borrowed mapping in their cursor cache.
+    fn scoped_blocks(&self) -> bool {
+        false
+    }
 }
 /// Private append-only sink. The owner reserves retained capacity before append
 /// and keeps all new artifacts in an explicit abort inventory, including on error.
@@ -116,6 +141,21 @@ pub(crate) struct TreeTraceReservation<'a> {
     reservation: CapacityReservation<'a>,
     owner: CursorOwner<'a>,
 }
+
+/// One lazily requested copied-span cache charged to the same active owner as
+/// the cursor. Backing is declared before its reservation so it drops first.
+pub(crate) struct TreeReadBuffer<'a> {
+    output: Vec<u8>,
+    reservation: CapacityReservation<'a>,
+}
+impl TreeReadBuffer<'_> {
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        &self.output
+    }
+    pub(crate) fn as_mut_slice(&mut self) -> &mut [u8] {
+        &mut self.output
+    }
+}
 impl TreeTraceReservation<'_> {
     pub(crate) fn require(&self, resources: &TreeResources<'_>) -> Result<(), TreeError> {
         if self.reservation.bytes() == 0 {
@@ -130,6 +170,16 @@ impl CapacityReservation<'_> {
             Self::Shared(charge) => charge.bytes() as usize,
             Self::Preparation(charge) => charge.bytes(),
             Self::Query(charge) => charge.bytes(),
+        }
+    }
+    fn resize(&mut self, bytes: usize) -> Result<(), TreeError> {
+        match self {
+            Self::Shared(charge) => charge.resize(bytes).map_err(|_| TreeError::Memory),
+            Self::Preparation(charge) => charge.resize(bytes),
+            Self::Query(charge) => charge
+                .resize(bytes)
+                .map_err(RuntimeError::Memory)
+                .map_err(TreeError::Runtime),
         }
     }
 }
@@ -342,6 +392,28 @@ impl<'a> TreeResources<'a> {
         let owner = self.cursor_owner()?;
         let reservation = self.owner.reserve(bytes)?;
         Ok(TreeTraceReservation { reservation, owner })
+    }
+    pub(crate) fn copied_span_buffer(
+        &mut self,
+        bytes: usize,
+    ) -> Result<TreeReadBuffer<'a>, TreeError> {
+        if bytes == 0 || bytes > super::super::payload::CHUNK_BYTES {
+            return Err(TreeError::Memory);
+        }
+        self.step(0)?;
+        let mut reservation = self.owner.reserve(bytes)?;
+        let mut output = Vec::new();
+        #[cfg(feature = "allocation-audit")]
+        let allocation = crate::allocation_audit::attributed(|| output.try_reserve_exact(bytes));
+        #[cfg(not(feature = "allocation-audit"))]
+        let allocation = output.try_reserve_exact(bytes);
+        allocation.map_err(|_| TreeError::Memory)?;
+        reservation.resize(output.capacity())?;
+        output.resize(bytes, 0);
+        Ok(TreeReadBuffer {
+            output,
+            reservation,
+        })
     }
     #[cfg(feature = "graph-cypher")]
     pub(crate) fn decode_graph_lexical<'m>(
@@ -577,6 +649,13 @@ fn checked_block<'a>(
     resources.step(1)?;
     let block = source.resolve(reference, resources)?;
     resources.step(0)?;
+    check_block(root, reference, block)
+}
+fn check_block<'a>(
+    root: DirectoryRoot,
+    reference: PhysicalRef,
+    block: FramedBlock<'a>,
+) -> Result<FramedBlock<'a>, TreeError> {
     let identity = block.identity();
     if block.reference() != reference
         || identity.store != root.store
@@ -681,6 +760,663 @@ pub(crate) fn trace_page<'s>(
     let cells = count(bytes)?;
     Ok((page, cells))
 }
+
+/// Fully validate one directory page inside a scoped source callback and
+/// return only caller-owned state. Captured trace sources release the mapping
+/// before this function returns.
+pub(crate) fn trace_page_scoped<R>(
+    source: &impl BlockSource,
+    root: DirectoryRoot,
+    reference: PhysicalRef,
+    lower: Option<Key<'_>>,
+    upper: Option<Key<'_>>,
+    resources: &mut TreeResources<'_>,
+    callback: impl for<'a, 'r> FnOnce(
+        super::FramedPage<'a>,
+        ArtifactIdentity,
+        usize,
+        &'r mut TreeResources<'_>,
+    ) -> Result<R, TreeError>,
+) -> Result<R, TreeError> {
+    resources.step(1)?;
+    source.with_block(reference, resources, |block, resources| {
+        resources.step(0)?;
+        let block = check_block(root, reference, block)?;
+        let identity = block.identity();
+        let page = checked_page(
+            source,
+            root,
+            identity,
+            block.payload(),
+            lower,
+            upper,
+            resources,
+        )?;
+        let cells = count(block.payload())?;
+        callback(page, identity, cells, resources)
+    })
+}
+
+#[derive(Clone, Copy)]
+struct FixedLookupBound {
+    bytes: [u8; 32],
+    length: u8,
+}
+
+impl FixedLookupBound {
+    fn copy(key: Key<'_>, width: usize) -> Result<Self, TreeError> {
+        let Key::Inline(bytes) = key else {
+            return Err(TreeError::Invalid("fixed lookup overflow key"));
+        };
+        if bytes.len() != width {
+            return Err(TreeError::Invalid("fixed lookup key width"));
+        }
+        let mut output = [0_u8; 32];
+        output
+            .get_mut(..width)
+            .ok_or(TreeError::Invalid("fixed lookup key extent"))?
+            .copy_from_slice(bytes);
+        Ok(Self {
+            bytes: output,
+            length: u8::try_from(width).map_err(|_| TreeError::Memory)?,
+        })
+    }
+
+    fn key(&self) -> Result<Key<'_>, TreeError> {
+        Ok(Key::Inline(
+            self.bytes
+                .get(..usize::from(self.length))
+                .ok_or(TreeError::Invalid("fixed lookup bound extent"))?,
+        ))
+    }
+}
+
+enum FixedLookupStep {
+    Found(usize),
+    Absent,
+    Child {
+        reference: PhysicalRef,
+        expected_level: u16,
+        generation_bound: GraphGeneration,
+        lower: Option<FixedLookupBound>,
+        upper: Option<FixedLookupBound>,
+    },
+}
+
+/// Copy one fixed-width trace-only value while releasing every page mapping
+/// before following its next route. Ordinary borrowed lookups retain their
+/// existing API and ownership semantics.
+pub(crate) fn lookup_fixed_scoped(
+    source: &impl BlockSource,
+    root: DirectoryRoot,
+    key: &[u8],
+    output: &mut [u8],
+    resources: &mut TreeResources<'_>,
+) -> Result<Option<usize>, TreeError> {
+    let width = match root.kind {
+        TreeKind::Nodes | TreeKind::SparseMembership => 16,
+        TreeKind::SparseSources => 32,
+        _ => return Err(TreeError::Invalid("fixed lookup tree kind")),
+    };
+    if key.len() != width {
+        return Err(TreeError::Invalid("fixed lookup probe width"));
+    }
+    resources.step(1)?;
+    resources.read_event(NativeReadEvent::Lookup)?;
+    validate_key(source, root, Key::Inline(key), resources)?;
+    let Some(mut reference) = root.reference else {
+        return Ok(None);
+    };
+    let mut expected_level = None;
+    let mut generation_bound = root.generation;
+    let mut lower = None;
+    let mut upper = None;
+    let mut ancestors = [None; MAX_DEPTH];
+    let mut depth = 0_usize;
+    loop {
+        if ancestors
+            .get(..depth)
+            .is_some_and(|path| path.contains(&Some(reference)))
+        {
+            return Err(TreeError::Invalid("fixed lookup directory cycle"));
+        }
+        *ancestors
+            .get_mut(depth)
+            .ok_or(TreeError::Invalid("fixed lookup directory depth"))? = Some(reference);
+        depth = depth.checked_add(1).ok_or(TreeError::Work)?;
+        let lower_key = lower.as_ref().map(FixedLookupBound::key).transpose()?;
+        let upper_key = upper.as_ref().map(FixedLookupBound::key).transpose()?;
+        let step = trace_page_scoped(
+            source,
+            root,
+            reference,
+            lower_key,
+            upper_key,
+            resources,
+            |page, _identity, cells, resources| {
+                if expected_level.is_some_and(|level| level != page.header().level)
+                    || page.header().generation > generation_bound
+                {
+                    return Err(TreeError::Invalid("fixed lookup child level or generation"));
+                }
+                if page.header().level == 0 {
+                    for index in 0..cells {
+                        resources.step(1)?;
+                        let Cell::Leaf { key: stored, value } = page.cell(index)? else {
+                            return Err(TreeError::Invalid("fixed lookup leaf cell"));
+                        };
+                        let Key::Inline(stored_bytes) = stored else {
+                            return Err(TreeError::Invalid("fixed lookup overflow key"));
+                        };
+                        if stored_bytes.len() != width {
+                            return Err(TreeError::Invalid("fixed lookup key width"));
+                        }
+                        match compare(source, root, Key::Inline(key), stored, resources)? {
+                            std::cmp::Ordering::Equal => {
+                                let destination =
+                                    output.get_mut(..value.len()).ok_or(TreeError::Memory)?;
+                                resources.step(value.len() as u64)?;
+                                resources
+                                    .read_event(NativeReadEvent::CopiedBytes(value.len() as u64))?;
+                                destination.copy_from_slice(value);
+                                return Ok(FixedLookupStep::Found(value.len()));
+                            }
+                            std::cmp::Ordering::Less => return Ok(FixedLookupStep::Absent),
+                            std::cmp::Ordering::Greater => {}
+                        }
+                    }
+                    return Ok(FixedLookupStep::Absent);
+                }
+                let mut selected = None;
+                let mut prior = lower;
+                for index in 0..cells {
+                    resources.step(1)?;
+                    let Cell::Branch {
+                        upper: bound,
+                        child,
+                    } = page.cell(index)?
+                    else {
+                        return Err(TreeError::Invalid("fixed lookup branch cell"));
+                    };
+                    let copied_bound = bound
+                        .map(|bound| FixedLookupBound::copy(bound, width))
+                        .transpose()?;
+                    if selected.is_none()
+                        && (bound.is_none()
+                            || compare(
+                                source,
+                                root,
+                                Key::Inline(key),
+                                bound.ok_or(TreeError::Invalid("fixed lookup bound"))?,
+                                resources,
+                            )?
+                            .is_lt())
+                    {
+                        selected = Some((child, prior, copied_bound.or(upper)));
+                        break;
+                    }
+                    prior = copied_bound;
+                }
+                let (child, child_lower, child_upper) =
+                    selected.ok_or(TreeError::Invalid("fixed lookup missing branch route"))?;
+                Ok(FixedLookupStep::Child {
+                    reference: child,
+                    expected_level: page
+                        .header()
+                        .level
+                        .checked_sub(1)
+                        .ok_or(TreeError::Invalid("fixed lookup branch level"))?,
+                    generation_bound: page.header().generation,
+                    lower: child_lower,
+                    upper: child_upper,
+                })
+            },
+        )?;
+        match step {
+            FixedLookupStep::Found(length) => return Ok(Some(length)),
+            FixedLookupStep::Absent => return Ok(None),
+            FixedLookupStep::Child {
+                reference: child,
+                expected_level: child_level,
+                generation_bound: child_generation,
+                lower: child_lower,
+                upper: child_upper,
+            } => {
+                reference = child;
+                expected_level = Some(child_level);
+                generation_bound = child_generation;
+                lower = child_lower;
+                upper = child_upper;
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TraceBound {
+    page: PhysicalRef,
+    cell: usize,
+    generation: GraphGeneration,
+}
+
+#[derive(Clone, Copy)]
+struct DirectoryTraceFrame {
+    reference: PhysicalRef,
+    expected_level: Option<u16>,
+    generation_bound: GraphGeneration,
+    next_cell: usize,
+    cells: usize,
+    emitted: bool,
+    lower: Option<TraceBound>,
+    upper: Option<TraceBound>,
+}
+
+#[derive(Clone, Copy)]
+struct PayloadTraceState {
+    payload: super::super::payload::PayloadRef,
+    generation: GraphGeneration,
+    next: usize,
+}
+
+/// Owned locator for one already validated leaf. It names the page and cell
+/// only, so reopening it cannot switch roots or keep mapped bytes.
+#[derive(Clone, Copy)]
+pub(crate) struct DirectoryTraceLeaf {
+    page: PhysicalRef,
+    cell: usize,
+    generation: GraphGeneration,
+}
+
+/// One resumable all-cell trace event.
+pub(crate) enum DirectoryTraceEvent {
+    Reference(PhysicalRef),
+    Leaf(DirectoryTraceLeaf),
+    Done,
+}
+
+/// Value-owned depth-first trace state. It retains no source, mapping, page,
+/// key or directory entry between calls.
+pub(crate) struct DirectoryTraceState<'m> {
+    root: DirectoryRoot,
+    frames: [Option<DirectoryTraceFrame>; MAX_DEPTH],
+    depth: usize,
+    payload: Option<PayloadTraceState>,
+    leaf: Option<DirectoryTraceLeaf>,
+    page: [u8; PAGE_BYTES],
+    page_reference: Option<PhysicalRef>,
+    page_header: Option<PageHeader>,
+    failed: bool,
+    done: bool,
+    reservation: TreeTraceReservation<'m>,
+}
+
+impl<'m> DirectoryTraceState<'m> {
+    pub(crate) fn new(
+        root: DirectoryRoot,
+        resources: &mut TreeResources<'m>,
+    ) -> Result<Self, TreeError> {
+        let reservation = resources.reserve_trace(std::mem::size_of::<Self>())?;
+        let mut frames = [None; MAX_DEPTH];
+        let depth = if let Some(reference) = root.reference {
+            frames[0] = Some(DirectoryTraceFrame {
+                reference,
+                expected_level: None,
+                generation_bound: root.generation,
+                next_cell: 0,
+                cells: 0,
+                emitted: false,
+                lower: None,
+                upper: None,
+            });
+            1
+        } else {
+            0
+        };
+        Ok(Self {
+            root,
+            frames,
+            depth,
+            payload: None,
+            leaf: None,
+            page: [0_u8; PAGE_BYTES],
+            page_reference: None,
+            page_header: None,
+            failed: false,
+            done: depth == 0,
+            reservation,
+        })
+    }
+
+    pub(crate) fn next(
+        &mut self,
+        source: &impl BlockSource,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<DirectoryTraceEvent, TreeError> {
+        if self.failed {
+            return Err(TreeError::Invalid("directory trace previously failed"));
+        }
+        let result = self.next_inner(source, resources);
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+
+    fn next_inner(
+        &mut self,
+        source: &impl BlockSource,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<DirectoryTraceEvent, TreeError> {
+        self.reservation.require(resources)?;
+        resources.step(0)?;
+        loop {
+            if let Some(mut payload) = self.payload {
+                match payload.payload.physical_reference_at_scoped(
+                    source,
+                    self.root.store,
+                    payload.generation,
+                    payload.next,
+                    resources,
+                )? {
+                    Some(reference) => {
+                        payload.next = payload.next.checked_add(1).ok_or(TreeError::Work)?;
+                        self.payload = Some(payload);
+                        return Ok(DirectoryTraceEvent::Reference(reference));
+                    }
+                    None => self.payload = None,
+                }
+            }
+            if let Some(leaf) = self.leaf.take() {
+                return Ok(DirectoryTraceEvent::Leaf(leaf));
+            }
+            if self.depth == 0 {
+                self.done = true;
+                return Ok(DirectoryTraceEvent::Done);
+            }
+            let index = self.depth - 1;
+            let mut frame = self
+                .frames
+                .get(index)
+                .copied()
+                .flatten()
+                .ok_or(TreeError::Invalid("directory trace frame"))?;
+            if self.page_reference != Some(frame.reference) {
+                let (header, cells) =
+                    copy_inspect_trace_page(source, self.root, frame, &mut self.page, resources)?;
+                if frame.emitted && frame.cells != cells {
+                    return Err(TreeError::Invalid("directory trace page changed"));
+                }
+                self.page_reference = Some(frame.reference);
+                self.page_header = Some(header);
+            }
+            let header = self
+                .page_header
+                .ok_or(TreeError::Invalid("directory trace page header"))?;
+            if !frame.emitted {
+                let cells = count(&self.page)?;
+                if frame
+                    .expected_level
+                    .is_some_and(|expected| expected != header.level)
+                    || header.generation.get() > frame.generation_bound.get()
+                {
+                    return Err(TreeError::Invalid(
+                        "directory trace child level or generation",
+                    ));
+                }
+                frame.emitted = true;
+                frame.cells = cells;
+                *self.frames.get_mut(index).ok_or(TreeError::Memory)? = Some(frame);
+                return Ok(DirectoryTraceEvent::Reference(frame.reference));
+            }
+            if frame.next_cell == frame.cells {
+                *self.frames.get_mut(index).ok_or(TreeError::Memory)? = None;
+                self.depth -= 1;
+                continue;
+            }
+            let cell_index = frame.next_cell;
+            frame.next_cell = frame.next_cell.checked_add(1).ok_or(TreeError::Work)?;
+            *self.frames.get_mut(index).ok_or(TreeError::Memory)? = Some(frame);
+            let cell = owned_page_cell(&self.page, header, cell_index)?;
+            let generation = header.generation;
+            let payload = match cell {
+                Cell::Leaf { key, .. }
+                | Cell::Branch {
+                    upper: Some(key), ..
+                } => overflow_key_payload(key)?,
+                Cell::Branch { upper: None, .. } => None,
+            };
+            let action = match cell {
+                Cell::Leaf { .. } => TraceCellAction::Leaf {
+                    locator: DirectoryTraceLeaf {
+                        page: frame.reference,
+                        cell: cell_index,
+                        generation,
+                    },
+                    payload,
+                },
+                Cell::Branch { upper, child } => {
+                    let current = upper.map(|_| TraceBound {
+                        page: frame.reference,
+                        cell: cell_index,
+                        generation,
+                    });
+                    let lower = if cell_index == 0 {
+                        frame.lower
+                    } else {
+                        Some(TraceBound {
+                            page: frame.reference,
+                            cell: cell_index - 1,
+                            generation,
+                        })
+                    };
+                    TraceCellAction::Branch {
+                        child,
+                        expected_level: header
+                            .level
+                            .checked_sub(1)
+                            .ok_or(TreeError::Invalid("leaf branch cell"))?,
+                        generation_bound: generation,
+                        lower,
+                        upper: current.or(frame.upper),
+                        payload,
+                    }
+                }
+            };
+            match action {
+                TraceCellAction::Leaf { locator, payload } => {
+                    self.leaf = Some(locator);
+                    self.payload = payload.map(|payload| PayloadTraceState {
+                        payload,
+                        generation: locator.generation,
+                        next: 0,
+                    });
+                }
+                TraceCellAction::Branch {
+                    child,
+                    expected_level,
+                    generation_bound,
+                    lower,
+                    upper,
+                    payload,
+                } => {
+                    if self.frames.get(..self.depth).is_some_and(|frames| {
+                        frames
+                            .iter()
+                            .flatten()
+                            .any(|ancestor| ancestor.reference == child)
+                    }) {
+                        return Err(TreeError::Invalid("directory trace cycle"));
+                    }
+                    *self
+                        .frames
+                        .get_mut(self.depth)
+                        .ok_or(TreeError::Invalid("directory trace depth"))? =
+                        Some(DirectoryTraceFrame {
+                            reference: child,
+                            expected_level: Some(expected_level),
+                            generation_bound,
+                            next_cell: 0,
+                            cells: 0,
+                            emitted: false,
+                            lower,
+                            upper,
+                        });
+                    self.depth += 1;
+                    self.payload = payload.map(|payload| PayloadTraceState {
+                        payload,
+                        generation: generation_bound,
+                        next: 0,
+                    });
+                }
+            }
+        }
+    }
+
+    /// Borrow a selected leaf from the currently retained copied page. The
+    /// source mapping was released before the page entered this state.
+    pub(crate) fn with_leaf<R>(
+        &self,
+        leaf: DirectoryTraceLeaf,
+        resources: &mut TreeResources<'_>,
+        callback: impl FnOnce(DirectoryEntry<'_>, &mut TreeResources<'_>) -> Result<R, TreeError>,
+    ) -> Result<R, TreeError> {
+        self.reservation.require(resources)?;
+        if self.page_reference != Some(leaf.page) {
+            return Err(TreeError::Invalid("directory trace leaf page not retained"));
+        }
+        let header = self
+            .page_header
+            .ok_or(TreeError::Invalid("directory trace leaf header"))?;
+        if header.level != 0 || header.generation != leaf.generation {
+            return Err(TreeError::Invalid("directory trace leaf owner"));
+        }
+        let Cell::Leaf { key, value } = owned_page_cell(&self.page, header, leaf.cell)? else {
+            return Err(TreeError::Invalid("directory trace leaf cell"));
+        };
+        callback(
+            DirectoryEntry {
+                root: self.root,
+                generation: leaf.generation,
+                key,
+                value,
+            },
+            resources,
+        )
+    }
+}
+
+#[derive(Clone, Copy)]
+enum TraceCellAction {
+    Leaf {
+        locator: DirectoryTraceLeaf,
+        payload: Option<super::super::payload::PayloadRef>,
+    },
+    Branch {
+        child: PhysicalRef,
+        expected_level: u16,
+        generation_bound: GraphGeneration,
+        lower: Option<TraceBound>,
+        upper: Option<TraceBound>,
+        payload: Option<super::super::payload::PayloadRef>,
+    },
+}
+
+fn overflow_key_payload(
+    key: Key<'_>,
+) -> Result<Option<super::super::payload::PayloadRef>, TreeError> {
+    match key {
+        Key::Inline(_) => Ok(None),
+        Key::Overflow {
+            logical_length,
+            reference,
+        } => Ok(Some(super::super::payload::PayloadRef::new(
+            BlockKind::OverflowKey,
+            logical_length,
+            reference,
+        )?)),
+    }
+}
+
+fn with_trace_bound<R>(
+    source: &impl BlockSource,
+    root: DirectoryRoot,
+    bound: TraceBound,
+    resources: &mut TreeResources<'_>,
+    callback: impl for<'a, 'r> FnOnce(Key<'a>, &'r mut TreeResources<'_>) -> Result<R, TreeError>,
+) -> Result<R, TreeError> {
+    source.with_block(bound.page, resources, |block, resources| {
+        let block = check_block(root, bound.page, block)?;
+        let page = decode_page(root.kind, block.payload())?;
+        if page.header().generation != bound.generation || page.header().level == 0 {
+            return Err(TreeError::Invalid("directory trace bound owner"));
+        }
+        let Cell::Branch {
+            upper: Some(key), ..
+        } = page.cell(bound.cell)?
+        else {
+            return Err(TreeError::Invalid("directory trace bound cell"));
+        };
+        validate_key(
+            source,
+            DirectoryRoot {
+                generation: bound.generation,
+                ..root
+            },
+            key,
+            resources,
+        )?;
+        callback(key, resources)
+    })
+}
+
+fn copy_inspect_trace_page(
+    source: &impl BlockSource,
+    root: DirectoryRoot,
+    frame: DirectoryTraceFrame,
+    output: &mut [u8; PAGE_BYTES],
+    resources: &mut TreeResources<'_>,
+) -> Result<(PageHeader, usize), TreeError> {
+    let identity = source.with_block(frame.reference, resources, |block, resources| {
+        let block = check_block(root, frame.reference, block)?;
+        if block.payload().len() != PAGE_BYTES {
+            return Err(TreeError::Invalid("directory trace page width"));
+        }
+        resources.step(PAGE_BYTES as u64)?;
+        resources.read_event(NativeReadEvent::CopiedBytes(PAGE_BYTES as u64))?;
+        output.copy_from_slice(block.payload());
+        Ok(block.identity())
+    })?;
+    let page = checked_page(source, root, identity, output, None, None, resources)?;
+    let cells = count(output)?;
+    for index in 0..cells {
+        let key = match page.cell(index)? {
+            Cell::Leaf { key, .. } => Some(key),
+            Cell::Branch { upper, .. } => upper,
+        };
+        let Some(key) = key else {
+            continue;
+        };
+        if let Some(lower) = frame.lower {
+            with_trace_bound(source, root, lower, resources, |bound, resources| {
+                let order = compare(source, root, key, bound, resources)?;
+                if order.is_lt() || (page.header().level > 0 && order.is_eq()) {
+                    return Err(TreeError::Invalid("key below ancestor lower bound"));
+                }
+                Ok(())
+            })?;
+        }
+        if let Some(upper) = frame.upper {
+            with_trace_bound(source, root, upper, resources, |bound, resources| {
+                if !compare(source, root, key, bound, resources)?.is_lt() {
+                    return Err(TreeError::Invalid("key exceeds ancestor upper bound"));
+                }
+                Ok(())
+            })?;
+        }
+    }
+    Ok((page.header(), cells))
+}
+
 #[derive(Clone, Copy)]
 struct PathEntry {
     reference: PhysicalRef,
@@ -1736,10 +2472,21 @@ impl<'a, 'm, S: BlockSource> DirectoryCursor<'a, 'm, S> {
         lower: Option<&[u8]>,
         resources: &mut TreeResources<'m>,
     ) -> Result<Self, TreeError> {
+        Self::seek_stored(source, root, lower.map(Key::Inline), resources)
+    }
+
+    /// Seek from an already validated stored-key descriptor. This keeps a
+    /// bounded overflow-key resume token between scoped mapping windows.
+    pub(crate) fn seek_stored(
+        source: &'a S,
+        root: DirectoryRoot,
+        lower: Option<Key<'_>>,
+        resources: &mut TreeResources<'m>,
+    ) -> Result<Self, TreeError> {
         resources.read_event(NativeReadEvent::Scan)?;
         resources.step(1)?;
         if let Some(key) = lower {
-            validate_key(source, root, Key::Inline(key), resources)?;
+            validate_key(source, root, key, resources)?;
         }
         let owner = resources.cursor_owner()?;
         let reservation = resources.owner.reserve(std::mem::size_of::<Self>())?;
@@ -1761,7 +2508,7 @@ impl<'a, 'm, S: BlockSource> DirectoryCursor<'a, 'm, S> {
             find_path(
                 source,
                 root,
-                ProbeKey::Stored(Key::Inline(key)),
+                ProbeKey::Stored(key),
                 &mut cursor.path,
                 None,
                 resources,
@@ -1778,7 +2525,7 @@ impl<'a, 'm, S: BlockSource> DirectoryCursor<'a, 'm, S> {
                 let Cell::Leaf { key, .. } = page.cell(cursor.index)? else {
                     return Err(TreeError::Invalid("cursor leaf expected"));
                 };
-                if !compare(source, root, key, Key::Inline(lower), resources)?.is_lt() {
+                if !compare(source, root, key, lower, resources)?.is_lt() {
                     break;
                 }
                 cursor.index += 1;

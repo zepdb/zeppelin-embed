@@ -69,6 +69,7 @@ pub trait ReplayValidator {
     /// Validate coherent catalog/search/root and inventory/proof state together.
     fn state(
         &mut self,
+        kind: EnvelopeKind,
         base: CommitState<'_>,
         target: CommitState<'_>,
         changes: ChangeReader<'_>,
@@ -104,6 +105,23 @@ pub enum ReplayStep<'a> {
     /// Fully validated coherent envelope.
     Envelope(ValidatedEnvelope<'a>),
     /// Terminal state; read-only replay has changed no input bytes.
+    End(ReplayEnd),
+}
+
+/// Framing-only immutable capture evidence. This proves one complete encoded
+/// envelope boundary and exposes its typed changes for protected-root tracing;
+/// it is not semantic replay admission or cleanup authority.
+pub(crate) struct FramedCaptureEnvelope<'a> {
+    change_bytes: &'a [u8],
+    change_count: u32,
+    batch: BatchId,
+    pub(crate) kind: EnvelopeKind,
+    pub(crate) state: CommitState<'a>,
+    pub(crate) complete_bytes: usize,
+}
+
+pub(crate) enum FramedCaptureStep<'a> {
+    Envelope(FramedCaptureEnvelope<'a>),
     End(ReplayEnd),
 }
 /// Latched private recovery scanner borrowing immutable WAL and checkpoint state.
@@ -180,7 +198,7 @@ impl<'a> Replay<'a> {
             match replay.next_inner(None, r)? {
                 ReplayStep::Envelope(_) if replay.state.sequence < checkpoint.sequence => {}
                 ReplayStep::Envelope(_) if replay.state.sequence == checkpoint.sequence => {
-                    if !same_state(replay.state, checkpoint, r)? {
+                    if !same_commit_state(replay.state, checkpoint, r)? {
                         return Err(WalError::Participant);
                     }
                     return Ok(replay.offset);
@@ -262,7 +280,7 @@ impl<'a> Replay<'a> {
                 return Err(WalError::Malformed);
             }
         }
-        if replay.offset != watermark || !same_state(replay.state, checkpoint, r)? {
+        if replay.offset != watermark || !same_commit_state(replay.state, checkpoint, r)? {
             return Err(WalError::Participant);
         }
         replay.state = checkpoint;
@@ -312,6 +330,36 @@ impl<'a> Replay<'a> {
             self.failed = true;
         }
         result
+    }
+
+    pub(crate) fn next_framed_capture(
+        &mut self,
+        r: &mut WalResources<'_>,
+    ) -> Result<FramedCaptureStep<'a>, WalError> {
+        if self.failed {
+            return Err(WalError::Failed);
+        }
+        if let Some(end) = self.end {
+            return Ok(FramedCaptureStep::End(end));
+        }
+        let result = self.next_inner(None, r);
+        match result {
+            Ok(ReplayStep::Envelope(envelope)) => {
+                Ok(FramedCaptureStep::Envelope(FramedCaptureEnvelope {
+                    change_bytes: envelope.change_bytes,
+                    change_count: envelope.change_count,
+                    batch: envelope.batch,
+                    kind: envelope.kind,
+                    state: envelope.state,
+                    complete_bytes: self.offset,
+                }))
+            }
+            Ok(ReplayStep::End(end)) => Ok(FramedCaptureStep::End(end)),
+            Err(error) => {
+                self.failed = true;
+                Err(error)
+            }
+        }
     }
     fn finish(&mut self, incomplete_tail: bool) -> ReplayStep<'a> {
         let end = ReplayEnd {
@@ -567,7 +615,7 @@ impl<'a> Replay<'a> {
                 remaining: count,
                 failed: false,
             };
-            validator.state(self.state, state, changes, r)?;
+            validator.state(kind, self.state, state, changes, r)?;
         }
         r.charge(0)?;
         self.state = state;
@@ -726,6 +774,19 @@ impl<'a> ValidatedEnvelope<'a> {
         }
     }
 }
+impl<'a> FramedCaptureEnvelope<'a> {
+    pub(crate) const fn changes(&self) -> ChangeReader<'a> {
+        ChangeReader {
+            bytes: self.change_bytes,
+            state: self.state,
+            batch: self.batch,
+            offset: 0,
+            index: 1,
+            remaining: self.change_count,
+            failed: false,
+        }
+    }
+}
 impl<'a> ChangeReader<'a> {
     /// Returns the next complete typed change; errors latch this cursor. Callers
     /// mutate only private recovery state and discard it if later replay fails.
@@ -807,7 +868,7 @@ fn read_header(
     Ok(first)
 }
 
-fn same_state(
+pub(crate) fn same_commit_state(
     left: CommitState<'_>,
     right: CommitState<'_>,
     r: &mut WalResources<'_>,

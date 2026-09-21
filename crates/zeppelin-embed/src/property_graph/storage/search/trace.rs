@@ -4,7 +4,7 @@ use super::codec::{
     MEMBERSHIP_BYTES, MembershipRow, Modality, ROW_BYTES, SOURCE_VALUE_BYTES, SourceFormat,
     SourceManifest, SourceValue, SparseRootState, SparseRoots, SparseRow, validate_row_correlation,
 };
-use super::vector_index::{open_vector_index, validate_vector_index_rows};
+use super::vector_index::{NativeVectorIndex, open_vector_index, validate_vector_index_rows};
 use super::view::{SparseLexical, SparseOwner, SparseView, decode_lexical_prepare};
 use crate::lifecycle::native_graph::NativeReadLease;
 use crate::property_graph::storage::artifact::{self, BlockKind, PhysicalRef};
@@ -12,13 +12,13 @@ use crate::property_graph::storage::payload::PayloadRef;
 use crate::property_graph::storage::records::{RecordCatalog, verify_record};
 use crate::property_graph::storage::stream::PayloadSlice;
 use crate::property_graph::storage::tree::directory::{
-    BlockSource, DirectoryRoot, MAX_DEPTH, TreeError, TreeResources, TreeTraceReservation,
-    lookup_entry, trace_page,
+    BlockSource, DirectoryRoot, DirectoryTraceEvent, DirectoryTraceState, TreeError, TreeResources,
+    TreeTraceReservation, lookup_fixed_scoped,
 };
-use crate::property_graph::storage::tree::{Cell, Key, TreeKind};
+use crate::property_graph::storage::tree::{Key, TreeKind};
 use crate::property_graph::storage::{NativePreparationCatalog, NativePreparationSource};
 use crate::property_graph::wal::RequiredRef;
-use crate::property_graph::{EntityId, GraphGeneration};
+use crate::property_graph::{EntityId, GraphGeneration, GraphRevision, NodeId, StoreInstanceId};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SearchTraceResult {
@@ -27,48 +27,27 @@ pub(crate) struct SearchTraceResult {
 }
 
 #[derive(Clone, Copy)]
-struct Bound {
-    bytes: [u8; 32],
-    len: u8,
+pub(crate) struct SparseTraceRecordFacts {
+    revision: GraphRevision,
+    has_text: bool,
+    has_vector: bool,
+    required_payloads: [PayloadRef; 2],
 }
 
-impl Bound {
-    fn from_key(key: Key<'_>, width: usize) -> Result<Self, TreeError> {
-        let Key::Inline(bytes) = key else {
-            return Err(TreeError::Invalid("sparse trace overflow key"));
-        };
-        if bytes.len() != width {
-            return Err(TreeError::Invalid("sparse trace key width"));
-        }
-        let mut output = [0_u8; 32];
-        output
-            .get_mut(..width)
-            .ok_or(TreeError::Invalid("sparse trace key extent"))?
-            .copy_from_slice(bytes);
-        Ok(Self {
-            bytes: output,
-            len: u8::try_from(width).map_err(|_| TreeError::Memory)?,
-        })
-    }
-
-    fn key(&self) -> Result<Key<'_>, TreeError> {
-        Ok(Key::Inline(
-            self.bytes
-                .get(..usize::from(self.len))
-                .ok_or(TreeError::Invalid("sparse trace bound extent"))?,
-        ))
-    }
-}
-
-#[derive(Clone, Copy)]
-struct PageFrame {
-    reference: PhysicalRef,
-    expected_level: Option<u16>,
-    generation_bound: GraphGeneration,
-    next_cell: usize,
-    emitted: bool,
-    lower: Option<Bound>,
-    upper: Option<Bound>,
+pub(crate) fn verify_sparse_trace_record<S: BlockSource>(
+    payload: PayloadSlice<'_, S>,
+    node: NodeId,
+    catalog: &impl RecordCatalog<S>,
+    document: Option<&crate::epoch::EmbeddingTower>,
+    resources: &mut TreeResources<'_>,
+) -> Result<SparseTraceRecordFacts, TreeError> {
+    let record = verify_record(payload, EntityId::Node(node), catalog, document, resources)?;
+    Ok(SparseTraceRecordFacts {
+        revision: record.revision(),
+        has_text: record.canonical().stored_text().is_some(),
+        has_vector: record.canonical().stored_vector().is_some(),
+        required_payloads: record.required_payloads(),
+    })
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -77,7 +56,7 @@ enum DirectoryFamily {
     Sources,
 }
 
-struct DirectoryWalk {
+struct DirectoryWalk<'m> {
     root: DirectoryRoot,
     members: DirectoryRoot,
     sources: DirectoryRoot,
@@ -85,8 +64,7 @@ struct DirectoryWalk {
     modality: Modality,
     descriptor_generation: GraphGeneration,
     descriptor_sequence: u64,
-    frames: [Option<PageFrame>; MAX_DEPTH],
-    depth: usize,
+    trace: DirectoryTraceState<'m>,
 }
 
 enum DirectoryEvent {
@@ -96,7 +74,7 @@ enum DirectoryEvent {
     Done,
 }
 
-impl DirectoryWalk {
+impl<'m> DirectoryWalk<'m> {
     #[allow(
         clippy::too_many_arguments,
         reason = "one checked sparse directory context"
@@ -109,24 +87,9 @@ impl DirectoryWalk {
         modality: Modality,
         generation: GraphGeneration,
         sequence: u64,
+        resources: &mut TreeResources<'m>,
     ) -> Result<Self, TreeError> {
-        let mut frames = [None; MAX_DEPTH];
-        let mut depth = 0;
-        if let Some(reference) = root.reference() {
-            frames
-                .get_mut(0)
-                .ok_or(TreeError::Invalid("sparse trace directory depth"))?
-                .replace(PageFrame {
-                    reference,
-                    expected_level: None,
-                    generation_bound: root.generation(),
-                    next_cell: 0,
-                    emitted: false,
-                    lower: None,
-                    upper: None,
-                });
-            depth = 1;
-        }
+        let trace = DirectoryTraceState::new(root, resources)?;
         Ok(Self {
             root,
             members,
@@ -135,8 +98,7 @@ impl DirectoryWalk {
             modality,
             descriptor_generation: generation,
             descriptor_sequence: sequence,
-            frames,
-            depth,
+            trace,
         })
     }
 
@@ -152,162 +114,95 @@ impl DirectoryWalk {
         source: &S,
         resources: &mut TreeResources<'_>,
     ) -> Result<DirectoryEvent, TreeError> {
-        loop {
-            if self.depth == 0 {
-                return Ok(DirectoryEvent::Done);
+        match self.trace.next(source, resources)? {
+            DirectoryTraceEvent::Reference(reference) => {
+                return Ok(DirectoryEvent::Reference(reference));
             }
-            let frame_index = self.depth - 1;
-            let frame = self
-                .frames
-                .get(frame_index)
-                .copied()
-                .flatten()
-                .ok_or(TreeError::Invalid("sparse trace page frame"))?;
-            let lower = frame.lower.as_ref().map(Bound::key).transpose()?;
-            let upper = frame.upper.as_ref().map(Bound::key).transpose()?;
-            let (page, count) =
-                trace_page(source, self.root, frame.reference, lower, upper, resources)?;
-            if frame
-                .expected_level
-                .is_some_and(|level| level != page.header().level)
-                || page.header().generation > frame.generation_bound
-            {
-                return Err(TreeError::Invalid("sparse trace child level or generation"));
-            }
-            if !frame.emitted {
-                self.frames
-                    .get_mut(frame_index)
-                    .and_then(Option::as_mut)
-                    .ok_or(TreeError::Invalid("sparse trace emitted frame"))?
-                    .emitted = true;
-                return Ok(DirectoryEvent::Reference(frame.reference));
-            }
-            if frame.next_cell == count {
-                *self
-                    .frames
-                    .get_mut(frame_index)
-                    .ok_or(TreeError::Invalid("sparse trace pop extent"))? = None;
-                self.depth -= 1;
-                continue;
-            }
-            if frame.next_cell > count {
-                return Err(TreeError::Invalid("sparse trace page cell extent"));
-            }
-            let cell = page.cell(frame.next_cell)?;
-            self.frames
-                .get_mut(frame_index)
-                .and_then(Option::as_mut)
-                .ok_or(TreeError::Invalid("sparse trace live frame"))?
-                .next_cell += 1;
-            if page.header().level == 0 {
-                let Cell::Leaf { key, value } = cell else {
-                    return Err(TreeError::Invalid("sparse trace leaf cell"));
-                };
-                let key = Bound::from_key(key, self.width())?;
-                return match self.family {
-                    DirectoryFamily::Members => {
-                        if value.len() != MEMBERSHIP_BYTES {
-                            return Err(TreeError::Invalid("sparse trace membership width"));
-                        }
-                        let member = MembershipRow::decode(value)?;
-                        let mut source_key = [0_u8; 32];
-                        artifact::encode_reference(member.source, &mut source_key)?;
-                        let source_entry =
-                            lookup_entry(source, self.sources, &source_key, resources)?
-                                .ok_or(TreeError::Invalid("sparse member source is absent"))?;
-                        if source_entry.value().len() != SOURCE_VALUE_BYTES {
-                            return Err(TreeError::Invalid("sparse source value width"));
-                        }
-                        SourceValue::decode(source_entry.value())?;
-                        let _ = key;
-                        Ok(DirectoryEvent::Member)
+            DirectoryTraceEvent::Leaf(leaf) => {
+                return self.trace.with_leaf(leaf, resources, |entry, resources| {
+                    let Key::Inline(key) = entry.key() else {
+                        return Err(TreeError::Invalid("sparse trace overflow key"));
+                    };
+                    if key.len() != self.width() {
+                        return Err(TreeError::Invalid("sparse trace key width"));
                     }
-                    DirectoryFamily::Sources => {
-                        if value.len() != SOURCE_VALUE_BYTES {
-                            return Err(TreeError::Invalid("sparse source value width"));
+                    match self.family {
+                        DirectoryFamily::Members => {
+                            let value = entry.value();
+                            if value.len() != MEMBERSHIP_BYTES {
+                                return Err(TreeError::Invalid("sparse trace membership width"));
+                            }
+                            let member = MembershipRow::decode(value)?;
+                            let mut source_key = [0_u8; 32];
+                            artifact::encode_reference(member.source, &mut source_key)?;
+                            let mut source_value = [0_u8; SOURCE_VALUE_BYTES];
+                            if lookup_fixed_scoped(
+                                source,
+                                self.sources,
+                                &source_key,
+                                &mut source_value,
+                                resources,
+                            )? != Some(SOURCE_VALUE_BYTES)
+                            {
+                                return Err(TreeError::Invalid("sparse source value width"));
+                            }
+                            SourceValue::decode(&source_value)?;
+                            Ok(DirectoryEvent::Member)
                         }
-                        let reference = artifact::decode_reference(
-                            key.bytes
-                                .get(..32)
-                                .ok_or(TreeError::Invalid("sparse source key extent"))?,
-                        )?;
-                        let value = SourceValue::decode(value)?;
-                        let block = source.resolve(reference, resources)?;
-                        let manifest = SourceManifest::decode(block.payload())?;
-                        if block.reference() != reference
-                            || reference.kind != BlockKind::CommitParticipant
-                            || block.identity().store != self.root.store()
-                            || block.identity().generation != manifest.generation
-                            || manifest.modality != self.modality
-                            || manifest.generation > self.descriptor_generation
-                            || manifest.sequence > self.descriptor_sequence
-                            || value.live_rows > u64::from(manifest.rows)
-                        {
-                            return Err(TreeError::Invalid(
-                                "sparse trace source cutoff or identity",
-                            ));
+                        DirectoryFamily::Sources => {
+                            let value = entry.value();
+                            if value.len() != SOURCE_VALUE_BYTES {
+                                return Err(TreeError::Invalid("sparse source value width"));
+                            }
+                            let reference = artifact::decode_reference(key)?;
+                            let value = SourceValue::decode(value)?;
+                            let (block_reference, block_store, block_generation, manifest) = source
+                                .with_block(reference, resources, |block, _resources| {
+                                    Ok((
+                                        block.reference(),
+                                        block.identity().store,
+                                        block.identity().generation,
+                                        SourceManifest::decode(block.payload())?,
+                                    ))
+                                })?;
+                            if block_reference != reference
+                                || reference.kind != BlockKind::CommitParticipant
+                                || block_store != self.root.store()
+                                || block_generation != manifest.generation
+                                || manifest.modality != self.modality
+                                || manifest.generation > self.descriptor_generation
+                                || manifest.sequence > self.descriptor_sequence
+                                || value.live_rows > u64::from(manifest.rows)
+                            {
+                                return Err(TreeError::Invalid(
+                                    "sparse trace source cutoff or identity",
+                                ));
+                            }
+                            let mask_len = usize::try_from(manifest.rows)
+                                .map_err(|_| TreeError::Memory)?
+                                .checked_add(7)
+                                .ok_or(TreeError::Memory)?
+                                / 8;
+                            if value.mask.len() != mask_len as u64 {
+                                return Err(TreeError::Invalid("sparse trace mask length"));
+                            }
+                            Ok(DirectoryEvent::Source(SourceState {
+                                source: reference,
+                                source_value_generation: entry.creation_generation(),
+                                value,
+                                manifest,
+                                members: self.members,
+                                store: self.root.store(),
+                                phase: 0,
+                                row: 0,
+                                live_rows: 0,
+                                live_length: 0,
+                            }))
                         }
-                        let mask_len = usize::try_from(manifest.rows)
-                            .map_err(|_| TreeError::Memory)?
-                            .checked_add(7)
-                            .ok_or(TreeError::Memory)?
-                            / 8;
-                        if value.mask.len() != mask_len as u64 {
-                            return Err(TreeError::Invalid("sparse trace mask length"));
-                        }
-                        Ok(DirectoryEvent::Source(SourceState {
-                            source: reference,
-                            source_value_generation: page.header().generation,
-                            value,
-                            manifest,
-                            members: self.members,
-                            store: self.root.store(),
-                            phase: 0,
-                            row: 0,
-                            live_rows: 0,
-                            live_length: 0,
-                        }))
                     }
-                };
+                });
             }
-            let Cell::Branch { upper, child } = cell else {
-                return Err(TreeError::Invalid("sparse trace branch cell"));
-            };
-            let child_lower = if frame.next_cell == 0 {
-                frame.lower
-            } else {
-                let Cell::Branch {
-                    upper: previous, ..
-                } = page.cell(frame.next_cell - 1)?
-                else {
-                    return Err(TreeError::Invalid("sparse trace prior branch"));
-                };
-                previous
-                    .map(|key| Bound::from_key(key, self.width()))
-                    .transpose()?
-            };
-            let child_upper = upper
-                .map(|key| Bound::from_key(key, self.width()))
-                .transpose()?
-                .or(frame.upper);
-            let expected_level = page
-                .header()
-                .level
-                .checked_sub(1)
-                .ok_or(TreeError::Invalid("sparse trace branch level"))?;
-            *self
-                .frames
-                .get_mut(self.depth)
-                .ok_or(TreeError::Invalid("sparse trace directory depth"))? = Some(PageFrame {
-                reference: child,
-                expected_level: Some(expected_level),
-                generation_bound: page.header().generation,
-                next_cell: 0,
-                emitted: false,
-                lower: child_lower,
-                upper: child_upper,
-            });
-            self.depth += 1;
+            DirectoryTraceEvent::Done => return Ok(DirectoryEvent::Done),
         }
     }
 }
@@ -334,25 +229,23 @@ struct SourceState {
     live_length: u64,
 }
 
-/// One fixed-state cursor bound to an actual admitted preparation source.
-pub(crate) struct SearchTraceCursor<'s, 'm, S, C> {
-    source: &'s S,
-    catalog: &'s C,
-    lease: &'s NativeReadLease,
-    document: Option<&'s crate::epoch::EmbeddingTower>,
-    lexical_epoch: crate::fts::tokenizer::TokenizerEpoch,
+/// Value-owned sparse trace state. It retains no mapped source or catalog, so a
+/// coordinator may release and recreate bounded preparation windows per slice.
+pub(crate) struct SearchTraceState<'m> {
     store: crate::property_graph::StoreInstanceId,
     native: crate::property_graph::storage::tree::directory::GraphRoots,
-    memory: &'m crate::property_graph::storage::memory::StorageMemory<'m>,
+    binding: SearchTraceBinding,
     reservation: TreeTraceReservation<'m>,
     required: [Option<RequiredRef>; 2],
     states: [Option<SparseRootState>; 2],
+    state_catalog: RequiredRef,
     historical_catalog: RequiredRef,
+    lexical_epoch: crate::fts::tokenizer::TokenizerEpoch,
     generation: GraphGeneration,
     sequence: u64,
     root_slot: usize,
     root_phase: u8,
-    directory: Option<DirectoryWalk>,
+    directory: Option<DirectoryWalk<'m>>,
     source_state: Option<SourceState>,
     lexical: Option<SparseLexical<'m>>,
     payload: Option<PayloadState>,
@@ -364,6 +257,26 @@ pub(crate) struct SearchTraceCursor<'s, 'm, S, C> {
     source_length: u64,
     failed: bool,
     done: bool,
+}
+
+#[derive(Clone, Copy)]
+enum SearchTraceBinding {
+    Lease(u64),
+    Captured {
+        checkpoint: RequiredRef,
+        sequence: u64,
+    },
+}
+
+/// Existing borrowed cursor facade retained for ordinary callers and focused
+/// corruption tests. Maintenance consumes its value state between windows.
+pub(crate) struct SearchTraceCursor<'s, 'm, S, C> {
+    state: SearchTraceState<'m>,
+    source: &'s S,
+    catalog: &'s C,
+    lease: &'s NativeReadLease,
+    document: Option<&'s crate::epoch::EmbeddingTower>,
+    memory: &'m crate::property_graph::storage::memory::StorageMemory<'m>,
 }
 
 impl<'s, 'lease, 'm>
@@ -387,7 +300,7 @@ impl<'s, 'lease, 'm>
             text: bundle.text(),
             vector: bundle.vector(),
         };
-        Self::open_checked(
+        let state = SearchTraceState::open_checked(
             source,
             catalog,
             roots,
@@ -395,19 +308,31 @@ impl<'s, 'lease, 'm>
             bundle.catalog(),
             bundle.document(),
             bundle.lexical(),
-            source.lease(),
+            SearchTraceBinding::Lease(source.lease().token()),
             source.memory(),
             resources,
-        )
+        )?;
+        Ok(Self {
+            state,
+            source,
+            catalog,
+            lease: source.lease(),
+            document: bundle.document(),
+            memory: source.memory(),
+        })
+    }
+
+    pub(crate) fn into_state(self) -> SearchTraceState<'m> {
+        self.state
     }
 }
 
-impl<'s, 'm, S: BlockSource, C: RecordCatalog<S>> SearchTraceCursor<'s, 'm, S, C> {
+impl<'m> SearchTraceState<'m> {
     #[allow(
         clippy::too_many_arguments,
         reason = "one fully bound sparse trace view"
     )]
-    fn open_checked(
+    fn open_checked<'s, S: BlockSource, C: RecordCatalog<S>>(
         source: &'s S,
         catalog: &'s C,
         roots: SparseRoots,
@@ -415,7 +340,7 @@ impl<'s, 'm, S: BlockSource, C: RecordCatalog<S>> SearchTraceCursor<'s, 'm, S, C
         catalog_required: RequiredRef,
         document: Option<&'s crate::epoch::EmbeddingTower>,
         lexical: crate::fts::tokenizer::TokenizerEpoch,
-        lease: &'s NativeReadLease,
+        binding: SearchTraceBinding,
         memory: &'m crate::property_graph::storage::memory::StorageMemory<'m>,
         resources: &mut TreeResources<'m>,
     ) -> Result<Self, TreeError> {
@@ -442,18 +367,15 @@ impl<'s, 'm, S: BlockSource, C: RecordCatalog<S>> SearchTraceCursor<'s, 'm, S, C
         drop(view);
         let reservation = resources.reserve_trace(std::mem::size_of::<Self>())?;
         Ok(Self {
-            source,
-            catalog,
-            lease,
-            document,
-            lexical_epoch: lexical,
             store,
             native,
-            memory,
+            binding,
             reservation,
             required,
             states,
+            state_catalog: catalog_required,
             historical_catalog,
+            lexical_epoch: lexical,
             generation,
             sequence,
             root_slot: 0,
@@ -473,43 +395,54 @@ impl<'s, 'm, S: BlockSource, C: RecordCatalog<S>> SearchTraceCursor<'s, 'm, S, C
         })
     }
 
-    #[cfg(test)]
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "corruption fixture supplies one coherent view"
-    )]
-    pub(crate) fn for_test(
-        source: &'s S,
-        catalog: &'s C,
-        roots: SparseRoots,
-        native: crate::property_graph::storage::tree::directory::GraphRoots,
-        catalog_required: RequiredRef,
-        document: Option<&'s crate::epoch::EmbeddingTower>,
-        lexical: crate::fts::tokenizer::TokenizerEpoch,
-        lease: &'s NativeReadLease,
-        memory: &'m crate::property_graph::storage::memory::StorageMemory<'m>,
-        resources: &mut TreeResources<'m>,
-    ) -> Result<Self, TreeError> {
-        Self::open_checked(
-            source,
-            catalog,
-            roots,
-            native,
-            catalog_required,
-            document,
-            lexical,
-            lease,
-            memory,
-            resources,
-        )
-    }
-
     fn modality(&self) -> Result<Modality, TreeError> {
         match self.root_slot {
             0 => Ok(Modality::Text),
             1 => Ok(Modality::Vector),
             _ => Err(TreeError::Invalid("sparse trace modality slot")),
         }
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one coordinator-authenticated captured sparse state"
+    )]
+    pub(crate) fn for_captured<'s, S: BlockSource, C: RecordCatalog<S>>(
+        source: &'s S,
+        catalog: &'s C,
+        checkpoint: RequiredRef,
+        state: crate::property_graph::wal::CommitState<'_>,
+        document: Option<&'s crate::epoch::EmbeddingTower>,
+        lexical: crate::fts::tokenizer::TokenizerEpoch,
+        memory: &'m crate::property_graph::storage::memory::StorageMemory<'m>,
+        resources: &mut TreeResources<'m>,
+    ) -> Result<Self, TreeError> {
+        let native = crate::property_graph::storage::tree::directory::GraphRoots::from_references(
+            state.store,
+            state.generation,
+            state
+                .graph
+                .slots
+                .map(|root| root.map(|required| required.block)),
+        )?;
+        Self::open_checked(
+            source,
+            catalog,
+            SparseRoots {
+                text: state.text,
+                vector: state.vector,
+            },
+            native,
+            state.catalog,
+            document,
+            lexical,
+            SearchTraceBinding::Captured {
+                checkpoint,
+                sequence: state.sequence,
+            },
+            memory,
+            resources,
+        )
     }
 
     fn schedule_payload(&mut self, payload: PayloadRef, generation: GraphGeneration) {
@@ -521,19 +454,57 @@ impl<'s, 'm, S: BlockSource, C: RecordCatalog<S>> SearchTraceCursor<'s, 'm, S, C
         });
     }
 
-    fn next_reference(
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one authenticated sparse trace slice"
+    )]
+    fn next_reference<S: BlockSource, C: RecordCatalog<S>, F, V>(
         &mut self,
-        resources: &mut TreeResources<'_>,
-    ) -> Result<Option<PhysicalRef>, TreeError> {
+        source: &S,
+        catalog: &C,
+        document: Option<&crate::epoch::EmbeddingTower>,
+        memory: &'m crate::property_graph::storage::memory::StorageMemory<'m>,
+        verify_row: &mut F,
+        validate_vectors: &mut V,
+        resources: &mut TreeResources<'m>,
+    ) -> Result<Option<PhysicalRef>, TreeError>
+    where
+        F: FnMut(
+            StoreInstanceId,
+            GraphGeneration,
+            PayloadRef,
+            NodeId,
+            &mut TreeResources<'m>,
+        ) -> Result<SparseTraceRecordFacts, TreeError>,
+        V: FnMut(
+            StoreInstanceId,
+            GraphGeneration,
+            PayloadRef,
+            u32,
+            &NativeVectorIndex<'m>,
+            &mut TreeResources<'m>,
+        ) -> Result<(), TreeError>,
+    {
         loop {
             if let Some(mut payload) = self.payload {
-                match payload.payload.physical_reference_at(
-                    self.source,
-                    payload.store,
-                    payload.generation,
-                    payload.next,
-                    resources,
-                )? {
+                let reference = if source.scoped_blocks() {
+                    payload.payload.physical_reference_at_scoped(
+                        source,
+                        payload.store,
+                        payload.generation,
+                        payload.next,
+                        resources,
+                    )?
+                } else {
+                    payload.payload.physical_reference_at(
+                        source,
+                        payload.store,
+                        payload.generation,
+                        payload.next,
+                        resources,
+                    )?
+                };
+                match reference {
                     Some(reference) => {
                         payload.next = payload.next.checked_add(1).ok_or(TreeError::Work)?;
                         self.payload = Some(payload);
@@ -586,12 +557,12 @@ impl<'s, 'm, S: BlockSource, C: RecordCatalog<S>> SearchTraceCursor<'s, 'm, S, C
                         self.source_state = Some(state);
                         if let Some(lexical) = state.manifest.lexical {
                             let decoded = decode_lexical_prepare(
-                                self.source,
+                                source,
                                 state.store,
                                 state.manifest.generation,
                                 lexical,
-                                self.lease.bundle().lexical(),
-                                self.memory,
+                                self.lexical_epoch,
+                                memory,
                                 resources,
                             )?;
                             if decoded.row_count() != state.manifest.rows {
@@ -614,23 +585,20 @@ impl<'s, 'm, S: BlockSource, C: RecordCatalog<S>> SearchTraceCursor<'s, 'm, S, C
                                 .vector_index
                                 .ok_or(TreeError::Invalid("missing sparse trace vector index"))?;
                             let index = open_vector_index(
-                                self.source,
+                                source,
                                 state.store,
                                 state.manifest.generation,
                                 payload,
                                 self.lexical_epoch,
-                                self.document,
-                                SparseOwner::preparation(self.memory),
+                                document,
+                                SparseOwner::preparation(memory),
                                 resources,
                             )?;
-                            validate_vector_index_rows(
-                                self.source,
+                            validate_vectors(
                                 state.store,
                                 state.manifest.generation,
                                 state.manifest.row_table,
                                 state.manifest.rows,
-                                self.catalog,
-                                self.document,
                                 &index,
                                 resources,
                             )?;
@@ -642,7 +610,7 @@ impl<'s, 'm, S: BlockSource, C: RecordCatalog<S>> SearchTraceCursor<'s, 'm, S, C
                         let row_index = state.row;
                         let mut row_bytes = [0_u8; ROW_BYTES];
                         let rows = PayloadSlice::new(
-                            self.source,
+                            source,
                             state.store,
                             state.manifest.generation,
                             state.manifest.row_table,
@@ -656,42 +624,34 @@ impl<'s, 'm, S: BlockSource, C: RecordCatalog<S>> SearchTraceCursor<'s, 'm, S, C
                             return Err(TreeError::Invalid("short sparse trace row"));
                         }
                         let row = SparseRow::decode(&row_bytes)?;
-                        let record = verify_record(
-                            PayloadSlice::new(
-                                self.source,
-                                state.store,
-                                state.manifest.generation,
-                                row.record,
-                            ),
-                            EntityId::Node(row.node),
-                            self.catalog,
-                            self.document,
+                        let record = verify_row(
+                            state.store,
+                            state.manifest.generation,
+                            row.record,
+                            row.node,
                             resources,
                         )?;
-                        if record.revision().get() != row.revision {
+                        if record.revision.get() != row.revision {
                             return Err(TreeError::Invalid("sparse trace row revision"));
                         }
                         match state.manifest.modality {
                             Modality::Text
                                 if row.analyzed_length == 0
-                                    || record.canonical().stored_text().is_none()
+                                    || !record.has_text
                                     || self.lexical.as_ref().and_then(|decoded| {
                                         decoded.row_lengths().get(row_index as usize).copied()
                                     }) != Some(row.analyzed_length) =>
                             {
                                 return Err(TreeError::Invalid("sparse trace text row payload"));
                             }
-                            Modality::Vector
-                                if row.analyzed_length != 0
-                                    || record.canonical().stored_vector().is_none() =>
-                            {
+                            Modality::Vector if row.analyzed_length != 0 || !record.has_vector => {
                                 return Err(TreeError::Invalid("sparse trace vector row payload"));
                             }
                             _ => {}
                         }
                         let mut mask = [0_u8; 1];
                         if PayloadSlice::new(
-                            self.source,
+                            source,
                             state.store,
                             state.source_value_generation,
                             state.value.mask,
@@ -715,17 +675,20 @@ impl<'s, 'm, S: BlockSource, C: RecordCatalog<S>> SearchTraceCursor<'s, 'm, S, C
                             }
                         }
                         if byte & (1_u8 << (row_index % 8)) != 0 {
-                            let entry = lookup_entry(
-                                self.source,
+                            let mut membership = [0_u8; MEMBERSHIP_BYTES];
+                            if lookup_fixed_scoped(
+                                source,
                                 state.members,
                                 &row.node.get().to_le_bytes(),
+                                &mut membership,
                                 resources,
-                            )?
-                            .ok_or(TreeError::Invalid("live sparse trace row lacks membership"))?;
-                            if entry.value().len() != MEMBERSHIP_BYTES {
-                                return Err(TreeError::Invalid("sparse trace membership width"));
+                            )? != Some(MEMBERSHIP_BYTES)
+                            {
+                                return Err(TreeError::Invalid(
+                                    "live sparse trace row lacks membership",
+                                ));
                             }
-                            let member = MembershipRow::decode(entry.value())?;
+                            let member = MembershipRow::decode(&membership)?;
                             validate_row_correlation(
                                 row.node,
                                 member,
@@ -734,14 +697,20 @@ impl<'s, 'm, S: BlockSource, C: RecordCatalog<S>> SearchTraceCursor<'s, 'm, S, C
                                 row,
                             )?;
                             let native = self.native.directory(TreeKind::Nodes)?;
-                            let native_entry = lookup_entry(
-                                self.source,
+                            let mut native_value = [0_u8; 48];
+                            if lookup_fixed_scoped(
+                                source,
                                 native,
                                 &row.node.get().to_le_bytes(),
+                                &mut native_value,
                                 resources,
-                            )?
-                            .ok_or(TreeError::Invalid("sparse trace native node is absent"))?;
-                            if PayloadRef::decode(native_entry.value())? != row.record {
+                            )? != Some(native_value.len())
+                            {
+                                return Err(TreeError::Invalid(
+                                    "sparse trace native node is absent",
+                                ));
+                            }
+                            if PayloadRef::decode(&native_value)? != row.record {
                                 return Err(TreeError::Invalid(
                                     "sparse trace native record mismatch",
                                 ));
@@ -754,7 +723,7 @@ impl<'s, 'm, S: BlockSource, C: RecordCatalog<S>> SearchTraceCursor<'s, 'm, S, C
                                 .ok_or(TreeError::Work)?;
                         }
                         state.row += 1;
-                        let [canonical, provenance] = record.required_payloads();
+                        let [canonical, provenance] = record.required_payloads;
                         self.record_payloads =
                             [Some(row.record), Some(canonical), Some(provenance)];
                         self.record_payload = 0;
@@ -785,7 +754,7 @@ impl<'s, 'm, S: BlockSource, C: RecordCatalog<S>> SearchTraceCursor<'s, 'm, S, C
                 continue;
             }
             if let Some(directory) = self.directory.as_mut() {
-                match directory.next(self.source, resources)? {
+                match directory.next(source, resources)? {
                     DirectoryEvent::Reference(reference) => return Ok(Some(reference)),
                     DirectoryEvent::Member => {
                         self.member_count =
@@ -832,6 +801,7 @@ impl<'s, 'm, S: BlockSource, C: RecordCatalog<S>> SearchTraceCursor<'s, 'm, S, C
                         self.modality()?,
                         self.generation,
                         self.sequence,
+                        resources,
                     )?);
                 }
                 3 => {
@@ -844,6 +814,7 @@ impl<'s, 'm, S: BlockSource, C: RecordCatalog<S>> SearchTraceCursor<'s, 'm, S, C
                         self.modality()?,
                         self.generation,
                         self.sequence,
+                        resources,
                     )?);
                 }
                 4 => {
@@ -864,19 +835,49 @@ impl<'s, 'm, S: BlockSource, C: RecordCatalog<S>> SearchTraceCursor<'s, 'm, S, C
         }
     }
 
-    pub(crate) fn trace(
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one authenticated sparse trace slice"
+    )]
+    fn trace_with<S: BlockSource, C: RecordCatalog<S>, F, V>(
         &mut self,
+        source: &S,
+        catalog: &C,
+        lease: Option<&NativeReadLease>,
+        document: Option<&crate::epoch::EmbeddingTower>,
+        memory: &'m crate::property_graph::storage::memory::StorageMemory<'m>,
         output: &mut [Option<PhysicalRef>],
-        resources: &mut TreeResources<'_>,
-    ) -> Result<SearchTraceResult, TreeError> {
+        verify_row: &mut F,
+        validate_vectors: &mut V,
+        resources: &mut TreeResources<'m>,
+    ) -> Result<SearchTraceResult, TreeError>
+    where
+        F: FnMut(
+            StoreInstanceId,
+            GraphGeneration,
+            PayloadRef,
+            NodeId,
+            &mut TreeResources<'m>,
+        ) -> Result<SparseTraceRecordFacts, TreeError>,
+        V: FnMut(
+            StoreInstanceId,
+            GraphGeneration,
+            PayloadRef,
+            u32,
+            &NativeVectorIndex<'m>,
+            &mut TreeResources<'m>,
+        ) -> Result<(), TreeError>,
+    {
         if self.failed {
             return Err(TreeError::Invalid("sparse trace cursor previously failed"));
         }
         let result = (|| {
-            self.lease
-                .check_active()
-                .map_err(crate::property_graph::query::runtime::RuntimeError::Value)
-                .map_err(TreeError::Runtime)?;
+            if let Some(lease) = lease {
+                lease
+                    .check_active()
+                    .map_err(crate::property_graph::query::runtime::RuntimeError::Value)
+                    .map_err(TreeError::Runtime)?;
+            }
             self.reservation.require(resources)?;
             resources.step(0)?;
             if output.is_empty() || output.len() > 256 {
@@ -885,7 +886,16 @@ impl<'s, 'm, S: BlockSource, C: RecordCatalog<S>> SearchTraceCursor<'s, 'm, S, C
             output.fill(None);
             let mut count = 0_usize;
             while count < output.len() {
-                let Some(reference) = self.next_reference(resources)? else {
+                let Some(reference) = self.next_reference(
+                    source,
+                    catalog,
+                    document,
+                    memory,
+                    verify_row,
+                    validate_vectors,
+                    resources,
+                )?
+                else {
                     return Ok(SearchTraceResult {
                         count,
                         complete: true,
@@ -905,5 +915,222 @@ impl<'s, 'm, S: BlockSource, C: RecordCatalog<S>> SearchTraceCursor<'s, 'm, S, C
             self.failed = true;
         }
         result
+    }
+
+    pub(crate) fn trace_preparation<'s, 'lease>(
+        &mut self,
+        source: &'s NativePreparationSource<'lease, 'm>,
+        catalog: &NativePreparationCatalog<'s, 'lease, 'm>,
+        output: &mut [Option<PhysicalRef>],
+        resources: &mut TreeResources<'m>,
+    ) -> Result<SearchTraceResult, TreeError> {
+        let bundle = source.lease().bundle();
+        if !catalog.owns(source)
+            || !matches!(self.binding, SearchTraceBinding::Lease(token) if token == source.lease().token())
+            || bundle.base().store != self.store
+            || bundle.roots() != self.native
+            || bundle.sequence() != self.sequence
+        {
+            return Err(TreeError::Invalid("foreign sparse trace window"));
+        }
+        let mut verify_row =
+            |store, generation, record, node, resources: &mut TreeResources<'m>| {
+                verify_sparse_trace_record(
+                    PayloadSlice::new(source, store, generation, record),
+                    node,
+                    catalog,
+                    bundle.document(),
+                    resources,
+                )
+            };
+        let mut validate_vectors =
+            |store,
+             generation,
+             row_table,
+             rows,
+             index: &NativeVectorIndex<'m>,
+             resources: &mut TreeResources<'m>| {
+                validate_vector_index_rows(
+                    source,
+                    store,
+                    generation,
+                    row_table,
+                    rows,
+                    catalog,
+                    bundle.document(),
+                    index,
+                    resources,
+                )
+            };
+        self.trace_with(
+            source,
+            catalog,
+            Some(source.lease()),
+            bundle.document(),
+            source.memory(),
+            output,
+            &mut verify_row,
+            &mut validate_vectors,
+            resources,
+        )
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one coordinator-authenticated captured sparse trace window"
+    )]
+    pub(crate) fn trace_captured<S: BlockSource, C: RecordCatalog<S>, F, V>(
+        &mut self,
+        source: &S,
+        catalog: &C,
+        checkpoint: RequiredRef,
+        state: crate::property_graph::wal::CommitState<'_>,
+        document: Option<&crate::epoch::EmbeddingTower>,
+        lexical: crate::fts::tokenizer::TokenizerEpoch,
+        memory: &'m crate::property_graph::storage::memory::StorageMemory<'m>,
+        output: &mut [Option<PhysicalRef>],
+        verify_row: &mut F,
+        validate_vectors: &mut V,
+        resources: &mut TreeResources<'m>,
+    ) -> Result<SearchTraceResult, TreeError>
+    where
+        F: FnMut(
+            StoreInstanceId,
+            GraphGeneration,
+            PayloadRef,
+            NodeId,
+            &mut TreeResources<'m>,
+        ) -> Result<SparseTraceRecordFacts, TreeError>,
+        V: FnMut(
+            StoreInstanceId,
+            GraphGeneration,
+            PayloadRef,
+            u32,
+            &NativeVectorIndex<'m>,
+            &mut TreeResources<'m>,
+        ) -> Result<(), TreeError>,
+    {
+        let native = crate::property_graph::storage::tree::directory::GraphRoots::from_references(
+            state.store,
+            state.generation,
+            state
+                .graph
+                .slots
+                .map(|root| root.map(|required| required.block)),
+        )?;
+        if !matches!(
+            self.binding,
+            SearchTraceBinding::Captured {
+                checkpoint: bound_checkpoint,
+                sequence: bound_sequence,
+            } if bound_checkpoint == checkpoint && bound_sequence == state.sequence
+        ) || state.store != self.store
+            || state.generation != self.generation
+            || native != self.native
+            || state.catalog != self.state_catalog
+            || [state.text, state.vector] != self.required
+            || lexical != self.lexical_epoch
+        {
+            return Err(TreeError::Invalid("foreign captured sparse trace window"));
+        }
+        self.trace_with(
+            source,
+            catalog,
+            None,
+            document,
+            memory,
+            output,
+            verify_row,
+            validate_vectors,
+            resources,
+        )
+    }
+}
+
+impl<'s, 'm, S: BlockSource, C: RecordCatalog<S>> SearchTraceCursor<'s, 'm, S, C> {
+    #[cfg(test)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "corruption fixture supplies one coherent view"
+    )]
+    pub(crate) fn for_test(
+        source: &'s S,
+        catalog: &'s C,
+        roots: SparseRoots,
+        native: crate::property_graph::storage::tree::directory::GraphRoots,
+        catalog_required: RequiredRef,
+        document: Option<&'s crate::epoch::EmbeddingTower>,
+        lexical: crate::fts::tokenizer::TokenizerEpoch,
+        lease: &'s NativeReadLease,
+        memory: &'m crate::property_graph::storage::memory::StorageMemory<'m>,
+        resources: &mut TreeResources<'m>,
+    ) -> Result<Self, TreeError> {
+        let state = SearchTraceState::open_checked(
+            source,
+            catalog,
+            roots,
+            native,
+            catalog_required,
+            document,
+            lexical,
+            SearchTraceBinding::Lease(lease.token()),
+            memory,
+            resources,
+        )?;
+        Ok(Self {
+            state,
+            source,
+            catalog,
+            lease,
+            document,
+            memory,
+        })
+    }
+
+    pub(crate) fn trace(
+        &mut self,
+        output: &mut [Option<PhysicalRef>],
+        resources: &mut TreeResources<'m>,
+    ) -> Result<SearchTraceResult, TreeError> {
+        let mut verify_row =
+            |store, generation, record, node, resources: &mut TreeResources<'m>| {
+                verify_sparse_trace_record(
+                    PayloadSlice::new(self.source, store, generation, record),
+                    node,
+                    self.catalog,
+                    self.document,
+                    resources,
+                )
+            };
+        let mut validate_vectors =
+            |store,
+             generation,
+             row_table,
+             rows,
+             index: &NativeVectorIndex<'m>,
+             resources: &mut TreeResources<'m>| {
+                validate_vector_index_rows(
+                    self.source,
+                    store,
+                    generation,
+                    row_table,
+                    rows,
+                    self.catalog,
+                    self.document,
+                    index,
+                    resources,
+                )
+            };
+        self.state.trace_with(
+            self.source,
+            self.catalog,
+            Some(self.lease),
+            self.document,
+            self.memory,
+            output,
+            &mut verify_row,
+            &mut validate_vectors,
+            resources,
+        )
     }
 }

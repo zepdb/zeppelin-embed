@@ -108,6 +108,7 @@ impl ReplayValidator for FixtureValidator {
     }
     fn state(
         &mut self,
+        _: EnvelopeKind,
         _: CommitState<'_>,
         _: CommitState<'_>,
         _: ChangeReader<'_>,
@@ -293,6 +294,7 @@ fn mutation_preserves_complete_provenance_membership_and_atomic_framing() {
         }
         fn state(
             &mut self,
+            _: EnvelopeKind,
             _: CommitState<'_>,
             _: CommitState<'_>,
             _: ChangeReader<'_>,
@@ -427,6 +429,7 @@ fn maintenance_keeps_required_proofs_separate_from_missing_deletion_targets() {
         }
         fn state(
             &mut self,
+            _: EnvelopeKind,
             _: CommitState<'_>,
             _: CommitState<'_>,
             _: ChangeReader<'_>,
@@ -741,6 +744,7 @@ fn checked_checkpoint_watermark_skips_only_complete_retired_history() {
         }
         fn state(
             &mut self,
+            _: EnvelopeKind,
             _: CommitState<'_>,
             _: CommitState<'_>,
             _: ChangeReader<'_>,
@@ -913,6 +917,7 @@ impl ReplayValidator for CarriageValidator<'_> {
     }
     fn state(
         &mut self,
+        _: EnvelopeKind,
         _: CommitState<'_>,
         _: CommitState<'_>,
         _: ChangeReader<'_>,
@@ -1525,6 +1530,7 @@ fn missing_middle_extent_is_observed_before_any_batch_escapes() {
         }
         fn state(
             &mut self,
+            _: EnvelopeKind,
             _: CommitState<'_>,
             _: CommitState<'_>,
             _: ChangeReader<'_>,

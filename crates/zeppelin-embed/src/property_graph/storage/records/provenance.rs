@@ -137,7 +137,7 @@ pub fn verify_provenance<'a, S: BlockSource>(
     {
         return Err(TreeError::Invalid("provenance role or bound"));
     }
-    let mut cursor = PayloadCursor::new(source);
+    let mut cursor = PayloadCursor::new_with_resources(source, resources)?;
     if cursor.read_array::<4>(resources)? != *b"ZGOP"
         || u16::from_le_bytes(cursor.read_array(resources)?) != 1
     {
@@ -195,7 +195,7 @@ pub fn verify_provenance<'a, S: BlockSource>(
     })
 }
 fn kind<S: BlockSource>(
-    cursor: &mut PayloadCursor<'_, S>,
+    cursor: &mut PayloadCursor<'_, '_, S>,
     resources: &mut TreeResources<'_>,
 ) -> Result<EntityKind, TreeError> {
     match super::byte(cursor, resources)? {
@@ -205,14 +205,14 @@ fn kind<S: BlockSource>(
     }
 }
 fn revision<S: BlockSource>(
-    cursor: &mut PayloadCursor<'_, S>,
+    cursor: &mut PayloadCursor<'_, '_, S>,
     resources: &mut TreeResources<'_>,
 ) -> Result<GraphRevision, TreeError> {
     GraphRevision::new(u64::from_le_bytes(cursor.read_array(resources)?))
         .map_err(|_| TreeError::Invalid("zero provenance revision"))
 }
 fn entity<S: BlockSource>(
-    cursor: &mut PayloadCursor<'_, S>,
+    cursor: &mut PayloadCursor<'_, '_, S>,
     resources: &mut TreeResources<'_>,
 ) -> Result<EntityId, TreeError> {
     let kind = kind(cursor, resources)?;

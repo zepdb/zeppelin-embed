@@ -7,6 +7,7 @@ pub mod tree;
 
 /// Bounded immutable adjacency codecs and range merging.
 pub mod adjacency;
+pub(crate) mod consolidation;
 
 /// Bounded, role-checked logical streams over immutable physical chunks.
 pub mod payload;
@@ -25,9 +26,10 @@ mod view;
 )]
 pub(crate) use view::{
     CursorState, DirectionSelection, ExpandCursor, GraphPreparation, GraphReadView, LabelSelection,
-    NativeCatalog, NativePreparationCatalog, NativePreparationSource, NativeQuerySource,
-    NativeReadCapability, NativeReadonlyMapping, NodeCursor, NodeView, PreparedGraphArtifacts,
-    PreparedGraphFailure, RelView, RelationshipTypeSelection, TextPayloadReader,
+    NativeArtifactWindow, NativeCatalog, NativePreparationCatalog, NativePreparationSource,
+    NativeQuerySource, NativeReadCapability, NativeReadonlyMapping, NodeCursor, NodeView,
+    PreparedGraphArtifacts, PreparedGraphFailure, RelView, RelationshipTypeSelection,
+    TextPayloadReader,
 };
 
 /// Combined private storage capacity inside the authentic writer/store owner.
@@ -38,6 +40,9 @@ pub mod prepared;
 
 /// Persisted immutable allocation descriptors and reclamation state.
 pub mod inventory;
+
+/// Bounded protected-root, completed-mark, and reclaim-state proofs.
+pub(crate) mod reclaim;
 
 /// Native directory changes from one authentic normalized writer batch.
 pub mod participant;

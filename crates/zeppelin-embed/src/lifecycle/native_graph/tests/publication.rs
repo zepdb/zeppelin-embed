@@ -36,6 +36,12 @@ pub(super) fn take_verified_faults() -> u64 {
     VERIFIED_FAULTS.with(|count| count.replace(0))
 }
 
+/// Count one fired refusal that no VFS fault point produced (a budget, a
+/// cancellation, a planted omission), after its assertions passed.
+pub(super) fn record_verified_fault() {
+    VERIFIED_FAULTS.with(|count| count.set(count.get() + 1));
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum DurabilityEvent {
     Create(PathBuf),
@@ -61,11 +67,14 @@ pub(crate) enum FaultPoint {
     Publish,
     OpenAppend,
     SelectorSync,
+    Delete,
 }
 
 #[derive(Default)]
 struct FaultSchedule {
     armed: Option<FaultPoint>,
+    /// Matching path-level operations to let through before firing.
+    skip: u64,
     fires: u64,
 }
 
@@ -74,6 +83,7 @@ pub(crate) struct RecordingVfs {
     events: Arc<Mutex<Vec<DurabilityEvent>>>,
     wal_sync_gate: Arc<Mutex<Option<(Arc<Barrier>, Arc<Barrier>)>>>,
     faults: Arc<Mutex<FaultSchedule>>,
+    after_create: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     list_calls: AtomicU64,
     child_calls: AtomicU64,
 }
@@ -107,20 +117,48 @@ impl RecordingVfs {
     }
 
     pub(crate) fn arm_fault(&self, point: FaultPoint) {
+        self.arm_fault_after(point, 0);
+    }
+
+    /// Fires on the matching operation after `skip` earlier ones succeed.
+    /// Only path-level points (create, sync, rename, delete) honor `skip`.
+    pub(super) fn arm_fault_after(&self, point: FaultPoint, skip: u64) {
         let mut faults = self.faults.lock().expect("fault schedule");
         assert!(faults.armed.replace(point).is_none());
+        faults.skip = skip;
         faults.fires = 0;
     }
 
     fn fire(&self, point: FaultPoint) -> bool {
         let mut faults = self.faults.lock().expect("fault schedule");
-        if faults.armed == Some(point) {
+        if faults.armed == Some(point) && faults.skip > 0 {
+            faults.skip -= 1;
+            false
+        } else if faults.armed == Some(point) {
             faults.armed = None;
             faults.fires += 1;
             true
         } else {
             false
         }
+    }
+
+    /// Runs `action` once, on the creating thread, right after the next
+    /// successful create: the caller's first private file is then on disk.
+    pub(super) fn after_next_create(&self, action: impl FnOnce() + Send + 'static) {
+        let previous = self
+            .after_create
+            .lock()
+            .expect("after-create hook")
+            .replace(Box::new(action));
+        assert!(previous.is_none());
+    }
+
+    pub(super) fn after_create_is_armed(&self) -> bool {
+        self.after_create
+            .lock()
+            .expect("after-create hook")
+            .is_some()
     }
 
     pub(crate) fn assert_fired_once(&self) {
@@ -257,6 +295,10 @@ impl Vfs for RecordingVfs {
         }
         StdVfs.create_new(path, bytes)?;
         self.record(DurabilityEvent::Create(path.to_path_buf()));
+        let action = self.after_create.lock().expect("after-create hook").take();
+        if let Some(action) = action {
+            action();
+        }
         Ok(())
     }
 
@@ -332,6 +374,9 @@ impl Vfs for RecordingVfs {
     }
 
     fn delete(&self, path: &Path) -> std::io::Result<()> {
+        if self.fire(FaultPoint::Delete) {
+            return Err(std::io::Error::other("scheduled delete failure"));
+        }
         StdVfs.delete(path)?;
         self.record(DurabilityEvent::Delete(path.to_path_buf()));
         Ok(())
@@ -590,7 +635,7 @@ fn run_ze39_fresh_mixed_commit_is_durable_and_coherent() -> Vec<RelationshipRow>
     observed
 }
 
-fn property_fixture() -> Vec<GraphProperty<'static>> {
+pub(super) fn property_fixture() -> Vec<GraphProperty<'static>> {
     [
         ("s", PropertyData::String("property\0text")),
         ("b", PropertyData::Bool(true)),
@@ -674,21 +719,22 @@ fn check_native_property_adapter(store: &Store, node: NodeId) {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-struct GenerationSnapshot {
-    generation: u64,
-    revision: u64,
-    canonical: Vec<u8>,
-    text: Vec<u8>,
-    vector: Vec<u32>,
-    old_relationship: bool,
-    new_relationship: bool,
-    out: Vec<RelId>,
-    incoming: Vec<RelId>,
-    sparse_text: bool,
-    sparse_vector: bool,
+pub(super) struct GenerationSnapshot {
+    pub(super) generation: u64,
+    pub(super) revision: u64,
+    pub(super) original_generation: u64,
+    pub(super) canonical: Vec<u8>,
+    pub(super) text: Vec<u8>,
+    pub(super) vector: Vec<u32>,
+    pub(super) old_relationship: bool,
+    pub(super) new_relationship: bool,
+    pub(super) out: Vec<RelId>,
+    pub(super) incoming: Vec<RelId>,
+    pub(super) sparse_text: bool,
+    pub(super) sparse_vector: bool,
 }
 
-fn snapshot_for_lease(
+pub(super) fn snapshot_for_lease(
     store: &Store,
     lease: &super::super::NativeReadLease,
     node: NodeId,
@@ -811,6 +857,7 @@ fn snapshot_for_lease(
     GenerationSnapshot {
         generation: lease.bundle().base().generation.get(),
         revision: record.record().revision().get(),
+        original_generation: record.record().provenance().original_generation().get(),
         canonical,
         text,
         vector,
@@ -821,6 +868,74 @@ fn snapshot_for_lease(
         sparse_text,
         sparse_vector,
     }
+}
+
+/// Actual OUT expansion rows of `node`, through the public read view.
+pub(super) fn out_rows_for_lease(
+    store: &Store,
+    lease: &super::super::NativeReadLease,
+    node: NodeId,
+    peer: NodeId,
+) -> Vec<RelationshipRow> {
+    let shared = crate::property_graph::resources::GraphResources::from_store(store)
+        .expect("shared graph resources");
+    let memory = QueryMemory::new(&shared, 8 * 1024 * 1024).expect("query memory");
+    let control = QueryControl::Cancel(CancelToken::new());
+    let mut runtime = RuntimeContext::new(lease, &control, &memory, RuntimeLimits::default())
+        .expect("retained runtime");
+    let capability = NativeReadCapability::admit(lease, &runtime).expect("retained capability");
+    let mut resources = TreeResources::for_query(&mut runtime).expect("initial resources");
+    let source = NativeQuerySource::new(capability, &resources, 16).expect("retained source");
+    let catalog = NativeCatalog::open(&source, &mut resources).expect("retained catalog");
+    drop(resources);
+    let view = GraphReadView::new(&source, &catalog).expect("retained view");
+    let mut cursor = view
+        .expansion_cursor(
+            node,
+            DirectionSelection::Out,
+            RelationshipTypeSelection::All,
+            &mut runtime,
+        )
+        .expect("OUT cursor");
+    let sentinel = RelationshipRow {
+        rel: RelId::new(u128::MAX).expect("sentinel relationship"),
+        source: node,
+        target: peer,
+        relationship_type: crate::property_graph::catalog::RelTypeId::new(u64::MAX)
+            .expect("sentinel type"),
+    };
+    let mut rows = [sentinel; 4];
+    let (count, state) = view
+        .expand(&mut cursor, &mut rows, &mut runtime)
+        .expect("OUT expansion");
+    assert_eq!(state, CursorState::Done);
+    rows[..count].to_vec()
+}
+
+pub(super) fn sparse_physical_for_lease(
+    store: &Store,
+    lease: &super::super::NativeReadLease,
+    node: NodeId,
+    modality: Modality,
+) -> crate::property_graph::storage::search::SparsePhysicalSnapshot {
+    let shared = crate::property_graph::resources::GraphResources::from_store(store)
+        .expect("shared graph resources");
+    let memory = QueryMemory::new(&shared, 8 * 1024 * 1024).expect("query memory");
+    let control = QueryControl::Cancel(CancelToken::new());
+    let mut runtime = RuntimeContext::new(lease, &control, &memory, RuntimeLimits::default())
+        .expect("retained runtime");
+    let capability = NativeReadCapability::admit(lease, &runtime).expect("retained capability");
+    let mut resources = TreeResources::for_query(&mut runtime).expect("initial resources");
+    let source = NativeQuerySource::new(capability, &resources, 16).expect("retained source");
+    let catalog = NativeCatalog::open(&source, &mut resources).expect("retained catalog");
+    drop(resources);
+    let view = GraphReadView::new(&source, &catalog).expect("retained view");
+    let sparse = view.sparse_view(&mut runtime).expect("sparse view");
+    let mut resources = TreeResources::for_query(&mut runtime).expect("sparse resources");
+    sparse
+        .physical_snapshot(modality, node, &mut resources)
+        .expect("physical sparse lookup")
+        .expect("physical sparse member")
 }
 
 fn run_ze39_retained_reader_and_new_admission_observe_whole_generations() {
@@ -1009,6 +1124,7 @@ fn run_ze39_retained_reader_and_new_admission_observe_whole_generations() {
         GenerationSnapshot {
             generation: 1,
             revision: 1,
+            original_generation: 1,
             canonical: {
                 let mut bytes = Vec::new();
                 old_node
@@ -1031,6 +1147,7 @@ fn run_ze39_retained_reader_and_new_admission_observe_whole_generations() {
         GenerationSnapshot {
             generation: 2,
             revision: 2,
+            original_generation: 2,
             canonical: {
                 let mut bytes = Vec::new();
                 new_node
@@ -1467,6 +1584,12 @@ fn run_ze39_protection_capture_and_maintenance_recheck_are_atomic() {
                 .apply_native_graph(&second, &QueryControl::Cancel(CancelToken::new()))
                 .expect("racing commit")
         });
+        // The commit owns the writer while its admission waits behind the
+        // paused read. A capture that won the writer first would observe
+        // only the old bundle.
+        while store.native_graph.writer.try_lock().is_ok() {
+            std::thread::yield_now();
+        }
         let capture_store = Arc::clone(&store);
         let captured = scope.spawn(move || {
             capture_store
@@ -1521,23 +1644,31 @@ fn run_ze39_protection_capture_and_maintenance_recheck_are_atomic() {
     let maintenance = store
         .admit_native_graph_maintenance()
         .expect("fresh maintenance admission");
-    store
+    // ZE-46: maintenance publishes a Maintenance transition rather than a
+    // checkpoint. The cutoff guarantee this control pinned holds at the
+    // checkpoint that follows it.
+    let report = store
         .commit_native_graph_maintenance(&maintenance, &QueryControl::Cancel(CancelToken::new()))
-        .expect("bounded checkpoint maintenance");
+        .expect("bounded replacement maintenance");
+    assert_eq!(report.generation.get(), 3);
+    assert!(report.replaced_physical_refs > 0);
+    drop(maintenance);
+    store
+        .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+        .expect("checkpoint after maintenance");
     let after = store
         .capture_native_read_roots()
         .expect("post-checkpoint capture");
     assert!(after.serial_fence() > before_fence);
-    assert!(after.wal().is_some_and(|wal| wal.first_sequence == 3));
+    assert!(after.wal().is_some_and(|wal| wal.first_sequence == 4));
     assert!(after.prepared.is_empty());
     let selected = store
         .admit_native_read()
         .expect("selected maintenance root");
     assert_ne!(selected.bundle().root_envelope(), old_root);
-    assert_eq!(selected.bundle().base().generation.get(), 2);
+    assert_eq!(selected.bundle().base().generation.get(), 3);
     assert_eq!(selected.bundle().catalog(), checkpoint_catalog);
     drop(selected);
-    drop(maintenance);
     drop(stale);
     drop(before);
     drop(after);
@@ -1580,7 +1711,7 @@ fn run_ze39_protection_capture_and_maintenance_recheck_are_atomic() {
             .base()
             .generation
             .get(),
-        2
+        3
     );
     assert_eq!(
         store
@@ -1588,7 +1719,7 @@ fn run_ze39_protection_capture_and_maintenance_recheck_are_atomic() {
             .unwrap()[0]
             .generation
             .get(),
-        3
+        4
     );
     let store = Arc::into_inner(store).expect("sole store owner");
     store.close().expect("close native store");

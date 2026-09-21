@@ -122,6 +122,106 @@ pub(super) fn apply(
     r.step(0)
 }
 
+/// Merge the pending deltas of one adjacency range into a bounded base. The
+/// range with the most pending edges goes first, then the smallest key. A
+/// consolidated range has no pending edges, so successive calls move through
+/// every range that needs work, with no persisted cursor. A direction with
+/// nothing pending is left alone: rewriting an already bounded base would
+/// only copy bytes.
+pub(crate) fn consolidate_pending_range(
+    sink: &mut impl BlockSink,
+    root: DirectoryRoot,
+    context: RangeEditContext,
+    memory: &StorageMemory<'_>,
+    r: &mut TreeResources<'_>,
+) -> Result<Option<DirectoryRoot>, TreeError> {
+    const RANGE_KEY_BYTES: usize = 40;
+    let mut selected: Option<(usize, [u8; RANGE_KEY_BYTES])> = None;
+    {
+        let mut scan = DirectoryCursor::seek(&*sink, root, None, r)?;
+        while let Some(entry) = scan.next_entry(r)? {
+            let pending = descriptor(root, entry, r)?.pending_count();
+            if pending == 0 || selected.is_some_and(|(most, _)| pending <= most) {
+                continue;
+            }
+            let Key::Inline(key) = entry.key() else {
+                return Err(TreeError::Invalid("adjacency range key overflow"));
+            };
+            selected = Some((
+                pending,
+                key.try_into()
+                    .map_err(|_| TreeError::Invalid("adjacency range key width"))?,
+            ));
+        }
+    }
+    let Some((_, selected_key)) = selected else {
+        return Ok(None);
+    };
+    let mut workspace = Workspace::new(memory, r)?;
+    let mut cursor = DirectoryCursor::seek(&*sink, root, Some(&selected_key), r)?;
+    let Some(entry) = cursor.next_entry(r)? else {
+        return Err(TreeError::Invalid("selected adjacency range disappeared"));
+    };
+    if !matches!(entry.key(), Key::Inline(key) if key == selected_key) {
+        return Err(TreeError::Invalid("selected adjacency range disappeared"));
+    }
+    let descriptor = descriptor(root, entry, r)?;
+    let range = validate_range(
+        &*sink,
+        root,
+        entry,
+        context.cutoff(entry)?,
+        &mut workspace.merged,
+        r,
+    )?;
+    let count = range.edges().len();
+    let copied = workspace
+        .old
+        .as_mut_slice()
+        .get_mut(..count)
+        .ok_or(TreeError::Memory)?;
+    for (target, source) in copied
+        .chunks_mut((64 * 1024 / std::mem::size_of::<Edge>()).max(1))
+        .zip(
+            range
+                .edges()
+                .chunks((64 * 1024 / std::mem::size_of::<Edge>()).max(1)),
+        )
+    {
+        r.step(std::mem::size_of_val(source) as u64)?;
+        target.copy_from_slice(source);
+    }
+    drop(cursor);
+    let mut tree = TreeScratch::for_prepare(memory)?;
+    let root = remove_range(
+        sink,
+        root,
+        descriptor,
+        context,
+        &mut workspace.merged,
+        &mut tree,
+        r,
+    )?;
+    let mut writer = BaseWriter {
+        sink,
+        root,
+        context,
+        merged: &mut workspace.merged,
+        encoded: &mut workspace.encoded,
+        tree: &mut tree,
+    };
+    writer.emit(
+        descriptor.key(),
+        workspace
+            .old
+            .as_slice()
+            .get(..count)
+            .ok_or(TreeError::Memory)?,
+        r,
+    )?;
+    Ok(Some(writer.root))
+}
+
 fn descriptor(
     root: DirectoryRoot,
     entry: DirectoryEntry<'_>,

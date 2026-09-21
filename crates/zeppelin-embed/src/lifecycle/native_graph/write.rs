@@ -1,4 +1,5 @@
 use super::base::NativeAdmittedBase;
+use super::maintenance::{ValidatedCompletedReclaim, spill::PreparedDurableSpill};
 use super::persistence::{
     NativeWal, artifact_descriptor, catalog_payload, encode_framed, next_artifact,
     publish_root_selector, write_new_full, zeroed,
@@ -14,11 +15,19 @@ use crate::property_graph::staging::{
     WriteLimits, WriteMemory, WritePhase, stage_structured_with_results,
 };
 use crate::property_graph::storage::artifact::{ArtifactIdentity, Block, BlockKind, ContainerKind};
+use crate::property_graph::storage::consolidation::ConsolidationOutcome;
+use crate::property_graph::storage::inventory::{
+    validate_inventory_changes, validate_inventory_retirement,
+};
 use crate::property_graph::storage::memory::{StorageBuffer, StorageMemory};
 use crate::property_graph::storage::participant::BatchCatalog;
 use crate::property_graph::storage::payload::PayloadRef;
-use crate::property_graph::storage::prepared::PackLimits;
+use crate::property_graph::storage::prepared::{PackLimits, PreparedObjects};
 use crate::property_graph::storage::records::{RecordCatalog, verify_record};
+use crate::property_graph::storage::search::{
+    PreparedSparseCheckpoint, SparseCheckpoint, SparseRoots,
+    validate_persisted_maintenance_transition,
+};
 use crate::property_graph::storage::stream::PayloadSlice;
 use crate::property_graph::storage::tree::TreeKind;
 use crate::property_graph::storage::tree::directory::{
@@ -28,10 +37,10 @@ use crate::property_graph::storage::{
     GraphPreparation, NativePreparationCatalog, NativePreparationSource, PreparedGraphArtifacts,
 };
 use crate::property_graph::wal::{
-    BatchId, Change, CommitState, Envelope, EnvelopeKind, HighWaters, InventoryChange,
-    InventoryState, MAX_ENVELOPE_BYTES, Membership, Mutation, NativeCheckpoint, ReferenceList,
-    RequiredRef, STACK_RESERVATION_BYTES, WalGraphRoots, WalResources, encode_checkpoint,
-    encode_envelope, encode_header,
+    BatchId, Change, CommitState, DescriptorList, Envelope, EnvelopeKind, HighWaters,
+    InventoryChange, InventoryState, MAX_ENVELOPE_BYTES, Membership, Mutation, NativeCheckpoint,
+    ReclaimComplete, ReclaimIntent, ReferenceList, RequiredRef, STACK_RESERVATION_BYTES,
+    WalGraphRoots, WalResources, encode_checkpoint, encode_envelope, encode_header,
 };
 use crate::property_graph::{BatchDisposition, EntityId, GraphGeneration};
 use crate::vfs::SyncKind;
@@ -44,11 +53,545 @@ pub(super) struct NativeWriter {
     pub(super) stopped: bool,
     pub(super) checkpoint_failed: bool,
     pub(super) protected: Vec<crate::property_graph::wal::ArtifactDescriptor>,
+    pub(super) durable_protected: Vec<NativeDurableProtection>,
     _protected_charge: GraphReservation,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn prepare_reclaim_completion_transition<'p, 'a, 'b, S, F, C>(
+    store: &crate::lifecycle::Store,
+    shared: &GraphResources,
+    lease: &'p NativeReadLease,
+    objects: &'p PreparedObjects<'a, 'b, S, F>,
+    sparse_checkpoint: &PreparedSparseCheckpoint,
+    catalog: &C,
+    roots: GraphRoots,
+    binding: crate::property_graph::storage::reclaim::SpillBinding,
+    intent: RequiredRef,
+    completion: RequiredRef,
+    candidates: &'p [crate::property_graph::wal::ArtifactDescriptor],
+    reclaimed: &'p [InventoryChange],
+    inventory: &'p [InventoryChange],
+    inventory_identity: ArtifactIdentity,
+    inventory_bytes: &'p [u8],
+    inventory_ref: RequiredRef,
+    batch: BatchId,
+    output: &'p mut [u8],
+    commit_artifacts: &'p mut StorageBuffer<'_, NativeCommitArtifact<'p>>,
+    tree_resources: &mut crate::property_graph::storage::tree::directory::TreeResources<'_>,
+    wal_resources: &mut WalResources<'_>,
+) -> Result<(NativeCommittedTransition<'p>, GraphGeneration), NativeGraphError>
+where
+    S: BlockSource,
+    F: FnMut() -> Result<ArtifactIdentity, TreeError>,
+    C: RecordCatalog<PreparedObjects<'a, 'b, S, F>>,
+{
+    let admitted = lease.bundle();
+    let generation = GraphGeneration::new(
+        admitted
+            .base()
+            .generation
+            .get()
+            .checked_add(1)
+            .ok_or(NativeGraphError::IdentityExhausted)?,
+    );
+    let sequence = admitted
+        .sequence()
+        .checked_add(1)
+        .ok_or(NativeGraphError::IdentityExhausted)?;
+    let intent_id = BatchId::new(binding.session.get())?;
+    if !objects.is_finished()
+        || objects.store() != admitted.base().store
+        || objects.generation() != generation
+        || roots.store() != admitted.base().store
+        || roots.generation() != generation
+        || !sparse_checkpoint.matches(
+            SparseRoots {
+                text: admitted.text(),
+                vector: admitted.vector(),
+            },
+            admitted.roots(),
+            roots,
+            sequence,
+            admitted.catalog(),
+        )
+        || binding.store != admitted.base().store
+        // Foreground commits may carry a pending intent forward, so the
+        // intent binds its own generation, at or before the admitted base.
+        || binding.target_generation != intent.object.generation
+        || binding.target_generation > admitted.base().generation
+        || binding
+            .sequence
+            .checked_add(1)
+            .is_none_or(|sequence| sequence > admitted.sequence())
+        || admitted.reclaim() != Some(intent)
+        || completion.object.store != admitted.base().store
+        || completion.object.generation != generation
+        || completion.block.artifact != completion.object.artifact
+        || completion.block.kind != BlockKind::CommitParticipant
+        || candidates.is_empty()
+        || candidates.len() != reclaimed.len()
+        || candidates.iter().zip(reclaimed).any(|(candidate, change)| {
+            change.object != *candidate || change.state != InventoryState::Reclaimed(intent_id)
+        })
+        || inventory.len() != objects.len()
+        || commit_artifacts.capacity()
+            != objects
+                .len()
+                .checked_add(1)
+                .ok_or(NativeGraphError::Invalid("completion artifact count"))?
+        || !commit_artifacts.as_slice().is_empty()
+    {
+        return Err(NativeGraphError::Invalid(
+            "prepared reclaim completion facts",
+        ));
+    }
+    for (base, target) in [
+        TreeKind::Nodes,
+        TreeKind::Relationships,
+        TreeKind::KeyFences,
+        TreeKind::Labels,
+        TreeKind::RelationshipTypes,
+        TreeKind::OutRanges,
+        TreeKind::InRanges,
+    ]
+    .into_iter()
+    .map(|kind| (admitted.roots().directory(kind), roots.directory(kind)))
+    {
+        if base?.reference() != target?.reference() {
+            return Err(NativeGraphError::Invalid(
+                "reclaim completion changed logical graph root",
+            ));
+        }
+    }
+    validate_inventory_changes(
+        objects,
+        roots.directory(TreeKind::ObjectInventory)?,
+        reclaimed,
+        tree_resources,
+    )?;
+    let mut greatest_serial = admitted.high_waters().creation_serial;
+    for (index, change) in inventory.iter().enumerate() {
+        let artifact = objects.artifact(index)?;
+        let descriptor =
+            artifact_descriptor(artifact.identity(), ContainerKind::Object, artifact.bytes())?;
+        if change.object != descriptor
+            || change.state != InventoryState::Prepared
+            || descriptor.generation != generation
+            || descriptor.serial <= admitted.high_waters().creation_serial
+        {
+            return Err(NativeGraphError::Invalid(
+                "reclaim completion prepared inventory",
+            ));
+        }
+        greatest_serial = greatest_serial.max(descriptor.serial);
+    }
+    if inventory_identity.store != admitted.base().store
+        || inventory_identity.generation != generation
+        || inventory_identity.creation_serial <= greatest_serial
+    {
+        return Err(NativeGraphError::Invalid(
+            "reclaim completion inventory identity",
+        ));
+    }
+    let inventory_artifact = SupplementalArtifact {
+        identity: inventory_identity,
+        bytes: inventory_bytes,
+        required: inventory_ref,
+    };
+    verify_prepared_inventory(inventory_artifact, inventory, None, tree_resources)?;
+    let sparse = sparse_checkpoint.finalize(inventory)?;
+    validate_persisted_maintenance_transition(
+        objects,
+        SparseCheckpoint {
+            cutoff: admitted.sequence(),
+            roots: SparseRoots {
+                text: admitted.text(),
+                vector: admitted.vector(),
+            },
+        },
+        admitted.roots(),
+        sparse,
+        roots,
+        admitted.catalog(),
+        catalog,
+        admitted.document(),
+        admitted.lexical(),
+        objects.memory(),
+        tree_resources,
+    )?;
+    let graph = wal_roots(roots, inventory, admitted.wal_roots())?;
+    let reference_count = admitted
+        .prepared_inventories()
+        .len()
+        .checked_add(1)
+        .ok_or(NativeGraphError::IdentityExhausted)?;
+    let mut prepared_refs = StorageBuffer::new(objects.memory(), reference_count)?;
+    prepared_refs.extend_from_slice(admitted.prepared_inventories())?;
+    prepared_refs.push(inventory_ref)?;
+    let state = CommitState {
+        store: admitted.base().store,
+        generation,
+        sequence,
+        graph,
+        catalog: admitted.catalog(),
+        vector: sparse.vector,
+        text: sparse.text,
+        reclaim: Some(completion),
+        high_waters: HighWaters {
+            creation_serial: inventory_identity.creation_serial,
+            ..admitted.high_waters()
+        },
+        prepared_inventories: ReferenceList::Values(prepared_refs.as_slice()),
+    };
+    let change_count = inventory
+        .len()
+        .checked_add(reclaimed.len())
+        .and_then(|count| count.checked_add(2))
+        .ok_or(NativeGraphError::IdentityExhausted)?;
+    let mut changes = StorageBuffer::new(objects.memory(), change_count)?;
+    for change in inventory {
+        changes.push(Change::Inventory(*change))?;
+    }
+    for change in reclaimed {
+        changes.push(Change::Inventory(*change))?;
+    }
+    changes.push(Change::Inventory(InventoryChange {
+        object: inventory_ref.object,
+        state: InventoryState::Prepared,
+    }))?;
+    changes.push(Change::ReclaimComplete(ReclaimComplete {
+        id: intent_id,
+        intent,
+        completed: DescriptorList::Values(candidates),
+        remaining: DescriptorList::Values(&[]),
+    }))?;
+    let encoded_length = encode_envelope(
+        commit_state(admitted),
+        Envelope {
+            batch,
+            kind: EnvelopeKind::Maintenance,
+            changes: changes.as_slice(),
+            state,
+        },
+        output,
+        wal_resources,
+    )?;
+    let _input_charge = shared.reserve(
+        reference_count
+            .checked_mul(std::mem::size_of::<RequiredRef>())
+            .ok_or(NativeGraphError::IdentityExhausted)?,
+    )?;
+    let next = NativeGraphBundle::assemble_committed(
+        store,
+        shared,
+        admitted,
+        NativeGraphBundleInput {
+            base: crate::property_graph::staging::BaseIdentity {
+                store: admitted.base().store,
+                generation,
+                roots: admitted.base().roots,
+            },
+            root_envelope: admitted.root_envelope(),
+            roots,
+            wal_roots: graph,
+            sequence,
+            catalog: admitted.catalog(),
+            vector: sparse.vector,
+            text: sparse.text,
+            reclaim: Some(completion),
+            high_waters: state.high_waters,
+            prepared_inventories: prepared_refs.as_slice().to_vec(),
+            lexical: admitted.lexical(),
+            document: admitted.document().cloned(),
+        },
+    )?;
+    for index in 0..objects.len() {
+        let artifact = objects.artifact(index)?;
+        commit_artifacts.push(NativeCommitArtifact {
+            identity: artifact.identity(),
+            descriptor: inventory
+                .get(index)
+                .ok_or(NativeGraphError::Invalid("completion artifact descriptor"))?
+                .object,
+            bytes: artifact.bytes(),
+        })?;
+    }
+    commit_artifacts.push(NativeCommitArtifact {
+        identity: inventory_identity,
+        descriptor: inventory_ref.object,
+        bytes: inventory_bytes,
+    })?;
+    Ok((
+        NativeCommittedTransition {
+            admitted: Arc::clone(admitted),
+            next,
+            encoded: output
+                .get(..encoded_length)
+                .ok_or(NativeGraphError::Invalid("completion WAL extent"))?,
+            artifacts: commit_artifacts.as_slice(),
+            durable: None,
+        },
+        generation,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn prepare_reclaim_clear_transition<'p, 'a, 'b, S, F, C>(
+    store: &crate::lifecycle::Store,
+    shared: &GraphResources,
+    lease: &'p NativeReadLease,
+    completed: &ValidatedCompletedReclaim<'_>,
+    objects: &'p PreparedObjects<'a, 'b, S, F>,
+    sparse_checkpoint: &PreparedSparseCheckpoint,
+    catalog: &C,
+    roots: GraphRoots,
+    inventory: &'p [InventoryChange],
+    inventory_identity: ArtifactIdentity,
+    inventory_bytes: &'p [u8],
+    inventory_ref: RequiredRef,
+    batch: BatchId,
+    output: &'p mut [u8],
+    commit_artifacts: &'p mut StorageBuffer<'_, NativeCommitArtifact<'p>>,
+    tree_resources: &mut crate::property_graph::storage::tree::directory::TreeResources<'_>,
+    wal_resources: &mut WalResources<'_>,
+) -> Result<(NativeCommittedTransition<'p>, GraphGeneration), NativeGraphError>
+where
+    S: BlockSource,
+    F: FnMut() -> Result<ArtifactIdentity, TreeError>,
+    C: RecordCatalog<PreparedObjects<'a, 'b, S, F>>,
+{
+    let admitted = lease.bundle();
+    let generation = GraphGeneration::new(
+        admitted
+            .base()
+            .generation
+            .get()
+            .checked_add(1)
+            .ok_or(NativeGraphError::IdentityExhausted)?,
+    );
+    let sequence = admitted
+        .sequence()
+        .checked_add(1)
+        .ok_or(NativeGraphError::IdentityExhausted)?;
+    let manifest = completed.manifest();
+    if !completed.matches(lease)
+        || manifest.binding.store != admitted.base().store
+        || manifest.remaining_count != 0
+        || manifest.completed_count == 0
+        || !objects.is_finished()
+        || objects.store() != admitted.base().store
+        || objects.generation() != generation
+        || roots.store() != admitted.base().store
+        || roots.generation() != generation
+        || !sparse_checkpoint.matches(
+            SparseRoots {
+                text: admitted.text(),
+                vector: admitted.vector(),
+            },
+            admitted.roots(),
+            roots,
+            sequence,
+            admitted.catalog(),
+        )
+        || inventory.len() != objects.len()
+        || commit_artifacts.capacity()
+            != objects
+                .len()
+                .checked_add(1)
+                .ok_or(NativeGraphError::Invalid("clear artifact count"))?
+        || !commit_artifacts.as_slice().is_empty()
+    {
+        return Err(NativeGraphError::Invalid("prepared reclaim clear facts"));
+    }
+    for kind in [
+        TreeKind::Nodes,
+        TreeKind::Relationships,
+        TreeKind::KeyFences,
+        TreeKind::Labels,
+        TreeKind::RelationshipTypes,
+        TreeKind::OutRanges,
+        TreeKind::InRanges,
+    ] {
+        if admitted.roots().directory(kind)?.reference() != roots.directory(kind)?.reference() {
+            return Err(NativeGraphError::Invalid(
+                "reclaim clear changed graph root",
+            ));
+        }
+    }
+    validate_inventory_retirement(
+        objects,
+        roots.directory(TreeKind::ObjectInventory)?,
+        completed.reclaimed(),
+        tree_resources,
+    )?;
+    let mut greatest_serial = admitted.high_waters().creation_serial;
+    for (index, change) in inventory.iter().enumerate() {
+        let artifact = objects.artifact(index)?;
+        let descriptor =
+            artifact_descriptor(artifact.identity(), ContainerKind::Object, artifact.bytes())?;
+        if change.object != descriptor
+            || change.state != InventoryState::Prepared
+            || descriptor.generation != generation
+            || descriptor.serial <= admitted.high_waters().creation_serial
+        {
+            return Err(NativeGraphError::Invalid(
+                "reclaim clear prepared inventory",
+            ));
+        }
+        greatest_serial = greatest_serial.max(descriptor.serial);
+    }
+    if inventory_identity.store != admitted.base().store
+        || inventory_identity.generation != generation
+        || inventory_identity.creation_serial <= greatest_serial
+    {
+        return Err(NativeGraphError::Invalid(
+            "reclaim clear inventory identity",
+        ));
+    }
+    let inventory_artifact = SupplementalArtifact {
+        identity: inventory_identity,
+        bytes: inventory_bytes,
+        required: inventory_ref,
+    };
+    verify_prepared_inventory(inventory_artifact, inventory, None, tree_resources)?;
+    let sparse = sparse_checkpoint.finalize(inventory)?;
+    validate_persisted_maintenance_transition(
+        objects,
+        SparseCheckpoint {
+            cutoff: admitted.sequence(),
+            roots: SparseRoots {
+                text: admitted.text(),
+                vector: admitted.vector(),
+            },
+        },
+        admitted.roots(),
+        sparse,
+        roots,
+        admitted.catalog(),
+        catalog,
+        admitted.document(),
+        admitted.lexical(),
+        objects.memory(),
+        tree_resources,
+    )?;
+    let graph = wal_roots(roots, inventory, admitted.wal_roots())?;
+    let reference_count = admitted
+        .prepared_inventories()
+        .len()
+        .checked_add(1)
+        .ok_or(NativeGraphError::IdentityExhausted)?;
+    let mut prepared_refs = StorageBuffer::new(objects.memory(), reference_count)?;
+    prepared_refs.extend_from_slice(admitted.prepared_inventories())?;
+    prepared_refs.push(inventory_ref)?;
+    let state = CommitState {
+        store: admitted.base().store,
+        generation,
+        sequence,
+        graph,
+        catalog: admitted.catalog(),
+        vector: sparse.vector,
+        text: sparse.text,
+        reclaim: None,
+        high_waters: HighWaters {
+            creation_serial: inventory_identity.creation_serial,
+            ..admitted.high_waters()
+        },
+        prepared_inventories: ReferenceList::Values(prepared_refs.as_slice()),
+    };
+    let change_count = inventory
+        .len()
+        .checked_add(1)
+        .ok_or(NativeGraphError::IdentityExhausted)?;
+    let mut changes = StorageBuffer::new(objects.memory(), change_count)?;
+    for change in inventory {
+        changes.push(Change::Inventory(*change))?;
+    }
+    changes.push(Change::Inventory(InventoryChange {
+        object: inventory_ref.object,
+        state: InventoryState::Prepared,
+    }))?;
+    let encoded_length = encode_envelope(
+        commit_state(admitted),
+        Envelope {
+            batch,
+            kind: EnvelopeKind::Maintenance,
+            changes: changes.as_slice(),
+            state,
+        },
+        output,
+        wal_resources,
+    )?;
+    let _input_charge = shared.reserve(
+        reference_count
+            .checked_mul(std::mem::size_of::<RequiredRef>())
+            .ok_or(NativeGraphError::IdentityExhausted)?,
+    )?;
+    let next = NativeGraphBundle::assemble_committed(
+        store,
+        shared,
+        admitted,
+        NativeGraphBundleInput {
+            base: crate::property_graph::staging::BaseIdentity {
+                store: admitted.base().store,
+                generation,
+                roots: admitted.base().roots,
+            },
+            root_envelope: admitted.root_envelope(),
+            roots,
+            wal_roots: graph,
+            sequence,
+            catalog: admitted.catalog(),
+            vector: sparse.vector,
+            text: sparse.text,
+            reclaim: None,
+            high_waters: state.high_waters,
+            prepared_inventories: prepared_refs.as_slice().to_vec(),
+            lexical: admitted.lexical(),
+            document: admitted.document().cloned(),
+        },
+    )?;
+    for index in 0..objects.len() {
+        let artifact = objects.artifact(index)?;
+        commit_artifacts.push(NativeCommitArtifact {
+            identity: artifact.identity(),
+            descriptor: inventory
+                .get(index)
+                .ok_or(NativeGraphError::Invalid("clear artifact descriptor"))?
+                .object,
+            bytes: artifact.bytes(),
+        })?;
+    }
+    commit_artifacts.push(NativeCommitArtifact {
+        identity: inventory_identity,
+        descriptor: inventory_ref.object,
+        bytes: inventory_bytes,
+    })?;
+    Ok((
+        NativeCommittedTransition {
+            admitted: Arc::clone(admitted),
+            next,
+            encoded: output
+                .get(..encoded_length)
+                .ok_or(NativeGraphError::Invalid("reclaim clear WAL extent"))?,
+            artifacts: commit_artifacts.as_slice(),
+            durable: None,
+        },
+        generation,
+    ))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct NativeDurableProtection {
+    pub(super) allocation_head: RequiredRef,
+    pub(super) protected: crate::property_graph::storage::reclaim::DurableProtectedStream,
+    pub(super) mark: crate::property_graph::storage::reclaim::DurableRun,
+    pub(super) intent: Option<RequiredRef>,
 }
 
 impl NativeWriter {
     const MAX_PROTECTED_DESCRIPTORS: usize = 8_192;
+    const MAX_DURABLE_PROTECTIONS: usize = 64;
 
     pub(super) fn new(
         wal: NativeWal,
@@ -58,6 +601,11 @@ impl NativeWriter {
             .checked_mul(std::mem::size_of::<
                 crate::property_graph::wal::ArtifactDescriptor,
             >())
+            .and_then(|bytes| {
+                Self::MAX_DURABLE_PROTECTIONS
+                    .checked_mul(std::mem::size_of::<NativeDurableProtection>())
+                    .and_then(|durable| bytes.checked_add(durable))
+            })
             .ok_or(NativeGraphError::Invalid("protected descriptor capacity"))?;
         let mut charge = resources.reserve(bytes)?;
         let mut protected = Vec::new();
@@ -68,12 +616,26 @@ impl NativeWriter {
         #[cfg(not(feature = "allocation-audit"))]
         let reserved = protected.try_reserve_exact(Self::MAX_PROTECTED_DESCRIPTORS);
         reserved.map_err(|_| NativeGraphError::Invalid("protected descriptor allocation"))?;
+        let mut durable_protected = Vec::new();
+        #[cfg(feature = "allocation-audit")]
+        let reserved = crate::allocation_audit::attributed(|| {
+            durable_protected.try_reserve_exact(Self::MAX_DURABLE_PROTECTIONS)
+        });
+        #[cfg(not(feature = "allocation-audit"))]
+        let reserved = durable_protected.try_reserve_exact(Self::MAX_DURABLE_PROTECTIONS);
+        reserved.map_err(|_| NativeGraphError::Invalid("durable protection allocation"))?;
         charge.resize(
             protected
                 .capacity()
                 .checked_mul(std::mem::size_of::<
                     crate::property_graph::wal::ArtifactDescriptor,
                 >())
+                .and_then(|bytes| {
+                    durable_protected
+                        .capacity()
+                        .checked_mul(std::mem::size_of::<NativeDurableProtection>())
+                        .and_then(|durable| bytes.checked_add(durable))
+                })
                 .ok_or(NativeGraphError::Invalid("protected descriptor capacity"))?,
         )?;
         Ok(Self {
@@ -82,6 +644,7 @@ impl NativeWriter {
             stopped: false,
             checkpoint_failed: false,
             protected,
+            durable_protected,
             _protected_charge: charge,
         })
     }
@@ -99,7 +662,7 @@ impl NativeWriter {
         Ok(writer)
     }
 
-    fn can_protect(&self, additional: usize) -> Result<(), NativeGraphError> {
+    pub(super) fn can_protect(&self, additional: usize) -> Result<(), NativeGraphError> {
         if self
             .protected
             .len()
@@ -112,9 +675,18 @@ impl NativeWriter {
         }
         Ok(())
     }
+
+    fn can_protect_durable(&self) -> Result<(), NativeGraphError> {
+        if self.durable_protected.len() == self.durable_protected.capacity() {
+            return Err(NativeGraphError::Invalid(
+                "durable protection capacity exhausted",
+            ));
+        }
+        Ok(())
+    }
 }
 
-fn commit_state(bundle: &NativeGraphBundle) -> CommitState<'_> {
+pub(super) fn commit_state(bundle: &NativeGraphBundle) -> CommitState<'_> {
     CommitState {
         store: bundle.base().store,
         generation: bundle.base().generation,
@@ -129,7 +701,7 @@ fn commit_state(bundle: &NativeGraphBundle) -> CommitState<'_> {
     }
 }
 
-fn checkpoint_current(
+pub(super) fn checkpoint_current(
     store: &crate::lifecycle::Store,
     writer: &mut NativeWriter,
     admitted: &Arc<NativeGraphBundle>,
@@ -257,6 +829,16 @@ fn checkpoint_current_inner(
         writer.complete_envelopes = 0;
         writer.checkpoint_failed = false;
         writer.protected.clear();
+        // A proof is named by its own WAL envelope and, while a reclaim
+        // cycle is open, by the rooted reclaim state. This checkpoint cut
+        // the WAL, so only an open cycle still needs its proof protected.
+        if admitted.reclaim().is_some() {
+            writer
+                .durable_protected
+                .retain(|proof| proof.intent.is_some());
+        } else {
+            writer.durable_protected.clear();
+        }
         Ok(())
     })();
     if result.is_err() {
@@ -389,7 +971,7 @@ fn checkpoint(control: &crate::lifecycle::QueryControl, _: WritePhase) -> Result
     control.checkpoint().map_err(|_| StageError::Cancelled)
 }
 
-fn io(path: &std::path::Path, source: std::io::Error) -> NativeGraphError {
+pub(super) fn io(path: &std::path::Path, source: std::io::Error) -> NativeGraphError {
     NativeGraphError::Io {
         path: path.to_path_buf(),
         source,
@@ -442,7 +1024,7 @@ fn encode_descriptor(
     Ok(())
 }
 
-fn inventory_payload<'a>(
+pub(super) fn inventory_payload<'a>(
     memory: &'a StorageMemory<'a>,
     control: &crate::lifecycle::QueryControl,
     prepared: &[InventoryChange],
@@ -509,7 +1091,7 @@ fn required_for_block(
         ))
 }
 
-fn wal_roots(
+pub(super) fn wal_roots(
     roots: GraphRoots,
     prepared: &[InventoryChange],
     admitted: WalGraphRoots,
@@ -581,14 +1163,23 @@ struct SupplementalArtifact<'a> {
     required: RequiredRef,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct NativeCommitArtifact<'a> {
+    identity: ArtifactIdentity,
+    descriptor: crate::property_graph::wal::ArtifactDescriptor,
+    bytes: &'a [u8],
+}
+
 pub(super) struct NativeCommittedTransition<'a> {
     admitted: Arc<NativeGraphBundle>,
     next: Arc<NativeGraphBundle>,
     encoded: &'a [u8],
+    artifacts: &'a [NativeCommitArtifact<'a>],
+    durable: Option<PreparedDurableSpill>,
 }
 
 impl<'a> NativeCommittedTransition<'a> {
-    const fn wal_bytes(&self) -> &[u8] {
+    pub(super) const fn wal_bytes(&self) -> &[u8] {
         self.encoded
     }
 
@@ -712,6 +1303,7 @@ fn prepare_committed_transition<'p, 'source, 'a, 'b, S, F, C>(
     inventory_artifact: SupplementalArtifact<'p>,
     batch_id: BatchId,
     output: &'p mut [u8],
+    commit_artifacts: &'p mut StorageBuffer<'_, NativeCommitArtifact<'p>>,
     tree_resources: &mut crate::property_graph::storage::tree::directory::TreeResources<'_>,
     wal_resources: &mut WalResources<'_>,
 ) -> Result<NativeCommittedTransition<'p>, NativeGraphError>
@@ -934,13 +1526,518 @@ where
             document: admitted.document().cloned(),
         },
     )?;
+    for index in 0..prepared.objects().len() {
+        let artifact = prepared.objects().artifact(index)?;
+        let descriptor = prepared
+            .inventory()
+            .get(index)
+            .ok_or(NativeGraphError::Invalid("prepared artifact descriptor"))?
+            .object;
+        commit_artifacts.push(NativeCommitArtifact {
+            identity: artifact.identity(),
+            descriptor,
+            bytes: artifact.bytes(),
+        })?;
+    }
+    if let Some(catalog) = catalog_artifact {
+        commit_artifacts.push(NativeCommitArtifact {
+            identity: catalog.identity,
+            descriptor: catalog.required.object,
+            bytes: catalog.bytes,
+        })?;
+    }
+    commit_artifacts.push(NativeCommitArtifact {
+        identity: inventory_artifact.identity,
+        descriptor: inventory_artifact.required.object,
+        bytes: inventory_artifact.bytes,
+    })?;
     Ok(NativeCommittedTransition {
         admitted: Arc::clone(admitted),
         next,
         encoded: output
             .get(..encoded_length)
             .ok_or(NativeGraphError::Invalid("encoded WAL extent"))?,
+        artifacts: commit_artifacts.as_slice(),
+        durable: None,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn prepare_maintenance_transition<'p, 'a, 'b, S, F, C>(
+    store: &crate::lifecycle::Store,
+    shared: &GraphResources,
+    lease: &'p NativeReadLease,
+    objects: &'p PreparedObjects<'a, 'b, S, F>,
+    consolidated: &ConsolidationOutcome,
+    sparse_checkpoint: &PreparedSparseCheckpoint,
+    durable: Option<PreparedDurableSpill>,
+    catalog: &C,
+    inventory: &'p [InventoryChange],
+    reclaim_pending: &'p [InventoryChange],
+    reclaim_candidates: &'p [crate::property_graph::wal::ArtifactDescriptor],
+    inventory_identity: ArtifactIdentity,
+    inventory_bytes: &'p [u8],
+    inventory_ref: RequiredRef,
+    batch: BatchId,
+    output: &'p mut [u8],
+    commit_artifacts: &'p mut StorageBuffer<'_, NativeCommitArtifact<'p>>,
+    tree_resources: &mut crate::property_graph::storage::tree::directory::TreeResources<'_>,
+    wal_resources: &mut WalResources<'_>,
+) -> Result<(NativeCommittedTransition<'p>, GraphGeneration), NativeGraphError>
+where
+    S: BlockSource,
+    F: FnMut() -> Result<ArtifactIdentity, TreeError>,
+    C: RecordCatalog<PreparedObjects<'a, 'b, S, F>>,
+{
+    let admitted = lease.bundle();
+    let generation = GraphGeneration::new(
+        admitted
+            .base()
+            .generation
+            .get()
+            .checked_add(1)
+            .ok_or(NativeGraphError::IdentityExhausted)?,
+    );
+    let sequence = admitted
+        .sequence()
+        .checked_add(1)
+        .ok_or(NativeGraphError::IdentityExhausted)?;
+    let roots = consolidated.roots();
+    if !objects.is_finished()
+        || consolidated.expected_base() != admitted.roots()
+        || consolidated.expected_sequence() != admitted.sequence()
+        || consolidated.source_token() != lease.token()
+        || objects.store() != admitted.base().store
+        || objects.generation() != generation
+        || roots.store() != admitted.base().store
+        || roots.generation() != generation
+        || inventory.len() != objects.len()
+        || commit_artifacts.capacity()
+            != objects
+                .len()
+                .checked_add(1)
+                .ok_or(NativeGraphError::Invalid("maintenance artifact count"))?
+        || !commit_artifacts.as_slice().is_empty()
+        || inventory_identity.store != admitted.base().store
+        || inventory_identity.generation != generation
+        || inventory_identity.creation_serial <= admitted.high_waters().creation_serial
+        || !consolidated.inventory_fold().matches_base(
+            admitted.roots(),
+            admitted.sequence(),
+            lease.token(),
+            admitted.prepared_inventories(),
+        )
+    {
+        return Err(NativeGraphError::Invalid(
+            "prepared maintenance transition facts",
+        ));
+    }
+    if let Some(durable) = durable.as_ref() {
+        let durable_binding = durable.binding();
+        let durable_id = BatchId::new(durable_binding.session.get())?;
+        if durable_binding.store != admitted.base().store
+            || durable_binding.capture_generation != admitted.base().generation
+            || durable_binding.target_generation != generation
+            || durable_binding.sequence != admitted.sequence()
+            || durable.protected().binding != durable_binding
+            || durable.mark().binding != durable_binding
+            || !durable.matches_admission(lease)
+            || durable.candidate_count() != reclaim_candidates.len()
+            || durable.intent().is_some() != !reclaim_candidates.is_empty()
+            || reclaim_pending.len() != reclaim_candidates.len()
+            || reclaim_pending
+                .iter()
+                .zip(reclaim_candidates)
+                .any(|(pending, candidate)| {
+                    pending.object != *candidate
+                        || pending.state != InventoryState::ReclaimPending(durable_id)
+                })
+        {
+            return Err(NativeGraphError::Invalid(
+                "prepared maintenance durable proof association",
+            ));
+        }
+        durable.validate_candidates(reclaim_candidates, objects.memory(), tree_resources)?;
+    }
+    if durable.is_none() && (!reclaim_pending.is_empty() || !reclaim_candidates.is_empty()) {
+        return Err(NativeGraphError::Invalid(
+            "maintenance reclaim candidates lack durable proof",
+        ));
+    }
+    if !sparse_checkpoint.matches(
+        SparseRoots {
+            text: admitted.text(),
+            vector: admitted.vector(),
+        },
+        admitted.roots(),
+        roots,
+        sequence,
+        admitted.catalog(),
+    ) {
+        return Err(NativeGraphError::Invalid(
+            "prepared maintenance sparse association",
+        ));
+    }
+    let mut greatest_serial = admitted.high_waters().creation_serial;
+    for (index, change) in inventory.iter().enumerate() {
+        let artifact = objects.artifact(index)?;
+        let descriptor =
+            artifact_descriptor(artifact.identity(), ContainerKind::Object, artifact.bytes())?;
+        let duplicate = inventory
+            .get(..index)
+            .ok_or(NativeGraphError::Invalid("maintenance inventory prefix"))?
+            .iter()
+            .any(|previous| {
+                previous.object.artifact == descriptor.artifact
+                    || previous.object.serial == descriptor.serial
+            });
+        if change.state != InventoryState::Prepared
+            || change.object != descriptor
+            || descriptor.store != admitted.base().store
+            || descriptor.generation != generation
+            || descriptor.serial <= admitted.high_waters().creation_serial
+            || duplicate
+        {
+            return Err(NativeGraphError::Invalid(
+                "maintenance prepared inventory union",
+            ));
+        }
+        greatest_serial = greatest_serial.max(descriptor.serial);
+    }
+    if inventory_identity.creation_serial <= greatest_serial {
+        return Err(NativeGraphError::Invalid(
+            "maintenance inventory creation serial order",
+        ));
+    }
+    let inventory_artifact = SupplementalArtifact {
+        identity: inventory_identity,
+        bytes: inventory_bytes,
+        required: inventory_ref,
+    };
+    verify_prepared_inventory(inventory_artifact, inventory, None, tree_resources)?;
+    if inventory_ref.object.serial != inventory_identity.creation_serial
+        || inventory
+            .iter()
+            .any(|change| change.object.artifact == inventory_ref.object.artifact)
+    {
+        return Err(NativeGraphError::Invalid(
+            "maintenance inventory artifact identity",
+        ));
+    }
+    let sparse = sparse_checkpoint.finalize(inventory)?;
+    validate_persisted_maintenance_transition(
+        objects,
+        SparseCheckpoint {
+            cutoff: admitted.sequence(),
+            roots: SparseRoots {
+                text: admitted.text(),
+                vector: admitted.vector(),
+            },
+        },
+        admitted.roots(),
+        sparse,
+        roots,
+        admitted.catalog(),
+        catalog,
+        admitted.document(),
+        admitted.lexical(),
+        objects.memory(),
+        tree_resources,
+    )?;
+    consolidated.inventory_fold().validate_candidate(
+        objects,
+        consolidated.inventory_fold_root(),
+        tree_resources,
+    )?;
+    validate_inventory_changes(
+        objects,
+        roots.directory(crate::property_graph::storage::tree::TreeKind::ObjectInventory)?,
+        reclaim_pending,
+        tree_resources,
+    )?;
+    validate_inventory_changes(
+        objects,
+        roots.directory(crate::property_graph::storage::tree::TreeKind::ObjectInventory)?,
+        consolidated.adoptions(),
+        tree_resources,
+    )?;
+    let graph = wal_roots(roots, inventory, admitted.wal_roots())?;
+    // The fold retires a fully covered prefix of the admitted manifests.
+    let retired = consolidated.inventory_fold().retired();
+    let retained_count = admitted
+        .prepared_inventories()
+        .len()
+        .checked_sub(retired)
+        .ok_or(NativeGraphError::Invalid(
+            "maintenance retained inventory count",
+        ))?;
+    let reference_count = retained_count
+        .checked_add(1)
+        .ok_or(NativeGraphError::IdentityExhausted)?;
+    let mut prepared_refs = StorageBuffer::new(objects.memory(), reference_count)?;
+    prepared_refs.extend_from_slice(admitted.prepared_inventories().get(retired..).ok_or(
+        NativeGraphError::Invalid("maintenance retained inventory extent"),
+    )?)?;
+    prepared_refs.push(inventory_ref)?;
+    let previous_high = admitted.high_waters();
+    let reclaim = durable
+        .as_ref()
+        .and_then(PreparedDurableSpill::intent)
+        .or(admitted.reclaim());
+    let state = CommitState {
+        store: admitted.base().store,
+        generation,
+        sequence,
+        graph,
+        catalog: admitted.catalog(),
+        vector: sparse.vector,
+        text: sparse.text,
+        reclaim,
+        high_waters: HighWaters {
+            creation_serial: inventory_identity.creation_serial,
+            ..previous_high
+        },
+        prepared_inventories: ReferenceList::Values(prepared_refs.as_slice()),
+    };
+    let mut changes = StorageBuffer::new(
+        objects.memory(),
+        inventory
+            .len()
+            .checked_add(reclaim_pending.len())
+            .and_then(|count| count.checked_add(1))
+            .and_then(|count| count.checked_add(usize::from(!reclaim_candidates.is_empty())))
+            .ok_or(NativeGraphError::IdentityExhausted)?,
+    )?;
+    for change in inventory {
+        changes.push(Change::Inventory(*change))?;
+    }
+    for change in reclaim_pending {
+        changes.push(Change::Inventory(*change))?;
+    }
+    changes.push(Change::Inventory(InventoryChange {
+        object: inventory_ref.object,
+        state: InventoryState::Prepared,
+    }))?;
+    if let Some(durable) = durable.as_ref()
+        && let Some(_intent) = durable.intent()
+    {
+        changes.push(Change::ReclaimIntent(ReclaimIntent {
+            id: BatchId::new(durable.binding().session.get())?,
+            capture_generation: durable.binding().capture_generation,
+            capture_sequence: durable.binding().sequence,
+            serial_fence: durable.binding().serial_fence,
+            protected_roots: durable.protected().head,
+            protected_digest: durable.protected().digest,
+            completed_mark: durable.mark().root,
+            mark_digest: durable.mark().digest,
+            candidates: DescriptorList::Values(reclaim_candidates),
+        }))?;
+    }
+    let encoded_length = encode_envelope(
+        commit_state(admitted),
+        Envelope {
+            batch,
+            kind: EnvelopeKind::Maintenance,
+            changes: changes.as_slice(),
+            state,
+        },
+        output,
+        wal_resources,
+    )?;
+    let _input_charge = shared.reserve(
+        reference_count
+            .checked_mul(std::mem::size_of::<RequiredRef>())
+            .ok_or(NativeGraphError::IdentityExhausted)?,
+    )?;
+    let next = NativeGraphBundle::assemble_committed(
+        store,
+        shared,
+        admitted,
+        NativeGraphBundleInput {
+            base: crate::property_graph::staging::BaseIdentity {
+                store: admitted.base().store,
+                generation,
+                roots: admitted.base().roots,
+            },
+            root_envelope: admitted.root_envelope(),
+            roots,
+            wal_roots: graph,
+            sequence,
+            catalog: admitted.catalog(),
+            vector: sparse.vector,
+            text: sparse.text,
+            reclaim,
+            high_waters: state.high_waters,
+            prepared_inventories: prepared_refs.as_slice().to_vec(),
+            lexical: admitted.lexical(),
+            document: admitted.document().cloned(),
+        },
+    )?;
+    for index in 0..objects.len() {
+        let artifact = objects.artifact(index)?;
+        commit_artifacts.push(NativeCommitArtifact {
+            identity: artifact.identity(),
+            descriptor: inventory
+                .get(index)
+                .ok_or(NativeGraphError::Invalid("maintenance artifact descriptor"))?
+                .object,
+            bytes: artifact.bytes(),
+        })?;
+    }
+    commit_artifacts.push(NativeCommitArtifact {
+        identity: inventory_identity,
+        descriptor: inventory_ref.object,
+        bytes: inventory_bytes,
+    })?;
+    Ok((
+        NativeCommittedTransition {
+            admitted: Arc::clone(admitted),
+            next,
+            encoded: output
+                .get(..encoded_length)
+                .ok_or(NativeGraphError::Invalid("maintenance WAL extent"))?,
+            artifacts: commit_artifacts.as_slice(),
+            durable,
+        },
+        generation,
+    ))
+}
+
+#[derive(Clone, Copy, Default)]
+pub(super) struct NativeCommitAudit {
+    allocations: u64,
+    denials: u64,
+}
+
+pub(super) fn protect_and_commit(
+    store: &crate::lifecycle::Store,
+    writer: &mut NativeWriter,
+    transition: NativeCommittedTransition<'_>,
+    control: &crate::lifecycle::QueryControl,
+    audit_publication: bool,
+) -> Result<NativeCommitAudit, NativeGraphError> {
+    writer.can_protect(transition.artifacts.len())?;
+    if transition.durable.is_some() {
+        writer.can_protect_durable()?;
+    }
+    for (index, artifact) in transition.artifacts.iter().enumerate() {
+        let descriptor =
+            artifact_descriptor(artifact.identity, ContainerKind::Object, artifact.bytes)?;
+        let duplicate = transition
+            .artifacts
+            .get(..index)
+            .ok_or(NativeGraphError::Invalid("commit artifact prefix"))?
+            .iter()
+            .any(|previous| {
+                previous.identity.artifact == artifact.identity.artifact
+                    || previous.identity.creation_serial == artifact.identity.creation_serial
+            });
+        if descriptor != artifact.descriptor || duplicate {
+            return Err(NativeGraphError::Invalid("commit artifact binding"));
+        }
+    }
+    for artifact in transition.artifacts {
+        writer.protected.push(artifact.descriptor);
+    }
+    if let Some(durable) = transition.durable.as_ref() {
+        writer.durable_protected.push(NativeDurableProtection {
+            allocation_head: durable.allocation_head(),
+            protected: durable.protected(),
+            mark: durable.mark(),
+            intent: durable.intent(),
+        });
+    }
+    let directory = transition.admitted.directory();
+    for artifact in transition.artifacts {
+        let path = crate::property_graph::storage::allocation::artifact_path(
+            directory,
+            artifact.identity.artifact,
+        );
+        transition
+            .admitted
+            .vfs()
+            .create_new(&path, artifact.bytes)
+            .map_err(|source| io(&path, source))?;
+        transition
+            .admitted
+            .vfs()
+            .sync(&path, SyncKind::Full)
+            .map_err(|source| io(&path, source))?;
+    }
+    transition
+        .admitted
+        .vfs()
+        .sync(directory, SyncKind::Full)
+        .map_err(|source| io(directory, source))?;
+    control
+        .checkpoint()
+        .map_err(|_| NativeGraphError::Stage(StageError::Cancelled))?;
+
+    // Both counters are established before append. Once append begins, every
+    // failure is indeterminate and stops admission rather than recomputing state.
+    let next_wal_bytes = writer
+        .wal
+        .bytes
+        .checked_add(transition.wal_bytes().len())
+        .ok_or(NativeGraphError::IdentityExhausted)?;
+    let next_complete_envelopes = writer
+        .complete_envelopes
+        .checked_add(1)
+        .ok_or(NativeGraphError::IdentityExhausted)?;
+    let failure_path = writer.wal.path.clone();
+    if let Err(source) = writer.wal.handle.append(transition.wal_bytes()) {
+        writer.stopped = true;
+        let _ = store.native_graph.stop_admissions();
+        return Err(NativeGraphError::CommitIndeterminate {
+            stage: "WAL append",
+            path: failure_path,
+            source: Some(source),
+        });
+    }
+    writer.wal.bytes = next_wal_bytes;
+    if let Err(source) = writer.wal.handle.sync(SyncKind::Full) {
+        writer.stopped = true;
+        let _ = store.native_graph.stop_admissions();
+        return Err(NativeGraphError::CommitIndeterminate {
+            stage: "WAL Full sync",
+            path: failure_path,
+            source: Some(source),
+        });
+    }
+    let expose = || {
+        if store
+            .native_graph
+            .publish_committed_transition(transition)
+            .is_err()
+        {
+            writer.stopped = true;
+            let _ = store.native_graph.stop_admissions();
+            return Err(NativeGraphError::CommitIndeterminate {
+                stage: "bundle publication",
+                path: failure_path,
+                source: None,
+            });
+        }
+        writer.complete_envelopes = next_complete_envelopes;
+        Ok(())
+    };
+    #[cfg(all(feature = "allocation-audit", any(test, feature = "test-support")))]
+    {
+        if audit_publication {
+            let ((result, denials), audit) = crate::allocation_audit::audit_engine_path(|| {
+                crate::allocation_audit::fail_attributed_allocation(1, expose)
+            });
+            result?;
+            return Ok(NativeCommitAudit {
+                allocations: audit.allocations,
+                denials,
+            });
+        }
+    }
+    #[cfg(not(all(feature = "allocation-audit", any(test, feature = "test-support"))))]
+    let _ = audit_publication;
+    expose()?;
+    Ok(NativeCommitAudit::default())
 }
 
 impl crate::lifecycle::Store {
@@ -1258,6 +2355,7 @@ impl crate::lifecycle::Store {
                 let old = admitted.roots().for_generation(target_generation)?;
                 final_roots.replace(old.directory(TreeKind::OutRanges)?)?;
             }
+            let mut commit_artifacts = StorageBuffer::new(&storage, protected_start)?;
             let transition = prepare_committed_transition(
                 self,
                 &shared,
@@ -1271,6 +2369,7 @@ impl crate::lifecycle::Store {
                 inventory_supplement,
                 batch,
                 envelope_bytes.as_mut_slice(),
+                &mut commit_artifacts,
                 resources,
                 &mut wal_resources,
             )?;
@@ -1294,117 +2393,9 @@ impl crate::lifecycle::Store {
                 continue;
             }
 
-            let next_wal_bytes = writer
-                .wal
-                .bytes
-                .checked_add(transition.wal_bytes().len())
-                .ok_or(NativeGraphError::IdentityExhausted)?;
-            let next_complete_envelopes = writer
-                .complete_envelopes
-                .checked_add(1)
-                .ok_or(NativeGraphError::IdentityExhausted)?;
-
-            for change in prepared.inventory() {
-                writer.protected.push(change.object);
-            }
-            if let Some(catalog) = catalog_supplement {
-                writer.protected.push(catalog.required.object);
-            }
-            writer.protected.push(inventory_ref.object);
-
-            let directory = admitted.directory();
-            for index in 0..prepared.objects().len() {
-                let object = prepared.objects().artifact(index)?;
-                let path = crate::property_graph::storage::allocation::artifact_path(
-                    directory,
-                    object.identity().artifact,
-                );
-                admitted
-                    .vfs()
-                    .create_new(&path, object.bytes())
-                    .map_err(|source| io(&path, source))?;
-                admitted
-                    .vfs()
-                    .sync(&path, SyncKind::Full)
-                    .map_err(|source| io(&path, source))?;
-            }
-            if let Some((identity, bytes)) = &catalog_artifact {
-                let path = crate::property_graph::storage::allocation::artifact_path(
-                    directory,
-                    identity.artifact,
-                );
-                admitted
-                    .vfs()
-                    .create_new(&path, bytes.as_slice())
-                    .map_err(|source| io(&path, source))?;
-                admitted
-                    .vfs()
-                    .sync(&path, SyncKind::Full)
-                    .map_err(|source| io(&path, source))?;
-            }
-            let inventory_path = crate::property_graph::storage::allocation::artifact_path(
-                directory,
-                inventory_identity.artifact,
-            );
-            admitted
-                .vfs()
-                .create_new(&inventory_path, inventory_bytes.as_slice())
-                .map_err(|source| io(&inventory_path, source))?;
-            admitted
-                .vfs()
-                .sync(&inventory_path, SyncKind::Full)
-                .map_err(|source| io(&inventory_path, source))?;
-            admitted
-                .vfs()
-                .sync(directory, SyncKind::Full)
-                .map_err(|source| io(directory, source))?;
-
-            control
-                .checkpoint()
-                .map_err(|_| NativeGraphError::Stage(StageError::Cancelled))?;
-            let failure_path = writer.wal.path.clone();
-            if let Err(source) = writer.wal.handle.append(transition.wal_bytes()) {
-                writer.stopped = true;
-                let _ = self.native_graph.stop_admissions();
-                return Err(NativeGraphError::CommitIndeterminate {
-                    stage: "WAL append",
-                    path: failure_path,
-                    source: Some(source),
-                });
-            }
-            writer.wal.bytes = next_wal_bytes;
-            if let Err(source) = writer.wal.handle.sync(SyncKind::Full) {
-                writer.stopped = true;
-                let _ = self.native_graph.stop_admissions();
-                return Err(NativeGraphError::CommitIndeterminate {
-                    stage: "WAL Full sync",
-                    path: failure_path,
-                    source: Some(source),
-                });
-            }
-            let expose = || {
-                if self
-                    .native_graph
-                    .publish_committed_transition(transition)
-                    .is_err()
-                {
-                    writer.stopped = true;
-                    let _ = self.native_graph.stop_admissions();
-                    return Err(NativeGraphError::CommitIndeterminate {
-                        stage: "bundle publication",
-                        path: failure_path,
-                        source: None,
-                    });
-                }
-                writer.complete_envelopes = next_complete_envelopes;
-                Ok(())
-            };
+            let commit_audit = protect_and_commit(self, writer, transition, control, true)?;
             #[cfg(all(feature = "allocation-audit", any(test, feature = "test-support")))]
             {
-                let ((result, denied), audit) = crate::allocation_audit::audit_engine_path(|| {
-                    crate::allocation_audit::fail_attributed_allocation(1, expose)
-                });
-                result?;
                 let ((result, handoff_denied), handoff) =
                     crate::allocation_audit::audit_engine_path(|| {
                         crate::allocation_audit::fail_attributed_allocation(1, || {
@@ -1412,18 +2403,18 @@ impl crate::lifecycle::Store {
                         })
                     });
                 self.native_graph.commit_allocations.store(
-                    audit.allocations + handoff.allocations,
+                    commit_audit.allocations + handoff.allocations,
                     std::sync::atomic::Ordering::Release,
                 );
                 self.native_graph.commit_allocation_denials.store(
-                    denied + handoff_denied,
+                    commit_audit.denials + handoff_denied,
                     std::sync::atomic::Ordering::Release,
                 );
                 return Ok(result);
             }
             #[cfg(not(all(feature = "allocation-audit", any(test, feature = "test-support"))))]
             {
-                expose()?;
+                let _ = commit_audit;
                 return Ok(NativePreparedResult::from_materialized(materialized));
             }
         }
@@ -1477,27 +2468,17 @@ impl crate::lifecycle::Store {
         &self,
         admission: &super::NativeMaintenanceAdmission,
         control: &crate::lifecycle::QueryControl,
-    ) -> Result<(), NativeGraphError> {
-        self.native_graph.require_writable()?;
-        let mut writer_slot = self.native_graph.writer.lock().map_err(|_| {
-            NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
-                component: "native graph writer",
-            })
-        })?;
-        let writer = writer_slot
-            .as_mut()
-            .ok_or(NativeGraphError::Invalid("native graph writer is absent"))?;
-        if writer.stopped {
-            return Err(NativeGraphError::WritesStopped);
-        }
-        if !self
-            .native_graph
-            .is_current_at_serial(admission.lease.bundle(), admission.serial_fence)?
-        {
-            return Err(NativeGraphError::StalePreparation);
-        }
-        let admitted = Arc::clone(admission.lease.bundle());
-        let resources = GraphResources::from_store(self)?;
-        checkpoint_current(self, writer, &admitted, &resources, control)
+    ) -> Result<super::maintenance::NativeMaintenanceReport, NativeGraphError> {
+        super::maintenance::commit(self, admission, control)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn commit_native_graph_maintenance_with_limits(
+        &self,
+        admission: &super::NativeMaintenanceAdmission,
+        control: &crate::lifecycle::QueryControl,
+        limits: super::maintenance::MaintenanceLimits,
+    ) -> Result<super::maintenance::NativeMaintenanceReport, NativeGraphError> {
+        super::maintenance::commit_with_limits(self, admission, control, limits)
     }
 }

@@ -11,6 +11,7 @@ pub struct NodeTombstone<'a, S: BlockSource> {
     node: NodeId,
     revision: GraphRevision,
     provenance: StoredProvenance<'a, S>,
+    provenance_ref: PayloadRef,
 }
 impl<'a, S: BlockSource> NodeTombstone<'a, S> {
     /// Full retired node identity; IDs are never recycled by tombstone removal.
@@ -24,6 +25,9 @@ impl<'a, S: BlockSource> NodeTombstone<'a, S> {
     /// Complete checked deletion evidence, including unkeyed Cypher deletes.
     pub const fn provenance(&self) -> &StoredProvenance<'a, S> {
         &self.provenance
+    }
+    pub(crate) const fn provenance_ref(&self) -> PayloadRef {
+        self.provenance_ref
     }
 }
 
@@ -51,7 +55,7 @@ pub fn verify_node_state<'a, S: BlockSource>(
     if source.role() != BlockKind::NodeRecord || !source.is_whole() {
         return Err(TreeError::Invalid("node record role or window"));
     }
-    let mut flags = PayloadCursor::new(source.subslice(24, 4)?);
+    let mut flags = PayloadCursor::new_with_resources(source.subslice(24, 4)?, r)?;
     match u32::from_le_bytes(flags.read_array(r)?) {
         0 => verify_record(source, EntityId::Node(expected), catalog, document, r)
             .map(NodeRecordState::Live),
@@ -70,7 +74,7 @@ pub fn verify_node_tombstone<'a, S: BlockSource>(
         return Err(TreeError::Invalid("node tombstone role or extent"));
     }
     let created = source.creation_generation(r)?;
-    let mut c = PayloadCursor::new(source);
+    let mut c = PayloadCursor::new_with_resources(source, r)?;
     let node = NodeId::new(u128::from_le_bytes(c.read_array(r)?))
         .map_err(|_| TreeError::Invalid("zero tombstone node"))?;
     let revision = GraphRevision::new(u64::from_le_bytes(c.read_array(r)?))
@@ -97,6 +101,7 @@ pub fn verify_node_tombstone<'a, S: BlockSource>(
         node,
         revision,
         provenance,
+        provenance_ref: reference,
     })
 }
 /// Prepare one retained tombstone without traversing or mutating incident edges.

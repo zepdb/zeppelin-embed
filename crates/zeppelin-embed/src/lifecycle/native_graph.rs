@@ -25,6 +25,7 @@ use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::Instant;
 
 mod base;
+mod maintenance;
 mod persistence;
 mod recovery;
 mod write;
@@ -32,6 +33,7 @@ mod write;
 const MAX_NATIVE_READ_LEASES: usize = 1024;
 const MAX_NATIVE_READ_MAPPINGS: usize = MAX_NATIVE_READ_LEASES * 16;
 const MAX_NATIVE_PREPARATIONS: usize = MAX_NATIVE_READ_LEASES;
+const MAX_NATIVE_SPILL_PREPARATIONS: usize = MAX_NATIVE_READ_LEASES;
 
 /// Native lifecycle rejection, kept separate from tree/query data errors.
 #[derive(Debug)]
@@ -253,7 +255,7 @@ impl NativeGraphBundle {
         }))
     }
 
-    fn assemble_committed(
+    pub(super) fn assemble_committed(
         store: &Store,
         resources: &GraphResources,
         admitted: &Arc<Self>,
@@ -461,6 +463,17 @@ impl NativeGraphBundle {
             .chain(self.prepared_inventories.iter().copied())
             .find(|required| required.block == reference)
     }
+
+    pub(super) fn protected_references(&self) -> [Option<RequiredRef>; 13] {
+        let mut output = [None; 13];
+        output[0] = Some(self.root_envelope);
+        output[1..9].copy_from_slice(&self.wal_roots.slots);
+        output[9] = Some(self.catalog);
+        output[10] = self.vector;
+        output[11] = self.text;
+        output[12] = self.reclaim;
+        output
+    }
 }
 
 fn bundle_owned_bytes(
@@ -578,14 +591,24 @@ struct NativePreparationEntry {
     length: usize,
 }
 
+#[derive(Clone, Copy)]
+struct NativeSpillEntry {
+    token: u64,
+    admission_token: u64,
+    head: Option<RequiredRef>,
+    pending: [Option<ArtifactDescriptor>; 2],
+}
+
 struct PublicationState {
     current: Option<Arc<NativeGraphBundle>>,
     leases: Vec<Option<RegistryEntry>>,
     mappings: Vec<Option<NativeMappingEntry>>,
     preparations: Vec<Option<NativePreparationEntry>>,
+    spills: Vec<Option<NativeSpillEntry>>,
     next_token: u64,
     next_mapping_token: u64,
     next_preparation_token: u64,
+    next_spill_token: u64,
     creation_serial_fence: u64,
     closing: bool,
     admissions_stopped: bool,
@@ -636,6 +659,12 @@ impl NativeGraphPublication {
                 needed: u64::MAX,
                 component: "native graph preparation registry",
             })?;
+        let spill_bytes = MAX_NATIVE_SPILL_PREPARATIONS
+            .checked_mul(std::mem::size_of::<Option<NativeSpillEntry>>())
+            .ok_or(StoreError::AllocationFailed {
+                needed: u64::MAX,
+                component: "native graph spill registry",
+            })?;
         let bytes = std::mem::size_of::<Self>()
             .checked_add(2 * std::mem::size_of::<usize>())
             .and_then(|bytes| bytes.checked_add(lease_bytes))
@@ -643,6 +672,8 @@ impl NativeGraphPublication {
             .and_then(|bytes| bytes.checked_add(mapping_bytes))
             .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<usize>()))
             .and_then(|bytes| bytes.checked_add(preparation_bytes))
+            .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<usize>()))
+            .and_then(|bytes| bytes.checked_add(spill_bytes))
             .ok_or(StoreError::AllocationFailed {
                 needed: u64::MAX,
                 component: "native graph registry",
@@ -684,15 +715,29 @@ impl NativeGraphPublication {
             component: "native graph preparation registry",
         })?;
         preparations.resize_with(MAX_NATIVE_PREPARATIONS, || None);
+        let mut spills = Vec::new();
+        #[cfg(feature = "allocation-audit")]
+        let reserved = crate::allocation_audit::attributed(|| {
+            spills.try_reserve_exact(MAX_NATIVE_SPILL_PREPARATIONS)
+        });
+        #[cfg(not(feature = "allocation-audit"))]
+        let reserved = spills.try_reserve_exact(MAX_NATIVE_SPILL_PREPARATIONS);
+        reserved.map_err(|_| StoreError::AllocationFailed {
+            needed: spill_bytes as u64,
+            component: "native graph spill registry",
+        })?;
+        spills.resize_with(MAX_NATIVE_SPILL_PREPARATIONS, || None);
         Ok(Arc::new(Self {
             state: Mutex::new(PublicationState {
                 current: None,
                 leases,
                 mappings,
                 preparations,
+                spills,
                 next_token: 1,
                 next_mapping_token: 1,
                 next_preparation_token: 1,
+                next_spill_token: 1,
                 creation_serial_fence: 0,
                 closing: false,
                 admissions_stopped: false,
@@ -760,6 +805,52 @@ impl NativeGraphPublication {
             length: inventory.len(),
         });
         Ok(NativePreparedRegistration {
+            publication: Arc::downgrade(self),
+            slot,
+            token,
+        })
+    }
+
+    fn register_spill(
+        self: &Arc<Self>,
+        admission_token: u64,
+    ) -> Result<NativeSpillRegistration, NativeGraphError> {
+        let mut state = self.state.lock().map_err(|_| {
+            NativeGraphError::Store(StoreError::Synchronization {
+                component: "native graph publication",
+            })
+        })?;
+        if state.closing {
+            return Err(NativeGraphError::Store(StoreError::Closing));
+        }
+        if !state
+            .leases
+            .iter()
+            .flatten()
+            .any(|entry| entry.token == admission_token)
+        {
+            return Err(NativeGraphError::Invalid("spill admission is not retained"));
+        }
+        let slot = state
+            .spills
+            .iter()
+            .position(Option::is_none)
+            .ok_or(NativeGraphError::LeaseLimit)?;
+        let token = state.next_spill_token;
+        state.next_spill_token = state
+            .next_spill_token
+            .checked_add(1)
+            .ok_or(NativeGraphError::IdentityExhausted)?;
+        *state
+            .spills
+            .get_mut(slot)
+            .ok_or(NativeGraphError::LeaseLimit)? = Some(NativeSpillEntry {
+            token,
+            admission_token,
+            head: None,
+            pending: [None; 2],
+        });
+        Ok(NativeSpillRegistration {
             publication: Arc::downgrade(self),
             slot,
             token,
@@ -881,6 +972,18 @@ impl NativeGraphPublication {
                 .current
                 .as_ref()
                 .is_some_and(|current| Arc::ptr_eq(current, bundle)))
+    }
+
+    fn is_current_bundle(&self, bundle: &Arc<NativeGraphBundle>) -> Result<bool, NativeGraphError> {
+        let state = self.state.lock().map_err(|_| {
+            NativeGraphError::Store(StoreError::Synchronization {
+                component: "native graph publication",
+            })
+        })?;
+        Ok(state
+            .current
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, bundle)))
     }
 
     fn burn_creation_serial(&self) -> Result<u64, NativeGraphError> {
@@ -1038,12 +1141,31 @@ impl NativeGraphPublication {
                     .or_else(|| writer.is_none().then_some(total))
             })
             .ok_or(NativeGraphError::LeaseLimit)?;
+        let spill_capacity = state.spills.iter().filter(|entry| entry.is_some()).count();
+        let proof_capacity = writer
+            .as_ref()
+            .map_or(0, |writer| writer.durable_protected.len());
         let bytes = capacity
             .checked_mul(std::mem::size_of::<Arc<NativeGraphBundle>>())
+            .and_then(|bytes| {
+                capacity
+                    .checked_mul(std::mem::size_of::<NativeReadLease>())
+                    .and_then(|leases| bytes.checked_add(leases))
+            })
             .and_then(|bytes| {
                 prepared_capacity
                     .checked_mul(std::mem::size_of::<ArtifactDescriptor>())
                     .and_then(|prepared| bytes.checked_add(prepared))
+            })
+            .and_then(|bytes| {
+                spill_capacity
+                    .checked_mul(std::mem::size_of::<NativeProtectedSpill>())
+                    .and_then(|spill| bytes.checked_add(spill))
+            })
+            .and_then(|bytes| {
+                proof_capacity
+                    .checked_mul(std::mem::size_of::<write::NativeDurableProtection>())
+                    .and_then(|proofs| bytes.checked_add(proofs))
             })
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<NativeProtectedRoots>()))
             .ok_or(NativeGraphError::LeaseLimit)?;
@@ -1059,6 +1181,29 @@ impl NativeGraphPublication {
                 component: "native graph protected roots",
             })
         })?;
+        let mut leases = Vec::new();
+        #[cfg(feature = "allocation-audit")]
+        let reserved = crate::allocation_audit::attributed(|| leases.try_reserve_exact(capacity));
+        #[cfg(not(feature = "allocation-audit"))]
+        let reserved = leases.try_reserve_exact(capacity);
+        reserved.map_err(|_| {
+            NativeGraphError::Store(StoreError::AllocationFailed {
+                needed: bytes as u64,
+                component: "native graph protected leases",
+            })
+        })?;
+        let mut spills = Vec::new();
+        #[cfg(feature = "allocation-audit")]
+        let reserved =
+            crate::allocation_audit::attributed(|| spills.try_reserve_exact(spill_capacity));
+        #[cfg(not(feature = "allocation-audit"))]
+        let reserved = spills.try_reserve_exact(spill_capacity);
+        reserved.map_err(|_| {
+            NativeGraphError::Store(StoreError::AllocationFailed {
+                needed: bytes as u64,
+                component: "native graph spill roots",
+            })
+        })?;
         let mut prepared = Vec::new();
         #[cfg(feature = "allocation-audit")]
         let reserved =
@@ -1071,16 +1216,64 @@ impl NativeGraphPublication {
                 component: "native graph prepared roots",
             })
         })?;
+        let mut proofs = Vec::new();
+        #[cfg(feature = "allocation-audit")]
+        let reserved =
+            crate::allocation_audit::attributed(|| proofs.try_reserve_exact(proof_capacity));
+        #[cfg(not(feature = "allocation-audit"))]
+        let reserved = proofs.try_reserve_exact(proof_capacity);
+        reserved.map_err(|_| {
+            NativeGraphError::Store(StoreError::AllocationFailed {
+                needed: bytes as u64,
+                component: "native graph durable proof roots",
+            })
+        })?;
+        // Reconcile the actual allocator capacities before upgrading any weak
+        // reader owner. From this point until the publication guard is dropped,
+        // releasing a captured lease must not take an error path that drops its
+        // registration and recursively locks this same mutex.
+        let actual = bundles
+            .capacity()
+            .checked_mul(std::mem::size_of::<Arc<NativeGraphBundle>>())
+            .and_then(|bytes| {
+                leases
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<NativeReadLease>())
+                    .and_then(|leases| bytes.checked_add(leases))
+            })
+            .and_then(|bytes| {
+                prepared
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<ArtifactDescriptor>())
+                    .and_then(|prepared| bytes.checked_add(prepared))
+            })
+            .and_then(|bytes| {
+                spills
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<NativeProtectedSpill>())
+                    .and_then(|spill| bytes.checked_add(spill))
+            })
+            .and_then(|bytes| {
+                proofs
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<write::NativeDurableProtection>())
+                    .and_then(|proofs| bytes.checked_add(proofs))
+            })
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<NativeProtectedRoots>()))
+            .ok_or(NativeGraphError::LeaseLimit)?;
+        charge.resize(actual)?;
         if let Some(current) = state.current.as_ref() {
             bundles.push(Arc::clone(current));
         }
         for entry in state.leases.iter().flatten() {
-            if let Some(owner) = entry.owner.upgrade()
-                && !bundles
+            if let Some(owner) = entry.owner.upgrade() {
+                if !bundles
                     .iter()
                     .any(|bundle| Arc::ptr_eq(bundle, &owner.bundle))
-            {
-                bundles.push(Arc::clone(&owner.bundle));
+                {
+                    bundles.push(Arc::clone(&owner.bundle));
+                }
+                leases.push(NativeReadLease { owner });
             }
         }
         for entry in state.preparations.iter().flatten() {
@@ -1094,22 +1287,25 @@ impl NativeGraphPublication {
         }
         if let Some(writer) = writer.as_ref() {
             prepared.extend(writer.protected.iter().copied());
+            proofs.extend(writer.durable_protected.iter().copied());
         }
-        let actual = bundles
-            .capacity()
-            .checked_mul(std::mem::size_of::<Arc<NativeGraphBundle>>())
-            .and_then(|bytes| {
-                prepared
-                    .capacity()
-                    .checked_mul(std::mem::size_of::<ArtifactDescriptor>())
-                    .and_then(|prepared| bytes.checked_add(prepared))
-            })
-            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<NativeProtectedRoots>()))
-            .ok_or(NativeGraphError::LeaseLimit)?;
-        charge.resize(actual)?;
+        spills.extend(
+            state
+                .spills
+                .iter()
+                .flatten()
+                .map(|entry| NativeProtectedSpill {
+                    admission_token: entry.admission_token,
+                    head: entry.head,
+                    pending: entry.pending,
+                }),
+        );
         Ok(NativeProtectedRoots {
             bundles,
+            leases,
             prepared,
+            spills,
+            proofs,
             wal: writer.as_ref().map(|writer| NativeProtectedWal {
                 identity: writer.wal.identity,
                 first_sequence: writer.wal.first_sequence,
@@ -1241,6 +1437,102 @@ pub(crate) struct NativePreparedRegistration {
     token: u64,
 }
 
+pub(crate) struct NativeSpillRegistration {
+    publication: Weak<NativeGraphPublication>,
+    slot: usize,
+    token: u64,
+}
+
+impl NativeSpillRegistration {
+    fn update(
+        &self,
+        pending: [Option<ArtifactDescriptor>; 2],
+        head: Option<RequiredRef>,
+    ) -> Result<(), NativeGraphError> {
+        let publication = self.publication.upgrade().ok_or(NativeGraphError::Invalid(
+            "native spill publication is absent",
+        ))?;
+        let mut state = publication.state.lock().map_err(|_| {
+            NativeGraphError::Store(StoreError::Synchronization {
+                component: "native graph publication",
+            })
+        })?;
+        let entry = state
+            .spills
+            .get_mut(self.slot)
+            .and_then(Option::as_mut)
+            .filter(|entry| entry.token == self.token)
+            .ok_or(NativeGraphError::Invalid(
+                "native spill registration is stale",
+            ))?;
+        entry.pending = pending;
+        entry.head = head;
+        Ok(())
+    }
+
+    pub(super) fn begin_data(
+        &self,
+        descriptor: ArtifactDescriptor,
+        head: Option<RequiredRef>,
+    ) -> Result<(), NativeGraphError> {
+        self.update([Some(descriptor), None], head)
+    }
+
+    pub(super) fn begin_inventory(
+        &self,
+        data: ArtifactDescriptor,
+        inventory: ArtifactDescriptor,
+        head: Option<RequiredRef>,
+    ) -> Result<(), NativeGraphError> {
+        self.update([Some(data), Some(inventory)], head)
+    }
+
+    pub(super) fn finish_pair(&self, head: RequiredRef) -> Result<(), NativeGraphError> {
+        self.update([None; 2], Some(head))
+    }
+
+    pub(super) fn head(&self) -> Result<Option<RequiredRef>, NativeGraphError> {
+        let publication = self.publication.upgrade().ok_or(NativeGraphError::Invalid(
+            "native spill publication is absent",
+        ))?;
+        let state = publication.state.lock().map_err(|_| {
+            NativeGraphError::Store(StoreError::Synchronization {
+                component: "native graph publication",
+            })
+        })?;
+        state
+            .spills
+            .get(self.slot)
+            .and_then(Option::as_ref)
+            .filter(|entry| entry.token == self.token)
+            .map(|entry| entry.head)
+            .ok_or(NativeGraphError::Invalid(
+                "native spill registration is stale",
+            ))
+    }
+}
+
+impl Drop for NativeSpillRegistration {
+    fn drop(&mut self) {
+        let Some(publication) = self.publication.upgrade() else {
+            return;
+        };
+        let mut state = publication
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state
+            .spills
+            .get(self.slot)
+            .and_then(Option::as_ref)
+            .is_some_and(|entry| entry.token == self.token)
+            && let Some(slot) = state.spills.get_mut(self.slot)
+        {
+            *slot = None;
+        }
+    }
+}
+
 impl Drop for NativePreparedRegistration {
     fn drop(&mut self) {
         let Some(publication) = self.publication.upgrade() else {
@@ -1362,23 +1654,22 @@ impl NativeReadLease {
 
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn wait_until_cancelled_for_test(&self) -> Result<(), NativeGraphError> {
-        let publication = self
-            .owner
-            .registration
-            .publication
-            .upgrade()
-            .ok_or(NativeGraphError::Invalid(
-                "native graph publication no longer owns read lease",
-            ))?;
+        let publication =
+            self.owner
+                .registration
+                .publication
+                .upgrade()
+                .ok_or(NativeGraphError::Invalid(
+                    "native graph publication no longer owns read lease",
+                ))?;
         let mut state = publication
             .state
             .lock()
             .map_err(|_| NativeGraphError::Invalid("native graph publication poisoned"))?;
         while self.check_active().is_ok() {
-            state = publication
-                .changed
-                .wait(state)
-                .map_err(|_| NativeGraphError::Invalid("native graph cancellation wait poisoned"))?;
+            state = publication.changed.wait(state).map_err(|_| {
+                NativeGraphError::Invalid("native graph cancellation wait poisoned")
+            })?;
         }
         Ok(())
     }
@@ -1412,6 +1703,18 @@ impl NativeReadLease {
                 ))?;
         publication.register_prepared(inventory)
     }
+
+    pub(crate) fn register_spill(&self) -> Result<NativeSpillRegistration, NativeGraphError> {
+        let publication =
+            self.owner
+                .registration
+                .publication
+                .upgrade()
+                .ok_or(NativeGraphError::Invalid(
+                    "native graph publication no longer owns spill preparation",
+                ))?;
+        publication.register_spill(self.token())
+    }
 }
 
 impl RetainedView for NativeReadLease {
@@ -1426,10 +1729,20 @@ impl RetainedView for NativeReadLease {
 
 pub(crate) struct NativeProtectedRoots {
     bundles: Vec<Arc<NativeGraphBundle>>,
+    leases: Vec<NativeReadLease>,
     prepared: Vec<ArtifactDescriptor>,
+    spills: Vec<NativeProtectedSpill>,
+    proofs: Vec<write::NativeDurableProtection>,
     wal: Option<NativeProtectedWal>,
     serial_fence: u64,
     _charge: GraphReservation,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct NativeProtectedSpill {
+    pub(crate) admission_token: u64,
+    pub(crate) head: Option<RequiredRef>,
+    pub(crate) pending: [Option<ArtifactDescriptor>; 2],
 }
 
 pub(crate) struct NativeMaintenanceAdmission {
@@ -1463,6 +1776,60 @@ impl NativeProtectedRoots {
 
     fn serial_fence(&self) -> u64 {
         self.serial_fence
+    }
+
+    pub(super) fn bundles(&self) -> &[Arc<NativeGraphBundle>] {
+        &self.bundles
+    }
+
+    /// Whether `bundle` was the published bundle when these roots were
+    /// captured. Capture records the published bundle before any reader's.
+    pub(super) fn is_current(&self, bundle: &Arc<NativeGraphBundle>) -> bool {
+        self.bundles
+            .first()
+            .is_some_and(|current| Arc::ptr_eq(current, bundle))
+    }
+
+    pub(super) fn lease_for(&self, bundle: &Arc<NativeGraphBundle>) -> Option<&NativeReadLease> {
+        self.leases
+            .iter()
+            .find(|lease| Arc::ptr_eq(lease.bundle(), bundle))
+    }
+
+    pub(super) fn contains_lease(&self, lease: &NativeReadLease) -> bool {
+        self.leases.iter().any(|captured| {
+            captured.token() == lease.token() && Arc::ptr_eq(captured.bundle(), lease.bundle())
+        })
+    }
+
+    pub(super) fn leases(&self) -> &[NativeReadLease] {
+        &self.leases
+    }
+
+    pub(super) fn prepared(&self) -> &[ArtifactDescriptor] {
+        &self.prepared
+    }
+
+    pub(super) fn spills(&self) -> &[NativeProtectedSpill] {
+        &self.spills
+    }
+
+    pub(in crate::lifecycle::native_graph) fn proofs(&self) -> &[write::NativeDurableProtection] {
+        &self.proofs
+    }
+}
+
+impl NativeProtectedWal {
+    pub(super) const fn identity(self) -> u128 {
+        self.identity
+    }
+
+    pub(super) const fn first_sequence(self) -> u64 {
+        self.first_sequence
+    }
+
+    pub(super) const fn bytes(self) -> usize {
+        self.bytes
     }
 }
 
@@ -1576,11 +1943,19 @@ pub(crate) mod tests {
     )]
 
     mod close_owner;
+    mod consolidation;
     mod expression_tests;
     pub(crate) mod publication;
     mod recovery;
     mod retrieval;
     mod sparse;
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn run_reclaim_probe(
+        seed: u64,
+    ) -> crate::graph_reclaim_test_support::ReclaimProbeReport {
+        consolidation::run_actual_probe(seed)
+    }
 
     #[cfg(feature = "test-support")]
     pub(crate) fn run_recovery_probe(

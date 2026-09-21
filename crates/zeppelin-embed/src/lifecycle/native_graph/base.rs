@@ -244,7 +244,7 @@ fn copy_owned_text<'m>(
 }
 
 fn property_count<S: crate::property_graph::storage::tree::directory::BlockSource>(
-    cursor: &mut PayloadCursor<'_, S>,
+    cursor: &mut PayloadCursor<'_, '_, S>,
     resources: &mut TreeResources<'_>,
 ) -> Result<usize, TreeError> {
     usize::try_from(u64::from_le_bytes(cursor.read_array(resources)?))

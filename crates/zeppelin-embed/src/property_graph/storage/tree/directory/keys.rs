@@ -69,56 +69,39 @@ pub(super) fn validate_key(
 ) -> Result<(), TreeError> {
     resources.step(1)?;
     if root.kind != TreeKind::KeyFences {
-        let Key::Inline(bytes) = key else {
-            return Err(TreeError::Invalid("overflow numeric key"));
-        };
-        super::super::compare_inline_keys(root.kind, bytes, bytes)?;
-        let nonzero = |start: usize, length: usize| {
-            bytes
-                .get(start..start + length)
-                .is_some_and(|part| part.iter().any(|byte| *byte != 0))
-        };
-        let valid = match root.kind {
-            TreeKind::Nodes
-            | TreeKind::Relationships
-            | TreeKind::ObjectInventory
-            | TreeKind::SparseMembership => nonzero(0, 16),
-            TreeKind::SparseSources => {
-                let reference = crate::property_graph::storage::artifact::decode_reference(bytes)?;
-                reference.kind == BlockKind::CommitParticipant && reference.version == 1
-            }
-            TreeKind::Labels | TreeKind::RelationshipTypes => nonzero(0, 8) && nonzero(8, 16),
-            TreeKind::OutRanges | TreeKind::InRanges => {
-                nonzero(0, 16) && nonzero(16, 8) && nonzero(24, 16)
-            }
-            TreeKind::KeyFences => false,
-        };
-        return if valid {
-            Ok(())
-        } else {
-            Err(TreeError::Invalid("zero numeric key component"))
-        };
+        return validate_numeric_key(root.kind, key);
     }
     let length = length(key)?;
     if !(9..=crate::property_graph::MAX_GRAPH_INPUT_BYTES).contains(&length) {
         return Err(TreeError::Invalid("key logical length"));
     }
-    prefix(source, root, key, resources)?;
-    let mut utf8 = crate::property_graph::storage::stream::Utf8State::default();
-    let mut position = 9;
-    while position < length {
-        let bytes = span(source, root, key, position, resources)?;
-        if bytes.is_empty() {
-            return Err(TreeError::Invalid("short key stream"));
-        }
-        utf8.feed(bytes)?;
-        position = position.checked_add(bytes.len()).ok_or(TreeError::Work)?;
+    let key_prefix = if source.scoped_blocks() {
+        scoped_prefix(source, root, key, resources)?
+    } else {
+        prefix(source, root, key, resources)?
+    };
+    if source.scoped_blocks() {
+        let mut buffer = [0_u8; CHUNK_BYTES];
+        validate_fence_key(length, key_prefix, |position, utf8| {
+            let maximum = (length - position).min(CHUNK_BYTES);
+            let count = copy_scoped_span(
+                source,
+                root,
+                key,
+                position,
+                buffer.get_mut(..maximum).ok_or(TreeError::Memory)?,
+                resources,
+            )?;
+            utf8.feed(buffer.get(..count).ok_or(TreeError::Memory)?)?;
+            Ok(count)
+        })
+    } else {
+        validate_fence_key(length, key_prefix, |position, utf8| {
+            let bytes = span(source, root, key, position, resources)?;
+            utf8.feed(bytes)?;
+            Ok(bytes.len())
+        })
     }
-    utf8.finish()?;
-    if position != length {
-        return Err(TreeError::Invalid("key stream length"));
-    }
-    Ok(())
 }
 pub(super) fn compare(
     source: &impl BlockSource,
@@ -134,36 +117,213 @@ pub(super) fn compare(
         };
         return Ok(super::super::compare_inline_keys(root.kind, left, right)?);
     }
-    let order =
-        prefix(source, root, left, resources)?.cmp(&prefix(source, root, right, resources)?);
+    let left_prefix = if source.scoped_blocks() {
+        scoped_prefix(source, root, left, resources)?
+    } else {
+        prefix(source, root, left, resources)?
+    };
+    let right_prefix = if source.scoped_blocks() {
+        scoped_prefix(source, root, right, resources)?
+    } else {
+        prefix(source, root, right, resources)?
+    };
+    let order = left_prefix.cmp(&right_prefix);
     if !order.is_eq() {
         return Ok(order);
     }
     let left_length = length(left)?;
     let right_length = length(right)?;
+    if source.scoped_blocks() {
+        let mut left_bytes = [0_u8; CHUNK_BYTES];
+        let mut right_bytes = [0_u8; CHUNK_BYTES];
+        compare_fence_key(left_length, right_length, |position, maximum| {
+            let left_count = copy_scoped_span(
+                source,
+                root,
+                left,
+                position,
+                left_bytes.get_mut(..maximum).ok_or(TreeError::Memory)?,
+                resources,
+            )?;
+            let right_count = copy_scoped_span(
+                source,
+                root,
+                right,
+                position,
+                right_bytes.get_mut(..maximum).ok_or(TreeError::Memory)?,
+                resources,
+            )?;
+            let count = left_count.min(right_count).min(maximum);
+            Ok((
+                count,
+                left_bytes
+                    .get(..count)
+                    .ok_or(TreeError::Memory)?
+                    .cmp(right_bytes.get(..count).ok_or(TreeError::Memory)?),
+            ))
+        })
+    } else {
+        compare_fence_key(left_length, right_length, |position, maximum| {
+            let a = span(source, root, left, position, resources)?;
+            let b = span(source, root, right, position, resources)?;
+            let count = a.len().min(b.len()).min(maximum);
+            Ok((
+                count,
+                a.get(..count)
+                    .ok_or(TreeError::Invalid("left comparator extent"))?
+                    .cmp(
+                        b.get(..count)
+                            .ok_or(TreeError::Invalid("right comparator extent"))?,
+                    ),
+            ))
+        })
+    }
+}
+
+fn validate_numeric_key(kind: TreeKind, key: Key<'_>) -> Result<(), TreeError> {
+    let Key::Inline(bytes) = key else {
+        return Err(TreeError::Invalid("overflow numeric key"));
+    };
+    super::super::compare_inline_keys(kind, bytes, bytes)?;
+    let nonzero = |start: usize, length: usize| {
+        bytes
+            .get(start..start + length)
+            .is_some_and(|part| part.iter().any(|byte| *byte != 0))
+    };
+    let valid = match kind {
+        TreeKind::Nodes
+        | TreeKind::Relationships
+        | TreeKind::ObjectInventory
+        | TreeKind::SparseMembership => nonzero(0, 16),
+        TreeKind::SparseSources => {
+            let reference = crate::property_graph::storage::artifact::decode_reference(bytes)?;
+            reference.kind == BlockKind::CommitParticipant && reference.version == 1
+        }
+        TreeKind::Labels | TreeKind::RelationshipTypes => nonzero(0, 8) && nonzero(8, 16),
+        TreeKind::OutRanges | TreeKind::InRanges => {
+            nonzero(0, 16) && nonzero(16, 8) && nonzero(24, 16)
+        }
+        TreeKind::KeyFences => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(TreeError::Invalid("zero numeric key component"))
+    }
+}
+
+fn validate_fence_key(
+    length: usize,
+    _prefix: (u8, u64),
+    mut consume: impl FnMut(
+        usize,
+        &mut crate::property_graph::storage::stream::Utf8State,
+    ) -> Result<usize, TreeError>,
+) -> Result<(), TreeError> {
+    let mut utf8 = crate::property_graph::storage::stream::Utf8State::default();
+    let mut position = 9;
+    while position < length {
+        let count = consume(position, &mut utf8)?;
+        if count == 0 || count > length - position {
+            return Err(TreeError::Invalid("short key stream"));
+        }
+        position = position.checked_add(count).ok_or(TreeError::Work)?;
+    }
+    utf8.finish()?;
+    if position != length {
+        return Err(TreeError::Invalid("key stream length"));
+    }
+    Ok(())
+}
+
+fn compare_fence_key(
+    left_length: usize,
+    right_length: usize,
+    mut compare_span: impl FnMut(usize, usize) -> Result<(usize, Ordering), TreeError>,
+) -> Result<Ordering, TreeError> {
     let end = left_length.min(right_length);
     let mut position = 9;
     while position < end {
-        let a = span(source, root, left, position, resources)?;
-        let b = span(source, root, right, position, resources)?;
-        let length = a.len().min(b.len()).min(end - position);
-        if length == 0 {
+        let (count, order) = compare_span(position, end - position)?;
+        if count == 0 || count > end - position {
             return Err(TreeError::Invalid("short comparator stream"));
         }
-        let order = a
-            .get(..length)
-            .ok_or(TreeError::Invalid("left comparator extent"))?
-            .cmp(
-                b.get(..length)
-                    .ok_or(TreeError::Invalid("right comparator extent"))?,
-            );
         if !order.is_eq() {
             return Ok(order);
         }
-        position += length;
+        position += count;
     }
     Ok(left_length.cmp(&right_length))
 }
+
+fn copy_scoped_span(
+    source: &impl BlockSource,
+    root: DirectoryRoot,
+    key: Key<'_>,
+    offset: usize,
+    output: &mut [u8],
+    resources: &mut TreeResources<'_>,
+) -> Result<usize, TreeError> {
+    match key {
+        Key::Inline(bytes) => {
+            let bytes = bytes
+                .get(offset..)
+                .ok_or(TreeError::Invalid("key read extent"))?;
+            let count = bytes.len().min(output.len()).min(CHUNK_BYTES);
+            resources.step(count as u64)?;
+            resources.read_event(NativeReadEvent::CopiedBytes(count as u64))?;
+            output
+                .get_mut(..count)
+                .ok_or(TreeError::Memory)?
+                .copy_from_slice(bytes.get(..count).ok_or(TreeError::Invalid("key span"))?);
+            Ok(count)
+        }
+        Key::Overflow {
+            logical_length,
+            reference,
+        } => PayloadRef::new(BlockKind::OverflowKey, logical_length, reference)?.with_span_at(
+            source,
+            root.store,
+            root.generation,
+            offset as u64,
+            output.len(),
+            resources,
+            |bytes, resources| {
+                let count = bytes.len().min(output.len());
+                output
+                    .get_mut(..count)
+                    .ok_or(TreeError::Memory)?
+                    .copy_from_slice(bytes.get(..count).ok_or(TreeError::Invalid("key span"))?);
+                resources.read_event(NativeReadEvent::CopiedBytes(count as u64))?;
+                Ok(count)
+            },
+        ),
+    }
+}
+
+fn scoped_prefix(
+    source: &impl BlockSource,
+    root: DirectoryRoot,
+    key: Key<'_>,
+    resources: &mut TreeResources<'_>,
+) -> Result<(u8, u64), TreeError> {
+    let mut prefix = [0_u8; 9];
+    if copy_scoped_span(source, root, key, 0, &mut prefix, resources)? != prefix.len() {
+        return Err(TreeError::Invalid("missing key prefix"));
+    }
+    let kind = prefix[0];
+    let namespace = u64::from_le_bytes(
+        prefix
+            .get(1..9)
+            .and_then(|part| part.try_into().ok())
+            .ok_or(TreeError::Invalid("missing namespace symbol"))?,
+    );
+    if !(1..=2).contains(&kind) || namespace == 0 {
+        return Err(TreeError::Invalid("key kind or namespace"));
+    }
+    Ok((kind, namespace))
+}
+
 pub(super) fn copy(
     source: &impl BlockSource,
     root: DirectoryRoot,

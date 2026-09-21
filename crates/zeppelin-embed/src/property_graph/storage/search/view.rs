@@ -259,6 +259,21 @@ pub(crate) struct SparseMember<'a, S: BlockSource> {
     pub(crate) vector: Option<StoredVector<'a, S>>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SparsePhysicalSnapshot {
+    pub(crate) source: crate::property_graph::storage::artifact::PhysicalRef,
+    pub(crate) source_generation: crate::property_graph::GraphGeneration,
+    pub(crate) row_table: PayloadRef,
+    pub(crate) lexical: Option<PayloadRef>,
+    pub(crate) mask: PayloadRef,
+    pub(crate) mask_generation: crate::property_graph::GraphGeneration,
+    pub(crate) vector_index: Option<PayloadRef>,
+    pub(crate) vector_index_catalog: Option<RequiredRef>,
+    pub(crate) ordinal: u32,
+    pub(crate) record: PayloadRef,
+}
+
 /// Bounded source-directory cursor retaining the exact sparse view and owner.
 pub(crate) struct SparseSources<'v, 'a, 'm, 'r, S, C> {
     view: &'v SparseView<'a, 'm, S, C>,
@@ -761,6 +776,81 @@ impl<'a, 'm, S: BlockSource, C: RecordCatalog<S>> SparseView<'a, 'm, S, C> {
         )?))
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn physical_snapshot(
+        &self,
+        modality: Modality,
+        node: NodeId,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<Option<SparsePhysicalSnapshot>, TreeError> {
+        let Some(descriptor) = self.descriptor(modality) else {
+            return Ok(None);
+        };
+        let Some(member_entry) = lookup_entry(
+            self.source,
+            descriptor.members,
+            &node.get().to_le_bytes(),
+            resources,
+        )?
+        else {
+            return Ok(None);
+        };
+        let member = MembershipRow::decode(member_entry.value())?;
+        let mut source_key = [0_u8; 32];
+        artifact::encode_reference(member.source, &mut source_key)?;
+        let source_entry = lookup_entry(self.source, descriptor.sources, &source_key, resources)?
+            .ok_or(TreeError::Invalid("sparse snapshot source is absent"))?;
+        let value = SourceValue::decode(source_entry.value())?;
+        let block = self.source.resolve(member.source, resources)?;
+        let manifest = SourceManifest::decode(block.payload())?;
+        let mut row_bytes = [0_u8; ROW_BYTES];
+        if PayloadSlice::new(
+            self.source,
+            descriptor.store,
+            manifest.generation,
+            manifest.row_table,
+        )
+        .read_at(
+            u64::from(member.row) * ROW_BYTES as u64,
+            &mut row_bytes,
+            resources,
+        )? != ROW_BYTES
+        {
+            return Err(TreeError::Invalid("short sparse snapshot row"));
+        }
+        let row = SparseRow::decode(&row_bytes)?;
+        validate_row_correlation(node, member, member.source, member.row, row)?;
+        let vector_index_catalog = if let Some(payload) = manifest.vector_index {
+            Some(
+                open_vector_index(
+                    self.source,
+                    descriptor.store,
+                    manifest.generation,
+                    payload,
+                    descriptor.lexical,
+                    self.document,
+                    self.owner,
+                    resources,
+                )?
+                .interpretation_catalog(),
+            )
+        } else {
+            None
+        };
+        Ok(Some(SparsePhysicalSnapshot {
+            source: member.source,
+            source_generation: manifest.generation,
+            row_table: manifest.row_table,
+            lexical: manifest.lexical,
+            mask: value.mask,
+            mask_generation: source_entry.creation_generation(),
+            vector_index: manifest.vector_index,
+            vector_index_catalog,
+            ordinal: member.row,
+            record: row.record,
+        }))
+    }
+
     pub(crate) fn validate_all(
         &self,
         modality: Modality,
@@ -990,6 +1080,258 @@ impl<'a, 'm, S: BlockSource, C: RecordCatalog<S>> SparseView<'a, 'm, S, C> {
                     .next(&mut active_key, &mut active_value, resources)?
                     .is_some();
             }
+        }
+        Ok(())
+    }
+
+    /// Accepts only a physical source-row rebind whose live membership keys,
+    /// revisions, ordinals, mask, aggregates and immutable index payloads are
+    /// unchanged, and whose changed row records exactly follow native roots.
+    pub(crate) fn validate_maintenance_rebind(
+        &self,
+        target: &Self,
+        modality: Modality,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<u64, TreeError> {
+        let descriptor = match modality {
+            Modality::Text => self.text,
+            Modality::Vector => self.vector,
+        };
+        let target_descriptor = match modality {
+            Modality::Text => target.text,
+            Modality::Vector => target.vector,
+        };
+        let (Some(descriptor), Some(target_descriptor)) = (descriptor, target_descriptor) else {
+            if descriptor.is_some() != target_descriptor.is_some() {
+                return Err(TreeError::Invalid("sparse maintenance modality changed"));
+            }
+            return Ok(0);
+        };
+        if descriptor.live_rows != target_descriptor.live_rows {
+            return Err(TreeError::Invalid("sparse maintenance live rows changed"));
+        }
+        if descriptor.live_length != target_descriptor.live_length {
+            return Err(TreeError::Invalid("sparse maintenance live length changed"));
+        }
+        if descriptor.checkpoint != target_descriptor.checkpoint {
+            return Err(TreeError::Invalid("sparse maintenance checkpoint changed"));
+        }
+        if descriptor.catalog != target_descriptor.catalog {
+            return Err(TreeError::Invalid("sparse maintenance catalog changed"));
+        }
+        if descriptor.lexical != target_descriptor.lexical {
+            return Err(TreeError::Invalid(
+                "sparse maintenance lexical epoch changed",
+            ));
+        }
+        let mut base = DirectoryCursor::seek(self.source, descriptor.members, None, resources)?;
+        let mut active =
+            DirectoryCursor::seek(target.source, target_descriptor.members, None, resources)?;
+        let mut base_key = [0_u8; 16];
+        let mut base_value = [0_u8; MEMBERSHIP_BYTES];
+        let mut active_key = [0_u8; 16];
+        let mut active_value = [0_u8; MEMBERSHIP_BYTES];
+        let mut count = 0_u64;
+        loop {
+            let left = base.next(&mut base_key, &mut base_value, resources)?;
+            let right = active.next(&mut active_key, &mut active_value, resources)?;
+            match (left, right) {
+                (None, None) => break,
+                (Some((16, MEMBERSHIP_BYTES)), Some((16, MEMBERSHIP_BYTES)))
+                    if base_key == active_key => {}
+                _ => {
+                    return Err(TreeError::Invalid(
+                        "sparse maintenance membership key set changed",
+                    ));
+                }
+            }
+            let old_member = MembershipRow::decode(&base_value)?;
+            let new_member = MembershipRow::decode(&active_value)?;
+            if old_member.revision != new_member.revision || old_member.row != new_member.row {
+                return Err(TreeError::Invalid(
+                    "sparse maintenance membership logical row changed",
+                ));
+            }
+            if old_member.source != new_member.source {
+                self.validate_rebound_source(
+                    target,
+                    descriptor,
+                    target_descriptor,
+                    old_member.source,
+                    new_member.source,
+                    modality,
+                    resources,
+                )?;
+            }
+            count = count.checked_add(1).ok_or(TreeError::Work)?;
+        }
+        if count != descriptor.live_rows {
+            return Err(TreeError::Invalid(
+                "sparse maintenance membership population changed",
+            ));
+        }
+        Ok(count)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn validate_rebound_source(
+        &self,
+        target: &Self,
+        descriptor: RootDescriptor,
+        target_descriptor: RootDescriptor,
+        old_source: crate::property_graph::storage::artifact::PhysicalRef,
+        new_source: crate::property_graph::storage::artifact::PhysicalRef,
+        modality: Modality,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<(), TreeError> {
+        let mut old_key = [0_u8; 32];
+        artifact::encode_reference(old_source, &mut old_key)?;
+        let mut new_key = [0_u8; 32];
+        artifact::encode_reference(new_source, &mut new_key)?;
+        let old_entry = lookup_entry(self.source, descriptor.sources, &old_key, resources)?.ok_or(
+            TreeError::Invalid("sparse maintenance old source is absent"),
+        )?;
+        let new_entry = lookup_entry(
+            target.source,
+            target_descriptor.sources,
+            &new_key,
+            resources,
+        )?
+        .ok_or(TreeError::Invalid(
+            "sparse maintenance new source is absent",
+        ))?;
+        let old_value = SourceValue::decode(old_entry.value())?;
+        let new_value = SourceValue::decode(new_entry.value())?;
+        if old_value != new_value {
+            return Err(TreeError::Invalid(
+                "sparse maintenance source mask or aggregate changed",
+            ));
+        }
+        let old_block = self.source.resolve(old_source, resources)?;
+        let new_block = target.source.resolve(new_source, resources)?;
+        let old_manifest = SourceManifest::decode(old_block.payload())?;
+        let new_manifest = SourceManifest::decode(new_block.payload())?;
+        if old_manifest.modality != modality
+            || new_manifest.modality != modality
+            || old_manifest.format != new_manifest.format
+            || old_manifest.rows != new_manifest.rows
+            || old_manifest.lexical != new_manifest.lexical
+            || old_manifest.vector_index != new_manifest.vector_index
+            || new_manifest.generation != target_descriptor.generation
+            || new_manifest.sequence != target_descriptor.sequence
+            || old_manifest.row_table == new_manifest.row_table
+        {
+            return Err(TreeError::Invalid(
+                "sparse maintenance source manifest changed",
+            ));
+        }
+        let old_rows = PayloadSlice::new(
+            self.source,
+            descriptor.store,
+            old_manifest.generation,
+            old_manifest.row_table,
+        );
+        let new_rows = PayloadSlice::new(
+            target.source,
+            target_descriptor.store,
+            new_manifest.generation,
+            new_manifest.row_table,
+        );
+        let mask = PayloadSlice::new(
+            self.source,
+            descriptor.store,
+            old_entry.creation_generation(),
+            old_value.mask,
+        );
+        let mut changed_records = 0_u64;
+        for ordinal in 0..old_manifest.rows {
+            let mut old_bytes = [0_u8; ROW_BYTES];
+            let mut new_bytes = [0_u8; ROW_BYTES];
+            let offset = u64::from(ordinal) * ROW_BYTES as u64;
+            if old_rows.read_at(offset, &mut old_bytes, resources)? != ROW_BYTES
+                || new_rows.read_at(offset, &mut new_bytes, resources)? != ROW_BYTES
+            {
+                return Err(TreeError::Invalid("short sparse maintenance source row"));
+            }
+            let old_row = SparseRow::decode(&old_bytes)?;
+            let new_row = SparseRow::decode(&new_bytes)?;
+            if old_row.node != new_row.node
+                || old_row.revision != new_row.revision
+                || old_row.analyzed_length != new_row.analyzed_length
+            {
+                return Err(TreeError::Invalid("sparse maintenance source row changed"));
+            }
+            let mut bit = [0_u8; 1];
+            if mask.read_at(u64::from(ordinal / 8), &mut bit, resources)? != 1 {
+                return Err(TreeError::Invalid("short sparse maintenance source mask"));
+            }
+            let live = bit.first().copied().unwrap_or(0) & (1_u8 << (ordinal % 8)) != 0;
+            if old_row.record != new_row.record {
+                if !live {
+                    return Err(TreeError::Invalid(
+                        "sparse maintenance changed dead source row",
+                    ));
+                }
+                let native_record = |source: &S,
+                                     roots: GraphRoots,
+                                     node: NodeId,
+                                     resources: &mut TreeResources<'_>|
+                 -> Result<PayloadRef, TreeError> {
+                    let entry = lookup_entry(
+                        source,
+                        roots.directory(TreeKind::Nodes)?,
+                        &node.get().to_le_bytes(),
+                        resources,
+                    )?
+                    .ok_or(TreeError::Invalid(
+                        "sparse maintenance native node is absent",
+                    ))?;
+                    PayloadRef::decode(entry.value())
+                };
+                if native_record(self.source, self.native, old_row.node, resources)?
+                    != old_row.record
+                    || native_record(target.source, target.native, new_row.node, resources)?
+                        != new_row.record
+                {
+                    return Err(TreeError::Invalid(
+                        "sparse maintenance record relocation unexplained",
+                    ));
+                }
+                changed_records = changed_records.checked_add(1).ok_or(TreeError::Work)?;
+            }
+            if live {
+                let old_member = lookup_entry(
+                    self.source,
+                    descriptor.members,
+                    &old_row.node.get().to_le_bytes(),
+                    resources,
+                )?
+                .ok_or(TreeError::Invalid("sparse maintenance old peer is absent"))?;
+                let new_member = lookup_entry(
+                    target.source,
+                    target_descriptor.members,
+                    &new_row.node.get().to_le_bytes(),
+                    resources,
+                )?
+                .ok_or(TreeError::Invalid("sparse maintenance new peer is absent"))?;
+                let old_member = MembershipRow::decode(old_member.value())?;
+                let new_member = MembershipRow::decode(new_member.value())?;
+                if old_member.source != old_source
+                    || new_member.source != new_source
+                    || old_member.row != ordinal
+                    || new_member.row != ordinal
+                    || old_member.revision != new_member.revision
+                {
+                    return Err(TreeError::Invalid(
+                        "sparse maintenance peer was not atomically rebound",
+                    ));
+                }
+            }
+        }
+        if changed_records == 0 {
+            return Err(TreeError::Invalid(
+                "sparse maintenance source has no record relocation",
+            ));
         }
         Ok(())
     }

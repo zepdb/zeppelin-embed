@@ -8,12 +8,18 @@ mod vector_index;
 mod view;
 
 pub(crate) use checkpoint::{
-    SparseCheckpoint, prepare_sparse_checkpoint, validate_checkpoint,
+    PreparedSparseCheckpoint, SparseCheckpoint, prepare_sparse_checkpoint,
+    prepare_sparse_maintenance, validate_checkpoint, validate_persisted_maintenance_transition,
     validate_persisted_replay_transition, validate_replay_transition,
 };
 pub(crate) use codec::{Modality, SparseRoots};
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use prepare::miss_next_maintenance_peer_retarget;
 pub(crate) use prepare::{PreparedMembershipChange, PreparedSparseCandidate, prepare_sparse};
-pub(crate) use trace::{SearchTraceCursor, SearchTraceResult};
+pub(crate) use trace::{
+    SearchTraceCursor, SearchTraceResult, SearchTraceState, SparseTraceRecordFacts,
+    verify_sparse_trace_record,
+};
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use vector_index::test_support::limits as native_vector_index_test_limits;
 #[cfg(all(feature = "graph-cypher", feature = "test-support"))]
@@ -35,7 +41,12 @@ pub(crate) use vector_index::test_support::{
 pub(crate) use vector_index::test_support::{
     PhysicalReadOrigin, observe_physical_read as observe_native_vector_physical_read,
 };
+pub(crate) use vector_index::{
+    NativeVectorIndex, validate_vector_index_row, validate_vector_index_rows_with,
+};
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use view::SparsePhysicalSnapshot;
 pub(crate) use view::{SparseMember, SparseSource, SparseSources, SparseView};
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 mod tests;

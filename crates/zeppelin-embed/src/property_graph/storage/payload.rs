@@ -126,6 +126,12 @@ impl PayloadRef {
         generation: GraphGeneration,
         resources: &mut TreeResources<'_>,
     ) -> Result<GraphGeneration, TreeError> {
+        if source.scoped_blocks() {
+            return source.with_block(self.reference, resources, |block, resources| {
+                let block = checked_resolved_block(block, self.reference, store, generation)?;
+                Ok(self.check_root(block, resources)?.identity().generation)
+            });
+        }
         Ok(self
             .root(source, store, generation, resources)?
             .identity()
@@ -142,6 +148,13 @@ impl PayloadRef {
         resources: &mut TreeResources<'_>,
     ) -> Result<FramedBlock<'a>, TreeError> {
         let block = resolve(source, self.reference, store, generation, resources)?;
+        self.check_root(block, resources)
+    }
+    fn check_root<'a>(
+        self,
+        block: FramedBlock<'a>,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<FramedBlock<'a>, TreeError> {
         let bytes = block.payload();
         if self.indirect() {
             if self.length == 0
@@ -171,6 +184,75 @@ impl PayloadRef {
         }
         Ok(block)
     }
+
+    /// Run one bounded span read without allowing the source mapping lifetime
+    /// to escape. Ordinary sources delegate to their retained borrowed resolve;
+    /// captured trace sources release backing before this method returns.
+    pub(super) fn with_span_at<R>(
+        self,
+        source: &impl BlockSource,
+        store: StoreInstanceId,
+        generation: GraphGeneration,
+        offset: u64,
+        maximum: usize,
+        resources: &mut TreeResources<'_>,
+        callback: impl for<'a, 'r> FnOnce(&'a [u8], &'r mut TreeResources<'_>) -> Result<R, TreeError>,
+    ) -> Result<R, TreeError> {
+        if offset > self.length {
+            return Err(TreeError::Invalid("read beyond logical end"));
+        }
+        source.with_block(self.reference, resources, |root, resources| {
+            let root = checked_resolved_block(root, self.reference, store, generation)?;
+            let root = self.check_root(root, resources)?;
+            if offset == self.length {
+                return callback(
+                    root.payload()
+                        .get(..0)
+                        .ok_or(TreeError::Invalid("empty span"))?,
+                    resources,
+                );
+            }
+            if self.indirect() {
+                let index = offset as usize / CHUNK_BYTES;
+                let reference = chunk_reference(root.payload(), index)?;
+                let root_generation = root.identity().generation;
+                source.with_block(reference, resources, |chunk, resources| {
+                    let chunk = checked_resolved_block(chunk, reference, store, root_generation)?;
+                    self.check_chunk(index, chunk.payload())?;
+                    let start = offset as usize % CHUNK_BYTES;
+                    let length = chunk
+                        .payload()
+                        .len()
+                        .saturating_sub(start)
+                        .min(CHUNK_BYTES)
+                        .min(maximum);
+                    resources.step(length as u64)?;
+                    callback(
+                        chunk
+                            .payload()
+                            .get(start..start + length)
+                            .ok_or(TreeError::Invalid("payload span extent"))?,
+                        resources,
+                    )
+                })
+            } else {
+                let start = offset as usize;
+                let length = root
+                    .payload()
+                    .len()
+                    .saturating_sub(start)
+                    .min(CHUNK_BYTES)
+                    .min(maximum);
+                resources.step(length as u64)?;
+                callback(
+                    root.payload()
+                        .get(start..start + length)
+                        .ok_or(TreeError::Invalid("payload span extent"))?,
+                    resources,
+                )
+            }
+        })
+    }
     /// Validate every required chunk and its exact geometry. Repeated exact chunk
     /// refs are legal; they repeat those bytes in the logical stream.
     pub fn validate_all(
@@ -180,6 +262,42 @@ impl PayloadRef {
         generation: GraphGeneration,
         resources: &mut TreeResources<'_>,
     ) -> Result<(), TreeError> {
+        if source.scoped_blocks() {
+            let mut descriptor = [0_u8; MAX_DESCRIPTOR_BYTES];
+            let (root_generation, descriptor_length) =
+                source.with_block(self.reference, resources, |root, resources| {
+                    let root = checked_resolved_block(root, self.reference, store, generation)?;
+                    let root = self.check_root(root, resources)?;
+                    if !self.indirect() {
+                        for chunk in root.payload().chunks(CHUNK_BYTES) {
+                            resources.step(chunk.len() as u64)?;
+                        }
+                        return Ok((root.identity().generation, 0));
+                    }
+                    let length = root.payload().len();
+                    descriptor
+                        .get_mut(..length)
+                        .ok_or(TreeError::Invalid("extent descriptor copy bound"))?
+                        .copy_from_slice(root.payload());
+                    Ok((root.identity().generation, length))
+                })?;
+            if !self.indirect() {
+                return Ok(());
+            }
+            let bytes = descriptor
+                .get(..descriptor_length)
+                .ok_or(TreeError::Invalid("extent descriptor copy extent"))?;
+            let count = (self.length as usize).div_ceil(CHUNK_BYTES);
+            for index in 0..count {
+                let reference = chunk_reference(bytes, index)?;
+                source.with_block(reference, resources, |chunk, resources| {
+                    let chunk = checked_resolved_block(chunk, reference, store, root_generation)?;
+                    self.check_chunk(index, chunk.payload())?;
+                    resources.step(chunk.payload().len() as u64)
+                })?;
+            }
+            return Ok(());
+        }
         let root = self.root(source, store, generation, resources)?;
         if self.indirect() {
             let count = (self.length as usize).div_ceil(CHUNK_BYTES);
@@ -237,6 +355,42 @@ impl PayloadRef {
         )?;
         self.check_chunk(chunk_index, chunk.payload())?;
         Ok(Some(reference))
+    }
+    /// Scoped counterpart used by resumable reclamation tracing. It returns
+    /// only the copied physical descriptor after all mapped backing is gone.
+    pub(crate) fn physical_reference_at_scoped(
+        self,
+        source: &impl BlockSource,
+        store: StoreInstanceId,
+        generation: GraphGeneration,
+        index: usize,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<Option<PhysicalRef>, TreeError> {
+        source.with_block(self.reference, resources, |root, resources| {
+            let root = checked_resolved_block(root, self.reference, store, generation)?;
+            let root = self.check_root(root, resources)?;
+            if index == 0 {
+                return Ok(Some(self.reference));
+            }
+            if !self.indirect() {
+                return Ok(None);
+            }
+            let chunk_index = index - 1;
+            let count = (self.length as usize).div_ceil(CHUNK_BYTES);
+            if chunk_index == count {
+                return Ok(None);
+            }
+            if chunk_index > count {
+                return Err(TreeError::Invalid("payload trace beyond exact end"));
+            }
+            let reference = chunk_reference(root.payload(), chunk_index)?;
+            let root_generation = root.identity().generation;
+            source.with_block(reference, resources, |chunk, _resources| {
+                let chunk = checked_resolved_block(chunk, reference, store, root_generation)?;
+                self.check_chunk(chunk_index, chunk.payload())?;
+                Ok(Some(reference))
+            })
+        })
     }
     fn check_chunk(self, index: usize, bytes: &[u8]) -> Result<(), TreeError> {
         let start = index
@@ -536,6 +690,15 @@ fn resolve<'a>(
     check_reference(reference)?;
     let block = source.resolve(reference, resources)?;
     resources.step(0)?;
+    checked_resolved_block(block, reference, store, generation)
+}
+fn checked_resolved_block<'a>(
+    block: FramedBlock<'a>,
+    reference: PhysicalRef,
+    store: StoreInstanceId,
+    generation: GraphGeneration,
+) -> Result<FramedBlock<'a>, TreeError> {
+    check_reference(reference)?;
     if block.reference() != reference
         || block.identity().artifact != reference.artifact
         || block.identity().store != store

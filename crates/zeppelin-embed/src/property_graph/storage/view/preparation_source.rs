@@ -25,7 +25,17 @@ struct PreparationMappedArtifact {
     validation: ValidatedArtifact,
 }
 
-fn charged_artifact_path<'m>(
+/// One authenticated artifact mapping retained only for a caller-owned bounded
+/// semantic window. Nested reads in the same artifact reuse its completed
+/// framing proof; reads in another artifact remain scoped through the parent.
+pub(crate) struct NativeArtifactWindow<'source, 'lease, 'm> {
+    source: &'source NativePreparationSource<'lease, 'm>,
+    artifact: ArtifactId,
+    mapping: NativeReadonlyMapping,
+    validation: ValidatedArtifact,
+}
+
+pub(crate) fn charged_artifact_path<'m>(
     memory: &'m StorageMemory<'m>,
     directory: &std::path::Path,
     artifact: ArtifactId,
@@ -70,9 +80,18 @@ pub(crate) struct NativePreparationSource<'lease, 'm> {
     lease: &'lease NativeReadLease,
     memory: &'m StorageMemory<'m>,
     slots: StorageBuffer<'m, OnceCell<PreparationMappedArtifact>>,
+    scoped: bool,
 }
 
 impl<'lease, 'm> NativePreparationSource<'lease, 'm> {
+    pub(crate) fn charged_path(
+        memory: &'m StorageMemory<'m>,
+        directory: &std::path::Path,
+        artifact: ArtifactId,
+    ) -> Result<(PathBuf, StorageReservation<'m>), TreeError> {
+        charged_artifact_path(memory, directory, artifact)
+    }
+
     pub(crate) fn new(
         lease: &'lease NativeReadLease,
         memory: &'m StorageMemory<'m>,
@@ -95,7 +114,20 @@ impl<'lease, 'm> NativePreparationSource<'lease, 'm> {
             lease,
             memory,
             slots,
+            scoped: false,
         })
+    }
+
+    /// Construct the authenticated trace variant. Its scoped callbacks release
+    /// each path, file and mapping before returning an owned result.
+    pub(crate) fn new_scoped(
+        lease: &'lease NativeReadLease,
+        memory: &'m StorageMemory<'m>,
+        capacity: usize,
+    ) -> Result<Self, TreeError> {
+        let mut source = Self::new(lease, memory, capacity)?;
+        source.scoped = true;
+        Ok(source)
     }
 
     pub(crate) fn resources(&self, work_limit: u64) -> Result<TreeResources<'m>, TreeError> {
@@ -189,6 +221,218 @@ impl<'lease, 'm> NativePreparationSource<'lease, 'm> {
         }
         Ok(block)
     }
+
+    /// Authenticate one immutable artifact once, retain it for one bounded
+    /// callback, then release its mapping before returning an owned result.
+    pub(crate) fn with_artifact_window<R>(
+        &self,
+        reference: PhysicalRef,
+        resources: &mut TreeResources<'_>,
+        callback: impl for<'a, 'r> FnOnce(
+            &'a NativeArtifactWindow<'_, 'lease, 'm>,
+            &'r mut TreeResources<'_>,
+        ) -> Result<R, TreeError>,
+    ) -> Result<R, TreeError> {
+        self.check_owner(resources)?;
+        let (path, path_charge) = charged_artifact_path(
+            self.memory,
+            self.lease.bundle().directory(),
+            reference.artifact,
+        )?;
+        let file = self
+            .lease
+            .bundle()
+            .vfs()
+            .open_for_map(&path)
+            .map_err(TreeError::Io)?;
+        let mapping = NativeReadonlyMapping::open(file, &path, self.lease)?;
+        let validation = self.admit_mapping(&mapping, reference, resources)?;
+        let window = NativeArtifactWindow {
+            source: self,
+            artifact: reference.artifact,
+            mapping,
+            validation,
+        };
+        let result = callback(&window, resources);
+        drop(window);
+        drop(path);
+        drop(path_charge);
+        result
+    }
+
+    /// Copies one exact maintenance spill payload into caller-owned charged
+    /// scratch and releases its path, file and mapping before returning.
+    pub(crate) fn copy_spill_page(
+        &self,
+        required: crate::property_graph::wal::RequiredRef,
+        target_generation: crate::property_graph::GraphGeneration,
+        output: &mut [u8],
+        resources: &mut TreeResources<'_>,
+    ) -> Result<usize, TreeError> {
+        self.check_owner(resources)?;
+        let bundle = self.lease.bundle();
+        if required.object.store != bundle.base().store
+            || required.object.generation != target_generation
+            || required.object.family != crate::format::FormatFamily::NativeGraphObject.id()
+            || required.object.version != 1
+            || required.object.artifact != required.block.artifact
+            || required.block.kind != BlockKind::CommitParticipant
+            || required.block.version != 1
+        {
+            return Err(TreeError::Invalid("maintenance spill required reference"));
+        }
+        let (path, path_charge) =
+            charged_artifact_path(self.memory, bundle.directory(), required.object.artifact)?;
+        let file = bundle.vfs().open_for_map(&path).map_err(TreeError::Io)?;
+        let mapping = NativeReadonlyMapping::open(file, &path, self.lease)?;
+        let frame = artifact::decode_with_control(
+            ContainerKind::Object,
+            Some((required.object.store, required.object.artifact)),
+            mapping.as_bytes(),
+            &mut |bytes| resources.step(bytes as u64),
+        )
+        .map_err(|error| match error {
+            ArtifactControlError::Format(error) => TreeError::Format(error),
+            ArtifactControlError::Control(error) => error,
+        })?;
+        let identity = frame.identity();
+        let block = frame
+            .framed_block(required.block)
+            .map_err(TreeError::Format)?;
+        if identity.store != required.object.store
+            || identity.artifact != required.object.artifact
+            || identity.generation != required.object.generation
+            || identity.creation_serial != required.object.serial
+            || block.file_length() != required.object.bytes as usize
+            || block.file_checksum() != required.object.checksum
+            || block.reference() != required.block
+        {
+            return Err(TreeError::Invalid("maintenance spill descriptor mismatch"));
+        }
+        let payload = block.payload();
+        let target = output
+            .get_mut(..payload.len())
+            .ok_or(TreeError::Invalid("maintenance spill page exceeds scratch"))?;
+        resources.step(payload.len() as u64)?;
+        target.copy_from_slice(payload);
+        let length = payload.len();
+        drop(frame);
+        drop(mapping);
+        drop(path);
+        drop(path_charge);
+        Ok(length)
+    }
+
+    /// Revalidates one complete inventory descriptor through a scoped mapping.
+    /// The path, file and mapping are released before returning.
+    pub(crate) fn validate_object_descriptor(
+        &self,
+        descriptor: crate::property_graph::wal::ArtifactDescriptor,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<(), TreeError> {
+        self.check_owner(resources)?;
+        let bundle = self.lease.bundle();
+        if descriptor.store != bundle.base().store
+            || descriptor.family != crate::format::FormatFamily::NativeGraphObject.id()
+            || descriptor.version != 1
+        {
+            return Err(TreeError::Invalid("inventory object descriptor domain"));
+        }
+        let (path, path_charge) =
+            charged_artifact_path(self.memory, bundle.directory(), descriptor.artifact)?;
+        let file = bundle.vfs().open_for_map(&path).map_err(TreeError::Io)?;
+        let mapping = NativeReadonlyMapping::open(file, &path, self.lease)?;
+        let frame = artifact::decode_with_control(
+            ContainerKind::Object,
+            Some((descriptor.store, descriptor.artifact)),
+            mapping.as_bytes(),
+            &mut |bytes| resources.step(bytes as u64),
+        )
+        .map_err(|error| match error {
+            ArtifactControlError::Format(error) => TreeError::Format(error),
+            ArtifactControlError::Control(error) => error,
+        })?;
+        let identity = frame.identity();
+        let checksum = u64::from_le_bytes(
+            *mapping
+                .as_bytes()
+                .last_chunk::<8>()
+                .ok_or(TreeError::Invalid("inventory object checksum"))?,
+        );
+        if identity.store != descriptor.store
+            || identity.artifact != descriptor.artifact
+            || identity.generation != descriptor.generation
+            || identity.creation_serial != descriptor.serial
+            || mapping.as_bytes().len() != descriptor.bytes as usize
+            || checksum != descriptor.checksum
+        {
+            return Err(TreeError::Invalid("inventory object descriptor mismatch"));
+        }
+        drop(frame);
+        drop(mapping);
+        drop(path);
+        drop(path_charge);
+        Ok(())
+    }
+
+    pub(crate) fn validate_required_reference(
+        &self,
+        required: crate::property_graph::wal::RequiredRef,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<(), TreeError> {
+        self.check_owner(resources)?;
+        let bundle = self.lease.bundle();
+        let kind = if required.object.family == crate::format::FormatFamily::NativeGraphObject.id()
+        {
+            ContainerKind::Object
+        } else if required.object.family == crate::format::FormatFamily::NativeGraphRoot.id() {
+            ContainerKind::RootEnvelope
+        } else {
+            return Err(TreeError::Invalid("required reference container family"));
+        };
+        if required.object.store != bundle.base().store
+            || required.object.generation > bundle.base().generation
+            || required.object.serial == 0
+            || required.object.serial > bundle.high_waters().creation_serial
+            || required.object.artifact != required.block.artifact
+            || required.object.version != 1
+        {
+            return Err(TreeError::Invalid("required reference descriptor domain"));
+        }
+        let (path, path_charge) =
+            charged_artifact_path(self.memory, bundle.directory(), required.object.artifact)?;
+        let file = bundle.vfs().open_for_map(&path).map_err(TreeError::Io)?;
+        let mapping = NativeReadonlyMapping::open(file, &path, self.lease)?;
+        let frame = artifact::decode_with_control(
+            kind,
+            Some((required.object.store, required.object.artifact)),
+            mapping.as_bytes(),
+            &mut |bytes| resources.step(bytes as u64),
+        )
+        .map_err(|error| match error {
+            ArtifactControlError::Format(error) => TreeError::Format(error),
+            ArtifactControlError::Control(error) => error,
+        })?;
+        let block = frame
+            .framed_block(required.block)
+            .map_err(TreeError::Format)?;
+        let identity = frame.identity();
+        if identity.store != required.object.store
+            || identity.artifact != required.object.artifact
+            || identity.generation != required.object.generation
+            || identity.creation_serial != required.object.serial
+            || mapping.as_bytes().len() != required.object.bytes as usize
+            || block.file_checksum() != required.object.checksum
+            || block.reference() != required.block
+        {
+            return Err(TreeError::Invalid("required reference descriptor mismatch"));
+        }
+        drop(frame);
+        drop(mapping);
+        drop(path);
+        drop(path_charge);
+        Ok(())
+    }
 }
 
 impl BlockSource for NativePreparationSource<'_, '_> {
@@ -237,6 +481,109 @@ impl BlockSource for NativePreparationSource<'_, '_> {
             "native preparation source slot remained empty",
         ))?;
         self.decode(mapped, reference, resources)
+    }
+
+    fn with_block<R>(
+        &self,
+        reference: PhysicalRef,
+        resources: &mut TreeResources<'_>,
+        callback: impl for<'a, 'r> FnOnce(
+            FramedBlock<'a>,
+            &'r mut TreeResources<'_>,
+        ) -> Result<R, TreeError>,
+    ) -> Result<R, TreeError> {
+        if !self.scoped {
+            let block = self.resolve(reference, resources)?;
+            return callback(block, resources);
+        }
+        self.check_owner(resources)?;
+        let (path, path_charge) = charged_artifact_path(
+            self.memory,
+            self.lease.bundle().directory(),
+            reference.artifact,
+        )?;
+        let file = self
+            .lease
+            .bundle()
+            .vfs()
+            .open_for_map(&path)
+            .map_err(TreeError::Io)?;
+        let mapping = NativeReadonlyMapping::open(file, &path, self.lease)?;
+        let validation = self.admit_mapping(&mapping, reference, resources)?;
+        let block = validation
+            .framed_block(mapping.as_bytes(), reference)
+            .map_err(TreeError::Format)?;
+        let block = self.check_required(block)?;
+        let result = callback(block, resources);
+        drop(mapping);
+        drop(path);
+        drop(path_charge);
+        result
+    }
+
+    fn scoped_blocks(&self) -> bool {
+        self.scoped
+    }
+}
+
+impl BlockSource for NativeArtifactWindow<'_, '_, '_> {
+    fn resolve<'a>(
+        &'a self,
+        reference: PhysicalRef,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<FramedBlock<'a>, TreeError> {
+        self.source.check_owner(resources)?;
+        if reference.artifact != self.artifact {
+            return Err(TreeError::Invalid("artifact window reference owner"));
+        }
+        resources.step(1)?;
+        let block = self
+            .validation
+            .framed_block(self.mapping.as_bytes(), reference)
+            .map_err(TreeError::Format)?;
+        self.source.check_required(block)
+    }
+
+    fn with_block<R>(
+        &self,
+        reference: PhysicalRef,
+        resources: &mut TreeResources<'_>,
+        callback: impl for<'a, 'r> FnOnce(
+            FramedBlock<'a>,
+            &'r mut TreeResources<'_>,
+        ) -> Result<R, TreeError>,
+    ) -> Result<R, TreeError> {
+        if reference.artifact == self.artifact {
+            let block = self.resolve(reference, resources)?;
+            callback(block, resources)
+        } else {
+            self.source.with_block(reference, resources, callback)
+        }
+    }
+
+    fn scoped_blocks(&self) -> bool {
+        true
+    }
+}
+
+impl<'source, 'lease, 'm> NativeArtifactWindow<'source, 'lease, 'm> {
+    /// Reuse this authenticated object or enter one nested bounded object
+    /// window through the same admitted parent.
+    pub(crate) fn with_artifact_window<R>(
+        &self,
+        reference: PhysicalRef,
+        resources: &mut TreeResources<'_>,
+        callback: impl for<'a, 'r> FnOnce(
+            &'a NativeArtifactWindow<'_, 'lease, 'm>,
+            &'r mut TreeResources<'_>,
+        ) -> Result<R, TreeError>,
+    ) -> Result<R, TreeError> {
+        if reference.artifact == self.artifact {
+            callback(self, resources)
+        } else {
+            self.source
+                .with_artifact_window(reference, resources, callback)
+        }
     }
 }
 

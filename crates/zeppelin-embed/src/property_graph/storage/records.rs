@@ -19,6 +19,7 @@ mod prepare;
 pub(crate) use prepare::sort_by_symbol;
 pub use prepare::{RecordInput, prepare_record};
 mod fence;
+pub(crate) use fence::fence_window_reference;
 pub use fence::{FenceInput, FenceView, prepare_fence, verify_fence_entry};
 mod tombstone;
 pub use tombstone::{
@@ -126,7 +127,10 @@ impl<'a, S: BlockSource> StoredVector<'a, S> {
         if index >= self.dimensions {
             return Err(TreeError::Invalid("vector coordinate index"));
         }
-        let mut c = PayloadCursor::new(self.coordinates.subslice(u64::from(index) * 4, 4)?);
+        let mut c = PayloadCursor::new_with_resources(
+            self.coordinates.subslice(u64::from(index) * 4, 4)?,
+            resources,
+        )?;
         Ok(f32::from_bits(u32::from_le_bytes(c.read_array(resources)?)))
     }
 }
@@ -172,7 +176,7 @@ pub fn verify_canonical<'a, S: BlockSource>(
     {
         return Err(TreeError::Invalid("canonical role or bound"));
     }
-    let mut cursor = PayloadCursor::new(source);
+    let mut cursor = PayloadCursor::new_with_resources(source, resources)?;
     if cursor.read_array::<4>(resources)? != *b"ZGCI"
         || u16::from_le_bytes(cursor.read_array(resources)?) != 1
     {
@@ -243,13 +247,13 @@ pub fn verify_canonical<'a, S: BlockSource>(
     })
 }
 fn byte<S: BlockSource>(
-    c: &mut PayloadCursor<'_, S>,
+    c: &mut PayloadCursor<'_, '_, S>,
     r: &mut TreeResources<'_>,
 ) -> Result<u8, TreeError> {
     Ok(u8::from_le_bytes(c.read_array(r)?))
 }
 fn count<S: BlockSource>(
-    c: &mut PayloadCursor<'_, S>,
+    c: &mut PayloadCursor<'_, '_, S>,
     r: &mut TreeResources<'_>,
 ) -> Result<u64, TreeError> {
     let count = u64::from_le_bytes(c.read_array(r)?);
@@ -259,14 +263,14 @@ fn count<S: BlockSource>(
     Ok(count)
 }
 fn node<S: BlockSource>(
-    c: &mut PayloadCursor<'_, S>,
+    c: &mut PayloadCursor<'_, '_, S>,
     r: &mut TreeResources<'_>,
 ) -> Result<NodeId, TreeError> {
     NodeId::new(u128::from_le_bytes(c.read_array(r)?))
         .map_err(|_| TreeError::Invalid("zero canonical endpoint"))
 }
 fn text<'a, S: BlockSource>(
-    c: &mut PayloadCursor<'a, S>,
+    c: &mut PayloadCursor<'a, '_, S>,
     r: &mut TreeResources<'_>,
 ) -> Result<PayloadSlice<'a, S>, TreeError> {
     let value = c.blob(r)?;
@@ -274,7 +278,7 @@ fn text<'a, S: BlockSource>(
     Ok(value)
 }
 fn optional_text<'a, S: BlockSource>(
-    c: &mut PayloadCursor<'a, S>,
+    c: &mut PayloadCursor<'a, '_, S>,
     r: &mut TreeResources<'_>,
 ) -> Result<Option<PayloadSlice<'a, S>>, TreeError> {
     match byte(c, r)? {
@@ -296,7 +300,7 @@ fn increasing<S: BlockSource>(
     Ok(())
 }
 fn property<S: BlockSource>(
-    c: &mut PayloadCursor<'_, S>,
+    c: &mut PayloadCursor<'_, '_, S>,
     r: &mut TreeResources<'_>,
 ) -> Result<(u8, Option<u64>), TreeError> {
     let tag = byte(c, r)?;
@@ -343,7 +347,7 @@ fn property<S: BlockSource>(
     Ok((tag, count))
 }
 fn match_blob<S: BlockSource>(
-    c: &mut PayloadCursor<'_, S>,
+    c: &mut PayloadCursor<'_, '_, S>,
     expected: &[u8],
     r: &mut TreeResources<'_>,
 ) -> Result<(), TreeError> {
@@ -354,7 +358,7 @@ fn match_blob<S: BlockSource>(
 }
 fn vector<'a, S: BlockSource>(
     source: PayloadSlice<'a, S>,
-    c: &mut PayloadCursor<'a, S>,
+    c: &mut PayloadCursor<'a, '_, S>,
     tower: &EmbeddingTower,
     r: &mut TreeResources<'_>,
 ) -> Result<StoredVector<'a, S>, TreeError> {
