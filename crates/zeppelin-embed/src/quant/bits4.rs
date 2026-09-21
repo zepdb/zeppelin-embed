@@ -23,6 +23,12 @@ use crate::kernels::{MAX_DOT_I8_DIMENSION, dot_bit4_prepared, score_bit4_prepare
 
 use super::QuantError;
 
+mod controlled;
+pub(crate) use controlled::{
+    Bit4ControlError, Bit4Scratch, est_dot_bit4_controlled, prepare_bit4_query_controlled,
+    quantize_bit4_controlled,
+};
+
 const CODES_PER_BYTE: usize = 2;
 const MAX_MAGNITUDE_LEVEL: u8 = 7;
 
@@ -179,84 +185,13 @@ struct CriticalValue {
 /// Validation completes before `out` is modified.
 pub fn quantize_bit4(v: &[f32], out: &mut [u8]) -> Result<Bit4Factors, QuantError> {
     validate_input(v, out.len())?;
-
-    let mut norm_squared = 0.0_f64;
-    let mut absolute_sum = 0.0_f64;
-    let mut row_scale = 0.0_f64;
-    let mut critical_values = Vec::with_capacity(v.len().saturating_mul(7));
-    for (coordinate, &value) in v.iter().enumerate() {
-        let value = f64::from(value);
-        let magnitude = value.abs();
-        norm_squared += value * value;
-        absolute_sum += magnitude;
-        row_scale = row_scale.max(magnitude);
-        if magnitude > 0.0 {
-            for level in 1..=MAX_MAGNITUDE_LEVEL {
-                critical_values.push(CriticalValue {
-                    threshold: f64::from(level) / magnitude,
-                    coordinate,
-                    level,
-                    magnitude,
-                });
-            }
-        }
+    let mut scratch = Bit4Scratch::compatibility(v.len());
+    match quantize_bit4_controlled(v, out, &mut scratch, &mut |_| Ok::<_, ()>(())) {
+        Ok(factors) => Ok(factors),
+        Err(Bit4ControlError::Quant(error)) => Err(error),
+        Err(Bit4ControlError::Memory) => Err(QuantError::Allocation),
+        Err(Bit4ControlError::Control(())) => Err(QuantError::Allocation),
     }
-    critical_values.sort_unstable_by(|left, right| {
-        left.threshold
-            .total_cmp(&right.threshold)
-            .then_with(|| left.coordinate.cmp(&right.coordinate))
-            .then_with(|| left.level.cmp(&right.level))
-    });
-
-    let mut numerator = 0.5 * absolute_sum;
-    let mut grid_norm_squared = 0.25 * v.len() as f64;
-    let mut best_numerator = numerator;
-    let mut best_score_squared = normalized_score_squared(numerator, grid_norm_squared);
-    let mut best_event_count = 0_usize;
-    let mut event_count = 0_usize;
-    let mut events = critical_values.iter().peekable();
-    while let Some(event) = events.next() {
-        let threshold = event.threshold;
-        apply_event(event, &mut numerator, &mut grid_norm_squared);
-        event_count += 1;
-        while events
-            .peek()
-            .is_some_and(|next| next.threshold == threshold)
-        {
-            if let Some(tied) = events.next() {
-                apply_event(tied, &mut numerator, &mut grid_norm_squared);
-                event_count += 1;
-            }
-        }
-        let score_squared = normalized_score_squared(numerator, grid_norm_squared);
-        if score_squared > best_score_squared {
-            best_score_squared = score_squared;
-            best_numerator = numerator;
-            best_event_count = event_count;
-        }
-    }
-
-    let mut magnitudes = vec![0_u8; v.len()];
-    for event in critical_values.iter().take(best_event_count) {
-        if let Some(level) = magnitudes.get_mut(event.coordinate) {
-            *level = event.level;
-        }
-    }
-    pack(v, &magnitudes, out);
-
-    let (normalized_norm, normalized_correction) = if norm_squared == 0.0 {
-        (0.0, 0.0)
-    } else {
-        (
-            (norm_squared.sqrt() / row_scale) as f32,
-            (norm_squared / (row_scale * best_numerator)) as f32,
-        )
-    };
-    Ok(Bit4Factors {
-        scale: row_scale as f32,
-        normalized_norm,
-        normalized_correction,
-    })
 }
 
 /// Reconstructs the norm-scaled selected four-bit code direction.
@@ -305,43 +240,18 @@ pub fn dequantize_bit4(
 /// [`QuantError::NonFinite`] under the same input policy as
 /// [`quantize_bit4`].
 pub fn prepare_bit4_query(q: &[f32], seed: u64) -> Result<Bit4Query, QuantError> {
-    validate_vector(q)?;
     #[cfg(any(test, feature = "test-support"))]
     super::QUERY_PREPARATIONS.with(|calls| {
         if let Some(calls) = calls.borrow_mut().as_mut() {
             calls.bit4.push((q.len(), seed));
         }
     });
-    let max_absolute = q.iter().map(|value| value.abs()).fold(0.0_f32, f32::max);
-    if max_absolute == 0.0 {
-        return Ok(Bit4Query {
-            codes: vec![0_i8; q.len()],
-            code_sum: 0,
-            scale_half: 0.0,
-        });
+    match prepare_bit4_query_controlled(q, seed, &mut |_| Ok::<_, ()>(())) {
+        Ok((query, _)) => Ok(query),
+        Err(Bit4ControlError::Quant(error)) => Err(error),
+        Err(Bit4ControlError::Memory) => Err(QuantError::Allocation),
+        Err(Bit4ControlError::Control(())) => Err(QuantError::Allocation),
     }
-
-    let scale = f64::from(max_absolute) / 127.0;
-    let mut random = SplitMix64::new(seed);
-    let mut coordinate_codes = Vec::with_capacity(q.len());
-    for &value in q {
-        let scaled = f64::from(value) / scale;
-        let lower = scaled.floor();
-        let probability_up = scaled - lower;
-        let rounded = if random.next_open_unit_f64() < probability_up {
-            lower + 1.0
-        } else {
-            lower
-        };
-        coordinate_codes.push(rounded.clamp(-127.0, 127.0) as i8);
-    }
-    let code_sum = coordinate_codes.iter().map(|&code| i32::from(code)).sum();
-    let codes = interleave_bit4_query_blocks(&coordinate_codes);
-    Ok(Bit4Query {
-        codes,
-        code_sum,
-        scale_half: scale * 0.5,
-    })
 }
 
 /// Estimates a dot product directly from one packed four-bit row.
@@ -365,12 +275,14 @@ pub fn est_dot_bit4(
     codes: &[u8],
     factors: Bit4Factors,
 ) -> Result<f32, QuantError> {
-    validate_code(codes, query.codes.len())?;
-    if factors.scale == 0.0 {
-        return Ok(0.0);
+    match est_dot_bit4_controlled(query, codes, factors, &mut |_| {
+        Ok::<_, std::convert::Infallible>(())
+    }) {
+        Ok(value) => Ok(value),
+        Err(Bit4ControlError::Quant(error)) => Err(error),
+        Err(Bit4ControlError::Memory) => Err(QuantError::Allocation),
+        Err(Bit4ControlError::Control(never)) => match never {},
     }
-    let integer_dot = dot_bit4_prepared(&query.codes, query.code_sum, codes);
-    Ok((factors.correction() * query.scale_half * f64::from(integer_dot)) as f32)
 }
 
 /// Estimates dot products for contiguous packed four-bit rows in one dispatch.
@@ -421,15 +333,6 @@ pub fn est_dot_bit4_batch(
     Ok(())
 }
 
-fn interleave_bit4_query_blocks(codes: &[i8]) -> Vec<i8> {
-    let mut interleaved = Vec::with_capacity(codes.len());
-    for block in codes.chunks(32) {
-        interleaved.extend(block.iter().step_by(2).copied());
-        interleaved.extend(block.iter().skip(1).step_by(2).copied());
-    }
-    interleaved
-}
-
 fn validate_input(v: &[f32], output_len: usize) -> Result<(), QuantError> {
     validate_vector(v)?;
     let expected = v.len().div_ceil(CODES_PER_BYTE);
@@ -442,7 +345,7 @@ fn validate_input(v: &[f32], output_len: usize) -> Result<(), QuantError> {
     Ok(())
 }
 
-fn validate_vector(v: &[f32]) -> Result<(), QuantError> {
+fn validate_vector_shape(v: &[f32]) -> Result<(), QuantError> {
     if v.is_empty() {
         return Err(QuantError::EmptyVector);
     }
@@ -452,6 +355,11 @@ fn validate_vector(v: &[f32]) -> Result<(), QuantError> {
             maximum: MAX_DOT_I8_DIMENSION,
         });
     }
+    Ok(())
+}
+
+fn validate_vector(v: &[f32]) -> Result<(), QuantError> {
+    validate_vector_shape(v)?;
     if let Some((index, _)) = v.iter().enumerate().find(|(_, value)| !value.is_finite()) {
         return Err(QuantError::NonFinite { index });
     }

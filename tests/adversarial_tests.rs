@@ -19160,13 +19160,30 @@ fn native_graph_runner_keys_are_active_with_graph_feature() {
     #[cfg(not(feature = "graph-result-test-support"))]
     assert_eq!(
         adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        217
+        276
     );
     #[cfg(feature = "graph-result-test-support")]
     assert_eq!(
         adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        237
+        296
     );
+}
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn native_vector_index_probe_credits_exact_registered_receipts() {
+    let mut coverage = adversarial::coverage::CoverageRegistry::default();
+    let report = adversarial::graph_native_vector_index::probe(7, &mut coverage)
+        .expect("directed native vector-index probe");
+    assert_eq!(
+        adversarial::graph_native_vector_index::REGISTERED_COVERAGE.len(),
+        8
+    );
+    for key in adversarial::graph_native_vector_index::REGISTERED_COVERAGE {
+        assert_eq!(coverage.count(key), 1, "native vector-index receipt {key}");
+    }
+    assert_eq!(report.oracle.fires, 6);
+    assert_eq!(report.oracle.release_checks, 2);
 }
 
 #[cfg(feature = "graph-cypher")]

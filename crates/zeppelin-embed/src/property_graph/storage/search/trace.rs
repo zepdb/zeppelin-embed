@@ -1,10 +1,11 @@
 //! Complete bounded tracing for one admitted sparse retrieval participant.
 
 use super::codec::{
-    MEMBERSHIP_BYTES, MembershipRow, Modality, ROW_BYTES, SOURCE_VALUE_BYTES, SourceManifest,
-    SourceValue, SparseRootState, SparseRoots, SparseRow, validate_row_correlation,
+    MEMBERSHIP_BYTES, MembershipRow, Modality, ROW_BYTES, SOURCE_VALUE_BYTES, SourceFormat,
+    SourceManifest, SourceValue, SparseRootState, SparseRoots, SparseRow, validate_row_correlation,
 };
-use super::view::{SparseLexical, SparseView, decode_lexical_prepare};
+use super::vector_index::{open_vector_index, validate_vector_index_rows};
+use super::view::{SparseLexical, SparseOwner, SparseView, decode_lexical_prepare};
 use crate::lifecycle::native_graph::NativeReadLease;
 use crate::property_graph::storage::artifact::{self, BlockKind, PhysicalRef};
 use crate::property_graph::storage::payload::PayloadRef;
@@ -339,6 +340,7 @@ pub(crate) struct SearchTraceCursor<'s, 'm, S, C> {
     catalog: &'s C,
     lease: &'s NativeReadLease,
     document: Option<&'s crate::epoch::EmbeddingTower>,
+    lexical_epoch: crate::fts::tokenizer::TokenizerEpoch,
     store: crate::property_graph::StoreInstanceId,
     native: crate::property_graph::storage::tree::directory::GraphRoots,
     memory: &'m crate::property_graph::storage::memory::StorageMemory<'m>,
@@ -354,6 +356,7 @@ pub(crate) struct SearchTraceCursor<'s, 'm, S, C> {
     source_state: Option<SourceState>,
     lexical: Option<SparseLexical<'m>>,
     payload: Option<PayloadState>,
+    index_catalog: Option<RequiredRef>,
     record_payloads: [Option<PayloadRef>; 3],
     record_payload: usize,
     member_count: u64,
@@ -443,6 +446,7 @@ impl<'s, 'm, S: BlockSource, C: RecordCatalog<S>> SearchTraceCursor<'s, 'm, S, C
             catalog,
             lease,
             document,
+            lexical_epoch: lexical,
             store,
             native,
             memory,
@@ -458,6 +462,7 @@ impl<'s, 'm, S: BlockSource, C: RecordCatalog<S>> SearchTraceCursor<'s, 'm, S, C
             source_state: None,
             lexical: None,
             payload: None,
+            index_catalog: None,
             record_payloads: [None; 3],
             record_payload: 0,
             member_count: 0,
@@ -538,6 +543,9 @@ impl<'s, 'm, S: BlockSource, C: RecordCatalog<S>> SearchTraceCursor<'s, 'm, S, C
                 }
                 continue;
             }
+            if let Some(required) = self.index_catalog.take() {
+                return Ok(Some(required.block));
+            }
             if self.record_payload < self.record_payloads.len() {
                 let index = self.record_payload;
                 self.record_payload += 1;
@@ -595,7 +603,42 @@ impl<'s, 'm, S: BlockSource, C: RecordCatalog<S>> SearchTraceCursor<'s, 'm, S, C
                             return Err(TreeError::Invalid("missing sparse trace lexical region"));
                         }
                     }
-                    4 if state.row < state.manifest.rows => {
+                    4 => {
+                        state.phase = 5;
+                        self.source_state = Some(state);
+                        if state.manifest.modality == Modality::Vector
+                            && state.manifest.format == SourceFormat::V2
+                        {
+                            let payload = state
+                                .manifest
+                                .vector_index
+                                .ok_or(TreeError::Invalid("missing sparse trace vector index"))?;
+                            let index = open_vector_index(
+                                self.source,
+                                state.store,
+                                state.manifest.generation,
+                                payload,
+                                self.lexical_epoch,
+                                self.document,
+                                SparseOwner::preparation(self.memory),
+                                resources,
+                            )?;
+                            validate_vector_index_rows(
+                                self.source,
+                                state.store,
+                                state.manifest.generation,
+                                state.manifest.row_table,
+                                state.manifest.rows,
+                                self.catalog,
+                                self.document,
+                                &index,
+                                resources,
+                            )?;
+                            self.index_catalog = Some(index.interpretation_catalog());
+                            self.schedule_payload(payload, state.manifest.generation);
+                        }
+                    }
+                    5 if state.row < state.manifest.rows => {
                         let row_index = state.row;
                         let mut row_bytes = [0_u8; ROW_BYTES];
                         let rows = PayloadSlice::new(
@@ -717,7 +760,7 @@ impl<'s, 'm, S: BlockSource, C: RecordCatalog<S>> SearchTraceCursor<'s, 'm, S, C
                         self.record_payload = 0;
                         self.source_state = Some(state);
                     }
-                    4 => {
+                    5 => {
                         if state.live_rows != state.value.live_rows
                             || (state.manifest.modality == Modality::Text
                                 && state.live_length != state.value.live_length)

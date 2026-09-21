@@ -10,7 +10,8 @@ use crate::property_graph::wal::{ArtifactDescriptor, RequiredRef};
 use crate::property_graph::{GraphGeneration, NodeId, StoreInstanceId};
 
 pub(super) const ROOT_BYTES: usize = 256;
-pub(super) const SOURCE_BYTES: usize = 144;
+pub(super) const SOURCE_V1_BYTES: usize = 144;
+pub(super) const SOURCE_V2_BYTES: usize = 200;
 pub(super) const ROW_BYTES: usize = 80;
 pub(super) const MEMBERSHIP_BYTES: usize = 48;
 pub(super) const SOURCE_VALUE_BYTES: usize = 64;
@@ -32,6 +33,12 @@ impl Modality {
             _ => Err(TreeError::Invalid("sparse modality")),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SourceFormat {
+    V1,
+    V2,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -125,23 +132,44 @@ impl SourceValue {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SourceManifest {
+    pub(super) format: SourceFormat,
     pub(super) modality: Modality,
     pub(super) generation: GraphGeneration,
     pub(super) sequence: u64,
     pub(super) rows: u32,
     pub(super) row_table: PayloadRef,
     pub(super) lexical: Option<PayloadRef>,
+    pub(super) vector_index: Option<PayloadRef>,
 }
 
 impl SourceManifest {
     pub(super) fn encode(self, output: &mut [u8]) -> Result<(), TreeError> {
-        if output.len() != SOURCE_BYTES || self.rows == 0 {
+        let (version, width) = match self.format {
+            SourceFormat::V1 => (1_u16, SOURCE_V1_BYTES),
+            SourceFormat::V2 => (2_u16, SOURCE_V2_BYTES),
+        };
+        if output.len() != width || self.rows == 0 {
             return Err(TreeError::Invalid("sparse source width or rows"));
+        }
+        if self.row_table.role() != BlockKind::RetrievalRows
+            || self.row_table.len() != u64::from(self.rows) * ROW_BYTES as u64
+            || (self.modality == Modality::Text) != self.lexical.is_some()
+            || self
+                .lexical
+                .is_some_and(|value| value.role() != BlockKind::RetrievalLexical)
+            || (self.format == SourceFormat::V1 && self.vector_index.is_some())
+            || (self.format == SourceFormat::V2
+                && ((self.modality == Modality::Vector) != self.vector_index.is_some()))
+            || self
+                .vector_index
+                .is_some_and(|value| value.role() != BlockKind::RetrievalVectorIndex)
+        {
+            return Err(TreeError::Invalid("sparse source geometry or modality"));
         }
         output.fill(0);
         put(output, 0, b"ZGCP")?;
         put(output, 4, &ROLE.to_le_bytes())?;
-        put(output, 6, &VERSION.to_le_bytes())?;
+        put(output, 6, &version.to_le_bytes())?;
         put(output, 8, &[2])?;
         put(output, 9, &[self.modality as u8])?;
         put(output, 16, &self.generation.get().to_le_bytes())?;
@@ -152,13 +180,26 @@ impl SourceManifest {
             put(output, 88, &[1])?;
             lexical.encode_into(range_mut(output, 96, 48)?)?;
         }
+        if let Some(vector_index) = self.vector_index {
+            put(output, 144, &[1])?;
+            vector_index.encode_into(range_mut(output, 152, 48)?)?;
+        }
         Ok(())
     }
 
     pub(super) fn decode(bytes: &[u8]) -> Result<Self, TreeError> {
-        participant_header(bytes, 2)?;
-        if bytes.len() != SOURCE_BYTES
-            || range(bytes, 10, 6)?.iter().any(|byte| *byte != 0)
+        if bytes.get(..4) != Some(b"ZGCP".as_slice())
+            || read_u16(bytes, 4)? != ROLE
+            || read_u8(bytes, 8)? != 2
+        {
+            return Err(TreeError::Invalid("sparse source role or subtype"));
+        }
+        let format = match (read_u16(bytes, 6)?, bytes.len()) {
+            (1, SOURCE_V1_BYTES) => SourceFormat::V1,
+            (2, SOURCE_V2_BYTES) => SourceFormat::V2,
+            _ => return Err(TreeError::Invalid("sparse source version or width")),
+        };
+        if range(bytes, 10, 6)?.iter().any(|byte| *byte != 0)
             || read_u32(bytes, 36)? != 0
             || range(bytes, 89, 7)?.iter().any(|byte| *byte != 0)
         {
@@ -172,21 +213,39 @@ impl SourceManifest {
             1 => Some(PayloadRef::decode(range(bytes, 96, 48)?)?),
             _ => return Err(TreeError::Invalid("sparse lexical presence")),
         };
+        let vector_index = match format {
+            SourceFormat::V1 => None,
+            SourceFormat::V2 => {
+                if range(bytes, 145, 7)?.iter().any(|byte| *byte != 0) {
+                    return Err(TreeError::Invalid("sparse vector index reserved"));
+                }
+                match read_u8(bytes, 144)? {
+                    0 if range(bytes, 152, 48)?.iter().all(|byte| *byte == 0) => None,
+                    1 => Some(PayloadRef::decode(range(bytes, 152, 48)?)?),
+                    _ => return Err(TreeError::Invalid("sparse vector index presence")),
+                }
+            }
+        };
         if rows == 0
             || row_table.role() != BlockKind::RetrievalRows
             || row_table.len() != u64::from(rows) * ROW_BYTES as u64
             || (modality == Modality::Text) != lexical.is_some()
             || lexical.is_some_and(|value| value.role() != BlockKind::RetrievalLexical)
+            || (format == SourceFormat::V2
+                && ((modality == Modality::Vector) != vector_index.is_some()))
+            || vector_index.is_some_and(|value| value.role() != BlockKind::RetrievalVectorIndex)
         {
             return Err(TreeError::Invalid("sparse source geometry or modality"));
         }
         Ok(Self {
+            format,
             modality,
             generation: GraphGeneration::new(read_u64(bytes, 16)?),
             sequence: read_u64(bytes, 24)?,
             rows,
             row_table,
             lexical,
+            vector_index,
         })
     }
 }
@@ -452,7 +511,7 @@ fn decode_optional(bytes: &[u8]) -> Result<Option<PhysicalRef>, TreeError> {
     }
 }
 
-fn encode_required(value: RequiredRef, output: &mut [u8]) -> Result<(), TreeError> {
+pub(super) fn encode_required(value: RequiredRef, output: &mut [u8]) -> Result<(), TreeError> {
     if output.len() != 96 {
         return Err(TreeError::Invalid("required reference width"));
     }
@@ -468,7 +527,7 @@ fn encode_required(value: RequiredRef, output: &mut [u8]) -> Result<(), TreeErro
     Ok(())
 }
 
-fn decode_required(bytes: &[u8]) -> Result<RequiredRef, TreeError> {
+pub(super) fn decode_required(bytes: &[u8]) -> Result<RequiredRef, TreeError> {
     if bytes.len() != 96 {
         return Err(TreeError::Invalid("required reference width"));
     }

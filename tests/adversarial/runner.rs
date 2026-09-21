@@ -2920,6 +2920,7 @@ fn run_program_for_with_clock(
         super::graph_search_lowering::probe(seed, &mut coverage)?;
         super::graph_query_storage::probe(seed, &mut coverage)?;
         super::graph_mutation_lowering::probe(seed, &mut coverage)?;
+        super::graph_native_vector_index::probe(seed, &mut coverage)?;
         super::graph_read_view::probe(seed, &mut coverage)?;
         super::graph_publication::probe(seed, &mut coverage)?;
         super::graph_native_result::probe(seed, &mut coverage)?;

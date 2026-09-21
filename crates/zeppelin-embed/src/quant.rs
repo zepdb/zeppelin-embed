@@ -36,6 +36,10 @@ pub fn take_query_preparation_test_observations() -> QueryPreparationTestObserva
     QUERY_PREPARATIONS.with(|calls| calls.take().unwrap_or_default())
 }
 
+pub(crate) use bits4::{
+    Bit4ControlError, Bit4Scratch, est_dot_bit4_controlled, prepare_bit4_query_controlled,
+    quantize_bit4_controlled,
+};
 pub use bits4::{
     Bit4Factors, Bit4Query, dequantize_bit4, est_dot_bit4, est_dot_bit4_batch, prepare_bit4_query,
     quantize_bit4,
@@ -55,6 +59,8 @@ pub use rescore::{
 /// Typed failure from a training-free quantizer or estimator.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum QuantError {
+    /// Scratch or output backing could not be allocated.
+    Allocation,
     /// The input dimension is zero, for which a code direction is undefined.
     EmptyVector,
     /// The vector exceeds the dimension supported by the reused i8 kernel.
@@ -102,6 +108,7 @@ pub enum QuantError {
 impl std::fmt::Display for QuantError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Allocation => formatter.write_str("quantization allocation failed"),
             Self::EmptyVector => formatter.write_str("quantization vector must not be empty"),
             Self::DimensionTooLarge { actual, maximum } => write!(
                 formatter,

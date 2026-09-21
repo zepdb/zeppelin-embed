@@ -39,6 +39,7 @@ impl PayloadRef {
                 | BlockKind::RetrievalRows
                 | BlockKind::RetrievalLexical
                 | BlockKind::RetrievalLiveRows
+                | BlockKind::RetrievalVectorIndex
         ) || length > role_limit(role) as u64
             || (role == BlockKind::OverflowKey
                 && (length < 9 || reference.kind != BlockKind::OverflowKey))
@@ -92,6 +93,7 @@ impl PayloadRef {
             15 => BlockKind::RetrievalRows,
             16 => BlockKind::RetrievalLexical,
             17 => BlockKind::RetrievalLiveRows,
+            18 => BlockKind::RetrievalVectorIndex,
             _ => return Err(TreeError::Invalid("logical payload role")),
         };
         let reference = artifact::decode_reference(
@@ -357,7 +359,10 @@ fn role_limit(role: BlockKind) -> usize {
         MAX_RECORD_BYTES
     } else if matches!(
         role,
-        BlockKind::RetrievalRows | BlockKind::RetrievalLexical | BlockKind::RetrievalLiveRows
+        BlockKind::RetrievalRows
+            | BlockKind::RetrievalLexical
+            | BlockKind::RetrievalLiveRows
+            | BlockKind::RetrievalVectorIndex
     ) {
         MAX_RECORD_BYTES
     } else {
@@ -379,6 +384,7 @@ fn validate_prepared(role: BlockKind, length: usize) -> Result<(), TreeError> {
                 | BlockKind::RetrievalRows
                 | BlockKind::RetrievalLexical
                 | BlockKind::RetrievalLiveRows
+                | BlockKind::RetrievalVectorIndex
         )
     {
         return Err(TreeError::Invalid(

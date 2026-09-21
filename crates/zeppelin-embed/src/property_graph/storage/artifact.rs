@@ -124,6 +124,8 @@ pub enum BlockKind {
     RetrievalLexical = 16,
     /// Sparse retrieval source live mask.
     RetrievalLiveRows = 17,
+    /// Complete immutable native derived vector-index image.
+    RetrievalVectorIndex = 18,
 }
 
 /// Identity and monotone creation metadata covered by the file checksum.
@@ -725,6 +727,7 @@ fn block_kind(value: u16) -> Result<BlockKind, FormatError> {
         15 => Ok(BlockKind::RetrievalRows),
         16 => Ok(BlockKind::RetrievalLexical),
         17 => Ok(BlockKind::RetrievalLiveRows),
+        18 => Ok(BlockKind::RetrievalVectorIndex),
         _ => Err(invalid(
             FormatCheck::Family,
             "unknown required graph block kind",

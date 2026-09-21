@@ -2,9 +2,10 @@
 
 use super::codec::{
     MEMBERSHIP_BYTES, MembershipRow, Modality, ROW_BYTES, RootDescriptor, SOURCE_VALUE_BYTES,
-    SourceManifest, SourceValue, SparseRootState, SparseRoots, SparseRow,
+    SourceFormat, SourceManifest, SourceValue, SparseRootState, SparseRoots, SparseRow,
     validate_catalog_interpretation, validate_row_correlation,
 };
+use super::vector_index::{NativeVectorIndex, open_vector_index, validate_vector_index_rows};
 use crate::epoch::EmbeddingTower;
 use crate::fts::graph_build::{DecodedGraphLexical, GraphLexicalError};
 use crate::fts::sealed::SealedSegment;
@@ -130,13 +131,13 @@ impl SparseCharge<'_> {
     }
 }
 
-enum SparseBytes<'m> {
+pub(super) enum SparseBytes<'m> {
     Preparation(StorageBuffer<'m, u8>),
     Query(QueryArena<'m, 'm, u8>),
 }
 
 impl<'m> SparseBytes<'m> {
-    fn new(
+    pub(super) fn new(
         owner: SparseOwner<'m>,
         length: usize,
         resources: &mut TreeResources<'_>,
@@ -165,14 +166,14 @@ impl<'m> SparseBytes<'m> {
         Ok(bytes)
     }
 
-    fn as_slice(&self) -> &[u8] {
+    pub(super) fn as_slice(&self) -> &[u8] {
         match self {
             Self::Preparation(values) => values.as_slice(),
             Self::Query(values) => values.as_slice(),
         }
     }
 
-    fn as_mut_slice(&mut self) -> &mut [u8] {
+    pub(super) fn as_mut_slice(&mut self) -> &mut [u8] {
         match self {
             Self::Preparation(values) => values.as_mut_slice(),
             Self::Query(values) => values.as_mut_slice(),
@@ -816,6 +817,32 @@ impl<'a, 'm, S: BlockSource, C: RecordCatalog<S>> SparseView<'a, 'm, S, C> {
             if manifest.modality != modality {
                 return Err(TreeError::Invalid("sparse scanned source modality"));
             }
+            if modality == Modality::Vector && manifest.format == SourceFormat::V2 {
+                let payload = manifest
+                    .vector_index
+                    .ok_or(TreeError::Invalid("missing native vector index"))?;
+                let index = open_vector_index(
+                    self.source,
+                    descriptor.store,
+                    manifest.generation,
+                    payload,
+                    descriptor.lexical,
+                    self.document,
+                    self.owner,
+                    resources,
+                )?;
+                validate_vector_index_rows(
+                    self.source,
+                    descriptor.store,
+                    manifest.generation,
+                    manifest.row_table,
+                    manifest.rows,
+                    self.catalog,
+                    self.document,
+                    &index,
+                    resources,
+                )?;
+            }
             let mask_len = (manifest.rows as usize).saturating_add(7) / 8;
             if value.mask.len() != mask_len as u64 {
                 return Err(TreeError::Invalid("sparse scanned mask length"));
@@ -1140,6 +1167,144 @@ impl<'v, 'a, 'm, 'r, S: BlockSource, C: RecordCatalog<S>> SparseSources<'v, 'a, 
 impl<'v, 'a, 'm, S: BlockSource, C: RecordCatalog<S>> SparseSource<'v, 'a, 'm, S, C> {
     pub(crate) const fn row_count(&self) -> u32 {
         self.manifest.rows
+    }
+
+    #[cfg(any(test, all(feature = "graph-cypher", feature = "test-support")))]
+    pub(crate) const fn source_reference_for_test(
+        &self,
+    ) -> crate::property_graph::storage::artifact::PhysicalRef {
+        self.reference
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn format_for_test(&self) -> SourceFormat {
+        self.manifest.format
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn has_vector_index_for_test(&self) -> bool {
+        self.manifest.vector_index.is_some()
+    }
+
+    #[cfg(any(test, all(feature = "graph-cypher", feature = "test-support")))]
+    pub(crate) fn vector_index_physical_references_for_test(
+        &self,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<Vec<crate::property_graph::storage::artifact::PhysicalRef>, TreeError> {
+        self.view.owner.check(resources)?;
+        let payload = self
+            .manifest
+            .vector_index
+            .ok_or(TreeError::Invalid("missing native vector index"))?;
+        let mut references = Vec::new();
+        let mut ordinal = 0;
+        loop {
+            let Some(reference) = payload.physical_reference_at(
+                self.view.source,
+                self.descriptor.store,
+                self.manifest.generation,
+                ordinal,
+                resources,
+            )?
+            else {
+                break;
+            };
+            references.push(reference);
+            ordinal += 1;
+        }
+        Ok(references)
+    }
+
+    #[cfg(test)]
+    pub(super) const fn manifest_for_test(&self) -> super::codec::SourceManifest {
+        self.manifest
+    }
+
+    #[cfg(test)]
+    pub(crate) fn open_vector_index_image_for_test(
+        &self,
+        image: &[u8],
+        resources: &mut TreeResources<'_>,
+    ) -> Result<(), TreeError> {
+        let index = super::vector_index::open_vector_index_image_for_test(
+            self.view.source,
+            self.descriptor.store,
+            self.manifest.generation,
+            image,
+            self.descriptor.lexical,
+            self.view.document,
+            self.view.owner,
+            resources,
+        )?;
+        super::vector_index::validate_vector_index_rows(
+            self.view.source,
+            self.descriptor.store,
+            self.manifest.generation,
+            self.manifest.row_table,
+            self.manifest.rows,
+            self.view.catalog,
+            self.view.document,
+            &index,
+            resources,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn validate_physical_row_rewrite_for_test(
+        &self,
+        index: &NativeVectorIndex<'_>,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<(), TreeError>
+    where
+        C: RecordCatalog<super::vector_index::PhysicalRewriteOverlay<'a, S>>,
+    {
+        super::vector_index::validate_physical_row_rewrite_for_test(
+            self.view.source,
+            self.descriptor.store,
+            self.manifest.generation,
+            self.manifest.row_table,
+            self.manifest.rows,
+            self.view.catalog,
+            self.view.document,
+            index,
+            resources,
+        )
+    }
+
+    pub(crate) fn vector_index(
+        &self,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<Option<NativeVectorIndex<'m>>, TreeError> {
+        self.view.owner.check(resources)?;
+        if self.manifest.modality != Modality::Vector || self.manifest.format == SourceFormat::V1 {
+            return Ok(None);
+        }
+        let payload = self
+            .manifest
+            .vector_index
+            .ok_or(TreeError::Invalid("missing native vector index"))?;
+        let index = open_vector_index(
+            self.view.source,
+            self.descriptor.store,
+            self.manifest.generation,
+            payload,
+            self.descriptor.lexical,
+            self.view.document,
+            self.view.owner,
+            resources,
+        )?;
+        validate_vector_index_rows(
+            self.view.source,
+            self.descriptor.store,
+            self.manifest.generation,
+            self.manifest.row_table,
+            self.manifest.rows,
+            self.view.catalog,
+            self.view.document,
+            &index,
+            resources,
+        )?;
+        Ok(Some(index))
     }
 
     fn live_bit(&self, row: u32, resources: &mut TreeResources<'_>) -> Result<bool, TreeError> {

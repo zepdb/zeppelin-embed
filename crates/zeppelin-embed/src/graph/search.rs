@@ -127,14 +127,30 @@ const ANGULAR_EF_PER_K: usize = 4;
 pub const UNIT_NORM_SQUARED_TOLERANCE: f64 = 1.0e-3;
 
 pub(crate) fn non_unit_squared_norm(vector: &[f32]) -> Option<f64> {
-    if vector.is_empty() || vector.iter().any(|value| !value.is_finite()) {
-        return None;
+    match non_unit_squared_norm_controlled(vector, &mut |_| Ok::<_, std::convert::Infallible>(())) {
+        Ok(value) => value,
+        Err(never) => match never {},
     }
-    let squared_norm = vector
-        .iter()
-        .map(|value| f64::from(*value) * f64::from(*value))
-        .sum::<f64>();
-    ((squared_norm - 1.0).abs() > UNIT_NORM_SQUARED_TOLERANCE).then_some(squared_norm)
+}
+
+pub(crate) fn non_unit_squared_norm_controlled<E>(
+    vector: &[f32],
+    control: &mut impl FnMut(u64) -> Result<(), E>,
+) -> Result<Option<f64>, E> {
+    if vector.is_empty() {
+        return Ok(None);
+    }
+    let mut squared_norm = 0.0_f64;
+    for chunk in vector.chunks(256) {
+        control(chunk.len() as u64)?;
+        for value in chunk {
+            if !value.is_finite() {
+                return Ok(None);
+            }
+            squared_norm += f64::from(*value) * f64::from(*value);
+        }
+    }
+    Ok(((squared_norm - 1.0).abs() > UNIT_NORM_SQUARED_TOLERANCE).then_some(squared_norm))
 }
 
 /// Dataset-shape profile used when the caller leaves `ef` adaptive.
@@ -1267,9 +1283,23 @@ impl<'a> GraphSearcher<'a> {
             }
         }
         let entry_count = entries.len();
+        let expected = usize::try_from(graph.node_count())
+            .unwrap_or(usize::MAX)
+            .min(4);
+        if entry_count != expected {
+            return Err(GraphSearchError::Geometry(format!(
+                "graph contains {entry_count} persisted entry seeds, expected {expected}"
+            )));
+        }
+        let Some(first) = entries.first().copied() else {
+            return Err(GraphSearchError::Geometry(
+                "graph contains no persisted entry seed".to_owned(),
+            ));
+        };
+        entries.resize(4, first);
         entries.try_into().map_err(|_: Vec<u32>| {
             GraphSearchError::Geometry(format!(
-                "graph contains {entry_count} persisted entry seeds, expected medoid plus three refined seeds"
+                "graph contains {entry_count} persisted entry seeds, expected at most four"
             ))
         })
     }
@@ -2438,6 +2468,63 @@ mod tests {
             assert_eq!(range.squared_l2_lower_bound(&zero_query), 0.0);
             assert_eq!(range.squared_l2_upper_bound(&zero_query), f64::INFINITY);
         }
+    }
+
+    #[test]
+    fn graph_search_small_persisted_seed_sets() {
+        fn fixture(rows: usize, flagged: usize) -> crate::graph::block::EncodedNodeBlocks {
+            let layout =
+                GraphNodeLayout::new(DIMS as u32, DIMS as u32, 1).expect("small-seed layout");
+            let codes = vec![0_u8; rows * DIMS.div_ceil(2)];
+            let factors = Bit4Factors::from_persisted(0.0, 0.0, 0.0);
+            let nodes = (0..rows)
+                .map(|row| GraphNodeBlockInput {
+                    codes: &codes[row * DIMS.div_ceil(2)..(row + 1) * DIMS.div_ceil(2)],
+                    factors,
+                    flags: u8::from(row < flagged),
+                    neighbors: &[],
+                })
+                .collect::<Vec<_>>();
+            encode_node_blocks(GraphNodeBlockBuild {
+                layout,
+                nodes: &nodes,
+            })
+            .expect("small-seed graph")
+        }
+
+        for rows in 1..=3 {
+            let encoded = fixture(rows, rows);
+            let graph = decode_node_blocks(encoded.as_bytes()).expect("small graph decodes");
+            let entries = GraphSearcher::discover_entry_row_ids(graph).expect("real seeds");
+            assert_eq!(&entries[..rows], &(0..rows as u32).collect::<Vec<_>>());
+            assert!(entries[rows..].iter().all(|entry| *entry == 0));
+        }
+
+        let encoded = fixture(4, 4);
+        let graph = decode_node_blocks(encoded.as_bytes()).expect("four-seed graph decodes");
+        assert_eq!(
+            GraphSearcher::discover_entry_row_ids(graph).expect("exact four seeds"),
+            [0, 1, 2, 3]
+        );
+        for (rows, flagged) in [(3, 2), (5, 5)] {
+            let encoded = fixture(rows, flagged);
+            let graph = decode_node_blocks(encoded.as_bytes()).expect("invalid seed graph decodes");
+            assert!(matches!(
+                GraphSearcher::discover_entry_row_ids(graph),
+                Err(GraphSearchError::Geometry(detail)) if detail.contains("persisted entry seeds")
+            ));
+        }
+
+        let encoded = fixture(1, 1);
+        let graph = decode_node_blocks(encoded.as_bytes()).expect("one-row graph decodes");
+        let rescore = vec![0.0_f32; DIMS];
+        let mut scratch = GraphSearchScratch::new(1, 1).expect("one-row scratch");
+        let mut searcher = GraphSearcher::new(graph, &rescore, &mut scratch)
+            .expect("repeated adapter entries bind");
+        let result = searcher
+            .search(GraphSearchRequest::new(&rescore, 1, 7).with_ef(1), None)
+            .expect("one-row traversal");
+        assert_eq!(result.counters().visited(), 1);
     }
 
     #[test]

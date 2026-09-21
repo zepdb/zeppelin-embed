@@ -49,7 +49,7 @@ pub(super) enum DurabilityEvent {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum FaultPoint {
+pub(crate) enum FaultPoint {
     Create,
     PartialCreate,
     ObjectSync,
@@ -70,7 +70,7 @@ struct FaultSchedule {
 }
 
 #[derive(Default)]
-pub(super) struct RecordingVfs {
+pub(crate) struct RecordingVfs {
     events: Arc<Mutex<Vec<DurabilityEvent>>>,
     wal_sync_gate: Arc<Mutex<Option<(Arc<Barrier>, Arc<Barrier>)>>>,
     faults: Arc<Mutex<FaultSchedule>>,
@@ -106,7 +106,7 @@ impl RecordingVfs {
         (entered, release)
     }
 
-    pub(super) fn arm_fault(&self, point: FaultPoint) {
+    pub(crate) fn arm_fault(&self, point: FaultPoint) {
         let mut faults = self.faults.lock().expect("fault schedule");
         assert!(faults.armed.replace(point).is_none());
         faults.fires = 0;
@@ -123,7 +123,7 @@ impl RecordingVfs {
         }
     }
 
-    pub(super) fn assert_fired_once(&self) {
+    pub(crate) fn assert_fired_once(&self) {
         let faults = self.faults.lock().expect("fault schedule");
         assert_eq!(faults.fires, 1);
         assert!(faults.armed.is_none());

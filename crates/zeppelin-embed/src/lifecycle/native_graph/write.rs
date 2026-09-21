@@ -987,9 +987,30 @@ impl crate::lifecycle::Store {
             let admitted = Arc::clone(lease.bundle());
             let shared = GraphResources::from_store(self)?;
             let write_memory = WriteMemory::new(&shared, WriteLimits::default())?;
-            let storage = StorageMemory::new(&write_memory, control, 32 * 1024 * 1024)?;
+            #[cfg(any(test, feature = "test-support"))]
+            let (storage_limit, preparation_work) =
+                crate::property_graph::storage::search::native_vector_index_test_limits(
+                    32 * 1024 * 1024,
+                    64 * 1024 * 1024,
+                );
+            #[cfg(not(any(test, feature = "test-support")))]
+            let (storage_limit, preparation_work) = (32 * 1024 * 1024, 64 * 1024 * 1024);
+            let storage = StorageMemory::new(&write_memory, control, storage_limit)?;
+            let preparation_checkpoint = || match self.state() {
+                Ok(crate::lifecycle::StoreState::Open) => Ok(()),
+                Ok(
+                    crate::lifecycle::StoreState::Closing | crate::lifecycle::StoreState::Closed,
+                ) => Err(TreeError::Control(
+                    crate::lifecycle::QueryError::ReadCancelled { partial: false },
+                )),
+                Err(error) => Err(TreeError::Control(crate::lifecycle::QueryError::Store(
+                    error,
+                ))),
+            };
             let source = NativePreparationSource::new(&lease, &storage, 64)?;
-            let mut base_resources = source.resources(64 * 1024 * 1024)?;
+            let mut base_resources = source
+                .resources(preparation_work)?
+                .with_preparation_checkpoint(&preparation_checkpoint)?;
             let resources_cell = RefCell::new(&mut base_resources);
             let first_storage_error = Cell::new(None);
             let base = NativeAdmittedBase::new(

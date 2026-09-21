@@ -42,6 +42,20 @@ pub mod adversarial_test_support;
 
 #[cfg(all(feature = "graph-cypher", feature = "test-support"))]
 #[doc(hidden)]
+pub mod graph_native_vector_index_test_support {
+    pub use crate::property_graph::storage::search::{
+        ActualProbeReport, CleanPreparationObservation, CloseFailureObservation,
+        ControlProbeReport, IdentityProbeReport, KernelProbeReport, LimitProbeReport,
+        NativeFailureObservation, OracleControlObservation, OracleProbeReport, PhysicalReadReceipt,
+        PhysicalReadReport, ReopenIndexObservation, ReopenProbeReport, SmallWriteSourceObservation,
+        SmallWritesProbeReport, TraceBatchObservation, TraceProbeReport, TraceSourceObservation,
+        run_actual_probe, run_identity_probe, run_kernel_probe, run_oracle_probe,
+        run_preparation_schedule_probe, run_reopen_probe, run_small_writes_probe, run_trace_probe,
+    };
+}
+
+#[cfg(all(feature = "graph-cypher", feature = "test-support"))]
+#[doc(hidden)]
 pub mod graph_read_view_test_support {
     /// One completed production boundary, emitted only after its exact direct
     /// assertion and any paired clean control returned successfully.

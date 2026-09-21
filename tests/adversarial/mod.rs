@@ -147,14 +147,17 @@ pub mod graph_query_storage;
 pub mod graph_mutation_lowering;
 
 #[cfg(feature = "graph-cypher")]
+pub mod graph_native_vector_index;
+
+#[cfg(feature = "graph-cypher")]
 pub mod graph_read_view;
 
 #[cfg(feature = "graph-cypher")]
 pub mod graph_publication;
 
 #[cfg(feature = "graph-cypher")]
-pub mod graph_pattern;
-#[cfg(feature = "graph-cypher")]
 pub mod graph_native_relational;
+#[cfg(feature = "graph-cypher")]
+pub mod graph_pattern;
 #[cfg(feature = "graph-cypher")]
 pub mod graph_recovery;

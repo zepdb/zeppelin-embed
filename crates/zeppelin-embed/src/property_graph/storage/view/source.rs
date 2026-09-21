@@ -163,7 +163,13 @@ impl<'a, 'm, 'g> NativeQuerySource<'a, 'm, 'g> {
             .validation
             .framed_block(mapped.mapping.as_bytes(), reference)
             .map_err(TreeError::Format)?;
-        self.check_required(block)
+        let block = self.check_required(block)?;
+        #[cfg(any(test, feature = "test-support"))]
+        crate::property_graph::storage::search::observe_native_vector_physical_read(
+            crate::property_graph::storage::search::PhysicalReadOrigin::Query,
+            reference,
+        );
+        Ok(block)
     }
 
     fn admit_mapping(

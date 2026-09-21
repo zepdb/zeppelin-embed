@@ -3,7 +3,7 @@
 use crate::graph::refine::RefinementPasses;
 use crate::kernels::Bit4Row;
 use crate::quant::Bit4Factors;
-use xxhash_rust::xxh3::xxh3_64;
+use xxhash_rust::xxh3::{Xxh3, xxh3_64};
 
 /// Cache-line width frozen by the graph node-block v1 format.
 pub const CACHE_LINE_BYTES: usize = 128;
@@ -463,6 +463,10 @@ impl EncodedNodeBlocks {
         self.bytes
     }
 
+    pub(crate) fn resident_bytes(&self) -> usize {
+        self.bytes.capacity()
+    }
+
     /// Returns the byte offset of a present dense node id.
     pub fn block_offset(&self, node_id: u32) -> Result<u32, GraphNodeError> {
         if node_id >= self.node_count {
@@ -478,6 +482,8 @@ impl EncodedNodeBlocks {
 /// Typed graph node-block encode/decode failure.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum GraphNodeError {
+    /// A controlled encode/decode operation was interrupted.
+    Control,
     /// The region is shorter than its bounded fixed trailer or block geometry.
     Truncated {
         /// Minimum bytes required by the declared format.
@@ -510,6 +516,7 @@ pub enum GraphNodeError {
 impl std::fmt::Display for GraphNodeError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Control => formatter.write_str("graph node block operation was interrupted"),
             Self::Truncated { minimum, actual } => write!(
                 formatter,
                 "graph node region is truncated: need {minimum} bytes, got {actual}"
@@ -541,13 +548,21 @@ impl std::error::Error for GraphNodeError {}
 pub fn encode_node_blocks(
     build: GraphNodeBlockBuild<'_>,
 ) -> Result<EncodedNodeBlocks, GraphNodeError> {
-    encode_node_blocks_with_refinement_passes(build, RefinementPasses::default())
+    encode_node_blocks_controlled(build, RefinementPasses::default(), &mut |_| true)
 }
 
 /// Encodes node blocks with an authenticated additive refinement-pass record.
 pub fn encode_node_blocks_with_refinement_passes(
     build: GraphNodeBlockBuild<'_>,
     refinement_passes: RefinementPasses,
+) -> Result<EncodedNodeBlocks, GraphNodeError> {
+    encode_node_blocks_controlled(build, refinement_passes, &mut |_| true)
+}
+
+pub(crate) fn encode_node_blocks_controlled(
+    build: GraphNodeBlockBuild<'_>,
+    refinement_passes: RefinementPasses,
+    control: &mut impl FnMut(u64) -> bool,
 ) -> Result<EncodedNodeBlocks, GraphNodeError> {
     let node_count = u32::try_from(build.nodes.len())
         .map_err(|_| GraphNodeError::Layout("node count exceeds u32".to_owned()))?;
@@ -558,12 +573,31 @@ pub fn encode_node_blocks_with_refinement_passes(
     let total_bytes = block_bytes
         .checked_add(NODE_BLOCK_TRAILER_LEN)
         .ok_or(GraphNodeError::ArithmeticOverflow)?;
-    let mut output = Vec::with_capacity(total_bytes);
+    let mut output = Vec::new();
+    output
+        .try_reserve_exact(total_bytes)
+        .map_err(|_| GraphNodeError::ArithmeticOverflow)?;
     for (position, node) in build.nodes.iter().enumerate() {
+        if !control(1) {
+            return Err(GraphNodeError::Control);
+        }
         let node_id = u32::try_from(position).map_err(|_| GraphNodeError::ArithmeticOverflow)?;
-        encode_node(build.layout, node_id, node, node_count, &mut output)?;
+        encode_node(
+            build.layout,
+            node_id,
+            node,
+            node_count,
+            &mut output,
+            control,
+        )?;
     }
-    encode_trailer(build.layout, node_count, refinement_passes, &mut output);
+    encode_trailer(
+        build.layout,
+        node_count,
+        refinement_passes,
+        &mut output,
+        control,
+    )?;
     Ok(EncodedNodeBlocks {
         bytes: output,
         layout: build.layout,
@@ -573,6 +607,13 @@ pub fn encode_node_blocks_with_refinement_passes(
 
 /// Validates and borrows a complete fixed-stride graph node-block region.
 pub fn decode_node_blocks(bytes: &[u8]) -> Result<GraphNodeBlocks<'_>, GraphNodeError> {
+    decode_node_blocks_controlled(bytes, &mut |_| true)
+}
+
+pub(crate) fn decode_node_blocks_controlled<'a>(
+    bytes: &'a [u8],
+    control: &mut impl FnMut(u64) -> bool,
+) -> Result<GraphNodeBlocks<'a>, GraphNodeError> {
     if bytes.len() < NODE_BLOCK_TRAILER_LEN {
         return Err(GraphNodeError::Truncated {
             minimum: NODE_BLOCK_TRAILER_LEN,
@@ -632,7 +673,14 @@ pub fn decode_node_blocks(bytes: &[u8]) -> Result<GraphNodeBlocks<'_>, GraphNode
             minimum: checksummed_end,
             actual: bytes.len(),
         })?;
-    let actual_checksum = xxh3_64(checksummed);
+    let mut hasher = Xxh3::new();
+    for chunk in checksummed.chunks(256) {
+        if !control(chunk.len() as u64) {
+            return Err(GraphNodeError::Control);
+        }
+        hasher.update(chunk);
+    }
+    let actual_checksum = hasher.digest();
     if actual_checksum != stored_checksum {
         return Err(GraphNodeError::InvalidHeader(format!(
             "xxh3-64 expected {stored_checksum:#018x}, computed {actual_checksum:#018x}"
@@ -673,6 +721,9 @@ pub fn decode_node_blocks(bytes: &[u8]) -> Result<GraphNodeBlocks<'_>, GraphNode
         )));
     }
     for node_id in 0..node_count {
+        if !control(1) {
+            return Err(GraphNodeError::Control);
+        }
         let start = usize::try_from(layout.block_offset(node_id)?)
             .map_err(|_| GraphNodeError::ArithmeticOverflow)?;
         let end = start
@@ -682,7 +733,7 @@ pub fn decode_node_blocks(bytes: &[u8]) -> Result<GraphNodeBlocks<'_>, GraphNode
             minimum: end,
             actual: bytes.len(),
         })?;
-        validate_decoded_node(layout, node_id, node_count, block)?;
+        validate_decoded_node(layout, node_id, node_count, block, control)?;
     }
     Ok(GraphNodeBlocks {
         bytes,
@@ -698,9 +749,10 @@ fn validate_decoded_node(
     node_id: u32,
     node_count: u32,
     block: &[u8],
+    control: &mut impl FnMut(u64) -> bool,
 ) -> Result<(), GraphNodeError> {
     let view = decode_block_view(layout, node_id, block)?;
-    validate_code_padding(layout, node_id, view.codes)?;
+    validate_code_padding_controlled(layout, node_id, view.codes, control)?;
     if view.flags & !ALLOWED_NODE_FLAGS != 0 {
         return Err(GraphNodeError::InvalidNode {
             node_id,
@@ -713,11 +765,16 @@ fn validate_decoded_node(
             detail: "reserved bytes are non-zero".to_owned(),
         });
     }
-    if view.padding.iter().any(|byte| *byte != 0) {
-        return Err(GraphNodeError::InvalidNode {
-            node_id,
-            detail: "cache-line padding is non-zero".to_owned(),
-        });
+    for chunk in view.padding.chunks(256) {
+        if !control(chunk.len() as u64) {
+            return Err(GraphNodeError::Control);
+        }
+        if chunk.iter().any(|byte| *byte != 0) {
+            return Err(GraphNodeError::InvalidNode {
+                node_id,
+                detail: "cache-line padding is non-zero".to_owned(),
+            });
+        }
     }
     let degree = usize::from(view.degree);
     if degree > usize::from(layout.max_degree) {
@@ -727,6 +784,9 @@ fn validate_decoded_node(
         });
     }
     for (slot, neighbor) in view.neighbors_padded().enumerate() {
+        if !control(1) {
+            return Err(GraphNodeError::Control);
+        }
         if slot < degree {
             if neighbor >= node_count {
                 return Err(GraphNodeError::InvalidNode {
@@ -735,6 +795,23 @@ fn validate_decoded_node(
                         "active neighbour slot {slot} id {neighbor} is outside row count {node_count}"
                     ),
                 });
+            }
+            if neighbor == node_id {
+                return Err(GraphNodeError::InvalidNode {
+                    node_id,
+                    detail: format!("active neighbour slot {slot} refers to its owner"),
+                });
+            }
+            for previous in view.neighbors_padded().take(slot) {
+                if !control(1) {
+                    return Err(GraphNodeError::Control);
+                }
+                if previous == neighbor {
+                    return Err(GraphNodeError::InvalidNode {
+                        node_id,
+                        detail: format!("active neighbour slot {slot} repeats id {neighbor}"),
+                    });
+                }
             }
         } else if neighbor != UNUSED_NEIGHBOR_ID {
             return Err(GraphNodeError::InvalidNode {
@@ -878,6 +955,7 @@ fn encode_node(
     node: &GraphNodeBlockInput<'_>,
     node_count: u32,
     output: &mut Vec<u8>,
+    control: &mut impl FnMut(u64) -> bool,
 ) -> Result<(), GraphNodeError> {
     if node.codes.len() != layout.code_bytes() {
         return Err(GraphNodeError::InvalidNode {
@@ -889,7 +967,7 @@ fn encode_node(
             ),
         });
     }
-    validate_code_padding(layout, node_id, node.codes)?;
+    validate_code_padding_controlled(layout, node_id, node.codes, control)?;
     if node
         .factors
         .persisted_fields()
@@ -917,20 +995,42 @@ fn encode_node(
             ),
         });
     }
-    if let Some(invalid) = node
-        .neighbors
-        .iter()
-        .copied()
-        .find(|neighbor| *neighbor >= node_count)
-    {
-        return Err(GraphNodeError::InvalidNode {
-            node_id,
-            detail: format!("neighbour id {invalid} is outside row count {node_count}"),
-        });
+    for (slot, neighbor) in node.neighbors.iter().copied().enumerate() {
+        if !control(1) {
+            return Err(GraphNodeError::Control);
+        }
+        if neighbor >= node_count {
+            return Err(GraphNodeError::InvalidNode {
+                node_id,
+                detail: format!("neighbour id {neighbor} is outside row count {node_count}"),
+            });
+        }
+        if neighbor == node_id {
+            return Err(GraphNodeError::InvalidNode {
+                node_id,
+                detail: format!("active neighbour slot {slot} refers to its owner"),
+            });
+        }
+        for previous in node.neighbors.iter().take(slot) {
+            if !control(1) {
+                return Err(GraphNodeError::Control);
+            }
+            if *previous == neighbor {
+                return Err(GraphNodeError::InvalidNode {
+                    node_id,
+                    detail: format!("active neighbour slot {slot} repeats id {neighbor}"),
+                });
+            }
+        }
     }
 
     let start = output.len();
-    output.extend_from_slice(node.codes);
+    for chunk in node.codes.chunks(256) {
+        if !control(chunk.len() as u64) {
+            return Err(GraphNodeError::Control);
+        }
+        output.extend_from_slice(chunk);
+    }
     for field in node.factors.persisted_fields() {
         output.extend_from_slice(&field.to_bits().to_le_bytes());
     }
@@ -942,6 +1042,9 @@ fn encode_node(
     output.push(node.flags);
     output.extend_from_slice(&0_u16.to_le_bytes());
     for neighbor in node.neighbors {
+        if !control(1) {
+            return Err(GraphNodeError::Control);
+        }
         output.extend_from_slice(&neighbor.to_le_bytes());
     }
     for _ in node.neighbors.len()..usize::from(layout.max_degree) {
@@ -959,6 +1062,15 @@ fn validate_code_padding(
     node_id: u32,
     codes: &[u8],
 ) -> Result<(), GraphNodeError> {
+    validate_code_padding_controlled(layout, node_id, codes, &mut |_| true)
+}
+
+fn validate_code_padding_controlled(
+    layout: GraphNodeLayout,
+    node_id: u32,
+    codes: &[u8],
+    control: &mut impl FnMut(u64) -> bool,
+) -> Result<(), GraphNodeError> {
     let logical_bytes = (layout.dims as usize).div_ceil(2);
     if !layout.dims.is_multiple_of(2)
         && codes
@@ -970,14 +1082,18 @@ fn validate_code_padding(
             detail: "unused low nibble is non-zero".to_owned(),
         });
     }
-    if codes
-        .get(logical_bytes..)
-        .is_some_and(|padding| padding.iter().any(|byte| *byte != 0))
-    {
-        return Err(GraphNodeError::InvalidNode {
-            node_id,
-            detail: "padded Bit4 dimensions are non-zero".to_owned(),
-        });
+    if let Some(padding) = codes.get(logical_bytes..) {
+        for chunk in padding.chunks(256) {
+            if !control(chunk.len() as u64) {
+                return Err(GraphNodeError::Control);
+            }
+            if chunk.iter().any(|byte| *byte != 0) {
+                return Err(GraphNodeError::InvalidNode {
+                    node_id,
+                    detail: "padded Bit4 dimensions are non-zero".to_owned(),
+                });
+            }
+        }
     }
     Ok(())
 }
@@ -987,7 +1103,8 @@ fn encode_trailer(
     node_count: u32,
     refinement_passes: RefinementPasses,
     output: &mut Vec<u8>,
-) {
+    control: &mut impl FnMut(u64) -> bool,
+) -> Result<(), GraphNodeError> {
     let start = output.len();
     output.extend_from_slice(&NODE_BLOCK_MAGIC);
     output.extend_from_slice(&NODE_BLOCK_VERSION.to_le_bytes());
@@ -998,9 +1115,17 @@ fn encode_trailer(
     output.extend_from_slice(&[0_u8; 3]);
     output.extend_from_slice(&layout.stride.to_le_bytes());
     output.extend_from_slice(&node_count.to_le_bytes());
-    let checksum = xxh3_64(output);
+    let mut hasher = Xxh3::new();
+    for chunk in output.chunks(256) {
+        if !control(chunk.len() as u64) {
+            return Err(GraphNodeError::Control);
+        }
+        hasher.update(chunk);
+    }
+    let checksum = hasher.digest();
     output.extend_from_slice(&checksum.to_le_bytes());
     output.resize(start.saturating_add(NODE_BLOCK_TRAILER_LEN), 0);
+    Ok(())
 }
 
 fn round_up_cache_line(value: usize) -> Result<usize, GraphNodeError> {

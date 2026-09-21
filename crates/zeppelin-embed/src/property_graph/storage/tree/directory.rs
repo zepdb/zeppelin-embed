@@ -222,6 +222,7 @@ pub struct TreeResources<'a> {
     work: u64,
     owner: CapacityOwner<'a>,
     workspace: CapacityReservation<'a>,
+    preparation_checkpoint: Option<&'a dyn Fn() -> Result<(), TreeError>>,
 }
 impl<'a> TreeResources<'a> {
     /// A caller retains the same control across every component of its operation.
@@ -240,6 +241,7 @@ impl<'a> TreeResources<'a> {
             work: 0,
             owner: CapacityOwner::Shared(shared.clone()),
             workspace: CapacityReservation::Shared(workspace),
+            preparation_checkpoint: None,
         })
     }
     /// Reserves the full tree workspace inside the complete storage preparation.
@@ -254,6 +256,7 @@ impl<'a> TreeResources<'a> {
             work: 0,
             owner,
             workspace,
+            preparation_checkpoint: None,
         })
     }
     /// Reserves tree workspace through the exact query memory and retains the
@@ -275,7 +278,24 @@ impl<'a> TreeResources<'a> {
             work: 0,
             owner,
             workspace,
+            preparation_checkpoint: None,
         })
+    }
+    pub(crate) fn with_preparation_checkpoint(
+        mut self,
+        checkpoint: &'a dyn Fn() -> Result<(), TreeError>,
+    ) -> Result<Self, TreeError> {
+        if !matches!(self.owner, CapacityOwner::Preparation(_)) {
+            return Err(TreeError::Invalid(
+                "preparation checkpoint requires preparation resources",
+            ));
+        }
+        if self.preparation_checkpoint.is_some() {
+            return Err(TreeError::Invalid("duplicate preparation checkpoint"));
+        }
+        checkpoint()?;
+        self.preparation_checkpoint = Some(checkpoint);
+        Ok(self)
     }
     pub(crate) fn require_preparation(&self, memory: &StorageMemory<'_>) -> Result<(), TreeError> {
         match &self.owner {
@@ -388,6 +408,9 @@ impl<'a> TreeResources<'a> {
     }
     /// Poll before work and charge its complete checked amount.
     pub fn step(&mut self, units: u64) -> Result<(), TreeError> {
+        if let Some(checkpoint) = self.preparation_checkpoint {
+            checkpoint()?;
+        }
         match &mut self.control {
             TreeControl::Direct { control, .. } => {
                 control.checkpoint().map_err(TreeError::Control)?;

@@ -372,11 +372,22 @@ fn surviving_quantizers_reject_dimensions_beyond_i8_kernel_limit() {
         actual: input.len(),
         maximum: MAX_DOT_I8_DIMENSION,
     };
-    let mut bit4 = vec![0_u8; input.len().div_ceil(2)];
+    let mut bit4 = vec![0x5a_u8; input.len().div_ceil(2)];
     let mut int8 = vec![0_i8; input.len()];
 
     assert_eq!(quantize_int8(&input, &mut int8), Err(expected.clone()));
-    assert_eq!(quantize_bit4(&input, &mut bit4), Err(expected.clone()));
+    #[cfg(feature = "allocation-audit")]
+    let (bit4_result, audit) =
+        crate::allocation_audit::audit_engine_path(|| quantize_bit4(&input, &mut bit4));
+    #[cfg(not(feature = "allocation-audit"))]
+    let bit4_result = quantize_bit4(&input, &mut bit4);
+    assert_eq!(bit4_result, Err(expected.clone()));
+    assert!(bit4.iter().all(|byte| *byte == 0x5a));
+    #[cfg(feature = "allocation-audit")]
+    assert_eq!(
+        audit.allocations, 0,
+        "invalid Bit4 input allocates no scratch"
+    );
     assert_eq!(prepare_int8_query(&input), Err(expected.clone()));
     assert_eq!(prepare_bit4_query(&input, 0), Err(expected));
 }

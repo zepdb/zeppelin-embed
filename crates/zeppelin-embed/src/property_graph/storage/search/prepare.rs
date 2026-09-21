@@ -1,10 +1,12 @@
 //! Sparse retrieval preparation over the native candidate owned by one writer.
 
 use super::codec::{
-    MEMBERSHIP_BYTES, MembershipRow, Modality, ROOT_BYTES, ROW_BYTES, RootDescriptor, SOURCE_BYTES,
-    SOURCE_VALUE_BYTES, SourceManifest, SourceValue, SparsePhysicalRoots, SparseRootState,
-    SparseRoots, SparseRow, validate_catalog_interpretation, validate_row_correlation,
+    MEMBERSHIP_BYTES, MembershipRow, Modality, ROOT_BYTES, ROW_BYTES, RootDescriptor,
+    SOURCE_V1_BYTES, SOURCE_V2_BYTES, SOURCE_VALUE_BYTES, SourceFormat, SourceManifest,
+    SourceValue, SparsePhysicalRoots, SparseRootState, SparseRoots, SparseRow,
+    validate_catalog_interpretation, validate_row_correlation,
 };
+use super::vector_index::{NativeVectorRow, prepare_vector_index};
 use crate::fts::graph_build::{GraphLexicalBuilder, GraphLexicalError};
 use crate::fts::tokenizer::Analyzer;
 use crate::lifecycle::native_graph::NativeReadLease;
@@ -19,6 +21,9 @@ use crate::property_graph::storage::stream::PayloadSlice;
 use crate::property_graph::storage::tree::{TreeKind, directory::*};
 use crate::property_graph::wal::{InventoryChange, Membership, RequiredRef};
 use crate::property_graph::{EntityId, GraphGeneration, NodeId};
+
+const VECTOR_SOURCE_MAX_ROWS: usize = 1_024;
+const VECTOR_SOURCE_MAX_RESCORE_BYTES: usize = 4 * 1_024 * 1_024;
 
 /// Exact analyzed transition emitted for the WAL mutation at one delta ordinal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -223,6 +228,7 @@ fn prepare_source<S: BlockSink>(
     modality: Modality,
     rows: &[PendingRow],
     lexical: Option<&[u8]>,
+    vector_index: Option<PayloadRef>,
     generation: GraphGeneration,
     sequence: u64,
     memory: &StorageMemory<'_>,
@@ -264,20 +270,30 @@ fn prepare_source<S: BlockSink>(
             )
         })
         .transpose()?;
-    let mut manifest = [0_u8; SOURCE_BYTES];
+    let format = SourceFormat::V2;
+    let manifest_length = match format {
+        SourceFormat::V1 => SOURCE_V1_BYTES,
+        SourceFormat::V2 => SOURCE_V2_BYTES,
+    };
+    let mut manifest = [0_u8; SOURCE_V2_BYTES];
+    let encoded_manifest = manifest
+        .get_mut(..manifest_length)
+        .ok_or(TreeError::Invalid("sparse source manifest extent"))?;
     SourceManifest {
+        format,
         modality,
         generation,
         sequence,
         rows: u32::try_from(rows.len()).map_err(|_| TreeError::Memory)?,
         row_table,
         lexical,
+        vector_index,
     }
-    .encode(&mut manifest)?;
+    .encode(encoded_manifest)?;
     let source = sink.append(
         BlockKind::CommitParticipant,
         generation,
-        &manifest,
+        encoded_manifest,
         resources,
     )?;
     let mask_len = rows.len().checked_add(7).ok_or(TreeError::Memory)? / 8;
@@ -718,7 +734,7 @@ pub(crate) fn prepare_sparse<'m, S: BlockSink, C: RecordCatalog<S>>(
                     })?;
                 }
             }
-            if record.canonical().stored_vector().is_some() {
+            if let Some(vector) = record.canonical().stored_vector() {
                 vector_after = true;
                 vector_rows.push(PendingRow {
                     node,
@@ -756,6 +772,7 @@ pub(crate) fn prepare_sparse<'m, S: BlockSink, C: RecordCatalog<S>>(
         Modality::Text,
         text_rows.as_slice(),
         Some(lexical.region()),
+        None,
         generation,
         native.sequence(),
         memory,
@@ -774,29 +791,96 @@ pub(crate) fn prepare_sparse<'m, S: BlockSink, C: RecordCatalog<S>>(
             resources,
         )?;
     }
-    let vector_source = prepare_source(
-        sink,
-        store,
-        Modality::Vector,
-        vector_rows.as_slice(),
-        None,
-        generation,
-        native.sequence(),
-        memory,
-        resources,
-    )?;
-    if let Some((source, mask, length)) = vector_source {
-        vector_state = install_source(
-            sink,
-            vector_state,
-            source,
-            mask,
-            vector_rows.as_slice(),
-            length,
-            generation,
-            memory,
-            resources,
-        )?;
+    if !vector_rows.as_slice().is_empty() {
+        let document = document.ok_or(TreeError::Invalid("vector source without document"))?;
+        let dimensions = document.dims as usize;
+        let row_bytes = dimensions.checked_mul(4).ok_or(TreeError::Memory)?;
+        let byte_bound = if row_bytes > VECTOR_SOURCE_MAX_RESCORE_BYTES {
+            1
+        } else {
+            (VECTOR_SOURCE_MAX_RESCORE_BYTES / row_bytes.max(1)).max(1)
+        };
+        let cohort_rows = VECTOR_SOURCE_MAX_ROWS.min(byte_bound);
+        for cohort in vector_rows.as_slice().chunks(cohort_rows) {
+            let coordinate_count = cohort
+                .len()
+                .checked_mul(dimensions)
+                .ok_or(TreeError::Memory)?;
+            let mut coordinates = StorageBuffer::new(memory, coordinate_count)?;
+            let mut identities = StorageBuffer::new(memory, cohort.len())?;
+            for row in cohort {
+                let entry =
+                    lookup_entry(sink, node_root, &row.node.get().to_le_bytes(), resources)?
+                        .ok_or(TreeError::Invalid("vector cohort node is absent"))?;
+                let record_ref = PayloadRef::decode(entry.value())?;
+                if record_ref != row.record {
+                    return Err(TreeError::Invalid("vector cohort record changed"));
+                }
+                let state = verify_node_state(
+                    PayloadSlice::new(sink, store, entry.creation_generation(), record_ref),
+                    row.node,
+                    catalog,
+                    Some(document),
+                    resources,
+                )?;
+                let NodeRecordState::Live(record) = state else {
+                    return Err(TreeError::Invalid("vector cohort record is not live"));
+                };
+                if record.revision().get() != row.revision {
+                    return Err(TreeError::Invalid("vector cohort revision changed"));
+                }
+                let vector = record
+                    .canonical()
+                    .stored_vector()
+                    .ok_or(TreeError::Invalid("vector cohort payload is absent"))?;
+                if vector.dimensions() != document.dims {
+                    return Err(TreeError::Invalid("vector cohort dimensions changed"));
+                }
+                identities.push(NativeVectorRow {
+                    node: row.node,
+                    revision: row.revision,
+                })?;
+                for dimension in 0..document.dims {
+                    coordinates.push(vector.coordinate(dimension, resources)?)?;
+                }
+            }
+            let vector_index = prepare_vector_index(
+                sink,
+                store,
+                generation,
+                identities.as_slice(),
+                coordinates.as_slice(),
+                dimensions,
+                catalog_required,
+                document.normalization,
+                memory,
+                resources,
+            )?;
+            let vector_source = prepare_source(
+                sink,
+                store,
+                Modality::Vector,
+                cohort,
+                None,
+                Some(vector_index),
+                generation,
+                native.sequence(),
+                memory,
+                resources,
+            )?
+            .ok_or(TreeError::Invalid("nonempty vector cohort was omitted"))?;
+            vector_state = install_source(
+                sink,
+                vector_state,
+                vector_source.0,
+                vector_source.1,
+                cohort,
+                vector_source.2,
+                generation,
+                memory,
+                resources,
+            )?;
+        }
     }
     let text = append_root(
         sink,
@@ -967,6 +1051,7 @@ mod tests {
             Modality::Text,
             &initial_rows,
             Some(b"lexical-one"),
+            None,
             generation_one,
             1,
             &memory,
@@ -1027,6 +1112,7 @@ mod tests {
             Modality::Text,
             &replacement_rows,
             Some(b"lexical-two"),
+            None,
             generation_two,
             2,
             &memory,
