@@ -165,3 +165,5 @@ pub mod graph_pattern;
 pub mod graph_reclaim;
 #[cfg(feature = "graph-cypher")]
 pub mod graph_recovery;
+#[cfg(feature = "graph-cypher")]
+pub mod graph_storage_faults;

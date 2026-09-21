@@ -7,7 +7,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 mod compare;
+mod keyed;
 pub use compare::Difference;
+pub use keyed::{KeyedModel, KeyedNode};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Kind {

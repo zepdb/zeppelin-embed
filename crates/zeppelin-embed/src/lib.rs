@@ -237,6 +237,148 @@ pub mod graph_reclaim_test_support {
 
 #[cfg(all(feature = "graph-cypher", feature = "test-support"))]
 #[doc(hidden)]
+pub mod graph_storage_fault_test_support {
+    use crate::graph_read_view_test_support::{ObservedRelationship, PathReceipt};
+    use crate::lifecycle::{OpenOptions, Store};
+    use crate::vfs::Vfs;
+    use std::path::Path;
+    use std::sync::Arc;
+
+    /// One keyed node observed in actual directory order. It holds no expected
+    /// answer and no comparator.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct ObservedKeyedNode {
+        /// Application-key bytes exactly as the fixture supplied them.
+        pub key: Vec<u8>,
+        /// Node identity the store resolved for that key.
+        pub node: u128,
+        /// Installed revision of that node record.
+        pub revision: u64,
+    }
+
+    /// Seeded per-class fault selection. The adversarial family owns the
+    /// schedule; this crate only executes the schedule it is handed.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct StorageFaultSchedule {
+        /// Byte position, modulo the damaged region, of the class-1 bit flip.
+        pub artifact_ref_offset: u64,
+        /// Upper bound on the keyed nodes class 2 commits while it discovers
+        /// which chunk splits the node directory.
+        pub split_keys: u32,
+        /// Which pre-split key class 2 resolves first through the old root.
+        pub split_probe: u32,
+        /// How many class-2 artifact creates succeed before the fault fires.
+        pub split_skip: u32,
+        /// Which class-3 adjacency append fails after the OUT append succeeds.
+        pub out_in_append: u32,
+        /// Selects the class-4 root-replacement variant order.
+        pub root_variant: u8,
+    }
+
+    /// Actual state observed by one complete ZE-47 storage-fault execution.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct StorageFaultState {
+        /// Typed classification of every class-1 damaged-artifact refusal.
+        pub artifact_refusals: Vec<String>,
+        /// Nodes observed after each class-1 damage was reverted byte-exactly.
+        pub surviving_nodes: Vec<ObservedKeyedNode>,
+        /// Actual node-directory root level after the splitting commit
+        /// published, observed through a fresh lease.
+        pub split_level: u16,
+        /// Root level the retained pre-split lease still reports after that
+        /// same publication. A pre-split oracle must still read level zero.
+        pub retained_split_level: u16,
+        /// Keyed nodes committed before the splitting chunk, so the family
+        /// can model exactly the population both leases must answer.
+        pub pre_split_keys: u32,
+        /// Pre-split keys observed through a fresh post-split lease.
+        pub committed_keys: Vec<ObservedKeyedNode>,
+        /// The same keys resolved through the retained pre-split root.
+        pub old_root_keys: Vec<ObservedKeyedNode>,
+        /// Published generations observed before and after the class-2 faults
+        /// on the splitting commit, each through its own fresh lease.
+        pub split_generations: (u64, u64),
+        /// Xxh3-64 over the retained pre-split root page, before the faults
+        /// and after the splitting chunk published cleanly.
+        pub retained_root_digests: (u64, u64),
+        /// Generations before and after the WAL-envelope fault on the
+        /// splitting commit, the second one read through a reopen because
+        /// that refusal stops read admissions.
+        pub unsplit_generations: (u64, u64),
+        /// Node-directory root level that same reopen exposes. A split whose
+        /// WAL envelope never landed must not survive recovery.
+        pub unsplit_reopen_level: u16,
+        /// Typed classification of every class-2 refusal.
+        pub split_refusals: Vec<String>,
+        /// OUT rows of the class-3 relationship after a reopen.
+        pub out_rows: Vec<ObservedRelationship>,
+        /// IN rows of the same relationship after the same reopen.
+        pub in_rows: Vec<ObservedRelationship>,
+        /// Typed classification of every class-3 half-prepared refusal.
+        pub out_in_refusals: Vec<String>,
+        /// Typed classification of every class-4 root-replacement refusal.
+        pub root_refusals: Vec<String>,
+        /// Generation exposed by the class-4 reopen.
+        pub reopened_generation: u64,
+        /// Generation acknowledged before the class-4 fault.
+        pub previous_generation: u64,
+    }
+
+    /// Receipts emitted only after each directed storage-fault body completes.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct StorageFaultProbeReport {
+        /// Completed path receipts with actual fired and clean counts.
+        pub receipts: Vec<PathReceipt>,
+        /// Actual state observed by the four fault classes.
+        pub state: StorageFaultState,
+    }
+
+    /// Runs the four directed ZE-47 native storage fault classes against a
+    /// real native store under a faulty VFS, following the supplied schedule.
+    pub fn run_actual_probe(seed: u64, schedule: StorageFaultSchedule) -> StorageFaultProbeReport {
+        crate::lifecycle::native_graph::tests::run_storage_fault_probe(seed, schedule)
+    }
+
+    /// Forwards the crate-private native-store constructor so an external
+    /// test crate can place its own [`Vfs`] under a real native store.
+    /// `lifecycle::native_graph` is `pub(crate)`, so `NativeGraphError` cannot
+    /// cross this seam; the refusal is rendered through its `Display`.
+    pub fn create_native_graph_with_infrastructure(
+        path: &Path,
+        options: OpenOptions,
+        vfs: Arc<dyn Vfs>,
+    ) -> Result<Store, String> {
+        Store::create_native_graph_with_infrastructure(
+            path,
+            options,
+            None,
+            vfs,
+            Arc::new(crate::lifecycle::SystemMonotonicClock),
+            &mut crate::property_graph::storage::allocation::OsEntropy,
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    /// Forwards the crate-private native-store reopen constructor. See
+    /// [`create_native_graph_with_infrastructure`] for the error contract.
+    pub fn open_native_graph_with_infrastructure(
+        path: &Path,
+        options: OpenOptions,
+        vfs: Arc<dyn Vfs>,
+    ) -> Result<Store, String> {
+        Store::open_native_graph_with_infrastructure(
+            path,
+            options,
+            None,
+            vfs,
+            Arc::new(crate::lifecycle::SystemMonotonicClock),
+        )
+        .map_err(|error| error.to_string())
+    }
+}
+
+#[cfg(all(feature = "graph-cypher", feature = "test-support"))]
+#[doc(hidden)]
 pub mod graph_recovery_test_support {
     use crate::graph_read_view_test_support::{ObservedRelationship, PathReceipt};
 

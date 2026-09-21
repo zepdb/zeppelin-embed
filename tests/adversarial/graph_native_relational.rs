@@ -40,12 +40,16 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
     let mut missing = report.observations.clone();
     let _ = missing.pop();
     if accepted(&missing, &report.expected) {
-        return Err(String::from("native relational oracle accepted missing row"));
+        return Err(String::from(
+            "native relational oracle accepted missing row",
+        ));
     }
     let mut duplicate = report.observations.clone();
     duplicate.extend(report.observations.iter().copied());
     if accepted(&duplicate, &report.expected) {
-        return Err(String::from("native relational oracle accepted duplicate row"));
+        return Err(String::from(
+            "native relational oracle accepted duplicate row",
+        ));
     }
     let mut wrong_representative = report.observations.clone();
     let row = wrong_representative

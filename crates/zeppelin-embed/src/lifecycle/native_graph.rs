@@ -1955,6 +1955,15 @@ pub(crate) mod tests {
     pub(crate) mod recovery;
     mod retrieval;
     mod sparse;
+    mod storage_faults;
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn run_storage_fault_probe(
+        seed: u64,
+        schedule: crate::graph_storage_fault_test_support::StorageFaultSchedule,
+    ) -> crate::graph_storage_fault_test_support::StorageFaultProbeReport {
+        storage_faults::run_actual_probe(seed, schedule)
+    }
 
     #[cfg(feature = "test-support")]
     pub(crate) fn run_identity_probe(
