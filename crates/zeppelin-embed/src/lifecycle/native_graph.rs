@@ -1945,6 +1945,7 @@ pub(crate) mod tests {
     mod close_owner;
     mod consolidation;
     mod expression_tests;
+    mod mapping_slots;
     pub(crate) mod publication;
     mod recovery;
     mod retrieval;

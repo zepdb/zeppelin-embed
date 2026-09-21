@@ -693,7 +693,13 @@ struct RecoverySource<'a, 'm> {
     creation_serial: u64,
     memory: &'m StorageMemory<'m>,
     slots: StorageBuffer<'m, OnceCell<RecoveryMappedArtifact>>,
-    scoped: bool,
+    scoped: Cell<bool>,
+    /// At most one authenticated mapping retained for the current scoped
+    /// traversal, keeping its open/authenticate cost at parity with the
+    /// retained slot table without retaining one mapping per artifact.
+    window: RefCell<Option<RecoveryMappedArtifact>>,
+    retain_window: Cell<bool>,
+    filled: Cell<usize>,
     source_error: RefCell<Option<NativeGraphError>>,
 }
 
@@ -747,7 +753,10 @@ impl<'a, 'm> RecoverySource<'a, 'm> {
             creation_serial: state.high_waters.creation_serial,
             memory,
             slots,
-            scoped,
+            scoped: Cell::new(scoped),
+            window: RefCell::new(None),
+            retain_window: Cell::new(false),
+            filled: Cell::new(0),
             source_error: RefCell::new(None),
         })
     }
@@ -805,7 +814,7 @@ impl<'a, 'm> RecoverySource<'a, 'm> {
     }
 
     fn decode<'s>(
-        &'s self,
+        &self,
         mapped: &'s RecoveryMappedArtifact,
         reference: PhysicalRef,
         resources: &mut TreeResources<'_>,
@@ -1716,40 +1725,68 @@ fn validate_complete_reclaim_authority(
     Ok(())
 }
 
-impl BlockSource for RecoverySource<'_, '_> {
-    fn resolve<'a>(
-        &'a self,
+impl RecoverySource<'_, '_> {
+    /// Open and authenticate one immutable artifact, releasing its path charge
+    /// before the mapping is returned.
+    fn open_mapping(
+        &self,
         reference: PhysicalRef,
         resources: &mut TreeResources<'_>,
-    ) -> Result<FramedBlock<'a>, TreeError> {
-        resources.require_preparation(self.memory)?;
-        resources.step(0)?;
-        for slot in self.slots.as_slice() {
-            if let Some(mapped) = slot.get()
-                && mapped.artifact == reference.artifact
-            {
-                return self.decode(mapped, reference, resources);
-            }
-        }
-        let slot = self
-            .slots
-            .as_slice()
-            .iter()
-            .find(|slot| slot.get().is_none())
-            .ok_or(TreeError::Memory)?;
+    ) -> Result<RecoveryMappedArtifact, TreeError> {
         let (path, path_charge) = self.charged_path(reference.artifact)?;
         let mapping = map_file(self.store, &path, MAX_ARTIFACT_BYTES)
             .map_err(|error| self.latch_source(error))?;
         drop(path);
         drop(path_charge);
         let validation = self.admit_mapping(&mapping, reference, resources)?;
-        let mapped = RecoveryMappedArtifact {
+        Ok(RecoveryMappedArtifact {
             artifact: reference.artifact,
             validation,
             mapping,
+        })
+    }
+
+    /// Serve one reference from an already retained slot, without taking a free
+    /// one. `None` means this artifact is not in the table.
+    fn slot_hit<'a>(
+        &'a self,
+        reference: PhysicalRef,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<Option<FramedBlock<'a>>, TreeError> {
+        resources.require_preparation(self.memory)?;
+        resources.step(0)?;
+        for slot in self.slots.as_slice() {
+            if let Some(mapped) = slot.get()
+                && mapped.artifact == reference.artifact
+            {
+                return self.decode(mapped, reference, resources).map(Some);
+            }
+        }
+        Ok(None)
+    }
+
+    /// Serve one reference from the retained slot table, filling a free slot when
+    /// the artifact is new. `None` means every slot is already taken by another
+    /// artifact; the caller decides whether that is fatal or falls back.
+    fn slot_block<'a>(
+        &'a self,
+        reference: PhysicalRef,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<Option<FramedBlock<'a>>, TreeError> {
+        if let Some(block) = self.slot_hit(reference, resources)? {
+            return Ok(Some(block));
+        }
+        let Some(slot) = self
+            .slots
+            .as_slice()
+            .iter()
+            .find(|slot| slot.get().is_none())
+        else {
+            return Ok(None);
         };
-        slot.set(mapped)
+        slot.set(self.open_mapping(reference, resources)?)
             .map_err(|_| TreeError::Invalid("native recovery source slot initialized twice"))?;
+        self.filled.set(self.filled.get().saturating_add(1));
         self.decode(
             slot.get().ok_or(TreeError::Invalid(
                 "native recovery source slot remained empty",
@@ -1757,6 +1794,28 @@ impl BlockSource for RecoverySource<'_, '_> {
             reference,
             resources,
         )
+        .map(Some)
+    }
+
+    /// Whether a scoped traversal must stop pinning. The reserve keeps `resolve`
+    /// answerable for a consumer that already chose the pinning path.
+    fn slots_exhausted(&self) -> bool {
+        self.slots
+            .as_slice()
+            .len()
+            .saturating_sub(self.filled.get())
+            <= crate::property_graph::storage::tree::directory::RESERVED_PINNED_SLOTS
+    }
+}
+
+impl BlockSource for RecoverySource<'_, '_> {
+    fn resolve<'a>(
+        &'a self,
+        reference: PhysicalRef,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<FramedBlock<'a>, TreeError> {
+        self.slot_block(reference, resources)?
+            .ok_or(TreeError::Memory)
     }
 
     fn with_block<R>(
@@ -1768,27 +1827,61 @@ impl BlockSource for RecoverySource<'_, '_> {
             &'r mut TreeResources<'_>,
         ) -> Result<R, TreeError>,
     ) -> Result<R, TreeError> {
-        if !self.scoped {
+        if !self.scoped_blocks() {
             let block = self.resolve(reference, resources)?;
             return callback(block, resources);
         }
         self.check_owner(resources)?;
-        let (path, path_charge) = self.charged_path(reference.artifact)?;
-        let mapping = map_file(self.store, &path, MAX_ARTIFACT_BYTES)
-            .map_err(|error| self.latch_source(error))?;
-        let validation = self.admit_mapping(&mapping, reference, resources)?;
-        let block = validation
-            .framed_block(mapping.as_bytes(), reference)
-            .map_err(TreeError::Format)?;
+        if self.retain_window.get() {
+            // Artifacts already pinned before the table filled stay free to read.
+            // The reserve is never spent here; it belongs to `resolve`.
+            if let Some(block) = self.slot_hit(reference, resources)? {
+                return callback(block, resources);
+            }
+            if let Ok(window) = self.window.try_borrow()
+                && let Some(mapped) = window.as_ref()
+                && mapped.artifact == reference.artifact
+            {
+                let block = self.decode(mapped, reference, resources)?;
+                return callback(block, resources);
+            }
+            if let Ok(mut window) = self.window.try_borrow_mut() {
+                *window = Some(self.open_mapping(reference, resources)?);
+                drop(window);
+                let window = self
+                    .window
+                    .try_borrow()
+                    .map_err(|_| TreeError::Invalid("scoped window is already borrowed"))?;
+                let mapped = window
+                    .as_ref()
+                    .ok_or(TreeError::Invalid("scoped window remained empty"))?;
+                let block = self.decode(mapped, reference, resources)?;
+                return callback(block, resources);
+            }
+        }
+        // A nested read naming another artifact keeps the retained window and
+        // releases its own mapping before returning.
+        let mapped = self.open_mapping(reference, resources)?;
+        let block = self.decode(&mapped, reference, resources)?;
         let result = callback(block, resources);
-        drop(mapping);
-        drop(path);
-        drop(path_charge);
+        drop(mapped);
         result
     }
 
+    /// A scoped traversal keeps pinning until its retained slot table is spent.
+    /// Until then it reads exactly as an unscoped traversal does.
     fn scoped_blocks(&self) -> bool {
-        self.scoped
+        self.scoped.get() || (self.retain_window.get() && self.slots_exhausted())
+    }
+
+    fn with_scoped_reads<R>(&self, body: impl FnOnce() -> R) -> R {
+        let previous_retain = self.retain_window.replace(true);
+        let result = body();
+        self.retain_window.set(previous_retain);
+        if !previous_retain && let Ok(mut window) = self.window.try_borrow_mut() {
+            *window = None;
+        }
+        result
     }
 }
 

@@ -57,6 +57,12 @@ impl std::fmt::Display for TreeError {
 }
 impl std::error::Error for TreeError {}
 
+/// Free mapping slots a scoped source keeps available for a consumer that
+/// already observed `scoped_blocks() == false` and is part-way through one
+/// bounded operation. The largest such operation compares two overflow keys,
+/// and each side pins one root block plus one chunk, so four is the worst case.
+pub(crate) const RESERVED_PINNED_SLOTS: usize = 4;
+
 /// Read-only immutable source. The owner retains its coherent base lease and
 /// charges mapping/cache capacity. A successful callback must return an exact
 /// framed block; tree consumers independently reject substituted references.
@@ -91,6 +97,17 @@ pub trait BlockSource {
     /// retaining a borrowed mapping in their cursor cache.
     fn scoped_blocks(&self) -> bool {
         false
+    }
+
+    /// Run one bounded traversal whose incidental reads are validated and then
+    /// released rather than pinned for this source's whole lifetime. Sources
+    /// that already release every mapping keep the no-op default.
+    /// `Self: Sized` keeps the trait usable as `dyn BlockSource`.
+    fn with_scoped_reads<R>(&self, body: impl FnOnce() -> R) -> R
+    where
+        Self: Sized,
+    {
+        body()
     }
 }
 /// Private append-only sink. The owner reserves retained capacity before append
@@ -650,6 +667,24 @@ fn checked_block<'a>(
     let block = source.resolve(reference, resources)?;
     resources.step(0)?;
     check_block(root, reference, block)
+}
+/// The same checked read as `checked_block`, with the block's backing scoped to
+/// the callback. The owned result cannot retain that mapping's lifetime.
+fn with_checked_block<S: BlockSource, R>(
+    source: &S,
+    root: DirectoryRoot,
+    reference: PhysicalRef,
+    resources: &mut TreeResources<'_>,
+    callback: impl for<'a, 'r> FnOnce(
+        FramedBlock<'a>,
+        &'r mut TreeResources<'_>,
+    ) -> Result<R, TreeError>,
+) -> Result<R, TreeError> {
+    resources.step(1)?;
+    source.with_block(reference, resources, |block, resources| {
+        resources.step(0)?;
+        callback(check_block(root, reference, block)?, resources)
+    })
 }
 fn check_block<'a>(
     root: DirectoryRoot,
@@ -1453,7 +1488,24 @@ impl Path {
         Ok(())
     }
 }
+/// Route one probe to its leaf, optionally verifying every leaf entry and every
+/// retained branch child on the way. Validator mode reads far more artifacts
+/// than the path itself, so its incidental reads are scoped and released.
 fn find_path<S: BlockSource>(
+    source: &S,
+    root: DirectoryRoot,
+    key: ProbeKey<'_>,
+    path: &mut Path,
+    validator: Option<&mut dyn LeafValidator<S>>,
+    resources: &mut TreeResources<'_>,
+) -> Result<(), TreeError> {
+    if validator.is_some() {
+        return source
+            .with_scoped_reads(|| find_path_inner(source, root, key, path, validator, resources));
+    }
+    find_path_inner(source, root, key, path, validator, resources)
+}
+fn find_path_inner<S: BlockSource>(
     source: &S,
     root: DirectoryRoot,
     key: ProbeKey<'_>,
@@ -1531,19 +1583,25 @@ fn find_path<S: BlockSource>(
                     generation: page.header().generation,
                     ..root
                 };
-                let block = checked_block(source, child_root, child, resources)?;
-                let child_page = checked_page(
-                    source,
-                    child_root,
-                    block.identity(),
-                    block.payload(),
-                    prior,
-                    bound.or(upper),
-                    resources,
-                )?;
-                if child_page.header().level.checked_add(1) != Some(page.header().level) {
-                    return Err(TreeError::Invalid("child level before directory rewrite"));
-                }
+                let child_upper = bound.or(upper);
+                let level = page.header().level;
+                // The checked child page is released here: only the pages this
+                // probe actually descends into stay mapped for the caller.
+                with_checked_block(source, child_root, child, resources, |block, resources| {
+                    let child_page = checked_page(
+                        source,
+                        child_root,
+                        block.identity(),
+                        block.payload(),
+                        prior,
+                        child_upper,
+                        resources,
+                    )?;
+                    if child_page.header().level.checked_add(1) != Some(level) {
+                        return Err(TreeError::Invalid("child level before directory rewrite"));
+                    }
+                    Ok(())
+                })?;
             }
             if selected.is_none()
                 && (bound.is_none()
@@ -2835,15 +2893,19 @@ pub fn verify_directory<'a>(
     resources: &mut TreeResources<'_>,
     validator: &mut impl FnMut(DirectoryEntry<'a>, &mut TreeResources<'_>) -> Result<(), TreeError>,
 ) -> Result<u64, TreeError> {
-    let mut cursor = DirectoryCursor::seek(source, root, None, resources)?;
-    let mut entries = 0u64;
-    while let Some(entry) = cursor.next_entry(resources)? {
-        validator(entry, resources)?;
-        resources.step(1)?;
-        entries = entries.checked_add(1).ok_or(TreeError::Work)?;
-    }
-    resources.step(0)?;
-    Ok(entries)
+    // The validator reads one record artifact per entry. Those reads are scoped
+    // and released; only the leaf pages under the cursor stay mapped.
+    source.with_scoped_reads(|| {
+        let mut cursor = DirectoryCursor::seek(source, root, None, resources)?;
+        let mut entries = 0u64;
+        while let Some(entry) = cursor.next_entry(resources)? {
+            validator(entry, resources)?;
+            resources.step(1)?;
+            entries = entries.checked_add(1).ok_or(TreeError::Work)?;
+        }
+        resources.step(0)?;
+        Ok(entries)
+    })
 }
 
 mod roots;

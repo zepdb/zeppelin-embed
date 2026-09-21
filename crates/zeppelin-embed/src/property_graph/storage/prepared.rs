@@ -239,6 +239,33 @@ impl<S: BlockSource, F> BlockSource for PreparedObjects<'_, '_, S, F> {
         }
         self.base.resolve(reference, r)
     }
+    /// A private pack is already resident, so it is served in place. Every other
+    /// reference follows the base source's own retention policy.
+    fn with_block<R>(
+        &self,
+        reference: PhysicalRef,
+        r: &mut TreeResources<'_>,
+        callback: impl for<'x, 'y> FnOnce(
+            FramedBlock<'x>,
+            &'y mut TreeResources<'_>,
+        ) -> Result<R, TreeError>,
+    ) -> Result<R, TreeError> {
+        r.require_preparation(self.memory)?;
+        for pack in self.packs.as_slice() {
+            r.step(1)?;
+            if pack.identity().artifact == reference.artifact {
+                let block = pack.framed_block(reference, r)?;
+                return callback(block, r);
+            }
+        }
+        self.base.with_block(reference, r, callback)
+    }
+    fn scoped_blocks(&self) -> bool {
+        self.base.scoped_blocks()
+    }
+    fn with_scoped_reads<R>(&self, body: impl FnOnce() -> R) -> R {
+        self.base.with_scoped_reads(body)
+    }
 }
 impl<S: BlockSource, F: FnMut() -> Result<ArtifactIdentity, TreeError>> BlockSink
     for PreparedObjects<'_, '_, S, F>

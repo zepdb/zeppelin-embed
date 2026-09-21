@@ -256,7 +256,7 @@ fn compare_fence_key(
     Ok(left_length.cmp(&right_length))
 }
 
-fn copy_scoped_span(
+pub(super) fn copy_scoped_span(
     source: &impl BlockSource,
     root: DirectoryRoot,
     key: Key<'_>,
@@ -301,7 +301,7 @@ fn copy_scoped_span(
     }
 }
 
-fn scoped_prefix(
+pub(super) fn scoped_prefix(
     source: &impl BlockSource,
     root: DirectoryRoot,
     key: Key<'_>,

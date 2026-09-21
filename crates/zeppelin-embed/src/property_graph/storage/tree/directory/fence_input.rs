@@ -283,13 +283,21 @@ impl DirectoryEntry<'_> {
             EntityKind::Node => 1,
             EntityKind::Relationship => 2,
         };
-        if keys::prefix(source, root, self.key, r)? != (kind, namespace.get())
+        let key_prefix = if source.scoped_blocks() {
+            keys::scoped_prefix(source, root, self.key, r)?
+        } else {
+            keys::prefix(source, root, self.key, r)?
+        };
+        if key_prefix != (kind, namespace.get())
             || keys::length(self.key)?
                 .checked_sub(9)
                 .ok_or(TreeError::Invalid("fence key length"))? as u64
                 != text.len()
         {
             return Ok(false);
+        }
+        if source.scoped_blocks() {
+            return self.scoped_fence_stream_matches(source, root, text, r);
         }
         let mut position = 0usize;
         while (position as u64) < text.len() {
@@ -301,6 +309,49 @@ impl DirectoryEntry<'_> {
             }
             r.step(n as u64)?;
             if a.get(..n) != b.get(..n) {
+                return Ok(false);
+            }
+            position = position.checked_add(n).ok_or(TreeError::Work)?;
+        }
+        r.step(0)?;
+        Ok(true)
+    }
+
+    /// The same exact byte-for-byte fence-stream comparison, copying one bounded
+    /// span of each side at a time so neither mapping is retained afterwards.
+    fn scoped_fence_stream_matches<S: BlockSource>(
+        self,
+        source: &S,
+        root: DirectoryRoot,
+        text: crate::property_graph::storage::stream::PayloadSlice<'_, S>,
+        r: &mut TreeResources<'_>,
+    ) -> Result<bool, TreeError> {
+        let mut key_bytes = [0_u8; crate::property_graph::storage::payload::CHUNK_BYTES];
+        let mut text_bytes = [0_u8; crate::property_graph::storage::payload::CHUNK_BYTES];
+        let mut position = 0usize;
+        while (position as u64) < text.len() {
+            let remaining = usize::try_from(text.len() - position as u64)
+                .map_err(|_| TreeError::Memory)?
+                .min(crate::property_graph::storage::payload::CHUNK_BYTES);
+            let n = keys::copy_scoped_span(
+                source,
+                root,
+                self.key,
+                position
+                    .checked_add(9)
+                    .ok_or(TreeError::Invalid("fence key offset"))?,
+                key_bytes.get_mut(..remaining).ok_or(TreeError::Memory)?,
+                r,
+            )?;
+            if n == 0 {
+                return Err(TreeError::Invalid("short fence key stream"));
+            }
+            let target = text_bytes.get_mut(..n).ok_or(TreeError::Memory)?;
+            if text.read_at(position as u64, target, r)? != n {
+                return Err(TreeError::Invalid("short fence text stream"));
+            }
+            r.step(n as u64)?;
+            if key_bytes.get(..n) != text_bytes.get(..n) {
                 return Ok(false);
             }
             position = position.checked_add(n).ok_or(TreeError::Work)?;
