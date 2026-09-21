@@ -19160,13 +19160,29 @@ fn native_graph_runner_keys_are_active_with_graph_feature() {
     #[cfg(not(feature = "graph-result-test-support"))]
     assert_eq!(
         adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        276
+        278
     );
     #[cfg(feature = "graph-result-test-support")]
     assert_eq!(
         adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        296
+        298
     );
+}
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn native_pattern_probe_agrees_with_the_independent_oracle() {
+    for seed in [0, 1, 2, 3] {
+        let mut coverage = adversarial::coverage::CoverageRegistry::default();
+        adversarial::graph_pattern::probe(seed, &mut coverage)
+            .expect("directed native pattern probe");
+        for key in [
+            "property-graph.pattern.oracle.permutation",
+            "property-graph.pattern.oracle.subsequent-match",
+        ] {
+            assert!(coverage.count(key) > 0, "{key}");
+        }
+    }
 }
 
 #[cfg(feature = "graph-cypher")]

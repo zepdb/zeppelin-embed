@@ -146,6 +146,9 @@ pub mod graph_adjacency_store;
 /// Composed ZE-36 keyed identity and adjacency sequence oracle.
 pub mod graph_identity;
 
+/// Independent tiny-graph pattern-matching oracle.
+pub mod graph_pattern;
+
 /// Independent primitive relational kernel oracle.
 pub mod graph_relational;
 

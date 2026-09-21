@@ -58,6 +58,8 @@ pub const REQUIRED_GRAPH_SMOKE_COVERAGE: &[&str] = &[
     "property-graph.pattern.same-seed-control",
     "property-graph.pattern.release",
     "property-graph.pattern.oracle.can-fire",
+    "property-graph.pattern.oracle.permutation",
+    "property-graph.pattern.oracle.subsequent-match",
     "property-graph.native-relational.pipeline",
     "property-graph.native-relational.representative",
     "property-graph.native-relational.group",

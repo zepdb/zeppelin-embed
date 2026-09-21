@@ -48,9 +48,69 @@ pub struct ProbeReport {
     pub faults: Vec<(&'static str, u64)>,
     /// Same-seed clean executions paired with the injected controls.
     pub clean_controls: Vec<(&'static str, u64)>,
+    /// Committed node identities in fixture order.
+    pub fixture_nodes: Vec<u128>,
+    /// Committed relationships as `(relationship, source, target)`.
+    pub fixture_edges: Vec<(u128, u128, u128)>,
+    /// One bag per legal source and build-side permutation of the same pattern.
+    pub permutations: Vec<Vec<(u128, u128, u128, u128)>>,
+    /// Bag observed when the right side is a later, independent pattern match.
+    pub subsequent: Vec<(u128, u128, u128, u128)>,
 }
 
-struct FreezeReceipts;
+/// Legal plan permutations of the one directed probe pattern.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PatternVariant {
+    /// Path side first, one syntactic MATCH.
+    #[default]
+    Directed,
+    /// Scalar side first; the same pattern with the other build side.
+    JoinSwapped,
+    /// The scalar side is a later, independent MATCH with a fresh
+    /// uniqueness set.
+    SubsequentMatch,
+}
+
+struct FreezeReceipts {
+    source: usize,
+    target: usize,
+    path: usize,
+    relationship: usize,
+}
+
+/// Locates the probe's four reported slots in the validated root schema, which
+/// changes with the join input order.
+fn probe_columns(
+    facts: &NodeFacts,
+) -> Result<FreezeReceipts, crate::property_graph::storage::tree::directory::TreeError> {
+    let mut source = None;
+    let mut target = None;
+    let mut path = None;
+    let mut relationship = None;
+    for ordinal in 0..facts.width() {
+        let (slot, _) = facts.slot_at(ordinal).ok_or(
+            crate::property_graph::storage::tree::directory::TreeError::Invalid(
+                "pattern probe slot",
+            ),
+        )?;
+        match slot.0 {
+            0 => source = Some(ordinal),
+            1 => target = Some(ordinal),
+            2 => path = Some(ordinal),
+            4 => relationship = Some(ordinal),
+            _ => {}
+        }
+    }
+    let missing = || {
+        crate::property_graph::storage::tree::directory::TreeError::Invalid("pattern probe columns")
+    };
+    Ok(FreezeReceipts {
+        source: source.ok_or_else(missing)?,
+        target: target.ok_or_else(missing)?,
+        path: path.ok_or_else(missing)?,
+        relationship: relationship.ok_or_else(missing)?,
+    })
+}
 
 struct FreezeNodeIds;
 
@@ -93,22 +153,22 @@ impl<'m, 'g> Completion<'m, 'g, NativeExecutionError> for FreezeReceipts {
             .try_reserve_exact(rows.rows())
             .map_err(|_| RuntimeError::Batch)?;
         for row in 0..rows.rows() {
-            let source = match rows.value(row, 0) {
+            let source = match rows.value(row, self.source) {
                 Some(QueryValue::NodeRef(value)) => value.id().get(),
                 _ => return Err(RuntimeError::Batch.into()),
             };
-            let target = match rows.value(row, 1) {
+            let target = match rows.value(row, self.target) {
                 Some(QueryValue::NodeRef(value)) => value.id().get(),
                 _ => return Err(RuntimeError::Batch.into()),
             };
-            let path_relationship = match rows.value(row, 2) {
+            let path_relationship = match rows.value(row, self.path) {
                 Some(QueryValue::List(list)) if list.len() == 1 => match list.get(0) {
                     Some(QueryValue::RelRef(value)) => value.id().get(),
                     _ => return Err(RuntimeError::Batch.into()),
                 },
                 _ => return Err(RuntimeError::Batch.into()),
             };
-            let relationship = match rows.value(row, 4) {
+            let relationship = match rows.value(row, self.relationship) {
                 Some(QueryValue::RelRef(value)) => value.id().get(),
                 _ => return Err(RuntimeError::Batch.into()),
             };
@@ -124,6 +184,7 @@ impl<'m, 'g> Completion<'m, 'g, NativeExecutionError> for FreezeReceipts {
 
 struct ProbeConsumer {
     start: NodeId,
+    variant: PatternVariant,
     fault_vfs: Option<Arc<ScheduledMapVfs>>,
     publication: Option<ProbePublication>,
 }
@@ -330,7 +391,16 @@ impl NativeReadConsumer<Result<ProbeExecution, RuntimeFailure<NativeExecutionErr
         let path_input = [PlanNodeId(1)];
         let right_lookup_input = [PlanNodeId(0)];
         let right_expand_input = [PlanNodeId(3)];
-        let join_inputs = [PlanNodeId(2), PlanNodeId(4)];
+        let join_inputs = match self.variant {
+            PatternVariant::JoinSwapped => [PlanNodeId(4), PlanNodeId(2)],
+            PatternVariant::Directed | PatternVariant::SubsequentMatch => {
+                [PlanNodeId(2), PlanNodeId(4)]
+            }
+        };
+        let right_pattern = match self.variant {
+            PatternVariant::SubsequentMatch => PatternId(1),
+            PatternVariant::Directed | PatternVariant::JoinSwapped => PatternId(0),
+        };
         let optional_inputs = [PlanNodeId(5), PlanNodeId(5)];
         let collect_input = [PlanNodeId(6)];
         let expressions = [
@@ -395,7 +465,7 @@ impl NativeReadConsumer<Result<ProbeExecution, RuntimeFailure<NativeExecutionErr
                     relationship: SlotId(4),
                     direction: Direction::Outgoing,
                     relationship_types: &[],
-                    pattern: PatternId(0),
+                    pattern: right_pattern,
                 },
             },
             Operator {
@@ -604,6 +674,11 @@ impl NativeReadConsumer<Result<ProbeExecution, RuntimeFailure<NativeExecutionErr
                 "pattern probe admit",
             )
         })?;
+        let mut receipts = probe_columns(plan.facts(PlanNodeId(7)).ok_or(
+            crate::property_graph::storage::tree::directory::TreeError::Invalid(
+                "pattern probe root facts",
+            ),
+        )?)?;
         let operator_baseline = runtime.memory().reserved_bytes();
         let source = NativePattern::new(
             view,
@@ -643,7 +718,7 @@ impl NativeReadConsumer<Result<ProbeExecution, RuntimeFailure<NativeExecutionErr
             runtime,
             &admitted,
             &mut source,
-            &mut FreezeReceipts,
+            &mut receipts,
             ExecutionCapacity {
                 batch_rows: 1,
                 result_rows: 8,
@@ -1019,6 +1094,7 @@ pub fn run_actual_probe(seed: u64) -> Result<ProbeReport, String> {
             64,
             ProbeConsumer {
                 start: source_id,
+                variant: PatternVariant::Directed,
                 fault_vfs: None,
                 publication: None,
             },
@@ -1038,6 +1114,7 @@ pub fn run_actual_probe(seed: u64) -> Result<ProbeReport, String> {
             64,
             ProbeConsumer {
                 start: source_id,
+                variant: PatternVariant::Directed,
                 fault_vfs: None,
                 publication: None,
             },
@@ -1119,6 +1196,7 @@ pub fn run_actual_probe(seed: u64) -> Result<ProbeReport, String> {
             64,
             ProbeConsumer {
                 start: source_id,
+                variant: PatternVariant::Directed,
                 fault_vfs: None,
                 publication: None,
             },
@@ -1127,6 +1205,60 @@ pub fn run_actual_probe(seed: u64) -> Result<ProbeReport, String> {
         .map_err(|error| format!("paired directed pattern execution: {error:?}"))?;
     let mut paired_observations = paired.execution.output.clone();
     paired_observations.sort_unstable();
+    let swapped = store
+        .with_native_read(
+            &QueryControl::Cancel(CancelToken::new()),
+            RuntimeLimits::default(),
+            16 * 1024 * 1024,
+            64,
+            ProbeConsumer {
+                start: source_id,
+                variant: PatternVariant::JoinSwapped,
+                fault_vfs: None,
+                publication: None,
+            },
+        )
+        .map_err(|error| error.to_string())?
+        .map_err(|error| format!("join-swapped pattern execution: {error:?}"))?;
+    let mut swapped_observations = swapped.execution.output.clone();
+    swapped_observations.sort_unstable();
+    let subsequent_execution = store
+        .with_native_read(
+            &QueryControl::Cancel(CancelToken::new()),
+            RuntimeLimits::default(),
+            16 * 1024 * 1024,
+            64,
+            ProbeConsumer {
+                start: source_id,
+                variant: PatternVariant::SubsequentMatch,
+                fault_vfs: None,
+                publication: None,
+            },
+        )
+        .map_err(|error| error.to_string())?
+        .map_err(|error| format!("subsequent-match pattern execution: {error:?}"))?;
+    let mut subsequent = subsequent_execution.execution.output.clone();
+    subsequent.sort_unstable();
+    let permutations = vec![observations.clone(), swapped_observations];
+    let permutation_control = u64::try_from(
+        permutations
+            .iter()
+            .filter(|bag| **bag == observations)
+            .count(),
+    )
+    .map_err(|_| String::from("permutation control"))?;
+    let subsequent_control = u64::try_from(
+        subsequent
+            .iter()
+            .filter(|(_, path, _, relationship)| path == relationship)
+            .count(),
+    )
+    .map_err(|_| String::from("subsequent-match control"))?;
+    let fixture_nodes = vec![source, target];
+    let fixture_edges = relationships
+        .iter()
+        .map(|relationship| (*relationship, source, target))
+        .collect::<Vec<(u128, u128, u128)>>();
     let cancelled = CancelToken::new();
     cancelled.cancel();
     let cancelled_result = store.with_native_read(
@@ -1136,6 +1268,7 @@ pub fn run_actual_probe(seed: u64) -> Result<ProbeReport, String> {
         64,
         ProbeConsumer {
             start: source_id,
+            variant: PatternVariant::Directed,
             fault_vfs: None,
             publication: None,
         },
@@ -1163,6 +1296,7 @@ pub fn run_actual_probe(seed: u64) -> Result<ProbeReport, String> {
             64,
             ProbeConsumer {
                 start: alias,
+                variant: PatternVariant::Directed,
                 fault_vfs: None,
                 publication: None,
             },
@@ -1178,6 +1312,7 @@ pub fn run_actual_probe(seed: u64) -> Result<ProbeReport, String> {
             64,
             ProbeConsumer {
                 start: source_id,
+                variant: PatternVariant::Directed,
                 fault_vfs: None,
                 publication: Some(ProbePublication {
                     store: Arc::clone(&store),
@@ -1205,6 +1340,7 @@ pub fn run_actual_probe(seed: u64) -> Result<ProbeReport, String> {
             64,
             ProbeConsumer {
                 start: source_id,
+                variant: PatternVariant::Directed,
                 fault_vfs: None,
                 publication: None,
             },
@@ -1285,11 +1421,19 @@ pub fn run_actual_probe(seed: u64) -> Result<ProbeReport, String> {
                     .min(alias_execution.released)
                     .min(retained.released)
                     .min(fresh.released)
-                    .min(late_clean.released),
+                    .min(late_clean.released)
+                    .min(swapped.released)
+                    .min(subsequent_execution.released),
             ),
             ("oracle", oracle_count),
+            ("permutation", permutation_control),
+            ("subsequent-match", subsequent_control),
         ],
         faults: vec![("cancel", cancel_fired), ("limit", limit_fired)],
         clean_controls: vec![("same-seed", same_seed)],
+        fixture_nodes,
+        fixture_edges,
+        permutations,
+        subsequent,
     })
 }
