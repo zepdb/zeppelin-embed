@@ -848,7 +848,11 @@ fn ze61_sparse_populations_match_model() {
             )
         });
 
-    let mut sparse_participants = 0_usize;
+    // Role 6 subtype 1 is a sparse root and stays at version 1. Role 6 subtype 2
+    // is a sparse source, which ZE-158 writes in the 200-byte V2 layout, so the
+    // two populations no longer share one version and must be counted apart.
+    let mut sparse_roots = 0_usize;
+    let mut sparse_sources = 0_usize;
     for index in 0..artifacts.objects().len() {
         let object = artifacts.objects().artifact(index).unwrap();
         let frame = artifact::decode(
@@ -861,16 +865,40 @@ fn ze61_sparse_populations_match_model() {
         while let Ok(reference) = frame.reference(block) {
             if reference.kind == BlockKind::CommitParticipant {
                 let payload = frame.framed_block(reference).unwrap().payload();
-                if payload.get(..8) == Some(&[b'Z', b'G', b'C', b'P', 6, 0, 1, 0]) {
-                    sparse_participants += 1;
+                if payload.get(..9) == Some(&[b'Z', b'G', b'C', b'P', 6, 0, 1, 0, 1]) {
+                    sparse_roots += 1;
+                }
+                if payload.get(..9) == Some(&[b'Z', b'G', b'C', b'P', 6, 0, 2, 0, 2]) {
+                    sparse_sources += 1;
+                    assert_eq!(payload.len(), 200, "sparse source is not the V2 width");
+                    // A V2 vector source carries its native index; a text source
+                    // never does. Offset 144 is that presence byte.
+                    let presence = payload.get(144).copied();
+                    match payload.get(9).copied() {
+                        Some(1) => assert_eq!(
+                            presence,
+                            Some(0),
+                            "sparse text source claims a native vector index"
+                        ),
+                        Some(2) => assert_eq!(
+                            presence,
+                            Some(1),
+                            "sparse vector source omits its native vector index"
+                        ),
+                        other => panic!("unexpected sparse modality {other:?}"),
+                    }
                 }
             }
             block += 1;
         }
     }
     assert_eq!(
-        sparse_participants, 4,
-        "finished real preparation omitted the two sparse roots and two sparse sources"
+        sparse_roots, 2,
+        "finished real preparation omitted the two sparse roots"
+    );
+    assert_eq!(
+        sparse_sources, 2,
+        "finished real preparation omitted the two sparse V2 sources"
     );
 
     let roots = artifacts.sparse_roots();
@@ -1190,6 +1218,30 @@ fn expected_installed_trace_closure<
                 )
                 .unwrap();
                 expected_payload_closure(source, lexical, resources, &mut output);
+            }
+            // ZE-158 gives every V2 vector source a native index. Offset 144 is
+            // the presence byte and is absent from the 144-byte V1 manifest. The
+            // index header carries its own interpretation catalog RequiredRef at
+            // bytes 64..160, whose block reference lives at 128..160, so both the
+            // index block and that catalog participant are trace descendants.
+            if manifest.get(144).copied() == Some(1) {
+                let vector_index = crate::property_graph::storage::payload::PayloadRef::decode(
+                    manifest.get(152..200).unwrap(),
+                )
+                .unwrap();
+                expected_payload_closure(source, vector_index, resources, &mut output);
+                let index_payload = crate::property_graph::storage::stream::PayloadSlice::new(
+                    source,
+                    store,
+                    generation,
+                    vector_index,
+                );
+                let mut header = [0_u8; 160];
+                assert_eq!(
+                    index_payload.read_at(0, &mut header, resources).unwrap(),
+                    header.len()
+                );
+                output.push(artifact::decode_reference(header.get(128..160).unwrap()).unwrap());
             }
             let rows_payload = crate::property_graph::storage::stream::PayloadSlice::new(
                 source, store, generation, row_table,
@@ -2162,6 +2214,7 @@ fn run_sparse_lifecycle_acceptance(
             enum RequiredCorruption {
                 Role,
                 Version,
+                LegacyVersion,
                 Modality,
                 Reserved,
                 ShortRows,
@@ -2171,14 +2224,21 @@ fn run_sparse_lifecycle_acceptance(
                 SourceCount,
                 RootTotal,
             }
+            // ZE-158 split the source manifest's header check: the role and
+            // subtype are checked first, then the (version, width) pair, so the
+            // two corruptions no longer share one combined message.
             let required_cases = [
                 (
                     RequiredCorruption::Role,
-                    Some("sparse participant role version or subtype"),
+                    Some("sparse source role or subtype"),
                 ),
                 (
                     RequiredCorruption::Version,
-                    Some("sparse participant role version or subtype"),
+                    Some("sparse source version or width"),
+                ),
+                (
+                    RequiredCorruption::LegacyVersion,
+                    Some("sparse source version or width"),
                 ),
                 (RequiredCorruption::Modality, Some("sparse modality")),
                 (
@@ -2211,6 +2271,7 @@ fn run_sparse_lifecycle_acceptance(
                     let bytes = match case {
                         RequiredCorruption::Role
                         | RequiredCorruption::Version
+                        | RequiredCorruption::LegacyVersion
                         | RequiredCorruption::Modality
                         | RequiredCorruption::Reserved
                         | RequiredCorruption::ShortRows
@@ -2225,10 +2286,17 @@ fn run_sparse_lifecycle_acceptance(
                                         .get_mut(4..6)
                                         .unwrap()
                                         .copy_from_slice(&7_u16.to_le_bytes()),
+                                    // 2 is the live V2 version, so it would be a
+                                    // no-op here. 3 is unknown at any width and
+                                    // 1 is legal only at the 144-byte V1 width.
                                     RequiredCorruption::Version => payload
                                         .get_mut(6..8)
                                         .unwrap()
-                                        .copy_from_slice(&2_u16.to_le_bytes()),
+                                        .copy_from_slice(&3_u16.to_le_bytes()),
+                                    RequiredCorruption::LegacyVersion => payload
+                                        .get_mut(6..8)
+                                        .unwrap()
+                                        .copy_from_slice(&1_u16.to_le_bytes()),
                                     RequiredCorruption::Modality => {
                                         *payload.get_mut(9).unwrap() = 9
                                     }

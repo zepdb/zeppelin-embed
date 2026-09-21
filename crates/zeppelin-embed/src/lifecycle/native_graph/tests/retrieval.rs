@@ -215,6 +215,49 @@ impl NativeReadConsumer<(u64, u64)> for ExpectedPreparationFailure<'_> {
 }
 
 #[test]
+fn ze60_admission_refuses_document_dimensions_beyond_the_native_index_bound() {
+    use crate::kernels::MAX_DOT_I8_DIMENSION;
+    use crate::property_graph::catalog::{CatalogError, DocumentDeclaration, GraphInterpretation};
+
+    let lexical = TokenizerEpoch::of(&TokenizerConfig::text_default());
+    let mut tower = EmbeddingTower {
+        model_id: "ze167-document".into(),
+        model_version: "1".into(),
+        weights_digest: vec![0x16, 0x70],
+        dims: u32::try_from(MAX_DOT_I8_DIMENSION + 1).unwrap(),
+        normalization: Normalization::None,
+        prompt_prefix: "doc: ".into(),
+        max_tokens: 32,
+        runtime: EmbeddingRuntime::CpuReference,
+        compute_units: ComputeUnits::Cpu,
+        os_build: None,
+    };
+
+    // ZE-158 requires every V2 vector source to carry a Bit4/Vamana index, and
+    // Bit4 refuses more than MAX_DOT_I8_DIMENSION coordinates. The declaration
+    // must therefore be refused at admission with a typed catalog error, not
+    // admitted and then failed by the first write with the corruption-class
+    // TreeError::Invalid("native vector quantization").
+    assert_eq!(
+        DocumentDeclaration::new(&tower),
+        Err(CatalogError::InvalidEmbedding)
+    );
+    assert_eq!(
+        GraphInterpretation::new(lexical, Some(&tower)).err(),
+        Some(CatalogError::InvalidEmbedding)
+    );
+
+    // The full legacy width stays admissible; ze60_preparation_reuses_bounded_
+    // vector_validation proves it still indexes natively end to end.
+    tower.dims = u32::try_from(MAX_DOT_I8_DIMENSION).unwrap();
+    assert_eq!(
+        DocumentDeclaration::new(&tower).map(DocumentDeclaration::dimensions),
+        Ok(u32::try_from(MAX_DOT_I8_DIMENSION).unwrap())
+    );
+    assert!(GraphInterpretation::new(lexical, Some(&tower)).is_ok());
+}
+
+#[test]
 fn ze60_preparation_reuses_bounded_vector_validation() {
     use crate::lifecycle::prepared::{VectorValidationError, validate_vector_coordinates};
 
@@ -365,7 +408,11 @@ fn ze60_preparation_reuses_bounded_vector_validation() {
     )
     .unwrap();
     let wide_identity = StoreInstanceId::new((1_u128 << 84) + 2).unwrap();
-    let wide_query = vec![0.25_f32; crate::kernels::MAX_DOT_I8_DIMENSION + 1];
+    // ZE-158 gives every V2 vector source a Bit4 index, so the widest document
+    // space a store can admit is exactly MAX_DOT_I8_DIMENSION; anything wider is
+    // refused by ze60_admission_refuses_document_dimensions_beyond_the_native_
+    // index_bound. This case proves the full legacy width still indexes.
+    let wide_query = vec![0.25_f32; crate::kernels::MAX_DOT_I8_DIMENSION];
     wide.install_native_graph_for_test(actual_producer_bundle_with_dimensions(
         &wide,
         wide_directory.path(),

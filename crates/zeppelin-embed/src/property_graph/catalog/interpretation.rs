@@ -40,6 +40,11 @@ impl<'a> DocumentDeclaration<'a> {
     pub const fn dimensions(self) -> u32 {
         self.dims
     }
+    /// Refuses a declaration no native vector index could ever carry. The Bit4
+    /// path is bounded by `kernels::MAX_DOT_I8_DIMENSION`, so an over-wide
+    /// document space is rejected here, at admission, instead of surviving into
+    /// storage and failing the first write with a corruption-class quantizer
+    /// error (ZE-167, amending ZE-60 against ZE-158's index-per-source rule).
     pub(super) fn validate(self) -> Result<(), CatalogError> {
         let mut bytes = if self.os_build.is_some() {
             55_usize
@@ -58,6 +63,7 @@ impl<'a> DocumentDeclaration<'a> {
                 .ok_or(CatalogError::InvalidEmbedding)?;
         }
         if self.dims == 0
+            || u64::from(self.dims) > crate::kernels::MAX_DOT_I8_DIMENSION as u64
             || u64::from(self.dims) * 4 > MAX_GRAPH_INPUT_BYTES as u64
             || bytes > MAX_GRAPH_INPUT_BYTES
         {
