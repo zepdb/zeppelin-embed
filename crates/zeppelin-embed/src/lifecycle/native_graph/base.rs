@@ -662,10 +662,6 @@ where
     /// `entity`, `property` or `stored_text` then resolves the target from the
     /// admitted roots into a bounded arena of `lazy_capacity` entries. `key`
     /// keeps its structured-write-only meaning.
-    #[allow(
-        dead_code,
-        reason = "the mutation executor that resolves MATCH targets lands in a later ZE-52 slice"
-    )]
     pub(super) fn with_lazy_targets(
         lease: &'lease NativeReadLease,
         source: &'source NativePreparationSource<'lease, 'm>,

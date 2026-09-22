@@ -2059,6 +2059,303 @@ pub(super) fn protect_and_commit(
     Ok(NativeCommitAudit::default())
 }
 
+/// One outcome of the irreversible commit tail. `Checkpointed` means no batch
+/// was committed: the caller must rebuild its whole attempt against the new
+/// generation and try again.
+pub(super) enum CommitStep {
+    /// The staged batch changed no durable participant.
+    NoOp,
+    /// The batch is durable and published at `generation`.
+    Committed {
+        generation: GraphGeneration,
+        audit: NativeCommitAudit,
+    },
+    /// A checkpoint ran instead of a commit; the caller re-loops.
+    Checkpointed,
+}
+
+/// The shared commit tail: classify the staged batch, prepare its artifacts,
+/// encode one envelope and publish it. Both the structured-write path and the
+/// query-mutation path reach durability only through this function, so one
+/// checkpoint, ordering and protection protocol exists.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one commit carries its store, writer, lease, base, batch and controls"
+)]
+pub(super) fn commit_staged_batch<'m>(
+    store: &crate::lifecycle::Store,
+    writer: &mut NativeWriter,
+    lease: &NativeReadLease,
+    admitted: &Arc<NativeGraphBundle>,
+    shared: &GraphResources,
+    storage: &'m StorageMemory<'m>,
+    control: &crate::lifecycle::QueryControl,
+    base: &NativeAdmittedBase<'_, '_, '_, 'm>,
+    staged_batch: &StagedBatch<'_>,
+    allow_pending_checkpoint: &mut bool,
+) -> Result<CommitStep, NativeGraphError> {
+    if staged_batch.disposition() != BatchDisposition::Changed {
+        return Ok(CommitStep::NoOp);
+    }
+    if writer.checkpoint_failed {
+        return Err(NativeGraphError::CheckpointRequired);
+    }
+    let committed_tail = writer
+        .wal
+        .bytes
+        .checked_sub(crate::property_graph::wal::HEADER_BYTES)
+        .ok_or(NativeGraphError::Invalid("native WAL byte accounting"))?;
+    if writer.complete_envelopes >= 64 || committed_tail >= MAX_ENVELOPE_BYTES {
+        checkpoint_current(store, writer, admitted, shared, control)?;
+        return Ok(CommitStep::Checkpointed);
+    }
+
+    let target_generation = GraphGeneration::new(
+        admitted
+            .base()
+            .generation
+            .get()
+            .checked_add(1)
+            .ok_or(NativeGraphError::IdentityExhausted)?,
+    );
+    let source = base.source();
+    let mut resources_guard = base.resources()?;
+    let resources = &mut **resources_guard;
+    let store_identity = admitted.base().store;
+    let identity_source = || {
+        let creation_serial = store
+            .native_graph
+            .burn_creation_serial()
+            .map_err(|_| TreeError::Invalid("native creation serial unavailable"))?;
+        let mut entropy = crate::property_graph::storage::allocation::OsEntropy;
+        let value = crate::property_graph::storage::allocation::fresh_store_identity(&mut entropy)
+            .map_err(TreeError::Io)?;
+        Ok(ArtifactIdentity {
+            store: store_identity,
+            artifact: crate::property_graph::storage::artifact::ArtifactId::new(value.get())?,
+            generation: target_generation,
+            creation_serial,
+        })
+    };
+    let prepared_result = GraphPreparation::new(
+        source,
+        target_generation,
+        identity_source,
+        PackLimits::default(),
+        &store.tokenizer,
+        resources,
+    )?
+    .prepare(staged_batch, resources);
+    let prepared = prepared_result.map_err(|failure| {
+        let (error, _, _) = failure.into_parts();
+        NativeGraphError::Read(error)
+    })?;
+    if !prepared.matches_base(lease) {
+        return Err(NativeGraphError::Invalid("prepared native base changed"));
+    }
+
+    let catalog = NativePreparationCatalog::open(source, resources)?;
+    let batch_catalog = BatchCatalog {
+        base: &catalog,
+        additions: staged_batch.symbols(),
+    };
+    let total_symbols = catalog
+        .symbol_entries()
+        .len()
+        .checked_add(staged_batch.symbols().len())
+        .ok_or(NativeGraphError::Invalid("catalog symbol count"))?;
+    let mut merged = StorageBuffer::<SymbolEntry<'_>>::new(storage, total_symbols)?;
+    for entry in catalog
+        .symbol_entries()
+        .iter()
+        .chain(staged_batch.symbols())
+    {
+        merged.push(*entry)?;
+    }
+
+    let prepared_max_serial = prepared
+        .inventory()
+        .iter()
+        .map(|change| change.object.serial)
+        .max()
+        .unwrap_or(store.native_graph.serial_fence()?);
+    let high = staged_batch.high_waters();
+    let high_symbols = [
+        high.symbols.label,
+        high.symbols.relationship_type,
+        high.symbols.property,
+        high.symbols.namespace,
+    ];
+    let catalog_changed = !staged_batch.symbols().is_empty()
+        || high.node != admitted.high_waters().node
+        || high.relationship != admitted.high_waters().relationship
+        || high_symbols != admitted.high_waters().symbols;
+    let (catalog_artifact, catalog_ref, catalog_floor) = if catalog_changed {
+        let catalog_serial = store.native_graph.burn_creation_serial()?;
+        if catalog_serial <= prepared_max_serial {
+            return Err(NativeGraphError::Invalid("catalog creation serial order"));
+        }
+        let catalog_identity = ArtifactIdentity {
+            store: store_identity,
+            artifact: next_artifact(&mut crate::property_graph::storage::allocation::OsEntropy)?,
+            generation: target_generation,
+            creation_serial: catalog_serial,
+        };
+        let payload = catalog_payload(
+            storage,
+            control,
+            store_identity,
+            admitted.lexical(),
+            admitted.document(),
+            high.node,
+            high.relationship,
+            merged.as_slice(),
+            high.symbols,
+        )?;
+        let (bytes, required) = encode_framed(
+            storage,
+            control,
+            ContainerKind::Object,
+            catalog_identity,
+            &[Block {
+                kind: BlockKind::CommitParticipant,
+                payload: payload.as_slice(),
+            }],
+        )?;
+        (Some((catalog_identity, bytes)), required, catalog_serial)
+    } else {
+        (None, admitted.catalog(), prepared_max_serial)
+    };
+
+    let inventory_serial = store.native_graph.burn_creation_serial()?;
+    if inventory_serial <= catalog_floor {
+        return Err(NativeGraphError::Invalid("inventory creation serial order"));
+    }
+    let inventory_identity = ArtifactIdentity {
+        store: store_identity,
+        artifact: next_artifact(&mut crate::property_graph::storage::allocation::OsEntropy)?,
+        generation: target_generation,
+        creation_serial: inventory_serial,
+    };
+    let inventory_payload = inventory_payload(
+        storage,
+        control,
+        prepared.inventory(),
+        catalog_artifact.as_ref().map(|_| catalog_ref.object),
+    )?;
+    let (inventory_bytes, inventory_ref) = encode_framed(
+        storage,
+        control,
+        ContainerKind::Object,
+        inventory_identity,
+        &[Block {
+            kind: BlockKind::CommitParticipant,
+            payload: inventory_payload.as_slice(),
+        }],
+    )?;
+
+    let protected_start = prepared
+        .inventory()
+        .len()
+        .checked_add(usize::from(catalog_artifact.is_some()))
+        .and_then(|count| count.checked_add(1))
+        .ok_or(NativeGraphError::Invalid("protected descriptor count"))?;
+    writer.can_protect(protected_start)?;
+    let batch = BatchId::new(
+        crate::property_graph::storage::allocation::fresh_store_identity(
+            &mut crate::property_graph::storage::allocation::OsEntropy,
+        )
+        .map_err(|source| io(&writer.wal.path, source))?
+        .get(),
+    )?;
+    let mut envelope_bytes = zeroed(storage, control, MAX_ENVELOPE_BYTES)?;
+    let mut cancelled = || control.checkpoint().is_err();
+    let mut wal_resources = WalResources::new(
+        (MAX_ENVELOPE_BYTES as u64) * 4,
+        STACK_RESERVATION_BYTES,
+        &mut cancelled,
+    )?;
+    let catalog_supplement =
+        catalog_artifact
+            .as_ref()
+            .map(|(identity, bytes)| SupplementalArtifact {
+                identity: *identity,
+                bytes: bytes.as_slice(),
+                required: catalog_ref,
+            });
+    let inventory_supplement = SupplementalArtifact {
+        identity: inventory_identity,
+        bytes: inventory_bytes.as_slice(),
+        required: inventory_ref,
+    };
+    let mut supplemental = StorageBuffer::new(storage, 2)?;
+    if let Some(catalog) = catalog_supplement {
+        supplemental.push(InventoryChange {
+            object: catalog.required.object,
+            state: InventoryState::Prepared,
+        })?;
+    }
+    supplemental.push(InventoryChange {
+        object: inventory_ref.object,
+        state: InventoryState::Prepared,
+    })?;
+    let _supplemental_registration = lease.register_prepared(supplemental.as_slice())?;
+    #[allow(unused_mut)]
+    let mut final_roots = prepared.candidate().roots();
+    #[cfg(any(test, feature = "test-support"))]
+    if store
+        .native_graph
+        .substitute_old_out
+        .swap(false, std::sync::atomic::Ordering::AcqRel)
+    {
+        let old = admitted.roots().for_generation(target_generation)?;
+        final_roots.replace(old.directory(TreeKind::OutRanges)?)?;
+    }
+    let mut commit_artifacts = StorageBuffer::new(storage, protected_start)?;
+    let transition = prepare_committed_transition(
+        store,
+        shared,
+        lease,
+        staged_batch,
+        &prepared,
+        final_roots,
+        &batch_catalog,
+        catalog_supplement,
+        catalog_ref,
+        inventory_supplement,
+        batch,
+        envelope_bytes.as_mut_slice(),
+        &mut commit_artifacts,
+        resources,
+        &mut wal_resources,
+    )?;
+
+    let tail_bytes = writer
+        .wal
+        .bytes
+        .checked_sub(crate::property_graph::wal::HEADER_BYTES)
+        .ok_or(NativeGraphError::Invalid("native WAL byte accounting"))?;
+    let pending_tail_bytes = tail_bytes
+        .checked_add(transition.wal_bytes().len())
+        .ok_or(NativeGraphError::IdentityExhausted)?;
+    if pending_tail_bytes > MAX_ENVELOPE_BYTES {
+        if !*allow_pending_checkpoint {
+            return Err(NativeGraphError::Invalid(
+                "single native WAL envelope exceeds tail bound",
+            ));
+        }
+        checkpoint_current(store, writer, admitted, shared, control)?;
+        *allow_pending_checkpoint = false;
+        return Ok(CommitStep::Checkpointed);
+    }
+
+    let audit = protect_and_commit(store, writer, transition, control, true)?;
+    Ok(CommitStep::Committed {
+        generation: target_generation,
+        audit,
+    })
+}
+
 impl crate::lifecycle::Store {
     pub(crate) fn apply_native_graph(
         &self,
@@ -2150,269 +2447,25 @@ impl crate::lifecycle::Store {
             }
             let materialized = staged?;
             let staged_batch = materialized.batch();
-            if staged_batch.disposition() != BatchDisposition::Changed {
-                return Ok(NativePreparedResult::from_materialized(materialized));
-            }
-            if writer.checkpoint_failed {
-                return Err(NativeGraphError::CheckpointRequired);
-            }
-            let committed_tail = writer
-                .wal
-                .bytes
-                .checked_sub(crate::property_graph::wal::HEADER_BYTES)
-                .ok_or(NativeGraphError::Invalid("native WAL byte accounting"))?;
-            if writer.complete_envelopes >= 64 || committed_tail >= MAX_ENVELOPE_BYTES {
-                checkpoint_current(self, writer, &admitted, &shared, control)?;
-                continue;
-            }
-
-            let target_generation = GraphGeneration::new(
-                admitted
-                    .base()
-                    .generation
-                    .get()
-                    .checked_add(1)
-                    .ok_or(NativeGraphError::IdentityExhausted)?,
-            );
-            let source = base.source();
-            let mut resources_guard = base.resources()?;
-            let resources = &mut **resources_guard;
-            let store_identity = admitted.base().store;
-            let identity_source = || {
-                let creation_serial = self
-                    .native_graph
-                    .burn_creation_serial()
-                    .map_err(|_| TreeError::Invalid("native creation serial unavailable"))?;
-                let mut entropy = crate::property_graph::storage::allocation::OsEntropy;
-                let value =
-                    crate::property_graph::storage::allocation::fresh_store_identity(&mut entropy)
-                        .map_err(TreeError::Io)?;
-                Ok(ArtifactIdentity {
-                    store: store_identity,
-                    artifact: crate::property_graph::storage::artifact::ArtifactId::new(
-                        value.get(),
-                    )?,
-                    generation: target_generation,
-                    creation_serial,
-                })
-            };
-            let prepared_result = GraphPreparation::new(
-                source,
-                target_generation,
-                identity_source,
-                PackLimits::default(),
-                &self.tokenizer,
-                resources,
-            )?
-            .prepare(staged_batch, resources);
-            let prepared = prepared_result.map_err(|failure| {
-                let (error, _, _) = failure.into_parts();
-                NativeGraphError::Read(error)
-            })?;
-            if !prepared.matches_base(&lease) {
-                return Err(NativeGraphError::Invalid("prepared native base changed"));
-            }
-
-            let catalog = NativePreparationCatalog::open(source, resources)?;
-            let batch_catalog = BatchCatalog {
-                base: &catalog,
-                additions: staged_batch.symbols(),
-            };
-            let total_symbols = catalog
-                .symbol_entries()
-                .len()
-                .checked_add(staged_batch.symbols().len())
-                .ok_or(NativeGraphError::Invalid("catalog symbol count"))?;
-            let mut merged = StorageBuffer::<SymbolEntry<'_>>::new(&storage, total_symbols)?;
-            for entry in catalog
-                .symbol_entries()
-                .iter()
-                .chain(staged_batch.symbols())
-            {
-                merged.push(*entry)?;
-            }
-
-            let prepared_max_serial = prepared
-                .inventory()
-                .iter()
-                .map(|change| change.object.serial)
-                .max()
-                .unwrap_or(self.native_graph.serial_fence()?);
-            let high = staged_batch.high_waters();
-            let high_symbols = [
-                high.symbols.label,
-                high.symbols.relationship_type,
-                high.symbols.property,
-                high.symbols.namespace,
-            ];
-            let catalog_changed = !staged_batch.symbols().is_empty()
-                || high.node != admitted.high_waters().node
-                || high.relationship != admitted.high_waters().relationship
-                || high_symbols != admitted.high_waters().symbols;
-            let (catalog_artifact, catalog_ref, catalog_floor) = if catalog_changed {
-                let catalog_serial = self.native_graph.burn_creation_serial()?;
-                if catalog_serial <= prepared_max_serial {
-                    return Err(NativeGraphError::Invalid("catalog creation serial order"));
-                }
-                let catalog_identity = ArtifactIdentity {
-                    store: store_identity,
-                    artifact: next_artifact(
-                        &mut crate::property_graph::storage::allocation::OsEntropy,
-                    )?,
-                    generation: target_generation,
-                    creation_serial: catalog_serial,
-                };
-                let payload = catalog_payload(
-                    &storage,
-                    control,
-                    store_identity,
-                    admitted.lexical(),
-                    admitted.document(),
-                    high.node,
-                    high.relationship,
-                    merged.as_slice(),
-                    high.symbols,
-                )?;
-                let (bytes, required) = encode_framed(
-                    &storage,
-                    control,
-                    ContainerKind::Object,
-                    catalog_identity,
-                    &[Block {
-                        kind: BlockKind::CommitParticipant,
-                        payload: payload.as_slice(),
-                    }],
-                )?;
-                (Some((catalog_identity, bytes)), required, catalog_serial)
-            } else {
-                (None, admitted.catalog(), prepared_max_serial)
-            };
-
-            let inventory_serial = self.native_graph.burn_creation_serial()?;
-            if inventory_serial <= catalog_floor {
-                return Err(NativeGraphError::Invalid("inventory creation serial order"));
-            }
-            let inventory_identity = ArtifactIdentity {
-                store: store_identity,
-                artifact: next_artifact(
-                    &mut crate::property_graph::storage::allocation::OsEntropy,
-                )?,
-                generation: target_generation,
-                creation_serial: inventory_serial,
-            };
-            let inventory_payload = inventory_payload(
-                &storage,
-                control,
-                prepared.inventory(),
-                catalog_artifact.as_ref().map(|_| catalog_ref.object),
-            )?;
-            let (inventory_bytes, inventory_ref) = encode_framed(
-                &storage,
-                control,
-                ContainerKind::Object,
-                inventory_identity,
-                &[Block {
-                    kind: BlockKind::CommitParticipant,
-                    payload: inventory_payload.as_slice(),
-                }],
-            )?;
-
-            let protected_start = prepared
-                .inventory()
-                .len()
-                .checked_add(usize::from(catalog_artifact.is_some()))
-                .and_then(|count| count.checked_add(1))
-                .ok_or(NativeGraphError::Invalid("protected descriptor count"))?;
-            writer.can_protect(protected_start)?;
-            let batch = BatchId::new(
-                crate::property_graph::storage::allocation::fresh_store_identity(
-                    &mut crate::property_graph::storage::allocation::OsEntropy,
-                )
-                .map_err(|source| io(&writer.wal.path, source))?
-                .get(),
-            )?;
-            let mut envelope_bytes = zeroed(&storage, control, MAX_ENVELOPE_BYTES)?;
-            let mut cancelled = || control.checkpoint().is_err();
-            let mut wal_resources = WalResources::new(
-                (MAX_ENVELOPE_BYTES as u64) * 4,
-                STACK_RESERVATION_BYTES,
-                &mut cancelled,
-            )?;
-            let catalog_supplement =
-                catalog_artifact
-                    .as_ref()
-                    .map(|(identity, bytes)| SupplementalArtifact {
-                        identity: *identity,
-                        bytes: bytes.as_slice(),
-                        required: catalog_ref,
-                    });
-            let inventory_supplement = SupplementalArtifact {
-                identity: inventory_identity,
-                bytes: inventory_bytes.as_slice(),
-                required: inventory_ref,
-            };
-            let mut supplemental = StorageBuffer::new(&storage, 2)?;
-            if let Some(catalog) = catalog_supplement {
-                supplemental.push(InventoryChange {
-                    object: catalog.required.object,
-                    state: InventoryState::Prepared,
-                })?;
-            }
-            supplemental.push(InventoryChange {
-                object: inventory_ref.object,
-                state: InventoryState::Prepared,
-            })?;
-            let _supplemental_registration = lease.register_prepared(supplemental.as_slice())?;
-            #[allow(unused_mut)]
-            let mut final_roots = prepared.candidate().roots();
-            #[cfg(any(test, feature = "test-support"))]
-            if self
-                .native_graph
-                .substitute_old_out
-                .swap(false, std::sync::atomic::Ordering::AcqRel)
-            {
-                let old = admitted.roots().for_generation(target_generation)?;
-                final_roots.replace(old.directory(TreeKind::OutRanges)?)?;
-            }
-            let mut commit_artifacts = StorageBuffer::new(&storage, protected_start)?;
-            let transition = prepare_committed_transition(
+            let step = commit_staged_batch(
                 self,
-                &shared,
+                writer,
                 &lease,
+                &admitted,
+                &shared,
+                &storage,
+                control,
+                &base,
                 staged_batch,
-                &prepared,
-                final_roots,
-                &batch_catalog,
-                catalog_supplement,
-                catalog_ref,
-                inventory_supplement,
-                batch,
-                envelope_bytes.as_mut_slice(),
-                &mut commit_artifacts,
-                resources,
-                &mut wal_resources,
+                &mut allow_pending_checkpoint,
             )?;
-
-            let tail_bytes = writer
-                .wal
-                .bytes
-                .checked_sub(crate::property_graph::wal::HEADER_BYTES)
-                .ok_or(NativeGraphError::Invalid("native WAL byte accounting"))?;
-            let pending_tail_bytes = tail_bytes
-                .checked_add(transition.wal_bytes().len())
-                .ok_or(NativeGraphError::IdentityExhausted)?;
-            if pending_tail_bytes > MAX_ENVELOPE_BYTES {
-                if !allow_pending_checkpoint {
-                    return Err(NativeGraphError::Invalid(
-                        "single native WAL envelope exceeds tail bound",
-                    ));
+            let commit_audit = match step {
+                CommitStep::NoOp => {
+                    return Ok(NativePreparedResult::from_materialized(materialized));
                 }
-                checkpoint_current(self, writer, &admitted, &shared, control)?;
-                allow_pending_checkpoint = false;
-                continue;
-            }
-
-            let commit_audit = protect_and_commit(self, writer, transition, control, true)?;
+                CommitStep::Checkpointed => continue,
+                CommitStep::Committed { audit, .. } => audit,
+            };
             #[cfg(all(feature = "allocation-audit", any(test, feature = "test-support")))]
             {
                 let ((result, handoff_denied), handoff) =

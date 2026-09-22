@@ -26,6 +26,7 @@ use std::time::Instant;
 
 mod base;
 mod maintenance;
+mod mutate;
 mod persistence;
 mod recovery;
 mod write;
@@ -1979,6 +1980,7 @@ pub(crate) mod tests {
     mod expression_tests;
     mod identity;
     mod mapping_slots;
+    mod mutation_admission;
     // Real second processes re-invoke the unit-test executable, so these live
     // only in the test binary and never in a `test-support` library build.
     #[cfg(test)]
