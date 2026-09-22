@@ -565,6 +565,147 @@ fn ze52_slice_d1_structured_path_is_unchanged() {
     reopened.close().expect("close reopened store");
 }
 
+/// One committed node whose stored text is large enough that reading its
+/// canonical image back dominates the work one statement charges.
+const WIDE_TEXT_BYTES: usize = 64 * 1024;
+
+/// Preparation work budgets that land inside the canonical stream comparison
+/// `overlay.finish` runs, measured on this fixture: the statement completes at
+/// and above 1,495,000 units, and fails inside the consumer's own base read at
+/// and below 1,360,000. Every budget between those bounds stops in
+/// `CachedCanonical::read_at`, which stashes the typed `TreeError` and returns
+/// only an opaque `io::Error` to its caller. These five sit at least 15,000
+/// units inside both edges of that window.
+const CANONICAL_READ_WORK_BUDGETS: [u64; 5] =
+    [1_380_000, 1_405_000, 1_430_000, 1_455_000, 1_480_000];
+
+/// A budget the same statement completes under, proving the window above is a
+/// storage failure and not an unconditional rejection.
+const SUFFICIENT_WORK_BUDGET: u64 = 4 * 1024 * 1024;
+
+/// A node image owned for the rest of the process. The admission hands its
+/// consumer an overlay whose lifetime is chosen by the caller, so a replacement
+/// image has to outlive every possible choice.
+fn retained_wide_image() -> WriteImage<'static, 'static> {
+    let text: &'static str = Box::leak("wide".repeat(WIDE_TEXT_BYTES / 4).into_boxed_str());
+    let labels: &'static mut [GraphName<'static>] =
+        Box::leak(Box::new([GraphName::new("Document").expect("wide label")]));
+    let properties: &'static mut [GraphProperty<'static>] =
+        Box::leak(super::publication::property_fixture().into_boxed_slice());
+    let contents: &'static CanonicalContents<'static> = Box::leak(Box::new(
+        CanonicalContents::node(labels, properties, Some(text), None).expect("wide node image"),
+    ));
+    WriteImage::Node(contents)
+}
+
+/// Stages one full-image replacement of an already committed node. The final
+/// image equals the committed one, so finalization compares the two canonical
+/// streams byte for byte and therefore reads the admitted base's stored image
+/// back through `CachedCanonical::read_at`.
+struct ReplaceWithSameImage {
+    target: NodeId,
+    image: WriteImage<'static, 'static>,
+}
+
+impl NativeMutationConsumer<()> for ReplaceWithSameImage {
+    fn consume<'s, 'lease, 'm, 'g, 'w>(
+        &mut self,
+        _view: &GraphReadView<'s, 'lease, 'm, 'g>,
+        _runtime: &mut RuntimeContext<'lease, 'm, 'g>,
+        mut overlay: GraphBatchReadView<'w, 'static>,
+        control: &mut WriteControl<'_>,
+    ) -> Result<((), GraphBatchReadView<'w, 'static>), NativeExecutionError> {
+        overlay.replace(
+            BatchEntityRef::Node(NodeRef::Existing(self.target)),
+            self.image,
+            control,
+        )?;
+        Ok(((), overlay))
+    }
+}
+
+/// A canonical read that fails inside the admitted base surfaces as the typed
+/// lifecycle storage error, not as the opaque canonical I/O rejection it
+/// caused.
+///
+/// `CachedCanonical::read_at` is the only writer of the base's error stash: it
+/// records the real `TreeError` and hands its caller `io::ErrorKind::Other`,
+/// which staging classifies as a canonical-comparison failure. The admission
+/// must therefore read the stash before applying `?` to the call it guards.
+/// Checking afterwards is unreachable for exactly the case the stash exists
+/// for, and reports `Stage(Lifecycle(Canonical(Io(Other))))` with the root
+/// cause discarded.
+#[test]
+fn ze52_slice_d1_canonical_read_failure_surfaces_as_the_typed_storage_error() {
+    let directory = super::tempfile::tempdir().expect("temporary parent");
+    let path = directory.path().join("canonical-read-failure");
+    let store =
+        Store::create_native_graph(&path, fixture_options(), None).expect("create native store");
+    let image = retained_wide_image();
+    let WriteImage::Node(contents) = image else {
+        panic!("wide image is a node image");
+    };
+    let receipts = store
+        .apply_native_graph(
+            &[StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "app", "wide").expect("wide key"),
+                revision: GraphRevision::new(1).expect("wide revision"),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(contents)),
+            }],
+            &control(),
+        )
+        .expect("commit the wide node");
+    let target = match receipts[0].entity {
+        EntityId::Node(node) => node,
+        EntityId::Relationship(_) => panic!("wide commit returned a relationship"),
+    };
+    let committed = published_generation(&store);
+
+    let replace = |work_limit: u64| {
+        let _schedule = crate::property_graph::storage::search::native_vector_index_test_schedule(
+            None,
+            Some(work_limit),
+            |_| {},
+        );
+        store.with_native_mutation(
+            &control(),
+            RuntimeLimits::default(),
+            4 * 1024 * 1024,
+            16,
+            8,
+            8,
+            ReplaceWithSameImage { target, image },
+        )
+    };
+
+    // The same statement is a successful NoOp when the base can be read, so
+    // the window below fails on storage and on nothing else.
+    let (value, report) = replace(SUFFICIENT_WORK_BUDGET).expect("unbudgeted replacement");
+    assert_eq!(value, ());
+    assert_eq!(report.disposition, BatchDisposition::NoOp);
+    assert_eq!(report.changed, None);
+
+    for work_limit in CANONICAL_READ_WORK_BUDGETS {
+        let rejected = replace(work_limit);
+        match rejected {
+            Err(NativeMutationError::Graph(NativeGraphError::Stage(
+                StageError::NativeStorage(TreeError::Work),
+            ))) => {}
+            Ok((_, report)) => panic!(
+                "a canonical read at {work_limit} units committed {:?}",
+                report.changed
+            ),
+            Err(other) => panic!("a canonical read at {work_limit} units: {other:?}"),
+        }
+        // Every rejection leaves the writer usable and publishes nothing.
+        assert_eq!(published_generation(&store), committed);
+    }
+
+    assert_eq!(live_nodes(&store), vec![target]);
+    store.close().expect("close native store");
+}
+
 fn sorted<const N: usize>(mut nodes: [NodeId; N]) -> Vec<NodeId> {
     nodes.sort_by_key(|node| node.get());
     nodes.to_vec()

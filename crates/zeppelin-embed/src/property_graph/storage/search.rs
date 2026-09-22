@@ -21,6 +21,8 @@ pub(crate) use trace::{
     verify_sparse_trace_record,
 };
 #[cfg(any(test, feature = "test-support"))]
+pub(crate) use vector_index::test_support::install as native_vector_index_test_schedule;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) use vector_index::test_support::limits as native_vector_index_test_limits;
 #[cfg(all(feature = "graph-cypher", feature = "test-support"))]
 pub use vector_index::test_support::{

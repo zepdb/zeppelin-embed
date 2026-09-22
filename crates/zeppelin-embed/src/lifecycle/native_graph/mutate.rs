@@ -221,20 +221,27 @@ impl crate::lifecycle::Store {
                 overlay_capacity,
                 &mut write_control,
             )?;
-            let (value, overlay) =
-                consumer.consume(&view, &mut runtime, overlay, &mut write_control)?;
-            runtime.checkpoint().map_err(TreeError::Runtime)?;
+            // The consumer reads the base through `CachedCanonical`, which
+            // stashes the first storage error and hands its caller only an
+            // opaque `io::Error`. The stash is therefore checked before the
+            // `?` on the call it guards, exactly as the structured writer
+            // does, so the typed root cause wins over the opaque rejection it
+            // caused.
+            let consumed = consumer.consume(&view, &mut runtime, overlay, &mut write_control);
             if let Some(error) = base.take_error() {
                 return Err(NativeGraphError::Stage(StageError::NativeStorage(error)).into());
             }
+            let (value, overlay) = consumed?;
+            runtime.checkpoint().map_err(TreeError::Runtime)?;
             let counters = runtime.counters();
-            let staged = overlay.finish(&mut write_control)?;
             // Finalization reads the base again, exactly as the structured
             // writer's staging does, so its storage errors are checked here
             // rather than inferred from a successful return.
+            let staged = overlay.finish(&mut write_control);
             if let Some(error) = base.take_error() {
                 return Err(NativeGraphError::Stage(StageError::NativeStorage(error)).into());
             }
+            let staged = staged?;
             let disposition = staged.disposition();
             let admitted_generation = admitted.base().generation;
 
