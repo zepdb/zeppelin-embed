@@ -19157,15 +19157,18 @@ fn native_graph_runner_keys_are_active_with_graph_feature() {
     for key in adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE {
         assert!(active.contains(key), "enabled graph runner omitted {key}");
     }
+    // ZE-170 measured the pre-change lengths as 304 and 324; the committed 278
+    // and 298 had drifted, so this pin was already red on main. Both are the
+    // observed baseline plus the two ZE-170 read-view text receipts.
     #[cfg(not(feature = "graph-result-test-support"))]
     assert_eq!(
         adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        278
+        306
     );
     #[cfg(feature = "graph-result-test-support")]
     assert_eq!(
         adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        298
+        326
     );
 }
 

@@ -1981,6 +1981,7 @@ pub(crate) mod tests {
     mod retrieval;
     mod sparse;
     mod storage_faults;
+    mod text_lifecycle;
 
     #[cfg(feature = "test-support")]
     pub(crate) fn run_storage_fault_probe(
@@ -6728,6 +6729,10 @@ pub(crate) mod tests {
         receipt("property-graph.read-view.admission-capture", 1, 1);
         native_read_old_view_lazily_opens_unmapped_artifact_after_replacement();
         receipt("property-graph.read-view.old-lazy-open", 1, 1);
+        text_lifecycle::run_ze170_stored_text_shapes_survive_maintenance_and_reopen();
+        text_lifecycle::run_ze170_retained_view_reads_exact_text_across_reclaim_unlink();
+        text_lifecycle::run_ze170_detached_node_text_is_a_typed_error_across_maintenance();
+        receipt("property-graph.read-view.text-maintenance", 0, 1);
         native_read_all_operations_use_one_admitted_bundle();
         receipt("property-graph.read-view.coherent-reads", 0, 1);
         native_read_cursor_rejects_same_view_memory_different_runtime();
@@ -6762,6 +6767,11 @@ pub(crate) mod tests {
         receipt("property-graph.read-view.close-drain-last-owner", 0, 1);
         close_owner::native_close_best_effort_releases_last_temporary_owner();
         receipt("property-graph.read-view.close-drop-last-owner", 0, 1);
+        // ZE-170: the value a caller actually receives from `StoredText` across
+        // a maintenance generation, a reader-protected reclaim and a close.
+        text_lifecycle::run_ze170_copied_text_survives_close();
+        text_lifecycle::run_ze170_close_during_text_copy_is_a_typed_cancel_not_torn_text();
+        receipt("property-graph.read-view.text-close", 1, 1);
         native_read_drop_cancels_without_destroying_borrowed_mapping();
         receipt("property-graph.read-view.release", 1, 1);
         native_prepared_artifacts_retain_exact_base_source_and_abort_owners();
