@@ -2411,7 +2411,6 @@ fn validate_native_checkpoint(
         &[ArtifactDescriptor],
         bool,
     )>,
-    validate_allocations: bool,
     resources: &mut TreeResources<'_>,
 ) -> Result<(), TreeError> {
     for kind in [
@@ -2692,7 +2691,12 @@ fn validate_native_checkpoint(
                 entry,
                 resources,
             )?;
-            let mut allow_missing = false;
+            // An inventory row is a liveness claim of its own generation only.
+            // A completed reclaim legitimately unlinks artifacts that older
+            // replayed states still list as `Retained`, so file existence is
+            // proved once against the state this open actually publishes; see
+            // `validate_deferred_checkpoint_allocations`. The reclaim proof
+            // binding below stays an exact per-state check.
             if let InventoryState::ReclaimPending(id) | InventoryState::Reclaimed(id) = change.state
             {
                 let Some((expected_id, candidates, completed)) = reclaim else {
@@ -2706,17 +2710,8 @@ fn validate_native_checkpoint(
                 {
                     return Err(TreeError::Invalid("recovery inventory proof mismatch"));
                 }
-                allow_missing = true;
-            } else if let Some((_, candidates, _)) = reclaim {
-                allow_missing = candidates
-                    .iter()
-                    .any(|candidate| *candidate == change.object);
             }
-            if validate_allocations {
-                source.validate_descriptor_with_missing(change.object, allow_missing, resources)
-            } else {
-                Ok(())
-            }
+            Ok(())
         },
     )?;
     Ok(())
@@ -4689,7 +4684,6 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
                 state.sequence,
                 state.high_waters,
                 reclaim,
-                false,
                 &mut tree,
             )?;
             if state.sequence == 0 {
@@ -4848,20 +4842,67 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
         Ok(())
     }
 
+    /// True when the reclaim proof live at `state` names `descriptor` as one
+    /// of its candidates, which is the only way an inventoried artifact may be
+    /// absent from the directory.
+    fn reclaim_allows_missing(
+        &self,
+        state: CommitState<'_>,
+        descriptor: ArtifactDescriptor,
+    ) -> bool {
+        self.active_reclaim.is_some_and(|manifest| {
+            manifest.binding.store == descriptor.store
+                && manifest.binding.target_generation <= state.generation
+        }) && self
+            .reclaim_candidates
+            .iter()
+            .any(|candidate| *candidate == descriptor)
+    }
+
+    /// Proves every inventoried artifact exists exactly once, against the
+    /// state this open publishes rather than against superseded history.
+    ///
+    /// The checkpoint's own allocations are collected during checkpoint
+    /// validation and checked here, because a completed reclaim between the
+    /// checkpoint and `state` legitimately unlinks artifacts the checkpoint
+    /// still lists. Replayed envelopes carry the same superseded claim, so
+    /// their inventories are proved here too, through `state`'s inventory:
+    /// rows only leave it through a reclaim retirement, which is fenced by a
+    /// checkpoint at the retiring generation.
     fn validate_deferred_checkpoint_allocations(
         &mut self,
         state: CommitState<'_>,
     ) -> Result<(), NativeGraphError> {
         let source = RecoverySource::new(self.store, self.directory, state, self.memory)?;
         let mut resources = source.resources()?;
+        let roots = GraphRoots::from_references(
+            state.store,
+            state.generation,
+            state.graph.slots.map(|root| root.map(|value| value.block)),
+        )
+        .map_err(NativeGraphError::Read)?;
+        let rooted = (|| -> Result<(), TreeError> {
+            let inventory_root = roots.directory(TreeKind::ObjectInventory)?;
+            let mut cursor = DirectoryCursor::seek(&source, inventory_root, None, &mut resources)?;
+            while let Some(entry) = cursor.next_entry(&mut resources)? {
+                let change = verify_inventory_entry(inventory_root, entry, &mut resources)?;
+                let allow_missing = self.reclaim_allows_missing(state, change.object);
+                source.validate_descriptor_with_missing(
+                    change.object,
+                    allow_missing,
+                    &mut resources,
+                )?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = rooted {
+            if let Some(source_error) = source.take_source_error() {
+                return Err(source_error);
+            }
+            return Err(NativeGraphError::Read(error));
+        }
         for descriptor in &self.checkpoint_allocations {
-            let allow_missing = self.active_reclaim.is_some_and(|manifest| {
-                manifest.binding.store == descriptor.store
-                    && manifest.binding.target_generation <= state.generation
-            }) && self
-                .reclaim_candidates
-                .iter()
-                .any(|candidate| candidate == descriptor);
+            let allow_missing = self.reclaim_allows_missing(state, *descriptor);
             if let Err(error) =
                 source.validate_descriptor_with_missing(*descriptor, allow_missing, &mut resources)
             {
@@ -5126,7 +5167,6 @@ impl ReplayValidator for SemanticReplay<'_, '_> {
                 target.sequence,
                 target.high_waters,
                 reclaim,
-                true,
                 &mut tree,
             )?;
             let mut retained_mutations = StorageBuffer::new(self.memory, MAX_GRAPH_CHANGES)?;

@@ -5035,6 +5035,92 @@ fn run_ze163_mark_membership_is_a_bounded_descent_not_a_run_scan() {
     store.close().expect("ze163 close mark store");
 }
 
+/// ZE-187: a plain store that checkpoints, writes uncheckpointed tail
+/// envelopes, and then runs a complete reclaim cycle (one maintenance that
+/// publishes the pending intent, one that completes it) must still reopen.
+/// Those tail envelopes predate the intent, so their inventories still list
+/// the candidates as `Retained`; that superseded claim may not make open
+/// demand a file the completed reclaim legitimately unlinked. The control
+/// below keeps the real claim loud: an artifact the published state still
+/// inventories is a typed `NotFound` when it is absent.
+#[test]
+fn ze187_plain_store_reopens_after_a_completed_reclaim() {
+    run_ze187_plain_store_reopens_after_a_completed_reclaim();
+}
+
+fn run_ze187_plain_store_reopens_after_a_completed_reclaim() {
+    let parent = super::tempfile::tempdir().expect("ze187 parent");
+    let path = parent.path().join("native");
+    let vfs = Arc::new(RecordingVfs::default());
+    let store = create_reclaim_test_store(&path, &vfs);
+    for index in 0..24 {
+        ze163_base_write(&store, "ze187-base", index);
+    }
+    commit_maintenance(&store).expect("ze187 base replacement");
+    store
+        .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+        .expect("ze187 checkpoint");
+    for index in 0..3 {
+        ze163_base_write(&store, "ze187-tail", index);
+    }
+    vfs.take();
+    commit_maintenance(&store).expect("ze187 pending maintenance");
+    let pending_deletes = delete_events(&vfs.take());
+    commit_maintenance(&store).expect("ze187 completing maintenance");
+    let completing_deletes = delete_events(&vfs.take());
+    println!(
+        "ze187 deletes: pending={} completing={}",
+        pending_deletes.len(),
+        completing_deletes.len()
+    );
+    assert!(
+        pending_deletes.is_empty(),
+        "the first maintenance only publishes the intent: {pending_deletes:?}"
+    );
+    assert!(
+        !completing_deletes.is_empty(),
+        "the second maintenance must complete the reclaim"
+    );
+    store.close().expect("ze187 close");
+    let reopened = Store::open_native_graph(&path, options(), None)
+        .expect("ze187 reopen after a completed reclaim");
+    // The liveness proof moved to the published state; it did not become a
+    // best-effort skip. An artifact that state still inventories must stay a
+    // loud typed error when it is absent.
+    let victim = {
+        let lease = reopened.admit_native_read().expect("ze187 witness lease");
+        let inventory = rooted_inventory_for_lease(&reopened, &lease);
+        let victim = inventory
+            .iter()
+            .find(|change| {
+                change.state == InventoryState::Retained
+                    && crate::property_graph::storage::allocation::artifact_path(
+                        &path,
+                        change.object.artifact,
+                    )
+                    .exists()
+            })
+            .map(|change| change.object.artifact)
+            .expect("ze187 live inventoried artifact");
+        drop(lease);
+        victim
+    };
+    reopened.close().expect("ze187 close reopened");
+    let victim_path = crate::property_graph::storage::allocation::artifact_path(&path, victim);
+    std::fs::remove_file(&victim_path).expect("ze187 remove a live artifact");
+    let Err(error) = Store::open_native_graph(&path, options(), None) else {
+        panic!("ze187 a missing live artifact must refuse");
+    };
+    assert!(
+        matches!(
+            &error,
+            super::super::NativeGraphError::Io { path: missing, source }
+                if missing == &victim_path && source.kind() == std::io::ErrorKind::NotFound
+        ),
+        "{error:?}"
+    );
+}
+
 fn ze163_document_tower() -> EmbeddingTower {
     EmbeddingTower {
         model_id: "ze163-witness".into(),
