@@ -380,6 +380,47 @@ mod tests {
         assert_eq!(lexical.code, ZeErrorCode::ZeErrInvalidArgument);
     }
 
+    /// ZE-181. A leg stopped mid-flight reports its stop as a `ScanError`,
+    /// which fuses through `FusionError` rather than through
+    /// `FfiError::query`. That path must reach the same typed codes ZE-178
+    /// pinned on the top-level one, so a hybrid query that runs out of time
+    /// never looks like a malformed request. Every other `ScanError` stays a
+    /// `Leg` failure and keeps `ZE_ERR_INVALID_ARGUMENT`.
+    #[test]
+    fn a_mid_flight_leg_stop_keeps_its_typed_code_through_fusion() {
+        use zeppelin_embed::lifecycle::QueryError;
+        use zeppelin_embed::scan::ScanError;
+
+        let fused = |error| FfiError::fusion(FusionError::from(QueryError::Scan(error)));
+
+        let timeout = fused(ScanError::Timeout { partial: false });
+        assert_eq!(timeout.code, ZeErrorCode::ZeErrTimeout);
+        assert_eq!(
+            timeout.message,
+            "hybrid query deadline expired (partial=false)"
+        );
+
+        let cancelled = fused(ScanError::Cancelled { partial: false });
+        assert_eq!(cancelled.code, ZeErrorCode::ZeErrCancelled);
+        assert_eq!(
+            cancelled.message,
+            "hybrid query was cancelled (partial=false)"
+        );
+
+        let read_cancelled = fused(ScanError::ReadCancelled { partial: false });
+        assert_eq!(read_cancelled.code, ZeErrorCode::ZeErrCancelled);
+        assert_eq!(
+            read_cancelled.message,
+            "store close cancelled hybrid query (partial=false)"
+        );
+
+        // A genuinely malformed scan request is not a control outcome.
+        let malformed = fused(ScanError::ZeroDimension);
+        assert_eq!(malformed.code, ZeErrorCode::ZeErrInvalidArgument);
+        let overflow = fused(ScanError::ArithmeticOverflow);
+        assert_eq!(overflow.code, ZeErrorCode::ZeErrInvalidArgument);
+    }
+
     #[test]
     fn contained_hybrid_panics_keep_the_frozen_panic_code() {
         let panic = FfiError::fusion(FusionError::LegPanic {
@@ -441,8 +482,9 @@ mod tests {
         assert_eq!(cancelled.code, ZeErrorCode::ZeErrCancelled);
         assert_eq!(cancelled.message, "scan was cancelled (partial=false)");
 
-        let read_cancelled =
-            FfiError::query(QueryError::Scan(ScanError::ReadCancelled { partial: false }));
+        let read_cancelled = FfiError::query(QueryError::Scan(ScanError::ReadCancelled {
+            partial: false,
+        }));
         assert_eq!(read_cancelled.code, ZeErrorCode::ZeErrCancelled);
         assert_eq!(
             read_cancelled.message,

@@ -567,6 +567,21 @@ impl From<crate::lifecycle::QueryError> for FusionError {
             crate::lifecycle::QueryError::ReadCancelled { .. } => {
                 Self::ReadCancelled { partial: false }
             }
+            // A leg stopped by its deadline, by a cancel token, or by store
+            // close is a control outcome, not a malformed request. The
+            // top-level arms above see the lifecycle-typed form, but every
+            // mid-flight check inside a leg reports the scan-typed form, so
+            // both must classify the same way (ZE-181). Every other
+            // `ScanError` stays a `Leg` failure below.
+            crate::lifecycle::QueryError::Scan(crate::scan::ScanError::Timeout { .. }) => {
+                Self::Timeout { partial: false }
+            }
+            crate::lifecycle::QueryError::Scan(crate::scan::ScanError::Cancelled { .. }) => {
+                Self::Cancelled { partial: false }
+            }
+            crate::lifecycle::QueryError::Scan(crate::scan::ScanError::ReadCancelled {
+                ..
+            }) => Self::ReadCancelled { partial: false },
             other => {
                 let kind = match &other {
                     crate::lifecycle::QueryError::Store(error) => {

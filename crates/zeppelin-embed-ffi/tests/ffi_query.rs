@@ -674,7 +674,10 @@ fn a_fired_deadline_times_out_and_a_cancelled_token_cancels() {
     assert_eq!(
         ingest_text(
             store.handle,
-            &["harbour lights at dusk", "zeppelin airship over the harbour"],
+            &[
+                "harbour lights at dusk",
+                "zeppelin airship over the harbour"
+            ],
         ),
         ZeErrorCode::ZeOk
     );
@@ -714,5 +717,126 @@ fn a_fired_deadline_times_out_and_a_cancelled_token_cancels() {
         query(store.handle, &both).0,
         ZeErrorCode::ZeErrInvalidArgument
     );
+    assert_eq!(ze_cancel_token_free(token), ZeErrorCode::ZeOk);
+}
+
+/// ZE-181. A hybrid query stopped by its deadline reports `ZE_ERR_TIMEOUT`
+/// whenever the deadline fires, not only when it fires before the legs start.
+///
+/// A deadline that has already expired is caught by the top-level check
+/// ZE-178 fixed, and a generous deadline never fires at all. Neither endpoint
+/// reaches the interesting case: a deadline that fires *between* those two,
+/// while a leg is already running. A leg's mid-flight check reports a
+/// `ScanError`, which fuses through `FusionError` rather than through
+/// `FfiError::query`, so it is classified on a different path.
+///
+/// Sweeping the deadline in half-octave steps crosses that middle regime on
+/// any machine without pinning the test to one machine's timings. Where the
+/// transition lands varies; that every outcome is either a ranking or a
+/// timeout does not.
+#[test]
+fn a_hybrid_deadline_always_times_out_and_never_looks_malformed() {
+    let store = common::TestStore::new();
+    // Enough text that the lexical leg is still working when a mid-range
+    // deadline fires; two documents finish before any deadline can land.
+    let corpus = (0..400)
+        .map(|index| {
+            format!(
+                "harbour lights at dusk zeppelin airship over the harbour \
+                 number {index} with alpha beta gamma delta epsilon"
+            )
+        })
+        .collect::<Vec<_>>();
+    let corpus = corpus.iter().map(String::as_str).collect::<Vec<_>>();
+    assert_eq!(ingest_text(store.handle, &corpus), ZeErrorCode::ZeOk);
+    let text = b"harbour";
+    let probe = vector(0);
+
+    let hybrid_request = || {
+        let mut request = common::valid_query_request(&probe);
+        request.text = text.as_ptr();
+        request.text_len = text.len();
+        request.k = 5;
+        request
+    };
+
+    let mut timed_out = 0_usize;
+    let mut ranked = 0_usize;
+    // One nanosecond through roughly one second, two samples per octave.
+    for step in 0..60_u32 {
+        let octave = 1_u64 << (step / 2);
+        let deadline = if step % 2 == 0 {
+            octave
+        } else {
+            octave + octave / 2
+        };
+        let mut request = hybrid_request();
+        request.deadline_ns = deadline;
+        let (code, mut result) = query(store.handle, &request);
+        match code {
+            ZeErrorCode::ZeOk => {
+                ranked += 1;
+                assert_eq!(result.mode, 2);
+                assert_eq!(ze_query_result_free(&mut result), ZeErrorCode::ZeOk);
+            }
+            ZeErrorCode::ZeErrTimeout => {
+                timed_out += 1;
+                // A stopped hybrid query never hands back a partial ranking.
+                assert_eq!(result.hit_count, 0, "deadline_ns={deadline}");
+                assert!(result.hits.is_null(), "deadline_ns={deadline}");
+            }
+            other => panic!("deadline_ns={deadline} reported {other:?}, not a timeout"),
+        }
+    }
+    // Prove the sweep actually straddled the transition on this machine
+    // rather than sitting entirely in one regime.
+    assert!(timed_out > 0, "no deadline in the sweep ever fired");
+    assert!(
+        ranked > 0,
+        "no deadline in the sweep was ever generous enough"
+    );
+}
+
+/// ZE-181. The cancel-token and store-close outcomes share the classification
+/// the deadline above exercises, so a cancelled hybrid query stays
+/// `ZE_ERR_CANCELLED` on both the top-level and the fused path.
+#[test]
+fn a_cancelled_hybrid_query_reports_cancelled() {
+    let store = common::TestStore::new();
+    assert_eq!(
+        ingest_text(
+            store.handle,
+            &[
+                "harbour lights at dusk",
+                "zeppelin airship over the harbour"
+            ],
+        ),
+        ZeErrorCode::ZeOk
+    );
+    let text = b"harbour";
+    let probe = vector(0);
+    let mut request = common::valid_query_request(&probe);
+    request.text = text.as_ptr();
+    request.text_len = text.len();
+    request.k = 2;
+
+    // A generous deadline still fuses both legs and ranks every document.
+    let mut generous = request;
+    generous.deadline_ns = 60_000_000_000;
+    let (code, mut fused) = query(store.handle, &generous);
+    assert_eq!(code, ZeErrorCode::ZeOk);
+    assert_eq!(fused.mode, 2);
+    assert_eq!(hit_ids(&fused).len(), 2);
+    assert_eq!(ze_query_result_free(&mut fused), ZeErrorCode::ZeOk);
+
+    let mut token = 0;
+    assert_eq!(ze_cancel_token_create(&mut token), ZeErrorCode::ZeOk);
+    assert_eq!(ze_cancel_token_cancel(token), ZeErrorCode::ZeOk);
+    let mut cancelled = request;
+    cancelled.cancel_token = token;
+    let (code, result) = query(store.handle, &cancelled);
+    assert_eq!(code, ZeErrorCode::ZeErrCancelled);
+    assert_eq!(result.hit_count, 0);
+    assert!(result.hits.is_null());
     assert_eq!(ze_cancel_token_free(token), ZeErrorCode::ZeOk);
 }
