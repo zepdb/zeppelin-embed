@@ -2028,3 +2028,600 @@ fn native_expression_limits_cancellation_and_failure_are_atomic() {
         .unwrap()
         .unwrap();
 }
+
+// ZE-52 slice C: the overlay-aware expression evaluator entry point. The
+// overlay is driven directly here; no mutation executor exists yet.
+use crate::property_graph::catalog::SymbolKind;
+use crate::property_graph::query::expression::ClauseOverlay;
+use crate::property_graph::staging::{
+    BatchEntityRef, CanonicalSource, GraphBatchReadView, Membership, WritePhase,
+};
+use crate::property_graph::{
+    CanonicalFingerprint, EntityShape, ExpectedGraphState, GraphDeleteMode, GraphOperation,
+    OperationFields, OperationProvenance, RelRef,
+};
+
+/// One admitted base holding exactly the fixture's entities. Its property and
+/// text answers differ from the installed graph on purpose, so an overlay read
+/// that falls through is distinguishable from a `GraphReadView` read.
+struct Ze52Base {
+    identity: BaseIdentity,
+    high_waters: StageHighWaters,
+    node_a: NodeId,
+    node_b: NodeId,
+    relationship: RelId,
+    canonical: Vec<u8>,
+    fingerprint: CanonicalFingerprint,
+    relationship_type: String,
+    base_text: String,
+}
+
+impl Ze52Base {
+    fn new(identity: StoreInstanceId) -> Self {
+        let node_a = NodeId::new((1_u128 << 100) + 1).unwrap();
+        let node_b = NodeId::new((1_u128 << 100) + 2).unwrap();
+        let contents = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+        let mut canonical = Vec::new();
+        contents.write_to(&mut canonical, &mut || Ok(())).unwrap();
+        let fingerprint = CanonicalFingerprint::new(
+            canonical.len() as u64,
+            xxhash_rust::xxh3::xxh3_64(&canonical),
+        )
+        .unwrap();
+        Self {
+            identity: BaseIdentity {
+                store: identity,
+                generation: GraphGeneration::new(0),
+                roots: None,
+            },
+            high_waters: StageHighWaters {
+                node: (1_u128 << 100) + 8,
+                relationship: (1_u128 << 110) + 8,
+                ..StageHighWaters::default()
+            },
+            node_a,
+            node_b,
+            relationship: RelId::new((1_u128 << 110) + 1).unwrap(),
+            canonical,
+            fingerprint,
+            relationship_type: String::from("R"),
+            base_text: String::from("admitted base text"),
+        }
+    }
+
+    fn provenance(&self, id: EntityId) -> OperationProvenance<'_> {
+        OperationProvenance::from_fields(
+            Some(1),
+            OperationFields {
+                operation: GraphOperation::StructuredCreate,
+                key: None,
+                requested_revision: GraphRevision::new(1).unwrap(),
+                installed_revision: GraphRevision::new(1).unwrap(),
+                expected: ExpectedGraphState::Absent,
+                incarnation: id,
+                delete_mode: None,
+                original_generation: self.identity.generation,
+            },
+        )
+        .unwrap()
+    }
+}
+
+impl CanonicalSource for Ze52Base {
+    fn read_at(&self, offset: u64, output: &mut [u8]) -> std::io::Result<usize> {
+        crate::property_graph::staging::CanonicalSlice(&self.canonical).read_at(offset, output)
+    }
+}
+
+impl AdmittedBase for Ze52Base {
+    fn identity(&self) -> BaseIdentity {
+        self.identity
+    }
+
+    fn high_waters(&self) -> StageHighWaters {
+        self.high_waters
+    }
+
+    fn interpretation(&self) -> GraphInterpretation<'_> {
+        GraphInterpretation::new(TokenizerEpoch::of(&TokenizerConfig::text_default()), None)
+            .unwrap()
+    }
+
+    fn key(
+        &self,
+        _: ApplicationKey<'_>,
+        _: &mut WriteControl<'_>,
+    ) -> Result<BaseKeyState<'_>, StageError> {
+        Ok(BaseKeyState::NeverUsed)
+    }
+
+    fn entity(
+        &self,
+        id: EntityId,
+        _: &mut WriteControl<'_>,
+    ) -> Result<Option<BaseEntity<'_>>, StageError> {
+        let shape = match id {
+            EntityId::Node(node) if node == self.node_a || node == self.node_b => EntityShape::Node,
+            EntityId::Relationship(relationship) if relationship == self.relationship => {
+                EntityShape::Relationship {
+                    source: self.node_a,
+                    target: self.node_b,
+                    relationship_type: GraphName::new(self.relationship_type.as_str()).unwrap(),
+                }
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(BaseEntity {
+            view: self.identity,
+            provenance: self.provenance(id),
+            shape,
+            fingerprint: self.fingerprint,
+            source: self,
+            membership: Membership::default(),
+        }))
+    }
+
+    fn has_live_incident(
+        &self,
+        _: NodeId,
+        _: &[RelId],
+        _: &mut WriteControl<'_>,
+    ) -> Result<bool, StageError> {
+        Ok(false)
+    }
+
+    fn property(
+        &self,
+        entity: EntityId,
+        name: GraphName<'_>,
+        _: &mut WriteControl<'_>,
+    ) -> Result<Option<PropertyValue<'_>>, StageError> {
+        if entity == EntityId::Node(self.node_b) && name.as_str() == "integer" {
+            return Ok(Some(
+                PropertyValue::new(PropertyData::I64(99)).map_err(|_| StageError::InvalidInput)?,
+            ));
+        }
+        Ok(None)
+    }
+
+    fn stored_text(
+        &self,
+        node: NodeId,
+        _: &mut WriteControl<'_>,
+    ) -> Result<Option<&str>, StageError> {
+        if node == self.node_b {
+            return Ok(Some(self.base_text.as_str()));
+        }
+        Ok(None)
+    }
+
+    fn symbol(
+        &self,
+        _: SymbolKind,
+        _: GraphName<'_>,
+        _: &mut WriteControl<'_>,
+    ) -> Result<Option<Symbol>, StageError> {
+        Ok(None)
+    }
+}
+
+struct Ze52OverlayTracer<'store> {
+    store: &'store Store,
+    identity: StoreInstanceId,
+}
+
+impl NativeReadConsumer<()> for Ze52OverlayTracer<'_> {
+    fn consume<'s, 'lease, 'm, 'g>(
+        &mut self,
+        view: &GraphReadView<'s, 'lease, 'm, 'g>,
+        runtime: &mut RuntimeContext<'lease, 'm, 'g>,
+    ) -> Result<(), TreeError> {
+        let integer_name = String::from("integer");
+        let staged_label_name = String::from("Staged");
+        let label_name = String::from("Label");
+        let integer = GraphName::new(integer_name.as_str()).unwrap();
+        let staged_label = GraphName::new(staged_label_name.as_str()).unwrap();
+        let label = GraphName::new(label_name.as_str()).unwrap();
+        let node_a = NodeId::new((1_u128 << 100) + 1).unwrap();
+        let node_b = NodeId::new((1_u128 << 100) + 2).unwrap();
+        let relationship_one = RelId::new((1_u128 << 110) + 1).unwrap();
+        let relationship_three = RelId::new((1_u128 << 110) + 3).unwrap();
+
+        let expressions = [
+            Expression::Slot(SlotId(11)),
+            Expression::Slot(SlotId(12)),
+            Expression::Slot(SlotId(13)),
+            Expression::Slot(SlotId(14)),
+            Expression::Property {
+                entity: ExprId(0),
+                name: integer,
+            },
+            Expression::Property {
+                entity: ExprId(1),
+                name: integer,
+            },
+            Expression::Unary {
+                operation: UnaryExpression::StoredText,
+                operand: ExprId(1),
+            },
+            Expression::HasLabel {
+                entity: ExprId(0),
+                label: staged_label,
+            },
+            Expression::HasLabel {
+                entity: ExprId(0),
+                label,
+            },
+            Expression::Unary {
+                operation: UnaryExpression::Labels,
+                operand: ExprId(0),
+            },
+            Expression::Unary {
+                operation: UnaryExpression::Labels,
+                operand: ExprId(1),
+            },
+            Expression::Unary {
+                operation: UnaryExpression::RelType,
+                operand: ExprId(2),
+            },
+            Expression::Unary {
+                operation: UnaryExpression::RelType,
+                operand: ExprId(3),
+            },
+        ];
+        let projections: [Projection; 13] = std::array::from_fn(|index| Projection {
+            slot: SlotId(100 + index as u32),
+            expression: ExprId(index as u32),
+        });
+        let input_1 = [PlanNodeId(0)];
+        let input_2 = [PlanNodeId(1)];
+        let input_3 = [PlanNodeId(2)];
+        let input_4 = [PlanNodeId(3)];
+        let project_input = [PlanNodeId(4)];
+        let operators = [
+            Operator {
+                inputs: &[],
+                kind: OperatorKind::Unit,
+            },
+            Operator {
+                inputs: &input_1,
+                kind: OperatorKind::LookupNode {
+                    output: SlotId(11),
+                    id: node_a,
+                },
+            },
+            Operator {
+                inputs: &input_2,
+                kind: OperatorKind::LookupNode {
+                    output: SlotId(12),
+                    id: node_b,
+                },
+            },
+            Operator {
+                inputs: &input_3,
+                kind: OperatorKind::LookupRelationship {
+                    output: SlotId(13),
+                    id: relationship_one,
+                },
+            },
+            Operator {
+                inputs: &input_4,
+                kind: OperatorKind::LookupRelationship {
+                    output: SlotId(14),
+                    id: relationship_three,
+                },
+            },
+            Operator {
+                inputs: &project_input,
+                kind: OperatorKind::Project(&projections),
+            },
+        ];
+        let mut facts = QueryArena::new(runtime.memory(), operators.len())
+            .map_err(crate::property_graph::query::runtime::RuntimeError::Memory)
+            .map_err(TreeError::Runtime)?;
+        for _ in &operators {
+            facts
+                .push(NodeFacts::default())
+                .map_err(crate::property_graph::query::runtime::RuntimeError::Memory)
+                .map_err(TreeError::Runtime)?;
+        }
+        let mut regions = vec![
+            RetainedRegion::slice(&operators).unwrap(),
+            RetainedRegion::slice(&input_1).unwrap(),
+            RetainedRegion::slice(&input_2).unwrap(),
+            RetainedRegion::slice(&input_3).unwrap(),
+            RetainedRegion::slice(&input_4).unwrap(),
+            RetainedRegion::slice(&project_input).unwrap(),
+            RetainedRegion::slice(&projections).unwrap(),
+            RetainedRegion::slice(&expressions).unwrap(),
+            RetainedRegion::declared(integer_name.as_ptr() as usize, integer_name.capacity())
+                .unwrap(),
+            RetainedRegion::declared(
+                staged_label_name.as_ptr() as usize,
+                staged_label_name.capacity(),
+            )
+            .unwrap(),
+            RetainedRegion::declared(label_name.as_ptr() as usize, label_name.capacity()).unwrap(),
+            RetainedRegion::declared(facts.as_slice().as_ptr() as usize, facts.heap_bytes())
+                .unwrap(),
+        ];
+        regions.sort();
+        let region_bytes = regions.capacity() * std::mem::size_of::<RetainedRegion>();
+        let external_bytes = regions
+            .iter()
+            .map(|region| region.end() - region.start())
+            .sum::<usize>()
+            + region_bytes
+            + std::mem::size_of::<PlanDescription<'_>>()
+            + VALIDATION_SCRATCH_BYTES;
+        let mut plan_capacity = runtime
+            .memory()
+            .reserve_external_capacity()
+            .map_err(crate::property_graph::query::runtime::RuntimeError::Memory)
+            .map_err(TreeError::Runtime)?;
+        plan_capacity
+            .reserve_additional(external_bytes)
+            .map_err(crate::property_graph::query::runtime::RuntimeError::Memory)
+            .map_err(TreeError::Runtime)?;
+        let description = PlanDescription {
+            operators: &operators,
+            expressions: &expressions,
+            parameters: &[],
+            root: PlanNodeId(5),
+            eager_searches: &[],
+        };
+        let footprint = PlanFootprint::declared(runtime.memory().reserved_bytes());
+        let (plan, facts_owner) = facts
+            .validate_plan(
+                description,
+                footprint,
+                PlanBacking::new(&regions, region_bytes).unwrap(),
+                runtime.values(),
+            )
+            .map_err(crate::property_graph::query::runtime::RuntimeError::Memory)
+            .map_err(TreeError::Runtime)?;
+        let owners = vec![
+            RetainedAllocation::array(&operators).unwrap(),
+            RetainedAllocation::array(&input_1).unwrap(),
+            RetainedAllocation::array(&input_2).unwrap(),
+            RetainedAllocation::array(&input_3).unwrap(),
+            RetainedAllocation::array(&input_4).unwrap(),
+            RetainedAllocation::array(&project_input).unwrap(),
+            RetainedAllocation::array(&projections).unwrap(),
+            RetainedAllocation::array(&expressions).unwrap(),
+            RetainedAllocation::string(&integer_name).unwrap(),
+            RetainedAllocation::string(&staged_label_name).unwrap(),
+            RetainedAllocation::string(&label_name).unwrap(),
+            facts_owner,
+        ];
+        let runtime_plan = QueryInputs::reserve(
+            runtime.memory(),
+            RetentionInventory::vector(&owners)
+                .map_err(crate::property_graph::query::runtime::RuntimeError::Memory)
+                .map_err(TreeError::Runtime)?,
+            runtime.values(),
+        )
+        .map_err(crate::property_graph::query::runtime::RuntimeError::Memory)
+        .map_err(TreeError::Runtime)?
+        .admit_plan(&plan, runtime.values())
+        .map_err(crate::property_graph::query::runtime::RuntimeError::Memory)
+        .map_err(TreeError::Runtime)?;
+        let slots = [SlotId(11), SlotId(12), SlotId(13), SlotId(14)];
+        let schema = Schema::new(runtime, &slots).map_err(TreeError::Runtime)?;
+        let mut input = RowBatch::new(runtime, 4, 1, 128).map_err(TreeError::Runtime)?;
+        input
+            .push_row(
+                &[
+                    runtime.view().node(node_a),
+                    runtime.view().node(node_b),
+                    runtime.view().relationship(relationship_one),
+                    runtime.view().relationship(relationship_three),
+                ],
+                runtime,
+            )
+            .map_err(TreeError::Runtime)?;
+        let mut evaluator = NativeExpressionEvaluator::new(
+            &runtime_plan,
+            &[],
+            ExpressionCapacity {
+                cells: 64,
+                string_bytes: 4096,
+            },
+            runtime,
+        )
+        .map_err(|_| TreeError::Invalid("ze52 expression constructor"))?;
+
+        // The progressive overlay a mutation executor will build up clause by
+        // clause. Nothing here goes through NativePattern or Mutate.
+        let shared = GraphResources::from_store(self.store).unwrap();
+        let writer = WriteMemory::new(&shared, WriteLimits::default()).unwrap();
+        let admitted = Ze52Base::new(self.identity);
+        let mut staged_labels = [staged_label];
+        let mut staged_properties = [GraphProperty::new(
+            integer,
+            PropertyValue::new(PropertyData::I64(7)).unwrap(),
+        )];
+        let staged_node = CanonicalContents::node(
+            &mut staged_labels,
+            &mut staged_properties,
+            Some("staged text"),
+            None,
+        )
+        .unwrap();
+        let mut overlay = GraphBatchReadView::new(&admitted, &writer, 8, &mut |_| Ok(())).unwrap();
+        overlay
+            .replace(
+                BatchEntityRef::Node(NodeRef::Existing(node_a)),
+                WriteImage::Node(&staged_node),
+                &mut |_| Ok(()),
+            )
+            .unwrap();
+        overlay
+            .replace(
+                BatchEntityRef::Relationship(RelRef::Existing(relationship_one)),
+                WriteImage::Relationship {
+                    source: NodeRef::Existing(node_a),
+                    target: NodeRef::Existing(node_b),
+                    relationship_type: GraphName::new("STAGED").unwrap(),
+                    properties: &[],
+                },
+                &mut |_| Ok(()),
+            )
+            .unwrap();
+
+        macro_rules! overlaid {
+            ($expression:expr) => {{
+                let mut control = |_: WritePhase| -> Result<(), StageError> { Ok(()) };
+                let mut clause = ClauseOverlay::new(&mut overlay, &mut control);
+                evaluator.evaluate_with_overlay(
+                    $expression,
+                    &schema,
+                    &input,
+                    0,
+                    view,
+                    &mut clause,
+                    runtime,
+                )
+            }};
+        }
+
+        // 1. A pending replacement is read before the admitted base.
+        assert!(matches!(
+            evaluator.evaluate(ExprId(4), &schema, &input, 0, view, runtime),
+            Ok(QueryValue::I64(value)) if value == i64::MIN
+        ));
+        assert!(matches!(overlaid!(ExprId(4)), Ok(QueryValue::I64(7))));
+
+        // 2. Pending labels answer HasLabel and Labels.
+        assert!(matches!(
+            evaluator.evaluate(ExprId(8), &schema, &input, 0, view, runtime),
+            Ok(QueryValue::Bool(true))
+        ));
+        assert!(matches!(overlaid!(ExprId(7)), Ok(QueryValue::Bool(true))));
+        assert!(matches!(overlaid!(ExprId(8)), Ok(QueryValue::Bool(false))));
+        match overlaid!(ExprId(9)) {
+            Ok(QueryValue::List(list)) => {
+                assert_eq!(list.len(), 1);
+                assert!(matches!(list.get(0), Some(QueryValue::String("Staged"))));
+            }
+            other => panic!("pending labels: {other:?}"),
+        }
+
+        // 3. A pending relationship type answers RelType.
+        assert!(matches!(
+            evaluator.evaluate(ExprId(11), &schema, &input, 0, view, runtime),
+            Ok(QueryValue::String("R"))
+        ));
+        assert!(matches!(
+            overlaid!(ExprId(11)),
+            Ok(QueryValue::String("STAGED"))
+        ));
+
+        // 4. Untouched entities fall through: node b's property and text come
+        // from the admitted base, its labels and its relationship's type from
+        // the read view, and all four differ from the staged answers.
+        assert!(matches!(
+            evaluator.evaluate(ExprId(5), &schema, &input, 0, view, runtime),
+            Ok(QueryValue::Null)
+        ));
+        assert!(matches!(overlaid!(ExprId(5)), Ok(QueryValue::I64(99))));
+        assert!(matches!(
+            evaluator.evaluate(ExprId(6), &schema, &input, 0, view, runtime),
+            Ok(QueryValue::String(""))
+        ));
+        assert!(matches!(
+            overlaid!(ExprId(6)),
+            Ok(QueryValue::String("admitted base text"))
+        ));
+        match overlaid!(ExprId(10)) {
+            Ok(QueryValue::List(list)) => assert_eq!(list.len(), 0),
+            other => panic!("base labels: {other:?}"),
+        }
+        assert!(matches!(overlaid!(ExprId(12)), Ok(QueryValue::String("R"))));
+
+        // 5. A target this statement already deleted is typed, not silently
+        // answered from the base.
+        overlay
+            .delete(
+                BatchEntityRef::Node(NodeRef::Existing(node_b)),
+                GraphDeleteMode::Detach,
+                &mut |_| Ok(()),
+            )
+            .unwrap();
+        for expression in [ExprId(5), ExprId(6), ExprId(10)] {
+            let error = overlaid!(expression).unwrap_err();
+            assert!(
+                matches!(
+                    error.failure,
+                    ExpressionFailure::Stage(StageError::DeletedEntity)
+                ),
+                "deleted overlay target must be typed: {error}"
+            );
+        }
+
+        // 6. The unchanged entry point still answers from the read view alone.
+        assert!(matches!(
+            evaluator.evaluate(ExprId(4), &schema, &input, 0, view, runtime),
+            Ok(QueryValue::I64(value)) if value == i64::MIN
+        ));
+        assert!(matches!(
+            evaluator.evaluate(ExprId(5), &schema, &input, 0, view, runtime),
+            Ok(QueryValue::Null)
+        ));
+        assert!(matches!(
+            evaluator.evaluate(ExprId(8), &schema, &input, 0, view, runtime),
+            Ok(QueryValue::Bool(true))
+        ));
+        assert!(matches!(
+            evaluator.evaluate(ExprId(11), &schema, &input, 0, view, runtime),
+            Ok(QueryValue::String("R"))
+        ));
+        match evaluator.evaluate(ExprId(9), &schema, &input, 0, view, runtime) {
+            Ok(QueryValue::List(list)) => {
+                assert_eq!(list.len(), 1);
+                assert!(matches!(list.get(0), Some(QueryValue::String("Label"))));
+            }
+            other => panic!("base labels after overlay reads: {other:?}"),
+        }
+
+        assert!(overlay.counters().symbol_lookups > 0);
+        assert!(overlay.counters().property_lookups > 0);
+        assert!(overlay.counters().text_lookups > 0);
+        Ok(())
+    }
+}
+
+#[test]
+fn ze52_slice_c_overlay_aware_evaluator_reads_pending_writes_then_base() {
+    let directory = tempfile::tempdir().expect("store directory");
+    let store = Store::open(
+        directory.path(),
+        OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+    )
+    .expect("open store");
+    let identity = StoreInstanceId::new(1_u128 << 92).unwrap();
+    store
+        .install_native_graph_for_test(expression_producer_bundle_with_extra_nodes(
+            &store,
+            directory.path(),
+            identity,
+            0,
+            false,
+            0,
+            false,
+        ))
+        .unwrap();
+    store
+        .with_native_read(
+            &QueryControl::Cancel(CancelToken::new()),
+            RuntimeLimits::default(),
+            16 * 1024 * 1024,
+            16,
+            Ze52OverlayTracer {
+                store: &store,
+                identity,
+            },
+        )
+        .expect("overlay-aware expression evaluation");
+    store.close().unwrap();
+}

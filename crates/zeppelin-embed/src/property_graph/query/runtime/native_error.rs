@@ -1,6 +1,7 @@
 use super::RuntimeError;
 use crate::property_graph::query::expression::{ExpressionError, ExpressionFailure};
 use crate::property_graph::query::plan::PlanError;
+use crate::property_graph::staging::StageError;
 use crate::property_graph::storage::tree::directory::TreeError;
 
 /// Complete native execution cause retained inside the graph engine.
@@ -10,6 +11,7 @@ pub(crate) enum NativeExecutionError {
     Expression(ExpressionError),
     Plan(PlanError),
     Tree(TreeError),
+    Stage(StageError),
 }
 
 impl From<RuntimeError> for NativeExecutionError {
@@ -24,6 +26,7 @@ impl From<ExpressionFailure> for NativeExecutionError {
             ExpressionFailure::Runtime(error) => Self::Runtime(error),
             ExpressionFailure::Plan(error) => Self::Plan(error),
             ExpressionFailure::Tree(error) => Self::Tree(error),
+            ExpressionFailure::Stage(error) => Self::Stage(error),
         }
     }
 }
@@ -46,6 +49,12 @@ impl From<TreeError> for NativeExecutionError {
     }
 }
 
+impl From<StageError> for NativeExecutionError {
+    fn from(error: StageError) -> Self {
+        Self::Stage(error)
+    }
+}
+
 impl std::fmt::Display for NativeExecutionError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -53,6 +62,7 @@ impl std::fmt::Display for NativeExecutionError {
             Self::Expression(error) => error.fmt(formatter),
             Self::Plan(error) => error.fmt(formatter),
             Self::Tree(error) => error.fmt(formatter),
+            Self::Stage(error) => error.fmt(formatter),
         }
     }
 }
@@ -64,6 +74,7 @@ impl std::error::Error for NativeExecutionError {
             Self::Expression(error) => Some(error),
             Self::Plan(error) => Some(error),
             Self::Tree(error) => Some(error),
+            Self::Stage(error) => Some(error),
         }
     }
 }

@@ -17,13 +17,18 @@ use super::{
     MAX_LIST_DEPTH, MAX_LIST_ELEMENTS, MAX_QUERY_BYTES, QueryList, QueryValue, QueryView, Truth,
 };
 use crate::property_graph::catalog::{Symbol, SymbolKind};
+use crate::property_graph::staging::{
+    BatchEntityRef, GraphBatchReadView, StageError, WriteControl,
+};
 use crate::property_graph::storage::payload::CHUNK_BYTES;
 use crate::property_graph::storage::stream::{PayloadCursor, PayloadSlice};
 use crate::property_graph::storage::tree::directory::{
     BlockSource, NativeReadEvent, TreeError, TreeResources,
 };
 use crate::property_graph::storage::{GraphReadView, TextPayloadReader};
-use crate::property_graph::{GraphName, NodeId, RelId};
+use crate::property_graph::{
+    GraphName, NodeId, NodeRef, PropertyData, PropertyValue, RelId, RelRef,
+};
 use std::marker::PhantomData;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -92,6 +97,7 @@ pub(crate) enum ExpressionFailure {
     Runtime(RuntimeError),
     Plan(PlanError),
     Tree(TreeError),
+    Stage(StageError),
 }
 
 impl std::fmt::Display for ExpressionFailure {
@@ -100,6 +106,7 @@ impl std::fmt::Display for ExpressionFailure {
             Self::Runtime(error) => error.fmt(formatter),
             Self::Plan(error) => error.fmt(formatter),
             Self::Tree(error) => error.fmt(formatter),
+            Self::Stage(error) => error.fmt(formatter),
         }
     }
 }
@@ -137,6 +144,55 @@ impl From<PlanError> for ExpressionFailure {
 impl From<TreeError> for ExpressionFailure {
     fn from(error: TreeError) -> Self {
         Self::Tree(error)
+    }
+}
+
+impl From<StageError> for ExpressionFailure {
+    fn from(error: StageError) -> Self {
+        Self::Stage(error)
+    }
+}
+
+/// The uncommitted writes an earlier clause of this same statement staged.
+/// Reads consult it before the admitted base so a clause sees its predecessors.
+pub(crate) struct ClauseOverlay<'o, 'c, 'a, 'batch> {
+    batch: &'o mut GraphBatchReadView<'a, 'batch>,
+    control: &'o mut WriteControl<'c>,
+}
+
+impl<'o, 'c, 'a, 'batch> ClauseOverlay<'o, 'c, 'a, 'batch> {
+    /// Borrows one progressive write overlay and the checkpoint that bounds it.
+    pub(crate) fn new(
+        batch: &'o mut GraphBatchReadView<'a, 'batch>,
+        control: &'o mut WriteControl<'c>,
+    ) -> Self {
+        Self { batch, control }
+    }
+
+    fn property(
+        &mut self,
+        target: BatchEntityRef<'batch>,
+        name: GraphName<'_>,
+    ) -> Result<Option<PropertyValue<'a>>, StageError> {
+        self.batch.property(target, name, self.control)
+    }
+
+    fn stored_text(&mut self, node: NodeId) -> Result<Option<&'a str>, StageError> {
+        self.batch
+            .stored_text(NodeRef::Existing(node), self.control)
+    }
+
+    fn labels(&mut self, node: NodeId) -> Result<Option<&'a [GraphName<'a>]>, StageError> {
+        self.batch
+            .pending_labels(NodeRef::Existing(node), self.control)
+    }
+
+    fn relationship_type(
+        &mut self,
+        relationship: RelId,
+    ) -> Result<Option<GraphName<'a>>, StageError> {
+        self.batch
+            .pending_relationship_type(RelRef::Existing(relationship), self.control)
     }
 }
 
@@ -576,6 +632,43 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
         view: &GraphReadView<'_, 'v, 'm, 'g>,
         context: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<QueryValue<'a>, ExpressionError> {
+        self.evaluate_over(expression, schema, input, row, view, None, context)
+    }
+
+    /// Evaluates against the writes an earlier clause of this same statement
+    /// staged, falling back to `view` for every entity the overlay has not
+    /// staged. Scalar evaluation is identical to `evaluate`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the scalar boundary keeps every authentic owner explicit"
+    )]
+    pub(crate) fn evaluate_with_overlay<'a>(
+        &'a mut self,
+        expression: ExprId,
+        schema: &Schema<'_, '_>,
+        input: &RowBatch<'v, 'm, 'g>,
+        row: usize,
+        view: &GraphReadView<'_, 'v, 'm, 'g>,
+        overlay: &mut ClauseOverlay<'_, '_, '_, '_>,
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+    ) -> Result<QueryValue<'a>, ExpressionError> {
+        self.evaluate_over(expression, schema, input, row, view, Some(overlay), context)
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the scalar boundary keeps every authentic owner explicit"
+    )]
+    fn evaluate_over<'a>(
+        &'a mut self,
+        expression: ExprId,
+        schema: &Schema<'_, '_>,
+        input: &RowBatch<'v, 'm, 'g>,
+        row: usize,
+        view: &GraphReadView<'_, 'v, 'm, 'g>,
+        overlay: Option<&mut ClauseOverlay<'_, '_, '_, '_>>,
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+    ) -> Result<QueryValue<'a>, ExpressionError> {
         self.reset();
         let result: Result<ScratchCell, ExpressionFailure> = (|| {
             view.validate_expression_owner(context)?;
@@ -587,7 +680,7 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
             {
                 return Err(RuntimeError::Batch.into());
             }
-            self.evaluate_inner(expression, schema, input, row, view, context, 0)
+            self.evaluate_inner(expression, schema, input, row, view, overlay, context, 0)
         })();
         match result {
             Ok(value) => {
@@ -624,6 +717,7 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
         input: &RowBatch<'v, 'm, 'g>,
         row: usize,
         view: &GraphReadView<'_, 'v, 'm, 'g>,
+        mut overlay: Option<&mut ClauseOverlay<'_, '_, '_, '_>>,
         context: &mut RuntimeContext<'v, 'm, 'g>,
         depth: usize,
     ) -> Result<ScratchCell, ExpressionFailure> {
@@ -667,8 +761,16 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
                     Ok(())
                 })?;
                 for (index, item) in items.iter().enumerate() {
-                    let value =
-                        self.evaluate_inner(*item, schema, input, row, view, context, depth + 1)?;
+                    let value = self.evaluate_inner(
+                        *item,
+                        schema,
+                        input,
+                        row,
+                        view,
+                        overlay.as_deref_mut(),
+                        context,
+                        depth + 1,
+                    )?;
                     *self
                         .scratch
                         .cells
@@ -683,29 +785,69 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
                 })?
             }
             Expression::Property { entity, name } => {
-                let receiver =
-                    self.evaluate_inner(entity, schema, input, row, view, context, depth + 1)?;
-                self.property(receiver, name, view, context)?
+                let receiver = self.evaluate_inner(
+                    entity,
+                    schema,
+                    input,
+                    row,
+                    view,
+                    overlay.as_deref_mut(),
+                    context,
+                    depth + 1,
+                )?;
+                self.property(receiver, name, view, overlay, context)?
             }
             Expression::HasLabel { entity, label } => {
-                let receiver =
-                    self.evaluate_inner(entity, schema, input, row, view, context, depth + 1)?;
-                self.has_label(receiver, label, view, context)?
+                let receiver = self.evaluate_inner(
+                    entity,
+                    schema,
+                    input,
+                    row,
+                    view,
+                    overlay.as_deref_mut(),
+                    context,
+                    depth + 1,
+                )?;
+                self.has_label(receiver, label, view, overlay, context)?
             }
             Expression::Unary { operation, operand } => {
-                let operand =
-                    self.evaluate_inner(operand, schema, input, row, view, context, depth + 1)?;
-                self.unary(operation, operand, view, context)?
+                let operand = self.evaluate_inner(
+                    operand,
+                    schema,
+                    input,
+                    row,
+                    view,
+                    overlay.as_deref_mut(),
+                    context,
+                    depth + 1,
+                )?;
+                self.unary(operation, operand, view, overlay, context)?
             }
             Expression::Binary {
                 operation,
                 left,
                 right,
             } => {
-                let left =
-                    self.evaluate_inner(left, schema, input, row, view, context, depth + 1)?;
-                let right =
-                    self.evaluate_inner(right, schema, input, row, view, context, depth + 1)?;
+                let left = self.evaluate_inner(
+                    left,
+                    schema,
+                    input,
+                    row,
+                    view,
+                    overlay.as_deref_mut(),
+                    context,
+                    depth + 1,
+                )?;
+                let right = self.evaluate_inner(
+                    right,
+                    schema,
+                    input,
+                    row,
+                    view,
+                    overlay,
+                    context,
+                    depth + 1,
+                )?;
                 self.binary(operation, left, right, context)?
             }
         })
@@ -716,6 +858,7 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
         operation: UnaryExpression,
         operand: ScratchCell,
         view: &GraphReadView<'_, 'v, 'm, 'g>,
+        overlay: Option<&mut ClauseOverlay<'_, '_, '_, '_>>,
         context: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<ScratchCell, ExpressionFailure> {
         let value = self.scratch.value(operand).ok_or(RuntimeError::Batch)?;
@@ -726,9 +869,9 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
             UnaryExpression::IsNull => ScratchCell::Bool(matches!(value, QueryValue::Null)),
             UnaryExpression::IsNotNull => ScratchCell::Bool(!matches!(value, QueryValue::Null)),
             UnaryExpression::Size => self.scratch.adopt(value.size(context.values())?)?,
-            UnaryExpression::Labels => self.labels(operand, view, context)?,
-            UnaryExpression::RelType => self.relationship_type(operand, view, context)?,
-            UnaryExpression::StoredText => self.stored_text(operand, view, context)?,
+            UnaryExpression::Labels => self.labels(operand, view, overlay, context)?,
+            UnaryExpression::RelType => self.relationship_type(operand, view, overlay, context)?,
+            UnaryExpression::StoredText => self.stored_text(operand, view, overlay, context)?,
             UnaryExpression::NodeIdText => {
                 let mut output = [0_u8; 32];
                 let value = value.node_id_text(&mut output, context.values())?;
@@ -776,6 +919,7 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
         receiver: ScratchCell,
         name: GraphName<'_>,
         view: &GraphReadView<'_, 'v, 'm, 'g>,
+        overlay: Option<&mut ClauseOverlay<'_, '_, '_, '_>>,
         context: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<ScratchCell, ExpressionFailure> {
         let receiver = self.scratch.value(receiver).ok_or(RuntimeError::Batch)?;
@@ -786,6 +930,19 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
             QueryValue::RelRef(relationship) => (None, Some(relationship.id())),
             _ => return Err(super::QueryError::Type.into()),
         };
+        if let Some(overlay) = overlay {
+            let target = match entity {
+                (Some(node), _) => BatchEntityRef::Node(NodeRef::Existing(node)),
+                (_, Some(relationship)) => {
+                    BatchEntityRef::Relationship(RelRef::Existing(relationship))
+                }
+                _ => return Err(super::QueryError::Type.into()),
+            };
+            return match overlay.property(target, name)? {
+                None => Ok(ScratchCell::Null),
+                Some(value) => self.copy_property(value, context),
+            };
+        }
         let mut resources = TreeResources::for_query(context)?;
         let payload = if let Some(node) = entity.0 {
             let record = view
@@ -822,6 +979,7 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
         receiver: ScratchCell,
         label: GraphName<'_>,
         view: &GraphReadView<'_, 'v, 'm, 'g>,
+        overlay: Option<&mut ClauseOverlay<'_, '_, '_, '_>>,
         context: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<ScratchCell, ExpressionFailure> {
         let receiver = self.scratch.value(receiver).ok_or(RuntimeError::Batch)?;
@@ -831,6 +989,16 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
             QueryValue::NodeRef(node) => node.id(),
             _ => return Err(super::QueryError::Type.into()),
         };
+        if let Some(overlay) = overlay
+            && let Some(staged) = overlay.labels(node)?
+        {
+            for staged in staged {
+                if same_name(*staged, label, context)? {
+                    return Ok(ScratchCell::Bool(true));
+                }
+            }
+            return Ok(ScratchCell::Bool(false));
+        }
         let mut resources = TreeResources::for_query(context)?;
         let record = view
             .lookup_node(node, &mut resources)?
@@ -858,6 +1026,7 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
         &mut self,
         receiver: ScratchCell,
         view: &GraphReadView<'_, 'v, 'm, 'g>,
+        overlay: Option<&mut ClauseOverlay<'_, '_, '_, '_>>,
         context: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<ScratchCell, ExpressionFailure> {
         let receiver = self.scratch.value(receiver).ok_or(RuntimeError::Batch)?;
@@ -867,6 +1036,11 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
             QueryValue::NodeRef(node) => node.id(),
             _ => return Err(super::QueryError::Type.into()),
         };
+        if let Some(overlay) = overlay
+            && let Some(staged) = overlay.labels(node)?
+        {
+            return self.copy_names(staged, context);
+        }
         let mut resources = TreeResources::for_query(context)?;
         let record = view
             .lookup_node(node, &mut resources)?
@@ -910,6 +1084,7 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
         &mut self,
         receiver: ScratchCell,
         view: &GraphReadView<'_, 'v, 'm, 'g>,
+        overlay: Option<&mut ClauseOverlay<'_, '_, '_, '_>>,
         context: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<ScratchCell, ExpressionFailure> {
         let receiver = self.scratch.value(receiver).ok_or(RuntimeError::Batch)?;
@@ -919,6 +1094,15 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
             QueryValue::RelRef(relationship) => relationship.id(),
             _ => return Err(super::QueryError::Type.into()),
         };
+        if let Some(overlay) = overlay
+            && let Some(staged) = overlay.relationship_type(relationship)?
+        {
+            return self.scratch.copy_bytes(
+                staged.as_str().as_bytes(),
+                context,
+                &mut self.test_poll,
+            );
+        }
         let mut resources = TreeResources::for_query(context)?;
         let record = view
             .lookup_relationship(relationship, &mut resources)?
@@ -944,6 +1128,7 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
         &mut self,
         receiver: ScratchCell,
         view: &GraphReadView<'_, 'v, 'm, 'g>,
+        overlay: Option<&mut ClauseOverlay<'_, '_, '_, '_>>,
         context: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<ScratchCell, ExpressionFailure> {
         let receiver = self.scratch.value(receiver).ok_or(RuntimeError::Batch)?;
@@ -953,6 +1138,15 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
             QueryValue::NodeRef(node) => node.id(),
             _ => return Err(super::QueryError::Type.into()),
         };
+        if let Some(overlay) = overlay {
+            return match overlay.stored_text(node)? {
+                None => Ok(ScratchCell::Null),
+                Some(text) => {
+                    self.scratch
+                        .copy_bytes(text.as_bytes(), context, &mut self.test_poll)
+                }
+            };
+        }
         let mut resources = TreeResources::for_query(context)?;
         match view.stored_text(node, &mut resources)? {
             None => Ok(ScratchCell::Null),
@@ -960,6 +1154,97 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
                 .scratch
                 .copy_text_reader(&text, &mut resources, &mut self.test_poll),
         }
+    }
+
+    /// Copies one overlay-owned property into scratch. The pending image holds
+    /// already validated values, so no canonical stream is decoded here.
+    fn copy_property(
+        &mut self,
+        value: PropertyValue<'_>,
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+    ) -> Result<ScratchCell, ExpressionFailure> {
+        Ok(match value.data() {
+            PropertyData::String(value) => {
+                self.scratch
+                    .copy_bytes(value.as_bytes(), context, &mut self.test_poll)?
+            }
+            PropertyData::Bool(value) => ScratchCell::Bool(value),
+            PropertyData::I64(value) => ScratchCell::I64(value),
+            PropertyData::F64(value) => ScratchCell::F64(value),
+            PropertyData::EmptyList { count } => {
+                if count != 0 {
+                    return Err(super::QueryError::Type.into());
+                }
+                self.copy_list(&[], context, |_, _, value: &(), _| {
+                    let _ = value;
+                    Err(RuntimeError::Batch.into())
+                })?
+            }
+            PropertyData::Strings(values) => {
+                self.copy_list(values, context, |scratch, poll, value, context| {
+                    scratch.copy_bytes(value.as_bytes(), context, poll)
+                })?
+            }
+            PropertyData::Bools(values) => self.copy_list(values, context, |_, _, value, _| {
+                Ok(ScratchCell::Bool(*value))
+            })?,
+            PropertyData::Integers(values) => {
+                self.copy_list(values, context, |_, _, value, _| {
+                    Ok(ScratchCell::I64(*value))
+                })?
+            }
+            PropertyData::Floats(values) => self.copy_list(values, context, |_, _, value, _| {
+                Ok(ScratchCell::F64(*value))
+            })?,
+        })
+    }
+
+    fn copy_list<T>(
+        &mut self,
+        values: &[T],
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+        mut cell: impl FnMut(
+            &mut ScratchArenas<'v, 'm, 'g>,
+            &mut TestPollControl,
+            &T,
+            &mut RuntimeContext<'v, 'm, 'g>,
+        ) -> Result<ScratchCell, ExpressionFailure>,
+    ) -> Result<ScratchCell, ExpressionFailure> {
+        let len = values.len();
+        if len > MAX_LIST_ELEMENTS {
+            return Err(super::QueryError::ListLimit.into());
+        }
+        let start = self.scratch.reserve_list(len, || {
+            self.test_poll.poll();
+            context.values().step()?;
+            Ok(())
+        })?;
+        for (index, value) in values.iter().enumerate() {
+            context.checkpoint()?;
+            let child = cell(&mut self.scratch, &mut self.test_poll, value, context)?;
+            *self
+                .scratch
+                .cells
+                .as_mut_slice()
+                .get_mut(start + index)
+                .ok_or(RuntimeError::Batch)? = child;
+        }
+        self.scratch.finish_list(start, len, || {
+            self.test_poll.poll();
+            context.values().step()?;
+            Ok(())
+        })
+    }
+
+    /// Copies staged label names into one scratch list.
+    fn copy_names(
+        &mut self,
+        names: &[GraphName<'_>],
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+    ) -> Result<ScratchCell, ExpressionFailure> {
+        self.copy_list(names, context, |scratch, poll, name, context| {
+            scratch.copy_bytes(name.as_str().as_bytes(), context, poll)
+        })
     }
 
     fn decode_property<S: BlockSource>(
@@ -1041,6 +1326,29 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
         cursor.finish(resources)?;
         Ok(result)
     }
+}
+
+/// Compares two exact names in bounded chunks, checking work between them.
+fn same_name(
+    left: GraphName<'_>,
+    right: GraphName<'_>,
+    context: &mut RuntimeContext<'_, '_, '_>,
+) -> Result<bool, ExpressionFailure> {
+    let left = left.as_str().as_bytes();
+    let right = right.as_str().as_bytes();
+    if left.len() != right.len() {
+        context.checkpoint()?;
+        return Ok(false);
+    }
+    for (left, right) in left.chunks(CHUNK_BYTES).zip(right.chunks(CHUNK_BYTES)) {
+        context.checkpoint()?;
+        context.charge(WorkKind::CopiedBytes, left.len() as u64)?;
+        if left != right {
+            return Ok(false);
+        }
+    }
+    context.checkpoint()?;
+    Ok(true)
 }
 
 fn scalar_cell(value: QueryValue<'_>) -> Result<ScratchCell, ExpressionFailure> {

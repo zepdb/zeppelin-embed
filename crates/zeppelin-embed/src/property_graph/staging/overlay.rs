@@ -30,6 +30,8 @@ pub struct OverlayCounters {
     pub property_lookups: u64,
     /// Stored-text accesses actually requested.
     pub text_lookups: u64,
+    /// Pending label/relationship-type accesses actually requested.
+    pub symbol_lookups: u64,
     /// Pending entity/property descriptors examined by accessors.
     pub descriptors_examined: u64,
     /// Logical value/text bytes returned through bounded borrowed spans.
@@ -212,22 +214,7 @@ impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
             .checked_add(1)
             .ok_or(StageError::Limit)?;
         self.check_view()?;
-        let mut pending = None;
-        for entry in &*self.entries {
-            control(WritePhase::Overlay)?;
-            self.counters.descriptors_examined = self
-                .counters
-                .descriptors_examined
-                .checked_add(1)
-                .ok_or(StageError::Limit)?;
-            if entry.target == target {
-                if entry.deleted.is_some() {
-                    return Err(StageError::DeletedEntity);
-                }
-                pending = entry.image;
-                break;
-            }
-        }
+        let pending = self.staged(target, control)?;
         let value = if let Some(image) = pending {
             let properties = match image {
                 WriteImage::Node(image) => {
@@ -282,22 +269,7 @@ impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
             .checked_add(1)
             .ok_or(StageError::Limit)?;
         self.check_view()?;
-        let mut pending = None;
-        for entry in &*self.entries {
-            control(WritePhase::Overlay)?;
-            self.counters.descriptors_examined = self
-                .counters
-                .descriptors_examined
-                .checked_add(1)
-                .ok_or(StageError::Limit)?;
-            if entry.target == BatchEntityRef::Node(target) {
-                if entry.deleted.is_some() {
-                    return Err(StageError::DeletedEntity);
-                }
-                pending = entry.image;
-                break;
-            }
-        }
+        let pending = self.staged(BatchEntityRef::Node(target), control)?;
         let text = if let Some(WriteImage::Node(image)) = pending {
             image
                 .staging_node_parts()
@@ -315,6 +287,100 @@ impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
         }
         self.check_view()?;
         Ok(text)
+    }
+    /// Reads the labels a prior clause staged for this node. `None` means no
+    /// clause has staged the node, so the caller must read its own admitted
+    /// base: `AdmittedBase` exposes labels only inside a canonical image, so an
+    /// in-overlay fallback would have to decode one. Deletion stays typed and a
+    /// staged image of the wrong role is rejected, exactly as `property` does.
+    pub fn pending_labels(
+        &mut self,
+        target: NodeRef<'batch>,
+        control: &mut WriteControl<'_>,
+    ) -> Result<Option<&'a [GraphName<'a>]>, StageError> {
+        control(WritePhase::Overlay)?;
+        self.counters.symbol_lookups = self
+            .counters
+            .symbol_lookups
+            .checked_add(1)
+            .ok_or(StageError::Limit)?;
+        self.check_view()?;
+        let Some(image) = self.staged(BatchEntityRef::Node(target), control)? else {
+            self.check_view()?;
+            return Ok(None);
+        };
+        let WriteImage::Node(image) = image else {
+            return Err(StageError::InvalidInput);
+        };
+        let labels = image
+            .staging_node_parts()
+            .ok_or(StageError::InvalidInput)?
+            .0;
+        for label in labels {
+            control(WritePhase::Overlay)?;
+            self.counters.descriptors_examined = self
+                .counters
+                .descriptors_examined
+                .checked_add(1)
+                .ok_or(StageError::Limit)?;
+            self.count_bytes(label.as_str().len(), 65536, control)?;
+        }
+        self.check_view()?;
+        Ok(Some(labels))
+    }
+    /// Reads the type a prior clause staged for this relationship, on exactly
+    /// the terms of `pending_labels`.
+    pub fn pending_relationship_type(
+        &mut self,
+        target: RelRef<'batch>,
+        control: &mut WriteControl<'_>,
+    ) -> Result<Option<GraphName<'a>>, StageError> {
+        control(WritePhase::Overlay)?;
+        self.counters.symbol_lookups = self
+            .counters
+            .symbol_lookups
+            .checked_add(1)
+            .ok_or(StageError::Limit)?;
+        self.check_view()?;
+        let Some(image) = self.staged(BatchEntityRef::Relationship(target), control)? else {
+            self.check_view()?;
+            return Ok(None);
+        };
+        let WriteImage::Relationship {
+            relationship_type, ..
+        } = image
+        else {
+            return Err(StageError::InvalidInput);
+        };
+        self.count_bytes(relationship_type.as_str().len(), 65536, control)?;
+        self.check_view()?;
+        Ok(Some(relationship_type))
+    }
+    /// Scans the staged entries once, charging one examined descriptor per
+    /// entry. `None` means no clause has staged `target`; a target already
+    /// deleted in this statement is typed.
+    fn staged(
+        &mut self,
+        target: BatchEntityRef<'batch>,
+        control: &mut WriteControl<'_>,
+    ) -> Result<Option<WriteImage<'a, 'batch>>, StageError> {
+        let mut pending = None;
+        for entry in &*self.entries {
+            control(WritePhase::Overlay)?;
+            self.counters.descriptors_examined = self
+                .counters
+                .descriptors_examined
+                .checked_add(1)
+                .ok_or(StageError::Limit)?;
+            if entry.target == target {
+                if entry.deleted.is_some() {
+                    return Err(StageError::DeletedEntity);
+                }
+                pending = entry.image;
+                break;
+            }
+        }
+        Ok(pending)
     }
     fn check_view(&self) -> Result<(), StageError> {
         if self.base.identity() != self.identity {
