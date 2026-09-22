@@ -4,6 +4,31 @@ All notable changes to Zeppelin Embed are recorded here. Versions follow
 semantic versioning, with the 0.x rule that a new public surface is a minor
 release and a compatible correction is a patch release.
 
+## Unreleased
+
+### Changed
+
+- `ze_query` now returns `ZE_ERR_TIMEOUT` (13) when its deadline fires and
+  `ZE_ERR_CANCELLED` (12) when a caller's cancel token stops it. Both cases
+  previously returned `ZE_ERR_INVALID_ARGUMENT` (3), because the scan layer's
+  control outcomes were collapsed into one wildcard arm alongside genuinely
+  malformed scan requests. `ze_search` and `ze_scan` already reported these
+  two codes for the same two outcomes, so `ze_query` now agrees with its
+  siblings. Error messages are unchanged.
+
+  This is an observable ABI change. A caller that matched on
+  `ZE_ERR_INVALID_ARGUMENT` to detect a stopped query must match on
+  `ZE_ERR_TIMEOUT` or `ZE_ERR_CANCELLED` instead. Nothing in the header, the
+  `ze_error_code` enum, or any struct layout changed: both codes already
+  existed in the frozen append-only enum. A caller that treats a fired
+  deadline and an explicit cancel as one condition must now accept both
+  codes; they are deliberately distinct, because a deadline that fired and a
+  caller who cancelled are different events.
+
+  A request that carries both a cancel token and a deadline remains
+  `ZE_ERR_INVALID_ARGUMENT`: the C ABI takes one or the other, and supplying
+  both is still a malformed request rather than a stopped query.
+
 ## 0.4.2 - 2026-09-18
 
 A packaging and binding release: no engine, on-disk format, or C ABI change,

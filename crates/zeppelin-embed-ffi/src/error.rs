@@ -119,6 +119,7 @@ impl FfiError {
 
     pub(crate) fn query(error: zeppelin_embed::lifecycle::QueryError) -> Self {
         use zeppelin_embed::lifecycle::QueryError;
+        use zeppelin_embed::scan::ScanError;
 
         let message = error.to_string();
         let code = match error {
@@ -127,6 +128,12 @@ impl FfiError {
                 ZeErrorCode::ZeErrCancelled
             }
             QueryError::Store(error) => Self::store(error).code,
+            // A scan that stopped on its deadline or on a cancel token is a
+            // control outcome, not a malformed request (ZE-178).
+            QueryError::Scan(ScanError::Timeout { .. }) => ZeErrorCode::ZeErrTimeout,
+            QueryError::Scan(ScanError::Cancelled { .. } | ScanError::ReadCancelled { .. }) => {
+                ZeErrorCode::ZeErrCancelled
+            }
             QueryError::Scan(_) => ZeErrorCode::ZeErrInvalidArgument,
             QueryError::Graph(_) => ZeErrorCode::ZeErrCorrupt,
         };
@@ -415,5 +422,38 @@ mod tests {
         for (kind, expected) in cases {
             assert_eq!(FfiError::store_kind_code(kind), expected);
         }
+    }
+
+    /// ZE-178. A scan that stopped on its deadline or on a cancel token is a
+    /// control outcome, not a malformed request, so `ze_query` reports the
+    /// same codes `ze_search` and `ze_scan` already report. Every other
+    /// `ScanError` stays `ZE_ERR_INVALID_ARGUMENT`, and no message changes.
+    #[test]
+    fn scan_control_outcomes_keep_their_typed_codes_through_query() {
+        use zeppelin_embed::lifecycle::QueryError;
+        use zeppelin_embed::scan::ScanError;
+
+        let timeout = FfiError::query(QueryError::Scan(ScanError::Timeout { partial: false }));
+        assert_eq!(timeout.code, ZeErrorCode::ZeErrTimeout);
+        assert_eq!(timeout.message, "scan deadline expired (partial=false)");
+
+        let cancelled = FfiError::query(QueryError::Scan(ScanError::Cancelled { partial: false }));
+        assert_eq!(cancelled.code, ZeErrorCode::ZeErrCancelled);
+        assert_eq!(cancelled.message, "scan was cancelled (partial=false)");
+
+        let read_cancelled =
+            FfiError::query(QueryError::Scan(ScanError::ReadCancelled { partial: false }));
+        assert_eq!(read_cancelled.code, ZeErrorCode::ZeErrCancelled);
+        assert_eq!(
+            read_cancelled.message,
+            "store close cancelled scan (partial=false)"
+        );
+
+        let malformed = FfiError::query(QueryError::Scan(ScanError::ZeroDimension));
+        assert_eq!(malformed.code, ZeErrorCode::ZeErrInvalidArgument);
+        assert_eq!(malformed.message, "scan dimension must not be zero");
+
+        let overflow = FfiError::query(QueryError::Scan(ScanError::ArithmeticOverflow));
+        assert_eq!(overflow.code, ZeErrorCode::ZeErrInvalidArgument);
     }
 }

@@ -664,3 +664,55 @@ fn epoch_identity_open_with_epoch_and_transitions_are_typed_through_the_boundary
     assert_eq!(code, ZeErrorCode::ZeOk);
     assert_eq!(ze_close(handle), ZeErrorCode::ZeOk);
 }
+
+/// ZE-178. `ze_query` stopped by its deadline or by a cancel token reports the
+/// same typed codes `ze_scan` already reports, not `ZE_ERR_INVALID_ARGUMENT`.
+/// Neither outcome hands back a partial ranking or a buffer to free.
+#[test]
+fn a_fired_deadline_times_out_and_a_cancelled_token_cancels() {
+    let store = common::TestStore::new();
+    assert_eq!(
+        ingest_text(
+            store.handle,
+            &["harbour lights at dusk", "zeppelin airship over the harbour"],
+        ),
+        ZeErrorCode::ZeOk
+    );
+    let text = b"harbour";
+
+    // A one-nanosecond budget has always run out by the time the scan starts.
+    let mut expired = lexical_request(text, false);
+    expired.deadline_ns = 1;
+    let (code, result) = query(store.handle, &expired);
+    assert_eq!(code, ZeErrorCode::ZeErrTimeout);
+    assert_eq!(result.hit_count, 0);
+    assert!(result.hits.is_null());
+
+    // A budget with real time in it still completes and still ranks.
+    let mut generous = lexical_request(text, false);
+    generous.deadline_ns = 60_000_000_000;
+    let (code, mut ranked) = query(store.handle, &generous);
+    assert_eq!(code, ZeErrorCode::ZeOk);
+    assert_eq!(hit_ids(&ranked).len(), 2);
+    assert_eq!(ze_query_result_free(&mut ranked), ZeErrorCode::ZeOk);
+
+    let mut token = 0;
+    assert_eq!(ze_cancel_token_create(&mut token), ZeErrorCode::ZeOk);
+    assert_eq!(ze_cancel_token_cancel(token), ZeErrorCode::ZeOk);
+    let mut cancelled = lexical_request(text, false);
+    cancelled.cancel_token = token;
+    let (code, result) = query(store.handle, &cancelled);
+    assert_eq!(code, ZeErrorCode::ZeErrCancelled);
+    assert_eq!(result.hit_count, 0);
+    assert!(result.hits.is_null());
+
+    // A token and a deadline together remain a malformed request.
+    let mut both = lexical_request(text, false);
+    both.deadline_ns = 1;
+    both.cancel_token = token;
+    assert_eq!(
+        query(store.handle, &both).0,
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+    assert_eq!(ze_cancel_token_free(token), ZeErrorCode::ZeOk);
+}

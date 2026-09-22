@@ -202,11 +202,15 @@ test('a fired deadline and a cancelled token both stop the query', () => {
     ]);
 
     // A deadline this short has already expired by the time the scan starts,
-    // so the engine reports it rather than returning a partial ranking.
+    // so the engine reports it rather than returning a partial ranking. The
+    // code is ZE_ERR_TIMEOUT, the same code search and scan already report
+    // for a fired deadline (ZE-178); the message is not the contract.
     assert.throws(
       () => store.query({ text: 'harbour', k: 5, deadlineNs: 1n }),
       (error) =>
-        error instanceof ZeppelinError && /deadline expired/.test(error.message),
+        error instanceof ZeppelinError &&
+        error.code === 'ZE_ERR_TIMEOUT' &&
+        error.errorCode === 13,
     );
 
     // A deadline with real time in it completes normally.
@@ -217,10 +221,14 @@ test('a fired deadline and a cancelled token both stop the query', () => {
     const cancelled = new CancellationToken();
     cancelled.cancel();
     try {
+      // An explicit cancel token is ZE_ERR_CANCELLED, distinct from the
+      // timeout above (ZE-178).
       assert.throws(
         () => store.query({ text: 'harbour', k: 5, cancelToken: cancelled }),
         (error) =>
-          error instanceof ZeppelinError && /cancelled/.test(error.message),
+          error instanceof ZeppelinError &&
+          error.code === 'ZE_ERR_CANCELLED' &&
+          error.errorCode === 12,
       );
     } finally {
       cancelled.close();
@@ -238,7 +246,9 @@ test('a fired deadline and a cancelled token both stop the query', () => {
     try {
       assert.throws(
         () => store.query({ text: 'harbour', k: 5, cancelToken: both, deadlineNs: 1_000_000n }),
-        (error) => error instanceof ZeppelinError,
+        (error) =>
+          error instanceof ZeppelinError &&
+          error.code === 'ZE_ERR_INVALID_ARGUMENT',
       );
     } finally {
       both.close();
