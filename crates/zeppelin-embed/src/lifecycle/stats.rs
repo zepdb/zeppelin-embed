@@ -22,6 +22,7 @@ pub(crate) enum AllocationComponent {
     Cache,
     Temporary,
     QueryPool,
+    NativeGraph,
 }
 
 impl AllocationComponent {
@@ -33,6 +34,7 @@ impl AllocationComponent {
             Self::Cache => "cache",
             Self::Temporary => "temporary",
             Self::QueryPool => "query pool",
+            Self::NativeGraph => "native graph registry",
         }
     }
 
@@ -51,6 +53,7 @@ struct AccountingState {
     snapshot_bytes: u64,
     active_bytes: u64,
     query_pool_bytes: u64,
+    native_graph_bytes: u64,
     mapped_bytes: u64,
     scans_by_reason: [u64; crate::planner::SCAN_REASON_COUNTER_COUNT],
     graph_segments_served: u64,
@@ -78,6 +81,7 @@ impl Accounting {
                 snapshot_bytes: 0,
                 active_bytes: 0,
                 query_pool_bytes: 0,
+                native_graph_bytes: 0,
                 mapped_bytes: 0,
                 scans_by_reason: [0; crate::planner::SCAN_REASON_COUNTER_COUNT],
                 graph_segments_served: 0,
@@ -150,6 +154,9 @@ impl Accounting {
             AllocationComponent::QueryPool => {
                 state.query_pool_bytes = state.query_pool_bytes.saturating_add(bytes);
             }
+            AllocationComponent::NativeGraph => {
+                state.native_graph_bytes = state.native_graph_bytes.saturating_add(bytes);
+            }
         }
         drop(state);
         Ok(())
@@ -167,6 +174,7 @@ impl Accounting {
             snapshot_bytes: state.snapshot_bytes,
             active_bytes: state.active_bytes,
             query_pool_bytes: state.query_pool_bytes,
+            native_graph_bytes: state.native_graph_bytes,
             mapped_bytes: state.mapped_bytes,
             scans_by_reason: state.scans_by_reason,
             graph_segments_served: state.graph_segments_served,
@@ -252,6 +260,7 @@ pub(crate) struct AccountingAudit {
     pub(crate) snapshot_bytes: u64,
     pub(crate) active_bytes: u64,
     pub(crate) query_pool_bytes: u64,
+    pub(crate) native_graph_bytes: u64,
     pub(crate) mapped_bytes: u64,
     pub(crate) scans_by_reason: [u64; crate::planner::SCAN_REASON_COUNTER_COUNT],
     pub(crate) graph_segments_served: u64,
@@ -265,6 +274,7 @@ impl AccountingAudit {
             .saturating_add(self.snapshot_bytes)
             .saturating_add(self.active_bytes)
             .saturating_add(self.query_pool_bytes)
+            .saturating_add(self.native_graph_bytes)
     }
 }
 
@@ -330,6 +340,9 @@ impl Reservation {
             AllocationComponent::QueryPool => {
                 state.query_pool_bytes = state.query_pool_bytes.saturating_sub(released);
             }
+            AllocationComponent::NativeGraph => {
+                state.native_graph_bytes = state.native_graph_bytes.saturating_sub(released);
+            }
         }
     }
 }
@@ -359,6 +372,9 @@ impl Drop for Reservation {
             }
             AllocationComponent::QueryPool => {
                 state.query_pool_bytes = state.query_pool_bytes.saturating_sub(self.bytes);
+            }
+            AllocationComponent::NativeGraph => {
+                state.native_graph_bytes = state.native_graph_bytes.saturating_sub(self.bytes);
             }
         }
     }
@@ -678,6 +694,10 @@ pub struct Stats {
     pub temporary_bytes: u64,
     /// Exact capacity in bytes of the persistent query pool's worker registry.
     pub query_pool_bytes: u64,
+    /// Exact capacity in bytes of the native graph publication's store-lifetime
+    /// lease, mapping, preparation, and spill registries. This is zero while
+    /// [`Store`] has no native graph publication.
+    pub native_graph_bytes: u64,
     /// Exact number of file descriptors retained by this store handle.
     pub open_files: u64,
     /// Exact number of store-admitted queries that have not yet returned.
@@ -853,6 +873,7 @@ impl Store {
             cache_bytes: accounting.cache_bytes,
             temporary_bytes: accounting.temporary_bytes,
             query_pool_bytes: accounting.query_pool_bytes,
+            native_graph_bytes: accounting.native_graph_bytes,
             open_files,
             active_queries,
             active_snapshot_leases,
@@ -943,7 +964,11 @@ mod tests {
         let expected_snapshot_bytes = std::mem::size_of::<SegmentReader>()
             + std::mem::size_of_val(segment.directory())
             + segment.retained_validation_bytes()
-            + usize::try_from(baseline.snapshot_bytes).expect("baseline snapshot bytes fit usize");
+            + usize::try_from(baseline.snapshot_bytes).expect("baseline snapshot bytes fit usize")
+            // Store-lifetime components are resident from open, not just the
+            // mapped snapshot. Zero unless `graph-cypher` is enabled.
+            + usize::try_from(baseline.native_graph_bytes)
+                .expect("baseline native graph bytes fit usize");
         drop(snapshot);
         let mapped_stats = mapped.stats().expect("mapped stats");
         assert_eq!(
@@ -1040,10 +1065,12 @@ mod tests {
         let directory = tempdir().expect("store directory");
         let baseline_store =
             Store::open(directory.path(), OpenOptions::default()).expect("baseline open");
+        // The resident total, not just the snapshot component: a store-lifetime
+        // component such as the native graph registry is resident from open.
         let baseline = baseline_store
             .stats()
             .expect("baseline stats")
-            .snapshot_bytes;
+            .resident_owned_bytes;
         baseline_store.close().expect("close baseline");
         let options = OpenOptions::new()
             .with_max_resident_bytes(baseline + 64)

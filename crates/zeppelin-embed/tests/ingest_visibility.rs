@@ -874,6 +874,7 @@ fn deleted_doc_is_not_returned_and_is_durable() {
             + stats.cache_bytes
             + stats.temporary_bytes
             + stats.query_pool_bytes
+            + stats.native_graph_bytes
     );
     assert!(stats.wal_bytes > wal_before);
     store.close().expect("close store");

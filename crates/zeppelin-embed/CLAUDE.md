@@ -931,3 +931,31 @@ the guard. Caller-borrowed source/parameters do not establish owner proofs.
 Cypher compile_in uses this seam for frontend allocations and 64 KiB compiler
 scratch. Later execution still requires QueryInputs actual-owner capabilities
 or separately charged copies. A binding callback is not writer/runtime admission.
+
+
+## ZE-180 native graph registry accounting
+
+The native graph publication's four fixed-capacity registries (read leases,
+mappings, preparations, spills) are a store-lifetime arena, not scratch. They
+charge `AllocationComponent::NativeGraph` and surface as
+`Stats::native_graph_bytes`, which is always present and is zero unless
+`graph-cypher` is enabled. Never charge them to `Temporary`: `Temporary` means
+live scratch, it is the only component `Budgets::check` gates against
+`max_temp_bytes`, and charging a fixed 852,496-byte arena there both broke
+every `temporary_bytes == 0` assertion and made `with_max_temp_bytes(n)` refuse
+to open for any `n` below that arena.
+
+Per Task 09 Part C the component returns to zero at close. `drain_and_clear`,
+the `Store::close` path, empties the four registries and zeroes the charge
+after its final unconditional wait for every read lease. This is safe only
+because that path has drained: admission refuses while `closing`.
+`cancel_and_clear_best_effort` runs from `Store::drop`, cancels without
+draining, and therefore keeps its registries so a survivor registration still
+finds its slot; the charge goes with the publication when the last survivor
+releases it. Never release registries on a path that has not drained.
+
+`graph-cypher` library tests are part of what must pass. `scripts/ci-gates.sh`
+runs them explicitly and unconditionally. The workspace run enables the feature
+only on `aarch64-apple-darwin`, through
+`zeppelin-embed-workspace-tests/graph-result-test-support`, so before ZE-180 no
+gate proved these tests on any other host.

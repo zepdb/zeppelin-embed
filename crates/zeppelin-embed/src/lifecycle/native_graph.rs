@@ -601,6 +601,9 @@ struct NativeSpillEntry {
 
 struct PublicationState {
     current: Option<Arc<NativeGraphBundle>>,
+    /// Exact accounting for the four fixed-capacity registries below. It lives
+    /// beside the vectors it charges so that close releases both together.
+    charge: super::stats::AccountedCounter,
     leases: Vec<Option<RegistryEntry>>,
     mappings: Vec<Option<NativeMappingEntry>>,
     preparations: Vec<Option<NativePreparationEntry>>,
@@ -618,11 +621,28 @@ struct PublicationState {
     close_owner_hook: Option<(u64, Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>,
 }
 
+impl PublicationState {
+    /// Releases the store-lifetime registry backing and returns its exact
+    /// accounting charge to zero.
+    ///
+    /// Task 09 Part C requires every accounted component to return to zero
+    /// after close. Only a fully drained close may call this: the registries
+    /// are dead once `closing` is set and every read lease has gone, because
+    /// admission refuses while closing. `cancel_and_clear_best_effort` cancels
+    /// without draining, so it must keep its registries for the survivors.
+    fn release_registries(&mut self) -> Result<(), StoreError> {
+        self.leases = Vec::new();
+        self.mappings = Vec::new();
+        self.preparations = Vec::new();
+        self.spills = Vec::new();
+        self.charge.set(0)
+    }
+}
+
 pub(crate) struct NativeGraphPublication {
     state: Mutex<PublicationState>,
     changed: Condvar,
     accounting: Arc<super::stats::Accounting>,
-    _charge: super::stats::AccountedCounter,
     writer: Mutex<Option<write::NativeWriter>>,
     read_only: AtomicBool,
     #[cfg(any(test, feature = "test-support"))]
@@ -639,7 +659,7 @@ impl NativeGraphPublication {
     pub(crate) fn new(accounting: &Arc<super::stats::Accounting>) -> Result<Arc<Self>, StoreError> {
         let mut charge = super::stats::AccountedCounter::new(
             accounting,
-            super::stats::AllocationComponent::Temporary,
+            super::stats::AllocationComponent::NativeGraph,
         )?;
         let lease_bytes = MAX_NATIVE_READ_LEASES
             .checked_mul(std::mem::size_of::<Option<RegistryEntry>>())
@@ -730,6 +750,7 @@ impl NativeGraphPublication {
         Ok(Arc::new(Self {
             state: Mutex::new(PublicationState {
                 current: None,
+                charge,
                 leases,
                 mappings,
                 preparations,
@@ -748,7 +769,6 @@ impl NativeGraphPublication {
             }),
             changed: Condvar::new(),
             accounting: Arc::clone(accounting),
-            _charge: charge,
             writer: Mutex::new(None),
             read_only: AtomicBool::new(false),
             #[cfg(any(test, feature = "test-support"))]
@@ -1377,7 +1397,7 @@ impl NativeGraphPublication {
                 })?;
         }
         drop(state.current.take());
-        Ok(())
+        state.release_registries()
     }
 
     pub(crate) fn cancel_and_clear_best_effort(&self) {
@@ -1415,6 +1435,11 @@ impl NativeGraphPublication {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
         drop(state.current.take());
+        // The registries are deliberately retained here. This path runs from
+        // `Store::drop`, which cancels but never drains: a survivor read
+        // registration must still find its slot to release. The whole
+        // publication, and with it the charge, drops once the last survivor
+        // does. `Store::close` is the path Task 09 Part C gates, and it drains.
         self.changed.notify_all();
     }
 }

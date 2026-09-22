@@ -58,6 +58,11 @@ cargo clippy "${WORKSPACE_ARGS[@]}" --all-targets -- -D warnings
 cargo clippy -p zeppelin-embed --all-targets --features allocation-audit -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc "${WORKSPACE_ARGS[@]}" --no-deps
 cargo test "${WORKSPACE_ARGS[@]}"
+# ZE-180: the graph-cypher library tests, unconditionally. The workspace run
+# above only enables the feature on aarch64-apple-darwin, so on every other
+# host zeppelin-embed's own unit tests never compile the native graph paths.
+# That is how a store-lifetime accounting regression survived from ZE-45.
+cargo test -p zeppelin-embed --lib --features graph-cypher
 cargo test -p zeppelin-embed --features allocation-audit \
     lifecycle::stats::tests::nothing_allocates_outside_accounting \
     -- --exact --test-threads=1
