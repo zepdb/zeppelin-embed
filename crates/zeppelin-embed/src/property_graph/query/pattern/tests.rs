@@ -338,6 +338,19 @@ fn strings_cell(values: &[&str]) -> PrimitiveCell {
     )
 }
 
+/// One frozen batch of test cells. `PrimitiveCell` is 272 bytes wide because
+/// of its `Relationships` variant, so this whole fixture is about 34 KiB.
+///
+/// ZE-183: the completion output travels by value through the runtime's
+/// generic frames and out of every `with_native_read` call. An unoptimized
+/// build gives each of those moves its own stack slot and merges none of
+/// them, so a test with ten such calls in one body needed roughly 1.9 MiB of
+/// stack and overflowed libtest's 2 MiB thread. Every owner below therefore
+/// holds it behind a `Box`, which keeps those frames pointer-sized. Assert it
+/// so a future widening of `PrimitiveCell` cannot quietly restore the frames.
+/// Counters and the boxed output only; one `PrimitiveRows` is ~34 KiB.
+const _: () = assert!(size_of::<Execution<Box<PrimitiveRows>>>() <= 1024);
+
 #[derive(Clone, Debug, PartialEq)]
 struct PrimitiveRows {
     rows: [[PrimitiveCell; 8]; 16],
@@ -348,7 +361,7 @@ struct PrimitiveRows {
 struct FreezePrimitiveValues;
 
 impl<'m, 'g> Completion<'m, 'g, NativeExecutionError> for FreezePrimitiveValues {
-    type Output = PrimitiveRows;
+    type Output = Box<PrimitiveRows>;
 
     fn complete<'v>(
         &mut self,
@@ -419,11 +432,11 @@ impl<'m, 'g> Completion<'m, 'g, NativeExecutionError> for FreezePrimitiveValues 
             }
         }
         FrozenOutput::new(
-            PrimitiveRows {
+            Box::new(PrimitiveRows {
                 rows: output,
                 row_count: rows.rows(),
                 column_count: rows.columns(),
-            },
+            }),
             rows.rows(),
             rows.rows() * rows.columns() * size_of::<PrimitiveCell>(),
             0,
@@ -437,7 +450,7 @@ struct RecordingCompletion {
 }
 
 impl<'m, 'g> Completion<'m, 'g, NativeExecutionError> for RecordingCompletion {
-    type Output = PrimitiveRows;
+    type Output = Box<PrimitiveRows>;
 
     fn complete<'v>(
         &mut self,
@@ -990,7 +1003,7 @@ struct KeyPatternConsumer {
     relationship: RelId,
 }
 
-impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>>
+impl NativeReadConsumer<Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>>
     for KeyPatternConsumer
 {
     fn consume<'s, 'lease, 'm, 'g>(
@@ -998,7 +1011,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
         view: &crate::property_graph::storage::GraphReadView<'s, 'lease, 'm, 'g>,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<
-        Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>,
+        Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>,
         crate::property_graph::storage::tree::directory::TreeError,
     > {
         let namespace = String::from("keys");
@@ -1082,7 +1095,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
 
 struct IdentityPatternConsumer(EntityId);
 
-impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>>
+impl NativeReadConsumer<Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>>
     for IdentityPatternConsumer
 {
     fn consume<'s, 'lease, 'm, 'g>(
@@ -1090,7 +1103,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
         view: &crate::property_graph::storage::GraphReadView<'s, 'lease, 'm, 'g>,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<
-        Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>,
+        Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>,
         crate::property_graph::storage::tree::directory::TreeError,
     > {
         let lookup_input = [PlanNodeId(0)];
@@ -1427,7 +1440,7 @@ impl NativeReadConsumer<Result<(), MemoryError>> for StaticKeyLimitConsumer {
     }
 }
 
-impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>>
+impl NativeReadConsumer<Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>>
     for KeySourceConsumer
 {
     fn consume<'s, 'lease, 'm, 'g>(
@@ -1435,7 +1448,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
         view: &crate::property_graph::storage::GraphReadView<'s, 'lease, 'm, 'g>,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<
-        Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>,
+        Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>,
         crate::property_graph::storage::tree::directory::TreeError,
     > {
         let (namespace_text, mut key_text, kind, literal) = match self.0 {
@@ -1516,7 +1529,7 @@ struct InIdentityConsumer {
     node: NodeId,
 }
 
-impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>>
+impl NativeReadConsumer<Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>>
     for InIdentityConsumer
 {
     fn consume<'s, 'lease, 'm, 'g>(
@@ -1524,7 +1537,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
         view: &crate::property_graph::storage::GraphReadView<'s, 'lease, 'm, 'g>,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<
-        Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>,
+        Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>,
         crate::property_graph::storage::tree::directory::TreeError,
     > {
         let lookup_input = [PlanNodeId(0)];
@@ -1587,7 +1600,7 @@ struct DynamicKeyConsumer {
     node: NodeId,
 }
 
-impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>>
+impl NativeReadConsumer<Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>>
     for DynamicKeyConsumer
 {
     fn consume<'s, 'lease, 'm, 'g>(
@@ -1595,7 +1608,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
         view: &crate::property_graph::storage::GraphReadView<'s, 'lease, 'm, 'g>,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<
-        Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>,
+        Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>,
         crate::property_graph::storage::tree::directory::TreeError,
     > {
         let namespace = String::from("keys");
@@ -1661,7 +1674,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
     }
 }
 
-impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>>
+impl NativeReadConsumer<Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>>
     for LabelPatternConsumer
 {
     fn consume<'s, 'lease, 'm, 'g>(
@@ -1669,7 +1682,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
         view: &crate::property_graph::storage::GraphReadView<'s, 'lease, 'm, 'g>,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<
-        Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>,
+        Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>,
         crate::property_graph::storage::tree::directory::TreeError,
     > {
         let label = String::from(if self.missing_label {
@@ -2224,7 +2237,7 @@ struct ZeroHopPredicateConsumer {
     start: NodeId,
 }
 
-impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>>
+impl NativeReadConsumer<Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>>
     for ZeroHopPredicateConsumer
 {
     fn consume<'s, 'lease, 'm, 'g>(
@@ -2232,7 +2245,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
         view: &crate::property_graph::storage::GraphReadView<'s, 'lease, 'm, 'g>,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<
-        Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>,
+        Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>,
         crate::property_graph::storage::tree::directory::TreeError,
     > {
         let lookup_input = [PlanNodeId(0)];
@@ -2328,7 +2341,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
     }
 }
 
-impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>>
+impl NativeReadConsumer<Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>>
     for PredicatePathConsumer
 {
     fn consume<'s, 'lease, 'm, 'g>(
@@ -2336,7 +2349,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
         view: &crate::property_graph::storage::GraphReadView<'s, 'lease, 'm, 'g>,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<
-        Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>,
+        Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>,
         crate::property_graph::storage::tree::directory::TreeError,
     > {
         let lookup_input = [PlanNodeId(0)];
@@ -2505,7 +2518,7 @@ struct LateErrorPathConsumer {
     completion_called: Arc<AtomicBool>,
 }
 
-impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>>
+impl NativeReadConsumer<Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>>
     for LateErrorPathConsumer
 {
     fn consume<'s, 'lease, 'm, 'g>(
@@ -2513,7 +2526,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
         view: &crate::property_graph::storage::GraphReadView<'s, 'lease, 'm, 'g>,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<
-        Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>,
+        Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>,
         crate::property_graph::storage::tree::directory::TreeError,
     > {
         let property = String::from("divisor");
@@ -2598,7 +2611,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
     }
 }
 
-impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>>
+impl NativeReadConsumer<Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>>
     for PathPatternConsumer
 {
     fn consume<'s, 'lease, 'm, 'g>(
@@ -2606,7 +2619,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
         view: &crate::property_graph::storage::GraphReadView<'s, 'lease, 'm, 'g>,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<
-        Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>,
+        Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>,
         crate::property_graph::storage::tree::directory::TreeError,
     > {
         let lookup_input = [PlanNodeId(0)];
@@ -3253,7 +3266,7 @@ fn native_pattern_bounded_paths_predicates() {
 
 struct JoinPatternConsumer;
 
-impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>>
+impl NativeReadConsumer<Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>>
     for JoinPatternConsumer
 {
     fn consume<'s, 'lease, 'm, 'g>(
@@ -3261,7 +3274,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
         view: &crate::property_graph::storage::GraphReadView<'s, 'lease, 'm, 'g>,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<
-        Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>,
+        Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>,
         crate::property_graph::storage::tree::directory::TreeError,
     > {
         let left_input = [PlanNodeId(0)];
@@ -3340,7 +3353,7 @@ enum ScalarJoinCase {
 
 struct ScalarJoinConsumer(ScalarJoinCase);
 
-impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>>
+impl NativeReadConsumer<Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>>
     for SemanticListJoinConsumer
 {
     fn consume<'s, 'lease, 'm, 'g>(
@@ -3348,7 +3361,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
         view: &crate::property_graph::storage::GraphReadView<'s, 'lease, 'm, 'g>,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<
-        Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>,
+        Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>,
         crate::property_graph::storage::tree::directory::TreeError,
     > {
         let property = String::from("number");
@@ -3496,7 +3509,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
     }
 }
 
-impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>>
+impl NativeReadConsumer<Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>>
     for ScalarJoinConsumer
 {
     fn consume<'s, 'lease, 'm, 'g>(
@@ -3504,7 +3517,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
         view: &crate::property_graph::storage::GraphReadView<'s, 'lease, 'm, 'g>,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<
-        Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>,
+        Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>,
         crate::property_graph::storage::tree::directory::TreeError,
     > {
         let left_input = [PlanNodeId(0)];
@@ -3613,7 +3626,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
     }
 }
 
-impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>>
+impl NativeReadConsumer<Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>>
     for SelectiveDuplicateJoinConsumer
 {
     fn consume<'s, 'lease, 'm, 'g>(
@@ -3621,7 +3634,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
         view: &crate::property_graph::storage::GraphReadView<'s, 'lease, 'm, 'g>,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<
-        Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>,
+        Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>,
         crate::property_graph::storage::tree::directory::TreeError,
     > {
         let lookup_input = [PlanNodeId(0)];
@@ -4025,7 +4038,7 @@ struct OptionalContractConsumer {
     contract: OptionalContract,
 }
 
-impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>>
+impl NativeReadConsumer<Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>>
     for OptionalContractConsumer
 {
     fn consume<'s, 'lease, 'm, 'g>(
@@ -4033,7 +4046,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
         view: &crate::property_graph::storage::GraphReadView<'s, 'lease, 'm, 'g>,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<
-        Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>,
+        Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>,
         crate::property_graph::storage::tree::directory::TreeError,
     > {
         match self.contract {
@@ -4291,7 +4304,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
     }
 }
 
-impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>>
+impl NativeReadConsumer<Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>>
     for OptionalAnchorConsumer
 {
     fn consume<'s, 'lease, 'm, 'g>(
@@ -4299,7 +4312,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
         view: &crate::property_graph::storage::GraphReadView<'s, 'lease, 'm, 'g>,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<
-        Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>,
+        Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>,
         crate::property_graph::storage::tree::directory::TreeError,
     > {
         let lookup_input = [PlanNodeId(0)];
@@ -4388,7 +4401,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
     }
 }
 
-impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>>
+impl NativeReadConsumer<Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>>
     for OptionalRebindingConsumer
 {
     fn consume<'s, 'lease, 'm, 'g>(
@@ -4396,7 +4409,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
         view: &crate::property_graph::storage::GraphReadView<'s, 'lease, 'm, 'g>,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<
-        Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>,
+        Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>,
         crate::property_graph::storage::tree::directory::TreeError,
     > {
         let lookup_input = [PlanNodeId(0)];
@@ -4755,7 +4768,7 @@ struct CommonOriginAliasConsumer {
     start: NodeId,
 }
 
-impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>>
+impl NativeReadConsumer<Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>>
     for CommonOriginAliasConsumer
 {
     fn consume<'s, 'lease, 'm, 'g>(
@@ -4763,7 +4776,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
         view: &crate::property_graph::storage::GraphReadView<'s, 'lease, 'm, 'g>,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<
-        Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>,
+        Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>,
         crate::property_graph::storage::tree::directory::TreeError,
     > {
         let lookup_input = [PlanNodeId(0)];
@@ -4875,7 +4888,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
     }
 }
 
-impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>>
+impl NativeReadConsumer<Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>>
     for UniquenessConsumer
 {
     fn consume<'s, 'lease, 'm, 'g>(
@@ -4883,7 +4896,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
         view: &crate::property_graph::storage::GraphReadView<'s, 'lease, 'm, 'g>,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<
-        Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>,
+        Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>,
         crate::property_graph::storage::tree::directory::TreeError,
     > {
         let left_lookup_input = [PlanNodeId(0)];
@@ -5126,7 +5139,7 @@ struct PublicationScanConsumer {
     publish: Option<PublicationAction>,
 }
 
-impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>>
+impl NativeReadConsumer<Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>>
     for PublicationScanConsumer
 {
     fn consume<'s, 'lease, 'm, 'g>(
@@ -5134,7 +5147,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
         view: &crate::property_graph::storage::GraphReadView<'s, 'lease, 'm, 'g>,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<
-        Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>,
+        Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>,
         crate::property_graph::storage::tree::directory::TreeError,
     > {
         let label = String::from("Source");
@@ -5568,7 +5581,7 @@ struct PatternAllocationFailureConsumer {
     completion_called: Arc<AtomicBool>,
 }
 
-impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>>
+impl NativeReadConsumer<Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>>
     for PatternAllocationFailureConsumer
 {
     fn consume<'s, 'lease, 'm, 'g>(
@@ -5576,7 +5589,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
         view: &crate::property_graph::storage::GraphReadView<'s, 'lease, 'm, 'g>,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<
-        Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>,
+        Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>,
         crate::property_graph::storage::tree::directory::TreeError,
     > {
         let collect_input = [PlanNodeId(0)];
@@ -5696,7 +5709,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
     }
 }
 
-impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>>
+impl NativeReadConsumer<Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>>
     for FilteredScanConsumer
 {
     fn consume<'s, 'lease, 'm, 'g>(
@@ -5704,7 +5717,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
         view: &crate::property_graph::storage::GraphReadView<'s, 'lease, 'm, 'g>,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<
-        Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>,
+        Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>,
         crate::property_graph::storage::tree::directory::TreeError,
     > {
         let scan_input = [PlanNodeId(0)];
@@ -5755,7 +5768,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
 }
 
 impl<F: FnOnce()>
-    NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>>
+    NativeReadConsumer<Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>>
     for ControlledPathConsumer<F>
 {
     fn consume<'s, 'lease, 'm, 'g>(
@@ -5763,7 +5776,7 @@ impl<F: FnOnce()>
         view: &crate::property_graph::storage::GraphReadView<'s, 'lease, 'm, 'g>,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<
-        Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>,
+        Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>,
         crate::property_graph::storage::tree::directory::TreeError,
     > {
         let lookup_input = [PlanNodeId(0)];
@@ -5853,7 +5866,7 @@ struct LateStorageConsumer {
     arm_fault: bool,
 }
 
-impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>>
+impl NativeReadConsumer<Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>>
     for LateStorageConsumer
 {
     fn consume<'s, 'lease, 'm, 'g>(
@@ -5861,7 +5874,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
         view: &crate::property_graph::storage::GraphReadView<'s, 'lease, 'm, 'g>,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<
-        Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>,
+        Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>,
         crate::property_graph::storage::tree::directory::TreeError,
     > {
         let scan_input = [PlanNodeId(0)];
@@ -5910,7 +5923,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
     }
 }
 
-impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>>
+impl NativeReadConsumer<Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>>
     for LimitedPathConsumer
 {
     fn consume<'s, 'lease, 'm, 'g>(
@@ -5918,7 +5931,7 @@ impl NativeReadConsumer<Result<Execution<PrimitiveRows>, RuntimeFailure<NativeEx
         view: &crate::property_graph::storage::GraphReadView<'s, 'lease, 'm, 'g>,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<
-        Result<Execution<PrimitiveRows>, RuntimeFailure<NativeExecutionError>>,
+        Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<NativeExecutionError>>,
         crate::property_graph::storage::tree::directory::TreeError,
     > {
         let lookup_input = [PlanNodeId(0)];
