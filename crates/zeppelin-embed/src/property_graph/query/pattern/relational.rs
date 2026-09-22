@@ -705,7 +705,7 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
     }
 }
 
-fn copy_relationship_uses_slice(
+pub(super) fn copy_relationship_uses_slice(
     source: &[RelationshipUse],
     destination: &mut QueryArena<'_, '_, RelationshipUse>,
 ) -> Result<(), RuntimeError> {

@@ -26,6 +26,7 @@ use crate::property_graph::{
 
 mod expand;
 mod join;
+mod mutation;
 mod planner;
 pub(super) mod relational;
 mod source;
@@ -243,6 +244,10 @@ enum PhysicalState<'s, 'plan, 'v, 'm, 'g> {
     Distinct {
         child: usize,
         state: QueryArena<'m, 'g, relational::DistinctState<'v, 'm, 'g>>,
+    },
+    Eager {
+        child: usize,
+        state: QueryArena<'m, 'g, mutation::EagerState<'v, 'm, 'g>>,
     },
     Aggregate {
         child: usize,
@@ -626,6 +631,7 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
             PhysicalState::Distinct { child, state } => {
                 self.next_distinct(index, *child, state, context)
             }
+            PhysicalState::Eager { child, state } => self.next_eager(index, *child, state, context),
             PhysicalState::Aggregate { child, state } => {
                 self.next_aggregate(index, *child, state, context)
             }
@@ -776,6 +782,14 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
                     self.reset_occurrence(*child, context)?;
                 }
                 PhysicalState::Distinct { child, state } => {
+                    let state = state
+                        .as_mut_slice()
+                        .first_mut()
+                        .ok_or(RuntimeError::Batch)?;
+                    state.reset(context)?;
+                    self.reset_occurrence(*child, context)?;
+                }
+                PhysicalState::Eager { child, state } => {
                     let state = state
                         .as_mut_slice()
                         .first_mut()
@@ -2070,6 +2084,7 @@ fn occurrence_count(
             | OperatorKind::OffsetLimit { .. }
             | OperatorKind::Sort(_)
             | OperatorKind::Distinct
+            | OperatorKind::Eager
             | OperatorKind::Aggregate { .. }
             | OperatorKind::Collect
     ) {
@@ -2604,6 +2619,30 @@ fn build_occurrence<'s, 'r, 'plan, 'v, 'm, 'g>(
                 )?,
             }
         }
+        OperatorKind::Eager => {
+            let child = build_unary(
+                view,
+                plan,
+                operator,
+                capacity,
+                occurrences,
+                context,
+                bindings,
+            )?;
+            PhysicalState::Eager {
+                child,
+                state: mutation::EagerState::new(
+                    occurrences
+                        .as_slice()
+                        .get(child)
+                        .ok_or(RuntimeError::Batch)?
+                        .schema
+                        .slots(),
+                    capacity,
+                    context,
+                )?,
+            }
+        }
         OperatorKind::Aggregate { keys, aggregates } => {
             let child = build_unary(
                 view,
@@ -2765,6 +2804,7 @@ fn slot_inherited_from_anchor(
         | PhysicalState::OffsetLimit { child, .. }
         | PhysicalState::Sort { child, .. }
         | PhysicalState::Distinct { child, .. }
+        | PhysicalState::Eager { child, .. }
         | PhysicalState::Collect { child } => {
             slot_inherited_from_anchor(occurrences, expressions, *child, slot, anchor)?
         }

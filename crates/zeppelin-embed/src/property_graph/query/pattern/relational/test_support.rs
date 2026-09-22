@@ -1796,3 +1796,155 @@ pub fn run_actual_probe(seed: u64) -> Result<NativeRelationalProbeReport, String
         ],
     })
 }
+
+/// Builds, validates and admits one borrowed relational plan, then drives it
+/// through `execute_in`.
+///
+/// The seven-argument form keeps the directed relational defaults: the
+/// sixteen-row pattern capacity, the four-row execution capacity, an
+/// unwrapped `NativePattern` source and the caller's own
+/// `RelationalExecutionFailure` constructors. The twelve-argument form names
+/// each of those explicitly so a different occurrence suite can tighten a
+/// capacity, wrap the source in an observing `PullOperator` or report through
+/// its own failure type.
+#[allow(
+    unused_macros,
+    reason = "only the cfg(test) occurrence suites expand this helper"
+)]
+macro_rules! execute_relational_plan {
+    ($view:expr, $runtime:expr, $operators:ident, $expressions:ident,
+     $regions:expr, $owners:expr, $completion:expr) => {
+        execute_relational_plan!(
+            $view,
+            $runtime,
+            $operators,
+            $expressions,
+            $regions,
+            $owners,
+            $completion,
+            PatternCapacity {
+                rows: StorageCapacity {
+                    rows: 16,
+                    payload_bytes: 8192,
+                    variable: ArenaCapacity {
+                        string_bytes: 4096,
+                        list_cells: 128,
+                        node_ids: 64,
+                        relationship_ids: 64,
+                    },
+                },
+                expression: ExpressionCapacity {
+                    cells: 32,
+                    string_bytes: 4096,
+                },
+            },
+            ExecutionCapacity {
+                batch_rows: 1,
+                result_rows: 4,
+                batch_payload_bytes: 8192,
+                result_payload_bytes: 8192,
+                batch: ArenaCapacity {
+                    string_bytes: 4096,
+                    list_cells: 128,
+                    node_ids: 64,
+                    relationship_ids: 64,
+                },
+                result: ArenaCapacity {
+                    string_bytes: 4096,
+                    list_cells: 128,
+                    node_ids: 64,
+                    relationship_ids: 64,
+                },
+            },
+            RelationalExecutionFailure::Build,
+            RelationalExecutionFailure::Run,
+            |source| source,
+            array
+        )
+    };
+    ($view:expr, $runtime:expr, $operators:ident, $expressions:ident,
+     $regions:expr, $owners:expr, $completion:expr,
+     $pattern_capacity:expr, $execution_capacity:expr,
+     $build:expr, $run:expr, $wrap:expr, $owner:ident) => {{
+        let memory = $runtime.memory();
+        let mut facts = QueryArena::new(memory, $operators.len()).expect("fact arena");
+        for _ in 0..$operators.len() {
+            facts.push(NodeFacts::default()).expect("fact slot");
+        }
+        let mut regions = vec![
+            RetainedRegion::slice(&$operators).unwrap(),
+            RetainedRegion::slice(&$expressions).unwrap(),
+            RetainedRegion::declared(facts.as_slice().as_ptr() as usize, facts.heap_bytes())
+                .unwrap(),
+        ];
+        regions.extend($regions);
+        regions.sort();
+        let retained_bytes = regions
+            .iter()
+            .try_fold(0usize, |total, region| {
+                total.checked_add(region.end() - region.start())
+            })
+            .expect("retained plan bytes");
+        let mut external = memory
+            .reserve_external_capacity()
+            .expect("external plan backing");
+        external
+            .reserve_additional(
+                retained_bytes
+                    + VALIDATION_SCRATCH_BYTES
+                    + regions.capacity() * size_of::<RetainedRegion>()
+                    + size_of::<PlanDescription<'_>>(),
+            )
+            .expect("plan validation backing");
+        let root = PlanNodeId(u32::try_from($operators.len() - 1).unwrap());
+        let description = PlanDescription {
+            operators: &$operators,
+            expressions: &$expressions,
+            parameters: &[],
+            root,
+            eager_searches: &[],
+        };
+        let (plan, facts_owner) = facts
+            .validate_plan(
+                description,
+                PlanFootprint::declared(memory.reserved_bytes()),
+                PlanBacking::vector(&regions).unwrap(),
+                $runtime.values(),
+            )
+            .expect("validate relational pattern plan");
+        let mut owners = vec![
+            RetainedAllocation::$owner(&$operators).unwrap(),
+            RetainedAllocation::$owner(&$expressions).unwrap(),
+            facts_owner,
+        ];
+        owners.extend($owners);
+        let admitted = QueryInputs::reserve(
+            memory,
+            RetentionInventory::vector(&owners).unwrap(),
+            $runtime.values(),
+        )
+        .expect("retain relational pattern plan")
+        .admit_plan(&plan, $runtime.values())
+        .expect("admit relational pattern plan");
+        match NativePattern::new($view, &admitted, root, &[], $pattern_capacity, $runtime) {
+            Err(error) => Err($build(error)),
+            Ok(pattern) => {
+                let mut source = $wrap(pattern);
+                execute_in(
+                    $runtime,
+                    &admitted,
+                    &mut source,
+                    $completion,
+                    $execution_capacity,
+                )
+                .map_err($run)
+            }
+        }
+    }};
+}
+
+#[allow(
+    unused_imports,
+    reason = "only the cfg(test) occurrence suites expand this helper"
+)]
+pub(crate) use execute_relational_plan;

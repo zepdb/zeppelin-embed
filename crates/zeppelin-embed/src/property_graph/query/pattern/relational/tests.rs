@@ -26,6 +26,8 @@ use crate::property_graph::{
 };
 use std::mem::size_of;
 
+use super::test_support::execute_relational_plan;
+
 type OffsetTuple = (u128, u128, u128);
 
 struct FreezeOffsetTuple;
@@ -489,123 +491,6 @@ fn native_relational_offset_scope_then_match() {
         chained.output.0[0],
         Some((node_b.get(), relationship_bc.get(), node_c.get()))
     );
-}
-
-macro_rules! execute_relational_plan {
-    ($view:expr, $runtime:expr, $operators:ident, $expressions:ident,
-     $regions:expr, $owners:expr, $completion:expr) => {{
-        let memory = $runtime.memory();
-        let mut facts = QueryArena::new(memory, $operators.len()).expect("fact arena");
-        for _ in 0..$operators.len() {
-            facts.push(NodeFacts::default()).expect("fact slot");
-        }
-        let mut regions = vec![
-            RetainedRegion::slice(&$operators).unwrap(),
-            RetainedRegion::slice(&$expressions).unwrap(),
-            RetainedRegion::declared(facts.as_slice().as_ptr() as usize, facts.heap_bytes())
-                .unwrap(),
-        ];
-        regions.extend($regions);
-        regions.sort();
-        let retained_bytes = regions
-            .iter()
-            .try_fold(0usize, |total, region| {
-                total.checked_add(region.end() - region.start())
-            })
-            .expect("retained plan bytes");
-        let mut external = memory
-            .reserve_external_capacity()
-            .expect("external plan backing");
-        external
-            .reserve_additional(
-                retained_bytes
-                    + VALIDATION_SCRATCH_BYTES
-                    + regions.capacity() * size_of::<RetainedRegion>()
-                    + size_of::<PlanDescription<'_>>(),
-            )
-            .expect("plan validation backing");
-        let root = PlanNodeId(u32::try_from($operators.len() - 1).unwrap());
-        let description = PlanDescription {
-            operators: &$operators,
-            expressions: &$expressions,
-            parameters: &[],
-            root,
-            eager_searches: &[],
-        };
-        let (plan, facts_owner) = facts
-            .validate_plan(
-                description,
-                PlanFootprint::declared(memory.reserved_bytes()),
-                PlanBacking::vector(&regions).unwrap(),
-                $runtime.values(),
-            )
-            .expect("validate relational pattern plan");
-        let mut owners = vec![
-            RetainedAllocation::array(&$operators).unwrap(),
-            RetainedAllocation::array(&$expressions).unwrap(),
-            facts_owner,
-        ];
-        owners.extend($owners);
-        let admitted = QueryInputs::reserve(
-            memory,
-            RetentionInventory::vector(&owners).unwrap(),
-            $runtime.values(),
-        )
-        .expect("retain relational pattern plan")
-        .admit_plan(&plan, $runtime.values())
-        .expect("admit relational pattern plan");
-        let mut source = match NativePattern::new(
-            $view,
-            &admitted,
-            root,
-            &[],
-            PatternCapacity {
-                rows: StorageCapacity {
-                    rows: 16,
-                    payload_bytes: 8192,
-                    variable: ArenaCapacity {
-                        string_bytes: 4096,
-                        list_cells: 128,
-                        node_ids: 64,
-                        relationship_ids: 64,
-                    },
-                },
-                expression: ExpressionCapacity {
-                    cells: 32,
-                    string_bytes: 4096,
-                },
-            },
-            $runtime,
-        ) {
-            Ok(source) => source,
-            Err(error) => return Ok(Err(RelationalExecutionFailure::Build(error))),
-        };
-        execute_in(
-            $runtime,
-            &admitted,
-            &mut source,
-            $completion,
-            ExecutionCapacity {
-                batch_rows: 1,
-                result_rows: 4,
-                batch_payload_bytes: 8192,
-                result_payload_bytes: 8192,
-                batch: ArenaCapacity {
-                    string_bytes: 4096,
-                    list_cells: 128,
-                    node_ids: 64,
-                    relationship_ids: 64,
-                },
-                result: ArenaCapacity {
-                    string_bytes: 4096,
-                    list_cells: 128,
-                    node_ids: 64,
-                    relationship_ids: 64,
-                },
-            },
-        )
-        .map_err(RelationalExecutionFailure::Run)
-    }};
 }
 
 struct SortScopeConsumer {
