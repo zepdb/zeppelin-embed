@@ -653,6 +653,10 @@ pub(crate) struct NativeGraphPublication {
     commit_allocations: std::sync::atomic::AtomicU64,
     #[cfg(all(feature = "allocation-audit", any(test, feature = "test-support")))]
     commit_allocation_denials: std::sync::atomic::AtomicU64,
+    /// Exact tree work charged by the most recent `prepare_durable_proof`.
+    /// ZE-163 gates its growth against the uncheckpointed envelope count.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) proof_work: std::sync::atomic::AtomicU64,
 }
 
 impl NativeGraphPublication {
@@ -779,6 +783,8 @@ impl NativeGraphPublication {
             commit_allocations: std::sync::atomic::AtomicU64::new(u64::MAX),
             #[cfg(all(feature = "allocation-audit", any(test, feature = "test-support")))]
             commit_allocation_denials: std::sync::atomic::AtomicU64::new(u64::MAX),
+            #[cfg(any(test, feature = "test-support"))]
+            proof_work: std::sync::atomic::AtomicU64::new(u64::MAX),
         }))
     }
 

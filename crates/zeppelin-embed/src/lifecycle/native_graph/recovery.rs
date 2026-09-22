@@ -59,6 +59,18 @@ use xxhash_rust::xxh3::Xxh3;
 const MAX_RECOVERED_DESCRIPTORS: usize = 8_192;
 const RECOVERY_TREE_WORK: u64 = 512 * 1024 * 1024;
 
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    /// Full captured-state traversals on this thread, counting both the
+    /// producer's proof and the recovery retrace. ZE-163 gates the count.
+    static STATE_TRACE_COUNT: Cell<u64> = const { Cell::new(0) };
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn take_state_trace_count_for_test() -> u64 {
+    STATE_TRACE_COUNT.with(|count| count.replace(0))
+}
+
 fn canonical_payload<S: BlockSource>(
     source: &S,
     required: RequiredRef,
@@ -1126,20 +1138,21 @@ impl crate::property_graph::storage::reclaim::SpillIo for RecoverySpillIo<'_, '_
     }
 }
 
+/// Membership of one traced reference in the completed mark.
+///
+/// The descent reads one page per run level and does not re-authenticate the
+/// run's count or digest; exactly one full authenticating walk per manifest
+/// runs in `validate_reclaim_manifest_authority` before any caller reaches
+/// here. The reader is caller-owned so one manifest's whole retrace shares a
+/// single charged page buffer.
 fn validate_mark_reference(
-    mark: crate::property_graph::storage::reclaim::DurableRun,
+    mark: &mut crate::property_graph::storage::reclaim::DurableRunReader<'_>,
     io: &impl crate::property_graph::storage::reclaim::SpillIo,
-    memory: &StorageMemory<'_>,
     candidates: &[ArtifactDescriptor],
     expected_artifact: ArtifactId,
     resources: &mut TreeResources<'_>,
 ) -> Result<(), TreeError> {
-    let mut reader = crate::property_graph::storage::reclaim::DurableRunReader::new(mark, memory)?;
-    let mut found = false;
-    while let Some(artifact) = reader.next(io, resources)? {
-        found |= artifact == expected_artifact;
-    }
-    if !found {
+    if !mark.contains(expected_artifact, io, resources)? {
         return Err(TreeError::Invalid(
             "captured live reference absent from completed mark",
         ));
@@ -1151,6 +1164,20 @@ fn validate_mark_reference(
         return Err(TreeError::Invalid("reclaim candidate is captured live"));
     }
     Ok(())
+}
+
+/// How much of one captured state a proof has to walk.
+///
+/// Recovery maps exactly the roots a commit state names before it replays
+/// that envelope, so an intermediate state's own roots stay load-bearing.
+/// Everything those roots reach transitively is already covered by the
+/// checkpoint's complete trace, by the target's own bundle trace, and by the
+/// envelope change references, so an intermediate state never needs the
+/// traversal that dominates the cost.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum CapturedTraceDepth {
+    Roots,
+    Complete,
 }
 
 #[allow(
@@ -1165,35 +1192,27 @@ pub(super) fn trace_captured_state_references<'m, V>(
     expected: GraphInterpretation<'_>,
     document: Option<&EmbeddingTower>,
     memory: &'m StorageMemory<'m>,
+    depth: CapturedTraceDepth,
     resources: &mut TreeResources<'m>,
     visitor: &mut V,
 ) -> Result<(), NativeGraphError>
 where
     V: TraceReferenceVisitor,
 {
+    #[cfg(any(test, feature = "test-support"))]
+    if depth == CapturedTraceDepth::Complete {
+        STATE_TRACE_COUNT.with(|count| count.set(count.get().saturating_add(1)));
+    }
     resources.require_preparation(memory)?;
-    let catalog_source =
-        RecoverySource::new_with_capacity(store, directory, state, memory, 1, false)?;
     let trace_source = RecoverySource::new_scoped(store, directory, state, memory, 1)?;
+    let catalog_source = (depth == CapturedTraceDepth::Complete)
+        .then(|| RecoverySource::new_with_capacity(store, directory, state, memory, 1, false))
+        .transpose()?;
     let result = (|| -> Result<(), TreeError> {
-        let catalog = RecoveryCatalog::open(
-            &catalog_source,
-            state.catalog,
-            expected,
-            state.high_waters,
-            resources,
-        )?;
-        let roots = GraphRoots::from_references(
-            state.store,
-            state.generation,
-            state
-                .graph
-                .slots
-                .map(|required| required.map(|value| value.block)),
-        )?;
         visitor.visit(checkpoint.block, resources)?;
         for required in state.graph.slots.into_iter().flatten() {
             trace_source.validate_required_reference_scoped(required, resources)?;
+            visitor.visit(required.block, resources)?;
         }
         trace_source.validate_required_reference_scoped(state.catalog, resources)?;
         visitor.visit(state.catalog.block, resources)?;
@@ -1226,6 +1245,24 @@ where
             trace_source.validate_required_reference_scoped(required, resources)?;
             visitor.visit(required.block, resources)?;
         }
+        let Some(catalog_source) = catalog_source.as_ref() else {
+            return Ok(());
+        };
+        let catalog = RecoveryCatalog::open(
+            catalog_source,
+            state.catalog,
+            expected,
+            state.high_waters,
+            resources,
+        )?;
+        let roots = GraphRoots::from_references(
+            state.store,
+            state.generation,
+            state
+                .graph
+                .slots
+                .map(|required| required.map(|value| value.block)),
+        )?;
         let mut range_scratch = RangeScratch::for_prepare(memory, resources)?;
         crate::property_graph::storage::reclaim::trace_graph_state(
             &trace_source,
@@ -1339,10 +1376,11 @@ where
         Ok(())
     })();
     if let Err(error) = result {
-        if let Some(source) = trace_source
-            .take_source_error()
-            .or_else(|| catalog_source.take_source_error())
-        {
+        if let Some(source) = trace_source.take_source_error().or_else(|| {
+            catalog_source
+                .as_ref()
+                .and_then(RecoverySource::take_source_error)
+        }) {
             return Err(source);
         }
         return Err(error.into());
@@ -1362,7 +1400,8 @@ fn validate_captured_state_reachability<'m>(
     expected: GraphInterpretation<'_>,
     document: Option<&EmbeddingTower>,
     memory: &'m StorageMemory<'m>,
-    mark: crate::property_graph::storage::reclaim::DurableRun,
+    depth: CapturedTraceDepth,
+    mark: &mut crate::property_graph::storage::reclaim::DurableRunReader<'_>,
     io: &impl crate::property_graph::storage::reclaim::SpillIo,
     candidates: &[ArtifactDescriptor],
 ) -> Result<(), NativeGraphError> {
@@ -1371,7 +1410,7 @@ fn validate_captured_state_reachability<'m>(
         crate::property_graph::storage::reclaim::MARK_WORK_LIMIT,
     )?;
     let mut visitor = |reference: PhysicalRef, resources: &mut TreeResources<'_>| {
-        validate_mark_reference(mark, io, memory, candidates, reference.artifact, resources)
+        validate_mark_reference(mark, io, candidates, reference.artifact, resources)
     };
     trace_captured_state_references(
         store,
@@ -1381,6 +1420,7 @@ fn validate_captured_state_reachability<'m>(
         expected,
         document,
         memory,
+        depth,
         &mut resources,
         &mut visitor,
     )
@@ -1461,7 +1501,7 @@ fn validate_captured_change_references<'m>(
     changes: ChangeReader<'_>,
     wal_resources: &mut WalResources<'_>,
     memory: &'m StorageMemory<'m>,
-    mark: crate::property_graph::storage::reclaim::DurableRun,
+    mark: &mut crate::property_graph::storage::reclaim::DurableRunReader<'_>,
     io: &impl crate::property_graph::storage::reclaim::SpillIo,
     candidates: &[ArtifactDescriptor],
 ) -> Result<(), NativeGraphError> {
@@ -1470,7 +1510,7 @@ fn validate_captured_change_references<'m>(
         crate::property_graph::storage::reclaim::MARK_WORK_LIMIT,
     )?;
     let mut visitor = |reference: PhysicalRef, resources: &mut TreeResources<'_>| {
-        validate_mark_reference(mark, io, memory, candidates, reference.artifact, resources)
+        validate_mark_reference(mark, io, candidates, reference.artifact, resources)
     };
     trace_captured_change_references(
         store,
@@ -1540,6 +1580,7 @@ fn validate_complete_reclaim_authority(
     manifest: crate::property_graph::storage::reclaim::PendingIntentManifest,
     source: &RecoverySource<'_, '_>,
     memory: &StorageMemory<'_>,
+    mark_reader: &mut crate::property_graph::storage::reclaim::DurableRunReader<'_>,
     resources: &mut TreeResources<'_>,
     candidates: &[ArtifactDescriptor],
 ) -> Result<(), TreeError> {
@@ -1605,14 +1646,7 @@ fn validate_complete_reclaim_authority(
                     }
                 }
             }
-            validate_mark_reference(
-                manifest.mark,
-                &io,
-                memory,
-                candidates,
-                record.artifact()?,
-                resources,
-            )
+            validate_mark_reference(mark_reader, &io, candidates, record.artifact()?, resources)
         },
     )?;
     let wal_authority =
@@ -1660,10 +1694,10 @@ fn validate_complete_reclaim_authority(
                 exact_cutoff,
                 control,
                 |visit, wal_resources| {
-                    let (state, changes) = match visit {
-                        CapturedStateVisit::Checkpoint { state, .. } => (state, None),
+                    let (state, changes, is_checkpoint) = match visit {
+                        CapturedStateVisit::Checkpoint { state, .. } => (state, None, true),
                         CapturedStateVisit::Envelope { state, changes, .. } => {
-                            (state, Some(changes))
+                            (state, Some(changes), false)
                         }
                     };
                     if let Some(changes) = changes {
@@ -1674,11 +1708,21 @@ fn validate_complete_reclaim_authority(
                             changes,
                             wal_resources,
                             memory,
-                            manifest.mark,
+                            mark_reader,
                             &io,
                             candidates,
                         )?;
                     }
+                    // The producer's mirror: only the checkpoint and the exact
+                    // target carry a full reachability retrace. An
+                    // intermediate state still needs its own roots proved
+                    // live, because replay maps exactly those before it
+                    // replays that envelope.
+                    let depth = if is_checkpoint || state.sequence == sequence {
+                        CapturedTraceDepth::Complete
+                    } else {
+                        CapturedTraceDepth::Roots
+                    };
                     validate_captured_state_reachability(
                         store,
                         directory,
@@ -1687,7 +1731,8 @@ fn validate_complete_reclaim_authority(
                         expected,
                         document,
                         memory,
-                        manifest.mark,
+                        depth,
+                        mark_reader,
                         &io,
                         candidates,
                     )?;
@@ -4237,6 +4282,39 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
             encoded_candidates.push(candidate)?;
         }
         let io = RecoverySpillIo { source };
+        // The one authenticating walk of this manifest's mark. It proves the
+        // run's count, digest, sorted-unique order and binding, and it proves
+        // no candidate is marked live. Every membership question below is
+        // then a bounded root-to-leaf descent over the same authenticated
+        // run, so this walk must stay ahead of them.
+        let mut authenticating = crate::property_graph::storage::reclaim::DurableRunReader::new(
+            manifest.mark,
+            self.memory,
+        )?;
+        let mut candidate_index = 0_usize;
+        while let Some(live) = authenticating.next(&io, resources)? {
+            while encoded_candidates
+                .as_slice()
+                .get(candidate_index)
+                .is_some_and(|candidate| candidate.artifact < live)
+            {
+                candidate_index += 1;
+            }
+            if encoded_candidates
+                .as_slice()
+                .get(candidate_index)
+                .is_some_and(|candidate| candidate.artifact == live)
+            {
+                return Err(TreeError::Invalid(
+                    "recovery reclaim candidate is marked live",
+                ));
+            }
+        }
+        drop(authenticating);
+        let mut mark_reader = crate::property_graph::storage::reclaim::DurableRunReader::new(
+            manifest.mark,
+            self.memory,
+        )?;
         crate::property_graph::storage::reclaim::validate_protected_stream(
             manifest.protected,
             &io,
@@ -4277,17 +4355,7 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
                     } => source.validate_checkpoint_control_reference(checkpoint, resources)?,
                 }
                 let expected_artifact = record.artifact()?;
-                let mut mark = crate::property_graph::storage::reclaim::DurableRunReader::new(
-                    manifest.mark,
-                    self.memory,
-                )?;
-                let mut found = false;
-                while let Some(artifact) = mark.next(&io, resources)? {
-                    if artifact == expected_artifact {
-                        found = true;
-                    }
-                }
-                if !found {
+                if !mark_reader.contains(expected_artifact, &io, resources)? {
                     return Err(TreeError::Invalid("protected root is absent from mark"));
                 }
                 Ok(())
@@ -4304,32 +4372,10 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
             manifest,
             source,
             self.memory,
+            &mut mark_reader,
             resources,
             encoded_candidates.as_slice(),
         )?;
-        let mut mark = crate::property_graph::storage::reclaim::DurableRunReader::new(
-            manifest.mark,
-            self.memory,
-        )?;
-        let mut candidate_index = 0_usize;
-        while let Some(live) = mark.next(&io, resources)? {
-            while encoded_candidates
-                .as_slice()
-                .get(candidate_index)
-                .is_some_and(|candidate| candidate.artifact < live)
-            {
-                candidate_index += 1;
-            }
-            if encoded_candidates
-                .as_slice()
-                .get(candidate_index)
-                .is_some_and(|candidate| candidate.artifact == live)
-            {
-                return Err(TreeError::Invalid(
-                    "recovery reclaim candidate is marked live",
-                ));
-            }
-        }
         self.reclaim_candidates.clear();
         self.reclaim_candidates
             .extend_from_slice(encoded_candidates.as_slice());

@@ -26,7 +26,25 @@ thread_local! {
     static OMITTED_MARK_EMISSIONS: std::cell::Cell<u64> = const {
         std::cell::Cell::new(0)
     };
+    /// Mark pages a `DurableRunReader` read on this thread. ZE-163 gates it
+    /// so membership stays a bounded descent instead of a run-long scan.
+    static MARK_PAGE_READS: std::cell::Cell<u64> = const {
+        std::cell::Cell::new(0)
+    };
 }
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn take_mark_page_reads_for_test() -> u64 {
+    MARK_PAGE_READS.with(|count| count.replace(0))
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn charge_mark_page_read() {
+    MARK_PAGE_READS.with(|count| count.set(count.get().saturating_add(1)));
+}
+
+#[cfg(not(any(test, feature = "test-support")))]
+const fn charge_mark_page_read() {}
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) fn omit_mark_artifact_for_test(artifact: ArtifactId) {
@@ -158,6 +176,15 @@ pub(crate) struct DurableRun {
     pub(crate) last: ArtifactId,
     pub(crate) binding: SpillBinding,
     height: u16,
+}
+
+impl DurableRun {
+    /// Levels above the leaves. A membership descent reads at most one page
+    /// per level plus the leaf, which is the bound ZE-163 gates.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) const fn height(&self) -> u16 {
+        self.height
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1084,6 +1111,7 @@ impl<'m> DurableRunReader<'m> {
             return Ok(false);
         }
         for _ in 0..=MAX_RUN_LEVELS {
+            charge_mark_page_read();
             let length = source.read_page(reference, &mut self.page.values, resources)?;
             let payload = self
                 .page
@@ -1149,6 +1177,7 @@ impl<'m> DurableRunReader<'m> {
                 .copied()
                 .flatten()
                 .ok_or(TreeError::Invalid("mark cursor frame"))?;
+            charge_mark_page_read();
             self.page_length =
                 source.read_page(frame.reference, &mut self.page.values, resources)?;
             let payload = self

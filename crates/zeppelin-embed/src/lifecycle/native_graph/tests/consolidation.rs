@@ -4877,6 +4877,760 @@ fn wal_only_witness_is_guarded_and_never_selected() {
     reopened.close().expect("close reopened witness store");
 }
 
+/// One single-node create, keyed by group and index, so a ZE-163 history is
+/// a run of one-envelope commits over an otherwise fixed store.
+fn ze163_base_write(store: &Store, group: &str, index: usize) {
+    let text = format!("ze163 {group} row {index}");
+    let image =
+        CanonicalContents::node(&mut [], &mut [], Some(&text), None).expect("ze163 node image");
+    store
+        .apply_native_graph(
+            &[StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, group, &index.to_string())
+                    .expect("ze163 key"),
+                revision: GraphRevision::new(1).expect("revision"),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            }],
+            &QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("ze163 write");
+}
+
+/// ZE-163: one durable proof walks one captured state completely per bundle,
+/// the bundle's checkpoint, plus the bundle's own target roots. Every
+/// uncheckpointed envelope between them contributes only its change
+/// references and the roots replay maps before it replays that envelope, so
+/// proof cost follows the changed paths and not the history length, on the
+/// producer and again on every reopen over the pending reclaim.
+#[test]
+fn ze163_proof_work_grows_with_changed_paths_not_with_history_length() {
+    run_ze163_proof_work_grows_with_changed_paths_not_with_history_length();
+}
+
+fn run_ze163_proof_work_grows_with_changed_paths_not_with_history_length() {
+    const HISTORY: [usize; 3] = [1, 4, 16];
+    const BASE_ROWS: usize = 40;
+    let mut producer_traces = Vec::new();
+    let mut recovery_traces = Vec::new();
+    let mut proof_work = Vec::new();
+    for envelopes in HISTORY {
+        let parent = super::tempfile::tempdir().expect("ze163 parent");
+        let path = parent.path().join("native");
+        let vfs = Arc::new(RecordingVfs::default());
+        let store = create_reclaim_test_store(&path, &vfs);
+        // A fixed base, large enough that one full traversal costs far more
+        // than one single-node envelope's own rewritten root paths.
+        for index in 0..BASE_ROWS {
+            ze163_base_write(&store, "ze163-base", index);
+        }
+        // One replacement before the checkpoint leaves reclaimable packs, so
+        // the measured maintenance publishes a real pending intent and the
+        // reopen below has an authority to revalidate.
+        commit_maintenance(&store).expect("ze163 base replacement");
+        store
+            .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+            .expect("ze163 base checkpoint");
+        for index in 0..envelopes {
+            ze163_base_write(&store, "ze163-tail", index);
+        }
+        let _ = crate::lifecycle::native_graph::recovery::take_state_trace_count_for_test();
+        commit_maintenance(&store).expect("ze163 maintenance");
+        producer_traces
+            .push(crate::lifecycle::native_graph::recovery::take_state_trace_count_for_test());
+        proof_work.push(
+            store
+                .native_graph
+                .proof_work
+                .load(std::sync::atomic::Ordering::Acquire),
+        );
+        {
+            let lease = store.admit_native_read().expect("ze163 pending reader");
+            assert!(
+                lease.bundle().reclaim().is_some(),
+                "the measured maintenance must publish a pending reclaim intent"
+            );
+            drop(lease);
+        }
+        store.close().expect("ze163 close");
+        let _ = crate::lifecycle::native_graph::recovery::take_state_trace_count_for_test();
+        let reopened =
+            Store::open_native_graph(&path, options(), None).expect("ze163 reopen over reclaim");
+        recovery_traces
+            .push(crate::lifecycle::native_graph::recovery::take_state_trace_count_for_test());
+        reopened.close().expect("ze163 close reopened");
+    }
+    let report = format!(
+        "history={HISTORY:?} producer={producer_traces:?} \
+         recovery={recovery_traces:?} work={proof_work:?}"
+    );
+    println!("ze163 proof work: {report}");
+    assert_eq!(
+        producer_traces,
+        vec![1_u64, 1, 1],
+        "one producer state trace per captured bundle: {report}"
+    );
+    // Two protected captured-state records survive the reopen, Current and
+    // PreparedBase, and each retraces exactly its checkpoint and its target.
+    assert_eq!(
+        recovery_traces,
+        vec![4_u64, 4, 4],
+        "recovery retrace count must not follow history length: {report}"
+    );
+    let base = *proof_work.first().expect("ze163 base work");
+    let longest = *proof_work.last().expect("ze163 longest work");
+    assert!(
+        longest.saturating_sub(base) <= base / 2,
+        "marginal proof work must stay under half of one traversal: {report}"
+    );
+}
+
+/// ZE-163: `validate_mark_reference` used to walk the whole completed mark
+/// once per traced reference. `DurableRunReader::contains` answers the same
+/// question with one page read per run level, so the cost of proving a
+/// reference live no longer follows the mark's length.
+#[test]
+fn ze163_mark_membership_is_a_bounded_descent_not_a_run_scan() {
+    run_ze163_mark_membership_is_a_bounded_descent_not_a_run_scan();
+}
+
+fn run_ze163_mark_membership_is_a_bounded_descent_not_a_run_scan() {
+    let parent = super::tempfile::tempdir().expect("ze163 mark parent");
+    let path = parent.path().join("native");
+    let store = Store::create_native_graph(&path, options(), None).expect("ze163 mark store");
+    ze163_base_write(&store, "ze163-mark", 0);
+    let admission = store
+        .admit_native_graph_maintenance()
+        .expect("ze163 mark admission");
+    // Enough ids to fill several leaf pages, so a run scan and a
+    // root-to-leaf descent cost visibly different numbers of pages.
+    let input: Vec<u128> = (1..=2048).collect();
+    let report = super::super::maintenance::run_spill_probe(&store, &admission, &input, 256)
+        .expect("ze163 membership probe");
+    let descent = u64::from(report.run.height() + 1);
+    let report_line = format!(
+        "height={} descent={descent} walk_pages={} queries={} membership_pages={}",
+        report.run.height(),
+        report.walk_page_reads,
+        report.membership_queries,
+        report.membership_page_reads
+    );
+    println!("ze163 mark membership: {report_line}");
+    assert_eq!(report.ordered.len(), input.len(), "{report_line}");
+    assert!(report.membership_queries > 0, "{report_line}");
+    assert!(
+        report.run.height() >= 1,
+        "the probe must build a multi-level run: {report_line}"
+    );
+    assert!(
+        report.membership_page_reads <= report.membership_queries * descent,
+        "each membership question reads at most one page per level: {report_line}"
+    );
+    assert!(
+        report.walk_page_reads >= 3 * descent,
+        "a run scan must cost several descents, or the gate proves nothing: \
+         {report_line}"
+    );
+    drop(admission);
+    store.close().expect("ze163 close mark store");
+}
+
+fn ze163_document_tower() -> EmbeddingTower {
+    EmbeddingTower {
+        model_id: "ze163-witness".into(),
+        model_version: "1".into(),
+        weights_digest: vec![0x16, 0x03],
+        dims: 2,
+        normalization: Normalization::None,
+        prompt_prefix: "doc: ".into(),
+        max_tokens: 32,
+        runtime: EmbeddingRuntime::CpuReference,
+        compute_units: ComputeUnits::Cpu,
+        os_build: None,
+    }
+}
+
+fn ze163_witness_store(path: &Path, vfs: &Arc<RecordingVfs>, document: &EmbeddingTower) -> Store {
+    let infrastructure: Arc<dyn Vfs> = vfs.clone();
+    Store::create_native_graph_with_infrastructure(
+        path,
+        options(),
+        Some(document.clone()),
+        infrastructure,
+        Arc::new(crate::lifecycle::SystemMonotonicClock),
+        &mut crate::property_graph::storage::allocation::OsEntropy,
+    )
+    .expect("ze163 witness store")
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one complete keyed write, spelled out so each fixture row is \
+              readable at its call site"
+)]
+fn ze163_keyed_write(
+    store: &Store,
+    document: &EmbeddingTower,
+    group: &str,
+    key: &str,
+    revision: u64,
+    operation: StructuredOperation,
+    text: &str,
+    coordinates: [f32; 2],
+) -> EntityId {
+    let embedding = CanonicalEmbedding::new(document, &coordinates).expect("keyed embedding");
+    let image = CanonicalContents::node(&mut [], &mut [], Some(text), Some(embedding))
+        .expect("keyed image");
+    let receipts = store
+        .apply_native_graph(
+            &[StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, group, key).expect("keyed key"),
+                revision: GraphRevision::new(revision).expect("keyed revision"),
+                operation,
+                image: Some(WriteImage::Node(&image)),
+            }],
+            &QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("keyed write");
+    receipts[0].entity
+}
+
+/// One checkpoint, then at least three uncheckpointed one-node envelopes over
+/// the same key, so a middle envelope's records are superseded before the
+/// target state is reached.
+fn ze163_seed_superseded_history(store: &Store, document: &EmbeddingTower) {
+    for index in 0..24 {
+        ze163_keyed_write(
+            store,
+            document,
+            "ze163-base",
+            &index.to_string(),
+            1,
+            StructuredOperation::Create,
+            &format!("ze163 witness base row {index} with some words"),
+            [index as f32 / 32.0, 1.0 - index as f32 / 32.0],
+        );
+    }
+    // A replacement before the checkpoint leaves reclaimable packs, so the
+    // measured maintenance publishes a real pending intent.
+    commit_maintenance(store).expect("ze163 witness base replacement");
+    store
+        .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+        .expect("ze163 witness checkpoint");
+    let mid = match ze163_keyed_write(
+        store,
+        document,
+        "ze163-mid",
+        "mid",
+        1,
+        StructuredOperation::Create,
+        "witness mid revision one alpha beta gamma",
+        [0.11, 0.89],
+    ) {
+        EntityId::Node(node) => node,
+        EntityId::Relationship(_) => panic!("ze163 witness mid identity"),
+    };
+    // Envelope two is the middle state. Envelope three rewrites the same key,
+    // so every page envelope two wrote for it is superseded before the target.
+    for (revision, word) in [(2_u64, "delta"), (3, "epsilon")] {
+        ze163_keyed_write(
+            store,
+            document,
+            "ze163-mid",
+            "mid",
+            revision,
+            StructuredOperation::Put(EntityId::Node(mid)),
+            &format!("witness mid revision {revision} {word} zeta eta theta"),
+            [0.11 * revision as f32, 0.5],
+        );
+    }
+}
+
+/// What the removed per-intermediate-state retrace used to reach, measured
+/// against what ZE-163 kept.
+struct Ze163Witness {
+    states: usize,
+    /// Artifacts that neither the checkpoint's nor the target's complete
+    /// traversal reaches, so only the intermediate history names them.
+    intermediate_only: std::collections::BTreeSet<u128>,
+    /// Of those, the ones the surviving cover does not reach either. The
+    /// surviving cover is the checkpoint trace, the target trace, every
+    /// state's `Roots` trace and every envelope's change references.
+    uncovered: std::collections::BTreeSet<u128>,
+}
+
+/// Traces one captured bundle twice per state, at both `CapturedTraceDepth`
+/// values, and reports which artifacts the deeper trace was the only witness
+/// for. The measurement excludes `writer.protected`, the current bundle's own
+/// trace and the durable proof roots, all of which the production mark also
+/// emits, so an empty `uncovered` set is a conservative result.
+fn ze163_witness_report(store: &Store, lease: &super::super::NativeReadLease) -> Ze163Witness {
+    use std::collections::BTreeSet;
+    type Ref = crate::property_graph::storage::artifact::PhysicalRef;
+    type Res<'a> = crate::property_graph::storage::tree::directory::TreeResources<'a>;
+    type Err = crate::property_graph::storage::tree::directory::TreeError;
+
+    struct Captured {
+        sequence: u64,
+        edge: bool,
+        roots: BTreeSet<u128>,
+        complete: BTreeSet<u128>,
+        changes: BTreeSet<u128>,
+    }
+
+    let bundle = lease.bundle();
+    let control = QueryControl::Cancel(CancelToken::new());
+    let shared = crate::property_graph::resources::GraphResources::from_store(store)
+        .expect("ze163 witness shared");
+    let write_memory =
+        WriteMemory::new(&shared, WriteLimits::default()).expect("ze163 witness write memory");
+    let memory = StorageMemory::new(&write_memory, &control, 32 * 1024 * 1024)
+        .expect("ze163 witness memory");
+    let mut resources =
+        crate::property_graph::storage::tree::directory::TreeResources::for_prepare(
+            &memory,
+            crate::property_graph::storage::reclaim::MARK_WORK_LIMIT,
+        )
+        .expect("ze163 witness resources");
+    let expected = crate::property_graph::catalog::GraphInterpretation::new(
+        bundle.lexical(),
+        bundle.document(),
+    )
+    .expect("ze163 witness interpretation");
+
+    let mut per_state: Vec<Captured> = Vec::new();
+    super::super::recovery::visit_captured_state(
+        store,
+        bundle.directory(),
+        bundle.root_envelope(),
+        bundle.sequence(),
+        None,
+        &control,
+        |visit, wal_resources| {
+            let (state, changes, is_checkpoint) = match visit {
+                super::super::recovery::CapturedStateVisit::Checkpoint { state, .. } => {
+                    (state, None, true)
+                }
+                super::super::recovery::CapturedStateVisit::Envelope { state, changes, .. } => {
+                    (state, Some(changes), false)
+                }
+            };
+            let mut change_set: BTreeSet<u128> = BTreeSet::new();
+            if let Some(changes) = changes {
+                let mut visit_change = |reference: Ref, _res: &mut Res<'_>| -> Result<(), Err> {
+                    change_set.insert(reference.artifact.get());
+                    Ok(())
+                };
+                super::super::recovery::trace_captured_change_references(
+                    store,
+                    bundle.directory(),
+                    state,
+                    changes,
+                    wal_resources,
+                    &memory,
+                    &mut resources,
+                    &mut visit_change,
+                )?;
+            }
+            let mut roots: BTreeSet<u128> = BTreeSet::new();
+            let mut complete: BTreeSet<u128> = BTreeSet::new();
+            for (depth, sink) in [
+                (
+                    super::super::recovery::CapturedTraceDepth::Roots,
+                    &mut roots,
+                ),
+                (
+                    super::super::recovery::CapturedTraceDepth::Complete,
+                    &mut complete,
+                ),
+            ] {
+                let mut visit_depth = |reference: Ref, _res: &mut Res<'_>| -> Result<(), Err> {
+                    sink.insert(reference.artifact.get());
+                    Ok(())
+                };
+                super::super::recovery::trace_captured_state_references(
+                    store,
+                    bundle.directory(),
+                    bundle.root_envelope(),
+                    state,
+                    expected,
+                    bundle.document(),
+                    &memory,
+                    depth,
+                    &mut resources,
+                    &mut visit_depth,
+                )?;
+            }
+            per_state.push(Captured {
+                sequence: state.sequence,
+                edge: is_checkpoint || state.sequence == bundle.sequence(),
+                roots,
+                complete,
+                changes: change_set,
+            });
+            Ok(())
+        },
+    )
+    .expect("ze163 witness captured walk");
+    drop(resources);
+
+    let mut edges: BTreeSet<u128> = BTreeSet::new();
+    let mut surviving: BTreeSet<u128> = BTreeSet::new();
+    for entry in &per_state {
+        surviving.extend(entry.changes.iter().copied());
+        surviving.extend(entry.roots.iter().copied());
+        if entry.edge {
+            edges.extend(entry.complete.iter().copied());
+            surviving.extend(entry.complete.iter().copied());
+        }
+    }
+    let mut intermediate_only: BTreeSet<u128> = BTreeSet::new();
+    let mut uncovered: BTreeSet<u128> = BTreeSet::new();
+    for entry in &per_state {
+        if entry.edge {
+            continue;
+        }
+        intermediate_only.extend(entry.complete.difference(&edges).copied());
+        uncovered.extend(entry.complete.difference(&surviving).copied());
+    }
+    println!(
+        "ze163 witness: states={} edges={} surviving={} intermediate_only={} uncovered={}",
+        per_state.len(),
+        edges.len(),
+        surviving.len(),
+        intermediate_only.len(),
+        uncovered.len()
+    );
+    for entry in &per_state {
+        println!(
+            "ze163 witness state seq={} edge={} roots={} complete={} changes={}",
+            entry.sequence,
+            entry.edge,
+            entry.roots.len(),
+            entry.complete.len(),
+            entry.changes.len()
+        );
+    }
+    Ze163Witness {
+        states: per_state.len(),
+        intermediate_only,
+        uncovered,
+    }
+}
+
+/// Plants the mark omission for one artifact and runs maintenance over it.
+/// The omission must fire and nothing may be unlinked; whether the producer
+/// refuses or defers the refusal to the next open is the caller's assertion.
+fn ze163_plant_omitted_mark(
+    store: &Store,
+    vfs: &Arc<RecordingVfs>,
+    artifact: crate::property_graph::storage::artifact::ArtifactId,
+) -> Option<super::super::NativeGraphError> {
+    vfs.take();
+    omit_mark_artifact_for_test(artifact);
+    let result = commit_maintenance(store);
+    let fired = take_omitted_mark_emissions_for_test();
+    let error = match result {
+        Ok(report) => {
+            assert_eq!(report.removed_bytes, 0, "a planted omission removed bytes");
+            None
+        }
+        Err(error) => Some(error),
+    };
+    println!(
+        "ze163 witness omission: fired={fired} refused={}",
+        error.is_some()
+    );
+    assert!(
+        delete_events(&vfs.take()).is_empty(),
+        "a planted omission deleted a file"
+    );
+    assert!(fired > 0, "the planted omission never fired");
+    error
+}
+
+fn ze163_assert_absent_from_mark_refusal(error: &super::super::NativeGraphError) {
+    let message = match error {
+        super::super::NativeGraphError::Read(
+            crate::property_graph::storage::tree::directory::TreeError::Invalid(message),
+        ) => *message,
+        other => panic!("unexpected refusal: {other:?}"),
+    };
+    assert!(
+        message == "protected root is absent from completed mark"
+            || message == "captured live reference absent from completed mark",
+        "unexpected refusal message: {message}"
+    );
+    println!("ze163 witness refusal: {message}");
+}
+
+/// ZE-163 stopped retracing every uncheckpointed envelope state in full. This
+/// is the negative control for the class that retrace was the only witness
+/// for: an artifact a middle envelope allocated, whose pages a later envelope
+/// supersedes before the target state. The fixture proves that class is
+/// non-empty, that what ZE-163 kept still reaches every member of it, and
+/// that a member reaches the completed mark and survives a real reclaim.
+#[test]
+fn ze163_intermediate_tree_artifact_keeps_a_current_witness() {
+    let parent = super::tempfile::tempdir().expect("ze163 current parent");
+    let path = parent.path().join("native");
+    let vfs = Arc::new(RecordingVfs::default());
+    let document = ze163_document_tower();
+    let store = ze163_witness_store(&path, &vfs, &document);
+    ze163_seed_superseded_history(&store, &document);
+
+    let lease = store.admit_native_read().expect("ze163 current reader");
+    let report = ze163_witness_report(&store, &lease);
+    drop(lease);
+    assert!(
+        report.states >= 4,
+        "the fixture needs a checkpoint and at least three uncheckpointed \
+         envelopes: states={}",
+        report.states
+    );
+    assert!(
+        !report.intermediate_only.is_empty(),
+        "the fixture never allocated an artifact only an intermediate state \
+         reaches, so this control proves nothing"
+    );
+    assert!(
+        report.uncovered.is_empty(),
+        "an intermediate state reached an artifact that the checkpoint trace, \
+         the target trace, the retained roots and the change references do \
+         not: {:032x?}",
+        report.uncovered
+    );
+
+    let witness = crate::property_graph::storage::artifact::ArtifactId::new(
+        *report
+            .intermediate_only
+            .first()
+            .expect("intermediate-only artifact"),
+    )
+    .expect("nonzero witness artifact");
+    let witness_path = crate::property_graph::storage::allocation::artifact_path(&path, witness);
+    let witness_bytes = std::fs::read(&witness_path).expect("ze163 witness bytes");
+
+    let before = directory_image(&path);
+    let error = ze163_plant_omitted_mark(&store, &vfs, witness)
+        .expect("the omitted intermediate artifact must refuse before mutation");
+    ze163_assert_absent_from_mark_refusal(&error);
+    assert_live_files_unchanged(&path, &before);
+
+    // With the real mark the same artifact reaches it, is never selected, and
+    // keeps its bytes across a real reclaim and the reopen over its intent.
+    ze163_survives_a_pending_reclaim_round(store, &path, &document, witness, &witness_bytes, None);
+}
+
+/// One real reclaim round over a witness artifact, ending at the reopen over
+/// the published pending intent. `retained`, when present, is held across the
+/// whole round and released only before the close.
+///
+/// The second, completing maintenance is deliberately not run. ZE-187 records
+/// a pre-existing reopen failure after a *completed* reclaim on a
+/// post-checkpoint envelope chain; it reproduces on unmodified main `39e740c`
+/// with every ZE-163 production file reverted (probe
+/// `ze163_baseline_probe_plain_store_reopens_after_two_maintenances`, nextest
+/// run `f872df48`), so it is not this change's. Letting it run here would
+/// replace this control's signal with that one.
+fn ze163_survives_a_pending_reclaim_round(
+    store: Store,
+    path: &Path,
+    document: &EmbeddingTower,
+    witness: crate::property_graph::storage::artifact::ArtifactId,
+    witness_bytes: &[u8],
+    retained: Option<super::super::NativeReadLease>,
+) {
+    let witness_path = crate::property_graph::storage::allocation::artifact_path(path, witness);
+    commit_maintenance(&store).expect("ze163 maintenance with the real mark");
+    let lease = store.admit_native_read().expect("ze163 round reader");
+    assert!(
+        lease.bundle().reclaim().is_some(),
+        "the maintenance must publish a real pending reclaim intent, or this \
+         round proves nothing about deletion authority"
+    );
+    assert!(
+        !pending_reclaim_candidates_or_empty_root(&store, &lease)
+            .iter()
+            .any(|candidate| candidate.artifact == witness),
+        "the intermediate-envelope artifact became a reclaim candidate"
+    );
+    drop(lease);
+    assert_eq!(
+        std::fs::read(&witness_path).expect("ze163 witness survives"),
+        witness_bytes
+    );
+    drop(retained);
+    store.close().expect("ze163 close");
+    let reopened = Store::open_native_graph(path, options(), Some(document.clone()))
+        .expect("ze163 reopen over the pending intent");
+    assert_eq!(
+        std::fs::read(&witness_path).expect("ze163 witness after reopen"),
+        witness_bytes
+    );
+    reopened.close().expect("ze163 close reopened");
+}
+
+/// The same superseded-intermediate history, pinned by a retained reader
+/// lease that is held across a checkpoint. `writer.protected` is rebuilt from
+/// the uncheckpointed WAL, so after that checkpoint it no longer names this
+/// history and cannot be the cover here.
+fn ze163_reader_history_fixture(
+    path: &Path,
+    vfs: &Arc<RecordingVfs>,
+    document: &EmbeddingTower,
+) -> (Store, super::super::NativeReadLease) {
+    let store = ze163_witness_store(path, vfs, document);
+    ze163_seed_superseded_history(&store, document);
+    let retained = store.admit_native_read().expect("ze163 retained reader");
+    let retained_root = retained.bundle().root_envelope();
+    store
+        .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+        .expect("ze163 checkpoint over the retained history");
+    ze163_keyed_write(
+        &store,
+        document,
+        "ze163-tail",
+        "tail",
+        1,
+        StructuredOperation::Create,
+        "witness tail row iota kappa lambda",
+        [0.55, 0.45],
+    );
+    let current = store.admit_native_read().expect("ze163 current reader");
+    assert_ne!(
+        current.bundle().root_envelope(),
+        retained_root,
+        "the checkpoint did not move the writer past the retained history"
+    );
+    drop(current);
+    (store, retained)
+}
+
+fn ze163_reader_witness(
+    store: &Store,
+    path: &Path,
+    retained: &super::super::NativeReadLease,
+) -> (
+    crate::property_graph::storage::artifact::ArtifactId,
+    Vec<u8>,
+) {
+    let report = ze163_witness_report(store, retained);
+    assert!(
+        report.states >= 4,
+        "the retained history needs a checkpoint and at least three \
+         uncheckpointed envelopes: states={}",
+        report.states
+    );
+    assert!(
+        !report.intermediate_only.is_empty(),
+        "the retained history never allocated an artifact only an \
+         intermediate state reaches, so this control proves nothing"
+    );
+    assert!(
+        report.uncovered.is_empty(),
+        "an intermediate reader state reached an artifact that the checkpoint \
+         trace, the target trace, the retained roots and the change \
+         references do not: {:032x?}",
+        report.uncovered
+    );
+    let witness = crate::property_graph::storage::artifact::ArtifactId::new(
+        *report
+            .intermediate_only
+            .first()
+            .expect("intermediate-only artifact"),
+    )
+    .expect("nonzero witness artifact");
+    let witness_path = crate::property_graph::storage::allocation::artifact_path(path, witness);
+    let bytes = std::fs::read(&witness_path).expect("ze163 reader witness bytes");
+    let writer_protected: Vec<crate::property_graph::storage::artifact::ArtifactId> = store
+        .native_graph
+        .writer
+        .lock()
+        .expect("ze163 writer state")
+        .as_ref()
+        .expect("ze163 writer")
+        .protected
+        .iter()
+        .map(|descriptor| descriptor.artifact)
+        .collect();
+    assert!(
+        !writer_protected.contains(&witness),
+        "the checkpoint left this reader-history artifact in writer.protected, \
+         so the reader-class leg would only retest the Current cover"
+    );
+    (witness, bytes)
+}
+
+#[test]
+fn ze163_intermediate_tree_artifact_keeps_a_reader_witness() {
+    let parent = super::tempfile::tempdir().expect("ze163 reader parent");
+    let path = parent.path().join("native");
+    let vfs = Arc::new(RecordingVfs::default());
+    let document = ze163_document_tower();
+    let (store, retained) = ze163_reader_history_fixture(&path, &vfs, &document);
+    let (witness, witness_bytes) = ze163_reader_witness(&store, &path, &retained);
+
+    // The lease stays held across the whole reclaim round: the point is that
+    // this history is the reader's, not the writer's.
+    ze163_survives_a_pending_reclaim_round(
+        store,
+        &path,
+        &document,
+        witness,
+        &witness_bytes,
+        Some(retained),
+    );
+}
+
+/// The negative control for the reader-class leg. An independent store with
+/// the same history has one intermediate-only artifact omitted from the
+/// completed mark. The producer may accept it, because a reader bundle's
+/// protected stream does not name that artifact; the next open over the
+/// resulting manifest must not.
+#[test]
+fn ze163_omitted_reader_history_artifact_refuses_before_any_unlink() {
+    let parent = super::tempfile::tempdir().expect("ze163 plant parent");
+    let path = parent.path().join("native");
+    let vfs = Arc::new(RecordingVfs::default());
+    let document = ze163_document_tower();
+    let (store, retained) = ze163_reader_history_fixture(&path, &vfs, &document);
+    let (witness, witness_bytes) = ze163_reader_witness(&store, &path, &retained);
+    let witness_path = crate::property_graph::storage::allocation::artifact_path(&path, witness);
+
+    let before = directory_image(&path);
+    let refusal = ze163_plant_omitted_mark(&store, &vfs, witness);
+    match refusal {
+        Some(error) => {
+            ze163_assert_absent_from_mark_refusal(&error);
+            assert_live_files_unchanged(&path, &before);
+            drop(retained);
+            store.close().expect("ze163 plant close");
+        }
+        None => {
+            // The producer accepted the omission. The durable mark now lacks
+            // a reference the retained reader history still names, so the
+            // next open over it must refuse rather than reclaim anything.
+            drop(retained);
+            store.close().expect("ze163 plant close");
+            match Store::open_native_graph(&path, options(), Some(document.clone())) {
+                Ok(reopened) => {
+                    reopened.close().expect("ze163 plant close reopened");
+                    panic!(
+                        "a mark missing a reader-history reference reopened \
+                         without a refusal"
+                    );
+                }
+                Err(error) => println!("ze163 reader reopen refusal: {error:?}"),
+            }
+        }
+    }
+    assert_eq!(
+        std::fs::read(&witness_path).expect("ze163 plant witness survives"),
+        witness_bytes
+    );
+}
+
 /// One real reclaim cycle, a reopen and a replay of the original keyed
 /// request, reported as plain observations for an independent comparator.
 #[cfg(feature = "test-support")]

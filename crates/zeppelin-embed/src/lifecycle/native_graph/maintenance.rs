@@ -846,13 +846,13 @@ fn prepare_durable_proof<'m>(
                 exact_wal_cutoff,
                 control,
                 |visit, wal_resources| {
-                    let (state, changes) = match visit {
+                    let (state, changes, is_checkpoint) = match visit {
                         super::recovery::CapturedStateVisit::Checkpoint { state, .. } => {
-                            (state, None)
+                            (state, None, true)
                         }
                         super::recovery::CapturedStateVisit::Envelope {
                             state, changes, ..
-                        } => (state, Some(changes)),
+                        } => (state, Some(changes), false),
                     };
                     if let Some(changes) = changes {
                         super::recovery::trace_captured_change_references(
@@ -892,6 +892,17 @@ fn prepare_durable_proof<'m>(
                         }
                         reached_target = true;
                     } else {
+                        // Only the checkpoint needs a full retrace. A commit
+                        // reaches what its base reaches or what that commit
+                        // created, and the target's own bundle trace already
+                        // walked the end of that chain, so an intermediate
+                        // state contributes only the roots replay maps before
+                        // it replays that envelope.
+                        let depth = if is_checkpoint {
+                            super::recovery::CapturedTraceDepth::Complete
+                        } else {
+                            super::recovery::CapturedTraceDepth::Roots
+                        };
                         super::recovery::trace_captured_state_references(
                             store,
                             bundle.directory(),
@@ -900,6 +911,7 @@ fn prepare_durable_proof<'m>(
                             expected,
                             bundle.document(),
                             storage,
+                            depth,
                             resources,
                             &mut emit_reference,
                         )?;
@@ -1081,6 +1093,12 @@ pub(super) struct SpillProbeReport {
     pub(super) allocation_head: Option<crate::property_graph::wal::RequiredRef>,
     pub(super) captured_head: Option<crate::property_graph::wal::RequiredRef>,
     pub(super) captured_pending: [Option<crate::property_graph::wal::ArtifactDescriptor>; 2],
+    /// Mark pages the one authenticating `next` walk read.
+    pub(super) walk_page_reads: u64,
+    /// Membership questions asked through `DurableRunReader::contains`.
+    pub(super) membership_queries: u64,
+    /// Mark pages those membership questions read in total.
+    pub(super) membership_page_reads: u64,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -1146,6 +1164,7 @@ pub(super) fn run_spill_probe(
     ordered.try_reserve_exact(input.len()).map_err(|_| {
         NativeGraphError::Read(crate::property_graph::storage::tree::directory::TreeError::Memory)
     })?;
+    let _ = crate::property_graph::storage::reclaim::take_mark_page_reads_for_test();
     loop {
         match reader.next(&writer, &mut resources) {
             Ok(Some(id)) => ordered.push(id.get()),
@@ -1153,6 +1172,27 @@ pub(super) fn run_spill_probe(
             Err(error) => return Err(writer.take_failure().unwrap_or_else(|| error.into())),
         }
     }
+    let walk_page_reads = crate::property_graph::storage::reclaim::take_mark_page_reads_for_test();
+    // ZE-163: every id the walk emitted, asked again as an exact membership
+    // question over the same authenticated run. Each answer must cost one
+    // bounded root-to-leaf descent, not another walk.
+    let mut membership_queries = 0_u64;
+    let stride = ordered.len().div_ceil(256).max(1);
+    for value in ordered.iter().step_by(stride) {
+        let id = ArtifactId::new(*value)
+            .map_err(|_| NativeGraphError::Invalid("spill probe artifact identity"))?;
+        match reader.contains(id, &writer, &mut resources) {
+            Ok(true) => membership_queries += 1,
+            Ok(false) => {
+                return Err(NativeGraphError::Invalid(
+                    "spill probe membership is absent",
+                ));
+            }
+            Err(error) => return Err(writer.take_failure().unwrap_or_else(|| error.into())),
+        }
+    }
+    let membership_page_reads =
+        crate::property_graph::storage::reclaim::take_mark_page_reads_for_test();
     let capture = store.capture_native_read_roots()?;
     let captured = capture
         .spills()
@@ -1179,6 +1219,9 @@ pub(super) fn run_spill_probe(
         allocation_head: stats.allocation_head,
         captured_head: captured.head,
         captured_pending: captured.pending,
+        walk_page_reads,
+        membership_queries,
+        membership_page_reads,
     })
 }
 
@@ -1804,7 +1847,14 @@ pub(super) fn commit_with_limits(
             &mut resources,
         )?
     };
+    #[cfg(any(test, feature = "test-support"))]
+    let work_before_proof = resources.work();
     let proof = prepare_durable_proof(store, admission, &storage, control, &mut resources)?;
+    #[cfg(any(test, feature = "test-support"))]
+    store.native_graph.proof_work.store(
+        resources.work().saturating_sub(work_before_proof),
+        std::sync::atomic::Ordering::Release,
+    );
     let reclaim_id = BatchId::new(proof.durable.binding().session.get())?;
     let mut reclaim_pending = StorageBuffer::new(&storage, proof.candidates.as_slice().len())?;
     for descriptor in proof.candidates.as_slice().iter().copied() {
