@@ -1973,6 +1973,7 @@ pub(crate) mod tests {
         clippy::unwrap_used
     )]
 
+    mod base_lazy;
     mod close_owner;
     pub(crate) mod consolidation;
     mod expression_tests;

@@ -186,12 +186,94 @@ impl CachedEntity<'_, '_, '_> {
     }
 }
 
+/// Largest lazy target arena a caller may request. A query-driven executor
+/// discovers its targets while it runs, so the arena is admitted once at
+/// construction and never grows; a caller that asks for more is refused.
+pub(super) const MAX_LAZY_TARGETS: usize = 4096;
+
+/// One lazily resolved target lives in its own single-element buffer. A later
+/// arrival therefore appends to the slot array without touching the bytes an
+/// earlier caller is still borrowing.
+type LazySlot<'source, 'resources, 'm> = StorageBuffer<'m, CachedEntity<'source, 'resources, 'm>>;
+
+/// Bounded interior-mutable cache for targets no structured-write list named.
+struct LazyTargets<'source, 'resources, 'm> {
+    slots: RefCell<StorageBuffer<'m, LazySlot<'source, 'resources, 'm>>>,
+}
+
+impl<'source, 'resources, 'm> LazyTargets<'source, 'resources, 'm> {
+    fn new(memory: &'m StorageMemory<'m>, capacity: usize) -> Result<Self, NativeGraphError> {
+        if capacity > MAX_LAZY_TARGETS {
+            return Err(NativeGraphError::Invalid(
+                "native base lazy target capacity",
+            ));
+        }
+        Ok(Self {
+            slots: RefCell::new(StorageBuffer::new(memory, capacity)?),
+        })
+    }
+
+    fn borrowed() -> StageError {
+        StageError::NativeStorage(TreeError::Invalid(
+            "native base lazy targets already borrowed",
+        ))
+    }
+
+    fn find(
+        &self,
+        id: EntityId,
+    ) -> Result<Option<&CachedEntity<'source, 'resources, 'm>>, StageError> {
+        let slots = self.slots.try_borrow().map_err(|_| Self::borrowed())?;
+        for slot in slots.as_slice() {
+            let Some(entry) = slot.as_slice().first() else {
+                continue;
+            };
+            if entry.incarnation == id {
+                let pointer: *const CachedEntity<'source, 'resources, 'm> = entry;
+                // SAFETY: the entry lives in its own fixed-capacity slot buffer,
+                // whose allocation is made once and is never reallocated, moved
+                // into, or handed out mutably. The slot buffer is owned by
+                // `self.slots` for the whole life of `self`, and appending
+                // another slot only writes the outer array. Returning the
+                // reference bounded by `&self` therefore cannot outlive or
+                // alias the bytes it names.
+                return Ok(Some(unsafe { &*pointer }));
+            }
+        }
+        Ok(None)
+    }
+
+    fn insert(
+        &self,
+        memory: &'m StorageMemory<'m>,
+        entity: CachedEntity<'source, 'resources, 'm>,
+    ) -> Result<&CachedEntity<'source, 'resources, 'm>, StageError> {
+        let mut slot = LazySlot::new(memory, 1)?;
+        slot.push(entity)?;
+        let pointer: *const CachedEntity<'source, 'resources, 'm> = slot
+            .as_slice()
+            .first()
+            .ok_or(StageError::NativeStorage(TreeError::Memory))?;
+        // A full arena is a loud refusal: the rejected slot drops here and
+        // releases every byte it charged, so no partial target survives.
+        self.slots
+            .try_borrow_mut()
+            .map_err(|_| Self::borrowed())?
+            .push(slot)?;
+        // SAFETY: as in `find`, plus the slot buffer was moved into `self.slots`
+        // without touching its heap allocation, so `pointer` still names the
+        // element just written and is now owned for the whole life of `self`.
+        Ok(unsafe { &*pointer })
+    }
+}
+
 pub(super) struct NativeAdmittedBase<'source, 'lease, 'resources, 'm> {
     lease: &'lease NativeReadLease,
     interpretation: GraphInterpretation<'lease>,
     source: &'source NativePreparationSource<'lease, 'm>,
     memory: &'m StorageMemory<'m>,
     cache: StorageBuffer<'m, CachedEntity<'source, 'resources, 'm>>,
+    lazy: Option<LazyTargets<'source, 'resources, 'm>>,
     resources: &'resources RefCell<&'resources mut TreeResources<'m>>,
     first_error: &'resources Cell<Option<TreeError>>,
 }
@@ -510,7 +592,7 @@ fn load_record<'source, 'resources, 'm>(
     resources_cell: &'resources RefCell<&'resources mut TreeResources<'m>>,
     first_error: &'resources Cell<Option<TreeError>>,
     resources: &mut TreeResources<'m>,
-) -> Result<Option<CachedEntity<'source, 'resources, 'm>>, NativeGraphError> {
+) -> Result<Option<CachedEntity<'source, 'resources, 'm>>, TreeError> {
     let (kind, key) = match entity {
         EntityId::Node(node) => (TreeKind::Nodes, node.get()),
         EntityId::Relationship(relationship) => (TreeKind::Relationships, relationship.get()),
@@ -554,6 +636,9 @@ impl<'source, 'lease, 'resources, 'm> NativeAdmittedBase<'source, 'lease, 'resou
 where
     'm: 'source,
 {
+    /// Structured-write admission: every target is named by `requests` and is
+    /// preloaded here, so a later cache miss is an absent entity, not an
+    /// unasked question.
     pub(super) fn new(
         lease: &'lease NativeReadLease,
         source: &'source NativePreparationSource<'lease, 'm>,
@@ -561,6 +646,58 @@ where
         requests: &[StructuredWrite<'_, '_>],
         resources_cell: &'resources RefCell<&'resources mut TreeResources<'m>>,
         first_error: &'resources Cell<Option<TreeError>>,
+    ) -> Result<Self, NativeGraphError> {
+        Self::build(
+            lease,
+            source,
+            memory,
+            requests,
+            resources_cell,
+            first_error,
+            None,
+        )
+    }
+
+    /// Query-driven admission: the same preload runs, and a miss on
+    /// `entity`, `property` or `stored_text` then resolves the target from the
+    /// admitted roots into a bounded arena of `lazy_capacity` entries. `key`
+    /// keeps its structured-write-only meaning.
+    #[allow(
+        dead_code,
+        reason = "the mutation executor that resolves MATCH targets lands in a later ZE-52 slice"
+    )]
+    pub(super) fn with_lazy_targets(
+        lease: &'lease NativeReadLease,
+        source: &'source NativePreparationSource<'lease, 'm>,
+        memory: &'m StorageMemory<'m>,
+        requests: &[StructuredWrite<'_, '_>],
+        resources_cell: &'resources RefCell<&'resources mut TreeResources<'m>>,
+        first_error: &'resources Cell<Option<TreeError>>,
+        lazy_capacity: usize,
+    ) -> Result<Self, NativeGraphError> {
+        Self::build(
+            lease,
+            source,
+            memory,
+            requests,
+            resources_cell,
+            first_error,
+            Some(lazy_capacity),
+        )
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one admitted base carries its lease, source, arena and controls"
+    )]
+    fn build(
+        lease: &'lease NativeReadLease,
+        source: &'source NativePreparationSource<'lease, 'm>,
+        memory: &'m StorageMemory<'m>,
+        requests: &[StructuredWrite<'_, '_>],
+        resources_cell: &'resources RefCell<&'resources mut TreeResources<'m>>,
+        first_error: &'resources Cell<Option<TreeError>>,
+        lazy_capacity: Option<usize>,
     ) -> Result<Self, NativeGraphError> {
         lease
             .check_active()
@@ -725,6 +862,9 @@ where
             source,
             memory,
             cache,
+            lazy: lazy_capacity
+                .map(|capacity| LazyTargets::new(memory, capacity))
+                .transpose()?,
             resources: resources_cell,
             first_error,
         })
@@ -744,6 +884,85 @@ where
 
     pub(super) fn take_error(&self) -> Option<TreeError> {
         self.first_error.take()
+    }
+
+    /// Resolve one target: the structured-write preload first, then, when this
+    /// base was admitted with a lazy arena, the admitted roots themselves.
+    fn cached_entity<'a>(
+        &'a self,
+        id: EntityId,
+    ) -> Result<Option<&'a CachedEntity<'source, 'resources, 'm>>, StageError> {
+        if let Some(entry) = self
+            .cache
+            .as_slice()
+            .iter()
+            .find(|entry| entry.incarnation == id)
+        {
+            return Ok(Some(entry));
+        }
+        let Some(lazy) = self.lazy.as_ref() else {
+            return Ok(None);
+        };
+        if let Some(entry) = lazy.find(id)? {
+            return Ok(Some(entry));
+        }
+        // An unpublished graph has no roots to read, exactly as the preload
+        // reads none. An absent target is not cached: only a resolved one
+        // consumes arena capacity.
+        if self.lease.bundle().base().generation.get() == 0 {
+            return Ok(None);
+        }
+        let Some(loaded) = self.load_target(id)? else {
+            return Ok(None);
+        };
+        lazy.insert(self.memory, loaded).map(Some)
+    }
+
+    /// Read one entity from the admitted roots, with the same catalog, sparse
+    /// membership and record verification the structured preload applies.
+    fn load_target(
+        &self,
+        id: EntityId,
+    ) -> Result<Option<CachedEntity<'source, 'resources, 'm>>, StageError> {
+        let mut resources_ref = self.resources.try_borrow_mut().map_err(|_| {
+            StageError::NativeStorage(TreeError::Invalid("native base resources already borrowed"))
+        })?;
+        let resources = &mut **resources_ref;
+        let catalog = NativePreparationCatalog::open(self.source, resources)?;
+        let roots = self.lease.bundle().roots();
+        let sparse = SparseView::open(
+            self.source,
+            SparseRoots {
+                text: self.lease.bundle().text(),
+                vector: self.lease.bundle().vector(),
+            },
+            roots,
+            self.lease.bundle().catalog(),
+            &catalog,
+            self.lease.bundle().document(),
+            self.lease.bundle().lexical(),
+            self.memory,
+            resources,
+        )?;
+        let membership = match id {
+            EntityId::Node(node) => Membership {
+                text: sparse.lookup(Modality::Text, node, resources)?.is_some(),
+                vector: sparse.lookup(Modality::Vector, node, resources)?.is_some(),
+            },
+            EntityId::Relationship(_) => Membership::default(),
+        };
+        Ok(load_record(
+            self.source,
+            roots,
+            id,
+            &catalog,
+            self.lease.bundle().document(),
+            membership,
+            self.memory,
+            self.resources,
+            self.first_error,
+            resources,
+        )?)
     }
 
     fn cached_by_key<'a>(
@@ -807,10 +1026,7 @@ impl AdmittedBase for NativeAdmittedBase<'_, '_, '_, '_> {
         control: &mut WriteControl<'_>,
     ) -> Result<Option<BaseEntity<'_>>, StageError> {
         control(crate::property_graph::staging::WritePhase::Validate)?;
-        self.cache
-            .as_slice()
-            .iter()
-            .find(|entry| entry.incarnation == id)
+        self.cached_entity(id)?
             .map(|entry| entry.live(self.identity()))
             .transpose()
             .map(Option::flatten)
@@ -847,12 +1063,7 @@ impl AdmittedBase for NativeAdmittedBase<'_, '_, '_, '_> {
         control: &mut WriteControl<'_>,
     ) -> Result<Option<PropertyValue<'_>>, StageError> {
         control(crate::property_graph::staging::WritePhase::Overlay)?;
-        let Some(entry) = self
-            .cache
-            .as_slice()
-            .iter()
-            .find(|entry| entry.incarnation == entity)
-        else {
+        let Some(entry) = self.cached_entity(entity)? else {
             return Ok(None);
         };
         for property in entry.properties.as_slice() {
@@ -870,10 +1081,7 @@ impl AdmittedBase for NativeAdmittedBase<'_, '_, '_, '_> {
     ) -> Result<Option<&str>, StageError> {
         control(crate::property_graph::staging::WritePhase::Overlay)?;
         Ok(self
-            .cache
-            .as_slice()
-            .iter()
-            .find(|entry| entry.incarnation == EntityId::Node(node))
+            .cached_entity(EntityId::Node(node))?
             .and_then(|entry| entry.text.as_ref())
             .map(ChargedText::as_str)
             .transpose()?)
