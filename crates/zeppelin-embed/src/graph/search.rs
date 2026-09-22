@@ -2438,11 +2438,23 @@ mod tests {
             .expect("a rejected request leaves reusable scratch valid");
         assert_eq!(recovered.candidates()[0].row_id(), 8);
 
+        // A one-row graph expects exactly one seed, so one flagged row is valid.
         let one_entry = factor_graph_fixture(Bit4Factors::from_persisted(1.0, 1.0, 0.0), 1);
         let one_entry = decode_node_blocks(one_entry.as_bytes()).expect("one-entry graph is valid");
+        assert_eq!(
+            GraphSearcher::discover_entry_row_ids(one_entry)
+                .expect("a one-row graph carries one seed"),
+            [0, 0, 0, 0]
+        );
+
+        // The seed count that was rejected must reach the typed error intact.
+        let no_entry = factor_graph_fixture(Bit4Factors::from_persisted(1.0, 1.0, 0.0), 0);
+        let no_entry = decode_node_blocks(no_entry.as_bytes()).expect("no-entry graph is valid");
         assert!(matches!(
-            GraphSearcher::discover_entry_row_ids(one_entry),
-            Err(GraphSearchError::Geometry(detail)) if detail.contains("contains 1 persisted entry")
+            GraphSearcher::discover_entry_row_ids(no_entry),
+            Err(GraphSearchError::Geometry(detail))
+                if detail.contains("contains 0 persisted entry seeds")
+                    && detail.contains("expected 1")
         ));
     }
 
