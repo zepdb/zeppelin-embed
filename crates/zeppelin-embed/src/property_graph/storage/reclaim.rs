@@ -84,9 +84,10 @@ pub(crate) fn encode_pending_intent(
     protected: DurableProtectedStream,
     mark: DurableRun,
     candidates: &[ArtifactDescriptor],
+    partials: &[PartialTarget],
     output: &mut [u8],
 ) -> Result<(usize, u64), TreeError> {
-    codec::encode_pending_intent(binding, protected, mark, candidates, output)
+    codec::encode_pending_intent(binding, protected, mark, candidates, partials, output)
 }
 
 pub(crate) fn validate_pending_intent(
@@ -95,9 +96,33 @@ pub(crate) fn validate_pending_intent(
     protected: DurableProtectedStream,
     mark: DurableRun,
     candidates: &[ArtifactDescriptor],
+    partials: &[PartialTarget],
     expected_digest: u64,
 ) -> Result<(), TreeError> {
-    codec::validate_pending_intent(bytes, binding, protected, mark, candidates, expected_digest)
+    codec::validate_pending_intent(
+        bytes,
+        binding,
+        protected,
+        mark,
+        candidates,
+        partials,
+        expected_digest,
+    )
+}
+
+/// The encoded length of one pending intent, including its tagged partial
+/// partition. Callers size their payload buffer with this.
+pub(crate) fn pending_intent_bytes(candidates: usize, partials: usize) -> Result<usize, TreeError> {
+    codec::pending_intent_bytes(candidates, partials)
+}
+
+/// The encoded length of one reclaim completion, including its tagged partial
+/// partition.
+pub(crate) fn reclaim_completion_bytes(
+    targets: usize,
+    partials: usize,
+) -> Result<usize, TreeError> {
+    codec::reclaim_completion_bytes(targets, partials)
 }
 
 /// Writes-owned exact I/O for one durable reclaim-stream page at a time.
@@ -202,6 +227,7 @@ pub(crate) struct PendingIntentManifest {
     pub(crate) protected: DurableProtectedStream,
     pub(crate) mark: DurableRun,
     pub(crate) candidate_count: usize,
+    pub(crate) partial_count: usize,
     pub(crate) digest: u64,
 }
 
@@ -211,7 +237,53 @@ pub(crate) struct CompletedIntentManifest {
     pub(crate) intent: RequiredRef,
     pub(crate) completed_count: usize,
     pub(crate) remaining_count: usize,
+    pub(crate) partial_count: usize,
     pub(crate) digest: u64,
+}
+
+/// An interrupted native object creation that keeps an intact 96-byte header.
+///
+/// ZE-46 adopts a *complete* unregistered object by reading an
+/// [`ArtifactDescriptor`] out of it and validating the whole file against that
+/// descriptor's checksum. A partial create has no whole-file checksum, so it
+/// can never become a descriptor and can never enter the inventory, the WAL
+/// candidate lists, or the completed mark. ZE-165 therefore names it in its
+/// own tagged partition of the role-5 pending and completion records: the
+/// bytes that were actually observed, digested exactly as observed, plus the
+/// same-store identity facts its own header declared.
+///
+/// `declared` is the length the header claims and is always strictly greater
+/// than `observed`; that inequality *is* the interrupted-prefix
+/// classification. A file whose header agrees with its length is a complete
+/// object and belongs to ZE-46's adoption path instead.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PartialTarget {
+    pub(crate) store: StoreInstanceId,
+    pub(crate) artifact: ArtifactId,
+    pub(crate) generation: GraphGeneration,
+    pub(crate) serial: u64,
+    /// Bytes the file actually held when it was observed.
+    pub(crate) observed: u64,
+    /// Bytes the intact header declared. Always greater than `observed`.
+    pub(crate) declared: u64,
+    /// xxh3-64 over exactly the `observed` bytes.
+    pub(crate) digest: u64,
+    pub(crate) family: u16,
+    pub(crate) version: u16,
+}
+
+pub(crate) fn pending_intent_partial_at(
+    bytes: &[u8],
+    index: usize,
+) -> Result<PartialTarget, TreeError> {
+    codec::pending_intent_partial_at(bytes, index)
+}
+
+pub(crate) fn completed_intent_partial_at(
+    bytes: &[u8],
+    index: usize,
+) -> Result<PartialTarget, TreeError> {
+    codec::completed_intent_partial_at(bytes, index)
 }
 
 pub(crate) fn decode_pending_intent_manifest(
@@ -245,9 +317,10 @@ pub(crate) fn encode_reclaim_completion(
     intent: RequiredRef,
     completed: &[ArtifactDescriptor],
     remaining: &[ArtifactDescriptor],
+    partials: &[PartialTarget],
     output: &mut [u8],
 ) -> Result<(usize, u64), TreeError> {
-    codec::encode_reclaim_completion(binding, intent, completed, remaining, output)
+    codec::encode_reclaim_completion(binding, intent, completed, remaining, partials, output)
 }
 
 /// Fixed-page typed capture stream. It retains at most32 records and one page

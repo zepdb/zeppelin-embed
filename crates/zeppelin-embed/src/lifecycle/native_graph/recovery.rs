@@ -4247,8 +4247,12 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
             || manifest.binding.target_generation > state.generation
             || manifest.binding.capture_generation >= manifest.binding.target_generation
             || manifest.binding.serial_fence > state.high_waters.creation_serial
-            || manifest.candidate_count == 0
-            || manifest.candidate_count > crate::property_graph::storage::reclaim::MAX_CANDIDATES
+            || manifest
+                .candidate_count
+                .checked_add(manifest.partial_count)
+                .is_none_or(|rows| {
+                    rows == 0 || rows > crate::property_graph::storage::reclaim::MAX_CANDIDATES
+                })
         {
             return Err(TreeError::Invalid("recovery reclaim intent binding"));
         }
@@ -4286,7 +4290,18 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
             manifest.mark,
             self.memory,
         )?;
+        // The tagged partial partition is validated separately: it is not an
+        // object, so nothing above reaches it. Its domain, ordering and
+        // disjointness from the candidates were proved by the decoder; this
+        // walk proves the one remaining fact, that the mark never named it.
+        let mut encoded_partials = StorageBuffer::new(self.memory, manifest.partial_count)?;
+        for index in 0..manifest.partial_count {
+            encoded_partials.push(
+                crate::property_graph::storage::reclaim::pending_intent_partial_at(bytes, index)?,
+            )?;
+        }
         let mut candidate_index = 0_usize;
+        let mut partial_index = 0_usize;
         while let Some(live) = authenticating.next(&io, resources)? {
             while encoded_candidates
                 .as_slice()
@@ -4302,6 +4317,22 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
             {
                 return Err(TreeError::Invalid(
                     "recovery reclaim candidate is marked live",
+                ));
+            }
+            while encoded_partials
+                .as_slice()
+                .get(partial_index)
+                .is_some_and(|target| target.artifact < live)
+            {
+                partial_index += 1;
+            }
+            if encoded_partials
+                .as_slice()
+                .get(partial_index)
+                .is_some_and(|target| target.artifact == live)
+            {
+                return Err(TreeError::Invalid(
+                    "recovery reclaim partial target is marked live",
                 ));
             }
         }
@@ -4437,8 +4468,11 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
         if completion.binding.store != state.store
             || completion.binding.target_generation >= completion_ref.object.generation
             || completion_ref.object.generation > state.generation
-            || total == 0
-            || total > crate::property_graph::storage::reclaim::MAX_CANDIDATES
+            || total
+                .checked_add(completion.partial_count)
+                .is_none_or(|rows| {
+                    rows == 0 || rows > crate::property_graph::storage::reclaim::MAX_CANDIDATES
+                })
         {
             return Err(TreeError::Invalid("recovery reclaim completion binding"));
         }
@@ -4479,7 +4513,10 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
         }
         let intent =
             self.validate_pending_reclaim(source, state, None, completion.intent, None, resources)?;
-        if intent.binding != completion.binding || intent.candidate_count != total {
+        if intent.binding != completion.binding
+            || intent.candidate_count != total
+            || intent.partial_count != completion.partial_count
+        {
             return Err(TreeError::Invalid(
                 "recovery completion original intent mismatch",
             ));
@@ -4990,8 +5027,12 @@ impl ReplayValidator for SemanticReplay<'_, '_> {
         if self.pending_intent.is_some() || self.pending_completion.is_some() {
             return Err(WalError::Participant);
         }
+        // An empty list is legal: the intent may name only interrupted
+        // creations, which are not objects and never enter this list.
+        // `validate_pending_reclaim` reads the role-5 record's tagged partial
+        // partition and rejects an intent that names nothing at all.
         let count = intent.candidates.len()?;
-        if count == 0 || count > crate::property_graph::storage::reclaim::MAX_CANDIDATES {
+        if count > crate::property_graph::storage::reclaim::MAX_CANDIDATES {
             return Err(WalError::Capacity);
         }
         self.reclaim_candidates.clear();
@@ -5022,10 +5063,9 @@ impl ReplayValidator for SemanticReplay<'_, '_> {
         }
         let completed_count = complete.completed.len()?;
         let remaining_count = complete.remaining.len()?;
-        if completed_count == 0
-            || completed_count
-                .checked_add(remaining_count)
-                .is_none_or(|count| count > crate::property_graph::storage::reclaim::MAX_CANDIDATES)
+        if completed_count
+            .checked_add(remaining_count)
+            .is_none_or(|count| count > crate::property_graph::storage::reclaim::MAX_CANDIDATES)
         {
             return Err(WalError::Capacity);
         }

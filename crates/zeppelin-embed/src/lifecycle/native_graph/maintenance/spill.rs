@@ -125,6 +125,7 @@ pub(in crate::lifecycle::native_graph) struct PreparedDurableSpill {
     intent: Option<RequiredRef>,
     intent_digest: u64,
     candidate_count: usize,
+    partial_count: usize,
     allocation_head: RequiredRef,
     _registration: NativeSpillRegistration,
 }
@@ -158,6 +159,10 @@ impl PreparedDurableSpill {
         self.candidate_count
     }
 
+    pub(in crate::lifecycle::native_graph) const fn partial_count(&self) -> usize {
+        self.partial_count
+    }
+
     pub(in crate::lifecycle::native_graph) fn matches_admission(
         &self,
         lease: &NativeReadLease,
@@ -171,10 +176,11 @@ impl PreparedDurableSpill {
     pub(in crate::lifecycle::native_graph) fn validate_candidates<'m>(
         &self,
         candidates: &[ArtifactDescriptor],
+        partials: &[crate::property_graph::storage::reclaim::PartialTarget],
         memory: &'m StorageMemory<'m>,
         resources: &mut TreeResources<'_>,
     ) -> Result<(), NativeGraphError> {
-        if candidates.len() != self.candidate_count {
+        if candidates.len() != self.candidate_count || partials.len() != self.partial_count {
             return Err(NativeGraphError::Invalid(
                 "native spill candidate count mismatch",
             ));
@@ -203,6 +209,7 @@ impl PreparedDurableSpill {
                 if candidates
                     .iter()
                     .any(|candidate| candidate.artifact == expected)
+                    || partials.iter().any(|partial| partial.artifact == expected)
                 {
                     return Err(TreeError::Invalid(
                         "reclaim candidate is an authentic protected root",
@@ -212,7 +219,7 @@ impl PreparedDurableSpill {
             },
         )?;
         let Some(intent) = self.intent else {
-            return if candidates.is_empty() {
+            return if candidates.is_empty() && partials.is_empty() {
                 Ok(())
             } else {
                 Err(NativeGraphError::Invalid(
@@ -240,6 +247,7 @@ impl PreparedDurableSpill {
             self.protected,
             self.mark,
             candidates,
+            partials,
             self.intent_digest,
         )?;
         Ok(())
@@ -330,6 +338,7 @@ impl<'a, 'm> NativeSpillWriter<'a, 'm> {
         intent: Option<RequiredRef>,
         intent_digest: u64,
         candidate_count: usize,
+        partial_count: usize,
     ) -> Result<PreparedDurableSpill, NativeGraphError> {
         if protected.binding != self.binding || mark.binding != self.binding {
             return Err(NativeGraphError::Invalid("native spill proof binding"));
@@ -345,9 +354,13 @@ impl<'a, 'm> NativeSpillWriter<'a, 'm> {
                 "native spill allocation head mismatch",
             ));
         }
-        if intent.is_some() != (candidate_count != 0)
+        // Either partition alone is a complete reason for an intent: an
+        // interrupted creation is reclaimed even when no registered object is.
+        if intent.is_some() != (candidate_count != 0 || partial_count != 0)
             || (intent.is_none() && intent_digest != 0)
-            || candidate_count > crate::property_graph::storage::reclaim::MAX_CANDIDATES
+            || candidate_count
+                .checked_add(partial_count)
+                .is_none_or(|rows| rows > crate::property_graph::storage::reclaim::MAX_CANDIDATES)
         {
             return Err(NativeGraphError::Invalid(
                 "native spill reclaim intent association",
@@ -362,6 +375,7 @@ impl<'a, 'm> NativeSpillWriter<'a, 'm> {
             intent,
             intent_digest,
             candidate_count,
+            partial_count,
             allocation_head,
             _registration: self.registration,
         })

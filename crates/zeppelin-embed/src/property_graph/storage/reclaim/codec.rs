@@ -7,6 +7,7 @@ use xxhash_rust::xxh3::Xxh3;
 
 const REQUIRED_BYTES: usize = 96;
 const DESCRIPTOR_BYTES: usize = 64;
+pub(super) const PARTIAL_TARGET_BYTES: usize = 80;
 pub(super) const PROTECTED_PAGE_HEADER_BYTES: usize = 224;
 pub(super) const PROTECTED_STREAM_RECORD_BYTES: usize = 112;
 pub(super) const PROTECTED_STREAM_PAGE_RECORDS: usize = 32;
@@ -445,14 +446,137 @@ fn validate_spill_binding(bytes: &[u8], binding: super::SpillBinding) -> Result<
     Ok(())
 }
 
+/// The total encoded length of one pending intent: the fixed header, the
+/// genuine object descriptors, then the tagged partial-target partition.
+pub(super) fn pending_intent_bytes(candidates: usize, partials: usize) -> Result<usize, TreeError> {
+    PENDING_INTENT_HEADER_BYTES
+        .checked_add(
+            candidates
+                .checked_mul(DESCRIPTOR_BYTES)
+                .ok_or(TreeError::Memory)?,
+        )
+        .and_then(|length| length.checked_add(partials.checked_mul(PARTIAL_TARGET_BYTES)?))
+        .ok_or(TreeError::Memory)
+}
+
+pub(super) fn reclaim_completion_bytes(
+    targets: usize,
+    partials: usize,
+) -> Result<usize, TreeError> {
+    COMPLETION_HEADER_BYTES
+        .checked_add(
+            targets
+                .checked_mul(DESCRIPTOR_BYTES)
+                .ok_or(TreeError::Memory)?,
+        )
+        .and_then(|length| length.checked_add(partials.checked_mul(PARTIAL_TARGET_BYTES)?))
+        .ok_or(TreeError::Memory)
+}
+
+/// Every rule the tagged partial partition must satisfy in both directions.
+///
+/// A partial target is not an object: it has no whole-file checksum and it can
+/// never be validated against a descriptor. Its authority to be unlinked comes
+/// entirely from these facts, so both the encoder and every decoder check them.
+fn validate_partial_domain(
+    binding: super::SpillBinding,
+    candidates: &[ArtifactDescriptor],
+    partials: &[super::PartialTarget],
+) -> Result<(), TreeError> {
+    if candidates
+        .len()
+        .checked_add(partials.len())
+        .ok_or(TreeError::Memory)?
+        > super::MAX_CANDIDATES
+        || partials
+            .windows(2)
+            .any(|pair| matches!(pair, [left, right] if left.artifact >= right.artifact))
+        || partials.iter().any(|partial| {
+            partial.store != binding.store
+                || partial.generation > binding.capture_generation
+                || partial.serial == 0
+                || partial.serial > binding.serial_fence
+                || partial.family != FormatFamily::NativeGraphObject.id()
+                || partial.version != 1
+                || partial.observed < artifact::HEADER_BYTES as u64
+                || partial.declared <= partial.observed
+                || partial.declared > artifact::MAX_ARTIFACT_BYTES as u64
+        })
+        || partials.iter().any(|partial| {
+            candidates
+                .iter()
+                .any(|candidate| candidate.artifact == partial.artifact)
+        })
+    {
+        return Err(TreeError::Invalid("reclaim partial target domain"));
+    }
+    Ok(())
+}
+
+fn put_partial(
+    output: &mut [u8],
+    offset: usize,
+    partial: super::PartialTarget,
+) -> Result<(), TreeError> {
+    let target = output
+        .get_mut(
+            offset
+                ..offset
+                    .checked_add(PARTIAL_TARGET_BYTES)
+                    .ok_or(TreeError::Memory)?,
+        )
+        .ok_or(TreeError::Memory)?;
+    put(target, 0, &partial.store.get().to_le_bytes())?;
+    put(target, 16, &partial.artifact.get().to_le_bytes())?;
+    put(target, 32, &partial.generation.get().to_le_bytes())?;
+    put(target, 40, &partial.serial.to_le_bytes())?;
+    put(target, 48, &partial.observed.to_le_bytes())?;
+    put(target, 56, &partial.declared.to_le_bytes())?;
+    put(target, 64, &partial.digest.to_le_bytes())?;
+    put(target, 72, &partial.family.to_le_bytes())?;
+    put(target, 74, &partial.version.to_le_bytes())?;
+    put(target, 76, &[0; 4])
+}
+
+fn partial(bytes: &[u8], offset: usize) -> Result<super::PartialTarget, TreeError> {
+    let source = bytes
+        .get(
+            offset
+                ..offset
+                    .checked_add(PARTIAL_TARGET_BYTES)
+                    .ok_or(TreeError::Memory)?,
+        )
+        .ok_or(TreeError::Memory)?;
+    if source.get(76..80) != Some([0_u8; 4].as_slice()) {
+        return Err(TreeError::Invalid("reclaim partial target reserved bytes"));
+    }
+    Ok(super::PartialTarget {
+        store: StoreInstanceId::new(read_u128(source, 0)?)
+            .map_err(|_| TreeError::Invalid("reclaim partial target store"))?,
+        artifact: ArtifactId::new(read_u128(source, 16)?)?,
+        generation: GraphGeneration::new(read_u64(source, 32)?),
+        serial: read_u64(source, 40)?,
+        observed: read_u64(source, 48)?,
+        declared: read_u64(source, 56)?,
+        digest: read_u64(source, 64)?,
+        family: read_u16(source, 72)?,
+        version: read_u16(source, 74)?,
+    })
+}
+
 /// Encode the bounded role-5 pending target manifest. The protected and mark
 /// roots are completed durable stream manifests; target rows remain whole
 /// object descriptors and never become live edges.
+///
+/// `partials` is the ZE-165 tagged partition: interrupted creations that keep
+/// an intact header. They follow the descriptors and are never mixed into
+/// them, because they are not objects and can never be validated as one.
 pub(super) fn encode_pending_intent(
     binding: super::SpillBinding,
     protected: super::DurableProtectedStream,
     mark: super::DurableRun,
     candidates: &[ArtifactDescriptor],
+    partials: &[super::PartialTarget],
     output: &mut [u8],
 ) -> Result<(usize, u64), TreeError> {
     if protected.binding != binding
@@ -471,14 +595,8 @@ pub(super) fn encode_pending_intent(
     {
         return Err(TreeError::Invalid("pending reclaim intent domain"));
     }
-    let length = PENDING_INTENT_HEADER_BYTES
-        .checked_add(
-            candidates
-                .len()
-                .checked_mul(DESCRIPTOR_BYTES)
-                .ok_or(TreeError::Memory)?,
-        )
-        .ok_or(TreeError::Memory)?;
+    validate_partial_domain(binding, candidates, partials)?;
+    let length = pending_intent_bytes(candidates.len(), partials.len())?;
     let target = output.get_mut(..length).ok_or(TreeError::Memory)?;
     target.fill(0);
     put(target, 0, b"ZGCP")?;
@@ -500,6 +618,13 @@ pub(super) fn encode_pending_intent(
             .map_err(|_| TreeError::Memory)?
             .to_le_bytes(),
     )?;
+    put(
+        target,
+        84,
+        &u32::try_from(partials.len())
+            .map_err(|_| TreeError::Memory)?
+            .to_le_bytes(),
+    )?;
     put_required(target, 88, protected.head)?;
     put(target, 184, &protected.count.to_le_bytes())?;
     put(target, 192, &protected.digest.to_le_bytes())?;
@@ -517,6 +642,20 @@ pub(super) fn encode_pending_intent(
             candidate,
         )?;
     }
+    let partition = pending_intent_bytes(candidates.len(), 0)?;
+    for (index, value) in partials.iter().copied().enumerate() {
+        put_partial(
+            target,
+            partition
+                .checked_add(
+                    index
+                        .checked_mul(PARTIAL_TARGET_BYTES)
+                        .ok_or(TreeError::Memory)?,
+                )
+                .ok_or(TreeError::Memory)?,
+            value,
+        )?;
+    }
     let mut hasher = Xxh3::new();
     hasher.update(target.get(..352).ok_or(TreeError::Memory)?);
     hasher.update(&[0; 8]);
@@ -532,16 +671,10 @@ pub(super) fn validate_pending_intent(
     protected: super::DurableProtectedStream,
     mark: super::DurableRun,
     candidates: &[ArtifactDescriptor],
+    partials: &[super::PartialTarget],
     expected_digest: u64,
 ) -> Result<(), TreeError> {
-    let expected_length = PENDING_INTENT_HEADER_BYTES
-        .checked_add(
-            candidates
-                .len()
-                .checked_mul(DESCRIPTOR_BYTES)
-                .ok_or(TreeError::Memory)?,
-        )
-        .ok_or(TreeError::Memory)?;
+    let expected_length = pending_intent_bytes(candidates.len(), partials.len())?;
     if bytes.len() != expected_length
         || bytes.get(..4) != Some(b"ZGCP".as_slice())
         || read_u16(bytes, 4)? != ProofRole::ReclaimState as u16
@@ -549,13 +682,14 @@ pub(super) fn validate_pending_intent(
         || read_u16(bytes, 8)? != 2
         || read_u16(bytes, 10)? != 0
         || usize::try_from(read_u32(bytes, 12)?).map_err(|_| TreeError::Memory)? != expected_length
-        || bytes.get(84..88) != Some([0_u8; 4].as_slice())
         || bytes.get(362..368) != Some([0_u8; 6].as_slice())
         || usize::try_from(read_u32(bytes, 80)?).map_err(|_| TreeError::Memory)? != candidates.len()
+        || usize::try_from(read_u32(bytes, 84)?).map_err(|_| TreeError::Memory)? != partials.len()
     {
         return Err(TreeError::Invalid("pending reclaim intent header"));
     }
     validate_spill_binding(bytes, binding)?;
+    validate_partial_domain(binding, candidates, partials)?;
     if required(bytes, 88)? != protected.head
         || read_u64(bytes, 184)? != protected.count
         || read_u64(bytes, 192)? != protected.digest
@@ -580,6 +714,11 @@ pub(super) fn validate_pending_intent(
             return Err(TreeError::Invalid("pending reclaim intent candidate"));
         }
     }
+    for (index, expected) in partials.iter().copied().enumerate() {
+        if pending_intent_partial_at(bytes, index)? != expected {
+            return Err(TreeError::Invalid("pending reclaim intent partial target"));
+        }
+    }
     let mut hasher = Xxh3::new();
     hasher.update(bytes.get(..352).ok_or(TreeError::Memory)?);
     hasher.update(&[0; 8]);
@@ -601,7 +740,6 @@ pub(super) fn decode_pending_intent_manifest(
         || read_u16(bytes, 8)? != 2
         || read_u16(bytes, 10)? != 0
         || usize::try_from(read_u32(bytes, 12)?).map_err(|_| TreeError::Memory)? != bytes.len()
-        || bytes.get(84..88) != Some([0_u8; 4].as_slice())
         || bytes.get(362..368) != Some([0_u8; 6].as_slice())
     {
         return Err(TreeError::Invalid("pending reclaim intent header"));
@@ -616,16 +754,14 @@ pub(super) fn decode_pending_intent_manifest(
         serial_fence: read_u64(bytes, 72)?,
     };
     let candidate_count = usize::try_from(read_u32(bytes, 80)?).map_err(|_| TreeError::Memory)?;
-    if candidate_count == 0
-        || candidate_count > super::MAX_CANDIDATES
-        || bytes.len()
-            != PENDING_INTENT_HEADER_BYTES
-                .checked_add(
-                    candidate_count
-                        .checked_mul(DESCRIPTOR_BYTES)
-                        .ok_or(TreeError::Memory)?,
-                )
-                .ok_or(TreeError::Memory)?
+    let partial_count = usize::try_from(read_u32(bytes, 84)?).map_err(|_| TreeError::Memory)?;
+    // An intent must name at least one target, but either partition alone is a
+    // complete reason to have written it: a crash that interrupts one object
+    // creation leaves exactly one partial file and nothing else to reclaim.
+    if candidate_count
+        .checked_add(partial_count)
+        .is_none_or(|total| total == 0 || total > super::MAX_CANDIDATES)
+        || bytes.len() != pending_intent_bytes(candidate_count, partial_count)?
     {
         return Err(TreeError::Invalid("pending reclaim intent candidate count"));
     }
@@ -664,6 +800,29 @@ pub(super) fn decode_pending_intent_manifest(
         }
         previous = Some(candidate.artifact);
     }
+    let mut previous_partial = None;
+    for index in 0..partial_count {
+        let target = pending_intent_partial_at(bytes, index)?;
+        if target.store != binding.store
+            || target.generation > binding.capture_generation
+            || target.serial == 0
+            || target.serial > binding.serial_fence
+            || target.family != FormatFamily::NativeGraphObject.id()
+            || target.version != 1
+            || target.observed < artifact::HEADER_BYTES as u64
+            || target.declared <= target.observed
+            || target.declared > artifact::MAX_ARTIFACT_BYTES as u64
+            || previous_partial.is_some_and(|artifact| artifact >= target.artifact)
+        {
+            return Err(TreeError::Invalid("reclaim partial target domain"));
+        }
+        for candidate in 0..candidate_count {
+            if pending_intent_candidate_at(bytes, candidate)?.artifact == target.artifact {
+                return Err(TreeError::Invalid("reclaim partial target domain"));
+            }
+        }
+        previous_partial = Some(target.artifact);
+    }
     let mut hasher = Xxh3::new();
     hasher.update(bytes.get(..352).ok_or(TreeError::Memory)?);
     hasher.update(&[0; 8]);
@@ -677,6 +836,7 @@ pub(super) fn decode_pending_intent_manifest(
         protected,
         mark,
         candidate_count,
+        partial_count,
         digest,
     })
 }
@@ -699,19 +859,47 @@ pub(super) fn pending_intent_candidate_at(
     descriptor(bytes, offset)
 }
 
+pub(super) fn pending_intent_partial_at(
+    bytes: &[u8],
+    index: usize,
+) -> Result<super::PartialTarget, TreeError> {
+    let candidates = usize::try_from(read_u32(bytes, 80)?).map_err(|_| TreeError::Memory)?;
+    let count = usize::try_from(read_u32(bytes, 84)?).map_err(|_| TreeError::Memory)?;
+    if index >= count {
+        return Err(TreeError::Invalid("pending reclaim partial index"));
+    }
+    partial(bytes, pending_intent_bytes(candidates, index)?)
+}
+
+pub(super) fn completed_intent_partial_at(
+    bytes: &[u8],
+    index: usize,
+) -> Result<super::PartialTarget, TreeError> {
+    let completed = usize::try_from(read_u32(bytes, 80)?).map_err(|_| TreeError::Memory)?;
+    let remaining = usize::try_from(read_u32(bytes, 84)?).map_err(|_| TreeError::Memory)?;
+    let count = usize::try_from(read_u32(bytes, 192)?).map_err(|_| TreeError::Memory)?;
+    if index >= count {
+        return Err(TreeError::Invalid("reclaim completion partial index"));
+    }
+    let targets = completed.checked_add(remaining).ok_or(TreeError::Memory)?;
+    partial(bytes, reclaim_completion_bytes(targets, index)?)
+}
+
 pub(super) fn encode_reclaim_completion(
     binding: super::SpillBinding,
     intent: RequiredRef,
     completed: &[ArtifactDescriptor],
     remaining: &[ArtifactDescriptor],
+    partials: &[super::PartialTarget],
     output: &mut [u8],
 ) -> Result<(usize, u64), TreeError> {
     let total = completed
         .len()
         .checked_add(remaining.len())
         .ok_or(TreeError::Memory)?;
-    if total == 0
-        || total > super::MAX_CANDIDATES
+    if total
+        .checked_add(partials.len())
+        .is_none_or(|rows| rows == 0 || rows > super::MAX_CANDIDATES)
         || intent.object.store != binding.store
         || intent.object.generation != binding.target_generation
         || completed
@@ -726,13 +914,9 @@ pub(super) fn encode_reclaim_completion(
     {
         return Err(TreeError::Invalid("reclaim completion domain"));
     }
-    let length = COMPLETION_HEADER_BYTES
-        .checked_add(
-            total
-                .checked_mul(DESCRIPTOR_BYTES)
-                .ok_or(TreeError::Memory)?,
-        )
-        .ok_or(TreeError::Memory)?;
+    validate_partial_domain(binding, completed, partials)?;
+    validate_partial_domain(binding, remaining, partials)?;
+    let length = reclaim_completion_bytes(total, partials.len())?;
     let target = output.get_mut(..length).ok_or(TreeError::Memory)?;
     target.fill(0);
     put(target, 0, b"ZGCP")?;
@@ -762,10 +946,21 @@ pub(super) fn encode_reclaim_completion(
             .to_le_bytes(),
     )?;
     put_required(target, 88, intent)?;
+    put(
+        target,
+        192,
+        &u32::try_from(partials.len())
+            .map_err(|_| TreeError::Memory)?
+            .to_le_bytes(),
+    )?;
     let mut offset = COMPLETION_HEADER_BYTES;
     for descriptor in completed.iter().chain(remaining).copied() {
         put_descriptor(target, offset, descriptor)?;
         offset += DESCRIPTOR_BYTES;
+    }
+    for value in partials.iter().copied() {
+        put_partial(target, offset, value)?;
+        offset += PARTIAL_TARGET_BYTES;
     }
     let mut hasher = Xxh3::new();
     hasher.update(target.get(..184).ok_or(TreeError::Memory)?);
@@ -786,26 +981,21 @@ pub(super) fn decode_completed_intent_manifest(
         || read_u16(bytes, 8)? != 3
         || read_u16(bytes, 10)? != 0
         || usize::try_from(read_u32(bytes, 12)?).map_err(|_| TreeError::Memory)? != bytes.len()
-        || bytes.get(192..200) != Some([0_u8; 8].as_slice())
+        || bytes.get(196..200) != Some([0_u8; 4].as_slice())
     {
         return Err(TreeError::Invalid("reclaim completion header"));
     }
     let binding = decode_spill_binding(bytes)?;
     let completed_count = usize::try_from(read_u32(bytes, 80)?).map_err(|_| TreeError::Memory)?;
     let remaining_count = usize::try_from(read_u32(bytes, 84)?).map_err(|_| TreeError::Memory)?;
+    let partial_count = usize::try_from(read_u32(bytes, 192)?).map_err(|_| TreeError::Memory)?;
     let total = completed_count
         .checked_add(remaining_count)
         .ok_or(TreeError::Memory)?;
-    if total == 0
-        || total > super::MAX_CANDIDATES
-        || bytes.len()
-            != COMPLETION_HEADER_BYTES
-                .checked_add(
-                    total
-                        .checked_mul(DESCRIPTOR_BYTES)
-                        .ok_or(TreeError::Memory)?,
-                )
-                .ok_or(TreeError::Memory)?
+    if total
+        .checked_add(partial_count)
+        .is_none_or(|rows| rows == 0 || rows > super::MAX_CANDIDATES)
+        || bytes.len() != reclaim_completion_bytes(total, partial_count)?
     {
         return Err(TreeError::Invalid("reclaim completion geometry"));
     }
@@ -844,6 +1034,29 @@ pub(super) fn decode_completed_intent_manifest(
             }
         }
     }
+    let mut previous_partial = None;
+    for index in 0..partial_count {
+        let target = completed_intent_partial_at(bytes, index)?;
+        if target.store != binding.store
+            || target.generation > binding.capture_generation
+            || target.serial == 0
+            || target.serial > binding.serial_fence
+            || target.family != FormatFamily::NativeGraphObject.id()
+            || target.version != 1
+            || target.observed < artifact::HEADER_BYTES as u64
+            || target.declared <= target.observed
+            || target.declared > artifact::MAX_ARTIFACT_BYTES as u64
+            || previous_partial.is_some_and(|artifact| artifact >= target.artifact)
+        {
+            return Err(TreeError::Invalid("reclaim partial target domain"));
+        }
+        for row in 0..total {
+            if completed_intent_candidate_at(bytes, row)?.artifact == target.artifact {
+                return Err(TreeError::Invalid("reclaim completion partition overlap"));
+            }
+        }
+        previous_partial = Some(target.artifact);
+    }
     let mut hasher = Xxh3::new();
     hasher.update(bytes.get(..184).ok_or(TreeError::Memory)?);
     hasher.update(&[0; 8]);
@@ -857,6 +1070,7 @@ pub(super) fn decode_completed_intent_manifest(
         intent,
         completed_count,
         remaining_count,
+        partial_count,
         digest,
     })
 }

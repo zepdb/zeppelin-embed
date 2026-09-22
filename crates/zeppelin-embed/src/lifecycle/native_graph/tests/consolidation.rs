@@ -1783,9 +1783,10 @@ fn run_ze46_reconciles_real_prewal_orphans_without_touching_unknown_files() {
         debris.push((label, created));
     }
     write("second").expect("clean retry");
-    let complete: Vec<_> = debris[0].1.clone();
-    let mut retained: BTreeMap<std::ffi::OsString, Vec<u8>> =
-        debris[1].1.iter().chain(&debris[2].1).cloned().collect();
+    // ZE-46 reclaims the complete orphan; ZE-165 reclaims the interrupted
+    // create beside it. The headerless prefix is retained by both.
+    let complete: Vec<_> = debris[0].1.iter().chain(&debris[1].1).cloned().collect();
+    let mut retained: BTreeMap<std::ffi::OsString, Vec<u8>> = debris[2].1.iter().cloned().collect();
     assert!(
         debris[1].1.iter().all(|(_, bytes)| bytes.len() >= 96),
         "the partial create keeps an intact header"
@@ -1847,7 +1848,7 @@ fn run_ze46_reconciles_real_prewal_orphans_without_touching_unknown_files() {
             .collect();
         let pending: Vec<_> = {
             let lease = store.admit_native_read().expect("round reader");
-            pending_reclaim_candidates_or_empty_root(&store, &lease)
+            pending_reclaim_targets_or_empty_root(&store, &lease)
         };
         vfs.take();
         match commit_maintenance(&store) {
@@ -1858,11 +1859,9 @@ fn run_ze46_reconciles_real_prewal_orphans_without_touching_unknown_files() {
         for unlinked in delete_events(&vfs.take()) {
             let name = unlinked.file_name().expect("deleted name").to_os_string();
             assert!(
-                pending.iter().any(|candidate| {
-                    crate::property_graph::storage::allocation::artifact_path(
-                        &path,
-                        candidate.artifact,
-                    ) == unlinked
+                pending.iter().any(|target| {
+                    crate::property_graph::storage::allocation::artifact_path(&path, *target)
+                        == unlinked
                 }),
                 "round {round} unlinked {name:?} without a durable intent naming it"
             );
@@ -1920,10 +1919,7 @@ fn run_ze46_reconciles_real_prewal_orphans_without_touching_unknown_files() {
     store.close().expect("close orphan store");
     for name in retained.keys() {
         let bytes = &retained[name];
-        if bytes.len() >= 96
-            && bytes != b"foreign-owner"
-            && !debris[1].1.iter().any(|(n, _)| n == name)
-        {
+        if bytes.len() >= 96 && bytes != b"foreign-owner" {
             std::fs::remove_file(path.join(name)).expect("remove refused fixture file");
         }
     }
@@ -2028,6 +2024,298 @@ fn pending_reclaim_candidates_or_empty_root(
             .collect(),
         Err(_) => Vec::new(),
     }
+}
+
+/// Every artifact the rooted pending intent authorizes an unlink for: the
+/// genuine object candidates plus ZE-165's tagged partial-target partition.
+fn pending_reclaim_targets_or_empty_root(
+    store: &Store,
+    lease: &super::super::NativeReadLease,
+) -> Vec<crate::property_graph::storage::artifact::ArtifactId> {
+    let Some(required) = lease.bundle().reclaim() else {
+        return Vec::new();
+    };
+    let shared = crate::property_graph::resources::GraphResources::from_store(store)
+        .expect("shared resources");
+    let control = QueryControl::Cancel(CancelToken::new());
+    let writer = WriteMemory::new(&shared, WriteLimits::default()).expect("write memory");
+    let memory = StorageMemory::new(&writer, &control, 8 * 1024 * 1024).expect("storage memory");
+    let source = NativePreparationSource::new(lease, &memory, 1).expect("reclaim source");
+    let mut resources = source.resources(32 * 1024 * 1024).expect("tree resources");
+    let block = source
+        .resolve(required.block, &mut resources)
+        .expect("resolve reclaim state");
+    let payload = block.payload();
+    match crate::property_graph::storage::reclaim::decode_pending_intent_manifest(payload) {
+        Ok(manifest) => (0..manifest.candidate_count)
+            .map(|index| {
+                crate::property_graph::storage::reclaim::pending_intent_candidate_at(payload, index)
+                    .expect("pending candidate")
+                    .artifact
+            })
+            .chain((0..manifest.partial_count).map(|index| {
+                crate::property_graph::storage::reclaim::pending_intent_partial_at(payload, index)
+                    .expect("pending partial target")
+                    .artifact
+            }))
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// The tagged partial partition of the rooted pending intent, or nothing when
+/// no intent is rooted.
+fn pending_reclaim_partials_or_empty_root(
+    store: &Store,
+    lease: &super::super::NativeReadLease,
+) -> Vec<crate::property_graph::storage::reclaim::PartialTarget> {
+    let Some(required) = lease.bundle().reclaim() else {
+        return Vec::new();
+    };
+    let shared = crate::property_graph::resources::GraphResources::from_store(store)
+        .expect("shared resources");
+    let control = QueryControl::Cancel(CancelToken::new());
+    let writer = WriteMemory::new(&shared, WriteLimits::default()).expect("write memory");
+    let memory = StorageMemory::new(&writer, &control, 8 * 1024 * 1024).expect("storage memory");
+    let source = NativePreparationSource::new(lease, &memory, 1).expect("reclaim source");
+    let mut resources = source.resources(32 * 1024 * 1024).expect("tree resources");
+    let block = source
+        .resolve(required.block, &mut resources)
+        .expect("resolve reclaim state");
+    let payload = block.payload();
+    match crate::property_graph::storage::reclaim::decode_pending_intent_manifest(payload) {
+        Ok(manifest) => (0..manifest.partial_count)
+            .map(|index| {
+                crate::property_graph::storage::reclaim::pending_intent_partial_at(payload, index)
+                    .expect("pending partial target")
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+#[test]
+fn ze165_reclaims_a_partial_create_and_retains_every_other_prefix() {
+    run_ze165_reclaims_a_partial_create_and_retains_every_other_prefix();
+}
+
+/// ZE-165. A real `PartialCreate` fault leaves a file whose 96-byte header is
+/// intact but whose body is not. It can never carry a whole-file checksum, so
+/// ZE-46 could not adopt it and retained it. Here a later completed proof
+/// selects it into the intent's tagged partial partition, and the unlink
+/// follows that durable intent.
+///
+/// Three prefixes that look similar must survive byte-identical: a headerless
+/// one from a `Create` collision, a foreign store's *interrupted* create whose
+/// header shape is identical but whose store id is not, and a non-native name.
+fn run_ze165_reclaims_a_partial_create_and_retains_every_other_prefix() {
+    use super::publication::FaultPoint;
+    let parent = super::tempfile::tempdir().expect("temporary parent");
+    let path = parent.path().join("native");
+    let vfs = Arc::new(RecordingVfs::default());
+    let store = create_reclaim_test_store(&path, &vfs);
+    let write = |name: &str| {
+        let image = CanonicalContents::node(&mut [], &mut [], Some(name), None).expect("node");
+        store.apply_native_graph(
+            &[StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "partials", name).expect("key"),
+                revision: GraphRevision::new(1).expect("revision"),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            }],
+            &QueryControl::Cancel(CancelToken::new()),
+        )
+    };
+    write("first").expect("first commit");
+
+    // Real crash debris, produced by the fault VFS inside a real write.
+    let mut debris = Vec::new();
+    for (point, label) in [
+        (FaultPoint::PartialCreate, "partial"),
+        (FaultPoint::Create, "headerless"),
+    ] {
+        let before = directory_image(&path);
+        vfs.arm_fault(point);
+        let Err(error) = write("second") else {
+            panic!("{label} fault did not fail the write");
+        };
+        assert!(
+            matches!(error, super::super::NativeGraphError::Io { .. }),
+            "{label}: {error:?}"
+        );
+        vfs.assert_fired_once();
+        let created: Vec<_> = directory_image(&path)
+            .into_iter()
+            .filter(|(name, _)| !before.contains_key(name))
+            .collect();
+        assert_eq!(created.len(), 1, "{label} fault left {created:?}");
+        debris.push(created.into_iter().next().expect("one debris file"));
+    }
+    write("second").expect("clean retry");
+    let (partial_name, partial_bytes) = debris.first().cloned().expect("partial debris");
+    let (headerless_name, headerless_bytes) = debris.get(1).cloned().expect("headerless debris");
+    assert!(
+        partial_bytes.len() >= 96,
+        "the partial create must keep an intact header"
+    );
+    assert!(
+        headerless_bytes.len() < 96,
+        "the headerless prefix must be shorter than one header"
+    );
+    let partial_artifact = artifact_of_name(&partial_name);
+
+    // Files reclamation must never touch. The foreign partial has the exact
+    // header shape of the reclaimable one and differs only in its store id.
+    let mut retained: BTreeMap<std::ffi::OsString, Vec<u8>> =
+        [(headerless_name.clone(), headerless_bytes)]
+            .into_iter()
+            .collect();
+    retained.insert("notes.txt".into(), b"not a native name".to_vec());
+    let foreign_parent = super::tempfile::tempdir().expect("foreign parent");
+    let foreign_path = foreign_parent.path().join("native");
+    let foreign_store =
+        Store::create_native_graph(&foreign_path, options(), None).expect("foreign store");
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).expect("foreign node");
+    foreign_store
+        .apply_native_graph(
+            &[StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "foreign", "node").expect("key"),
+                revision: GraphRevision::new(1).expect("revision"),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            }],
+            &QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("foreign commit");
+    foreign_store.close().expect("close foreign store");
+    let (foreign_name, foreign_bytes) = directory_image(&foreign_path)
+        .into_iter()
+        .find(|(name, bytes)| name.to_string_lossy().ends_with(".zgraph") && bytes.len() > 200)
+        .expect("foreign object");
+    let foreign_partial = foreign_bytes
+        .get(..foreign_bytes.len() / 2)
+        .expect("foreign prefix")
+        .to_vec();
+    assert!(foreign_partial.len() >= 96);
+    retained.insert(foreign_name, foreign_partial);
+    for (name, bytes) in &retained {
+        // The headerless prefix is already on disk: the fault left it there.
+        if !path.join(name).exists() {
+            std::fs::write(path.join(name), bytes).expect("plant retained file");
+        }
+    }
+
+    // Maintenance with checkpoints between calls. Every unlink must name a
+    // target of the pending intent that was durable before it ran.
+    let mut removed_bytes = 0_u64;
+    let mut deleted: BTreeMap<std::ffi::OsString, u64> = BTreeMap::new();
+    let mut authorizing: Option<crate::property_graph::storage::reclaim::PartialTarget> = None;
+    for round in 0..40 {
+        let sizes: BTreeMap<_, _> = directory_image(&path)
+            .into_iter()
+            .map(|(name, bytes)| (name, bytes.len() as u64))
+            .collect();
+        let (targets, partials) = {
+            let lease = store.admit_native_read().expect("round reader");
+            (
+                pending_reclaim_targets_or_empty_root(&store, &lease),
+                pending_reclaim_partials_or_empty_root(&store, &lease),
+            )
+        };
+        vfs.take();
+        match commit_maintenance(&store) {
+            Ok(report) => removed_bytes += report.removed_bytes,
+            Err(super::super::NativeGraphError::StalePreparation) => {}
+            Err(error) => panic!("partial round {round} failed: {error:?}"),
+        }
+        for unlinked in delete_events(&vfs.take()) {
+            let name = unlinked.file_name().expect("deleted name").to_os_string();
+            assert!(
+                targets.iter().any(|target| {
+                    crate::property_graph::storage::allocation::artifact_path(&path, *target)
+                        == unlinked
+                }),
+                "round {round} unlinked {name:?} without a durable intent naming it"
+            );
+            if name == partial_name {
+                authorizing = partials
+                    .iter()
+                    .copied()
+                    .find(|target| target.artifact == partial_artifact);
+            }
+            let size = *sizes.get(&name).expect("deleted file existed");
+            assert!(deleted.insert(name, size).is_none(), "double unlink");
+        }
+        store
+            .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+            .expect("checkpoint between partial rounds");
+        if deleted.contains_key(&partial_name) {
+            break;
+        }
+    }
+
+    // The interrupted create was reclaimed, and the intent that authorized it
+    // recorded the bytes actually observed rather than any declared length.
+    assert_eq!(
+        deleted.get(&partial_name),
+        Some(&(partial_bytes.len() as u64)),
+        "the partial create was not reclaimed"
+    );
+    let authorizing = authorizing.expect("no partial target authorized the unlink");
+    assert_eq!(authorizing.artifact, partial_artifact);
+    assert_eq!(authorizing.observed, partial_bytes.len() as u64);
+    assert!(
+        authorizing.declared > authorizing.observed,
+        "an interrupted prefix declares more than it holds"
+    );
+    assert_eq!(
+        authorizing.digest,
+        xxhash_rust::xxh3::xxh3_64(&partial_bytes),
+        "the intent digested bytes other than the ones on disk"
+    );
+    assert_eq!(removed_bytes, deleted.values().sum::<u64>());
+
+    // Every look-alike prefix is still there, byte for byte.
+    for (name, bytes) in &retained {
+        assert_eq!(
+            std::fs::read(path.join(name)).ok().as_ref(),
+            Some(bytes),
+            "reclamation touched {name:?}"
+        );
+    }
+
+    store.close().expect("close partial store");
+    for name in retained.keys() {
+        if retained[name].len() >= 96 {
+            std::fs::remove_file(path.join(name)).expect("remove refused fixture file");
+        }
+    }
+    let reopened = Store::open_native_graph(&path, options(), None).expect("reopen partial store");
+    assert_eq!(
+        reopened
+            .admit_native_read()
+            .expect("reopened reader")
+            .bundle()
+            .high_waters()
+            .node,
+        2
+    );
+    reopened.close().expect("close reopened partial store");
+}
+
+/// The artifact id a canonical `graph-<32 hex>.zgraph` name encodes.
+fn artifact_of_name(
+    name: &std::ffi::OsStr,
+) -> crate::property_graph::storage::artifact::ArtifactId {
+    let text = name.to_string_lossy();
+    let digits = text
+        .strip_prefix("graph-")
+        .and_then(|rest| rest.strip_suffix(".zgraph"))
+        .expect("canonical native object name");
+    crate::property_graph::storage::artifact::ArtifactId::new(
+        u128::from_str_radix(digits, 16).expect("artifact digits"),
+    )
+    .expect("artifact id")
 }
 
 #[test]

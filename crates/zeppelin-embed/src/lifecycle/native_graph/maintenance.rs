@@ -387,11 +387,14 @@ struct PreparedReclaimProof<'m> {
     adoptions: StorageBuffer<'m, InventoryChange>,
     durable: spill::PreparedDurableSpill,
     candidates: StorageBuffer<'m, crate::property_graph::wal::ArtifactDescriptor>,
+    /// Interrupted creations this commit's intent authorizes for unlink.
+    partials: StorageBuffer<'m, crate::property_graph::storage::reclaim::PartialTarget>,
 }
 
 struct PendingReclaim<'m> {
     manifest: PendingIntentManifest,
     candidates: StorageBuffer<'m, crate::property_graph::wal::ArtifactDescriptor>,
+    partials: StorageBuffer<'m, crate::property_graph::storage::reclaim::PartialTarget>,
     inventory: StorageBuffer<'m, InventoryChange>,
 }
 
@@ -477,6 +480,15 @@ fn load_pending_reclaim<'m>(
             state: InventoryState::ReclaimPending(intent_id),
         })?;
     }
+    // Interrupted creations have no inventory row to move: they were never
+    // registered, so there is nothing to mark pending and nothing to reclaim
+    // from the tree. Only the file itself is removed.
+    let mut partials = StorageBuffer::new(storage, manifest.partial_count)?;
+    for index in 0..manifest.partial_count {
+        partials.push(
+            crate::property_graph::storage::reclaim::pending_intent_partial_at(payload, index)?,
+        )?;
+    }
     crate::property_graph::storage::inventory::validate_inventory_changes(
         &source,
         admitted.roots().directory(TreeKind::ObjectInventory)?,
@@ -493,6 +505,7 @@ fn load_pending_reclaim<'m>(
     )?;
     let mut mark = DurableRunReader::new(manifest.mark, storage)?;
     let mut candidate_index = 0_usize;
+    let mut partial_index = 0_usize;
     while let Some(live) = mark.next(&reader, resources)? {
         while candidates
             .as_slice()
@@ -510,10 +523,28 @@ fn load_pending_reclaim<'m>(
                 "pending reclaim candidate is marked live",
             ));
         }
+        // Both partitions are sorted by artifact, so one walk answers both.
+        while partials
+            .as_slice()
+            .get(partial_index)
+            .is_some_and(|target| target.artifact < live)
+        {
+            partial_index += 1;
+        }
+        if partials
+            .as_slice()
+            .get(partial_index)
+            .is_some_and(|target| target.artifact == live)
+        {
+            return Err(NativeGraphError::Invalid(
+                "pending reclaim partial target is marked live",
+            ));
+        }
     }
     Ok(PendingReclaim {
         manifest,
         candidates,
+        partials,
         inventory,
     })
 }
@@ -551,7 +582,10 @@ fn load_completed_reclaim<'m>(
         || manifest.binding.target_generation >= reference.object.generation
         || reference.object.generation > admitted.base().generation
         || manifest.remaining_count != 0
-        || manifest.completed_count == 0
+        || manifest
+            .completed_count
+            .checked_add(manifest.partial_count)
+            .is_none_or(|rows| rows == 0)
     {
         return Err(NativeGraphError::Invalid(
             "completed reclaim bundle association",
@@ -573,10 +607,28 @@ fn load_completed_reclaim<'m>(
         .get(..intent_length)
         .ok_or(NativeGraphError::Invalid("completed reclaim intent extent"))?;
     let intent = decode_pending_intent_manifest(intent_payload)?;
-    if intent.binding != manifest.binding || intent.candidate_count != manifest.completed_count {
+    if intent.binding != manifest.binding
+        || intent.candidate_count != manifest.completed_count
+        || intent.partial_count != manifest.partial_count
+    {
         return Err(NativeGraphError::Invalid(
             "completed reclaim original intent association",
         ));
+    }
+    // The completion repeats the intent's partial partition verbatim. An
+    // interrupted creation has no inventory row, so this is the only place
+    // the retirement can check that the completion names what was authorized.
+    for index in 0..manifest.partial_count {
+        if crate::property_graph::storage::reclaim::completed_intent_partial_at(payload, index)?
+            != crate::property_graph::storage::reclaim::pending_intent_partial_at(
+                intent_payload,
+                index,
+            )?
+        {
+            return Err(NativeGraphError::Invalid(
+                "completed reclaim partial partition",
+            ));
+        }
     }
     let intent_id = BatchId::new(manifest.binding.session.get())?;
     let mut reclaimed = StorageBuffer::new(storage, manifest.completed_count)?;
@@ -1026,39 +1078,42 @@ fn prepare_durable_proof<'m>(
         Err(error) => return Err(spill_error(&writer, error)),
     } {}
     let candidates = select_rooted_candidates(&admission.lease, storage, mark, &writer, resources)?;
-    let (intent, intent_digest) = if candidates.as_slice().is_empty() {
-        (None, 0)
-    } else {
-        let length = 368_usize
-            .checked_add(
-                candidates
-                    .as_slice()
-                    .len()
-                    .checked_mul(64)
-                    .ok_or(NativeGraphError::IdentityExhausted)?,
-            )
-            .ok_or(NativeGraphError::IdentityExhausted)?;
-        let mut payload = zeroed(storage, control, length)?;
-        let (encoded, digest) = crate::property_graph::storage::reclaim::encode_pending_intent(
-            binding,
-            protected,
-            mark,
-            candidates.as_slice(),
-            payload.as_mut_slice(),
-        )?;
-        let bytes = payload
-            .as_slice()
-            .get(..encoded)
-            .ok_or(NativeGraphError::Invalid("pending reclaim intent extent"))?;
-        let reference = match writer.append_page(bytes, resources) {
-            Ok(reference) => reference,
-            Err(error) => return Err(spill_error(&writer, error)),
+    // Both classes of unreachable file are selected before the intent is
+    // written, because the intent is the one durable record that authorizes
+    // either of them to be removed.
+    let orphans::OrphanSelection {
+        adoptions,
+        partials,
+    } = orphans::select_adoptions(admission, &capture, mark, &writer, storage, resources)?;
+    let (intent, intent_digest) =
+        if candidates.as_slice().is_empty() && partials.as_slice().is_empty() {
+            (None, 0)
+        } else {
+            let length = crate::property_graph::storage::reclaim::pending_intent_bytes(
+                candidates.as_slice().len(),
+                partials.as_slice().len(),
+            )?;
+            let mut payload = zeroed(storage, control, length)?;
+            let (encoded, digest) = crate::property_graph::storage::reclaim::encode_pending_intent(
+                binding,
+                protected,
+                mark,
+                candidates.as_slice(),
+                partials.as_slice(),
+                payload.as_mut_slice(),
+            )?;
+            let bytes = payload
+                .as_slice()
+                .get(..encoded)
+                .ok_or(NativeGraphError::Invalid("pending reclaim intent extent"))?;
+            let reference = match writer.append_page(bytes, resources) {
+                Ok(reference) => reference,
+                Err(error) => return Err(spill_error(&writer, error)),
+            };
+            (Some(reference), digest)
         };
-        (Some(reference), digest)
-    };
-    let adoptions =
-        orphans::select_adoptions(admission, &capture, mark, &writer, storage, resources)?;
     let candidate_count = candidates.as_slice().len();
+    let partial_count = partials.as_slice().len();
     let durable = writer.finish(
         capture,
         protected,
@@ -1066,11 +1121,13 @@ fn prepare_durable_proof<'m>(
         intent,
         intent_digest,
         candidate_count,
+        partial_count,
     )?;
     Ok(PreparedReclaimProof {
         adoptions,
         durable,
         candidates,
+        partials,
     })
 }
 
@@ -1319,16 +1376,10 @@ fn resume_pending_reclaim(
         &storage,
         &mut resources,
     )?;
-    let completion_capacity = 200_usize
-        .checked_add(
-            pending
-                .candidates
-                .as_slice()
-                .len()
-                .checked_mul(64)
-                .ok_or(NativeGraphError::IdentityExhausted)?,
-        )
-        .ok_or(NativeGraphError::IdentityExhausted)?;
+    let completion_capacity = crate::property_graph::storage::reclaim::reclaim_completion_bytes(
+        pending.candidates.as_slice().len(),
+        pending.partials.as_slice().len(),
+    )?;
     let mut completion_payload = zeroed(&storage, control, completion_capacity)?;
     let intent = admitted
         .reclaim()
@@ -1339,6 +1390,7 @@ fn resume_pending_reclaim(
             intent,
             pending.candidates.as_slice(),
             &[],
+            pending.partials.as_slice(),
             completion_payload.as_mut_slice(),
         )?;
     let completion_block = objects.append(
@@ -1429,6 +1481,7 @@ fn resume_pending_reclaim(
         intent,
         completion,
         pending.candidates.as_slice(),
+        pending.partials.as_slice(),
         reclaimed.as_slice(),
         inventory.as_slice(),
         inventory_identity,
@@ -1506,6 +1559,48 @@ fn resume_pending_reclaim(
             Err(error) => return Err(error.into()),
         }
     }
+    // Interrupted creations. There is no descriptor to validate, so the file's
+    // own bytes are the proof: re-observe the length and the digest the intent
+    // recorded and unlink only on an exact match. Anything else means the path
+    // now holds something this intent never named, and it is retained.
+    for target in pending.partials.as_slice().iter().copied() {
+        let (path, path_charge) =
+            NativePreparationSource::charged_path(&storage, admitted.directory(), target.artifact)?;
+        let observed = match admitted.vfs().open(&path) {
+            Ok(length) => Some(length),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(source) => return Err(io(&path, source)),
+        };
+        match observed {
+            None => {
+                already_missing = already_missing
+                    .checked_add(1)
+                    .ok_or(NativeGraphError::IdentityExhausted)?;
+            }
+            Some(length)
+                if length == target.observed
+                    && orphans::observe_digest(admitted.vfs(), &path, length, &mut resources)?
+                        == target.digest =>
+            {
+                match admitted.vfs().delete(&path) {
+                    Ok(()) => {
+                        removed_bytes = removed_bytes
+                            .checked_add(target.observed)
+                            .ok_or(NativeGraphError::IdentityExhausted)?;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        already_missing = already_missing
+                            .checked_add(1)
+                            .ok_or(NativeGraphError::IdentityExhausted)?;
+                    }
+                    Err(source) => return Err(io(&path, source)),
+                }
+            }
+            Some(_) => {}
+        }
+        drop(path);
+        drop(path_charge);
+    }
     admitted
         .vfs()
         .sync(admitted.directory(), SyncKind::Full)
@@ -1517,6 +1612,13 @@ fn resume_pending_reclaim(
         .iter()
         .try_fold(0_u64, |total, candidate| {
             total.checked_add(u64::from(candidate.bytes))
+        })
+        .and_then(|total| {
+            pending
+                .partials
+                .as_slice()
+                .iter()
+                .try_fold(total, |total, target| total.checked_add(target.observed))
         })
         .ok_or(NativeGraphError::IdentityExhausted)?;
     Ok(NativeMaintenanceReport {
@@ -2001,6 +2103,7 @@ pub(super) fn commit_with_limits(
         adoptions: _adoptions,
         durable,
         candidates,
+        partials,
     } = proof;
     let (transition, generation) = prepare_maintenance_transition(
         store,
@@ -2014,6 +2117,7 @@ pub(super) fn commit_with_limits(
         inventory.as_slice(),
         reclaim_pending.as_slice(),
         candidates.as_slice(),
+        partials.as_slice(),
         inventory_identity,
         inventory_bytes.as_slice(),
         inventory_ref,

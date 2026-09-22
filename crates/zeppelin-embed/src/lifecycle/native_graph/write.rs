@@ -70,6 +70,7 @@ pub(super) fn prepare_reclaim_completion_transition<'p, 'a, 'b, S, F, C>(
     intent: RequiredRef,
     completion: RequiredRef,
     candidates: &'p [crate::property_graph::wal::ArtifactDescriptor],
+    partials: &'p [crate::property_graph::storage::reclaim::PartialTarget],
     reclaimed: &'p [InventoryChange],
     inventory: &'p [InventoryChange],
     inventory_identity: ArtifactIdentity,
@@ -129,7 +130,7 @@ where
         || completion.object.generation != generation
         || completion.block.artifact != completion.object.artifact
         || completion.block.kind != BlockKind::CommitParticipant
-        || candidates.is_empty()
+        || (candidates.is_empty() && partials.is_empty())
         || candidates.len() != reclaimed.len()
         || candidates.iter().zip(reclaimed).any(|(candidate, change)| {
             change.object != *candidate || change.state != InventoryState::Reclaimed(intent_id)
@@ -1575,6 +1576,7 @@ pub(super) fn prepare_maintenance_transition<'p, 'a, 'b, S, F, C>(
     inventory: &'p [InventoryChange],
     reclaim_pending: &'p [InventoryChange],
     reclaim_candidates: &'p [crate::property_graph::wal::ArtifactDescriptor],
+    reclaim_partials: &'p [crate::property_graph::storage::reclaim::PartialTarget],
     inventory_identity: ArtifactIdentity,
     inventory_bytes: &'p [u8],
     inventory_ref: RequiredRef,
@@ -1643,7 +1645,9 @@ where
             || durable.mark().binding != durable_binding
             || !durable.matches_admission(lease)
             || durable.candidate_count() != reclaim_candidates.len()
-            || durable.intent().is_some() != !reclaim_candidates.is_empty()
+            || durable.partial_count() != reclaim_partials.len()
+            || durable.intent().is_some()
+                != (!reclaim_candidates.is_empty() || !reclaim_partials.is_empty())
             || reclaim_pending.len() != reclaim_candidates.len()
             || reclaim_pending
                 .iter()
@@ -1657,9 +1661,18 @@ where
                 "prepared maintenance durable proof association",
             ));
         }
-        durable.validate_candidates(reclaim_candidates, objects.memory(), tree_resources)?;
+        durable.validate_candidates(
+            reclaim_candidates,
+            reclaim_partials,
+            objects.memory(),
+            tree_resources,
+        )?;
     }
-    if durable.is_none() && (!reclaim_pending.is_empty() || !reclaim_candidates.is_empty()) {
+    if durable.is_none()
+        && (!reclaim_pending.is_empty()
+            || !reclaim_candidates.is_empty()
+            || !reclaim_partials.is_empty())
+    {
         return Err(NativeGraphError::Invalid(
             "maintenance reclaim candidates lack durable proof",
         ));
@@ -1805,7 +1818,13 @@ where
             .len()
             .checked_add(reclaim_pending.len())
             .and_then(|count| count.checked_add(1))
-            .and_then(|count| count.checked_add(usize::from(!reclaim_candidates.is_empty())))
+            .and_then(|count| {
+                count.checked_add(usize::from(
+                    durable
+                        .as_ref()
+                        .is_some_and(|value| value.intent().is_some()),
+                ))
+            })
             .ok_or(NativeGraphError::IdentityExhausted)?,
     )?;
     for change in inventory {
