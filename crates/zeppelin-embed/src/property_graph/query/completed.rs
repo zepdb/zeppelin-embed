@@ -9,14 +9,8 @@ mod records;
 pub use records::*;
 #[cfg(feature = "graph-cypher")]
 pub(super) mod native;
-#[cfg(feature = "graph-cypher")]
-#[allow(
-    unused_imports,
-    reason = "ZE-53 S2 lands the write-result collector; S3's execution seam is its first production caller"
-)]
-pub(crate) use native::execute_native_mutation_result;
 #[cfg(all(feature = "graph-cypher", test))]
-pub(crate) use native::execute_native_result;
+pub(crate) use native::{execute_native_mutation_result, execute_native_result};
 mod validate;
 
 /// Checked span into the named typed pool, never a byte pointer.
@@ -385,16 +379,8 @@ impl<'m, 'g> PreparedGraphResult<'m, 'g> {
 /// then the result is held here, where nothing can read it; `settle` is the
 /// only way out, and it runs after that decision.
 #[cfg(feature = "graph-cypher")]
-#[allow(
-    dead_code,
-    reason = "ZE-53 S2 lands the write-result collector; S3's execution seam is its first production caller"
-)]
 pub(crate) struct UnsettledWriteResult(CompletedGraphResult);
 #[cfg(feature = "graph-cypher")]
-#[allow(
-    dead_code,
-    reason = "ZE-53 S2 lands the write-result collector; S3's execution seam is its first production caller"
-)]
 impl UnsettledWriteResult {
     /// Stamps the decided outcome. Infallible, because it runs after an
     /// irreversible commit: it only overwrites fields copying already

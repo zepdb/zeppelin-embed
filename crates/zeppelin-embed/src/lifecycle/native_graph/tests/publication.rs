@@ -108,7 +108,7 @@ impl RecordingVfs {
             .push(event);
     }
 
-    fn arm_wal_full_sync(&self) -> (Arc<Barrier>, Arc<Barrier>) {
+    pub(crate) fn arm_wal_full_sync(&self) -> (Arc<Barrier>, Arc<Barrier>) {
         let entered = Arc::new(Barrier::new(2));
         let release = Arc::new(Barrier::new(2));
         *self.wal_sync_gate.lock().expect("WAL sync gate") =
@@ -145,7 +145,7 @@ impl RecordingVfs {
 
     /// Runs `action` once, on the creating thread, right after the next
     /// successful create: the caller's first private file is then on disk.
-    pub(super) fn after_next_create(&self, action: impl FnOnce() + Send + 'static) {
+    pub(crate) fn after_next_create(&self, action: impl FnOnce() + Send + 'static) {
         let previous = self
             .after_create
             .lock()
@@ -154,7 +154,7 @@ impl RecordingVfs {
         assert!(previous.is_none());
     }
 
-    pub(super) fn after_create_is_armed(&self) -> bool {
+    pub(crate) fn after_create_is_armed(&self) -> bool {
         self.after_create
             .lock()
             .expect("after-create hook")

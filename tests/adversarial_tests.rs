@@ -19159,17 +19159,37 @@ fn native_graph_runner_keys_are_active_with_graph_feature() {
     }
     // ZE-170 measured the pre-change lengths as 304 and 324; the committed 278
     // and 298 had drifted, so this pin was already red on main. Both are the
-    // observed baseline plus the two ZE-170 read-view text receipts.
+    // observed baseline plus the two ZE-170 read-view text receipts. ZE-53 S3
+    // adds the eight query-entry keys.
     #[cfg(not(feature = "graph-result-test-support"))]
     assert_eq!(
         adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        306
+        314
     );
     #[cfg(feature = "graph-result-test-support")]
     assert_eq!(
         adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        326
+        334
     );
+}
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn query_entry_probe_fires_every_write_fault_site() {
+    for seed in [0, 7] {
+        let mut coverage = adversarial::coverage::CoverageRegistry::default();
+        adversarial::graph_query_entry::probe(seed, &mut coverage)
+            .expect("directed query entry probe");
+        for key in [
+            "property-graph.query-entry.mid-drain.fire",
+            "property-graph.query-entry.precommit-cancel.fire",
+            "property-graph.query-entry.indeterminate.fire",
+            "property-graph.query-entry.post-commit-cancel.commit",
+            "property-graph.query-entry.same-seed-control",
+        ] {
+            assert_eq!(coverage.count(key), 1, "{key}");
+        }
+    }
 }
 
 #[cfg(feature = "graph-cypher")]

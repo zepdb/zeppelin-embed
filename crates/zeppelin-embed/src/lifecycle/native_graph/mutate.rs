@@ -161,7 +161,7 @@ impl crate::lifecycle::Store {
         image_capacity: usize,
         consumer: C,
     ) -> Result<(T, NativeMutationReport), NativeMutationError> {
-        self.with_native_mutation_settled(
+        match self.native_mutation_attempts(
             control,
             limits,
             memory_limit,
@@ -171,7 +171,11 @@ impl crate::lifecycle::Store {
             image_capacity,
             consumer,
             |value, _, _| value,
-        )
+        ) {
+            Ok(Ok(value)) => Ok(value),
+            Ok(Err(error)) => Err(error.into()),
+            Err(error) => Err(error),
+        }
     }
 
     /// `with_native_mutation`, whose consumer produces an `S` that is only
@@ -183,6 +187,10 @@ impl crate::lifecycle::Store {
     /// statement's per-entity receipts and the generation the commit actually
     /// published, `None` for a `NoOp`. It cannot fail: by the time it runs
     /// the write may be durable, so every fallible step belongs in `consume`.
+    ///
+    /// The consumer's own rejection `E` comes back unchanged, and every
+    /// admission, staging or commit rejection is converted into `E`, so a
+    /// statement driver with a richer error type keeps it.
     #[allow(
         clippy::too_many_arguments,
         reason = "one admission carries its control, limits, five capacities and its settle step"
@@ -196,12 +204,49 @@ impl crate::lifecycle::Store {
         lazy_targets: usize,
         overlay_capacity: usize,
         image_capacity: usize,
-        mut consumer: C,
+        consumer: C,
         settle: F,
-    ) -> Result<(T, NativeMutationReport), NativeMutationError>
+    ) -> Result<(T, NativeMutationReport), E>
     where
         C: NativeMutationConsumer<S, E>,
-        E: Into<NativeMutationError>,
+        E: From<NativeMutationError>,
+        F: FnOnce(S, &[ItemReceipt], Option<GraphGeneration>) -> T,
+    {
+        self.native_mutation_attempts(
+            control,
+            limits,
+            memory_limit,
+            source_slots,
+            lazy_targets,
+            overlay_capacity,
+            image_capacity,
+            consumer,
+            settle,
+        )
+        .unwrap_or_else(|error| Err(error.into()))
+    }
+
+    /// The attempt loop. The outer error is the admission's own; the inner
+    /// one is the consumer's, exactly as the consumer returned it.
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::type_complexity,
+        reason = "one admission carries its control, limits, five capacities and its settle step"
+    )]
+    fn native_mutation_attempts<S, T, E, C, F>(
+        &self,
+        control: &crate::lifecycle::QueryControl,
+        limits: RuntimeLimits,
+        memory_limit: usize,
+        source_slots: usize,
+        lazy_targets: usize,
+        overlay_capacity: usize,
+        image_capacity: usize,
+        mut consumer: C,
+        settle: F,
+    ) -> Result<Result<(T, NativeMutationReport), E>, NativeMutationError>
+    where
+        C: NativeMutationConsumer<S, E>,
         F: FnOnce(S, &[ItemReceipt], Option<GraphGeneration>) -> T,
     {
         self.native_graph.require_writable()?;
@@ -304,7 +349,10 @@ impl crate::lifecycle::Store {
             if let Some(error) = base.take_error() {
                 return Err(NativeGraphError::Stage(StageError::NativeStorage(error)).into());
             }
-            let (value, overlay) = consumed.map_err(Into::into)?;
+            let (value, overlay) = match consumed {
+                Ok(consumed) => consumed,
+                Err(error) => return Ok(Err(error)),
+            };
             runtime.checkpoint().map_err(TreeError::Runtime)?;
             let counters = runtime.counters();
             // Finalization reads the base again, exactly as the structured
@@ -346,7 +394,7 @@ impl crate::lifecycle::Store {
                 // the generation the checkpoint published.
                 CommitStep::Checkpointed => continue,
             };
-            return Ok((
+            return Ok(Ok((
                 settle(value, staged.receipts(), changed),
                 NativeMutationReport {
                     disposition,
@@ -354,7 +402,7 @@ impl crate::lifecycle::Store {
                     changed,
                     counters,
                 },
-            ));
+            )));
         }
     }
 }

@@ -31,10 +31,12 @@ mod persistence;
 mod recovery;
 mod write;
 
-// The query executor's own tests drive a `Mutate` occurrence through the real
-// writer admission, so they need the consumer seam from outside this module.
+// The structured execution seam drives a `Mutate` occurrence through the real
+// writer admission, so it needs the consumer seam from outside this module.
+#[cfg(any(test, feature = "graph-cypher"))]
+pub(crate) use mutate::NativeMutationConsumer;
 #[cfg(test)]
-pub(crate) use mutate::{NativeMutationConsumer, NativeMutationReport};
+pub(crate) use mutate::NativeMutationReport;
 // The completed-result write path rejects through the admission's own error.
 #[cfg(any(test, feature = "graph-cypher"))]
 pub(crate) use mutate::NativeMutationError;

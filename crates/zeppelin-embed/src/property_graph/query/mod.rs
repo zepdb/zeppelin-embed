@@ -111,3 +111,9 @@ pub mod completed;
 pub mod native_result_test_support {
     pub use super::completed::native::test_support::{ProbeReport, run_actual_probe};
 }
+
+#[cfg(all(feature = "graph-cypher", feature = "test-support"))]
+/// Tooling-only directed probes of the structured execution seam's write path.
+pub mod query_entry_test_support {
+    pub use super::completed::native::entry_probe::{ProbeReport, run_actual_probe};
+}

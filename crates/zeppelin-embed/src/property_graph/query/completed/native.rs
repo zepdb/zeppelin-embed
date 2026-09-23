@@ -26,10 +26,18 @@ use crate::property_graph::storage::GraphReadView;
 use std::cell::Cell;
 
 mod entities;
+mod entry;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod entry_probe;
+mod error;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod test_support;
 mod values;
 
+use error::GraphQueryError;
+
+#[cfg(test)]
+mod entry_tests;
 #[cfg(test)]
 mod search_tests;
 #[cfg(test)]
@@ -658,6 +666,83 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> PullOperator<'v, 'm, 'g, NativeResultErr
 /// The result is returned unsettled beside the overlay, for the admission's
 /// commit tail: its outcome and each changed entity's revision and generation
 /// are stamped by `UnsettledWriteResult::settle` once that tail has run.
+///
+/// A rejection from inside the driver keeps its failing operator and the
+/// work done so far, exactly as a read's `RuntimeFailure` does.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "all authentic native and writer owners stay explicit"
+)]
+fn execute_native_mutation_diagnosed<'w, 'r, 'plan, 'lease, 'm, 'g, 'i>(
+    view: &'w GraphReadView<'w, 'lease, 'm, 'g>,
+    runtime: &mut RuntimeContext<'lease, 'm, 'g>,
+    plan: &'r RuntimePlan<'r, 'plan, 'r, 'm, 'g, 'r>,
+    bindings: &[ParameterBinding<'_>],
+    column_names: &[GraphName<'_>],
+    pattern_capacity: PatternCapacity,
+    execution_capacity: ExecutionCapacity,
+    overlay: GraphBatchReadView<'w, 'static>,
+    images: &'w StatementImages<'i>,
+) -> Result<(super::UnsettledWriteResult, GraphBatchReadView<'w, 'static>), GraphQueryError> {
+    let root = plan.plan().description().root;
+    let kinds = output_kinds(plan, runtime)?;
+    let handoff: OverlayHandoff<'w> = Cell::new(None);
+    let pattern = NativePattern::new_with_mutation(
+        view,
+        plan,
+        root,
+        bindings,
+        pattern_capacity,
+        runtime,
+        MutationScope::new(overlay, images),
+    )
+    .map_err(|error| RuntimeFailure {
+        operator: root,
+        error,
+        counters: runtime.counters(),
+    })?;
+    let mut source = WriteSource {
+        root,
+        pattern: Some(pattern),
+        handoff: &handoff,
+    };
+    let mut completion = NativeCompletion::new(
+        view,
+        runtime,
+        column_names,
+        kinds.as_slice(),
+        None,
+        |_, _| Ok(()),
+    )
+    .map_err(|error| RuntimeFailure {
+        operator: root,
+        error,
+        counters: runtime.counters(),
+    })?;
+    completion.handoff = Some(&handoff);
+    let execution = execute_in(
+        runtime,
+        plan,
+        &mut source,
+        &mut completion,
+        execution_capacity,
+    )?;
+    let overlay = handoff
+        .take()
+        .ok_or(NativeResultError::Native(RuntimeError::Batch.into()))?;
+    Ok((
+        super::UnsettledWriteResult(
+            execution
+                .output
+                .detach(execution.counters, execution.peak_query_bytes),
+        ),
+        overlay,
+    ))
+}
+
+/// The S2 write path below the seam, in the admission's own error, for the
+/// tests that drive `with_native_mutation_settled` directly.
+#[cfg(test)]
 #[allow(
     clippy::too_many_arguments,
     reason = "all authentic native and writer owners stay explicit"
@@ -676,51 +761,18 @@ pub(crate) fn execute_native_mutation_result<'w, 'r, 'plan, 'lease, 'm, 'g, 'i>(
     (super::UnsettledWriteResult, GraphBatchReadView<'w, 'static>),
     crate::lifecycle::native_graph::NativeMutationError,
 > {
-    let root = plan.plan().description().root;
-    let kinds = output_kinds(plan, runtime).map_err(|failure| failure.error)?;
-    let handoff: OverlayHandoff<'w> = Cell::new(None);
-    let pattern = NativePattern::new_with_mutation(
+    execute_native_mutation_diagnosed(
         view,
+        runtime,
         plan,
-        root,
         bindings,
-        pattern_capacity,
-        runtime,
-        MutationScope::new(overlay, images),
-    )?;
-    let mut source = WriteSource {
-        root,
-        pattern: Some(pattern),
-        handoff: &handoff,
-    };
-    let mut completion = NativeCompletion::new(
-        view,
-        runtime,
         column_names,
-        kinds.as_slice(),
-        None,
-        |_, _| Ok(()),
-    )?;
-    completion.handoff = Some(&handoff);
-    let execution = execute_in(
-        runtime,
-        plan,
-        &mut source,
-        &mut completion,
+        pattern_capacity,
         execution_capacity,
-    )
-    .map_err(|failure| failure.error)?;
-    let overlay = handoff
-        .take()
-        .ok_or(NativeResultError::Native(RuntimeError::Batch.into()))?;
-    Ok((
-        super::UnsettledWriteResult(
-            execution
-                .output
-                .detach(execution.counters, execution.peak_query_bytes),
-        ),
         overlay,
-    ))
+        images,
+    )
+    .map_err(GraphQueryError::into_mutation)
 }
 
 #[cfg(any(test, feature = "test-support"))]

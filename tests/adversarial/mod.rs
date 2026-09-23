@@ -130,6 +130,8 @@ pub mod graph_relational;
 pub mod graph_completed;
 #[cfg(feature = "graph-cypher")]
 pub mod graph_native_result;
+#[cfg(feature = "graph-cypher")]
+pub mod graph_query_entry;
 
 #[cfg(feature = "graph-result-test-support")]
 pub mod graph_response;

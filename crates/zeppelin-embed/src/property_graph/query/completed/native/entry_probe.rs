@@ -1,0 +1,774 @@
+//! Plans, fixtures and the directed adversarial probe for the structured
+//! execution seam (ZE-53 S3, ZE-192).
+//!
+//! Every statement here is built the way a real statement driver builds one:
+//! inside the admission, in the admitted query memory, and handed to the
+//! seam's executor. The probe drives the seam's write path through its
+//! failure sites and checks each outcome against an oracle that never reads
+//! the result collector: the node values the fixture wrote, the statement's
+//! own arithmetic, and the published generation.
+
+use super::super::{CompletedGraphResult, Outcome, Value};
+use super::entry::{Executed, GraphQuery, GraphQueryExecutor, GraphQueryOptions, NoSearch};
+use super::error::{GraphQueryError, GraphQueryErrorKind};
+use crate::lifecycle::durability::{CommitTier, DurabilityMode};
+use crate::lifecycle::native_graph::tests::publication::{FaultPoint, RecordingVfs};
+use crate::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
+use crate::property_graph::query::Arithmetic;
+use crate::property_graph::query::expression::ExpressionCapacity;
+use crate::property_graph::query::pattern::PatternCapacity;
+use crate::property_graph::query::plan::{
+    BinaryExpression, ExprId, Expression, Literal, Mutation, NodeFacts, Operator, OperatorKind,
+    PlanBacking, PlanDescription, PlanFootprint, PlanNodeId, Projection, RetainedRegion, SlotId,
+    VALIDATION_SCRATCH_BYTES,
+};
+use crate::property_graph::query::relational::StorageCapacity;
+use crate::property_graph::query::resources::{QueryArena, RetainedAllocation, RetentionInventory};
+use crate::property_graph::query::runtime::{
+    ArenaCapacity, ExecutionCapacity, RuntimeContext, RuntimeLimits,
+};
+use crate::property_graph::staging::{StructuredOperation, StructuredWrite, WriteImage};
+use crate::property_graph::{
+    ApplicationKey, CanonicalContents, EntityId, EntityKind, GraphName, GraphProperty,
+    GraphRevision, NodeId, PropertyData, PropertyValue,
+};
+use crate::vfs::Vfs;
+use std::mem::size_of;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+// ---------------------------------------------------------------------------
+// Plan construction inside the admission
+// ---------------------------------------------------------------------------
+
+/// The actual owners of every vector or string a plan borrows besides its
+/// operator, expression and eager arenas.
+#[derive(Default)]
+pub(crate) struct Backing<'a> {
+    regions: Vec<RetainedRegion>,
+    owners: Vec<RetainedAllocation<'a>>,
+}
+
+impl<'a> Backing<'a> {
+    pub(crate) fn vec<T>(&mut self, value: &'a Vec<T>) -> Result<(), GraphQueryError> {
+        if value.capacity() != 0 {
+            self.regions.push(RetainedRegion::vector(value)?);
+            self.owners.push(RetainedAllocation::vector(value)?);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn string(&mut self, value: &'a String) -> Result<(), GraphQueryError> {
+        if value.capacity() != 0 {
+            self.regions.push(RetainedRegion::declared(
+                value.as_ptr() as usize,
+                value.capacity(),
+            )?);
+            self.owners.push(RetainedAllocation::string(value)?);
+        }
+        Ok(())
+    }
+}
+
+/// Validates the plan rooted at its last operator in the admitted query
+/// memory, retains every owner, and hands it to the seam.
+pub(crate) fn run_plan<'lease, 'm, 'g>(
+    runtime: &mut RuntimeContext<'lease, 'm, 'g>,
+    executor: GraphQueryExecutor<'_, '_, '_, 'lease, 'm, 'g>,
+    operators: &Vec<Operator<'_>>,
+    expressions: &Vec<Expression<'_>>,
+    eager: &Vec<PlanNodeId>,
+    backing: &Backing<'_>,
+    columns: &[&str],
+) -> Result<Executed, GraphQueryError> {
+    let memory = runtime.memory();
+    let mut facts = QueryArena::new(memory, operators.len())?;
+    for _ in 0..operators.len() {
+        facts.push(NodeFacts::default())?;
+    }
+    let mut regions = Vec::new();
+    regions.push(RetainedRegion::vector(operators)?);
+    regions.push(RetainedRegion::vector(expressions)?);
+    if eager.capacity() != 0 {
+        regions.push(RetainedRegion::vector(eager)?);
+    }
+    regions.push(RetainedRegion::declared(
+        facts.as_slice().as_ptr() as usize,
+        facts.heap_bytes(),
+    )?);
+    regions.extend(backing.regions.iter().copied());
+    regions.sort();
+    let retained = regions
+        .iter()
+        .try_fold(0usize, |total, region| {
+            total.checked_add(region.end() - region.start())
+        })
+        .ok_or(GraphQueryError::contract("retained plan bytes overflow"))?;
+    let mut external = memory.reserve_external_capacity()?;
+    external.reserve_additional(
+        retained
+            + VALIDATION_SCRATCH_BYTES
+            + regions.capacity() * size_of::<RetainedRegion>()
+            + size_of::<PlanDescription<'_>>(),
+    )?;
+    let root = operators
+        .len()
+        .checked_sub(1)
+        .and_then(|root| u32::try_from(root).ok())
+        .ok_or(GraphQueryError::contract("empty plan"))?;
+    let description = PlanDescription {
+        operators,
+        expressions,
+        parameters: &[],
+        root: PlanNodeId(root),
+        eager_searches: eager,
+    };
+    let (plan, facts_owner) = facts.validate_plan(
+        description,
+        PlanFootprint::declared(memory.reserved_bytes()),
+        PlanBacking::vector(&regions)?,
+        runtime.values(),
+    )?;
+    let mut owners = vec![
+        RetainedAllocation::vector(operators)?,
+        RetainedAllocation::vector(expressions)?,
+        facts_owner,
+    ];
+    if eager.capacity() != 0 {
+        owners.push(RetainedAllocation::vector(eager)?);
+    }
+    owners.extend(backing.owners.iter().copied());
+    let names = columns
+        .iter()
+        .map(|column| GraphName::new(column))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| GraphQueryError::contract("invalid column name"))?;
+    executor.run(
+        runtime,
+        GraphQuery {
+            plan: &plan,
+            inventory: RetentionInventory::vector(&owners)?,
+            bindings: &[],
+            columns: &names,
+        },
+    )
+}
+
+/// `MATCH (n) RETURN n, n.p`.
+pub(crate) fn read_p<'lease, 'm, 'g>(
+    runtime: &mut RuntimeContext<'lease, 'm, 'g>,
+    executor: GraphQueryExecutor<'_, '_, '_, 'lease, 'm, 'g>,
+) -> Result<Executed, GraphQueryError> {
+    let p = String::from("p");
+    let name = GraphName::new(&p).map_err(|_| GraphQueryError::contract("name"))?;
+    let unit = vec![PlanNodeId(0)];
+    let scan = vec![PlanNodeId(1)];
+    let projections = vec![
+        Projection {
+            slot: SlotId(10),
+            expression: ExprId(0),
+        },
+        Projection {
+            slot: SlotId(11),
+            expression: ExprId(1),
+        },
+    ];
+    let operators = vec![
+        Operator {
+            inputs: &[],
+            kind: OperatorKind::Unit,
+        },
+        Operator {
+            inputs: &unit,
+            kind: OperatorKind::ScanNodes {
+                output: SlotId(0),
+                label: None,
+            },
+        },
+        Operator {
+            inputs: &scan,
+            kind: OperatorKind::Project(&projections),
+        },
+    ];
+    let expressions = vec![
+        Expression::Slot(SlotId(0)),
+        Expression::Property {
+            entity: ExprId(0),
+            name,
+        },
+    ];
+    let mut backing = Backing::default();
+    backing.string(&p)?;
+    backing.vec(&unit)?;
+    backing.vec(&scan)?;
+    backing.vec(&projections)?;
+    run_plan(
+        runtime,
+        executor,
+        &operators,
+        &expressions,
+        &Vec::new(),
+        &backing,
+        &["n", "p"],
+    )
+}
+
+/// What a write statement assigns to every scanned node's `p`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Assign {
+    /// `SET n.p = n.p + 1`.
+    Increment,
+    /// `SET n.p = 6 / (n.p - pole)`: every row before the one whose `p`
+    /// equals `pole` stages its value, and that row divides by zero.
+    DivideAround(i64),
+}
+
+/// `MATCH (n) SET n.p = <assign> RETURN n, n.p`.
+pub(crate) fn write_p<'lease, 'm, 'g>(
+    runtime: &mut RuntimeContext<'lease, 'm, 'g>,
+    executor: GraphQueryExecutor<'_, '_, '_, 'lease, 'm, 'g>,
+    assign: Assign,
+) -> Result<Executed, GraphQueryError> {
+    let p = String::from("p");
+    let name = GraphName::new(&p).map_err(|_| GraphQueryError::contract("name"))?;
+    let unit = vec![PlanNodeId(0)];
+    let scan = vec![PlanNodeId(1)];
+    let eager = vec![PlanNodeId(2)];
+    let mutate = vec![PlanNodeId(3)];
+    let (value, mut expressions) = match assign {
+        Assign::Increment => (
+            ExprId(3),
+            vec![
+                Expression::Literal(Literal::I64(1)),
+                Expression::Binary {
+                    operation: BinaryExpression::Arithmetic(Arithmetic::Add),
+                    left: ExprId(1),
+                    right: ExprId(2),
+                },
+            ],
+        ),
+        Assign::DivideAround(pole) => (
+            ExprId(5),
+            vec![
+                Expression::Literal(Literal::I64(pole)),
+                Expression::Binary {
+                    operation: BinaryExpression::Arithmetic(Arithmetic::Subtract),
+                    left: ExprId(1),
+                    right: ExprId(2),
+                },
+                Expression::Literal(Literal::I64(6)),
+                Expression::Binary {
+                    operation: BinaryExpression::Arithmetic(Arithmetic::Divide),
+                    left: ExprId(4),
+                    right: ExprId(3),
+                },
+            ],
+        ),
+    };
+    expressions.splice(
+        0..0,
+        [
+            Expression::Slot(SlotId(0)),
+            Expression::Property {
+                entity: ExprId(0),
+                name,
+            },
+        ],
+    );
+    let mutations = vec![Mutation::SetProperty {
+        entity: ExprId(0),
+        name,
+        value,
+    }];
+    let projections = vec![
+        Projection {
+            slot: SlotId(10),
+            expression: ExprId(0),
+        },
+        Projection {
+            slot: SlotId(11),
+            expression: ExprId(1),
+        },
+    ];
+    let operators = vec![
+        Operator {
+            inputs: &[],
+            kind: OperatorKind::Unit,
+        },
+        Operator {
+            inputs: &unit,
+            kind: OperatorKind::ScanNodes {
+                output: SlotId(0),
+                label: None,
+            },
+        },
+        Operator {
+            inputs: &scan,
+            kind: OperatorKind::Eager,
+        },
+        Operator {
+            inputs: &eager,
+            kind: OperatorKind::Mutate(&mutations),
+        },
+        Operator {
+            inputs: &mutate,
+            kind: OperatorKind::Project(&projections),
+        },
+    ];
+    let mut backing = Backing::default();
+    backing.string(&p)?;
+    backing.vec(&unit)?;
+    backing.vec(&scan)?;
+    backing.vec(&eager)?;
+    backing.vec(&mutate)?;
+    backing.vec(&mutations)?;
+    backing.vec(&projections)?;
+    run_plan(
+        runtime,
+        executor,
+        &operators,
+        &expressions,
+        &Vec::new(),
+        &backing,
+        &["n", "p"],
+    )
+}
+
+/// `CREATE (n) DELETE n RETURN 0`: consumes an identity and publishes no
+/// entity, which the commit tail cannot publish yet.
+pub(crate) fn create_then_delete<'lease, 'm, 'g>(
+    runtime: &mut RuntimeContext<'lease, 'm, 'g>,
+    executor: GraphQueryExecutor<'_, '_, '_, 'lease, 'm, 'g>,
+) -> Result<Executed, GraphQueryError> {
+    let unit = vec![PlanNodeId(0)];
+    let eager = vec![PlanNodeId(1)];
+    let mutate = vec![PlanNodeId(2)];
+    let mutations = vec![
+        Mutation::CreateNode {
+            output: SlotId(0),
+            labels: &[],
+        },
+        Mutation::Delete {
+            entity: ExprId(0),
+            detach: false,
+        },
+    ];
+    let projections = vec![Projection {
+        slot: SlotId(10),
+        expression: ExprId(1),
+    }];
+    let operators = vec![
+        Operator {
+            inputs: &[],
+            kind: OperatorKind::Unit,
+        },
+        Operator {
+            inputs: &unit,
+            kind: OperatorKind::Eager,
+        },
+        Operator {
+            inputs: &eager,
+            kind: OperatorKind::Mutate(&mutations),
+        },
+        Operator {
+            inputs: &mutate,
+            kind: OperatorKind::Project(&projections),
+        },
+    ];
+    let expressions = vec![
+        Expression::Slot(SlotId(0)),
+        Expression::Literal(Literal::I64(0)),
+    ];
+    let mut backing = Backing::default();
+    backing.vec(&unit)?;
+    backing.vec(&eager)?;
+    backing.vec(&mutate)?;
+    backing.vec(&mutations)?;
+    backing.vec(&projections)?;
+    run_plan(
+        runtime,
+        executor,
+        &operators,
+        &expressions,
+        &Vec::new(),
+        &backing,
+        &["zero"],
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Options, fixture and result observations
+// ---------------------------------------------------------------------------
+
+/// Capacities for the fixture's three-node statements.
+pub(crate) fn options(image_capacity: usize) -> GraphQueryOptions {
+    let variable = ArenaCapacity {
+        string_bytes: 4096,
+        list_cells: 128,
+        node_ids: 64,
+        relationship_ids: 64,
+    };
+    GraphQueryOptions {
+        limits: RuntimeLimits::default(),
+        memory_limit: 16 * 1024 * 1024,
+        source_slots: 64,
+        pattern: PatternCapacity {
+            rows: StorageCapacity {
+                rows: 16,
+                payload_bytes: 8192,
+                variable,
+            },
+            expression: ExpressionCapacity {
+                cells: 32,
+                string_bytes: 4096,
+            },
+        },
+        execution: ExecutionCapacity {
+            batch_rows: 1,
+            result_rows: 16,
+            batch_payload_bytes: 8192,
+            result_payload_bytes: 8192,
+            batch: variable,
+            result: variable,
+        },
+        lazy_targets: 16,
+        overlay_capacity: 16,
+        image_capacity,
+    }
+}
+
+pub(crate) fn control() -> QueryControl {
+    QueryControl::Cancel(CancelToken::new())
+}
+
+fn store_options() -> OpenOptions {
+    OpenOptions::new()
+        .with_durability(DurabilityMode::Durable, CommitTier::Durable)
+        .with_max_resident_bytes(256 * 1024 * 1024)
+}
+
+/// A native store on a recording VFS holding three nodes whose `p` values
+/// are `base + 1`, `base + 2` and `base + 3`, in node-ID order.
+pub(crate) struct Fixture {
+    pub(crate) directory: PathBuf,
+    pub(crate) vfs: Arc<RecordingVfs>,
+    pub(crate) store: Store,
+    pub(crate) nodes: [NodeId; 3],
+    pub(crate) values: [i64; 3],
+}
+
+impl Fixture {
+    pub(crate) fn create(directory: PathBuf, base: i64) -> Result<Self, String> {
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        let vfs = Arc::new(RecordingVfs::default());
+        let infrastructure: Arc<dyn Vfs> = vfs.clone();
+        let store = Store::create_native_graph_with_infrastructure(
+            directory.join("native"),
+            store_options(),
+            None,
+            infrastructure,
+            Arc::new(crate::lifecycle::SystemMonotonicClock),
+            &mut crate::property_graph::storage::allocation::OsEntropy,
+        )
+        .map_err(|error| error.to_string())?;
+        let values = [base + 1, base + 2, base + 3];
+        let p = GraphName::new("p").map_err(|error| error.to_string())?;
+        let mut properties = values.map(|value| {
+            PropertyValue::new(PropertyData::I64(value))
+                .map(|value| [GraphProperty::new(p, value)])
+                .map_err(|error| error.to_string())
+        });
+        let mut images = Vec::new();
+        for property in &mut properties {
+            let property = property.as_mut().map_err(|error| error.clone())?;
+            images.push(
+                CanonicalContents::node(&mut [], property, None, None)
+                    .map_err(|error| error.to_string())?,
+            );
+        }
+        let keys = ["one", "two", "three"];
+        let mut requests = Vec::new();
+        for (key, image) in keys.iter().zip(&images) {
+            requests.push(StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "ze53-s3", key)
+                    .map_err(|error| error.to_string())?,
+                revision: GraphRevision::new(1).map_err(|error| error.to_string())?,
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(image)),
+            });
+        }
+        let receipts = store
+            .apply_native_graph(&requests, &control())
+            .map_err(|error| error.to_string())?;
+        let mut nodes = Vec::new();
+        for receipt in receipts.iter() {
+            match receipt.entity {
+                EntityId::Node(node) => nodes.push(node),
+                EntityId::Relationship(_) => return Err(String::from("fixture receipt kind")),
+            }
+        }
+        let nodes: [NodeId; 3] = nodes
+            .try_into()
+            .map_err(|_| String::from("fixture receipt count"))?;
+        Ok(Self {
+            directory,
+            vfs,
+            store,
+            nodes,
+            values,
+        })
+    }
+
+    pub(crate) fn generation(&self) -> Result<u64, String> {
+        Ok(self
+            .store
+            .admit_native_read()
+            .map_err(|error| error.to_string())?
+            .bundle()
+            .base()
+            .generation
+            .get())
+    }
+
+    pub(crate) fn read(&self) -> Result<CompletedGraphResult, GraphQueryError> {
+        self.store
+            .execute_graph_query(&control(), &options(16), None::<&mut NoSearch>, read_p)
+    }
+
+    pub(crate) fn write(
+        &self,
+        control: &QueryControl,
+        image_capacity: usize,
+        assign: Assign,
+    ) -> Result<CompletedGraphResult, GraphQueryError> {
+        self.store.execute_graph_query(
+            control,
+            &options(image_capacity),
+            None::<&mut NoSearch>,
+            |runtime, executor| write_p(runtime, executor, assign),
+        )
+    }
+
+    pub(crate) fn remove(self) -> Result<(), String> {
+        let Self {
+            directory, store, ..
+        } = self;
+        store.close().map_err(|error| error.to_string())?;
+        std::fs::remove_dir_all(&directory).map_err(|error| error.to_string())
+    }
+}
+
+/// `(node, p)` per row of a two-column `n, n.p` result, sorted by node.
+pub(crate) fn node_values(result: &CompletedGraphResult) -> Result<Vec<(u128, i64)>, String> {
+    let mut rows = Vec::new();
+    for row in 0..result.metadata().rows as usize {
+        let Some(Value::Node(index)) = result.cell(row, 0) else {
+            return Err(format!("row {row} has no node"));
+        };
+        let Some(Value::I64(value)) = result.cell(row, 1) else {
+            return Err(format!("row {row} has no p"));
+        };
+        let node = result
+            .pools()
+            .nodes
+            .get(*index as usize)
+            .ok_or("missing node record")?;
+        rows.push((node.id.get(), *value));
+    }
+    rows.sort_unstable();
+    Ok(rows)
+}
+
+// ---------------------------------------------------------------------------
+// The directed probe
+// ---------------------------------------------------------------------------
+
+/// Independent observations plus exact directed receipts.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProbeReport {
+    /// `(node, p)` rows the committed clean statement returned, then the rows
+    /// a fresh read returns, then the committed generation.
+    pub observations: Vec<(u128, i64)>,
+    /// The same, derived from the fixture's values and the statement's
+    /// arithmetic without reading any result.
+    pub expected: Vec<(u128, i64)>,
+    /// Exact evidence inventory; every count is measured from its named path.
+    pub receipts: Vec<(&'static str, u64)>,
+}
+
+/// One directory per call: concurrent probes of the same seed in one process
+/// must not share a store (the ZE-196 race).
+fn probe_directory(seed: u64, arm: &str) -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let call = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "zeppelin-ze53-s3-{arm}-{}-{seed}-{call}",
+        std::process::id()
+    ))
+}
+
+/// One refused statement: its group, and whether the store kept its
+/// generation and every `p` value.
+fn refused(
+    fixture: &Fixture,
+    outcome: Result<CompletedGraphResult, GraphQueryError>,
+    expected: GraphQueryErrorKind,
+    before: u64,
+) -> Result<u64, String> {
+    let error = match outcome {
+        Ok(result) => {
+            return Err(format!(
+                "a {expected:?} fault site published {:?}",
+                result.metadata().outcome
+            ));
+        }
+        Err(error) => error,
+    };
+    if error.kind() != expected || !error.nothing_committed() {
+        return Err(format!("expected a definite {expected:?}, got {error}"));
+    }
+    if fixture.generation()? != before {
+        return Err(format!("a refused {expected:?} advanced the generation"));
+    }
+    let unchanged = node_values(&fixture.read().map_err(|error| error.to_string())?)?;
+    let original: Vec<_> = fixture
+        .nodes
+        .iter()
+        .zip(fixture.values)
+        .map(|(node, value)| (node.get(), value))
+        .collect();
+    if unchanged != original {
+        return Err(format!("a refused {expected:?} changed stored values"));
+    }
+    Ok(1)
+}
+
+/// Drives the seam's write path through its fault sites, each refused with
+/// its typed group and a proved unchanged store, then through a cancellation
+/// that arrives after the commit attempt, which must commit.
+pub fn run_actual_probe(seed: u64) -> Result<ProbeReport, String> {
+    let base = i64::try_from(seed % 1000).map_err(|error| error.to_string())? * 10;
+    let fixture = Fixture::create(probe_directory(seed, "refusals"), base)?;
+    let before = fixture.generation()?;
+
+    // Mid-drain: the first row stages its value, the second divides by zero.
+    let mid_drain = refused(
+        &fixture,
+        fixture.write(&control(), 16, Assign::DivideAround(fixture.values[1])),
+        GraphQueryErrorKind::Expression,
+        before,
+    )?;
+    // The statement image arena admits fewer images than rows.
+    let images = refused(
+        &fixture,
+        fixture.write(&control(), 2, Assign::Increment),
+        GraphQueryErrorKind::Limit,
+        before,
+    )?;
+    // A statement that only consumes an identity cannot publish.
+    let fence_only = refused(
+        &fixture,
+        fixture.store.execute_graph_query(
+            &control(),
+            &options(16),
+            None::<&mut NoSearch>,
+            create_then_delete,
+        ),
+        GraphQueryErrorKind::InvalidPlan,
+        before,
+    )?;
+    // Cancellation inside the commit tail, before its point of no return:
+    // the first private artifact is on disk, the WAL is untouched.
+    let token = CancelToken::new();
+    let cancel = token.clone();
+    fixture.vfs.after_next_create(move || cancel.cancel());
+    let precommit = refused(
+        &fixture,
+        fixture.write(&QueryControl::Cancel(token), 16, Assign::Increment),
+        GraphQueryErrorKind::Cancelled,
+        before,
+    )?;
+
+    // The clean statement, and a cancellation that arrives while the WAL
+    // Full sync of its commit is held: it must still report the commit.
+    let token = CancelToken::new();
+    let (entered, release) = fixture.vfs.arm_wal_full_sync();
+    let committed = std::thread::scope(|scope| {
+        let writer = scope
+            .spawn(|| fixture.write(&QueryControl::Cancel(token.clone()), 16, Assign::Increment));
+        entered.wait();
+        token.cancel();
+        release.wait();
+        writer.join()
+    })
+    .map_err(|_| String::from("probe writer panicked"))?
+    .map_err(|error| format!("a post-commit-attempt cancel claimed rollback: {error}"))?;
+    let changed = fixture.generation()?;
+    if committed.metadata().outcome
+        != (Outcome::Committed {
+            changed: crate::property_graph::GraphGeneration::new(changed),
+        })
+        || changed != before + 1
+    {
+        return Err(String::from("post-commit cancel did not report its commit"));
+    }
+    let post_commit = u64::from(token.is_cancelled());
+    let expected_rows: Vec<_> = fixture
+        .nodes
+        .iter()
+        .zip(fixture.values)
+        .map(|(node, value)| (node.get(), value + 1))
+        .collect();
+    let mut observations = node_values(&committed)?;
+    observations.extend(node_values(
+        &fixture.read().map_err(|error| error.to_string())?,
+    )?);
+    observations.push((
+        0,
+        i64::try_from(changed - before).map_err(|e| e.to_string())?,
+    ));
+    let mut expected = expected_rows.clone();
+    expected.extend(expected_rows);
+    expected.push((0, 1));
+    fixture.remove()?;
+
+    // A failed WAL append leaves the commit's outcome unknown. It stops the
+    // writer, so it runs on its own store.
+    let fixture = Fixture::create(probe_directory(seed, "indeterminate"), base)?;
+    fixture.vfs.arm_fault(FaultPoint::Append);
+    let indeterminate = match fixture.write(&control(), 16, Assign::Increment) {
+        Err(error)
+            if error.kind() == GraphQueryErrorKind::WriteIndeterminate
+                && !error.nothing_committed() =>
+        {
+            1
+        }
+        Err(error) => {
+            return Err(format!(
+                "a failed WAL append was not indeterminate: {error}"
+            ));
+        }
+        Ok(_) => return Err(String::from("a failed WAL append reported a commit")),
+    };
+    fixture.remove()?;
+
+    let mut perturbed = observations.clone();
+    if let Some(first) = perturbed.first_mut() {
+        first.1 ^= 1;
+    }
+    let oracle = u64::from(perturbed != expected && observations == expected);
+    Ok(ProbeReport {
+        observations,
+        expected,
+        receipts: vec![
+            ("mid-drain.fire", mid_drain),
+            ("image-limit.fire", images),
+            ("fence-only.fire", fence_only),
+            ("precommit-cancel.fire", precommit),
+            ("indeterminate.fire", indeterminate),
+            ("post-commit-cancel.commit", post_commit),
+            ("oracle.can-fire", oracle),
+        ],
+    })
+}
