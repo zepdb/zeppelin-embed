@@ -39,6 +39,8 @@ use error::GraphQueryError;
 #[cfg(test)]
 mod entry_tests;
 #[cfg(test)]
+mod lifetime_tests;
+#[cfg(test)]
 mod search_tests;
 #[cfg(test)]
 mod tests;
