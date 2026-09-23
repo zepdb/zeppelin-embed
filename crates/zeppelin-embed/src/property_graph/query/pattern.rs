@@ -354,8 +354,8 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i>
     }
 
     /// An occurrence tree whose every expression reads through `mutation`'s
-    /// overlay, and whose `Mutate` occurrences stage into it. Only SET, REMOVE
-    /// and label items are admitted; CREATE and DELETE remain refused.
+    /// overlay, and whose `Mutate` occurrences stage into it. SET, REMOVE,
+    /// label and CREATE items are admitted; DELETE remains refused.
     #[allow(
         clippy::too_many_arguments,
         reason = "all authentic native owners stay explicit"
@@ -2184,8 +2184,8 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i> PullOperator<'v, 'm, 'g, NativeExecutionErro
 
 /// Counts the occurrences a validated plan needs, refusing every operator this
 /// executor does not implement. `mutation` is true only under a writer scope:
-/// `Mutate` is admitted there when every item is a SET, REMOVE or label edit,
-/// and is refused everywhere else, as are CREATE and DELETE items.
+/// `Mutate` is admitted there when every item is a SET, REMOVE, label edit or
+/// CREATE, and is refused everywhere else, as are DELETE items.
 fn occurrence_count(
     operators: &[super::plan::Operator<'_>],
     node: PlanNodeId,
@@ -2294,8 +2294,8 @@ fn writer_checkpoint(control: &crate::lifecycle::QueryControl) -> Result<(), Sta
     control.checkpoint().map_err(|_| StageError::Cancelled)
 }
 
-/// The mutation items this executor implements. CREATE needs fresh identity
-/// allocation and DELETE needs tombstone staging; both stay refused.
+/// The mutation items this executor implements. DELETE needs tombstone
+/// staging and stays refused.
 fn supported_mutations(items: &[Mutation<'_>]) -> bool {
     items.iter().all(|item| {
         matches!(
@@ -2303,6 +2303,8 @@ fn supported_mutations(items: &[Mutation<'_>]) -> bool {
             Mutation::SetProperty { .. }
                 | Mutation::RemoveProperty { .. }
                 | Mutation::SetLabel { .. }
+                | Mutation::CreateNode { .. }
+                | Mutation::CreateRelationship { .. }
         )
     })
 }
@@ -2841,16 +2843,19 @@ fn build_occurrence<'s, 'r, 'plan, 'v, 'm, 'g>(
                 context,
                 bindings,
             )?;
+            // The retained rows carry the clause's output schema: the input
+            // columns plus one column per CREATE item.
+            let output = schema_for(plan, node, context)?;
             PhysicalState::Mutate {
                 child,
                 items,
-                state: mutation::EagerState::new(
-                    occurrences
+                state: mutation::EagerState::mutate(
+                    output.slots(),
+                    &occurrences
                         .as_slice()
                         .get(child)
                         .ok_or(RuntimeError::Batch)?
-                        .schema
-                        .slots(),
+                        .schema,
                     capacity,
                     context,
                 )?,

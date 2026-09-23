@@ -24,9 +24,21 @@
 //! is executed again after a reset applies its items again, as a re-executed
 //! clause would.
 //!
-//! Only SET, REMOVE and label items exist here. `CreateNode`,
-//! `CreateRelationship` and `Delete` stay refused at build time by
-//! `occurrence_count`, and are refused again here should one ever arrive.
+//! A `Mutate` row is staged into the occurrence's own output batch, which has
+//! the clause's output schema: the input row's cells plus one cell for every
+//! entity the clause creates. Items evaluate against that row, so a later item
+//! reads a node or relationship an earlier item created.
+//!
+//! `CreateNode` and `CreateRelationship` start from an empty image, stage it
+//! with `GraphBatchReadView::create_fresh`, and bind the identity that call
+//! allocates into their output cell. The identity is an ordinary `Existing`
+//! reference from then on: a SET on it rebuilds from the staged image exactly
+//! as it does for an existing entity, and every later read finds that image
+//! first. Scans read only the admitted base view, and the `Eager` input has
+//! drained them before the first item runs, so no scan observes a create.
+//!
+//! `Delete` stays refused at build time by `occurrence_count`, and is refused
+//! again here should one ever arrive.
 
 use super::super::property::PropertyScratch;
 use super::super::relational::Rows;
@@ -39,7 +51,7 @@ use crate::property_graph::storage::records::RecordShape;
 use crate::property_graph::storage::tree::directory::TreeError;
 use crate::property_graph::storage::{NativeQuerySource, NodeView, RelView};
 use crate::property_graph::{
-    CanonicalContents, GraphProperty, NodeRef as BatchNode, PropertyValue,
+    CanonicalContents, EntityId, GraphProperty, NodeRef as BatchNode, PropertyValue,
     RelRef as BatchRelationship,
 };
 
@@ -54,6 +66,12 @@ pub(super) struct EagerState<'v, 'm, 'g> {
     capacity: PatternCapacity,
     started: bool,
     next: usize,
+    /// For a `Mutate`: the input column each output column copies, or `None`
+    /// for a column a CREATE item binds. Empty for an `Eager`.
+    sources: QueryArena<'m, 'g, Option<usize>>,
+    /// For a `Mutate`: the identity each CREATE output column holds for the
+    /// row being mutated. Empty for an `Eager`.
+    created: QueryArena<'m, 'g, Option<EntityId>>,
 }
 
 impl<'v, 'm, 'g> EagerState<'v, 'm, 'g> {
@@ -62,6 +80,38 @@ impl<'v, 'm, 'g> EagerState<'v, 'm, 'g> {
         capacity: PatternCapacity,
         context: &RuntimeContext<'v, 'm, 'g>,
     ) -> Result<QueryArena<'m, 'g, Self>, NativeExecutionError> {
+        Self::build(slots, None, capacity, context)
+    }
+
+    /// The state of a `Mutate` whose output schema is `slots` over an input
+    /// with schema `input`. Output columns absent from the input are the
+    /// columns its CREATE items bind.
+    pub(super) fn mutate(
+        slots: &[SlotId],
+        input: &Schema<'m, 'g>,
+        capacity: PatternCapacity,
+        context: &RuntimeContext<'v, 'm, 'g>,
+    ) -> Result<QueryArena<'m, 'g, Self>, NativeExecutionError> {
+        Self::build(slots, Some(input), capacity, context)
+    }
+
+    fn build(
+        slots: &[SlotId],
+        input: Option<&Schema<'m, 'g>>,
+        capacity: PatternCapacity,
+        context: &RuntimeContext<'v, 'm, 'g>,
+    ) -> Result<QueryArena<'m, 'g, Self>, NativeExecutionError> {
+        let width = if input.is_some() { slots.len() } else { 0 };
+        let mut sources = QueryArena::new(context.memory(), width).map_err(RuntimeError::Memory)?;
+        let mut created = QueryArena::new(context.memory(), width).map_err(RuntimeError::Memory)?;
+        if let Some(input) = input {
+            for slot in slots {
+                sources
+                    .push(input.column(*slot).ok())
+                    .map_err(RuntimeError::Memory)?;
+                created.push(None).map_err(RuntimeError::Memory)?;
+            }
+        }
         let mut owner = QueryArena::new(context.memory(), 1).map_err(RuntimeError::Memory)?;
         let mut owned_slots =
             QueryArena::new(context.memory(), slots.len()).map_err(RuntimeError::Memory)?;
@@ -85,6 +135,8 @@ impl<'v, 'm, 'g> EagerState<'v, 'm, 'g> {
                 capacity,
                 started: false,
                 next: 0,
+                sources,
+                created,
             })
             .map_err(RuntimeError::Memory)?;
         Ok(owner)
@@ -150,13 +202,26 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i>
             while self.next_occurrence(child, context)? {
                 context.charge(WorkKind::OperatorRows, 1)?;
                 context.charge(WorkKind::RowsIn, 1)?;
-                if let Some(items) = items {
-                    self.apply_mutations(child, items, context)?;
-                }
+                // A `Mutate` stages each row into its own output batch and
+                // retains that row; an `Eager` retains the input row as is.
+                let source = match items {
+                    Some(items) => {
+                        self.apply_mutations(
+                            index,
+                            child,
+                            items,
+                            state.sources.as_slice(),
+                            &mut state.created,
+                            context,
+                        )?;
+                        index
+                    }
+                    None => child,
+                };
                 let mut values = QueryArena::new(context.memory(), rows.schema().slots().len())
                     .map_err(RuntimeError::Memory)?;
                 {
-                    let occurrence = self.occurrence(child)?;
+                    let occurrence = self.occurrence(source)?;
                     for column in 0..occurrence.output.columns() {
                         values
                             .push(
@@ -170,6 +235,9 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i>
                 }
                 rows.push(values.as_slice(), context)?;
                 drop(values);
+                if items.is_some() {
+                    self.output_mut(index)?.clear();
+                }
                 let start = state.uses.len();
                 for usage in self.occurrence(child)?.uses.as_slice() {
                     state.uses.push(*usage).map_err(RuntimeError::Memory)?;
@@ -212,13 +280,25 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i>
         Ok(true)
     }
 
-    /// Applies every item to the row `child` currently holds, in textual order.
+    /// Applies every item, in textual order, to the row `child` currently
+    /// holds, staged as the one row of occurrence `index`'s output batch.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the row mapping stays explicit beside both occurrences"
+    )]
     fn apply_mutations(
         &mut self,
+        index: usize,
         child: usize,
         items: &'plan [Mutation<'plan>],
+        sources: &[Option<usize>],
+        created: &mut QueryArena<'m, 'g, Option<EntityId>>,
         context: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<(), NativeExecutionError> {
+        for cell in created.as_mut_slice() {
+            *cell = None;
+        }
+        self.stage_row(index, child, sources, created.as_slice(), context)?;
         for item in items {
             context.checkpoint()?;
             match *item {
@@ -227,13 +307,13 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i>
                     name,
                     value,
                 } => {
-                    let Some(target) = self.mutation_target(child, entity, context)? else {
+                    let Some(target) = self.mutation_target(index, entity, context)? else {
                         continue;
                     };
                     let occurrence = self
                         .occurrences
                         .as_slice()
-                        .get(child)
+                        .get(index)
                         .ok_or(RuntimeError::Batch)?;
                     let evaluated = evaluate_at(
                         &mut self.evaluator,
@@ -249,7 +329,7 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i>
                     assign(scope, self.view, target, name, evaluated, context)?;
                 }
                 Mutation::RemoveProperty { entity, name } => {
-                    let Some(target) = self.mutation_target(child, entity, context)? else {
+                    let Some(target) = self.mutation_target(index, entity, context)? else {
                         continue;
                     };
                     let scope = self.mutation.as_mut().ok_or(PlanError::Reference)?;
@@ -266,7 +346,7 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i>
                     label,
                     present,
                 } => {
-                    let Some(target) = self.mutation_target(child, entity, context)? else {
+                    let Some(target) = self.mutation_target(index, entity, context)? else {
                         continue;
                     };
                     if !matches!(target, BatchEntityRef::Node(_)) {
@@ -281,26 +361,129 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i>
                         context,
                     )?;
                 }
-                Mutation::CreateNode { .. }
-                | Mutation::CreateRelationship { .. }
-                | Mutation::Delete { .. } => return Err(PlanError::Reference.into()),
+                Mutation::CreateNode { output, labels } => {
+                    let scope = self.mutation.as_mut().ok_or(PlanError::Reference)?;
+                    let id = EntityId::Node(create_node(scope, labels, context)?);
+                    self.bind_created(index, child, output, id, sources, created, context)?;
+                }
+                Mutation::CreateRelationship {
+                    output,
+                    source,
+                    target,
+                    relationship_type,
+                } => {
+                    let source = self.endpoint(index, source, context)?;
+                    let target = self.endpoint(index, target, context)?;
+                    let scope = self.mutation.as_mut().ok_or(PlanError::Reference)?;
+                    let id =
+                        create_relationship(scope, source, target, relationship_type, context)?;
+                    self.bind_created(index, child, output, id, sources, created, context)?;
+                }
+                Mutation::Delete { .. } => return Err(PlanError::Reference.into()),
             }
         }
         Ok(())
     }
 
-    /// Resolves one item's receiver. Null skips the item; anything but an
-    /// entity reference is a type error.
+    /// Replaces occurrence `index`'s output with one row: every input column
+    /// copied from `child`'s current row, and every created column holding
+    /// the identity bound so far, or null before its CREATE item has run.
+    fn stage_row(
+        &mut self,
+        index: usize,
+        child: usize,
+        sources: &[Option<usize>],
+        created: &[Option<EntityId>],
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+    ) -> Result<(), NativeExecutionError> {
+        let view = context.view();
+        let (child, parent) = child_parent(self.occurrences.as_mut_slice(), child, index)?;
+        parent.output.clear();
+        parent.output.push_from(
+            |column| match created.get(column).ok_or(RuntimeError::Batch)? {
+                Some(EntityId::Node(id)) => Ok(view.node(*id)),
+                Some(EntityId::Relationship(id)) => Ok(view.relationship(*id)),
+                None => match sources.get(column).ok_or(RuntimeError::Batch)? {
+                    Some(input) => child.output.value(0, *input).ok_or(RuntimeError::Batch),
+                    None => Ok(QueryValue::Null),
+                },
+            },
+            context,
+        )?;
+        Ok(())
+    }
+
+    /// Binds a created identity into its output column and restages the row
+    /// so every later item reads it.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the row mapping stays explicit beside both occurrences"
+    )]
+    fn bind_created(
+        &mut self,
+        index: usize,
+        child: usize,
+        output: SlotId,
+        id: EntityId,
+        sources: &[Option<usize>],
+        created: &mut QueryArena<'m, 'g, Option<EntityId>>,
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+    ) -> Result<(), NativeExecutionError> {
+        let column = self.occurrence(index)?.schema.column(output)?;
+        if sources.get(column).ok_or(RuntimeError::Batch)?.is_some() {
+            // The plan validator refuses a CREATE into a bound slot.
+            return Err(PlanError::Reference.into());
+        }
+        *created
+            .as_mut_slice()
+            .get_mut(column)
+            .ok_or(RuntimeError::Batch)? = Some(id);
+        self.stage_row(index, child, sources, created.as_slice(), context)
+    }
+
+    /// Resolves one relationship endpoint. A null endpoint cannot be created
+    /// against and is a typed endpoint failure; anything but a node is a type
+    /// error.
+    fn endpoint(
+        &mut self,
+        index: usize,
+        expression: ExprId,
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+    ) -> Result<NodeId, NativeExecutionError> {
+        let occurrence = self
+            .occurrences
+            .as_slice()
+            .get(index)
+            .ok_or(RuntimeError::Batch)?;
+        let value = evaluate_at(
+            &mut self.evaluator,
+            self.mutation.as_mut(),
+            expression,
+            &occurrence.schema,
+            &occurrence.output,
+            0,
+            self.view,
+            context,
+        )?;
+        match value {
+            QueryValue::NodeRef(node) => Ok(node.id()),
+            QueryValue::Null => Err(StageError::Endpoint.into()),
+            _ => Err(RuntimeError::Value(QueryError::Type).into()),
+        }
+    }
+
+    /// Resolves one item's receiver against occurrence `index`'s staged row.
+    /// Null skips the item; anything but an entity reference is a type error.
     fn mutation_target(
         &mut self,
-        child: usize,
+        index: usize,
         entity: ExprId,
         context: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<Option<BatchEntityRef<'static>>, NativeExecutionError> {
         let occurrence = self
             .occurrences
             .as_slice()
-            .get(child)
+            .get(index)
             .ok_or(RuntimeError::Batch)?;
         let value = evaluate_at(
             &mut self.evaluator,
@@ -322,6 +505,64 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i>
             ))),
             _ => Err(RuntimeError::Value(QueryError::Type).into()),
         }
+    }
+}
+
+/// Stages one new node carrying exactly `labels` and returns its identity.
+/// A CREATE has no prior image to measure: its budget is the labels alone,
+/// and its properties arrive through the SET items that follow it.
+fn create_node(
+    scope: &mut MutationScope<'_, '_>,
+    labels: &[GraphName<'_>],
+    context: &mut RuntimeContext<'_, '_, '_>,
+) -> Result<NodeId, NativeExecutionError> {
+    let control = context.values().control();
+    let mut control = |_: WritePhase| writer_checkpoint(control);
+    let images = scope.images;
+    let mut budget = NodeImageBudget::default();
+    for label in labels {
+        control(WritePhase::Overlay)?;
+        budget.label(*label)?;
+    }
+    let mut builder = images.node(budget, &mut control)?;
+    for label in labels {
+        builder.label(*label, &mut control)?;
+    }
+    let image = builder.finish(&mut control)?;
+    match scope
+        .overlay
+        .create_fresh(WriteImage::Node(image), &mut control)?
+    {
+        EntityId::Node(id) => Ok(id),
+        EntityId::Relationship(_) => Err(StageError::InvalidInput.into()),
+    }
+}
+
+/// Stages one new relationship with no properties and returns its identity.
+/// Either endpoint may be a node this statement created.
+fn create_relationship(
+    scope: &mut MutationScope<'_, '_>,
+    source: NodeId,
+    target: NodeId,
+    relationship_type: GraphName<'_>,
+    context: &mut RuntimeContext<'_, '_, '_>,
+) -> Result<EntityId, NativeExecutionError> {
+    let control = context.values().control();
+    let mut control = |_: WritePhase| writer_checkpoint(control);
+    let budget = RelationshipImageBudget {
+        type_bytes: relationship_type.as_str().len(),
+        ..RelationshipImageBudget::default()
+    };
+    let builder = scope.images.relationship(budget, &mut control)?;
+    let image = builder.finish(
+        BatchNode::Existing(source),
+        BatchNode::Existing(target),
+        relationship_type,
+        &mut control,
+    )?;
+    match scope.overlay.create_fresh(image, &mut control)? {
+        id @ EntityId::Relationship(_) => Ok(id),
+        EntityId::Node(_) => Err(StageError::InvalidInput.into()),
     }
 }
 

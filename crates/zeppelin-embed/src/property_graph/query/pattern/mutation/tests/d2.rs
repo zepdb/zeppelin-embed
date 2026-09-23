@@ -48,7 +48,10 @@ enum M {
     Remove(u32, &'static str),
     Label(u32, &'static str, bool),
     Delete(u32),
-    CreateNode(u32),
+    /// `CreateNode(output, labels)`.
+    CreateNode(u32, &'static [&'static str]),
+    /// `CreateRelationship(output, source, target, type)`.
+    CreateRelationship(u32, u32, u32, &'static str),
 }
 
 /// One operator kind.
@@ -64,6 +67,9 @@ enum K {
     Filter(u32),
     Sort(Vec<(u32, bool)>),
     Join,
+    /// `OptionalApply` with no predicate; the right input reads the left one
+    /// as its anchor.
+    Optional,
     Collect,
 }
 
@@ -133,17 +139,19 @@ macro_rules! run_spec {
                 _ => None,
             })
             .collect();
-        let mutation_names: Vec<Vec<Option<(usize, usize)>>> = spec
+        let mutation_names: Vec<Vec<Vec<(usize, usize)>>> = spec
             .operators
             .iter()
             .map(|(_, kind)| match kind {
                 K::Mutate(items) => items
                     .iter()
                     .map(|item| match item {
-                        M::Set(_, value, _) | M::Remove(_, value) | M::Label(_, value, _) => {
-                            Some(name(value))
-                        }
-                        M::Delete(_) | M::CreateNode(_) => None,
+                        M::Set(_, value, _)
+                        | M::Remove(_, value)
+                        | M::Label(_, value, _)
+                        | M::CreateRelationship(_, _, _, value) => vec![name(value)],
+                        M::CreateNode(_, labels) => labels.iter().map(|label| name(label)).collect(),
+                        M::Delete(_) => Vec::new(),
                     })
                     .collect(),
                 _ => Vec::new(),
@@ -154,6 +162,21 @@ macro_rules! run_spec {
             let (start, len) = range.expect("named plan item");
             GraphName::new(&names[start..start + len]).unwrap()
         };
+        let first = |ranges: &Vec<(usize, usize)>| named(ranges.first().copied());
+        // One label list per mutation item, in operator then item order.
+        let label_lists: Vec<Vec<GraphName<'_>>> = mutation_names
+            .iter()
+            .flatten()
+            .zip(spec.operators.iter().flat_map(|(_, kind)| match kind {
+                K::Mutate(items) => items.clone(),
+                _ => Vec::new(),
+            }))
+            .map(|(ranges, item)| match item {
+                M::CreateNode(..) => ranges.iter().map(|range| named(Some(*range))).collect(),
+                _ => Vec::new(),
+            })
+            .collect();
+        let mut label_list = label_lists.iter();
         let inputs: Vec<Vec<PlanNodeId>> = spec
             .operators
             .iter()
@@ -195,29 +218,40 @@ macro_rules! run_spec {
                 K::Mutate(items) => items
                     .iter()
                     .zip(ranges)
-                    .map(|(item, range)| match *item {
-                        M::Set(entity, _, value) => Mutation::SetProperty {
-                            entity: ExprId(entity),
-                            name: named(*range),
-                            value: ExprId(value),
-                        },
-                        M::Remove(entity, _) => Mutation::RemoveProperty {
-                            entity: ExprId(entity),
-                            name: named(*range),
-                        },
-                        M::Label(entity, _, present) => Mutation::SetLabel {
-                            entity: ExprId(entity),
-                            label: named(*range),
-                            present,
-                        },
-                        M::Delete(entity) => Mutation::Delete {
-                            entity: ExprId(entity),
-                            detach: false,
-                        },
-                        M::CreateNode(output) => Mutation::CreateNode {
-                            output: SlotId(output),
-                            labels: &[],
-                        },
+                    .map(|(item, range)| {
+                        let labels = label_list.next().expect("one label list per item");
+                        match *item {
+                            M::Set(entity, _, value) => Mutation::SetProperty {
+                                entity: ExprId(entity),
+                                name: first(range),
+                                value: ExprId(value),
+                            },
+                            M::Remove(entity, _) => Mutation::RemoveProperty {
+                                entity: ExprId(entity),
+                                name: first(range),
+                            },
+                            M::Label(entity, _, present) => Mutation::SetLabel {
+                                entity: ExprId(entity),
+                                label: first(range),
+                                present,
+                            },
+                            M::Delete(entity) => Mutation::Delete {
+                                entity: ExprId(entity),
+                                detach: false,
+                            },
+                            M::CreateNode(output, _) => Mutation::CreateNode {
+                                output: SlotId(output),
+                                labels: labels.as_slice(),
+                            },
+                            M::CreateRelationship(output, source, target, _) => {
+                                Mutation::CreateRelationship {
+                                    output: SlotId(output),
+                                    source: ExprId(source),
+                                    target: ExprId(target),
+                                    relationship_type: first(range),
+                                }
+                            }
+                        }
                     })
                     .collect(),
                 _ => Vec::new(),
@@ -273,6 +307,7 @@ macro_rules! run_spec {
                     K::Filter(predicate) => OperatorKind::Filter(ExprId(*predicate)),
                     K::Sort(_) => OperatorKind::Sort(&sort_keys[index]),
                     K::Join => OperatorKind::Join { predicate: None },
+                    K::Optional => OperatorKind::OptionalApply { predicate: None },
                     K::Collect => OperatorKind::Collect,
                 },
             })
@@ -285,6 +320,7 @@ macro_rules! run_spec {
         retain(&projections, &mut regions, &mut owners);
         retain(&sort_keys, &mut regions, &mut owners);
         retain(&mutations, &mut regions, &mut owners);
+        retain(&label_lists, &mut regions, &mut owners);
         run_spec!(@$($run)+, $view, $runtime, operators, expressions, regions, owners, $pattern_rows)
     }};
     (@read, $view:expr, $runtime:expr, $operators:ident, $expressions:ident, $regions:ident,
@@ -1232,12 +1268,13 @@ fn ze52_slice_d2_image_capacity_limit_rejects_without_partial_commit() {
     store.store.close().expect("close d2 store");
 }
 
-/// CREATE and DELETE are later slices. Under a real writer scope, any
-/// `Mutate` holding one of them, even beside a supported item, is refused
-/// when the pattern is built, before a row is pulled or anything is staged.
-/// Without a writer scope, even a supported `Mutate` is refused.
+/// DELETE is a later slice. Under a real writer scope, any `Mutate` holding
+/// a DELETE item, even beside a supported SET or CREATE item, is refused when
+/// the pattern is built, before a row is pulled or anything is staged.
+/// Without a writer scope, even a supported `Mutate` is refused. (CREATE was
+/// refused here too until slice D3 lifted it.)
 #[test]
-fn ze52_slice_d2_create_and_delete_items_are_rejected_at_build() {
+fn ze52_slice_d2_delete_items_are_rejected_at_build() {
     let store = D2Store::create(None);
     let nodes = three_nodes(&store);
     let before = store.generation();
@@ -1246,16 +1283,15 @@ fn ze52_slice_d2_create_and_delete_items_are_rejected_at_build() {
 
     for (label, items, expressions) in [
         ("delete", vec![M::Delete(0)], read_p.clone()),
-        ("create", vec![M::CreateNode(7)], read_p),
         (
             "set beside delete",
             vec![M::Set(0, "p", 2), M::Delete(0)],
             expressions.clone(),
         ),
         (
-            "create beside set",
-            vec![M::CreateNode(7), M::Set(0, "p", 2)],
-            expressions.clone(),
+            "create beside delete",
+            vec![M::CreateNode(7, &[]), M::Delete(0)],
+            read_p,
         ),
     ] {
         let spec = scan_mutate(items, 1, expressions);
@@ -1293,3 +1329,5 @@ fn ze52_slice_d2_create_and_delete_items_are_rejected_at_build() {
     assert_eq!(sorted(read(&store, &scan_p())), pairs(&nodes, &[1, 2, 3]));
     store.store.close().expect("close d2 store");
 }
+
+mod d3;

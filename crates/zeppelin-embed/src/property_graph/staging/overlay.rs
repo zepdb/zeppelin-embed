@@ -42,6 +42,19 @@ struct Entry<'a, 'batch> {
     target: BatchEntityRef<'batch>,
     image: Option<WriteImage<'a, 'batch>>,
     deleted: Option<GraphDeleteMode>,
+    /// Created by `create_fresh`: `target` names the identity this statement
+    /// allocated, and nothing about it is read from the admitted base.
+    fresh: bool,
+}
+impl Entry<'_, '_> {
+    /// The admitted-base identity this entry edits; `None` for every creation.
+    fn base(&self) -> Option<EntityId> {
+        if self.fresh {
+            None
+        } else {
+            self.target.existing()
+        }
+    }
 }
 /// Progressive private property/text overlay. Upstream bindings remain frozen;
 /// this interface cannot scan, traverse adjacency or introduce new bindings.
@@ -50,6 +63,8 @@ pub struct GraphBatchReadView<'a, 'batch> {
     identity: BaseIdentity,
     memory: &'a WriteMemory<'a>,
     entries: Arena<'a, Entry<'a, 'batch>>,
+    /// The base's allocation fences, advanced by every `create_fresh`.
+    high_waters: HighWaters,
     counters: OverlayCounters,
 }
 impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
@@ -72,6 +87,7 @@ impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
             identity: base.identity(),
             memory,
             entries: Arena::new(memory, capacity, control)?,
+            high_waters: base.high_waters(),
             counters: OverlayCounters::default(),
         })
     }
@@ -104,7 +120,42 @@ impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
             target,
             image: Some(image),
             deleted: None,
+            fresh: false,
         })
+    }
+    /// Creates one new unkeyed node or relationship and returns the identity
+    /// it will publish under. The identity comes from the same allocator and
+    /// the same admitted fences finalization uses for local creations, taken
+    /// now rather than at finalization so a query can bind it: later items
+    /// and later clauses of the statement address the entity as an ordinary
+    /// `Existing` reference, and every read finds its staged image first.
+    ///
+    /// The identity is private to the statement until publication. Dropping
+    /// the overlay, on any rejection, discards it with the advanced fences.
+    pub fn create_fresh(
+        &mut self,
+        image: WriteImage<'a, 'batch>,
+        control: &mut WriteControl<'_>,
+    ) -> Result<EntityId, StageError> {
+        control(WritePhase::Overlay)?;
+        let kind = match image {
+            WriteImage::Node(image) => image.shape().kind(),
+            WriteImage::Relationship { .. } => EntityKind::Relationship,
+        };
+        let mut high_waters = self.high_waters;
+        let id = structured::allocate(kind, &mut high_waters, control)?;
+        let target = match id {
+            EntityId::Node(id) => BatchEntityRef::Node(NodeRef::Existing(id)),
+            EntityId::Relationship(id) => BatchEntityRef::Relationship(RelRef::Existing(id)),
+        };
+        self.entries.push(Entry {
+            target,
+            image: Some(image),
+            deleted: None,
+            fresh: true,
+        })?;
+        self.high_waters = high_waters;
+        Ok(id)
     }
     /// Finalizes one Cypher statement: equal final images are NoOp, changed
     /// existing entities advance once, and consumed local IDs remain fenced.
@@ -171,6 +222,7 @@ impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
             target,
             image: Some(image),
             deleted: None,
+            fresh: false,
         })
     }
     /// Stages one tombstone; repeated deletion is one statement change.
@@ -198,6 +250,7 @@ impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
             target,
             image: None,
             deleted: Some(mode),
+            fresh: false,
         })
     }
     /// Reads the current pending property; absent is None and deletion is typed.
@@ -507,7 +560,9 @@ impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
         control(WritePhase::Validate)?;
         self.check_view()?;
         let base: &'a dyn AdmittedBase = self.base;
-        let mut high_waters = base.high_waters();
+        // Fences already advanced by `create_fresh`, so local creations
+        // allocate after every identity the statement has bound.
+        let mut high_waters = self.high_waters;
         let mut prepared = Arena::new(self.memory, self.entries.len(), control)?;
         let mut slots = Arena::new(self.memory, self.entries.len(), control)?;
         let mut keys = Arena::new(self.memory, self.entries.len(), control)?;
@@ -521,16 +576,18 @@ impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
         // before computing a target generation or assigning a fresh identity.
         for entry in &*self.entries {
             control(WritePhase::Validate)?;
-            let existing = entry.target.existing();
+            let existing = entry.base();
             let mut suppressed = existing.is_none() && entry.deleted.is_some();
             let endpoints = match entry.image {
                 Some(WriteImage::Relationship { source, target, .. }) => {
                     for reference in [source, target] {
                         let mut declared = false;
+                        let mut fresh = false;
                         for node in &*self.entries {
                             control(WritePhase::Validate)?;
                             if node.target == BatchEntityRef::Node(reference) {
                                 declared = true;
+                                fresh = node.fresh;
                                 if entry.deleted.is_none()
                                     && node.deleted == Some(GraphDeleteMode::Restrict)
                                 {
@@ -541,6 +598,7 @@ impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
                             }
                         }
                         match reference {
+                            NodeRef::Existing(_) if fresh => {}
                             NodeRef::Existing(id) => {
                                 self.check_existing(EntityId::Node(id), control)?
                             }
@@ -564,7 +622,7 @@ impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
                 .map(|id| base.entity(id, control)?.ok_or(StageError::MissingEntity))
                 .transpose()?;
             if let Some(current) = &current {
-                structured::checked_base(current, self.identity, high_waters)?;
+                structured::checked_base(current, self.identity, base.high_waters())?;
                 if Some(current.provenance.fields().incarnation) != existing {
                     return Err(StageError::ViewMismatch);
                 }
@@ -663,7 +721,7 @@ impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
         for entry in &*self.entries {
             control(WritePhase::Validate)?;
             if let (Some(EntityId::Node(id)), Some(GraphDeleteMode::Restrict)) =
-                (entry.target.existing(), entry.deleted)
+                (entry.base(), entry.deleted)
             {
                 control(WritePhase::Incident)?;
                 if base.has_live_incident(id, &removed, control)? {
@@ -699,7 +757,7 @@ impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
                     .as_mut_slice()
                     .get_mut(index)
                     .ok_or(StageError::InvalidInput)?;
-                if entry.target.existing().is_none() {
+                if entry.base().is_none() {
                     let endpoints = match entry.image {
                         Some(WriteImage::Relationship { source, target, .. }) => Some((
                             self.resolve_node(source, &slots, control)?.0,
@@ -720,13 +778,16 @@ impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
                         control,
                     )?,
                     Some(KeyDecision::Change(change)) => change.install(
-                        entry.target.existing().ok_or(StageError::MissingEntity)?,
+                        entry.base().ok_or(StageError::MissingEntity)?,
                         generation.ok_or(StageError::InvalidInput)?,
                         &mut || canonical_poll(control),
                     )?,
                     Some(KeyDecision::Replay(_)) => return Err(StageError::InvalidInput),
                     None => {
-                        let id = allocate(kind, &mut high_waters, control)?;
+                        let id = match entry.target.existing() {
+                            Some(id) if entry.fresh => id,
+                            _ => allocate(kind, &mut high_waters, control)?,
+                        };
                         let revision =
                             GraphRevision::new(1).map_err(|_| StageError::InvalidInput)?;
                         OperationProvenance::from_fields_with_control(
