@@ -329,8 +329,9 @@ pub(super) fn lexical(call: SearchCallId, generation: GraphGeneration, count: u6
 }
 
 impl<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g> for FixedHits {
-    fn search(
+    fn search<'s>(
         &mut self,
+        _: &'s crate::property_graph::storage::GraphReadView<'s, 'v, 'm, 'g>,
         invocation: &SearchInvocation<'_, '_, 'v, 'm, 'g>,
         hits: &mut QueryArena<'m, 'g, SearchHit>,
         _: &mut RuntimeContext<'v, 'm, 'g>,

@@ -1,6 +1,7 @@
 use super::RuntimeError;
 use crate::property_graph::query::expression::{ExpressionError, ExpressionFailure};
 use crate::property_graph::query::plan::PlanError;
+use crate::property_graph::retrieval::RetrievalError;
 use crate::property_graph::staging::StageError;
 use crate::property_graph::storage::tree::directory::TreeError;
 
@@ -12,6 +13,14 @@ pub(crate) enum NativeExecutionError {
     Plan(PlanError),
     Tree(TreeError),
     Stage(StageError),
+    /// A real `SearchAdapter`'s retrieval producer (ZE-62/63) refused.
+    Retrieval(RetrievalError),
+}
+
+impl From<RetrievalError> for NativeExecutionError {
+    fn from(error: RetrievalError) -> Self {
+        Self::Retrieval(error)
+    }
 }
 
 impl From<RuntimeError> for NativeExecutionError {
@@ -63,6 +72,9 @@ impl std::fmt::Display for NativeExecutionError {
             Self::Plan(error) => error.fmt(formatter),
             Self::Tree(error) => error.fmt(formatter),
             Self::Stage(error) => error.fmt(formatter),
+            // RetrievalError is a `pub(crate)` ZE-62/63 cause with no Display
+            // impl of its own; Debug is the honest, non-invented rendering.
+            Self::Retrieval(error) => write!(formatter, "{error:?}"),
         }
     }
 }
@@ -75,6 +87,7 @@ impl std::error::Error for NativeExecutionError {
             Self::Plan(error) => Some(error),
             Self::Tree(error) => Some(error),
             Self::Stage(error) => Some(error),
+            Self::Retrieval(_) => None,
         }
     }
 }

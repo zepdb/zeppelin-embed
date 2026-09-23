@@ -391,6 +391,34 @@ fn stage(error: &StageError) -> Kind {
     }
 }
 
+/// A real `SearchAdapter`'s ZE-62/63 retrieval producer refused. Most causes
+/// are internal-invariant classes that a correctly built adapter never
+/// triggers; the few reachable ones (limits, a store lacking a vector
+/// space, a stale resolved version) map to their nearest existing kind.
+fn retrieval(error: &crate::property_graph::retrieval::RetrievalError) -> Kind {
+    use crate::property_graph::retrieval::RetrievalError;
+    match error {
+        RetrievalError::Storage(error) => tree(error),
+        RetrievalError::Control(error) => runtime(error),
+        RetrievalError::Eligibility(error) => value(*error),
+        RetrievalError::Memory | RetrievalError::CandidateWindow { .. } => Kind::Limit,
+        RetrievalError::LexicalTerms { .. } => Kind::Limit,
+        RetrievalError::NoVectorSpace
+        | RetrievalError::UnindexedVectorSource
+        | RetrievalError::AnalyzerMismatch
+        | RetrievalError::MissingVersion(_)
+        | RetrievalError::Version(_) => Kind::Constraint,
+        RetrievalError::Dimension { .. } => Kind::Expression,
+        RetrievalError::Identity(_)
+        | RetrievalError::Vector(_)
+        | RetrievalError::Graph(_)
+        | RetrievalError::Lexical(_)
+        | RetrievalError::Fusion(_)
+        | RetrievalError::EligibilityMismatch
+        | RetrievalError::Invariant(_) => Kind::Corruption,
+    }
+}
+
 fn execution(error: &NativeExecutionError) -> Kind {
     match error {
         NativeExecutionError::Runtime(error) => runtime(error),
@@ -403,6 +431,7 @@ fn execution(error: &NativeExecutionError) -> Kind {
         NativeExecutionError::Plan(error) => plan(*error),
         NativeExecutionError::Tree(error) => tree(error),
         NativeExecutionError::Stage(error) => stage(error),
+        NativeExecutionError::Retrieval(error) => retrieval(error),
     }
 }
 

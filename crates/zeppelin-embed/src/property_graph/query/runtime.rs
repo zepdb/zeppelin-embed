@@ -155,6 +155,22 @@ impl WorkCounters {
     pub fn get(self, kind: WorkKind) -> u64 {
         self.values.get(kind as usize).copied().unwrap_or(0)
     }
+    /// Per-site work performed strictly after `before` was captured. Every
+    /// site is saturating: an adopted/shared budget never regresses a
+    /// counter, but a caller comparing counters from different runtimes
+    /// must not rely on this being meaningful.
+    pub(crate) fn since(self, before: Self) -> Self {
+        let mut values = [0_u64; KINDS.len()];
+        for (index, value) in values.iter_mut().enumerate() {
+            *value = self
+                .values
+                .get(index)
+                .copied()
+                .unwrap_or(0)
+                .saturating_sub(before.values.get(index).copied().unwrap_or(0));
+        }
+        Self { values }
+    }
 }
 /// Runtime rejection; errors contain no prepared/completed row collection.
 #[derive(Debug)]

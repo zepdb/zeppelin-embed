@@ -37,6 +37,7 @@ use super::super::plan::{SearchBounds, SearchCallId, SearchMode, SearchOutputs, 
 use super::relational::eligibility::eligible_set;
 use super::*;
 use crate::property_graph::GraphGeneration;
+use crate::property_graph::storage::GraphReadView;
 
 /// Plan validation admits at most this many syntactic calls per statement.
 pub(crate) const MAX_SEARCH_CALLS: usize = 8;
@@ -86,9 +87,16 @@ pub(crate) struct SearchInvocation<'a, 'e, 'v, 'm, 'g> {
 /// Typed search seam. An implementation ranks once, pushes at most `k` hits
 /// into the charged `hits` arena and returns the invocation's report. Any
 /// error fails the whole statement with no rows and no result.
+///
+/// `view` is the same admitted view the rest of the statement reads through;
+/// an adapter must never admit or open a second, independently generationed
+/// view. It is a method-generic parameter, not part of the trait's own
+/// lifetimes, because the adapter value is chosen by the caller before any
+/// view exists and must stay valid across every retry attempt.
 pub(crate) trait SearchAdapter<'v, 'm, 'g> {
-    fn search(
+    fn search<'s>(
         &mut self,
+        view: &'s GraphReadView<'s, 'v, 'm, 'g>,
         invocation: &SearchInvocation<'_, '_, 'v, 'm, 'g>,
         hits: &mut QueryArena<'m, 'g, SearchHit>,
         context: &mut RuntimeContext<'v, 'm, 'g>,
@@ -281,8 +289,11 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
         };
         let mut hits =
             QueryArena::new(context.memory(), k as usize).map_err(RuntimeError::Memory)?;
+        let view = self.view;
         let scope = self.search.as_mut().ok_or(PlanError::Search)?;
-        let report = scope.adapter.search(&invocation, &mut hits, context)?;
+        let report = scope
+            .adapter
+            .search(view, &invocation, &mut hits, context)?;
         if report.call != call || report.generation != generation || hits.len() > k as usize {
             return Err(RuntimeError::Batch.into());
         }

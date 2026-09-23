@@ -241,7 +241,14 @@ fn records(
             if report.lexical_leg == LegState::NotRequested {
                 return Err(CompletedError::Shape);
             }
-        } else if report.actual_tier.is_none()
+        } else if (report.actual_tier.is_none()
+            // ZE-197: membership alone proves there is nothing to rank, so
+            // an empty or unindexed vector leg carries no actual route. Any
+            // other vector leg state still requires a concrete tier.
+            && !matches!(
+                report.vector_leg,
+                LegState::NoEligibleMembers | LegState::NoIndexedPopulation
+            ))
             || report.vector_leg == LegState::NoQueryMatches
             || (report.vector_leg == LegState::Nonempty
                 && report.precision == ScorePrecision::NotApplicable)

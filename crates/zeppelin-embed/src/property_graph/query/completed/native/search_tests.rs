@@ -61,8 +61,9 @@ struct Scripted {
 const ADAPTER_FAILURE: WorkKind = WorkKind::VectorBytes;
 
 impl<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g> for Scripted {
-    fn search(
+    fn search<'s>(
         &mut self,
+        _: &'s crate::property_graph::storage::GraphReadView<'s, 'v, 'm, 'g>,
         invocation: &SearchInvocation<'_, '_, 'v, 'm, 'g>,
         hits: &mut QueryArena<'m, 'g, SearchHit>,
         context: &mut RuntimeContext<'v, 'm, 'g>,
@@ -148,6 +149,27 @@ fn approximate(call: SearchCallId, generation: GraphGeneration, count: u64) -> S
     }
 }
 
+/// ZE-197: a Vector report for an explicit empty eligible set, exactly as
+/// the real `rank_vector` (ZE-62, unchanged and closed: see
+/// `ze62_absent_restriction_differs_from_explicit_empty_set` and
+/// `report_for_exact` in `lifecycle::native_graph::tests::ranking`) reports
+/// it: `actual_tier: None`, because membership alone proves there is
+/// nothing eligible to rank, which is distinct from an actual route. The
+/// completed-result validator (`query::completed::validate::records`) must
+/// accept exactly this shape for a `NoEligibleMembers`/`NoIndexedPopulation`
+/// vector leg; it still rejects `None` for any other vector leg state.
+fn vector_empty(call: SearchCallId, generation: GraphGeneration, count: u64) -> SearchReport {
+    SearchReport {
+        kind: SearchKind::Vector,
+        actual_tier: None,
+        precision: ScorePrecision::NotApplicable,
+        coverage: CandidateCoverage::Exact,
+        vector_leg: LegState::NoEligibleMembers,
+        lexical_leg: LegState::NotRequested,
+        ..lexical(call, generation, count)
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Shape {
     /// Two independent calls joined, then projected to the two nodes only.
@@ -179,6 +201,7 @@ impl NativeReadConsumer<Outcome> for SearchConsumer {
         let join_inputs = [PlanNodeId(1), PlanNodeId(3)];
         let project_join = [PlanNodeId(4)];
         let coordinates = [ExprId(5), ExprId(6)];
+        let vector_coords = [ExprId(4), ExprId(5)];
         let no_members: [ExprId; 0] = [];
         let cartesian_projection = [
             Projection {
@@ -284,6 +307,10 @@ impl NativeReadConsumer<Outcome> for SearchConsumer {
                     ],
                     vec![PlanNodeId(1)],
                 ),
+                // ZE-197: a Vector call (not Text) with an explicit empty
+                // eligibility list, so the completed result must carry a
+                // Vector/Hybrid report through the validator's actual_tier
+                // check, which a Lexical report never exercises.
                 Shape::EmptyEligible => (
                     vec![
                         Operator {
@@ -292,7 +319,20 @@ impl NativeReadConsumer<Outcome> for SearchConsumer {
                         },
                         Operator {
                             inputs: &unit,
-                            kind: text(Some(ExprId(2))),
+                            kind: OperatorKind::Search {
+                                call: SearchCallId(0),
+                                request: SearchRequest::Vector {
+                                    vector: ExprId(2),
+                                    k: ExprId(0),
+                                    mode: SearchMode::Default,
+                                    eligible: Some(ExprId(1)),
+                                },
+                                outputs: SearchOutputs {
+                                    node: Some(SlotId(0)),
+                                    distance: Some(SlotId(1)),
+                                    ..SearchOutputs::default()
+                                },
+                            },
                         },
                         Operator {
                             inputs: &first_search,
@@ -300,10 +340,12 @@ impl NativeReadConsumer<Outcome> for SearchConsumer {
                         },
                     ],
                     vec![
-                        Expression::Literal(Literal::String(&query)),
                         Expression::Literal(Literal::I64(2)),
                         Expression::List(&no_members),
+                        Expression::List(&vector_coords),
                         Expression::Slot(SlotId(0)),
+                        Expression::Literal(Literal::F64(1.0)),
+                        Expression::Literal(Literal::F64(0.0)),
                     ],
                     vec![PlanNodeId(1)],
                 ),
@@ -325,6 +367,7 @@ impl NativeReadConsumer<Outcome> for SearchConsumer {
             RetainedRegion::slice(&join_inputs).unwrap(),
             RetainedRegion::slice(&project_join).unwrap(),
             RetainedRegion::slice(&coordinates).unwrap(),
+            RetainedRegion::slice(&vector_coords).unwrap(),
             RetainedRegion::slice(&cartesian_projection).unwrap(),
             RetainedRegion::slice(&single_projection).unwrap(),
         ];
@@ -371,6 +414,7 @@ impl NativeReadConsumer<Outcome> for SearchConsumer {
             RetainedAllocation::array(&join_inputs).unwrap(),
             RetainedAllocation::array(&project_join).unwrap(),
             RetainedAllocation::array(&coordinates).unwrap(),
+            RetainedAllocation::array(&vector_coords).unwrap(),
             RetainedAllocation::array(&cartesian_projection).unwrap(),
             RetainedAllocation::array(&single_projection).unwrap(),
         ];
@@ -566,7 +610,7 @@ fn ze53_s1_limit_zero_still_invokes_and_reports() {
 }
 
 #[test]
-fn ze53_s1_empty_eligible_set_yields_zero_rows_and_one_report() {
+fn ze53_s1_empty_eligible_vector_set_yields_zero_rows_and_one_report() {
     let directory = tempfile::tempdir().expect("search store");
     let (store, _) = fixture(directory.path());
     let (outcome, seen) = run(
@@ -574,7 +618,7 @@ fn ze53_s1_empty_eligible_set_yields_zero_rows_and_one_report() {
         Shape::EmptyEligible,
         vec![Script {
             hits: vec![],
-            report: lexical,
+            report: vector_empty,
             fail: false,
         }],
     );
@@ -591,8 +635,52 @@ fn ze53_s1_empty_eligible_set_yields_zero_rows_and_one_report() {
     assert_eq!(result.metadata().rows, 0);
     assert_eq!(
         result.pools().reports,
-        [lexical(SearchCallId(0), result.metadata().generation, 0)]
+        [vector_empty(
+            SearchCallId(0),
+            result.metadata().generation,
+            0
+        )]
     );
+}
+
+/// ZE-197 discrimination: `actual_tier: None` is accepted only for the two
+/// leg states that mean "nothing eligible to rank". A `None` tier paired
+/// with any other vector leg (here, `Nonempty`, which a real producer would
+/// never emit) is still a `CompletedError::Shape` violation, so the ZE-197
+/// fix narrowly targets the empty-eligible gap and does not accept every
+/// missing tier.
+#[test]
+fn ze197_missing_tier_still_rejected_for_a_nonempty_vector_leg() {
+    fn broken_nonempty(
+        call: SearchCallId,
+        generation: GraphGeneration,
+        count: u64,
+    ) -> SearchReport {
+        SearchReport {
+            actual_tier: None,
+            precision: ScorePrecision::Original,
+            vector_leg: LegState::Nonempty,
+            ..vector_empty(call, generation, count)
+        }
+    }
+    let directory = tempfile::tempdir().expect("search store");
+    let (store, _) = fixture(directory.path());
+    let (outcome, _) = run(
+        &store,
+        Shape::EmptyEligible,
+        vec![Script {
+            hits: vec![],
+            report: broken_nonempty,
+            fail: false,
+        }],
+    );
+    let Err(failure) = outcome else {
+        panic!("a Vector report with a Nonempty leg and no actual_tier must not produce a result");
+    };
+    assert!(matches!(
+        failure.error,
+        NativeResultError::Completed(CompletedError::Shape)
+    ));
 }
 
 #[test]

@@ -129,8 +129,9 @@ pub struct Executed(());
 pub(crate) enum NoSearch {}
 
 impl<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g> for NoSearch {
-    fn search(
+    fn search<'s>(
         &mut self,
+        _: &'s GraphReadView<'s, 'v, 'm, 'g>,
         _: &SearchInvocation<'_, '_, 'v, 'm, 'g>,
         _: &mut QueryArena<'m, 'g, SearchHit>,
         _: &mut RuntimeContext<'v, 'm, 'g>,
