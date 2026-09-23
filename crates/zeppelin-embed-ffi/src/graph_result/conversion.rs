@@ -236,6 +236,12 @@ impl<'m, 'g> FinalizedNativeResponse<'m, 'g> {
     pub(crate) fn into_parts(self) -> (PreparedResponse<'m, 'g>, SuccessfulOutcome) {
         (self.response, self.outcome)
     }
+    /// Write path: detaches the finalized owner before commit and discards
+    /// the provisional copy-time outcome; only the post-commit settle
+    /// decides the published one.
+    pub(crate) fn into_pending(self) -> PendingResponse {
+        self.response.detach()
+    }
 }
 
 /// Copies one authentic native result and converts it under the same context.

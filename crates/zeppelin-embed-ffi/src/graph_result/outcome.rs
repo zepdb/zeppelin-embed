@@ -69,6 +69,20 @@ impl OutcomeCell {
         self.state.set(next);
         Ok(())
     }
+    /// A cell whose potential write has already begun: Indeterminate until
+    /// the coordinator's unique, single-use attempt resolves it.
+    pub(super) const fn attempting() -> Self {
+        Self {
+            state: Cell::new(OperationOutcome::Indeterminate),
+        }
+    }
+    /// Infallible resolution of an Indeterminate attempt. Only the unique
+    /// consuming `WriteAttempt` calls it, at most once, so the state it
+    /// replaces is always Indeterminate and every target is a valid
+    /// transition from it.
+    pub(super) fn resolve_attempt(&self, outcome: OperationOutcome) {
+        self.state.set(outcome);
+    }
     /// Only a coordinator's definite no-effect result permits this transition.
     /// Never call it merely because cancellation, panic, or delivery failed.
     pub fn record_not_committed(&self) -> Result<(), OutcomeTransitionError> {

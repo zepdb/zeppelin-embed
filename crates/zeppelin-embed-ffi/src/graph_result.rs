@@ -10,11 +10,13 @@ use zeppelin_embed::property_graph::query::runtime::{RuntimeContext, RuntimeErro
 mod outcome;
 pub use outcome::{OperationOutcome, OutcomeCell, OutcomeTransitionError};
 pub(crate) mod conversion;
+mod coordinator;
+pub use coordinator::{GuardedWrite, WriteAttempt, WriteInterrupted, run_potential_write};
 mod registration;
 /// Scoped allocation-site injection for the canonical opt-in test runner.
 #[cfg(feature = "graph-result-test-support")]
 pub mod test_support;
-pub use registration::{FreeReport, GraphResultRegistry, PreparedResponse};
+pub use registration::{FreeReport, GraphResultRegistry, PendingResponse, PreparedResponse};
 
 /// A failure before publication or a rejected free. No partial result escapes.
 #[derive(Debug)]
@@ -252,6 +254,32 @@ impl SuccessfulOutcome {
         root.disposition = disposition as u32;
         root.has_changed_generation = u32::from(generation.is_some());
         root.changed_generation = generation.unwrap_or(0);
+    }
+}
+/// The decided outcome of a potential write, known only after its commit
+/// tail has run. A read or an unknown outcome never settles a result.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WriteSettlement {
+    /// The commit published this durable changed generation.
+    Committed(std::num::NonZeroU64),
+    /// All operations replayed existing durable receipts.
+    Replayed,
+    /// No durable change.
+    NoOp,
+}
+impl WriteSettlement {
+    const fn outcome(self) -> SuccessfulOutcome {
+        match self {
+            Self::Committed(changed) => SuccessfulOutcome::Committed(changed),
+            Self::Replayed => SuccessfulOutcome::Replayed,
+            Self::NoOp => SuccessfulOutcome::NoOp,
+        }
+    }
+    const fn changed(self) -> Option<u64> {
+        match self {
+            Self::Committed(changed) => Some(changed.get()),
+            Self::Replayed | Self::NoOp => None,
+        }
     }
 }
 /// Canonical empty descriptor; no backing and no registry ownership.

@@ -2177,3 +2177,103 @@ fn graph_result_native_private_drop_and_source_independence_are_heap_flat() {
         assert_eq!(audit.bytes, 0);
     });
 }
+
+#[test]
+fn graph_result_native_provisional_write_settles_through_pending_owner() {
+    use zeppelin_embed::property_graph::staging::ItemReceipt;
+
+    let pending = super::super::tests::with_context(|context| {
+        // A write statement copies its result before commit with a
+        // provisional NoOp and the admitted records (generation 0).
+        let nodes = [
+            Node {
+                id: NodeId::new(3).unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                generation: GraphGeneration::new(0),
+                key: None,
+                labels: Span::new(0, 0),
+                properties: Span::new(0, 0),
+                text: None,
+                vector: None,
+            },
+            Node {
+                id: NodeId::new((1_u128 << 64) | 2).unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                generation: GraphGeneration::new(0),
+                key: None,
+                labels: Span::new(0, 0),
+                properties: Span::new(0, 0),
+                text: None,
+                vector: None,
+            },
+        ];
+        let values = [Value::Node(1)];
+        let columns = [Column {
+            name: Span::new(0, 0),
+            kinds: ValueKinds::NODE,
+        }];
+        let cells = [ValueIndex(0)];
+        let source = NativeSource {
+            input: ResultInput {
+                view: context.view(),
+                pools: Pools {
+                    values: &values,
+                    columns: &columns,
+                    cells: &cells,
+                    nodes: &nodes,
+                    ..Pools::default()
+                },
+                rows: 1,
+                outcome: Outcome::NoOp,
+            },
+            calls: Cell::new(0),
+        };
+        let baseline = context.memory().reserved_bytes();
+        let pending = finalize_native(execute_conversion(context, &source, 1)).into_pending();
+        assert_eq!(context.memory().reserved_bytes(), baseline);
+        let mut private = pending.descriptor();
+        assert!(matches!(
+            REGISTRY.free(&mut private),
+            Err(OwnerError::InvalidOwner)
+        ));
+        pending
+    });
+    // The query, its memory and its store are gone; settle still works.
+    let receipts = [ItemReceipt {
+        entity: EntityId::Node(NodeId::new((1_u128 << 64) | 2).unwrap()),
+        revision: GraphRevision::new(2).unwrap(),
+        generation: GraphGeneration::new(1),
+        replayed: false,
+    }];
+    let committed = WriteSettlement::Committed(std::num::NonZeroU64::new(1).unwrap());
+    let guarded = run_potential_write(|attempt| attempt.settle(pending, &receipts, committed));
+    assert_eq!(
+        guarded.outcome,
+        OperationOutcome::Success(SuccessfulOutcome::Committed(
+            std::num::NonZeroU64::new(1).unwrap()
+        ))
+    );
+    let mut output = guarded.value.unwrap();
+    assert_eq!(
+        (
+            output.disposition,
+            output.has_changed_generation,
+            output.changed_generation
+        ),
+        (2, 1, 1)
+    );
+    let c_nodes = unsafe { output_slice(output.pool.nodes, output.pool.node_count) };
+    assert_eq!(
+        (c_nodes[0].revision, c_nodes[0].last_change_generation),
+        (1, 0)
+    );
+    assert_eq!(
+        (
+            c_nodes[1].id.high,
+            c_nodes[1].revision,
+            c_nodes[1].last_change_generation
+        ),
+        (1, 2, 1)
+    );
+    REGISTRY.free(&mut output).unwrap();
+}

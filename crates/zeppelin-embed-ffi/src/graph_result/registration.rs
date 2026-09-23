@@ -5,6 +5,8 @@ use std::cell::UnsafeCell;
 use std::mem::{ManuallyDrop, size_of};
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use zeppelin_embed::property_graph::EntityId;
+use zeppelin_embed::property_graph::staging::ItemReceipt;
 
 // Shared across registry instances, including all-empty arenas.
 static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
@@ -383,10 +385,131 @@ impl PreparedResponse<'_, '_> {
             root
         }
     }
+    /// Detaches the still-private owner from its query before a possibly
+    /// durable commit, exactly as core's `UnsettledWriteResult` does: the
+    /// query charge is released here and the registered node stays private,
+    /// so free keeps refusing it. No allocation or registry gate occurs.
+    pub fn detach(self) -> PendingResponse {
+        let prepared = ManuallyDrop::new(self); // abort ownership moves below
+        // SAFETY: unique prepared ownership; the charge is moved out once and
+        // the node pointer moves into the one pending owner (Drop = abort).
+        let charge = unsafe { std::ptr::read(&prepared.charge) };
+        let pending = PendingResponse {
+            registry: prepared.registry,
+            node: prepared.node,
+        };
+        drop(charge);
+        pending
+    }
 }
 impl Drop for PreparedResponse<'_, '_> {
     fn drop(&mut self) {
         self.registry.abort(self.node);
+    }
+}
+
+/// Registered, still-private C owner of a write result whose outcome is not
+/// known yet. It has no query, store, snapshot or caller lifetime; its query
+/// charge was released at detach. Free rejects it (`InvalidOwner`) until the
+/// coordinator's infallible settle publishes it. Drop aborts: the node is
+/// unlinked and both allocations are released, as for a prepared owner.
+pub struct PendingResponse {
+    registry: &'static GraphResultRegistry,
+    node: NonNull<Node>,
+}
+impl PendingResponse {
+    /// Read-only descriptor snapshot. Free rejects it; after settle it is a
+    /// stale copy whose outcome fields differ, so free still rejects it.
+    pub fn descriptor(&self) -> ZeGraphResponse {
+        // Unique pending owner; root is still private and cannot be freed.
+        unsafe { *(*self.node.as_ptr()).root.get() }
+    }
+    /// Actual retained heap bytes: padded arena plus registry node.
+    pub fn allocation_bytes(&self) -> usize {
+        unsafe { (*self.node.as_ptr()).arena.layout.size() + size_of::<Node>() }
+    }
+    /// Stamps the decided outcome and publishes. Infallible and allocation-
+    /// free, because it runs after an irreversible commit: no registry gate,
+    /// allocation, payload copy or callback. Mirrors core's
+    /// `UnsettledWriteResult::settle`: a receipt newer than the admitted
+    /// generation names an entity this write changed, which the commit
+    /// published at the settled generation; every other receipt keeps its
+    /// own generation. Each receipt's revision is stamped. Entities absent
+    /// from the result, or never staged, are unchanged. Node and
+    /// relationship pools keep core's ascending id order, so lookup is a
+    /// binary search on (high, low). The receipts pool is not rewritten.
+    /// Only the outcome coordinator may call this, after recording the same
+    /// outcome in its cell.
+    pub(super) fn settle(
+        self,
+        receipts: &[ItemReceipt],
+        settlement: WriteSettlement,
+    ) -> ZeGraphResponse {
+        let pending = ManuallyDrop::new(self); // disarm abort before publication
+        let node = pending.node.as_ptr();
+        // SAFETY: unique pending ownership excludes another settle/abort, and
+        // acquire-side free refuses the private node, so the root and its
+        // arena are exclusively ours. Pool pointers and counts were written
+        // by the checked initializer into this node's own arena. Copy the
+        // root before the release-store: a concurrent free may destroy the
+        // node immediately afterward, so never dereference it again.
+        unsafe {
+            let root = &mut *(*node).root.get();
+            let nodes = pool_mut(root.pool.nodes, root.pool.node_count);
+            let relationships = pool_mut(root.pool.relationships, root.pool.relationship_count);
+            let admitted = root.admitted_generation;
+            let changed = settlement.changed();
+            for receipt in receipts {
+                let generation = match changed {
+                    Some(changed) if receipt.generation.get() > admitted => changed,
+                    _ => receipt.generation.get(),
+                };
+                let revision = receipt.revision.get();
+                match receipt.entity {
+                    EntityId::Node(id) => {
+                        let key = split(id.get());
+                        if let Ok(index) =
+                            nodes.binary_search_by(|node| (node.id.high, node.id.low).cmp(&key))
+                            && let Some(node) = nodes.get_mut(index)
+                        {
+                            node.revision = revision;
+                            node.last_change_generation = generation;
+                        }
+                    }
+                    EntityId::Relationship(id) => {
+                        let key = split(id.get());
+                        if let Ok(index) = relationships.binary_search_by(|relationship| {
+                            (relationship.id.high, relationship.id.low).cmp(&key)
+                        }) && let Some(relationship) = relationships.get_mut(index)
+                        {
+                            relationship.revision = revision;
+                            relationship.last_change_generation = generation;
+                        }
+                    }
+                }
+            }
+            settlement.outcome().apply(root);
+            let published = *root;
+            (*node).published.store(true, Ordering::Release);
+            published
+        }
+    }
+}
+impl Drop for PendingResponse {
+    fn drop(&mut self) {
+        self.registry.abort(self.node);
+    }
+}
+fn split(id: u128) -> (u64, u64) {
+    ((id >> 64) as u64, id as u64)
+}
+// Caller holds unique private ownership of the arena that `pointer` names
+// with exactly `count` initialized elements; empty pools publish null.
+unsafe fn pool_mut<'a, T>(pointer: *const T, count: usize) -> &'a mut [T] {
+    if count == 0 || pointer.is_null() {
+        &mut []
+    } else {
+        unsafe { std::slice::from_raw_parts_mut(pointer.cast_mut(), count) }
     }
 }
 
