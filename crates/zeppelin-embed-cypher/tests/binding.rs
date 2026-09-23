@@ -470,10 +470,12 @@ fn selected_original_statements_bind_without_claiming_execution() {
             &mut Budget::default(),
             |_| Ok(()),
         );
+        // The only `reject` rows are Match1[6] and Match2[8], whose original
+        // expected error is SyntaxError InvalidParameterUse.
         if label.starts_with("reject ") {
             assert_eq!(
                 result.unwrap_err().kind,
-                zeppelin_embed_cypher::ErrorKind::Unsupported,
+                zeppelin_embed_cypher::ErrorKind::InvalidParameterUse,
                 "{label}"
             );
             rejected += 1;

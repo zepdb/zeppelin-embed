@@ -605,7 +605,8 @@ fn selected_original_tck_statements_parse_without_claiming_execution_conformance
         let (label, query) = part.split_once('\n').unwrap();
         let result = parse(query);
         if label.starts_with("reject ") {
-            assert!(result.is_err(), "{label}: accepted {query}");
+            let error = result.expect_err(label);
+            assert_eq!(error.kind, ErrorKind::InvalidParameterUse, "{label}");
             rejections += 1;
         } else {
             result.unwrap_or_else(|error| panic!("{label}: {error:?}\n{query}"));

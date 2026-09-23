@@ -395,7 +395,10 @@ impl Parser<'_> {
             self.append(&mut items, props)?;
         }
         if self.kind() == Some(Kind::Parameter) {
-            return Err(self.error(ErrorKind::Unsupported, "whole-map pattern parameter"));
+            return Err(self.error(
+                ErrorKind::InvalidParameterUse,
+                "whole-map pattern parameter",
+            ));
         }
         self.expect(Kind::RParen, "expected closing node parenthesis")?;
         self.add(NodeKind::NodePattern { variable }, start, items)
@@ -467,7 +470,10 @@ impl Parser<'_> {
                 self.append(&mut parts, props)?;
             }
             if self.kind() == Some(Kind::Parameter) {
-                return Err(self.error(ErrorKind::Unsupported, "whole-map pattern parameter"));
+                return Err(self.error(
+                    ErrorKind::InvalidParameterUse,
+                    "whole-map pattern parameter",
+                ));
             }
             self.expect(Kind::RBracket, "expected closing relationship bracket")?;
         }

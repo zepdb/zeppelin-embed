@@ -181,12 +181,13 @@ fn ze56_original_read_tck_compile_errors_are_refused_before_execution() {
             ),
             Ok(_) => panic!("{}: expected compile error, executed", scenario.coordinate),
         };
-        // The parser refuses a parameter in pattern-property position as a
-        // whole-map parameter, before binding; the binder refuses reuse.
+        // The parser refuses a parameter in pattern-property position with
+        // the TCK's own category, before binding; the binder refuses reuse.
         let expected = match original.as_str() {
-            "SyntaxError InvalidParameterUse" => {
-                (ErrorKind::Unsupported, "whole-map pattern parameter")
-            }
+            "SyntaxError InvalidParameterUse" => (
+                ErrorKind::InvalidParameterUse,
+                "whole-map pattern parameter",
+            ),
             "SyntaxError RelationshipUniquenessViolation" => (
                 ErrorKind::RelationshipUniqueness,
                 "relationship reused in one MATCH",

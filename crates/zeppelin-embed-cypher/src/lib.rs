@@ -44,6 +44,7 @@ pub struct Span {
 pub enum ErrorKind {
     Syntax,
     Unsupported,
+    InvalidParameterUse,
     InvalidLiteral,
     InvalidRange,
     DuplicateProperty,
