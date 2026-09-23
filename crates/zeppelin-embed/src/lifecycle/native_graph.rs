@@ -1998,6 +1998,7 @@ pub(crate) mod tests {
     #[cfg(test)]
     mod process_lock;
     pub(crate) mod publication;
+    mod ranking;
     pub(crate) mod recovery;
     mod retrieval;
     mod sparse;

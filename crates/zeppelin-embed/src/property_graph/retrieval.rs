@@ -6,6 +6,8 @@
 
 use super::staging::NormalizedDelta;
 use super::{EntityId, GraphRevision, NodeId};
+
+pub(crate) mod rank;
 use crate::ingest::{DocId, DocumentVersion, Revision};
 use crate::lifecycle::materialize::{VersionMismatch, require_document_version};
 use crate::lifecycle::prepared::{VectorValidationError, validate_vector_coordinates};
@@ -61,11 +63,25 @@ pub(crate) enum RetrievalError {
     Control(RuntimeError),
     Eligibility(QueryError),
     NoVectorSpace,
-    Dimension { expected: usize, actual: usize },
+    Dimension {
+        expected: usize,
+        actual: usize,
+    },
     Vector(crate::quant::QuantError),
     MissingVersion(DocumentVersion),
     Version(VersionMismatch),
     Memory,
+    /// The selected method must retain more candidates than the caller allowed.
+    CandidateWindow {
+        required: usize,
+        window: usize,
+    },
+    /// A raw V1 vector source cannot serve a quantized or approximate route.
+    UnindexedVectorSource,
+    /// Existing graph kernel refusal, preserved without reinterpretation.
+    Graph(crate::graph::search::GraphSearchError),
+    /// A retrieval contract was violated by admitted state.
+    Invariant(&'static str),
 }
 
 impl From<TreeError> for RetrievalError {
@@ -86,6 +102,7 @@ pub(crate) enum PreparedEligibility<'a> {
 }
 
 pub(crate) struct PreparedNativeVector<'q, 'e> {
+    view: *const crate::property_graph::query::QueryView,
     coordinates: &'q [f32],
     mode: SearchMode,
     eligibility: PreparedEligibility<'e>,
@@ -214,6 +231,7 @@ impl<'view, 's, 'lease, 'm, 'g> NativeRetrievalContext<'view, 's, 'lease, 'm, 'g
             VectorValidationError::Control(error) => RetrievalError::Control(error),
         })?;
         Ok(PreparedNativeVector {
+            view: self.query_view,
             coordinates,
             mode,
             eligibility,

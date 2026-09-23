@@ -525,6 +525,23 @@ impl<'a> TreeResources<'a> {
         }
         Ok(())
     }
+    /// Charges query-owned retrieval work to the same cumulative runtime. There
+    /// is no silent direct-control path: scoring requires a query runtime.
+    #[cfg(feature = "graph-cypher")]
+    pub(crate) fn charge_query_work(
+        &mut self,
+        kind: WorkKind,
+        units: u64,
+    ) -> Result<(), TreeError> {
+        match &mut self.control {
+            TreeControl::Query { context, .. } => {
+                context.charge(kind, units).map_err(TreeError::Runtime)
+            }
+            TreeControl::Direct { .. } => {
+                Err(TreeError::Invalid("query work requires a query runtime"))
+            }
+        }
+    }
     /// Exact charged work, including work completed before an error.
     pub const fn work(&self) -> u64 {
         self.work
