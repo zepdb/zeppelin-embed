@@ -454,5 +454,8 @@ impl std::error::Error for GraphStoreError {
     }
 }
 
+mod get;
+pub use get::{GraphGetOptions, GraphNodesResult, GraphRelationshipsResult};
+
 #[cfg(test)]
 mod tests;
