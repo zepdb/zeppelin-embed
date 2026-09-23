@@ -356,6 +356,20 @@ impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
         self.check_view()?;
         Ok(Some(relationship_type))
     }
+    /// The whole image a prior clause of this statement staged for `target`.
+    /// `None` means nothing is staged, so the caller must read its own
+    /// admitted base; a target already deleted in this statement is typed.
+    pub fn pending_image(
+        &mut self,
+        target: BatchEntityRef<'batch>,
+        control: &mut WriteControl<'_>,
+    ) -> Result<Option<WriteImage<'a, 'batch>>, StageError> {
+        control(WritePhase::Overlay)?;
+        self.check_view()?;
+        let image = self.staged(target, control)?;
+        self.check_view()?;
+        Ok(image)
+    }
     /// Scans the staged entries once, charging one examined descriptor per
     /// entry. `None` means no clause has staged `target`; a target already
     /// deleted in this statement is typed.

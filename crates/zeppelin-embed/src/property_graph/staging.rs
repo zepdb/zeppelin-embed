@@ -4,9 +4,14 @@ use super::storage::artifact::ArtifactId;
 use super::*;
 mod bounded;
 mod encode;
+mod images;
 mod memory;
 mod overlay;
 mod symbols;
+pub use images::{
+    NodeImageBudget, NodeImageBuilder, RelationshipImageBudget, RelationshipImageBuilder,
+    StatementImages,
+};
 pub use memory::{WriteAdoptionError, WriteMemory, WriteReservation};
 pub use overlay::{BatchEntityRef, GraphBatchReadView, OverlayCounters};
 mod result;

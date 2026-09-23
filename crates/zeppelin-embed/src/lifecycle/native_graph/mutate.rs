@@ -18,7 +18,7 @@ use crate::property_graph::query::runtime::{
 };
 use crate::property_graph::resources::GraphResources;
 use crate::property_graph::staging::{
-    GraphBatchReadView, StageError, WriteControl, WriteLimits, WriteMemory,
+    GraphBatchReadView, StageError, StatementImages, WriteControl, WriteLimits, WriteMemory,
 };
 use crate::property_graph::storage::memory::StorageMemory;
 use crate::property_graph::storage::tree::directory::{TreeError, TreeResources};
@@ -36,12 +36,20 @@ use std::sync::atomic::Ordering;
 /// targets, plus the writer overlay it stages into. The overlay is handed over
 /// by value and returned by value: an error therefore drops it, and no partial
 /// statement can reach the commit tail.
+///
+/// The view, the overlay and the statement image arena share one region `'w`:
+/// an image built from the arena is borrowed for `'w`, which is exactly as long
+/// as the overlay that retains it, and a pattern built over the view can hold
+/// both. The arena's own lifetime `'i` stays separate because the arena is
+/// interior-mutable, and therefore invariant, and has drop glue; tying it to
+/// `'w` would require borrowing it for as long as it exists.
 pub(crate) trait NativeMutationConsumer<T> {
-    fn consume<'s, 'lease, 'm, 'g, 'w>(
+    fn consume<'lease, 'm, 'g, 'w, 'i>(
         &mut self,
-        view: &GraphReadView<'s, 'lease, 'm, 'g>,
+        view: &'w GraphReadView<'w, 'lease, 'm, 'g>,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
         overlay: GraphBatchReadView<'w, 'static>,
+        images: &'w StatementImages<'i>,
         control: &mut WriteControl<'_>,
     ) -> Result<(T, GraphBatchReadView<'w, 'static>), NativeExecutionError>;
 }
@@ -129,7 +137,7 @@ impl crate::lifecycle::Store {
     /// therefore be re-runnable; it is not told which attempt it is on.
     #[allow(
         clippy::too_many_arguments,
-        reason = "one admission carries its control, limits and four capacities"
+        reason = "one admission carries its control, limits and five capacities"
     )]
     pub(crate) fn with_native_mutation<T, C: NativeMutationConsumer<T>>(
         &self,
@@ -139,6 +147,7 @@ impl crate::lifecycle::Store {
         source_slots: usize,
         lazy_targets: usize,
         overlay_capacity: usize,
+        image_capacity: usize,
         mut consumer: C,
     ) -> Result<(T, NativeMutationReport), NativeMutationError> {
         self.native_graph.require_writable()?;
@@ -215,6 +224,15 @@ impl crate::lifecycle::Store {
             let view = GraphReadView::new(&query_source, &catalog)?;
 
             let mut write_control = |phase| checkpoint(control, phase);
+            // Declared before the overlay so it outlives the staged batch: a
+            // replacement image, and any new symbol name it introduces, is
+            // borrowed from this arena until `commit_staged_batch` returns.
+            let images = StatementImages::new(
+                &write_memory,
+                admitted.document(),
+                image_capacity,
+                &mut write_control,
+            )?;
             let overlay = GraphBatchReadView::new(
                 &base,
                 &write_memory,
@@ -227,7 +245,8 @@ impl crate::lifecycle::Store {
             // `?` on the call it guards, exactly as the structured writer
             // does, so the typed root cause wins over the opaque rejection it
             // caused.
-            let consumed = consumer.consume(&view, &mut runtime, overlay, &mut write_control);
+            let consumed =
+                consumer.consume(&view, &mut runtime, overlay, &images, &mut write_control);
             if let Some(error) = base.take_error() {
                 return Err(NativeGraphError::Stage(StageError::NativeStorage(error)).into());
             }

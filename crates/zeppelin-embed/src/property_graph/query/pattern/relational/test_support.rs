@@ -1807,6 +1807,11 @@ pub fn run_actual_probe(seed: u64) -> Result<NativeRelationalProbeReport, String
 /// each of those explicitly so a different occurrence suite can tighten a
 /// capacity, wrap the source in an observing `PullOperator` or report through
 /// its own failure type.
+///
+/// The `mutation = scope;` form builds the pattern with
+/// `NativePattern::new_with_mutation` over a real writer scope, drives the
+/// unwrapped pattern, and evaluates to `(result, overlay)`: the overlay the
+/// pattern staged into, or `None` when the pattern was refused at build time.
 #[allow(
     unused_macros,
     reason = "only the cfg(test) occurrence suites expand this helper"
@@ -1865,7 +1870,61 @@ macro_rules! execute_relational_plan {
     ($view:expr, $runtime:expr, $operators:ident, $expressions:ident,
      $regions:expr, $owners:expr, $completion:expr,
      $pattern_capacity:expr, $execution_capacity:expr,
-     $build:expr, $run:expr, $wrap:expr, $owner:ident) => {{
+     $build:expr, $run:expr, $wrap:expr, $owner:ident) => {
+        execute_relational_plan!(
+            @admit $runtime, $operators, $expressions, $regions, $owners, $owner,
+            (admitted, root) => {
+                match NativePattern::new($view, &admitted, root, &[], $pattern_capacity, $runtime) {
+                    Err(error) => Err($build(error)),
+                    Ok(pattern) => {
+                        let mut source = $wrap(pattern);
+                        execute_in(
+                            $runtime,
+                            &admitted,
+                            &mut source,
+                            $completion,
+                            $execution_capacity,
+                        )
+                        .map_err($run)
+                    }
+                }
+            }
+        )
+    };
+    (mutation = $scope:expr; $view:expr, $runtime:expr, $operators:ident, $expressions:ident,
+     $regions:expr, $owners:expr, $completion:expr,
+     $pattern_capacity:expr, $execution_capacity:expr,
+     $build:expr, $run:expr, $owner:ident) => {
+        execute_relational_plan!(
+            @admit $runtime, $operators, $expressions, $regions, $owners, $owner,
+            (admitted, root) => {
+                match NativePattern::new_with_mutation(
+                    $view,
+                    &admitted,
+                    root,
+                    &[],
+                    $pattern_capacity,
+                    $runtime,
+                    $scope,
+                ) {
+                    Err(error) => (Err($build(error)), None),
+                    Ok(mut pattern) => {
+                        let result = execute_in(
+                            $runtime,
+                            &admitted,
+                            &mut pattern,
+                            $completion,
+                            $execution_capacity,
+                        )
+                        .map_err($run);
+                        (result, pattern.into_mutation())
+                    }
+                }
+            }
+        )
+    };
+    (@admit $runtime:expr, $operators:ident, $expressions:ident, $regions:expr, $owners:expr,
+     $owner:ident, ($admitted:ident, $root:ident) => $body:block) => {{
         let memory = $runtime.memory();
         let mut facts = QueryArena::new(memory, $operators.len()).expect("fact arena");
         for _ in 0..$operators.len() {
@@ -1896,12 +1955,12 @@ macro_rules! execute_relational_plan {
                     + size_of::<PlanDescription<'_>>(),
             )
             .expect("plan validation backing");
-        let root = PlanNodeId(u32::try_from($operators.len() - 1).unwrap());
+        let $root = PlanNodeId(u32::try_from($operators.len() - 1).unwrap());
         let description = PlanDescription {
             operators: &$operators,
             expressions: &$expressions,
             parameters: &[],
-            root,
+            root: $root,
             eager_searches: &[],
         };
         let (plan, facts_owner) = facts
@@ -1918,7 +1977,7 @@ macro_rules! execute_relational_plan {
             facts_owner,
         ];
         owners.extend($owners);
-        let admitted = QueryInputs::reserve(
+        let $admitted = QueryInputs::reserve(
             memory,
             RetentionInventory::vector(&owners).unwrap(),
             $runtime.values(),
@@ -1926,20 +1985,7 @@ macro_rules! execute_relational_plan {
         .expect("retain relational pattern plan")
         .admit_plan(&plan, $runtime.values())
         .expect("admit relational pattern plan");
-        match NativePattern::new($view, &admitted, root, &[], $pattern_capacity, $runtime) {
-            Err(error) => Err($build(error)),
-            Ok(pattern) => {
-                let mut source = $wrap(pattern);
-                execute_in(
-                    $runtime,
-                    &admitted,
-                    &mut source,
-                    $completion,
-                    $execution_capacity,
-                )
-                .map_err($run)
-            }
-        }
+        $body
     }};
 }
 

@@ -31,6 +31,11 @@ mod persistence;
 mod recovery;
 mod write;
 
+// The query executor's own tests drive a `Mutate` occurrence through the real
+// writer admission, so they need the consumer seam from outside this module.
+#[cfg(test)]
+pub(crate) use mutate::{NativeMutationConsumer, NativeMutationError, NativeMutationReport};
+
 const MAX_NATIVE_READ_LEASES: usize = 1024;
 const MAX_NATIVE_READ_MAPPINGS: usize = MAX_NATIVE_READ_LEASES * 16;
 const MAX_NATIVE_PREPARATIONS: usize = MAX_NATIVE_READ_LEASES;

@@ -363,7 +363,7 @@ impl<'v, 'm, 'g> SortState<'v, 'm, 'g> {
     }
 }
 
-impl<'s, 'r, 'plan, 'v, 'm, 'g> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
+impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i> {
     pub(super) fn next_offset_limit(
         &mut self,
         index: usize,
@@ -460,7 +460,9 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
                             .as_slice()
                             .get(child)
                             .ok_or(RuntimeError::Batch)?;
-                        self.evaluator.evaluate(
+                        evaluate_at(
+                            &mut self.evaluator,
+                            self.mutation.as_mut(),
                             descriptor.expression,
                             &occurrence.schema,
                             &occurrence.output,
@@ -625,7 +627,9 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
                             .as_slice()
                             .get(child)
                             .ok_or(RuntimeError::Batch)?;
-                        self.evaluator.evaluate(
+                        evaluate_at(
+                            &mut self.evaluator,
+                            self.mutation.as_mut(),
                             expression,
                             &occurrence.schema,
                             &occurrence.output,

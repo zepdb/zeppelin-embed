@@ -21,7 +21,7 @@ use super::super::mutate::{NativeMutationConsumer, NativeMutationError, NativeMu
 use super::*;
 use crate::lifecycle::durability::{CommitTier, DurabilityMode};
 use crate::property_graph::query::runtime::{NativeExecutionError, RuntimeError, WorkKind};
-use crate::property_graph::staging::{BatchEntityRef, GraphBatchReadView};
+use crate::property_graph::staging::{BatchEntityRef, GraphBatchReadView, StatementImages};
 use crate::property_graph::storage::NativePreparationSource;
 use crate::property_graph::{BatchDisposition, GraphDeleteMode};
 
@@ -189,11 +189,12 @@ impl<'a> ScanThenStage<'a> {
 }
 
 impl NativeMutationConsumer<Vec<NodeId>> for ScanThenStage<'_> {
-    fn consume<'s, 'lease, 'm, 'g, 'w>(
+    fn consume<'lease, 'm, 'g, 'w, 'i>(
         &mut self,
-        view: &GraphReadView<'s, 'lease, 'm, 'g>,
+        view: &'w GraphReadView<'w, 'lease, 'm, 'g>,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
         mut overlay: GraphBatchReadView<'w, 'static>,
+        _images: &'w StatementImages<'i>,
         control: &mut WriteControl<'_>,
     ) -> Result<(Vec<NodeId>, GraphBatchReadView<'w, 'static>), NativeExecutionError> {
         self.invocations.set(self.invocations.get() + 1);
@@ -228,6 +229,7 @@ fn admit(
         RuntimeLimits::default(),
         4 * 1024 * 1024,
         16,
+        8,
         8,
         8,
         consumer,
@@ -608,11 +610,12 @@ struct ReplaceWithSameImage {
 }
 
 impl NativeMutationConsumer<()> for ReplaceWithSameImage {
-    fn consume<'s, 'lease, 'm, 'g, 'w>(
+    fn consume<'lease, 'm, 'g, 'w, 'i>(
         &mut self,
-        _view: &GraphReadView<'s, 'lease, 'm, 'g>,
+        _view: &'w GraphReadView<'w, 'lease, 'm, 'g>,
         _runtime: &mut RuntimeContext<'lease, 'm, 'g>,
         mut overlay: GraphBatchReadView<'w, 'static>,
+        _images: &'w StatementImages<'i>,
         control: &mut WriteControl<'_>,
     ) -> Result<((), GraphBatchReadView<'w, 'static>), NativeExecutionError> {
         overlay.replace(
@@ -673,6 +676,7 @@ fn ze52_slice_d1_canonical_read_failure_surfaces_as_the_typed_storage_error() {
             RuntimeLimits::default(),
             4 * 1024 * 1024,
             16,
+            8,
             8,
             8,
             ReplaceWithSameImage { target, image },

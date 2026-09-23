@@ -1,4 +1,9 @@
-#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+#![allow(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::unwrap_used
+)]
 
 use super::super::relational::test_support::execute_relational_plan;
 use super::super::{NativePattern, PatternCapacity};
@@ -29,6 +34,8 @@ use crate::property_graph::{
 use std::mem::size_of;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+
+mod d2;
 
 const PATTERN_ROWS: usize = 16;
 

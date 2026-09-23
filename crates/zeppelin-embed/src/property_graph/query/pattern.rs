@@ -1,11 +1,12 @@
 //! Native physical execution for validated property-graph pattern regions.
 
 use super::expression::{
-    ExpressionCapacity, ExpressionError, ExpressionFailure, NativeExpressionEvaluator,
+    ClauseOverlay, ExpressionCapacity, ExpressionError, ExpressionFailure,
+    NativeExpressionEvaluator,
 };
 use super::plan::{
-    CompletedEdgePredicate, Direction, EdgePredicate, ExprId, MAX_PLAN_NODES, OperatorKind,
-    ParameterBinding, PatternId, PlanError, PlanNodeId, Projection, SlotId,
+    CompletedEdgePredicate, Direction, EdgePredicate, ExprId, MAX_PLAN_NODES, Mutation,
+    OperatorKind, ParameterBinding, PatternId, PlanError, PlanNodeId, Projection, SlotId,
 };
 use super::relational::{RowOperator, Schema, StorageCapacity};
 use super::resources::{QueryArena, RuntimePlan};
@@ -14,6 +15,9 @@ use super::runtime::{
 };
 use super::{Comparison, QueryError, QueryList, QueryValue, QueryView};
 use crate::property_graph::catalog::{LabelId, RelTypeId, Symbol, SymbolKind};
+use crate::property_graph::staging::{
+    GraphBatchReadView, StageError, StatementImages, WriteControl, WritePhase,
+};
 use crate::property_graph::storage::adjacency::RelationshipRow;
 use crate::property_graph::storage::tree::directory::TreeResources;
 use crate::property_graph::storage::{
@@ -249,6 +253,11 @@ enum PhysicalState<'s, 'plan, 'v, 'm, 'g> {
         child: usize,
         state: QueryArena<'m, 'g, mutation::EagerState<'v, 'm, 'g>>,
     },
+    Mutate {
+        child: usize,
+        items: &'plan [Mutation<'plan>],
+        state: QueryArena<'m, 'g, mutation::EagerState<'v, 'm, 'g>>,
+    },
     Aggregate {
         child: usize,
         state: QueryArena<'m, 'g, relational::AggregateState<'v, 'm, 'g>>,
@@ -283,9 +292,31 @@ fn anchor_source(bindings: Option<&AnchorBinding<'_>>, node: PlanNodeId) -> Opti
     None
 }
 
+/// The writer half of one query-driven mutation statement: the progressive
+/// overlay every expression in the statement reads through, and the arena its
+/// replacement images are copied into. A pattern built without a scope never
+/// admits a `Mutate` occurrence.
+pub(crate) struct MutationScope<'s, 'i> {
+    overlay: GraphBatchReadView<'s, 'static>,
+    images: &'s StatementImages<'i>,
+}
+
+impl<'s, 'i> MutationScope<'s, 'i> {
+    #[allow(
+        dead_code,
+        reason = "ZE-52 slice D2 lands the executor; the Cypher statement driver is a later slice"
+    )]
+    pub(crate) fn new(
+        overlay: GraphBatchReadView<'s, 'static>,
+        images: &'s StatementImages<'i>,
+    ) -> Self {
+        Self { overlay, images }
+    }
+}
+
 /// One bounded physical occurrence tree. A repeated validated DAG node is built
 /// as a separate occurrence so cursor position is never accidentally shared.
-pub(crate) struct NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
+pub(crate) struct NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i> {
     view: &'s GraphReadView<'s, 'v, 'm, 'g>,
     query_view: &'v QueryView,
     evaluator: NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g>,
@@ -293,9 +324,10 @@ pub(crate) struct NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
     root: usize,
     root_node: PlanNodeId,
     schema: Schema<'m, 'g>,
+    mutation: Option<MutationScope<'s, 'i>>,
 }
 
-impl<'s, 'r, 'plan, 'v, 'm, 'g> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
+impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i> {
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn cancel_after_expression_polls(
         &mut self,
@@ -305,6 +337,7 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
         self.evaluator.cancel_after_scratch_polls(polls, cancel);
     }
 
+    /// A read-only occurrence tree. Any `Mutate` operator is refused.
     #[allow(
         clippy::too_many_arguments,
         reason = "all authentic native owners stay explicit"
@@ -317,8 +350,71 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
         capacity: PatternCapacity,
         context: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<Self, NativeExecutionError> {
+        Self::build(view, plan, root_node, bindings, capacity, context, None)
+    }
+
+    /// An occurrence tree whose every expression reads through `mutation`'s
+    /// overlay, and whose `Mutate` occurrences stage into it. Only SET, REMOVE
+    /// and label items are admitted; CREATE and DELETE remain refused.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "all authentic native owners stay explicit"
+    )]
+    #[allow(
+        dead_code,
+        reason = "ZE-52 slice D2 lands the executor; the Cypher statement driver is a later slice"
+    )]
+    pub(crate) fn new_with_mutation(
+        view: &'s GraphReadView<'s, 'v, 'm, 'g>,
+        plan: &'r RuntimePlan<'r, 'plan, 'r, 'm, 'g, 'r>,
+        root_node: PlanNodeId,
+        bindings: &[ParameterBinding<'_>],
+        capacity: PatternCapacity,
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+        mutation: MutationScope<'s, 'i>,
+    ) -> Result<Self, NativeExecutionError> {
+        Self::build(
+            view,
+            plan,
+            root_node,
+            bindings,
+            capacity,
+            context,
+            Some(mutation),
+        )
+    }
+
+    /// Returns the overlay this pattern staged into, for the admission's
+    /// final staging step. A read-only pattern returns `None`.
+    #[allow(
+        dead_code,
+        reason = "ZE-52 slice D2 lands the executor; the Cypher statement driver is a later slice"
+    )]
+    pub(crate) fn into_mutation(self) -> Option<GraphBatchReadView<'s, 'static>> {
+        self.mutation.map(|scope| scope.overlay)
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "all authentic native owners stay explicit"
+    )]
+    fn build(
+        view: &'s GraphReadView<'s, 'v, 'm, 'g>,
+        plan: &'r RuntimePlan<'r, 'plan, 'r, 'm, 'g, 'r>,
+        root_node: PlanNodeId,
+        bindings: &[ParameterBinding<'_>],
+        capacity: PatternCapacity,
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+        mutation: Option<MutationScope<'s, 'i>>,
+    ) -> Result<Self, NativeExecutionError> {
         let description = plan.plan().description();
-        let count = occurrence_count(description.operators, root_node, 0, None)?;
+        let count = occurrence_count(
+            description.operators,
+            root_node,
+            0,
+            None,
+            mutation.is_some(),
+        )?;
         let mut occurrences =
             QueryArena::new(context.memory(), count).map_err(RuntimeError::Memory)?;
         let root = build_occurrence(
@@ -344,6 +440,7 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
             root,
             root_node,
             schema,
+            mutation,
         })
     }
 
@@ -566,18 +663,19 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
                         .as_slice()
                         .get(*child)
                         .ok_or(RuntimeError::Batch)?;
-                    self.evaluator
-                        .evaluate(
-                            *predicate,
-                            &child.schema,
-                            &child.output,
-                            0,
-                            self.view,
-                            context,
-                        )?
-                        .truth()
-                        .map_err(RuntimeError::Value)?
-                        .retained()
+                    evaluate_at(
+                        &mut self.evaluator,
+                        self.mutation.as_mut(),
+                        *predicate,
+                        &child.schema,
+                        &child.output,
+                        0,
+                        self.view,
+                        context,
+                    )?
+                    .truth()
+                    .map_err(RuntimeError::Value)?
+                    .retained()
                 };
                 if retained {
                     self.copy_output(index, *child, context)?;
@@ -606,7 +704,9 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
                             .as_slice()
                             .get(*child)
                             .ok_or(RuntimeError::Batch)?;
-                        self.evaluator.evaluate(
+                        evaluate_at(
+                            &mut self.evaluator,
+                            self.mutation.as_mut(),
                             projection.expression,
                             &child.schema,
                             &child.output,
@@ -632,6 +732,11 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
                 self.next_distinct(index, *child, state, context)
             }
             PhysicalState::Eager { child, state } => self.next_eager(index, *child, state, context),
+            PhysicalState::Mutate {
+                child,
+                items,
+                state,
+            } => self.next_mutate(index, *child, items, state, context),
             PhysicalState::Aggregate { child, state } => {
                 self.next_aggregate(index, *child, state, context)
             }
@@ -789,7 +894,8 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
                     state.reset(context)?;
                     self.reset_occurrence(*child, context)?;
                 }
-                PhysicalState::Eager { child, state } => {
+                PhysicalState::Eager { child, state }
+                | PhysicalState::Mutate { child, state, .. } => {
                     let state = state
                         .as_mut_slice()
                         .first_mut()
@@ -873,8 +979,16 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
                     .as_slice()
                     .get(child)
                     .ok_or(RuntimeError::Batch)?;
-                self.evaluator
-                    .evaluate(key, &child.schema, &child.output, 0, self.view, context)?
+                evaluate_at(
+                    &mut self.evaluator,
+                    self.mutation.as_mut(),
+                    key,
+                    &child.schema,
+                    &child.output,
+                    0,
+                    self.view,
+                    context,
+                )?
             };
             let text = match evaluated {
                 QueryValue::Null => continue,
@@ -1121,12 +1235,19 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
                     relationship.rel,
                     context,
                 )?;
-                let retained = self
-                    .evaluator
-                    .evaluate(predicate.expression, schema, input, 0, self.view, context)?
-                    .truth()
-                    .map_err(RuntimeError::Value)?
-                    .retained();
+                let retained = evaluate_at(
+                    &mut self.evaluator,
+                    self.mutation.as_mut(),
+                    predicate.expression,
+                    schema,
+                    input,
+                    0,
+                    self.view,
+                    context,
+                )?
+                .truth()
+                .map_err(RuntimeError::Value)?
+                .retained();
                 if !retained {
                     continue;
                 }
@@ -1164,12 +1285,19 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
                         *relationship,
                         context,
                     )?;
-                    if !self
-                        .evaluator
-                        .evaluate(predicate.expression, schema, input, 0, self.view, context)?
-                        .truth()
-                        .map_err(RuntimeError::Value)?
-                        .retained()
+                    if !evaluate_at(
+                        &mut self.evaluator,
+                        self.mutation.as_mut(),
+                        predicate.expression,
+                        schema,
+                        input,
+                        0,
+                        self.view,
+                        context,
+                    )?
+                    .truth()
+                    .map_err(RuntimeError::Value)?
+                    .retained()
                     {
                         retained = false;
                         break;
@@ -1493,19 +1621,19 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
             .as_slice()
             .get(index)
             .ok_or(RuntimeError::Batch)?;
-        let retained = self
-            .evaluator
-            .evaluate(
-                expression,
-                &occurrence.schema,
-                &occurrence.output,
-                0,
-                self.view,
-                context,
-            )?
-            .truth()
-            .map_err(RuntimeError::Value)?
-            .retained();
+        let retained = evaluate_at(
+            &mut self.evaluator,
+            self.mutation.as_mut(),
+            expression,
+            &occurrence.schema,
+            &occurrence.output,
+            0,
+            self.view,
+            context,
+        )?
+        .truth()
+        .map_err(RuntimeError::Value)?
+        .retained();
         if !retained {
             self.output_mut(index)?.clear();
             self.uses_mut(index)?.clear();
@@ -2009,16 +2137,16 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g> {
     }
 }
 
-impl<'s, 'r, 'plan, 'v, 'm, 'g> RowOperator<'v, 'm, 'g, NativeExecutionError>
-    for NativePattern<'s, 'r, 'plan, 'v, 'm, 'g>
+impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i> RowOperator<'v, 'm, 'g, NativeExecutionError>
+    for NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i>
 {
     fn schema(&self) -> &Schema<'m, 'g> {
         &self.schema
     }
 }
 
-impl<'s, 'r, 'plan, 'v, 'm, 'g> PullOperator<'v, 'm, 'g, NativeExecutionError>
-    for NativePattern<'s, 'r, 'plan, 'v, 'm, 'g>
+impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i> PullOperator<'v, 'm, 'g, NativeExecutionError>
+    for NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i>
 {
     fn node(&self) -> PlanNodeId {
         self.root_node
@@ -2054,11 +2182,16 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g> PullOperator<'v, 'm, 'g, NativeExecutionError>
     }
 }
 
+/// Counts the occurrences a validated plan needs, refusing every operator this
+/// executor does not implement. `mutation` is true only under a writer scope:
+/// `Mutate` is admitted there when every item is a SET, REMOVE or label edit,
+/// and is refused everywhere else, as are CREATE and DELETE items.
 fn occurrence_count(
     operators: &[super::plan::Operator<'_>],
     node: PlanNodeId,
     depth: usize,
     bindings: Option<&AnchorBinding<'_>>,
+    mutation: bool,
 ) -> Result<usize, PlanError> {
     if depth >= super::plan::MAX_PLAN_DEPTH {
         return Err(PlanError::Limit);
@@ -2067,7 +2200,7 @@ fn occurrence_count(
         return Ok(1);
     }
     let operator = operators.get(node.0 as usize).ok_or(PlanError::Reference)?;
-    if !matches!(
+    let implemented = matches!(
         operator.kind,
         OperatorKind::Unit
             | OperatorKind::ScanNodes { .. }
@@ -2087,7 +2220,10 @@ fn occurrence_count(
             | OperatorKind::Eager
             | OperatorKind::Aggregate { .. }
             | OperatorKind::Collect
-    ) {
+    );
+    let mutation_admitted = mutation
+        && matches!(operator.kind, OperatorKind::Mutate(items) if supported_mutations(items));
+    if !implemented && !mutation_admitted {
         return Err(PlanError::Reference);
     }
     if matches!(operator.kind, OperatorKind::OptionalApply { .. }) {
@@ -2096,13 +2232,13 @@ fn occurrence_count(
         if operator.inputs.len() != 2 {
             return Err(PlanError::Arity);
         }
-        let left_count = occurrence_count(operators, left, depth + 1, bindings)?;
+        let left_count = occurrence_count(operators, left, depth + 1, bindings, mutation)?;
         let scoped = AnchorBinding {
             logical: left,
             source: 0,
             parent: bindings,
         };
-        let right_count = occurrence_count(operators, right, depth + 1, Some(&scoped))?;
+        let right_count = occurrence_count(operators, right, depth + 1, Some(&scoped), mutation)?;
         return 1usize
             .checked_add(left_count)
             .and_then(|count| count.checked_add(right_count))
@@ -2112,11 +2248,63 @@ fn occurrence_count(
     let mut count = 1usize;
     for input in operator.inputs {
         count = count
-            .checked_add(occurrence_count(operators, *input, depth + 1, bindings)?)
+            .checked_add(occurrence_count(
+                operators,
+                *input,
+                depth + 1,
+                bindings,
+                mutation,
+            )?)
             .filter(|count| *count <= MAX_PLAN_NODES)
             .ok_or(PlanError::Limit)?;
     }
     Ok(count)
+}
+
+/// Evaluates one expression for one occurrence row. Outside a mutation scope
+/// this is exactly `evaluate` against the read view. Inside one, every read
+/// goes through the statement's overlay first, so a clause after a `Mutate`
+/// sees the values that clause staged, and a SET item sees the items before
+/// it. The overlay's checkpoint is the runtime's own caller control.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the scalar boundary keeps every authentic owner explicit"
+)]
+fn evaluate_at<'a, 'r, 'plan, 'v, 'm, 'g>(
+    evaluator: &'a mut NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g>,
+    mutation: Option<&mut MutationScope<'_, '_>>,
+    expression: ExprId,
+    schema: &Schema<'_, '_>,
+    input: &RowBatch<'v, 'm, 'g>,
+    row: usize,
+    view: &GraphReadView<'_, 'v, 'm, 'g>,
+    context: &mut RuntimeContext<'v, 'm, 'g>,
+) -> Result<QueryValue<'a>, ExpressionError> {
+    let Some(scope) = mutation else {
+        return evaluator.evaluate(expression, schema, input, row, view, context);
+    };
+    let control = context.values().control();
+    let mut write_control = |_: WritePhase| writer_checkpoint(control);
+    let mut overlay = ClauseOverlay::new(&mut scope.overlay, &mut write_control);
+    evaluator.evaluate_with_overlay(expression, schema, input, row, view, &mut overlay, context)
+}
+
+/// The same caller-control adapter the admission's own writer checkpoint uses.
+fn writer_checkpoint(control: &crate::lifecycle::QueryControl) -> Result<(), StageError> {
+    control.checkpoint().map_err(|_| StageError::Cancelled)
+}
+
+/// The mutation items this executor implements. CREATE needs fresh identity
+/// allocation and DELETE needs tombstone staging; both stay refused.
+fn supported_mutations(items: &[Mutation<'_>]) -> bool {
+    items.iter().all(|item| {
+        matches!(
+            item,
+            Mutation::SetProperty { .. }
+                | Mutation::RemoveProperty { .. }
+                | Mutation::SetLabel { .. }
+        )
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2643,6 +2831,31 @@ fn build_occurrence<'s, 'r, 'plan, 'v, 'm, 'g>(
                 )?,
             }
         }
+        OperatorKind::Mutate(items) if supported_mutations(items) => {
+            let child = build_unary(
+                view,
+                plan,
+                operator,
+                capacity,
+                occurrences,
+                context,
+                bindings,
+            )?;
+            PhysicalState::Mutate {
+                child,
+                items,
+                state: mutation::EagerState::new(
+                    occurrences
+                        .as_slice()
+                        .get(child)
+                        .ok_or(RuntimeError::Batch)?
+                        .schema
+                        .slots(),
+                    capacity,
+                    context,
+                )?,
+            }
+        }
         OperatorKind::Aggregate { keys, aggregates } => {
             let child = build_unary(
                 view,
@@ -2805,6 +3018,7 @@ fn slot_inherited_from_anchor(
         | PhysicalState::Sort { child, .. }
         | PhysicalState::Distinct { child, .. }
         | PhysicalState::Eager { child, .. }
+        | PhysicalState::Mutate { child, .. }
         | PhysicalState::Collect { child } => {
             slot_inherited_from_anchor(occurrences, expressions, *child, slot, anchor)?
         }
