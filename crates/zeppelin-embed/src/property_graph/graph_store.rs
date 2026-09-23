@@ -21,7 +21,7 @@ use crate::lifecycle::durability::{CommitTier, DurabilityMode};
 use crate::lifecycle::native_graph::NativeGraphError;
 use crate::lifecycle::{AccessMode, OpenOptions, QueryControl, Store, StoreErrorKind};
 use crate::property_graph::query::completed::{
-    GraphQueryError, GraphQueryErrorKind, native_graph_error_kind,
+    GraphQueryCause, GraphQueryError, GraphQueryErrorKind, native_graph_error_kind,
 };
 use crate::property_graph::query::plan::PlanNodeId;
 use crate::property_graph::query::runtime::WorkCounters;
@@ -433,6 +433,15 @@ impl GraphStoreError {
                 GraphStoreErrorKind::ReadOnly
             }
             Cause::Graph(error) => from_graph_query_kind(native_graph_error_kind(error)),
+            Cause::Query(error)
+                if matches!(
+                    error.cause(),
+                    GraphQueryCause::Graph(NativeGraphError::Store(inner))
+                        if inner.kind() == StoreErrorKind::ReadOnly
+                ) =>
+            {
+                GraphStoreErrorKind::ReadOnly
+            }
             Cause::Query(error) => from_graph_query_kind(error.kind()),
         }
     }

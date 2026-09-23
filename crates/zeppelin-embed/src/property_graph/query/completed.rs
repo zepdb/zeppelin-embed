@@ -9,8 +9,6 @@ mod records;
 pub use records::*;
 #[cfg(feature = "graph-cypher")]
 pub(super) mod native;
-#[cfg(feature = "graph-cypher")]
-pub(crate) use native::native_graph_error_kind;
 /// The structured statement seam, exposed to the internal Cypher crate only.
 /// It is not the release query API (ZE-66 owns public exposure).
 #[cfg(feature = "graph-cypher")]
@@ -19,6 +17,8 @@ pub use native::{
     Executed, GraphQuery, GraphQueryError, GraphQueryErrorKind, GraphQueryExecutor,
     GraphQueryOptions,
 };
+#[cfg(feature = "graph-cypher")]
+pub(crate) use native::{GraphQueryCause, native_graph_error_kind};
 #[cfg(all(feature = "graph-cypher", test))]
 pub(crate) use native::{execute_native_mutation_result, execute_native_result};
 mod validate;

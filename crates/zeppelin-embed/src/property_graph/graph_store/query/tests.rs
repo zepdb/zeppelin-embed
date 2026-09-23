@@ -397,13 +397,13 @@ fn graph_query_refuses_an_already_cancelled_control() {
 }
 
 #[test]
-fn graph_query_write_on_read_only_store_folds_readonly_to_unavailable() {
-    // Documents the one real gap in mapping GraphQueryError into
-    // GraphStoreError: apply_batch can tell ReadOnly apart from other
-    // Unavailable causes because it classifies NativeGraphError directly;
-    // query() cannot, because GraphQueryErrorKind (kept unchanged per the
-    // owner's decision) already folds ReadOnly into its own Unavailable
-    // group before GraphStoreError ever sees it.
+fn graph_query_write_on_read_only_store_reports_readonly() {
+    // GraphStoreError::kind() reaches into GraphQueryError's own private
+    // cause (GraphQueryCause::Graph(NativeGraphError::Store(..))) to tell
+    // ReadOnly apart from other causes GraphQueryErrorKind folds into
+    // Unavailable, the same precision apply_batch already has classifying
+    // NativeGraphError directly. GraphQueryErrorKind itself is unchanged,
+    // per the owner's decision; only GraphStoreError's mapping was widened.
     let directory = tempfile::tempdir().expect("temporary directory");
     let path = directory.path().join("native");
     let writer = GraphStore::create(&path, store_options(), None).expect("graph store");
@@ -415,7 +415,7 @@ fn graph_query_write_on_read_only_store_folds_readonly_to_unavailable() {
         write_p(&reader, &control(), Assign::Increment),
         "write on a read-only store",
     );
-    assert_eq!(error.kind(), GraphStoreErrorKind::Unavailable);
+    assert_eq!(error.kind(), GraphStoreErrorKind::ReadOnly);
     assert!(error.nothing_committed());
     reader.close().expect("close reader");
 }
