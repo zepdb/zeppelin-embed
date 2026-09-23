@@ -31,13 +31,15 @@ use super::{
 use crate::lifecycle::native_graph::{NativeMutationConsumer, NativeReadConsumer};
 use crate::lifecycle::{QueryControl, Store};
 use crate::property_graph::GraphName;
+use crate::property_graph::query::expression::ExpressionCapacity;
 use crate::property_graph::query::pattern::{
     PatternCapacity, SearchAdapter, SearchHit, SearchInvocation,
 };
 use crate::property_graph::query::plan::{GraphPlan, ParameterBinding, PlanError};
+use crate::property_graph::query::relational::StorageCapacity;
 use crate::property_graph::query::resources::{QueryArena, QueryInputs, RetentionInventory};
 use crate::property_graph::query::runtime::{
-    ExecutionCapacity, NativeExecutionError, RuntimeContext, RuntimeLimits,
+    ArenaCapacity, ExecutionCapacity, NativeExecutionError, RuntimeContext, RuntimeLimits,
 };
 use crate::property_graph::staging::{GraphBatchReadView, StatementImages, WriteControl};
 use crate::property_graph::storage::GraphReadView;
@@ -46,7 +48,7 @@ use std::cell::Cell;
 
 /// Every explicit limit and capacity one statement is admitted with.
 #[derive(Clone, Copy)]
-pub(crate) struct GraphQueryOptions {
+pub struct GraphQueryOptions {
     /// Cumulative runtime work limits.
     pub(crate) limits: RuntimeLimits,
     /// The statement's query-memory sublimit.
@@ -65,21 +67,63 @@ pub(crate) struct GraphQueryOptions {
     pub(crate) image_capacity: usize,
 }
 
+impl Default for GraphQueryOptions {
+    /// Capacities for small statements: at most 1,024 rows per operator and
+    /// in the result, and 1,024 staged entities for a write.
+    fn default() -> Self {
+        let variable = ArenaCapacity {
+            string_bytes: 64 * 1024,
+            list_cells: 4096,
+            node_ids: 1024,
+            relationship_ids: 1024,
+        };
+        Self {
+            limits: RuntimeLimits::default(),
+            memory_limit: 24 * 1024 * 1024,
+            source_slots: 64,
+            pattern: PatternCapacity {
+                rows: StorageCapacity {
+                    rows: 1024,
+                    payload_bytes: 256 * 1024,
+                    variable,
+                },
+                expression: ExpressionCapacity {
+                    cells: 1024,
+                    string_bytes: 64 * 1024,
+                },
+            },
+            execution: ExecutionCapacity {
+                batch_rows: 64,
+                result_rows: 1024,
+                batch_payload_bytes: 256 * 1024,
+                result_payload_bytes: 256 * 1024,
+                batch: variable,
+                result: variable,
+            },
+            lazy_targets: 1024,
+            overlay_capacity: 1024,
+            image_capacity: 1024,
+        }
+    }
+}
+
 /// A validated plan and the owners that retain its backing, built by the
 /// caller inside the admitted query memory.
-pub(crate) struct GraphQuery<'q, 'plan, 'facts, 'a> {
-    pub(crate) plan: &'q GraphPlan<'plan, 'facts>,
+pub struct GraphQuery<'q, 'plan, 'facts, 'a> {
+    /// The validated plan.
+    pub plan: &'q GraphPlan<'plan, 'facts>,
     /// The actual owners of every span the plan borrows, including its facts.
-    pub(crate) inventory: RetentionInventory<'q, 'a>,
-    pub(crate) bindings: &'q [ParameterBinding<'q>],
+    pub inventory: RetentionInventory<'q, 'a>,
+    /// The statement's parameter values, by name.
+    pub bindings: &'q [ParameterBinding<'q>],
     /// One name per root output column, in column order.
-    pub(crate) columns: &'q [GraphName<'q>],
+    pub columns: &'q [GraphName<'q>],
 }
 
 /// Proof that a builder handed its plan to its executor. It carries nothing:
 /// the result stays with the seam.
 #[must_use]
-pub(crate) struct Executed(());
+pub struct Executed(());
 
 /// The type of an absent search adapter. It has no values.
 pub(crate) enum NoSearch {}
@@ -129,7 +173,7 @@ enum Ran<'w> {
 /// Runs one validated plan under the admission the seam chose. It is
 /// consumed by [`GraphQueryExecutor::run`], so a builder runs at most one
 /// plan per admission.
-pub(crate) struct GraphQueryExecutor<'x, 'w, 'i, 'lease, 'm, 'g> {
+pub struct GraphQueryExecutor<'x, 'w, 'i, 'lease, 'm, 'g> {
     admission: Admission<'w, 'i, 'lease, 'm, 'g>,
     options: &'x GraphQueryOptions,
     ran: &'x Cell<Ran<'w>>,
@@ -137,7 +181,7 @@ pub(crate) struct GraphQueryExecutor<'x, 'w, 'i, 'lease, 'm, 'g> {
 
 impl<'w, 'lease, 'm, 'g> GraphQueryExecutor<'_, 'w, '_, 'lease, 'm, 'g> {
     /// Admits `query` against its retained owners and runs it.
-    pub(crate) fn run(
+    pub fn run(
         self,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
         query: GraphQuery<'_, '_, '_, '_>,
@@ -372,5 +416,49 @@ impl Store {
             },
         )?;
         Ok(result)
+    }
+
+    /// [`Store::execute_graph_query`] for a statement that does not search.
+    /// A searching plan is refused as an invalid plan.
+    ///
+    /// This is the internal seam `zeppelin-embed-cypher` compiles into; it is
+    /// not the release graph API, which ZE-66's `GraphStore` owns.
+    #[doc(hidden)]
+    pub fn execute_graph_statement<B>(
+        &self,
+        control: &QueryControl,
+        options: &GraphQueryOptions,
+        build: B,
+    ) -> Result<CompletedGraphResult, GraphQueryError>
+    where
+        B: for<'x, 'w, 'i, 'lease, 'm, 'g> FnMut(
+            &mut RuntimeContext<'lease, 'm, 'g>,
+            GraphQueryExecutor<'x, 'w, 'i, 'lease, 'm, 'g>,
+        ) -> Result<Executed, GraphQueryError>,
+    {
+        self.execute_graph_query(control, options, None::<&mut NoSearch>, build)
+    }
+
+    /// Creates a new native graph store with no document embedding tower,
+    /// for tests outside this crate. The release lifecycle API and its typed
+    /// error belong to ZE-66's `GraphStore`, not to this helper.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn create_graph_store(
+        path: impl AsRef<std::path::Path>,
+        options: crate::lifecycle::OpenOptions,
+    ) -> Result<Self, GraphQueryError> {
+        Ok(Self::create_native_graph(path, options, None)?)
+    }
+
+    /// Opens an existing native graph store with no document embedding tower,
+    /// for tests outside this crate (see [`Store::create_graph_store`]).
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn open_graph_store(
+        path: impl AsRef<std::path::Path>,
+        options: crate::lifecycle::OpenOptions,
+    ) -> Result<Self, GraphQueryError> {
+        Ok(Self::open_native_graph(path, options, None)?)
     }
 }

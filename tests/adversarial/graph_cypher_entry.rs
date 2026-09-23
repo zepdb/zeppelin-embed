@@ -1,0 +1,212 @@
+//! Directed ZE-56 proof: Cypher text through the compiler and the store's
+//! structured statement seam, on a real persisted native graph store.
+//!
+//! The oracle never reads the engine's own planner or evaluator: expected
+//! values are the seed's own arithmetic, and "nothing committed" is the
+//! generation a read observes before and after each refusal.
+
+use super::coverage::CoverageRegistry;
+use std::collections::BTreeSet;
+use std::path::PathBuf;
+use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode};
+use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
+use zeppelin_embed::property_graph::query::QueryValue;
+use zeppelin_embed::property_graph::query::completed::{
+    CompletedGraphResult, GraphQueryErrorKind, GraphQueryOptions, Outcome, Value,
+};
+use zeppelin_embed::property_graph::query::plan::ParameterBinding;
+use zeppelin_embed_cypher::{CompileLimits, ErrorKind, StatementError, execute};
+
+pub const REQUIRED_COVERAGE: [&str; 6] = [
+    "property-graph.cypher-entry.no-return.commit",
+    "property-graph.cypher-entry.no-return-fault.fire",
+    "property-graph.cypher-entry.profile-reject.fire",
+    "property-graph.cypher-entry.reopen-read",
+    "property-graph.cypher-entry.oracle.can-fire",
+    "property-graph.cypher-entry.same-seed-control",
+];
+
+/// Everything one seed observed, compared across two runs of the same seed.
+#[derive(Debug, PartialEq)]
+struct Report {
+    /// Values read back, in explicit ORDER BY order, before and after reopen.
+    observations: Vec<i64>,
+    /// Generation after each step: setup, fault, reject, commit, reopen.
+    generations: Vec<u64>,
+}
+
+fn run(
+    store: &Store,
+    text: &str,
+    parameters: &[ParameterBinding<'_>],
+) -> Result<CompletedGraphResult, StatementError> {
+    execute(
+        store,
+        &QueryControl::Cancel(CancelToken::new()),
+        &GraphQueryOptions::default(),
+        text,
+        parameters,
+        CompileLimits::default(),
+    )
+}
+
+fn values(result: &CompletedGraphResult) -> Result<Vec<i64>, String> {
+    (0..result.metadata().rows as usize)
+        .map(|row| match result.cell(row, 0) {
+            Some(Value::I64(value)) => Ok(*value),
+            other => Err(format!("cypher entry: unexpected cell {other:?}")),
+        })
+        .collect()
+}
+
+fn read(store: &Store) -> Result<(Vec<i64>, u64), String> {
+    let result = run(store, "MATCH (p:P) RETURN p.v AS v ORDER BY v", &[])
+        .map_err(|error| format!("cypher entry read: {error}"))?;
+    if result.metadata().outcome != Outcome::Read {
+        return Err(String::from("cypher entry read changed the store"));
+    }
+    Ok((values(&result)?, result.metadata().generation.get()))
+}
+
+fn committed_no_rows(result: &CompletedGraphResult) -> Result<(), String> {
+    if !matches!(result.metadata().outcome, Outcome::Committed { .. })
+        || result.metadata().rows != 0
+        || !result.pools().columns.is_empty()
+    {
+        return Err(String::from(
+            "cypher entry: a write without RETURN must commit with no rows",
+        ));
+    }
+    Ok(())
+}
+
+fn options() -> OpenOptions {
+    OpenOptions::new()
+        .with_durability(DurabilityMode::Durable, CommitTier::Durable)
+        .with_max_resident_bytes(256 * 1024 * 1024)
+}
+
+fn once(seed: u64, run_index: u32) -> Result<Report, String> {
+    let root: PathBuf = std::env::temp_dir().join(format!(
+        "zeppelin-ze56-cypher-entry-{}-{seed}-{run_index}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+    let path = root.join("graph");
+    let outcome = (|| {
+        let base = i64::try_from(seed % 1000).map_err(|error| error.to_string())? * 10;
+        let store = Store::create_graph_store(&path, options()).map_err(|e| e.to_string())?;
+        let mut generations = Vec::new();
+
+        let setup = run(&store, &format!("CREATE (:P {{v: {base}}})"), &[])
+            .map_err(|error| format!("cypher entry setup: {error}"))?;
+        committed_no_rows(&setup)?;
+        generations.push(read(&store)?.1);
+
+        // A write without RETURN whose second item divides by zero: refused
+        // as an expression error, and its valid first item is not committed.
+        let text = "CREATE (:P {v: $a}), (:P {v: $a / $d})";
+        let fault = [
+            ParameterBinding {
+                name: "a",
+                value: QueryValue::I64(base + 1),
+            },
+            ParameterBinding {
+                name: "d",
+                value: QueryValue::I64(0),
+            },
+        ];
+        match run(&store, text, &fault) {
+            Err(StatementError::Query(error))
+                if error.kind() == GraphQueryErrorKind::Expression && error.nothing_committed() => {
+            }
+            Err(error) => return Err(format!("cypher entry fault: wrong refusal {error}")),
+            Ok(_) => return Err(String::from("cypher entry fault: committed a zero divisor")),
+        }
+        let (after_fault, generation) = read(&store)?;
+        if after_fault != [base] {
+            return Err(String::from("cypher entry fault: a refused write leaked"));
+        }
+        generations.push(generation);
+
+        // An unbounded path is outside the profile: refused by the compiler,
+        // before any admission can run.
+        match run(&store, "MATCH (a:P)-[*]->(b) RETURN b", &[]) {
+            Err(StatementError::Compile(error)) if error.kind == ErrorKind::InvalidRange => {}
+            Err(error) => return Err(format!("cypher entry reject: wrong refusal {error}")),
+            Ok(_) => return Err(String::from("cypher entry reject: executed")),
+        }
+        generations.push(read(&store)?.1);
+
+        // The same statement with a nonzero divisor is the clean control.
+        let clean = [
+            ParameterBinding {
+                name: "a",
+                value: QueryValue::I64(base + 1),
+            },
+            ParameterBinding {
+                name: "d",
+                value: QueryValue::I64(1),
+            },
+        ];
+        let committed = run(&store, text, &clean)
+            .map_err(|error| format!("cypher entry clean control: {error}"))?;
+        committed_no_rows(&committed)?;
+        let (mut observations, generation) = read(&store)?;
+        generations.push(generation);
+
+        store.close().map_err(|error| error.to_string())?;
+        let reopened = Store::open_graph_store(&path, options()).map_err(|e| e.to_string())?;
+        let (again, generation) = read(&reopened)?;
+        generations.push(generation);
+        reopened.close().map_err(|error| error.to_string())?;
+        observations.extend(again);
+        Ok(Report {
+            observations,
+            generations,
+        })
+    })();
+    let _ = std::fs::remove_dir_all(&root);
+    outcome
+}
+
+pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
+    let report = once(seed, 0)?;
+    let base = i64::try_from(seed % 1000).map_err(|error| error.to_string())? * 10;
+    // Independent oracle: the clean statement adds base+1 twice.
+    let expected = vec![base, base + 1, base + 1, base, base + 1, base + 1];
+    if report.observations != expected {
+        return Err(format!(
+            "cypher entry oracle mismatch: {:?}",
+            report.observations
+        ));
+    }
+    // Refusals publish nothing; the clean write publishes exactly once and
+    // reopen preserves it.
+    let [setup, fault, reject, commit, reopen] = report.generations[..] else {
+        return Err(String::from("cypher entry generation count mismatch"));
+    };
+    if fault != setup || reject != setup || commit != setup + 1 || reopen != commit {
+        return Err(format!("cypher entry generations {:?}", report.generations));
+    }
+    let mut perturbed = report.observations.clone();
+    if let Some(first) = perturbed.first_mut() {
+        *first ^= 1;
+    }
+    if perturbed == expected {
+        return Err(String::from(
+            "cypher entry oracle accepted a perturbed value",
+        ));
+    }
+    if once(seed, 1)? != report {
+        return Err(String::from("cypher entry paired clean mismatch"));
+    }
+    if REQUIRED_COVERAGE.into_iter().collect::<BTreeSet<_>>().len() != REQUIRED_COVERAGE.len() {
+        return Err(String::from("duplicate cypher entry coverage key"));
+    }
+    for key in REQUIRED_COVERAGE {
+        coverage.hit(key);
+    }
+    Ok(())
+}

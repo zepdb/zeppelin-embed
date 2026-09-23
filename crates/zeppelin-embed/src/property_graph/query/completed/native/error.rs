@@ -32,7 +32,7 @@ use crate::property_graph::storage::tree::directory::TreeError;
 /// The plan's error groups. A caller branches on this; the exact cause stays
 /// available through [`GraphQueryError::cause`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum GraphQueryErrorKind {
+pub enum GraphQueryErrorKind {
     /// The plan is invalid or unsupported, or the statement driver broke its
     /// own contract with the seam.
     InvalidPlan,
@@ -82,7 +82,7 @@ pub(crate) enum GraphQueryCause {
 
 /// A rejected graph statement. It never carries a partial result.
 #[derive(Debug)]
-pub(crate) struct GraphQueryError {
+pub struct GraphQueryError {
     cause: GraphQueryCause,
     operator: Option<PlanNodeId>,
     counters: Option<WorkCounters>,
@@ -91,6 +91,12 @@ pub(crate) struct GraphQueryError {
 impl GraphQueryError {
     pub(crate) const fn contract(reason: &'static str) -> Self {
         Self::from_cause(GraphQueryCause::Contract(reason))
+    }
+
+    /// A statement builder refused to produce a plan. The builder keeps its
+    /// own typed reason; this only stops the seam without a result.
+    pub const fn builder_rejected() -> Self {
+        Self::contract("the statement builder rejected its statement")
     }
 
     const fn from_cause(cause: GraphQueryCause) -> Self {
@@ -102,7 +108,7 @@ impl GraphQueryError {
     }
 
     /// The error group a caller acts on.
-    pub(crate) fn kind(&self) -> GraphQueryErrorKind {
+    pub fn kind(&self) -> GraphQueryErrorKind {
         match &self.cause {
             GraphQueryCause::Admission(error) => memory(error),
             GraphQueryCause::Execution(error) => execution(error),
@@ -115,19 +121,19 @@ impl GraphQueryError {
     /// True unless the commit was attempted with an unknown outcome. Every
     /// other rejection, including one that arrives during the commit tail
     /// before its point of no return, published nothing.
-    pub(crate) fn nothing_committed(&self) -> bool {
+    pub fn nothing_committed(&self) -> bool {
         self.kind() != GraphQueryErrorKind::WriteIndeterminate
     }
 
     /// The operator the driver was running when the statement failed, when
     /// the failure came from inside the driver.
-    pub(crate) const fn operator(&self) -> Option<PlanNodeId> {
+    pub const fn operator(&self) -> Option<PlanNodeId> {
         self.operator
     }
 
     /// The work the driver had done when the statement failed, when the
     /// failure came from inside the driver.
-    pub(crate) const fn counters(&self) -> Option<WorkCounters> {
+    pub const fn counters(&self) -> Option<WorkCounters> {
         self.counters
     }
 

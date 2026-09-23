@@ -14,7 +14,7 @@ use crate::property_graph::GraphName;
 use crate::property_graph::query::pattern::{
     MutationScope, NativePattern, PatternCapacity, SearchAdapter, SearchReports, SearchScope,
 };
-use crate::property_graph::query::plan::{ParameterBinding, PlanNodeId};
+use crate::property_graph::query::plan::{OperatorKind, ParameterBinding, PlanNodeId};
 use crate::property_graph::query::resources::{QueryArena, QueryMemory, RuntimePlan};
 use crate::property_graph::query::runtime::{
     Completion, ExecutionCapacity, FrozenOutput, NativeExecutionError, PreparedRows, PullOperator,
@@ -34,7 +34,8 @@ mod error;
 pub(crate) mod test_support;
 mod values;
 
-use error::GraphQueryError;
+pub use entry::{Executed, GraphQuery, GraphQueryExecutor, GraphQueryOptions};
+pub use error::{GraphQueryError, GraphQueryErrorKind};
 
 #[cfg(test)]
 mod entry_tests;
@@ -259,6 +260,9 @@ struct NativeCompletion<'a, 's, 'lease, 'm, 'g, C> {
     /// Present only for a write statement: every entity is then copied from
     /// the statement's staged image first and the admitted view second.
     handoff: Option<&'a OverlayHandoff<'s>>,
+    /// A write statement without RETURN: its rows are driven for their
+    /// writes only, and the result has no columns and no rows.
+    no_return: bool,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -288,6 +292,7 @@ impl<'a, 's, 'lease, 'm, 'g, C> NativeCompletion<'a, 's, 'lease, 'm, 'g, C> {
             reports,
             before_copy,
             handoff: None,
+            no_return: false,
         })
     }
 }
@@ -342,10 +347,15 @@ where
         outcome: Outcome,
     ) -> Result<FrozenOutput<PreparedGraphResult<'m, 'g>>, NativeResultError> {
         (self.before_copy)(NativeCompletionStage::BeforeStaging, context.counters())?;
-        if rows.columns() != self.columns.len() {
+        let returned = (!self.no_return).then_some(rows);
+        if returned.is_some_and(|rows| rows.columns() != self.columns.len()) {
             return Err(NativeResultError::Completed(CompletedError::Shape));
         }
-        let mut sizes = values::measure_rows(rows, context)?;
+        let row_count = returned.map_or(0, PreparedRows::rows);
+        let mut sizes = match returned {
+            Some(rows) => values::measure_rows(rows, context)?,
+            None => Sizes::default(),
+        };
         sizes.columns = self.columns.len();
         for column in self.columns {
             sizes.bytes = sizes
@@ -353,8 +363,17 @@ where
                 .checked_add(column.as_str().len())
                 .ok_or(NativeResultError::Completed(CompletedError::Limit))?;
         }
-        let (node_occurrences, relationship_occurrences) =
-            values::collect_entity_ids(rows, sizes, context)?;
+        let (node_occurrences, relationship_occurrences) = match returned {
+            Some(rows) => values::collect_entity_ids(rows, sizes, context)?,
+            None => (
+                QueryArena::new(context.memory(), 0)
+                    .map_err(CompletedError::from)
+                    .map_err(NativeResultError::Completed)?,
+                QueryArena::new(context.memory(), 0)
+                    .map_err(CompletedError::from)
+                    .map_err(NativeResultError::Completed)?,
+            ),
+        };
         let node_ids = entities::sort_unique(node_occurrences, context)?;
         let relationship_ids = entities::sort_unique(relationship_occurrences, context)?;
         entities::measure_entities(
@@ -403,7 +422,7 @@ where
             receipts: QueryArena::new(context.memory(), 0)
                 .map_err(CompletedError::from)
                 .map_err(NativeResultError::Completed)?,
-            rows: u32::try_from(rows.rows())
+            rows: u32::try_from(row_count)
                 .map_err(|_| NativeResultError::Completed(CompletedError::Limit))?,
             outcome,
         };
@@ -428,18 +447,22 @@ where
             &mut staging,
             context,
         )?;
-        values::fill_rows(
-            rows,
-            node_ids.as_slice(),
-            relationship_ids.as_slice(),
-            &mut staging,
-            context,
-        )?;
+        if let Some(rows) = returned {
+            values::fill_rows(
+                rows,
+                node_ids.as_slice(),
+                relationship_ids.as_slice(),
+                &mut staging,
+                context,
+            )?;
+        }
         (self.before_copy)(NativeCompletionStage::BeforeDestination, context.counters())?;
         let prepared = PreparedGraphResult::copy_from(&staging, context)
             .map_err(NativeResultError::Completed)?;
         let represented = prepared.represented_bytes();
         drop(staging);
+        // The driver accounts every prepared row, including the rows a
+        // statement without RETURN drove only for their writes.
         FrozenOutput::new(prepared, rows.rows(), represented, 0).map_err(NativeResultError::from)
     }
 }
@@ -687,7 +710,21 @@ fn execute_native_mutation_diagnosed<'w, 'r, 'plan, 'lease, 'm, 'g, 'i>(
     images: &'w StatementImages<'i>,
 ) -> Result<(super::UnsettledWriteResult, GraphBatchReadView<'w, 'static>), GraphQueryError> {
     let root = plan.plan().description().root;
-    let kinds = output_kinds(plan, runtime)?;
+    // A statement whose last clause writes has no RETURN: its root is the
+    // Mutate operator itself, and its result has no columns and no rows.
+    let no_return = matches!(
+        plan.plan()
+            .description()
+            .operators
+            .get(root.0 as usize)
+            .map(|operator| operator.kind),
+        Some(OperatorKind::Mutate(_))
+    );
+    let kinds = if no_return {
+        QueryArena::new(runtime.memory(), 0)?
+    } else {
+        output_kinds(plan, runtime)?
+    };
     let handoff: OverlayHandoff<'w> = Cell::new(None);
     let pattern = NativePattern::new_with_mutation(
         view,
@@ -722,6 +759,7 @@ fn execute_native_mutation_diagnosed<'w, 'r, 'plan, 'lease, 'm, 'g, 'i>(
         counters: runtime.counters(),
     })?;
     completion.handoff = Some(&handoff);
+    completion.no_return = no_return;
     let execution = execute_in(
         runtime,
         plan,

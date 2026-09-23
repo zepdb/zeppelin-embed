@@ -19160,17 +19160,30 @@ fn native_graph_runner_keys_are_active_with_graph_feature() {
     // ZE-170 measured the pre-change lengths as 304 and 324; the committed 278
     // and 298 had drifted, so this pin was already red on main. Both are the
     // observed baseline plus the two ZE-170 read-view text receipts. ZE-53 S3
-    // adds the eight query-entry keys.
+    // adds the eight query-entry keys; ZE-56 adds the six cypher-entry keys.
     #[cfg(not(feature = "graph-result-test-support"))]
     assert_eq!(
         adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        314
+        320
     );
     #[cfg(feature = "graph-result-test-support")]
     assert_eq!(
         adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        334
+        340
     );
+}
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn cypher_entry_probe_fires_refusals_and_clean_control() {
+    for seed in [0, 7] {
+        let mut coverage = adversarial::coverage::CoverageRegistry::default();
+        adversarial::graph_cypher_entry::probe(seed, &mut coverage)
+            .expect("directed cypher entry probe");
+        for key in adversarial::graph_cypher_entry::REQUIRED_COVERAGE {
+            assert_eq!(coverage.count(key), 1, "{key}");
+        }
+    }
 }
 
 #[cfg(feature = "graph-cypher")]

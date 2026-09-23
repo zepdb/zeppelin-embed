@@ -15,6 +15,7 @@
 
 mod ast;
 mod binding;
+mod execute;
 mod lexer;
 mod lowering;
 mod parser;
@@ -23,6 +24,7 @@ mod shared_resources;
 
 pub use ast::*;
 pub use binding::*;
+pub use execute::{StatementError, execute};
 pub use lowering::{
     LoweredMutation, LoweredRead, PreparationControl, ReadColumn, ReadContext, compile_mutation_in,
     compile_read_in,

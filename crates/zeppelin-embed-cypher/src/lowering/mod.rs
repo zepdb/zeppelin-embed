@@ -86,12 +86,14 @@ pub fn compile_read_in<'v, T, C: ReadContext<'v>>(
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
-pub(super) enum Route {
+pub(crate) enum Route {
     Read,
     Mutation,
+    /// Either kind; the statement's own clauses decide.
+    Statement,
 }
 
-pub(super) fn compile_route_in<'v, T, C: ReadContext<'v>>(
+pub(crate) fn compile_route_in<'v, T, C: ReadContext<'v>>(
     source: &str,
     parameters: &[ParameterBinding<'_>],
     limits: CompileLimits,
@@ -148,6 +150,25 @@ pub(super) fn compile_route_in<'v, T, C: ReadContext<'v>>(
                         node.kind,
                         NodeKind::Projection { .. } | NodeKind::Match { .. } | NodeKind::Call(_)
                     ),
+                    Route::Statement => {
+                        has_mutation |= matches!(
+                            node.kind,
+                            NodeKind::Create
+                                | NodeKind::Set
+                                | NodeKind::Remove
+                                | NodeKind::Delete { .. }
+                        );
+                        matches!(
+                            node.kind,
+                            NodeKind::Projection { .. }
+                                | NodeKind::Match { .. }
+                                | NodeKind::Call(_)
+                                | NodeKind::Create
+                                | NodeKind::Set
+                                | NodeKind::Remove
+                                | NodeKind::Delete { .. }
+                        )
+                    }
                     Route::Mutation => match node.kind {
                         NodeKind::Create
                         | NodeKind::Set
@@ -167,6 +188,7 @@ pub(super) fn compile_route_in<'v, T, C: ReadContext<'v>>(
                         match route {
                             Route::Read => "read lowering clause",
                             Route::Mutation => "mutation lowering clause",
+                            Route::Statement => "statement lowering clause",
                         },
                     ));
                 }
@@ -206,14 +228,14 @@ pub(super) fn compile_route_in<'v, T, C: ReadContext<'v>>(
                         builder.pattern(&bound, clause, current, optional)?
                     }
                     NodeKind::Projection { .. } => builder.projection(&bound, *id, current)?,
-                    NodeKind::Call(_) if route == Route::Read => {
+                    NodeKind::Call(_) if route != Route::Mutation => {
                         builder.search(&bound, *id, current, has_prior)?
                     }
                     NodeKind::Create
                     | NodeKind::Set
                     | NodeKind::Remove
                     | NodeKind::Delete { .. }
-                        if route == Route::Mutation =>
+                        if route != Route::Read =>
                     {
                         builder.mutation(&bound, clause, current)?
                     }
@@ -223,6 +245,7 @@ pub(super) fn compile_route_in<'v, T, C: ReadContext<'v>>(
                             match route {
                                 Route::Read => "unexpected read clause",
                                 Route::Mutation => "unexpected mutation clause",
+                                Route::Statement => "unexpected statement clause",
                             },
                         ));
                     }
@@ -854,7 +877,7 @@ fn check(control: &dyn Fn() -> Result<(), ResourceError>, span: Span) -> Result<
     control()
         .map_err(|error| ParseError::new(ErrorKind::Resource(error), span, "read lowering control"))
 }
-fn invariant(span: Span, message: &'static str) -> ParseError {
+pub(crate) fn invariant(span: Span, message: &'static str) -> ParseError {
     ParseError::new(ErrorKind::BindingInvariant, span, message)
 }
 fn limit(span: Span) -> ParseError {
@@ -864,7 +887,7 @@ fn limit(span: Span) -> ParseError {
         "native plan node limit",
     )
 }
-fn memory_error(error: MemoryError) -> ParseError {
+pub(crate) fn memory_error(error: MemoryError) -> ParseError {
     match error {
         MemoryError::Allocation => ParseError::new(
             ErrorKind::Resource(ResourceError::Allocation),

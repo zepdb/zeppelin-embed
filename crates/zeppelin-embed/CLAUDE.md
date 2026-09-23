@@ -959,3 +959,21 @@ runs them explicitly and unconditionally. The workspace run enables the feature
 only on `aarch64-apple-darwin`, through
 `zeppelin-embed-workspace-tests/graph-result-test-support`, so before ZE-180 no
 gate proved these tests on any other host.
+
+## ZE-56 Cypher statement seam
+
+`zeppelin_embed_cypher::execute` compiles Cypher text inside each admission
+of `Store::execute_graph_statement` (a doc-hidden, search-free wrapper over
+the ZE-53 seam) with the admitted `RuntimeContext`, so plan, facts and owners
+are charged to that statement. A write statement is compiled twice (read
+classification, then writer). A compile refusal returns
+`StatementError::Compile` and admits nothing. The seam types re-exported from
+`query::completed` are an internal-crate seam, not the release API: ZE-66's
+`GraphStore` owns public lifecycle, query and typed errors.
+`Store::create_graph_store`/`open_graph_store` exist only under
+`test-support` for tests outside this crate.
+
+A write statement without RETURN lowers to a plan whose root is `Mutate`.
+Its result has zero columns and zero rows and its outcome is Committed or
+NoOp; the driver still pulls and charges every driven row, so row/payload
+capacities apply to it exactly as to a returning statement.
