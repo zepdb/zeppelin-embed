@@ -33,7 +33,16 @@ mod join;
 mod mutation;
 mod planner;
 pub(super) mod relational;
+mod search;
 mod source;
+
+#[allow(
+    unused_imports,
+    reason = "ZE-64 binds the real ranking adapter; ZE-53 S1 lands the seam"
+)]
+pub(crate) use search::{
+    SearchAdapter, SearchArguments, SearchHit, SearchInvocation, SearchReports, SearchScope,
+};
 
 #[cfg(test)]
 mod oracle_generation_tests;
@@ -268,6 +277,11 @@ enum PhysicalState<'s, 'plan, 'v, 'm, 'g> {
     Collect {
         child: usize,
     },
+    /// Replays one eager call's retained hits; it has no child in this tree.
+    Search {
+        call: usize,
+        next: usize,
+    },
 }
 
 struct Occurrence<'s, 'plan, 'v, 'm, 'g> {
@@ -319,7 +333,7 @@ impl<'s, 'i> MutationScope<'s, 'i> {
 
 /// One bounded physical occurrence tree. A repeated validated DAG node is built
 /// as a separate occurrence so cursor position is never accidentally shared.
-pub(crate) struct NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i> {
+pub(crate) struct NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> {
     view: &'s GraphReadView<'s, 'v, 'm, 'g>,
     query_view: &'v QueryView,
     evaluator: NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g>,
@@ -328,9 +342,17 @@ pub(crate) struct NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i> {
     root_node: PlanNodeId,
     schema: Schema<'m, 'g>,
     mutation: Option<MutationScope<'s, 'i>>,
+    description: super::plan::PlanDescription<'plan>,
+    capacity: PatternCapacity,
+    /// Per eager call, in call order; empty without a search scope.
+    searches: QueryArena<'m, 'g, search::PreparedSearch<'v, 'm, 'g>>,
+    /// The adapter and report sink, borrowed for `'q`. Plan validation
+    /// refuses search and mutation in one statement, so at most one of
+    /// `mutation` and `search` is ever present.
+    search: Option<SearchScope<'q, 'v, 'm, 'g>>,
 }
 
-impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i> {
+impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> {
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn cancel_after_expression_polls(
         &mut self,
@@ -353,7 +375,37 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i>
         capacity: PatternCapacity,
         context: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<Self, NativeExecutionError> {
-        Self::build(view, plan, root_node, bindings, capacity, context, None)
+        Self::build(
+            view, plan, root_node, bindings, capacity, context, None, None,
+        )
+    }
+
+    /// A read-only occurrence tree whose eager `Search` calls invoke
+    /// `search`'s adapter once each and record their reports into its sink.
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::result_large_err,
+        reason = "all authentic native owners and typed causes stay explicit"
+    )]
+    pub(crate) fn new_with_search(
+        view: &'s GraphReadView<'s, 'v, 'm, 'g>,
+        plan: &'r RuntimePlan<'r, 'plan, 'r, 'm, 'g, 'r>,
+        root_node: PlanNodeId,
+        bindings: &[ParameterBinding<'_>],
+        capacity: PatternCapacity,
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+        search: SearchScope<'q, 'v, 'm, 'g>,
+    ) -> Result<Self, NativeExecutionError> {
+        Self::build(
+            view,
+            plan,
+            root_node,
+            bindings,
+            capacity,
+            context,
+            None,
+            Some(search),
+        )
     }
 
     /// An occurrence tree whose every expression reads through `mutation`'s
@@ -384,6 +436,7 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i>
             capacity,
             context,
             Some(mutation),
+            None,
         )
     }
 
@@ -409,15 +462,33 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i>
         capacity: PatternCapacity,
         context: &mut RuntimeContext<'v, 'm, 'g>,
         mutation: Option<MutationScope<'s, 'i>>,
+        search: Option<SearchScope<'q, 'v, 'm, 'g>>,
     ) -> Result<Self, NativeExecutionError> {
         let description = plan.plan().description();
-        let count = occurrence_count(
-            description.operators,
-            root_node,
-            0,
-            None,
-            mutation.is_some(),
-        )?;
+        let admitted = Admitted {
+            mutation: mutation.is_some(),
+            search: search.is_some(),
+        };
+        let mut count = occurrence_count(description.operators, root_node, 0, None, admitted)?;
+        let calls = if admitted.search {
+            description.eager_searches
+        } else {
+            &[]
+        };
+        // Each call also owns one private singleton input subtree, built
+        // outside the row tree so it runs once however often the call recurs.
+        for node in calls {
+            count = count
+                .checked_add(occurrence_count(
+                    description.operators,
+                    search_input(description, *node)?,
+                    0,
+                    None,
+                    admitted,
+                )?)
+                .filter(|count| *count <= MAX_PLAN_NODES)
+                .ok_or(PlanError::Limit)?;
+        }
         let mut occurrences =
             QueryArena::new(context.memory(), count).map_err(RuntimeError::Memory)?;
         let root = build_occurrence(
@@ -429,6 +500,32 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i>
             context,
             None,
         )?;
+        let mut searches =
+            QueryArena::new(context.memory(), calls.len()).map_err(RuntimeError::Memory)?;
+        for (index, node) in calls.iter().enumerate() {
+            if search::call_index(description, *node)? != index {
+                return Err(PlanError::Search.into());
+            }
+            let Some(OperatorKind::Search { outputs, .. }) = description
+                .operators
+                .get(node.0 as usize)
+                .map(|operator| operator.kind)
+            else {
+                return Err(PlanError::Search.into());
+            };
+            let input = build_occurrence(
+                view,
+                plan,
+                search_input(description, *node)?,
+                capacity,
+                &mut occurrences,
+                context,
+                None,
+            )?;
+            searches
+                .push(search::PreparedSearch::new(input, outputs))
+                .map_err(RuntimeError::Memory)?;
+        }
         if occurrences.len() != count {
             return Err(RuntimeError::Batch.into());
         }
@@ -444,6 +541,10 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i>
             root_node,
             schema,
             mutation,
+            description,
+            capacity,
+            searches,
+            search,
         })
     }
 
@@ -758,6 +859,7 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i>
                 self.copy_output(index, *child, context)?;
                 Ok(true)
             }
+            PhysicalState::Search { call, next } => self.next_search(index, *call, next, context),
         })();
         self.occurrence_mut(index)?.state = state;
         result
@@ -778,6 +880,7 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i>
         let result = (|| {
             match &mut state {
                 PhysicalState::Vacant => return Err(RuntimeError::Batch),
+                PhysicalState::Search { next, .. } => *next = 0,
                 PhysicalState::Anchor { emitted, .. } => *emitted = false,
                 PhysicalState::Unit { emitted } => *emitted = false,
                 PhysicalState::ScanNodes { child, cursor, .. } => {
@@ -2149,16 +2252,16 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i>
     }
 }
 
-impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i> RowOperator<'v, 'm, 'g, NativeExecutionError>
-    for NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i>
+impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> RowOperator<'v, 'm, 'g, NativeExecutionError>
+    for NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q>
 {
     fn schema(&self) -> &Schema<'m, 'g> {
         &self.schema
     }
 }
 
-impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i> PullOperator<'v, 'm, 'g, NativeExecutionError>
-    for NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i>
+impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> PullOperator<'v, 'm, 'g, NativeExecutionError>
+    for NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q>
 {
     fn node(&self) -> PlanNodeId {
         self.root_node
@@ -2166,10 +2269,13 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i> PullOperator<'v, 'm, 'g, NativeExecutionErro
 
     fn prepare_search(
         &mut self,
-        _: PlanNodeId,
-        _: &mut RuntimeContext<'v, 'm, 'g>,
+        node: PlanNodeId,
+        context: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<(), NativeExecutionError> {
-        Err(PlanError::Search.into())
+        if self.search.is_none() {
+            return Err(PlanError::Search.into());
+        }
+        self.run_search(node, context)
     }
 
     fn pull(
@@ -2194,16 +2300,40 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i> PullOperator<'v, 'm, 'g, NativeExecutionErro
     }
 }
 
+/// The scopes a pattern was built under, which admit their operators.
+#[derive(Clone, Copy)]
+struct Admitted {
+    mutation: bool,
+    search: bool,
+}
+
+/// The single input of a `Search` node: its private singleton subtree.
+fn search_input(
+    description: super::plan::PlanDescription<'_>,
+    node: PlanNodeId,
+) -> Result<PlanNodeId, PlanError> {
+    let operator = description
+        .operators
+        .get(node.0 as usize)
+        .ok_or(PlanError::Reference)?;
+    match operator.inputs {
+        [input] => Ok(*input),
+        _ => Err(PlanError::Arity),
+    }
+}
+
 /// Counts the occurrences a validated plan needs, refusing every operator this
 /// executor does not implement. `mutation` is true only under a writer scope:
 /// `Mutate` is admitted there when every item is a SET, REMOVE, label edit or
-/// CREATE, and is refused everywhere else, as are DELETE items.
+/// CREATE, and is refused everywhere else, as are DELETE items. `Search` is
+/// admitted only under a search scope, as one childless replay occurrence;
+/// its input subtree is counted once per call by the caller.
 fn occurrence_count(
     operators: &[super::plan::Operator<'_>],
     node: PlanNodeId,
     depth: usize,
     bindings: Option<&AnchorBinding<'_>>,
-    mutation: bool,
+    admitted: Admitted,
 ) -> Result<usize, PlanError> {
     if depth >= super::plan::MAX_PLAN_DEPTH {
         return Err(PlanError::Limit);
@@ -2233,8 +2363,11 @@ fn occurrence_count(
             | OperatorKind::Aggregate { .. }
             | OperatorKind::Collect
     );
-    let mutation_admitted = mutation
+    let mutation_admitted = admitted.mutation
         && matches!(operator.kind, OperatorKind::Mutate(items) if supported_mutations(items));
+    if admitted.search && matches!(operator.kind, OperatorKind::Search { .. }) {
+        return Ok(1);
+    }
     if !implemented && !mutation_admitted {
         return Err(PlanError::Reference);
     }
@@ -2244,13 +2377,13 @@ fn occurrence_count(
         if operator.inputs.len() != 2 {
             return Err(PlanError::Arity);
         }
-        let left_count = occurrence_count(operators, left, depth + 1, bindings, mutation)?;
+        let left_count = occurrence_count(operators, left, depth + 1, bindings, admitted)?;
         let scoped = AnchorBinding {
             logical: left,
             source: 0,
             parent: bindings,
         };
-        let right_count = occurrence_count(operators, right, depth + 1, Some(&scoped), mutation)?;
+        let right_count = occurrence_count(operators, right, depth + 1, Some(&scoped), admitted)?;
         return 1usize
             .checked_add(left_count)
             .and_then(|count| count.checked_add(right_count))
@@ -2265,7 +2398,7 @@ fn occurrence_count(
                 *input,
                 depth + 1,
                 bindings,
-                mutation,
+                admitted,
             )?)
             .filter(|count| *count <= MAX_PLAN_NODES)
             .ok_or(PlanError::Limit)?;
@@ -2902,6 +3035,10 @@ fn build_occurrence<'s, 'r, 'plan, 'v, 'm, 'g>(
                 )?,
             }
         }
+        OperatorKind::Search { call, .. } => PhysicalState::Search {
+            call: call.0 as usize,
+            next: 0,
+        },
         OperatorKind::Collect => PhysicalState::Collect {
             child: build_unary(
                 view,
@@ -3002,7 +3139,8 @@ fn slot_inherited_from_anchor(
     let inherited = match &occurrence.state {
         PhysicalState::Vacant => return Err(RuntimeError::Batch.into()),
         PhysicalState::Anchor { source, .. } => *source == anchor,
-        PhysicalState::Unit { .. } => false,
+        // A call's input is its own uncorrelated singleton subtree.
+        PhysicalState::Unit { .. } | PhysicalState::Search { .. } => false,
         PhysicalState::ScanNodes { child, output, .. }
         | PhysicalState::LookupNode { child, output, .. }
         | PhysicalState::LookupRelationship { child, output, .. }

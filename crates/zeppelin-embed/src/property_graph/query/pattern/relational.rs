@@ -363,7 +363,7 @@ impl<'v, 'm, 'g> SortState<'v, 'm, 'g> {
     }
 }
 
-impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i> {
+impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> {
     pub(super) fn next_offset_limit(
         &mut self,
         index: usize,

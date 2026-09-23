@@ -11,7 +11,9 @@ use super::{
     Column, CompletedError, Outcome, Pools, PreparedGraphResult, ResultInput, ResultSource, Span,
 };
 use crate::property_graph::GraphName;
-use crate::property_graph::query::pattern::{NativePattern, PatternCapacity};
+use crate::property_graph::query::pattern::{
+    NativePattern, PatternCapacity, SearchAdapter, SearchReports, SearchScope,
+};
 use crate::property_graph::query::plan::{ParameterBinding, PlanNodeId};
 use crate::property_graph::query::resources::{QueryArena, QueryMemory, RuntimePlan};
 use crate::property_graph::query::runtime::{
@@ -26,6 +28,8 @@ mod entities;
 pub(crate) mod test_support;
 mod values;
 
+#[cfg(test)]
+mod search_tests;
 #[cfg(test)]
 mod tests;
 
@@ -220,6 +224,9 @@ struct NativeCompletion<'a, 's, 'lease, 'm, 'g, C> {
     owner: NativeOwner<'m, 'g>,
     columns: &'a [GraphName<'a>],
     kinds: &'a [crate::property_graph::query::plan::ValueKinds],
+    /// The eager reports recorded at search time, and how many calls the
+    /// plan has. Without a search scope there are none to copy.
+    reports: Option<(&'a SearchReports, usize)>,
     before_copy: C,
 }
 
@@ -235,6 +242,7 @@ impl<'a, 's, 'lease, 'm, 'g, C> NativeCompletion<'a, 's, 'lease, 'm, 'g, C> {
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
         columns: &'a [GraphName<'a>],
         kinds: &'a [crate::property_graph::query::plan::ValueKinds],
+        reports: Option<(&'a SearchReports, usize)>,
         before_copy: C,
     ) -> Result<Self, NativeExecutionError> {
         view.validate_expression_owner(runtime)?;
@@ -246,6 +254,7 @@ impl<'a, 's, 'lease, 'm, 'g, C> NativeCompletion<'a, 's, 'lease, 'm, 'g, C> {
             owner: NativeOwner::capture(runtime),
             columns,
             kinds,
+            reports,
             before_copy,
         })
     }
@@ -326,7 +335,7 @@ where
             vectors: QueryArena::new(context.memory(), 0)
                 .map_err(CompletedError::from)
                 .map_err(NativeResultError::Completed)?,
-            reports: QueryArena::new(context.memory(), 0)
+            reports: QueryArena::new(context.memory(), self.reports.map_or(0, |(_, calls)| calls))
                 .map_err(CompletedError::from)
                 .map_err(NativeResultError::Completed)?,
             receipts: QueryArena::new(context.memory(), 0)
@@ -343,6 +352,9 @@ where
                 .push(Column { name, kinds })
                 .map_err(CompletedError::from)
                 .map_err(NativeResultError::Completed)?;
+        }
+        if let Some((reports, calls)) = self.reports {
+            reports.copy_into(calls, &mut staging.reports)?;
         }
         entities::fill_entities(
             self.view,
@@ -386,6 +398,34 @@ pub(super) fn execute_native_result<'s, 'r, 'plan, 'lease, 'm, 'g>(
         column_names,
         pattern_capacity,
         execution_capacity,
+        None,
+        |_| Ok(()),
+        |_, _| Ok(()),
+    )
+}
+
+/// Executes a read plan whose eager `Search` calls invoke `adapter` once each,
+/// in call order, and copies every call's report into the completed result.
+#[allow(clippy::too_many_arguments, clippy::result_large_err)]
+pub(super) fn execute_native_search_result<'s, 'r, 'plan, 'lease, 'm, 'g>(
+    view: &'s GraphReadView<'s, 'lease, 'm, 'g>,
+    runtime: &mut RuntimeContext<'lease, 'm, 'g>,
+    plan: &'r RuntimePlan<'r, 'plan, 'r, 'm, 'g, 'r>,
+    bindings: &[ParameterBinding<'_>],
+    column_names: &[GraphName<'_>],
+    pattern_capacity: PatternCapacity,
+    execution_capacity: ExecutionCapacity,
+    adapter: &mut dyn SearchAdapter<'lease, 'm, 'g>,
+) -> Result<super::CompletedGraphResult, RuntimeFailure<NativeResultError>> {
+    execute_native_result_with(
+        view,
+        runtime,
+        plan,
+        bindings,
+        column_names,
+        pattern_capacity,
+        execution_capacity,
+        Some(adapter),
         |_| Ok(()),
         |_, _| Ok(()),
     )
@@ -400,6 +440,7 @@ fn execute_native_result_with<'s, 'r, 'plan, 'lease, 'm, 'g, H, C>(
     column_names: &[GraphName<'_>],
     pattern_capacity: PatternCapacity,
     execution_capacity: ExecutionCapacity,
+    search: Option<&mut dyn SearchAdapter<'lease, 'm, 'g>>,
     after_pull: H,
     before_copy: C,
 ) -> Result<super::CompletedGraphResult, RuntimeFailure<NativeResultError>>
@@ -438,24 +479,40 @@ where
                 counters: runtime.counters(),
             })?;
     }
-    let mut source = NativeSource {
-        inner: NativePattern::new(view, plan, root, bindings, pattern_capacity, runtime).map_err(
-            |error| RuntimeFailure {
-                operator: root,
-                error: NativeResultError::Native(error),
-                counters: runtime.counters(),
-            },
-        )?,
-        after_pull,
-    };
-    let mut completion =
-        NativeCompletion::new(view, runtime, column_names, kinds.as_slice(), before_copy).map_err(
-            |error| RuntimeFailure {
-                operator: root,
-                error: NativeResultError::Native(error),
-                counters: runtime.counters(),
-            },
-        )?;
+    let reports = SearchReports::new();
+    let calls = plan.plan().description().eager_searches.len();
+    let searched = search.is_some();
+    let inner = match search {
+        Some(adapter) => NativePattern::new_with_search(
+            view,
+            plan,
+            root,
+            bindings,
+            pattern_capacity,
+            runtime,
+            SearchScope::new(adapter, &reports),
+        ),
+        None => NativePattern::new(view, plan, root, bindings, pattern_capacity, runtime),
+    }
+    .map_err(|error| RuntimeFailure {
+        operator: root,
+        error: NativeResultError::Native(error),
+        counters: runtime.counters(),
+    })?;
+    let mut source = NativeSource { inner, after_pull };
+    let mut completion = NativeCompletion::new(
+        view,
+        runtime,
+        column_names,
+        kinds.as_slice(),
+        searched.then_some((&reports, calls)),
+        before_copy,
+    )
+    .map_err(|error| RuntimeFailure {
+        operator: root,
+        error: NativeResultError::Native(error),
+        counters: runtime.counters(),
+    })?;
     let execution = execute_in(
         runtime,
         plan,
@@ -494,6 +551,7 @@ where
         column_names,
         pattern_capacity,
         execution_capacity,
+        None,
         |_| Ok(()),
         before_copy,
     )
@@ -527,6 +585,7 @@ where
         column_names,
         pattern_capacity,
         execution_capacity,
+        None,
         after_pull,
         before_copy,
     )

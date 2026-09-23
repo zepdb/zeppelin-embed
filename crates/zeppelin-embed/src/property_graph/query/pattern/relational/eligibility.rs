@@ -130,27 +130,58 @@ pub(super) fn prepare<'s, 'r, 'plan, 'v, 'm, 'g>(
             context,
         )?;
         let evaluated = evaluator.evaluate(expression, &schema, &row, 0, view, context)?;
-        let QueryValue::List(list) = evaluated else {
-            return Err(expression_error(expression, QueryError::Type.into()));
-        };
-        QueryValue::List(list)
-            .validate(context.values())
-            .map_err(|error| expression_error(expression, error.into()))?;
-        let mut values = CheckedListValues {
-            list,
-            next: 0,
-            missing: false,
-        };
-        let set = EligibleNodeSet::build(context, set_capacity, values.by_ref())
-            .map_err(|error| expression_error(expression, error))?;
-        if values.missing || values.next != list.len() {
-            return Err(RuntimeError::Batch.into());
-        }
-        Some(set)
+        Some(build_set(evaluated, expression, set_capacity, context)?)
     } else {
         None
     };
     Ok(PreparedEligibility { row, schema, set })
+}
+
+/// Builds the execution-owned eligible set from one evaluated singleton list.
+/// Its capacity is the list length: deduplication can only shrink it.
+#[allow(
+    clippy::result_large_err,
+    reason = "native typed causes remain unboxed and allocation-free"
+)]
+pub(in crate::property_graph::query::pattern) fn eligible_set<'v, 'm, 'g>(
+    evaluated: QueryValue<'_>,
+    expression: ExprId,
+    context: &mut RuntimeContext<'v, 'm, 'g>,
+) -> Result<EligibleNodeSet<'v, 'm, 'g>, NativeExecutionError> {
+    let capacity = match evaluated {
+        QueryValue::List(list) => list.len(),
+        _ => 0,
+    };
+    build_set(evaluated, expression, capacity, context)
+}
+
+#[allow(
+    clippy::result_large_err,
+    reason = "native typed causes remain unboxed and allocation-free"
+)]
+fn build_set<'v, 'm, 'g>(
+    evaluated: QueryValue<'_>,
+    expression: ExprId,
+    set_capacity: usize,
+    context: &mut RuntimeContext<'v, 'm, 'g>,
+) -> Result<EligibleNodeSet<'v, 'm, 'g>, NativeExecutionError> {
+    let QueryValue::List(list) = evaluated else {
+        return Err(expression_error(expression, QueryError::Type.into()));
+    };
+    QueryValue::List(list)
+        .validate(context.values())
+        .map_err(|error| expression_error(expression, error.into()))?;
+    let mut values = CheckedListValues {
+        list,
+        next: 0,
+        missing: false,
+    };
+    let set = EligibleNodeSet::build(context, set_capacity, values.by_ref())
+        .map_err(|error| expression_error(expression, error))?;
+    if values.missing || values.next != list.len() {
+        return Err(RuntimeError::Batch.into());
+    }
+    Ok(set)
 }
 
 fn expression_error(expression: ExprId, error: RuntimeError) -> NativeExecutionError {
