@@ -12,13 +12,15 @@
 use super::NativeGraphError;
 use super::base::NativeAdmittedBase;
 use super::write::{CommitStep, commit_staged_batch};
+use crate::property_graph::query::completed::CompletedError;
 use crate::property_graph::query::resources::QueryMemory;
 use crate::property_graph::query::runtime::{
     NativeExecutionError, RuntimeContext, RuntimeError, RuntimeLimits, WorkCounters,
 };
 use crate::property_graph::resources::GraphResources;
 use crate::property_graph::staging::{
-    GraphBatchReadView, StageError, StatementImages, WriteControl, WriteLimits, WriteMemory,
+    GraphBatchReadView, ItemReceipt, StageError, StatementImages, WriteControl, WriteLimits,
+    WriteMemory,
 };
 use crate::property_graph::storage::memory::StorageMemory;
 use crate::property_graph::storage::tree::directory::{TreeError, TreeResources};
@@ -43,7 +45,11 @@ use std::sync::atomic::Ordering;
 /// both. The arena's own lifetime `'i` stays separate because the arena is
 /// interior-mutable, and therefore invariant, and has drop glue; tying it to
 /// `'w` would require borrowing it for as long as it exists.
-pub(crate) trait NativeMutationConsumer<T> {
+///
+/// A consumer rejects with `E`. Most reject with the executor's own error; a
+/// consumer that copies the statement's completed result also rejects with
+/// that result's typed error, so it reports `NativeMutationError` directly.
+pub(crate) trait NativeMutationConsumer<T, E = NativeExecutionError> {
     fn consume<'lease, 'm, 'g, 'w, 'i>(
         &mut self,
         view: &'w GraphReadView<'w, 'lease, 'm, 'g>,
@@ -51,7 +57,7 @@ pub(crate) trait NativeMutationConsumer<T> {
         overlay: GraphBatchReadView<'w, 'static>,
         images: &'w StatementImages<'i>,
         control: &mut WriteControl<'_>,
-    ) -> Result<(T, GraphBatchReadView<'w, 'static>), NativeExecutionError>;
+    ) -> Result<(T, GraphBatchReadView<'w, 'static>), E>;
 }
 
 /// What one admitted mutation actually did.
@@ -75,6 +81,9 @@ pub(crate) enum NativeMutationError {
     Graph(NativeGraphError),
     /// The consumer itself rejected before anything was staged for commit.
     Execution(NativeExecutionError),
+    /// Copying the statement's result rejected before commit: nothing was
+    /// committed and no partial result exists.
+    Completed(CompletedError),
 }
 
 impl From<NativeGraphError> for NativeMutationError {
@@ -112,6 +121,7 @@ impl std::fmt::Display for NativeMutationError {
         match self {
             Self::Graph(error) => error.fmt(formatter),
             Self::Execution(error) => error.fmt(formatter),
+            Self::Completed(error) => write!(formatter, "graph result: {error:?}"),
         }
     }
 }
@@ -121,6 +131,7 @@ impl std::error::Error for NativeMutationError {
         match self {
             Self::Graph(error) => Some(error),
             Self::Execution(error) => Some(error),
+            Self::Completed(_) => None,
         }
     }
 }
@@ -148,8 +159,51 @@ impl crate::lifecycle::Store {
         lazy_targets: usize,
         overlay_capacity: usize,
         image_capacity: usize,
-        mut consumer: C,
+        consumer: C,
     ) -> Result<(T, NativeMutationReport), NativeMutationError> {
+        self.with_native_mutation_settled(
+            control,
+            limits,
+            memory_limit,
+            source_slots,
+            lazy_targets,
+            overlay_capacity,
+            image_capacity,
+            consumer,
+            |value, _, _| value,
+        )
+    }
+
+    /// `with_native_mutation`, whose consumer produces an `S` that is only
+    /// complete once the commit tail has decided the statement's outcome.
+    ///
+    /// `settle` runs exactly once, for the attempt that is returned, after
+    /// `commit_staged_batch` has committed it or found it a `NoOp`, and never
+    /// for an attempt a checkpoint discarded. It receives the staged
+    /// statement's per-entity receipts and the generation the commit actually
+    /// published, `None` for a `NoOp`. It cannot fail: by the time it runs
+    /// the write may be durable, so every fallible step belongs in `consume`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one admission carries its control, limits, five capacities and its settle step"
+    )]
+    pub(crate) fn with_native_mutation_settled<S, T, E, C, F>(
+        &self,
+        control: &crate::lifecycle::QueryControl,
+        limits: RuntimeLimits,
+        memory_limit: usize,
+        source_slots: usize,
+        lazy_targets: usize,
+        overlay_capacity: usize,
+        image_capacity: usize,
+        mut consumer: C,
+        settle: F,
+    ) -> Result<(T, NativeMutationReport), NativeMutationError>
+    where
+        C: NativeMutationConsumer<S, E>,
+        E: Into<NativeMutationError>,
+        F: FnOnce(S, &[ItemReceipt], Option<GraphGeneration>) -> T,
+    {
         self.native_graph.require_writable()?;
         let mut allow_pending_checkpoint = true;
         loop {
@@ -250,7 +304,7 @@ impl crate::lifecycle::Store {
             if let Some(error) = base.take_error() {
                 return Err(NativeGraphError::Stage(StageError::NativeStorage(error)).into());
             }
-            let (value, overlay) = consumed?;
+            let (value, overlay) = consumed.map_err(Into::into)?;
             runtime.checkpoint().map_err(TreeError::Runtime)?;
             let counters = runtime.counters();
             // Finalization reads the base again, exactly as the structured
@@ -293,7 +347,7 @@ impl crate::lifecycle::Store {
                 CommitStep::Checkpointed => continue,
             };
             return Ok((
-                value,
+                settle(value, staged.receipts(), changed),
                 NativeMutationReport {
                     disposition,
                     admitted: admitted_generation,

@@ -12,7 +12,7 @@ use super::{
 };
 use crate::property_graph::GraphName;
 use crate::property_graph::query::pattern::{
-    NativePattern, PatternCapacity, SearchAdapter, SearchReports, SearchScope,
+    MutationScope, NativePattern, PatternCapacity, SearchAdapter, SearchReports, SearchScope,
 };
 use crate::property_graph::query::plan::{ParameterBinding, PlanNodeId};
 use crate::property_graph::query::resources::{QueryArena, QueryMemory, RuntimePlan};
@@ -21,7 +21,9 @@ use crate::property_graph::query::runtime::{
     PullState, RowBatch, RuntimeContext, RuntimeError, RuntimeFailure, RuntimeInstanceId,
     execute_in,
 };
+use crate::property_graph::staging::{GraphBatchReadView, StatementImages};
 use crate::property_graph::storage::GraphReadView;
+use std::cell::Cell;
 
 mod entities;
 #[cfg(any(test, feature = "test-support"))]
@@ -34,7 +36,7 @@ mod search_tests;
 mod tests;
 
 #[derive(Debug)]
-pub(super) enum NativeResultError {
+pub(crate) enum NativeResultError {
     Native(NativeExecutionError),
     Completed(CompletedError),
 }
@@ -50,6 +52,15 @@ impl std::fmt::Display for NativeResultError {
         match self {
             Self::Native(error) => error.fmt(formatter),
             Self::Completed(error) => write!(formatter, "{error:?}"),
+        }
+    }
+}
+
+impl From<NativeResultError> for crate::lifecycle::native_graph::NativeMutationError {
+    fn from(error: NativeResultError) -> Self {
+        match error {
+            NativeResultError::Native(error) => Self::Execution(error),
+            NativeResultError::Completed(error) => Self::Completed(error),
         }
     }
 }
@@ -132,6 +143,7 @@ struct NativeStaging<'v, 'm, 'g> {
     reports: QueryArena<'m, 'g, super::SearchReport>,
     receipts: QueryArena<'m, 'g, super::Receipt>,
     rows: u32,
+    outcome: Outcome,
 }
 
 impl NativeStaging<'_, '_, '_> {
@@ -159,7 +171,7 @@ impl ResultSource for NativeStaging<'_, '_, '_> {
             view: self.view,
             pools: self.pools(),
             rows: self.rows,
-            outcome: Outcome::Read,
+            outcome: self.outcome,
         })
     }
 }
@@ -219,6 +231,12 @@ impl NativeOwnerFingerprint {
     }
 }
 
+/// Where a write statement's overlay waits between the pattern that staged
+/// into it and the completion that copies entities through it. The drain
+/// holds both at once, so the overlay moves by value: the source parks it
+/// here when its last pull is done, and the completion borrows it back.
+type OverlayHandoff<'s> = Cell<Option<GraphBatchReadView<'s, 'static>>>;
+
 struct NativeCompletion<'a, 's, 'lease, 'm, 'g, C> {
     view: &'a GraphReadView<'s, 'lease, 'm, 'g>,
     owner: NativeOwner<'m, 'g>,
@@ -228,6 +246,9 @@ struct NativeCompletion<'a, 's, 'lease, 'm, 'g, C> {
     /// plan has. Without a search scope there are none to copy.
     reports: Option<(&'a SearchReports, usize)>,
     before_copy: C,
+    /// Present only for a write statement: every entity is then copied from
+    /// the statement's staged image first and the admitted view second.
+    handoff: Option<&'a OverlayHandoff<'s>>,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -256,6 +277,7 @@ impl<'a, 's, 'lease, 'm, 'g, C> NativeCompletion<'a, 's, 'lease, 'm, 'g, C> {
             kinds,
             reports,
             before_copy,
+            handoff: None,
         })
     }
 }
@@ -280,6 +302,35 @@ where
                 super::SourceError::ForeignView,
             )));
         }
+        let Some(handoff) = self.handoff else {
+            return self.freeze(rows, context, None, Outcome::Read);
+        };
+        // The source parks the overlay only once its last pull is done.
+        let mut overlay = handoff
+            .take()
+            .ok_or(NativeResultError::Native(RuntimeError::Batch.into()))?;
+        // Copying precedes the commit, so the only outcome it can prove is
+        // none; the commit tail settles the real one.
+        let frozen = self.freeze(rows, context, Some(&mut overlay), Outcome::NoOp);
+        handoff.set(Some(overlay));
+        frozen
+    }
+}
+
+impl<'a, 's, 'lease, 'm, 'g, C> NativeCompletion<'a, 's, 'lease, 'm, 'g, C>
+where
+    C: FnMut(
+        NativeCompletionStage,
+        crate::property_graph::query::runtime::WorkCounters,
+    ) -> Result<(), NativeResultError>,
+{
+    fn freeze<'v>(
+        &mut self,
+        rows: &PreparedRows<'v, 'm, 'g>,
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+        mut overlay: Option<&mut GraphBatchReadView<'s, 'static>>,
+        outcome: Outcome,
+    ) -> Result<FrozenOutput<PreparedGraphResult<'m, 'g>>, NativeResultError> {
         (self.before_copy)(NativeCompletionStage::BeforeStaging, context.counters())?;
         if rows.columns() != self.columns.len() {
             return Err(NativeResultError::Completed(CompletedError::Shape));
@@ -298,6 +349,7 @@ where
         let relationship_ids = entities::sort_unique(relationship_occurrences, context)?;
         entities::measure_entities(
             self.view,
+            overlay.as_deref_mut(),
             node_ids.as_slice(),
             relationship_ids.as_slice(),
             &mut sizes,
@@ -343,6 +395,7 @@ where
                 .map_err(NativeResultError::Completed)?,
             rows: u32::try_from(rows.rows())
                 .map_err(|_| NativeResultError::Completed(CompletedError::Limit))?,
+            outcome,
         };
         for (column, kinds) in self.columns.iter().zip(self.kinds.iter().copied()) {
             let name =
@@ -358,6 +411,7 @@ where
         }
         entities::fill_entities(
             self.view,
+            overlay,
             node_ids.as_slice(),
             relationship_ids.as_slice(),
             sizes.name_scratch,
@@ -381,7 +435,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments, clippy::result_large_err)]
-pub(super) fn execute_native_result<'s, 'r, 'plan, 'lease, 'm, 'g>(
+pub(crate) fn execute_native_result<'s, 'r, 'plan, 'lease, 'm, 'g>(
     view: &'s GraphReadView<'s, 'lease, 'm, 'g>,
     runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     plan: &'r RuntimePlan<'r, 'plan, 'r, 'm, 'g, 'r>,
@@ -431,26 +485,15 @@ pub(super) fn execute_native_search_result<'s, 'r, 'plan, 'lease, 'm, 'g>(
     )
 }
 
-#[allow(clippy::too_many_arguments, clippy::result_large_err)]
-fn execute_native_result_with<'s, 'r, 'plan, 'lease, 'm, 'g, H, C>(
-    view: &'s GraphReadView<'s, 'lease, 'm, 'g>,
-    runtime: &mut RuntimeContext<'lease, 'm, 'g>,
-    plan: &'r RuntimePlan<'r, 'plan, 'r, 'm, 'g, 'r>,
-    bindings: &[ParameterBinding<'_>],
-    column_names: &[GraphName<'_>],
-    pattern_capacity: PatternCapacity,
-    execution_capacity: ExecutionCapacity,
-    search: Option<&mut dyn SearchAdapter<'lease, 'm, 'g>>,
-    after_pull: H,
-    before_copy: C,
-) -> Result<super::CompletedGraphResult, RuntimeFailure<NativeResultError>>
-where
-    H: FnMut(usize) -> Result<(), NativeResultError>,
-    C: FnMut(
-        NativeCompletionStage,
-        crate::property_graph::query::runtime::WorkCounters,
-    ) -> Result<(), NativeResultError>,
-{
+/// The root's output value kinds, one per column, in column order.
+#[allow(clippy::result_large_err)]
+fn output_kinds<'m, 'g>(
+    plan: &RuntimePlan<'_, '_, '_, 'm, 'g, '_>,
+    runtime: &mut RuntimeContext<'_, 'm, 'g>,
+) -> Result<
+    QueryArena<'m, 'g, crate::property_graph::query::plan::ValueKinds>,
+    RuntimeFailure<NativeResultError>,
+> {
     let root = plan.plan().description().root;
     let facts = plan.plan().facts(root).ok_or_else(|| RuntimeFailure {
         operator: root,
@@ -479,6 +522,31 @@ where
                 counters: runtime.counters(),
             })?;
     }
+    Ok(kinds)
+}
+
+#[allow(clippy::too_many_arguments, clippy::result_large_err)]
+fn execute_native_result_with<'s, 'r, 'plan, 'lease, 'm, 'g, H, C>(
+    view: &'s GraphReadView<'s, 'lease, 'm, 'g>,
+    runtime: &mut RuntimeContext<'lease, 'm, 'g>,
+    plan: &'r RuntimePlan<'r, 'plan, 'r, 'm, 'g, 'r>,
+    bindings: &[ParameterBinding<'_>],
+    column_names: &[GraphName<'_>],
+    pattern_capacity: PatternCapacity,
+    execution_capacity: ExecutionCapacity,
+    search: Option<&mut dyn SearchAdapter<'lease, 'm, 'g>>,
+    after_pull: H,
+    before_copy: C,
+) -> Result<super::CompletedGraphResult, RuntimeFailure<NativeResultError>>
+where
+    H: FnMut(usize) -> Result<(), NativeResultError>,
+    C: FnMut(
+        NativeCompletionStage,
+        crate::property_graph::query::runtime::WorkCounters,
+    ) -> Result<(), NativeResultError>,
+{
+    let root = plan.plan().description().root;
+    let kinds = output_kinds(plan, runtime)?;
     let reports = SearchReports::new();
     let calls = plan.plan().description().eager_searches.len();
     let searched = search.is_some();
@@ -523,6 +591,136 @@ where
     Ok(execution
         .output
         .detach(execution.counters, execution.peak_query_bytes))
+}
+
+/// The write statement's source: its `NativePattern`, which stages into the
+/// statement overlay, parked into `handoff` once its last pull is done.
+struct WriteSource<'c, 's, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> {
+    root: PlanNodeId,
+    pattern: Option<NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q>>,
+    handoff: &'c OverlayHandoff<'s>,
+}
+
+impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> PullOperator<'v, 'm, 'g, NativeResultError>
+    for WriteSource<'_, 's, 'r, 'plan, 'v, 'm, 'g, 'i, 'q>
+{
+    fn node(&self) -> PlanNodeId {
+        self.root
+    }
+
+    fn prepare_search(
+        &mut self,
+        node: PlanNodeId,
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+    ) -> Result<(), NativeResultError> {
+        self.pattern
+            .as_mut()
+            .ok_or(NativeResultError::Native(RuntimeError::Batch.into()))?
+            .prepare_search(node, context)
+            .map_err(NativeResultError::Native)
+    }
+
+    /// A pull after the last one finds no pattern and fails loudly, rather
+    /// than evaluating anything without the statement's overlay.
+    fn pull(
+        &mut self,
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+        output: &mut RowBatch<'v, 'm, 'g>,
+    ) -> Result<PullState, NativeResultError> {
+        let state = self
+            .pattern
+            .as_mut()
+            .ok_or(NativeResultError::Native(RuntimeError::Batch.into()))?
+            .pull(context, output)
+            .map_err(NativeResultError::Native)?;
+        if state == PullState::Done {
+            let pattern = self
+                .pattern
+                .take()
+                .ok_or(NativeResultError::Native(RuntimeError::Batch.into()))?;
+            self.handoff.set(pattern.into_mutation());
+        }
+        Ok(state)
+    }
+}
+
+/// Runs one write statement's plan under its writer scope and copies its
+/// complete result before anything commits.
+///
+/// Every entity the result names is copied from the image this statement
+/// staged for it first, and from the admitted view only when nothing is
+/// staged: a returned entity shows its SET values, a created one exists only
+/// in its staged image, and one this statement deleted is refused with a
+/// typed `Deleted` rather than copied from the view. Every fallible copy
+/// finishes here; any failure drops the whole result and the overlay with it,
+/// so nothing partial escapes and nothing can commit.
+///
+/// The result is returned unsettled beside the overlay, for the admission's
+/// commit tail: its outcome and each changed entity's revision and generation
+/// are stamped by `UnsettledWriteResult::settle` once that tail has run.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "all authentic native and writer owners stay explicit"
+)]
+pub(crate) fn execute_native_mutation_result<'w, 'r, 'plan, 'lease, 'm, 'g, 'i>(
+    view: &'w GraphReadView<'w, 'lease, 'm, 'g>,
+    runtime: &mut RuntimeContext<'lease, 'm, 'g>,
+    plan: &'r RuntimePlan<'r, 'plan, 'r, 'm, 'g, 'r>,
+    bindings: &[ParameterBinding<'_>],
+    column_names: &[GraphName<'_>],
+    pattern_capacity: PatternCapacity,
+    execution_capacity: ExecutionCapacity,
+    overlay: GraphBatchReadView<'w, 'static>,
+    images: &'w StatementImages<'i>,
+) -> Result<
+    (super::UnsettledWriteResult, GraphBatchReadView<'w, 'static>),
+    crate::lifecycle::native_graph::NativeMutationError,
+> {
+    let root = plan.plan().description().root;
+    let kinds = output_kinds(plan, runtime).map_err(|failure| failure.error)?;
+    let handoff: OverlayHandoff<'w> = Cell::new(None);
+    let pattern = NativePattern::new_with_mutation(
+        view,
+        plan,
+        root,
+        bindings,
+        pattern_capacity,
+        runtime,
+        MutationScope::new(overlay, images),
+    )?;
+    let mut source = WriteSource {
+        root,
+        pattern: Some(pattern),
+        handoff: &handoff,
+    };
+    let mut completion = NativeCompletion::new(
+        view,
+        runtime,
+        column_names,
+        kinds.as_slice(),
+        None,
+        |_, _| Ok(()),
+    )?;
+    completion.handoff = Some(&handoff);
+    let execution = execute_in(
+        runtime,
+        plan,
+        &mut source,
+        &mut completion,
+        execution_capacity,
+    )
+    .map_err(|failure| failure.error)?;
+    let overlay = handoff
+        .take()
+        .ok_or(NativeResultError::Native(RuntimeError::Batch.into()))?;
+    Ok((
+        super::UnsettledWriteResult(
+            execution
+                .output
+                .detach(execution.counters, execution.peak_query_bytes),
+        ),
+        overlay,
+    ))
 }
 
 #[cfg(any(test, feature = "test-support"))]

@@ -11,7 +11,7 @@ use crate::epoch::{ComputeUnits, EmbeddingRuntime, EmbeddingTower, Normalization
 use crate::lifecycle::native_graph::{
     NativeMutationConsumer, NativeMutationError, NativeMutationReport,
 };
-use crate::property_graph::query::plan::{BinaryExpression, SortKey};
+use crate::property_graph::query::plan::{BinaryExpression, SortKey, UnaryExpression};
 use crate::property_graph::query::runtime::{Completion, RuntimeLimits};
 use crate::property_graph::query::{Arithmetic, Comparison};
 use crate::property_graph::resources::GraphResources;
@@ -39,6 +39,8 @@ enum E {
     Null,
     Arithmetic(Arithmetic, u32, u32),
     Comparison(Comparison, u32, u32),
+    /// The full-width identity text of the node an expression names.
+    NodeIdText(u32),
 }
 
 /// One mutation item.
@@ -287,6 +289,10 @@ macro_rules! run_spec {
                     left: ExprId(left),
                     right: ExprId(right),
                 },
+                E::NodeIdText(operand) => Expression::Unary {
+                    operation: UnaryExpression::NodeIdText,
+                    operand: ExprId(operand),
+                },
             })
             .collect();
         let operators: Vec<Operator<'_>> = spec
@@ -375,6 +381,44 @@ macro_rules! run_spec {
             EagerExecutionFailure::Build,
             EagerExecutionFailure::Run,
             vector
+        )
+    };
+    (@result $overlay:expr, $images:expr, $columns:expr, $view:expr, $runtime:expr,
+     $operators:ident, $expressions:ident, $regions:ident, $owners:ident, $pattern_rows:expr) => {
+        execute_relational_plan!(
+            @admit $runtime, $operators, $expressions, $regions, $owners, vector,
+            (admitted, root) => {
+                let _ = root;
+                crate::property_graph::query::completed::execute_native_mutation_result(
+                    $view,
+                    $runtime,
+                    &admitted,
+                    &[],
+                    $columns,
+                    pattern_capacity($pattern_rows),
+                    execution_capacity(PATTERN_ROWS),
+                    $overlay,
+                    $images,
+                )
+            }
+        )
+    };
+    (@read_result $columns:expr, $view:expr, $runtime:expr, $operators:ident,
+     $expressions:ident, $regions:ident, $owners:ident, $pattern_rows:expr) => {
+        execute_relational_plan!(
+            @admit $runtime, $operators, $expressions, $regions, $owners, vector,
+            (admitted, root) => {
+                let _ = root;
+                crate::property_graph::query::completed::execute_native_result(
+                    $view,
+                    $runtime,
+                    &admitted,
+                    &[],
+                    $columns,
+                    pattern_capacity($pattern_rows),
+                    execution_capacity(PATTERN_ROWS),
+                )
+            }
         )
     };
 }
@@ -1354,6 +1398,7 @@ fn ze52_slice_d4_detach_delete_is_rejected_at_build() {
     store.store.close().expect("close d2 store");
 }
 
+mod completed_result;
 mod d3;
 mod d4;
 mod limit_zero;

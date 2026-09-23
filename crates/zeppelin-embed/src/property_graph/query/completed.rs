@@ -9,6 +9,14 @@ mod records;
 pub use records::*;
 #[cfg(feature = "graph-cypher")]
 pub(super) mod native;
+#[cfg(feature = "graph-cypher")]
+#[allow(
+    unused_imports,
+    reason = "ZE-53 S2 lands the write-result collector; S3's execution seam is its first production caller"
+)]
+pub(crate) use native::execute_native_mutation_result;
+#[cfg(all(feature = "graph-cypher", test))]
+pub(crate) use native::execute_native_result;
 mod validate;
 
 /// Checked span into the named typed pool, never a byte pointer.
@@ -367,6 +375,79 @@ impl<'m, 'g> PreparedGraphResult<'m, 'g> {
         }
     }
 }
+/// A write statement's result, completely copied before its commit, whose
+/// outcome and per-entity write metadata are not known yet.
+///
+/// Copying runs while the statement's writes are still staged, so it can
+/// prove only what the admitted view and the staged images contain. The
+/// generation a changed entity is published at, and whether the statement
+/// changed anything at all, exist only once the commit tail has run. Until
+/// then the result is held here, where nothing can read it; `settle` is the
+/// only way out, and it runs after that decision.
+#[cfg(feature = "graph-cypher")]
+#[allow(
+    dead_code,
+    reason = "ZE-53 S2 lands the write-result collector; S3's execution seam is its first production caller"
+)]
+pub(crate) struct UnsettledWriteResult(CompletedGraphResult);
+#[cfg(feature = "graph-cypher")]
+#[allow(
+    dead_code,
+    reason = "ZE-53 S2 lands the write-result collector; S3's execution seam is its first production caller"
+)]
+impl UnsettledWriteResult {
+    /// Stamps the decided outcome. Infallible, because it runs after an
+    /// irreversible commit: it only overwrites fields copying already
+    /// validated, and it keeps every invariant that validation checked.
+    ///
+    /// `receipts` are the staged statement's per-entity receipts and
+    /// `changed` is the generation the commit tail actually published, `None`
+    /// for a statement that changed nothing. A receipt newer than the
+    /// admitted view names an entity this statement changed, which the
+    /// commit published at `changed`; any other receipt keeps its original
+    /// revision and generation. An entity the statement never staged keeps
+    /// the admitted record it was copied from.
+    pub(crate) fn settle(
+        self,
+        receipts: &[crate::property_graph::staging::ItemReceipt],
+        changed: Option<GraphGeneration>,
+    ) -> CompletedGraphResult {
+        let mut result = self.0;
+        let admitted = result.metadata.generation;
+        for receipt in receipts {
+            let generation = match changed {
+                Some(changed) if receipt.generation > admitted => changed,
+                _ => receipt.generation,
+            };
+            match receipt.entity {
+                EntityId::Node(id) => {
+                    if let Ok(index) = result.nodes.binary_search_by(|node| node.id.cmp(&id))
+                        && let Some(node) = result.nodes.get_mut(index)
+                    {
+                        node.revision = receipt.revision;
+                        node.generation = generation;
+                    }
+                }
+                EntityId::Relationship(id) => {
+                    if let Ok(index) = result
+                        .relationships
+                        .binary_search_by(|relationship| relationship.id.cmp(&id))
+                        && let Some(relationship) = result.relationships.get_mut(index)
+                    {
+                        relationship.revision = receipt.revision;
+                        relationship.generation = generation;
+                    }
+                }
+            }
+        }
+        result.metadata.outcome = match changed {
+            Some(changed) => Outcome::Committed { changed },
+            None => Outcome::NoOp,
+        };
+        result
+    }
+}
+
 impl CompletedGraphResult {
     /// Read-only initialized typed arrays; nothing is fetched from a store.
     pub fn pools(&self) -> Pools<'_> {

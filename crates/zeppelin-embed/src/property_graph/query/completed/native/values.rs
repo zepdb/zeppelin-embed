@@ -393,7 +393,7 @@ pub(super) fn measure_stored<S: BlockSource>(
         .map_err(NativeResultError::Native)
 }
 
-fn push_stored_scalar(
+pub(super) fn push_stored_scalar(
     value: Value,
     staging: &mut NativeStaging<'_, '_, '_>,
 ) -> Result<ValueIndex, NativeResultError> {

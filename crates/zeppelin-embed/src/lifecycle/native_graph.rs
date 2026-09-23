@@ -34,7 +34,10 @@ mod write;
 // The query executor's own tests drive a `Mutate` occurrence through the real
 // writer admission, so they need the consumer seam from outside this module.
 #[cfg(test)]
-pub(crate) use mutate::{NativeMutationConsumer, NativeMutationError, NativeMutationReport};
+pub(crate) use mutate::{NativeMutationConsumer, NativeMutationReport};
+// The completed-result write path rejects through the admission's own error.
+#[cfg(any(test, feature = "graph-cypher"))]
+pub(crate) use mutate::NativeMutationError;
 
 const MAX_NATIVE_READ_LEASES: usize = 1024;
 const MAX_NATIVE_READ_MAPPINGS: usize = MAX_NATIVE_READ_LEASES * 16;
