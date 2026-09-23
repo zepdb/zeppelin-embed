@@ -10,7 +10,7 @@ pub use records::*;
 #[cfg(feature = "graph-cypher")]
 pub(super) mod native;
 /// The structured statement seam, exposed to the internal Cypher crate only.
-/// It is not the release query API (ZE-74 owns public and FFI exposure).
+/// It is not the release query API (ZE-66 owns public exposure).
 #[cfg(feature = "graph-cypher")]
 #[doc(hidden)]
 pub use native::{

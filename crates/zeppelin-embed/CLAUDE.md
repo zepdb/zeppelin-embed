@@ -965,12 +965,15 @@ gate proved these tests on any other host.
 `zeppelin_embed_cypher::execute` compiles Cypher text inside each admission
 of `Store::execute_graph_statement` (a doc-hidden, search-free wrapper over
 the ZE-53 seam) with the admitted `RuntimeContext`, so plan, facts and owners
-are charged to that statement. A write statement is compiled twice (read
-classification, then writer). A compile refusal returns
-`StatementError::Compile` and admits nothing. The seam types re-exported from
-`query::completed` are an internal-crate seam, not the release API: ZE-66's
-`GraphStore` owns public lifecycle, query and typed errors.
-`Store::create_graph_store`/`open_graph_store` exist only under
+are charged to that statement. A write statement is compiled at least twice
+(read classification, then writer, and once more per writer checkpoint
+retry). A compile refusal runs no operator and commits nothing;
+compilation happens inside an already-open read admission, so admission
+refusals (cancel, closed) take precedence over compile errors and surface
+as `StatementError::Query`, not `StatementError::Compile`. The seam types
+re-exported from `query::completed` are an internal-crate seam, not the
+release API: ZE-66's `GraphStore` owns public lifecycle, query and typed
+errors. `Store::create_graph_store`/`open_graph_store` exist only under
 `test-support` for tests outside this crate.
 
 A write statement without RETURN lowers to a plan whose root is `Mutate`.
