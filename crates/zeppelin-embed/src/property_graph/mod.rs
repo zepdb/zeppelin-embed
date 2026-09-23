@@ -23,8 +23,8 @@ pub(crate) mod retrieval;
 mod graph_store;
 #[cfg(feature = "graph-cypher")]
 pub use graph_store::{
-    GraphGetOptions, GraphNodesResult, GraphRelationshipsResult, GraphStore, GraphStoreError,
-    GraphStoreErrorKind, GraphWriteOutcome, GraphWriteResult,
+    GraphGetOptions, GraphNodesResult, GraphPlanBacking, GraphQueryPlan, GraphRelationshipsResult,
+    GraphStore, GraphStoreError, GraphStoreErrorKind, GraphWriteOutcome, GraphWriteResult,
 };
 
 pub use identity::{

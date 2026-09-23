@@ -20,10 +20,17 @@ use crate::epoch::EmbeddingTower;
 use crate::lifecycle::durability::{CommitTier, DurabilityMode};
 use crate::lifecycle::native_graph::NativeGraphError;
 use crate::lifecycle::{AccessMode, OpenOptions, QueryControl, Store, StoreErrorKind};
-use crate::property_graph::query::completed::{GraphQueryErrorKind, native_graph_error_kind};
+use crate::property_graph::query::completed::{
+    GraphQueryError, GraphQueryErrorKind, native_graph_error_kind,
+};
+use crate::property_graph::query::plan::PlanNodeId;
+use crate::property_graph::query::runtime::WorkCounters;
 use crate::property_graph::staging::{ItemReceipt, StageError, StructuredWrite};
 use crate::property_graph::{BatchDisposition, GraphGeneration};
 use std::path::{Path, PathBuf};
+
+mod query;
+pub use query::{GraphPlanBacking, GraphQueryPlan};
 
 /// One open native graph store. Every write it admits is Durable.
 ///
@@ -338,11 +345,49 @@ pub enum GraphStoreErrorKind {
 }
 
 #[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the typed graph and query causes stay unboxed and allocation-free, as in GraphQueryError"
+)]
 enum Cause {
-    LegacyStore { path: PathBuf },
+    LegacyStore {
+        path: PathBuf,
+    },
     Graph(NativeGraphError),
+    /// A rejected [`GraphStore::query`] statement (ZE-66 S2). The typed cause
+    /// is ZE-53's already-reviewed `GraphQueryError`, kept unchanged per the
+    /// owner's decision; only its error group is folded into
+    /// [`GraphStoreErrorKind`], through the same table [`Cause::Graph`] uses.
+    Query(GraphQueryError),
     Contract(&'static str),
     Limit(&'static str),
+}
+
+/// Folds one of ZE-53's plan error groups into the coarser groups a
+/// `GraphStore` caller acts on. [`Cause::Graph`] and [`Cause::Query`] both
+/// route through this one table so the two paths never drift apart.
+///
+/// This loses one distinction `GraphStore::apply_batch` can make directly
+/// from `NativeGraphError`: a write statement against a read-only store
+/// folds here to `Unavailable`, not `ReadOnly`, because `GraphQueryError`
+/// itself already groups `StoreErrorKind::ReadOnly` under its own
+/// `Unavailable` (`GraphQueryErrorKind` has no separate `ReadOnly`/`Busy`
+/// group to preserve). `nothing_committed()` still reports `true`.
+const fn from_graph_query_kind(kind: GraphQueryErrorKind) -> GraphStoreErrorKind {
+    match kind {
+        GraphQueryErrorKind::InvalidPlan
+        | GraphQueryErrorKind::Parameter
+        | GraphQueryErrorKind::Expression => GraphStoreErrorKind::InvalidRequest,
+        GraphQueryErrorKind::Constraint => GraphStoreErrorKind::Constraint,
+        GraphQueryErrorKind::Limit => GraphStoreErrorKind::Limit,
+        GraphQueryErrorKind::Cancelled => GraphStoreErrorKind::Cancelled,
+        GraphQueryErrorKind::Timeout => GraphStoreErrorKind::Timeout,
+        GraphQueryErrorKind::Closed => GraphStoreErrorKind::Closed,
+        GraphQueryErrorKind::Corruption => GraphStoreErrorKind::Corruption,
+        GraphQueryErrorKind::Storage => GraphStoreErrorKind::Storage,
+        GraphQueryErrorKind::Unavailable => GraphStoreErrorKind::Unavailable,
+        GraphQueryErrorKind::WriteIndeterminate => GraphStoreErrorKind::WriteIndeterminate,
+    }
 }
 
 /// A rejected graph store lifecycle or write operation.
@@ -387,20 +432,29 @@ impl GraphStoreError {
             {
                 GraphStoreErrorKind::ReadOnly
             }
-            Cause::Graph(error) => match native_graph_error_kind(error) {
-                GraphQueryErrorKind::InvalidPlan
-                | GraphQueryErrorKind::Parameter
-                | GraphQueryErrorKind::Expression => GraphStoreErrorKind::InvalidRequest,
-                GraphQueryErrorKind::Constraint => GraphStoreErrorKind::Constraint,
-                GraphQueryErrorKind::Limit => GraphStoreErrorKind::Limit,
-                GraphQueryErrorKind::Cancelled => GraphStoreErrorKind::Cancelled,
-                GraphQueryErrorKind::Timeout => GraphStoreErrorKind::Timeout,
-                GraphQueryErrorKind::Closed => GraphStoreErrorKind::Closed,
-                GraphQueryErrorKind::Corruption => GraphStoreErrorKind::Corruption,
-                GraphQueryErrorKind::Storage => GraphStoreErrorKind::Storage,
-                GraphQueryErrorKind::Unavailable => GraphStoreErrorKind::Unavailable,
-                GraphQueryErrorKind::WriteIndeterminate => GraphStoreErrorKind::WriteIndeterminate,
-            },
+            Cause::Graph(error) => from_graph_query_kind(native_graph_error_kind(error)),
+            Cause::Query(error) => from_graph_query_kind(error.kind()),
+        }
+    }
+
+    /// The operator [`GraphStore::query`] was running when the statement
+    /// failed, when the failure came from inside the driver. `None` for
+    /// every other operation and refusal.
+    #[must_use]
+    pub const fn operator(&self) -> Option<PlanNodeId> {
+        match &self.cause {
+            Cause::Query(error) => error.operator(),
+            Cause::LegacyStore { .. } | Cause::Graph(_) | Cause::Contract(_) => None,
+        }
+    }
+
+    /// The work [`GraphStore::query`]'s driver had done when the statement
+    /// failed, when the failure came from inside the driver.
+    #[must_use]
+    pub const fn counters(&self) -> Option<WorkCounters> {
+        match &self.cause {
+            Cause::Query(error) => error.counters(),
+            Cause::LegacyStore { .. } | Cause::Graph(_) | Cause::Contract(_) => None,
         }
     }
 
@@ -438,6 +492,14 @@ impl From<NativeGraphError> for GraphStoreError {
     }
 }
 
+impl From<GraphQueryError> for GraphStoreError {
+    fn from(error: GraphQueryError) -> Self {
+        Self {
+            cause: Cause::Query(error),
+        }
+    }
+}
+
 impl std::fmt::Display for GraphStoreError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(formatter, "graph store rejected ({:?}): ", self.kind())?;
@@ -448,6 +510,7 @@ impl std::fmt::Display for GraphStoreError {
                 path.display()
             ),
             Cause::Graph(error) => error.fmt(formatter),
+            Cause::Query(error) => error.fmt(formatter),
             Cause::Contract(reason) | Cause::Limit(reason) => formatter.write_str(reason),
         }
     }
@@ -457,6 +520,7 @@ impl std::error::Error for GraphStoreError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self.cause {
             Cause::Graph(error) => Some(error),
+            Cause::Query(error) => Some(error),
             Cause::LegacyStore { .. } | Cause::Contract(_) | Cause::Limit(_) => None,
         }
     }
