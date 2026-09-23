@@ -1514,6 +1514,15 @@ impl OpenOptions {
         self
     }
 
+    /// Replaces the requested filesystem authority. The graph store facade
+    /// owns its access mode, so this stays crate-private.
+    #[cfg(feature = "graph-cypher")]
+    #[must_use]
+    pub(crate) const fn with_access_mode(mut self, access_mode: AccessMode) -> Self {
+        self.access_mode = access_mode;
+        self
+    }
+
     /// Sets the grace period close gives admitted readers before cancellation.
     #[must_use]
     pub const fn with_reader_drain_timeout(mut self, timeout: Duration) -> Self {
@@ -2117,6 +2126,12 @@ pub enum StoreError {
         /// Synchronization component that rejected the operation.
         component: &'static str,
     },
+    /// The directory holds a native graph store, which this legacy store
+    /// cannot open. Nothing in the directory was changed.
+    NativeGraphDirectory {
+        /// Native graph store directory.
+        path: PathBuf,
+    },
 }
 
 impl std::fmt::Display for StoreError {
@@ -2285,6 +2300,11 @@ impl std::fmt::Display for StoreError {
                     "store lifecycle synchronization poisoned: {component}"
                 )
             }
+            Self::NativeGraphDirectory { path } => write!(
+                formatter,
+                "native graph directory cannot be opened as a legacy store: {}",
+                path.display()
+            ),
         }
     }
 }
@@ -2351,7 +2371,8 @@ impl StoreError {
             | Self::Tokenizer(_)
             | Self::SchemaMismatch { .. }
             | Self::ScanStale { .. }
-            | Self::InvalidScan { .. } => StoreErrorKind::InvalidArgument,
+            | Self::InvalidScan { .. }
+            | Self::NativeGraphDirectory { .. } => StoreErrorKind::InvalidArgument,
             Self::StoreBusy { .. } => StoreErrorKind::StoreBusy,
             Self::Durability(_)
             | Self::Kernel(_)
@@ -2445,7 +2466,8 @@ impl std::error::Error for StoreError {
             | Self::QueryPoolHandshake
             | Self::QueryPoolThreadPanicked
             | Self::QueryPoolCapacity { .. }
-            | Self::Synchronization { .. } => None,
+            | Self::Synchronization { .. }
+            | Self::NativeGraphDirectory { .. } => None,
         }
     }
 }
@@ -2553,15 +2575,43 @@ fn refuse_native_graph_directory(vfs: &dyn crate::vfs::Vfs, path: &Path) -> Resu
         source,
     })?;
     if native {
-        return Err(StoreError::Io {
+        return Err(StoreError::NativeGraphDirectory {
             path: path.to_path_buf(),
-            source: std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "native graph directory cannot be opened as a legacy store",
-            ),
         });
     }
     Ok(())
+}
+
+/// True when `path` is a directory holding a legacy store's manifest or WAL.
+/// A missing path or a non-directory is not a legacy store; the graph open
+/// path reports those itself. It only opens candidate files for reading.
+#[cfg(feature = "graph-cypher")]
+pub(crate) fn is_legacy_store_directory(
+    vfs: &dyn crate::vfs::Vfs,
+    path: &Path,
+) -> Result<bool, StoreError> {
+    for name in [
+        crate::manifest::io::MANIFEST_FILE,
+        crate::manifest::io::MANIFEST_TEMP_FILE,
+        "wal.ze",
+    ] {
+        let candidate = path.join(name);
+        match vfs.open(&candidate) {
+            Ok(_) => return Ok(true),
+            Err(source)
+                if matches!(
+                    source.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) => {}
+            Err(source) => {
+                return Err(StoreError::Io {
+                    path: candidate,
+                    source,
+                });
+            }
+        }
+    }
+    Ok(false)
 }
 
 #[cfg(feature = "graph-cypher")]

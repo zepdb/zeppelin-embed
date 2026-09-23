@@ -419,6 +419,12 @@ fn completed(error: &CompletedError) -> Kind {
     }
 }
 
+/// The error group of a graph lifecycle error, shared with the graph store
+/// facade so both seams classify the same cause the same way.
+pub(crate) fn native_graph_error_kind(error: &NativeGraphError) -> Kind {
+    graph(error)
+}
+
 fn graph(error: &NativeGraphError) -> Kind {
     match error {
         NativeGraphError::Store(error) => store(error),

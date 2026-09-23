@@ -19,6 +19,13 @@ pub mod storage;
 #[cfg(feature = "graph-cypher")]
 pub(crate) mod retrieval;
 
+#[cfg(feature = "graph-cypher")]
+mod graph_store;
+#[cfg(feature = "graph-cypher")]
+pub use graph_store::{
+    GraphStore, GraphStoreError, GraphStoreErrorKind, GraphWriteOutcome, GraphWriteResult,
+};
+
 pub use identity::{
     EntityId, EntityKind, GraphGeneration, GraphRevision, NodeId, RelId, StoreInstanceId,
 };

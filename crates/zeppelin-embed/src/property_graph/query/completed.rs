@@ -17,6 +17,8 @@ pub use native::{
     Executed, GraphQuery, GraphQueryError, GraphQueryErrorKind, GraphQueryExecutor,
     GraphQueryOptions,
 };
+#[cfg(feature = "graph-cypher")]
+pub(crate) use native::native_graph_error_kind;
 #[cfg(all(feature = "graph-cypher", test))]
 pub(crate) use native::{execute_native_mutation_result, execute_native_result};
 mod validate;

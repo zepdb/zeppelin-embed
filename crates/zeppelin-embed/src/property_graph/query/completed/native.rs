@@ -36,6 +36,7 @@ mod values;
 
 pub use entry::{Executed, GraphQuery, GraphQueryExecutor, GraphQueryOptions};
 pub use error::{GraphQueryError, GraphQueryErrorKind};
+pub(crate) use error::native_graph_error_kind;
 
 #[cfg(test)]
 mod entry_tests;

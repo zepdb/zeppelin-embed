@@ -882,6 +882,13 @@ impl NativeGraphPublication {
 
 pub(crate) struct ReceiptRegistration(Box<[ItemReceipt]>);
 
+impl ReceiptRegistration {
+    /// Moves the receipts out, in request order, without copying them.
+    pub(crate) fn into_receipts(self) -> Box<[ItemReceipt]> {
+        self.0
+    }
+}
+
 impl std::ops::Deref for ReceiptRegistration {
     type Target = [ItemReceipt];
     fn deref(&self) -> &Self::Target {
@@ -891,21 +898,50 @@ impl std::ops::Deref for ReceiptRegistration {
 
 /// Result backing and actual accounting move together, with no callback after
 /// commit. A binding may borrow its prepared arenas for the owner's lifetime.
+/// It also keeps the batch disposition, the admitted generation it was
+/// classified against and, only when it committed, the changed generation.
 pub(crate) struct NativePreparedResult<R> {
     registration: R,
     core: Vec<u8>,
     abi: Vec<u8>,
     _charges: [GraphReservation; 3],
+    disposition: BatchDisposition,
+    admitted: GraphGeneration,
+    changed: Option<GraphGeneration>,
 }
 impl<R> NativePreparedResult<R> {
-    fn from_materialized(value: crate::property_graph::staging::MaterializedBatch<'_, R>) -> Self {
-        let (_batch, registration, core, abi, charges) = value.into_prepared_parts();
+    /// `changed` is the generation the commit tail published, `None` when
+    /// nothing committed.
+    fn from_materialized(
+        value: crate::property_graph::staging::MaterializedBatch<'_, R>,
+        changed: Option<GraphGeneration>,
+    ) -> Self {
+        let (batch, registration, core, abi, charges) = value.into_prepared_parts();
         Self {
             registration,
             core,
             abi,
             _charges: charges,
+            disposition: batch.disposition(),
+            admitted: batch.base().generation,
+            changed,
         }
+    }
+    /// The staged batch's logical disposition.
+    pub(crate) const fn disposition(&self) -> BatchDisposition {
+        self.disposition
+    }
+    /// The published generation the batch was classified against.
+    pub(crate) const fn admitted_generation(&self) -> GraphGeneration {
+        self.admitted
+    }
+    /// The generation the commit published; `None` unless it committed.
+    pub(crate) const fn changed_generation(&self) -> Option<GraphGeneration> {
+        self.changed
+    }
+    /// Releases the backing and charges and keeps only the registration.
+    pub(crate) fn into_registration(self) -> R {
+        self.registration
     }
     pub(super) fn core_bytes(&self) -> &[u8] {
         &self.core
@@ -2459,19 +2495,19 @@ impl crate::lifecycle::Store {
                 staged_batch,
                 &mut allow_pending_checkpoint,
             )?;
-            let commit_audit = match step {
+            let (commit_audit, changed) = match step {
                 CommitStep::NoOp => {
-                    return Ok(NativePreparedResult::from_materialized(materialized));
+                    return Ok(NativePreparedResult::from_materialized(materialized, None));
                 }
                 CommitStep::Checkpointed => continue,
-                CommitStep::Committed { audit, .. } => audit,
+                CommitStep::Committed { audit, generation } => (audit, generation),
             };
             #[cfg(all(feature = "allocation-audit", any(test, feature = "test-support")))]
             {
                 let ((result, handoff_denied), handoff) =
                     crate::allocation_audit::audit_engine_path(|| {
                         crate::allocation_audit::fail_attributed_allocation(1, || {
-                            NativePreparedResult::from_materialized(materialized)
+                            NativePreparedResult::from_materialized(materialized, Some(changed))
                         })
                     });
                 self.native_graph.commit_allocations.store(
@@ -2487,7 +2523,10 @@ impl crate::lifecycle::Store {
             #[cfg(not(all(feature = "allocation-audit", any(test, feature = "test-support"))))]
             {
                 let _ = commit_audit;
-                return Ok(NativePreparedResult::from_materialized(materialized));
+                return Ok(NativePreparedResult::from_materialized(
+                    materialized,
+                    Some(changed),
+                ));
             }
         }
     }
