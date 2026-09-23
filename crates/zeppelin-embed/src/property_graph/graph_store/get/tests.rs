@@ -572,3 +572,41 @@ fn graph_store_get_nodes_orders_multiple_labels_by_name() {
     assert_eq!(label_names, vec!["Apple", "Mango", "Zebra"]);
     store.close().expect("close store");
 }
+
+#[test]
+fn get_nodes_over_max_graph_changes_is_refused_as_limit_before_any_read() {
+    let parent = tempfile::tempdir().expect("temporary parent");
+    let store =
+        GraphStore::create(parent.path().join("nodes-limit"), options(), None).expect("store");
+    let too_many: Vec<NodeId> = (1..=(crate::property_graph::MAX_GRAPH_CHANGES as u128 + 1))
+        .map(|value| NodeId::new(value).expect("nonzero id"))
+        .collect();
+
+    let Err(error) = store.get_nodes(&too_many, GraphGetOptions::default(), &control()) else {
+        panic!("oversized batch must be refused");
+    };
+    assert_eq!(
+        error.kind(),
+        crate::property_graph::GraphStoreErrorKind::Limit
+    );
+    store.close().expect("close store");
+}
+
+#[test]
+fn get_relationships_over_max_graph_changes_is_refused_as_limit_before_any_read() {
+    let parent = tempfile::tempdir().expect("temporary parent");
+    let store =
+        GraphStore::create(parent.path().join("rels-limit"), options(), None).expect("store");
+    let too_many: Vec<RelId> = (1..=(crate::property_graph::MAX_GRAPH_CHANGES as u128 + 1))
+        .map(|value| RelId::new(value).expect("nonzero id"))
+        .collect();
+
+    let Err(error) = store.get_relationships(&too_many, &control()) else {
+        panic!("oversized batch must be refused");
+    };
+    assert_eq!(
+        error.kind(),
+        crate::property_graph::GraphStoreErrorKind::Limit
+    );
+    store.close().expect("close store");
+}

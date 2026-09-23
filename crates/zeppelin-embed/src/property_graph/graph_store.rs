@@ -342,6 +342,7 @@ enum Cause {
     LegacyStore { path: PathBuf },
     Graph(NativeGraphError),
     Contract(&'static str),
+    Limit(&'static str),
 }
 
 /// A rejected graph store lifecycle or write operation.
@@ -363,12 +364,19 @@ impl GraphStoreError {
         }
     }
 
+    const fn limit(reason: &'static str) -> Self {
+        Self {
+            cause: Cause::Limit(reason),
+        }
+    }
+
     /// The error group a caller acts on.
     #[must_use]
     pub fn kind(&self) -> GraphStoreErrorKind {
         match &self.cause {
             Cause::LegacyStore { .. } => GraphStoreErrorKind::LegacyStore,
             Cause::Contract(_) => GraphStoreErrorKind::Corruption,
+            Cause::Limit(_) => GraphStoreErrorKind::Limit,
             Cause::Graph(NativeGraphError::Store(error))
                 if error.kind() == StoreErrorKind::StoreBusy =>
             {
@@ -440,7 +448,7 @@ impl std::fmt::Display for GraphStoreError {
                 path.display()
             ),
             Cause::Graph(error) => error.fmt(formatter),
-            Cause::Contract(reason) => formatter.write_str(reason),
+            Cause::Contract(reason) | Cause::Limit(reason) => formatter.write_str(reason),
         }
     }
 }
@@ -449,7 +457,7 @@ impl std::error::Error for GraphStoreError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self.cause {
             Cause::Graph(error) => Some(error),
-            Cause::LegacyStore { .. } | Cause::Contract(_) => None,
+            Cause::LegacyStore { .. } | Cause::Contract(_) | Cause::Limit(_) => None,
         }
     }
 }

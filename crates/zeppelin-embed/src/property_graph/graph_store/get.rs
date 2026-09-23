@@ -28,7 +28,7 @@ use crate::property_graph::storage::GraphReadView;
 use crate::property_graph::storage::records::{RecordShape, RecordView, StoredKey, StoredVector};
 use crate::property_graph::storage::stream::{PayloadCursor, PayloadSlice};
 use crate::property_graph::storage::tree::directory::{BlockSource, TreeError, TreeResources};
-use crate::property_graph::{GraphGeneration, NodeId, RelId};
+use crate::property_graph::{GraphGeneration, MAX_GRAPH_CHANGES, NodeId, RelId};
 
 /// Which optional node fields [`GraphStore::get_nodes`] copies. Labels, the
 /// application key and properties are always copied; text and vector are
@@ -513,6 +513,11 @@ impl GraphStore {
         options: GraphGetOptions,
         control: &QueryControl,
     ) -> Result<GraphNodesResult, GraphStoreError> {
+        if ids.len() > MAX_GRAPH_CHANGES {
+            return Err(GraphStoreError::limit(
+                "requested id count exceeds MAX_GRAPH_CHANGES",
+            ));
+        }
         Ok(self.store.with_native_read(
             control,
             RuntimeLimits::default(),
@@ -534,6 +539,11 @@ impl GraphStore {
         ids: &[RelId],
         control: &QueryControl,
     ) -> Result<GraphRelationshipsResult, GraphStoreError> {
+        if ids.len() > MAX_GRAPH_CHANGES {
+            return Err(GraphStoreError::limit(
+                "requested id count exceeds MAX_GRAPH_CHANGES",
+            ));
+        }
         Ok(self.store.with_native_read(
             control,
             RuntimeLimits::default(),
