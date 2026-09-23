@@ -453,7 +453,9 @@ impl GraphStoreError {
     pub const fn operator(&self) -> Option<PlanNodeId> {
         match &self.cause {
             Cause::Query(error) => error.operator(),
-            Cause::LegacyStore { .. } | Cause::Graph(_) | Cause::Contract(_) => None,
+            Cause::LegacyStore { .. } | Cause::Graph(_) | Cause::Contract(_) | Cause::Limit(_) => {
+                None
+            }
         }
     }
 
@@ -463,7 +465,9 @@ impl GraphStoreError {
     pub const fn counters(&self) -> Option<WorkCounters> {
         match &self.cause {
             Cause::Query(error) => error.counters(),
-            Cause::LegacyStore { .. } | Cause::Graph(_) | Cause::Contract(_) => None,
+            Cause::LegacyStore { .. } | Cause::Graph(_) | Cause::Contract(_) | Cause::Limit(_) => {
+                None
+            }
         }
     }
 
