@@ -103,13 +103,13 @@ impl RankedVector<'_, '_> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Route {
+pub(super) enum Route {
     Exact,
     Scan,
     Graph,
 }
 
-const fn route(mode: SearchMode) -> (Route, Option<SearchTier>) {
+pub(super) const fn route(mode: SearchMode) -> (Route, Option<SearchTier>) {
     match mode {
         SearchMode::Default => (Route::Graph, None),
         SearchMode::Auto => (Route::Graph, Some(SearchTier::Auto)),
@@ -126,7 +126,9 @@ fn better(left: &RankedNode, right: &RankedNode) -> bool {
     }
 }
 
-fn memory_error(error: crate::property_graph::query::resources::MemoryError) -> RetrievalError {
+pub(super) fn memory_error(
+    error: crate::property_graph::query::resources::MemoryError,
+) -> RetrievalError {
     RetrievalError::Control(RuntimeError::Memory(error))
 }
 
@@ -209,13 +211,13 @@ impl<'m, 'g> RowMask<'m, 'g> {
     }
 }
 
-enum Eligible<'e> {
+pub(super) enum Eligible<'e> {
     All,
     Set(&'e [NodeId]),
 }
 
 impl Eligible<'_> {
-    fn contains(
+    pub(super) fn contains(
         &self,
         node: NodeId,
         resources: &mut TreeResources<'_>,

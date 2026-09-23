@@ -356,12 +356,12 @@ where
             ScoreRange::explicit(leg.min_bm25, leg.max_bm25)
         }
     });
-    // Store policy v1 gives the sole useful leg full weight. A zero-distance
-    // vector enclosure is a constant perfect vector score, not an RRF trigger.
-    let alpha = if fixed_anchors && bounds.vector.is_none() {
-        0.0
-    } else if fixed_anchors && bounds.lexical.is_none_or(|leg| leg.max_bm25 == 0.0) {
-        1.0
+    let alpha = if fixed_anchors {
+        store_policy_alpha(
+            alpha,
+            bounds.vector.is_some(),
+            bounds.lexical.map(|leg| leg.max_bm25),
+        )
     } else {
         alpha
     };
@@ -865,6 +865,119 @@ fn next_lexical_bound<K>(
         (FusionMethod::ConvexCombination, Some(range)) => (1.0 - alpha) * range.lexical(hit.bm25),
         (FusionMethod::ReciprocalRankFusion, _) => super::rrf::contribution(take),
         (FusionMethod::ConvexCombination, None) => 0.0,
+    }
+}
+
+/// Store policy v1 gives the sole useful leg full weight. A zero-distance
+/// vector enclosure is a constant perfect vector score, not an RRF trigger.
+fn store_policy_alpha(alpha: f64, vector_present: bool, lexical_maximum: Option<f64>) -> f64 {
+    if !vector_present {
+        0.0
+    } else if lexical_maximum.is_none_or(|maximum| maximum == 0.0) {
+        1.0
+    } else {
+        alpha
+    }
+}
+
+/// Store policy v1 applied to one fully cross-scored candidate at a time.
+///
+/// This is the fixed-anchor branch of the bounded Store fusion with the same
+/// ranges, alpha rule and accumulation order (vector contribution first), for
+/// producers that stream candidates into a bounded top-k instead of
+/// materializing ranked lists. A `None` anchor means the leg has no members;
+/// a `None` component means that modality is absent for the candidate and
+/// contributes zero, never a perfect distance.
+#[derive(Clone, Copy)]
+pub(crate) struct StorePolicyScorer {
+    alpha: f64,
+    vector: Option<(f64, ScoreRange)>,
+    lexical: Option<(f64, ScoreRange)>,
+}
+
+impl StorePolicyScorer {
+    pub(crate) fn new(
+        query: &HybridQuery,
+        vector_ceiling: Option<f64>,
+        lexical_maximum: Option<f64>,
+    ) -> Result<Self, FusionError> {
+        let (alpha, _) = super::rules::effective_alpha(query)?;
+        for (leg, anchor) in [
+            (FusionLeg::Vector, vector_ceiling),
+            (FusionLeg::Lexical, lexical_maximum),
+        ] {
+            if anchor.is_some_and(|value| !value.is_finite() || value < 0.0) {
+                return Err(FusionError::InvalidBounds {
+                    leg,
+                    detail: "a fixed upper anchor is not a finite nonnegative value",
+                });
+            }
+        }
+        Ok(Self {
+            alpha: store_policy_alpha(alpha, vector_ceiling.is_some(), lexical_maximum),
+            vector: vector_ceiling.map(|maximum| (maximum, ScoreRange::fixed_zero(maximum, 1.0))),
+            lexical: lexical_maximum.map(|maximum| (maximum, ScoreRange::fixed_zero(maximum, 0.0))),
+        })
+    }
+
+    /// Effective query-level vector weight after the empty-leg rule.
+    pub(crate) const fn alpha(&self) -> f64 {
+        self.alpha
+    }
+
+    /// Fused score of one candidate from its present components.
+    pub(crate) fn score(
+        &self,
+        squared_l2: Option<f64>,
+        bm25: Option<f64>,
+    ) -> Result<f64, FusionError> {
+        let mut fused = 0.0;
+        if let Some(distance) = squared_l2 {
+            let (maximum, range) = self.vector.ok_or(FusionError::InvalidBounds {
+                leg: FusionLeg::Vector,
+                detail: "a vector component was supplied without an anchor",
+            })?;
+            if !distance.is_finite() || distance < 0.0 || distance > maximum {
+                return Err(FusionError::InvalidBounds {
+                    leg: FusionLeg::Vector,
+                    detail: "a window score lies outside the supplied extremes",
+                });
+            }
+            fused += vector_contribution(
+                0,
+                distance,
+                FusionMethod::ConvexCombination,
+                self.alpha,
+                Some(range),
+            );
+        }
+        if let Some(score) = bm25 {
+            let Some((maximum, range)) = self.lexical else {
+                // A present nonmatching text scores exactly zero; with no
+                // eligible match the lexical leg carries no weight at all.
+                if score == 0.0 {
+                    return Ok(fused);
+                }
+                return Err(FusionError::InvalidBounds {
+                    leg: FusionLeg::Lexical,
+                    detail: "a lexical match was supplied without an anchor",
+                });
+            };
+            if !score.is_finite() || score < 0.0 || score > maximum {
+                return Err(FusionError::InvalidBounds {
+                    leg: FusionLeg::Lexical,
+                    detail: "a window score lies outside the supplied extremes",
+                });
+            }
+            fused += lexical_contribution(
+                0,
+                score,
+                FusionMethod::ConvexCombination,
+                self.alpha,
+                Some(range),
+            );
+        }
+        Ok(fused)
     }
 }
 

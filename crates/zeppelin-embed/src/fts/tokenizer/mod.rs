@@ -24,6 +24,7 @@ pub(crate) mod fold;
 mod fold_table;
 pub(crate) mod numbers;
 mod pipeline;
+pub(crate) use pipeline::ControlledToken;
 pub mod profiles;
 #[cfg(test)]
 mod properties;

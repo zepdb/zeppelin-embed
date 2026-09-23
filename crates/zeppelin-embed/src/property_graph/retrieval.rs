@@ -7,6 +7,7 @@
 use super::staging::NormalizedDelta;
 use super::{EntityId, GraphRevision, NodeId};
 
+pub(crate) mod hybrid;
 pub(crate) mod rank;
 use crate::ingest::{DocId, DocumentVersion, Revision};
 use crate::lifecycle::materialize::{VersionMismatch, require_document_version};
@@ -80,6 +81,19 @@ pub(crate) enum RetrievalError {
     UnindexedVectorSource,
     /// Existing graph kernel refusal, preserved without reinterpretation.
     Graph(crate::graph::search::GraphSearchError),
+    /// The supplied analyzer does not interpret this view's indexed text.
+    AnalyzerMismatch,
+    /// A lexical argument analyzed to more terms than the shared limit.
+    LexicalTerms {
+        count: usize,
+        limit: usize,
+    },
+    /// Existing bounded lexical analysis/decoding refusal.
+    Lexical(crate::fts::graph_build::GraphLexicalError),
+    /// Store fusion policy v1 rejected a component or anchor.
+    Fusion(crate::fusion::FusionError),
+    /// Hybrid legs were prepared against different eligibility domains.
+    EligibilityMismatch,
     /// A retrieval contract was violated by admitted state.
     Invariant(&'static str),
 }

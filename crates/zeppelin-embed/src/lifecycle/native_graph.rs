@@ -1995,6 +1995,7 @@ pub(crate) mod tests {
     mod close_owner;
     pub(crate) mod consolidation;
     mod expression_tests;
+    mod hybrid_ranking;
     mod identity;
     mod mapping_slots;
     mod mutation_admission;

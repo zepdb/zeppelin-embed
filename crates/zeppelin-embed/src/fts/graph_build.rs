@@ -332,6 +332,40 @@ impl<'m> PreparedGraphLexical<'m> {
     }
 }
 
+/// Query text analyzed by the store's analyzer under the exact query memory.
+///
+/// The term sequence is the analyzer's token order, duplicates included,
+/// exactly as a flat `TermQuery` built from `Analyzer::analyze`.
+pub(crate) struct GraphQueryTerms<'m> {
+    tokens: GuardedVec<'m, super::tokenizer::ControlledToken<'m, Charge<'m>>, Charge<'m>>,
+}
+
+impl GraphQueryTerms<'_> {
+    pub(crate) fn len(&self) -> usize {
+        self.tokens.len()
+    }
+
+    pub(crate) fn term(&self, index: usize) -> Option<&str> {
+        self.tokens.get(index).map(|token| token.term())
+    }
+}
+
+/// Analyzes one lexical query argument with bounded, accounted work.
+///
+/// # Errors
+/// Returns a typed tokenizer, lifecycle, work, or query-memory error.
+pub(crate) fn analyze_query<'m>(
+    analyzer: &Analyzer,
+    text: &str,
+    memory: &'m QueryMemory<'m>,
+    context: &mut RuntimeContext<'_, '_, '_>,
+) -> Result<GraphQueryTerms<'m>, GraphLexicalError> {
+    let mut policy = QueryPolicy::new(memory, context)?;
+    let tokens = analyzer.analyze_with_policy(text, &mut policy)?;
+    policy.checkpoint()?;
+    Ok(GraphQueryTerms { tokens })
+}
+
 /// A validated graph lexical region with all retained capacity accounted.
 pub struct DecodedGraphLexical<'m> {
     sealed: GraphSealed<'m, Charge<'m>>,

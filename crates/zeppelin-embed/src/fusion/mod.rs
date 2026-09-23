@@ -11,7 +11,7 @@
 //! See the local [architecture-decision ledger](ARCHITECTURE.md).
 
 mod cc;
-pub(crate) use cc::StoreFusionScratch;
+pub(crate) use cc::{StoreFusionScratch, StorePolicyScorer};
 mod normalize;
 mod rrf;
 mod rules;
