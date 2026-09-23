@@ -240,6 +240,9 @@ enum PhysicalState<'s, 'plan, 'v, 'm, 'g> {
         limit: Option<u64>,
         remaining_offset: u64,
         remaining_limit: Option<u64>,
+        /// A `Mutate` lies below, so an exhausted limit still drains the
+        /// child: `LIMIT` bounds returned rows, never a statement's writes.
+        writes_below: bool,
     },
     Sort {
         child: usize,
@@ -725,8 +728,16 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i>
                 child,
                 remaining_offset,
                 remaining_limit,
+                writes_below,
                 ..
-            } => self.next_offset_limit(index, *child, remaining_offset, remaining_limit, context),
+            } => self.next_offset_limit(
+                index,
+                *child,
+                remaining_offset,
+                remaining_limit,
+                *writes_below,
+                context,
+            ),
             PhysicalState::Sort { child, state } => self.next_sort(index, *child, state, context),
             PhysicalState::Distinct { child, state } => {
                 self.next_distinct(index, *child, state, context)
@@ -873,6 +884,7 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i>
                     limit,
                     remaining_offset,
                     remaining_limit,
+                    ..
                 } => {
                     *remaining_offset = *offset;
                     *remaining_limit = *limit;
@@ -2760,6 +2772,13 @@ fn build_occurrence<'s, 'r, 'plan, 'v, 'm, 'g>(
             limit,
             remaining_offset: offset,
             remaining_limit: limit,
+            writes_below: operator
+                .inputs
+                .first()
+                .and_then(|input| plan.plan().facts(*input))
+                .ok_or(PlanError::Reference)?
+                .classification()
+                .writes(),
         },
         OperatorKind::Sort(keys) => {
             let child = build_unary(

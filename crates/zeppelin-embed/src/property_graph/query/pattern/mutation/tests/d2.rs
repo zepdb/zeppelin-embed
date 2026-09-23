@@ -72,6 +72,8 @@ enum K {
     /// `OptionalApply` with no predicate; the right input reads the left one
     /// as its anchor.
     Optional,
+    /// `OffsetLimit(offset, limit)`.
+    Limit(u64, Option<u64>),
     Collect,
 }
 
@@ -314,6 +316,10 @@ macro_rules! run_spec {
                     K::Sort(_) => OperatorKind::Sort(&sort_keys[index]),
                     K::Join => OperatorKind::Join { predicate: None },
                     K::Optional => OperatorKind::OptionalApply { predicate: None },
+                    K::Limit(offset, limit) => OperatorKind::OffsetLimit {
+                        offset: *offset,
+                        limit: *limit,
+                    },
                     K::Collect => OperatorKind::Collect,
                 },
             })
@@ -1350,3 +1356,4 @@ fn ze52_slice_d4_detach_delete_is_rejected_at_build() {
 
 mod d3;
 mod d4;
+mod limit_zero;

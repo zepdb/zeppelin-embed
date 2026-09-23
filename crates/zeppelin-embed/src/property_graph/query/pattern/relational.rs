@@ -370,9 +370,18 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i>
         child: usize,
         remaining_offset: &mut u64,
         remaining_limit: &mut Option<u64>,
+        writes_below: bool,
         context: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<bool, NativeExecutionError> {
         if *remaining_limit == Some(0) {
+            // Emit nothing more, but a write below must still run to
+            // completion; a read-only child is never pulled.
+            if writes_below {
+                while self.next_occurrence(child, context)? {
+                    context.charge(WorkKind::OperatorRows, 1)?;
+                    context.charge(WorkKind::RowsIn, 1)?;
+                }
+            }
             return Ok(false);
         }
         loop {
