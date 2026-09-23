@@ -10,12 +10,15 @@
 use super::super::{CompletedGraphResult, Outcome};
 use super::entry::NoSearch;
 use super::entry_probe::{Assign, Fixture, control, node_values, options, write_p};
+use super::entry_tests::{FixedHits, lexical, search_nodes};
 use super::error::GraphQueryErrorKind;
 use crate::lifecycle::durability::{CommitTier, DurabilityMode};
 use crate::lifecycle::native_graph::NativeGraphError;
 use crate::lifecycle::{CancelToken, OpenOptions, QueryControl, Store, StoreState};
 use crate::property_graph::GraphGeneration;
+use crate::property_graph::query::plan::SearchCallId;
 use crate::property_graph::resources::GraphResources;
+use crate::property_graph::wal::RequiredRef;
 use std::cell::Cell;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -313,12 +316,13 @@ fn fold(store: &Store) {
         .expect("maintenance");
 }
 
-/// Repeated read, write and refused-write statements through the seam leave
-/// the store's exact accounting where they found it. A held result charges
-/// the store nothing: it is application-owned. A read or a refused
-/// statement leaves exactly the charge it found. Once maintenance folds the
-/// writer's per-commit bookkeeping, every round returns to one baseline, so
-/// no query, lease, overlay or writer charge accumulates.
+/// Repeated read, search, failed-search, write and refused-write statements
+/// through the seam leave the store's exact accounting where they found it.
+/// A held result charges the store nothing: it is application-owned. A read,
+/// a search or a refused statement leaves exactly the charge it found. A
+/// commit grows it by exactly one prepared-inventory `RequiredRef`, and once
+/// maintenance folds that bookkeeping every round returns to one baseline,
+/// so no query, lease, search, overlay or writer charge accumulates.
 #[test]
 fn ze53_s4_repeated_statements_return_accounting_to_baseline() {
     let fixture = fixture("release", open_options());
@@ -328,6 +332,11 @@ fn ze53_s4_repeated_statements_return_accounting_to_baseline() {
     fold(&fixture.store);
     let baseline = charged(&fixture.store);
     let start = fixture.generation().unwrap();
+    let mut adapter = FixedHits {
+        hits: vec![fixture.nodes[2], fixture.nodes[0]],
+        calls: 0,
+        fail: false,
+    };
     for round in 0..16_i64 {
         let read = fixture.read().unwrap();
         assert_eq!(
@@ -343,8 +352,53 @@ fn ze53_s4_repeated_statements_return_accounting_to_baseline() {
             "round {round}: dropped read"
         );
 
+        adapter.fail = false;
+        let search = fixture
+            .store
+            .execute_graph_query(&control(), &options(16), Some(&mut adapter), search_nodes)
+            .expect("search statement");
+        assert_eq!(
+            charged(&fixture.store),
+            baseline,
+            "round {round}: held search"
+        );
+        assert_eq!(search.metadata().rows, 2);
+        assert_eq!(
+            search.pools().reports,
+            &[lexical(SearchCallId(0), search.metadata().generation, 2)]
+        );
+        drop(search);
+        assert_eq!(
+            charged(&fixture.store),
+            baseline,
+            "round {round}: dropped search"
+        );
+
+        adapter.fail = true;
+        let failed = fixture
+            .store
+            .execute_graph_query(&control(), &options(16), Some(&mut adapter), search_nodes)
+            .map(|_| ())
+            .expect_err("the adapter fails");
+        assert_eq!(failed.kind(), GraphQueryErrorKind::Limit, "{failed}");
+        assert!(failed.nothing_committed(), "{failed}");
+        assert_eq!(
+            charged(&fixture.store),
+            baseline,
+            "round {round}: failed search"
+        );
+        assert_eq!(adapter.calls, 2 * (round as usize + 1));
+
         let write = fixture.write(&control(), 16, Assign::Increment).unwrap();
         let committed = charged(&fixture.store);
+        assert_eq!(
+            committed,
+            (
+                baseline.0 + std::mem::size_of::<RequiredRef>() as u64,
+                baseline.1
+            ),
+            "round {round}: one commit grows the charge by one RequiredRef"
+        );
         assert_eq!(node_values(&write).unwrap(), rows(&fixture, 2 + round));
         drop(write);
         assert_eq!(

@@ -296,12 +296,14 @@ fn ze53_s3_builder_that_skips_its_executor_is_refused() {
 // Search dispatch
 // ---------------------------------------------------------------------------
 
-struct FixedHits {
-    hits: Vec<NodeId>,
-    calls: usize,
+/// Returns `hits` for every call, or fails the call when `fail` is set.
+pub(super) struct FixedHits {
+    pub(super) hits: Vec<NodeId>,
+    pub(super) calls: usize,
+    pub(super) fail: bool,
 }
 
-fn lexical(call: SearchCallId, generation: GraphGeneration, count: u64) -> SearchReport {
+pub(super) fn lexical(call: SearchCallId, generation: GraphGeneration, count: u64) -> SearchReport {
     SearchReport {
         call,
         generation,
@@ -334,6 +336,9 @@ impl<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g> for FixedHits {
         _: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<SearchReport, NativeExecutionError> {
         self.calls += 1;
+        if self.fail {
+            return Err(RuntimeError::Limit(WorkKind::VectorBytes).into());
+        }
         for node in &self.hits {
             hits.push(SearchHit {
                 node: *node,
@@ -352,7 +357,7 @@ impl<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g> for FixedHits {
 }
 
 /// `CALL text_search('q', 3) YIELD node RETURN node`.
-fn search_nodes<'lease, 'm, 'g>(
+pub(super) fn search_nodes<'lease, 'm, 'g>(
     runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     executor: GraphQueryExecutor<'_, '_, '_, 'lease, 'm, 'g>,
 ) -> Result<Executed, GraphQueryError> {
@@ -420,6 +425,7 @@ fn ze53_s3_search_plan_reaches_its_adapter_once() {
     let mut adapter = FixedHits {
         hits: vec![fixture.nodes[2], fixture.nodes[0]],
         calls: 0,
+        fail: false,
     };
     let result = fixture
         .store
