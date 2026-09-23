@@ -315,6 +315,9 @@ pub enum OperatorKind<'a> {
         outputs: SearchOutputs,
     },
     /// Projection-stage bounds; never suppresses eager calls or mutations.
+    /// When a write is staged below this node, rows beyond the bound are
+    /// still evaluated so their errors and charges fail the statement; only
+    /// row emission upward is suppressed.
     OffsetLimit {
         /// Nonnegative skipped row count.
         offset: u64,
