@@ -37,8 +37,17 @@
 //! first. Scans read only the admitted base view, and the `Eager` input has
 //! drained them before the first item runs, so no scan observes a create.
 //!
-//! `Delete` stays refused at build time by `occurrence_count`, and is refused
-//! again here should one ever arrive.
+//! A plain `Delete` stages a `Restrict` tombstone through the overlay. From
+//! then on every read or write of that entity through the overlay, by a later
+//! item, a later row or a later clause, fails with the typed
+//! `StageError::DeletedEntity`, and a CREATE that names it as an endpoint
+//! fails the same way. Whether a deleted node still has a live incident
+//! relationship is not decided here: the overlay decides it once, when the
+//! statement is finalized, so `DELETE n, r` and `DELETE r, n` agree. Deleting
+//! an entity twice is one change, and a null target skips the item.
+//!
+//! `DETACH DELETE` stays refused at build time by `occurrence_count`, and is
+//! refused again here should one ever arrive.
 
 use super::super::property::PropertyScratch;
 use super::super::relational::Rows;
@@ -51,8 +60,8 @@ use crate::property_graph::storage::records::RecordShape;
 use crate::property_graph::storage::tree::directory::TreeError;
 use crate::property_graph::storage::{NativeQuerySource, NodeView, RelView};
 use crate::property_graph::{
-    CanonicalContents, EntityId, GraphProperty, NodeRef as BatchNode, PropertyValue,
-    RelRef as BatchRelationship,
+    CanonicalContents, EntityId, GraphDeleteMode, GraphProperty, NodeRef as BatchNode,
+    PropertyValue, RelRef as BatchRelationship,
 };
 
 #[cfg(test)]
@@ -379,7 +388,23 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i>
                         create_relationship(scope, source, target, relationship_type, context)?;
                     self.bind_created(index, child, output, id, sources, created, context)?;
                 }
-                Mutation::Delete { .. } => return Err(PlanError::Reference.into()),
+                Mutation::Delete {
+                    entity,
+                    detach: false,
+                } => {
+                    let Some(target) = self.mutation_target(index, entity, context)? else {
+                        continue;
+                    };
+                    let scope = self.mutation.as_mut().ok_or(PlanError::Reference)?;
+                    let control = context.values().control();
+                    let mut control = |_: WritePhase| writer_checkpoint(control);
+                    scope
+                        .overlay
+                        .delete(target, GraphDeleteMode::Restrict, &mut control)?;
+                }
+                Mutation::Delete { detach: true, .. } => {
+                    return Err(PlanError::Reference.into());
+                }
             }
         }
         Ok(())
@@ -539,7 +564,8 @@ fn create_node(
 }
 
 /// Stages one new relationship with no properties and returns its identity.
-/// Either endpoint may be a node this statement created.
+/// Either endpoint may be a node this statement created; neither may be one
+/// it deleted.
 fn create_relationship(
     scope: &mut MutationScope<'_, '_>,
     source: NodeId,
@@ -553,6 +579,15 @@ fn create_relationship(
         type_bytes: relationship_type.as_str().len(),
         ..RelationshipImageBudget::default()
     };
+    // An endpoint this statement already deleted is typed here, at the item
+    // that names it, through the same deleted-entity check every overlay read
+    // makes.
+    for endpoint in [source, target] {
+        scope.overlay.pending_image(
+            BatchEntityRef::Node(BatchNode::Existing(endpoint)),
+            &mut control,
+        )?;
+    }
     let builder = scope.images.relationship(budget, &mut control)?;
     let image = builder.finish(
         BatchNode::Existing(source),

@@ -48,6 +48,8 @@ enum M {
     Remove(u32, &'static str),
     Label(u32, &'static str, bool),
     Delete(u32),
+    /// `DETACH DELETE`, which this executor refuses at build time.
+    DetachDelete(u32),
     /// `CreateNode(output, labels)`.
     CreateNode(u32, &'static [&'static str]),
     /// `CreateRelationship(output, source, target, type)`.
@@ -151,7 +153,7 @@ macro_rules! run_spec {
                         | M::Label(_, value, _)
                         | M::CreateRelationship(_, _, _, value) => vec![name(value)],
                         M::CreateNode(_, labels) => labels.iter().map(|label| name(label)).collect(),
-                        M::Delete(_) => Vec::new(),
+                        M::Delete(_) | M::DetachDelete(_) => Vec::new(),
                     })
                     .collect(),
                 _ => Vec::new(),
@@ -239,6 +241,10 @@ macro_rules! run_spec {
                                 entity: ExprId(entity),
                                 detach: false,
                             },
+                            M::DetachDelete(entity) => Mutation::Delete {
+                                entity: ExprId(entity),
+                                detach: true,
+                            },
                             M::CreateNode(output, _) => Mutation::CreateNode {
                                 output: SlotId(output),
                                 labels: labels.as_slice(),
@@ -312,10 +318,16 @@ macro_rules! run_spec {
                 },
             })
             .collect();
-        let mut regions = vec![
-            RetainedRegion::declared(names.as_ptr() as usize, names.capacity()).unwrap(),
-        ];
-        let mut owners = vec![RetainedAllocation::string(&names).unwrap()];
+        // A plan that names nothing (a DELETE-only statement) has no name
+        // backing to retain.
+        let mut regions = Vec::new();
+        let mut owners = Vec::new();
+        if names.capacity() != 0 {
+            regions.push(
+                RetainedRegion::declared(names.as_ptr() as usize, names.capacity()).unwrap(),
+            );
+            owners.push(RetainedAllocation::string(&names).unwrap());
+        }
         retain(&inputs, &mut regions, &mut owners);
         retain(&projections, &mut regions, &mut owners);
         retain(&sort_keys, &mut regions, &mut owners);
@@ -1268,13 +1280,14 @@ fn ze52_slice_d2_image_capacity_limit_rejects_without_partial_commit() {
     store.store.close().expect("close d2 store");
 }
 
-/// DELETE is a later slice. Under a real writer scope, any `Mutate` holding
-/// a DELETE item, even beside a supported SET or CREATE item, is refused when
-/// the pattern is built, before a row is pulled or anything is staged.
-/// Without a writer scope, even a supported `Mutate` is refused. (CREATE was
-/// refused here too until slice D3 lifted it.)
+/// DETACH DELETE is out of this executor's scope. Under a real writer
+/// scope, any `Mutate` holding a DETACH item, even beside a supported SET,
+/// CREATE or plain DELETE item, is refused when the pattern is built, before
+/// a row is pulled or anything is staged. Without a writer scope, even a
+/// supported `Mutate` is refused. (Plain DELETE was refused here too until
+/// slice D4 lifted it, and CREATE until slice D3.)
 #[test]
-fn ze52_slice_d2_delete_items_are_rejected_at_build() {
+fn ze52_slice_d4_detach_delete_is_rejected_at_build() {
     let store = D2Store::create(None);
     let nodes = three_nodes(&store);
     let before = store.generation();
@@ -1282,15 +1295,20 @@ fn ze52_slice_d2_delete_items_are_rejected_at_build() {
     let expressions = vec![E::Slot(0), E::Property(0, "p"), E::I64(1)];
 
     for (label, items, expressions) in [
-        ("delete", vec![M::Delete(0)], read_p.clone()),
+        ("detach", vec![M::DetachDelete(0)], read_p.clone()),
         (
-            "set beside delete",
-            vec![M::Set(0, "p", 2), M::Delete(0)],
+            "set beside detach",
+            vec![M::Set(0, "p", 2), M::DetachDelete(0)],
             expressions.clone(),
         ),
         (
-            "create beside delete",
-            vec![M::CreateNode(7, &[]), M::Delete(0)],
+            "create beside detach",
+            vec![M::CreateNode(7, &[]), M::DetachDelete(0)],
+            read_p.clone(),
+        ),
+        (
+            "plain delete beside detach",
+            vec![M::Delete(0), M::DetachDelete(0)],
             read_p,
         ),
     ] {
@@ -1331,3 +1349,4 @@ fn ze52_slice_d2_delete_items_are_rejected_at_build() {
 }
 
 mod d3;
+mod d4;

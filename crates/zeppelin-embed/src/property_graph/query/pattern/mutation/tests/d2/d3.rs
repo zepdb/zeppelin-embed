@@ -47,12 +47,12 @@ fn relationship_bytes(source: NodeId, target: NodeId, kind: &str, w: i64) -> Vec
     bytes
 }
 
-fn node_id(value: u128) -> NodeId {
+pub(super) fn node_id(value: u128) -> NodeId {
     NodeId::new(value).unwrap()
 }
 
 /// One keyed structured create, returning the identity its receipt names.
-fn structured_node(store: &D2Store, key: &str) -> NodeId {
+pub(super) fn structured_node(store: &D2Store, key: &str) -> NodeId {
     let receipts = crate::property_graph::with_local_refs(|_| {
         let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
         store
