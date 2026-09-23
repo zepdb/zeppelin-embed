@@ -25,6 +25,7 @@ use crate::property_graph::query::completed::{
 };
 use crate::property_graph::query::plan::PlanNodeId;
 use crate::property_graph::query::runtime::WorkCounters;
+use crate::property_graph::resources::GraphResources;
 use crate::property_graph::staging::{ItemReceipt, StageError, StructuredWrite};
 use crate::property_graph::{BatchDisposition, GraphGeneration};
 use std::path::{Path, PathBuf};
@@ -208,6 +209,23 @@ impl GraphStore {
             outcome,
             admitted_generation,
         })
+    }
+
+    /// Exposes this store's shared, read-only resource-accounting handle.
+    ///
+    /// A caller can use it to build its own `RuntimeContext` for work that
+    /// happens after this call has already returned an owned result (for
+    /// example, converting a [`GraphWriteResult`] or a [`query`](Self::query)
+    /// result into another representation): [`GraphResources`] admits no
+    /// view and grants no additional store capability beyond accounting, so
+    /// this leaks no mutation or admission authority.
+    ///
+    /// # Errors
+    ///
+    /// The classified accounting-configuration failure.
+    pub fn resources(&self) -> Result<GraphResources, GraphStoreError> {
+        GraphResources::from_store(&self.store)
+            .map_err(|error| GraphStoreError::graph(NativeGraphError::Store(error)))
     }
 
     #[cfg(test)]

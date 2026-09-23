@@ -8,14 +8,23 @@
 use super::*;
 use std::mem::size_of;
 use std::ptr::NonNull;
-use zeppelin_embed::lifecycle::SearchTier;
+use zeppelin_embed::lifecycle::{QueryControl, SearchTier};
 use zeppelin_embed::property_graph::EntityId;
 use zeppelin_embed::property_graph::query::completed::{
-    ActualTier, CandidateCoverage, CompletedError, LegState, ListKind, Outcome, Pools,
-    PreparedGraphResult, ResultSource, ScorePrecision, SearchKind, SearchReport, Span, Value,
-    ValueKinds,
+    ActualTier, CandidateCoverage, CompletedError, CompletedGraphResult, GraphQueryOptions,
+    LegState, ListKind, Outcome, Pools, PreparedGraphResult, ResultSource, ScorePrecision,
+    SearchKind, SearchReport, Span, Value, ValueKinds,
 };
-use zeppelin_embed::property_graph::query::runtime::{Execution, FrozenOutput, WorkCounters};
+use zeppelin_embed::property_graph::query::resources::QueryMemory;
+use zeppelin_embed::property_graph::query::runtime::{
+    Execution, FrozenOutput, RetainedView, RuntimeLimits, WorkCounters,
+};
+use zeppelin_embed::property_graph::query::{QueryError, QueryView};
+use zeppelin_embed::property_graph::staging::{ItemReceipt, StructuredOperation, StructuredWrite};
+use zeppelin_embed::property_graph::{
+    GraphGeneration, GraphQueryPlan, GraphStore, GraphStoreError, GraphWriteOutcome,
+    GraphWriteResult, StoreInstanceId,
+};
 
 const GLOBAL_WORK_COUNT: usize = 23;
 const REPORT_WORK_COUNT: usize = 22;
@@ -180,8 +189,15 @@ impl NativeGeometry {
     }
 }
 
-struct NativeInitializer<'a, 'm, 'g> {
-    native: &'a PreparedGraphResult<'m, 'g>,
+/// Already-owned typed pools to copy into the C arena, plus their checked
+/// geometry. Any owner exposing `Pools<'_>` can fill through this shape:
+/// `prepare_native` copies from a still-live `PreparedGraphResult` and passes
+/// its pools here once; `prepare_from_completed`/`prepare_from_receipts`
+/// (ZE-68 real-producer conversion) pass an already-detached
+/// `CompletedGraphResult`'s pools directly, with no further copy.
+#[derive(Clone, Copy)]
+struct NativeInitializer<'a> {
+    pools: Pools<'a>,
     geometry: NativeGeometry,
 }
 
@@ -263,14 +279,14 @@ pub(crate) fn prepare_native<'v, 'm, 'g>(
     };
     let native_bytes = native.represented_bytes();
     let initializer = NativeInitializer {
-        native: &native,
+        pools: native.pools(),
         geometry,
     };
     let largest_wrapper = size_of::<FrozenOutput<PreparedNativeResponse<'m, 'g>>>()
         .max(size_of::<Execution<PreparedNativeResponse<'m, 'g>>>())
         .max(size_of::<FinalizedNativeResponse<'m, 'g>>());
     let wrapper_extra = largest_wrapper.saturating_sub(size_of::<PreparedResponse<'m, 'g>>());
-    let initializer_controls = size_of::<NativeInitializer<'_, 'm, 'g>>()
+    let initializer_controls = size_of::<NativeInitializer<'_>>()
         .checked_add(wrapper_extra)
         .ok_or(OwnerError::Limit)?;
     let response = registry.prepare_with(
@@ -598,11 +614,11 @@ fn work_kind(index: usize) -> (WorkKind, u32) {
 fn fill_native(
     arena: &AlignedArena,
     plan: &ArenaLayout,
-    initializer: NativeInitializer<'_, '_, '_>,
+    initializer: NativeInitializer<'_>,
     metadata: ResponseMetadata,
     context: &mut RuntimeContext<'_, '_, '_>,
 ) -> Result<ZeGraphResponse, OwnerError> {
-    let pools = initializer.native.pools();
+    let pools = initializer.pools;
     let mut root = empty_response();
     root.row_count = metadata.row_count;
     root.has_admitted_generation = 1;
@@ -709,5 +725,316 @@ fn fill_native(
     Ok(root)
 }
 
+// ===== ZE-68 Slice A: wiring to ZE-66's real public producers =====
+//
+// Everything above this line is ZE-141's seam for a still-live producer
+// (`ResultSource`/`PreparedGraphResult`, copying inside the same admission
+// that produced the data). `GraphStore::apply_batch`/`query` do not expose
+// that admission: each is one synchronous call that fully owns, copies and
+// detaches its own result before returning (`GraphWriteResult`,
+// `CompletedGraphResult`, both documented to "stay valid after this store
+// closes"). Neither implements `ResultSource`, and neither could:
+// `ResultSource::result_input` requires a live `&QueryView` identical to the
+// caller's own admission (`copy_from` checks `std::ptr::eq`), which no
+// longer exists once `GraphStore` has returned. So this conversion works
+// directly from the already-owned public types instead: the write path
+// builds its own small receipt-only `ResponseParts` (`GraphWriteResult` has
+// no node/relationship pools to restamp -- see `apply_and_settle`'s doc);
+// the read path reuses `NativeInitializer`/`fill_native` unchanged, because
+// `Pools<'_>` is `Pools<'_>` whether it comes from a still-live
+// `PreparedGraphResult` or an already-detached `CompletedGraphResult`.
+//
+// `GraphNodesResult`/`GraphRelationshipsResult` (`GraphStore::get_nodes`/
+// `get_relationships`) are deliberately NOT wired here: unlike
+// `CompletedGraphResult`, they expose only per-span accessor methods
+// (`labels`, `properties`, `value`, `string`, ...), not a `Pools`-shaped
+// bulk view of their backing `bytes`/`names`/`properties`/`values`/
+// `children`/`vectors` pools, so there is no way to `arena.copy`/`arena.map`
+// them directly the way `fill_native` does for a query result. Wiring them
+// needs a small ZE-66 follow-up (a `pools()`-style accessor) before an FFI
+// conversion can reuse the existing per-field mapping functions here; filed
+// as a backlog ticket rather than inventing a one-off encoding under time
+// pressure (see the ZE-68 evidence file).
+
+/// A rejected ZE-68 real-producer conversion: either the real `GraphStore`
+/// call itself was rejected (no response was built), or the call resolved
+/// but building/publishing the C response afterward failed.
+#[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "GraphStoreError stays unboxed and allocation-free, as it is at its own definition"
+)]
+pub(crate) enum ProducerError {
+    /// The real `GraphStore::apply_batch`/`query` call was rejected.
+    Store(GraphStoreError),
+    /// The real call resolved; converting or publishing its C response
+    /// afterward failed.
+    Conversion(ConversionError),
+}
+impl From<ConversionError> for ProducerError {
+    fn from(error: ConversionError) -> Self {
+        Self::Conversion(error)
+    }
+}
+
+/// Bound for the FFI's own post-call arena build. The converted bytes are
+/// already-owned Rust data being re-expressed as C, not unbounded caller
+/// input, so this does not need `QueryMemory`'s full per-call sublimit.
+const PRODUCER_MEMORY_LIMIT: usize = 8 * 1024 * 1024;
+
+/// Always-active retained-view adapter for a `RuntimeContext` built after a
+/// `GraphStore` call has already returned. Nothing here re-checks store
+/// liveness: the data being converted (`GraphWriteResult`,
+/// `CompletedGraphResult`) is already a fully owned, detached copy that by
+/// contract stays valid after the store closes, so there is no consistency
+/// window left to protect; `RuntimeContext::new` still requires an adapter.
+struct DetachedView(QueryView);
+impl RetainedView for DetachedView {
+    fn query_view(&self) -> &QueryView {
+        &self.0
+    }
+    fn check_active(&self) -> Result<(), QueryError> {
+        Ok(())
+    }
+}
+
+/// Builds a `RuntimeContext` charged against `store`'s real shared
+/// accounting (`GraphStore::resources`), for converting an already-returned
+/// result into a C response. `control` is the same one the caller passed to
+/// the producing call, so a caller cancellation also interrupts response
+/// construction.
+fn with_producer_context<T>(
+    store: &GraphStore,
+    control: &QueryControl,
+    body: impl FnOnce(&mut RuntimeContext<'_, '_, '_>) -> T,
+) -> Result<T, ProducerError> {
+    let resources = store.resources().map_err(ProducerError::Store)?;
+    let memory = QueryMemory::new(&resources, PRODUCER_MEMORY_LIMIT)
+        .map_err(|error| ProducerError::from(ConversionError::from(RuntimeError::from(error))))?;
+    // 1 is a fixed, obviously nonzero placeholder: nothing checks this token
+    // against real store identity, since the converted data never goes
+    // through `ResultSource`/`copy_from` (see the module note above).
+    let identity = StoreInstanceId::new(1)
+        .map_err(|_| ProducerError::from(ConversionError::Owner(OwnerError::InvalidShape)))?;
+    let view = DetachedView(QueryView::new(identity, GraphGeneration::new(0)));
+    let mut context = RuntimeContext::new(&view, control, &memory, RuntimeLimits::default())
+        .map_err(|error| ProducerError::from(ConversionError::from(error)))?;
+    Ok(body(&mut context))
+}
+
+/// Maps ZE-66's `GraphWriteOutcome` onto Slice B's `WriteSettlement`: they
+/// correspond directly, one variant at a time, confirming Slice B's own
+/// review note. `Replayed` is reachable: a real single-item exact retry
+/// through `GraphStore::apply_batch` produces `GraphWriteOutcome::Replayed`
+/// (proved by `graph_store_exact_retry_replays_with_its_original_generation`
+/// in `zeppelin-embed`'s own `graph_store::tests`, and again here by
+/// `apply_and_settle_replays_an_exact_retry`).
+fn write_settlement(outcome: GraphWriteOutcome) -> Result<WriteSettlement, ConversionError> {
+    match outcome {
+        GraphWriteOutcome::Committed { generation } => std::num::NonZeroU64::new(generation.get())
+            .map(WriteSettlement::Committed)
+            .ok_or(OwnerError::InvalidShape)
+            .map_err(ConversionError::from),
+        GraphWriteOutcome::Replayed => Ok(WriteSettlement::Replayed),
+        GraphWriteOutcome::NoOp => Ok(WriteSettlement::NoOp),
+    }
+}
+
+/// Builds one write result's `ZeGraphReceipt`. `GraphWriteResult::receipts`
+/// is `&[ItemReceipt]`, not `query::completed::Receipt`: ZE-66 S1 kept
+/// `apply_batch`'s receipt to the staging shape, so `item_index` is the
+/// request's own position (receipts are "one per request, in request
+/// order") and `deleted` is derived from that same request's operation,
+/// not carried by the receipt itself.
+fn write_receipt(index: usize, receipt: &ItemReceipt, deleted: bool) -> ZeGraphReceipt {
+    let (entity_kind, node, relationship) = match receipt.entity {
+        EntityId::Node(id) => (
+            ZeGraphEntityKind::ZeGraphEntityNode as u32,
+            node_id(id.get()),
+            ZeRelId::default(),
+        ),
+        EntityId::Relationship(id) => (
+            ZeGraphEntityKind::ZeGraphEntityRelationship as u32,
+            ZeNodeId::default(),
+            rel_id(id.get()),
+        ),
+    };
+    ZeGraphReceipt {
+        abi_size: size_of::<ZeGraphReceipt>() as u32,
+        abi_reserved: 0,
+        // `apply_batch` bounds every batch to `MAX_GRAPH_CHANGES` (16,384)
+        // before producing any receipt, so `index` always fits.
+        item: index as u32,
+        entity_kind,
+        disposition: if receipt.replayed {
+            ZeGraphDisposition::ZeGraphDispositionReplayed as u32
+        } else {
+            ZeGraphDisposition::ZeGraphDispositionCommitted as u32
+        },
+        deleted: u32::from(deleted),
+        node,
+        relationship,
+        revision: receipt.revision.get(),
+        generation: receipt.generation.get(),
+    }
+}
+
+/// Runs one real [`GraphStore::apply_batch`] under the potential-write
+/// guard and, on success, builds and publishes its C receipt response.
+///
+/// The guard covers the whole call, not just a post-commit tail: unlike the
+/// Cypher statement seam, `apply_batch` exposes no pre-commit reflection to
+/// detach before its own commit (it returns fully settled `ItemReceipt`s,
+/// already stamped by core's own internal settle), so there is nothing to
+/// restamp here -- `PendingResponse::settle`'s per-entity loop runs, but
+/// against empty node/relationship pools (`apply_batch` returns no entity
+/// data), making it a genuine no-op that still correctly stamps disposition
+/// and publishes. The only real uncertainty window left is `apply_batch`
+/// itself: if it panics after committing but before returning, or if
+/// anything below panics after a real `Ok`, the guard reports Indeterminate
+/// rather than a stale NotCommitted or a false success.
+pub(crate) fn apply_and_settle(
+    registry: &'static GraphResultRegistry,
+    store: &GraphStore,
+    requests: &[StructuredWrite<'_, '_>],
+    control: &QueryControl,
+) -> GuardedWrite<Result<ZeGraphResponse, ProducerError>> {
+    run_potential_write(|attempt| {
+        let result = match store.apply_batch(requests, control) {
+            Ok(result) => result,
+            Err(error) => {
+                // `nothing_committed()` is core's own proof, not a guess:
+                // only record NotCommitted when it is actually true.
+                // Otherwise the outcome is genuinely unknown; leave
+                // Indeterminate by not resolving the attempt at all.
+                if error.nothing_committed() {
+                    attempt.no_effect();
+                }
+                return Err(ProducerError::Store(error));
+            }
+        };
+        // The write already resolved (committed, replayed or no-op); any
+        // failure from here on must not call `no_effect` -- that would
+        // misreport a real commit as none. Just return without resolving.
+        build_write_response(registry, store, control, requests, attempt, result)
+    })
+}
+
+fn build_write_response(
+    registry: &'static GraphResultRegistry,
+    store: &GraphStore,
+    control: &QueryControl,
+    requests: &[StructuredWrite<'_, '_>],
+    attempt: WriteAttempt<'_>,
+    result: GraphWriteResult,
+) -> Result<ZeGraphResponse, ProducerError> {
+    let settlement = write_settlement(result.outcome())?;
+    let receipts = result.receipts();
+    let pool: Vec<ZeGraphReceipt> = receipts
+        .iter()
+        .enumerate()
+        .map(|(index, receipt)| {
+            let deleted = requests.get(index).is_some_and(|request| {
+                matches!(request.operation, StructuredOperation::Delete(..))
+            });
+            write_receipt(index, receipt, deleted)
+        })
+        .collect();
+    let parts = ResponseParts {
+        receipts: &pool,
+        ..ResponseParts::default()
+    };
+    let metadata = ResponseMetadata::new(0, Some(result.admitted_generation().get()));
+    // `detach()` runs inside the same closure as `prepare()`: it strips the
+    // `'m, 'g` lifetime tied to `with_producer_context`'s own (function-
+    // scoped) `QueryMemory`, so only the lifetime-free `PendingResponse` --
+    // never a `PreparedResponse<'m, 'g>` -- escapes to here.
+    let pending = with_producer_context(store, control, |context| {
+        registry
+            .prepare(context, parts, metadata)
+            .map(PreparedResponse::detach)
+    })?
+    .map_err(|error| ProducerError::from(ConversionError::from(error)))?;
+    Ok(attempt.settle(pending, receipts, settlement))
+}
+
+/// Builds a C response directly from an already-detached
+/// `CompletedGraphResult` (`GraphStore::query`'s return value), reusing
+/// `fill_native`/`NativeInitializer` unchanged: `Pools<'_>` is `Pools<'_>`
+/// whether it comes from a still-live `PreparedGraphResult` or an
+/// already-owned `CompletedGraphResult`. `result.metadata().counters`/
+/// `peak_query_bytes` are already the real final values core recorded
+/// internally (`PreparedGraphResult::detach` stamps them before
+/// `GraphStore::query` returns), so this finalizes the global-work rows
+/// immediately instead of deferring to a live `Execution` driver.
+fn prepare_completed<'m, 'g>(
+    registry: &'static GraphResultRegistry,
+    context: &mut RuntimeContext<'_, 'm, 'g>,
+    result: &CompletedGraphResult,
+) -> Result<(PreparedResponse<'m, 'g>, SuccessfulOutcome), ConversionError> {
+    let pools = result.pools();
+    let geometry = NativeGeometry::new(pools)?;
+    let outcome = map_outcome(result.metadata().outcome)?;
+    let metadata = ResponseMetadata {
+        row_count: result.metadata().rows as usize,
+        admitted_generation: Some(result.metadata().generation.get()),
+        global_work: ZeGraphRange {
+            start: 0,
+            count: u32::try_from(GLOBAL_WORK_COUNT).map_err(|_| OwnerError::Limit)?,
+        },
+    };
+    let initializer = NativeInitializer { pools, geometry };
+    let initializer_controls = size_of::<NativeInitializer<'_>>();
+    let response = registry.prepare_with(
+        context,
+        geometry.counts,
+        metadata,
+        initializer_controls,
+        move |arena, plan, context| fill_native(arena, plan, initializer, metadata, context),
+    )?;
+    let global_work = GlobalWorkSlots::new(&response)?;
+    global_work.finalize(
+        result.metadata().counters,
+        result.metadata().peak_query_bytes,
+    );
+    Ok((response, outcome))
+}
+
+/// Runs one real [`GraphStore::query`] and builds/publishes its C response.
+///
+/// This does not go through `run_potential_write`: `query` can itself run a
+/// committing Cypher statement, but by the time it returns `Ok`, core has
+/// already durably committed and fully settled the result (the same
+/// already-resolved shape as `apply_batch`); per this slice's scope, the
+/// read path uses the pending/settle guard only through `apply_batch`, not
+/// here. A panic while building the response after a committing `query`
+/// call would not be caught as Indeterminate the way `apply_and_settle`'s
+/// is -- a known, documented asymmetry, not an oversight (see the ZE-68
+/// evidence file).
+pub(crate) fn run_query(
+    registry: &'static GraphResultRegistry,
+    store: &GraphStore,
+    control: &QueryControl,
+    options: &GraphQueryOptions,
+    plan: &GraphQueryPlan<'_>,
+) -> Result<ZeGraphResponse, ProducerError> {
+    let result = store
+        .query(control, options, plan)
+        .map_err(ProducerError::Store)?;
+    // `expose()` runs inside the same closure as `prepare_with()`, for the
+    // same reason `build_write_response` calls `detach()` there: it
+    // consumes the `'m, 'g`-scoped `PreparedResponse` into a plain
+    // `ZeGraphResponse` C struct before `with_producer_context`'s own
+    // `QueryMemory` goes out of scope.
+    let response = with_producer_context(store, control, |context| {
+        prepare_completed(registry, context, &result)
+            .map(|(prepared, outcome)| prepared.expose(outcome))
+    })?
+    .map_err(ProducerError::from)?;
+    Ok(response)
+}
+
+#[cfg(test)]
+mod producer_tests;
 #[cfg(test)]
 mod tests;
