@@ -116,8 +116,8 @@ struct CachedProperty<'m> {
 
 struct CachedEntity<'source, 'resources, 'm> {
     kind: EntityKind,
-    namespace: ChargedText<'m>,
-    key: ChargedText<'m>,
+    namespace: Option<ChargedText<'m>>,
+    key: Option<ChargedText<'m>>,
     operation: GraphOperation,
     requested_revision: GraphRevision,
     installed_revision: GraphRevision,
@@ -134,9 +134,19 @@ struct CachedEntity<'source, 'resources, 'm> {
 }
 
 impl CachedEntity<'_, '_, '_> {
-    fn key(&self) -> Result<ApplicationKey<'_>, StageError> {
-        ApplicationKey::new(self.kind, self.namespace.as_str()?, self.key.as_str()?)
-            .map_err(|_| StageError::InvalidInput)
+    /// Application key, when this entity has one. Absence (a Cypher-created
+    /// entity) is distinct from an empty namespace/key and is never forced
+    /// into one: `namespace` and `key` are always both present or both
+    /// absent, by construction in `cached_from_parts`.
+    fn key(&self) -> Result<Option<ApplicationKey<'_>>, StageError> {
+        match (&self.namespace, &self.key) {
+            (Some(namespace), Some(key)) => Ok(Some(
+                ApplicationKey::new(self.kind, namespace.as_str()?, key.as_str()?)
+                    .map_err(|_| StageError::InvalidInput)?,
+            )),
+            (None, None) => Ok(None),
+            _ => Err(StageError::InvalidInput),
+        }
     }
 
     fn provenance(&self) -> Result<OperationProvenance<'_>, StageError> {
@@ -144,7 +154,7 @@ impl CachedEntity<'_, '_, '_> {
             Some(1),
             OperationFields {
                 operation: self.operation,
-                key: Some(self.key()?),
+                key: self.key()?,
                 requested_revision: self.requested_revision,
                 installed_revision: self.installed_revision,
                 expected: self.expected,
@@ -505,15 +515,26 @@ fn cached_from_parts<'source, 'resources, 'm>(
     resources: &mut TreeResources<'m>,
     properties: Option<StorageBuffer<'m, CachedProperty<'m>>>,
 ) -> Result<CachedEntity<'source, 'resources, 'm>, TreeError> {
-    let stored_key = provenance
-        .key()
-        .ok_or(TreeError::Invalid("native admitted entity has no key"))?;
-    let namespace = copy_text(stored_key.namespace(), memory, resources)?;
-    let key = copy_text(stored_key.key(), memory, resources)?;
-    let application_key =
-        ApplicationKey::new(stored_key.kind(), namespace.as_str()?, key.as_str()?)
-            .map_err(|_| TreeError::Invalid("invalid admitted application key"))?;
-    let fields = provenance.fields_with_key(Some(application_key), resources)?;
+    // A Cypher CREATE admits an entity with no application key at all; that
+    // absence must survive here rather than being forced into a key or
+    // refused as corruption. `provenance.key()` is already `Option` for
+    // exactly this reason (ZE-32/ZE-34: absence is not an empty value).
+    let stored_key = provenance.key();
+    let namespace = stored_key
+        .map(|stored_key| copy_text(stored_key.namespace(), memory, resources))
+        .transpose()?;
+    let key = stored_key
+        .map(|stored_key| copy_text(stored_key.key(), memory, resources))
+        .transpose()?;
+    let application_key = match (stored_key, &namespace, &key) {
+        (Some(stored_key), Some(namespace), Some(key)) => Some(
+            ApplicationKey::new(stored_key.kind(), namespace.as_str()?, key.as_str()?)
+                .map_err(|_| TreeError::Invalid("invalid admitted application key"))?,
+        ),
+        (None, None, None) => None,
+        _ => return Err(TreeError::Invalid("incomplete admitted application key")),
+    };
+    let fields = provenance.fields_with_key(application_key, resources)?;
     let operation = fields.operation;
     let requested_revision = fields.requested_revision;
     let installed_revision = fields.installed_revision;
@@ -558,7 +579,7 @@ fn cached_from_parts<'source, 'resources, 'm>(
         _ => return Err(TreeError::Invalid("incomplete admitted canonical")),
     };
     Ok(CachedEntity {
-        kind: stored_key.kind(),
+        kind: incarnation.kind(),
         namespace,
         key,
         operation,
@@ -732,9 +753,20 @@ where
             for request in requests {
                 let mut cached = false;
                 for entry in cache.as_slice() {
+                    // The structured-write preload only ever caches keyed
+                    // entities (every `request` here names a key), so
+                    // `entry.namespace`/`entry.key` are always `Some` in
+                    // this loop; `transpose()?` still surfaces a real UTF-8
+                    // decode failure instead of masking it as a non-match.
                     if entry.kind == request.key.kind()
-                        && entry.namespace.as_str()? == request.key.namespace().as_str()
-                        && entry.key.as_str()? == request.key.key().as_str()
+                        && entry
+                            .namespace
+                            .as_ref()
+                            .map(ChargedText::as_str)
+                            .transpose()?
+                            == Some(request.key.namespace().as_str())
+                        && entry.key.as_ref().map(ChargedText::as_str).transpose()?
+                            == Some(request.key.key().as_str())
                     {
                         cached = true;
                         break;
@@ -966,9 +998,19 @@ where
         key: ApplicationKey<'_>,
     ) -> Result<Option<&'a CachedEntity<'source, 'resources, 'm>>, StageError> {
         for entry in self.cache.as_slice() {
+            // Same reasoning as the preload loop in `build`: `self.cache`
+            // holds only structured-write (keyed) entries, so `Some` is the
+            // only outcome reached here in practice, but a genuine decode
+            // failure still surfaces through `?` rather than being hidden.
             if entry.kind == key.kind()
-                && entry.namespace.as_str()? == key.namespace().as_str()
-                && entry.key.as_str()? == key.key().as_str()
+                && entry
+                    .namespace
+                    .as_ref()
+                    .map(ChargedText::as_str)
+                    .transpose()?
+                    == Some(key.namespace().as_str())
+                && entry.key.as_ref().map(ChargedText::as_str).transpose()?
+                    == Some(key.key().as_str())
             {
                 return Ok(Some(entry));
             }

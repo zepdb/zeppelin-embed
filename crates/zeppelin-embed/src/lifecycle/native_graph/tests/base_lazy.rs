@@ -235,6 +235,16 @@ fn ze52_slice_b_lazy_base_resolves_an_unlisted_target() {
             .expect("published node resolves through the lazy fallthrough");
         assert!(matches!(entity.shape, EntityShape::Node));
         assert_eq!(entity.provenance.fields().incarnation, EntityId::Node(node));
+        // ZE-207 regression pin: this node was committed through a keyed
+        // structured write, and it is resolved here through the same lazy
+        // `cached_from_parts` path a Cypher-created (unkeyed) target uses.
+        // Its real application key must survive that path unchanged -- the
+        // fix that lets an unkeyed target load as `key: None` must not turn
+        // a keyed target's key into `None` too.
+        assert_eq!(
+            entity.provenance.fields().key,
+            Some(ApplicationKey::new(EntityKind::Node, "app", "unlisted").expect("unlisted key"))
+        );
         assert_eq!(entity.view, base.identity());
         assert_eq!(
             base.stored_text(node, &mut |_| Ok(())).expect("lazy text"),
