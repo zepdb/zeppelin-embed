@@ -1482,3 +1482,114 @@ mod batch_working_copy_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod wal_replay_tests {
+    use tempfile::tempdir;
+
+    use crate::lifecycle::{DocumentFields, OpenOptions, StoredDocument};
+
+    use super::*;
+
+    fn document(doc_id: u128, revision: u64, text: Option<&str>) -> IngestDocument {
+        let document = IngestDocument::new(
+            DocumentVersion::new(DocId::new(doc_id), Revision::new(revision)),
+            vec![1.0, doc_id as f32],
+        );
+        match text {
+            Some(text) => document.with_text(text),
+            None => document,
+        }
+    }
+
+    /// Writes one WAL record per mutation: text-less rows before the first
+    /// texted row, replacements, deletes, and a deleted id written again.
+    pub(super) fn write_mixed_wal(store: &Store) {
+        for doc_id in 1_u128..=40 {
+            let text = format!("alpha beta note {doc_id}");
+            let text = (doc_id > 3 && doc_id % 7 != 0).then_some(text.as_str());
+            store
+                .ingest(IngestBatch::new(vec![document(doc_id, 1, text)]))
+                .expect("ingest one row");
+        }
+        for doc_id in [3_u128, 10, 21] {
+            store
+                .ingest(IngestBatch::new(vec![document(
+                    doc_id,
+                    2,
+                    Some("gamma replaced text"),
+                )]))
+                .expect("replace one row");
+        }
+        store
+            .delete(DeleteBatch::new(vec![
+                DocId::new(5),
+                DocId::new(6),
+                DocId::new(10),
+            ]))
+            .expect("delete rows");
+        store
+            .ingest(IngestBatch::new(vec![document(
+                5,
+                2,
+                Some("delta revived"),
+            )]))
+            .expect("write a deleted id again");
+    }
+
+    fn observed(store: &Store) -> (Vec<Option<StoredDocument>>, crate::fts::bm25::CorpusStats) {
+        let ids = (1_u128..=41).map(DocId::new).collect::<Vec<_>>();
+        (
+            store
+                .get_documents(&ids, DocumentFields::TEXT)
+                .expect("read documents"),
+            store.lexical_corpus_stats().expect("corpus stats"),
+        )
+    }
+
+    #[test]
+    fn wal_replay_reopens_the_exact_live_state() {
+        let directory = tempdir().expect("store directory");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+        write_mixed_wal(&store);
+        let before = observed(&store);
+        store.close().expect("close store");
+
+        let reopened = Store::open(directory.path(), OpenOptions::default()).expect("reopen");
+        assert_eq!(observed(&reopened), before);
+        reopened.close().expect("close reopened store");
+    }
+}
+
+#[cfg(all(test, feature = "allocation-audit"))]
+#[allow(clippy::expect_used)]
+mod wal_replay_copy_tests {
+    use tempfile::tempdir;
+
+    use crate::lifecycle::OpenOptions;
+
+    use super::*;
+
+    #[test]
+    fn wal_replay_clones_the_active_segment_at_most_once() {
+        let directory = tempdir().expect("store directory");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+        super::wal_replay_tests::write_mixed_wal(&store);
+        store.close().expect("close store");
+
+        let (reopened, report) = crate::allocation_audit::audit_engine_path(|| {
+            Store::open(directory.path(), OpenOptions::default())
+        });
+
+        reopened
+            .expect("reopen")
+            .close()
+            .expect("close reopened store");
+        assert!(
+            report.full_segment_clones <= 1,
+            "WAL replay cloned the active segment {} times",
+            report.full_segment_clones
+        );
+    }
+}

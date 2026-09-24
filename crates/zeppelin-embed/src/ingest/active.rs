@@ -1,5 +1,6 @@
 //! Exactly accounted in-RAM active-segment storage.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
@@ -16,9 +17,6 @@ use crate::wal::{CleanWalReader, LogSeq, WalReadError, WalReader, WalWriter, enc
 
 use super::wal_payload::MutationPayload;
 use super::{DocId, DocumentVersion, IngestDocument, IngestError, Revision, wal_payload};
-
-type AccountedMetadata = (Accounted<Vec<u64>>, Accounted<Vec<u8>>);
-type AccountedText = (Accounted<Vec<u8>>, Accounted<Vec<u64>>, Accounted<Vec<u8>>);
 
 /// Preserve the caller's control error while translating writer errors at the
 /// active-segment boundary, without adding storage errors to the FTS API.
@@ -127,6 +125,12 @@ impl ActiveState {
         }
     }
 
+    /// Rebuilds the active segment from the unabsorbed WAL tail.
+    ///
+    /// The tail is decoded first so one working segment is sized for all of
+    /// it, then every record is applied in place and the lexical index is
+    /// built once at the end. Copying the segment per record, as live
+    /// copy-on-write ingest does, made reopen quadratic in unsealed rows.
     fn replay(
         mut generation: u64,
         absorbed_through: u64,
@@ -135,8 +139,9 @@ impl ActiveState {
         schema: &crate::meta::Schema,
         analyzer: &Analyzer,
     ) -> Result<(Self, Vec<SealedTombstoneDemand>), StoreError> {
-        let mut segment = ActiveSegment::empty();
-        let mut sealed_tombstones = Vec::new();
+        let mut documents = Vec::new();
+        let mut steps = Vec::new();
+        let mut deleted_ids = 0_usize;
         for record in recovered.records() {
             if record.seq.get() <= absorbed_through {
                 continue;
@@ -152,26 +157,18 @@ impl ActiveState {
                     source,
                 }
             })?;
-            segment = match mutation {
+            match mutation {
                 MutationPayload::Upsert(document) => {
                     super::validate_document_columns(schema, &document)
                         .map_err(|error| recovery_apply_error(record.seq, record.op, error))?;
-                    let next = apply_recovered_upsert(
-                        &segment, &document, record.seq, record.op, accounting, analyzer,
-                    )?;
-                    sealed_tombstones.push(SealedTombstoneDemand::upsert(document.version()));
-                    next
+                    steps.push((record.seq, record.op, ReplayStep::Upsert(documents.len())));
+                    documents.push(document);
                 }
                 MutationPayload::Delete(doc_ids) => {
-                    let (mut next, rows) = segment
-                        .tombstone(&doc_ids, accounting)
-                        .map_err(|error| recovery_apply_error(record.seq, record.op, error))?;
-                    for row in rows {
-                        next.set_sequence(row, record.seq)?;
-                    }
-                    sealed_tombstones
-                        .extend(doc_ids.iter().copied().map(SealedTombstoneDemand::delete));
-                    next
+                    deleted_ids = deleted_ids
+                        .checked_add(doc_ids.len())
+                        .ok_or(StoreError::ActiveRowOverflow)?;
+                    steps.push((record.seq, record.op, ReplayStep::Delete(doc_ids)));
                 }
                 MutationPayload::MetadataEdit(_) => {
                     return Err(StoreError::UnsupportedWalMutation {
@@ -179,10 +176,80 @@ impl ActiveState {
                         op: record.op,
                     });
                 }
-            };
+            }
+        }
+        let mut segment = match (documents.first(), steps.first()) {
+            (Some(first), Some((seq, op, _))) => ActiveSegment::empty()
+                .copy_for_batch(first, &documents, accounting)
+                .map_err(|error| recovery_apply_error(*seq, *op, error))?,
+            _ => ActiveSegment::empty(),
+        };
+        segment.tombstones = copy_accounted(accounting, &segment.tombstones, deleted_ids)?;
+        let mut rows = HashMap::<DocId, usize>::new();
+        let mut sealed_tombstones = Vec::new();
+        let last_record = steps.last().map(|(seq, op, _)| (*seq, *op));
+        for (seq, op, step) in steps {
+            match step {
+                ReplayStep::Upsert(index) => {
+                    let document = documents.get(index).ok_or(StoreError::ActiveRowOverflow)?;
+                    let doc_id = document.version().doc_id();
+                    let row = match rows.get(&doc_id).copied() {
+                        Some(row) => {
+                            let current =
+                                segment.document(row).ok_or(StoreError::ActiveRowOverflow)?;
+                            if document.version().revision() <= current.revision() {
+                                return Err(StoreError::WalRevisionOrder {
+                                    seq,
+                                    doc_id,
+                                    current: current.revision(),
+                                    attempted: document.version().revision(),
+                                });
+                            }
+                            segment
+                                .replace_row_in_place(row, document)
+                                .map_err(|error| recovery_apply_error(seq, op, error))?;
+                            row
+                        }
+                        None => {
+                            let row = segment
+                                .insert_row_in_place(document)
+                                .map_err(|error| recovery_apply_error(seq, op, error))?;
+                            rows.insert(doc_id, row);
+                            row
+                        }
+                    };
+                    segment.set_sequence(row, seq)?;
+                    sealed_tombstones.push(SealedTombstoneDemand::upsert(document.version()));
+                }
+                ReplayStep::Delete(doc_ids) => {
+                    for doc_id in &doc_ids {
+                        let Some(row) = rows.get(doc_id).copied() else {
+                            continue;
+                        };
+                        let row_u32 =
+                            u32::try_from(row).map_err(|_| StoreError::ActiveRowOverflow)?;
+                        if !segment.tombstones.contains(&row_u32) {
+                            segment.tombstones.push(row_u32)?;
+                        }
+                        segment.set_sequence(row, seq)?;
+                    }
+                    sealed_tombstones
+                        .extend(doc_ids.iter().copied().map(SealedTombstoneDemand::delete));
+                }
+            }
             generation = generation
                 .checked_add(1)
                 .ok_or(StoreError::GenerationOverflow)?;
+        }
+        if let Some((seq, op)) = last_record
+            && segment.tracks_text()
+        {
+            segment.lexical = segment
+                .rebuild_lexical(None, analyzer)
+                .map_err(|error| recovery_apply_error(seq, op, error))?;
+            segment
+                .refresh_lexical_accounting(accounting)
+                .map_err(|error| recovery_apply_error(seq, op, error))?;
         }
         Ok((
             Self {
@@ -194,43 +261,11 @@ impl ActiveState {
     }
 }
 
-fn apply_recovered_upsert(
-    segment: &ActiveSegment,
-    document: &IngestDocument,
-    seq: LogSeq,
-    op: u16,
-    accounting: &Arc<Accounting>,
-    analyzer: &Analyzer,
-) -> Result<ActiveSegment, StoreError> {
-    let (mut next, row) = match segment.existing(document.version().doc_id()) {
-        Some((row, current, _)) => {
-            if document.version().revision() <= current.revision() {
-                return Err(StoreError::WalRevisionOrder {
-                    seq,
-                    doc_id: document.version().doc_id(),
-                    current: current.revision(),
-                    attempted: document.version().revision(),
-                });
-            }
-            (
-                segment
-                    .replace(row, document, accounting, analyzer)
-                    .map_err(|error| recovery_apply_error(seq, op, error))?,
-                row,
-            )
-        }
-        None => {
-            let row = segment.row_count();
-            (
-                segment
-                    .insert(document, accounting, analyzer)
-                    .map_err(|error| recovery_apply_error(seq, op, error))?,
-                row,
-            )
-        }
-    };
-    next.set_sequence(row, seq)?;
-    Ok(next)
+/// One decoded WAL record awaiting in-place replay.
+enum ReplayStep {
+    /// Index into the decoded upsert documents.
+    Upsert(usize),
+    Delete(Vec<DocId>),
 }
 
 fn recovery_apply_error(seq: LogSeq, op: u16, error: IngestError) -> StoreError {
@@ -299,11 +334,7 @@ struct CachedActiveLexical {
 
 struct GrownCapacities {
     row: u32,
-    row_count: usize,
-    vector_count: usize,
     row_stride: usize,
-    code_count: usize,
-    metadata_capacity: usize,
 }
 
 struct WorkingCapacities {
@@ -456,221 +487,43 @@ impl ActiveSegment {
         })
     }
 
-    pub(crate) fn insert(
-        &self,
-        document: &IngestDocument,
-        accounting: &Arc<Accounting>,
-        analyzer: &Analyzer,
-    ) -> Result<Self, IngestError> {
-        #[cfg(feature = "allocation-audit")]
-        crate::allocation_audit::record_full_segment_clone();
-        let capacities = self.grown_row_capacities(document)?;
-        let dims = document.vector().len();
-        let GrownCapacities {
-            row,
-            row_count,
-            vector_count,
-            row_stride,
-            code_count,
-            metadata_capacity,
-        } = capacities;
-        let ScalarRowBuffers {
-            mut doc_ids,
-            mut revisions,
-            mut sequences,
-            mut timestamps,
-        } = self.copy_scalar_rows(accounting, 1)?;
-        let mut metadata_end_offsets =
-            copy_accounted(accounting, &self.metadata_end_offsets, row_count)?;
-        let mut metadata_bytes =
-            copy_accounted(accounting, &self.metadata_bytes, metadata_capacity)?;
-        let (text_present, text_end_offsets, text_bytes) =
-            self.appended_text(document.text(), accounting)?;
-        let (column_end_offsets, column_bytes) =
-            self.appended_columns(document.has_columns(), document.columns(), accounting)?;
-        let mut vectors = copy_accounted(accounting, &self.vectors, vector_count)?;
-        let mut codes = copy_accounted(accounting, &self.codes, code_count)?;
-        let mut factors = copy_accounted(accounting, &self.factors, row_count)?;
-        let tombstones = copy_accounted(accounting, &self.tombstones, self.tombstones.len())?;
-
-        doc_ids.push(document.version().doc_id())?;
-        revisions.push(document.version().revision())?;
-        sequences.push(LogSeq::new(0))?;
-        timestamps.push(document.timestamp())?;
-        for byte in document.metadata() {
-            metadata_bytes.push(*byte)?;
-        }
-        metadata_end_offsets.push(
-            u64::try_from(metadata_bytes.len())
-                .map_err(|_| IngestError::Store(StoreError::ActiveRowOverflow))?,
-        )?;
-        for value in document.vector() {
-            vectors.push(*value)?;
-        }
-        for _ in 0..row_stride {
-            codes.push(0)?;
-        }
-        let start = usize::try_from(row)
-            .ok()
-            .and_then(|value| value.checked_mul(row_stride))
-            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
-        let encoded = codes
-            .as_mut_slice()
-            .get_mut(start..)
-            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
-        let factor = quantize_bit4(document.vector(), encoded).map_err(IngestError::Vector)?;
-        factors.push(factor)?;
-        let (lexical, lexical_bytes) =
-            self.appended_lexical(document.text(), accounting, analyzer)?;
-        Ok(Self {
-            dims: Some(dims),
-            doc_ids,
-            revisions,
-            sequences,
-            timestamps,
-            metadata_end_offsets,
-            metadata_bytes,
-            text_present,
-            text_end_offsets,
-            text_bytes,
-            column_end_offsets,
-            column_bytes,
-            lexical,
-            lexical_bytes,
-            sealed_lexical: OnceLock::new(),
-            vectors,
-            codes,
-            factors,
-            tombstones,
-        })
-    }
-
-    pub(crate) fn replace(
-        &self,
-        row: usize,
-        document: &IngestDocument,
-        accounting: &Arc<Accounting>,
-        analyzer: &Analyzer,
-    ) -> Result<Self, IngestError> {
-        #[cfg(feature = "allocation-audit")]
-        crate::allocation_audit::record_full_segment_clone();
-        let dims = self
-            .dims
-            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
-        if document.vector().len() != dims {
-            return Err(IngestError::Store(StoreError::DimensionMismatch {
-                expected: dims,
-                actual: document.vector().len(),
-            }));
-        }
-        let row_stride = dims.div_ceil(2);
-        let ScalarRowBuffers {
-            mut doc_ids,
-            mut revisions,
-            mut sequences,
-            mut timestamps,
-        } = self.copy_scalar_rows(accounting, 0)?;
-        let (metadata_end_offsets, metadata_bytes) =
-            self.replaced_metadata(row, document.metadata(), accounting)?;
-        let (text_present, text_end_offsets, text_bytes) =
-            self.replaced_text(row, document.text(), accounting)?;
-        let (column_end_offsets, column_bytes) =
-            self.replaced_columns(row, document.has_columns(), document.columns(), accounting)?;
-        let mut vectors = copy_accounted(accounting, &self.vectors, self.vectors.len())?;
-        let mut codes = copy_accounted(accounting, &self.codes, self.codes.len())?;
-        let mut factors = copy_accounted(accounting, &self.factors, self.factors.len())?;
-        let row_u32 =
-            u32::try_from(row).map_err(|_| IngestError::Store(StoreError::ActiveRowOverflow))?;
-        let tombstones = self.copy_tombstones_excluding(accounting, row_u32)?;
-
-        *doc_ids
-            .as_mut_slice()
-            .get_mut(row)
-            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))? =
-            document.version().doc_id();
-        *revisions
-            .as_mut_slice()
-            .get_mut(row)
-            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))? =
-            document.version().revision();
-        *sequences
-            .as_mut_slice()
-            .get_mut(row)
-            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))? = LogSeq::new(0);
-        *timestamps
-            .as_mut_slice()
-            .get_mut(row)
-            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))? = document.timestamp();
-        let vector_start = row
-            .checked_mul(dims)
-            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
-        let vector_end = vector_start
-            .checked_add(dims)
-            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
-        vectors
-            .as_mut_slice()
-            .get_mut(vector_start..vector_end)
-            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?
-            .copy_from_slice(document.vector());
-        let code_start = row
-            .checked_mul(row_stride)
-            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
-        let code_end = code_start
-            .checked_add(row_stride)
-            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
-        let code = codes
-            .as_mut_slice()
-            .get_mut(code_start..code_end)
-            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
-        let factor = quantize_bit4(document.vector(), code).map_err(IngestError::Vector)?;
-        *factors
-            .as_mut_slice()
-            .get_mut(row)
-            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))? = factor;
-        let tracks_text = self.tracks_text() || document.text().is_some();
-        let lexical = if tracks_text {
-            self.rebuild_lexical(Some((row, document.text())), analyzer)?
-        } else {
-            SegmentIndex::new()
-        };
-        let lexical_bytes = tracks_text
-            .then(|| account_lexical(accounting, &lexical))
-            .transpose()?;
-        Ok(Self {
-            dims: self.dims,
-            doc_ids,
-            revisions,
-            sequences,
-            timestamps,
-            metadata_end_offsets,
-            metadata_bytes,
-            text_present,
-            text_end_offsets,
-            text_bytes,
-            column_end_offsets,
-            column_bytes,
-            lexical,
-            lexical_bytes,
-            sealed_lexical: OnceLock::new(),
-            vectors,
-            codes,
-            factors,
-            tombstones,
-        })
-    }
-
     pub(crate) fn insert_in_place(
         &mut self,
         document: &IngestDocument,
         accounting: &Arc<Accounting>,
         analyzer: &Analyzer,
     ) -> Result<usize, IngestError> {
-        let capacities = self.grown_row_capacities(document)?;
+        self.refuse_existing(document)?;
+        let tracked_text = self.tracks_text();
+        let row = self.insert_row_in_place(document)?;
+        if tracked_text || document.text().is_some() {
+            if !tracked_text {
+                for _ in 0..row {
+                    self.lexical
+                        .push_document(analyzer, &LexicalDocument::new())
+                        .map_err(IngestError::Lexical)?;
+                }
+            }
+            let lexical_document = document
+                .text()
+                .map_or_else(LexicalDocument::new, LexicalDocument::with_text);
+            self.lexical
+                .push_document(analyzer, &lexical_document)
+                .map_err(IngestError::Lexical)?;
+            self.refresh_lexical_accounting(accounting)?;
+        }
+        Ok(row)
+    }
+
+    /// Appends every column of one row but leaves the lexical index stale;
+    /// the caller updates or rebuilds it, and has already refused an id the
+    /// segment holds.
+    fn insert_row_in_place(&mut self, document: &IngestDocument) -> Result<usize, IngestError> {
+        let capacities = self.appended_row_capacities(document)?;
         let row = usize::try_from(capacities.row)
             .map_err(|_| IngestError::Store(StoreError::ActiveRowOverflow))?;
         let dims = document.vector().len();
         let row_stride = capacities.row_stride;
-        let tracked_text = self.tracks_text();
 
         self.doc_ids.push(document.version().doc_id())?;
         self.revisions.push(document.version().revision())?;
@@ -697,22 +550,6 @@ impl ActiveSegment {
             .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
         let factor = quantize_bit4(document.vector(), encoded).map_err(IngestError::Vector)?;
         self.factors.push(factor)?;
-        if tracked_text || document.text().is_some() {
-            if !tracked_text {
-                for _ in 0..row {
-                    self.lexical
-                        .push_document(analyzer, &LexicalDocument::new())
-                        .map_err(IngestError::Lexical)?;
-                }
-            }
-            let lexical_document = document
-                .text()
-                .map_or_else(LexicalDocument::new, LexicalDocument::with_text);
-            self.lexical
-                .push_document(analyzer, &lexical_document)
-                .map_err(IngestError::Lexical)?;
-            self.refresh_lexical_accounting(accounting)?;
-        }
         self.dims = Some(dims);
         Ok(row)
     }
@@ -724,6 +561,22 @@ impl ActiveSegment {
         accounting: &Arc<Accounting>,
         analyzer: &Analyzer,
     ) -> Result<(), IngestError> {
+        let tracks_text = self.tracks_text() || document.text().is_some();
+        self.replace_row_in_place(row, document)?;
+        if tracks_text {
+            self.lexical = self.rebuild_lexical(None, analyzer)?;
+            self.refresh_lexical_accounting(accounting)?;
+        }
+        Ok(())
+    }
+
+    /// Overwrites every column of one row but leaves the lexical index
+    /// stale; the caller rebuilds it.
+    fn replace_row_in_place(
+        &mut self,
+        row: usize,
+        document: &IngestDocument,
+    ) -> Result<(), IngestError> {
         let dims = self
             .dims
             .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
@@ -733,7 +586,6 @@ impl ActiveSegment {
                 actual: document.vector().len(),
             }));
         }
-        let tracks_text = self.tracks_text() || document.text().is_some();
         *self
             .doc_ids
             .as_mut_slice()
@@ -804,10 +656,6 @@ impl ActiveSegment {
                 .checked_add(1)
                 .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
             self.tombstones.replace_range(position..end, &[])?;
-        }
-        if tracks_text {
-            self.lexical = self.rebuild_lexical(None, analyzer)?;
-            self.refresh_lexical_accounting(accounting)?;
         }
         Ok(())
     }
@@ -1170,15 +1018,21 @@ impl ActiveSegment {
         })
     }
 
-    fn grown_row_capacities(
-        &self,
-        document: &IngestDocument,
-    ) -> Result<GrownCapacities, IngestError> {
+    /// Refuses to append a row for an id the segment already holds. The scan
+    /// is linear, so WAL replay, which tracks its ids itself, skips it.
+    fn refuse_existing(&self, document: &IngestDocument) -> Result<(), IngestError> {
         if self.existing(document.version().doc_id()).is_some() {
             return Err(IngestError::Store(StoreError::Synchronization {
                 component: "revision handling not yet admitted",
             }));
         }
+        Ok(())
+    }
+
+    fn appended_row_capacities(
+        &self,
+        document: &IngestDocument,
+    ) -> Result<GrownCapacities, IngestError> {
         let dims = document.vector().len();
         if let Some(expected) = self.dims
             && expected != dims
@@ -1193,30 +1047,9 @@ impl ActiveSegment {
         }
         let row = u32::try_from(self.doc_ids.len())
             .map_err(|_| IngestError::Store(StoreError::ActiveRowOverflow))?;
-        let row_count = self
-            .doc_ids
-            .len()
-            .checked_add(1)
-            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
-        let vector_count = row_count
-            .checked_mul(dims)
-            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
-        let row_stride = dims.div_ceil(2);
-        let code_count = row_count
-            .checked_mul(row_stride)
-            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
-        let metadata_capacity = self
-            .metadata_bytes
-            .len()
-            .checked_add(document.metadata().len())
-            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
         Ok(GrownCapacities {
             row,
-            row_count,
-            vector_count,
-            row_stride,
-            code_count,
-            metadata_capacity,
+            row_stride: dims.div_ceil(2),
         })
     }
 
@@ -1255,25 +1088,6 @@ impl ActiveSegment {
             sequences,
             timestamps,
         })
-    }
-
-    fn copy_tombstones_excluding(
-        &self,
-        accounting: &Arc<Accounting>,
-        row: u32,
-    ) -> Result<Accounted<Vec<u32>>, IngestError> {
-        let capacity = self
-            .tombstones
-            .len()
-            .saturating_sub(usize::from(self.tombstones.contains(&row)));
-        let mut tombstones =
-            Accounted::try_with_capacity(accounting, capacity, AllocationComponent::Active)?;
-        for tombstone in self.tombstones.iter().copied() {
-            if tombstone != row {
-                tombstones.push(tombstone)?;
-            }
-        }
-        Ok(tombstones)
     }
 
     fn retained_capacities(
@@ -1751,332 +1565,6 @@ impl ActiveSegment {
             self.lexical_bytes = Some(account_lexical(accounting, &self.lexical)?);
         }
         Ok(())
-    }
-
-    fn replaced_metadata(
-        &self,
-        row: usize,
-        replacement: &[u8],
-        accounting: &Arc<Accounting>,
-    ) -> Result<AccountedMetadata, IngestError> {
-        if row >= self.row_count() {
-            return Err(IngestError::Store(StoreError::ActiveRowOverflow));
-        }
-        let current = self
-            .metadata(row)
-            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
-        let byte_capacity = self
-            .metadata_bytes
-            .len()
-            .checked_sub(current.len())
-            .and_then(|value| value.checked_add(replacement.len()))
-            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
-        let mut end_offsets = Accounted::try_with_capacity(
-            accounting,
-            self.row_count(),
-            AllocationComponent::Active,
-        )?;
-        let mut bytes =
-            Accounted::try_with_capacity(accounting, byte_capacity, AllocationComponent::Active)?;
-        for current_row in 0..self.row_count() {
-            let value = if current_row == row {
-                replacement
-            } else {
-                self.metadata(current_row)
-                    .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?
-            };
-            for byte in value {
-                bytes.push(*byte)?;
-            }
-            end_offsets.push(
-                u64::try_from(bytes.len())
-                    .map_err(|_| IngestError::Store(StoreError::ActiveRowOverflow))?,
-            )?;
-        }
-        Ok((end_offsets, bytes))
-    }
-
-    fn replaced_text(
-        &self,
-        row: usize,
-        replacement: Option<&str>,
-        accounting: &Arc<Accounting>,
-    ) -> Result<AccountedText, IngestError> {
-        if row >= self.row_count() {
-            return Err(IngestError::Store(StoreError::ActiveRowOverflow));
-        }
-        if !self.tracks_text() {
-            let Some(replacement) = replacement else {
-                return Ok((
-                    Accounted::unaccounted_empty(),
-                    Accounted::unaccounted_empty(),
-                    Accounted::unaccounted_empty(),
-                ));
-            };
-            let mut present = Accounted::try_with_capacity(
-                accounting,
-                self.row_count(),
-                AllocationComponent::Active,
-            )?;
-            let mut end_offsets = Accounted::try_with_capacity(
-                accounting,
-                self.row_count(),
-                AllocationComponent::Active,
-            )?;
-            let mut bytes = Accounted::try_with_capacity(
-                accounting,
-                replacement.len(),
-                AllocationComponent::Active,
-            )?;
-            for current_row in 0..self.row_count() {
-                let is_replacement = current_row == row;
-                present.push(u8::from(is_replacement))?;
-                if is_replacement {
-                    for byte in replacement.as_bytes() {
-                        bytes.push(*byte)?;
-                    }
-                }
-                end_offsets.push(
-                    u64::try_from(bytes.len())
-                        .map_err(|_| IngestError::Store(StoreError::ActiveRowOverflow))?,
-                )?;
-            }
-            return Ok((present, end_offsets, bytes));
-        }
-        let (end_offsets, bytes) = self.replaced_row_bytes(
-            row,
-            replacement.unwrap_or("").as_bytes(),
-            &self.text_end_offsets,
-            &self.text_bytes,
-            accounting,
-        )?;
-        let mut present = copy_accounted(accounting, &self.text_present, self.text_present.len())?;
-        *present
-            .as_mut_slice()
-            .get_mut(row)
-            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))? =
-            u8::from(replacement.is_some());
-        Ok((present, end_offsets, bytes))
-    }
-
-    fn appended_text(
-        &self,
-        text: Option<&str>,
-        accounting: &Arc<Accounting>,
-    ) -> Result<AccountedText, IngestError> {
-        if !self.tracks_text() && text.is_none() {
-            return Ok((
-                Accounted::unaccounted_empty(),
-                Accounted::unaccounted_empty(),
-                Accounted::unaccounted_empty(),
-            ));
-        }
-        let row_count = self
-            .row_count()
-            .checked_add(1)
-            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
-        let is_present = text.is_some();
-        let text = text.unwrap_or("");
-        let text_capacity = self
-            .text_bytes
-            .len()
-            .checked_add(text.len())
-            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
-        let mut present = copy_accounted(accounting, &self.text_present, row_count)?;
-        let mut end_offsets = copy_accounted(accounting, &self.text_end_offsets, row_count)?;
-        let mut bytes = copy_accounted(accounting, &self.text_bytes, text_capacity)?;
-        if !self.tracks_text() {
-            for _ in 0..self.row_count() {
-                present.push(0)?;
-                end_offsets.push(0)?;
-            }
-        }
-        present.push(u8::from(is_present))?;
-        for byte in text.as_bytes() {
-            bytes.push(*byte)?;
-        }
-        end_offsets.push(
-            u64::try_from(bytes.len())
-                .map_err(|_| IngestError::Store(StoreError::ActiveRowOverflow))?,
-        )?;
-        Ok((present, end_offsets, bytes))
-    }
-
-    fn appended_lexical(
-        &self,
-        text: Option<&str>,
-        accounting: &Arc<Accounting>,
-        analyzer: &Analyzer,
-    ) -> Result<(SegmentIndex, Option<AccountedCounter>), IngestError> {
-        if !self.tracks_text() && text.is_none() {
-            return Ok((SegmentIndex::new(), None));
-        }
-        let mut lexical = self.lexical.clone();
-        if !self.tracks_text() {
-            for _ in 0..self.row_count() {
-                lexical
-                    .push_document(analyzer, &LexicalDocument::new())
-                    .map_err(IngestError::Lexical)?;
-            }
-        }
-        let document = text.map_or_else(LexicalDocument::new, LexicalDocument::with_text);
-        lexical
-            .push_document(analyzer, &document)
-            .map_err(IngestError::Lexical)?;
-        let lexical_bytes = Some(account_lexical(accounting, &lexical)?);
-        Ok((lexical, lexical_bytes))
-    }
-
-    fn appended_columns(
-        &self,
-        columns_present: bool,
-        columns: &[(crate::meta::ColumnId, crate::meta::PredicateValue)],
-        accounting: &Arc<Accounting>,
-    ) -> Result<AccountedMetadata, IngestError> {
-        if !self.tracks_columns() && !columns_present {
-            return Ok((
-                Accounted::unaccounted_empty(),
-                Accounted::unaccounted_empty(),
-            ));
-        }
-        let encoded = wal_payload::encode_column_values(columns).map_err(IngestError::Payload)?;
-        let empty = wal_payload::encode_column_values(&[]).map_err(IngestError::Payload)?;
-        let backfill_bytes = if self.tracks_columns() {
-            0
-        } else {
-            self.row_count()
-                .checked_mul(empty.len())
-                .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?
-        };
-        let capacity = self
-            .column_bytes
-            .len()
-            .checked_add(backfill_bytes)
-            .and_then(|value| value.checked_add(encoded.len()))
-            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
-        let row_count = self
-            .row_count()
-            .checked_add(1)
-            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
-        let mut end_offsets = copy_accounted(accounting, &self.column_end_offsets, row_count)?;
-        let mut bytes = copy_accounted(accounting, &self.column_bytes, capacity)?;
-        if !self.tracks_columns() {
-            for _ in 0..self.row_count() {
-                for byte in &empty {
-                    bytes.push(*byte)?;
-                }
-                end_offsets.push(
-                    u64::try_from(bytes.len())
-                        .map_err(|_| IngestError::Store(StoreError::ActiveRowOverflow))?,
-                )?;
-            }
-        }
-        for byte in encoded {
-            bytes.push(byte)?;
-        }
-        end_offsets.push(
-            u64::try_from(bytes.len())
-                .map_err(|_| IngestError::Store(StoreError::ActiveRowOverflow))?,
-        )?;
-        Ok((end_offsets, bytes))
-    }
-
-    fn replaced_columns(
-        &self,
-        row: usize,
-        columns_present: bool,
-        columns: &[(crate::meta::ColumnId, crate::meta::PredicateValue)],
-        accounting: &Arc<Accounting>,
-    ) -> Result<AccountedMetadata, IngestError> {
-        if row >= self.row_count() {
-            return Err(IngestError::Store(StoreError::ActiveRowOverflow));
-        }
-        if !self.tracks_columns() && !columns_present {
-            return Ok((
-                Accounted::unaccounted_empty(),
-                Accounted::unaccounted_empty(),
-            ));
-        }
-        let replacement =
-            wal_payload::encode_column_values(columns).map_err(IngestError::Payload)?;
-        if self.tracks_columns() {
-            return self.replaced_row_bytes(
-                row,
-                &replacement,
-                &self.column_end_offsets,
-                &self.column_bytes,
-                accounting,
-            );
-        }
-        let empty = wal_payload::encode_column_values(&[]).map_err(IngestError::Payload)?;
-        let capacity = self
-            .row_count()
-            .checked_sub(1)
-            .and_then(|rows| rows.checked_mul(empty.len()))
-            .and_then(|bytes| bytes.checked_add(replacement.len()))
-            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
-        let mut end_offsets = Accounted::try_with_capacity(
-            accounting,
-            self.row_count(),
-            AllocationComponent::Active,
-        )?;
-        let mut bytes =
-            Accounted::try_with_capacity(accounting, capacity, AllocationComponent::Active)?;
-        for current_row in 0..self.row_count() {
-            let value = if current_row == row {
-                replacement.as_slice()
-            } else {
-                empty.as_slice()
-            };
-            for byte in value {
-                bytes.push(*byte)?;
-            }
-            end_offsets.push(
-                u64::try_from(bytes.len())
-                    .map_err(|_| IngestError::Store(StoreError::ActiveRowOverflow))?,
-            )?;
-        }
-        Ok((end_offsets, bytes))
-    }
-
-    fn replaced_row_bytes(
-        &self,
-        row: usize,
-        replacement: &[u8],
-        source_offsets: &[u64],
-        source_bytes: &[u8],
-        accounting: &Arc<Accounting>,
-    ) -> Result<AccountedMetadata, IngestError> {
-        let current = row_bytes(source_offsets, source_bytes, row)
-            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
-        let capacity = source_bytes
-            .len()
-            .checked_sub(current.len())
-            .and_then(|value| value.checked_add(replacement.len()))
-            .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
-        let mut offsets = Accounted::try_with_capacity(
-            accounting,
-            self.row_count(),
-            AllocationComponent::Active,
-        )?;
-        let mut bytes =
-            Accounted::try_with_capacity(accounting, capacity, AllocationComponent::Active)?;
-        for current_row in 0..self.row_count() {
-            let value = if current_row == row {
-                replacement
-            } else {
-                row_bytes(source_offsets, source_bytes, current_row)
-                    .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?
-            };
-            for byte in value {
-                bytes.push(*byte)?;
-            }
-            offsets.push(
-                u64::try_from(bytes.len())
-                    .map_err(|_| IngestError::Store(StoreError::ActiveRowOverflow))?,
-            )?;
-        }
-        Ok((offsets, bytes))
     }
 
     fn rebuild_lexical(
@@ -2586,8 +2074,11 @@ mod tests {
             vec![0.0, 1.0],
         )
         .with_text("beta");
-        let segment = ActiveSegment::empty()
-            .insert(&first, &accounting, &analyzer)
+        let mut segment = ActiveSegment::empty()
+            .copy_for_batch(&first, std::slice::from_ref(&first), &accounting)
+            .expect("size seed segment");
+        segment
+            .insert_in_place(&first, &accounting, &analyzer)
             .expect("seed text row");
         let mut working = segment
             .copy_for_batch(
