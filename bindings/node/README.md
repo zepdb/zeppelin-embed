@@ -88,6 +88,26 @@ that follows that many written documents since the last seal. A smaller value
 keeps each write cheaper, because a write copies the active segment; a larger
 value makes fewer sealed segments.
 
+`deleteWhere` deletes every document that matches a filter, in one mutation,
+and removes their bytes from disk. It takes the same `Filter` as `scan` and
+`count`, and the filter is required:
+
+```js
+const { deleted, generation } = store.deleteWhere({
+  op: 'eq',
+  attributeId: 1,
+  values: [{ id: 1, type: 'u64', value: 42n }],
+});
+```
+
+No other write can land between finding the matches and deleting them, and
+readers see all of the matched documents or none of them. When the call
+returns, no byte of a deleted document remains in any store file: each
+affected sealed segment and the write-ahead log are rewritten without it, so
+there is no separate compaction step. If the process stops during the call,
+either nothing was deleted or the next writable open finishes the removal.
+`delete(ids)` only hides documents; their bytes stay on disk.
+
 `query` runs one structured query. `text` selects the lexical leg, `vector`
 selects the vector leg, and both together run hybrid fusion; a request with
 neither is refused.

@@ -475,6 +475,18 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   time. Orphan replacement files and old segments are swept against the current
   manifest during recovery; the durable intent is the sole completion marker.
 
+## ZE-217 delete-by-predicate invariants
+
+- `delete_matching` holds maintenance -> state -> writer -> WAL for the
+  whole call. Order is fixed: resolve live ids, write the purge intent,
+  one `DELETE_V1` tombstone record, then the physical purge. Intent before
+  tombstone is what makes a crash reclaim the bytes; the reverse order
+  leaves tombstoned text on disk forever (the crash sweep catches it).
+- A failed tombstone removes the intent before returning. A failed purge
+  after the tombstone keeps it, so the next writable open completes it.
+- The `*_locked` purge/delete helpers take no lock the caller holds; keep
+  them lock-free on maintenance/state/writer/WAL or they deadlock.
+
 ## Task 21 Part A epoch-identity invariants
 
 - Open enforces the complete four-branch identity table before WAL recovery or

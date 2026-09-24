@@ -1,6 +1,7 @@
 //! Ingest and mutation coordination.
 
 mod active;
+mod delete_matching;
 mod purge;
 
 /// Survivor-rewrite helpers shared with graph-segment consolidation.
@@ -30,6 +31,7 @@ use crate::scan::ScanStats;
 use crate::segment::SegmentId;
 use crate::wal::{LogSeq, WalWriteError};
 
+pub use delete_matching::{DeleteMatchingError, DeleteMatchingReport};
 pub use purge::{PurgeError, PurgeReport, PurgeToken};
 pub use retention::{DropPartitionReport, RetentionPolicy, RetentionPolicyError};
 #[cfg(any(test, feature = "test-support"))]
@@ -1296,6 +1298,17 @@ impl Store {
                 component: "WAL writer",
             })?;
         let writer = wal.as_mut().ok_or(StoreError::ReadOnly)?;
+        self.delete_with_writer(writer, &batch.doc_ids)
+    }
+
+    /// The body of [`Self::delete`] for a caller that already holds the WAL
+    /// writer, so one mutation can resolve ids and tombstone them without
+    /// another write landing in between. `doc_ids` must be non-empty.
+    pub(crate) fn delete_with_writer(
+        &self,
+        writer: &mut StoreWal,
+        doc_ids: &[DocId],
+    ) -> Result<IngestAck, IngestError> {
         let (current_generation, current_segment) = {
             let active = self
                 .active
@@ -1315,24 +1328,24 @@ impl Store {
             .as_ref()
             .cloned()
             .ok_or(StoreError::Closed)?;
-        let sealed = purge::sealed_document_matches(&snapshot, &batch.doc_ids)?;
+        let sealed = purge::sealed_document_matches(&snapshot, doc_ids)?;
         let generation = current_generation
             .checked_add(1)
             .ok_or(StoreError::GenerationOverflow)?;
-        let (mut next, rows) = current_segment.tombstone(&batch.doc_ids, &self.accounting)?;
+        let (mut next, rows) = current_segment.tombstone(doc_ids, &self.accounting)?;
         let prepared = purge::prepare_sealed_tombstones(
             self.vfs.as_ref(),
             &self.directory,
             &snapshot,
             &sealed,
-            &batch.doc_ids,
+            doc_ids,
             writer.durable_end(),
             generation,
             writer.durable_end().saturating_add(1),
             self.durability_policy,
             &self.accounting,
         )?;
-        let payload = wal_payload::encode_delete(&batch.doc_ids).map_err(IngestError::Payload)?;
+        let payload = wal_payload::encode_delete(doc_ids).map_err(IngestError::Payload)?;
         let seq = match writer.commit(wal_payload::DELETE_V1, &payload) {
             Ok(seq) => seq,
             Err(error) => {

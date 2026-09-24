@@ -4039,6 +4039,29 @@ impl Store {
         Ok(DocumentCount { count, generation })
     }
 
+    /// Ascending ids of the live documents in `active` and `segments` that
+    /// match an already validated `predicate`, from the same per-segment
+    /// bitmaps [`Self::count_documents`] sums. The caller pins that state.
+    pub(crate) fn live_document_ids_matching(
+        &self,
+        active: &crate::ingest::ActiveSegment,
+        segments: &[crate::segment::reader::SegmentReader],
+        predicate: &crate::meta::Predicate,
+    ) -> Result<Vec<crate::ingest::DocId>, QueryError> {
+        let mut ids = Vec::new();
+        for segment in segments {
+            for row in sealed_scan_rows(segment, Some(predicate))?.iter() {
+                ids.push(sealed_document_scan_row(segment, row)?.doc_id);
+            }
+        }
+        for row in active_scan_rows(active, &self.schema, Some(predicate))?.iter() {
+            ids.push(active_document_scan_row(active, row)?.doc_id);
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        Ok(ids)
+    }
+
     /// Runs a structured lexical query and returns provenance plus snippets
     /// copied from the exact row text pinned for this generation.
     pub fn search_lexical_structured(

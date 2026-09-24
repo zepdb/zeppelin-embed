@@ -7,6 +7,7 @@ ze_cancel_token_free
 ze_close
 ze_count
 ze_delete
+ze_delete_where
 ze_drop_partition
 ze_epoch_current
 ze_epoch_drop

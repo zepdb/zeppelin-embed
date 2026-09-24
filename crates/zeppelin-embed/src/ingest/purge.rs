@@ -593,12 +593,7 @@ impl Store {
 
     /// Schedules a physical purge and returns before artifact rewriting begins.
     pub fn purge(&self, ids: &[DocId]) -> Result<PurgeToken, PurgeError> {
-        let available = available_disk_bytes(&self.directory).map_err(|source| {
-            PurgeError::Store(StoreError::Io {
-                path: self.directory.clone(),
-                source,
-            })
-        })?;
+        let available = self.available_purge_bytes()?;
         self.purge_inner(ids, available, self.vfs.as_ref())
     }
 
@@ -642,6 +637,31 @@ impl Store {
         if writer_lock.is_none() {
             return Err(StoreError::ReadOnly.into());
         }
+        let token = self.schedule_purge_locked(ids, available_bytes, vfs)?;
+        drop(writer_lock);
+        drop(state);
+        Ok(token)
+    }
+
+    /// Current free bytes on the store's volume, as `purge` observes them.
+    pub(crate) fn available_purge_bytes(&self) -> Result<u64, PurgeError> {
+        available_disk_bytes(&self.directory).map_err(|source| {
+            PurgeError::Store(StoreError::Io {
+                path: self.directory.clone(),
+                source,
+            })
+        })
+    }
+
+    /// Durably records a purge intent for `ids`. The caller holds the
+    /// maintenance, state and writer locks and has checked the store is open
+    /// and writable; this takes the active and snapshot locks itself.
+    pub(crate) fn schedule_purge_locked(
+        &self,
+        ids: &[DocId],
+        available_bytes: u64,
+        vfs: &dyn Vfs,
+    ) -> Result<PurgeToken, PurgeError> {
         let intent_path = self.directory.join(PURGE_INTENT_FILE);
         match vfs.open(&intent_path) {
             Ok(_) => return Err(PurgeError::PurgeInProgress),
@@ -722,9 +742,13 @@ impl Store {
         }
         drop(snapshot);
         drop(active);
-        drop(writer_lock);
-        drop(state);
         Ok(token)
+    }
+
+    /// Removes the intent written by [`Self::schedule_purge_locked`] when the
+    /// mutation it was scheduled for did not commit. Same locks held.
+    pub(crate) fn abandon_scheduled_purge_locked(&self, vfs: &dyn Vfs) -> Result<(), PurgeError> {
+        remove_intent(vfs, &self.directory, self.durability_policy)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -941,6 +965,21 @@ impl Store {
                 component: "WAL writer",
             })?;
         let writer = wal.as_mut().ok_or(StoreError::ReadOnly)?;
+        let report = self.complete_physical_purge_locked(vfs, writer, token)?;
+        drop(wal);
+        drop(writer_lock);
+        drop(state);
+        Ok(report)
+    }
+
+    /// Runs the scheduled purge protocol to completion. The caller holds the
+    /// maintenance, state, writer and WAL locks; this takes the active lock.
+    pub(crate) fn complete_physical_purge_locked(
+        &self,
+        vfs: &dyn Vfs,
+        writer: &mut super::StoreWal,
+        token: PurgeToken,
+    ) -> Result<PurgeReport, PurgeError> {
         let intent = read_intent(vfs, &self.directory)?;
         if intent.token_id != token.id {
             return Err(PurgeError::UnknownToken { token_id: token.id });
@@ -1032,9 +1071,6 @@ impl Store {
         remove_intent(vfs, &self.directory, self.durability_policy)?;
         let generation = active_state.generation;
         drop(active);
-        drop(wal);
-        drop(writer_lock);
-        drop(state);
         Ok(PurgeReport {
             generation,
             segments_rewritten: rewritten,

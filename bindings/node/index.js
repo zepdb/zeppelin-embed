@@ -227,6 +227,17 @@ class Store {
     return this._write(ids?.length ?? 0, () => this._native.delete(ids));
   }
 
+  /**
+   * Deletes every document matching `filter` in one mutation and removes
+   * their bytes from every store file before returning. The deleted count
+   * joins the auto-seal row count once it is known.
+   */
+  deleteWhere(filter) {
+    const report = this._write(0, () => this._native.deleteWhere(filter));
+    this._unsealedWrites += Number(report.deleted);
+    return report;
+  }
+
   scan(request) {
     return callNative(() => this._native.scan(request));
   }

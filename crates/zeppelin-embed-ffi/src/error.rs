@@ -173,6 +173,19 @@ impl FfiError {
         Self::new(code, message)
     }
 
+    pub(crate) fn delete_matching(error: zeppelin_embed::ingest::DeleteMatchingError) -> Self {
+        use zeppelin_embed::ingest::DeleteMatchingError;
+
+        let message = error.to_string();
+        let code = match error {
+            DeleteMatchingError::Predicate(_) => ZeErrorCode::ZeErrInvalidArgument,
+            DeleteMatchingError::Query(error) => Self::query(error).code,
+            DeleteMatchingError::Delete(error) => Self::ingest(error).code,
+            DeleteMatchingError::Purge(error) => Self::purge(error).code,
+        };
+        Self::new(code, message)
+    }
+
     pub(crate) fn maintenance(error: zeppelin_embed::tier::MaintenanceError) -> Self {
         use zeppelin_embed::tier::MaintenanceError;
 

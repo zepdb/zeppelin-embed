@@ -2596,6 +2596,49 @@ pub extern "C" fn ze_delete(
     })
 }
 
+/// Atomically deletes every live document whose current version matches a
+/// required filter, then physically removes their bytes from every file in
+/// the store before returning. `request->filter` is caller-owned for the
+/// call; null is `ZE_ERR_INVALID_ARGUMENT`. Readers see every matched
+/// document or none of them. If the process stops during the call, the next
+/// writable open finishes the removal before it returns. `ZE_ERR_BUSY` means
+/// a physical purge is already pending; `ZE_ERR_ACCESS_MODE` a read-only
+/// handle. No match returns a zero count at the unchanged generation. Not
+/// cancellable in v1.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_delete_where(
+    handle: ZeHandle,
+    request: *const ZeDeleteWhereRequest,
+    out_report: *mut ZeDeleteWhereReport,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_delete_where");
+        finish(
+            Some(handle),
+            registry::with_writer(handle, |access| {
+                let request = marshal::read_struct(request)?;
+                let abi_size = marshal::validate_output(out_report)?;
+                let predicate = decode_filter(request.filter, access.store.schema())?
+                    .ok_or_else(|| FfiError::invalid("delete_where requires a non-null filter"))?;
+                let report = access
+                    .store
+                    .delete_matching(&predicate)
+                    .map_err(FfiError::delete_matching)?;
+                marshal::write_output(
+                    out_report,
+                    ZeDeleteWhereReport {
+                        abi_size,
+                        abi_reserved: 0,
+                        deleted_count: usize_u64(report.deleted_ids().len(), "deleted_count")?,
+                        generation: report.generation(),
+                    },
+                );
+                Ok(())
+            }),
+        )
+    })
+}
+
 fn parse_scan_order(order: i32) -> Result<ScanOrder, FfiError> {
     match order {
         0 => Ok(ScanOrder::Storage),

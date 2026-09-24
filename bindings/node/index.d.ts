@@ -184,6 +184,16 @@ export interface CountResult {
   readonly generation: bigint;
 }
 
+export interface DeleteWhereReport {
+  /** Number of documents deleted; `0n` when nothing matched. */
+  readonly deleted: bigint;
+  /**
+   * Store generation when the call returned. Unchanged when nothing
+   * matched.
+   */
+  readonly generation: bigint;
+}
+
 export interface SearchOptions {
   readonly k?: number;
   readonly threadBudget?: number;
@@ -313,6 +323,30 @@ export declare class Store {
   upsert(documents: readonly UpsertDocument[]): MutationReport;
   get(ids: readonly DocumentId[], fields?: DocumentFields): GetResult;
   delete(ids: readonly DocumentId[]): MutationReport;
+  /**
+   * Deletes every document whose current version matches `filter`, in one
+   * mutation, and removes their bytes from disk.
+   *
+   * The filter is the same structured `Filter` that `scan` and `count` take
+   * and is required; an absent filter throws `ERR_MISSING_ARGS`, and a
+   * filter that does not fit the namespace attributes throws
+   * `ZE_ERR_INVALID_ARGUMENT`. No other write can land between finding the
+   * matches and deleting them, and readers see every matched document or
+   * none of them.
+   *
+   * Reclamation bound: when the call returns, no byte of a deleted document
+   * (text, attributes, metadata, vector) remains in any file of the store:
+   * each affected sealed segment and the write-ahead log are rewritten
+   * without it. There is no separate compaction step and no knob. The cost
+   * is one rewrite of each segment that held a match, plus the unsealed
+   * rows. If the process stops during the call, either nothing was deleted
+   * or the next writable open finishes the removal before it returns; a
+   * read-only open leaves that pending removal to the next writable open.
+   *
+   * Throws `ZE_ERR_BUSY` while an earlier physical purge is still pending,
+   * and `ZE_ERR_ACCESS_MODE` on a read-only store.
+   */
+  deleteWhere(filter: Filter): DeleteWhereReport;
   scan(request?: ScanRequest): ScanPage;
   count(request?: CountRequest): CountResult;
   searchFiltered(

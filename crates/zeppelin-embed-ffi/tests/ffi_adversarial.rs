@@ -167,6 +167,10 @@ const ABI_REGISTRY: &[AbiEntry] = &[
         coverage: AbiCoverage::DetailedMatrix,
     },
     AbiEntry {
+        name: "ze_delete_where",
+        coverage: AbiCoverage::InvalidProbe(probe_delete_where),
+    },
+    AbiEntry {
         name: "ze_search",
         coverage: AbiCoverage::DetailedMatrix,
     },
@@ -894,6 +898,14 @@ fn probe_scan(context: &MatrixContext) -> ProbeResult {
 
 fn probe_count(context: &MatrixContext) -> ProbeResult {
     ProbeResult::Status(ze_count(
+        context.store.handle,
+        std::ptr::null(),
+        std::ptr::null_mut(),
+    ))
+}
+
+fn probe_delete_where(context: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_delete_where(
         context.store.handle,
         std::ptr::null(),
         std::ptr::null_mut(),

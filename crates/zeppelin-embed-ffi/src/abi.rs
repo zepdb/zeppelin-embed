@@ -667,6 +667,33 @@ pub struct ZeMutationReport {
     pub generation: u64,
 }
 
+/// Delete-by-filter request for `ze_delete_where`.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeDeleteWhereRequest {
+    /// Caller-provided `sizeof(ZeDeleteWhereRequest)`.
+    pub abi_size: u32,
+    /// Must be zero in ABI v1.
+    pub abi_reserved: u32,
+    /// Required caller-owned structured filter; null is rejected.
+    pub filter: *const ZeFilter,
+}
+
+/// Result of `ze_delete_where`.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeDeleteWhereReport {
+    /// Caller-provided `sizeof(ZeDeleteWhereReport)`.
+    pub abi_size: u32,
+    /// Must be zero in ABI v1.
+    pub abi_reserved: u32,
+    /// Number of documents deleted; zero when nothing matched.
+    pub deleted_count: u64,
+    /// Store generation when the call returned; unchanged when nothing
+    /// matched.
+    pub generation: u64,
+}
+
 /// Text store plus immutable model-bundle open request.
 #[derive(Clone, Copy)]
 #[repr(C)]

@@ -1635,6 +1635,63 @@ napi_value DeleteDocuments(napi_env env, napi_callback_info info) {
   });
 }
 
+napi_value DeleteWhere(napi_env env, napi_callback_info info) {
+  return Guard(env, [&]() -> napi_value {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_value receiver;
+    if (!NapiOk(env,
+                napi_get_cb_info(env, info, &argc, args, &receiver, nullptr),
+                "read deleteWhere arguments"))
+      return nullptr;
+    NativeStore *store = UnwrapStore(env, receiver);
+    if (store == nullptr)
+      return nullptr;
+    napi_valuetype filter_type = napi_undefined;
+    if (argc >= 1 &&
+        !NapiOk(env, napi_typeof(env, args[0], &filter_type),
+                "inspect deleteWhere filter"))
+      return nullptr;
+    if (filter_type == napi_undefined || filter_type == napi_null) {
+      napi_throw_type_error(env, "ERR_MISSING_ARGS",
+                            "deleteWhere requires a filter");
+      return nullptr;
+    }
+    if (filter_type != napi_object) {
+      napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE",
+                            "deleteWhere filter must be an object");
+      return nullptr;
+    }
+    FilterStorage filter_storage;
+    if (!ParseFilter(env, args[0], &filter_storage))
+      return nullptr;
+    ZeDeleteWhereRequest request{};
+    request.abi_size = sizeof(request);
+    request.filter = &filter_storage.filter;
+    ZeDeleteWhereReport report{};
+    report.abi_size = sizeof(report);
+    const ze_error_code status =
+        ze_delete_where(store->handle, &request, &report);
+    if (status != ZE_OK)
+      return ThrowZeppelin(env, store->handle, status);
+    napi_value result;
+    napi_value deleted;
+    napi_value generation;
+    if (!NapiOk(env, napi_create_object(env, &result),
+                "create deleteWhere report") ||
+        !NapiOk(env,
+                napi_create_bigint_uint64(env, report.deleted_count, &deleted),
+                "create deleted count") ||
+        !SetNamed(env, result, "deleted", deleted) ||
+        !NapiOk(env,
+                napi_create_bigint_uint64(env, report.generation, &generation),
+                "create deleteWhere generation") ||
+        !SetNamed(env, result, "generation", generation))
+      return nullptr;
+    return result;
+  });
+}
+
 napi_value Scan(napi_env env, napi_callback_info info) {
   return Guard(env, [&]() -> napi_value {
     size_t argc = 1;
@@ -2657,6 +2714,8 @@ napi_value Initialize(napi_env env, napi_value exports) {
        nullptr},
       {"get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"delete", nullptr, DeleteDocuments, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"deleteWhere", nullptr, DeleteWhere, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"scan", nullptr, Scan, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"count", nullptr, Count, nullptr, nullptr, nullptr, napi_default,

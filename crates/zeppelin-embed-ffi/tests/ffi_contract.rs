@@ -304,6 +304,12 @@ fn every_request_struct_has_the_frozen_size_and_field_offsets() {
     assert_layout!(ZeMutationReport, 24, 8, {
         abi_size: 0, abi_reserved: 4, sequence: 8, generation: 16
     });
+    assert_layout!(ZeDeleteWhereRequest, 16, 8, {
+        abi_size: 0, abi_reserved: 4, filter: 8
+    });
+    assert_layout!(ZeDeleteWhereReport, 24, 8, {
+        abi_size: 0, abi_reserved: 4, deleted_count: 8, generation: 16
+    });
     assert_layout!(ZeSearchRequest, 96, 8, {
         abi_size: 0, abi_reserved: 4, vector: 8, vector_len: 16,
         dimension: 24, k: 32, thread_budget: 40, has_tier: 48, tier: 52,
@@ -517,6 +523,7 @@ const POISON_TABLE_NAMES: &[&str] = &[
     "ze_close",
     "ze_count",
     "ze_delete",
+    "ze_delete_where",
     "ze_drop_partition",
     "ze_epoch_current",
     "ze_epoch_drop",
@@ -751,6 +758,15 @@ fn poison_function_table() -> Vec<(&'static str, PoisonCall)> {
             };
             let mut report: ZeMutationReport = common::sized_zeroed();
             ze_delete(context.store.handle, &request, &mut report)
+        }),
+        ("ze_delete_where", |context| {
+            let request = ZeDeleteWhereRequest {
+                abi_size: size_of::<ZeDeleteWhereRequest>() as u32,
+                abi_reserved: 0,
+                filter: std::ptr::null(),
+            };
+            let mut report: ZeDeleteWhereReport = common::sized_zeroed();
+            ze_delete_where(context.store.handle, &request, &mut report)
         }),
         ("ze_search", |context| {
             let request = common::valid_search_request(&context.vector);

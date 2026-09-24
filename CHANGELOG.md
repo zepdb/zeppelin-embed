@@ -13,6 +13,11 @@ release and a compatible correction is a patch release.
   at open and again before the write that follows that many written
   documents, so reopen reads sealed segments instead of replaying the whole
   write-ahead log.
+- `Store::delete_matching`, `ze_delete_where` and Node
+  `Store.deleteWhere(filter)` delete every document matching a filter in
+  one atomic mutation and return `{ deleted, generation }` (ZE-217). The
+  deleted bytes leave every store file before the call returns; a crash
+  mid-call deletes nothing or is completed by the next writable open.
 
 ### Fixed
 

@@ -1480,6 +1480,47 @@ typedef struct ZeFilter {
 } ZeFilter;
 
 /*
+ Delete-by-filter request for `ze_delete_where`.
+ */
+typedef struct ZeDeleteWhereRequest {
+    /*
+     Caller-provided `sizeof(ZeDeleteWhereRequest)`.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero in ABI v1.
+     */
+    uint32_t abi_reserved;
+    /*
+     Required caller-owned structured filter; null is rejected.
+     */
+    const struct ZeFilter *filter;
+} ZeDeleteWhereRequest;
+
+/*
+ Result of `ze_delete_where`.
+ */
+typedef struct ZeDeleteWhereReport {
+    /*
+     Caller-provided `sizeof(ZeDeleteWhereReport)`.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero in ABI v1.
+     */
+    uint32_t abi_reserved;
+    /*
+     Number of documents deleted; zero when nothing matched.
+     */
+    uint64_t deleted_count;
+    /*
+     Store generation when the call returned; unchanged when nothing
+     matched.
+     */
+    uint64_t generation;
+} ZeDeleteWhereReport;
+
+/*
  Opaque generation-tagged cooperative-cancellation handle.
  */
 typedef uint64_t ze_cancel_token;
@@ -2515,6 +2556,21 @@ ze_error_code ze_get_result_free(struct ZeGetResult *result);
 ze_error_code ze_delete(ze_handle handle,
                         const struct ZeDeleteRequest *request,
                         struct ZeMutationReport *out_report);
+
+/*
+ Atomically deletes every live document whose current version matches a
+ required filter, then physically removes their bytes from every file in
+ the store before returning. `request->filter` is caller-owned for the
+ call; null is `ZE_ERR_INVALID_ARGUMENT`. Readers see every matched
+ document or none of them. If the process stops during the call, the next
+ writable open finishes the removal before it returns. `ZE_ERR_BUSY` means
+ a physical purge is already pending; `ZE_ERR_ACCESS_MODE` a read-only
+ handle. No match returns a zero count at the unchanged generation. Not
+ cancellable in v1.
+ */
+ze_error_code ze_delete_where(ze_handle handle,
+                              const struct ZeDeleteWhereRequest *request,
+                              struct ZeDeleteWhereReport *out_report);
 
 /*
  Enumerates one ordered, filtered page of live documents. All request and
