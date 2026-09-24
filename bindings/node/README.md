@@ -70,6 +70,28 @@ Omit `vectorSpace` for a record-only namespace. Scan cursors are opaque and
 must be passed back unchanged; a cursor invalidated by a write throws
 `ZE_ERR_SCAN_STALE`.
 
+A scan can also order by a declared `u64`, `i64` or `f64` attribute:
+
+```js
+const page = store.scan({
+  limit: 50,
+  order: { attributeId: 1, direction: 'descending' },
+});
+const next = store.scan({
+  limit: 50,
+  order: { attributeId: 1, direction: 'descending' },
+  cursor: page.cursor,
+});
+```
+
+Equal values break ties by ascending document id, so pages are stable.
+`f64` compares numerically and `-0` equals `+0`. A document whose value is
+missing or `NaN` sorts after every document with a value, in both
+directions. A cursor works only with the order that issued it; any other
+order, attribute or direction throws `ZE_ERR_INVALID_ARGUMENT`. Ordering by an
+undeclared attribute, by attribute 0 (the timestamp), or by a `bool` or string
+attribute throws `ZE_ERR_INVALID_ARGUMENT`.
+
 Writes land in an active segment backed by the write-ahead log. `seal()`
 turns the active segment into an immutable segment and absorbs the log
 records it covers, so opening the store again reads the sealed segment

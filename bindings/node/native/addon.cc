@@ -1692,6 +1692,89 @@ napi_value DeleteWhere(napi_env env, napi_callback_info info) {
   });
 }
 
+// Reads `order` for ze_scan_ordered: a string names a storage or timestamp
+// order; `{ attributeId, direction }` names attribute order 3 (ascending) or
+// 4 (descending). Every other shape is rejected.
+bool ParseScanOrder(napi_env env, napi_value options, int32_t *order,
+                    uint32_t *attribute_id) {
+  napi_value field;
+  bool present = false;
+  if (!GetNamed(env, options, "order", &field, &present))
+    return false;
+  if (!present)
+    return true;
+  napi_valuetype type;
+  if (!NapiOk(env, napi_typeof(env, field, &type), "inspect scan order"))
+    return false;
+  if (type == napi_undefined)
+    return true;
+  if (type == napi_string) {
+    std::string name;
+    if (!GetUtf8(env, field, "order", &name))
+      return false;
+    const char *orders[] = {"storage", "timestampAscending",
+                            "timestampDescending"};
+    if (!ParseEnum(name, orders, 3, order)) {
+      napi_throw_range_error(env, "ERR_OUT_OF_RANGE",
+                             "scan order is out of range");
+      return false;
+    }
+    return true;
+  }
+  if (type != napi_object) {
+    napi_throw_type_error(
+        env, "ERR_INVALID_ARG_TYPE",
+        "scan order must be a string or an attribute order object");
+    return false;
+  }
+  napi_value js_id;
+  if (!GetNamed(env, field, "attributeId", &js_id, &present))
+    return false;
+  if (!present) {
+    napi_throw_type_error(env, "ERR_MISSING_ARGS", "attributeId is required");
+    return false;
+  }
+  napi_valuetype id_type;
+  if (!NapiOk(env, napi_typeof(env, js_id, &id_type),
+              "inspect scan order attributeId"))
+    return false;
+  if (id_type != napi_number) {
+    napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE",
+                          "scan order attributeId must be a number");
+    return false;
+  }
+  double id = 0;
+  if (!NapiOk(env, napi_get_value_double(env, js_id, &id),
+              "read scan order attributeId"))
+    return false;
+  if (!(id >= 0 && id <= 4294967295.0) || id != static_cast<double>(
+                                                    static_cast<uint32_t>(id))) {
+    napi_throw_range_error(
+        env, "ERR_OUT_OF_RANGE",
+        "scan order attributeId must be an integer in 0..4294967295");
+    return false;
+  }
+  std::string direction;
+  if (!GetOptionalString(env, field, "direction", &direction, &present))
+    return false;
+  if (!present) {
+    napi_throw_type_error(env, "ERR_MISSING_ARGS", "direction is required");
+    return false;
+  }
+  if (direction == "ascending") {
+    *order = 3;
+  } else if (direction == "descending") {
+    *order = 4;
+  } else {
+    napi_throw_range_error(
+        env, "ERR_OUT_OF_RANGE",
+        "scan order direction must be 'ascending' or 'descending'");
+    return false;
+  }
+  *attribute_id = static_cast<uint32_t>(id);
+  return true;
+}
+
 napi_value Scan(napi_env env, napi_callback_info info) {
   return Guard(env, [&]() -> napi_value {
     size_t argc = 1;
@@ -1718,7 +1801,9 @@ napi_value Scan(napi_env env, napi_callback_info info) {
       return nullptr;
     }
     const bool has_options = options != nullptr && options_type == napi_object;
-    ZeScanRequest request{};
+    ZeScanOrderedRequest ordered{};
+    ordered.abi_size = sizeof(ordered);
+    ZeScanRequest &request = ordered.scan;
     request.abi_size = sizeof(request);
     request.limit = 1000;
     request.include_vector = 1;
@@ -1740,18 +1825,9 @@ napi_value Scan(napi_env env, napi_callback_info info) {
         request.limit = limit;
       }
 
-      std::string order;
-      if (!GetOptionalString(env, options, "order", &order, &present))
+      if (!ParseScanOrder(env, options, &request.order,
+                          &ordered.order_attribute_id))
         return nullptr;
-      if (present) {
-        const char *orders[] = {"storage", "timestampAscending",
-                                "timestampDescending"};
-        if (!ParseEnum(order, orders, 3, &request.order)) {
-          napi_throw_range_error(env, "ERR_OUT_OF_RANGE",
-                                 "scan order is out of range");
-          return nullptr;
-        }
-      }
 
       if (!GetNamed(env, options, "fields", &field, &present))
         return nullptr;
@@ -1800,6 +1876,19 @@ napi_value Scan(napi_env env, napi_callback_info info) {
                                  &request.cursor_next_row) ||
               !GetRequiredUint32(env, field, "phase", &request.cursor_phase))
             return nullptr;
+          // The cursor carries the order that issued it; the core rejects a
+          // request whose order differs.
+          uint32_t cursor_order = 0;
+          if (!GetRequiredUint32(env, field, "order", &cursor_order) ||
+              !GetRequiredUint32(env, field, "orderAttributeId",
+                                 &ordered.cursor_order_attribute_id))
+            return nullptr;
+          if (cursor_order > 4) {
+            napi_throw_range_error(env, "ERR_OUT_OF_RANGE",
+                                   "scan cursor order is out of range");
+            return nullptr;
+          }
+          ordered.cursor_order = static_cast<int32_t>(cursor_order);
         }
       }
       if (!ParseTimestampRange(env, options, &request.has_timestamp_range,
@@ -1816,7 +1905,8 @@ napi_value Scan(napi_env env, napi_callback_info info) {
 
     ZeScanResult native{};
     native.abi_size = sizeof(native);
-    const ze_error_code status = ze_scan(store->handle, &request, &native);
+    const ze_error_code status =
+        ze_scan_ordered(store->handle, &ordered, &native);
     if (status != ZE_OK)
       return ThrowZeppelin(env, store->handle, status);
     ResultOwner<ZeScanResult, ze_scan_result_free> owner(&native);
@@ -1840,6 +1930,8 @@ napi_value Scan(napi_env env, napi_callback_info info) {
       napi_value segment_id;
       napi_value next_row;
       napi_value phase;
+      napi_value cursor_order;
+      napi_value cursor_attribute;
       if (!NapiOk(env, napi_create_object(env, &cursor),
                   "create scan cursor") ||
           !SetNamed(env, cursor, "generation", generation) ||
@@ -1851,7 +1943,17 @@ napi_value Scan(napi_env env, napi_callback_info info) {
           !SetNamed(env, cursor, "nextRow", next_row) ||
           !NapiOk(env, napi_create_uint32(env, native.next_phase, &phase),
                   "create cursor phase") ||
-          !SetNamed(env, cursor, "phase", phase))
+          !SetNamed(env, cursor, "phase", phase) ||
+          !NapiOk(env,
+                  napi_create_uint32(env, static_cast<uint32_t>(request.order),
+                                     &cursor_order),
+                  "create cursor order") ||
+          !SetNamed(env, cursor, "order", cursor_order) ||
+          !NapiOk(env,
+                  napi_create_uint32(env, ordered.order_attribute_id,
+                                     &cursor_attribute),
+                  "create cursor order attribute") ||
+          !SetNamed(env, cursor, "orderAttributeId", cursor_attribute))
         return nullptr;
     }
     if (!SetNamed(env, result, "cursor", cursor))

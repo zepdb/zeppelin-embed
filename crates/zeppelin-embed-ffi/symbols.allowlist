@@ -28,6 +28,7 @@ ze_purge
 ze_query
 ze_query_result_free
 ze_scan
+ze_scan_ordered
 ze_scan_result_free
 ze_seal
 ze_search

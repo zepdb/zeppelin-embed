@@ -155,6 +155,10 @@ const ABI_REGISTRY: &[AbiEntry] = &[
         coverage: AbiCoverage::InvalidProbe(probe_scan),
     },
     AbiEntry {
+        name: "ze_scan_ordered",
+        coverage: AbiCoverage::InvalidProbe(probe_scan_ordered),
+    },
+    AbiEntry {
         name: "ze_count",
         coverage: AbiCoverage::InvalidProbe(probe_count),
     },
@@ -890,6 +894,14 @@ fn probe_get_result_free(_: &MatrixContext) -> ProbeResult {
 
 fn probe_scan(context: &MatrixContext) -> ProbeResult {
     ProbeResult::Status(ze_scan(
+        context.store.handle,
+        std::ptr::null(),
+        std::ptr::null_mut(),
+    ))
+}
+
+fn probe_scan_ordered(context: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_scan_ordered(
         context.store.handle,
         std::ptr::null(),
         std::ptr::null_mut(),

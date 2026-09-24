@@ -1646,6 +1646,52 @@ typedef struct ZeScanResult {
 } ZeScanResult;
 
 /*
+ Scan request that may order by a numeric attribute, for `ze_scan_ordered`.
+
+ `scan.order` accepts the `ze_scan` values (zero storage, one timestamp
+ ascending, two timestamp descending) plus three attribute ascending and
+ four attribute descending. An attribute order sorts by the declared u64,
+ i64 or f64 attribute `order_attribute_id`, with ascending document id as
+ the tie breaker; f64 compares numerically and -0.0 equals +0.0; a
+ document whose value is missing or NaN sorts after every document with a
+ value, in both directions.
+
+ A cursor names the order it was issued under: when
+ `scan.cursor_generation` is nonzero, `cursor_order` and
+ `cursor_order_attribute_id` must repeat the `scan.order` and
+ `order_attribute_id` of the request that returned the cursor, and a
+ request with a different order rejects it. Any write between pages
+ makes the cursor stale (`ZE_ERR_SCAN_STALE`).
+ */
+typedef struct ZeScanOrderedRequest {
+    /*
+     Caller-provided `sizeof(ZeScanOrderedRequest)`.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero in ABI v1.
+     */
+    uint32_t abi_reserved;
+    /*
+     Existing scan request embedded by value.
+     */
+    struct ZeScanRequest scan;
+    /*
+     Attribute ordered by `scan.order` three or four; zero otherwise.
+     */
+    uint32_t order_attribute_id;
+    /*
+     `scan.order` of the request that issued the cursor; zero to start.
+     */
+    int32_t cursor_order;
+    /*
+     `order_attribute_id` of the request that issued the cursor; zero to
+     start or for a non-attribute cursor order.
+     */
+    uint32_t cursor_order_attribute_id;
+} ZeScanOrderedRequest;
+
+/*
  Counts live documents matching an optional filter and timestamp range.
  */
 typedef struct ZeCountRequest {
@@ -2580,6 +2626,17 @@ ze_error_code ze_delete_where(ze_handle handle,
 ze_error_code ze_scan(ze_handle handle,
                       const struct ZeScanRequest *request,
                       struct ZeScanResult *out_result);
+
+/*
+ Enumerates one page of live documents like [`ze_scan`], additionally
+ ordered by a declared numeric attribute when `scan.order` is three or
+ four. The embedded request, filter and cursor contracts match `ze_scan`;
+ the cursor fields must name the order that issued the cursor. The returned
+ arena must be released exactly once with [`ze_scan_result_free`].
+ */
+ze_error_code ze_scan_ordered(ze_handle handle,
+                              const struct ZeScanOrderedRequest *request,
+                              struct ZeScanResult *out_result);
 
 /*
  Counts live documents matching an optional filter and timestamp range.

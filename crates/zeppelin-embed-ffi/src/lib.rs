@@ -49,7 +49,7 @@ use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode};
 use zeppelin_embed::lifecycle::{
     AccessMode, CancelToken, Deadline, DocumentFields, DocumentScanCursor, DocumentScanRequest,
     DocumentScanSource, GraphSearchOptions, MAX_DOCUMENT_SCAN_LIMIT, OpenOptions, QueryControl,
-    ScanOrder, SearchOptions, SearchTier, Store, StoreState, StoredDocument,
+    ScanDirection, ScanOrder, SearchOptions, SearchTier, Store, StoreState, StoredDocument,
 };
 use zeppelin_embed::meta::{
     ColumnDefinition, ColumnId, ColumnType, Predicate, PredicateValue, RangeBound, RangePredicate,
@@ -2639,16 +2639,51 @@ pub extern "C" fn ze_delete_where(
     })
 }
 
-fn parse_scan_order(order: i32) -> Result<ScanOrder, FfiError> {
-    match order {
-        0 => Ok(ScanOrder::Storage),
-        1 => Ok(ScanOrder::TimestampAscending),
-        2 => Ok(ScanOrder::TimestampDescending),
-        _ => Err(FfiError::invalid("scan order discriminant is out of range")),
-    }
+/// Error messages for one `(order, attribute id)` field pair.
+struct ScanOrderFields {
+    out_of_range: &'static str,
+    stray_attribute: &'static str,
 }
 
-fn parse_scan_cursor(request: ZeScanRequest) -> Result<Option<DocumentScanCursor>, FfiError> {
+const REQUEST_ORDER_FIELDS: ScanOrderFields = ScanOrderFields {
+    out_of_range: "scan order discriminant is out of range",
+    stray_attribute: "scan order_attribute_id must be zero unless the order is 3 or 4",
+};
+
+const CURSOR_ORDER_FIELDS: ScanOrderFields = ScanOrderFields {
+    out_of_range: "scan cursor_order discriminant is out of range",
+    stray_attribute: "scan cursor_order_attribute_id must be zero unless cursor_order is 3 or 4",
+};
+
+fn parse_scan_order(
+    order: i32,
+    attribute_id: u32,
+    fields: &ScanOrderFields,
+) -> Result<ScanOrder, FfiError> {
+    let attribute = |direction| ScanOrder::Attribute {
+        column: ColumnId::new(attribute_id),
+        direction,
+    };
+    let order = match order {
+        0 => ScanOrder::Storage,
+        1 => ScanOrder::TimestampAscending,
+        2 => ScanOrder::TimestampDescending,
+        3 => attribute(ScanDirection::Ascending),
+        4 => attribute(ScanDirection::Descending),
+        _ => return Err(FfiError::invalid(fields.out_of_range)),
+    };
+    if attribute_id != 0 && !matches!(order, ScanOrder::Attribute { .. }) {
+        return Err(FfiError::invalid(fields.stray_attribute));
+    }
+    Ok(order)
+}
+
+/// Decodes the cursor fields of `request`; `cursor_order` is the order the
+/// caller declares the cursor was issued under.
+fn parse_scan_cursor(
+    request: ZeScanRequest,
+    cursor_order: ScanOrder,
+) -> Result<Option<DocumentScanCursor>, FfiError> {
     if request.cursor_generation == 0 {
         if request.cursor_segment_id != [0; 16]
             || request.cursor_next_row != 0
@@ -2680,6 +2715,7 @@ fn parse_scan_cursor(request: ZeScanRequest) -> Result<Option<DocumentScanCursor
     };
     Ok(Some(DocumentScanCursor {
         generation: request.cursor_generation,
+        order: cursor_order,
         source,
         next_row: request.cursor_next_row,
     }))
@@ -2748,90 +2784,151 @@ pub extern "C" fn ze_scan(
                 let request = marshal::read_struct(request)?;
                 let abi_size = marshal::validate_output(out_result)?;
                 marshal::write_output(out_result, empty_scan_result(abi_size));
-                if request.limit == 0 {
-                    return Err(FfiError::invalid("scan limit must be nonzero"));
-                }
-                if request.limit > MAX_DOCUMENT_SCAN_LIMIT {
+                if matches!(request.order, 3 | 4) {
                     return Err(FfiError::invalid(
-                        "scan limit exceeds MAX_DOCUMENT_SCAN_LIMIT",
+                        "attribute scan orders 3 and 4 require ze_scan_ordered",
                     ));
                 }
-                let order = parse_scan_order(request.order)?;
-                let cursor = parse_scan_cursor(request)?;
-                let include_vector = parse_flag(request.include_vector, "include_vector")?;
-                let include_text = parse_flag(request.include_text, "include_text")?;
-                let include_metadata = parse_flag(request.include_metadata, "include_metadata")?;
-                let include_attributes =
-                    parse_flag(request.include_attributes, "include_attributes")?;
-                let has_timestamp_range =
-                    parse_flag(request.has_timestamp_range, "has_timestamp_range")?;
-                if !has_timestamp_range && (request.start_ts != 0 || request.end_ts != 0) {
-                    return Err(FfiError::invalid(
-                        "scan timestamp bounds require has_timestamp_range",
-                    ));
-                }
-                let control = query_control_for(request.cancel_token, request.deadline_ns)?;
-                let access = registry::lookup(handle)?;
-                let predicate = decode_filter(request.filter, access.store.schema())?;
-                let record_only = access.record_only;
-                let mut fields = DocumentFields::NONE;
-                if include_vector && !record_only {
-                    fields = fields | DocumentFields::VECTOR;
-                }
-                if include_text {
-                    fields = fields | DocumentFields::TEXT;
-                }
-                if include_metadata {
-                    fields = fields | DocumentFields::METADATA;
-                }
-                if include_attributes {
-                    fields = fields | DocumentFields::ATTRIBUTES;
-                }
-                let mut scan =
-                    DocumentScanRequest::new(request.limit, fields, control).with_order(order);
-                if let Some(cursor) = cursor {
-                    scan = scan.with_cursor(cursor);
-                }
-                if has_timestamp_range {
-                    scan = scan.with_timestamp_range(request.start_ts, request.end_ts);
-                }
-                if let Some(predicate) = &predicate {
-                    scan = scan.with_predicate(predicate);
-                }
-                let page = access.store.scan_documents(scan).map_err(FfiError::query)?;
-                let (documents, allocation_generation, document_count) =
-                    publish_scan_documents(page.documents)?;
-                let (has_more, next_segment_id, next_row, next_phase) = match page.continuation {
-                    Some(DocumentScanCursor {
-                        source: DocumentScanSource::Sealed(segment),
-                        next_row,
-                        ..
-                    }) => (1, *segment.as_bytes(), next_row, 0),
-                    Some(DocumentScanCursor {
-                        source: DocumentScanSource::Active,
-                        next_row,
-                        ..
-                    }) => (1, [0; 16], next_row, 1),
-                    None => (0, [0; 16], 0, 0),
-                };
-                marshal::write_output(
-                    out_result,
-                    ZeScanResult {
-                        abi_size,
-                        abi_reserved: allocation_generation,
-                        documents,
-                        document_count,
-                        generation: page.generation,
-                        has_more,
-                        next_segment_id,
-                        next_row,
-                        next_phase,
-                    },
-                );
-                Ok(())
+                let order = parse_scan_order(request.order, 0, &REQUEST_ORDER_FIELDS)?;
+                // ze_scan cursors carry no order, so they resume the order of
+                // the request that presents them.
+                let cursor = parse_scan_cursor(request, order)?;
+                scan_documents_into(handle, request, order, cursor, abi_size, out_result)
             })(),
         )
     })
+}
+
+/// Enumerates one page of live documents like [`ze_scan`], additionally
+/// ordered by a declared numeric attribute when `scan.order` is three or
+/// four. The embedded request, filter and cursor contracts match `ze_scan`;
+/// the cursor fields must name the order that issued the cursor. The returned
+/// arena must be released exactly once with [`ze_scan_result_free`].
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_scan_ordered(
+    handle: ZeHandle,
+    request: *const ZeScanOrderedRequest,
+    out_result: *mut ZeScanResult,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_scan_ordered");
+        finish(
+            Some(handle),
+            (|| {
+                let ordered = marshal::read_struct(request)?;
+                let request = marshal::read_struct(&ordered.scan)?;
+                let abi_size = marshal::validate_output(out_result)?;
+                marshal::write_output(out_result, empty_scan_result(abi_size));
+                let order = parse_scan_order(
+                    request.order,
+                    ordered.order_attribute_id,
+                    &REQUEST_ORDER_FIELDS,
+                )?;
+                let cursor = if request.cursor_generation == 0 {
+                    if ordered.cursor_order != 0 || ordered.cursor_order_attribute_id != 0 {
+                        return Err(FfiError::invalid(
+                            "scan cursor order fields must be zero when cursor_generation is zero",
+                        ));
+                    }
+                    parse_scan_cursor(request, order)?
+                } else {
+                    let cursor_order = parse_scan_order(
+                        ordered.cursor_order,
+                        ordered.cursor_order_attribute_id,
+                        &CURSOR_ORDER_FIELDS,
+                    )?;
+                    parse_scan_cursor(request, cursor_order)?
+                };
+                scan_documents_into(handle, request, order, cursor, abi_size, out_result)
+            })(),
+        )
+    })
+}
+
+fn scan_documents_into(
+    handle: ZeHandle,
+    request: ZeScanRequest,
+    order: ScanOrder,
+    cursor: Option<DocumentScanCursor>,
+    abi_size: u32,
+    out_result: *mut ZeScanResult,
+) -> Result<(), FfiError> {
+    if request.limit == 0 {
+        return Err(FfiError::invalid("scan limit must be nonzero"));
+    }
+    if request.limit > MAX_DOCUMENT_SCAN_LIMIT {
+        return Err(FfiError::invalid(
+            "scan limit exceeds MAX_DOCUMENT_SCAN_LIMIT",
+        ));
+    }
+    let include_vector = parse_flag(request.include_vector, "include_vector")?;
+    let include_text = parse_flag(request.include_text, "include_text")?;
+    let include_metadata = parse_flag(request.include_metadata, "include_metadata")?;
+    let include_attributes = parse_flag(request.include_attributes, "include_attributes")?;
+    let has_timestamp_range = parse_flag(request.has_timestamp_range, "has_timestamp_range")?;
+    if !has_timestamp_range && (request.start_ts != 0 || request.end_ts != 0) {
+        return Err(FfiError::invalid(
+            "scan timestamp bounds require has_timestamp_range",
+        ));
+    }
+    let control = query_control_for(request.cancel_token, request.deadline_ns)?;
+    let access = registry::lookup(handle)?;
+    let predicate = decode_filter(request.filter, access.store.schema())?;
+    let record_only = access.record_only;
+    let mut fields = DocumentFields::NONE;
+    if include_vector && !record_only {
+        fields = fields | DocumentFields::VECTOR;
+    }
+    if include_text {
+        fields = fields | DocumentFields::TEXT;
+    }
+    if include_metadata {
+        fields = fields | DocumentFields::METADATA;
+    }
+    if include_attributes {
+        fields = fields | DocumentFields::ATTRIBUTES;
+    }
+    let mut scan = DocumentScanRequest::new(request.limit, fields, control).with_order(order);
+    if let Some(cursor) = cursor {
+        scan = scan.with_cursor(cursor);
+    }
+    if has_timestamp_range {
+        scan = scan.with_timestamp_range(request.start_ts, request.end_ts);
+    }
+    if let Some(predicate) = &predicate {
+        scan = scan.with_predicate(predicate);
+    }
+    let page = access.store.scan_documents(scan).map_err(FfiError::query)?;
+    let (documents, allocation_generation, document_count) =
+        publish_scan_documents(page.documents)?;
+    let (has_more, next_segment_id, next_row, next_phase) = match page.continuation {
+        Some(DocumentScanCursor {
+            source: DocumentScanSource::Sealed(segment),
+            next_row,
+            ..
+        }) => (1, *segment.as_bytes(), next_row, 0),
+        Some(DocumentScanCursor {
+            source: DocumentScanSource::Active,
+            next_row,
+            ..
+        }) => (1, [0; 16], next_row, 1),
+        None => (0, [0; 16], 0, 0),
+    };
+    marshal::write_output(
+        out_result,
+        ZeScanResult {
+            abi_size,
+            abi_reserved: allocation_generation,
+            documents,
+            document_count,
+            generation: page.generation,
+            has_more,
+            next_segment_id,
+            next_row,
+            next_phase,
+        },
+    );
+    Ok(())
 }
 
 /// Counts live documents matching an optional filter and timestamp range.

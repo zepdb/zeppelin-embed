@@ -430,6 +430,10 @@ fn every_phase_two_struct_has_the_frozen_size_and_field_offsets() {
         generation: 24, has_more: 32, next_segment_id: 36, next_row: 52,
         next_phase: 56
     });
+    assert_layout!(ZeScanOrderedRequest, 136, 8, {
+        abi_size: 0, abi_reserved: 4, scan: 8, order_attribute_id: 120,
+        cursor_order: 124, cursor_order_attribute_id: 128
+    });
     assert_layout!(ZeNamespaceSpec, 48, 8, {
         abi_size: 0, abi_reserved: 4, attributes: 8, attribute_count: 16,
         has_vector_space: 24, dimensions: 28, normalization: 32, epoch: 40
@@ -534,6 +538,7 @@ const POISON_TABLE_NAMES: &[&str] = &[
     "ze_purge",
     "ze_query",
     "ze_scan",
+    "ze_scan_ordered",
     "ze_scan_result_free",
     "ze_seal",
     "ze_search",
@@ -832,6 +837,22 @@ fn poison_function_table() -> Vec<(&'static str, PoisonCall)> {
             };
             let mut result: ZeScanResult = common::sized_zeroed();
             ze_scan(context.store.handle, &request, &mut result)
+        }),
+        ("ze_scan_ordered", |context| {
+            let request = ZeScanOrderedRequest {
+                abi_size: size_of::<ZeScanOrderedRequest>() as u32,
+                abi_reserved: 0,
+                scan: ZeScanRequest {
+                    abi_size: size_of::<ZeScanRequest>() as u32,
+                    limit: 1,
+                    ..common::sized_zeroed()
+                },
+                order_attribute_id: 0,
+                cursor_order: 0,
+                cursor_order_attribute_id: 0,
+            };
+            let mut result: ZeScanResult = common::sized_zeroed();
+            ze_scan_ordered(context.store.handle, &request, &mut result)
         }),
         ("ze_count", |context| {
             let request = ZeCountRequest {

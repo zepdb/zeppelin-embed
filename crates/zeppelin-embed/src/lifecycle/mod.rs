@@ -1817,6 +1817,26 @@ pub enum ScanOrder {
     TimestampAscending,
     /// Descending timestamp with ascending document id as the tie breaker.
     TimestampDescending,
+    /// A declared `U64`, `I64` or `F64` user attribute in `direction`, with
+    /// ascending document id as the tie breaker. `F64` compares numerically
+    /// and `-0.0` equals `+0.0`. A row whose value is missing or NaN has no
+    /// orderable value and sorts after every orderable row in both
+    /// directions.
+    Attribute {
+        /// Declared user attribute that supplies the sort key.
+        column: crate::meta::ColumnId,
+        /// Direction applied to orderable values.
+        direction: ScanDirection,
+    },
+}
+
+/// Direction of an attribute-ordered document scan.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScanDirection {
+    /// Smallest value first.
+    Ascending,
+    /// Largest value first.
+    Descending,
 }
 
 /// Source position named by a document-scan continuation.
@@ -1833,6 +1853,9 @@ pub enum DocumentScanSource {
 pub struct DocumentScanCursor {
     /// Generation pinned by the page that produced this cursor.
     pub generation: u64,
+    /// Order of the scan that issued this cursor; a request with any other
+    /// order rejects it.
+    pub order: ScanOrder,
     /// Source containing the next matching row.
     pub source: DocumentScanSource,
     /// Source-local row at which the next page starts.
@@ -3911,6 +3934,17 @@ impl Store {
                 detail: format!("limit must be in 1..={MAX_DOCUMENT_SCAN_LIMIT}, received {limit}"),
             }));
         }
+        if let ScanOrder::Attribute { column, .. } = order {
+            validate_scan_order_attribute(&self.schema, column)?;
+        }
+        if let Some(cursor) = cursor.filter(|cursor| cursor.order != order) {
+            return Err(QueryError::Store(StoreError::InvalidScan {
+                detail: format!(
+                    "scan cursor was issued for order {:?}, but the request orders by {order:?}",
+                    cursor.order
+                ),
+            }));
+        }
         let predicate = document_scan_predicate(predicate, timestamp_range)?;
         if let Some(predicate) = &predicate {
             crate::planner::validate_predicate(predicate, &self.schema).map_err(|error| {
@@ -3947,23 +3981,24 @@ impl Store {
                 &lease,
                 &mut work,
             )?,
-            ScanOrder::TimestampAscending | ScanOrder::TimestampDescending => {
-                collect_timestamp_scan_rows(
-                    &snapshot,
-                    &active,
-                    &self.schema,
-                    predicate.as_ref(),
-                    cursor,
-                    limit,
-                    order,
-                    &control,
-                    &lease,
-                    &mut work,
-                )?
-            }
+            ScanOrder::TimestampAscending
+            | ScanOrder::TimestampDescending
+            | ScanOrder::Attribute { .. } => collect_sorted_scan_rows(
+                &snapshot,
+                &active,
+                &self.schema,
+                predicate.as_ref(),
+                cursor,
+                limit,
+                order,
+                &control,
+                &lease,
+                &mut work,
+            )?,
         };
         let continuation = rows.get(limit).map(|row| DocumentScanCursor {
             generation,
+            order,
             source: row.source,
             next_row: row.row,
         });
@@ -8303,6 +8338,82 @@ struct DocumentScanRow {
     row: u32,
     timestamp: i64,
     doc_id: crate::ingest::DocId,
+    /// Order-preserving key of the [`ScanOrder::Attribute`] value, or `None`
+    /// when the value is missing or NaN or the order is not by attribute.
+    attribute_key: Option<u64>,
+}
+
+fn validate_scan_order_attribute(
+    schema: &crate::meta::Schema,
+    column: crate::meta::ColumnId,
+) -> Result<(), QueryError> {
+    use crate::meta::ColumnType;
+
+    let id = column.get();
+    let detail = if column == crate::meta::TIMESTAMP_COLUMN {
+        Some(format!(
+            "scan order attribute {id} is the document timestamp; use a timestamp order"
+        ))
+    } else {
+        match schema
+            .column(column)
+            .map(crate::meta::ColumnDefinition::column_type)
+        {
+            None => Some(format!(
+                "scan order attribute {id} is not a declared attribute"
+            )),
+            Some(ColumnType::U64 | ColumnType::I64 | ColumnType::F64) => None,
+            Some(other) => Some(format!(
+                "scan order attribute {id} has type {other:?}; only u64, i64 and f64 attributes are orderable"
+            )),
+        }
+    };
+    detail.map_or(Ok(()), |detail| {
+        Err(QueryError::Store(StoreError::InvalidScan { detail }))
+    })
+}
+
+/// Maps one attribute value to a `u64` whose unsigned order is the value
+/// order: `U64` unchanged, `I64` with the sign bit flipped, and `F64` by the
+/// IEEE-754 total-order bit transform after folding `-0.0` into `+0.0`.
+/// Missing and NaN values have no key.
+fn attribute_order_key(column: &crate::meta::Column, row: u32) -> Result<Option<u64>, QueryError> {
+    use crate::meta::Column;
+    const SIGN: u64 = 1 << 63;
+
+    match column {
+        Column::U64(values) => Ok(values.get(row)),
+        Column::I64(values) => Ok(values.get(row).map(|value| value.cast_unsigned() ^ SIGN)),
+        Column::F64(values) => Ok(values
+            .get(row)
+            .filter(|value| !value.is_nan())
+            .map(|value| {
+                // Adding +0.0 folds -0.0 into +0.0 and leaves every other
+                // non-NaN value unchanged.
+                let bits = (value + 0.0).to_bits();
+                if bits & SIGN == 0 { bits | SIGN } else { !bits }
+            })),
+        Column::Bool(_) | Column::DictionaryString(_) | Column::RawString(_) => {
+            Err(QueryError::Store(StoreError::InvalidScan {
+                detail: "scan order attribute column is not numeric".to_owned(),
+            }))
+        }
+    }
+}
+
+fn keyed_scan_row(
+    mut row: DocumentScanRow,
+    columns: Option<(&crate::meta::ColumnStore, crate::meta::ColumnId)>,
+) -> Result<DocumentScanRow, QueryError> {
+    if let Some((columns, column)) = columns {
+        let values = columns.column(column).ok_or_else(|| {
+            QueryError::Store(StoreError::InvalidScan {
+                detail: format!("scan order attribute {} has no stored column", column.get()),
+            })
+        })?;
+        row.attribute_key = attribute_order_key(values, row.row)?;
+    }
+    Ok(row)
 }
 
 fn document_scan_predicate(
@@ -8436,6 +8547,7 @@ fn sealed_document_scan_row(
         row,
         timestamp,
         doc_id: version.doc_id(),
+        attribute_key: None,
     })
 }
 
@@ -8457,6 +8569,7 @@ fn active_document_scan_row(
         row,
         timestamp,
         doc_id: version.doc_id(),
+        attribute_key: None,
     })
 }
 
@@ -8530,11 +8643,20 @@ fn document_scan_row_cmp(
     right: &DocumentScanRow,
     order: ScanOrder,
 ) -> std::cmp::Ordering {
-    let timestamp = match order {
+    let primary = match order {
         ScanOrder::Storage | ScanOrder::TimestampAscending => left.timestamp.cmp(&right.timestamp),
         ScanOrder::TimestampDescending => right.timestamp.cmp(&left.timestamp),
+        ScanOrder::Attribute { direction, .. } => match (left.attribute_key, right.attribute_key) {
+            (Some(left), Some(right)) => match direction {
+                ScanDirection::Ascending => left.cmp(&right),
+                ScanDirection::Descending => right.cmp(&left),
+            },
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        },
     };
-    timestamp
+    primary
         .then_with(|| left.doc_id.cmp(&right.doc_id))
         .then_with(|| document_scan_source_cmp(left.source, right.source))
         .then_with(|| left.row.cmp(&right.row))
@@ -8591,8 +8713,11 @@ fn clustering_range_cmp(
     }
 }
 
+/// Collects the first `limit + 1` rows at or after `cursor` under a timestamp
+/// or attribute order; every row is compared, so segment order only affects
+/// how early the bounded buffer fills.
 #[allow(clippy::too_many_arguments)]
-fn collect_timestamp_scan_rows(
+fn collect_sorted_scan_rows(
     snapshot: &PublishedSnapshot,
     active: &crate::ingest::ActiveSegment,
     schema: &crate::meta::Schema,
@@ -8612,19 +8737,41 @@ fn collect_timestamp_scan_rows(
             component: "scan positions",
         })
     })?;
+    let attribute = match order {
+        ScanOrder::Attribute { column, .. } => Some(column),
+        ScanOrder::Storage | ScanOrder::TimestampAscending | ScanOrder::TimestampDescending => None,
+    };
+    let active_columns = attribute
+        .map(|_| active_scan_columns(active, schema))
+        .transpose()?;
+    let active_keys = active_columns.as_ref().zip(attribute);
+    let sealed_columns = |segment: &crate::segment::reader::SegmentReader| {
+        attribute
+            .map(|_| segment.query_columns().map_err(QueryError::Store))
+            .transpose()
+    };
     let cursor_row = cursor
         .map(|cursor| match cursor.source {
-            DocumentScanSource::Active => active_document_scan_row(active, cursor.next_row),
-            DocumentScanSource::Sealed(segment_id) => snapshot
-                .segments()
-                .iter()
-                .find(|segment| segment.meta().id == segment_id)
-                .ok_or_else(|| {
-                    QueryError::Store(StoreError::InvalidScan {
-                        detail: format!("scan cursor names absent segment {segment_id}"),
-                    })
-                })
-                .and_then(|segment| sealed_document_scan_row(segment, cursor.next_row)),
+            DocumentScanSource::Active => keyed_scan_row(
+                active_document_scan_row(active, cursor.next_row)?,
+                active_keys,
+            ),
+            DocumentScanSource::Sealed(segment_id) => {
+                let segment = snapshot
+                    .segments()
+                    .iter()
+                    .find(|segment| segment.meta().id == segment_id)
+                    .ok_or_else(|| {
+                        QueryError::Store(StoreError::InvalidScan {
+                            detail: format!("scan cursor names absent segment {segment_id}"),
+                        })
+                    })?;
+                let columns = sealed_columns(segment)?;
+                keyed_scan_row(
+                    sealed_document_scan_row(segment, cursor.next_row)?,
+                    columns.as_deref().zip(attribute),
+                )
+            }
         })
         .transpose()?;
     let mut segments = snapshot.segments().iter().collect::<Vec<_>>();
@@ -8638,9 +8785,13 @@ fn collect_timestamp_scan_rows(
     });
     for segment in segments {
         let rows = sealed_scan_rows(segment, predicate)?;
+        let columns = sealed_columns(segment)?;
         for row in rows.iter() {
             scan_control_checkpoint(control, lease, work)?;
-            let candidate = sealed_document_scan_row(segment, row)?;
+            let candidate = keyed_scan_row(
+                sealed_document_scan_row(segment, row)?,
+                columns.as_deref().zip(attribute),
+            )?;
             if cursor_row.as_ref().is_none_or(|cursor_row| {
                 document_scan_row_cmp(&candidate, cursor_row, order) != std::cmp::Ordering::Less
             }) {
@@ -8650,7 +8801,7 @@ fn collect_timestamp_scan_rows(
     }
     for row in active_scan_rows(active, schema, predicate)?.iter() {
         scan_control_checkpoint(control, lease, work)?;
-        let candidate = active_document_scan_row(active, row)?;
+        let candidate = keyed_scan_row(active_document_scan_row(active, row)?, active_keys)?;
         if cursor_row.as_ref().is_none_or(|cursor_row| {
             document_scan_row_cmp(&candidate, cursor_row, order) != std::cmp::Ordering::Less
         }) {
@@ -8926,6 +9077,8 @@ mod lexical_assembly_tests;
 
 #[cfg(test)]
 mod get_tests;
+#[cfg(test)]
+mod scan_attribute_order_tests;
 #[cfg(test)]
 mod scan_document_tests;
 

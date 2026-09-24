@@ -159,10 +159,35 @@ export interface TimestampRange {
   readonly end: bigint;
 }
 
+/**
+ * Orders a scan by a declared `u64`, `i64` or `f64` attribute.
+ *
+ * Equal values break ties by ascending document id, so pagination is
+ * stable. `f64` compares numerically and `-0` equals `+0`. A document whose
+ * value is missing or `NaN` sorts after every document with a value, in both
+ * directions. An undeclared attribute, attribute 0 (the timestamp), or a
+ * `bool` or string attribute throws `ZE_ERR_INVALID_ARGUMENT`.
+ */
+export interface AttributeScanOrder {
+  /** Declared attribute id, an integer in 1..4294967295. */
+  readonly attributeId: number;
+  readonly direction: 'ascending' | 'descending';
+}
+
 export interface ScanRequest {
+  /**
+   * Continues the scan that returned it. A cursor works only with the order
+   * that issued it (a different order, attribute or direction throws
+   * `ZE_ERR_INVALID_ARGUMENT`), and any write since that page throws
+   * `ZE_ERR_SCAN_STALE`; restart the scan without a cursor.
+   */
   readonly cursor?: ScanCursor;
   readonly limit?: number;
-  readonly order?: 'storage' | 'timestampAscending' | 'timestampDescending';
+  readonly order?:
+    | 'storage'
+    | 'timestampAscending'
+    | 'timestampDescending'
+    | AttributeScanOrder;
   readonly fields?: DocumentFields;
   readonly timestampRange?: TimestampRange;
   readonly filter?: Filter;

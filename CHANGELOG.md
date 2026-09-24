@@ -18,6 +18,13 @@ release and a compatible correction is a patch release.
   one atomic mutation and return `{ deleted, generation }` (ZE-217). The
   deleted bytes leave every store file before the call returns; a crash
   mid-call deletes nothing or is completed by the next writable open.
+- Scans order by a declared `u64`, `i64` or `f64` attribute, ascending or
+  descending, with doc-id tie breaks and stable cursor pagination (ZE-219).
+  Core `ScanOrder::Attribute`, C ABI `ze_scan_ordered` with
+  `ZeScanOrderedRequest`, and Node `scan({ order: { attributeId,
+  direction } })`. Missing and NaN values sort last in both directions. A
+  cursor now records its order, and a request with a different order
+  rejects it.
 
 ### Fixed
 

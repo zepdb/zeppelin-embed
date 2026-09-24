@@ -623,6 +623,40 @@ pub struct ZeScanResult {
     pub next_phase: u32,
 }
 
+/// Scan request that may order by a numeric attribute, for `ze_scan_ordered`.
+///
+/// `scan.order` accepts the `ze_scan` values (zero storage, one timestamp
+/// ascending, two timestamp descending) plus three attribute ascending and
+/// four attribute descending. An attribute order sorts by the declared u64,
+/// i64 or f64 attribute `order_attribute_id`, with ascending document id as
+/// the tie breaker; f64 compares numerically and -0.0 equals +0.0; a
+/// document whose value is missing or NaN sorts after every document with a
+/// value, in both directions.
+///
+/// A cursor names the order it was issued under: when
+/// `scan.cursor_generation` is nonzero, `cursor_order` and
+/// `cursor_order_attribute_id` must repeat the `scan.order` and
+/// `order_attribute_id` of the request that returned the cursor, and a
+/// request with a different order rejects it. Any write between pages
+/// makes the cursor stale (`ZE_ERR_SCAN_STALE`).
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeScanOrderedRequest {
+    /// Caller-provided `sizeof(ZeScanOrderedRequest)`.
+    pub abi_size: u32,
+    /// Must be zero in ABI v1.
+    pub abi_reserved: u32,
+    /// Existing scan request embedded by value.
+    pub scan: ZeScanRequest,
+    /// Attribute ordered by `scan.order` three or four; zero otherwise.
+    pub order_attribute_id: u32,
+    /// `scan.order` of the request that issued the cursor; zero to start.
+    pub cursor_order: i32,
+    /// `order_attribute_id` of the request that issued the cursor; zero to
+    /// start or for a non-attribute cursor order.
+    pub cursor_order_attribute_id: u32,
+}
+
 /// Atomic document-ingest request.
 #[derive(Clone, Copy)]
 #[repr(C)]
