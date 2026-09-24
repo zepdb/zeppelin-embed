@@ -301,6 +301,9 @@ pub struct OwnedLexicalSnippet {
     pub source: Highlight,
     /// Absolute matched byte ranges within the persisted source text.
     pub highlights: Vec<Highlight>,
+    /// Byte length of the whole persisted source text, so a caller can tell
+    /// whether `source` stops before its end.
+    pub source_len: usize,
 }
 
 /// A malformed structured lexical query.

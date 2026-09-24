@@ -4392,6 +4392,7 @@ impl Store {
                     text: snippet_text.to_owned(),
                     source: snippet.window,
                     highlights: snippet.highlights,
+                    source_len: text.len(),
                 },
             });
         }

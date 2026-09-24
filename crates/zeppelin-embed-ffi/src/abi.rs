@@ -1557,3 +1557,54 @@ pub struct ZeQueryResult {
     /// Lexical posting entries decoded.
     pub postings_decoded: u64,
 }
+
+/// One matched range inside a snippet excerpt.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeSnippetHighlight {
+    /// Inclusive start, in UTF-8 bytes from the start of the excerpt `text`.
+    pub start: usize,
+    /// Exclusive end, in UTF-8 bytes from the start of the excerpt `text`.
+    pub end: usize,
+}
+
+/// One hit's excerpt of its document's stored text, with the ranges the
+/// query matched. Every offset is a UTF-8 character boundary.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeQuerySnippet {
+    /// One when this hit has a snippet. Zero when the document has no stored
+    /// text or its text contains none of the query's matched terms, which
+    /// happens only for a hybrid hit whose `lexical_bm25` is zero. A hit with
+    /// a positive `lexical_bm25` always has a snippet.
+    pub has_snippet: u32,
+    /// One when the excerpt starts after the start of the stored text.
+    pub truncated_start: u32,
+    /// One when the excerpt ends before the end of the stored text.
+    pub truncated_end: u32,
+    /// Always zero.
+    pub reserved: u32,
+    /// Callee-owned UTF-8 excerpt, not NUL-terminated.
+    pub text: *const u8,
+    /// Number of `text` bytes.
+    pub text_len: usize,
+    /// Callee-owned matched ranges, ascending and non-overlapping.
+    pub highlights: *const ZeSnippetHighlight,
+    /// Number of `highlights`.
+    pub highlight_count: usize,
+}
+
+/// Callee-owned snippets aligned one-to-one with a query's hits; release with
+/// `ze_query_snippets_free`.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeQuerySnippets {
+    /// Caller-provided structure size.
+    pub abi_size: u32,
+    /// Caller sets zero; callee returns an opaque allocation generation.
+    pub abi_reserved: u32,
+    /// Callee-owned snippet array, or null when `snippet_count` is zero.
+    pub snippets: *mut ZeQuerySnippet,
+    /// Number of snippets; equals the query result's `hit_count`.
+    pub snippet_count: usize,
+}

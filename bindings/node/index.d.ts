@@ -369,6 +369,54 @@ export interface QueryRequest {
   /** Relative monotonic deadline in nanoseconds; 0n means none. */
   readonly deadlineNs?: bigint;
   readonly cancelToken?: CancellationToken;
+  /**
+   * Opt in to a {@link Snippet} on each hit, and set the excerpt length in
+   * UTF-8 bytes: an integer from 1 to 4294967295. The excerpt may run up to 3
+   * bytes longer to finish a character. Requires `text`; a vector-only query
+   * with `snippetBytes` throws `ZE_ERR_INVALID_ARGUMENT`. A value that is not
+   * such an integer throws a `RangeError` (`ERR_OUT_OF_RANGE`), and a
+   * non-number a `TypeError`. Without it the query reads no extra text.
+   */
+  readonly snippetBytes?: number;
+}
+
+/**
+ * A matched range in {@link Snippet.text}, in UTF-16 code units, so
+ * `snippet.text.slice(start, end)` is the matched text.
+ */
+export interface SnippetHighlight {
+  /** Inclusive start. */
+  readonly start: number;
+  /** Exclusive end. */
+  readonly end: number;
+}
+
+/**
+ * An excerpt of a hit's stored text with the ranges the query matched.
+ *
+ * The engine finds the ranges with the same analyzer and the same scored terms
+ * the query used: stemming, case and accent folding, and every term a
+ * `lastAsPrefix` prefix expanded to. The query operators are terms and a
+ * trailing prefix, so a quoted phrase marks each of its terms. A document has
+ * one text field, so a hit has at most one snippet.
+ *
+ * The excerpt starts at a matched token; of the windows starting at each
+ * match, the one with the most distinct matches wins, then the most matches,
+ * then the earliest, so snippets are deterministic. No ellipsis is inserted.
+ */
+export interface Snippet {
+  /** The excerpt. */
+  readonly text: string;
+  /**
+   * Matched ranges, ascending and non-overlapping. Only ranges wholly inside
+   * the excerpt are reported, so a `snippetBytes` shorter than a matched word
+   * can leave this empty.
+   */
+  readonly highlights: SnippetHighlight[];
+  /** The excerpt starts after the start of the stored text. */
+  readonly truncatedStart: boolean;
+  /** The excerpt ends before the end of the stored text. */
+  readonly truncatedEnd: boolean;
 }
 
 export interface QueryHit {
@@ -381,6 +429,12 @@ export interface QueryHit {
   readonly vectorSquaredL2?: number;
   /** BM25 score of the lexical leg, when it ran. */
   readonly lexicalBm25?: number;
+  /**
+   * Present when the request set `snippetBytes` and the hit's stored text
+   * contains a query term. Every hit with a positive `lexicalBm25` has one; it
+   * is absent on a hybrid hit whose `lexicalBm25` is zero.
+   */
+  readonly snippet?: Snippet;
 }
 
 export interface QueryFusion {

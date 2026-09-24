@@ -26,22 +26,27 @@ impl FfiError {
             TextError::Query(error) => Self::query(error).code,
             TextError::Lexical(error) => Self::lexical(error).code,
             TextError::Hybrid(error) => Self::fusion(error).code,
-            TextError::Materialization(error) => {
-                use zeppelin_embed::lifecycle::MaterializationError;
-                match error {
-                    MaterializationError::Query(error) => Self::query(error).code,
-                    MaterializationError::Storage(error) => Self::store(error).code,
-                    MaterializationError::MissingText { .. } => ZeErrorCode::ZeErrNotFound,
-                    MaterializationError::AllocationFailed { .. } => ZeErrorCode::ZeErrOutOfMemory,
-                    MaterializationError::RankOutOfRange { .. }
-                    | MaterializationError::ArithmeticOverflow => ZeErrorCode::ZeErrInternal,
-                    MaterializationError::MissingIdentity { .. }
-                    | MaterializationError::MissingSource { .. }
-                    | MaterializationError::InvalidLexicalSource { .. }
-                    | MaterializationError::MissingFusedIdentity { .. }
-                    | MaterializationError::IdentityMismatch { .. } => ZeErrorCode::ZeErrCorrupt,
-                }
-            }
+            TextError::Materialization(error) => Self::materialization(error).code,
+        };
+        Self::new(code, message)
+    }
+
+    pub(crate) fn materialization(error: zeppelin_embed::lifecycle::MaterializationError) -> Self {
+        use zeppelin_embed::lifecycle::MaterializationError;
+
+        let message = error.to_string();
+        let code = match error {
+            MaterializationError::Query(error) => Self::query(error).code,
+            MaterializationError::Storage(error) => Self::store(error).code,
+            MaterializationError::MissingText { .. } => ZeErrorCode::ZeErrNotFound,
+            MaterializationError::AllocationFailed { .. } => ZeErrorCode::ZeErrOutOfMemory,
+            MaterializationError::RankOutOfRange { .. }
+            | MaterializationError::ArithmeticOverflow => ZeErrorCode::ZeErrInternal,
+            MaterializationError::MissingIdentity { .. }
+            | MaterializationError::MissingSource { .. }
+            | MaterializationError::InvalidLexicalSource { .. }
+            | MaterializationError::MissingFusedIdentity { .. }
+            | MaterializationError::IdentityMismatch { .. } => ZeErrorCode::ZeErrCorrupt,
         };
         Self::new(code, message)
     }

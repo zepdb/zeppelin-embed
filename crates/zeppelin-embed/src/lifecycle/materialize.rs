@@ -5,7 +5,13 @@ use crate::ingest::{
     ActiveSegment, DocId, DocumentVersion, GlobalRowId, RowSource, SearchCandidate,
 };
 use std::cell::Cell;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
+
+/// Per-hit hybrid snippets in rank order, or the failure to read a ranked
+/// row's text. `None` marks a hit without stored text or without a match.
+pub type HybridSnippets =
+    Result<Vec<Option<crate::fts::query::OwnedLexicalSnippet>>, MaterializationError>;
 
 /// Preserves a deferred vector producer's typed error separately from search.
 #[derive(Debug)]
@@ -381,11 +387,30 @@ impl Store {
         control: super::QueryControl,
         finish: impl FnOnce(&crate::ingest::StoreHybridSearchOutcome, &QueryMaterializer<'_>) -> R,
     ) -> Result<(crate::ingest::StoreHybridSearchOutcome, R), HybridPreparationError<E>> {
-        self.search_hybrid_prepared_then(
+        self.search_hybrid_pinned_with_text(
             prepare_vector,
             super::PinnedLexicalQuery::Term(lexical),
             query,
             options.into(),
+            control,
+            finish,
+        )
+    }
+
+    fn search_hybrid_pinned_with_text<'vector, E, R>(
+        &self,
+        prepare_vector: impl FnOnce() -> Result<crate::ingest::SearchRequest<'vector>, E>,
+        lexical: super::PinnedLexicalQuery<'_>,
+        query: &crate::fusion::HybridQuery,
+        options: super::SearchOptions,
+        control: super::QueryControl,
+        finish: impl FnOnce(&crate::ingest::StoreHybridSearchOutcome, &QueryMaterializer<'_>) -> R,
+    ) -> Result<(crate::ingest::StoreHybridSearchOutcome, R), HybridPreparationError<E>> {
+        self.search_hybrid_prepared_then(
+            prepare_vector,
+            lexical,
+            query,
+            options,
             control,
             true,
             |mut outcome, snapshot, active, cancellation, addresses| {
@@ -473,6 +498,176 @@ impl Store {
             options,
             control,
             finish,
+        )
+        .map_err(|error| match error {
+            HybridPreparationError::Preparation(never) => match never {},
+            HybridPreparationError::Search(error) => error,
+        })
+    }
+
+    /// Runs a flat-term lexical query and returns one snippet per candidate,
+    /// in rank order, cut from the text pinned for the query's generation.
+    ///
+    /// Highlights are the tokens the store's own analyzer produces from that
+    /// text whose analyzed term is one of the query's terms, which is exactly
+    /// what the lexical leg scored.
+    ///
+    /// # Errors
+    /// Returns the search failure, or [`crate::ingest::StoreLexicalError::MissingSnippetMatch`]
+    /// when a ranked row's stored text contains none of the query's terms.
+    pub fn search_lexical_with_snippets(
+        &self,
+        query: &crate::fts::search::TermQuery,
+        k: usize,
+        window: NonZeroUsize,
+        control: super::QueryControl,
+    ) -> Result<
+        (
+            crate::ingest::StoreLexicalSearchOutcome,
+            Vec<crate::fts::query::OwnedLexicalSnippet>,
+        ),
+        crate::ingest::StoreLexicalError,
+    > {
+        self.search_lexical_then(
+            query,
+            k,
+            control,
+            |outcome, snapshot, active, assembly, hits, cancellation| {
+                let mut snippets = Vec::with_capacity(hits.len());
+                for hit in hits {
+                    cancellation.check_graph().map_err(super::map_scan_error)?;
+                    let (text, _) = super::structured_lexical_row(
+                        snapshot,
+                        active,
+                        &assembly.sources,
+                        hit.doc,
+                    )?;
+                    snippets.push(
+                        crate::fts::snippet::owned_window(
+                            &self.tokenizer,
+                            text,
+                            &query.terms,
+                            window,
+                        )
+                        .ok_or(
+                            crate::ingest::StoreLexicalError::MissingSnippetMatch {
+                                segment: hit.doc.segment,
+                                row: hit.doc.row,
+                            },
+                        )?,
+                    );
+                }
+                Ok((outcome, snippets))
+            },
+        )
+    }
+
+    /// Runs hybrid fusion over a flat-term lexical leg and returns one
+    /// optional snippet per fused hit, in rank order, cut from the text pinned
+    /// for the query's generation. A hit gets no snippet when its row has no
+    /// stored text or the text contains none of the query's terms.
+    ///
+    /// # Errors
+    /// Returns the search failure; the inner result carries a failure to read
+    /// a ranked row's text.
+    pub fn search_hybrid_with_snippets(
+        &self,
+        vector: crate::ingest::SearchRequest<'_>,
+        lexical: &crate::fts::search::TermQuery,
+        query: &crate::fusion::HybridQuery,
+        options: impl Into<super::SearchOptions>,
+        control: super::QueryControl,
+        window: NonZeroUsize,
+    ) -> Result<(crate::ingest::StoreHybridSearchOutcome, HybridSnippets), crate::fusion::FusionError>
+    {
+        self.hybrid_snippets(
+            vector,
+            super::PinnedLexicalQuery::Term(lexical),
+            query,
+            options.into(),
+            control,
+            window,
+        )
+    }
+
+    /// [`Self::search_hybrid_with_snippets`] for a structured lexical leg.
+    /// Highlights mark the terms of the leg's reported expansions, so a prefix
+    /// marks every indexed term it expanded to.
+    ///
+    /// # Errors
+    /// As [`Self::search_hybrid_with_snippets`].
+    pub fn search_hybrid_structured_with_snippets(
+        &self,
+        vector: crate::ingest::SearchRequest<'_>,
+        lexical: &crate::fts::query::LexicalQuery,
+        query: &crate::fusion::HybridQuery,
+        options: impl Into<super::SearchOptions>,
+        control: super::QueryControl,
+        window: NonZeroUsize,
+    ) -> Result<(crate::ingest::StoreHybridSearchOutcome, HybridSnippets), crate::fusion::FusionError>
+    {
+        self.hybrid_snippets(
+            vector,
+            super::PinnedLexicalQuery::Structured(lexical),
+            query,
+            options.into(),
+            control,
+            window,
+        )
+    }
+
+    fn hybrid_snippets(
+        &self,
+        vector: crate::ingest::SearchRequest<'_>,
+        lexical: super::PinnedLexicalQuery<'_>,
+        query: &crate::fusion::HybridQuery,
+        options: super::SearchOptions,
+        control: super::QueryControl,
+        window: NonZeroUsize,
+    ) -> Result<(crate::ingest::StoreHybridSearchOutcome, HybridSnippets), crate::fusion::FusionError>
+    {
+        let flat_terms = match lexical {
+            super::PinnedLexicalQuery::Term(query) => Some(&query.terms),
+            super::PinnedLexicalQuery::Structured(_) => None,
+        };
+        self.search_hybrid_pinned_with_text(
+            || Ok::<_, std::convert::Infallible>(vector),
+            lexical,
+            query,
+            options,
+            control,
+            |outcome, materializer| {
+                let expanded;
+                let terms: &[Vec<u8>] = match flat_terms {
+                    Some(terms) => terms,
+                    None => {
+                        expanded = outcome
+                            .lexical_expansions
+                            .iter()
+                            .map(|expansion| expansion.term.clone())
+                            .collect::<Vec<_>>();
+                        &expanded
+                    }
+                };
+                let mut snippets = Vec::with_capacity(outcome.hits.len());
+                for rank in 0..outcome.hits.len() {
+                    let row = match materializer.text(rank) {
+                        Ok(row) => row,
+                        Err(MaterializationError::MissingText { .. }) => {
+                            snippets.push(None);
+                            continue;
+                        }
+                        Err(error) => return Err(error),
+                    };
+                    snippets.push(crate::fts::snippet::owned_window(
+                        &self.tokenizer,
+                        &row.text,
+                        terms,
+                        window,
+                    ));
+                }
+                Ok(snippets)
+            },
         )
         .map_err(|error| match error {
             HybridPreparationError::Preparation(never) => match never {},

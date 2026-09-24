@@ -27,6 +27,7 @@ mod text_registry;
 use std::any::Any;
 use std::ffi::c_char;
 use std::mem::{align_of, size_of};
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::time::Duration;
 
@@ -3709,226 +3710,7 @@ pub extern "C" fn ze_query(
                 }
                 let abi_size = marshal::validate_output(out_result)?;
                 marshal::write_output(out_result, empty_query_result(abi_size));
-                if request.lexical_flags & !ZE_QUERY_LAST_AS_PREFIX != 0 {
-                    return Err(FfiError::invalid(
-                        "query lexical_flags contains unknown bits",
-                    ));
-                }
-                if request.lexical_flags & ZE_QUERY_LAST_AS_PREFIX != 0 && request.text_len == 0 {
-                    return Err(FfiError::invalid(
-                        "ZE_QUERY_LAST_AS_PREFIX requires a lexical leg",
-                    ));
-                }
-                if request.k == 0 {
-                    return Err(FfiError::invalid("query k must be nonzero"));
-                }
-                if request.k > ZE_MAX_K {
-                    return Err(FfiError::invalid("query k exceeds ZE_MAX_K"));
-                }
-                if request.vector_len != request.dimension {
-                    return Err(FfiError::new(
-                        ZeErrorCode::ZeErrDimensionMismatch,
-                        "query vector length does not match its declared dimension",
-                    ));
-                }
-                let has_vector = request.vector_len != 0;
-                let has_text = request.text_len != 0;
-                if !has_vector && !has_text {
-                    return Err(FfiError::invalid(
-                        "query needs a vector leg, a lexical leg, or both",
-                    ));
-                }
-                let tier = parse_tier(&request)?;
-                if !has_vector && tier.is_some() {
-                    return Err(FfiError::invalid("a search tier requires a vector leg"));
-                }
-                let hybrid = parse_hybrid(&request, has_vector && has_text)?;
-                let vector = if has_vector {
-                    let vector_bytes =
-                        request
-                            .dimension
-                            .checked_mul(size_of::<f32>())
-                            .ok_or_else(|| {
-                                FfiError::invalid("query dimension byte length overflows")
-                            })?;
-                    marshal::checked_buffer_len(
-                        request.vector_len,
-                        size_of::<f32>(),
-                        vector_bytes,
-                    )?;
-                    marshal::copy_slice(request.vector, request.vector_len)?
-                } else {
-                    Vec::new()
-                };
-                let lexical = if has_text {
-                    let tokens = analyze_query_text(request.text, request.text_len)?;
-                    Some(if request.lexical_flags & ZE_QUERY_LAST_AS_PREFIX == 0 {
-                        FfiLexicalQuery::Term(term_query(tokens))
-                    } else {
-                        last_as_prefix_query(tokens, request.text_len)?
-                    })
-                } else {
-                    None
-                };
-                let mut options = SearchOptions::new(ScanOptions {
-                    thread_budget: request.thread_budget,
-                });
-                if let Some(tier) = tier {
-                    options = options.with_tier(tier);
-                }
-                let control = query_control_for(request.cancel_token, request.deadline_ns)?;
-                let mut result = empty_query_result(abi_size);
-                let mut hits = Vec::new();
-                match (has_vector, lexical, hybrid) {
-                    (true, Some(lexical), Some(mut hybrid)) => {
-                        if let Some(epoch) = access.epoch {
-                            hybrid = hybrid.with_epoch(epoch);
-                        }
-                        let outcome = match &lexical {
-                            FfiLexicalQuery::Term(lexical) => access.store.search_hybrid(
-                                SearchRequest::new(&vector),
-                                lexical,
-                                &hybrid,
-                                options,
-                                control,
-                            ),
-                            FfiLexicalQuery::Structured(lexical) => {
-                                access.store.search_hybrid_structured(
-                                    SearchRequest::new(&vector),
-                                    lexical,
-                                    &hybrid,
-                                    options,
-                                    control,
-                                )
-                            }
-                        }
-                        .map_err(FfiError::fusion)?;
-                        result.mode = 2;
-                        fill_diagnostics(&mut result, &outcome.diagnostics)?;
-                        result.generation = outcome.generation;
-                        hits.try_reserve_exact(outcome.hits.len()).map_err(|_| {
-                            FfiError::new(
-                                ZeErrorCode::ZeErrOutOfMemory,
-                                "query hit allocation failed",
-                            )
-                        })?;
-                        for hit in outcome.hits {
-                            hits.push(ZeQueryHit {
-                                has_document: 1,
-                                has_revision: 0,
-                                doc_id: ffi_doc_id(hit.key),
-                                revision: 0,
-                                score: hit.fused_score,
-                                has_vector_score: bool_u32(hit.vector_squared_l2.is_some()),
-                                has_lexical_score: bool_u32(hit.lexical_bm25.is_some()),
-                                vector_squared_l2: hit.vector_squared_l2.unwrap_or(0.0),
-                                lexical_bm25: hit.lexical_bm25.unwrap_or(0.0),
-                            });
-                        }
-                    }
-                    (false, Some(lexical), None) => match lexical {
-                        FfiLexicalQuery::Term(lexical) => {
-                            let outcome = access
-                                .store
-                                .search_lexical(&lexical, request.k, control)
-                                .map_err(FfiError::lexical)?;
-                            result.mode = 1;
-                            fill_diagnostics(&mut result, &outcome.diagnostics)?;
-                            result.generation = outcome.generation;
-                            hits.try_reserve_exact(outcome.candidates.len())
-                                .map_err(|_| {
-                                    FfiError::new(
-                                        ZeErrorCode::ZeErrOutOfMemory,
-                                        "query hit allocation failed",
-                                    )
-                                })?;
-                            for candidate in outcome.candidates {
-                                hits.push(ZeQueryHit {
-                                    has_document: 1,
-                                    has_revision: 1,
-                                    doc_id: ffi_doc_id(candidate.document.doc_id()),
-                                    revision: candidate.document.revision().get(),
-                                    score: candidate.score,
-                                    has_vector_score: 0,
-                                    has_lexical_score: 1,
-                                    vector_squared_l2: 0.0,
-                                    lexical_bm25: candidate.score,
-                                });
-                            }
-                        }
-                        FfiLexicalQuery::Structured(lexical) => {
-                            let outcome = access
-                                .store
-                                .search_lexical_structured(&lexical, request.k, 64, control)
-                                .map_err(FfiError::lexical)?;
-                            result.mode = 1;
-                            fill_diagnostics(&mut result, &outcome.diagnostics)?;
-                            result.generation = outcome.generation;
-                            hits.try_reserve_exact(outcome.candidates.len())
-                                .map_err(|_| {
-                                    FfiError::new(
-                                        ZeErrorCode::ZeErrOutOfMemory,
-                                        "query hit allocation failed",
-                                    )
-                                })?;
-                            for candidate in outcome.candidates {
-                                hits.push(ZeQueryHit {
-                                    has_document: 1,
-                                    has_revision: 1,
-                                    doc_id: ffi_doc_id(candidate.document.doc_id()),
-                                    revision: candidate.document.revision().get(),
-                                    score: candidate.score,
-                                    has_vector_score: 0,
-                                    has_lexical_score: 1,
-                                    vector_squared_l2: 0.0,
-                                    lexical_bm25: candidate.score,
-                                });
-                            }
-                        }
-                    },
-                    (true, None, None) => {
-                        let outcome = access
-                            .store
-                            .search(SearchRequest::new(&vector), request.k, options, control)
-                            .map_err(FfiError::query)?;
-                        result.mode = 0;
-                        fill_diagnostics(&mut result, &outcome.diagnostics)?;
-                        result.generation = outcome.generation;
-                        hits.try_reserve_exact(outcome.candidates.len())
-                            .map_err(|_| {
-                                FfiError::new(
-                                    ZeErrorCode::ZeErrOutOfMemory,
-                                    "query hit allocation failed",
-                                )
-                            })?;
-                        for candidate in outcome.candidates {
-                            let (has_document, doc_id, revision) = match candidate.document() {
-                                Some(document) => {
-                                    (1, ffi_doc_id(document.doc_id()), document.revision().get())
-                                }
-                                None => (0, ZeDocId { high: 0, low: 0 }, 0),
-                            };
-                            let score = f64::from(candidate.score());
-                            hits.push(ZeQueryHit {
-                                has_document,
-                                has_revision: has_document,
-                                doc_id,
-                                revision,
-                                score,
-                                has_vector_score: 1,
-                                has_lexical_score: 0,
-                                vector_squared_l2: -score,
-                                lexical_bm25: 0.0,
-                            });
-                        }
-                    }
-                    _ => {
-                        return Err(FfiError::new(
-                            ZeErrorCode::ZeErrInternal,
-                            "query leg dispatch reached an impossible combination",
-                        ));
-                    }
-                }
+                let (mut result, hits, _) = run_query(&access, &request, abi_size, None)?;
                 let (hit_pointer, hit_count, allocation_generation) = publish_hits(hits)?;
                 result.abi_reserved = allocation_generation;
                 result.hits = hit_pointer;
@@ -3938,6 +3720,550 @@ pub extern "C" fn ze_query(
             })(),
         )
     })
+}
+
+/// Runs `ze_query` and also returns, for each hit, an excerpt of its stored
+/// text with the ranges the query matched. The request must carry a lexical
+/// leg and `snippet_bytes` must be nonzero.
+///
+/// Matching is the query's own: the store's analyzer re-reads the text pinned
+/// for the queried generation and marks every token whose analyzed term is
+/// one the lexical leg scored, so stemmed, folded and prefix-expanded forms
+/// are marked exactly as they matched. A document has one text field, so a
+/// hit has at most one snippet.
+///
+/// The excerpt starts at a matched token and covers `snippet_bytes` bytes,
+/// extended by at most three bytes to end on a character boundary. Of the
+/// windows starting at each match, the one covering the most distinct
+/// matches wins, then the most matches, then the earliest, so snippets are
+/// deterministic. A highlight is reported only when it lies wholly inside
+/// the excerpt. No ellipsis is inserted; `truncated_start` and
+/// `truncated_end` report a cut. Offsets are UTF-8 bytes from the start of
+/// the excerpt.
+///
+/// `snippets` holds exactly one entry per hit, in hit order. On success
+/// release `out_result` with `ze_query_result_free` and `out_snippets` with
+/// `ze_query_snippets_free`. Once both outputs validate, any failure leaves
+/// both zeroed. `ze_query` computes no snippet and reads no stored text for a
+/// flat-term query.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_query_with_snippets(
+    handle: ZeHandle,
+    request: *const ZeQueryRequest,
+    snippet_bytes: usize,
+    out_result: *mut ZeQueryResult,
+    out_snippets: *mut ZeQuerySnippets,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_query_with_snippets");
+        finish(
+            Some(handle),
+            (|| {
+                let access = registry::lookup(handle)?;
+                let request = marshal::read_struct(request)?;
+                if access.record_only && request.vector_len != 0 {
+                    return Err(FfiError::new(
+                        ZeErrorCode::ZeErrNoVectorSpace,
+                        "record-only namespace has no vector space",
+                    ));
+                }
+                let abi_size = marshal::validate_output(out_result)?;
+                let snippets_abi_size = marshal::validate_output(out_snippets)?;
+                marshal::write_output(out_result, empty_query_result(abi_size));
+                marshal::write_output(out_snippets, empty_query_snippets(snippets_abi_size));
+                let window = NonZeroUsize::new(snippet_bytes)
+                    .ok_or_else(|| FfiError::invalid("snippet_bytes must be nonzero"))?;
+                let (mut result, hits, snippets) =
+                    run_query(&access, &request, abi_size, Some(window))?;
+                if snippets.len() != hits.len() {
+                    return Err(FfiError::new(
+                        ZeErrorCode::ZeErrInternal,
+                        "query snippets are not aligned with its hits",
+                    ));
+                }
+                // A positive BM25 means a scored term occurs in the row, so the
+                // same analyzer must find it again. Fusion reports zero BM25
+                // for a row the lexical leg did not match.
+                if hits.iter().zip(&snippets).any(|(hit, snippet)| {
+                    hit.has_lexical_score == 1 && hit.lexical_bm25 > 0.0 && snippet.is_none()
+                }) {
+                    return Err(FfiError::new(
+                        ZeErrorCode::ZeErrInternal,
+                        "a lexical hit's stored text contains none of its matched terms",
+                    ));
+                }
+                let (snippet_pointer, snippet_count, snippet_generation) =
+                    publish_snippets(&snippets)?;
+                let (hit_pointer, hit_count, allocation_generation) = match publish_hits(hits) {
+                    Ok(published) => published,
+                    Err(error) => {
+                        registry::take_registered_result(
+                            snippet_pointer.cast::<u64>(),
+                            snippet_count,
+                            snippet_generation,
+                        )?;
+                        return Err(error);
+                    }
+                };
+                result.abi_reserved = allocation_generation;
+                result.hits = hit_pointer;
+                result.hit_count = hit_count;
+                marshal::write_output(
+                    out_snippets,
+                    ZeQuerySnippets {
+                        abi_size: snippets_abi_size,
+                        abi_reserved: snippet_generation,
+                        snippets: snippet_pointer,
+                        snippet_count,
+                    },
+                );
+                marshal::write_output(out_result, result);
+                Ok(())
+            })(),
+        )
+    })
+}
+
+/// Releases callee-owned query snippets; a zeroed value is a successful
+/// no-op. `snippets` is caller-owned; only its `snippets` allocation, which
+/// also holds every excerpt and highlight, is released.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_query_snippets_free(snippets: *mut ZeQuerySnippets) -> ZeErrorCode {
+    ffi_entry!(None, ZeErrorCode::ZeErrPanic, {
+        finish(
+            None,
+            (|| {
+                if snippets.is_null() {
+                    return Err(FfiError::invalid("query snippets pointer is null"));
+                }
+                if snippets.align_offset(align_of::<ZeQuerySnippets>()) != 0 {
+                    return Err(FfiError::invalid("query snippets pointer is misaligned"));
+                }
+                let abi_size = marshal::read_abi_size(snippets);
+                if abi_size == 0 {
+                    let zeroed = marshal::read_value(snippets);
+                    if zeroed.snippets.is_null() && zeroed.snippet_count == 0 {
+                        return Ok(());
+                    }
+                    return Err(FfiError::invalid(
+                        "zero-sized query snippets contain an allocation",
+                    ));
+                }
+                marshal::validate_abi_size::<ZeQuerySnippets>(abi_size)?;
+                let current = marshal::read_value(snippets);
+                if current.snippets.is_null() != (current.snippet_count == 0) {
+                    return Err(FfiError::invalid(
+                        "query snippets pointer and count disagree",
+                    ));
+                }
+                registry::take_registered_result(
+                    current.snippets.cast::<u64>(),
+                    current.snippet_count,
+                    current.abi_reserved,
+                )?;
+                marshal::write_output(snippets, empty_query_snippets(abi_size));
+                Ok(())
+            })(),
+        )
+    })
+}
+
+type QueryParts = (
+    ZeQueryResult,
+    Vec<ZeQueryHit>,
+    Vec<Option<zeppelin_embed::fts::query::OwnedLexicalSnippet>>,
+);
+
+/// The body `ze_query` and `ze_query_with_snippets` share. With no `window`
+/// it calls exactly the store methods `ze_query` always called and returns no
+/// snippets.
+fn run_query(
+    access: &registry::HandleAccess,
+    request: &ZeQueryRequest,
+    abi_size: u32,
+    window: Option<NonZeroUsize>,
+) -> Result<QueryParts, FfiError> {
+    if request.lexical_flags & !ZE_QUERY_LAST_AS_PREFIX != 0 {
+        return Err(FfiError::invalid(
+            "query lexical_flags contains unknown bits",
+        ));
+    }
+    if request.lexical_flags & ZE_QUERY_LAST_AS_PREFIX != 0 && request.text_len == 0 {
+        return Err(FfiError::invalid(
+            "ZE_QUERY_LAST_AS_PREFIX requires a lexical leg",
+        ));
+    }
+    if request.k == 0 {
+        return Err(FfiError::invalid("query k must be nonzero"));
+    }
+    if request.k > ZE_MAX_K {
+        return Err(FfiError::invalid("query k exceeds ZE_MAX_K"));
+    }
+    if request.vector_len != request.dimension {
+        return Err(FfiError::new(
+            ZeErrorCode::ZeErrDimensionMismatch,
+            "query vector length does not match its declared dimension",
+        ));
+    }
+    let has_vector = request.vector_len != 0;
+    let has_text = request.text_len != 0;
+    if !has_vector && !has_text {
+        return Err(FfiError::invalid(
+            "query needs a vector leg, a lexical leg, or both",
+        ));
+    }
+    if window.is_some() && !has_text {
+        return Err(FfiError::invalid("query snippets require a lexical leg"));
+    }
+    let tier = parse_tier(request)?;
+    if !has_vector && tier.is_some() {
+        return Err(FfiError::invalid("a search tier requires a vector leg"));
+    }
+    let hybrid = parse_hybrid(request, has_vector && has_text)?;
+    let vector = if has_vector {
+        let vector_bytes = request
+            .dimension
+            .checked_mul(size_of::<f32>())
+            .ok_or_else(|| FfiError::invalid("query dimension byte length overflows"))?;
+        marshal::checked_buffer_len(request.vector_len, size_of::<f32>(), vector_bytes)?;
+        marshal::copy_slice(request.vector, request.vector_len)?
+    } else {
+        Vec::new()
+    };
+    let lexical = if has_text {
+        let tokens = analyze_query_text(request.text, request.text_len)?;
+        Some(if request.lexical_flags & ZE_QUERY_LAST_AS_PREFIX == 0 {
+            FfiLexicalQuery::Term(term_query(tokens))
+        } else {
+            last_as_prefix_query(tokens, request.text_len)?
+        })
+    } else {
+        None
+    };
+    let mut options = SearchOptions::new(ScanOptions {
+        thread_budget: request.thread_budget,
+    });
+    if let Some(tier) = tier {
+        options = options.with_tier(tier);
+    }
+    let control = query_control_for(request.cancel_token, request.deadline_ns)?;
+    let mut result = empty_query_result(abi_size);
+    let mut hits = Vec::new();
+    let mut snippets = Vec::new();
+    match (has_vector, lexical, hybrid) {
+        (true, Some(lexical), Some(mut hybrid)) => {
+            if let Some(epoch) = access.epoch {
+                hybrid = hybrid.with_epoch(epoch);
+            }
+            let outcome = match (&lexical, window) {
+                (FfiLexicalQuery::Term(lexical), None) => access
+                    .store
+                    .search_hybrid(
+                        SearchRequest::new(&vector),
+                        lexical,
+                        &hybrid,
+                        options,
+                        control,
+                    )
+                    .map_err(FfiError::fusion)?,
+                (FfiLexicalQuery::Structured(lexical), None) => access
+                    .store
+                    .search_hybrid_structured(
+                        SearchRequest::new(&vector),
+                        lexical,
+                        &hybrid,
+                        options,
+                        control,
+                    )
+                    .map_err(FfiError::fusion)?,
+                (FfiLexicalQuery::Term(lexical), Some(window)) => {
+                    let (outcome, found) = access
+                        .store
+                        .search_hybrid_with_snippets(
+                            SearchRequest::new(&vector),
+                            lexical,
+                            &hybrid,
+                            options,
+                            control,
+                            window,
+                        )
+                        .map_err(FfiError::fusion)?;
+                    snippets = found.map_err(FfiError::materialization)?;
+                    outcome
+                }
+                (FfiLexicalQuery::Structured(lexical), Some(window)) => {
+                    let (outcome, found) = access
+                        .store
+                        .search_hybrid_structured_with_snippets(
+                            SearchRequest::new(&vector),
+                            lexical,
+                            &hybrid,
+                            options,
+                            control,
+                            window,
+                        )
+                        .map_err(FfiError::fusion)?;
+                    snippets = found.map_err(FfiError::materialization)?;
+                    outcome
+                }
+            };
+            result.mode = 2;
+            fill_diagnostics(&mut result, &outcome.diagnostics)?;
+            result.generation = outcome.generation;
+            hits.try_reserve_exact(outcome.hits.len()).map_err(|_| {
+                FfiError::new(ZeErrorCode::ZeErrOutOfMemory, "query hit allocation failed")
+            })?;
+            for hit in outcome.hits {
+                hits.push(ZeQueryHit {
+                    has_document: 1,
+                    has_revision: 0,
+                    doc_id: ffi_doc_id(hit.key),
+                    revision: 0,
+                    score: hit.fused_score,
+                    has_vector_score: bool_u32(hit.vector_squared_l2.is_some()),
+                    has_lexical_score: bool_u32(hit.lexical_bm25.is_some()),
+                    vector_squared_l2: hit.vector_squared_l2.unwrap_or(0.0),
+                    lexical_bm25: hit.lexical_bm25.unwrap_or(0.0),
+                });
+            }
+        }
+        (false, Some(lexical), None) => match lexical {
+            FfiLexicalQuery::Term(lexical) => {
+                let outcome = match window {
+                    None => access
+                        .store
+                        .search_lexical(&lexical, request.k, control)
+                        .map_err(FfiError::lexical)?,
+                    Some(window) => {
+                        let (outcome, found) = access
+                            .store
+                            .search_lexical_with_snippets(&lexical, request.k, window, control)
+                            .map_err(FfiError::lexical)?;
+                        snippets = found.into_iter().map(Some).collect();
+                        outcome
+                    }
+                };
+                result.mode = 1;
+                fill_diagnostics(&mut result, &outcome.diagnostics)?;
+                result.generation = outcome.generation;
+                hits.try_reserve_exact(outcome.candidates.len())
+                    .map_err(|_| {
+                        FfiError::new(ZeErrorCode::ZeErrOutOfMemory, "query hit allocation failed")
+                    })?;
+                for candidate in outcome.candidates {
+                    hits.push(ZeQueryHit {
+                        has_document: 1,
+                        has_revision: 1,
+                        doc_id: ffi_doc_id(candidate.document.doc_id()),
+                        revision: candidate.document.revision().get(),
+                        score: candidate.score,
+                        has_vector_score: 0,
+                        has_lexical_score: 1,
+                        vector_squared_l2: 0.0,
+                        lexical_bm25: candidate.score,
+                    });
+                }
+            }
+            FfiLexicalQuery::Structured(lexical) => {
+                let outcome = access
+                    .store
+                    .search_lexical_structured(
+                        &lexical,
+                        request.k,
+                        window.map_or(64, NonZeroUsize::get),
+                        control,
+                    )
+                    .map_err(FfiError::lexical)?;
+                result.mode = 1;
+                fill_diagnostics(&mut result, &outcome.diagnostics)?;
+                result.generation = outcome.generation;
+                hits.try_reserve_exact(outcome.candidates.len())
+                    .map_err(|_| {
+                        FfiError::new(ZeErrorCode::ZeErrOutOfMemory, "query hit allocation failed")
+                    })?;
+                for candidate in outcome.candidates {
+                    hits.push(ZeQueryHit {
+                        has_document: 1,
+                        has_revision: 1,
+                        doc_id: ffi_doc_id(candidate.document.doc_id()),
+                        revision: candidate.document.revision().get(),
+                        score: candidate.score,
+                        has_vector_score: 0,
+                        has_lexical_score: 1,
+                        vector_squared_l2: 0.0,
+                        lexical_bm25: candidate.score,
+                    });
+                    if window.is_some() {
+                        snippets.push(Some(candidate.snippet));
+                    }
+                }
+            }
+        },
+        (true, None, None) => {
+            let outcome = access
+                .store
+                .search(SearchRequest::new(&vector), request.k, options, control)
+                .map_err(FfiError::query)?;
+            result.mode = 0;
+            fill_diagnostics(&mut result, &outcome.diagnostics)?;
+            result.generation = outcome.generation;
+            hits.try_reserve_exact(outcome.candidates.len())
+                .map_err(|_| {
+                    FfiError::new(ZeErrorCode::ZeErrOutOfMemory, "query hit allocation failed")
+                })?;
+            for candidate in outcome.candidates {
+                let (has_document, doc_id, revision) = match candidate.document() {
+                    Some(document) => (1, ffi_doc_id(document.doc_id()), document.revision().get()),
+                    None => (0, ZeDocId { high: 0, low: 0 }, 0),
+                };
+                let score = f64::from(candidate.score());
+                hits.push(ZeQueryHit {
+                    has_document,
+                    has_revision: has_document,
+                    doc_id,
+                    revision,
+                    score,
+                    has_vector_score: 1,
+                    has_lexical_score: 0,
+                    vector_squared_l2: -score,
+                    lexical_bm25: 0.0,
+                });
+            }
+        }
+        _ => {
+            return Err(FfiError::new(
+                ZeErrorCode::ZeErrInternal,
+                "query leg dispatch reached an impossible combination",
+            ));
+        }
+    }
+    Ok((result, hits, snippets))
+}
+
+fn empty_query_snippets(abi_size: u32) -> ZeQuerySnippets {
+    ZeQuerySnippets {
+        abi_size,
+        abi_reserved: 0,
+        snippets: std::ptr::null_mut(),
+        snippet_count: 0,
+    }
+}
+
+fn snippet_arena_error() -> FfiError {
+    FfiError::new(
+        ZeErrorCode::ZeErrInternal,
+        "query snippet arena is inconsistent",
+    )
+}
+
+/// Packs every snippet, its highlights and its excerpt bytes into one
+/// registered arena: the snippet array, then all highlights, then all text.
+fn publish_snippets(
+    snippets: &[Option<zeppelin_embed::fts::query::OwnedLexicalSnippet>],
+) -> Result<(*mut ZeQuerySnippet, usize, u32), FfiError> {
+    if snippets.is_empty() {
+        return Ok((std::ptr::null_mut(), 0, 0));
+    }
+    let present = || snippets.iter().flatten();
+    let highlight_count = present().try_fold(0_usize, |total, snippet| {
+        total
+            .checked_add(snippet.highlights.len())
+            .ok_or_else(snippet_arena_error)
+    })?;
+    let text_bytes = present().try_fold(0_usize, |total, snippet| {
+        total
+            .checked_add(snippet.text.len())
+            .ok_or_else(snippet_arena_error)
+    })?;
+    let highlight_offset = snippets
+        .len()
+        .checked_mul(size_of::<ZeQuerySnippet>())
+        .ok_or_else(snippet_arena_error)?;
+    let text_offset = highlight_count
+        .checked_mul(size_of::<ZeSnippetHighlight>())
+        .and_then(|bytes| bytes.checked_add(highlight_offset))
+        .ok_or_else(snippet_arena_error)?;
+    let arena_bytes = text_offset
+        .checked_add(text_bytes)
+        .ok_or_else(snippet_arena_error)?;
+    let words = arena_bytes.div_ceil(size_of::<u64>());
+    let mut arena = Vec::<u64>::new();
+    arena.try_reserve_exact(words).map_err(|_| {
+        FfiError::new(
+            ZeErrorCode::ZeErrOutOfMemory,
+            "query snippet arena allocation failed",
+        )
+    })?;
+    arena.resize(words, 0);
+    let mut arena = arena.into_boxed_slice();
+    let arena_pointer = arena.as_mut_ptr();
+    let output_snippets = arena_pointer.cast::<ZeQuerySnippet>();
+    let mut highlight_pointer =
+        unsafe { arena_pointer.cast::<u8>().add(highlight_offset) }.cast::<ZeSnippetHighlight>();
+    let mut text_pointer = unsafe { arena_pointer.cast::<u8>().add(text_offset) };
+    for (index, snippet) in snippets.iter().enumerate() {
+        let mut output = ZeQuerySnippet {
+            has_snippet: 0,
+            truncated_start: 0,
+            truncated_end: 0,
+            reserved: 0,
+            text: std::ptr::null(),
+            text_len: 0,
+            highlights: std::ptr::null(),
+            highlight_count: 0,
+        };
+        if let Some(snippet) = snippet {
+            let source_start =
+                usize::try_from(snippet.source.start).map_err(|_| snippet_arena_error())?;
+            let source_end =
+                usize::try_from(snippet.source.end).map_err(|_| snippet_arena_error())?;
+            if source_end.checked_sub(source_start) != Some(snippet.text.len())
+                || source_end > snippet.source_len
+            {
+                return Err(snippet_arena_error());
+            }
+            output.has_snippet = 1;
+            output.truncated_start = bool_u32(source_start > 0);
+            output.truncated_end = bool_u32(source_end < snippet.source_len);
+            if !snippet.text.is_empty() {
+                output.text = text_pointer;
+                output.text_len = snippet.text.len();
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        snippet.text.as_ptr(),
+                        text_pointer,
+                        snippet.text.len(),
+                    );
+                    text_pointer = text_pointer.add(snippet.text.len());
+                }
+            }
+            if !snippet.highlights.is_empty() {
+                output.highlights = highlight_pointer;
+                output.highlight_count = snippet.highlights.len();
+                for highlight in &snippet.highlights {
+                    let start = usize::try_from(highlight.start)
+                        .ok()
+                        .and_then(|start| start.checked_sub(source_start))
+                        .ok_or_else(snippet_arena_error)?;
+                    let end = usize::try_from(highlight.end)
+                        .ok()
+                        .and_then(|end| end.checked_sub(source_start))
+                        .ok_or_else(snippet_arena_error)?;
+                    if start >= end || end > snippet.text.len() {
+                        return Err(snippet_arena_error());
+                    }
+                    unsafe {
+                        std::ptr::write(highlight_pointer, ZeSnippetHighlight { start, end });
+                        highlight_pointer = highlight_pointer.add(1);
+                    }
+                }
+            }
+        }
+        unsafe { std::ptr::write(output_snippets.add(index), output) };
+    }
+    let generation = registry::register_result_arena(arena_pointer, arena.len(), snippets.len())?;
+    let _raw = Box::into_raw(arena);
+    Ok((output_snippets, snippets.len(), generation))
 }
 
 /// Releases a callee-owned query hit array; a zeroed result is a successful

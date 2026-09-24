@@ -225,6 +225,33 @@ which carries identity only. The result carries the queried `generation`, the
 `mode` that ran, the `approximate`, `exactRescore`, and `budgetExhausted`
 flags, and a `fusion` report when both legs ran.
 
+Set `snippetBytes` to also get an excerpt of each hit's stored text with the
+matched terms marked. The engine marks them with the same analyzer and the
+same scored terms the query used, so stemmed, accent-folded, and
+prefix-expanded forms are marked exactly as they matched. Without
+`snippetBytes` the query reads no extra text.
+
+```js
+const { hits } = store.query({ text: 'harbour cafe', k: 10, snippetBytes: 120 });
+for (const { snippet } of hits) {
+  if (snippet === undefined) continue; // a hybrid hit the text did not match
+  const marked = snippet.highlights.map(({ start, end }) => snippet.text.slice(start, end));
+  const prefix = snippet.truncatedStart ? '…' : '';
+  const suffix = snippet.truncatedEnd ? '…' : '';
+  console.log(prefix + snippet.text + suffix, marked);
+}
+```
+
+`highlights` are ascending, non-overlapping `{ start, end }` ranges in UTF-16
+code units into `snippet.text`, so `String.prototype.slice` takes them
+directly. The excerpt starts at a matched word and covers `snippetBytes` bytes
+of UTF-8, plus at most 3 to finish a character; the window with the most
+distinct matches wins. The engine adds no ellipsis; `truncatedStart` and
+`truncatedEnd` say where the excerpt was cut. A document has one text field, so
+a hit has at most one `snippet`. It is absent only on a hybrid hit whose text
+contains no query term. The query operators are terms and a trailing prefix;
+a quoted phrase is not matched as a phrase, so each of its terms is marked.
+
 A query stops early on either a `deadlineNs` or a `cancelToken`, never both.
 A `CancellationToken` owns an engine handle, so close it:
 

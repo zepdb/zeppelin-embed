@@ -26,6 +26,9 @@
 //! nearest boundary rather than truncated inward, because cutting a
 //! multibyte character in half is the classic snippet crash.
 
+use std::num::NonZeroUsize;
+
+use super::query::OwnedLexicalSnippet;
 use super::tokenizer::{Analyzer, TokenOffset};
 
 /// One highlighted range within a field.
@@ -150,12 +153,43 @@ pub fn best_window(
     if !stored {
         return Err(SnippetError::FieldNotStored);
     }
-    if window_bytes == 0 {
+    let Some(window_bytes) = NonZeroUsize::new(window_bytes) else {
         return Err(SnippetError::ZeroWindow);
-    }
+    };
+    Ok(select_window(analyzer, text, terms, window_bytes))
+}
+
+/// Chooses the best window as owned text with absolute source ranges.
+///
+/// The same selection as [`best_window`], for a caller that already holds
+/// stored text and a nonzero window, so neither typed error can arise.
+/// Returns `None` when no term occurs in `text`.
+#[must_use]
+pub fn owned_window(
+    analyzer: &Analyzer,
+    text: &str,
+    terms: &[Vec<u8>],
+    window_bytes: NonZeroUsize,
+) -> Option<OwnedLexicalSnippet> {
+    let snippet = select_window(analyzer, text, terms, window_bytes)?;
+    Some(OwnedLexicalSnippet {
+        text: snippet.text(text)?.to_owned(),
+        source: snippet.window,
+        highlights: snippet.highlights,
+        source_len: text.len(),
+    })
+}
+
+fn select_window(
+    analyzer: &Analyzer,
+    text: &str,
+    terms: &[Vec<u8>],
+    window_bytes: NonZeroUsize,
+) -> Option<Snippet> {
+    let window_bytes = window_bytes.get();
     let matches = match_offsets(analyzer, text, terms);
     if matches.is_empty() {
-        return Ok(None);
+        return None;
     }
 
     // Each match is a candidate anchor; the window starts at it.
@@ -201,14 +235,12 @@ pub fn best_window(
         }
     }
 
-    let Some((_, _, window)) = best else {
-        return Ok(None);
-    };
+    let (_, _, window) = best?;
     let highlights = matches
         .into_iter()
         .filter(|range| range.start >= window.start && range.end <= window.end)
         .collect();
-    Ok(Some(Snippet { window, highlights }))
+    Some(Snippet { window, highlights })
 }
 
 #[cfg(test)]

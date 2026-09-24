@@ -2422,6 +2422,85 @@ typedef struct ZeQueryResult {
 } ZeQueryResult;
 
 /*
+ One matched range inside a snippet excerpt.
+ */
+typedef struct ZeSnippetHighlight {
+    /*
+     Inclusive start, in UTF-8 bytes from the start of the excerpt `text`.
+     */
+    size_t start;
+    /*
+     Exclusive end, in UTF-8 bytes from the start of the excerpt `text`.
+     */
+    size_t end;
+} ZeSnippetHighlight;
+
+/*
+ One hit's excerpt of its document's stored text, with the ranges the
+ query matched. Every offset is a UTF-8 character boundary.
+ */
+typedef struct ZeQuerySnippet {
+    /*
+     One when this hit has a snippet. Zero when the document has no stored
+     text or its text contains none of the query's matched terms, which
+     happens only for a hybrid hit whose `lexical_bm25` is zero. A hit with
+     a positive `lexical_bm25` always has a snippet.
+     */
+    uint32_t has_snippet;
+    /*
+     One when the excerpt starts after the start of the stored text.
+     */
+    uint32_t truncated_start;
+    /*
+     One when the excerpt ends before the end of the stored text.
+     */
+    uint32_t truncated_end;
+    /*
+     Always zero.
+     */
+    uint32_t reserved;
+    /*
+     Callee-owned UTF-8 excerpt, not NUL-terminated.
+     */
+    const uint8_t *text;
+    /*
+     Number of `text` bytes.
+     */
+    size_t text_len;
+    /*
+     Callee-owned matched ranges, ascending and non-overlapping.
+     */
+    const struct ZeSnippetHighlight *highlights;
+    /*
+     Number of `highlights`.
+     */
+    size_t highlight_count;
+} ZeQuerySnippet;
+
+/*
+ Callee-owned snippets aligned one-to-one with a query's hits; release with
+ `ze_query_snippets_free`.
+ */
+typedef struct ZeQuerySnippets {
+    /*
+     Caller-provided structure size.
+     */
+    uint32_t abi_size;
+    /*
+     Caller sets zero; callee returns an opaque allocation generation.
+     */
+    uint32_t abi_reserved;
+    /*
+     Callee-owned snippet array, or null when `snippet_count` is zero.
+     */
+    struct ZeQuerySnippet *snippets;
+    /*
+     Number of snippets; equals the query result's `hit_count`.
+     */
+    size_t snippet_count;
+} ZeQuerySnippets;
+
+/*
  Explicit seal request.
  */
 typedef struct ZeSealRequest {
@@ -2958,6 +3037,45 @@ ze_error_code ze_search_filtered(ze_handle handle,
 ze_error_code ze_query(ze_handle handle,
                        const struct ZeQueryRequest *request,
                        struct ZeQueryResult *out_result);
+
+/*
+ Runs `ze_query` and also returns, for each hit, an excerpt of its stored
+ text with the ranges the query matched. The request must carry a lexical
+ leg and `snippet_bytes` must be nonzero.
+
+ Matching is the query's own: the store's analyzer re-reads the text pinned
+ for the queried generation and marks every token whose analyzed term is
+ one the lexical leg scored, so stemmed, folded and prefix-expanded forms
+ are marked exactly as they matched. A document has one text field, so a
+ hit has at most one snippet.
+
+ The excerpt starts at a matched token and covers `snippet_bytes` bytes,
+ extended by at most three bytes to end on a character boundary. Of the
+ windows starting at each match, the one covering the most distinct
+ matches wins, then the most matches, then the earliest, so snippets are
+ deterministic. A highlight is reported only when it lies wholly inside
+ the excerpt. No ellipsis is inserted; `truncated_start` and
+ `truncated_end` report a cut. Offsets are UTF-8 bytes from the start of
+ the excerpt.
+
+ `snippets` holds exactly one entry per hit, in hit order. On success
+ release `out_result` with `ze_query_result_free` and `out_snippets` with
+ `ze_query_snippets_free`. Once both outputs validate, any failure leaves
+ both zeroed. `ze_query` computes no snippet and reads no stored text for a
+ flat-term query.
+ */
+ze_error_code ze_query_with_snippets(ze_handle handle,
+                                     const struct ZeQueryRequest *request,
+                                     size_t snippet_bytes,
+                                     struct ZeQueryResult *out_result,
+                                     struct ZeQuerySnippets *out_snippets);
+
+/*
+ Releases callee-owned query snippets; a zeroed value is a successful
+ no-op. `snippets` is caller-owned; only its `snippets` allocation, which
+ also holds every excerpt and highlight, is released.
+ */
+ze_error_code ze_query_snippets_free(struct ZeQuerySnippets *snippets);
 
 /*
  Releases a callee-owned query hit array; a zeroed result is a successful

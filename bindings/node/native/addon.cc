@@ -2727,6 +2727,91 @@ napi_value Search(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Advances a UTF-16 position across `text[*byte_cursor, byte_offset)`.
+ *
+ * The engine reports snippet ranges in UTF-8 bytes; JavaScript strings index
+ * UTF-16 code units. This is a unit conversion only: every lead byte starts
+ * one scalar value, which is one code unit, or two (a surrogate pair) for a
+ * four-byte sequence. No text is analysed here. The engine guarantees each
+ * offset is a character boundary inside the excerpt and ranges ascend; a
+ * violation is a native contract failure, not a value to repair.
+ */
+bool AdvanceUtf16(napi_env env, const uint8_t *text, size_t text_len,
+                  size_t byte_offset, size_t *byte_cursor,
+                  uint32_t *unit_cursor) {
+  if (byte_offset < *byte_cursor || byte_offset > text_len) {
+    napi_throw_error(env, "ERR_ZEPPELIN_NATIVE",
+                     "query returned a snippet range outside its excerpt");
+    return false;
+  }
+  for (size_t index = *byte_cursor; index < byte_offset; ++index) {
+    const uint8_t byte = text[index];
+    if ((byte & 0xC0) != 0x80)
+      *unit_cursor += byte >= 0xF0 ? 2 : 1;
+  }
+  *byte_cursor = byte_offset;
+  return true;
+}
+
+/** One `ZeQuerySnippet` as `{ text, highlights, truncatedStart, truncatedEnd }`. */
+bool CreateSnippet(napi_env env, const ZeQuerySnippet &snippet,
+                   napi_value *output) {
+  const uint8_t *text = snippet.text;
+  napi_value excerpt;
+  napi_value highlights;
+  napi_value truncated_start;
+  napi_value truncated_end;
+  if (!NapiOk(env, napi_create_object(env, output), "create snippet") ||
+      !NapiOk(env,
+              napi_create_string_utf8(
+                  env,
+                  snippet.text_len == 0 ? ""
+                                        : reinterpret_cast<const char *>(text),
+                  snippet.text_len, &excerpt),
+              "create snippet text") ||
+      !SetNamed(env, *output, "text", excerpt) ||
+      !NapiOk(env,
+              napi_create_array_with_length(env, snippet.highlight_count,
+                                            &highlights),
+              "create snippet highlights"))
+    return false;
+  size_t byte_cursor = 0;
+  uint32_t unit_cursor = 0;
+  for (size_t index = 0; index < snippet.highlight_count; ++index) {
+    const ZeSnippetHighlight &range = snippet.highlights[index];
+    napi_value highlight;
+    napi_value start;
+    napi_value end;
+    if (!AdvanceUtf16(env, text, snippet.text_len, range.start, &byte_cursor,
+                      &unit_cursor) ||
+        !NapiOk(env, napi_create_uint32(env, unit_cursor, &start),
+                "create highlight start") ||
+        !AdvanceUtf16(env, text, snippet.text_len, range.end, &byte_cursor,
+                      &unit_cursor) ||
+        !NapiOk(env, napi_create_uint32(env, unit_cursor, &end),
+                "create highlight end") ||
+        !NapiOk(env, napi_create_object(env, &highlight),
+                "create highlight") ||
+        !SetNamed(env, highlight, "start", start) ||
+        !SetNamed(env, highlight, "end", end) ||
+        !NapiOk(env, napi_set_element(env, highlights, index, highlight),
+                "append highlight"))
+      return false;
+  }
+  return SetNamed(env, *output, "highlights", highlights) &&
+         NapiOk(env,
+                napi_get_boolean(env, snippet.truncated_start != 0,
+                                 &truncated_start),
+                "create truncatedStart") &&
+         SetNamed(env, *output, "truncatedStart", truncated_start) &&
+         NapiOk(env,
+                napi_get_boolean(env, snippet.truncated_end != 0,
+                                 &truncated_end),
+                "create truncatedEnd") &&
+         SetNamed(env, *output, "truncatedEnd", truncated_end);
+}
+
+/**
  * `ze_query`: one structured query with a vector leg, a lexical leg, or exact
  * hybrid fusion of both.
  *
@@ -2893,12 +2978,57 @@ napi_value Query(napi_env env, napi_callback_info info) {
                            &request.cancel_token))
       return nullptr;
 
+    // Snippets are opt-in. Without `snippetBytes` the addon calls `ze_query`
+    // exactly as before, so the default path reads no extra stored text.
+    // napi_get_value_uint32 would silently wrap a negative or fractional
+    // value, so the number is read as a double and checked here.
+    napi_value snippet_value;
+    bool has_snippets = false;
+    size_t snippet_bytes = 0;
+    if (!GetNamed(env, args[0], "snippetBytes", &snippet_value, &has_snippets))
+      return nullptr;
+    if (has_snippets) {
+      napi_valuetype snippet_type;
+      if (!NapiOk(env, napi_typeof(env, snippet_value, &snippet_type),
+                  "inspect snippetBytes"))
+        return nullptr;
+      if (snippet_type != napi_number) {
+        napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE",
+                              "snippetBytes must be a number");
+        return nullptr;
+      }
+      double value = 0.0;
+      if (!NapiOk(env, napi_get_value_double(env, snippet_value, &value),
+                  "read snippetBytes"))
+        return nullptr;
+      if (!(value >= 1.0 && value <= 4294967295.0) ||
+          std::trunc(value) != value) {
+        napi_throw_range_error(
+            env, "ERR_OUT_OF_RANGE",
+            "snippetBytes must be an integer from 1 to 4294967295");
+        return nullptr;
+      }
+      snippet_bytes = static_cast<size_t>(value);
+    }
+
     ZeQueryResult native{};
     native.abi_size = sizeof(native);
-    const ze_error_code status = ze_query(store->handle, &request, &native);
+    ZeQuerySnippets snippets{};
+    snippets.abi_size = sizeof(snippets);
+    const ze_error_code status =
+        has_snippets ? ze_query_with_snippets(store->handle, &request,
+                                              snippet_bytes, &native, &snippets)
+                     : ze_query(store->handle, &request, &native);
     if (status != ZE_OK)
       return ThrowZeppelin(env, store->handle, status);
     ResultOwner<ZeQueryResult, ze_query_result_free> owner(&native);
+    ResultOwner<ZeQuerySnippets, ze_query_snippets_free> snippet_owner(
+        has_snippets ? &snippets : nullptr);
+    if (has_snippets && snippets.snippet_count != native.hit_count) {
+      napi_throw_error(env, "ERR_ZEPPELIN_NATIVE",
+                       "query snippets are not aligned with its hits");
+      return nullptr;
+    }
 
     napi_value hits;
     if (!NapiOk(env,
@@ -2948,6 +3078,12 @@ napi_value Query(napi_env env, napi_callback_info info) {
                     napi_create_double(env, hit.lexical_bm25, &lexical_score),
                     "create lexical score") ||
             !SetNamed(env, result, "lexicalBm25", lexical_score))
+          return nullptr;
+      }
+      if (has_snippets && snippets.snippets[index].has_snippet != 0) {
+        napi_value snippet;
+        if (!CreateSnippet(env, snippets.snippets[index], &snippet) ||
+            !SetNamed(env, result, "snippet", snippet))
           return nullptr;
       }
       if (!NapiOk(env, napi_set_element(env, hits, index, result),
@@ -3029,6 +3165,11 @@ napi_value Query(napi_env env, napi_callback_info info) {
         return nullptr;
     }
 
+    if (has_snippets) {
+      const ze_error_code snippet_free_status = snippet_owner.FreeNow();
+      if (snippet_free_status != ZE_OK)
+        return ThrowZeppelin(env, store->handle, snippet_free_status);
+    }
     const ze_error_code free_status = owner.FreeNow();
     if (free_status != ZE_OK)
       return ThrowZeppelin(env, store->handle, free_status);

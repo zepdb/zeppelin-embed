@@ -366,3 +366,70 @@ fn freeing_a_foreign_or_already_released_buffer_is_a_typed_error_not_a_double_fr
         ZeErrorCode::ZeErrInvalidArgument
     );
 }
+
+#[test]
+fn query_snippets_are_released_by_their_free_and_the_heap_stays_flat() {
+    let _heap_guard = HEAP_TEST_GUARD.lock().expect("heap test guard");
+    let store = common::TestStore::new();
+    let texts = [
+        "harbour lights at dusk",
+        "the harbour master",
+        "Café 🚀 harbour",
+    ];
+    let vector = vec![0.5_f32; DIMENSION];
+    let documents = texts
+        .iter()
+        .enumerate()
+        .map(|(index, text)| ZeIngestDocument {
+            abi_size: size_of::<ZeIngestDocument>() as u32,
+            abi_reserved: 0,
+            doc_id: ZeDocId {
+                high: 0,
+                low: index as u64 + 1,
+            },
+            revision: 1,
+            timestamp: index as i64,
+            vector: vector.as_ptr(),
+            vector_len: vector.len(),
+            metadata: std::ptr::null(),
+            metadata_len: 0,
+            text: text.as_ptr(),
+            text_len: text.len(),
+        })
+        .collect::<Vec<_>>();
+    let ingest = ZeIngestRequest {
+        abi_size: size_of::<ZeIngestRequest>() as u32,
+        abi_reserved: 0,
+        documents: documents.as_ptr(),
+        document_count: documents.len(),
+        dimension: DIMENSION,
+    };
+    let mut report: ZeMutationReport = common::sized_zeroed();
+    assert_eq!(
+        ze_ingest(store.handle, &ingest, &mut report),
+        ZeErrorCode::ZeOk
+    );
+
+    let text = b"harbour";
+    let mut lexical = common::valid_query_request(&[]);
+    lexical.text = text.as_ptr();
+    lexical.text_len = text.len();
+    lexical.k = 3;
+    let mut hybrid = common::valid_query_request(&vector);
+    hybrid.text = text.as_ptr();
+    hybrid.text_len = text.len();
+    hybrid.k = 3;
+    for request in [lexical, hybrid] {
+        assert_heap_flat("ze_query_with_snippets/ze_query_snippets_free", || {
+            let mut result: ZeQueryResult = common::sized_zeroed();
+            let mut snippets: ZeQuerySnippets = common::sized_zeroed();
+            assert_eq!(
+                ze_query_with_snippets(store.handle, &request, 32, &mut result, &mut snippets),
+                ZeErrorCode::ZeOk
+            );
+            assert_eq!(snippets.snippet_count, 3);
+            assert_eq!(ze_query_snippets_free(&mut snippets), ZeErrorCode::ZeOk);
+            assert_eq!(ze_query_result_free(&mut result), ZeErrorCode::ZeOk);
+        });
+    }
+}

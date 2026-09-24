@@ -522,6 +522,14 @@ fn every_phase_two_struct_has_the_frozen_size_and_field_offsets() {
         tokenizer_epoch: 88, dims_touched: 96, bytes_read: 104,
         docs_evaluated: 112, postings_decoded: 120
     });
+    assert_layout!(ZeSnippetHighlight, 16, 8, { start: 0, end: 8 });
+    assert_layout!(ZeQuerySnippet, 48, 8, {
+        has_snippet: 0, truncated_start: 4, truncated_end: 8, reserved: 12,
+        text: 16, text_len: 24, highlights: 32, highlight_count: 40
+    });
+    assert_layout!(ZeQuerySnippets, 24, 8, {
+        abi_size: 0, abi_reserved: 4, snippets: 8, snippet_count: 16
+    });
 }
 
 #[test]
@@ -566,6 +574,7 @@ const POISON_TABLE_NAMES: &[&str] = &[
     "ze_maintain",
     "ze_purge",
     "ze_query",
+    "ze_query_with_snippets",
     "ze_scan",
     "ze_scan_ordered",
     "ze_scan_result_free",
@@ -907,6 +916,18 @@ fn poison_function_table() -> Vec<(&'static str, PoisonCall)> {
             let request = common::valid_query_request(&context.vector);
             let mut result: ZeQueryResult = common::sized_zeroed();
             ze_query(context.store.handle, &request, &mut result)
+        }),
+        ("ze_query_with_snippets", |context| {
+            let request = common::valid_query_request(&context.vector);
+            let mut result: ZeQueryResult = common::sized_zeroed();
+            let mut snippets: ZeQuerySnippets = common::sized_zeroed();
+            ze_query_with_snippets(
+                context.store.handle,
+                &request,
+                64,
+                &mut result,
+                &mut snippets,
+            )
         }),
         ("ze_scan", |context| {
             let request = ZeScanRequest {
