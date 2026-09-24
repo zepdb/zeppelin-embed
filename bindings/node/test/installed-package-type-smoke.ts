@@ -15,9 +15,13 @@ const store = new Store('typecheck-index');
 const generation: bigint = store.ingest(documents, 2).generation;
 const hits: SearchHit[] = store.search(new Float32Array([1, 0]), 1);
 
-const records = openNamespace('typecheck-records', 'notes', {
-  vectorSpace: { dimensions: 2 },
-});
+const records = openNamespace(
+  'typecheck-records',
+  'notes',
+  { vectorSpace: { dimensions: 2 } },
+  { autoSealRows: 2048 },
+);
+const sealed: bigint = records.seal().generation;
 const token = new CancellationToken();
 const result: QueryResult = records.query({
   text: 'harbour',
@@ -32,7 +36,7 @@ const mode: 'vector' | 'lexical' | 'hybrid' = result.mode;
 const lexicalScore: number | undefined = result.hits[0]?.lexicalBm25;
 const effectiveAlpha: number | undefined = result.fusion?.effectiveAlpha;
 
-console.log(ABI_VERSION, generation, hits, mode, lexicalScore, effectiveAlpha);
+console.log(ABI_VERSION, generation, sealed, hits, mode, lexicalScore, effectiveAlpha);
 token.close();
 records.close();
 store.close();

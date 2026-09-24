@@ -52,6 +52,24 @@ Omit `vectorSpace` for a record-only namespace. Scan cursors are opaque and
 must be passed back unchanged; a cursor invalidated by a write throws
 `ZE_ERR_SCAN_STALE`.
 
+Writes land in an active segment backed by the write-ahead log. `seal()`
+turns the active segment into an immutable segment and absorbs the log
+records it covers, so opening the store again reads the sealed segment
+instead of replaying those writes. Seal after a bulk load, when the
+application is idle, or let the store do it with `autoSealRows`:
+
+```js
+const store = openNamespace('my-database', 'notes', { attributes: [] }, {
+  autoSealRows: 2048,
+});
+store.seal(); // { generation }; a no-op when nothing is unsealed
+```
+
+With `autoSealRows`, the store seals once at open and again before the write
+that follows that many written documents since the last seal. A smaller value
+keeps each write cheaper, because a write copies the active segment; a larger
+value makes fewer sealed segments.
+
 `query` runs one structured query. `text` selects the lexical leg, `vector`
 selects the vector leg, and both together run hybrid fusion; a request with
 neither is refused.

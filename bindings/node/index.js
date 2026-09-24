@@ -147,17 +147,76 @@ class CancellationToken {
   }
 }
 
+/**
+ * Reads and validates the `autoSealRows` open option before any handle is
+ * opened, so a bad value never leaks a native store.
+ */
+function autoSealRowsOption(options) {
+  const rows = options?.autoSealRows;
+  if (rows === undefined) return 0;
+  if (!Number.isSafeInteger(rows) || rows < 1) {
+    throw new RangeError('autoSealRows must be a positive safe integer');
+  }
+  if (options.readOnly === true) {
+    throw new RangeError('autoSealRows needs a writable store; readOnly is true');
+  }
+  return rows;
+}
+
+/**
+ * Attaches a freshly opened native handle and applies the auto-seal policy.
+ *
+ * With `autoSealRows` set, the store seals once at open, which absorbs any WAL
+ * tail an earlier session left unsealed, and again before the write that
+ * would follow `autoSealRows` written documents. Sealing before the write
+ * rather than after it means an error always reports a write that did not
+ * happen, never one that did.
+ */
+function attach(store, open, autoSealRows) {
+  store._native = callNative(open);
+  store._autoSealRows = autoSealRows;
+  store._unsealedWrites = 0;
+  if (autoSealRows > 0) {
+    try {
+      store.seal();
+    } catch (error) {
+      try {
+        store._native.close();
+      } catch {
+        // The seal error is the one to report.
+      }
+      throw error;
+    }
+  }
+  return store;
+}
+
 class Store {
   constructor(storePath, options = {}) {
-    this._native = callNative(() => new binding.NativeStore(storePath, options));
+    attach(
+      this,
+      () => new binding.NativeStore(storePath, options),
+      autoSealRowsOption(options),
+    );
+  }
+
+  _write(count, write) {
+    if (this._autoSealRows > 0 && this._unsealedWrites >= this._autoSealRows) {
+      this.seal();
+    }
+    const report = callNative(write);
+    this._unsealedWrites += count;
+    return report;
   }
 
   ingest(documents, dimension) {
-    return callNative(() => this._native.ingest(documents, dimension));
+    return this._write(documents?.length ?? 0, () =>
+      this._native.ingest(documents, dimension),
+    );
   }
 
   upsert(documents) {
-    return callNative(() => this._native.upsert(documents));
+    return this._write(documents?.length ?? 0, () => this._native.upsert(documents));
   }
 
   get(ids, fields) {
@@ -165,7 +224,7 @@ class Store {
   }
 
   delete(ids) {
-    return callNative(() => this._native.delete(ids));
+    return this._write(ids?.length ?? 0, () => this._native.delete(ids));
   }
 
   scan(request) {
@@ -202,17 +261,28 @@ class Store {
     return callNative(() => this._native.query(native));
   }
 
+  /**
+   * Seals the active segment into an immutable segment and absorbs the WAL
+   * prefix it covers, so a later open does not replay those writes. An empty
+   * active segment is a no-op that returns the current generation.
+   */
+  seal() {
+    const report = callNative(() => this._native.seal());
+    this._unsealedWrites = 0;
+    return report;
+  }
+
   close() {
     return callNative(() => this._native.close());
   }
 }
 
 function openNamespace(root, name, spec, options = {}) {
-  return callNative(() => {
-    const store = Object.create(Store.prototype);
-    store._native = new binding.NativeStore(root, options, name, spec);
-    return store;
-  });
+  return attach(
+    Object.create(Store.prototype),
+    () => new binding.NativeStore(root, options, name, spec),
+    autoSealRowsOption(options),
+  );
 }
 
 function listNamespaces(root) {

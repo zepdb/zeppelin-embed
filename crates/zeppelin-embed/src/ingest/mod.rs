@@ -1549,6 +1549,53 @@ mod wal_replay_tests {
     }
 
     #[test]
+    fn sealed_revision_lookup_finds_every_sealed_copy_of_an_id() {
+        let directory = tempdir().expect("store directory");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+        for (doc_id, revision) in [(1_u128, 1_u64), (2, 1), (3, 1)] {
+            store
+                .ingest(IngestBatch::new(vec![document(
+                    doc_id,
+                    revision,
+                    Some("first"),
+                )]))
+                .expect("ingest first segment");
+        }
+        store.seal().expect("seal first segment");
+        store
+            .ingest(IngestBatch::new(vec![document(2, 2, Some("second"))]))
+            .expect("replace a sealed row");
+        store.seal().expect("seal second segment");
+
+        let stale = store.ingest(IngestBatch::new(vec![document(2, 1, Some("stale"))]));
+        assert!(
+            matches!(stale, Err(IngestError::StaleRevision { .. })),
+            "a revision older than a sealed one was accepted: {stale:?}"
+        );
+        store
+            .ingest(IngestBatch::new(vec![document(2, 3, Some("third"))]))
+            .expect("write a newer revision");
+        store
+            .delete(DeleteBatch::new(vec![DocId::new(3)]))
+            .expect("delete a sealed row");
+        let documents = store
+            .get_documents(
+                &[DocId::new(1), DocId::new(2), DocId::new(3)],
+                DocumentFields::TEXT,
+            )
+            .expect("read documents");
+        let texts = documents
+            .iter()
+            .map(|document| document.as_ref().and_then(|document| document.text.clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            texts,
+            vec![Some("first".to_owned()), Some("third".to_owned()), None]
+        );
+        store.close().expect("close store");
+    }
+
+    #[test]
     fn wal_replay_reopens_the_exact_live_state() {
         let directory = tempdir().expect("store directory");
         let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");

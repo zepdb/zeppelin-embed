@@ -6,6 +6,24 @@ release and a compatible correction is a patch release.
 
 ## Unreleased
 
+### Added
+
+- Node: `Store.seal()` seals the active segment and returns
+  `{ generation }` (ZE-231). The new `autoSealRows` open option seals once
+  at open and again before the write that follows that many written
+  documents, so reopen reads sealed segments instead of replaying the whole
+  write-ahead log.
+
+### Fixed
+
+- Reopening a store replays its unsealed WAL tail in linear time (ZE-232).
+  Replay used to copy the whole active segment for every record, so 3,000
+  small texted documents took 1.3 s to reopen and 20,000 took minutes; replay
+  now applies records in place and builds the text index once.
+- A write no longer reads every sealed row to find earlier copies of its
+  ids. It looks them up through each segment's identity-ordered index, so
+  write latency no longer grows with the number of sealed documents.
+
 ### Changed
 
 - `ze_query` now returns `ZE_ERR_TIMEOUT` (13) when its deadline fires and

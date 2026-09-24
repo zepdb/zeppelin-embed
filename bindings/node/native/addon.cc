@@ -2046,6 +2046,40 @@ napi_value CloseStore(napi_env env, napi_callback_info info) {
   });
 }
 
+// Seals the active segment into an immutable segment and absorbs the WAL
+// prefix it covers, so reopening the store no longer replays those writes.
+// An empty active segment is a no-op that returns the current generation.
+napi_value SealStore(napi_env env, napi_callback_info info) {
+  return Guard(env, [&]() -> napi_value {
+    size_t argc = 0;
+    napi_value receiver;
+    if (!NapiOk(env,
+                napi_get_cb_info(env, info, &argc, nullptr, &receiver, nullptr),
+                "read seal receiver")) {
+      return nullptr;
+    }
+    NativeStore *store = UnwrapStore(env, receiver);
+    if (store == nullptr)
+      return nullptr;
+    ZeSealRequest request{};
+    request.abi_size = sizeof(request);
+    ZeGenerationReport report{};
+    report.abi_size = sizeof(report);
+    const ze_error_code status = ze_seal(store->handle, &request, &report);
+    if (status != ZE_OK)
+      return ThrowZeppelin(env, store->handle, status);
+    napi_value result;
+    napi_value generation;
+    if (!NapiOk(env, napi_create_object(env, &result), "create seal report") ||
+        !NapiOk(env,
+                napi_create_bigint_uint64(env, report.generation, &generation),
+                "create generation") ||
+        !SetNamed(env, result, "generation", generation))
+      return nullptr;
+    return result;
+  });
+}
+
 napi_value Ingest(napi_env env, napi_callback_info info) {
   return Guard(env, [&]() -> napi_value {
     size_t argc = 2;
@@ -2632,6 +2666,8 @@ napi_value Initialize(napi_env env, napi_value exports) {
       {"search", nullptr, Search, nullptr, nullptr, nullptr, napi_default,
        nullptr},
       {"query", nullptr, Query, nullptr, nullptr, nullptr, napi_default,
+       nullptr},
+      {"seal", nullptr, SealStore, nullptr, nullptr, nullptr, napi_default,
        nullptr},
       {"close", nullptr, CloseStore, nullptr, nullptr, nullptr, napi_default,
        nullptr},

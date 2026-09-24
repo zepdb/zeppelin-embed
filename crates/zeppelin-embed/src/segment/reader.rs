@@ -1617,6 +1617,34 @@ impl SegmentReader {
         &self,
         doc_id: DocId,
     ) -> Result<Vec<usize>, crate::lifecycle::StoreError> {
+        let matching = self.query_rows_with_doc_id(doc_id)?;
+        let alive = self.query_alive()?;
+        let mut rows = Vec::new();
+        rows.try_reserve_exact(matching.len()).map_err(|_| {
+            crate::lifecycle::StoreError::AllocationFailed {
+                needed: matching
+                    .len()
+                    .checked_mul(std::mem::size_of::<usize>())
+                    .and_then(|bytes| u64::try_from(bytes).ok())
+                    .unwrap_or(u64::MAX),
+                component: "document-id rows",
+            }
+        })?;
+        for row in &matching {
+            if alive.is_alive(*row) {
+                rows.push(*row as usize);
+            }
+        }
+        Ok(rows)
+    }
+
+    /// Returns every sealed row holding `doc_id`, live or tombstoned, in
+    /// ascending row order, through the cached identity-ordered row
+    /// permutation. This replaces a scan of every row with a binary search.
+    pub(crate) fn query_rows_with_doc_id(
+        &self,
+        doc_id: DocId,
+    ) -> Result<Vec<u32>, crate::lifecycle::StoreError> {
         let Some(bytes) = self
             .document_versions_region()
             .map_err(crate::lifecycle::StoreError::Segment)?
@@ -1634,23 +1662,19 @@ impl SegmentReader {
                 "document-id index range is invalid".to_owned(),
             ))
         })?;
-        let alive = self.query_alive()?;
         let mut rows = Vec::new();
         rows.try_reserve_exact(matching.len()).map_err(|_| {
             crate::lifecycle::StoreError::AllocationFailed {
                 needed: matching
                     .len()
-                    .checked_mul(std::mem::size_of::<usize>())
+                    .checked_mul(std::mem::size_of::<u32>())
                     .and_then(|bytes| u64::try_from(bytes).ok())
                     .unwrap_or(u64::MAX),
                 component: "document-id rows",
             }
         })?;
-        for row in matching {
-            if alive.is_alive(*row) {
-                rows.push(*row as usize);
-            }
-        }
+        rows.extend_from_slice(matching);
+        rows.sort_unstable();
         Ok(rows)
     }
 

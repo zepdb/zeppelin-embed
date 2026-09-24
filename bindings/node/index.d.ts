@@ -5,6 +5,19 @@ export interface OpenOptions {
   readonly readerDrainTimeoutMs?: bigint;
   readonly maxResidentBytes?: bigint;
   readonly maxTempBytes?: bigint;
+  /**
+   * Seal automatically. The store seals once at open, which absorbs any WAL
+   * tail an earlier session left unsealed, and again before the write that
+   * follows this many written documents (upserted, ingested or deleted ids)
+   * since the last seal. Smaller values keep each write cheaper; larger values
+   * make fewer sealed segments. Needs a writable store.
+   */
+  readonly autoSealRows?: number;
+}
+
+export interface SealReport {
+  /** The committed generation; unchanged when there was nothing to seal. */
+  readonly generation: bigint;
 }
 
 export interface Document {
@@ -284,6 +297,12 @@ export declare class Store {
    * rejected.
    */
   query(request: QueryRequest): QueryResult;
+  /**
+   * Seal the active segment into an immutable segment and absorb the WAL
+   * records it covers, so a later open does not replay them. An empty active
+   * segment is a no-op.
+   */
+  seal(): SealReport;
   close(): void;
 }
 

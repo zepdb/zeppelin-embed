@@ -90,13 +90,20 @@ fn sealed_document_matches_in(
     segments: &[SegmentReader],
     ids: &[DocId],
 ) -> Result<Vec<SealedDocumentMatch>, StoreError> {
+    // Each segment's identity-ordered index answers an id by binary search,
+    // so a write costs O(ids x segments x log rows), not a scan of every
+    // sealed row. Matches keep the (segment, ascending row) order of a scan.
     let requested = ids.iter().copied().collect::<HashSet<_>>();
     let mut matches = Vec::new();
+    let mut rows = Vec::new();
     for (segment_index, segment) in segments.iter().enumerate() {
-        for row in 0..segment.meta().row_count as usize {
-            if let Some(version) = segment.document_version(row).map_err(StoreError::Segment)?
-                && requested.contains(&version.doc_id())
-            {
+        rows.clear();
+        for doc_id in &requested {
+            rows.extend(segment.query_rows_with_doc_id(*doc_id)?);
+        }
+        rows.sort_unstable();
+        for row in rows.iter().map(|row| *row as usize) {
+            if let Some(version) = segment.document_version(row).map_err(StoreError::Segment)? {
                 matches.push(SealedDocumentMatch {
                     segment_index,
                     row,
