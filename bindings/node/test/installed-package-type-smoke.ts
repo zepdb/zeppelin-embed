@@ -5,6 +5,8 @@ import {
   idToUuid,
   openNamespace,
   uuidToId,
+  type CountGroup,
+  type CountResult,
   type Document,
   type QueryResult,
   type SearchHit,
@@ -24,6 +26,10 @@ const records = openNamespace(
   { autoSealRows: 2048 },
 );
 const sealed: bigint = records.seal().generation;
+const grouped = records.count({ groupBy: { attributeId: 1, limit: 16 } });
+const groups: CountGroup[] = grouped.groups;
+const missing: bigint = grouped.missingCount;
+const plain: CountResult = records.count({ timestampRange: { start: 0n, end: 1n } });
 const token = new CancellationToken();
 const result: QueryResult = records.query({
   text: 'harbour',
@@ -39,7 +45,7 @@ const lexicalScore: number | undefined = result.hits[0]?.lexicalBm25;
 const effectiveAlpha: number | undefined = result.fusion?.effectiveAlpha;
 const uuid: string = idToUuid(uuidToId('123e4567-e89b-12d3-a456-426614174000'));
 
-console.log(ABI_VERSION, generation, sealed, hits, mode, lexicalScore, effectiveAlpha, uuid);
+console.log(ABI_VERSION, generation, sealed, groups, missing, plain, hits, mode, lexicalScore, effectiveAlpha, uuid);
 token.close();
 records.close();
 store.close();

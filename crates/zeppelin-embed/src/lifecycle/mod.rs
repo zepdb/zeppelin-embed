@@ -7,6 +7,7 @@ mod close;
 pub mod durability;
 mod expansion;
 pub(crate) mod graph_cache;
+mod group_count;
 mod hybrid;
 pub mod lock;
 pub(crate) mod materialize;
@@ -41,6 +42,9 @@ pub use materialize::{
 
 #[cfg(test)]
 mod hybrid_overlap_tests;
+pub use group_count::{
+    DocumentGroup, DocumentGroupCounts, DocumentGroupValue, MAX_DOCUMENT_GROUP_LIMIT,
+};
 pub use rescored_scan::ScanRescoreOptions;
 pub use snapshot::{
     InMemorySegment, InMemorySegmentFactors, PreparedSegment, PublishedSnapshot, SnapshotLease,
@@ -1996,6 +2000,11 @@ pub enum StoreError {
         /// Precise validation failure.
         detail: String,
     },
+    /// A grouped count found more distinct values than its group limit.
+    GroupLimitExceeded {
+        /// Group limit supplied by the caller.
+        limit: usize,
+    },
     /// A referenced immutable segment could not be mapped or validated.
     Segment(crate::segment::SegmentError),
     /// More than one live row carried the same stable document id.
@@ -2199,6 +2208,10 @@ impl std::fmt::Display for StoreError {
                 "scan cursor generation {cursor_generation} differs from current generation {current_generation}"
             ),
             Self::InvalidScan { detail } => write!(formatter, "invalid document scan: {detail}"),
+            Self::GroupLimitExceeded { limit } => write!(
+                formatter,
+                "grouped count found more than {limit} distinct values; raise the group limit"
+            ),
             Self::Segment(error) => error.fmt(formatter),
             Self::DuplicateLiveDocument { doc_id } => {
                 write!(
@@ -2411,7 +2424,9 @@ impl StoreError {
             | Self::WalRevisionOrder { .. }
             | Self::WalVector { .. }
             | Self::PurgeRecovery { .. } => StoreErrorKind::Corrupt,
-            Self::BudgetExceeded { .. } => StoreErrorKind::BudgetExceeded,
+            Self::BudgetExceeded { .. } | Self::GroupLimitExceeded { .. } => {
+                StoreErrorKind::BudgetExceeded
+            }
             Self::AllocationFailed { .. } => StoreErrorKind::OutOfMemory,
             Self::DimensionMismatch { .. } => StoreErrorKind::DimensionMismatch,
             Self::EpochMismatch(_) => StoreErrorKind::EpochMismatch,
@@ -2469,6 +2484,7 @@ impl std::error::Error for StoreError {
             | Self::WalRevisionOrder { .. }
             | Self::UnsupportedWalMutation { .. }
             | Self::BudgetExceeded { .. }
+            | Self::GroupLimitExceeded { .. }
             | Self::AllocationFailed { .. }
             | Self::DimensionMismatch { .. }
             | Self::ActiveRowOverflow
@@ -9077,6 +9093,8 @@ mod lexical_assembly_tests;
 
 #[cfg(test)]
 mod get_tests;
+#[cfg(test)]
+mod group_count_tests;
 #[cfg(test)]
 mod scan_attribute_order_tests;
 #[cfg(test)]

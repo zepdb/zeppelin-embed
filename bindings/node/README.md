@@ -130,6 +130,26 @@ there is no separate compaction step. If the process stops during the call,
 either nothing was deleted or the next writable open finishes the removal.
 `delete(ids)` only hides documents; their bytes stay on disk.
 
+`count` returns the live documents that match an optional `filter` and
+`timestampRange`. With `groupBy` it also returns one count per value of a
+`u64`, `i64`, `dictionaryString` or `rawString` attribute, all from one
+generation:
+
+```js
+store.count({ groupBy: { attributeId: 1 } });
+// { count: 5n, generation: 7n, missingCount: 1n,
+//   groups: [{ value: 'home', count: 1n }, { value: 'work', count: 3n }] }
+```
+
+Groups are in ascending value order: numeric for integers, byte order for
+strings. Documents whose attribute is null are not a group; they are in
+`missingCount`, so the group counts plus `missingCount` equal `count`.
+`groupBy.limit` (default 1024, at most 65536) bounds the number of distinct
+values; more values throw `ZE_ERR_BUDGET_EXCEEDED` and no group is dropped.
+Other attribute types throw `ZE_ERR_INVALID_ARGUMENT`. There is no timestamp
+bucketing: to count per day, store a day number as an `i64` attribute and
+group by it.
+
 `query` runs one structured query. `text` selects the lexical leg, `vector`
 selects the vector leg, and both together run hybrid fusion; a request with
 neither is refused.

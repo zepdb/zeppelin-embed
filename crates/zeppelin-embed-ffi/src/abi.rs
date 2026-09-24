@@ -132,6 +132,9 @@ pub const ZE_MAX_K: usize = 1 << 20;
 /// Treat the last analyzed lexical query term as a type-ahead prefix.
 pub const ZE_QUERY_LAST_AS_PREFIX: u32 = 1;
 
+/// Largest `group_limit` accepted by `ze_count_grouped`.
+pub const ZE_MAX_COUNT_GROUPS: usize = 1 << 16;
+
 /// Opens one store directory.
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -554,6 +557,57 @@ pub struct ZeCountResult {
     /// Exact number of matching live rows.
     pub count: u64,
     /// Store generation pinned for the complete count.
+    pub generation: u64,
+}
+
+/// Counts live documents grouped by one attribute value.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeCountGroupedRequest {
+    /// Caller-provided `sizeof(ZeCountGroupedRequest)`.
+    pub abi_size: u32,
+    /// Must be zero in ABI v1.
+    pub abi_reserved: u32,
+    /// Existing count request (filter and timestamp range) embedded by value.
+    pub count: ZeCountRequest,
+    /// Schema attribute to group by: U64, I64, DictionaryString or RawString.
+    pub group_attribute_id: u32,
+    /// Must be zero.
+    pub reserved: u32,
+    /// Most distinct values accepted, in `1..=ZE_MAX_COUNT_GROUPS`. More
+    /// distinct values fail the call with `ZE_ERR_BUDGET_EXCEEDED`.
+    pub group_limit: usize,
+}
+
+/// One callee-owned group of a grouped count.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeCountGroup {
+    /// Group value: `value_type` 1 (U64), 2 (I64) or 5 (string, arena-owned
+    /// bytes); `attribute_id` is the grouped attribute.
+    pub value: ZeAttributeValue,
+    /// Matching live documents with this value; never zero.
+    pub count: u64,
+}
+
+/// Callee-owned grouped count; release with `ze_count_grouped_result_free`.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeCountGroupedResult {
+    /// Caller-provided `sizeof(ZeCountGroupedResult)`.
+    pub abi_size: u32,
+    /// Caller sets zero; callee returns an opaque allocation generation.
+    pub abi_reserved: u32,
+    /// Arena-owned groups in ascending value order (numeric for integers,
+    /// byte order for strings).
+    pub groups: *mut ZeCountGroup,
+    /// Number of entries in `groups`.
+    pub group_count: usize,
+    /// Matching live documents whose group attribute is null.
+    pub missing_count: u64,
+    /// All matching live documents: the group counts plus `missing_count`.
+    pub count: u64,
+    /// Store generation pinned for every group.
     pub generation: u64,
 }
 

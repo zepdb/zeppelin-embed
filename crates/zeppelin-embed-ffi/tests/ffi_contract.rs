@@ -414,6 +414,15 @@ fn every_phase_two_struct_has_the_frozen_size_and_field_offsets() {
     assert_layout!(ZeCountResult, 24, 8, {
         abi_size: 0, abi_reserved: 4, count: 8, generation: 16
     });
+    assert_layout!(ZeCountGroupedRequest, 64, 8, {
+        abi_size: 0, abi_reserved: 4, count: 8, group_attribute_id: 48,
+        reserved: 52, group_limit: 56
+    });
+    assert_layout!(ZeCountGroup, 64, 8, { value: 0, count: 56 });
+    assert_layout!(ZeCountGroupedResult, 48, 8, {
+        abi_size: 0, abi_reserved: 4, groups: 8, group_count: 16,
+        missing_count: 24, count: 32, generation: 40
+    });
     assert_layout!(ZeSearchFilteredRequest, 112, 8, {
         abi_size: 0, abi_reserved: 4, search: 8, filter: 104
     });
@@ -526,6 +535,7 @@ const POISON_TABLE_NAMES: &[&str] = &[
     "ze_await_physical_purge",
     "ze_close",
     "ze_count",
+    "ze_count_grouped",
     "ze_delete",
     "ze_delete_where",
     "ze_drop_partition",
@@ -865,6 +875,25 @@ fn poison_function_table() -> Vec<(&'static str, PoisonCall)> {
             };
             let mut result: ZeCountResult = common::sized_zeroed();
             ze_count(context.store.handle, &request, &mut result)
+        }),
+        ("ze_count_grouped", |context| {
+            let request = ZeCountGroupedRequest {
+                abi_size: size_of::<ZeCountGroupedRequest>() as u32,
+                abi_reserved: 0,
+                count: ZeCountRequest {
+                    abi_size: size_of::<ZeCountRequest>() as u32,
+                    abi_reserved: 0,
+                    filter: std::ptr::null(),
+                    has_timestamp_range: 0,
+                    start_ts: 0,
+                    end_ts: 0,
+                },
+                group_attribute_id: 0,
+                reserved: 0,
+                group_limit: 1,
+            };
+            let mut result: ZeCountGroupedResult = common::sized_zeroed();
+            ze_count_grouped(context.store.handle, &request, &mut result)
         }),
         ("ze_scan_result_free", |_context| {
             let mut result: ZeScanResult = common::sized_zeroed();

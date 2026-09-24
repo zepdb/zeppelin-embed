@@ -6,6 +6,8 @@ ze_cancel_token_create
 ze_cancel_token_free
 ze_close
 ze_count
+ze_count_grouped
+ze_count_grouped_result_free
 ze_delete
 ze_delete_where
 ze_drop_partition

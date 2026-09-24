@@ -2977,6 +2977,206 @@ pub extern "C" fn ze_count(
     })
 }
 
+fn empty_count_grouped_result(abi_size: u32) -> ZeCountGroupedResult {
+    ZeCountGroupedResult {
+        abi_size,
+        abi_reserved: 0,
+        groups: std::ptr::null_mut(),
+        group_count: 0,
+        missing_count: 0,
+        count: 0,
+        generation: 0,
+    }
+}
+
+/// Copies `groups` into one registered arena: the group array, then every
+/// string value's bytes. An empty result still owns a one-word arena so the
+/// free contract is uniform.
+fn publish_groups(
+    attribute_id: u32,
+    groups: &[zeppelin_embed::lifecycle::DocumentGroup],
+) -> Result<(*mut ZeCountGroup, u32), FfiError> {
+    let group_bytes = get_arena_mul(groups.len(), size_of::<ZeCountGroup>())?;
+    let string_bytes = groups
+        .iter()
+        .try_fold(0_usize, |total, group| match &group.value {
+            zeppelin_embed::lifecycle::DocumentGroupValue::String(value) => {
+                get_arena_add(total, value.len())
+            }
+            zeppelin_embed::lifecycle::DocumentGroupValue::U64(_)
+            | zeppelin_embed::lifecycle::DocumentGroupValue::I64(_) => Ok(total),
+        })?;
+    let arena_bytes = get_arena_add(group_bytes, string_bytes)?;
+    let words = arena_bytes.div_ceil(size_of::<u64>()).max(1);
+    let mut arena = Vec::<u64>::new();
+    arena.try_reserve_exact(words).map_err(|_| {
+        FfiError::new(
+            ZeErrorCode::ZeErrOutOfMemory,
+            "grouped count arena allocation failed",
+        )
+    })?;
+    arena.resize(words, 0);
+    let mut arena = arena.into_boxed_slice();
+    let arena_pointer = arena.as_mut_ptr();
+    let output = arena_pointer.cast::<ZeCountGroup>();
+    let mut payload = unsafe { arena_pointer.cast::<u8>().add(group_bytes) };
+    for (index, group) in groups.iter().enumerate() {
+        let mut value = ZeAttributeValue {
+            attribute_id,
+            value_type: 0,
+            u64_value: 0,
+            i64_value: 0,
+            f64_value: 0.0,
+            bool_value: 0,
+            string_value: std::ptr::null(),
+            string_len: 0,
+        };
+        match &group.value {
+            zeppelin_embed::lifecycle::DocumentGroupValue::U64(number) => {
+                value.value_type = 1;
+                value.u64_value = *number;
+            }
+            zeppelin_embed::lifecycle::DocumentGroupValue::I64(number) => {
+                value.value_type = 2;
+                value.i64_value = *number;
+            }
+            zeppelin_embed::lifecycle::DocumentGroupValue::String(text) => {
+                value.value_type = 5;
+                value.string_len = text.len();
+                if !text.is_empty() {
+                    value.string_value = payload;
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(text.as_ptr(), payload, text.len());
+                        payload = payload.add(text.len());
+                    }
+                }
+            }
+        }
+        unsafe {
+            std::ptr::write(
+                output.add(index),
+                ZeCountGroup {
+                    value,
+                    count: group.count,
+                },
+            );
+        }
+    }
+    let generation = registry::register_result_arena(arena_pointer, arena.len(), groups.len())?;
+    let _raw = Box::into_raw(arena);
+    Ok((output, generation))
+}
+
+/// Counts live documents matching an optional filter and timestamp range,
+/// grouped by one U64, I64, DictionaryString or RawString attribute. Rows
+/// whose attribute is null are reported in `missing_count`, not as a
+/// group. Every group comes from one pinned generation. More distinct
+/// values than `group_limit` fail with `ZE_ERR_BUDGET_EXCEEDED` and no
+/// groups; other attribute types or unknown ids fail with
+/// `ZE_ERR_INVALID_ARGUMENT`. Request and filter pointers are caller-owned
+/// for the call; release the result exactly once with
+/// [`ze_count_grouped_result_free`].
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_count_grouped(
+    handle: ZeHandle,
+    request: *const ZeCountGroupedRequest,
+    out_result: *mut ZeCountGroupedResult,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_count_grouped");
+        finish(
+            Some(handle),
+            (|| {
+                let request = marshal::read_struct(request)?;
+                let count = marshal::read_struct(&request.count)?;
+                let abi_size = marshal::validate_output(out_result)?;
+                marshal::write_output(out_result, empty_count_grouped_result(abi_size));
+                if request.reserved != 0 {
+                    return Err(FfiError::invalid(
+                        "grouped count reserved field must be zero",
+                    ));
+                }
+                if request.group_limit == 0 || request.group_limit > ZE_MAX_COUNT_GROUPS {
+                    return Err(FfiError::invalid(
+                        "group_limit must be in 1..=ZE_MAX_COUNT_GROUPS",
+                    ));
+                }
+                let has_timestamp_range =
+                    parse_flag(count.has_timestamp_range, "has_timestamp_range")?;
+                if !has_timestamp_range && (count.start_ts != 0 || count.end_ts != 0) {
+                    return Err(FfiError::invalid(
+                        "count timestamp bounds require has_timestamp_range",
+                    ));
+                }
+                let access = registry::lookup(handle)?;
+                let predicate = decode_filter(count.filter, access.store.schema())?;
+                let timestamp_range = has_timestamp_range.then_some((count.start_ts, count.end_ts));
+                let result = access
+                    .store
+                    .count_documents_grouped(
+                        predicate.as_ref(),
+                        timestamp_range,
+                        ColumnId::new(request.group_attribute_id),
+                        request.group_limit,
+                    )
+                    .map_err(FfiError::query)?;
+                let (groups, allocation_generation) =
+                    publish_groups(request.group_attribute_id, &result.groups)?;
+                marshal::write_output(
+                    out_result,
+                    ZeCountGroupedResult {
+                        abi_size,
+                        abi_reserved: allocation_generation,
+                        groups,
+                        group_count: result.groups.len(),
+                        missing_count: result.missing,
+                        count: result.count,
+                        generation: result.generation,
+                    },
+                );
+                Ok(())
+            })(),
+        )
+    })
+}
+
+/// Releases the single arena owned by a grouped count result. A zeroed
+/// result or a second free of the same result is rejected without effect.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_count_grouped_result_free(result: *mut ZeCountGroupedResult) -> ZeErrorCode {
+    ffi_entry!(None, ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_count_grouped_result_free");
+        finish(
+            None,
+            (|| {
+                if result.is_null() {
+                    return Err(FfiError::invalid("grouped count result pointer is null"));
+                }
+                if result.align_offset(align_of::<ZeCountGroupedResult>()) != 0 {
+                    return Err(FfiError::invalid(
+                        "grouped count result pointer is misaligned",
+                    ));
+                }
+                let abi_size = marshal::read_abi_size(result);
+                marshal::validate_abi_size::<ZeCountGroupedResult>(abi_size)?;
+                let current = marshal::read_value(result);
+                if current.groups.is_null() {
+                    return Err(FfiError::invalid(
+                        "grouped count result was already freed or contains no arena",
+                    ));
+                }
+                registry::take_registered_result(
+                    current.groups.cast::<u64>(),
+                    current.group_count,
+                    current.abi_reserved,
+                )?;
+                marshal::write_output(result, empty_count_grouped_result(abi_size));
+                Ok(())
+            })(),
+        )
+    })
+}
+
 /// Releases the single arena owned by a scan result.
 #[unsafe(no_mangle)]
 pub extern "C" fn ze_scan_result_free(result: *mut ZeScanResult) -> ZeErrorCode {

@@ -163,6 +163,14 @@ const ABI_REGISTRY: &[AbiEntry] = &[
         coverage: AbiCoverage::InvalidProbe(probe_count),
     },
     AbiEntry {
+        name: "ze_count_grouped",
+        coverage: AbiCoverage::InvalidProbe(probe_count_grouped),
+    },
+    AbiEntry {
+        name: "ze_count_grouped_result_free",
+        coverage: AbiCoverage::InvalidProbe(probe_count_grouped_result_free),
+    },
+    AbiEntry {
         name: "ze_scan_result_free",
         coverage: AbiCoverage::InvalidProbe(probe_scan_result_free),
     },
@@ -922,6 +930,18 @@ fn probe_delete_where(context: &MatrixContext) -> ProbeResult {
         std::ptr::null(),
         std::ptr::null_mut(),
     ))
+}
+
+fn probe_count_grouped(context: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_count_grouped(
+        context.store.handle,
+        std::ptr::null(),
+        std::ptr::null_mut(),
+    ))
+}
+
+fn probe_count_grouped_result_free(_: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_count_grouped_result_free(std::ptr::null_mut()))
 }
 
 fn probe_search_filtered(context: &MatrixContext) -> ProbeResult {

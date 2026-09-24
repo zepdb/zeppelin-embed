@@ -219,6 +219,42 @@ export interface DeleteWhereReport {
   readonly generation: bigint;
 }
 
+/** The attribute a grouped count groups by. */
+export interface CountGroupBy {
+  /** A `u64`, `i64`, `dictionaryString` or `rawString` attribute id. */
+  readonly attributeId: number;
+  /**
+   * Most distinct values accepted: an integer in 1..=65536, default 1024.
+   * More distinct values throw `ZE_ERR_BUDGET_EXCEEDED`; no group is ever
+   * dropped.
+   */
+  readonly limit?: number;
+}
+
+export interface GroupedCountRequest extends CountRequest {
+  readonly groupBy: CountGroupBy;
+}
+
+export interface CountGroup {
+  /** `bigint` for an integer attribute, `string` for a string attribute. */
+  readonly value: bigint | string;
+  /** Matching live documents with this value; never zero. */
+  readonly count: bigint;
+}
+
+export interface GroupedCountResult extends CountResult {
+  /**
+   * Groups in ascending value order: numeric for integers, byte order for
+   * strings. Every group comes from `generation`.
+   */
+  readonly groups: CountGroup[];
+  /**
+   * Matching documents whose attribute is null. The group counts plus
+   * `missingCount` equal `count`.
+   */
+  readonly missingCount: bigint;
+}
+
 export interface SearchOptions {
   readonly k?: number;
   readonly threadBudget?: number;
@@ -373,6 +409,12 @@ export declare class Store {
    */
   deleteWhere(filter: Filter): DeleteWhereReport;
   scan(request?: ScanRequest): ScanPage;
+  /**
+   * Count live documents matching the optional filter and timestamp range.
+   * With `groupBy`, also count per attribute value at one generation; an
+   * `f64`, `bool` or unknown attribute throws `ZE_ERR_INVALID_ARGUMENT`.
+   */
+  count(request: GroupedCountRequest): GroupedCountResult;
   count(request?: CountRequest): CountResult;
   searchFiltered(
     vector: Float32Array,

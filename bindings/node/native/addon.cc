@@ -1,5 +1,6 @@
 #include <node_api.h>
 
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <exception>
@@ -1965,6 +1966,167 @@ napi_value Scan(napi_env env, napi_callback_info info) {
   });
 }
 
+// Reads an integer-valued number in [minimum, maximum], rejecting fractions,
+// NaN and out-of-range values rather than truncating them.
+bool GetBoundedInteger(napi_env env, napi_value value, const char *name,
+                       double minimum, double maximum, double *output) {
+  napi_valuetype type;
+  if (!NapiOk(env, napi_typeof(env, value, &type), "inspect number"))
+    return false;
+  if (type != napi_number) {
+    std::string message(name);
+    message.append(" must be a number");
+    napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE", message.c_str());
+    return false;
+  }
+  if (!NapiOk(env, napi_get_value_double(env, value, output), "read number"))
+    return false;
+  if (!std::isfinite(*output) || std::floor(*output) != *output ||
+      *output < minimum || *output > maximum) {
+    std::string message(name);
+    message.append(" must be an integer in ");
+    message.append(std::to_string(static_cast<uint64_t>(minimum)));
+    message.append("..=");
+    message.append(std::to_string(static_cast<uint64_t>(maximum)));
+    napi_throw_range_error(env, "ERR_OUT_OF_RANGE", message.c_str());
+    return false;
+  }
+  return true;
+}
+
+// Parses `groupBy: { attributeId, limit? }`; `limit` defaults to 1024.
+bool ParseGroupBy(napi_env env, napi_value group_by, uint32_t *attribute_id,
+                  size_t *limit) {
+  napi_valuetype type;
+  if (!NapiOk(env, napi_typeof(env, group_by, &type), "inspect groupBy"))
+    return false;
+  if (type != napi_object) {
+    napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE",
+                          "groupBy must be an object");
+    return false;
+  }
+  napi_value value;
+  bool present = false;
+  double number = 0;
+  if (!GetNamed(env, group_by, "attributeId", &value, &present))
+    return false;
+  if (!present) {
+    napi_throw_type_error(env, "ERR_MISSING_ARGS",
+                          "groupBy.attributeId is required");
+    return false;
+  }
+  if (!GetBoundedInteger(env, value, "groupBy.attributeId", 0, UINT32_MAX,
+                         &number))
+    return false;
+  *attribute_id = static_cast<uint32_t>(number);
+  *limit = 1024;
+  if (!GetNamed(env, group_by, "limit", &value, &present))
+    return false;
+  if (present) {
+    if (!GetBoundedInteger(env, value, "groupBy.limit", 1, ZE_MAX_COUNT_GROUPS,
+                           &number))
+      return false;
+    *limit = static_cast<size_t>(number);
+  }
+  return true;
+}
+
+bool CreateCountGroup(napi_env env, const ZeCountGroup &group,
+                      napi_value *output) {
+  napi_value value;
+  switch (group.value.value_type) {
+  case 1:
+    if (!NapiOk(env,
+                napi_create_bigint_uint64(env, group.value.u64_value, &value),
+                "create u64 group value"))
+      return false;
+    break;
+  case 2:
+    if (!NapiOk(env,
+                napi_create_bigint_int64(env, group.value.i64_value, &value),
+                "create i64 group value"))
+      return false;
+    break;
+  case 5: {
+    const char *text =
+        group.value.string_value == nullptr
+            ? ""
+            : reinterpret_cast<const char *>(group.value.string_value);
+    if (!NapiOk(env,
+                napi_create_string_utf8(env, text, group.value.string_len,
+                                        &value),
+                "create string group value"))
+      return false;
+    break;
+  }
+  default:
+    napi_throw_error(env, "ERR_ZEPPELIN_NATIVE",
+                     "grouped count returned an unknown value type");
+    return false;
+  }
+  napi_value count;
+  return NapiOk(env, napi_create_object(env, output), "create count group") &&
+         SetNamed(env, *output, "value", value) &&
+         NapiOk(env, napi_create_bigint_uint64(env, group.count, &count),
+                "create group count") &&
+         SetNamed(env, *output, "count", count);
+}
+
+napi_value CountGrouped(napi_env env, NativeStore *store,
+                        const ZeCountRequest &count, uint32_t attribute_id,
+                        size_t limit) {
+  ZeCountGroupedRequest request{};
+  request.abi_size = sizeof(request);
+  request.count = count;
+  request.group_attribute_id = attribute_id;
+  request.group_limit = limit;
+  ZeCountGroupedResult native{};
+  native.abi_size = sizeof(native);
+  const ze_error_code status =
+      ze_count_grouped(store->handle, &request, &native);
+  if (status != ZE_OK)
+    return ThrowZeppelin(env, store->handle, status);
+  ResultOwner<ZeCountGroupedResult, ze_count_grouped_result_free> owner(
+      &native);
+  napi_value result;
+  napi_value groups;
+  napi_value total;
+  napi_value generation;
+  napi_value missing;
+  if (!NapiOk(env, napi_create_object(env, &result),
+              "create grouped count result") ||
+      !NapiOk(env, napi_create_bigint_uint64(env, native.count, &total),
+              "create grouped document count") ||
+      !SetNamed(env, result, "count", total) ||
+      !NapiOk(env,
+              napi_create_bigint_uint64(env, native.generation, &generation),
+              "create grouped count generation") ||
+      !SetNamed(env, result, "generation", generation) ||
+      !NapiOk(env,
+              napi_create_array_with_length(env, native.group_count, &groups),
+              "create count groups"))
+    return nullptr;
+  for (size_t index = 0; index < native.group_count; ++index) {
+    napi_value group;
+    if (!CreateCountGroup(env, native.groups[index], &group) ||
+        !NapiOk(env,
+                napi_set_element(env, groups, static_cast<uint32_t>(index),
+                                 group),
+                "set count group"))
+      return nullptr;
+  }
+  if (!SetNamed(env, result, "groups", groups) ||
+      !NapiOk(env,
+              napi_create_bigint_uint64(env, native.missing_count, &missing),
+              "create grouped missing count") ||
+      !SetNamed(env, result, "missingCount", missing))
+    return nullptr;
+  const ze_error_code free_status = owner.FreeNow();
+  if (free_status != ZE_OK)
+    return ThrowZeppelin(env, store->handle, free_status);
+  return result;
+}
+
 napi_value Count(napi_env env, napi_callback_info info) {
   return Guard(env, [&]() -> napi_value {
     size_t argc = 1;
@@ -2004,6 +2166,21 @@ napi_value Count(napi_env env, napi_callback_info info) {
         if (!ParseFilter(env, filter, &filter_storage))
           return nullptr;
         request.filter = &filter_storage.filter;
+      }
+      napi_value group_by;
+      napi_valuetype group_by_type = napi_undefined;
+      if (!GetNamed(env, options, "groupBy", &group_by, &present))
+        return nullptr;
+      if (present &&
+          !NapiOk(env, napi_typeof(env, group_by, &group_by_type),
+                  "inspect groupBy"))
+        return nullptr;
+      if (present && group_by_type != napi_undefined) {
+        uint32_t attribute_id = 0;
+        size_t limit = 0;
+        if (!ParseGroupBy(env, group_by, &attribute_id, &limit))
+          return nullptr;
+        return CountGrouped(env, store, request, attribute_id, limit);
       }
     }
     ZeCountResult native{};

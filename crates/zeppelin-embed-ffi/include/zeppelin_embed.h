@@ -25,6 +25,11 @@
 #define ZE_QUERY_LAST_AS_PREFIX 1
 
 /*
+ Largest `group_limit` accepted by `ze_count_grouped`.
+ */
+#define ZE_MAX_COUNT_GROUPS (1 << 16)
+
+/*
  Frozen append-only status code returned by the C ABI.
  */
 enum ze_error_code
@@ -1744,6 +1749,87 @@ typedef struct ZeCountResult {
 } ZeCountResult;
 
 /*
+ Counts live documents grouped by one attribute value.
+ */
+typedef struct ZeCountGroupedRequest {
+    /*
+     Caller-provided `sizeof(ZeCountGroupedRequest)`.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero in ABI v1.
+     */
+    uint32_t abi_reserved;
+    /*
+     Existing count request (filter and timestamp range) embedded by value.
+     */
+    struct ZeCountRequest count;
+    /*
+     Schema attribute to group by: U64, I64, DictionaryString or RawString.
+     */
+    uint32_t group_attribute_id;
+    /*
+     Must be zero.
+     */
+    uint32_t reserved;
+    /*
+     Most distinct values accepted, in `1..=ZE_MAX_COUNT_GROUPS`. More
+     distinct values fail the call with `ZE_ERR_BUDGET_EXCEEDED`.
+     */
+    size_t group_limit;
+} ZeCountGroupedRequest;
+
+/*
+ One callee-owned group of a grouped count.
+ */
+typedef struct ZeCountGroup {
+    /*
+     Group value: `value_type` 1 (U64), 2 (I64) or 5 (string, arena-owned
+     bytes); `attribute_id` is the grouped attribute.
+     */
+    struct ZeAttributeValue value;
+    /*
+     Matching live documents with this value; never zero.
+     */
+    uint64_t count;
+} ZeCountGroup;
+
+/*
+ Callee-owned grouped count; release with `ze_count_grouped_result_free`.
+ */
+typedef struct ZeCountGroupedResult {
+    /*
+     Caller-provided `sizeof(ZeCountGroupedResult)`.
+     */
+    uint32_t abi_size;
+    /*
+     Caller sets zero; callee returns an opaque allocation generation.
+     */
+    uint32_t abi_reserved;
+    /*
+     Arena-owned groups in ascending value order (numeric for integers,
+     byte order for strings).
+     */
+    struct ZeCountGroup *groups;
+    /*
+     Number of entries in `groups`.
+     */
+    size_t group_count;
+    /*
+     Matching live documents whose group attribute is null.
+     */
+    uint64_t missing_count;
+    /*
+     All matching live documents: the group counts plus `missing_count`.
+     */
+    uint64_t count;
+    /*
+     Store generation pinned for every group.
+     */
+    uint64_t generation;
+} ZeCountGroupedResult;
+
+/*
  Vector search request.
  */
 typedef struct ZeSearchRequest {
@@ -2645,6 +2731,27 @@ ze_error_code ze_scan_ordered(ze_handle handle,
 ze_error_code ze_count(ze_handle handle,
                        const struct ZeCountRequest *request,
                        struct ZeCountResult *out_result);
+
+/*
+ Counts live documents matching an optional filter and timestamp range,
+ grouped by one U64, I64, DictionaryString or RawString attribute. Rows
+ whose attribute is null are reported in `missing_count`, not as a
+ group. Every group comes from one pinned generation. More distinct
+ values than `group_limit` fail with `ZE_ERR_BUDGET_EXCEEDED` and no
+ groups; other attribute types or unknown ids fail with
+ `ZE_ERR_INVALID_ARGUMENT`. Request and filter pointers are caller-owned
+ for the call; release the result exactly once with
+ [`ze_count_grouped_result_free`].
+ */
+ze_error_code ze_count_grouped(ze_handle handle,
+                               const struct ZeCountGroupedRequest *request,
+                               struct ZeCountGroupedResult *out_result);
+
+/*
+ Releases the single arena owned by a grouped count result. A zeroed
+ result or a second free of the same result is rejected without effect.
+ */
+ze_error_code ze_count_grouped_result_free(struct ZeCountGroupedResult *result);
 
 /*
  Releases the single arena owned by a scan result.

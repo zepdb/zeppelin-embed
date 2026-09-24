@@ -92,6 +92,32 @@ fn every_callee_owned_result_is_released_by_its_free_and_the_heap_stays_flat() {
         assert_eq!(ze_search_result_free(&mut result), ZeErrorCode::ZeOk);
     });
 
+    let grouped_request = ZeCountGroupedRequest {
+        abi_size: size_of::<ZeCountGroupedRequest>() as u32,
+        abi_reserved: 0,
+        count: ZeCountRequest {
+            abi_size: size_of::<ZeCountRequest>() as u32,
+            abi_reserved: 0,
+            filter: std::ptr::null(),
+            has_timestamp_range: 0,
+            start_ts: 0,
+            end_ts: 0,
+        },
+        group_attribute_id: 0,
+        reserved: 0,
+        group_limit: 64,
+    };
+    assert_heap_flat("ze_count_grouped/ze_count_grouped_result_free", || {
+        let mut result: ZeCountGroupedResult = common::sized_zeroed();
+        assert_eq!(
+            ze_count_grouped(store.handle, &grouped_request, &mut result),
+            ZeErrorCode::ZeOk
+        );
+        assert_eq!(result.count, 32);
+        assert!(result.group_count > 0);
+        assert_eq!(ze_count_grouped_result_free(&mut result), ZeErrorCode::ZeOk);
+    });
+
     let filter_node = ZeFilterNode {
         op: 6,
         attribute_id: 0,
