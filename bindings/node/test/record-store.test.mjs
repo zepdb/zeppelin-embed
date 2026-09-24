@@ -46,6 +46,74 @@ test('creates, reopens, validates, and lists namespaces', () => {
   }
 });
 
+test('reopens a namespace with an added nullable attribute and filters on it', () => {
+  const root = temporaryRoot('zeppelin-node-evolve-');
+  const releaseOne = {
+    attributes: [{ id: 1, name: 'rank', type: 'u64' }],
+    vectorSpace: { dimensions: 2 },
+  };
+  const lang = { id: 2, name: 'lang', type: 'dictionaryString', nullable: true };
+  const releaseTwo = { ...releaseOne, attributes: [...releaseOne.attributes, lang] };
+  const rank = (value) => ({ id: 1, type: 'u64', value });
+  const document = (id, attributes) => ({
+    id,
+    vector: new Float32Array([Number(id), 1]),
+    attributes,
+  });
+  const ids = (page) => page.documents.map((stored) => stored.id);
+  const schemaMismatch = (name) => (error) =>
+    error instanceof ZeppelinError &&
+    error.code === 'ZE_ERR_SCHEMA_MISMATCH' &&
+    error.message.includes(`'${name}'`);
+  let store;
+  try {
+    store = openNamespace(root, 'notes', releaseOne);
+    store.upsert([document(1n, [rank(1n)]), document(2n, [rank(2n)])]);
+    store.seal();
+    store.upsert([document(3n, [rank(3n)])]);
+    store.close();
+    store = undefined;
+
+    assert.throws(
+      () => openNamespace(root, 'notes', releaseTwo, { readOnly: true }),
+      schemaMismatch('lang'),
+    );
+    assert.throws(
+      () =>
+        openNamespace(root, 'notes', {
+          ...releaseTwo,
+          attributes: [...releaseOne.attributes, { ...lang, nullable: false }],
+        }),
+      schemaMismatch('lang'),
+    );
+
+    store = openNamespace(root, 'notes', releaseTwo);
+    store.upsert([
+      document(4n, [rank(4n), { id: 2, type: 'string', value: 'en' }]),
+      document(5n, [rank(5n), { id: 2, type: 'string', value: 'de' }]),
+    ]);
+    store.seal();
+    store.upsert([document(6n, [rank(6n), { id: 2, type: 'string', value: 'en' }])]);
+    const en = { op: 'eq', attributeId: 2, values: [{ id: 2, type: 'string', value: 'en' }] };
+    assert.deepEqual(ids(store.scan({ filter: en })), [4n, 6n]);
+    assert.deepEqual(ids(store.scan({ filter: { op: 'isNull', attributeId: 2 } })), [1n, 2n, 3n]);
+    assert.equal(store.count({ filter: { op: 'exists', attributeId: 2 } }).count, 3n);
+    assert.deepEqual(
+      store.get([1n], { attributes: true }).documents[0].attributes,
+      [rank(1n)],
+    );
+    store.close();
+    store = undefined;
+
+    assert.throws(() => openNamespace(root, 'notes', releaseOne), schemaMismatch('lang'));
+    store = openNamespace(root, 'notes', releaseTwo, { readOnly: true });
+    assert.deepEqual(ids(store.scan({ filter: en })), [4n, 6n]);
+  } finally {
+    store?.close();
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
 test('upserts and gets every attribute and document field type', () => {
   const root = temporaryRoot('zeppelin-node-upsert-get-');
   const spec = {

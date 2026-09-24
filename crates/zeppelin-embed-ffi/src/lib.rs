@@ -1558,7 +1558,16 @@ pub extern "C" fn ze_open_with_epoch(
 }
 
 /// Opens or idempotently creates `root/name` with the declared namespace spec.
-/// All request data is caller-owned and need only outlive this call. The
+/// Reopening an existing namespace matches attributes by `attribute_id`, in
+/// any order. Every persisted attribute must be declared with the same name,
+/// type and nullability. A declared attribute the namespace lacks is added
+/// when it is nullable: a read-write open commits the addition as one new
+/// generation before returning, documents written earlier read it as null,
+/// and sealed data is not rewritten. A read-only open cannot add attributes.
+/// A removed, changed or non-nullable added attribute, or an addition on a
+/// read-only open, returns `ZE_ERR_SCHEMA_MISMATCH`; the last-error message
+/// names the attribute. All request data is caller-owned and need only
+/// outlive this call. The
 /// returned handle is an ordinary store handle accepted by every existing
 /// store function.
 #[unsafe(no_mangle)]

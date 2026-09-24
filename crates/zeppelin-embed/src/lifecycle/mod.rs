@@ -1543,7 +1543,11 @@ impl OpenOptions {
 
     /// Declares the typed user-column schema when creating a store.
     ///
-    /// On reopen, an optional declaration must exactly match the persisted schema.
+    /// On reopen, the declaration must be an additive evolution of the
+    /// persisted schema (see [`crate::meta::Schema::additive_evolution`]).
+    /// A read-write open commits added nullable columns as one generation;
+    /// rows written earlier read them as null. A read-only open, or any
+    /// other difference, is [`StoreError::SchemaMismatch`].
     #[must_use]
     pub fn with_schema(mut self, schema: crate::meta::Schema) -> Self {
         self.schema = Some(schema);
@@ -2196,10 +2200,33 @@ impl std::fmt::Display for StoreError {
             Self::SchemaMismatch {
                 persisted,
                 declared,
-            } => write!(
-                formatter,
-                "declared store schema {declared:?} does not match persisted schema {persisted:?}"
-            ),
+            } => match persisted.additive_evolution(declared) {
+                Err(conflict) => write!(
+                    formatter,
+                    "declared store schema does not match the persisted schema: {conflict}"
+                ),
+                // An additive declaration is refused only by a read-only
+                // open, which cannot commit the evolved schema.
+                Ok(Some(_)) => {
+                    formatter.write_str(
+                        "declared store schema adds attributes that a read-only open \
+                         cannot persist:",
+                    )?;
+                    for added in declared
+                        .columns()
+                        .iter()
+                        .filter(|column| persisted.column(column.id()).is_none())
+                    {
+                        write!(formatter, " '{}' (id {})", added.name(), added.id().get())?;
+                    }
+                    Ok(())
+                }
+                Ok(None) => write!(
+                    formatter,
+                    "declared store schema {declared:?} does not match persisted schema \
+                     {persisted:?}"
+                ),
+            },
             Self::ScanStale {
                 cursor_generation,
                 current_generation,
@@ -2674,26 +2701,34 @@ fn acquire_native_graph_lock(
     })
 }
 
+/// Returns the schema the opened store serves and whether it is an additive
+/// evolution of the committed schema that open must commit before publishing.
 fn resolve_open_schema(
     manifest_exists: bool,
     snapshot: &PublishedSnapshot,
     declared: Option<&crate::meta::Schema>,
-) -> Result<crate::meta::Schema, StoreError> {
-    if manifest_exists {
-        let persisted = snapshot.schema().clone();
-        if let Some(declared) = declared
-            && declared != &persisted
-        {
-            return Err(StoreError::SchemaMismatch {
-                persisted,
-                declared: declared.clone(),
-            });
-        }
-        Ok(snapshot.schema().clone())
-    } else {
-        Ok(declared
-            .cloned()
-            .unwrap_or_else(crate::meta::Schema::timestamp_only))
+    access_mode: AccessMode,
+) -> Result<(crate::meta::Schema, bool), StoreError> {
+    if !manifest_exists {
+        return Ok((
+            declared
+                .cloned()
+                .unwrap_or_else(crate::meta::Schema::timestamp_only),
+            false,
+        ));
+    }
+    let persisted = snapshot.schema();
+    let Some(declared) = declared else {
+        return Ok((persisted.clone(), false));
+    };
+    let mismatch = || StoreError::SchemaMismatch {
+        persisted: persisted.clone(),
+        declared: declared.clone(),
+    };
+    match persisted.additive_evolution(declared) {
+        Ok(None) => Ok((persisted.clone(), false)),
+        Ok(Some(evolved)) if access_mode == AccessMode::ReadWrite => Ok((evolved, true)),
+        Ok(Some(_)) | Err(_) => Err(mismatch()),
     }
 }
 
@@ -2967,8 +3002,14 @@ impl Store {
         // Store-owned VFS before mmap becomes the query data plane. Internal
         // manifest-only remaps deliberately skip this probe so their exact
         // zero-segment-read accounting contracts remain intact.
-        let snapshot = PublishedSnapshot::load_for_open_on_vfs(path, &accounting, vfs.as_ref())?;
-        let schema = resolve_open_schema(manifest_exists, &snapshot, options.schema.as_ref())?;
+        let mut snapshot =
+            PublishedSnapshot::load_for_open_on_vfs(path, &accounting, vfs.as_ref())?;
+        let (schema, schema_evolved) = resolve_open_schema(
+            manifest_exists,
+            &snapshot,
+            options.schema.as_ref(),
+            options.access_mode,
+        )?;
         let persisted_epoch = snapshot.epoch_alias();
         let declared_epoch = options
             .epoch
@@ -2990,7 +3031,7 @@ impl Store {
         validate_tokenizer_epoch(persisted_epoch.or(declared_epoch), &tokenizer)?;
         let absorbed_through = snapshot.absorbed_through();
         let wal_path = path.join("wal.ze");
-        let (active, recovered_wal, sealed_tombstones) = crate::ingest::ActiveState::recover(
+        let (mut active, recovered_wal, sealed_tombstones) = crate::ingest::ActiveState::recover(
             vfs.as_ref(),
             &wal_path,
             snapshot.generation(),
@@ -3012,6 +3053,32 @@ impl Store {
                     })?;
                 }
             }
+        }
+        if schema_evolved {
+            // Additive schema evolution is one manifest commit that changes
+            // only the schema: the same segments, epochs, and absorbed WAL
+            // boundary under the next generation. Sealed segments are not
+            // rewritten; their readers decode against the evolved schema.
+            let generation = active
+                .generation
+                .checked_add(1)
+                .ok_or(StoreError::GenerationOverflow)?;
+            let committed =
+                crate::manifest::io::load_manifest(vfs.as_ref(), &manifest_path, absorbed_through)
+                    .map_err(StoreError::Manifest)?;
+            crate::manifest::io::commit_manifest(
+                vfs.as_ref(),
+                path,
+                &crate::manifest::Manifest {
+                    generation,
+                    schema: schema.clone(),
+                    ..committed
+                },
+                durability_policy,
+            )
+            .map_err(StoreError::Manifest)?;
+            active.generation = generation;
+            snapshot = PublishedSnapshot::load_on_vfs(path, &accounting, vfs.as_ref())?;
         }
         if options.access_mode == AccessMode::ReadWrite
             && !manifest_exists

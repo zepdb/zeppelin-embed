@@ -120,6 +120,27 @@ order, attribute or direction throws `ZE_ERR_INVALID_ARGUMENT`. Ordering by an
 undeclared attribute, by attribute 0 (the timestamp), or by a `bool` or string
 attribute throws `ZE_ERR_INVALID_ARGUMENT`.
 
+A later release can add attributes without re-ingesting. Declare the new
+attribute as nullable and open the namespace for writing; documents written
+before it read it as null, exactly like a document written without it
+(`isNull` matches them; `eq`, `in`, `range` and `exists` do not):
+
+```js
+const store = openNamespace('my-database', 'documents', {
+  attributes: [
+    { id: 1, name: 'category', type: 'dictionaryString' },
+    { id: 2, name: 'language', type: 'dictionaryString', nullable: true },
+  ],
+  vectorSpace: { dimensions: 2 },
+});
+```
+
+Attributes match by `id`. Every stored attribute must be declared unchanged.
+Removing or changing one, adding a non-nullable one, or adding one on a
+`readOnly` open throws `ZE_ERR_SCHEMA_MISMATCH` naming the attribute. Once a
+release adds an attribute, earlier releases can no longer open the namespace
+with their shorter declaration.
+
 Writes land in an active segment backed by the write-ahead log. `seal()`
 turns the active segment into an immutable segment and absorbs the log
 records it covers, so opening the store again reads the sealed segment

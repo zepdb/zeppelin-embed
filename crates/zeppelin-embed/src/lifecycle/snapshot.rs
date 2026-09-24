@@ -418,6 +418,7 @@ impl PublishedSnapshot {
                     .iter()
                     .filter(|segment| !segment_is_published(manifest.epoch_alias, segment)),
             );
+        let collection_schema = Arc::new(manifest.schema.clone());
         for expected in ordered_segments {
             let path = directory.join(expected.id.file_name());
             let reader = SegmentReader::open_accounted(
@@ -425,6 +426,7 @@ impl PublishedSnapshot {
                 &path,
                 expected,
                 accounting,
+                &collection_schema,
                 |allocation_bytes| {
                     let bytes = u64::try_from(allocation_bytes).map_err(|_| {
                         StoreError::BudgetExceeded {

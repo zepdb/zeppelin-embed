@@ -166,6 +166,80 @@ fn namespace_reopen_with_different_schema_returns_schema_mismatch() {
 }
 
 #[test]
+fn namespace_reopen_with_an_added_nullable_attribute_evolves_the_schema() {
+    let root = tempfile::tempdir().expect("temporary namespace root");
+    let root_bytes = root.path().to_string_lossy().into_owned().into_bytes();
+    let name = b"evolving";
+    let attribute = |attribute_id: u32, name: &'static [u8], nullable: u32| ZeAttributeDefinition {
+        attribute_id,
+        name: name.as_ptr(),
+        name_len: name.len(),
+        attribute_type: 5,
+        nullable,
+    };
+    let release_one = [attribute(1, b"title", 1)];
+    let release_two = [attribute(1, b"title", 1), attribute(2, b"language", 1)];
+    let reordered = [attribute(2, b"language", 1), attribute(1, b"title", 1)];
+    let added_required = [
+        attribute(1, b"title", 1),
+        attribute(2, b"language", 1),
+        attribute(3, b"author", 0),
+    ];
+    let spec = |attributes: &[ZeAttributeDefinition]| ZeNamespaceSpec {
+        abi_size: size_of::<ZeNamespaceSpec>() as u32,
+        abi_reserved: 0,
+        attributes: attributes.as_ptr(),
+        attribute_count: attributes.len(),
+        has_vector_space: 1,
+        dimensions: 4,
+        normalization: 0,
+        epoch: std::ptr::null(),
+    };
+    let open = |attributes: &[ZeAttributeDefinition], access_mode: i32| {
+        let spec = spec(attributes);
+        let request = ZeNamespaceOpenRequest {
+            abi_size: size_of::<ZeNamespaceOpenRequest>() as u32,
+            abi_reserved: 0,
+            root: root_bytes.as_ptr(),
+            root_len: root_bytes.len(),
+            name: name.as_ptr(),
+            name_len: name.len(),
+            open: ZeOpenRequest {
+                access_mode,
+                ..open_settings()
+            },
+            spec: &spec,
+        };
+        let mut handle = 0;
+        let code = ze_namespace_open(&request, &mut handle);
+        if code == ZeErrorCode::ZeOk {
+            assert_eq!(ze_close(handle), ZeErrorCode::ZeOk);
+        }
+        code
+    };
+
+    assert_eq!(open(&release_one, 0), ZeErrorCode::ZeOk);
+    assert_eq!(
+        open(&release_two, 1),
+        ZeErrorCode::ZeErrSchemaMismatch,
+        "a read-only open cannot persist an added attribute"
+    );
+    assert_eq!(open(&release_two, 0), ZeErrorCode::ZeOk);
+    assert_eq!(open(&release_two, 1), ZeErrorCode::ZeOk);
+    assert_eq!(open(&reordered, 0), ZeErrorCode::ZeOk);
+    assert_eq!(
+        open(&release_one, 0),
+        ZeErrorCode::ZeErrSchemaMismatch,
+        "an attribute cannot be removed"
+    );
+    assert_eq!(
+        open(&added_required, 0),
+        ZeErrorCode::ZeErrSchemaMismatch,
+        "an added attribute must be nullable"
+    );
+}
+
+#[test]
 fn namespace_reopen_with_different_epoch_returns_epoch_mismatch() {
     let root = tempfile::tempdir().expect("temporary namespace root");
     let root_bytes = root.path().to_string_lossy().into_owned().into_bytes();

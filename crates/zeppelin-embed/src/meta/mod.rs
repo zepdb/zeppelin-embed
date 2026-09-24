@@ -141,6 +141,72 @@ impl std::fmt::Display for SchemaError {
 
 impl std::error::Error for SchemaError {}
 
+/// Why a declared schema is not an additive extension of a persisted one.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SchemaConflict {
+    /// A persisted attribute is absent from the declaration.
+    Removed(ColumnDefinition),
+    /// A persisted attribute is declared with a different name, type, or
+    /// nullability.
+    Changed {
+        /// Definition already persisted.
+        persisted: ColumnDefinition,
+        /// Definition declared with the same identifier.
+        declared: ColumnDefinition,
+    },
+    /// A new attribute is declared non-nullable, so rows written before it
+    /// existed could not read it as null.
+    AddedNotNullable(ColumnDefinition),
+}
+
+struct DescribedColumn<'a>(&'a ColumnDefinition);
+
+impl std::fmt::Display for DescribedColumn<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let definition = self.0;
+        write!(
+            formatter,
+            "'{}' (id {}, {:?}, {})",
+            definition.name,
+            definition.id.get(),
+            definition.column_type,
+            if definition.nullable {
+                "nullable"
+            } else {
+                "not nullable"
+            }
+        )
+    }
+}
+
+impl std::fmt::Display for SchemaConflict {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Removed(persisted) => write!(
+                formatter,
+                "attribute {} is persisted but not declared; attributes cannot be removed",
+                DescribedColumn(persisted)
+            ),
+            Self::Changed {
+                persisted,
+                declared,
+            } => write!(
+                formatter,
+                "attribute {} is declared as {}; persisted attributes cannot change",
+                DescribedColumn(persisted),
+                DescribedColumn(declared)
+            ),
+            Self::AddedNotNullable(declared) => write!(
+                formatter,
+                "added attribute {} must be nullable so existing documents read it as null",
+                DescribedColumn(declared)
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SchemaConflict {}
+
 /// An immutable collection schema including the required `ts: i64` column.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Schema {
@@ -196,6 +262,43 @@ impl Schema {
         columns.reserve(user_columns.len());
         columns.extend(user_columns);
         Ok(Self { columns })
+    }
+
+    /// Reconciles a declared schema with this persisted one by column id.
+    ///
+    /// Every persisted column must be declared unchanged, and every declared
+    /// column this schema lacks must be nullable; declaration order does not
+    /// matter. Returns `None` when both name the same columns, otherwise the
+    /// evolved schema: this schema's columns in their order, then the added
+    /// columns in declaration order.
+    pub fn additive_evolution(&self, declared: &Self) -> Result<Option<Self>, SchemaConflict> {
+        for persisted in &self.columns {
+            match declared.column(persisted.id) {
+                None => return Err(SchemaConflict::Removed(persisted.clone())),
+                Some(candidate) if candidate != persisted => {
+                    return Err(SchemaConflict::Changed {
+                        persisted: persisted.clone(),
+                        declared: candidate.clone(),
+                    });
+                }
+                Some(_) => {}
+            }
+        }
+        let mut added = Vec::new();
+        for candidate in &declared.columns {
+            if self.column(candidate.id).is_none() {
+                if !candidate.nullable {
+                    return Err(SchemaConflict::AddedNotNullable(candidate.clone()));
+                }
+                added.push(candidate.clone());
+            }
+        }
+        if added.is_empty() {
+            return Ok(None);
+        }
+        let mut columns = self.columns.clone();
+        columns.extend(added);
+        Ok(Some(Self { columns }))
     }
 
     /// Returns all declarations, beginning with the required timestamp column.

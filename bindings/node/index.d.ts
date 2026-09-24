@@ -93,6 +93,16 @@ export interface VectorSpace {
 }
 
 export interface NamespaceSpec {
+  /**
+   * The namespace's typed attributes. Reopening an existing namespace
+   * matches them by `id`, in any order: every stored attribute must be
+   * declared with the same `name`, `type` and `nullable`. A declared
+   * attribute the namespace lacks is added when it is `nullable: true`; the
+   * writable open that adds it commits the change, and documents written
+   * before it read it as null. Removing or changing an attribute, adding a
+   * non-nullable one, or adding one on a `readOnly` open throws
+   * `ZE_ERR_SCHEMA_MISMATCH` with a message that names the attribute.
+   */
   readonly attributes?: readonly AttributeDefinition[];
   readonly vectorSpace?: VectorSpace;
 }

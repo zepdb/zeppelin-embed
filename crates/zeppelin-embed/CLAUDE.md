@@ -1002,3 +1002,20 @@ A write statement without RETURN lowers to a plan whose root is `Mutate`.
 Its result has zero columns and zero rows and its outcome is Committed or
 NoOp; the driver still pulls and charges every driven row, so row/payload
 capacities apply to it exactly as to a returning statement.
+
+## ZE-218 additive schema evolution
+
+- A declared schema reconciles with the manifest schema by column id through
+  `Schema::additive_evolution`: persisted columns unchanged, added columns
+  nullable, order irrelevant. Anything else is `SchemaMismatch`, whose
+  message names the column. A read-write open commits an addition as one
+  manifest (next generation, same segments, epochs and `log_seq`) before
+  publishing; a read-only open refuses it. No format change: the manifest
+  schema list and each segment's columns region already carry any count.
+- Sealed segments keep the schema they were sealed with. Snapshot readers
+  (`open_accounted`) decode columns against the manifest schema, so added
+  columns read as all-null and consolidation merges old and new segments
+  under one schema. A segment column that differs from the manifest fails
+  loudly. Raw `SegmentReader::open` decodes the segment's own schema.
+- `tests/fixtures/schema-v0.4.2` is a store written by the v0.4.2 core; the
+  `schema_evolution` suite opens it with added attributes.

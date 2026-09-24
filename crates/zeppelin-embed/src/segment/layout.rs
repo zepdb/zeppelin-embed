@@ -459,7 +459,12 @@ struct DecodedColumn {
     values: DecodedValues,
 }
 
-pub(crate) fn decode_columns(bytes: &[u8]) -> Result<ColumnStore, SegmentError> {
+/// Decodes a columns region. With `collection`, the result carries that
+/// schema, which must be an additive evolution of the segment's own.
+pub(crate) fn decode_columns(
+    bytes: &[u8],
+    collection: Option<&Schema>,
+) -> Result<ColumnStore, SegmentError> {
     let mut cursor = Cursor::new("columns", bytes);
     let row_count = cursor.u32()?;
     let column_count = cursor.usize_from_u32()?;
@@ -535,6 +540,20 @@ pub(crate) fn decode_columns(bytes: &[u8]) -> Result<ColumnStore, SegmentError> 
         .collect();
     let schema =
         Schema::new(user_definitions).map_err(|error| SegmentError::Columns(error.to_string()))?;
+    // A segment sealed before an additive schema evolution lacks the added
+    // nullable columns; decoding it against the collection schema reads them
+    // as null. Any other difference is a violated contract.
+    let schema = match collection {
+        None => schema,
+        Some(collection) => {
+            schema.additive_evolution(collection).map_err(|conflict| {
+                SegmentError::Columns(format!(
+                    "segment columns conflict with the collection schema: {conflict}"
+                ))
+            })?;
+            collection.clone()
+        }
+    };
     let mut builder = ColumnStoreBuilder::new(schema);
     for row in 0..row_count {
         let timestamp = decoded
@@ -854,6 +873,93 @@ impl<'a> Cursor<'a> {
                 self.artifact,
                 self.bytes.len().saturating_sub(self.position)
             ))
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
+mod collection_schema_tests {
+    use super::{
+        ColumnDefinition, ColumnId, ColumnInput, ColumnStoreBuilder, ColumnType, ColumnValue,
+        Schema, SegmentError, decode_columns, encode_columns,
+    };
+
+    const RANK: ColumnId = ColumnId::new(1);
+    const LANG: ColumnId = ColumnId::new(2);
+
+    fn rank_region() -> Vec<u8> {
+        let schema = Schema::new(vec![ColumnDefinition::new(
+            RANK,
+            "rank",
+            ColumnType::U64,
+            false,
+        )])
+        .expect("segment schema");
+        let mut builder = ColumnStoreBuilder::new(schema);
+        for value in [4_u64, 9] {
+            builder
+                .push_row(
+                    0,
+                    &[ColumnInput {
+                        column: RANK,
+                        value: ColumnValue::U64(value),
+                    }],
+                )
+                .expect("push row");
+        }
+        encode_columns(&builder.finish().expect("finish columns")).expect("encode columns")
+    }
+
+    fn collection(columns: Vec<ColumnDefinition>) -> Schema {
+        Schema::new(columns).expect("collection schema")
+    }
+
+    #[test]
+    fn a_segment_decodes_against_an_additive_collection_schema_as_null() {
+        let target = collection(vec![
+            ColumnDefinition::new(RANK, "rank", ColumnType::U64, false),
+            ColumnDefinition::new(LANG, "lang", ColumnType::DictionaryString, true),
+        ]);
+        let columns = decode_columns(&rank_region(), Some(&target)).expect("decode widened");
+        assert_eq!(columns.schema(), &target);
+        let lang = columns.column(LANG).expect("added column is materialized");
+        assert!(lang.present().is_empty(), "every old row reads null");
+        assert_eq!(lang.len(), 2);
+        let own = decode_columns(&rank_region(), None).expect("decode own schema");
+        assert_eq!(own.schema().user_column_count(), 1);
+    }
+
+    #[test]
+    fn a_segment_column_that_conflicts_with_the_collection_schema_fails_loudly() {
+        let conflicts = [
+            collection(vec![ColumnDefinition::new(
+                RANK,
+                "rank",
+                ColumnType::I64,
+                false,
+            )]),
+            collection(vec![ColumnDefinition::new(
+                LANG,
+                "lang",
+                ColumnType::DictionaryString,
+                true,
+            )]),
+            collection(vec![
+                ColumnDefinition::new(RANK, "rank", ColumnType::U64, false),
+                ColumnDefinition::new(LANG, "lang", ColumnType::DictionaryString, false),
+            ]),
+        ];
+        for target in conflicts {
+            match decode_columns(&rank_region(), Some(&target)) {
+                Err(SegmentError::Columns(detail)) => {
+                    assert!(
+                        detail.contains("conflict with the collection schema"),
+                        "{detail}"
+                    );
+                }
+                other => panic!("expected a column conflict for {target:?}, got {other:?}"),
+            }
         }
     }
 }

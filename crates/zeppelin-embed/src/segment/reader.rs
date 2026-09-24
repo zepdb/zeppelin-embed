@@ -454,6 +454,10 @@ pub struct SegmentReader {
     int8_factors_cache: OnceLock<CachedQueryValue<Arc<Vec<crate::scan::Int8Factors>>>>,
     postings_cache: OnceLock<CachedQueryValue<Arc<crate::fts::sealed::SealedSegment>>>,
     columns_cache: OnceLock<CachedQueryValue<Arc<ColumnStore>>>,
+    // The published manifest schema, set for snapshot readers only. Columns
+    // decode against it, so attributes added after this segment was sealed
+    // read as null without rewriting the immutable file.
+    collection_schema: Option<Arc<crate::meta::Schema>>,
     alive_cache: OnceLock<CachedQueryValue<Arc<AliveSet>>>,
     // Sealed rows ordered by persisted document identity so an exact revision
     // resolves by binary search instead of a full row scan.
@@ -633,6 +637,7 @@ impl SegmentReader {
             int8_factors_cache: OnceLock::new(),
             postings_cache: OnceLock::new(),
             columns_cache: OnceLock::new(),
+            collection_schema: None,
             alive_cache: OnceLock::new(),
             document_version_index_cache: OnceLock::new(),
             graph_search_cache: crate::lifecycle::graph_cache::SegmentGraphSearchCache::new(),
@@ -645,6 +650,7 @@ impl SegmentReader {
         path: &Path,
         expected: &SegmentMeta,
         accounting: &Arc<crate::lifecycle::stats::Accounting>,
+        collection_schema: &Arc<crate::meta::Schema>,
         mut before_reader_allocation: impl FnMut(usize) -> Result<(), crate::lifecycle::StoreError>,
     ) -> Result<Self, crate::lifecycle::StoreError> {
         let file = vfs
@@ -707,6 +713,7 @@ impl SegmentReader {
             int8_factors_cache: OnceLock::new(),
             postings_cache: OnceLock::new(),
             columns_cache: OnceLock::new(),
+            collection_schema: Some(Arc::clone(collection_schema)),
             alive_cache: OnceLock::new(),
             document_version_index_cache: OnceLock::new(),
             graph_search_cache: crate::lifecycle::graph_cache::SegmentGraphSearchCache::new(),
@@ -1283,11 +1290,14 @@ impl SegmentReader {
     }
 
     /// Decodes the checksummed metadata region into typed column arrays.
+    ///
+    /// A reader from a published snapshot decodes against the collection
+    /// schema, so columns added after this segment was sealed read as null.
     pub fn columns(&self) -> Result<ColumnStore, SegmentError> {
         let region = self.region(RegionKind::Columns)?;
         #[cfg(any(test, feature = "test-support"))]
         account_region_decode(RegionKind::Columns, region.len());
-        let columns = decode_columns(region)?;
+        let columns = decode_columns(region, self.collection_schema.as_deref())?;
         if columns.row_count() != self.meta.row_count {
             return Err(SegmentError::Geometry(format!(
                 "column rows {}, header rows {}",
@@ -1307,7 +1317,8 @@ impl SegmentReader {
             .map_err(crate::lifecycle::StoreError::Segment)?;
         #[cfg(any(test, feature = "test-support"))]
         account_region_decode(RegionKind::Columns, region.len());
-        let mut columns = decode_columns(region).map_err(crate::lifecycle::StoreError::Segment)?;
+        let mut columns = decode_columns(region, self.collection_schema.as_deref())
+            .map_err(crate::lifecycle::StoreError::Segment)?;
         if columns.row_count() != self.meta.row_count {
             return Err(crate::lifecycle::StoreError::Segment(
                 SegmentError::Geometry(format!(
