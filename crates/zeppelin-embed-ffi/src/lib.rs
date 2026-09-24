@@ -4829,6 +4829,9 @@ const _: () = {
     not(all(target_os = "macos", target_arch = "aarch64"))
 ))]
 compile_error!("graph-cypher contracts require macOS arm64; graph packaging requires macOS 14+");
+mod verify;
+pub use verify::*;
+
 #[cfg(feature = "graph-cypher")]
 mod graph_contracts;
 #[cfg(feature = "graph-cypher")]

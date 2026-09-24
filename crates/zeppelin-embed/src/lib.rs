@@ -451,6 +451,8 @@ pub mod segment;
 pub mod sys;
 /// Adaptive storage tiers.
 pub mod tier;
+/// Read-only end-to-end store verification.
+pub mod verify;
 /// Virtual filesystem and platform I/O.
 pub mod vfs;
 /// Write-ahead logging and durability.

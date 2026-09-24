@@ -11,6 +11,9 @@
   "homepage": "https://github.com/zepdb/zeppelin-embed#readme",
   "bugs": "https://github.com/zepdb/zeppelin-embed/issues",
   "main": "index.js",
+  "bin": {
+    "zeppelin-verify": "bin/zeppelin-verify.js"
+  },
   "types": "index.d.ts",
   "exports": {
     ".": {
@@ -22,6 +25,7 @@
   "files": [
     "index.js",
     "index.d.ts",
+    "bin/zeppelin-verify.js",
     "README.md",
     "LICENSE",
     "prebuilds/darwin-arm64/zeppelin_embed.node",

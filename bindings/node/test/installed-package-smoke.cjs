@@ -3,12 +3,14 @@
 const assert = require('node:assert/strict');
 const { mkdtempSync, rmSync } = require('node:fs');
 const { tmpdir } = require('node:os');
-const { join } = require('node:path');
+const { dirname, join } = require('node:path');
+const { spawnSync } = require('node:child_process');
 const {
   ABI_VERSION,
   CancellationToken,
   Store,
   openNamespace,
+  verify,
 } = require('@zepdb/zeppelin-embed');
 
 const directory = mkdtempSync(join(tmpdir(), 'zeppelin-node-installed-'));
@@ -64,6 +66,15 @@ try {
     prefix.hits.map((hit) => hit.id),
     [1n],
   );
+
+  // Store verification and the installed `zeppelin-verify` command. Verify
+  // is read-only, so it runs beside the open writer.
+  const notes = join(directory, 'records', 'notes');
+  assert.equal(verify(notes).ok, true);
+  const bin = join(dirname(require.resolve('@zepdb/zeppelin-embed')), 'bin', 'zeppelin-verify.js');
+  const cli = spawnSync(process.execPath, [bin, notes], { encoding: 'utf8' });
+  assert.equal(cli.status, 0, cli.stderr);
+  assert.equal(JSON.parse(cli.stdout).ok, true);
 } finally {
   token.close();
   records.close();

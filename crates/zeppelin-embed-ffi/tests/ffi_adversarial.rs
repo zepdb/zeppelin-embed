@@ -108,6 +108,14 @@ const ABI_REGISTRY: &[AbiEntry] = &[
         coverage: AbiCoverage::InvalidProbe(probe_namespace_list_result_free),
     },
     AbiEntry {
+        name: "ze_verify",
+        coverage: AbiCoverage::InvalidProbe(probe_verify),
+    },
+    AbiEntry {
+        name: "ze_verify_result_free",
+        coverage: AbiCoverage::InvalidProbe(probe_verify_result_free),
+    },
+    AbiEntry {
         name: "ze_epoch_identity",
         coverage: AbiCoverage::DetailedMatrix,
     },
@@ -1070,6 +1078,14 @@ fn probe_namespace_list_result_free(_: &MatrixContext) -> ProbeResult {
     ProbeResult::Status(ze_namespace_list_result_free(std::ptr::null_mut()))
 }
 
+fn probe_verify(_: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_verify(std::ptr::null(), std::ptr::null_mut()))
+}
+
+fn probe_verify_result_free(_: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_verify_result_free(std::ptr::null_mut()))
+}
+
 fn probe_last_error_message(context: &MatrixContext) -> ProbeResult {
     ProbeResult::Status(ze_last_error_message(
         context.store.handle,
@@ -1134,16 +1150,20 @@ fn probe_text_query_result_free(_: &MatrixContext) -> ProbeResult {
 
 #[test]
 fn every_exported_symbol_has_executable_adversarial_registry_coverage() {
-    let exported = include_str!("../src/lib.rs")
-        .lines()
-        .filter_map(|line| {
-            line.trim_start()
-                .strip_prefix("pub extern \"C\" fn ")
-                .and_then(|tail| tail.split('(').next())
-                .filter(|name| cfg!(feature = "text") || !name.starts_with("ze_text_"))
-                .map(str::to_owned)
-        })
-        .collect::<std::collections::BTreeSet<_>>();
+    let exported = [
+        include_str!("../src/lib.rs"),
+        include_str!("../src/verify.rs"),
+    ]
+    .into_iter()
+    .flat_map(str::lines)
+    .filter_map(|line| {
+        line.trim_start()
+            .strip_prefix("pub extern \"C\" fn ")
+            .and_then(|tail| tail.split('(').next())
+            .filter(|name| cfg!(feature = "text") || !name.starts_with("ze_text_"))
+            .map(str::to_owned)
+    })
+    .collect::<std::collections::BTreeSet<_>>();
     let registered = ABI_REGISTRY
         .iter()
         .map(|entry| entry.name.to_owned())

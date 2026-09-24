@@ -368,6 +368,15 @@ function listNamespaces(root) {
   return callNative(() => binding.listNamespaces(root));
 }
 
+/**
+ * Walks one store directory read-only and reports every damaged manifest,
+ * segment, and WAL artifact. It needs no open store and writes nothing, so it
+ * is safe to run after an unclean shutdown, before reopening.
+ */
+function verify(storePath) {
+  return callNative(() => binding.verify(storePath));
+}
+
 module.exports = {
   ABI_VERSION: binding.abiVersion,
   CancellationToken,
@@ -379,4 +388,5 @@ module.exports = {
   listNamespaces,
   openNamespace,
   uuidToId,
+  verify,
 };

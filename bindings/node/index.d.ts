@@ -628,3 +628,91 @@ export declare function openNamespace(
 ): Store;
 
 export declare function listNamespaces(root: string): string[];
+
+/**
+ * What is damaged. Kinds are append-only.
+ *
+ * - `manifestMissing`: `manifest.ze` is absent, but the WAL or segment files
+ *   prove a committed snapshot existed; data it covered is unreachable.
+ * - `manifestCorrupt`: the manifest failed its checksum or decoder.
+ * - `manifestAheadOfWal`: the manifest covers WAL records the WAL lacks.
+ * - `segmentMissing`: a segment the manifest references does not exist.
+ * - `segmentCorrupt`: a segment header, length, identity or trailer is bad.
+ * - `segmentMismatch`: a segment header disagrees with the manifest.
+ * - `segmentRegionCorrupt`: a segment region failed its checksum; `offset`
+ *   is the region's byte offset and `detail` names the region.
+ * - `segmentIndexInvalid`: a checksum-valid region (columns, alive set, text
+ *   index, stored text or metadata, graph) failed its decoder or disagrees
+ *   with the segment's row count.
+ * - `walMissing`: the WAL is absent although the manifest covers records.
+ * - `walHeaderCorrupt`: the WAL file header is truncated or invalid.
+ * - `walRecordCorrupt`: a WAL record failed framing, checksum or sequence
+ *   validation, including a torn tail; `offset` is the record's offset.
+ * - `walRecordInvalid`: a checksum-valid WAL record cannot be replayed.
+ * - `unreadable`: a store file exists but could not be read.
+ * - `purgeIntentCorrupt`: the pending purge intent `purge.ze` failed to
+ *   decode. A pending intent that decodes is not damage: the next writable
+ *   open completes that purge.
+ */
+export type VerifyFindingKind =
+  | 'manifestMissing'
+  | 'manifestCorrupt'
+  | 'manifestAheadOfWal'
+  | 'segmentMissing'
+  | 'segmentCorrupt'
+  | 'segmentMismatch'
+  | 'segmentRegionCorrupt'
+  | 'segmentIndexInvalid'
+  | 'walMissing'
+  | 'walHeaderCorrupt'
+  | 'walRecordCorrupt'
+  | 'walRecordInvalid'
+  | 'unreadable'
+  | 'purgeIntentCorrupt';
+
+export interface VerifyFinding {
+  readonly kind: VerifyFindingKind;
+  /** File name relative to the store directory. */
+  readonly file: string;
+  /** Byte offset of the damage inside `file`, when the decoder knows it. */
+  readonly offset?: bigint;
+  /** Human-readable decoder detail, for logs and support reports. */
+  readonly detail: string;
+}
+
+export interface VerifyReport {
+  /** True exactly when `findings` is empty. */
+  readonly ok: boolean;
+  /** Generation of the decoded manifest; `0n` without one. */
+  readonly generation: bigint;
+  /** Segments the manifest references. */
+  readonly segmentsChecked: bigint;
+  /** WAL records that passed checksum and sequence validation. */
+  readonly walRecordsChecked: bigint;
+  /** Every damaged artifact, in walk order: manifest, segments, WAL. */
+  readonly findings: VerifyFinding[];
+}
+
+/**
+ * Verify one store directory end to end without opening or modifying it.
+ *
+ * Walks the manifest, every referenced segment (header, region checksums,
+ * file trailer, and every index region's decoder, with columns read against
+ * the manifest schema), the WAL through the same replay recovery runs, and
+ * any pending purge intent. It creates, writes, renames, locks and removes
+ * nothing, so it is safe to call after an unclean shutdown and before
+ * reopening. For a namespace pass `path.join(root, name)`.
+ *
+ * Damage is returned as findings, never thrown. Every finding is damage: the
+ * engine refuses to open the store or would lose data from it. A torn WAL
+ * tail is damage, because recovery refuses it. Segment files no manifest
+ * references and leftover temporary files are not findings; a writable open
+ * removes them without losing data.
+ *
+ * Throws `ZeppelinError` `ZE_ERR_NOT_FOUND` when the path does not exist,
+ * `ZE_ERR_IO` when it is not a directory, and `ZE_ERR_INVALID_ARGUMENT` for
+ * an empty path or one containing a NUL character; a `TypeError` when `path`
+ * is not a string. Verifying a store another process is writing can report a
+ * write that is in flight.
+ */
+export declare function verify(path: string): VerifyReport;

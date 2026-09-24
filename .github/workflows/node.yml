@@ -55,8 +55,19 @@ jobs:
         run: xcrun clang-format --dry-run --Werror bindings/node/native/addon.cc
       - run: npm run build:native
         working-directory: bindings/node
+      # The package suite includes the crash-safety suite, which kills a
+      # writer at seeded points and verifies the store; its per-round results
+      # are kept with every run, including each release run.
       - run: npm test
         working-directory: bindings/node
+        env:
+          ZE_CRASH_EVIDENCE: ${{ runner.temp }}/crash-safety-darwin-arm64.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: crash-safety-darwin-arm64
+          path: ${{ runner.temp }}/crash-safety-darwin-arm64.json
+          if-no-files-found: error
       - run: npm run typecheck
         working-directory: bindings/node
       - name: Match a release tag to the npm version
@@ -155,8 +166,17 @@ jobs:
         working-directory: bindings/node
         env:
           ZE_ELECTRON_VERSION: 44.4.1
+      # On Windows the crash-safety suite's kill is TerminateProcess.
       - run: npm test
         working-directory: bindings/node
+        env:
+          ZE_CRASH_EVIDENCE: ${{ runner.temp }}/crash-safety-win32-x64.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: crash-safety-win32-x64
+          path: ${{ runner.temp }}/crash-safety-win32-x64.json
+          if-no-files-found: error
       - run: npm run typecheck
         working-directory: bindings/node
       - run: npm run check:prebuilt

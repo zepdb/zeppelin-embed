@@ -412,7 +412,7 @@ impl From<StoreError> for PurgeError {
     }
 }
 
-struct PurgeIntent {
+pub(crate) struct PurgeIntent {
     token_id: u64,
     ids: Vec<DocId>,
 }
@@ -1171,7 +1171,7 @@ fn write_intent(
     sync_directory(vfs, directory, policy).map_err(PurgeError::from)
 }
 
-fn read_intent(vfs: &dyn Vfs, directory: &Path) -> Result<PurgeIntent, PurgeError> {
+pub(crate) fn read_intent(vfs: &dyn Vfs, directory: &Path) -> Result<PurgeIntent, PurgeError> {
     let path = directory.join(PURGE_INTENT_FILE);
     let bytes = vfs.read(&path).map_err(|source| StoreError::Io {
         path: path.clone(),

@@ -89,6 +89,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "store_verify"
+path = "fuzz_targets/store_verify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "wal_replay"
 path = "fuzz_targets/wal_replay.rs"
 test = false

@@ -5,11 +5,14 @@ import {
   idToUuid,
   openNamespace,
   uuidToId,
+  verify,
   type CountGroup,
   type CountResult,
   type Document,
   type QueryResult,
   type SearchHit,
+  type VerifyFindingKind,
+  type VerifyReport,
 } from '@zepdb/zeppelin-embed';
 
 const documents: readonly Document[] = [
@@ -45,7 +48,12 @@ const lexicalScore: number | undefined = result.hits[0]?.lexicalBm25;
 const effectiveAlpha: number | undefined = result.fusion?.effectiveAlpha;
 const uuid: string = idToUuid(uuidToId('123e4567-e89b-12d3-a456-426614174000'));
 
+const report: VerifyReport = verify('typecheck-records/notes');
+const damage: VerifyFindingKind | undefined = report.findings[0]?.kind;
+const offset: bigint | undefined = report.findings[0]?.offset;
+
 console.log(ABI_VERSION, generation, sealed, groups, missing, plain, hits, mode, lexicalScore, effectiveAlpha, uuid);
+console.log(report.ok, damage, offset);
 token.close();
 records.close();
 store.close();

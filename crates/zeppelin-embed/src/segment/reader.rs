@@ -721,6 +721,14 @@ impl SegmentReader {
         })
     }
 
+    /// Decodes columns against the published manifest schema, as snapshot
+    /// readers do, for a reader opened outside a snapshot.
+    #[must_use]
+    pub(crate) fn with_collection_schema(mut self, schema: Arc<crate::meta::Schema>) -> Self {
+        self.collection_schema = Some(schema);
+        self
+    }
+
     /// Returns immutable manifest-visible metadata decoded from the header.
     #[must_use]
     pub const fn meta(&self) -> &SegmentMeta {

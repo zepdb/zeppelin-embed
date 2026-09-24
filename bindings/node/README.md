@@ -236,6 +236,30 @@ const restored = openNamespace('/Volumes/Backup', 'notes-2026-09-24',
 A crash during a snapshot can leave a hidden `.<name>.snapshot-*.tmp`
 directory beside the target. It is never a snapshot and can be deleted.
 
+`verify` checks a store directory end to end without opening or changing it:
+the manifest, every segment's checksums and index regions, and the
+write-ahead log through the same replay recovery runs. Run it after an unclean
+shutdown, before reopening, or from diagnostics. Damage comes back as
+findings rather than an exception:
+
+```js
+const { verify } = require('@zepdb/zeppelin-embed');
+
+const report = verify(path.join('my-database', 'notes'));
+if (!report.ok) {
+  for (const finding of report.findings) {
+    // { kind: 'walRecordCorrupt', file: 'wal.ze', offset: 40n, detail: '...' }
+    console.error(finding.kind, finding.file, finding.offset, finding.detail);
+  }
+}
+```
+
+Every finding is damage: the store will not open, or would lose data. A torn
+log tail is damage too, because recovery refuses it. The package also installs
+a `zeppelin-verify <store-directory>` command that prints the same report as
+JSON and exits 0 when the store is clean, 1 when it found damage, and 2 when
+it could not run.
+
 `query` runs one structured query. `text` selects the lexical leg, `vector`
 selects the vector leg, and both together run hybrid fusion; a request with
 neither is refused.

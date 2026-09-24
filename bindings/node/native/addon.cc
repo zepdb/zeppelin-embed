@@ -1432,6 +1432,159 @@ napi_value ListNamespaces(napi_env env, napi_callback_info info) {
   });
 }
 
+const char *VerifyFindingKindName(uint32_t kind) {
+  switch (kind) {
+  case ZE_VERIFY_MANIFEST_MISSING:
+    return "manifestMissing";
+  case ZE_VERIFY_MANIFEST_CORRUPT:
+    return "manifestCorrupt";
+  case ZE_VERIFY_MANIFEST_AHEAD_OF_WAL:
+    return "manifestAheadOfWal";
+  case ZE_VERIFY_SEGMENT_MISSING:
+    return "segmentMissing";
+  case ZE_VERIFY_SEGMENT_CORRUPT:
+    return "segmentCorrupt";
+  case ZE_VERIFY_SEGMENT_MISMATCH:
+    return "segmentMismatch";
+  case ZE_VERIFY_SEGMENT_REGION_CORRUPT:
+    return "segmentRegionCorrupt";
+  case ZE_VERIFY_SEGMENT_INDEX_INVALID:
+    return "segmentIndexInvalid";
+  case ZE_VERIFY_WAL_MISSING:
+    return "walMissing";
+  case ZE_VERIFY_WAL_HEADER_CORRUPT:
+    return "walHeaderCorrupt";
+  case ZE_VERIFY_WAL_RECORD_CORRUPT:
+    return "walRecordCorrupt";
+  case ZE_VERIFY_WAL_RECORD_INVALID:
+    return "walRecordInvalid";
+  case ZE_VERIFY_UNREADABLE:
+    return "unreadable";
+  case ZE_VERIFY_PURGE_INTENT_CORRUPT:
+    return "purgeIntentCorrupt";
+  default:
+    return nullptr;
+  }
+}
+
+bool CreateVerifyFinding(napi_env env, const ZeVerifyFinding &native,
+                         napi_value *output) {
+  const char *kind_name = VerifyFindingKindName(native.kind);
+  if (kind_name == nullptr) {
+    // A kind this addon does not know is a build mismatch; refuse the report
+    // rather than drop or relabel the finding.
+    const std::string message =
+        "verify returned unknown finding kind " + std::to_string(native.kind);
+    napi_throw_error(env, "ERR_ZEPPELIN_NATIVE", message.c_str());
+    return false;
+  }
+  napi_value kind;
+  napi_value file;
+  napi_value detail;
+  if (!NapiOk(env, napi_create_object(env, output), "create finding") ||
+      !NapiOk(env,
+              napi_create_string_utf8(env, kind_name, NAPI_AUTO_LENGTH, &kind),
+              "create finding kind") ||
+      !SetNamed(env, *output, "kind", kind) ||
+      !NapiOk(env,
+              napi_create_string_utf8(
+                  env, reinterpret_cast<const char *>(native.file),
+                  native.file_len, &file),
+              "create finding file") ||
+      !SetNamed(env, *output, "file", file) ||
+      !NapiOk(env,
+              napi_create_string_utf8(
+                  env, reinterpret_cast<const char *>(native.detail),
+                  native.detail_len, &detail),
+              "create finding detail") ||
+      !SetNamed(env, *output, "detail", detail)) {
+    return false;
+  }
+  if (native.has_offset != 0) {
+    napi_value offset;
+    if (!NapiOk(env, napi_create_bigint_uint64(env, native.offset, &offset),
+                "create finding offset") ||
+        !SetNamed(env, *output, "offset", offset)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+napi_value VerifyStore(napi_env env, napi_callback_info info) {
+  return Guard(env, [&]() -> napi_value {
+    size_t argc = 1;
+    napi_value args[1];
+    if (!NapiOk(env, napi_get_cb_info(env, info, &argc, args, nullptr, nullptr),
+                "read verify arguments")) {
+      return nullptr;
+    }
+    if (argc < 1) {
+      napi_throw_type_error(env, "ERR_MISSING_ARGS", "path is required");
+      return nullptr;
+    }
+    std::string path;
+    if (!GetUtf8(env, args[0], "path", &path))
+      return nullptr;
+    ZeVerifyRequest request{};
+    request.abi_size = sizeof(request);
+    request.path = reinterpret_cast<const uint8_t *>(path.data());
+    request.path_len = path.size();
+    ZeVerifyResult result{};
+    result.abi_size = sizeof(result);
+    const ze_error_code status = ze_verify(&request, &result);
+    if (status != ZE_OK)
+      return ThrowZeppelin(env, 0, status);
+    ResultOwner<ZeVerifyResult, ze_verify_result_free> owner(&result);
+
+    napi_value report;
+    napi_value ok;
+    napi_value generation;
+    napi_value segments;
+    napi_value records;
+    napi_value findings;
+    if (!NapiOk(env, napi_create_object(env, &report),
+                "create verify report") ||
+        !NapiOk(env, napi_get_boolean(env, result.finding_count == 0, &ok),
+                "create verify ok") ||
+        !SetNamed(env, report, "ok", ok) ||
+        !NapiOk(env,
+                napi_create_bigint_uint64(env, result.generation, &generation),
+                "create verify generation") ||
+        !SetNamed(env, report, "generation", generation) ||
+        !NapiOk(
+            env,
+            napi_create_bigint_uint64(env, result.segments_checked, &segments),
+            "create segments checked") ||
+        !SetNamed(env, report, "segmentsChecked", segments) ||
+        !NapiOk(env,
+                napi_create_bigint_uint64(env, result.wal_records_checked,
+                                          &records),
+                "create WAL records checked") ||
+        !SetNamed(env, report, "walRecordsChecked", records) ||
+        !NapiOk(
+            env,
+            napi_create_array_with_length(env, result.finding_count, &findings),
+            "create finding array")) {
+      return nullptr;
+    }
+    for (size_t index = 0; index < result.finding_count; ++index) {
+      napi_value finding;
+      if (!CreateVerifyFinding(env, result.findings[index], &finding) ||
+          !NapiOk(env, napi_set_element(env, findings, index, finding),
+                  "append finding")) {
+        return nullptr;
+      }
+    }
+    if (!SetNamed(env, report, "findings", findings))
+      return nullptr;
+    const ze_error_code free_status = owner.FreeNow();
+    if (free_status != ZE_OK)
+      return ThrowZeppelin(env, 0, free_status);
+    return report;
+  });
+}
+
 napi_value Upsert(napi_env env, napi_callback_info info) {
   return Guard(env, [&]() -> napi_value {
     size_t argc = 1;
@@ -3440,6 +3593,7 @@ napi_value Initialize(napi_env env, napi_value exports) {
       {"createCancelToken", CreateCancelToken},
       {"cancelToken", CancelToken},
       {"freeCancelToken", FreeCancelToken},
+      {"verify", VerifyStore},
   };
   for (const auto &entry : functions) {
     napi_value function;

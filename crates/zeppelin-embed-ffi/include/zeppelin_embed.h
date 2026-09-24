@@ -45,6 +45,77 @@
 #define ZE_REVISION_CONDITION_ABSENT 2
 
 /*
+ `manifest.ze` is absent, but the WAL or segment files prove a committed
+ snapshot existed and data it covered is now unreachable.
+ */
+#define ZE_VERIFY_MANIFEST_MISSING 1
+
+/*
+ The manifest frame, checksum, or payload failed to decode.
+ */
+#define ZE_VERIFY_MANIFEST_CORRUPT 2
+
+/*
+ The manifest covers WAL sequences that the WAL does not hold.
+ */
+#define ZE_VERIFY_MANIFEST_AHEAD_OF_WAL 3
+
+/*
+ A segment the manifest references does not exist.
+ */
+#define ZE_VERIFY_SEGMENT_MISSING 4
+
+/*
+ A segment header, length, identity, or file trailer failed validation.
+ */
+#define ZE_VERIFY_SEGMENT_CORRUPT 5
+
+/*
+ A segment header disagrees with the manifest's record of it.
+ */
+#define ZE_VERIFY_SEGMENT_MISMATCH 6
+
+/*
+ A segment region's checksum does not match its bytes.
+ */
+#define ZE_VERIFY_SEGMENT_REGION_CORRUPT 7
+
+/*
+ A checksum-valid region failed its decoder or cross-structure checks.
+ */
+#define ZE_VERIFY_SEGMENT_INDEX_INVALID 8
+
+/*
+ The WAL is absent although the manifest covers WAL sequences.
+ */
+#define ZE_VERIFY_WAL_MISSING 9
+
+/*
+ The WAL file header is truncated or invalid.
+ */
+#define ZE_VERIFY_WAL_HEADER_CORRUPT 10
+
+/*
+ A WAL record failed framing, checksum, or sequence validation.
+ */
+#define ZE_VERIFY_WAL_RECORD_CORRUPT 11
+
+/*
+ A checksum-valid WAL record cannot be replayed into the store.
+ */
+#define ZE_VERIFY_WAL_RECORD_INVALID 12
+
+/*
+ A store file exists but could not be read.
+ */
+#define ZE_VERIFY_UNREADABLE 13
+
+/*
+ The pending purge intent `purge.ze` failed its frame or decoder.
+ */
+#define ZE_VERIFY_PURGE_INTENT_CORRUPT 14
+
+/*
  Frozen append-only status code returned by the C ABI.
  */
 enum ze_error_code
@@ -2748,6 +2819,96 @@ typedef struct ZePurgeReport {
     uint32_t is_no_op;
 } ZePurgeReport;
 
+/*
+ Store verification request.
+ */
+typedef struct ZeVerifyRequest {
+    /*
+     Caller-provided `sizeof(ZeVerifyRequest)`.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero in ABI v1.
+     */
+    uint32_t abi_reserved;
+    /*
+     Caller-owned UTF-8 store-directory path, without interior NUL bytes.
+     */
+    const uint8_t *path;
+    /*
+     Number of path bytes.
+     */
+    size_t path_len;
+} ZeVerifyRequest;
+
+/*
+ One damaged artifact. Every byte is owned by the containing result arena.
+ */
+typedef struct ZeVerifyFinding {
+    /*
+     One of the `ZE_VERIFY_*` kinds. Kinds are append-only.
+     */
+    uint32_t kind;
+    /*
+     `1` when `offset` is meaningful, otherwise `0`.
+     */
+    uint32_t has_offset;
+    /*
+     Byte offset of the damage inside `file`.
+     */
+    uint64_t offset;
+    /*
+     UTF-8 file name relative to the store directory.
+     */
+    const uint8_t *file;
+    /*
+     Number of file-name bytes.
+     */
+    size_t file_len;
+    /*
+     UTF-8 decoder detail.
+     */
+    const uint8_t *detail;
+    /*
+     Number of detail bytes.
+     */
+    size_t detail_len;
+} ZeVerifyFinding;
+
+/*
+ Callee-owned verification report; release with `ze_verify_result_free`.
+ */
+typedef struct ZeVerifyResult {
+    /*
+     Caller-provided structure size.
+     */
+    uint32_t abi_size;
+    /*
+     Caller sets zero; callee returns an opaque allocation generation.
+     */
+    uint32_t abi_reserved;
+    /*
+     Callee-owned finding array, or null when `finding_count` is zero.
+     */
+    struct ZeVerifyFinding *findings;
+    /*
+     Number of findings; zero means no damage was found.
+     */
+    size_t finding_count;
+    /*
+     Generation of the decoded manifest, or zero without one.
+     */
+    uint64_t generation;
+    /*
+     Segments the manifest references.
+     */
+    uint64_t segments_checked;
+    /*
+     WAL records that passed checksum and sequence validation.
+     */
+    uint64_t wal_records_checked;
+} ZeVerifyResult;
+
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -3208,6 +3369,25 @@ ze_error_code ze_cancel_token_free(ze_cancel_token token);
  `result` is caller-owned; only its `hits` allocation is released.
  */
 ze_error_code ze_search_result_free(struct ZeSearchResult *result);
+
+/*
+ Walks the store directory at `request.path` and reports every damaged
+ manifest, segment, WAL, and pending purge-intent artifact. The store is never modified: no file
+ is created, written, renamed, locked, or removed, so this is safe to run
+ after an unclean shutdown and before any open. Damage is reported as
+ findings with `ZE_OK`; an error code means the walk could not start
+ (`ZE_ERR_NOT_FOUND` for a missing path, `ZE_ERR_IO` for a path that is not
+ a directory or cannot be listed). A store another process is writing can
+ report a write that is in flight.
+ */
+ze_error_code ze_verify(const struct ZeVerifyRequest *request,
+                        struct ZeVerifyResult *out_result);
+
+/*
+ Releases the single arena owned by a verification result. A zeroed result
+ is accepted as a successful no-op.
+ */
+ze_error_code ze_verify_result_free(struct ZeVerifyResult *result);
 
 #ifdef __cplusplus
 }  // extern "C"

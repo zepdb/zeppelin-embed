@@ -479,6 +479,17 @@ fn every_phase_two_struct_has_the_frozen_size_and_field_offsets() {
     assert_layout!(ZeNamespaceListResult, 24, 8, {
         abi_size: 0, abi_reserved: 4, entries: 8, entry_count: 16
     });
+    assert_layout!(ZeVerifyRequest, 24, 8, {
+        abi_size: 0, abi_reserved: 4, path: 8, path_len: 16
+    });
+    assert_layout!(ZeVerifyFinding, 48, 8, {
+        kind: 0, has_offset: 4, offset: 8, file: 16, file_len: 24, detail: 32,
+        detail_len: 40
+    });
+    assert_layout!(ZeVerifyResult, 48, 8, {
+        abi_size: 0, abi_reserved: 4, findings: 8, finding_count: 16,
+        generation: 24, segments_checked: 32, wal_records_checked: 40
+    });
     assert_layout!(ZeEmbeddingTower, 104, 8, {
         model_id: 0, model_id_len: 8, model_version: 16, model_version_len: 24,
         weights_digest: 32, weights_digest_len: 40, dims: 48, normalization: 52,

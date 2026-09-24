@@ -10,6 +10,9 @@ mod purge;
 /// Purge's per-segment gathers are re-exported unchanged so consolidation
 /// concatenates their survivor-order output across N inputs without forking
 /// the rewrite logic; purge's own behavior stays byte-identical.
+/// The pending purge intent decoder, for read-only store verification.
+pub(crate) use purge::{PURGE_INTENT_FILE, read_intent};
+
 pub(crate) mod purge_support {
     pub(crate) use super::purge::{
         OwnedFactors, PURGE_INTENT_FILE, append_survivor_columns, clustering_range,

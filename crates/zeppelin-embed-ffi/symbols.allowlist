@@ -48,3 +48,5 @@ ze_text_query
 ze_text_query_result_free
 ze_upsert
 ze_upsert_conditional
+ze_verify
+ze_verify_result_free

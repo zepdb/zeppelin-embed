@@ -280,6 +280,22 @@ fn every_callee_owned_result_is_released_by_its_free_and_the_heap_stays_flat() {
         );
     });
 
+    let damaged = tempfile::tempdir().expect("damaged store");
+    std::fs::write(damaged.path().join("manifest.ze"), b"not a manifest").expect("manifest");
+    let damaged_bytes = damaged.path().to_string_lossy().into_owned().into_bytes();
+    let verify = ZeVerifyRequest {
+        abi_size: size_of::<ZeVerifyRequest>() as u32,
+        abi_reserved: 0,
+        path: damaged_bytes.as_ptr(),
+        path_len: damaged_bytes.len(),
+    };
+    assert_heap_flat("ze_verify/ze_verify_result_free", || {
+        let mut result: ZeVerifyResult = common::sized_zeroed();
+        assert_eq!(ze_verify(&verify, &mut result), ZeErrorCode::ZeOk);
+        assert_eq!(result.finding_count, 1);
+        assert_eq!(ze_verify_result_free(&mut result), ZeErrorCode::ZeOk);
+    });
+
     assert_heap_flat("ze_cancel_token_create/ze_cancel_token_free", || {
         let mut token = 0;
         assert_eq!(ze_cancel_token_create(&mut token), ZeErrorCode::ZeOk);
