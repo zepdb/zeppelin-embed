@@ -442,6 +442,17 @@ fn purge_scrubs_wal_records_that_carried_purged_payloads() {
     let directory = tempdir().expect("store directory");
     let purged = DocId::new(601);
     let store = sealed_store_with_sentinel(directory.path(), purged);
+    // Seal truncates the WAL (ZE-233), so write a later revision to put the
+    // sentinels back in the log that purge must scrub.
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(
+                DocumentVersion::new(purged, Revision::new(2)),
+                VECTOR_SENTINEL_BITS.map(f32::from_bits).to_vec(),
+            )
+            .with_metadata(METADATA_SENTINEL.to_vec()),
+        ]))
+        .expect("ingest unsealed sentinel revision");
     let wal_path = directory.path().join("wal.ze");
     let before = fs::read(&wal_path).expect("read WAL before purge");
     assert!(contains(&before, METADATA_SENTINEL));

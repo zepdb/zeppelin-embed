@@ -2017,28 +2017,74 @@ impl StoreWal {
                     source,
                 })?;
         }
+        // Validate the image before the rename. Once the rename replaces the
+        // old log, the old writer would append to a file recovery never reads,
+        // so it is swapped out, or poisoned when the reopen fails, before any
+        // later step can return.
+        let reader = WalReader::open(vfs, &temporary).map_err(StoreError::Wal)?;
+        let recovered = reader.into_clean().map_err(StoreError::WalRecovery)?;
         vfs.rename(&temporary, &path)
             .map_err(|source| StoreError::Io {
                 path: path.clone(),
                 source,
             })?;
+        let replacement = match WalWriter::resume(vfs, &path, recovered, policy) {
+            Ok(replacement) => replacement,
+            Err(error) => {
+                self.writer
+                    .poison(&std::io::Error::other(format!(
+                        "wal.ze was replaced but its writer did not reopen: {error}"
+                    )))
+                    .map_err(StoreError::WalWrite)?;
+                return Err(StoreError::WalWrite(error));
+            }
+        };
+        self.writer = replacement;
+        self.retained.set(
+            self.writer
+                .stats()
+                .map_err(StoreError::WalWrite)?
+                .retained_bytes,
+        )?;
         if let SyncRequirement::Sync(kind) = policy.directory_sync() {
             vfs.sync(directory, kind).map_err(|source| StoreError::Io {
                 path: directory.to_path_buf(),
                 source,
             })?;
         }
-        let reader = WalReader::open(vfs, &path).map_err(StoreError::Wal)?;
-        let recovered = reader.into_clean().map_err(StoreError::WalRecovery)?;
-        let replacement =
-            WalWriter::resume(vfs, &path, recovered, policy).map_err(StoreError::WalWrite)?;
-        let retained = replacement
-            .stats()
-            .map_err(StoreError::WalWrite)?
-            .retained_bytes;
-        self.retained.set(retained)?;
-        self.writer = replacement;
         Ok(())
+    }
+
+    /// Replaces `wal.ze` with an empty log that continues the sequence after
+    /// `absorbed_through`, once a durable manifest has absorbed every record.
+    ///
+    /// Recovery accepts either file at every crash point: the old log replays
+    /// nothing at or below the manifest boundary, and the new log's header
+    /// resumes numbering after it. A record not yet absorbed fails loudly
+    /// instead of being dropped.
+    pub(crate) fn truncate_absorbed(
+        &mut self,
+        vfs: &dyn Vfs,
+        directory: &Path,
+        policy: DurabilityPolicy,
+        absorbed_through: LogSeq,
+    ) -> Result<(), StoreError> {
+        let stats = self.writer.stats().map_err(StoreError::WalWrite)?;
+        if stats.retained_records != 0 {
+            return Err(StoreError::WalRetire(
+                crate::wal::WalRetireError::BeyondDurable {
+                    requested: stats.visible_end.unwrap_or(absorbed_through),
+                    durable_end: Some(absorbed_through),
+                },
+            ));
+        }
+        let first_seq = absorbed_through
+            .get()
+            .checked_add(1)
+            .ok_or(StoreError::WalWrite(
+                crate::wal::WalWriteError::SequenceExhausted,
+            ))?;
+        self.rewrite(vfs, directory, policy, LogSeq::new(first_seq), &[])
     }
 }
 

@@ -297,6 +297,14 @@ impl Store {
         drop(previous);
         *active = Some(ActiveState::empty(generation));
         writer.retire_visible_through(LogSeq::new(absorbed_through))?;
+        // The manifest above durably absorbs every record, so the log can
+        // shrink to a header; without this wal.ze grows for the store's life.
+        writer.truncate_absorbed(
+            vfs,
+            &self.directory,
+            self.durability_policy,
+            LogSeq::new(absorbed_through),
+        )?;
         drop(active);
         drop(wal);
         drop(writer_lock);
@@ -452,4 +460,80 @@ fn cleanup_uncommitted_segment(
         })?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
+mod wal_truncation_crash_tests {
+    use std::path::Path;
+    use std::sync::Arc;
+
+    use crate::ingest::StoreWal;
+    use crate::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
+    use crate::lifecycle::stats::Accounting;
+    use crate::vfs::crash::{CrashVfs, MemoryVfs};
+    use crate::wal::{LogSeq, WalReader, encode_wal_image};
+
+    /// Every power-cut image of the rotation, including torn, reordered and
+    /// unsynced-rename states, must still open with the absorbed boundary
+    /// intact and hand out sequence 4 next. An empty or headerless wal.ze
+    /// would restart numbering at 1, below the manifest, and lose writes.
+    #[test]
+    fn every_crash_state_of_the_wal_truncation_resumes_after_the_boundary() {
+        let directory = Path::new("/wal-truncation");
+        let wal = directory.join("wal.ze");
+        let records = (0..3_u8)
+            .map(|index| (99, vec![index; 8]))
+            .collect::<Vec<_>>();
+        let memory = MemoryVfs::new();
+        memory
+            .insert(
+                wal.clone(),
+                encode_wal_image(LogSeq::new(1), &records).expect("old WAL"),
+            )
+            .expect("seed old WAL");
+        let crash = CrashVfs::new(memory).expect("crash recorder");
+        let policy = DurabilityPolicy::new(DurabilityMode::Durable, CommitTier::Ordered)
+            .expect("ordered policy");
+        let accounting = Arc::new(Accounting::new(u64::MAX, u64::MAX));
+        let recovered = WalReader::open(&crash, &wal)
+            .expect("open old WAL")
+            .into_clean()
+            .expect("clean old WAL");
+        let mut writer = StoreWal::resume(&crash, &wal, recovered, policy, 3, &accounting)
+            .expect("resume old WAL");
+
+        writer
+            .truncate_absorbed(&crash, directory, policy, LogSeq::new(3))
+            .expect("truncate");
+
+        let states = crash.crash_states().expect("crash states");
+        assert!(!states.was_capped());
+        assert!(states.len() > 10, "only {} crash states", states.len());
+        for state in states.iter() {
+            let recovered = WalReader::open(state.vfs(), &wal)
+                .expect("read WAL")
+                .into_clean()
+                .unwrap_or_else(|error| panic!("{:?}: WAL unreadable: {error}", state.kind()));
+            let sequences = recovered
+                .records()
+                .iter()
+                .map(|record| record.seq.get())
+                .collect::<Vec<_>>();
+            assert!(
+                sequences == [1, 2, 3] || sequences.is_empty(),
+                "{:?}: WAL holds {sequences:?}",
+                state.kind()
+            );
+            let mut resumed =
+                StoreWal::resume(state.vfs(), &wal, recovered, policy, 3, &accounting)
+                    .unwrap_or_else(|error| panic!("{:?}: resume: {error}", state.kind()));
+            assert_eq!(
+                resumed.commit(99, b"next").expect("commit after crash"),
+                LogSeq::new(4),
+                "{:?}",
+                state.kind()
+            );
+        }
+    }
 }

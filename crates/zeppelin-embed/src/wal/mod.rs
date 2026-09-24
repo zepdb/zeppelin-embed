@@ -629,6 +629,21 @@ impl WalWriter {
         });
     }
 
+    /// Permanently fails this writer after its file was replaced underneath it,
+    /// so every later commit reports `error` instead of appending to a file
+    /// that recovery will never read.
+    pub(crate) fn poison(&self, error: &std::io::Error) -> Result<(), WalWriteError> {
+        let mut state = self.lock_state()?;
+        state.failure.get_or_insert_with(|| {
+            Arc::new(Failure {
+                kind: error.kind(),
+                detail: Arc::from(error.to_string()),
+            })
+        });
+        self.changed.notify_all();
+        Ok(())
+    }
+
     /// Waits until every record visible when this call observes the writer has flushed.
     ///
     /// No record is appended solely to force progress. If pending records have

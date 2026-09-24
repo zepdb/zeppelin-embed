@@ -2570,9 +2570,10 @@ fn stage_01_site_is_reachable(operation: &Op, layer: Layer, site: FaultSite) -> 
         return match boundary {
             CrashBoundary::MidWalGroup => site == FaultSite::Append,
             CrashBoundary::MidSeal => site == FaultSite::Write,
-            CrashBoundary::PreManifestRename | CrashBoundary::PostManifestRename => {
-                site == FaultSite::Rename
-            }
+            CrashBoundary::PreManifestRename
+            | CrashBoundary::PostManifestRename
+            | CrashBoundary::PreWalRotationRename
+            | CrashBoundary::PostWalRotationRename => site == FaultSite::Rename,
             CrashBoundary::MidPurge => site == FaultSite::Delete,
         };
     }
@@ -8499,6 +8500,39 @@ fn twelve_seed_sweep_emits_every_process_crash_boundary() {
         .map(adversarial::program::CrashBoundary::key)
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(seen, expected);
+}
+
+/// ZE-233: a process killed on either side of the seal's WAL rotation
+/// rename recovers the acknowledged write and the model's live prefix.
+#[test]
+fn a_process_crash_at_each_wal_rotation_rename_recovers_the_model() {
+    let artifacts = tempfile::tempdir().expect("WAL rotation crash artifacts");
+    for boundary in [
+        adversarial::program::CrashBoundary::PreWalRotationRename,
+        adversarial::program::CrashBoundary::PostWalRotationRename,
+    ] {
+        let seed = (0..64)
+            .find(|seed| {
+                Program::generate(*seed).ops.iter().any(|operation| {
+                    matches!(operation, Op::Crash { boundary: planned, .. } if *planned == boundary)
+                })
+            })
+            .expect("a seed plans the WAL rotation boundary");
+        let outcome = adversarial::runner::run_program(seed, FaultProfile::None, artifacts.path())
+            .unwrap_or_else(|error| panic!("{} episode {seed}: {error}", boundary.key()));
+        assert!(
+            outcome.violations.is_empty(),
+            "{} episode {seed}: {:?}",
+            boundary.key(),
+            outcome.violations
+        );
+        assert_eq!(
+            outcome
+                .coverage
+                .count(&format!("crash.boundary.{}", boundary.key())),
+            1
+        );
+    }
 }
 
 #[test]

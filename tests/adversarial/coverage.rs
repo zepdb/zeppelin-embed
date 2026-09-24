@@ -397,6 +397,8 @@ pub const REQUIRED_SMOKE_COVERAGE: &[&str] = &[
     "crash.boundary.post_manifest_rename",
     "crash.boundary.mid_seal",
     "crash.boundary.mid_purge",
+    "crash.boundary.pre_wal_rotation_rename",
+    "crash.boundary.post_wal_rotation_rename",
     "search.scan",
     "search.auto",
     "search.graph",

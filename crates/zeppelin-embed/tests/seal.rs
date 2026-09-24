@@ -793,3 +793,352 @@ fn publish_existing_segment(directory: &std::path::Path, id: SegmentId) {
     )
     .expect("publish existing segment");
 }
+
+// ZE-233: seal truncates wal.ze to a header that continues the sequence.
+
+fn durable_options() -> OpenOptions {
+    OpenOptions::new().with_durability(DurabilityMode::Durable, CommitTier::Ordered)
+}
+
+/// Writes one replacement and one delete, so a double-applied WAL record
+/// would surface as a stale revision, a duplicate or a resurrected row.
+fn seed_truncation_store(directory: &Path) -> (Store, Vec<DocumentVersion>) {
+    let store = Store::open(directory, durable_options()).expect("open store");
+    let first = |id| DocumentVersion::new(DocId::new(id), Revision::new(1));
+    store
+        .ingest(IngestBatch::new(
+            (1..=4_u32)
+                .map(|id| IngestDocument::new(first(u128::from(id)), vec![id as f32, 1.0]))
+                .collect(),
+        ))
+        .expect("ingest rows");
+    let replaced = DocumentVersion::new(DocId::new(2), Revision::new(2));
+    store
+        .ingest(IngestBatch::new(vec![IngestDocument::new(
+            replaced,
+            vec![0.0, 2.0],
+        )]))
+        .expect("replace row");
+    store
+        .delete(DeleteBatch::new(vec![DocId::new(3)]))
+        .expect("delete row");
+    (store, vec![first(1), replaced, first(4)])
+}
+
+fn live_versions(store: &Store) -> Vec<DocumentVersion> {
+    let outcome = store
+        .search(
+            SearchRequest::new(&[1.0, 1.0]),
+            16,
+            ScanOptions { thread_budget: 1 },
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("search live rows");
+    let mut versions = outcome
+        .candidates
+        .iter()
+        .filter_map(|candidate| candidate.document())
+        .collect::<Vec<_>>();
+    versions.sort_unstable();
+    versions
+}
+
+/// Copies the store files as they are at this instant: the disk image a
+/// process killed here would leave behind.
+fn copy_store(source: &Path) -> tempfile::TempDir {
+    let copy = tempdir().expect("crash image directory");
+    for entry in std::fs::read_dir(source).expect("list store") {
+        let path = entry.expect("store entry").path();
+        if path.is_file() {
+            std::fs::copy(&path, copy.path().join(path.file_name().expect("name")))
+                .expect("copy store file");
+        }
+    }
+    copy
+}
+
+fn wal_length(directory: &Path) -> u64 {
+    std::fs::metadata(directory.join("wal.ze"))
+        .expect("wal metadata")
+        .len()
+}
+
+fn ingest_one(store: &Store, id: u128) -> DocumentVersion {
+    let version = DocumentVersion::new(DocId::new(id), Revision::new(1));
+    store
+        .ingest(IngestBatch::new(vec![IngestDocument::new(
+            version,
+            vec![id as f32, 1.0],
+        )]))
+        .expect("ingest one row");
+    version
+}
+
+#[test]
+fn seal_truncates_the_wal_to_a_header_and_reopen_continues_its_sequence() {
+    let directory = tempdir().expect("store directory");
+    let (store, mut expected) = seed_truncation_store(directory.path());
+    assert!(wal_length(directory.path()) > 40);
+
+    store.seal().expect("seal rows");
+
+    assert_eq!(
+        wal_length(directory.path()),
+        40,
+        "only the WAL header remains"
+    );
+    expected.push(ingest_one(&store, 5));
+    expected.sort_unstable();
+    store.close().expect("close store");
+    let reopened = Store::open(directory.path(), durable_options()).expect("reopen");
+    assert_eq!(live_versions(&reopened), expected);
+    assert_eq!(reopened.stats().expect("stats").active_row_count, 1);
+}
+
+#[test]
+fn a_kill_at_every_seal_step_reopens_with_every_write_exactly_once() {
+    let mut kill_after = 0;
+    loop {
+        let directory = tempdir().expect("store directory");
+        let (store, expected) = seed_truncation_store(directory.path());
+        let vfs = StepFaultVfs::new(StepFault::DieAfter(kill_after));
+        let result = store.seal_with_cancel_on_vfs(&CancelToken::new(), &vfs);
+        let steps = vfs.steps();
+        if result.is_ok() {
+            // Segment and manifest publication, then the WAL rotation.
+            let tail = steps.get(steps.len().saturating_sub(5)..).expect("tail");
+            assert_eq!(
+                tail,
+                [
+                    "write .wal.ze.purge.tmp",
+                    "sync .wal.ze.purge.tmp",
+                    "rename .wal.ze.purge.tmp wal.ze",
+                    "open_append wal.ze",
+                    "sync .",
+                ],
+                "steps: {steps:?}"
+            );
+            assert_eq!(wal_length(directory.path()), 40);
+            break;
+        }
+        // The killed step and any cleanup after it failed without effect.
+        let killed = steps.get(kill_after).expect("killed step").clone();
+        let steps = format!("#{kill_after} {killed}");
+        let image = copy_store(directory.path());
+        drop(store);
+
+        let reopened = Store::open(image.path(), durable_options())
+            .unwrap_or_else(|error| panic!("killed at {steps:?}: reopen failed: {error}"));
+        assert_eq!(live_versions(&reopened), expected, "killed at {steps:?}");
+        let mut with_later = expected.clone();
+        with_later.push(ingest_one(&reopened, 9));
+        with_later.sort_unstable();
+        reopened.seal().expect("seal after recovery");
+        with_later.push(ingest_one(&reopened, 10));
+        with_later.sort_unstable();
+        reopened.close().expect("close recovered store");
+        let again = Store::open(image.path(), durable_options()).expect("second reopen");
+        assert_eq!(live_versions(&again), with_later, "killed at {steps:?}");
+        kill_after += 1;
+    }
+    assert!(kill_after >= 13, "seal ran only {kill_after} steps");
+}
+
+/// Index of `label` in the steps of one clean seal of the seeded store.
+fn seal_step_index(label: &str) -> usize {
+    let directory = tempdir().expect("probe directory");
+    let (probe, _) = seed_truncation_store(directory.path());
+    let vfs = StepFaultVfs::new(StepFault::DieAfter(usize::MAX));
+    probe
+        .seal_with_cancel_on_vfs(&CancelToken::new(), &vfs)
+        .expect("probe seal");
+    let steps = vfs.steps();
+    let index = steps.iter().rposition(|step| step == label);
+    index.unwrap_or_else(|| panic!("no {label:?} in {steps:?}"))
+}
+
+#[test]
+fn a_failed_directory_sync_after_the_wal_rename_keeps_later_writes_durable() {
+    let directory = tempdir().expect("store directory");
+    let (store, mut expected) = seed_truncation_store(directory.path());
+    let vfs = StepFaultVfs::new(StepFault::FailOnly(seal_step_index("sync .")));
+    store
+        .seal_with_cancel_on_vfs(&CancelToken::new(), &vfs)
+        .expect_err("the directory sync failure is reported");
+    expected.push(ingest_one(&store, 7));
+    expected.sort_unstable();
+    store.close().expect("close store");
+
+    let reopened = Store::open(directory.path(), durable_options()).expect("reopen");
+    assert_eq!(live_versions(&reopened), expected);
+}
+
+#[test]
+fn a_failed_wal_reopen_after_the_rename_refuses_later_writes() {
+    let directory = tempdir().expect("store directory");
+    let (store, expected) = seed_truncation_store(directory.path());
+    let reopen = seal_step_index("open_append wal.ze");
+    let vfs = StepFaultVfs::new(StepFault::FailOnly(reopen));
+    store
+        .seal_with_cancel_on_vfs(&CancelToken::new(), &vfs)
+        .expect_err("the reopen failure is reported");
+    let later = DocumentVersion::new(DocId::new(8), Revision::new(1));
+    let error = store
+        .ingest(IngestBatch::new(vec![IngestDocument::new(
+            later,
+            vec![8.0, 1.0],
+        )]))
+        .expect_err("a write must not reach the replaced log");
+    assert!(
+        matches!(
+            error,
+            IngestError::Store(StoreError::WalWrite(
+                zeppelin_embed::wal::WalWriteError::Failed { .. }
+            ))
+        ),
+        "{error:?}"
+    );
+    drop(store);
+
+    let reopened = Store::open(directory.path(), durable_options()).expect("reopen");
+    assert_eq!(live_versions(&reopened), expected);
+}
+
+#[derive(Clone, Copy)]
+enum StepFault {
+    /// Every step after this many fails without touching the disk.
+    DieAfter(usize),
+    /// Only the step with this index fails; later steps run.
+    FailOnly(usize),
+}
+
+/// Records every mutating filesystem step and fails the planned ones.
+#[derive(Clone)]
+struct StepFaultVfs {
+    fault: StepFault,
+    steps: Arc<Mutex<Vec<String>>>,
+}
+
+impl StepFaultVfs {
+    fn new(fault: StepFault) -> Self {
+        Self {
+            fault,
+            steps: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn steps(&self) -> Vec<String> {
+        self.steps.lock().expect("steps").clone()
+    }
+
+    fn step(&self, label: String) -> std::io::Result<()> {
+        let mut steps = self.steps.lock().expect("steps");
+        let index = steps.len();
+        steps.push(label);
+        let fails = match self.fault {
+            StepFault::DieAfter(count) => index >= count,
+            StepFault::FailOnly(target) => index == target,
+        };
+        if fails {
+            Err(std::io::Error::other("planned step fault"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn step_name(path: &Path) -> String {
+    if path.is_dir() {
+        return ".".to_owned();
+    }
+    path.file_name().map_or_else(
+        || ".".to_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    )
+}
+
+struct StepFaultFile {
+    inner: Box<dyn VfsFile>,
+    name: String,
+    vfs: StepFaultVfs,
+}
+
+impl VfsFile for StepFaultFile {
+    fn append(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        self.vfs.step(format!("append {}", self.name))?;
+        self.inner.append(bytes)
+    }
+
+    fn sync(&self, kind: SyncKind) -> std::io::Result<()> {
+        self.vfs.step(format!("sync-file {}", self.name))?;
+        self.inner.sync(kind)
+    }
+}
+
+impl Vfs for StepFaultVfs {
+    fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
+        StdVfs.ensure_directory(path, create)
+    }
+
+    fn open(&self, path: &Path) -> std::io::Result<u64> {
+        StdVfs.open(path)
+    }
+
+    fn open_for_map(&self, path: &Path) -> std::io::Result<std::fs::File> {
+        StdVfs.open_for_map(path)
+    }
+
+    fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+        StdVfs.read(path)
+    }
+
+    fn read_range(&self, path: &Path, offset: u64, length: usize) -> std::io::Result<Vec<u8>> {
+        StdVfs.read_range(path, offset, length)
+    }
+
+    fn write(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        self.step(format!("write {}", step_name(path)))?;
+        StdVfs.write(path, bytes)
+    }
+
+    fn create_new(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        self.step(format!("create_new {}", step_name(path)))?;
+        StdVfs.create_new(path, bytes)
+    }
+
+    fn open_append(&self, path: &Path) -> std::io::Result<Box<dyn VfsFile>> {
+        self.step(format!("open_append {}", step_name(path)))?;
+        Ok(Box::new(StepFaultFile {
+            inner: StdVfs.open_append(path)?,
+            name: step_name(path),
+            vfs: self.clone(),
+        }))
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        self.step(format!("rename {} {}", step_name(from), step_name(to)))?;
+        StdVfs.rename(from, to)
+    }
+
+    fn sync(&self, path: &Path, kind: SyncKind) -> std::io::Result<()> {
+        self.step(format!("sync {}", step_name(path)))?;
+        StdVfs.sync(path, kind)
+    }
+
+    fn list(&self, directory: &Path) -> std::io::Result<Vec<PathBuf>> {
+        StdVfs.list(directory)
+    }
+
+    fn for_each_direct_child(
+        &self,
+        directory: &Path,
+        visitor: &mut dyn FnMut(&Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        StdVfs.for_each_direct_child(directory, visitor)
+    }
+
+    fn delete(&self, path: &Path) -> std::io::Result<()> {
+        self.step(format!("delete {}", step_name(path)))?;
+        StdVfs.delete(path)
+    }
+}

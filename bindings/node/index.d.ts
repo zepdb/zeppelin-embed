@@ -580,8 +580,10 @@ export declare class Store {
   query(request: QueryRequest): QueryResult;
   /**
    * Seal the active segment into an immutable segment and absorb the WAL
-   * records it covers, so a later open does not replay them. An empty active
-   * segment is a no-op.
+   * records it covers, so a later open does not replay them. After the seal
+   * commits, the WAL file is replaced by an empty one (a 40-byte header), so
+   * it holds only writes made since the last seal; a crash at any point of
+   * that replacement loses nothing. An empty active segment is a no-op.
    */
   seal(): SealReport;
   close(): void;

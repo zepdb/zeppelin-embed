@@ -55,15 +55,19 @@ pub enum CrashBoundary {
     PostManifestRename,
     MidSeal,
     MidPurge,
+    PreWalRotationRename,
+    PostWalRotationRename,
 }
 
 impl CrashBoundary {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
         Self::MidWalGroup,
         Self::PreManifestRename,
         Self::PostManifestRename,
         Self::MidSeal,
         Self::MidPurge,
+        Self::PreWalRotationRename,
+        Self::PostWalRotationRename,
     ];
 
     #[must_use]
@@ -74,6 +78,8 @@ impl CrashBoundary {
             Self::PostManifestRename => "post_manifest_rename",
             Self::MidSeal => "mid_seal",
             Self::MidPurge => "mid_purge",
+            Self::PreWalRotationRename => "pre_wal_rotation_rename",
+            Self::PostWalRotationRename => "post_wal_rotation_rename",
         }
     }
 

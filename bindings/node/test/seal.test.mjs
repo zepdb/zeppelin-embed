@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -185,6 +185,46 @@ test('reopen stays flat with autoSealRows', () => {
     assert.equal(store.count().count, 10_000n);
     assert.ok(reopened.milliseconds < 300, `reopen took ${reopened.milliseconds.toFixed(1)} ms`);
     assert.equal(store.query({ text: 'fox', k: 3 }).hits.length, 3);
+  } finally {
+    store?.close();
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+// ZE-233: each seal truncates wal.ze to its 40-byte header, so under
+// autoSealRows the log holds at most one threshold of writes instead of
+// growing with the store (47 MB at 300,000 documents before).
+test('the WAL stays bounded across many autoSealRows seals', () => {
+  const root = temporaryRoot('zeppelin-node-wal-bounded-');
+  const threshold = 500;
+  const walBytes = () => statSync(join(root, 'notes', 'wal.ze')).size;
+  let store;
+  try {
+    store = openNamespace(root, 'notes', SPEC, { ...FAST, autoSealRows: threshold });
+    upsertOneAtATime(store, threshold);
+    // One full threshold of writes, just before the first threshold seal.
+    const oneThreshold = walBytes();
+    let largest = 0;
+    for (let index = threshold + 1; index <= 20 * threshold; index += 1) {
+      store.upsert([{ id: BigInt(index), text: segmentText(index) }]);
+      largest = Math.max(largest, walBytes());
+    }
+    assert.equal(segmentFiles(root, 'notes').length, 19);
+    // Later texts carry a few more digits, hence the 10% allowance; without
+    // truncation the log would end near 20 thresholds.
+    const bound = Math.ceil(oneThreshold * 1.1);
+    assert.ok(largest <= bound, `WAL reached ${largest} bytes; bound ${bound}`);
+    store.seal();
+    assert.equal(walBytes(), 40);
+    store.close();
+
+    store = openNamespace(root, 'notes', SPEC, { ...FAST, autoSealRows: threshold });
+    assert.equal(store.count().count, BigInt(20 * threshold));
+    store.upsert([{ id: 1n, revision: 2n, text: 'harbour lights' }]);
+    assert.deepEqual(
+      store.query({ text: 'harbour', k: 5 }).hits.map((hit) => hit.id),
+      [1n],
+    );
   } finally {
     store?.close();
     rmSync(root, { force: true, recursive: true });

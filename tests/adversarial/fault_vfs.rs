@@ -786,6 +786,18 @@ impl Vfs for ProcessCrashVfs {
                 std::process::abort();
             }
         }
+        // A seal rotates wal.ze after its manifest commit (ZE-233): the old
+        // log must still recover before the rename, the header-only log after.
+        if file_name_is(to, "wal.ze") {
+            if self.armed_for(CrashBoundary::PreWalRotationRename) {
+                let _ = self.inner.action(FaultSite::Rename, to);
+                std::process::abort();
+            }
+            if self.armed_for(CrashBoundary::PostWalRotationRename) {
+                let _ = self.inner.rename(from, to);
+                std::process::abort();
+            }
+        }
         self.inner.rename(from, to)
     }
 
@@ -1944,6 +1956,14 @@ fn expected_matches(operation: &Op, site: FaultSite, first_wal_mutation: bool) -
             },
             FaultSite::Rename,
         ) => Some(2),
+        // Segment, manifest, then the WAL rotation rename.
+        (
+            Op::Crash {
+                boundary: CrashBoundary::PreWalRotationRename | CrashBoundary::PostWalRotationRename,
+                ..
+            },
+            FaultSite::Rename,
+        ) => Some(3),
         (
             Op::Ingest { .. }
             | Op::Upsert { .. }
@@ -1961,9 +1981,10 @@ fn expected_matches(operation: &Op, site: FaultSite, first_wal_mutation: bool) -
             FaultSite::Append | FaultSite::Sync,
         ) => Some(1),
         (_, FaultSite::List) => Some(1),
-        // A successful seal writes the segment temp and then the manifest temp.
-        (Op::Seal, FaultSite::Write | FaultSite::Rename) => Some(2),
-        (Op::Seal, FaultSite::Sync) => Some(4),
+        // A successful seal writes the segment temp, the manifest temp and
+        // then the rotated WAL temp, syncing each file and the directory.
+        (Op::Seal, FaultSite::Write | FaultSite::Rename) => Some(3),
+        (Op::Seal, FaultSite::Sync) => Some(6),
         // Generated programs select LAST_MATCH only on their final Seal.
         _ => None,
     }
@@ -2026,9 +2047,10 @@ fn reachable_sites(operation: &Op, layer: Layer) -> &'static [FaultSite] {
         return match boundary {
             CrashBoundary::MidWalGroup => &[FaultSite::Append],
             CrashBoundary::MidSeal => &[FaultSite::Write],
-            CrashBoundary::PreManifestRename | CrashBoundary::PostManifestRename => {
-                &[FaultSite::Rename]
-            }
+            CrashBoundary::PreManifestRename
+            | CrashBoundary::PostManifestRename
+            | CrashBoundary::PreWalRotationRename
+            | CrashBoundary::PostWalRotationRename => &[FaultSite::Rename],
             CrashBoundary::MidPurge => &[FaultSite::Delete],
         };
     }

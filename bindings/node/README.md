@@ -160,7 +160,10 @@ throws `ZE_ERR_CORRUPT` until a writable open has cut that record off.
 Writes land in an active segment backed by the write-ahead log. `seal()`
 turns the active segment into an immutable segment and absorbs the log
 records it covers, so opening the store again reads the sealed segment
-instead of replaying those writes. Seal after a bulk load, when the
+instead of replaying those writes. It then truncates the log to its
+header, so `wal.ze` holds only the writes since the last seal and stays
+bounded under `autoSealRows`; a crash during that step loses nothing.
+Seal after a bulk load, when the
 application is idle, or let the store do it with `autoSealRows`:
 
 ```js

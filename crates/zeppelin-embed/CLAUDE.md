@@ -500,6 +500,23 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
 - "Live" means what `get_documents` returns: a tombstoned active row or a
   dead sealed row is absent. Conditions are never persisted or replayed.
 
+## ZE-233 WAL rotation after seal
+
+- A non-empty seal rotates `wal.ze` only after its manifest (with
+  `log_seq = absorbed_through`) is durable: it writes and syncs a header-only
+  log with `first_seq = absorbed_through + 1` to `.wal.ze.purge.tmp`,
+  validates it, renames it over `wal.ze`, reopens and swaps the writer, then
+  syncs the directory. Either file recovers the same state.
+- The temp sync before the rename is load-bearing: without it a power cut
+  can leave an empty `wal.ze` beside a manifest with `log_seq > 0`, which
+  open refuses as ahead of the log. The in-crate CrashVfs matrix
+  `every_crash_state_of_the_wal_truncation_resumes_after_the_boundary`
+  fails on exactly that state if the sync is removed.
+- `StoreWal::rewrite` (seal and purge): after the rename the old writer's
+  handle names an unlinked file, so the swap may not wait behind the
+  directory sync, and a failed reopen poisons the old writer so later
+  writes fail loudly instead of landing in the replaced file.
+
 ## Task 21 Part A epoch-identity invariants
 
 - Open enforces the complete four-branch identity table before WAL recovery or

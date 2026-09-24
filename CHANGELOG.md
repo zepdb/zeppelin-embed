@@ -39,6 +39,13 @@ release and a compatible correction is a patch release.
   that one document (ZE-235). It used to re-tokenize every unsealed
   document, so a revision cost about 7 ms per 1,000 unsealed documents; it
   now costs the same as appending a new document.
+- A seal now truncates `wal.ze` to its header once the seal's manifest is
+  durable (ZE-233), so the log holds only the writes since the last seal.
+  It never shrank before and reached 47 MB at 300,000 documents. The new
+  log is written and synced beside the old one and renamed over it, so a
+  crash at any step reopens with every write exactly once. A failed
+  directory sync after a WAL rewrite no longer leaves later writes going
+  to the replaced file, which also affected physical purge.
 
 ### Changed
 
