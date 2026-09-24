@@ -27,6 +27,24 @@ Applications supply document and query vectors. Document IDs are unsigned
 native finalizer also closes an open handle if the JavaScript object is
 collected.
 
+The engine stores all 128 bits of an ID and every API returns it unchanged,
+so the whole UUID range fits. `uuidToId` reads a UUID's 32 hex digits as one
+big-endian integer and `idToUuid` formats an ID back as a lowercase UUID; the
+pair is exact for every 128-bit value:
+
+```js
+const { uuidToId, idToUuid } = require('@zepdb/zeppelin-embed');
+
+const id = uuidToId('123e4567-e89b-12d3-a456-426614174000');
+store.upsert([{ id, text: 'meeting notes' }]);
+const hit = store.query({ text: 'meeting', k: 1 }).hits[0];
+console.log(idToUuid(hit.id)); // '123e4567-e89b-12d3-a456-426614174000'
+```
+
+`uuidToId` accepts only the `8-4-4-4-12` hex form (either case) and throws a
+`TypeError` for anything else; `idToUuid` throws a `RangeError` for a bigint
+outside `0n..2n ** 128n - 1n`.
+
 Namespaces add typed records without changing the existing vector API:
 
 ```js

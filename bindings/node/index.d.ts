@@ -32,7 +32,37 @@ export interface MutationReport {
   readonly generation: bigint;
 }
 
+/**
+ * An unsigned 128-bit document id: any bigint in `0n..2n ** 128n - 1n`.
+ *
+ * The engine, its persisted layouts and the C ABI all carry the full 128
+ * bits, and every API that returns an id returns the same bigint. That is
+ * exactly the UUID range, so a UUID is a document id: convert with
+ * `uuidToId` and `idToUuid`. Inputs outside the range throw a `RangeError`
+ * with code `ERR_OUT_OF_RANGE`.
+ */
 export type DocumentId = bigint;
+
+/**
+ * The document id of a UUID string: its 32 hex digits read as one
+ * big-endian (RFC 9562 byte order) 128-bit integer. Exact for every UUID of
+ * any version or variant, and the inverse of `idToUuid`.
+ *
+ * Accepts only the `8-4-4-4-12` form: 32 ASCII hex digits, either case, with
+ * hyphens at offsets 8, 13, 18 and 23 and nothing else (no braces, `urn:`
+ * prefix or whitespace). A non-string throws a `TypeError` with code
+ * `ERR_INVALID_ARG_TYPE`; any other string throws a `TypeError` with code
+ * `ERR_INVALID_ARG_VALUE`.
+ */
+export declare function uuidToId(uuid: string): DocumentId;
+
+/**
+ * The canonical lowercase `8-4-4-4-12` UUID string of a document id, zero
+ * padded, so `uuidToId(idToUuid(id)) === id` for every id. A non-bigint
+ * throws a `TypeError` with code `ERR_INVALID_ARG_TYPE`; a bigint outside
+ * `0n..2n ** 128n - 1n` throws a `RangeError` with code `ERR_OUT_OF_RANGE`.
+ */
+export declare function idToUuid(id: DocumentId): string;
 
 export type AttributeType =
   | 'u64'

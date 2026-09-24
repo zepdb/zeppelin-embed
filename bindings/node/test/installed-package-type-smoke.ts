@@ -2,7 +2,9 @@ import {
   ABI_VERSION,
   CancellationToken,
   Store,
+  idToUuid,
   openNamespace,
+  uuidToId,
   type Document,
   type QueryResult,
   type SearchHit,
@@ -35,8 +37,9 @@ const result: QueryResult = records.query({
 const mode: 'vector' | 'lexical' | 'hybrid' = result.mode;
 const lexicalScore: number | undefined = result.hits[0]?.lexicalBm25;
 const effectiveAlpha: number | undefined = result.fusion?.effectiveAlpha;
+const uuid: string = idToUuid(uuidToId('123e4567-e89b-12d3-a456-426614174000'));
 
-console.log(ABI_VERSION, generation, sealed, hits, mode, lexicalScore, effectiveAlpha);
+console.log(ABI_VERSION, generation, sealed, hits, mode, lexicalScore, effectiveAlpha, uuid);
 token.close();
 records.close();
 store.close();

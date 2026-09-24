@@ -277,6 +277,57 @@ class Store {
   }
 }
 
+/** The only accepted UUID spelling: 8-4-4-4-12 ASCII hex, either case. */
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MAX_DOCUMENT_ID = (1n << 128n) - 1n;
+
+function argumentError(ErrorType, code, message) {
+  const error = new ErrorType(message);
+  error.code = code;
+  return error;
+}
+
+/**
+ * The document id of a UUID: its 32 hex digits as one big-endian 128-bit
+ * integer. Document ids are full 128-bit values end to end, so this is exact
+ * for every UUID and the inverse of `idToUuid`.
+ */
+function uuidToId(uuid) {
+  if (typeof uuid !== 'string') {
+    throw argumentError(TypeError, 'ERR_INVALID_ARG_TYPE', 'uuid must be a string');
+  }
+  if (!UUID_PATTERN.test(uuid)) {
+    throw argumentError(
+      TypeError,
+      'ERR_INVALID_ARG_VALUE',
+      'uuid must be 8-4-4-4-12 hexadecimal digits',
+    );
+  }
+  return BigInt(`0x${uuid.replaceAll('-', '')}`);
+}
+
+/** The canonical lowercase UUID string of a document id. */
+function idToUuid(id) {
+  if (typeof id !== 'bigint') {
+    throw argumentError(TypeError, 'ERR_INVALID_ARG_TYPE', 'document id must be a bigint');
+  }
+  if (id < 0n || id > MAX_DOCUMENT_ID) {
+    throw argumentError(
+      RangeError,
+      'ERR_OUT_OF_RANGE',
+      'document id must be an unsigned 128-bit bigint',
+    );
+  }
+  const hex = id.toString(16).padStart(32, '0');
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20),
+  ].join('-');
+}
+
 function openNamespace(root, name, spec, options = {}) {
   return attach(
     Object.create(Store.prototype),
@@ -296,6 +347,8 @@ module.exports = {
   UnsupportedPlatformError,
   UnsupportedRuntimeError,
   ZeppelinError,
+  idToUuid,
   listNamespaces,
   openNamespace,
+  uuidToId,
 };
