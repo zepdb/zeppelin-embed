@@ -236,6 +236,54 @@ impl PostingList {
                 docid: posting.docid,
             });
         }
+        Self::validate_positions(&posting)?;
+        self.postings.push(posting);
+        Ok(())
+    }
+
+    /// Inserts one posting at its document-id position, anywhere in the list.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::push`]; a document id already in the list is
+    /// [`PostingsError::DocidsNotAscending`], since it would break strict
+    /// ascent.
+    pub(crate) fn insert(&mut self, posting: Posting) -> Result<(), PostingsError> {
+        if posting.tf == 0 || posting.positions.is_empty() {
+            return Err(PostingsError::ZeroTermFrequency);
+        }
+        let index = self
+            .postings
+            .partition_point(|existing| existing.docid < posting.docid);
+        if self
+            .postings
+            .get(index)
+            .is_some_and(|existing| existing.docid == posting.docid)
+        {
+            return Err(PostingsError::DocidsNotAscending {
+                docid: posting.docid,
+            });
+        }
+        Self::validate_positions(&posting)?;
+        self.postings.insert(index, posting);
+        Ok(())
+    }
+
+    /// Removes the posting for `docid`, returning whether one was present.
+    pub(crate) fn remove(&mut self, docid: u32) -> bool {
+        match self
+            .postings
+            .binary_search_by_key(&docid, |posting| posting.docid)
+        {
+            Ok(index) => {
+                self.postings.remove(index);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    fn validate_positions(posting: &Posting) -> Result<(), PostingsError> {
         let mut previous: Option<u32> = None;
         for position in &posting.positions {
             if let Some(earlier) = previous
@@ -247,7 +295,6 @@ impl PostingList {
             }
             previous = Some(*position);
         }
-        self.postings.push(posting);
         Ok(())
     }
 }

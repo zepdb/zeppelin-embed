@@ -35,6 +35,10 @@ release and a compatible correction is a patch release.
 - A write no longer reads every sealed row to find earlier copies of its
   ids. It looks them up through each segment's identity-ordered index, so
   write latency no longer grows with the number of sealed documents.
+- Replacing a document that is not yet sealed updates the text index for
+  that one document (ZE-235). It used to re-tokenize every unsealed
+  document, so a revision cost about 7 ms per 1,000 unsealed documents; it
+  now costs the same as appending a new document.
 
 ### Changed
 

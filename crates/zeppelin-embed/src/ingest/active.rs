@@ -564,13 +564,36 @@ impl ActiveSegment {
         accounting: &Arc<Accounting>,
         analyzer: &Analyzer,
     ) -> Result<(), IngestError> {
-        let tracks_text = self.tracks_text() || document.text().is_some();
-        self.replace_row_in_place(row, document)?;
-        if tracks_text {
-            self.lexical = self.rebuild_lexical(None, analyzer)?;
-            self.refresh_lexical_accounting(accounting)?;
+        let tracked_text = self.tracks_text();
+        if !tracked_text && document.text().is_none() {
+            return self.replace_row_in_place(row, document);
         }
-        Ok(())
+        // The lexical index holds exactly the stored text, so the row's
+        // current text names every posting the replacement must remove.
+        let previous = if tracked_text {
+            self.text(row)
+                .map_err(IngestError::Store)?
+                .map_or_else(LexicalDocument::new, LexicalDocument::with_text)
+        } else {
+            LexicalDocument::new()
+        };
+        self.replace_row_in_place(row, document)?;
+        if !tracked_text {
+            for _ in 0..self.row_count() {
+                self.lexical
+                    .push_document(analyzer, &LexicalDocument::new())
+                    .map_err(IngestError::Lexical)?;
+            }
+        }
+        let replacement = document
+            .text()
+            .map_or_else(LexicalDocument::new, LexicalDocument::with_text);
+        let lexical_row =
+            u32::try_from(row).map_err(|_| IngestError::Store(StoreError::ActiveRowOverflow))?;
+        self.lexical
+            .replace_document(analyzer, lexical_row, &previous, &replacement)
+            .map_err(IngestError::Lexical)?;
+        self.refresh_lexical_accounting(accounting)
     }
 
     /// Overwrites every column of one row but leaves the lexical index
@@ -2103,5 +2126,178 @@ mod tests {
             .expect("read refreshed sealed lexical cache");
 
         assert_eq!(matching_rows(refreshed, b"beta"), vec![0]);
+    }
+
+    fn texted(doc_id: u128, revision: u64, text: Option<&str>) -> IngestDocument {
+        let document = IngestDocument::new(
+            DocumentVersion::new(DocId::new(doc_id), Revision::new(revision)),
+            vec![1.0, 0.5],
+        );
+        match text {
+            Some(text) => document.with_text(text),
+            None => document,
+        }
+    }
+
+    /// Asserts the incremental index answers exactly as a rebuild does:
+    /// sorted postings, every row's lengths, token totals, and the corpus
+    /// statistics and BM25 hits of every vocabulary term over live rows.
+    fn assert_index_matches_rebuild(segment: &ActiveSegment, analyzer: &Analyzer, step: usize) {
+        let incremental = segment.lexical();
+        let rebuilt = segment
+            .rebuild_lexical(None, analyzer)
+            .expect("rebuild oracle");
+        assert_eq!(incremental.row_count(), rebuilt.row_count(), "step {step}");
+        let ours: Vec<_> = incremental.postings().collect();
+        let oracle: Vec<_> = rebuilt.postings().collect();
+        assert_eq!(ours, oracle, "postings diverged at step {step}");
+        for row in 0..rebuilt.row_count() {
+            assert_eq!(
+                incremental.field_length(row, DEFAULT_FIELD),
+                rebuilt.field_length(row, DEFAULT_FIELD),
+                "length of row {row} diverged at step {step}"
+            );
+            assert_eq!(
+                incremental.document_length(row),
+                rebuilt.document_length(row),
+                "step {step}"
+            );
+        }
+        assert_eq!(incremental.total_tokens(), rebuilt.total_tokens());
+        let alive = segment.alive().expect("alive rows");
+        let scored = |index: &SegmentIndex| {
+            let sealed = crate::fts::sealed::SealedSegment::seal(index).expect("seal");
+            let mut lexical = LexicalIndex::new();
+            lexical
+                .push_sealed_with_live_rows(sealed, alive.alive_bitmap())
+                .expect("live rows");
+            let hits: Vec<_> = VOCABULARY
+                .iter()
+                .map(|term| {
+                    search(
+                        &lexical,
+                        &TermQuery::flat(vec![term.as_bytes().to_vec()], &[DEFAULT_FIELD]),
+                        64,
+                        Bm25Params::beir(),
+                    )
+                    .map(|result| result.hits)
+                })
+                .collect();
+            (lexical.corpus_stats(), hits)
+        };
+        assert_eq!(scored(incremental), scored(&rebuilt), "step {step}");
+    }
+
+    const VOCABULARY: [&str; 10] = [
+        "alpha", "beta", "gamma", "delta", "note", "meeting", "fox", "river", "stone", "cloud",
+    ];
+
+    #[test]
+    #[allow(clippy::indexing_slicing)]
+    fn incremental_text_index_matches_a_rebuild_after_every_step() {
+        use rand::Rng;
+
+        let accounting = Arc::new(Accounting::new(u64::MAX, u64::MAX));
+        let analyzer = Analyzer::new(TokenizerConfig::text_default()).expect("valid analyzer");
+        let mut rng = crate::test_support::seeded_rng("incremental_text_index_matches_a_rebuild");
+        fn random_text(rng: &mut rand_chacha::ChaCha8Rng) -> Option<String> {
+            match rng.random_range(0..10) {
+                0 => None,
+                1 => Some(String::new()),
+                _ => Some(
+                    (0..rng.random_range(1..12))
+                        .map(|_| VOCABULARY[rng.random_range(0..VOCABULARY.len())])
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                ),
+            }
+        }
+        let mut segment = ActiveSegment::empty();
+        let mut next_id = 0_u128;
+        let mut revision = 1_u64;
+        for step in 0..400 {
+            revision += 1;
+            let rows = segment.row_count();
+            let operation = if rows == 0 {
+                0
+            } else {
+                rng.random_range(0..10)
+            };
+            let text = random_text(&mut rng);
+            if operation < 4 {
+                next_id += 1;
+                let document = texted(next_id, revision, text.as_deref());
+                segment = segment
+                    .copy_for_batch(&document, std::slice::from_ref(&document), &accounting)
+                    .expect("copy for insert");
+                segment
+                    .insert_in_place(&document, &accounting, &analyzer)
+                    .expect("insert");
+            } else if operation < 8 {
+                let row = rng.random_range(0..rows);
+                let doc_id = segment.doc_ids()[row].get();
+                let document = texted(doc_id, revision, text.as_deref());
+                segment = segment
+                    .copy_for_batch(&document, std::slice::from_ref(&document), &accounting)
+                    .expect("copy for replace");
+                segment
+                    .replace_in_place(row, &document, &accounting, &analyzer)
+                    .expect("replace");
+            } else {
+                let row = rng.random_range(0..rows);
+                let doc_id = segment.doc_ids()[row];
+                segment = segment
+                    .tombstone(&[doc_id], &accounting)
+                    .expect("tombstone")
+                    .0;
+            }
+            if segment.has_text() {
+                assert_index_matches_rebuild(&segment, &analyzer, step);
+            }
+        }
+    }
+
+    #[test]
+    fn replacing_one_active_row_indexes_only_that_row() {
+        fn tokens_for_one_replace(rows: u128) -> u64 {
+            let directory = tempfile::tempdir().expect("store directory");
+            let store = crate::lifecycle::Store::open(
+                directory.path(),
+                crate::lifecycle::OpenOptions::default(),
+            )
+            .expect("open store");
+            for doc_id in 1..=rows {
+                let text = format!("alpha beta gamma note {doc_id}");
+                store
+                    .ingest(super::super::IngestBatch::new(vec![texted(
+                        doc_id,
+                        1,
+                        Some(&text),
+                    )]))
+                    .expect("append");
+            }
+            let before = crate::fts::index::tokens_indexed();
+            store
+                .ingest(super::super::IngestBatch::new(vec![texted(
+                    rows / 2,
+                    2,
+                    Some("delta epsilon replaced"),
+                )]))
+                .expect("replace one active row");
+            let tokens = crate::fts::index::tokens_indexed() - before;
+            store.close().expect("close");
+            tokens
+        }
+
+        let small = tokens_for_one_replace(8);
+        let large = tokens_for_one_replace(1_000);
+        assert_eq!(
+            small, large,
+            "one replace indexed {small} tokens at 8 rows and {large} at 1000"
+        );
+        assert!(
+            small > 0 && small <= 10,
+            "one replace indexed {small} tokens"
+        );
     }
 }

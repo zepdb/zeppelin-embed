@@ -89,6 +89,19 @@ pub enum IndexError {
         /// Live row without a length counter.
         row: u32,
     },
+    /// A replacement named a row the segment does not hold.
+    ReplacedRowOutOfRange {
+        /// Invalid row identifier.
+        row: u32,
+        /// Dense row count of the segment.
+        row_count: u32,
+    },
+    /// A replaced row's previous document names a term the row has no
+    /// posting for, so the index was not built from that document.
+    ReplacedPostingMissing {
+        /// The replaced row.
+        row: u32,
+    },
 }
 
 impl std::fmt::Display for IndexError {
@@ -113,6 +126,14 @@ impl std::fmt::Display for IndexError {
             Self::LiveLengthMissing { segment, row } => write!(
                 formatter,
                 "live lexical row {row} has no length counter in segment {segment}"
+            ),
+            Self::ReplacedRowOutOfRange { row, row_count } => write!(
+                formatter,
+                "replaced lexical row {row} is outside the segment's {row_count} rows"
+            ),
+            Self::ReplacedPostingMissing { row } => write!(
+                formatter,
+                "replaced lexical row {row} has no posting for a term of its previous document"
             ),
         }
     }
@@ -190,6 +211,32 @@ impl std::hash::BuildHasher for Xxh3State {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static TOKENS_INDEXED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Tokens this thread has folded into or removed from any segment index.
+///
+/// A deterministic work counter: a gate compares deltas around one write to
+/// prove the write's lexical cost does not depend on the rows beside it.
+#[cfg(test)]
+pub(crate) fn tokens_indexed() -> u64 {
+    TOKENS_INDEXED.with(std::cell::Cell::get)
+}
+
+#[cfg_attr(not(test), allow(unused_variables))]
+fn count_tokens_indexed(tokens: usize) {
+    #[cfg(test)]
+    TOKENS_INDEXED.with(|count| {
+        count.set(
+            count
+                .get()
+                .saturating_add(u64::try_from(tokens).unwrap_or(u64::MAX)),
+        );
+    });
+}
+
 /// One segment's postings and lengths, addressed by dense row id.
 ///
 /// # Why lengths are dense arrays and not a map
@@ -217,6 +264,18 @@ pub struct SegmentIndex {
     /// Per-field analyzed token counts, ascending by field id.
     lengths: Vec<FieldLengths>,
     row_count: u32,
+    /// Slots in `lists` whose term a replacement dropped; new terms reuse
+    /// them before growing `lists`. Each holds an empty list no key names.
+    free_slots: Vec<usize>,
+}
+
+/// Where [`SegmentIndex::accumulate`] places a row's postings.
+#[derive(Clone, Copy)]
+enum Placement {
+    /// The row is the next dense row: append, refusing any lower row.
+    Append,
+    /// The row already exists: insert at its document-id position.
+    Insert,
 }
 
 impl SegmentIndex {
@@ -334,6 +393,10 @@ impl SegmentIndex {
                     .map(PostingList::resident_bytes)
                     .fold(0_usize, usize::saturating_add),
             );
+        let free_slot_bytes = self
+            .free_slots
+            .capacity()
+            .saturating_mul(std::mem::size_of::<usize>());
         let length_bytes = self
             .lengths
             .capacity()
@@ -348,6 +411,7 @@ impl SegmentIndex {
             .saturating_add(term_bytes)
             .saturating_add(list_bytes)
             .saturating_add(length_bytes)
+            .saturating_add(free_slot_bytes)
     }
 
     /// Records one row's analyzed length for one field.
@@ -380,8 +444,12 @@ impl SegmentIndex {
         let Some(entry) = self.lengths.get_mut(position) else {
             return;
         };
-        entry.lengths.resize(slot, 0);
-        entry.lengths.push(length);
+        if let Some(existing) = entry.lengths.get_mut(slot) {
+            *existing = length;
+        } else {
+            entry.lengths.resize(slot, 0);
+            entry.lengths.push(length);
+        }
     }
 
     /// Extends every field array to cover `rows` rows.
@@ -406,10 +474,81 @@ impl SegmentIndex {
         let row = self.row_count;
         for (field, text) in document.fields() {
             let tokens = analyzer.analyze(text);
-            self.accumulate(row, field, &tokens)?;
+            self.accumulate(row, field, &tokens, Placement::Append)?;
         }
         self.finish_row();
         Ok(row)
+    }
+
+    /// Replaces one existing row's document in place.
+    ///
+    /// `previous` must be the document the row was indexed from. The row's
+    /// postings for every term of `previous` are removed, a term left with
+    /// no posting is dropped, the row's lengths are reset, and `replacement`
+    /// is folded in at the same row. The result answers exactly as a
+    /// segment rebuilt with the row's document swapped, and the cost is
+    /// proportional to the two documents, not to the segment.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IndexError::ReplacedRowOutOfRange`] for a row the segment
+    /// does not hold, [`IndexError::ReplacedPostingMissing`] when `previous`
+    /// is not what the row was indexed from, and [`IndexError::Postings`]
+    /// as [`Self::push_document`]. On an error the segment is partly
+    /// updated; the caller discards it.
+    pub fn replace_document(
+        &mut self,
+        analyzer: &Analyzer,
+        row: u32,
+        previous: &Document,
+        replacement: &Document,
+    ) -> Result<(), IndexError> {
+        let out_of_range = IndexError::ReplacedRowOutOfRange {
+            row,
+            row_count: self.row_count,
+        };
+        if row >= self.row_count {
+            return Err(out_of_range);
+        }
+        let slot = usize::try_from(row).map_err(|_| out_of_range)?;
+        for (field, text) in previous.fields() {
+            let tokens = analyzer.analyze(text);
+            count_tokens_indexed(tokens.len());
+            let mut terms: Vec<&str> = tokens.iter().map(|token| token.term.as_str()).collect();
+            terms.sort_unstable();
+            terms.dedup();
+            let mut probe = TermKey {
+                term: Vec::new(),
+                field,
+            };
+            for term in terms {
+                probe.term.clear();
+                probe.term.extend_from_slice(term.as_bytes());
+                let missing = IndexError::ReplacedPostingMissing { row };
+                let list_slot = self.terms.get(&probe).copied().ok_or(missing.clone())?;
+                let list = self.lists.get_mut(list_slot).ok_or(missing.clone())?;
+                if !list.remove(row) {
+                    return Err(missing);
+                }
+                if list.is_empty() {
+                    *list = PostingList::new();
+                    self.terms.remove(&probe);
+                    self.free_slots.push(list_slot);
+                }
+            }
+        }
+        for entry in &mut self.lengths {
+            if let Some(length) = entry.lengths.get_mut(slot) {
+                *length = 0;
+            }
+        }
+        for (field, text) in replacement.fields() {
+            let tokens = analyzer.analyze(text);
+            self.accumulate(row, field, &tokens, Placement::Insert)?;
+        }
+        // A field new to the segment must still cover every row.
+        self.pad_lengths_to(usize::try_from(self.row_count).unwrap_or(usize::MAX));
+        Ok(())
     }
 
     /// Appends many documents, analyzing them in parallel.
@@ -470,7 +609,7 @@ impl SegmentIndex {
             for fields in &analyzed {
                 let row = self.row_count;
                 for (field, tokens) in fields {
-                    self.accumulate(row, *field, tokens)?;
+                    self.accumulate(row, *field, tokens, Placement::Append)?;
                 }
                 self.finish_row();
             }
@@ -479,7 +618,14 @@ impl SegmentIndex {
     }
 
     /// Folds one field's analyzed tokens into the postings for one row.
-    fn accumulate(&mut self, row: u32, field: FieldId, tokens: &[Token]) -> Result<(), IndexError> {
+    fn accumulate(
+        &mut self,
+        row: u32,
+        field: FieldId,
+        tokens: &[Token],
+        placement: Placement,
+    ) -> Result<(), IndexError> {
+        count_tokens_indexed(tokens.len());
         // Position count is the analyzed length: stacked variants share
         // a position and must not inflate the document length, or avgdl
         // stops matching the unit being scored.
@@ -534,14 +680,25 @@ impl SegmentIndex {
                     // the lookup cannot miss; the `if let` is the panic-free
                     // spelling of that impossibility.
                     if let Some(list) = self.lists.get_mut(slot) {
-                        list.push(posting)?;
+                        match placement {
+                            Placement::Append => list.push(posting)?,
+                            Placement::Insert => list.insert(posting)?,
+                        }
                     }
                 }
                 None => {
                     let mut list = PostingList::new();
                     list.push(posting)?;
-                    let slot = self.lists.len();
-                    self.lists.push(list);
+                    let slot = if let Some(slot) = self.free_slots.pop()
+                        && let Some(free) = self.lists.get_mut(slot)
+                    {
+                        *free = list;
+                        slot
+                    } else {
+                        let slot = self.lists.len();
+                        self.lists.push(list);
+                        slot
+                    };
                     self.terms.insert(
                         TermKey {
                             term: probe.term.clone(),
@@ -1039,6 +1196,128 @@ mod tests {
 
     fn analyzer() -> Analyzer {
         Analyzer::new(TokenizerConfig::text_default()).expect("valid config")
+    }
+
+    #[test]
+    fn replace_document_refuses_a_row_or_previous_text_the_index_does_not_hold() {
+        let analyzer = analyzer();
+        let mut index = SegmentIndex::new();
+        index
+            .push_document(&analyzer, &Document::with_text("alpha beta"))
+            .expect("indexable");
+        let replacement = Document::with_text("gamma");
+
+        assert_eq!(
+            index.replace_document(&analyzer, 1, &Document::with_text("alpha"), &replacement),
+            Err(IndexError::ReplacedRowOutOfRange {
+                row: 1,
+                row_count: 1
+            })
+        );
+        assert_eq!(
+            index.replace_document(&analyzer, 0, &Document::with_text("delta"), &replacement),
+            Err(IndexError::ReplacedPostingMissing { row: 0 })
+        );
+        // A term the index holds, but not for this row.
+        index
+            .push_document(&analyzer, &Document::with_text("epsilon"))
+            .expect("indexable");
+        assert_eq!(
+            index.replace_document(&analyzer, 0, &Document::with_text("epsilon"), &replacement),
+            Err(IndexError::ReplacedPostingMissing { row: 0 })
+        );
+        assert!(
+            IndexError::ReplacedPostingMissing { row: 0 }
+                .to_string()
+                .contains("row 0")
+        );
+        assert!(
+            IndexError::ReplacedRowOutOfRange {
+                row: 1,
+                row_count: 1
+            }
+            .to_string()
+            .contains("1 rows")
+        );
+    }
+
+    #[test]
+    fn replace_document_reuses_a_dropped_term_slot_and_pads_a_new_field() {
+        let analyzer = analyzer();
+        let mut index = SegmentIndex::new();
+        for text in ["alpha", "beta", "alpha delta"] {
+            index
+                .push_document(&analyzer, &Document::with_text(text))
+                .expect("indexable");
+        }
+        let mut replacement = Document::with_text("alpha");
+        replacement.set(FieldId(1), "gamma");
+        index
+            .replace_document(&analyzer, 1, &Document::with_text("beta"), &replacement)
+            .expect("replace row 1");
+        // "gamma" took the slot "beta" freed; no list was appended.
+        assert_eq!(index.lists.len(), 3);
+        assert!(index.posting_list(b"beta", DEFAULT_FIELD).is_none());
+        assert!(index.free_slots.is_empty());
+        assert_eq!(
+            index.posting_list(b"alpha", DEFAULT_FIELD).map(|list| list
+                .postings()
+                .iter()
+                .map(|p| p.docid)
+                .collect::<Vec<_>>()),
+            Some(vec![0, 1, 2])
+        );
+        assert_eq!(index.field_lengths(FieldId(1)), Some(&[0, 1, 0][..]));
+        index
+            .replace_document(
+                &analyzer,
+                2,
+                &Document::with_text("alpha delta"),
+                &Document::new(),
+            )
+            .expect("replace row 2");
+        assert!(index.posting_list(b"delta", DEFAULT_FIELD).is_none());
+        assert_eq!(index.free_slots.len(), 1);
+        assert_eq!(index.total_tokens(), 3);
+    }
+
+    #[test]
+    fn posting_list_insert_refuses_a_duplicate_row() {
+        let mut list = PostingList::new();
+        let posting = |docid| Posting {
+            docid,
+            tf: 1,
+            positions: vec![0],
+        };
+        list.push(posting(0)).expect("append");
+        list.push(posting(4)).expect("append");
+        list.insert(posting(2)).expect("insert between");
+        assert_eq!(
+            list.insert(posting(2)),
+            Err(PostingsError::DocidsNotAscending { docid: 2 })
+        );
+        assert_eq!(
+            list.insert(Posting {
+                docid: 3,
+                tf: 0,
+                positions: Vec::new()
+            }),
+            Err(PostingsError::ZeroTermFrequency)
+        );
+        assert_eq!(
+            list.insert(Posting {
+                docid: 3,
+                tf: 2,
+                positions: vec![1, 1]
+            }),
+            Err(PostingsError::PositionsNotAscending { position: 1 })
+        );
+        assert!(list.remove(2));
+        assert!(!list.remove(2));
+        assert_eq!(
+            list.postings().iter().map(|p| p.docid).collect::<Vec<_>>(),
+            vec![0, 4]
+        );
     }
 
     fn code_analyzer() -> Analyzer {
