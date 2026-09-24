@@ -20,6 +20,7 @@ pub(crate) mod rescored_scan;
 #[cfg(test)]
 mod shared_bound_tests;
 mod snapshot;
+mod snapshot_copy;
 pub(crate) mod stats;
 
 use crate::diag::{timing_elapsed, timing_start};
@@ -49,6 +50,7 @@ pub use rescored_scan::ScanRescoreOptions;
 pub use snapshot::{
     InMemorySegment, InMemorySegmentFactors, PreparedSegment, PublishedSnapshot, SnapshotLease,
 };
+pub use snapshot_copy::SnapshotTargetReason;
 pub use stats::Stats;
 
 use std::collections::HashSet;
@@ -2168,6 +2170,22 @@ pub enum StoreError {
         /// Native graph store directory.
         path: PathBuf,
     },
+    /// A snapshot target cannot receive a snapshot. Nothing was written.
+    SnapshotTarget {
+        /// Target path as the caller supplied it.
+        path: PathBuf,
+        /// Why the target was rejected.
+        reason: SnapshotTargetReason,
+    },
+    /// The state pinned for a snapshot failed a consistency check. Nothing
+    /// was published.
+    SnapshotPin {
+        /// The violated pin invariant.
+        detail: &'static str,
+    },
+    /// A physical purge is pending; a snapshot would copy bytes it must
+    /// remove. Await the purge, then snapshot. Nothing was written.
+    SnapshotPurgePending,
 }
 
 impl std::fmt::Display for StoreError {
@@ -2368,6 +2386,14 @@ impl std::fmt::Display for StoreError {
                 "native graph directory cannot be opened as a legacy store: {}",
                 path.display()
             ),
+            Self::SnapshotTarget { path, reason } => {
+                write!(formatter, "snapshot target {} {reason}", path.display())
+            }
+            Self::SnapshotPin { detail } => {
+                write!(formatter, "snapshot pin is inconsistent: {detail}")
+            }
+            Self::SnapshotPurgePending => formatter
+                .write_str("a physical purge is pending; await it before taking a snapshot"),
         }
     }
 }
@@ -2435,12 +2461,14 @@ impl StoreError {
             | Self::SchemaMismatch { .. }
             | Self::ScanStale { .. }
             | Self::InvalidScan { .. }
-            | Self::NativeGraphDirectory { .. } => StoreErrorKind::InvalidArgument,
+            | Self::NativeGraphDirectory { .. }
+            | Self::SnapshotTarget { .. } => StoreErrorKind::InvalidArgument,
             Self::StoreBusy { .. } => StoreErrorKind::StoreBusy,
             Self::Durability(_)
             | Self::Kernel(_)
             | Self::GraphUnavailable { .. }
-            | Self::UnsupportedWalMutation { .. } => StoreErrorKind::Unsupported,
+            | Self::UnsupportedWalMutation { .. }
+            | Self::SnapshotPurgePending => StoreErrorKind::Unsupported,
             Self::Manifest(_)
             | Self::Segment(_)
             | Self::DuplicateLiveDocument { .. }
@@ -2466,7 +2494,8 @@ impl StoreError {
             | Self::ForeignPreparedSegment
             | Self::BackgroundHandshake
             | Self::QueryPoolHandshake
-            | Self::QueryPoolCapacity { .. } => StoreErrorKind::Internal,
+            | Self::QueryPoolCapacity { .. }
+            | Self::SnapshotPin { .. } => StoreErrorKind::Internal,
             Self::EmptyActiveSegment => StoreErrorKind::EmptyBatch,
             Self::SealCancelled | Self::ReadCancelled => StoreErrorKind::Cancelled,
             Self::ReadOnly | Self::SealedTombstoneRecoveryRequired => StoreErrorKind::ReadOnly,
@@ -2533,7 +2562,10 @@ impl std::error::Error for StoreError {
             | Self::QueryPoolThreadPanicked
             | Self::QueryPoolCapacity { .. }
             | Self::Synchronization { .. }
-            | Self::NativeGraphDirectory { .. } => None,
+            | Self::NativeGraphDirectory { .. }
+            | Self::SnapshotTarget { .. }
+            | Self::SnapshotPin { .. }
+            | Self::SnapshotPurgePending => None,
         }
     }
 }

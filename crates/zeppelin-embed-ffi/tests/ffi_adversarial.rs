@@ -74,6 +74,7 @@ const DETAILED_MATRIX: &[(&str, MatrixCall)] = &[
     ("ze_search", search_cell),
     ("ze_query", query_cell),
     ("ze_seal", seal_cell),
+    ("ze_snapshot", snapshot_cell),
     ("ze_drop_partition", drop_cell),
     ("ze_apply_retention", retention_cell),
     ("ze_purge", purge_cell),
@@ -216,6 +217,10 @@ const ABI_REGISTRY: &[AbiEntry] = &[
     },
     AbiEntry {
         name: "ze_seal",
+        coverage: AbiCoverage::DetailedMatrix,
+    },
+    AbiEntry {
+        name: "ze_snapshot",
         coverage: AbiCoverage::DetailedMatrix,
     },
     AbiEntry {
@@ -763,6 +768,51 @@ fn seal_cell(context: &MatrixContext, cell: Cell) -> CellResult {
     )
 }
 
+fn snapshot_cell(context: &MatrixContext, cell: Cell) -> CellResult {
+    let target = context.path_bytes();
+    let mut request = ZeSnapshotRequest {
+        abi_size: size_of::<ZeSnapshotRequest>() as u32,
+        abi_reserved: 0,
+        target: target.as_ptr(),
+        target_len: target.len(),
+    };
+    let mut report = common::sized_zeroed::<ZeGenerationReport>();
+    let invalid_utf8 = [0xff_u8];
+    let code = match cell {
+        Cell::NullPointer => ze_snapshot(context.store.handle, std::ptr::null(), &mut report),
+        Cell::InvalidUtf8Path => {
+            request.target = invalid_utf8.as_ptr();
+            request.target_len = invalid_utf8.len();
+            ze_snapshot(context.store.handle, &request, &mut report)
+        }
+        Cell::InteriorNulPath => {
+            let bytes = b"bad\0path";
+            request.target = bytes.as_ptr();
+            request.target_len = bytes.len();
+            ze_snapshot(context.store.handle, &request, &mut report)
+        }
+        Cell::UndersizedAbi => {
+            request.abi_size -= 1;
+            ze_snapshot(context.store.handle, &request, &mut report)
+        }
+        Cell::OversizedAbi => {
+            request.abi_size = ZE_ABI_MAX_STRUCT_SIZE + 1;
+            ze_snapshot(context.store.handle, &request, &mut report)
+        }
+        Cell::WrongDimensions
+        | Cell::ZeroK
+        | Cell::HugeK
+        | Cell::MisalignedBuffer
+        | Cell::BadEnumDiscriminant
+        | Cell::CountLengthOverflow => {
+            return not_applicable(
+                "ZeSnapshotRequest has no dimension, k, enum, or multi-byte count buffer",
+            );
+        }
+    };
+    expected_error(code)
+}
+
 fn drop_cell(context: &MatrixContext, cell: Cell) -> CellResult {
     header_only_cell!(
         context,
@@ -1151,8 +1201,8 @@ fn every_exported_symbol_has_executable_adversarial_registry_coverage() {
 
 #[test]
 fn the_adversarial_input_matrix_returns_typed_errors_for_every_cell() {
-    const EXPECTED_EXECUTED: usize = 85;
-    const EXPECTED_SKIPPED: usize = 82;
+    const EXPECTED_EXECUTED: usize = 90;
+    const EXPECTED_SKIPPED: usize = 88;
     let context = MatrixContext {
         store: common::TestStore::new(),
         vector: vec![1.0_f32],

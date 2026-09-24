@@ -2537,6 +2537,28 @@ typedef struct ZeGenerationReport {
 } ZeGenerationReport;
 
 /*
+ Consistent-snapshot request: the directory `ze_snapshot` writes.
+ */
+typedef struct ZeSnapshotRequest {
+    /*
+     Caller-provided `sizeof(ZeSnapshotRequest)`.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero in ABI v1.
+     */
+    uint32_t abi_reserved;
+    /*
+     Caller-owned UTF-8 target directory path, without a NUL.
+     */
+    const uint8_t *target;
+    /*
+     Number of target-path bytes; must be nonzero.
+     */
+    size_t target_len;
+} ZeSnapshotRequest;
+
+/*
  Whole-segment timestamp partition request.
  */
 typedef struct ZeDropPartitionRequest {
@@ -3089,6 +3111,24 @@ ze_error_code ze_query_result_free(struct ZeQueryResult *result);
 ze_error_code ze_seal(ze_handle handle,
                       const struct ZeSealRequest *request,
                       struct ZeGenerationReport *out_report);
+
+/*
+ Writes a consistent snapshot of the store into `request.target` and
+ reports the generation it captured. The target must not exist or must be
+ an empty directory, its parent must exist, and it must not lie inside the
+ store; otherwise `ZE_ERR_INVALID_ARGUMENT` and nothing is written. A
+ read-only handle returns `ZE_ERR_ACCESS_MODE`, and a pending physical
+ purge returns `ZE_ERR_UNSUPPORTED` until it is awaited. This is a reader call:
+ writers on other threads are blocked only while the generation is pinned,
+ and their later writes are absent from the snapshot. `ze_close` cancels
+ an in-flight snapshot (`ZE_ERR_CANCELLED`). A failed snapshot never
+ creates the target. The snapshot is an ordinary store directory: open it
+ with `ze_open` or `ze_namespace_open`, read-only or read-write, to restore
+ the captured state.
+ */
+ze_error_code ze_snapshot(ze_handle handle,
+                          const struct ZeSnapshotRequest *request,
+                          struct ZeGenerationReport *out_report);
 
 /*
  Drops immutable segments wholly contained by a timestamp range. Not

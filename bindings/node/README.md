@@ -218,6 +218,24 @@ Other attribute types throw `ZE_ERR_INVALID_ARGUMENT`. There is no timestamp
 bucketing: to count per day, store a day number as an `i64` attribute and
 group by it.
 
+`snapshot(target)` writes a consistent copy of the store at one generation
+into a directory, for a backup or an export, while the application keeps
+writing. It runs on a worker thread and resolves to `{ generation }`; writes
+made while it runs are not in the snapshot. The target must not exist or must
+be an empty directory, its parent must exist, and it must not be inside the
+store. A failed snapshot never creates the target. The snapshot is an ordinary
+store: open it, read-only or read-write, with the same namespace spec to
+restore that state.
+
+```js
+const { generation } = await store.snapshot('/Volumes/Backup/notes-2026-09-24');
+const restored = openNamespace('/Volumes/Backup', 'notes-2026-09-24',
+  { attributes: [] }, { readOnly: true });
+```
+
+A crash during a snapshot can leave a hidden `.<name>.snapshot-*.tmp`
+directory beside the target. It is never a snapshot and can be deleted.
+
 `query` runs one structured query. `text` selects the lexical leg, `vector`
 selects the vector leg, and both together run hybrid fusion; a request with
 neither is refused.

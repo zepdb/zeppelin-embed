@@ -1136,6 +1136,20 @@ pub struct ZeGenerationReport {
     pub generation: u64,
 }
 
+/// Consistent-snapshot request: the directory `ze_snapshot` writes.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeSnapshotRequest {
+    /// Caller-provided `sizeof(ZeSnapshotRequest)`.
+    pub abi_size: u32,
+    /// Must be zero in ABI v1.
+    pub abi_reserved: u32,
+    /// Caller-owned UTF-8 target directory path, without a NUL.
+    pub target: *const u8,
+    /// Number of target-path bytes; must be nonzero.
+    pub target_len: usize,
+}
+
 /// Whole-segment timestamp partition request.
 #[derive(Clone, Copy)]
 #[repr(C)]

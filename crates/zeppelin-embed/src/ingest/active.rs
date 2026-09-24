@@ -13,7 +13,9 @@ use crate::meta::AliveSet;
 use crate::quant::{Bit4Factors, quantize_bit4};
 use crate::vfs::Vfs;
 use crate::wal::record::MIN_RECORD_LEN;
-use crate::wal::{CleanWalReader, LogSeq, WalReadError, WalReader, WalWriter, encode_wal_image};
+use crate::wal::{
+    CleanWalReader, LogSeq, VisibleRecord, WalReadError, WalReader, WalWriter, encode_wal_image,
+};
 
 use super::wal_payload::MutationPayload;
 use super::{DocId, DocumentVersion, IngestDocument, IngestError, Revision, wal_payload};
@@ -1880,6 +1882,49 @@ impl StoreWal {
         use crate::manifest::io::DurableLog as _;
 
         self.writer.durable_end()
+    }
+
+    /// Every retained record after `absorbed_through`, in sequence order:
+    /// the WAL tail a store snapshot carries (ZE-220).
+    ///
+    /// The caller holds the store's WAL mutex, so no commit is in flight and
+    /// every retained record is acknowledged and applied. The records share
+    /// the writer's encoded allocations; nothing is copied.
+    pub(crate) fn unabsorbed_records(
+        &self,
+        absorbed_through: u64,
+    ) -> Result<Vec<VisibleRecord>, StoreError> {
+        let stats = self.writer.stats().map_err(StoreError::WalWrite)?;
+        let visible_end = stats.visible_end.map_or(0, LogSeq::get);
+        if stats.pending_records != 0 || visible_end > stats.durable_end.map_or(0, LogSeq::get) {
+            return Err(StoreError::SnapshotPin {
+                detail: "the WAL holds records whose flush has not returned",
+            });
+        }
+        let first = absorbed_through
+            .checked_add(1)
+            .ok_or(StoreError::SnapshotPin {
+                detail: "the absorbed WAL prefix has no successor sequence",
+            })?;
+        let records = self
+            .writer
+            .visible_records(LogSeq::new(first), stats.retained_records)
+            .map_err(StoreError::WalWrite)?;
+        let contiguous = records
+            .iter()
+            .zip(first..)
+            .all(|(record, expected)| record.seq.get() == expected);
+        let complete = records
+            .last()
+            .map_or(visible_end <= absorbed_through, |last| {
+                last.seq.get() == visible_end
+            });
+        if !contiguous || !complete {
+            return Err(StoreError::SnapshotPin {
+                detail: "the retained WAL tail does not continue the absorbed prefix",
+            });
+        }
+        Ok(records)
     }
 
     pub(crate) fn retire_visible_through(

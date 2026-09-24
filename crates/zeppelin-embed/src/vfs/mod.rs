@@ -62,6 +62,13 @@ pub trait Vfs: Send + Sync {
             "VFS does not support exclusive directory creation",
         ))
     }
+    /// Removes one empty directory. A non-empty directory is an error.
+    fn remove_directory(&self, _path: &Path) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "VFS does not support directory removal",
+        ))
+    }
     /// Opens an existing path and returns its byte length.
     fn open(&self, path: &Path) -> std::io::Result<u64>;
     /// Opens an existing path as an owned file suitable for memory mapping.
@@ -151,6 +158,10 @@ impl Vfs for StdVfs {
 
     fn create_directory(&self, path: &Path) -> std::io::Result<()> {
         std::fs::create_dir(path)
+    }
+
+    fn remove_directory(&self, path: &Path) -> std::io::Result<()> {
+        std::fs::remove_dir(path)
     }
 
     fn open(&self, path: &Path) -> std::io::Result<u64> {

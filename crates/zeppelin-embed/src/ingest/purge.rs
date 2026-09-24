@@ -29,7 +29,7 @@ use crate::wal::LogSeq;
 
 use super::{ActiveState, DocId, IngestDocument, SealedTombstoneDemand, wal_payload};
 
-const PURGE_INTENT_FILE: &str = "purge.ze";
+pub(crate) const PURGE_INTENT_FILE: &str = "purge.ze";
 const PURGE_INTENT_TEMP_FILE: &str = ".purge.ze.tmp";
 const WAL_PURGE_TEMP_FILE: &str = ".wal.ze.purge.tmp";
 

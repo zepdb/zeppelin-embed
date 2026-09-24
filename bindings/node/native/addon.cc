@@ -63,10 +63,11 @@ std::string LastError(ze_handle handle) {
   return std::string(buffer.data(), written);
 }
 
-bool CreateZeppelinError(napi_env env, ze_handle handle, ze_error_code status,
-                         napi_value *output) {
+// Builds the ZeppelinError-shaped value for `status` with `message`.
+bool CreateZeppelinErrorWithMessage(napi_env env, ze_error_code status,
+                                    const std::string &message,
+                                    napi_value *output) {
   const char *code = ze_error_code_name(status);
-  const std::string message = LastError(handle);
   napi_value js_message;
   napi_value &error = *output;
   napi_value js_name;
@@ -96,6 +97,11 @@ bool CreateZeppelinError(napi_env env, ze_handle handle, ze_error_code status,
     return false;
   }
   return true;
+}
+
+bool CreateZeppelinError(napi_env env, ze_handle handle, ze_error_code status,
+                         napi_value *output) {
+  return CreateZeppelinErrorWithMessage(env, status, LastError(handle), output);
 }
 
 napi_value ThrowZeppelin(napi_env env, ze_handle handle, ze_error_code status) {
@@ -2546,6 +2552,133 @@ napi_value SealStore(napi_env env, napi_callback_info info) {
   });
 }
 
+// One in-flight `snapshot(target)`. The copy runs on a libuv worker thread,
+// so JavaScript keeps writing through the same handle while it runs; the
+// engine blocks writers only while it pins the generation. The reference
+// keeps the JavaScript store, and so its handle, alive until completion.
+struct SnapshotWork {
+  napi_async_work work = nullptr;
+  napi_deferred deferred = nullptr;
+  napi_ref receiver = nullptr;
+  ze_handle handle = 0;
+  std::string target;
+  ze_error_code status = ZE_OK;
+  std::string message;
+  uint64_t generation = 0;
+};
+
+void ExecuteSnapshot(napi_env, void *data) {
+  auto *work = static_cast<SnapshotWork *>(data);
+  ZeSnapshotRequest request{};
+  request.abi_size = sizeof(request);
+  request.target = reinterpret_cast<const uint8_t *>(work->target.data());
+  request.target_len = work->target.size();
+  ZeGenerationReport report{};
+  report.abi_size = sizeof(report);
+  work->status = ze_snapshot(work->handle, &request, &report);
+  if (work->status == ZE_OK) {
+    work->generation = report.generation;
+    return;
+  }
+  try {
+    work->message = LastError(work->handle);
+  } catch (...) {
+    work->message = "Zeppelin Embed operation failed";
+  }
+}
+
+void CompleteSnapshot(napi_env env, napi_status status, void *data) {
+  std::unique_ptr<SnapshotWork> work(static_cast<SnapshotWork *>(data));
+  napi_value outcome = nullptr;
+  bool resolved = false;
+  if (status != napi_ok) {
+    napi_value message;
+    if (napi_create_string_utf8(env, "snapshot work did not run",
+                                NAPI_AUTO_LENGTH, &message) == napi_ok)
+      napi_create_error(env, nullptr, message, &outcome);
+  } else if (work->status != ZE_OK) {
+    if (!CreateZeppelinErrorWithMessage(env, work->status, work->message,
+                                        &outcome))
+      outcome = nullptr;
+  } else {
+    napi_value generation;
+    resolved =
+        napi_create_object(env, &outcome) == napi_ok &&
+        napi_create_bigint_uint64(env, work->generation, &generation) ==
+            napi_ok &&
+        napi_set_named_property(env, outcome, "generation", generation) ==
+            napi_ok;
+  }
+  if (!resolved && outcome == nullptr) {
+    bool pending = false;
+    napi_is_exception_pending(env, &pending);
+    if (pending)
+      napi_get_and_clear_last_exception(env, &outcome);
+    if (outcome == nullptr)
+      napi_get_undefined(env, &outcome);
+  }
+  if (resolved)
+    napi_resolve_deferred(env, work->deferred, outcome);
+  else
+    napi_reject_deferred(env, work->deferred, outcome);
+  napi_delete_reference(env, work->receiver);
+  napi_delete_async_work(env, work->work);
+}
+
+// Writes a consistent snapshot of the store into `target` without blocking
+// JavaScript. Resolves to `{ generation }`, the generation it captured.
+napi_value SnapshotStore(napi_env env, napi_callback_info info) {
+  return Guard(env, [&]() -> napi_value {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_value receiver;
+    if (!NapiOk(env,
+                napi_get_cb_info(env, info, &argc, args, &receiver, nullptr),
+                "read snapshot arguments")) {
+      return nullptr;
+    }
+    NativeStore *store = UnwrapStore(env, receiver);
+    if (store == nullptr)
+      return nullptr;
+    auto work = std::make_unique<SnapshotWork>();
+    if (argc < 1) {
+      napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE",
+                            "target must be a string");
+      return nullptr;
+    }
+    if (!GetUtf8(env, args[0], "target", &work->target))
+      return nullptr;
+    work->handle = store->handle;
+    napi_value promise;
+    napi_value name;
+    if (!NapiOk(env, napi_create_promise(env, &work->deferred, &promise),
+                "create snapshot promise") ||
+        !NapiOk(env,
+                napi_create_string_utf8(env, "zeppelin.snapshot",
+                                        NAPI_AUTO_LENGTH, &name),
+                "create snapshot work name") ||
+        !NapiOk(env, napi_create_reference(env, receiver, 1, &work->receiver),
+                "reference snapshot store") ||
+        !NapiOk(env,
+                napi_create_async_work(env, nullptr, name, ExecuteSnapshot,
+                                       CompleteSnapshot, work.get(),
+                                       &work->work),
+                "create snapshot work")) {
+      if (work->receiver != nullptr)
+        napi_delete_reference(env, work->receiver);
+      return nullptr;
+    }
+    if (!NapiOk(env, napi_queue_async_work(env, work->work),
+                "queue snapshot work")) {
+      napi_delete_reference(env, work->receiver);
+      napi_delete_async_work(env, work->work);
+      return nullptr;
+    }
+    work.release();
+    return promise;
+  });
+}
+
 napi_value Ingest(napi_env env, napi_callback_info info) {
   return Guard(env, [&]() -> napi_value {
     size_t argc = 2;
@@ -3278,6 +3411,8 @@ napi_value Initialize(napi_env env, napi_value exports) {
        nullptr},
       {"seal", nullptr, SealStore, nullptr, nullptr, nullptr, napi_default,
        nullptr},
+      {"snapshot", nullptr, SnapshotStore, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
       {"close", nullptr, CloseStore, nullptr, nullptr, nullptr, napi_default,
        nullptr},
   };

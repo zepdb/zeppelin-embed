@@ -744,6 +744,14 @@ impl SegmentReader {
         self.mapping.resident_bytes()
     }
 
+    /// Every byte of the immutable segment file, read through the mapping.
+    ///
+    /// The mapping outlives an unlink of the path, so a pinned reader can
+    /// still copy a segment that a later generation has replaced.
+    pub(crate) fn file_bytes(&self) -> &[u8] {
+        self.mapping.as_bytes()
+    }
+
     #[cfg(test)]
     pub(crate) fn retained_validation_bytes(&self) -> usize {
         self.rescore_valid_chunks

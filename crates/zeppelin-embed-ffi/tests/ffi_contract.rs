@@ -339,6 +339,9 @@ fn every_request_struct_has_the_frozen_size_and_field_offsets() {
     assert_layout!(ZeGenerationReport, 16, 8, {
         abi_size: 0, abi_reserved: 4, generation: 8
     });
+    assert_layout!(ZeSnapshotRequest, 24, 8, {
+        abi_size: 0, abi_reserved: 4, target: 8, target_len: 16
+    });
     assert_layout!(ZeDropPartitionRequest, 24, 8, {
         abi_size: 0, abi_reserved: 4, start_ts: 8, end_ts: 16
     });
@@ -581,6 +584,7 @@ const POISON_TABLE_NAMES: &[&str] = &[
     "ze_seal",
     "ze_search",
     "ze_search_filtered",
+    "ze_snapshot",
     "ze_state",
     "ze_stats",
     "ze_upsert",
@@ -1028,6 +1032,20 @@ fn poison_function_table() -> Vec<(&'static str, PoisonCall)> {
             };
             let mut report: ZeGenerationReport = common::sized_zeroed();
             ze_seal(context.store.handle, &request, &mut report)
+        }),
+        ("ze_snapshot", |context| {
+            let target = std::env::temp_dir()
+                .join("ze-poisoned-snapshot-never-written")
+                .to_string_lossy()
+                .into_owned();
+            let request = ZeSnapshotRequest {
+                abi_size: size_of::<ZeSnapshotRequest>() as u32,
+                abi_reserved: 0,
+                target: target.as_ptr(),
+                target_len: target.len(),
+            };
+            let mut report: ZeGenerationReport = common::sized_zeroed();
+            ze_snapshot(context.store.handle, &request, &mut report)
         }),
         ("ze_drop_partition", |context| {
             let request = ZeDropPartitionRequest {

@@ -286,6 +286,20 @@ class Store {
     return report;
   }
 
+  /**
+   * Writes a consistent snapshot of the store into `target` on a worker
+   * thread and resolves to `{ generation }`, the generation it captured.
+   * Writes made while it runs are absent from the snapshot. Every failure,
+   * including a bad argument, is a rejection.
+   */
+  async snapshot(target) {
+    try {
+      return await this._native.snapshot(target);
+    } catch (error) {
+      throw translateError(error);
+    }
+  }
+
   close() {
     return callNative(() => this._native.close());
   }

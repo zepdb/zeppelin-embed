@@ -104,6 +104,17 @@ impl VisibleRecord {
         decode_visible(encoded).map_err(VisibleRecordError::Record)
     }
 
+    /// Returns the complete encoded record bytes, exactly as appended.
+    pub(crate) fn encoded(&self) -> Result<&[u8], VisibleRecordError> {
+        self.encoded.get(self.encoded_range.clone()).ok_or(
+            VisibleRecordError::InvalidEncodedRange {
+                start: self.encoded_range.start,
+                end: self.encoded_range.end,
+                available: self.encoded.len(),
+            },
+        )
+    }
+
     /// Returns the complete encoded width retained for this record.
     #[must_use]
     pub fn encoded_len(&self) -> usize {

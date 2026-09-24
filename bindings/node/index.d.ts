@@ -20,6 +20,11 @@ export interface SealReport {
   readonly generation: bigint;
 }
 
+export interface SnapshotReport {
+  /** The generation the snapshot captured. Later writes are not in it. */
+  readonly generation: bigint;
+}
+
 export interface Document {
   readonly id: bigint;
   readonly vector: Float32Array;
@@ -586,6 +591,30 @@ export declare class Store {
    * that replacement loses nothing. An empty active segment is a no-op.
    */
   seal(): SealReport;
+  /**
+   * Write a consistent snapshot of the store at one generation into
+   * `target`, for a backup or an export. The copy runs on a worker thread,
+   * so the application keeps reading and writing through this store; writers
+   * wait only while the generation is pinned, which copies no document
+   * bytes. Writes, seals and segment rewrites made while it runs are absent
+   * from the snapshot.
+   *
+   * `target` must not exist or must be an empty directory, its parent must
+   * exist, and it must not be the store directory or inside it; otherwise
+   * the promise rejects with `ZE_ERR_INVALID_ARGUMENT` and nothing is
+   * written. A read-only store rejects with `ZE_ERR_ACCESS_MODE`, a closed
+   * one with `ZE_ERR_CLOSED`, and a non-string target with a `TypeError`.
+   * While a physical purge is pending it rejects with `ZE_ERR_UNSUPPORTED`.
+   * Closing the store cancels a running snapshot (`ZE_ERR_CANCELLED`). The
+   * snapshot is written under a hidden temporary name and renamed into place
+   * only once every file is synced, so a failure or crash never leaves a
+   * partial snapshot at `target`.
+   *
+   * The snapshot is an ordinary store directory: open it, read-only or
+   * read-write, with `openNamespace` and the same spec to restore the
+   * captured state.
+   */
+  snapshot(target: string): Promise<SnapshotReport>;
   close(): void;
 }
 

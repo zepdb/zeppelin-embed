@@ -4338,6 +4338,54 @@ pub extern "C" fn ze_seal(
     })
 }
 
+/// Writes a consistent snapshot of the store into `request.target` and
+/// reports the generation it captured. The target must not exist or must be
+/// an empty directory, its parent must exist, and it must not lie inside the
+/// store; otherwise `ZE_ERR_INVALID_ARGUMENT` and nothing is written. A
+/// read-only handle returns `ZE_ERR_ACCESS_MODE`, and a pending physical
+/// purge returns `ZE_ERR_UNSUPPORTED` until it is awaited. This is a reader call:
+/// writers on other threads are blocked only while the generation is pinned,
+/// and their later writes are absent from the snapshot. `ze_close` cancels
+/// an in-flight snapshot (`ZE_ERR_CANCELLED`). A failed snapshot never
+/// creates the target. The snapshot is an ordinary store directory: open it
+/// with `ze_open` or `ze_namespace_open`, read-only or read-write, to restore
+/// the captured state.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_snapshot(
+    handle: ZeHandle,
+    request: *const ZeSnapshotRequest,
+    out_report: *mut ZeGenerationReport,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_snapshot");
+        finish(
+            Some(handle),
+            (|| {
+                let request = marshal::read_struct(request)?;
+                let abi_size = marshal::validate_output(out_report)?;
+                let target = marshal::utf8_without_nul(request.target, request.target_len)?;
+                if target.is_empty() {
+                    return Err(FfiError::invalid("snapshot target must not be empty"));
+                }
+                let access = registry::lookup(handle)?;
+                let generation = access
+                    .store
+                    .write_snapshot(Path::new(target))
+                    .map_err(FfiError::store)?;
+                marshal::write_output(
+                    out_report,
+                    ZeGenerationReport {
+                        abi_size,
+                        abi_reserved: 0,
+                        generation,
+                    },
+                );
+                Ok(())
+            })(),
+        )
+    })
+}
+
 fn write_partition_report(
     output: *mut ZePartitionReport,
     abi_size: u32,
