@@ -142,39 +142,24 @@ impl ActiveState {
         let mut documents = Vec::new();
         let mut steps = Vec::new();
         let mut deleted_ids = 0_usize;
-        for record in recovered.records() {
-            if record.seq.get() <= absorbed_through {
-                continue;
-            }
-            let payload = record.payload().map_err(|source| StoreError::WalRecord {
-                seq: record.seq,
-                source,
-            })?;
-            let mutation = wal_payload::decode_mutation(record.op, payload).map_err(|source| {
-                StoreError::WalMutation {
-                    seq: record.seq,
-                    op: record.op,
-                    source,
-                }
-            })?;
+        for (seq, op, mutation) in
+            super::atomic_batch::committed_mutations(recovered.records(), absorbed_through)?
+        {
             match mutation {
                 MutationPayload::Upsert(document) => {
                     super::validate_document_columns(schema, &document)
-                        .map_err(|error| recovery_apply_error(record.seq, record.op, error))?;
-                    steps.push((record.seq, record.op, ReplayStep::Upsert(documents.len())));
+                        .map_err(|error| recovery_apply_error(seq, op, error))?;
+                    steps.push((seq, op, ReplayStep::Upsert(documents.len())));
                     documents.push(document);
                 }
                 MutationPayload::Delete(doc_ids) => {
                     deleted_ids = deleted_ids
                         .checked_add(doc_ids.len())
                         .ok_or(StoreError::ActiveRowOverflow)?;
-                    steps.push((record.seq, record.op, ReplayStep::Delete(doc_ids)));
+                    steps.push((seq, op, ReplayStep::Delete(doc_ids)));
                 }
-                MutationPayload::MetadataEdit(_) => {
-                    return Err(StoreError::UnsupportedWalMutation {
-                        seq: record.seq,
-                        op: record.op,
-                    });
+                MutationPayload::MetadataEdit(_) | MutationPayload::BatchMember { .. } => {
+                    return Err(StoreError::UnsupportedWalMutation { seq, op });
                 }
             }
         }

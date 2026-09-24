@@ -1773,22 +1773,10 @@ fn ensure_wal_rewrite_covers_retained(
     let wal_path = directory.join("wal.ze");
     let reader = crate::wal::WalReader::open(vfs, &wal_path).map_err(StoreError::Wal)?;
     let clean = reader.into_clean().map_err(StoreError::WalRecovery)?;
-    for record in clean
-        .records()
-        .iter()
-        .filter(|record| record.seq >= first_seq)
+    let absorbed_through = first_seq.get().saturating_sub(1);
+    for (seq, _, mutation) in
+        super::atomic_batch::committed_mutations(clean.records(), absorbed_through)?
     {
-        let payload = record.payload().map_err(|source| StoreError::WalRecord {
-            seq: record.seq,
-            source,
-        })?;
-        let mutation = wal_payload::decode_mutation(record.op, payload).map_err(|source| {
-            StoreError::WalMutation {
-                seq: record.seq,
-                op: record.op,
-                source,
-            }
-        })?;
         let covered = match mutation {
             super::wal_payload::MutationPayload::Upsert(document) => {
                 let version = document.version();
@@ -1803,10 +1791,11 @@ fn ensure_wal_rewrite_covers_retained(
                         .existing(*id)
                         .is_some_and(|(row, _, _)| next_active.is_tombstoned(row))
             }),
-            super::wal_payload::MutationPayload::MetadataEdit(_) => false,
+            super::wal_payload::MutationPayload::MetadataEdit(_)
+            | super::wal_payload::MutationPayload::BatchMember { .. } => false,
         };
         if !covered {
-            return Err(PurgeError::WalRewriteWouldDropAcked { seq: record.seq });
+            return Err(PurgeError::WalRewriteWouldDropAcked { seq });
         }
     }
     Ok(())

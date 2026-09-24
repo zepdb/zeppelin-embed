@@ -13,6 +13,8 @@ use super::{DocId, DocumentVersion, IngestDocument, Revision};
 //   5 = vector/document upsert with opaque stored metadata v1
 //   6 = vector/document upsert with canonical ts and opaque stored metadata v1
 //   7 = document upsert v2 with a u32 field-presence bitmap
+//   8 = one member of a multi-record upsert batch: `index:u32`,
+//       `count:u32`, then the unchanged upsert-v2 payload (ZE-216)
 //
 // Upsert-v2 bitmap bits are append-only persisted meanings:
 //   bit 0 = vector (`dims:u32`, then `f32[dims]`)
@@ -36,6 +38,10 @@ pub const UPSERT_WITH_METADATA_V1: u16 = 5;
 pub const UPSERT_WITH_TIMESTAMP_AND_METADATA_V1: u16 = 6;
 /// Bitmap-based upsert payload v2.
 pub const UPSERT_V2: u16 = 7;
+/// One member of a multi-record upsert batch: `[index:u32][count:u32]`, then
+/// an upsert-v2 payload. Replay applies a batch only when members
+/// `0..count` are all present.
+pub const UPSERT_V2_BATCH_MEMBER: u16 = 8;
 
 /// Upsert-v2 vector field bit.
 pub const UPSERT_V2_VECTOR: u32 = 1 << 0;
@@ -121,6 +127,20 @@ pub enum PayloadError {
     Lexical(String),
     /// Active typed-column reconstruction failed during WAL replay.
     Columns(String),
+    /// A batch member position is not `index < count` with `count >= 2`.
+    BatchPosition {
+        /// Persisted zero-based member index.
+        index: u32,
+        /// Persisted member count.
+        count: u32,
+    },
+    /// A batch member does not continue the batch the log was replaying.
+    OrphanBatchMember {
+        /// Persisted zero-based member index.
+        index: u32,
+        /// Persisted member count.
+        count: u32,
+    },
 }
 
 impl std::fmt::Display for PayloadError {
@@ -174,6 +194,14 @@ impl std::fmt::Display for PayloadError {
             ),
             Self::Lexical(detail) => write!(formatter, "WAL lexical replay failed: {detail}"),
             Self::Columns(detail) => write!(formatter, "WAL column replay failed: {detail}"),
+            Self::BatchPosition { index, count } => write!(
+                formatter,
+                "WAL batch member {index} of {count} is not a valid position"
+            ),
+            Self::OrphanBatchMember { index, count } => write!(
+                formatter,
+                "WAL batch member {index} of {count} continues no earlier member"
+            ),
         }
     }
 }
@@ -244,6 +272,15 @@ pub enum MutationPayload {
     Delete(Vec<DocId>),
     /// Structured metadata edit.
     MetadataEdit(MetadataEdit),
+    /// One upsert inside a multi-record batch.
+    BatchMember {
+        /// Zero-based position in the batch.
+        index: u32,
+        /// Number of members in the batch.
+        count: u32,
+        /// The member's upsert.
+        document: IngestDocument,
+    },
 }
 
 /// Encodes one upsert payload as little-endian
@@ -475,8 +512,53 @@ pub fn decode_mutation(op: u16, payload: &[u8]) -> Result<MutationPayload, Paylo
             decode_upsert_with_timestamp_and_metadata(payload).map(MutationPayload::Upsert)
         }
         UPSERT_V2 => decode_upsert_v2(payload).map(MutationPayload::Upsert),
+        UPSERT_V2_BATCH_MEMBER => {
+            decode_upsert_v2_batch_member(payload).map(|(index, count, document)| {
+                MutationPayload::BatchMember {
+                    index,
+                    count,
+                    document,
+                }
+            })
+        }
         unknown => Err(PayloadError::UnknownOperation(unknown)),
     }
+}
+
+/// Frames an upsert-v2 payload as member `index` of a `count`-record batch.
+pub fn encode_upsert_v2_batch_member(
+    index: u32,
+    count: u32,
+    upsert_v2: &[u8],
+) -> Result<Vec<u8>, PayloadError> {
+    validate_batch_position(index, count)?;
+    let mut payload = Vec::new();
+    payload
+        .try_reserve_exact(upsert_v2.len().saturating_add(8))
+        .map_err(|_| PayloadError::LengthOverflow)?;
+    payload.extend_from_slice(&index.to_le_bytes());
+    payload.extend_from_slice(&count.to_le_bytes());
+    payload.extend_from_slice(upsert_v2);
+    Ok(payload)
+}
+
+/// Decodes one batch member into `(index, count, document)`.
+pub fn decode_upsert_v2_batch_member(
+    payload: &[u8],
+) -> Result<(u32, u32, IngestDocument), PayloadError> {
+    let mut cursor = Cursor::new(payload);
+    let index = cursor.read_u32()?;
+    let count = cursor.read_u32()?;
+    validate_batch_position(index, count)?;
+    let body = payload.get(8..).ok_or(PayloadError::Truncated)?;
+    decode_upsert_v2(body).map(|document| (index, count, document))
+}
+
+fn validate_batch_position(index: u32, count: u32) -> Result<(), PayloadError> {
+    if count < 2 || index >= count {
+        return Err(PayloadError::BatchPosition { index, count });
+    }
+    Ok(())
 }
 
 /// Decodes one bitmap-based upsert-v2 payload.

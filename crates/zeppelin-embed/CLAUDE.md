@@ -397,7 +397,10 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
 
 - Opening a non-empty `wal.ze` requires replay to reach `CleanEnd`; invalid
   headers, torn tails, checksum failures, and sequence corruption are typed
-  open errors. Recovery never truncates the file or publishes a partial prefix.
+  open errors. Recovery never publishes a partial prefix. ZE-216 narrows one
+  case: before replay, the writable open cuts a final record that is only
+  shorter than its declared length (at most the 16 MiB group bound), through
+  a verified temporary and rename. A read-only open still refuses it.
 - Task 10-A has no sealed-segment fold boundary. Every clean WAL mutation is
   therefore rebuilt into the active segment on open. Task 10-B must persist an
   explicit absorbed-through boundary before it may exclude records already
@@ -1019,3 +1022,16 @@ capacities apply to it exactly as to a returning statement.
   loudly. Raw `SegmentReader::open` decodes the segment's own schema.
 - `tests/fixtures/schema-v0.4.2` is a store written by the v0.4.2 core; the
   `schema_evolution` suite opens it with added attributes.
+
+## ZE-216 batch atomicity
+
+- One `Store::ingest` or `Store::delete` is one crash-atomic batch. A delete
+  is one record. An upsert with two or more changed records writes WAL op 8
+  (`UPSERT_V2_BATCH_MEMBER`: `index:u32`, `count:u32`, upsert-v2 payload);
+  a one-record batch keeps op 7. Sequence numbers are unchanged.
+- `ingest::atomic_batch::committed_mutations` is the only way to read
+  mutations out of the WAL: it drops a member run that the log end, a new
+  member 0 or a standalone record cuts short (that append never returned),
+  and fails loudly on a member that continues nothing.
+- Atomicity is per store. Namespaces have independent WALs and manifests;
+  cross-namespace atomicity needs a commit protocol that does not exist.

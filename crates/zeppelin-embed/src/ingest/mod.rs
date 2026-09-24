@@ -1,6 +1,7 @@
 //! Ingest and mutation coordination.
 
 mod active;
+mod atomic_batch;
 mod delete_matching;
 mod purge;
 
@@ -43,6 +44,7 @@ pub use retention_fault::{
 };
 
 pub(crate) use active::{ActiveSegment, ActiveState, SealedTombstoneDemand, StoreWal};
+pub(crate) use atomic_batch::cut_interrupted_append;
 
 /// Stable application document identifier.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -1322,6 +1324,7 @@ impl Store {
                 generation: current_generation,
             });
         };
+        let records = atomic_batch::frame_batch(records)?;
         let generation = current_generation
             .checked_add(1)
             .ok_or(StoreError::GenerationOverflow)?;

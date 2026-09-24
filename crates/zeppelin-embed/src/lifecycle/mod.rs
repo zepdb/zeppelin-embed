@@ -2987,6 +2987,11 @@ impl Store {
             });
         }
         let writer_lock = acquire_writer_lock(path, options.access_mode)?;
+        if options.access_mode == AccessMode::ReadWrite {
+            // The single writer owns the WAL tail: a crash mid-append is cut
+            // off here so recovery sees whole batches only (ZE-216).
+            crate::ingest::cut_interrupted_append(vfs.as_ref(), path, durability_policy)?;
+        }
         let manifest_path = path.join(crate::manifest::io::MANIFEST_FILE);
         let manifest_exists = match vfs.open(&manifest_path) {
             Ok(_) => true,

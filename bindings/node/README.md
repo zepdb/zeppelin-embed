@@ -141,6 +141,22 @@ Removing or changing one, adding a non-nullable one, or adding one on a
 release adds an attribute, earlier releases can no longer open the namespace
 with their shorter declaration.
 
+One `upsert`, `ingest` or `delete` call is one atomic batch. If the process
+or the machine stops at any point during the call, the next writable open
+shows every document of the batch or none of them, and every batch whose call
+returned is still there. Put documents that must change together (a note head
+and its body, a transcript version and its head pointer) in one call.
+
+A batch is atomic only inside one namespace. Each namespace has its own
+write-ahead log, so an `upsert` to `notes` and an `upsert` to `segments` are
+two independent batches, and a crash between them can keep the first without
+the second. Keep documents that must change together in one namespace, or
+make the second write repairable from the first (for example, write the
+dependent documents first and the pointer that makes them live last).
+
+A read-only open never repairs: if the last write was cut mid-record, it
+throws `ZE_ERR_CORRUPT` until a writable open has cut that record off.
+
 Writes land in an active segment backed by the write-ahead log. `seal()`
 turns the active segment into an immutable segment and absorbs the log
 records it covers, so opening the store again reads the sealed segment

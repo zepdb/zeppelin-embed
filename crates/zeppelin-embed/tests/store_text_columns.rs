@@ -7,7 +7,7 @@ use zeppelin_embed::fts::query::{LexicalMatchKind, LexicalQuery};
 use zeppelin_embed::fts::search::TermQuery;
 use zeppelin_embed::fusion::{FusionError, FusionLeg, HYBRID_WINDOW_FLOOR, HybridQuery};
 use zeppelin_embed::ingest::SearchRequest;
-use zeppelin_embed::ingest::wal_payload::UPSERT_V2;
+use zeppelin_embed::ingest::wal_payload::UPSERT_V2_BATCH_MEMBER;
 use zeppelin_embed::ingest::{
     DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, IngestError, Revision,
 };
@@ -389,7 +389,12 @@ fn text_ingested_through_the_store_is_searchable_after_reopen() {
         ]))
         .expect("ingest text");
     let wal = WalReader::open(&StdVfs, &directory.path().join("wal.ze")).expect("open emitted WAL");
-    assert!(wal.records().iter().all(|record| record.op == UPSERT_V2));
+    // One two-document batch writes two framed members (ZE-216).
+    assert!(
+        wal.records()
+            .iter()
+            .all(|record| record.op == UPSERT_V2_BATCH_MEMBER)
+    );
     let active_outcome = store
         .search_lexical(
             &TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]),

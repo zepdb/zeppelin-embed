@@ -493,17 +493,43 @@ export declare class UnsupportedRuntimeError extends Error {
   readonly code: 'ERR_ZEPPELIN_UNSUPPORTED_RUNTIME';
 }
 
+/**
+ * A store is one namespace. Its writes are atomic batches.
+ *
+ * **Batch atomicity.** One `upsert`, `ingest` or `delete` call is one batch,
+ * whatever its size. If the process is killed or the machine stops at any
+ * point during the call, the next writable open shows every document of the
+ * batch or none of them; it never shows part of a batch. Every batch whose
+ * call returned is kept (within the durability the open options select: the
+ * default `derived` mode and the `none` tier survive a process kill but not a
+ * power cut). Put documents that must change together, such as a note head
+ * and its body, in one call.
+ *
+ * **One namespace only.** Atomicity does not span namespaces. Each namespace
+ * has its own write-ahead log, so writes to two stores are two batches, and a
+ * crash between them can keep the first and lose the second. Keep documents
+ * that must change together in one namespace, or order the writes so that a
+ * lost second write is repairable (write dependent documents first and the
+ * pointer that makes them live last).
+ *
+ * **Recovery.** A writable open cuts off a final write that a crash left
+ * incomplete. A read-only open never repairs: while such a cut record remains,
+ * it throws `ZE_ERR_CORRUPT`. Any other damage to the log fails every open.
+ */
 export declare class Store {
   constructor(path: string, options?: OpenOptions);
+  /** Writes `documents` as one atomic batch; see the class notes. */
   ingest(documents: readonly Document[], dimension: number): MutationReport;
   /**
-   * Upserts the documents as one batch. If any `expectedRevision` condition
-   * fails, nothing is written and the call throws `ZE_ERR_REVISION_CONFLICT`.
+   * Upserts the documents as one atomic batch (see the class notes). If any
+   * `expectedRevision` condition fails, nothing is written and the call
+   * throws `ZE_ERR_REVISION_CONFLICT`.
    */
   upsert(documents: readonly UpsertDocument[]): MutationReport;
   get(ids: readonly DocumentId[], fields?: DocumentFields): GetResult;
   /**
-   * Deletes the ids as one batch. An entry can carry an `expectedRevision`
+   * Deletes the ids as one atomic batch (see the class notes). An entry can
+   * carry an `expectedRevision`
    * condition; if any condition fails, nothing is deleted and the call
    * throws `ZE_ERR_REVISION_CONFLICT`.
    */

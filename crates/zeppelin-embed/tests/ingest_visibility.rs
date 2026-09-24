@@ -235,9 +235,11 @@ fn reopen_rejects_torn_tail_and_middle_checksum_corruption_typed() {
     torn.pop().expect("remove checksum tail byte");
     std::fs::write(&torn_path, torn).expect("write torn WAL");
 
-    let torn_error = Store::open(torn_directory.path(), OpenOptions::default())
+    // A reader never repairs; the single writer cuts the interrupted final
+    // append instead (ZE-216, covered in tests/batch_atomicity.rs).
+    let torn_error = Store::open(torn_directory.path(), OpenOptions::read_only())
         .err()
-        .expect("torn WAL must fail open");
+        .expect("torn WAL must fail read-only open");
     assert!(matches!(
         torn_error,
         StoreError::WalRecovery(WalRecoveryError::CorruptAt {
@@ -437,7 +439,8 @@ fn partial_batch_append_error_preserves_clean_prefix_and_emits_receipt() {
     let error = store
         .ingest(batch.clone())
         .expect_err("partial WAL append must reject the complete batch");
-    let expected_detail = "injected partial-batch-append after 7/140 bytes";
+    // Two 70-byte upsert-v2 records, each framed as a batch member (+8).
+    let expected_detail = "injected partial-batch-append after 7/156 bytes";
     match &error {
         IngestError::Store(StoreError::WalWrite(WalWriteError::Failed { kind, detail })) => {
             assert_eq!(*kind, std::io::ErrorKind::Other);
@@ -540,7 +543,7 @@ fn partial_batch_append_error_preserves_clean_prefix_and_emits_receipt() {
         &IngestRetentionFaultEffect::PartialBatchAppend {
             submitted_count: 2,
             changed_records: 2,
-            encoded_bytes: 140,
+            encoded_bytes: 156,
             prefix_bytes: 7,
             io_kind: IngestRetentionIoKind::Other,
             detail: expected_detail.to_owned(),

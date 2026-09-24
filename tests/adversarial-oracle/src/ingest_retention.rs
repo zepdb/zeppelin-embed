@@ -2004,9 +2004,17 @@ pub struct UpsertV2Shape {
 }
 
 /// Returns the exact encoded WAL group length for the supplied upsert-v2
-/// shapes using the frozen record and payload layouts.
+/// shapes using the frozen record and payload layouts. A batch of two or more
+/// records frames each as a batch member (op 8, ZE-216), which prefixes the
+/// upsert-v2 payload with `index:u32` and `count:u32`.
 pub fn encoded_upsert_v2_group_bytes(shapes: &[UpsertV2Shape]) -> Result<u64, String> {
     const RECORD_HEADER_BYTES: u64 = 14;
+    const BATCH_MEMBER_PREFIX_BYTES: u64 = 8;
+    let member_prefix = if shapes.len() > 1 {
+        BATCH_MEMBER_PREFIX_BYTES
+    } else {
+        0
+    };
     const RECORD_CHECKSUM_BYTES: u64 = 8;
     const FIELD_BITMAP_BYTES: u64 = 4;
     const DOCUMENT_VERSION_BYTES: u64 = 24;
@@ -2047,7 +2055,8 @@ pub fn encoded_upsert_v2_group_bytes(shapes: &[UpsertV2Shape]) -> Result<u64, St
                 .ok_or_else(|| "I20 upsert-v2 column length overflows u64".to_owned())?;
         }
         let record = RECORD_HEADER_BYTES
-            .checked_add(payload)
+            .checked_add(member_prefix)
+            .and_then(|value| value.checked_add(payload))
             .and_then(|value| value.checked_add(RECORD_CHECKSUM_BYTES))
             .ok_or_else(|| "I20 WAL record length overflows u64".to_owned())?;
         group

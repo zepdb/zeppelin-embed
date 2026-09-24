@@ -263,9 +263,11 @@ fn storage_torn_wal_body_can_fire() {
         StorageFaultPlan::new(0, "wal.ze")
             .with_offset(u64::try_from(bytes.len()).expect("torn WAL length fits u64")),
     );
+    // Read-only: the single writer cuts an interrupted final append instead
+    // of refusing (ZE-216); a reader still refuses and fires the fault site.
     let error = Store::open_with_test_dependencies(
         directory.path(),
-        OpenOptions::default(),
+        OpenOptions::read_only(),
         dependencies(controller.clone()),
     )
     .err()

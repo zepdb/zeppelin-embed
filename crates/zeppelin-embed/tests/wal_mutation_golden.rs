@@ -3,13 +3,13 @@
 use zeppelin_embed::format::golden::decode_hex;
 use zeppelin_embed::ingest::wal_payload::{
     DELETE_V1, METADATA_EDIT_V1, MetadataEdit, MetadataValue, MutationPayload, PayloadError,
-    UPSERT_V1, UPSERT_V2, UPSERT_V2_EPOCH_TAG_RESERVED, UPSERT_WITH_METADATA_V1,
-    UPSERT_WITH_TIMESTAMP_AND_METADATA_V1, UPSERT_WITH_TIMESTAMP_V1, decode_delete,
-    decode_metadata_edit, decode_mutation, decode_upsert, decode_upsert_v2,
-    decode_upsert_with_metadata, decode_upsert_with_timestamp,
+    UPSERT_V1, UPSERT_V2, UPSERT_V2_BATCH_MEMBER, UPSERT_V2_EPOCH_TAG_RESERVED,
+    UPSERT_WITH_METADATA_V1, UPSERT_WITH_TIMESTAMP_AND_METADATA_V1, UPSERT_WITH_TIMESTAMP_V1,
+    decode_delete, decode_metadata_edit, decode_mutation, decode_upsert, decode_upsert_v2,
+    decode_upsert_v2_batch_member, decode_upsert_with_metadata, decode_upsert_with_timestamp,
     decode_upsert_with_timestamp_and_metadata, encode_delete, encode_metadata_edit, encode_upsert,
-    encode_upsert_v2, encode_upsert_with_metadata, encode_upsert_with_timestamp,
-    encode_upsert_with_timestamp_and_metadata,
+    encode_upsert_v2, encode_upsert_v2_batch_member, encode_upsert_with_metadata,
+    encode_upsert_with_timestamp, encode_upsert_with_timestamp_and_metadata,
 };
 use zeppelin_embed::ingest::{DocId, DocumentVersion, IngestDocument, Revision};
 use zeppelin_embed::meta::{ColumnId, PredicateValue};
@@ -170,6 +170,71 @@ fn wal_upsert_payload_v2_bitmap_is_byte_exact() {
 }
 
 #[test]
+fn wal_upsert_batch_member_payload_v1_is_byte_exact() {
+    // The frozen upsert-v2 golden document, framed as member 1 of 3: the
+    // payload is `index:u32`, `count:u32`, then the upsert-v2 bytes.
+    let document = IngestDocument::new(
+        DocumentVersion::new(
+            DocId::new(0x0011_2233_4455_6677_8899_aabb_ccdd_eeff),
+            Revision::new(0x1122_3344_5566_7788),
+        ),
+        vec![1.5, -2.25],
+    )
+    .with_text("bronze")
+    .with_timestamp(-1234)
+    .with_metadata(b"meta".to_vec())
+    .with_columns(vec![
+        (ColumnId::new(9), PredicateValue::U64(17)),
+        (ColumnId::new(10), PredicateValue::String("blue".to_owned())),
+    ]);
+    let body = encode_upsert_v2(&document).expect("encode bitmap upsert");
+    let payload = encode_upsert_v2_batch_member(1, 3, &body).expect("frame member");
+    assert_eq!(&payload[..8], &[1, 0, 0, 0, 3, 0, 0, 0]);
+    assert_eq!(&payload[8..], &body[..]);
+    assert_record_golden(
+        UPSERT_V2_BATCH_MEMBER,
+        &payload,
+        include_str!("fixtures/format/wal_upsert_batch_member_record_v1.hex"),
+        MutationPayload::BatchMember {
+            index: 1,
+            count: 3,
+            document,
+        },
+    );
+}
+
+#[test]
+fn wal_batch_member_rejects_impossible_positions_typed() {
+    let body = encode_upsert_v2(&IngestDocument::new(
+        DocumentVersion::new(DocId::new(7), Revision::new(1)),
+        vec![1.0],
+    ))
+    .expect("encode upsert");
+    for (index, count) in [(0, 0), (0, 1), (2, 2), (u32::MAX, 3)] {
+        let expected = Err(PayloadError::BatchPosition { index, count });
+        assert_eq!(
+            encode_upsert_v2_batch_member(index, count, &body),
+            expected.clone()
+        );
+        let mut forged = Vec::new();
+        forged.extend_from_slice(&index.to_le_bytes());
+        forged.extend_from_slice(&count.to_le_bytes());
+        forged.extend_from_slice(&body);
+        assert_eq!(
+            decode_upsert_v2_batch_member(&forged).map(|_| ()),
+            expected.map(|_: Vec<u8>| ())
+        );
+    }
+    assert_eq!(
+        decode_upsert_v2_batch_member(&[1, 0, 0, 0, 2, 0, 0]),
+        Err(PayloadError::Truncated)
+    );
+    let mut bad_body = Vec::from([0_u8, 0, 0, 0, 2, 0, 0, 0]);
+    bad_body.extend_from_slice(&body[..body.len() - 1]);
+    assert!(decode_upsert_v2_batch_member(&bad_body).is_err());
+}
+
+#[test]
 fn wal_delete_payload_v1_is_byte_exact() {
     let doc_ids = vec![
         DocId::new(0x0011_2233_4455_6677_8899_aabb_ccdd_eeff),
@@ -226,8 +291,9 @@ fn mutation_operation_ids_are_append_only() {
             UPSERT_WITH_METADATA_V1,
             UPSERT_WITH_TIMESTAMP_AND_METADATA_V1,
             UPSERT_V2,
+            UPSERT_V2_BATCH_MEMBER,
         ),
-        (1, 2, 3, 4, 5, 6, 7)
+        (1, 2, 3, 4, 5, 6, 7, 8)
     );
 }
 
