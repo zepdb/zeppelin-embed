@@ -66,6 +66,34 @@ console.log(listNamespaces('my-database'));
 store.close();
 ```
 
+Each document has a caller-chosen `revision` (`1n` when omitted) that only
+moves forward per id: a higher revision replaces the document, the same
+revision is an idempotent retry that writes nothing, and a lower one throws
+`ZE_ERR_STALE_REVISION`. A deleted id keeps its last revision as that floor.
+`get` returns the live revision.
+
+An upsert or delete entry can carry `expectedRevision`, which makes the whole
+call a compare-and-set: a `bigint` requires a live document at exactly that
+revision, and `null` requires that no live document exists (never written, or
+deleted). The single writer checks every condition against the latest
+committed state, atomically with the write. If any condition fails, the call
+writes nothing and throws `ZE_ERR_REVISION_CONFLICT` with a `conflict` that
+names the failed entry:
+
+```js
+const head = store.get([headId]).documents[0];
+try {
+  store.upsert([
+    { id: headId, revision: head.revision + 1n, expectedRevision: head.revision },
+    { id: segmentId, expectedRevision: null },
+  ]);
+  store.delete([{ id: draftId, expectedRevision: 3n }]);
+} catch (error) {
+  if (error.code !== 'ZE_ERR_REVISION_CONFLICT') throw error;
+  // error.conflict: { index, id, expectedRevision, currentRevision }
+}
+```
+
 Omit `vectorSpace` for a record-only namespace. Scan cursors are opaque and
 must be passed back unchanged; a cursor invalidated by a write throws
 `ZE_ERR_SCAN_STALE`.

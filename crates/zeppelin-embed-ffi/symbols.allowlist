@@ -9,6 +9,7 @@ ze_count
 ze_count_grouped
 ze_count_grouped_result_free
 ze_delete
+ze_delete_conditional
 ze_delete_where
 ze_drop_partition
 ze_epoch_current
@@ -44,3 +45,4 @@ ze_text_open
 ze_text_query
 ze_text_query_result_free
 ze_upsert
+ze_upsert_conditional

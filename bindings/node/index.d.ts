@@ -97,9 +97,58 @@ export interface NamespaceSpec {
   readonly vectorSpace?: VectorSpace;
 }
 
+/**
+ * A condition on one document's live revision, checked before a write.
+ *
+ * - A `bigint` requires a live document at exactly that revision.
+ * - `null` requires that no live document exists: the id was never written,
+ *   or it was deleted.
+ * - Omitted or `undefined` sets no condition.
+ *
+ * The live revision is the `revision` that `get` and `scan` return. The
+ * store's single writer checks every condition in the call against the
+ * latest committed state, active and sealed, as it was before the call, and
+ * does so atomically with applying the call: no other write can land
+ * between the check and the write. If any condition fails, the call writes
+ * nothing (no log record; the generation does not change) and throws a
+ * `ZeppelinError` with code `ZE_ERR_REVISION_CONFLICT`, whose `conflict`
+ * names the first failed entry.
+ *
+ * Compare-and-set on a head document: read `r = get([id]).documents[0]
+ * .revision`, then `upsert([{ id, revision: r + 1n, expectedRevision: r }])`;
+ * on `ZE_ERR_REVISION_CONFLICT`, read again and retry.
+ */
+export type ExpectedRevision = bigint | null;
+
+/** The first failed condition of a conditional write. */
+export interface RevisionConflict {
+  /** Position of the failed entry in the `upsert` or `delete` array. */
+  readonly index: number;
+  readonly id: DocumentId;
+  /** The entry's `expectedRevision`. */
+  readonly expectedRevision: ExpectedRevision;
+  /** The live revision at the check, or `null` when no live document exists. */
+  readonly currentRevision: bigint | null;
+}
+
+/** One `delete` entry: a bare id, or an id with a revision condition. */
+export type DeleteTarget =
+  | DocumentId
+  | { readonly id: DocumentId; readonly expectedRevision?: ExpectedRevision };
+
 export interface UpsertDocument {
   readonly id: DocumentId;
+  /**
+   * The caller-chosen unsigned 64-bit revision; `1n` when omitted. Per id, a
+   * revision above the stored one replaces the document. The same revision
+   * is an idempotent retry: it succeeds and writes nothing. A lower revision
+   * throws `ZE_ERR_STALE_REVISION`. A delete keeps the deleted revision as
+   * that floor, so re-creating a deleted id needs a higher revision; the
+   * deleted revision itself succeeds and leaves the id deleted.
+   */
   readonly revision?: bigint;
+  /** Makes the whole call conditional; see `ExpectedRevision`. */
+  readonly expectedRevision?: ExpectedRevision;
   readonly timestamp?: bigint;
   readonly vector?: Float32Array;
   readonly text?: string;
@@ -361,6 +410,8 @@ export declare class ZeppelinError extends Error {
   constructor(message: string, code: string, errorCode: number);
   readonly code: string;
   readonly errorCode: number;
+  /** Present when `code` is `ZE_ERR_REVISION_CONFLICT`. */
+  readonly conflict?: RevisionConflict;
 }
 
 export declare class UnsupportedPlatformError extends Error {
@@ -381,9 +432,18 @@ export declare class UnsupportedRuntimeError extends Error {
 export declare class Store {
   constructor(path: string, options?: OpenOptions);
   ingest(documents: readonly Document[], dimension: number): MutationReport;
+  /**
+   * Upserts the documents as one batch. If any `expectedRevision` condition
+   * fails, nothing is written and the call throws `ZE_ERR_REVISION_CONFLICT`.
+   */
   upsert(documents: readonly UpsertDocument[]): MutationReport;
   get(ids: readonly DocumentId[], fields?: DocumentFields): GetResult;
-  delete(ids: readonly DocumentId[]): MutationReport;
+  /**
+   * Deletes the ids as one batch. An entry can carry an `expectedRevision`
+   * condition; if any condition fails, nothing is deleted and the call
+   * throws `ZE_ERR_REVISION_CONFLICT`.
+   */
+  delete(ids: readonly DeleteTarget[]): MutationReport;
   /**
    * Deletes every document whose current version matches `filter`, in one
    * mutation, and removes their bytes from disk.

@@ -112,6 +112,9 @@ pub enum ZeErrorCode {
     ZeErrDuplicateTarget = 53,
     /// The available identity space is exhausted.
     ZeErrIdentityOverflow = 54,
+    /// A document's expected-revision condition did not hold; nothing was
+    /// written.
+    ZeErrRevisionConflict = 55,
 }
 
 /// Opaque generation-tagged store handle.
@@ -780,6 +783,90 @@ pub struct ZeDeleteWhereReport {
     /// Store generation when the call returned; unchanged when nothing
     /// matched.
     pub generation: u64,
+}
+
+/// No condition: the document is written whatever its live revision.
+pub const ZE_REVISION_CONDITION_NONE: u32 = 0;
+
+/// A live document must exist at exactly `ZeRevisionCondition::revision`.
+pub const ZE_REVISION_CONDITION_EXACTLY: u32 = 1;
+
+/// No live document may exist: the id was never written or was deleted.
+pub const ZE_REVISION_CONDITION_ABSENT: u32 = 2;
+
+/// One document's live-revision precondition.
+///
+/// The live revision is the revision `ze_get` returns for the id; a deleted
+/// id has none. Conditions are checked by the store's single writer against
+/// the latest committed state, before the batch is applied and atomically
+/// with it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C)]
+pub struct ZeRevisionCondition {
+    /// One of the `ZE_REVISION_CONDITION_*` constants.
+    pub kind: u32,
+    /// Must be zero.
+    pub reserved: u32,
+    /// Expected live revision when `kind` is `ZE_REVISION_CONDITION_EXACTLY`;
+    /// must be zero otherwise.
+    pub revision: u64,
+}
+
+/// Atomic upsert that commits only when every document's condition holds.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeConditionalUpsertRequest {
+    /// Caller-provided `sizeof(ZeConditionalUpsertRequest)`.
+    pub abi_size: u32,
+    /// Must be zero in ABI v1.
+    pub abi_reserved: u32,
+    /// Existing v1 upsert request, embedded by value.
+    pub batch: ZeUpsertRequest,
+    /// Caller-owned conditions; entry `i` applies to `batch.documents[i]`.
+    pub conditions: *const ZeRevisionCondition,
+    /// Must equal `batch.document_count`.
+    pub condition_count: usize,
+}
+
+/// Atomic delete that commits only when every id's condition holds.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeConditionalDeleteRequest {
+    /// Caller-provided `sizeof(ZeConditionalDeleteRequest)`.
+    pub abi_size: u32,
+    /// Must be zero in ABI v1.
+    pub abi_reserved: u32,
+    /// Existing v1 delete request, embedded by value.
+    pub batch: ZeDeleteRequest,
+    /// Caller-owned conditions; entry `i` applies to `batch.doc_ids[i]`.
+    pub conditions: *const ZeRevisionCondition,
+    /// Must equal `batch.doc_id_count`.
+    pub condition_count: usize,
+}
+
+/// The first condition that failed in a conditional write.
+///
+/// Zeroed (apart from the ABI prefix) unless the call returns
+/// `ZE_ERR_REVISION_CONFLICT`.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeRevisionConflict {
+    /// Caller-provided `sizeof(ZeRevisionConflict)`.
+    pub abi_size: u32,
+    /// Must be zero in ABI v1.
+    pub abi_reserved: u32,
+    /// Batch position of the failed condition.
+    pub index: u64,
+    /// Document whose condition failed.
+    pub doc_id: ZeDocId,
+    /// The failed condition's `kind`.
+    pub expected_kind: u32,
+    /// One when a live document exists and `current_revision` is its revision.
+    pub has_current: u32,
+    /// The failed condition's `revision`.
+    pub expected_revision: u64,
+    /// Live revision when `has_current` is one, zero otherwise.
+    pub current_revision: u64,
 }
 
 /// Text store plus immutable model-bundle open request.

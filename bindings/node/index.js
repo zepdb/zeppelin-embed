@@ -99,7 +99,10 @@ function translateError(error) {
     error.code.startsWith('ZE_') &&
     typeof error.errorCode === 'number'
   ) {
-    return new ZeppelinError(error.message, error.code, error.errorCode);
+    const translated = new ZeppelinError(error.message, error.code, error.errorCode);
+    // A failed revision condition names the document the caller must re-read.
+    if (error.conflict !== undefined) translated.conflict = error.conflict;
+    return translated;
   }
   return error;
 }

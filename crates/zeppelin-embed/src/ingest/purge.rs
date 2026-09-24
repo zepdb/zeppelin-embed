@@ -1827,6 +1827,9 @@ fn purge_ingest_error(error: super::IngestError) -> PurgeError {
         super::IngestError::StaleRevision { .. } => PurgeError::IntentDecode(
             "active WAL rewrite produced a stale revision error".to_owned(),
         ),
+        super::IngestError::RevisionConflict { .. } => PurgeError::IntentDecode(
+            "active WAL rewrite produced a revision condition error".to_owned(),
+        ),
         super::IngestError::Vector(error) => PurgeError::IntentDecode(format!(
             "active WAL rewrite rejected a persisted vector: {error}"
         )),

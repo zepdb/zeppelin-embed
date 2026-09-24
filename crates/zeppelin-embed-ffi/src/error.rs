@@ -108,6 +108,7 @@ impl FfiError {
             IngestError::EpochUndeclared => ZeErrorCode::ZeErrEpochUndeclared,
             IngestError::EpochUnstamped => ZeErrorCode::ZeErrEpochUnstamped,
             IngestError::StaleRevision { .. } => ZeErrorCode::ZeErrStaleRevision,
+            IngestError::RevisionConflict { .. } => ZeErrorCode::ZeErrRevisionConflict,
             IngestError::Vector(_)
             | IngestError::Lexical(_)
             | IngestError::Tokenizer(_)

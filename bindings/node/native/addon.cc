@@ -63,11 +63,12 @@ std::string LastError(ze_handle handle) {
   return std::string(buffer.data(), written);
 }
 
-napi_value ThrowZeppelin(napi_env env, ze_handle handle, ze_error_code status) {
+bool CreateZeppelinError(napi_env env, ze_handle handle, ze_error_code status,
+                         napi_value *output) {
   const char *code = ze_error_code_name(status);
   const std::string message = LastError(handle);
   napi_value js_message;
-  napi_value error;
+  napi_value &error = *output;
   napi_value js_name;
   napi_value js_code;
   napi_value js_number;
@@ -92,8 +93,15 @@ napi_value ThrowZeppelin(napi_env env, ze_handle handle, ze_error_code status) {
               "create numeric error code") ||
       !NapiOk(env, napi_set_named_property(env, error, "errorCode", js_number),
               "set numeric error code")) {
-    return nullptr;
+    return false;
   }
+  return true;
+}
+
+napi_value ThrowZeppelin(napi_env env, ze_handle handle, ze_error_code status) {
+  napi_value error;
+  if (!CreateZeppelinError(env, handle, status, &error))
+    return nullptr;
   napi_throw(env, error);
   return nullptr;
 }
@@ -320,6 +328,92 @@ bool CreateUint128(napi_env env, ZeDocId id, napi_value *output) {
   const uint64_t words[2] = {id.low, id.high};
   return NapiOk(env, napi_create_bigint_words(env, 0, 2, words, output),
                 "create document id");
+}
+
+bool CreateRevisionOrNull(napi_env env, bool present, uint64_t revision,
+                          napi_value *output) {
+  if (!present)
+    return NapiOk(env, napi_get_null(env, output), "create null revision");
+  return NapiOk(env, napi_create_bigint_uint64(env, revision, output),
+                "create conflict revision");
+}
+
+// Throws the error of a failed conditional write. A failed revision condition
+// also carries `conflict`, naming the first failed document, so the caller can
+// re-read it and retry.
+napi_value ThrowWriteFailure(napi_env env, ze_handle handle,
+                             ze_error_code status,
+                             const ZeRevisionConflict &conflict) {
+  if (status != ZE_ERR_REVISION_CONFLICT)
+    return ThrowZeppelin(env, handle, status);
+  napi_value error;
+  napi_value detail;
+  napi_value index;
+  napi_value id;
+  napi_value expected;
+  napi_value current;
+  if (!CreateZeppelinError(env, handle, status, &error) ||
+      !NapiOk(env, napi_create_object(env, &detail), "create conflict") ||
+      !NapiOk(env,
+              napi_create_double(env, static_cast<double>(conflict.index),
+                                 &index),
+              "create conflict index") ||
+      !SetNamed(env, detail, "index", index) ||
+      !CreateUint128(env, conflict.doc_id, &id) ||
+      !SetNamed(env, detail, "id", id) ||
+      !CreateRevisionOrNull(env,
+                            conflict.expected_kind ==
+                                ZE_REVISION_CONDITION_EXACTLY,
+                            conflict.expected_revision, &expected) ||
+      !SetNamed(env, detail, "expectedRevision", expected) ||
+      !CreateRevisionOrNull(env, conflict.has_current != 0,
+                            conflict.current_revision, &current) ||
+      !SetNamed(env, detail, "currentRevision", current) ||
+      !SetNamed(env, error, "conflict", detail)) {
+    return nullptr;
+  }
+  napi_throw(env, error);
+  return nullptr;
+}
+
+// Reads the optional `expectedRevision` of one write target. Absent or
+// undefined is unconditional, null requires that no live document exists,
+// and an unsigned 64-bit bigint requires exactly that live revision.
+bool GetRevisionCondition(napi_env env, napi_value target,
+                          ZeRevisionCondition *output) {
+  *output = ZeRevisionCondition{};
+  napi_value value;
+  bool present = false;
+  if (!GetNamed(env, target, "expectedRevision", &value, &present))
+    return false;
+  if (!present)
+    return true;
+  napi_valuetype type;
+  if (!NapiOk(env, napi_typeof(env, value, &type), "inspect expectedRevision"))
+    return false;
+  if (type == napi_undefined)
+    return true;
+  if (type == napi_null) {
+    output->kind = ZE_REVISION_CONDITION_ABSENT;
+    return true;
+  }
+  if (type != napi_bigint) {
+    napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE",
+                          "expectedRevision must be a bigint or null");
+    return false;
+  }
+  bool lossless = false;
+  if (!NapiOk(env,
+              napi_get_value_bigint_uint64(env, value, &output->revision,
+                                           &lossless),
+              "read expectedRevision") ||
+      !lossless) {
+    napi_throw_range_error(env, "ERR_OUT_OF_RANGE",
+                           "expectedRevision must be an unsigned 64-bit bigint");
+    return false;
+  }
+  output->kind = ZE_REVISION_CONDITION_EXACTLY;
+  return true;
 }
 
 template <typename Result, ze_error_code (*Free)(Result *)> class ResultOwner {
@@ -1368,6 +1462,7 @@ napi_value Upsert(napi_env env, napi_callback_info info) {
     std::vector<std::string> texts(document_count);
     std::vector<std::vector<ZeAttributeValue>> attributes(document_count);
     std::vector<std::vector<std::string>> attribute_strings(document_count);
+    std::vector<ZeRevisionCondition> conditions(document_count);
     size_t dimension = 0;
     for (uint32_t index = 0; index < document_count; ++index) {
       napi_value document;
@@ -1389,7 +1484,8 @@ napi_value Upsert(napi_env env, napi_callback_info info) {
           !GetOptionalBigUint64(env, document, "revision", 1,
                                 &native.document.revision) ||
           !GetOptionalBigInt64(env, document, "timestamp", 0,
-                               &native.document.timestamp)) {
+                               &native.document.timestamp) ||
+          !GetRevisionCondition(env, document, &conditions[index])) {
         return nullptr;
       }
 
@@ -1470,11 +1566,19 @@ napi_value Upsert(napi_env env, napi_callback_info info) {
     request.documents = documents.data();
     request.document_count = documents.size();
     request.dimension = dimension;
+    ZeConditionalUpsertRequest conditional{};
+    conditional.abi_size = sizeof(conditional);
+    conditional.batch = request;
+    conditional.conditions = conditions.data();
+    conditional.condition_count = conditions.size();
     ZeMutationReport report{};
     report.abi_size = sizeof(report);
-    const ze_error_code status = ze_upsert(store->handle, &request, &report);
+    ZeRevisionConflict conflict{};
+    conflict.abi_size = sizeof(conflict);
+    const ze_error_code status =
+        ze_upsert_conditional(store->handle, &conditional, &report, &conflict);
     if (status != ZE_OK)
-      return ThrowZeppelin(env, store->handle, status);
+      return ThrowWriteFailure(env, store->handle, status, conflict);
 
     napi_value result;
     napi_value sequence;
@@ -1603,22 +1707,48 @@ napi_value DeleteDocuments(napi_env env, napi_callback_info info) {
                 "read id count"))
       return nullptr;
     std::vector<ZeDocId> ids(id_count);
+    std::vector<ZeRevisionCondition> conditions(id_count);
     for (uint32_t index = 0; index < id_count; ++index) {
+      napi_value target;
+      napi_valuetype type;
+      if (!NapiOk(env, napi_get_element(env, args[0], index, &target),
+                  "read delete target") ||
+          !NapiOk(env, napi_typeof(env, target, &type),
+                  "inspect delete target"))
+        return nullptr;
+      if (type != napi_object) {
+        if (!GetDocId(env, target, &ids[index]))
+          return nullptr;
+        continue;
+      }
       napi_value id;
-      if (!NapiOk(env, napi_get_element(env, args[0], index, &id),
-                  "read document id") ||
-          !GetDocId(env, id, &ids[index]))
+      bool present = false;
+      if (!GetNamed(env, target, "id", &id, &present))
+        return nullptr;
+      if (!present) {
+        napi_throw_type_error(env, "ERR_MISSING_ARGS",
+                              "each delete target requires id");
+        return nullptr;
+      }
+      if (!GetDocId(env, id, &ids[index]) ||
+          !GetRevisionCondition(env, target, &conditions[index]))
         return nullptr;
     }
-    ZeDeleteRequest request{};
+    ZeConditionalDeleteRequest request{};
     request.abi_size = sizeof(request);
-    request.doc_ids = ids.data();
-    request.doc_id_count = ids.size();
+    request.batch.abi_size = sizeof(request.batch);
+    request.batch.doc_ids = ids.data();
+    request.batch.doc_id_count = ids.size();
+    request.conditions = conditions.data();
+    request.condition_count = conditions.size();
     ZeMutationReport report{};
     report.abi_size = sizeof(report);
-    const ze_error_code status = ze_delete(store->handle, &request, &report);
+    ZeRevisionConflict conflict{};
+    conflict.abi_size = sizeof(conflict);
+    const ze_error_code status =
+        ze_delete_conditional(store->handle, &request, &report, &conflict);
     if (status != ZE_OK)
-      return ThrowZeppelin(env, store->handle, status);
+      return ThrowWriteFailure(env, store->handle, status, conflict);
     napi_value result;
     napi_value sequence;
     napi_value generation;

@@ -271,7 +271,10 @@ enum ReplayStep {
 fn recovery_apply_error(seq: LogSeq, op: u16, error: IngestError) -> StoreError {
     match error {
         IngestError::Store(error) => error,
-        IngestError::EmptyBatch => StoreError::UnsupportedWalMutation { seq, op },
+        // Replay carries no revision conditions, so a conflict cannot arise.
+        IngestError::EmptyBatch | IngestError::RevisionConflict { .. } => {
+            StoreError::UnsupportedWalMutation { seq, op }
+        }
         IngestError::EpochMismatch(error) => StoreError::EpochMismatch(error),
         IngestError::EpochUndeclared => StoreError::EpochUndeclared,
         IngestError::EpochUnstamped => StoreError::EpochUnstamped,

@@ -487,6 +487,16 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
 - The `*_locked` purge/delete helpers take no lock the caller holds; keep
   them lock-free on maintenance/state/writer/WAL or they deadlock.
 
+## ZE-224 expected-revision invariants
+
+- `ExpectedRevision` conditions are checked by `check_revision_conditions`
+  under the WAL writer lock, against the committed active segment and
+  published snapshot, before any segment copy, tombstone file or WAL
+  append. A failure is `RevisionConflict` and must write nothing. Keep the
+  check ahead of every side effect when reordering `ingest`/`delete`.
+- "Live" means what `get_documents` returns: a tombstoned active row or a
+  dead sealed row is absent. Conditions are never persisted or replayed.
+
 ## Task 21 Part A epoch-identity invariants
 
 - Open enforces the complete four-branch identity table before WAL recovery or

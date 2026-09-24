@@ -176,7 +176,7 @@ impl Store {
         let token = self
             .schedule_purge_locked(&ids, available, vfs)
             .map_err(DeleteMatchingError::Purge)?;
-        if let Err(error) = self.delete_with_writer(writer, &ids) {
+        if let Err(error) = self.delete_with_writer(writer, &ids, &[]) {
             // The tombstones did not commit, so the intent must not purge
             // these documents at the next open.
             self.abandon_scheduled_purge_locked(vfs)

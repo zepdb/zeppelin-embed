@@ -42,8 +42,8 @@ use zeppelin_embed::fts::tokenizer::{Analyzer, Token, TokenFlags, TokenizerConfi
 use zeppelin_embed::fusion::{FusionMethod, HybridQuery, RuleSignals};
 use zeppelin_embed::graph::search::GraphSearchProfile;
 use zeppelin_embed::ingest::{
-    DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, Revision, RowSource,
-    SearchRequest,
+    DeleteBatch, DocId, DocumentVersion, ExpectedRevision, IngestBatch, IngestDocument,
+    IngestError, Revision, RowSource, SearchRequest,
 };
 use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode};
 use zeppelin_embed::lifecycle::{
@@ -2315,129 +2315,284 @@ pub extern "C" fn ze_upsert(
             registry::with_writer(handle, |access| {
                 let request = marshal::read_struct(request)?;
                 let abi_size = marshal::validate_output(out_report)?;
-                let record_only = access.record_only;
-                if record_only && request.dimension > 1 {
-                    return Err(FfiError::invalid(
-                        "record-only upsert dimension must be zero or one",
-                    ));
-                }
-                if !record_only && request.dimension == 0 {
-                    return Err(FfiError::invalid("upsert dimension must be nonzero"));
-                }
-                let vector_bytes = if record_only {
-                    0
-                } else {
-                    request
-                        .dimension
-                        .checked_mul(size_of::<f32>())
-                        .ok_or_else(|| {
-                            FfiError::invalid("upsert dimension byte length overflows")
-                        })?
-                };
-                let records = marshal::read_slice(request.documents, request.document_count)?;
-                if records.is_empty() {
-                    return Err(FfiError::new(
-                        ZeErrorCode::ZeErrEmptyBatch,
-                        "upsert batch is empty",
-                    ));
-                }
-                let mut documents = Vec::new();
-                documents.try_reserve_exact(records.len()).map_err(|_| {
-                    FfiError::new(
-                        ZeErrorCode::ZeErrOutOfMemory,
-                        "upsert document allocation failed",
-                    )
-                })?;
-                for record in records {
-                    let record = marshal::read_struct(record as *const ZeUpsertDocument)?;
-                    let document = marshal::read_struct(&record.document)?;
-                    let vector = if record_only {
-                        if !document.vector.is_null() || document.vector_len != 0 {
-                            return Err(FfiError::new(
-                                ZeErrorCode::ZeErrNoVectorSpace,
-                                "record-only namespace does not accept caller vectors",
-                            ));
-                        }
-                        Vec::from([1.0_f32])
-                    } else {
-                        if document.vector_len != request.dimension {
-                            return Err(FfiError::new(
-                                ZeErrorCode::ZeErrDimensionMismatch,
-                                "upsert vector length does not match request dimension",
-                            ));
-                        }
-                        marshal::checked_buffer_len(
-                            document.vector_len,
-                            size_of::<f32>(),
-                            vector_bytes,
-                        )?;
-                        marshal::copy_slice(document.vector, document.vector_len)?
-                    };
-                    let metadata = marshal::copy_slice(document.metadata, document.metadata_len)?;
-                    let attributes =
-                        marshal::read_slice(record.attributes, record.attribute_count)?;
-                    let mut columns = Vec::new();
-                    columns.try_reserve_exact(attributes.len()).map_err(|_| {
-                        FfiError::new(
-                            ZeErrorCode::ZeErrOutOfMemory,
-                            "upsert attribute allocation failed",
-                        )
-                    })?;
-                    for (position, attribute) in attributes.iter().enumerate() {
-                        let column = ColumnId::new(attribute.attribute_id);
-                        if attributes
-                            .iter()
-                            .take(position)
-                            .any(|prior| prior.attribute_id == attribute.attribute_id)
-                        {
-                            return Err(FfiError::invalid(format!(
-                                "duplicate column {}",
-                                column.get()
-                            )));
-                        }
-                        if let Some(value) =
-                            parse_attribute_value(access.store.schema(), *attribute)?
-                        {
-                            columns.push(value);
-                        }
-                    }
-                    let mut ingested = IngestDocument::new(
-                        DocumentVersion::new(
-                            doc_id(document.doc_id),
-                            Revision::new(document.revision),
-                        ),
-                        vector,
-                    )
-                    .with_timestamp(document.timestamp)
-                    .with_metadata(metadata)
-                    .with_columns(columns);
-                    if document.text_len != 0 {
-                        ingested = ingested.with_text(utf8_field(
-                            document.text,
-                            document.text_len,
-                            "document text",
-                        )?);
-                    }
-                    documents.push(ingested);
-                }
-                let mut batch = IngestBatch::new(documents);
-                if let Some(epoch) = access.epoch {
-                    batch = batch.with_epoch(epoch);
-                }
-                let ack = access.store.ingest(batch).map_err(FfiError::ingest)?;
-                marshal::write_output(
-                    out_report,
-                    ZeMutationReport {
-                        abi_size,
-                        abi_reserved: 0,
-                        sequence: ack.seq().get(),
-                        generation: ack.generation(),
-                    },
-                );
+                let documents = upsert_documents(access, request)?;
+                let ack = access
+                    .store
+                    .ingest(upsert_batch(access, documents))
+                    .map_err(FfiError::ingest)?;
+                marshal::write_output(out_report, mutation_report(abi_size, ack));
                 Ok(())
             }),
         )
     })
+}
+
+/// Atomic [`ze_upsert`] that commits only when every document's revision
+/// condition holds. Conditions are checked by the store's single writer
+/// against the latest committed state before the batch, atomically with
+/// applying it. On `ZE_ERR_REVISION_CONFLICT` nothing is written and
+/// `out_conflict` names the first failed condition; on any other outcome it
+/// is zeroed. Every const pointer is caller-owned and need only outlive the
+/// call.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_upsert_conditional(
+    handle: ZeHandle,
+    request: *const ZeConditionalUpsertRequest,
+    out_report: *mut ZeMutationReport,
+    out_conflict: *mut ZeRevisionConflict,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_upsert_conditional");
+        finish(
+            Some(handle),
+            registry::with_writer(handle, |access| {
+                let request = marshal::read_struct(request)?;
+                let abi_size = marshal::validate_output(out_report)?;
+                let conflict_size = conflict_output(out_conflict)?;
+                let upsert = marshal::read_struct(&request.batch)?;
+                let conditions = revision_conditions(
+                    request.conditions,
+                    request.condition_count,
+                    upsert.document_count,
+                )?;
+                let documents = upsert_documents(access, upsert)?
+                    .into_iter()
+                    .zip(conditions)
+                    .map(|(document, expected)| match expected {
+                        Some(expected) => document.with_expected_revision(expected),
+                        None => document,
+                    })
+                    .collect();
+                let ack = access
+                    .store
+                    .ingest(upsert_batch(access, documents))
+                    .map_err(|error| revision_conflict(error, out_conflict, conflict_size))?;
+                marshal::write_output(out_report, mutation_report(abi_size, ack));
+                Ok(())
+            }),
+        )
+    })
+}
+
+fn mutation_report(abi_size: u32, ack: zeppelin_embed::ingest::IngestAck) -> ZeMutationReport {
+    ZeMutationReport {
+        abi_size,
+        abi_reserved: 0,
+        sequence: ack.seq().get(),
+        generation: ack.generation(),
+    }
+}
+
+fn upsert_batch(access: &registry::HandleAccess, documents: Vec<IngestDocument>) -> IngestBatch {
+    let batch = IngestBatch::new(documents);
+    match access.epoch {
+        Some(epoch) => batch.with_epoch(epoch),
+        None => batch,
+    }
+}
+
+/// Validates and copies one caller-owned v1 upsert request.
+fn upsert_documents(
+    access: &registry::HandleAccess,
+    request: ZeUpsertRequest,
+) -> Result<Vec<IngestDocument>, FfiError> {
+    let record_only = access.record_only;
+    if record_only && request.dimension > 1 {
+        return Err(FfiError::invalid(
+            "record-only upsert dimension must be zero or one",
+        ));
+    }
+    if !record_only && request.dimension == 0 {
+        return Err(FfiError::invalid("upsert dimension must be nonzero"));
+    }
+    let vector_bytes = if record_only {
+        0
+    } else {
+        request
+            .dimension
+            .checked_mul(size_of::<f32>())
+            .ok_or_else(|| FfiError::invalid("upsert dimension byte length overflows"))?
+    };
+    let records = marshal::read_slice(request.documents, request.document_count)?;
+    if records.is_empty() {
+        return Err(FfiError::new(
+            ZeErrorCode::ZeErrEmptyBatch,
+            "upsert batch is empty",
+        ));
+    }
+    let mut documents = Vec::new();
+    documents.try_reserve_exact(records.len()).map_err(|_| {
+        FfiError::new(
+            ZeErrorCode::ZeErrOutOfMemory,
+            "upsert document allocation failed",
+        )
+    })?;
+    for record in records {
+        let record = marshal::read_struct(record as *const ZeUpsertDocument)?;
+        let document = marshal::read_struct(&record.document)?;
+        let vector = if record_only {
+            if !document.vector.is_null() || document.vector_len != 0 {
+                return Err(FfiError::new(
+                    ZeErrorCode::ZeErrNoVectorSpace,
+                    "record-only namespace does not accept caller vectors",
+                ));
+            }
+            Vec::from([1.0_f32])
+        } else {
+            if document.vector_len != request.dimension {
+                return Err(FfiError::new(
+                    ZeErrorCode::ZeErrDimensionMismatch,
+                    "upsert vector length does not match request dimension",
+                ));
+            }
+            marshal::checked_buffer_len(document.vector_len, size_of::<f32>(), vector_bytes)?;
+            marshal::copy_slice(document.vector, document.vector_len)?
+        };
+        let metadata = marshal::copy_slice(document.metadata, document.metadata_len)?;
+        let attributes = marshal::read_slice(record.attributes, record.attribute_count)?;
+        let mut columns = Vec::new();
+        columns.try_reserve_exact(attributes.len()).map_err(|_| {
+            FfiError::new(
+                ZeErrorCode::ZeErrOutOfMemory,
+                "upsert attribute allocation failed",
+            )
+        })?;
+        for (position, attribute) in attributes.iter().enumerate() {
+            let column = ColumnId::new(attribute.attribute_id);
+            if attributes
+                .iter()
+                .take(position)
+                .any(|prior| prior.attribute_id == attribute.attribute_id)
+            {
+                return Err(FfiError::invalid(format!(
+                    "duplicate column {}",
+                    column.get()
+                )));
+            }
+            if let Some(value) = parse_attribute_value(access.store.schema(), *attribute)? {
+                columns.push(value);
+            }
+        }
+        let mut ingested = IngestDocument::new(
+            DocumentVersion::new(doc_id(document.doc_id), Revision::new(document.revision)),
+            vector,
+        )
+        .with_timestamp(document.timestamp)
+        .with_metadata(metadata)
+        .with_columns(columns);
+        if document.text_len != 0 {
+            ingested = ingested.with_text(utf8_field(
+                document.text,
+                document.text_len,
+                "document text",
+            )?);
+        }
+        documents.push(ingested);
+    }
+    Ok(documents)
+}
+
+/// Validates the caller's condition array against the batch size.
+fn revision_conditions(
+    pointer: *const ZeRevisionCondition,
+    count: usize,
+    batch_len: usize,
+) -> Result<Vec<Option<ExpectedRevision>>, FfiError> {
+    if count != batch_len {
+        return Err(FfiError::invalid(
+            "condition_count must equal the number of batch entries",
+        ));
+    }
+    let conditions = marshal::read_slice(pointer, count)?;
+    let mut parsed = Vec::new();
+    parsed.try_reserve_exact(conditions.len()).map_err(|_| {
+        FfiError::new(
+            ZeErrorCode::ZeErrOutOfMemory,
+            "revision condition allocation failed",
+        )
+    })?;
+    for condition in conditions {
+        if condition.reserved != 0 {
+            return Err(FfiError::invalid(
+                "revision condition reserved field must be zero",
+            ));
+        }
+        parsed.push(match (condition.kind, condition.revision) {
+            (ZE_REVISION_CONDITION_NONE, 0) => None,
+            (ZE_REVISION_CONDITION_EXACTLY, revision) => {
+                Some(ExpectedRevision::Exactly(Revision::new(revision)))
+            }
+            (ZE_REVISION_CONDITION_ABSENT, 0) => Some(ExpectedRevision::Absent),
+            (ZE_REVISION_CONDITION_NONE | ZE_REVISION_CONDITION_ABSENT, _) => {
+                return Err(FfiError::invalid(
+                    "revision condition revision must be zero unless kind is EXACTLY",
+                ));
+            }
+            _ => {
+                return Err(FfiError::invalid("revision condition kind is out of range"));
+            }
+        });
+    }
+    Ok(parsed)
+}
+
+/// Validates the conflict output and zeroes it behind its ABI prefix.
+fn conflict_output(out_conflict: *mut ZeRevisionConflict) -> Result<u32, FfiError> {
+    let abi_size = marshal::validate_output(out_conflict)?;
+    marshal::write_output(
+        out_conflict,
+        ZeRevisionConflict {
+            abi_size,
+            abi_reserved: 0,
+            index: 0,
+            doc_id: ZeDocId { high: 0, low: 0 },
+            expected_kind: ZE_REVISION_CONDITION_NONE,
+            has_current: 0,
+            expected_revision: 0,
+            current_revision: 0,
+        },
+    );
+    Ok(abi_size)
+}
+
+/// Maps a write error, filling `out_conflict` when a condition failed.
+fn revision_conflict(
+    error: IngestError,
+    out_conflict: *mut ZeRevisionConflict,
+    abi_size: u32,
+) -> FfiError {
+    if let IngestError::RevisionConflict {
+        index,
+        doc_id,
+        expected,
+        current,
+    } = &error
+    {
+        let Ok(index) = u64::try_from(*index) else {
+            return FfiError::new(
+                ZeErrorCode::ZeErrInternal,
+                "revision conflict index exceeds u64",
+            );
+        };
+        let (expected_kind, expected_revision) = match expected {
+            ExpectedRevision::Exactly(revision) => (ZE_REVISION_CONDITION_EXACTLY, revision.get()),
+            ExpectedRevision::Absent => (ZE_REVISION_CONDITION_ABSENT, 0),
+        };
+        marshal::write_output(
+            out_conflict,
+            ZeRevisionConflict {
+                abi_size,
+                abi_reserved: 0,
+                index,
+                doc_id: ffi_doc_id(*doc_id),
+                expected_kind,
+                has_current: u32::from(current.is_some()),
+                expected_revision,
+                current_revision: current.map_or(0, Revision::get),
+            },
+        );
+    }
+    FfiError::ingest(error)
 }
 
 /// Reads documents by stable id from one pinned generation. Request data is
@@ -2569,27 +2724,12 @@ pub extern "C" fn ze_delete(
             registry::with_writer(handle, |access| {
                 let request = marshal::read_struct(request)?;
                 let abi_size = marshal::validate_output(out_report)?;
-                let ids = marshal::read_slice(request.doc_ids, request.doc_id_count)?;
-                if ids.is_empty() {
-                    return Err(FfiError::new(
-                        ZeErrorCode::ZeErrEmptyBatch,
-                        "delete batch is empty",
-                    ));
-                }
-                let ids = ids.iter().copied().map(doc_id).collect::<Vec<_>>();
+                let ids = delete_ids(request)?;
                 let ack = access
                     .store
                     .delete(DeleteBatch::new(ids))
                     .map_err(FfiError::ingest)?;
-                marshal::write_output(
-                    out_report,
-                    ZeMutationReport {
-                        abi_size,
-                        abi_reserved: 0,
-                        sequence: ack.seq().get(),
-                        generation: ack.generation(),
-                    },
-                );
+                marshal::write_output(out_report, mutation_report(abi_size, ack));
                 Ok(())
             }),
         )
@@ -2637,6 +2777,56 @@ pub extern "C" fn ze_delete_where(
             }),
         )
     })
+}
+
+/// Atomic [`ze_delete`] that commits only when every id's revision
+/// condition holds, with the same checking and `out_conflict` contract as
+/// [`ze_upsert_conditional`]. Every const pointer is caller-owned and need
+/// only outlive the call.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_delete_conditional(
+    handle: ZeHandle,
+    request: *const ZeConditionalDeleteRequest,
+    out_report: *mut ZeMutationReport,
+    out_conflict: *mut ZeRevisionConflict,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_delete_conditional");
+        finish(
+            Some(handle),
+            registry::with_writer(handle, |access| {
+                let request = marshal::read_struct(request)?;
+                let abi_size = marshal::validate_output(out_report)?;
+                let conflict_size = conflict_output(out_conflict)?;
+                let delete = marshal::read_struct(&request.batch)?;
+                let conditions = revision_conditions(
+                    request.conditions,
+                    request.condition_count,
+                    delete.doc_id_count,
+                )?;
+                let ids = delete_ids(delete)?;
+                let ack = access
+                    .store
+                    .delete(DeleteBatch::conditional(
+                        ids.into_iter().zip(conditions).collect(),
+                    ))
+                    .map_err(|error| revision_conflict(error, out_conflict, conflict_size))?;
+                marshal::write_output(out_report, mutation_report(abi_size, ack));
+                Ok(())
+            }),
+        )
+    })
+}
+
+fn delete_ids(request: ZeDeleteRequest) -> Result<Vec<DocId>, FfiError> {
+    let ids = marshal::read_slice(request.doc_ids, request.doc_id_count)?;
+    if ids.is_empty() {
+        return Err(FfiError::new(
+            ZeErrorCode::ZeErrEmptyBatch,
+            "delete batch is empty",
+        ));
+    }
+    Ok(ids.iter().copied().map(doc_id).collect())
 }
 
 /// Error messages for one `(order, attribute id)` field pair.
@@ -4155,6 +4345,7 @@ pub extern "C" fn ze_error_code_name(code: i32) -> *const c_char {
             52 => b"ZE_ERR_GENERATION_OVERFLOW\0",
             53 => b"ZE_ERR_DUPLICATE_TARGET\0",
             54 => b"ZE_ERR_IDENTITY_OVERFLOW\0",
+            55 => b"ZE_ERR_REVISION_CONFLICT\0",
             _ => b"ZE_ERR_UNKNOWN\0",
         };
         bytes.as_ptr().cast::<c_char>()

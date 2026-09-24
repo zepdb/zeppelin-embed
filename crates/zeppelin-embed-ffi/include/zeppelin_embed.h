@@ -30,6 +30,21 @@
 #define ZE_MAX_COUNT_GROUPS (1 << 16)
 
 /*
+ No condition: the document is written whatever its live revision.
+ */
+#define ZE_REVISION_CONDITION_NONE 0
+
+/*
+ A live document must exist at exactly `ZeRevisionCondition::revision`.
+ */
+#define ZE_REVISION_CONDITION_EXACTLY 1
+
+/*
+ No live document may exist: the id was never written or was deleted.
+ */
+#define ZE_REVISION_CONDITION_ABSENT 2
+
+/*
  Frozen append-only status code returned by the C ABI.
  */
 enum ze_error_code
@@ -257,6 +272,11 @@ enum ze_error_code
      The available identity space is exhausted.
      */
     ZE_ERR_IDENTITY_OVERFLOW = 54,
+    /*
+     A document's expected-revision condition did not hold; nothing was
+     written.
+     */
+    ZE_ERR_REVISION_CONFLICT = 55,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -1260,6 +1280,97 @@ typedef struct ZeUpsertRequest {
 } ZeUpsertRequest;
 
 /*
+ One document's live-revision precondition.
+
+ The live revision is the revision `ze_get` returns for the id; a deleted
+ id has none. Conditions are checked by the store's single writer against
+ the latest committed state, before the batch is applied and atomically
+ with it.
+ */
+typedef struct ZeRevisionCondition {
+    /*
+     One of the `ZE_REVISION_CONDITION_*` constants.
+     */
+    uint32_t kind;
+    /*
+     Must be zero.
+     */
+    uint32_t reserved;
+    /*
+     Expected live revision when `kind` is `ZE_REVISION_CONDITION_EXACTLY`;
+     must be zero otherwise.
+     */
+    uint64_t revision;
+} ZeRevisionCondition;
+
+/*
+ Atomic upsert that commits only when every document's condition holds.
+ */
+typedef struct ZeConditionalUpsertRequest {
+    /*
+     Caller-provided `sizeof(ZeConditionalUpsertRequest)`.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero in ABI v1.
+     */
+    uint32_t abi_reserved;
+    /*
+     Existing v1 upsert request, embedded by value.
+     */
+    struct ZeUpsertRequest batch;
+    /*
+     Caller-owned conditions; entry `i` applies to `batch.documents[i]`.
+     */
+    const struct ZeRevisionCondition *conditions;
+    /*
+     Must equal `batch.document_count`.
+     */
+    size_t condition_count;
+} ZeConditionalUpsertRequest;
+
+/*
+ The first condition that failed in a conditional write.
+
+ Zeroed (apart from the ABI prefix) unless the call returns
+ `ZE_ERR_REVISION_CONFLICT`.
+ */
+typedef struct ZeRevisionConflict {
+    /*
+     Caller-provided `sizeof(ZeRevisionConflict)`.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero in ABI v1.
+     */
+    uint32_t abi_reserved;
+    /*
+     Batch position of the failed condition.
+     */
+    uint64_t index;
+    /*
+     Document whose condition failed.
+     */
+    struct ZeDocId doc_id;
+    /*
+     The failed condition's `kind`.
+     */
+    uint32_t expected_kind;
+    /*
+     One when a live document exists and `current_revision` is its revision.
+     */
+    uint32_t has_current;
+    /*
+     The failed condition's `revision`.
+     */
+    uint64_t expected_revision;
+    /*
+     Live revision when `has_current` is one, zero otherwise.
+     */
+    uint64_t current_revision;
+} ZeRevisionConflict;
+
+/*
  Requests documents by stable id in caller order.
  */
 typedef struct ZeGetRequest {
@@ -1524,6 +1635,32 @@ typedef struct ZeDeleteWhereReport {
      */
     uint64_t generation;
 } ZeDeleteWhereReport;
+
+/*
+ Atomic delete that commits only when every id's condition holds.
+ */
+typedef struct ZeConditionalDeleteRequest {
+    /*
+     Caller-provided `sizeof(ZeConditionalDeleteRequest)`.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero in ABI v1.
+     */
+    uint32_t abi_reserved;
+    /*
+     Existing v1 delete request, embedded by value.
+     */
+    struct ZeDeleteRequest batch;
+    /*
+     Caller-owned conditions; entry `i` applies to `batch.doc_ids[i]`.
+     */
+    const struct ZeRevisionCondition *conditions;
+    /*
+     Must equal `batch.doc_id_count`.
+     */
+    size_t condition_count;
+} ZeConditionalDeleteRequest;
 
 /*
  Opaque generation-tagged cooperative-cancellation handle.
@@ -2667,6 +2804,20 @@ ze_error_code ze_upsert(ze_handle handle,
                         struct ZeMutationReport *out_report);
 
 /*
+ Atomic [`ze_upsert`] that commits only when every document's revision
+ condition holds. Conditions are checked by the store's single writer
+ against the latest committed state before the batch, atomically with
+ applying it. On `ZE_ERR_REVISION_CONFLICT` nothing is written and
+ `out_conflict` names the first failed condition; on any other outcome it
+ is zeroed. Every const pointer is caller-owned and need only outlive the
+ call.
+ */
+ze_error_code ze_upsert_conditional(ze_handle handle,
+                                    const struct ZeConditionalUpsertRequest *request,
+                                    struct ZeMutationReport *out_report,
+                                    struct ZeRevisionConflict *out_conflict);
+
+/*
  Reads documents by stable id from one pinned generation. Request data is
  caller-owned for the call; the returned arena must be released exactly once
  with [`ze_get_result_free`].
@@ -2703,6 +2854,17 @@ ze_error_code ze_delete(ze_handle handle,
 ze_error_code ze_delete_where(ze_handle handle,
                               const struct ZeDeleteWhereRequest *request,
                               struct ZeDeleteWhereReport *out_report);
+
+/*
+ Atomic [`ze_delete`] that commits only when every id's revision
+ condition holds, with the same checking and `out_conflict` contract as
+ [`ze_upsert_conditional`]. Every const pointer is caller-owned and need
+ only outlive the call.
+ */
+ze_error_code ze_delete_conditional(ze_handle handle,
+                                    const struct ZeConditionalDeleteRequest *request,
+                                    struct ZeMutationReport *out_report,
+                                    struct ZeRevisionConflict *out_conflict);
 
 /*
  Enumerates one ordered, filtered page of live documents. All request and

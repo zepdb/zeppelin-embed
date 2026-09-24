@@ -158,6 +158,11 @@ const ERROR_CODE_GOLDEN: &[(ZeErrorCode, i32, &str)] = &[
         54,
         "ZE_ERR_IDENTITY_OVERFLOW",
     ),
+    (
+        ZeErrorCode::ZeErrRevisionConflict,
+        55,
+        "ZE_ERR_REVISION_CONFLICT",
+    ),
 ];
 
 fn header_error_codes() -> Vec<(String, i32)> {
@@ -384,6 +389,19 @@ fn every_phase_two_struct_has_the_frozen_size_and_field_offsets() {
         abi_size: 0, abi_reserved: 4, documents: 8, document_count: 16,
         dimension: 24
     });
+    assert_layout!(ZeRevisionCondition, 16, 8, {
+        kind: 0, reserved: 4, revision: 8
+    });
+    assert_layout!(ZeConditionalUpsertRequest, 56, 8, {
+        abi_size: 0, abi_reserved: 4, batch: 8, conditions: 40, condition_count: 48
+    });
+    assert_layout!(ZeConditionalDeleteRequest, 48, 8, {
+        abi_size: 0, abi_reserved: 4, batch: 8, conditions: 32, condition_count: 40
+    });
+    assert_layout!(ZeRevisionConflict, 56, 8, {
+        abi_size: 0, abi_reserved: 4, index: 8, doc_id: 16, expected_kind: 32,
+        has_current: 36, expected_revision: 40, current_revision: 48
+    });
     assert_layout!(ZeGetRequest, 40, 8, {
         abi_size: 0, abi_reserved: 4, ids: 8, id_count: 16,
         include_vector: 24, include_text: 28, include_metadata: 32,
@@ -537,6 +555,7 @@ const POISON_TABLE_NAMES: &[&str] = &[
     "ze_count",
     "ze_count_grouped",
     "ze_delete",
+    "ze_delete_conditional",
     "ze_delete_where",
     "ze_drop_partition",
     "ze_epoch_current",
@@ -556,6 +575,7 @@ const POISON_TABLE_NAMES: &[&str] = &[
     "ze_state",
     "ze_stats",
     "ze_upsert",
+    "ze_upsert_conditional",
 ];
 
 fn delegate_to_panic_feature(test_name: &str) -> bool {
@@ -750,6 +770,48 @@ fn poison_function_table() -> Vec<(&'static str, PoisonCall)> {
             let mut report: ZeMutationReport = common::sized_zeroed();
             ze_upsert(context.store.handle, &request, &mut report)
         }),
+        ("ze_upsert_conditional", |context| {
+            let document = ZeUpsertDocument {
+                abi_size: size_of::<ZeUpsertDocument>() as u32,
+                abi_reserved: 0,
+                document: ZeIngestDocument {
+                    abi_size: size_of::<ZeIngestDocument>() as u32,
+                    abi_reserved: 0,
+                    doc_id: context.ids[0],
+                    revision: 1,
+                    timestamp: 0,
+                    vector: context.vector.as_ptr(),
+                    vector_len: context.vector.len(),
+                    metadata: std::ptr::null(),
+                    metadata_len: 0,
+                    text: std::ptr::null(),
+                    text_len: 0,
+                },
+                attributes: std::ptr::null(),
+                attribute_count: 0,
+            };
+            let condition = ZeRevisionCondition {
+                kind: ZE_REVISION_CONDITION_NONE,
+                reserved: 0,
+                revision: 0,
+            };
+            let request = ZeConditionalUpsertRequest {
+                abi_size: size_of::<ZeConditionalUpsertRequest>() as u32,
+                abi_reserved: 0,
+                batch: ZeUpsertRequest {
+                    abi_size: size_of::<ZeUpsertRequest>() as u32,
+                    abi_reserved: 0,
+                    documents: &document,
+                    document_count: 1,
+                    dimension: 1,
+                },
+                conditions: &condition,
+                condition_count: 1,
+            };
+            let mut report: ZeMutationReport = common::sized_zeroed();
+            let mut conflict: ZeRevisionConflict = common::sized_zeroed();
+            ze_upsert_conditional(context.store.handle, &request, &mut report, &mut conflict)
+        }),
         ("ze_get", |context| {
             let request = ZeGetRequest {
                 abi_size: size_of::<ZeGetRequest>() as u32,
@@ -782,6 +844,28 @@ fn poison_function_table() -> Vec<(&'static str, PoisonCall)> {
             };
             let mut report: ZeDeleteWhereReport = common::sized_zeroed();
             ze_delete_where(context.store.handle, &request, &mut report)
+        }),
+        ("ze_delete_conditional", |context| {
+            let condition = ZeRevisionCondition {
+                kind: ZE_REVISION_CONDITION_NONE,
+                reserved: 0,
+                revision: 0,
+            };
+            let request = ZeConditionalDeleteRequest {
+                abi_size: size_of::<ZeConditionalDeleteRequest>() as u32,
+                abi_reserved: 0,
+                batch: ZeDeleteRequest {
+                    abi_size: size_of::<ZeDeleteRequest>() as u32,
+                    abi_reserved: 0,
+                    doc_ids: context.ids.as_ptr(),
+                    doc_id_count: context.ids.len(),
+                },
+                conditions: &condition,
+                condition_count: 1,
+            };
+            let mut report: ZeMutationReport = common::sized_zeroed();
+            let mut conflict: ZeRevisionConflict = common::sized_zeroed();
+            ze_delete_conditional(context.store.handle, &request, &mut report, &mut conflict)
         }),
         ("ze_search", |context| {
             let request = common::valid_search_request(&context.vector);

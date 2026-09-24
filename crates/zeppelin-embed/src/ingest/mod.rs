@@ -109,10 +109,25 @@ impl DocumentVersion {
     }
 }
 
+/// A precondition on one document's live revision, checked atomically with
+/// the batch that carries it.
+///
+/// Conditions are evaluated by the single writer against the latest committed
+/// state (active rows and sealed segments) as it was before the batch. A
+/// tombstoned id has no live document, so it matches [`Self::Absent`].
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ExpectedRevision {
+    /// A live document exists and its revision is exactly this value.
+    Exactly(Revision),
+    /// No live document exists: the id was never written or was deleted.
+    Absent,
+}
+
 /// One owned vector mutation supplied to an ingest batch.
 #[derive(Clone, Debug, PartialEq)]
 pub struct IngestDocument {
     version: DocumentVersion,
+    expected_revision: Option<ExpectedRevision>,
     vector: Vec<f32>,
     timestamp: i64,
     timestamp_present: bool,
@@ -129,6 +144,7 @@ impl IngestDocument {
     pub fn new(version: DocumentVersion, vector: Vec<f32>) -> Self {
         Self {
             version,
+            expected_revision: None,
             vector,
             timestamp: 0,
             timestamp_present: false,
@@ -169,6 +185,20 @@ impl IngestDocument {
         self.columns = columns;
         self.columns_present = true;
         self
+    }
+
+    /// Makes the whole batch conditional on this document's live revision.
+    /// The condition is not persisted.
+    #[must_use]
+    pub const fn with_expected_revision(mut self, expected: ExpectedRevision) -> Self {
+        self.expected_revision = Some(expected);
+        self
+    }
+
+    /// Returns the live-revision precondition, if any.
+    #[must_use]
+    pub const fn expected_revision(&self) -> Option<ExpectedRevision> {
+        self.expected_revision
     }
 
     /// Returns the document/revision idempotency key.
@@ -251,13 +281,25 @@ pub struct IngestBatch {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DeleteBatch {
     doc_ids: Vec<DocId>,
+    expected: Vec<Option<ExpectedRevision>>,
 }
 
 impl DeleteBatch {
     /// Takes ownership of document ids in caller order.
     #[must_use]
     pub const fn new(doc_ids: Vec<DocId>) -> Self {
-        Self { doc_ids }
+        Self {
+            doc_ids,
+            expected: Vec::new(),
+        }
+    }
+
+    /// Takes ids in caller order, each with an optional live-revision
+    /// precondition; one failed condition aborts the whole batch.
+    #[must_use]
+    pub fn conditional(targets: Vec<(DocId, Option<ExpectedRevision>)>) -> Self {
+        let (doc_ids, expected) = targets.into_iter().unzip();
+        Self { doc_ids, expected }
     }
 
     /// Returns the requested stable document ids.
@@ -334,6 +376,18 @@ pub enum IngestError {
         /// Rejected older revision.
         attempted: Revision,
     },
+    /// A document's expected-revision condition did not hold; nothing was
+    /// written.
+    RevisionConflict {
+        /// Position of the failed condition in the caller's batch.
+        index: usize,
+        /// Document whose condition failed.
+        doc_id: DocId,
+        /// The caller's condition.
+        expected: ExpectedRevision,
+        /// Live revision at evaluation, or `None` when no live document exists.
+        current: Option<Revision>,
+    },
     /// A vector could not be quantized under the frozen Bit4 contract.
     Vector(crate::quant::QuantError),
     /// The frozen analyzer or active lexical index rejected the text row.
@@ -367,6 +421,28 @@ impl std::fmt::Display for IngestError {
                 attempted.get(),
                 current.get()
             ),
+            Self::RevisionConflict {
+                index,
+                doc_id,
+                expected,
+                current,
+            } => {
+                write!(
+                    formatter,
+                    "revision condition failed for document {} at batch index {index}: expected ",
+                    doc_id.get()
+                )?;
+                match expected {
+                    ExpectedRevision::Exactly(revision) => {
+                        write!(formatter, "revision {}", revision.get())?;
+                    }
+                    ExpectedRevision::Absent => formatter.write_str("no live document")?,
+                }
+                match current {
+                    Some(revision) => write!(formatter, ", current revision is {}", revision.get()),
+                    None => formatter.write_str(", no live document exists"),
+                }
+            }
             Self::Vector(error) => write!(formatter, "ingest vector: {error}"),
             Self::Lexical(error) => write!(formatter, "ingest text: {error}"),
             Self::Tokenizer(error) => write!(formatter, "ingest tokenizer: {error}"),
@@ -389,7 +465,8 @@ impl std::error::Error for IngestError {
             Self::EmptyBatch
             | Self::EpochUndeclared
             | Self::EpochUnstamped
-            | Self::StaleRevision { .. } => None,
+            | Self::StaleRevision { .. }
+            | Self::RevisionConflict { .. } => None,
         }
     }
 }
@@ -777,6 +854,57 @@ fn resolve_revision(
     resolved
 }
 
+/// Returns the live revision of `doc_id` in the given committed state, or
+/// `None` when no live row exists. Tombstoned rows are not live.
+fn live_revision(
+    active: &ActiveSegment,
+    snapshot: &PublishedSnapshot,
+    doc_id: DocId,
+) -> Result<Option<Revision>, StoreError> {
+    if let Some((row, version, _)) = active.existing(doc_id)
+        && !active.is_tombstoned(row)
+    {
+        return Ok(Some(version.revision()));
+    }
+    for segment in snapshot.segments() {
+        for row in segment.query_rows_for_doc_id(doc_id)? {
+            if let Some(version) = segment.document_version(row).map_err(StoreError::Segment)? {
+                return Ok(Some(version.revision()));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Evaluates every `(index, id, condition)` against one committed state and
+/// fails on the first that does not hold. Runs under the WAL writer lock
+/// before any mutation work, so a failure writes nothing.
+fn check_revision_conditions(
+    active: &ActiveSegment,
+    snapshot: &PublishedSnapshot,
+    conditions: impl Iterator<Item = (usize, DocId, Option<ExpectedRevision>)>,
+) -> Result<(), IngestError> {
+    for (index, doc_id, expected) in conditions {
+        let Some(expected) = expected else {
+            continue;
+        };
+        let current = live_revision(active, snapshot, doc_id)?;
+        let holds = match expected {
+            ExpectedRevision::Exactly(revision) => current == Some(revision),
+            ExpectedRevision::Absent => current.is_none(),
+        };
+        if !holds {
+            return Err(IngestError::RevisionConflict {
+                index,
+                doc_id,
+                expected,
+                current,
+            });
+        }
+    }
+    Ok(())
+}
+
 fn validate_republish_generation(
     expected_generation: u64,
     actual_generation: u64,
@@ -1135,6 +1263,17 @@ impl Store {
             .as_ref()
             .cloned()
             .ok_or(StoreError::Closed)?;
+        check_revision_conditions(
+            current_segment.as_ref(),
+            &snapshot,
+            batch.documents.iter().enumerate().map(|(index, document)| {
+                (
+                    index,
+                    document.version().doc_id(),
+                    document.expected_revision(),
+                )
+            }),
+        )?;
         let requested_ids = batch
             .documents
             .iter()
@@ -1298,16 +1437,19 @@ impl Store {
                 component: "WAL writer",
             })?;
         let writer = wal.as_mut().ok_or(StoreError::ReadOnly)?;
-        self.delete_with_writer(writer, &batch.doc_ids)
+        self.delete_with_writer(writer, &batch.doc_ids, &batch.expected)
     }
 
     /// The body of [`Self::delete`] for a caller that already holds the WAL
     /// writer, so one mutation can resolve ids and tombstone them without
     /// another write landing in between. `doc_ids` must be non-empty.
+    /// `expected` holds the revision condition of each id by position; a
+    /// missing entry is unconditional.
     pub(crate) fn delete_with_writer(
         &self,
         writer: &mut StoreWal,
         doc_ids: &[DocId],
+        expected: &[Option<ExpectedRevision>],
     ) -> Result<IngestAck, IngestError> {
         let (current_generation, current_segment) = {
             let active = self
@@ -1328,6 +1470,14 @@ impl Store {
             .as_ref()
             .cloned()
             .ok_or(StoreError::Closed)?;
+        check_revision_conditions(
+            current_segment.as_ref(),
+            &snapshot,
+            doc_ids
+                .iter()
+                .enumerate()
+                .map(|(index, doc_id)| (index, *doc_id, expected.get(index).copied().flatten())),
+        )?;
         let sealed = purge::sealed_document_matches(&snapshot, doc_ids)?;
         let generation = current_generation
             .checked_add(1)
