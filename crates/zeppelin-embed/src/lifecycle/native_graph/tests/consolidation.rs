@@ -6308,3 +6308,80 @@ pub(super) fn run_actual_probe(
         state: observe_reclaim_cycle(),
     }
 }
+
+#[test]
+fn ze260_hundred_node_batches_write_bounded_pages() {
+    use crate::property_graph::storage::artifact::{self, BlockKind, ContainerKind};
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("store");
+    let store = Store::create_native_graph(&path, options(), None).unwrap();
+    let mut previous = directory_image(&path);
+    for batch in 0..20 {
+        let keys: Vec<_> = (0..100)
+            .map(|n| format!("node-{:04}", batch * 100 + n))
+            .collect();
+        let edge = format!("edge-{batch}");
+        let mut labels = [GraphName::new("Document").unwrap()];
+        let mut properties = property_fixture();
+        properties.truncate(1);
+        let image = CanonicalContents::node(
+            &mut labels,
+            &mut properties,
+            Some("bounded graph text"),
+            None,
+        )
+        .unwrap();
+        crate::property_graph::with_local_refs(|refs| {
+            let mut requests: Vec<_> = keys
+                .iter()
+                .map(|key| StructuredWrite {
+                    key: ApplicationKey::new(EntityKind::Node, "app", key).unwrap(),
+                    revision: GraphRevision::new(1).unwrap(),
+                    operation: StructuredOperation::Create,
+                    image: Some(WriteImage::Node(&image)),
+                })
+                .collect();
+            requests.push(StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Relationship, "app", &edge).unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Relationship {
+                    source: NodeRef::Local(refs.node(0).unwrap()),
+                    target: NodeRef::Local(refs.node(1).unwrap()),
+                    relationship_type: GraphName::new("LINKS").unwrap(),
+                    properties: &[],
+                }),
+            });
+            store
+                .apply_native_graph(&requests, &QueryControl::Cancel(CancelToken::new()))
+                .unwrap();
+        });
+        let next = directory_image(&path);
+        let mut pages = 0;
+        let mut bytes = 0;
+        let mut files = 0;
+        for (name, data) in &next {
+            if previous.contains_key(name) || !name.to_string_lossy().ends_with(".zgraph") {
+                continue;
+            }
+            files += 1;
+            bytes += data.len();
+            let frame = artifact::decode(ContainerKind::Object, None, data).unwrap();
+            let mut index = 0;
+            while let Ok(reference) = frame.reference(index) {
+                pages += usize::from(reference.kind == BlockKind::TreePage);
+                index += 1;
+            }
+        }
+        eprintln!(
+            "ZE260 batch={} nodes=100 pages={pages} bytes={bytes} files={files}",
+            batch + 1
+        );
+        assert!(
+            pages <= 24,
+            "batch {batch}: {pages} TreePage blocks, {bytes} bytes, {files} files"
+        );
+        assert!(bytes <= 512 * 1024, "batch {batch}: {bytes} bytes");
+        previous = next;
+    }
+}

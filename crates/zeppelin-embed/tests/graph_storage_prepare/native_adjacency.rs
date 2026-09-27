@@ -46,82 +46,89 @@ fn bootstrap(base: BaseIdentity, sequence: u64) -> CommitState<'static> {
 }
 
 #[test]
-fn actual_native_producer_refuses_large_batch_at_unchanged_work_limit() {
-    let directory = tempfile::tempdir().unwrap();
-    let store = Store::open(
-        directory.path(),
-        OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
-    )
-    .unwrap();
-    let shared = GraphResources::from_store(&store).unwrap();
-    let writer = WriteMemory::new(&shared, WriteLimits::default()).unwrap();
-    let control = QueryControl::Cancel(CancelToken::new());
-    let memory = StorageMemory::new(&writer, &control, 32 * 1024 * 1024).unwrap();
-    let mut r = TreeResources::for_prepare(&memory, 200_000_000).unwrap();
-    let node = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
-    with_local_refs(|refs| {
-        let mut view = GraphBatchReadView::new(&Empty, &writer, 2051, &mut |_| Ok(())).unwrap();
-        for index in 0..2 {
-            view.create(
-                BatchEntityRef::Node(NodeRef::Local(refs.node(index).unwrap())),
-                WriteImage::Node(&node),
-                &mut |_| Ok(()),
-            )
-            .unwrap();
-        }
-        for index in 0..2049 {
-            view.create(
-                BatchEntityRef::Relationship(RelRef::Local(refs.relationship(index).unwrap())),
-                WriteImage::Relationship {
-                    source: NodeRef::Local(refs.node(0).unwrap()),
-                    target: NodeRef::Local(refs.node(1).unwrap()),
-                    relationship_type: GraphName::new("R").unwrap(),
-                    properties: &[],
+fn actual_native_producer_batches_large_writes_and_honors_work_limit() {
+    for (work_limit, should_fit) in [(200_000_000, true), (1_000_000, false)] {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(
+            directory.path(),
+            OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+        )
+        .unwrap();
+        let shared = GraphResources::from_store(&store).unwrap();
+        let writer = WriteMemory::new(&shared, WriteLimits::default()).unwrap();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let memory = StorageMemory::new(&writer, &control, 32 * 1024 * 1024).unwrap();
+        let mut r = TreeResources::for_prepare(&memory, work_limit).unwrap();
+        let node = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+        with_local_refs(|refs| {
+            let mut view = GraphBatchReadView::new(&Empty, &writer, 2051, &mut |_| Ok(())).unwrap();
+            for index in 0..2 {
+                view.create(
+                    BatchEntityRef::Node(NodeRef::Local(refs.node(index).unwrap())),
+                    WriteImage::Node(&node),
+                    &mut |_| Ok(()),
+                )
+                .unwrap();
+            }
+            for index in 0..2049 {
+                view.create(
+                    BatchEntityRef::Relationship(RelRef::Local(refs.relationship(index).unwrap())),
+                    WriteImage::Relationship {
+                        source: NodeRef::Local(refs.node(0).unwrap()),
+                        target: NodeRef::Local(refs.node(1).unwrap()),
+                        relationship_type: GraphName::new("R").unwrap(),
+                        properties: &[],
+                    },
+                    &mut |_| Ok(()),
+                )
+                .unwrap();
+            }
+            let batch = view.finish(&mut |_| Ok(())).unwrap();
+            let base = Empty.identity();
+            let roots =
+                GraphRoots::from_references(base.store, base.generation, [None; 8]).unwrap();
+            let mut objects = packed(&Missing, 1, &memory, &mut r);
+            let result = prepare_native_graph(
+                &mut objects,
+                &batch,
+                NativeGraphBase {
+                    directories: DirectoryBase {
+                        identity: base,
+                        roots,
+                    },
+                    committed: bootstrap(base, 100),
                 },
-                &mut |_| Ok(()),
-            )
-            .unwrap();
-        }
-        let batch = view.finish(&mut |_| Ok(())).unwrap();
-        let base = Empty.identity();
-        let roots = GraphRoots::from_references(base.store, base.generation, [None; 8]).unwrap();
-        let mut objects = packed(&Missing, 1, &memory, &mut r);
-        let result = prepare_native_graph(
-            &mut objects,
-            &batch,
-            NativeGraphBase {
-                directories: DirectoryBase {
-                    identity: base,
-                    roots,
-                },
-                committed: bootstrap(base, 100),
-            },
-            &Catalog { base, symbols: &[] },
-            None,
-            &memory,
-            &mut r,
-        );
-        eprintln!(
-            "2049 incoming: storage_peak={} writer={} shared={} packs={} result={:?}",
-            memory.peak_reserved_bytes(),
-            writer.reserved_bytes(),
-            shared.reserved_bytes().unwrap(),
-            objects.len(),
-            result.as_ref().map(|c| c.sequence())
-        );
-        assert!(matches!(&result, Err(TreeError::Work)));
-        drop(result);
-        assert_eq!(objects.abort_inventory().count(), objects.len());
-        assert!(
-            objects.artifact(0).is_err(),
-            "failed preparation cannot finalize an artifact"
-        );
-        drop(objects);
-        assert_eq!(
-            memory.reserved_bytes(),
-            r.reserved_bytes() as usize + std::mem::size_of::<StorageMemory<'_>>()
-        );
-    });
+                &Catalog { base, symbols: &[] },
+                None,
+                &memory,
+                &mut r,
+            );
+            eprintln!(
+                "2049 incoming: storage_peak={} writer={} shared={} packs={} result={:?}",
+                memory.peak_reserved_bytes(),
+                writer.reserved_bytes(),
+                shared.reserved_bytes().unwrap(),
+                objects.len(),
+                result.as_ref().map(|c| c.sequence())
+            );
+            if should_fit {
+                assert_eq!(result.as_ref().unwrap().sequence(), 101);
+            } else {
+                assert!(matches!(&result, Err(TreeError::Work)));
+            }
+            drop(result);
+            assert_eq!(objects.abort_inventory().count(), objects.len());
+            assert!(
+                objects.artifact(0).is_err(),
+                "private preparation cannot expose an unfinished artifact"
+            );
+            drop(objects);
+            assert_eq!(
+                memory.reserved_bytes(),
+                r.reserved_bytes() as usize + std::mem::size_of::<StorageMemory<'_>>()
+            );
+        });
+    }
 }
 
 /// Fixture external retained bytes are charged to the same authentic aggregate,

@@ -2,8 +2,8 @@
 //! overlapping ranges never enter a candidate used by a subsequent edit.
 use super::*;
 use crate::property_graph::storage::tree::directory::{
-    BlockSink, DirectoryCursor, DirectoryMutation, LeafValidator, TreeScratch, insert_checked,
-    lookup_entry, lookup_predecessor, remove_checked,
+    BlockSink, DirectoryBatch, DirectoryCursor, DirectoryMutation, LeafValidator, TreeScratch,
+    insert_checked, lookup_entry, lookup_predecessor, remove_checked,
 };
 
 /// Expected and target sequence domains for one changed private preparation.
@@ -105,6 +105,63 @@ pub fn put_range(
     tree: &mut TreeScratch<'_>,
     r: &mut TreeResources<'_>,
 ) -> Result<DirectoryRoot, TreeError> {
+    validate_put(sink, root, descriptor, context, scratch, r)?;
+    let key = descriptor.directory_key()?;
+    let mut bytes = [0; RANGE_DESCRIPTOR_BYTES];
+    r.step((40 + RANGE_DESCRIPTOR_BYTES) as u64)?;
+    descriptor.encode(&mut bytes)?;
+    insert_checked(
+        sink,
+        DirectoryMutation::new(root, context.generation, Values { context, scratch }),
+        &key,
+        &bytes,
+        tree,
+        r,
+    )
+}
+
+/// Remove exactly the already observed descriptor. The old leaf is fully
+/// validated before rewriting, including entries unrelated to this removal.
+pub fn remove_range(
+    sink: &mut impl BlockSink,
+    root: DirectoryRoot,
+    descriptor: RangeDescriptor,
+    context: RangeEditContext,
+    scratch: &mut RangeScratch<'_>,
+    tree: &mut TreeScratch<'_>,
+    r: &mut TreeResources<'_>,
+) -> Result<DirectoryRoot, TreeError> {
+    context.require_root(root)?;
+    r.step(40)?;
+    let key = descriptor.directory_key()?;
+    let entry = lookup_entry(sink, root, &key, r)?.ok_or(TreeError::Missing)?;
+    if checked_entry(sink, root, entry, context, scratch, r)? != descriptor {
+        return Err(invalid("adjacency removal descriptor differs"));
+    }
+    remove_checked(
+        sink,
+        DirectoryMutation::new(root, context.generation, Values { context, scratch }),
+        &key,
+        tree,
+        r,
+    )
+}
+
+fn same_group(left: RangeKey, right: RangeKey) -> bool {
+    left.node == right.node && left.rel_type == right.rel_type && left.direction == right.direction
+}
+fn ends_before(upper: UpperBound, lower: RelId) -> bool {
+    matches!(upper, UpperBound::Exclusive(upper) if upper <= lower)
+}
+
+fn validate_put(
+    sink: &impl BlockSource,
+    root: DirectoryRoot,
+    descriptor: RangeDescriptor,
+    context: RangeEditContext,
+    scratch: &mut RangeScratch<'_>,
+    r: &mut TreeResources<'_>,
+) -> Result<(), TreeError> {
     context.require_root(root)?;
     if direction(root.kind())? != descriptor.key.direction {
         return Err(invalid("adjacency edit direction"));
@@ -158,49 +215,33 @@ pub fn put_range(
             }
         }
     }
-    let mut bytes = [0; RANGE_DESCRIPTOR_BYTES];
-    r.step((40 + RANGE_DESCRIPTOR_BYTES) as u64)?;
-    descriptor.encode(&mut bytes)?;
-    insert_checked(
-        sink,
-        DirectoryMutation::new(root, context.generation, Values { context, scratch }),
-        &key,
-        &bytes,
-        tree,
-        r,
-    )
+    Ok(())
 }
 
-/// Remove exactly the already observed descriptor. The old leaf is fully
-/// validated before rewriting, including entries unrelated to this removal.
-pub fn remove_range(
+pub(in crate::property_graph::storage::adjacency) fn flush_ranges(
     sink: &mut impl BlockSink,
     root: DirectoryRoot,
-    descriptor: RangeDescriptor,
+    pending: DirectoryBatch<'_>,
     context: RangeEditContext,
     scratch: &mut RangeScratch<'_>,
     tree: &mut TreeScratch<'_>,
     r: &mut TreeResources<'_>,
 ) -> Result<DirectoryRoot, TreeError> {
-    context.require_root(root)?;
-    r.step(40)?;
-    let key = descriptor.directory_key()?;
-    let entry = lookup_entry(sink, root, &key, r)?.ok_or(TreeError::Missing)?;
-    if checked_entry(sink, root, entry, context, scratch, r)? != descriptor {
-        return Err(invalid("adjacency removal descriptor differs"));
-    }
-    remove_checked(
+    pending.flush(
         sink,
         DirectoryMutation::new(root, context.generation, Values { context, scratch }),
-        &key,
         tree,
         r,
     )
 }
 
-fn same_group(left: RangeKey, right: RangeKey) -> bool {
-    left.node == right.node && left.rel_type == right.rel_type && left.direction == right.direction
-}
-fn ends_before(upper: UpperBound, lower: RelId) -> bool {
-    matches!(upper, UpperBound::Exclusive(upper) if upper <= lower)
+pub(in crate::property_graph::storage::adjacency) fn check_prepared_range(
+    sink: &impl BlockSource,
+    root: DirectoryRoot,
+    descriptor: RangeDescriptor,
+    context: RangeEditContext,
+    scratch: &mut RangeScratch<'_>,
+    r: &mut TreeResources<'_>,
+) -> Result<(), TreeError> {
+    validate_put(sink, root, descriptor, context, scratch, r)
 }

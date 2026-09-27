@@ -703,6 +703,10 @@ fn ze257_recovery_of_node_scale_fixture() {
 
 #[test]
 fn ze257_checkpoint_recovery_work_scales_linearly() {
+    // S2 measures 23,511 / 24,036 / 24,304 work per node (rounded up)
+    // at 128 / 256 / 512 nodes. Bound logical size, not amplified file bytes.
+    const WORK_PER_NODE_LIMIT: u64 = 25_000;
+    let mut measurements = Vec::new();
     for count in [128, 256, 512] {
         let parent = tempfile::tempdir().unwrap();
         let path = parent.path().join("graph");
@@ -740,9 +744,10 @@ fn ze257_checkpoint_recovery_work_scales_linearly() {
         );
         assert!(work > 0);
         assert!(
-            work <= bytes * 8,
-            "recovery work {work} exceeds linear byte bound for {bytes} encoded bytes"
+            work <= count as u64 * WORK_PER_NODE_LIMIT,
+            "recovery work {work} exceeds {WORK_PER_NODE_LIMIT} per node at {count} nodes"
         );
+        measurements.push((count as u64, work));
         assert!(peak <= 32 * 1024 * 1024);
         assert!(resident_peak <= 256 * 1024 * 1024);
         assert_eq!(
@@ -750,6 +755,15 @@ fn ze257_checkpoint_recovery_work_scales_linearly() {
             "one indexed fence candidate per keyed node"
         );
         store.close().unwrap();
+    }
+    // Check both doublings and the complete 4x span with 5% tolerance.
+    for (index, &(small_nodes, small_work)) in measurements.iter().enumerate() {
+        for &(large_nodes, large_work) in measurements.iter().skip(index + 1) {
+            assert!(
+                large_work * small_nodes * 20 <= small_work * large_nodes * 21,
+                "recovery work grew superlinearly: {small_nodes} nodes/{small_work} work -> {large_nodes} nodes/{large_work} work"
+            );
+        }
     }
 }
 

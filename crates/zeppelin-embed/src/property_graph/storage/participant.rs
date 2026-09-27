@@ -117,6 +117,28 @@ pub fn prepare_directories<'a, S: BlockSink>(
         document,
         memory,
         scratch: TreeScratch::for_prepare(memory)?,
+        pending: [
+            (
+                TreeKind::Nodes,
+                Some(DirectoryBatch::new(memory, batch.deltas().len())?),
+            ),
+            (
+                TreeKind::Relationships,
+                Some(DirectoryBatch::new(memory, batch.deltas().len())?),
+            ),
+            (
+                TreeKind::Labels,
+                Some(DirectoryBatch::new(memory, batch.deltas().len())?),
+            ),
+            (
+                TreeKind::RelationshipTypes,
+                Some(DirectoryBatch::new(memory, batch.deltas().len())?),
+            ),
+            (
+                TreeKind::KeyFences,
+                Some(DirectoryBatch::new(memory, batch.deltas().len())?),
+            ),
+        ],
     };
     #[cfg(all(feature = "graph-cypher", feature = "test-support"))]
     if crate::property_graph::query::native_relational_test_support::capacity_fixture_active() {
@@ -130,6 +152,7 @@ pub fn prepare_directories<'a, S: BlockSink>(
     for delta in batch.deltas() {
         state.apply(sink, delta, r)?;
     }
+    state.flush(sink, r)?;
     r.step(0)?;
     Ok(NativeDirectoryCandidate {
         expected: base.identity,
@@ -184,17 +207,63 @@ struct PrepareState<'a, 'm, C> {
     document: Option<&'a EmbeddingTower>,
     memory: &'m StorageMemory<'m>,
     scratch: TreeScratch<'m>,
+    pending: [(TreeKind, Option<DirectoryBatch<'m>>); 5],
 }
-impl<C> PrepareState<'_, '_, C> {
-    fn snapshot<'m, S: BlockSource>(
+impl<'m, C> PrepareState<'_, 'm, C> {
+    fn pending(&mut self, kind: TreeKind) -> Result<&mut DirectoryBatch<'m>, TreeError> {
+        self.pending
+            .iter_mut()
+            .find(|(k, _)| *k == kind)
+            .and_then(|(_, batch)| batch.as_mut())
+            .ok_or(TreeError::Invalid("missing directory buffer"))
+    }
+    fn flush<S: BlockSink>(
+        &mut self,
+        sink: &mut S,
+        r: &mut TreeResources<'_>,
+    ) -> Result<(), TreeError>
+    where
+        C: RecordCatalog<S>,
+    {
+        for (kind, batch) in &mut self.pending {
+            let kind = *kind;
+            let batch = batch
+                .take()
+                .ok_or(TreeError::Invalid("directory buffer already flushed"))?;
+            let root = self.roots.directory(kind)?;
+            let generation = self.roots.generation();
+            let root = if matches!(kind, TreeKind::Labels | TreeKind::RelationshipTypes) {
+                batch.flush(
+                    sink,
+                    DirectoryMutation::new(root, generation, MembershipValues),
+                    &mut self.scratch,
+                    r,
+                )?
+            } else {
+                batch.flush(
+                    sink,
+                    DirectoryMutation::new(
+                        root,
+                        generation,
+                        NativeDirectoryValues::new(self.catalog, self.document),
+                    ),
+                    &mut self.scratch,
+                    r,
+                )?
+            };
+            self.roots.replace(root)?;
+        }
+        Ok(())
+    }
+    fn snapshot<'s, S: BlockSource>(
         &self,
         source: &S,
         entity: EntityId,
         reference: PayloadRef,
         generation: GraphGeneration,
-        memory: &'m StorageMemory<'m>,
+        memory: &'s StorageMemory<'s>,
         r: &mut TreeResources<'_>,
-    ) -> Result<Snapshot<'m>, TreeError>
+    ) -> Result<Snapshot<'s>, TreeError>
     where
         C: RecordCatalog<S>,
     {
@@ -303,35 +372,14 @@ impl<C> PrepareState<'_, '_, C> {
             (reference, None)
         };
         self.memberships(sink, old.as_ref(), new.as_ref(), r)?;
-        let updated = if let Some(record) = record {
-            let mut bytes = [0; 48];
+        let mut bytes = [0; 48];
+        let value = if let Some(record) = record {
             record.encode_into(&mut bytes)?;
-            insert_checked(
-                sink,
-                DirectoryMutation::new(
-                    directory,
-                    generation,
-                    NativeDirectoryValues::new(self.catalog, self.document),
-                ),
-                &id.to_le_bytes(),
-                &bytes,
-                &mut self.scratch,
-                r,
-            )?
+            Some(bytes.as_slice())
         } else {
-            remove_checked(
-                sink,
-                DirectoryMutation::new(
-                    directory,
-                    generation,
-                    NativeDirectoryValues::new(self.catalog, self.document),
-                ),
-                &id.to_le_bytes(),
-                &mut self.scratch,
-                r,
-            )?
+            None
         };
-        self.roots.replace(updated)?;
+        self.pending(kind)?.push(&id.to_le_bytes(), value, r)?;
         if let Some(key) = fields.key {
             let stored =
                 verify_provenance(PayloadSlice::new(sink, store, generation, provenance), r)?;
@@ -358,19 +406,9 @@ impl<C> PrepareState<'_, '_, C> {
                 self.document,
                 r,
             )?;
-            let root = insert_fence_checked(
-                sink,
-                DirectoryMutation::new(
-                    self.roots.directory(TreeKind::KeyFences)?,
-                    generation,
-                    NativeDirectoryValues::new(self.catalog, self.document),
-                ),
-                probe,
-                &value,
-                &mut self.scratch,
-                r,
-            )?;
-            self.roots.replace(root)?;
+            let encoded = probe.encode(self.memory, r)?;
+            self.pending(TreeKind::KeyFences)?
+                .push(encoded.as_slice(), Some(&value), r)?;
         }
         r.step(0)
     }
@@ -470,25 +508,7 @@ impl<C> PrepareState<'_, '_, C> {
         if existing.is_some_and(|entry| !entry.value().is_empty()) || existing.is_some() == add {
             return Err(TreeError::Invalid("membership index/base mismatch"));
         }
-        let root = if add {
-            insert_checked(
-                sink,
-                DirectoryMutation::new(root, self.roots.generation(), MembershipValues),
-                &key,
-                &[],
-                &mut self.scratch,
-                r,
-            )?
-        } else {
-            remove_checked(
-                sink,
-                DirectoryMutation::new(root, self.roots.generation(), MembershipValues),
-                &key,
-                &mut self.scratch,
-                r,
-            )?
-        };
-        self.roots.replace(root)
+        self.pending(kind)?.push(&key, add.then_some(&[][..]), r)
     }
 }
 fn entity_key(entity: EntityId) -> (TreeKind, u128) {

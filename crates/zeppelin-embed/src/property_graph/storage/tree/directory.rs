@@ -728,6 +728,8 @@ const INLINE_BYTES: usize = 512;
 fn count(bytes: &[u8]) -> Result<usize, TreeError> {
     Ok(crate::format::frame::read_u32("graph directory", bytes, 12)? as usize)
 }
+mod batch;
+pub(crate) use batch::DirectoryBatch;
 mod fence_input;
 mod keys;
 use fence_input::ProbeKey;
@@ -2473,6 +2475,19 @@ pub fn apply_sorted_checked<S: BlockSink>(
     if ops.len() > 16_384 {
         return Err(TreeError::Invalid("too many bulk ops"));
     }
+    apply_prepared_sorted_checked(store, mutation, ops, scratch, resources)
+}
+
+// One entity may produce many label/range edits. The participant buffer has
+// already admitted every descriptor and byte against StorageMemory; its bound
+// is not the structured batch's 16,384-entity limit.
+fn apply_prepared_sorted_checked<S: BlockSink>(
+    store: &mut S,
+    mutation: DirectoryMutation<impl LeafValidator<S>>,
+    ops: &[DirectoryOp<'_>],
+    scratch: &mut TreeScratch<'_>,
+    resources: &mut TreeResources<'_>,
+) -> Result<DirectoryRoot, TreeError> {
     let (root, generation) = (mutation.root, mutation.generation);
     if generation < root.generation {
         return Err(TreeError::Invalid("generation regressed"));
@@ -3617,6 +3632,39 @@ pub(crate) mod tests {
         .unwrap();
         assert!(entries(&objects, retired, &mut resources).is_empty());
         assert!(objects.tree_pages - before <= 4);
+    }
+
+    #[test]
+    fn ze260_label_edits_are_not_limited_to_the_entity_count() {
+        use crate::property_graph::staging::{WriteLimits, WriteMemory};
+        let (_dir, _store, shared, mut objects) = fixture();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let writer = WriteMemory::new(&shared, WriteLimits::default()).unwrap();
+        let memory = StorageMemory::new(&writer, &control, 32 * 1024 * 1024).unwrap();
+        let mut resources = TreeResources::for_prepare(&memory, u64::MAX).unwrap();
+        let mut scratch = TreeScratch::for_prepare(&memory).unwrap();
+        let mut batch = DirectoryBatch::new(&memory, 1).unwrap();
+        for label in (1u64..=16_385).rev() {
+            let mut key = [0; 24];
+            key[..8].copy_from_slice(&label.to_le_bytes());
+            key[8..].copy_from_slice(&1u128.to_le_bytes());
+            batch.push(&key, Some(&[]), &mut resources).unwrap();
+        }
+        let root = DirectoryRoot::empty(objects.store, TreeKind::Labels, GraphGeneration::new(0));
+        let root = batch
+            .flush(
+                &mut objects,
+                DirectoryMutation::new(root, GraphGeneration::new(1), OpaqueValues),
+                &mut scratch,
+                &mut resources,
+            )
+            .unwrap();
+        let mut cursor = DirectoryCursor::seek(&objects, root, None, &mut resources).unwrap();
+        let mut count = 0;
+        while cursor.next_entry(&mut resources).unwrap().is_some() {
+            count += 1;
+        }
+        assert_eq!(count, 16_385);
     }
 
     #[test]

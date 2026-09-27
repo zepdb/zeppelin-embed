@@ -162,6 +162,9 @@ impl<'a, T> StorageBuffer<'a, T> {
             limit: capacity,
         })
     }
+    pub(crate) fn drain(&mut self) -> impl Iterator<Item = T> + '_ {
+        self.values.drain(..)
+    }
     /// Complete allocator backing capacity in bytes.
     pub fn owned_bytes(&self) -> usize {
         self.reservation.bytes()

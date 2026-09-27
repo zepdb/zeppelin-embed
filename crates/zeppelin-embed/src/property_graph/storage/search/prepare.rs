@@ -390,13 +390,18 @@ fn source_row<S: BlockSource>(
     Ok((manifest, SparseRow::decode(&encoded)?))
 }
 
-fn remove_member<S: BlockSink>(
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the pending edits share the existing preparation owners"
+)]
+fn remove_member_buffered<S: BlockSink>(
     sink: &mut S,
     mut state: SparseRootState,
     modality: Modality,
     node: NodeId,
     generation: GraphGeneration,
     memory: &StorageMemory<'_>,
+    pending: &mut DirectoryBatch<'_>,
     resources: &mut TreeResources<'_>,
 ) -> Result<(SparseRootState, bool), TreeError> {
     let node_key = node.get().to_le_bytes();
@@ -443,13 +448,7 @@ fn remove_member<S: BlockSink>(
     }
     *value &= !bit;
     let mut scratch = TreeScratch::for_prepare(memory)?;
-    state.members = remove_checked(
-        sink,
-        DirectoryMutation::new(state.members, generation, MembershipValidator),
-        &node_key,
-        &mut scratch,
-        resources,
-    )?;
+    pending.push(&node_key, None, resources)?;
     let row_length = if modality == Modality::Text {
         u64::from(row.analyzed_length)
     } else {
@@ -514,7 +513,7 @@ fn remove_member<S: BlockSink>(
     clippy::too_many_arguments,
     reason = "independent resource owners and lifetimes are explicit at this private seam"
 )]
-fn install_source<S: BlockSink>(
+fn install_source_buffered<S: BlockSink>(
     sink: &mut S,
     mut state: SparseRootState,
     source: PhysicalRef,
@@ -523,6 +522,7 @@ fn install_source<S: BlockSink>(
     live_length: u64,
     generation: GraphGeneration,
     memory: &StorageMemory<'_>,
+    pending: &mut DirectoryBatch<'_>,
     resources: &mut TreeResources<'_>,
 ) -> Result<SparseRootState, TreeError> {
     let mut scratch = TreeScratch::for_prepare(memory)?;
@@ -543,20 +543,17 @@ fn install_source<S: BlockSink>(
         &mut scratch,
         resources,
     )?;
-    for (row, pending) in rows.iter().enumerate() {
+    for (row, pending_row) in rows.iter().enumerate() {
         let mut value = [0_u8; MEMBERSHIP_BYTES];
         MembershipRow {
-            revision: pending.revision,
+            revision: pending_row.revision,
             source,
             row: u32::try_from(row).map_err(|_| TreeError::Memory)?,
         }
         .encode(&mut value)?;
-        state.members = insert_checked(
-            sink,
-            DirectoryMutation::new(state.members, generation, MembershipValidator),
-            &pending.node.get().to_le_bytes(),
-            &value,
-            &mut scratch,
+        pending.push(
+            &pending_row.node.get().to_le_bytes(),
+            Some(&value),
             resources,
         )?;
     }
@@ -783,6 +780,7 @@ pub(super) fn relocate_sparse_state<B: BlockSource, S: BlockSink>(
         resources,
     )?;
 
+    let mut pending = DirectoryBatch::new(memory, manifest.rows as usize)?;
     let mut observed_selected = false;
     let mut live_rows = 0_u64;
     let mut live_length = 0_u64;
@@ -830,14 +828,7 @@ pub(super) fn relocate_sparse_state<B: BlockSource, S: BlockSink>(
         if miss_peer && row.node != node {
             continue;
         }
-        state.members = insert_checked(
-            sink,
-            DirectoryMutation::new(state.members, generation, MembershipValidator),
-            &row.node.get().to_le_bytes(),
-            &encoded,
-            &mut scratch,
-            resources,
-        )?;
+        pending.push(&row.node.get().to_le_bytes(), Some(&encoded), resources)?;
         live_rows = live_rows.checked_add(1).ok_or(TreeError::Work)?;
         if modality == Modality::Text {
             live_length = live_length
@@ -852,6 +843,12 @@ pub(super) fn relocate_sparse_state<B: BlockSource, S: BlockSink>(
     {
         return Err(TreeError::Invalid("maintenance sparse cohort aggregate"));
     }
+    state.members = pending.flush(
+        sink,
+        DirectoryMutation::new(state.members, generation, MembershipValidator),
+        &mut scratch,
+        resources,
+    )?;
     Ok(state)
 }
 
@@ -1114,6 +1111,8 @@ pub(crate) fn prepare_sparse<'m, S: BlockSink, C: RecordCatalog<S>>(
     if document.is_some() && text_state.checkpoint != vector_state.checkpoint {
         return Err(TreeError::Invalid("sparse checkpoint marker mismatch"));
     }
+    let mut text_edits = DirectoryBatch::new(memory, batch.deltas().len())?;
+    let mut vector_edits = DirectoryBatch::new(memory, batch.deltas().len())?;
     let mut lexical_builder =
         GraphLexicalBuilder::new(analyzer, memory, resources).map_err(lexical_error)?;
     let mut text_rows = StorageBuffer::new(memory, batch.deltas().len())?;
@@ -1131,23 +1130,25 @@ pub(crate) fn prepare_sparse<'m, S: BlockSink, C: RecordCatalog<S>>(
             continue;
         };
         let key = node.get().to_le_bytes();
-        let (next_text, old_text) = remove_member(
+        let (next_text, old_text) = remove_member_buffered(
             sink,
             text_state,
             Modality::Text,
             node,
             generation,
             memory,
+            &mut text_edits,
             resources,
         )?;
         text_state = next_text;
-        let (next_vector, old_vector) = remove_member(
+        let (next_vector, old_vector) = remove_member_buffered(
             sink,
             vector_state,
             Modality::Vector,
             node,
             generation,
             memory,
+            &mut vector_edits,
             resources,
         )?;
         vector_state = next_vector;
@@ -1234,7 +1235,7 @@ pub(crate) fn prepare_sparse<'m, S: BlockSink, C: RecordCatalog<S>>(
         resources,
     )?;
     if let Some((source, mask, length)) = text_source {
-        text_state = install_source(
+        text_state = install_source_buffered(
             sink,
             text_state,
             source,
@@ -1243,6 +1244,7 @@ pub(crate) fn prepare_sparse<'m, S: BlockSink, C: RecordCatalog<S>>(
             length,
             generation,
             memory,
+            &mut text_edits,
             resources,
         )?;
     }
@@ -1324,7 +1326,7 @@ pub(crate) fn prepare_sparse<'m, S: BlockSink, C: RecordCatalog<S>>(
                 resources,
             )?
             .ok_or(TreeError::Invalid("nonempty vector cohort was omitted"))?;
-            vector_state = install_source(
+            vector_state = install_source_buffered(
                 sink,
                 vector_state,
                 vector_source.0,
@@ -1333,10 +1335,24 @@ pub(crate) fn prepare_sparse<'m, S: BlockSink, C: RecordCatalog<S>>(
                 vector_source.2,
                 generation,
                 memory,
+                &mut vector_edits,
                 resources,
             )?;
         }
     }
+    let mut scratch = TreeScratch::for_prepare(memory)?;
+    text_state.members = text_edits.flush(
+        sink,
+        DirectoryMutation::new(text_state.members, generation, MembershipValidator),
+        &mut scratch,
+        resources,
+    )?;
+    vector_state.members = vector_edits.flush(
+        sink,
+        DirectoryMutation::new(vector_state.members, generation, MembershipValidator),
+        &mut scratch,
+        resources,
+    )?;
     let text = append_root(
         sink,
         Modality::Text,
@@ -1374,6 +1390,70 @@ pub(crate) fn prepare_sparse<'m, S: BlockSink, C: RecordCatalog<S>>(
         base,
         native_roots: native.roots(),
     })
+}
+
+#[cfg(test)]
+fn remove_member<S: BlockSink>(
+    sink: &mut S,
+    state: SparseRootState,
+    modality: Modality,
+    node: NodeId,
+    generation: GraphGeneration,
+    memory: &StorageMemory<'_>,
+    resources: &mut TreeResources<'_>,
+) -> Result<(SparseRootState, bool), TreeError> {
+    let mut pending = DirectoryBatch::new(memory, 1)?;
+    let (mut state, found) = remove_member_buffered(
+        sink,
+        state,
+        modality,
+        node,
+        generation,
+        memory,
+        &mut pending,
+        resources,
+    )?;
+    state.members = pending.flush(
+        sink,
+        DirectoryMutation::new(state.members, generation, MembershipValidator),
+        &mut TreeScratch::for_prepare(memory)?,
+        resources,
+    )?;
+    Ok((state, found))
+}
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn install_source<S: BlockSink>(
+    sink: &mut S,
+    state: SparseRootState,
+    source: PhysicalRef,
+    mask: PayloadRef,
+    rows: &[PendingRow],
+    live_length: u64,
+    generation: GraphGeneration,
+    memory: &StorageMemory<'_>,
+    resources: &mut TreeResources<'_>,
+) -> Result<SparseRootState, TreeError> {
+    let mut pending = DirectoryBatch::new(memory, rows.len())?;
+    let mut state = install_source_buffered(
+        sink,
+        state,
+        source,
+        mask,
+        rows,
+        live_length,
+        generation,
+        memory,
+        &mut pending,
+        resources,
+    )?;
+    state.members = pending.flush(
+        sink,
+        DirectoryMutation::new(state.members, generation, MembershipValidator),
+        &mut TreeScratch::for_prepare(memory)?,
+        resources,
+    )?;
+    Ok(state)
 }
 
 #[cfg(test)]

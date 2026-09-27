@@ -18,6 +18,7 @@ use crate::property_graph::storage::tree::{TreeKind, directory::TreeError};
 use crate::property_graph::{GraphGeneration, StoreInstanceId};
 use crate::property_graph::{NodeId, RelId, catalog::RelTypeId};
 pub use edit::{RangeEditContext, put_range, remove_range};
+pub(super) use edit::{check_prepared_range, flush_ranges};
 
 /// Version-one leaf value, independent of the tree's inline key threshold.
 pub const RANGE_DESCRIPTOR_BYTES: usize = 328;

@@ -29,6 +29,24 @@ impl<'a> FenceKey<'a> {
             key,
         })
     }
+    pub(crate) fn encode<'m>(
+        self,
+        memory: &'m crate::property_graph::storage::memory::StorageMemory<'m>,
+        r: &mut TreeResources<'_>,
+    ) -> Result<crate::property_graph::storage::memory::StorageBuffer<'m, u8>, TreeError> {
+        let length = self.key.len().checked_add(9).ok_or(TreeError::Memory)?;
+        let mut bytes = crate::property_graph::storage::memory::StorageBuffer::new(memory, length)?;
+        let mut chunk = [0; 4096];
+        let mut offset = 0;
+        while offset < length {
+            let count = (length - offset).min(chunk.len());
+            let target = chunk.get_mut(..count).ok_or(TreeError::Memory)?;
+            self.fill(offset, target, r)?;
+            bytes.extend_from_slice(target)?;
+            offset += count;
+        }
+        Ok(bytes)
+    }
     /// Exact entity-kind domain.
     pub const fn kind(self) -> EntityKind {
         self.kind

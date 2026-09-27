@@ -68,6 +68,12 @@ pub(super) fn apply(
 ) -> Result<(), TreeError> {
     let mut workspace = Workspace::new(memory, r)?;
     let mut tree = TreeScratch::for_prepare(memory)?;
+    let mut out = DirectoryBatch::new(memory, changes.len())?;
+    let mut incoming = DirectoryBatch::new(memory, changes.len())?;
+    let mut descriptors = StorageBuffer::new(
+        memory,
+        changes.len().checked_mul(2).ok_or(TreeError::Memory)?,
+    )?;
     let mut position = 0;
     while let Some(first) = changes.get(position) {
         r.step(1)?;
@@ -84,7 +90,12 @@ pub(super) fn apply(
             Direction::Out => TreeKind::OutRanges,
             Direction::In => TreeKind::InRanges,
         };
-        let mut root = roots.directory(kind)?;
+        let root = roots.directory(kind)?;
+        let pending = if kind == TreeKind::OutRanges {
+            &mut out
+        } else {
+            &mut incoming
+        };
         while position < group_end {
             let first = *changes.get(position).ok_or(TreeError::Memory)?;
             let (key, old, old_count) = select(sink, root, first, context, &mut workspace, r)?;
@@ -102,7 +113,7 @@ pub(super) fn apply(
                 return Err(invalid("adjacency range did not advance"));
             }
             let incoming = changes.get(position..end).ok_or(TreeError::Memory)?;
-            root = update(
+            update(
                 sink,
                 root,
                 key,
@@ -112,12 +123,38 @@ pub(super) fn apply(
                 base_sequence,
                 context,
                 &mut workspace,
-                &mut tree,
+                pending,
+                &mut descriptors,
                 r,
             )?;
             position = end;
         }
+    }
+    for (kind, pending) in [(TreeKind::OutRanges, out), (TreeKind::InRanges, incoming)] {
+        let root = range::flush_ranges(
+            sink,
+            roots.directory(kind)?,
+            pending,
+            context,
+            &mut workspace.merged,
+            &mut tree,
+            r,
+        )?;
         roots.replace(root)?;
+    }
+    for descriptor in descriptors.as_slice() {
+        let kind = match descriptor.key().direction {
+            Direction::Out => TreeKind::OutRanges,
+            Direction::In => TreeKind::InRanges,
+        };
+        range::check_prepared_range(
+            sink,
+            roots.directory(kind)?,
+            *descriptor,
+            context,
+            &mut workspace.merged,
+            r,
+        )?;
     }
     r.step(0)
 }
@@ -208,7 +245,8 @@ pub(crate) fn consolidate_pending_range(
         context,
         merged: &mut workspace.merged,
         encoded: &mut workspace.encoded,
-        tree: &mut tree,
+        tree: Some(&mut tree),
+        pending: None,
     };
     writer.emit(
         descriptor.key(),
@@ -316,7 +354,8 @@ fn update<'m>(
     base_sequence: u64,
     context: RangeEditContext,
     workspace: &mut Workspace<'m>,
-    tree: &mut TreeScratch<'m>,
+    pending: &mut DirectoryBatch<'m>,
+    descriptors: &mut StorageBuffer<'m, RangeDescriptor>,
     r: &mut TreeResources<'_>,
 ) -> Result<DirectoryRoot, TreeError> {
     let old_edges = workspace
@@ -331,7 +370,8 @@ fn update<'m>(
     }
     if survivors == 0 {
         let old = old.ok_or(invalid("empty new adjacency interval"))?;
-        return remove_range(sink, root, old, context, &mut workspace.merged, tree, r);
+        pending.push(&old.directory_key()?, None, r)?;
+        return Ok(root);
     }
     let fits = incoming.len() <= MAX_PENDING_ENTRIES
         && matches!(
@@ -405,30 +445,23 @@ fn update<'m>(
                 .checked_add(incoming.len())
                 .ok_or(TreeError::Memory)?,
         )?;
-        return put_range(
-            sink,
-            root,
-            descriptor,
-            context,
-            &mut workspace.merged,
-            tree,
-            r,
-        );
+        queue_range(pending, descriptors, descriptor, r)?;
+        return Ok(root);
     }
     // Every old entry and incoming delete/insert has passed preflight. Build
     // only final bases at the one target sequence. Remove first so subsequent
     // mandatory checked edits never see overlapping intermediate intervals.
-    let root = match old {
-        Some(old) => remove_range(sink, root, old, context, &mut workspace.merged, tree, r)?,
-        None => root,
-    };
+    if let Some(old) = old {
+        pending.push(&old.directory_key()?, None, r)?;
+    }
     let mut writer = BaseWriter {
         sink,
         root,
         context,
         merged: &mut workspace.merged,
         encoded: &mut workspace.encoded,
-        tree,
+        tree: None,
+        pending: Some((pending, descriptors)),
     };
     let mut merged = Combined::new(old_edges, incoming);
     let mut count = 0;
@@ -487,7 +520,11 @@ struct BaseWriter<'a, 'm, S> {
     context: RangeEditContext,
     merged: &'a mut RangeScratch<'m>,
     encoded: &'a mut StorageBuffer<'m, u8>,
-    tree: &'a mut TreeScratch<'m>,
+    tree: Option<&'a mut TreeScratch<'m>>,
+    pending: Option<(
+        &'a mut DirectoryBatch<'m>,
+        &'a mut StorageBuffer<'m, RangeDescriptor>,
+    )>,
 }
 impl<S: BlockSink> BaseWriter<'_, '_, S> {
     fn emit(
@@ -519,15 +556,21 @@ impl<S: BlockSink> BaseWriter<'_, '_, S> {
             &[],
             0,
         )?;
-        self.root = put_range(
-            self.sink,
-            self.root,
-            descriptor,
-            self.context,
-            self.merged,
-            self.tree,
-            r,
-        )?;
+        if let Some((pending, descriptors)) = &mut self.pending {
+            queue_range(pending, descriptors, descriptor, r)?;
+        } else {
+            self.root = put_range(
+                self.sink,
+                self.root,
+                descriptor,
+                self.context,
+                self.merged,
+                self.tree
+                    .as_deref_mut()
+                    .ok_or(TreeError::Invalid("missing range tree scratch"))?,
+                r,
+            )?;
+        }
         r.step(0)
     }
 }
@@ -586,4 +629,16 @@ impl<'a> Combined<'a> {
             }
         }
     }
+}
+
+fn queue_range(
+    pending: &mut DirectoryBatch<'_>,
+    descriptors: &mut StorageBuffer<'_, RangeDescriptor>,
+    descriptor: RangeDescriptor,
+    r: &mut TreeResources<'_>,
+) -> Result<(), TreeError> {
+    let mut bytes = [0; RANGE_DESCRIPTOR_BYTES];
+    descriptor.encode(&mut bytes)?;
+    pending.push(&descriptor.directory_key()?, Some(&bytes), r)?;
+    descriptors.push(descriptor)
 }
