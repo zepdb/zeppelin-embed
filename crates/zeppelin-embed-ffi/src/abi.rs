@@ -1366,7 +1366,7 @@ pub struct ZeEpochRequest {
     pub abi_reserved: u32,
     /// Embedding interpretation.
     pub embedding: ZeEmbeddingEpoch,
-    /// `0` for the general-purpose text tokenizer profile used by ingest.
+    /// `0` textDefault, `1` code, or `2` voice tokenizer profile.
     pub tokenizer_profile: i32,
     /// Must be zero.
     pub reserved: u32,

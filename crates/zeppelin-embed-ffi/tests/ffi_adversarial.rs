@@ -100,6 +100,10 @@ const ABI_REGISTRY: &[AbiEntry] = &[
         coverage: AbiCoverage::InvalidProbe(probe_namespace_open),
     },
     AbiEntry {
+        name: "ze_namespace_open_with_tokenizer",
+        coverage: AbiCoverage::InvalidProbe(probe_namespace_open_with_tokenizer),
+    },
+    AbiEntry {
         name: "ze_namespace_list",
         coverage: AbiCoverage::InvalidProbe(probe_namespace_list),
     },
@@ -1068,6 +1072,14 @@ fn probe_query_snippets_free(_: &MatrixContext) -> ProbeResult {
 
 fn probe_namespace_open(_: &MatrixContext) -> ProbeResult {
     ProbeResult::Status(ze_namespace_open(std::ptr::null(), std::ptr::null_mut()))
+}
+
+fn probe_namespace_open_with_tokenizer(_: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_namespace_open_with_tokenizer(
+        std::ptr::null(),
+        2,
+        std::ptr::null_mut(),
+    ))
 }
 
 fn probe_namespace_list(_: &MatrixContext) -> ProbeResult {

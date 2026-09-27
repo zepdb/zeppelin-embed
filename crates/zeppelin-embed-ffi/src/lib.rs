@@ -39,7 +39,9 @@ use zeppelin_embed::epoch::{
 use zeppelin_embed::fts::index::DEFAULT_FIELD;
 use zeppelin_embed::fts::query::LexicalQuery;
 use zeppelin_embed::fts::search::{FieldWeights, TermQuery};
-use zeppelin_embed::fts::tokenizer::{Analyzer, Token, TokenFlags, TokenizerConfig};
+use zeppelin_embed::fts::tokenizer::{
+    Analyzer, Profile, Token, TokenFlags, TokenizerConfig, TokenizerEpoch,
+};
 use zeppelin_embed::fusion::{FusionMethod, HybridQuery, RuleSignals};
 use zeppelin_embed::graph::search::GraphSearchProfile;
 use zeppelin_embed::ingest::{
@@ -402,6 +404,27 @@ fn parse_tower(tower: ZeEmbeddingTower) -> Result<EmbeddingTower, FfiError> {
     })
 }
 
+fn parse_tokenizer_profile(profile: i32) -> Result<TokenizerConfig, FfiError> {
+    match profile {
+        0 => Ok(Profile::TextDefault.config()),
+        1 => Ok(Profile::Code.config()),
+        2 => Ok(Profile::Voice.config()),
+        _ => Err(FfiError::invalid(
+            "tokenizer_profile discriminant is out of range",
+        )),
+    }
+}
+
+fn tokenizer_for_epoch(epoch: TokenizerEpoch) -> Result<TokenizerConfig, FfiError> {
+    for profile in [Profile::TextDefault, Profile::Code, Profile::Voice] {
+        let config = profile.config();
+        if config.epoch() == epoch {
+            return Ok(config);
+        }
+    }
+    Err(FfiError::invalid("unsupported tokenizer epoch"))
+}
+
 fn parse_epoch(request: *const ZeEpochRequest) -> Result<StoreEpoch, FfiError> {
     let request = marshal::read_struct(request)?;
     if request.reserved != 0 {
@@ -409,14 +432,7 @@ fn parse_epoch(request: *const ZeEpochRequest) -> Result<StoreEpoch, FfiError> {
             "epoch request reserved field must be zero",
         ));
     }
-    let tokenizer = match request.tokenizer_profile {
-        0 => TokenizerConfig::text_default().epoch(),
-        _ => {
-            return Err(FfiError::invalid(
-                "tokenizer_profile discriminant is out of range",
-            ));
-        }
-    };
+    let tokenizer = parse_tokenizer_profile(request.tokenizer_profile)?.epoch();
     Ok(StoreEpoch {
         embedding: EmbeddingEpoch {
             document: parse_tower(request.embedding.document)?,
@@ -894,7 +910,9 @@ fn open_store_at(
 ) -> Result<(), FfiError> {
     let identity = epoch.as_ref().map(StoreEpoch::identity);
     if let Some(epoch) = epoch {
-        options = options.with_epoch(epoch);
+        options = options
+            .with_tokenizer(tokenizer_for_epoch(epoch.tokenizer)?)
+            .with_epoch(epoch);
     }
     if let Some(schema) = schema {
         options = options.with_schema(schema);
@@ -1396,9 +1414,13 @@ fn query_control_for(
     Ok(QueryControl::Cancel(CancelToken::new()))
 }
 
-fn analyze_query_text(pointer: *const u8, length: usize) -> Result<Vec<Token>, FfiError> {
+fn analyze_query_text(
+    config: TokenizerConfig,
+    pointer: *const u8,
+    length: usize,
+) -> Result<Vec<Token>, FfiError> {
     let bytes = marshal::read_slice(pointer, length)?;
-    let analyzer = Analyzer::new(TokenizerConfig::text_default()).map_err(FfiError::tokenizer)?;
+    let analyzer = Analyzer::new(config).map_err(FfiError::tokenizer)?;
     analyzer.analyze_bytes(bytes).map_err(FfiError::tokenizer)
 }
 
@@ -1597,8 +1619,33 @@ pub extern "C" fn ze_namespace_open(
     request: *const ZeNamespaceOpenRequest,
     out_handle: *mut ZeHandle,
 ) -> ZeErrorCode {
+    namespace_open(request, None, out_handle)
+}
+
+/// Opens a namespace with `0` textDefault, `1` code, or `2` voice tokenization.
+/// No embedding epoch is required. The profile is persisted as the tokenizer
+/// epoch; reopening must declare the same profile. If spec.epoch is supplied,
+/// its tokenizer profile must agree. Existing request layouts are unchanged.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_namespace_open_with_tokenizer(
+    request: *const ZeNamespaceOpenRequest,
+    tokenizer_profile: i32,
+    out_handle: *mut ZeHandle,
+) -> ZeErrorCode {
+    namespace_open(request, Some(tokenizer_profile), out_handle)
+}
+
+fn namespace_open(
+    request: *const ZeNamespaceOpenRequest,
+    tokenizer_profile: Option<i32>,
+    out_handle: *mut ZeHandle,
+) -> ZeErrorCode {
     ffi_entry!(None, ZeErrorCode::ZeErrPanic, {
-        run_named_panic_probe("ze_namespace_open");
+        run_named_panic_probe(if tokenizer_profile.is_some() {
+            "ze_namespace_open_with_tokenizer"
+        } else {
+            "ze_namespace_open"
+        });
         finish(
             None,
             (|| {
@@ -1611,7 +1658,17 @@ pub extern "C" fn ze_namespace_open(
                 let name_bytes = marshal::read_slice(request.name, request.name_len)?;
                 let name = validate_namespace_name(name_bytes)?;
                 let open = marshal::read_struct(&request.open)?;
-                let (schema, epoch) = parse_namespace_spec(request.spec)?;
+                let (schema, mut epoch) = parse_namespace_spec(request.spec)?;
+                if let Some(profile) = tokenizer_profile {
+                    let tokenizer = parse_tokenizer_profile(profile)?;
+                    let spec = marshal::read_struct(request.spec)?;
+                    if !spec.epoch.is_null() && epoch.tokenizer != tokenizer.epoch() {
+                        return Err(FfiError::invalid(
+                            "namespace and epoch tokenizer profiles disagree",
+                        ));
+                    }
+                    epoch.tokenizer = tokenizer.epoch();
+                }
                 let path = Path::new(root).join(name);
                 open_store_at(
                     &path,
@@ -3952,7 +4009,11 @@ fn run_query(
         Vec::new()
     };
     let lexical = if has_text {
-        let tokens = analyze_query_text(request.text, request.text_len)?;
+        let config = match access.store.epoch_identity() {
+            Some(epoch) => tokenizer_for_epoch(epoch.tokenizer)?,
+            None => TokenizerConfig::text_default(),
+        };
+        let tokens = analyze_query_text(config, request.text, request.text_len)?;
         Some(if request.lexical_flags & ZE_QUERY_LAST_AS_PREFIX == 0 {
             FfiLexicalQuery::Term(term_query(tokens))
         } else {

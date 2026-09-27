@@ -356,6 +356,7 @@ function idToUuid(id) {
   ].join('-');
 }
 
+// The native namespace parser validates and persists spec.tokenizerProfile.
 function openNamespace(root, name, spec, options = {}) {
   return attach(
     Object.create(Store.prototype),

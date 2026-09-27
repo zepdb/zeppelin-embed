@@ -99,6 +99,13 @@ export interface VectorSpace {
 
 export interface NamespaceSpec {
   /**
+   * Persisted tokenizer profile; defaults to textDefault. Supply the same
+   * profile on reopen or receive ZE_ERR_EPOCH_MISMATCH. No vector space or
+   * embedding epoch is required. voice normalizes transcript number words
+   * ("twenty five" matches "25"); code preserves stopwords and skips stemming.
+   */
+  readonly tokenizerProfile?: 'textDefault' | 'voice' | 'code';
+  /**
    * The namespace's typed attributes. Reopening an existing namespace
    * matches them by `id`, in any order: every stored attribute must be
    * declared with the same `name`, `type` and `nullable`. A declared

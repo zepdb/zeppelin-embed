@@ -521,7 +521,7 @@ typedef struct ZeEpochRequest {
      */
     struct ZeEmbeddingEpoch embedding;
     /*
-     `0` for the general-purpose text tokenizer profile used by ingest.
+     `0` textDefault, `1` code, or `2` voice tokenizer profile.
      */
     int32_t tokenizer_profile;
     /*
@@ -2956,6 +2956,16 @@ ze_error_code ze_open_with_epoch(const struct ZeOpenRequest *request,
  */
 ze_error_code ze_namespace_open(const struct ZeNamespaceOpenRequest *request,
                                 ze_handle *out_handle);
+
+/*
+ Opens a namespace with `0` textDefault, `1` code, or `2` voice tokenization.
+ No embedding epoch is required. The profile is persisted as the tokenizer
+ epoch; reopening must declare the same profile. If spec.epoch is supplied,
+ its tokenizer profile must agree. Existing request layouts are unchanged.
+ */
+ze_error_code ze_namespace_open_with_tokenizer(const struct ZeNamespaceOpenRequest *request,
+                                               int32_t tokenizer_profile,
+                                               ze_handle *out_handle);
 
 /*
  Lists direct child directories of `root` that contain a `manifest.ze`, in

@@ -1361,7 +1361,17 @@ napi_value ConstructStore(napi_env env, napi_callback_info info) {
       namespace_request.name_len = name.size();
       namespace_request.open = request;
       namespace_request.spec = &spec;
-      status = ze_namespace_open(&namespace_request, &handle);
+      std::string profile = "textDefault";
+      bool has_profile = false;
+      if (!GetOptionalString(env, args[3], "tokenizerProfile", &profile, &has_profile))
+        return nullptr;
+      const char *profiles[] = {"textDefault", "code", "voice"};
+      int32_t tokenizer_profile = 0;
+      if (!ParseEnum(profile, profiles, 3, &tokenizer_profile)) {
+        napi_throw_range_error(env, "ERR_OUT_OF_RANGE", "tokenizerProfile is out of range");
+        return nullptr;
+      }
+      status = ze_namespace_open_with_tokenizer(&namespace_request, tokenizer_profile, &handle);
     }
     if (status != ZE_OK)
       return ThrowZeppelin(env, 0, status);

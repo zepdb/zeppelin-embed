@@ -581,3 +581,52 @@ fn record_only_namespace_rejects_dimensions_above_one_and_a_caller_epoch() {
         ZeErrorCode::ZeErrInvalidArgument
     );
 }
+
+#[test]
+fn namespace_tokenizer_profiles_persist_without_embedding_epoch() {
+    use zeppelin_embed::fts::tokenizer::Profile;
+    let root = tempfile::tempdir().expect("root");
+    let root_bytes = root.path().to_string_lossy();
+    for (profile, config) in [
+        (0, Profile::TextDefault),
+        (1, Profile::Code),
+        (2, Profile::Voice),
+    ] {
+        for vectors in [0, 1] {
+            let name = format!("profile-{profile}-{vectors}");
+            let mut spec: ZeNamespaceSpec = common::sized_zeroed();
+            spec.has_vector_space = vectors;
+            spec.dimensions = vectors * 4;
+            let request = ZeNamespaceOpenRequest {
+                abi_size: size_of::<ZeNamespaceOpenRequest>() as u32,
+                abi_reserved: 0,
+                root: root_bytes.as_ptr(),
+                root_len: root_bytes.len(),
+                name: name.as_ptr(),
+                name_len: name.len(),
+                open: open_settings(),
+                spec: &spec,
+            };
+            for _ in 0..2 {
+                let mut handle = 0;
+                assert_eq!(
+                    ze_namespace_open_with_tokenizer(&request, profile, &mut handle),
+                    ZeErrorCode::ZeOk
+                );
+                let mut epoch: ZeEpochIdentity = common::sized_zeroed();
+                assert_eq!(ze_epoch_current(handle, &mut epoch), ZeErrorCode::ZeOk);
+                assert_eq!(ze_close(handle), ZeErrorCode::ZeOk);
+                assert_eq!(epoch.tokenizer_epoch, config.config().epoch().value());
+            }
+            let mut handle = 0;
+            assert_eq!(
+                ze_namespace_open_with_tokenizer(&request, (profile + 1) % 3, &mut handle),
+                ZeErrorCode::ZeErrEpochMismatch
+            );
+            assert_eq!(
+                ze_namespace_open_with_tokenizer(&request, 99, &mut handle),
+                ZeErrorCode::ZeErrInvalidArgument
+            );
+        }
+    }
+}

@@ -1409,3 +1409,21 @@ fn search_result_ownership_and_the_phase_one_engine_seams_are_real() {
     );
     assert_eq!(maintenance.status, 1);
 }
+
+#[test]
+fn namespace_tokenizer_open_catches_its_named_panic_probe() {
+    let _process_guard = process_sensitive_lock();
+    const NAME: &str = "namespace_tokenizer_open_catches_its_named_panic_probe";
+    if delegate_to_panic_feature(NAME) {
+        return;
+    }
+    arm_named_panic("ze_namespace_open_with_tokenizer");
+    assert_eq!(
+        ze_namespace_open_with_tokenizer(std::ptr::null(), 2, std::ptr::null_mut()),
+        ZeErrorCode::ZeErrPanic
+    );
+    assert_eq!(
+        ze_namespace_open_with_tokenizer(std::ptr::null(), 2, std::ptr::null_mut()),
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+}
