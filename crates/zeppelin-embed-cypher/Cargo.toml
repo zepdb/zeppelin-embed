@@ -8,8 +8,8 @@ publish = false
 description = "Bounded internal Cypher syntax frontend for Zeppelin Embed"
 
 [dependencies]
-zeppelin-embed = { path = "../zeppelin-embed", version = "=0.4.2", features = ["graph-cypher"] }
+zeppelin-embed = { path = "../zeppelin-embed", version = "=0.5.0", features = ["graph-cypher"] }
 
 [dev-dependencies]
 # Tests create and reopen native graph stores through test-only helpers.
-zeppelin-embed = { path = "../zeppelin-embed", version = "=0.4.2", features = ["graph-cypher", "test-support"] }
+zeppelin-embed = { path = "../zeppelin-embed", version = "=0.5.0", features = ["graph-cypher", "test-support"] }

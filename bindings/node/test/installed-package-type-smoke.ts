@@ -1,5 +1,9 @@
 import {
   ABI_VERSION,
+  GraphStore,
+  type GraphMutation,
+  type GraphResult,
+  type GraphValue,
   CancellationToken,
   Store,
   idToUuid,
@@ -58,3 +62,13 @@ console.log(report.ok, damage, offset);
 token.close();
 records.close();
 store.close();
+
+const graph = GraphStore.open('/unused/typecheck-graph');
+const items: GraphMutation[] = [{ kind: 'node', operation: 'create', namespace: 'notes',
+  key: 'first', revision: 1n, labels: ['Note'] }];
+const graphReport: GraphResult = graph.apply(items);
+const graphResult: GraphResult = graph.cypher('MATCH (n) RETURN n');
+const values: readonly GraphValue[] = graphResult.rows[0];
+void graphReport;
+void values;
+graph.close();

@@ -80,3 +80,34 @@ try {
   records.close();
   rmSync(directory, { force: true, recursive: true });
 }
+
+// Release gate: exercise graph from the installed tarball on each supported host.
+const { GraphStore } = require('@zepdb/zeppelin-embed');
+const graphDirectory = mkdtempSync(join(tmpdir(), 'zeppelin-installed-graph-'));
+assert.equal(GraphStore.isSupported(), true);
+const graph = GraphStore.open(join(graphDirectory, 'graph'));
+try {
+  const report = graph.apply([
+    { kind: 'node', operation: 'create', namespace: 'notes', key: 'first',
+      revision: 1n, labels: ['Note'], properties: { title: 'Planning' } },
+    { kind: 'node', operation: 'create', namespace: 'folders', key: 'work',
+      revision: 1n, labels: ['Folder'], properties: { name: 'Work' } },
+    { kind: 'relationship', operation: 'create', namespace: 'filing', key: 'first/work',
+      revision: 1n, type: 'IN_FOLDER', source: { local: 0 }, target: { local: 1 } },
+  ]);
+  assert.equal(report.disposition, 'Committed');
+  assert.equal(report.receipts.length, 3);
+  assert.deepEqual(graph.cypher(
+    'MATCH (n:Note)-[:IN_FOLDER]->(f:Folder) RETURN n.title, f.name',
+  ).rows, [['Planning', 'Work']]);
+} finally {
+  graph.close();
+}
+const reopened = GraphStore.open(join(graphDirectory, 'graph'), { mode: 'readOnly' });
+try {
+  assert.deepEqual(reopened.cypher('MATCH (n) RETURN count(n)').rows, [[2n]]);
+} finally {
+  reopened.close();
+  rmSync(graphDirectory, { force: true, recursive: true });
+}
+console.log(`installed graph open/apply/cypher/reopen: ${process.platform}-${process.arch} ok`);

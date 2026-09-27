@@ -4,27 +4,33 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUDGET_KB="${ZE_SIZE_BUDGET_KB:-5120}"
+GRAPH_BUDGET_KB="${ZE_GRAPH_SIZE_BUDGET_KB:-12288}"
 
 if [[ ! "$BUDGET_KB" =~ ^[0-9]+$ ]]; then
     echo "error: ZE_SIZE_BUDGET_KB must be a non-negative integer, got '$BUDGET_KB'" >&2
     exit 2
 fi
 
-cd "$PROJECT_ROOT"
-if [[ "$(uname -s)" == "Darwin" ]]; then
-    cargo build --release -p zeppelin-embed -p zeppelin-embed-ffi -p zeppelin-embed-text
-else
-    cargo build --release -p zeppelin-embed -p zeppelin-embed-ffi
+if [[ ! "$GRAPH_BUDGET_KB" =~ ^[0-9]+$ ]]; then
+    echo "error: ZE_GRAPH_SIZE_BUDGET_KB must be a non-negative integer" >&2
+    exit 2
 fi
+
+cd "$PROJECT_ROOT"
 
 TARGET_ROOT="${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}"
 MEASURE_DIR="$TARGET_ROOT/size-budget"
 
-if ! command -v strip >/dev/null 2>&1; then
+STRIP_TOOL=strip
+SIZE_TOOL=size
+case "$(uname -s)" in
+    MINGW*|MSYS*) STRIP_TOOL=llvm-strip; SIZE_TOOL=llvm-size ;;
+esac
+if ! command -v "$STRIP_TOOL" >/dev/null 2>&1; then
     echo "error: platform 'strip' tool is required for the size gate" >&2
     exit 2
 fi
-if ! command -v size >/dev/null 2>&1; then
+if ! command -v "$SIZE_TOOL" >/dev/null 2>&1; then
     echo "error: platform 'size' tool is required for the size gate" >&2
     exit 2
 fi
@@ -39,6 +45,7 @@ measure_artifact() {
     local label="$1"
     local artifact="$2"
     local gate="${3:-gate}"
+    local budget_kb="${4:-$BUDGET_KB}"
     local stripped="$MEASURE_DIR/$(basename "${artifact%.a}")-stripped.a"
     local size_bytes size_kb archive_kb
 
@@ -63,8 +70,15 @@ measure_artifact() {
                 END { print total + 0 }
             ')"
             ;;
+        MINGW*|MSYS*)
+            "$STRIP_TOOL" --strip-debug "$stripped"
+            size_bytes="$("$SIZE_TOOL" -A "$stripped" | awk '
+                $1 ~ /^\./ && $1 !~ /^\.llvm/ { total += $2 }
+                END { print total + 0 }
+            ')"
+            ;;
         *)
-            echo "error: size-budget.sh supports Darwin and Linux" >&2
+            echo "error: size-budget.sh supports Darwin, Linux and Windows (LLVM)" >&2
             exit 2
             ;;
     esac
@@ -72,21 +86,53 @@ measure_artifact() {
     size_kb="$(( (size_bytes + 1023) / 1024 ))"
     archive_kb="$(du -k "$stripped" | awk '{print $1}')"
     if [[ "$gate" == "gate" ]]; then
-        echo "$label stripped staticlib linked size: $size_kb KB (archive: $archive_kb KB; budget: $BUDGET_KB KB)"
+        echo "$label stripped staticlib linked size: $size_kb KB (archive: $archive_kb KB; budget: $budget_kb KB)"
     else
         echo "$label stripped staticlib linked size: $size_kb KB (archive: $archive_kb KB; recorded only; no budget introduced)"
     fi
 
-    if [[ "$gate" == "gate" ]] && (( size_kb > BUDGET_KB )); then
-        echo "error: $label stripped staticlib linked size $size_kb KB exceeds budget $BUDGET_KB KB" >&2
+    if [[ "$gate" == "gate" ]] && (( size_kb > budget_kb )); then
+        echo "error: $label stripped staticlib linked size $size_kb KB exceeds budget $budget_kb KB" >&2
         exit 1
     fi
 }
+
+# CI can gate the exact prebuilt archive without rebuilding or changing features.
+case "${1:-}" in
+    --graph-archive|--ffi-archive)
+        if [[ $# -ne 2 ]]; then
+            echo "usage: $0 [--graph-archive|--ffi-archive ARCHIVE]" >&2
+            exit 2
+        fi
+        if [[ "$1" == "--graph-archive" ]]; then
+            measure_artifact "graph ffi" "$2" gate "$GRAPH_BUDGET_KB"
+        else
+            measure_artifact "graph-free ffi" "$2"
+        fi
+        exit 0
+        ;;
+    "") ;;
+    *) echo "error: unknown size gate option: $1" >&2; exit 2 ;;
+esac
+
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    cargo build --release -p zeppelin-embed -p zeppelin-embed-ffi -p zeppelin-embed-text
+else
+    cargo build --release -p zeppelin-embed -p zeppelin-embed-ffi
+fi
 
 measure_artifact "core" "$TARGET_ROOT/release/libzeppelin_embed.a"
 measure_artifact "ffi" "$TARGET_ROOT/release/libzeppelin_embed_ffi.a"
 if [[ "$(uname -s)" == "Darwin" ]]; then
     measure_artifact "text" "$TARGET_ROOT/release/libzeppelin_embed_text.a" "report"
+fi
+
+# Graph uses a separate output directory, preserving the graph-free archive.
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    cargo build --locked --release -p zeppelin-embed-ffi --features graph-cypher \
+        --target-dir "$TARGET_ROOT/size-budget-graph"
+    measure_artifact "graph ffi" \
+        "$TARGET_ROOT/size-budget-graph/release/libzeppelin_embed_ffi.a" gate "$GRAPH_BUDGET_KB"
 fi
 
 CONSUMER_MANIFEST="$PROJECT_ROOT/tools/size-consumer/Cargo.toml"

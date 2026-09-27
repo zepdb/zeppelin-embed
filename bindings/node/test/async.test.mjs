@@ -104,7 +104,7 @@ test('async open and mutation policies preserve ownership and errors', async () 
   } finally { try { s?.close(); } catch {} rmSync(root, { recursive: true, force: true }); }
 });
 
-test('running query scan and cypher cancel from the event loop within 2s', { timeout: 15000 }, async () => {
+test('pending query scan and cypher cancel from a microtask within 2s', { timeout: 15000 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'ze249-running-'));
   const dimensions = 512;
   const s = openNamespace(root, 'vectors', { vectorSpace: { dimensions } });
@@ -115,8 +115,13 @@ test('running query scan and cypher cancel from the event loop within 2s', { tim
     let settled = false;
     const pending = run(controller.signal);
     const outcome = pending.then(value => { settled = true; return { value }; }, error => { settled = true; return { error }; });
-    await new Promise(resolve => setTimeout(resolve, 1));
-    assert.equal(settled, false, 'engine call still pending while JS timer runs');
+    // A 1 ms timer can run after native completion but before JS receives it,
+    // especially under Rosetta/load. Yield to a microtask instead: abort after
+    // submission, before waiting for a timer turn. This proves pending-call
+    // cancellation (queued or executing), not that the worker has started.
+    // Keep the 2 s promptness bound measured from the actual abort.
+    await new Promise(resolve => queueMicrotask(resolve));
+    assert.equal(settled, false, 'call still pending before abort');
     const start = performance.now();
     controller.abort();
     const result = await outcome;

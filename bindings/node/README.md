@@ -528,7 +528,7 @@ try {
 original application's namespace spec. It retains tokenizer compatibility
 checks and rejects writes. Ordinary `Store` and `openNamespace` epoch/schema
 validation is unchanged. This shell inspects document stores, not graph stores.
-## Graph documents and Cypher (macOS arm64)
+## Graph documents and Cypher — 0.5.0 MVP
 
 **Disk reclamation.** Writable graph stores default to `autoReclaim: true`
 with `reclaimAfterBytes: 67108864` (64 MiB). Set a safe integer threshold of
@@ -543,8 +543,12 @@ before staging that write. The options are refused on read-only opens.
 `GraphStore` uses the existing graph store format. A document is a node, so a
 single `apply` commits document nodes and relationships atomically. A legacy
 `Store` directory cannot be opened as a graph store or participate in its writes.
-`GraphStore.isSupported()` returns false on the Intel macOS and Windows builds;
-`open` then throws `ZeppelinError` with `ZE_ERR_UNSUPPORTED`.
+This labelled graph MVP ships on darwin-arm64, darwin-x64 and win32-x64
+(node-napi8 and electron-44). The macOS deployment target stays 11;
+`GraphStore.isSupported()` returns false below macOS 14, and `open` throws
+`ZeppelinError` with `ZE_ERR_UNSUPPORTED`. Full qualification remains ZE-78.
+A Cypher statement creates about 121 nodes under default budgets; use `apply`
+for bulk writes. Graph search inside Cypher is not included (ZE-58).
 
 ```js
 const { GraphStore } = require('@zepdb/zeppelin-embed');
@@ -595,13 +599,15 @@ are rejected before calling the engine.
 
 The [documented Cypher profile](https://github.com/zepdb/zeppelin-embed/blob/main/crates/zeppelin-embed-cypher/README.md)
 defines supported statements and functions. This binding does not add syntax,
-graph search, vector inputs, or list parameters. Calls are synchronous; Electron
-applications should run potentially long queries off the UI thread.
+graph search, vector inputs, or list parameters. The example uses synchronous
+calls; use the async API with `AbortSignal` for potentially long operations.
 
 The normal Node suite includes `test/bounded-soak.test.mjs`: eight compressed
 meeting hours (one transcript per second and one note edit per five seconds),
 then eight hours of note edits with a fixed live corpus. It samples process RSS,
 WAL and total store bytes hourly, without explicit maintenance or forced GC.
+The first half of the fixed-corpus phase warms allocator and merge state;
+the second half must grow by less than 64 MiB from that warmed baseline.
 Run `ZE_LONG_SOAK=1 node --test test/bounded-soak.test.mjs` for 48 hours per phase
 (up to 30 minutes instead of the normal three-minute deadline). The workload
 uses `commitTier: 'none'` to measure engine behavior without per-write fsync;

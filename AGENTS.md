@@ -73,6 +73,12 @@ Embedded fat-LTO LLVM bitcode and archive metadata are not runtime footprint;
 the linked-section total still includes Rust `std`, unwind support, and every
 engine section, so later code growth remains gated on each architecture.
 
+Owner decision 2026-09-27 (ZE-253): the graph-free FFI archive retains the
+5,120 KB gate. Graph-enabled FFI archives (core, FFI and Cypher together)
+have a separate 12,288 KB gate, using the same post-strip linked-section
+measurement. This does not raise the graph-free budget or the dependency
+allowlist. `scripts/size-budget.sh` and the Node archive checks enforce it.
+
 The gate was 2 MB from Task 01 through Track L. The repository owner raised it
 to 5 MB on 2026-08-23 by explicit instruction, so that lexical-engine
 structures are sized for retrieval quality and decode speed rather than for

@@ -110,6 +110,32 @@ embed or link the C ABI.
 The macOS SDK archive is language-neutral. Any runtime with C-compatible
 foreign functions can use its header and static or dynamic library.
 
+## Node graph MVP in 0.5.0
+
+`@zepdb/zeppelin-embed` ships a labelled graph MVP on darwin-arm64,
+darwin-x64 and win32-x64 (Node-API 8 and Electron 44). The macOS deployment
+target remains 11; `GraphStore` requires macOS 14 and refuses older systems.
+
+```js
+const { GraphStore } = require('@zepdb/zeppelin-embed');
+const graph = GraphStore.open('/path/to/new-graph');
+try {
+  graph.apply([{ kind: 'node', operation: 'create', namespace: 'notes',
+    key: 'first', revision: 1n, labels: ['Note'],
+    properties: { title: 'Planning' } }]);
+  console.log(graph.cypher('MATCH (n:Note) RETURN n.title').rows);
+} finally {
+  graph.close();
+}
+```
+
+See the [Node graph API](bindings/node/README.md#graph-documents-and-cypher--050-mvp)
+and [release limits](CHANGELOG.md#known-limits). Cypher writes are bounded
+(about 121 created nodes per statement); results default to 1,024 rows with
+`maxRows` up to 65,536. Graph search in Cypher and full graph qualification
+are deferred. This release publishes Node only; other distribution channels
+remain unchanged.
+
 ## Platform support
 
 | Package | macOS 11+, Apple silicon | Windows 10/11 x64 |

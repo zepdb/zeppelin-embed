@@ -4,9 +4,34 @@ All notable changes to Zeppelin Embed are recorded here. Versions follow
 semantic versioning, with the 0.x rule that a new public surface is a minor
 release and a compatible correction is a patch release.
 
-## Unreleased
+## 0.5.0 - 2026-09-27
 
 ### Added
+
+- Node graph MVP: `GraphStore.open`, atomic document-node/relationship
+  `apply` batches with ordered receipts and replay dispositions, relationship
+  rules, and parameterized `cypher` reads and writes with typed rows. Ships on
+  darwin-arm64, darwin-x64 and win32-x64 (node-napi8 and electron-44).
+  macOS keeps its 11 deployment target; graph requires macOS 14 at runtime.
+- Graph stores keep disk use bounded (ZE-260): maintenance drains packs by
+  measured garbage and reclaims superseded roots and WAL files, and runs
+  automatically once 64 MiB has been committed. Node `GraphStore.open`
+  accepts `autoReclaim` (default true) and `reclaimAfterBytes` (default
+  64 MiB); `maintain()` / `maintainAsync()` run one step and return a report.
+  C ABI: `ze_graph_maintain`, `ze_graph_set_maintenance_policy`.
+- Text snippets, highlights and absolute source byte ranges (ZE-215, ZE-244);
+  attribute filters and time ranges on text/hybrid queries (ZE-245).
+- Grouped counts (ZE-229), `id128` attributes (ZE-240), UUID conversion helpers
+  `uuidToId` / `idToUuid` (ZE-230), and additive nullable schema (ZE-218).
+- Expected-revision writes (ZE-224), crash-atomic batches within a namespace
+  (ZE-216), cross-namespace `namespaceBatch` (ZE-239), and declared cascading
+  deletes between related documents (ZE-225).
+- Purge/retention APIs `awaitPurge`, `applyRetention`, `dropPartition` (ZE-246),
+  snapshots and read-only `openSnapshot` (ZE-220, ZE-247), read-only `verify`
+  and the `zeppelin-shell` inspection CLI (ZE-226, ZE-227).
+- Namespace tokenizer profiles (ZE-250), idle merge and `autoMerge`
+  (ZE-234, ZE-222), Promise-returning async APIs with `AbortSignal` (ZE-249),
+  migration reports and text reindexing (ZE-248).
 
 - Node: `Store.seal()` seals the active segment and returns
   `{ generation }` (ZE-231). The new `autoSealRows` open option seals once
@@ -69,6 +94,34 @@ release and a compatible correction is a patch release.
   A request that carries both a cancel token and a deadline remains
   `ZE_ERR_INVALID_ARGUMENT`: the C ABI takes one or the other, and supplying
   both is still a malformed request rather than a stopped query.
+
+### Known limits
+
+- This is a labelled graph MVP ([ADR-021](docs/adr/ADR-021-graph-mvp-in-node.md)).
+  A Cypher statement creates about 121 nodes under default budgets; larger
+  writes refuse atomically with `Limit`. Use `apply` for bulk writes.
+- Results default to 1,024 rows; `maxRows` can be raised to 65,536, subject
+  to memory/work budgets. Exceeding a limit fails rather than truncating.
+- `namespaceBatch` and cascades require participating writers to be closed
+  and copy whole stores. Cascades perform logical deletes, not physical purge.
+- The graph-feature adversarial suite has been red since before E13; this
+  release does not claim full graph qualification. Windows Node CI remains
+  the Windows gate; full Windows engine/FFI qualification is not claimed.
+- `GraphStore` refuses macOS below 14 with `ZE_ERR_UNSUPPORTED`; legacy
+  vector/text support retains macOS 11 compatibility.
+
+### Not in this release
+
+- Encryption (ZE-223), graph search inside Cypher (ZE-58), full graph
+  qualification (ZE-78), or the remaining graph C surface (ZE-241).
+- This release publishes Node only: no crates.io, PyPI, Swift, macOS C SDK,
+  or Homebrew release. `Package.swift` remains pinned to v0.4.2.
+
+### Notes for upgrading
+
+Legacy 0.4.2 stores open unchanged (the `schema-v0.4.2` fixture remains the
+compatibility check). The first released graph format is the 0.5.0 ADR-013
+baseline; legacy `Store` directories are not graph stores.
 
 ## 0.4.2 - 2026-09-18
 
