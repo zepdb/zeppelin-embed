@@ -1812,6 +1812,7 @@ pub fn run_actual_probe(seed: u64) -> Result<NativeRelationalProbeReport, String
             ("oracle", oracle),
             ("chunk-reservation", 1),
             ("row-cap", 1),
+            ("streaming-retention", 1),
         ],
     })
 }
@@ -2128,10 +2129,11 @@ pub(super) fn blocking_capacity_probe(store: &Store) -> Result<(), String> {
     let baseline = resources
         .reserved_bytes()
         .map_err(|error| error.to_string())?;
-    for (memory_limit, max_rows, expected) in [
-        (6 * 1024 * 1024, 2, Some(GraphQueryErrorKind::Limit)),
-        (16 * 1024 * 1024, 1, Some(GraphQueryErrorKind::Limit)),
-        (16 * 1024 * 1024, 2, None),
+    for (memory_limit, max_rows, expected, streaming) in [
+        (6 * 1024 * 1024, 2, Some(GraphQueryErrorKind::Limit), false),
+        (16 * 1024 * 1024, 1, Some(GraphQueryErrorKind::Limit), false),
+        (16 * 1024 * 1024, 2, None, false),
+        (16 * 1024 * 1024, 1, None, true),
     ] {
         let mut options = GraphQueryOptions {
             memory_limit,
@@ -2155,14 +2157,19 @@ pub(super) fn blocking_capacity_probe(store: &Store) -> Result<(), String> {
                 let unit = vec![PlanNodeId(0)];
                 let scan = vec![PlanNodeId(1)];
                 let aggregate = vec![PlanNodeId(2)];
+                // DISTINCT over full node identity has two genuinely different
+                // retained keys. A streaming count no longer reaches this seam.
+                let mut expressions = Vec::with_capacity(1);
                 let aggregates = vec![Projection {
                     slot: SlotId(1),
                     expression: ExprId(0),
                 }];
-                let expressions = vec![Expression::Aggregate {
-                    operation: AggregateExpression::Count { distinct: false },
-                    operand: None,
-                }];
+                if streaming {
+                    expressions.push(Expression::Aggregate {
+                        operation: AggregateExpression::Count { distinct: false },
+                        operand: None,
+                    });
+                }
                 let operators = vec![
                     Operator {
                         inputs: &[],
@@ -2177,9 +2184,13 @@ pub(super) fn blocking_capacity_probe(store: &Store) -> Result<(), String> {
                     },
                     Operator {
                         inputs: &scan,
-                        kind: OperatorKind::Aggregate {
-                            keys: &[],
-                            aggregates: &aggregates,
+                        kind: if streaming {
+                            OperatorKind::Aggregate {
+                                keys: &[],
+                                aggregates: &aggregates,
+                            }
+                        } else {
+                            OperatorKind::Distinct
                         },
                     },
                     Operator {
@@ -2191,7 +2202,9 @@ pub(super) fn blocking_capacity_probe(store: &Store) -> Result<(), String> {
                 backing.vec(&unit)?;
                 backing.vec(&scan)?;
                 backing.vec(&aggregate)?;
-                backing.vec(&aggregates)?;
+                if streaming {
+                    backing.vec(&aggregates)?;
+                }
                 run_plan(
                     runtime,
                     executor,
@@ -2199,7 +2212,7 @@ pub(super) fn blocking_capacity_probe(store: &Store) -> Result<(), String> {
                     &expressions,
                     &Vec::new(),
                     &backing,
-                    &["count"],
+                    &["node"],
                 )
             },
         );
@@ -2230,7 +2243,17 @@ pub(super) fn blocking_capacity_probe(store: &Store) -> Result<(), String> {
                             && counters.get(WorkKind::CompletedRows) == 0
                     }) => {}
             (None, Ok(result))
-                if result.metadata().rows == 1 && result.pools().values == [Value::I64(2)] => {}
+                if streaming
+                    && result.metadata().rows == 1
+                    && result.pools().values == [Value::I64(2)] => {}
+            (None, Ok(result))
+                if !streaming
+                    && result.metadata().rows == 2
+                    && result
+                        .pools()
+                        .values
+                        .iter()
+                        .all(|value| matches!(value, Value::Node(_))) => {}
             (expected, result) => {
                 return Err(format!(
                     "blocking capacity expected {expected:?}, got {:?}",

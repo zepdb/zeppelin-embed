@@ -8,6 +8,7 @@ use super::runtime::{
 };
 use std::marker::PhantomData;
 mod ordering;
+pub(crate) mod streaming;
 pub use ordering::OrderKey;
 mod aggregate;
 pub use aggregate::{Aggregate, AggregateColumn};

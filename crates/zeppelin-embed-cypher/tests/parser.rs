@@ -212,7 +212,7 @@ fn complete_input_rejects_unsupported_suffixes_and_profile_syntax() {
         "RETURN CASE WHEN true THEN 1 END",
         "RETURN coalesce(null,1)",
         "RETURN id(n)",
-        "RETURN sum(n.x)",
+        "RETURN avg(n.x)",
         "RETURN 1^2",
         "RETURN 'x' =~ 'x'",
         "RETURN n LIMIT -1",

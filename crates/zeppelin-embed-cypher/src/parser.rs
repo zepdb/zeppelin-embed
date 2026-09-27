@@ -183,7 +183,11 @@ impl Parser<'_> {
         let aggregate = matches!(
             kind,
             NodeKind::Function {
-                function: Function::Count | Function::Collect,
+                function: Function::Count
+                    | Function::Collect
+                    | Function::Sum
+                    | Function::Min
+                    | Function::Max,
                 ..
             }
         ) || children
@@ -739,7 +743,11 @@ impl Parser<'_> {
             || !matches!(
                 node.kind,
                 NodeKind::Function {
-                    function: Function::Count | Function::Collect,
+                    function: Function::Count
+                        | Function::Collect
+                        | Function::Sum
+                        | Function::Min
+                        | Function::Max,
                     ..
                 }
             )
@@ -1094,6 +1102,12 @@ impl Parser<'_> {
             Function::Count
         } else if text.eq_ignore_ascii_case("collect") {
             Function::Collect
+        } else if text.eq_ignore_ascii_case("sum") {
+            Function::Sum
+        } else if text.eq_ignore_ascii_case("min") {
+            Function::Min
+        } else if text.eq_ignore_ascii_case("max") {
+            Function::Max
         } else if text.eq_ignore_ascii_case("labels") {
             Function::Labels
         } else if text.eq_ignore_ascii_case("type") {
@@ -1118,7 +1132,12 @@ impl Parser<'_> {
             }
             args
         };
-        if distinct && !matches!(function, Function::Count | Function::Collect) {
+        if distinct
+            && !matches!(
+                function,
+                Function::Count | Function::Collect | Function::Sum | Function::Min | Function::Max
+            )
+        {
             return Err(self.error(
                 ErrorKind::Unsupported,
                 "DISTINCT only permitted for aggregates",

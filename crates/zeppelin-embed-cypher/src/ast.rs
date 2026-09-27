@@ -54,6 +54,9 @@ pub enum BinaryOp {
 pub enum Function {
     Count,
     Collect,
+    Sum,
+    Min,
+    Max,
     Labels,
     Type,
     Size,

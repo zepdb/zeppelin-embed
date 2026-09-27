@@ -2890,8 +2890,8 @@ fn build_occurrence<'s, 'r, 'plan, 'v, 'm, 'g>(
                 values,
             }
         }
-        OperatorKind::OffsetLimit { offset, limit } => PhysicalState::OffsetLimit {
-            child: build_unary(
+        OperatorKind::OffsetLimit { offset, limit } => {
+            let child = build_unary(
                 view,
                 plan,
                 operator,
@@ -2899,19 +2899,40 @@ fn build_occurrence<'s, 'r, 'plan, 'v, 'm, 'g>(
                 occurrences,
                 context,
                 bindings,
-            )?,
-            offset,
-            limit,
-            remaining_offset: offset,
-            remaining_limit: limit,
-            writes_below: operator
-                .inputs
-                .first()
-                .and_then(|input| plan.plan().facts(*input))
-                .ok_or(PlanError::Reference)?
-                .classification()
-                .writes(),
-        },
+            )?;
+            if let Some(limit) = limit {
+                // A bound beyond the representable row count retains every
+                // possible input; it must not reject otherwise legal bounds.
+                let bound =
+                    usize::try_from(offset.saturating_add(limit)).map_err(|_| PlanError::Limit)?;
+                if let PhysicalState::Sort { state, .. } = &mut occurrences
+                    .as_mut_slice()
+                    .get_mut(child)
+                    .ok_or(RuntimeError::Batch)?
+                    .state
+                {
+                    state
+                        .as_mut_slice()
+                        .first_mut()
+                        .ok_or(RuntimeError::Batch)?
+                        .bound(bound, context)?;
+                }
+            }
+            PhysicalState::OffsetLimit {
+                child,
+                offset,
+                limit,
+                remaining_offset: offset,
+                remaining_limit: limit,
+                writes_below: operator
+                    .inputs
+                    .first()
+                    .and_then(|input| plan.plan().facts(*input))
+                    .ok_or(PlanError::Reference)?
+                    .classification()
+                    .writes(),
+            }
+        }
         OperatorKind::Sort(keys) => {
             let child = build_unary(
                 view,

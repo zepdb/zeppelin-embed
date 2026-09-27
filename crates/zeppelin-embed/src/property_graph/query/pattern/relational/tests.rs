@@ -2593,7 +2593,7 @@ fn relational_probe_receipts(
 }
 
 fn relational_receipt_oracle(receipts: &[(&'static str, u64)]) -> bool {
-    const EXPECTED: [&str; 12] = [
+    const EXPECTED: [&str; 13] = [
         "pipeline",
         "representative",
         "group",
@@ -2606,6 +2606,7 @@ fn relational_receipt_oracle(receipts: &[(&'static str, u64)]) -> bool {
         "oracle",
         "chunk-reservation",
         "row-cap",
+        "streaming-retention",
     ];
     receipts.len() == EXPECTED.len()
         && receipts
@@ -2640,7 +2641,7 @@ fn native_relational_limits_controls_errors_release() {
     let report = super::test_support::run_actual_probe(0x5e15_4c01)
         .expect("run actual native relational control probe");
     let receipts = relational_probe_receipts(&report);
-    assert_eq!(receipts.len(), 12);
+    assert_eq!(receipts.len(), 13);
     for name in ["limit", "cancel", "late-error", "release", "same-seed"] {
         assert!(
             receipts.get(name).copied().unwrap_or(0) > 0,

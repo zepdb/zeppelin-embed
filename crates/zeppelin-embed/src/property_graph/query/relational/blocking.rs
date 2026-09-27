@@ -91,7 +91,11 @@ impl<'v, 'm, 'g, O: RowOperator<'v, 'm, 'g, E>, E> BlockingRows<'v, 'm, 'g, O, E
             context.checkpoint()?;
             match aggregate.operation {
                 Aggregate::CountAll => {}
-                Aggregate::Count { slot, .. } | Aggregate::Collect { slot, .. } => {
+                Aggregate::Count { slot, .. }
+                | Aggregate::Collect { slot, .. }
+                | Aggregate::Sum { slot, .. }
+                | Aggregate::Min { slot }
+                | Aggregate::Max { slot } => {
                     child.schema().column(slot)?;
                 }
             }
@@ -197,6 +201,30 @@ impl<'v, 'm, 'g, O: RowOperator<'v, 'm, 'g, E>, E: From<RuntimeError>> PullOpera
                 },
             )?;
             let mut input = std::mem::replace(&mut self.input, placeholder);
+            let mut aggregate = if matches!(self.operation, Operation::Aggregate) {
+                Some(streaming::StreamAggregate::new(
+                    std::mem::replace(
+                        &mut input,
+                        Rows::new(
+                            context,
+                            &[],
+                            StorageCapacity::new(0, 0, ArenaCapacity::default()),
+                        )?,
+                    ),
+                    self.keys.as_slice(),
+                    self.aggregates.as_slice(),
+                    self.output_capacity,
+                    context,
+                )?)
+            } else {
+                None
+            };
+            let mut distinct = streaming::StreamIndex::new(context)?;
+            let mut columns = QueryArena::new(context.memory(), self.batch.columns())
+                .map_err(RuntimeError::Memory)?;
+            for column in 0..self.batch.columns() {
+                columns.push(column).map_err(RuntimeError::Memory)?;
+            }
             loop {
                 self.batch.clear();
                 let state = self.child.pull(context, &mut self.batch)?;
@@ -206,10 +234,29 @@ impl<'v, 'm, 'g, O: RowOperator<'v, 'm, 'g, E>, E: From<RuntimeError>> PullOpera
                 for row in 0..self.batch.rows() {
                     context.charge(WorkKind::OperatorRows, 1)?;
                     context.charge(WorkKind::RowsIn, 1)?;
-                    input.push_from(
-                        |column| self.batch.value(row, column).ok_or(RuntimeError::Batch),
-                        context,
-                    )?;
+                    let mut values = QueryArena::new(context.memory(), self.batch.columns())
+                        .map_err(RuntimeError::Memory)?;
+                    for column in 0..self.batch.columns() {
+                        values
+                            .push(self.batch.value(row, column).ok_or(RuntimeError::Batch)?)
+                            .map_err(RuntimeError::Memory)?;
+                    }
+                    if let Some(aggregate) = &mut aggregate {
+                        aggregate.push(values.as_slice(), self.aggregates.as_slice(), context)?;
+                    } else if matches!(self.operation, Operation::Distinct) {
+                        let (hash, found) = distinct.locate(
+                            values.as_slice(),
+                            &input,
+                            columns.as_slice(),
+                            context,
+                        )?;
+                        if found.is_none() {
+                            distinct.insert(hash, input.len(), context)?;
+                            input.push(values.as_slice(), context)?;
+                        }
+                    } else {
+                        input.push(values.as_slice(), context)?;
+                    }
                 }
                 if state == PullState::Done {
                     break;
@@ -217,12 +264,11 @@ impl<'v, 'm, 'g, O: RowOperator<'v, 'm, 'g, E>, E: From<RuntimeError>> PullOpera
             }
             self.batch.clear();
             let rows = match self.operation {
-                Operation::Distinct => input.distinct(context)?,
+                Operation::Distinct => input,
                 Operation::Sort => input.sort(self.order.as_slice(), context)?,
-                Operation::Aggregate => input.aggregate(
+                Operation::Aggregate => aggregate.ok_or(RuntimeError::Batch)?.finish(
                     self.keys.as_slice(),
                     self.aggregates.as_slice(),
-                    self.output_capacity,
                     context,
                 )?,
             };

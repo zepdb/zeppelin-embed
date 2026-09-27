@@ -1092,6 +1092,13 @@ export class GraphStore {
    * Parameters are scalar only; bigint values must fit signed I64. Unknown
    * options, nonfinite numbers and malformed Unicode are rejected. No graph
    * search, vector input, or list parameters in this release.
+   * count, sum, min and max accumulate per group; null operands are skipped.
+   * Empty sum/count is 0; empty min/max is null. Sum uses checked numeric
+   * arithmetic; min/max use the same value ordering as ORDER BY.
+   * DISTINCT retains unique keys. ORDER BY with LIMIT retains only offset +
+   * limit rows and preserves input order for ties. All input is still examined.
+   * collect and DISTINCT aggregate operands consume memory for retained values;
+   * the query memory/work budgets and result-row limit still apply.
    */
   cypher(text: string, params?: Readonly<Record<string, GraphScalar>>, options?: GraphQueryOptions): GraphResult;
   /** Off-thread atomic apply. Await dependent writes; concurrent writers may

@@ -4,10 +4,13 @@
 )]
 
 use super::super::plan::{AggregateExpression, Expression, Projection, SortKey};
+use super::super::relational::streaming::{StreamAggregate, StreamIndex};
 use super::super::relational::{Aggregate, AggregateColumn, OrderKey, Rows, SlotProjection};
 use super::*;
 
 pub(super) mod eligibility;
+mod top_k;
+use top_k::TopRows;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod test_support;
 
@@ -72,6 +75,7 @@ impl<'m, 'g> RowUses<'m, 'g> {
 }
 
 pub(super) struct SortState<'v, 'm, 'g> {
+    top: Option<TopRows<'v, 'm, 'g>>,
     descriptors: QueryArena<'m, 'g, SortKey>,
     order: QueryArena<'m, 'g, OrderKey>,
     visible_slots: QueryArena<'m, 'g, SlotId>,
@@ -207,6 +211,32 @@ impl<'v, 'm, 'g> AggregateState<'v, 'm, 'g> {
                         .map_err(RuntimeError::Memory)?;
                     Aggregate::Collect { slot, distinct }
                 }
+                (
+                    operation @ (AggregateExpression::Sum { .. }
+                    | AggregateExpression::Min
+                    | AggregateExpression::Max),
+                    Some(operand),
+                ) => {
+                    let slot = SlotId(candidate);
+                    candidate = candidate.checked_sub(1).ok_or(PlanError::Limit)?;
+                    expressions.push(operand).map_err(RuntimeError::Memory)?;
+                    input_slots.push(slot).map_err(RuntimeError::Memory)?;
+                    evaluated
+                        .push(RowBatch::storage(
+                            context,
+                            1,
+                            1,
+                            capacity.rows.payload_bytes,
+                            capacity.rows.variable,
+                        )?)
+                        .map_err(RuntimeError::Memory)?;
+                    match operation {
+                        AggregateExpression::Sum { distinct } => Aggregate::Sum { slot, distinct },
+                        AggregateExpression::Min => Aggregate::Min { slot },
+                        AggregateExpression::Max => Aggregate::Max { slot },
+                        _ => return Err(PlanError::Aggregate.into()),
+                    }
+                }
                 _ => return Err(PlanError::Aggregate.into()),
             };
             aggregate_columns
@@ -301,6 +331,16 @@ impl<'v, 'm, 'g> DistinctState<'v, 'm, 'g> {
 }
 
 impl<'v, 'm, 'g> SortState<'v, 'm, 'g> {
+    pub(super) fn bound(
+        &mut self,
+        limit: usize,
+        context: &RuntimeContext<'v, 'm, 'g>,
+    ) -> Result<(), RuntimeError> {
+        self.visible.take();
+        self.key_rows.take();
+        self.top = Some(TopRows::new(limit, context)?);
+        Ok(())
+    }
     pub(super) fn new(
         visible_slots: &[SlotId],
         keys: &[SortKey],
@@ -355,6 +395,7 @@ impl<'v, 'm, 'g> SortState<'v, 'm, 'g> {
         let key_rows = Rows::new(context, key_slots.as_slice(), capacity.rows)?;
         owner
             .push(Self {
+                top: None,
                 descriptors,
                 order,
                 visible_slots: owned_visible_slots,
@@ -377,16 +418,20 @@ impl<'v, 'm, 'g> SortState<'v, 'm, 'g> {
     ) -> Result<(), RuntimeError> {
         self.visible.take();
         self.key_rows.take();
-        self.visible = Some(Rows::new(
-            context,
-            self.visible_slots.as_slice(),
-            self.capacity.rows,
-        )?);
-        self.key_rows = Some(Rows::new(
-            context,
-            self.key_slots.as_slice(),
-            self.capacity.rows,
-        )?);
+        if let Some(top) = &mut self.top {
+            top.reset(context)?;
+        } else {
+            self.visible = Some(Rows::new(
+                context,
+                self.visible_slots.as_slice(),
+                self.capacity.rows,
+            )?);
+            self.key_rows = Some(Rows::new(
+                context,
+                self.key_slots.as_slice(),
+                self.capacity.rows,
+            )?);
+        }
         for value in self.evaluated.as_mut_slice() {
             context.checkpoint()?;
             value.clear();
@@ -451,33 +496,11 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
             .ok_or(RuntimeError::Batch)?;
         if !state.started {
             state.started = true;
-            let mut visible = state.visible.take().ok_or(RuntimeError::Batch)?;
-            let mut key_rows = state.key_rows.take().ok_or(RuntimeError::Batch)?;
+            let mut visible = state.visible.take();
+            let mut key_rows = state.key_rows.take();
             while self.next_occurrence(child, context)? {
                 context.charge(WorkKind::OperatorRows, 1)?;
                 context.charge(WorkKind::RowsIn, 1)?;
-                let mut values = QueryArena::new(context.memory(), visible.schema().slots().len())
-                    .map_err(RuntimeError::Memory)?;
-                {
-                    let occurrence = self.occurrence(child)?;
-                    for column in 0..occurrence.output.columns() {
-                        values
-                            .push(
-                                occurrence
-                                    .output
-                                    .value(0, column)
-                                    .ok_or(RuntimeError::Batch)?,
-                            )
-                            .map_err(RuntimeError::Memory)?;
-                    }
-                }
-                visible.push(values.as_slice(), context)?;
-                drop(values);
-
-                state
-                    .uses
-                    .push(self.occurrence(child)?.uses.as_slice(), context)?;
-
                 for position in 0..state.descriptors.len() {
                     let descriptor = *state
                         .descriptors
@@ -509,6 +532,22 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
                     };
                     value.push_row(&[evaluated], context)?;
                 }
+                let mut values = QueryArena::new(context.memory(), state.visible_slots.len())
+                    .map_err(RuntimeError::Memory)?;
+                {
+                    let occurrence = self.occurrence(child)?;
+                    for column in 0..occurrence.output.columns() {
+                        values
+                            .push(
+                                occurrence
+                                    .output
+                                    .value(0, column)
+                                    .ok_or(RuntimeError::Batch)?,
+                            )
+                            .map_err(RuntimeError::Memory)?;
+                    }
+                }
+
                 let mut key_values = QueryArena::new(context.memory(), state.evaluated.len())
                     .map_err(RuntimeError::Memory)?;
                 for value in state.evaluated.as_slice() {
@@ -516,10 +555,47 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
                         .push(value.value(0, 0).ok_or(RuntimeError::Batch)?)
                         .map_err(RuntimeError::Memory)?;
                 }
-                key_rows.push(key_values.as_slice(), context)?;
+                if let Some(top) = &mut state.top {
+                    top.offer(
+                        values.as_slice(),
+                        key_values.as_slice(),
+                        self.occurrence(child)?.uses.as_slice(),
+                        state.order.as_slice(),
+                        context,
+                    )?;
+                } else {
+                    visible
+                        .as_mut()
+                        .ok_or(RuntimeError::Batch)?
+                        .push(values.as_slice(), context)?;
+                    key_rows
+                        .as_mut()
+                        .ok_or(RuntimeError::Batch)?
+                        .push(key_values.as_slice(), context)?;
+                    state
+                        .uses
+                        .push(self.occurrence(child)?.uses.as_slice(), context)?;
+                }
             }
-            state.key_rows = Some(key_rows.sort(state.order.as_slice(), context)?);
-            state.visible = Some(visible);
+            if let Some(top) = &mut state.top {
+                top.sort(state.order.as_slice(), context)?;
+            } else {
+                state.key_rows = Some(
+                    key_rows
+                        .ok_or(RuntimeError::Batch)?
+                        .sort(state.order.as_slice(), context)?,
+                );
+            }
+            state.visible = visible;
+        }
+        if let Some(top) = &state.top {
+            if state.next == top.len() {
+                return Ok(false);
+            }
+            let parent = self.occurrence_mut(index)?;
+            top.emit(state.next, &mut parent.output, &mut parent.uses, context)?;
+            state.next += 1;
+            return Ok(true);
         }
         let key_rows = state.key_rows.as_ref().ok_or(RuntimeError::Batch)?;
         if state.next == key_rows.len() {
@@ -552,6 +628,12 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
         if !state.started {
             state.started = true;
             let mut rows = state.rows.take().ok_or(RuntimeError::Batch)?;
+            let mut seen = StreamIndex::new(context)?;
+            let mut columns = QueryArena::new(context.memory(), rows.schema().slots().len())
+                .map_err(RuntimeError::Memory)?;
+            for column in 0..rows.schema().slots().len() {
+                columns.push(column).map_err(RuntimeError::Memory)?;
+            }
             while self.next_occurrence(child, context)? {
                 context.charge(WorkKind::OperatorRows, 1)?;
                 context.charge(WorkKind::RowsIn, 1)?;
@@ -570,13 +652,19 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
                             .map_err(RuntimeError::Memory)?;
                     }
                 }
+                let (hash, found) =
+                    seen.locate(values.as_slice(), &rows, columns.as_slice(), context)?;
+                if found.is_some() {
+                    continue;
+                }
+                seen.insert(hash, rows.len(), context)?;
                 rows.push(values.as_slice(), context)?;
                 drop(values);
                 state
                     .uses
                     .push(self.occurrence(child)?.uses.as_slice(), context)?;
             }
-            state.rows = Some(rows.distinct(context)?);
+            state.rows = Some(rows);
         }
         let rows = state.rows.as_ref().ok_or(RuntimeError::Batch)?;
         if state.next == rows.len() {
@@ -607,7 +695,13 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
             .ok_or(RuntimeError::Batch)?;
         if !state.started {
             state.started = true;
-            let mut rows = state.rows.take().ok_or(RuntimeError::Batch)?;
+            let mut aggregate = StreamAggregate::new(
+                state.rows.take().ok_or(RuntimeError::Batch)?,
+                state.key_columns.as_slice(),
+                state.aggregate_columns.as_slice(),
+                state.capacity.rows,
+                context,
+            )?;
             while self.next_occurrence(child, context)? {
                 context.charge(WorkKind::OperatorRows, 1)?;
                 context.charge(WorkKind::RowsIn, 1)?;
@@ -649,20 +743,29 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
                         .push(value.value(0, 0).ok_or(RuntimeError::Batch)?)
                         .map_err(RuntimeError::Memory)?;
                 }
-                rows.push(values.as_slice(), context)?;
+                let fresh = aggregate.push(
+                    values.as_slice(),
+                    state.aggregate_columns.as_slice(),
+                    context,
+                )?;
                 drop(values);
-                state
-                    .uses
-                    .push(self.occurrence(child)?.uses.as_slice(), context)?;
+                if fresh {
+                    state
+                        .uses
+                        .push(self.occurrence(child)?.uses.as_slice(), context)?;
+                }
             }
-            let (rows, representatives) = rows.aggregate_with_representatives(
+            let rows = aggregate.finish(
                 state.key_columns.as_slice(),
                 state.aggregate_columns.as_slice(),
-                state.capacity.rows,
                 context,
             )?;
-            if rows.len() != representatives.len() {
-                return Err(RuntimeError::Batch.into());
+            let mut representatives =
+                QueryArena::new(context.memory(), rows.len()).map_err(RuntimeError::Memory)?;
+            for row in 0..rows.len() {
+                representatives
+                    .push(if state.uses.len == 0 { None } else { Some(row) })
+                    .map_err(RuntimeError::Memory)?;
             }
             state.rows = Some(rows);
             state.representatives = Some(representatives);

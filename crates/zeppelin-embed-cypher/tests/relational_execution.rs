@@ -404,3 +404,59 @@ fn ze51_blocking_operators_over_5000_nodes() {
         vec![vec![V::Int(1)]]
     );
 }
+
+#[test]
+fn ze255_numeric_aggregates() {
+    let graph = Graph::new("ze255-numeric");
+    graph.setup("CREATE (:Number {v: 2}), (:Number {v: 3}), (:Number)");
+    assert_eq!(
+        rows(
+            &graph,
+            "MATCH (n:Number) RETURN sum(n.v), min(n.v), max(n.v)"
+        ),
+        vec![vec![V::Int(5), V::Int(2), V::Int(3)]]
+    );
+    assert_eq!(
+        rows(
+            &graph,
+            "MATCH (n:Missing) RETURN sum(n.v), min(n.v), max(n.v)"
+        ),
+        vec![vec![V::Int(0), V::Null, V::Null]]
+    );
+}
+
+#[test]
+fn ze255_top_k_memory_bound() {
+    let mut peaks = Vec::new();
+    for count in [128, 5000] {
+        let graph = capacity_graph(count);
+        let result = graph
+            .run(
+                "MATCH (n:Segment) RETURN n.i AS i ORDER BY i DESC SKIP 2 LIMIT 3",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(
+            tck::actual_table(&result).1,
+            (count - 5..count - 2)
+                .rev()
+                .map(|i| vec![V::Int(i)])
+                .collect::<Vec<_>>()
+        );
+        peaks.push(result.metadata().peak_query_bytes);
+    }
+    assert_eq!(
+        peaks[0], peaks[1],
+        "fixed k must retain the same charged capacity across input sizes"
+    );
+}
+
+#[test]
+fn ze255_top_k_preserves_full_sort_ties_and_hidden_keys() {
+    let graph = capacity_graph(128);
+    let query =
+        "MATCH (n:Segment) RETURN n.i AS i, 'retained payload' AS text ORDER BY n.k DESC, n.i % 3";
+    let full = rows(&graph, query);
+    let bounded = rows(&graph, &format!("{query} SKIP 5 LIMIT 17"));
+    assert_eq!(bounded.as_slice(), full.get(5..22).unwrap());
+}

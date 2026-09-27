@@ -758,3 +758,118 @@ fn eligible_hashes_mix_high_identity_bits_before_bucket_selection() {
         );
     });
 }
+
+struct RepeatedRows<'m, 'g> {
+    schema: Schema<'m, 'g>,
+    remaining: usize,
+}
+impl<'v, 'm, 'g> RowOperator<'v, 'm, 'g> for RepeatedRows<'m, 'g> {
+    fn schema(&self) -> &Schema<'m, 'g> {
+        &self.schema
+    }
+}
+impl<'v, 'm, 'g> PullOperator<'v, 'm, 'g> for RepeatedRows<'m, 'g> {
+    fn node(&self) -> PlanNodeId {
+        PlanNodeId(0)
+    }
+    fn prepare_search(
+        &mut self,
+        _: PlanNodeId,
+        _: &mut RuntimeContext<'v, 'm, 'g>,
+    ) -> Result<(), RuntimeError> {
+        Err(RuntimeError::Batch)
+    }
+    fn pull(
+        &mut self,
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+        output: &mut RowBatch<'v, 'm, 'g>,
+    ) -> Result<PullState, RuntimeError> {
+        while self.remaining > 0 && output.rows() < output.capacity() {
+            output.push_row(&[QueryValue::I64((self.remaining % 7) as i64)], context)?;
+            self.remaining -= 1;
+        }
+        Ok(if self.remaining == 0 {
+            PullState::Done
+        } else {
+            PullState::More
+        })
+    }
+}
+fn ze255_bounded<'a>(operation: impl Fn() -> BlockingOperation<'a>, expected_rows: usize) {
+    let mut peaks = Vec::new();
+    for input_rows in [128, 200_000] {
+        fixture(|context| {
+            let baseline = context.memory().reserved_bytes();
+            let child = RepeatedRows {
+                schema: Schema::new(context, &[SlotId(0)]).expect("schema"),
+                remaining: input_rows,
+            };
+            let small = StorageCapacity::new(32, 4096, ArenaCapacity::default());
+            let mut operator = BlockingRows::new(
+                context,
+                PlanNodeId(1),
+                child,
+                operation(),
+                small,
+                small,
+                small,
+            )
+            .expect("operator");
+            let mut output =
+                RowBatch::new(context, operator.schema().slots().len(), 32, 4096).expect("batch");
+            let mut seen = 0;
+            let mut total = 0;
+            loop {
+                output.clear();
+                let state = operator
+                    .pull(context, &mut output)
+                    .expect("bounded streaming input");
+                seen += output.rows();
+                for row in 0..output.rows() {
+                    if output.columns() == 2 {
+                        let Some(QueryValue::I64(count)) = output.value(row, 1) else {
+                            panic!("count")
+                        };
+                        total += count;
+                    }
+                }
+                if state == PullState::Done {
+                    break;
+                }
+            }
+            assert_eq!(seen, expected_rows);
+            if output.columns() == 2 {
+                assert_eq!(total, input_rows as i64);
+            }
+            assert!(
+                context.memory().peak_reserved_bytes() - baseline < 256 * 1024,
+                "actual charged peak must depend on seven groups, not 200000 rows"
+            );
+            peaks.push(context.memory().peak_reserved_bytes() - baseline);
+        });
+    }
+    assert_eq!(
+        peaks[0], peaks[1],
+        "retained allocation is independent of input row count"
+    );
+}
+#[test]
+fn ze255_streaming_groups_memory_bound() {
+    ze255_bounded(
+        || BlockingOperation::Aggregate {
+            keys: &[SlotProjection {
+                source: SlotId(0),
+                output: SlotId(1),
+            }],
+            columns: &[AggregateColumn {
+                output: SlotId(2),
+                operation: Aggregate::CountAll,
+            }],
+        },
+        7,
+    );
+}
+#[test]
+fn ze255_distinct_memory_bound() {
+    ze255_bounded(|| BlockingOperation::Distinct, 7);
+}

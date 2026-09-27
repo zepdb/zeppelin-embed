@@ -354,17 +354,24 @@ impl<'a> Binder<'a, '_> {
                         .transpose()?
                         .unwrap_or_default();
                     match function {
-                        Function::Count | Function::Collect => {
+                        Function::Count
+                        | Function::Collect
+                        | Function::Sum
+                        | Function::Min
+                        | Function::Max => {
                             if function == Function::Collect {
                                 constant = Some(id);
                             }
                             eligible = function == Function::Collect
                                 && distinct
                                 && kinds.contains(ValueKinds::NODE);
-                            let operation = if function == Function::Count {
-                                AggregateExpression::Count { distinct }
-                            } else {
-                                AggregateExpression::Collect { distinct }
+                            let operation = match function {
+                                Function::Count => AggregateExpression::Count { distinct },
+                                Function::Collect => AggregateExpression::Collect { distinct },
+                                Function::Sum => AggregateExpression::Sum { distinct },
+                                Function::Min => AggregateExpression::Min,
+                                Function::Max => AggregateExpression::Max,
+                                _ => return Err(error(node.span, "invalid aggregate")),
                             };
                             (
                                 Expression::Aggregate {
@@ -373,8 +380,12 @@ impl<'a> Binder<'a, '_> {
                                 },
                                 if function == Function::Count {
                                     ValueKinds::I64
-                                } else {
+                                } else if function == Function::Collect {
                                     ValueKinds::LIST
+                                } else if function == Function::Sum {
+                                    ValueKinds::I64.union(ValueKinds::F64)
+                                } else {
+                                    kinds.union(ValueKinds::NULL)
                                 },
                             )
                         }

@@ -185,6 +185,15 @@ pub enum BinaryExpression {
 /// Supported aggregate forms, distinct from scalar functions.
 #[derive(Clone, Copy, Debug)]
 pub enum AggregateExpression {
+    /// Checked numeric sum of non-null operands.
+    Sum {
+        /// Group equivalence deduplication.
+        distinct: bool,
+    },
+    /// Least non-null operand in query order.
+    Min,
+    /// Greatest non-null operand in query order.
+    Max,
     /// Count rows or nonnull values.
     Count {
         /// Group equivalence deduplication.

@@ -201,6 +201,17 @@ pub(super) fn aggregate(
         AggregateExpression::Count { distinct: false } => ValueKinds::I64,
         AggregateExpression::Count { distinct: true } if operand.is_some() => ValueKinds::I64,
         AggregateExpression::Collect { .. } if operand.is_some() => ValueKinds::LIST,
+        AggregateExpression::Sum { .. } if operand.is_some() => {
+            ValueKinds::I64.union(ValueKinds::F64)
+        }
+        AggregateExpression::Min | AggregateExpression::Max if operand.is_some() => expression(
+            description,
+            operand.ok_or(PlanError::Aggregate)?,
+            scope,
+            seen,
+            context,
+        )?
+        .union(ValueKinds::NULL),
         _ => return Err(PlanError::Aggregate),
     })
 }
