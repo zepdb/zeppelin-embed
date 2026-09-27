@@ -1052,3 +1052,15 @@ capacities apply to it exactly as to a returning statement.
   and fails loudly on a member that continues nothing.
 - Atomicity is per store. Namespaces have independent WALs and manifests;
   cross-namespace atomicity needs a commit protocol that does not exist.
+
+## ZE-240 id128 attributes
+
+- `ColumnType::Id128` uses schema tag 7 in manifests and sealed columns.
+  WAL metadata/scalar tag 6 carries exactly 16 little-endian bytes; existing
+  tags and encodings are unchanged. Sealed arrays use 16 bytes per row, zero
+  bytes for null placeholders, with the existing separate presence bitmap.
+- Public core values use `DocId`. Equality/membership preserve all 128 bits;
+  ID attributes do not support numeric range, scan ordering or grouping.
+- C `ZeAttributeValue` tag 6 uses `u64_value` for the low half and the unsigned
+  bit pattern of `i64_value` for the high half. Existing repr(C) layouts stay
+  frozen. Node uses unsigned 128-bit bigints and the existing UUID helpers.

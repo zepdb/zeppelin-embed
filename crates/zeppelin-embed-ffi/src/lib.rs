@@ -482,6 +482,7 @@ fn record_only_epoch_identity() -> EpochIdentity {
 
 fn parse_attribute_type(value: i32) -> Result<ColumnType, FfiError> {
     match value {
+        7 => Ok(ColumnType::Id128),
         1 => Ok(ColumnType::U64),
         2 => Ok(ColumnType::I64),
         3 => Ok(ColumnType::F64),
@@ -593,6 +594,10 @@ fn parse_attribute_value(
             }
             return Ok(None);
         }
+        6 => PredicateValue::Id128(DocId::new(
+            u128::from(attribute.u64_value)
+                | (u128::from(attribute.i64_value.cast_unsigned()) << 64),
+        )),
         1 => PredicateValue::U64(attribute.u64_value),
         2 => PredicateValue::I64(attribute.i64_value),
         3 => PredicateValue::F64(attribute.f64_value),
@@ -627,6 +632,9 @@ fn parse_filter_value(
         )));
     }
     let parsed = match value.value_type {
+        6 => PredicateValue::Id128(DocId::new(
+            u128::from(value.u64_value) | (u128::from(value.i64_value.cast_unsigned()) << 64),
+        )),
         1 => PredicateValue::U64(value.u64_value),
         2 => PredicateValue::I64(value.i64_value),
         3 => PredicateValue::F64(value.f64_value),
@@ -648,6 +656,7 @@ fn parse_filter_value(
         .ok_or_else(|| FfiError::invalid(format!("unknown column {}", column.get())))?
         .column_type();
     let actual = match &parsed {
+        PredicateValue::Id128(_) => ColumnType::Id128,
         PredicateValue::U64(_) => ColumnType::U64,
         PredicateValue::I64(_) => ColumnType::I64,
         PredicateValue::F64(_) => ColumnType::F64,
@@ -1107,7 +1116,8 @@ fn publish_get_documents(
                 total,
                 |total, (_, value)| match value {
                     PredicateValue::String(value) => get_arena_add(total, value.len()),
-                    PredicateValue::U64(_)
+                    PredicateValue::Id128(_)
+                    | PredicateValue::U64(_)
                     | PredicateValue::I64(_)
                     | PredicateValue::F64(_)
                     | PredicateValue::Bool(_) => Ok(total),
@@ -1205,6 +1215,11 @@ fn publish_get_documents(
                         string_len: 0,
                     };
                     match value {
+                        PredicateValue::Id128(value) => {
+                            attribute.value_type = 6;
+                            attribute.u64_value = value.get() as u64;
+                            attribute.i64_value = ((value.get() >> 64) as u64).cast_signed();
+                        }
                         PredicateValue::U64(value) => {
                             attribute.value_type = 1;
                             attribute.u64_value = *value;

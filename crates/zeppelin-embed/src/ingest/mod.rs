@@ -265,6 +265,7 @@ pub(crate) fn column_inputs(columns: &[(ColumnId, PredicateValue)]) -> Vec<Colum
         .map(|(column, value)| ColumnInput {
             column: *column,
             value: match value {
+                PredicateValue::Id128(value) => ColumnValue::Id128(*value),
                 PredicateValue::U64(value) => ColumnValue::U64(*value),
                 PredicateValue::I64(value) => ColumnValue::I64(*value),
                 PredicateValue::F64(value) => ColumnValue::F64(*value),

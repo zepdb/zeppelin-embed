@@ -52,6 +52,8 @@ impl ColumnId {
 pub enum ColumnType {
     /// Unsigned 64-bit integers.
     U64,
+    /// Full 128-bit document identifiers.
+    Id128,
     /// Signed 64-bit integers.
     I64,
     /// IEEE-754 64-bit floating-point values.

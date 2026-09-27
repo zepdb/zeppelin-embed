@@ -74,6 +74,7 @@ const DELETE_PREFIX_LEN: usize = COMMON_HEADER_LEN + 4;
 const METADATA_PREFIX_LEN: usize = COMMON_HEADER_LEN + DOCUMENT_VERSION_LEN + 4 + 1 + 3 + 4;
 
 const VALUE_NULL: u8 = 0;
+const VALUE_ID128: u8 = 6;
 const VALUE_U64: u8 = 1;
 const VALUE_I64: u8 = 2;
 const VALUE_F64: u8 = 3;
@@ -215,6 +216,8 @@ pub enum MetadataValue {
     Null,
     /// Unsigned integer value.
     U64(u64),
+    /// Full document identifier, encoded as sixteen little-endian bytes.
+    Id128(DocId),
     /// Signed integer value.
     I64(i64),
     /// IEEE-754 value, preserving its exact bits.
@@ -390,6 +393,7 @@ pub(crate) fn encode_column_values(
 
 fn predicate_to_metadata(value: &PredicateValue) -> MetadataValue {
     match value {
+        PredicateValue::Id128(value) => MetadataValue::Id128(*value),
         PredicateValue::U64(value) => MetadataValue::U64(*value),
         PredicateValue::I64(value) => MetadataValue::I64(*value),
         PredicateValue::F64(value) => MetadataValue::F64(*value),
@@ -655,6 +659,7 @@ pub(crate) fn decode_column_values(
 fn metadata_to_predicate(value: MetadataValue) -> Result<PredicateValue, PayloadError> {
     match value {
         MetadataValue::Null => Err(PayloadError::ValueKind(VALUE_NULL)),
+        MetadataValue::Id128(value) => Ok(PredicateValue::Id128(value)),
         MetadataValue::U64(value) => Ok(PredicateValue::U64(value)),
         MetadataValue::I64(value) => Ok(PredicateValue::I64(value)),
         MetadataValue::F64(value) => Ok(PredicateValue::F64(value)),
@@ -786,6 +791,7 @@ fn append_version(payload: &mut Vec<u8>, version: DocumentVersion) {
 fn encode_metadata_value(value: &MetadataValue) -> Result<(u8, Vec<u8>), PayloadError> {
     let encoded = match value {
         MetadataValue::Null => (VALUE_NULL, Vec::new()),
+        MetadataValue::Id128(value) => (VALUE_ID128, value.get().to_le_bytes().to_vec()),
         MetadataValue::U64(value) => (VALUE_U64, value.to_le_bytes().to_vec()),
         MetadataValue::I64(value) => (VALUE_I64, value.to_le_bytes().to_vec()),
         MetadataValue::F64(value) => (VALUE_F64, value.to_bits().to_le_bytes().to_vec()),
@@ -803,6 +809,13 @@ fn decode_metadata_value(kind: u8, body: &[u8]) -> Result<MetadataValue, Payload
         VALUE_NULL => {
             require_value_len(kind, body, 0)?;
             Ok(MetadataValue::Null)
+        }
+        VALUE_ID128 => {
+            require_value_len(kind, body, 16)?;
+            read_array(body)
+                .map(u128::from_le_bytes)
+                .map(DocId::new)
+                .map(MetadataValue::Id128)
         }
         VALUE_U64 => {
             require_value_len(kind, body, 8)?;
@@ -954,6 +967,26 @@ impl<'a> Cursor<'a> {
             Ok(())
         } else {
             Err(PayloadError::TrailingBytes(remaining))
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod id128_tests {
+    use super::*;
+
+    #[test]
+    fn id128_wal_layout_is_sixteen_little_endian_bytes() {
+        let value = MetadataValue::Id128(DocId::new(0xffeeddccbbaa99887766554433221100));
+        let bytes = vec![
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+            0xee, 0xff,
+        ];
+        assert_eq!(encode_metadata_value(&value).unwrap(), (6, bytes.clone()));
+        assert_eq!(decode_metadata_value(6, &bytes).unwrap(), value);
+        for length in [0, 8, 15, 17] {
+            assert!(decode_metadata_value(6, &vec![0; length]).is_err());
         }
     }
 }

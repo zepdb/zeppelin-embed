@@ -75,7 +75,9 @@ export type AttributeType =
   | 'f64'
   | 'bool'
   | 'dictionaryString'
-  | 'rawString';
+  | 'rawString'
+  /** Full unsigned 128-bit ID; equality and set membership are supported. */
+  | 'id128';
 
 export interface AttributeDefinition {
   readonly id: number;
@@ -84,7 +86,10 @@ export interface AttributeDefinition {
   readonly nullable?: boolean;
 }
 
+/** Id128 values are bigints in [0, 2^128 - 1]. Convert UUID strings with
+ * uuidToId before writing/filtering and idToUuid after reading. */
 export type AttributeValue =
+  | { readonly id: number; readonly type: 'id128'; readonly value: DocumentId }
   | { readonly id: number; readonly type: 'null'; readonly value: null }
   | { readonly id: number; readonly type: 'u64'; readonly value: bigint }
   | { readonly id: number; readonly type: 'i64'; readonly value: bigint }

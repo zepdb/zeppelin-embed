@@ -83,7 +83,7 @@ impl Store {
             ColumnType::U64 => Tally::U64(BTreeMap::new()),
             ColumnType::I64 => Tally::I64(BTreeMap::new()),
             ColumnType::DictionaryString | ColumnType::RawString => Tally::String(BTreeMap::new()),
-            other @ (ColumnType::F64 | ColumnType::Bool) => {
+            other @ (ColumnType::Id128 | ColumnType::F64 | ColumnType::Bool) => {
                 return Err(invalid(format!(
                     "group-by attribute {} has type {other:?}; grouping supports \
                      U64, I64, DictionaryString and RawString",

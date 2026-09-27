@@ -10,6 +10,8 @@ use super::{ColumnId, ColumnType};
 pub enum PredicateValue {
     /// An unsigned 64-bit integer.
     U64(u64),
+    /// A full document identifier, supporting equality and membership.
+    Id128(crate::ingest::DocId),
     /// A signed 64-bit integer.
     I64(i64),
     /// An IEEE-754 64-bit floating-point value.
@@ -23,6 +25,7 @@ pub enum PredicateValue {
 impl PredicateValue {
     pub(crate) fn value_type(&self) -> ColumnType {
         match self {
+            Self::Id128(_) => ColumnType::Id128,
             Self::U64(_) => ColumnType::U64,
             Self::I64(_) => ColumnType::I64,
             Self::F64(_) => ColumnType::F64,
@@ -281,6 +284,9 @@ fn eval_eq(
     let column = get_column(columns, id)?;
     ensure_type(id, column, query)?;
     let result = match (column, query) {
+        (Column::Id128(column), PredicateValue::Id128(query)) => {
+            eval_values_eq(column.values(), column.present(), scope, query)
+        }
         (Column::U64(column), PredicateValue::U64(query)) => {
             eval_values_eq(column.values(), column.present(), scope, query)
         }
@@ -376,7 +382,8 @@ fn ensure_type(id: ColumnId, column: &Column, query: &PredicateValue) -> Result<
     let expected = column.column_type();
     let compatible = matches!(
         (expected, query),
-        (ColumnType::U64, PredicateValue::U64(_))
+        (ColumnType::Id128, PredicateValue::Id128(_))
+            | (ColumnType::U64, PredicateValue::U64(_))
             | (ColumnType::I64, PredicateValue::I64(_))
             | (ColumnType::F64, PredicateValue::F64(_))
             | (ColumnType::Bool, PredicateValue::Bool(_))
@@ -436,7 +443,7 @@ fn eval_range(
                 upper,
             ))
         }
-        Column::Bool(_) | Column::DictionaryString(_) | Column::RawString(_) => {
+        Column::Id128(_) | Column::Bool(_) | Column::DictionaryString(_) | Column::RawString(_) => {
             Err(EvalError::RangeRequiresNumericColumn(range.column))
         }
     }

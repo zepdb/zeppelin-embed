@@ -323,7 +323,8 @@ function argumentError(ErrorType, code, message) {
 /**
  * The document id of a UUID: its 32 hex digits as one big-endian 128-bit
  * integer. Document ids are full 128-bit values end to end, so this is exact
- * for every UUID and the inverse of `idToUuid`.
+ * for every UUID and the inverse of `idToUuid`. The returned bigint also
+ * supplies id128 attribute values and equality/membership filter values.
  */
 function uuidToId(uuid) {
   if (typeof uuid !== 'string') {

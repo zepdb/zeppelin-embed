@@ -548,8 +548,8 @@ bool ParseAttributeValue(napi_env env, napi_value value,
   std::string type;
   if (!GetUtf8(env, js_type, "attribute value type", &type))
     return false;
-  const char *types[] = {"null", "u64", "i64", "f64", "bool", "string"};
-  if (!ParseEnum(type, types, 6, &attribute->value_type)) {
+  const char *types[] = {"null", "u64", "i64", "f64", "bool", "string", "id128"};
+  if (!ParseEnum(type, types, 7, &attribute->value_type)) {
     napi_throw_range_error(env, "ERR_OUT_OF_RANGE",
                            "attribute value type is out of range");
     return false;
@@ -562,6 +562,13 @@ bool ParseAttributeValue(napi_env env, napi_value value,
   }
   bool lossless = false;
   switch (attribute->value_type) {
+  case 6: {
+    ZeDocId id{};
+    if (!GetDocId(env, js_value, &id)) return false;
+    attribute->u64_value = id.low;
+    std::memcpy(&attribute->i64_value, &id.high, sizeof(id.high));
+    break;
+  }
   case 0: {
     napi_value null_value;
     bool equal = false;
@@ -714,6 +721,14 @@ bool CreateAttributeValue(napi_env env, const ZeAttributeValue &native,
     return false;
   }
   switch (native.value_type) {
+  case 6: {
+    type_name = "id128";
+    ZeDocId id{};
+    id.low = native.u64_value;
+    std::memcpy(&id.high, &native.i64_value, sizeof(id.high));
+    if (!CreateUint128(env, id, &value)) return false;
+    break;
+  }
   case 0:
     type_name = "null";
     if (!NapiOk(env, napi_get_null(env, &value), "create null attribute"))
@@ -1216,9 +1231,9 @@ bool ParseNamespaceSpec(napi_env env, napi_value value, ZeNamespaceSpec *spec,
     if (!GetUtf8(env, field, "attribute type", &attribute_type))
       return false;
     const char *names[] = {"u64",      "i64", "f64", "bool", "dictionaryString",
-                           "rawString"};
+                           "rawString", "id128"};
     int32_t parsed_type = 0;
-    if (!ParseEnum(attribute_type, names, 6, &parsed_type)) {
+    if (!ParseEnum(attribute_type, names, 7, &parsed_type)) {
       napi_throw_range_error(env, "ERR_OUT_OF_RANGE",
                              "attribute type is out of range");
       return false;

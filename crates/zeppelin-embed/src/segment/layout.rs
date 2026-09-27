@@ -316,6 +316,7 @@ fn alive_cursor_error(error: SegmentError) -> SegmentError {
 
 fn column_type_id(column_type: ColumnType) -> u16 {
     match column_type {
+        ColumnType::Id128 => 7,
         ColumnType::U64 => 1,
         ColumnType::I64 => 2,
         ColumnType::F64 => 3,
@@ -327,6 +328,7 @@ fn column_type_id(column_type: ColumnType) -> u16 {
 
 fn column_type_from_id(id: u16) -> Result<ColumnType, SegmentError> {
     match id {
+        7 => Ok(ColumnType::Id128),
         1 => Ok(ColumnType::U64),
         2 => Ok(ColumnType::I64),
         3 => Ok(ColumnType::F64),
@@ -380,6 +382,16 @@ fn encode_column_values(
     output: &mut Vec<u8>,
 ) -> Result<(), SegmentError> {
     match column {
+        Column::Id128(values) => {
+            for row in 0..row_count {
+                output.extend_from_slice(
+                    &values
+                        .get(row)
+                        .map_or(0, crate::ingest::DocId::get)
+                        .to_le_bytes(),
+                );
+            }
+        }
         Column::U64(values) => {
             for row in 0..row_count {
                 output.extend_from_slice(&values.get(row).unwrap_or(0).to_le_bytes());
@@ -447,6 +459,7 @@ fn encode_string(value: &str, output: &mut Vec<u8>) -> Result<(), SegmentError> 
 
 enum DecodedValues {
     U64(Vec<u64>),
+    Id128(Vec<crate::ingest::DocId>),
     I64(Vec<i64>),
     F64(Vec<f64>),
     Bool(Vec<bool>),
@@ -591,6 +604,10 @@ fn decode_column_values(
     cursor: &mut Cursor<'_>,
 ) -> Result<DecodedValues, SegmentError> {
     match column_type {
+        ColumnType::Id128 => (0..row_count)
+            .map(|_| cursor.u128().map(crate::ingest::DocId::new))
+            .collect::<Result<Vec<_>, _>>()
+            .map(DecodedValues::Id128),
         ColumnType::U64 => (0..row_count)
             .map(|_| cursor.u64())
             .collect::<Result<Vec<_>, _>>()
@@ -698,6 +715,7 @@ fn decode_column_values(
 fn decoded_value(values: &DecodedValues, row: u32) -> Result<ColumnValue<'_>, SegmentError> {
     let position = row as usize;
     match values {
+        DecodedValues::Id128(values) => values.get(position).copied().map(ColumnValue::Id128),
         DecodedValues::U64(values) => values.get(position).copied().map(ColumnValue::U64),
         DecodedValues::I64(values) => values.get(position).copied().map(ColumnValue::I64),
         DecodedValues::F64(values) => values.get(position).copied().map(ColumnValue::F64),
@@ -843,6 +861,14 @@ impl<'a> Cursor<'a> {
         Ok(u32::from_le_bytes(raw))
     }
 
+    pub(crate) fn u128(&mut self) -> Result<u128, SegmentError> {
+        let raw = self
+            .take(16)?
+            .try_into()
+            .map_err(|_| SegmentError::Columns(format!("{} invalid u128", self.artifact)))?;
+        Ok(u128::from_le_bytes(raw))
+    }
+
     pub(crate) fn u64(&mut self) -> Result<u64, SegmentError> {
         let raw: [u8; 8] = self
             .take(8)?
@@ -887,6 +913,42 @@ mod collection_schema_tests {
 
     const RANK: ColumnId = ColumnId::new(1);
     const LANG: ColumnId = ColumnId::new(2);
+
+    #[test]
+    fn id128_segment_layout_and_null_presence_are_explicit() {
+        use crate::ingest::DocId;
+        let schema = Schema::new(vec![ColumnDefinition::new(
+            RANK,
+            "id",
+            ColumnType::Id128,
+            true,
+        )])
+        .expect("schema");
+        let mut builder = ColumnStoreBuilder::new(schema);
+        builder
+            .push_row(
+                0,
+                &[ColumnInput {
+                    column: RANK,
+                    value: ColumnValue::Id128(DocId::new(0xffeeddccbbaa99887766554433221100)),
+                }],
+            )
+            .expect("row");
+        builder.push_row(0, &[]).expect("null row");
+        let store = builder.finish().expect("columns");
+        let bytes = encode_columns(&store).expect("encode");
+        // Final column: presence length, presence bitmap, full ID, zero null slot.
+        let tail: &[u8] = &[
+            1, 0, 0, 0, 1, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
+            0xcc, 0xdd, 0xee, 0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        assert!(bytes.ends_with(tail));
+        assert_eq!(super::column_type_id(ColumnType::Id128), 7);
+        assert_eq!(decode_columns(&bytes, None).expect("decode"), store);
+        let mut truncated = bytes;
+        truncated.pop();
+        assert!(decode_columns(&truncated, None).is_err());
+    }
 
     fn rank_region() -> Vec<u8> {
         let schema = Schema::new(vec![ColumnDefinition::new(

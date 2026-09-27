@@ -174,7 +174,7 @@ pub struct ZeAttributeDefinition {
     pub name: *const u8,
     /// Number of attribute-name bytes.
     pub name_len: usize,
-    /// `1` U64, `2` I64, `3` F64, `4` Bool, `5` dictionary string, or `6` raw string.
+    /// `1` U64, `2` I64, `3` F64, `4` Bool, `5` dictionary string, `6` raw string, or `7` Id128.
     pub attribute_type: i32,
     /// One when the attribute is nullable.
     pub nullable: u32,
@@ -366,11 +366,12 @@ pub struct ZeIngestDocument {
 pub struct ZeAttributeValue {
     /// Schema-local identifier; zero is reserved for the `ts` column.
     pub attribute_id: u32,
-    /// `0` null, `1` U64, `2` I64, `3` F64, `4` Bool, or `5` string.
+    /// `0` null, `1` U64, `2` I64, `3` F64, `4` Bool, `5` string, or `6` Id128.
     pub value_type: i32,
-    /// Unsigned-integer payload when `value_type` is one.
+    /// Unsigned-integer payload when `value_type` is one; low 64 bits for Id128.
     pub u64_value: u64,
-    /// Signed-integer payload when `value_type` is two.
+    /// Signed-integer payload when `value_type` is two; high 64 bits for Id128
+    /// interpreted as an unsigned bit pattern (not a signed numeric value).
     pub i64_value: i64,
     /// Floating-point payload when `value_type` is three.
     pub f64_value: f64,

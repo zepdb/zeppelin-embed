@@ -11,6 +11,8 @@ use super::{ColumnId, ColumnType, Schema, TIMESTAMP_COLUMN};
 pub enum ColumnValue<'a> {
     /// An unsigned integer.
     U64(u64),
+    /// A full document identifier.
+    Id128(crate::ingest::DocId),
     /// A signed integer.
     I64(i64),
     /// A floating-point value.
@@ -25,7 +27,8 @@ impl ColumnValue<'_> {
     fn compatible_with(self, column_type: ColumnType) -> bool {
         matches!(
             (self, column_type),
-            (Self::U64(_), ColumnType::U64)
+            (Self::Id128(_), ColumnType::Id128)
+                | (Self::U64(_), ColumnType::U64)
                 | (Self::I64(_), ColumnType::I64)
                 | (Self::F64(_), ColumnType::F64)
                 | (Self::Bool(_), ColumnType::Bool)
@@ -38,6 +41,7 @@ impl ColumnValue<'_> {
 
     fn value_type(self) -> ColumnType {
         match self {
+            Self::Id128(_) => ColumnType::Id128,
             Self::U64(_) => ColumnType::U64,
             Self::I64(_) => ColumnType::I64,
             Self::F64(_) => ColumnType::F64,
@@ -323,6 +327,8 @@ impl RawStringColumn {
 pub enum Column {
     /// An unsigned-integer array.
     U64(NumericColumn<u64>),
+    /// A full document-identifier array.
+    Id128(NumericColumn<crate::ingest::DocId>),
     /// A signed-integer array, including `ts`.
     I64(NumericColumn<i64>),
     /// A floating-point array.
@@ -340,6 +346,7 @@ impl Column {
     #[must_use]
     pub const fn column_type(&self) -> ColumnType {
         match self {
+            Self::Id128(_) => ColumnType::Id128,
             Self::U64(_) => ColumnType::U64,
             Self::I64(_) => ColumnType::I64,
             Self::F64(_) => ColumnType::F64,
@@ -353,6 +360,7 @@ impl Column {
     #[must_use]
     pub fn len(&self) -> usize {
         match self {
+            Self::Id128(column) => column.len(),
             Self::U64(column) => column.len(),
             Self::I64(column) => column.len(),
             Self::F64(column) => column.len(),
@@ -372,6 +380,7 @@ impl Column {
     #[must_use]
     pub fn present(&self) -> &DocBitmap {
         match self {
+            Self::Id128(column) => column.present(),
             Self::U64(column) => column.present(),
             Self::I64(column) => column.present(),
             Self::F64(column) => column.present(),
@@ -394,6 +403,7 @@ impl ColumnStore {
     pub(crate) fn compact_for_cache(&mut self) {
         for column in &mut self.columns {
             match column {
+                Column::Id128(column) => column.present.compact_for_cache(),
                 Column::U64(column) => column.present.compact_for_cache(),
                 Column::I64(column) => column.present.compact_for_cache(),
                 Column::F64(column) => column.present.compact_for_cache(),
@@ -458,6 +468,11 @@ impl ColumnStore {
 
 fn column_resident_bytes(column: &Column) -> Option<usize> {
     match column {
+        Column::Id128(column) => column
+            .values
+            .capacity()
+            .checked_mul(std::mem::size_of::<crate::ingest::DocId>())?
+            .checked_add(column.present.resident_bytes()?),
         Column::U64(column) => column
             .values
             .capacity()
@@ -491,6 +506,7 @@ fn column_resident_bytes(column: &Column) -> Option<usize> {
 
 enum BuilderColumn {
     U64(Vec<u64>, DocBitmap),
+    Id128(Vec<crate::ingest::DocId>, DocBitmap),
     I64(Vec<i64>, DocBitmap),
     F64(Vec<f64>, DocBitmap),
     Bool(Vec<u8>, DocBitmap),
@@ -505,6 +521,7 @@ enum BuilderColumn {
 impl BuilderColumn {
     fn new(column_type: ColumnType) -> Self {
         match column_type {
+            ColumnType::Id128 => Self::Id128(Vec::new(), DocBitmap::new()),
             ColumnType::U64 => Self::U64(Vec::new(), DocBitmap::new()),
             ColumnType::I64 => Self::I64(Vec::new(), DocBitmap::new()),
             ColumnType::F64 => Self::F64(Vec::new(), DocBitmap::new()),
@@ -583,10 +600,15 @@ impl BuilderColumn {
     ) -> Result<(), BuildError> {
         let expected = self.column_type();
         match (self, value) {
+            (Self::Id128(values, present), Some(ColumnValue::Id128(value))) => {
+                values.push(value);
+                present.insert(row);
+            }
             (Self::U64(values, present), Some(ColumnValue::U64(value))) => {
                 values.push(value);
                 present.insert(row);
             }
+            (Self::Id128(values, _), None) => values.push(crate::ingest::DocId::new(0)),
             (Self::U64(values, _), None) => values.push(0),
             (Self::I64(values, present), Some(ColumnValue::I64(value))) => {
                 values.push(value);
@@ -633,6 +655,7 @@ impl BuilderColumn {
 
     fn column_type(&self) -> ColumnType {
         match self {
+            Self::Id128(_, _) => ColumnType::Id128,
             Self::U64(_, _) => ColumnType::U64,
             Self::I64(_, _) => ColumnType::I64,
             Self::F64(_, _) => ColumnType::F64,
@@ -644,6 +667,7 @@ impl BuilderColumn {
 
     fn finish(self) -> Result<Column, DictionaryError> {
         match self {
+            Self::Id128(values, present) => Ok(Column::Id128(NumericColumn { values, present })),
             Self::U64(values, present) => Ok(Column::U64(NumericColumn { values, present })),
             Self::I64(values, present) => Ok(Column::I64(NumericColumn { values, present })),
             Self::F64(values, present) => Ok(Column::F64(NumericColumn { values, present })),
@@ -860,6 +884,52 @@ mod tests {
                 )
                 .boxed()
         }
+    }
+
+    #[test]
+    fn id128_columns_preserve_all_bits() {
+        use crate::ingest::DocId;
+        let id = ColumnId::new(1);
+        let schema = Schema::new(vec![ColumnDefinition::new(
+            id,
+            "parent",
+            ColumnType::Id128,
+            true,
+        )])
+        .unwrap();
+        let mut builder = ColumnStoreBuilder::new(schema);
+        for value in [0, 1, (1_u128 << 127) + 1, u128::MAX] {
+            builder
+                .push_row(
+                    0,
+                    &[ColumnInput {
+                        column: id,
+                        value: ColumnValue::Id128(DocId::new(value)),
+                    }],
+                )
+                .unwrap();
+        }
+        builder.push_row(0, &[]).unwrap();
+        let store = builder.finish().unwrap();
+        let Some(Column::Id128(column)) = store.column(id) else {
+            panic!("id column missing")
+        };
+        assert_eq!(column.get(0), Some(DocId::new(0)));
+        assert_eq!(column.get(2), Some(DocId::new((1_u128 << 127) + 1)));
+        assert_eq!(column.get(3), Some(DocId::new(u128::MAX)));
+        assert_eq!(column.get(4), None);
+        use crate::meta::{AliveSet, Predicate, PredicateValue, evaluate};
+        let alive = AliveSet::new(5);
+        let result = evaluate(
+            &Predicate::Eq {
+                column: id,
+                value: PredicateValue::Id128(DocId::new((1_u128 << 127) + 1)),
+            },
+            &store,
+            &alive,
+        )
+        .unwrap();
+        assert_eq!(result.iter().collect::<Vec<_>>(), vec![2]);
     }
 
     fn complete_schema(nullable: bool) -> Schema {

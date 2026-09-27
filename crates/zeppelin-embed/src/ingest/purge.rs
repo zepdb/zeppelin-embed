@@ -1626,6 +1626,7 @@ pub(crate) fn append_survivor_columns(
                 )))
             })?;
             let value = match column {
+                Column::Id128(values) => values.get(row_u32).map(ColumnValue::Id128),
                 Column::U64(values) => values.get(row_u32).map(ColumnValue::U64),
                 Column::I64(values) => values.get(row_u32).map(ColumnValue::I64),
                 Column::F64(values) => values.get(row_u32).map(ColumnValue::F64),

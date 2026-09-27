@@ -3454,6 +3454,9 @@ impl Store {
                             )))
                         })?;
                         let value = match column {
+                            crate::meta::Column::Id128(column) => column
+                                .get(row_id.local_row())
+                                .map(crate::meta::PredicateValue::Id128),
                             crate::meta::Column::U64(column) => column
                                 .get(row_id.local_row())
                                 .map(crate::meta::PredicateValue::U64),
@@ -8674,7 +8677,7 @@ fn attribute_order_key(column: &crate::meta::Column, row: u32) -> Result<Option<
                 let bits = (value + 0.0).to_bits();
                 if bits & SIGN == 0 { bits | SIGN } else { !bits }
             })),
-        Column::Bool(_) | Column::DictionaryString(_) | Column::RawString(_) => {
+        Column::Id128(_) | Column::Bool(_) | Column::DictionaryString(_) | Column::RawString(_) => {
             Err(QueryError::Store(StoreError::InvalidScan {
                 detail: "scan order attribute column is not numeric".to_owned(),
             }))
@@ -9307,6 +9310,7 @@ fn predicate_value_for_row(
     use crate::meta::{Column, PredicateValue};
 
     match column {
+        Column::Id128(values) => Ok(values.get(row).map(PredicateValue::Id128)),
         Column::U64(values) => Ok(values.get(row).map(PredicateValue::U64)),
         Column::I64(values) => Ok(values.get(row).map(PredicateValue::I64)),
         Column::F64(values) => Ok(values.get(row).map(PredicateValue::F64)),

@@ -547,7 +547,7 @@ typedef struct ZeAttributeDefinition {
      */
     size_t name_len;
     /*
-     `1` U64, `2` I64, `3` F64, `4` Bool, `5` dictionary string, or `6` raw string.
+     `1` U64, `2` I64, `3` F64, `4` Bool, `5` dictionary string, `6` raw string, or `7` Id128.
      */
     int32_t attribute_type;
     /*
@@ -1269,15 +1269,16 @@ typedef struct ZeAttributeValue {
      */
     uint32_t attribute_id;
     /*
-     `0` null, `1` U64, `2` I64, `3` F64, `4` Bool, or `5` string.
+     `0` null, `1` U64, `2` I64, `3` F64, `4` Bool, `5` string, or `6` Id128.
      */
     int32_t value_type;
     /*
-     Unsigned-integer payload when `value_type` is one.
+     Unsigned-integer payload when `value_type` is one; low 64 bits for Id128.
      */
     uint64_t u64_value;
     /*
-     Signed-integer payload when `value_type` is two.
+     Signed-integer payload when `value_type` is two; high 64 bits for Id128
+     interpreted as an unsigned bit pattern (not a signed numeric value).
      */
     int64_t i64_value;
     /*

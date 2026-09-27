@@ -494,6 +494,7 @@ fn append_bytes(value: &[u8], output: &mut Vec<u8>) -> Result<(), ManifestError>
 
 fn column_type_id(column_type: ColumnType) -> u16 {
     match column_type {
+        ColumnType::Id128 => 7,
         ColumnType::U64 => 1,
         ColumnType::I64 => 2,
         ColumnType::F64 => 3,
@@ -505,6 +506,7 @@ fn column_type_id(column_type: ColumnType) -> u16 {
 
 fn column_type_from_id(id: u16) -> Result<ColumnType, ManifestError> {
     match id {
+        7 => Ok(ColumnType::Id128),
         1 => Ok(ColumnType::U64),
         2 => Ok(ColumnType::I64),
         3 => Ok(ColumnType::F64),
