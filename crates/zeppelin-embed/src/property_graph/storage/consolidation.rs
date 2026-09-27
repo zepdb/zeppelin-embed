@@ -119,6 +119,8 @@ pub(crate) fn prepare_one_replacement<'lease, 'm, T, C>(
     document: Option<&EmbeddingTower>,
     manifests: &[RequiredRef],
     inventory_fold: PreparedInventoryFold<'m>,
+    pages: &[PageRelocation],
+    page_floor: u64,
     reclaim_pending: &[crate::property_graph::wal::InventoryChange],
     adoptions: &[crate::property_graph::wal::InventoryChange],
     memory: &'m StorageMemory<'m>,
@@ -144,6 +146,8 @@ where
     let selected =
         select_live_records_in_oldest_packs(source, base, catalog, document, manifests, resources)?;
     let mut values = StorageBuffer::new(memory, RELOCATION_LIMIT)?;
+    let mut fences: StorageBuffer<'_, FenceRelocation<'_>> =
+        StorageBuffer::new(memory, RELOCATION_LIMIT)?;
     for selected in selected.as_slice() {
         resources.step(1)?;
         let scoped = NativePreparationSource::new(source.lease(), memory, 64)?;
@@ -192,6 +196,33 @@ where
             },
             resources,
         )?;
+        if let Some(row) = relocated_fence(
+            &scoped, base, &record, canonical, provenance, catalog, document, memory, resources,
+        )? {
+            let mut position = 0;
+            for (key, _) in fences.as_slice() {
+                resources.step(1)?;
+                let order = compare_relocation_keys(
+                    TreeKind::KeyFences,
+                    row.0.as_slice(),
+                    key.as_slice(),
+                    resources,
+                )?;
+                if order.is_eq() {
+                    return Err(TreeError::Invalid("duplicate relocation fence"));
+                }
+                if order.is_lt() {
+                    break;
+                }
+                position += 1;
+            }
+            fences.push(row)?;
+            fences
+                .as_mut_slice()
+                .get_mut(position..)
+                .ok_or(TreeError::Memory)?
+                .rotate_right(1);
+        }
         let record = prepare_record(
             sink,
             RecordInput {
@@ -232,7 +263,7 @@ where
             let root = apply_sorted_checked(
                 sink,
                 DirectoryMutation::new(
-                    base.directory(kind)?,
+                    roots.directory(kind)?,
                     generation,
                     NativeDirectoryValues::new(catalog, document),
                 ),
@@ -243,6 +274,30 @@ where
             roots.replace(root)?;
             replaced_physical_refs += 1;
         }
+    }
+
+    if !fences.as_slice().is_empty() {
+        let mut ops = StorageBuffer::new(memory, fences.as_slice().len())?;
+        for (key, value) in fences.as_slice() {
+            resources.step(1)?;
+            ops.push(DirectoryOp::Insert {
+                key: key.as_slice(),
+                value,
+            })?;
+        }
+        let root = apply_sorted_checked(
+            sink,
+            DirectoryMutation::new(
+                roots.directory(TreeKind::KeyFences)?,
+                generation,
+                NativeDirectoryValues::new(catalog, document),
+            ),
+            ops.as_slice(),
+            &mut tree,
+            resources,
+        )?;
+        roots.replace(root)?;
+        replaced_physical_refs += 1;
     }
 
     for kind in [TreeKind::OutRanges, TreeKind::InRanges] {
@@ -303,6 +358,18 @@ where
             .checked_add(1)
             .ok_or(TreeError::Work)?;
     }
+    replaced_physical_refs += relocate_pages(
+        sink,
+        &mut roots,
+        pages,
+        page_floor,
+        context.target_sequence(),
+        catalog,
+        document,
+        memory,
+        &mut tree,
+        resources,
+    )?;
     Ok(ConsolidationOutcome {
         expected_base: base,
         expected_sequence: base_sequence,
@@ -581,4 +648,314 @@ where
             .map_or(u64::MAX, |(serial, _)| serial);
     }
     Ok(selected)
+}
+
+/// Same-call hints only: losing them cannot change reclamation authority.
+pub(crate) const PAGE_RELOCATION_LIMIT: usize = 256;
+#[derive(Clone, Copy)]
+pub(crate) struct PageRelocation {
+    pub(crate) kind: TreeKind,
+    pub(crate) reference: super::artifact::PhysicalRef,
+}
+
+pub(crate) fn page_relocation_floor(
+    source: &NativePreparationSource<'_, '_>,
+    roots: GraphRoots,
+    manifests: &[RequiredRef],
+    resources: &mut TreeResources<'_>,
+) -> Result<u64, TreeError> {
+    let (packs, len) = oldest_packs(source, roots, manifests, 0, resources)?;
+    Ok(packs
+        .get(..len)
+        .and_then(|p| p.last())
+        .copied()
+        .flatten()
+        .map_or(0, |p| p.0))
+}
+
+struct PageValues<'a, 'm, C> {
+    native: NativeDirectoryValues<'a, C>,
+    sequence: u64,
+    ranges: super::adjacency::RangeScratch<'m>,
+}
+impl<S: super::tree::directory::BlockSource, C: RecordCatalog<S>>
+    super::tree::directory::LeafValidator<S> for PageValues<'_, '_, C>
+{
+    fn verify(
+        &mut self,
+        source: &S,
+        root: super::tree::directory::DirectoryRoot,
+        entry: super::tree::directory::DirectoryEntry<'_>,
+        r: &mut TreeResources<'_>,
+    ) -> Result<(), TreeError> {
+        use super::adjacency::{RangeDescriptor, validate_descriptor};
+        match root.kind() {
+            TreeKind::ObjectInventory => verify_inventory_entry(root, entry, r).map(|_| ()),
+            TreeKind::OutRanges | TreeKind::InRanges => {
+                let Key::Inline(key) = entry.key() else {
+                    return Err(TreeError::Invalid("overflow adjacency key"));
+                };
+                let descriptor = RangeDescriptor::decode(root.kind(), key, entry.value())?;
+                let range = validate_descriptor(
+                    source,
+                    root.store(),
+                    entry.creation_generation(),
+                    descriptor,
+                    self.sequence,
+                    &mut self.ranges,
+                    r,
+                )?;
+                if range.edges().is_empty() {
+                    return Err(TreeError::Invalid("empty relocation range"));
+                }
+                Ok(())
+            }
+            _ => self.native.verify(source, root, entry, r),
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn relocate_pages<'m, T: BlockSink, C: RecordCatalog<T>>(
+    sink: &mut T,
+    roots: &mut GraphRoots,
+    pages: &[PageRelocation],
+    floor: u64,
+    sequence: u64,
+    catalog: &C,
+    document: Option<&EmbeddingTower>,
+    memory: &'m StorageMemory<'m>,
+    tree: &mut TreeScratch<'_>,
+    resources: &mut TreeResources<'_>,
+) -> Result<u64, TreeError> {
+    use super::tree::directory::lookup_entry;
+    use super::tree::{Cell, decode_page};
+    let mut replaced = 0;
+    for kind in [
+        TreeKind::Nodes,
+        TreeKind::Relationships,
+        TreeKind::KeyFences,
+        TreeKind::Labels,
+        TreeKind::RelationshipTypes,
+        TreeKind::OutRanges,
+        TreeKind::InRanges,
+        TreeKind::ObjectInventory,
+    ] {
+        let root = roots.directory(kind)?;
+        let mut rows: StorageBuffer<'_, (StorageBuffer<'_, u8>, StorageBuffer<'_, u8>)> =
+            StorageBuffer::new(memory, PAGE_RELOCATION_LIMIT)?;
+        for page in pages.iter().filter(|page| page.kind == kind) {
+            resources.step(1)?;
+            let block = sink.resolve(page.reference, resources)?;
+            if block.identity().creation_serial > floor {
+                continue;
+            }
+            // Descend the first child: an exclusive upper separator need not
+            // itself be a live key, and the final child has no separator.
+            let mut reference = page.reference;
+            let key = loop {
+                resources.step(1)?;
+                let block = sink.resolve(reference, resources)?;
+                match decode_page(kind, block.payload())?.cell(0)? {
+                    Cell::Branch { child, .. } => reference = child,
+                    Cell::Leaf { key, .. } => {
+                        let length = match key {
+                            Key::Inline(bytes) => bytes.len(),
+                            Key::Overflow { logical_length, .. } => {
+                                usize::try_from(logical_length).map_err(|_| TreeError::Memory)?
+                            }
+                        };
+                        let mut bytes = StorageBuffer::new(memory, length)?;
+                        match key {
+                            Key::Inline(value) => bytes.extend_from_slice(value)?,
+                            Key::Overflow {
+                                logical_length,
+                                reference,
+                            } => {
+                                let payload = PayloadRef::new(
+                                    super::artifact::BlockKind::OverflowKey,
+                                    logical_length,
+                                    reference,
+                                )?;
+                                let stream = PayloadSlice::new(
+                                    sink,
+                                    root.store(),
+                                    root.generation(),
+                                    payload,
+                                );
+                                let mut buffer = [0_u8; 4096];
+                                let mut offset = 0;
+                                while offset < length {
+                                    resources.step(1)?;
+                                    let take = buffer.len().min(length - offset);
+                                    let output = buffer.get_mut(..take).ok_or(TreeError::Memory)?;
+                                    if stream.read_at(offset as u64, output, resources)? != take {
+                                        return Err(TreeError::Invalid("short relocation key"));
+                                    }
+                                    bytes.extend_from_slice(output)?;
+                                    offset += take;
+                                }
+                            }
+                        }
+                        break bytes;
+                    }
+                }
+            };
+            // At most 256 hints: bounded insertion sort with fallible exact
+            // comparators and cancellation at every comparison. Deduplicate
+            // branch/leaf hints that select the same path.
+            let mut position = 0;
+            let mut duplicate = false;
+            for (other, _) in rows.as_slice() {
+                resources.step(1)?;
+                let order =
+                    compare_relocation_keys(kind, key.as_slice(), other.as_slice(), resources)?;
+                if order.is_eq() {
+                    duplicate = true;
+                    break;
+                }
+                if order.is_lt() {
+                    break;
+                }
+                position += 1;
+            }
+            if duplicate {
+                continue;
+            }
+            let entry = lookup_entry(sink, root, key.as_slice(), resources)?
+                .ok_or(TreeError::Invalid("relocation key disappeared"))?;
+            // Record/fence/range/inventory edits may already have copied this
+            // leaf and every ancestor. Do not emit that path a second time.
+            if entry.creation_generation() == roots.generation() {
+                continue;
+            }
+            let mut value = StorageBuffer::new(memory, entry.value().len())?;
+            value.extend_from_slice(entry.value())?;
+            rows.push((key, value))?;
+            rows.as_mut_slice()
+                .get_mut(position..)
+                .ok_or(TreeError::Memory)?
+                .rotate_right(1);
+        }
+        if rows.as_slice().is_empty() {
+            continue;
+        }
+        let mut ops = StorageBuffer::new(memory, rows.as_slice().len())?;
+        for (key, value) in rows.as_slice() {
+            resources.step(1)?;
+            ops.push(DirectoryOp::Insert {
+                key: key.as_slice(),
+                value: value.as_slice(),
+            })?;
+        }
+        let validator = PageValues {
+            native: NativeDirectoryValues::new(catalog, document),
+            sequence,
+            ranges: super::adjacency::RangeScratch::for_prepare(memory, resources)?,
+        };
+        roots.replace(apply_sorted_checked(
+            sink,
+            DirectoryMutation::new(root, roots.generation(), validator),
+            ops.as_slice(),
+            tree,
+            resources,
+        )?)?;
+        replaced += rows.as_slice().len() as u64;
+    }
+    Ok(replaced)
+}
+
+type FenceRelocation<'m> = (StorageBuffer<'m, u8>, [u8; 144]);
+
+#[allow(clippy::too_many_arguments)]
+fn relocated_fence<'m, S: super::tree::directory::BlockSource, C: RecordCatalog<S>>(
+    source: &S,
+    roots: GraphRoots,
+    record: &super::records::RecordView<'_, S>,
+    canonical: PayloadRef,
+    provenance: PayloadRef,
+    catalog: &C,
+    document: Option<&EmbeddingTower>,
+    memory: &'m StorageMemory<'m>,
+    resources: &mut TreeResources<'_>,
+) -> Result<Option<FenceRelocation<'m>>, TreeError> {
+    use crate::property_graph::catalog::{Symbol, SymbolKind};
+    let Some(key) = record.provenance().key() else {
+        return Ok(None);
+    };
+    let Symbol::Namespace(namespace) =
+        catalog.resolve(SymbolKind::Namespace, key.namespace(), resources)?
+    else {
+        return Err(TreeError::Invalid("relocation fence namespace"));
+    };
+    let length = usize::try_from(key.key().len()).map_err(|_| TreeError::Memory)?;
+    let mut encoded = StorageBuffer::new(memory, length.checked_add(9).ok_or(TreeError::Memory)?)?;
+    encoded.push(match key.kind() {
+        crate::property_graph::EntityKind::Node => 1,
+        crate::property_graph::EntityKind::Relationship => 2,
+    })?;
+    encoded.extend_from_slice(&namespace.get().to_le_bytes())?;
+    let mut buffer = [0_u8; 4096];
+    let mut offset = 0;
+    while offset < length {
+        resources.step(1)?;
+        let take = buffer.len().min(length - offset);
+        let output = buffer.get_mut(..take).ok_or(TreeError::Memory)?;
+        if key.key().read_at(offset as u64, output, resources)? != take {
+            return Err(TreeError::Invalid("short fence relocation key"));
+        }
+        encoded.extend_from_slice(output)?;
+        offset += take;
+    }
+    let root = roots.directory(TreeKind::KeyFences)?;
+    let entry = super::tree::directory::lookup_entry(source, root, encoded.as_slice(), resources)?
+        .ok_or(TreeError::Invalid("missing relocation fence"))?;
+    let fence =
+        super::records::verify_fence_entry(source, root, entry, catalog, document, resources)?;
+    let [old_canonical, old_provenance] = record.required_payloads();
+    if fence.incarnation() != record.incarnation()
+        || fence.revision() != record.revision()
+        || fence.required_payloads() != (old_provenance, Some(old_canonical))
+    {
+        return Err(TreeError::Invalid("relocation fence/record correlation"));
+    }
+    let mut value: [u8; 144] = entry
+        .value()
+        .try_into()
+        .map_err(|_| TreeError::Invalid("relocation fence width"))?;
+    provenance.encode_into(value.get_mut(40..88).ok_or(TreeError::Memory)?)?;
+    canonical.encode_into(value.get_mut(96..144).ok_or(TreeError::Memory)?)?;
+    Ok(Some((encoded, value)))
+}
+
+fn compare_relocation_keys(
+    kind: TreeKind,
+    left: &[u8],
+    right: &[u8],
+    resources: &mut TreeResources<'_>,
+) -> Result<std::cmp::Ordering, TreeError> {
+    if kind != TreeKind::KeyFences {
+        return Ok(super::tree::compare_inline_keys(kind, left, right)?);
+    }
+    let prefix = super::tree::compare_inline_keys(
+        kind,
+        left.get(..9).ok_or(TreeError::Memory)?,
+        right.get(..9).ok_or(TreeError::Memory)?,
+    )?;
+    if !prefix.is_eq() {
+        return Ok(prefix);
+    }
+    for (a, b) in left
+        .get(9..)
+        .ok_or(TreeError::Memory)?
+        .chunks(64 * 1024)
+        .zip(right.get(9..).ok_or(TreeError::Memory)?.chunks(64 * 1024))
+    {
+        resources.step(a.len().max(b.len()) as u64)?;
+        let order = a.cmp(b);
+        if !order.is_eq() {
+            return Ok(order);
+        }
+    }
+    Ok(left.len().cmp(&right.len()))
 }

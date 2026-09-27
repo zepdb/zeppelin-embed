@@ -19,6 +19,14 @@ use crate::property_graph::storage::{NativePreparationCatalog, NativePreparation
 use crate::property_graph::{EntityId, NodeId, RelId};
 
 pub(crate) trait TraceReferenceVisitor {
+    fn visit_page(
+        &mut self,
+        _kind: TreeKind,
+        reference: PhysicalRef,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<(), TreeError> {
+        self.visit(reference, resources)
+    }
     fn visit(
         &mut self,
         reference: PhysicalRef,
@@ -391,7 +399,13 @@ where
         loop {
             match cursor.next(source, resources)? {
                 DirectoryTraceEvent::Reference(reference) => {
-                    visitor.visit(reference, resources)?;
+                    if reference.kind
+                        == crate::property_graph::storage::artifact::BlockKind::TreePage
+                    {
+                        visitor.visit_page(kind, reference, resources)?;
+                    } else {
+                        visitor.visit(reference, resources)?;
+                    }
                     emitted = emitted.checked_add(1).ok_or(TreeError::Work)?;
                 }
                 DirectoryTraceEvent::Leaf(leaf) => {
@@ -420,12 +434,66 @@ pub(crate) fn trace_graph_bundle<'s, 'lease, 'm, T: SpillIo>(
     sequence: u64,
     document: Option<&crate::epoch::EmbeddingTower>,
     scratch: &mut RangeScratch<'_>,
-    mark: &mut SpillMark<'_>,
+    mark: &mut SpillMark<'m>,
     sink: &mut T,
+    pages: Option<(
+        &mut crate::property_graph::storage::memory::StorageBuffer<
+            'm,
+            crate::property_graph::storage::consolidation::PageRelocation,
+        >,
+        u64,
+    )>,
     resources: &mut TreeResources<'_>,
 ) -> Result<u64, TreeError> {
-    let mut visitor = |reference: PhysicalRef, resources: &mut TreeResources<'_>| {
-        mark.emit(reference.artifact, sink, resources)
+    struct Visitor<'a, 's, 'lease, 'm, T> {
+        source: &'s NativePreparationSource<'lease, 'm>,
+        mark: &'a mut SpillMark<'m>,
+        sink: &'a mut T,
+        pages: Option<(
+            &'a mut crate::property_graph::storage::memory::StorageBuffer<
+                'm,
+                crate::property_graph::storage::consolidation::PageRelocation,
+            >,
+            u64,
+        )>,
+    }
+    impl<T: SpillIo> TraceReferenceVisitor for Visitor<'_, '_, '_, '_, T> {
+        fn visit(
+            &mut self,
+            reference: PhysicalRef,
+            resources: &mut TreeResources<'_>,
+        ) -> Result<(), TreeError> {
+            self.mark.emit(reference.artifact, self.sink, resources)
+        }
+        fn visit_page(
+            &mut self,
+            kind: TreeKind,
+            reference: PhysicalRef,
+            resources: &mut TreeResources<'_>,
+        ) -> Result<(), TreeError> {
+            self.visit(reference, resources)?;
+            if let Some((pages, floor)) = self.pages.as_mut()
+                && pages.as_slice().len()
+                    < crate::property_graph::storage::consolidation::PAGE_RELOCATION_LIMIT
+                && self.source.with_block(reference, resources, |block, _| {
+                    Ok(block.identity().creation_serial <= *floor)
+                })?
+            {
+                pages.push(
+                    crate::property_graph::storage::consolidation::PageRelocation {
+                        kind,
+                        reference,
+                    },
+                )?;
+            }
+            Ok(())
+        }
+    }
+    let mut visitor = Visitor {
+        source,
+        mark,
+        sink,
+        pages,
     };
     trace_graph_state(
         source,

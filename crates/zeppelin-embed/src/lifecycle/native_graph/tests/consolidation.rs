@@ -903,6 +903,185 @@ fn ze260_maintenance_drains_the_oldest_pack_in_one_call() {
 }
 
 #[test]
+fn ze260_full_cycle_frees_an_append_only_pack() {
+    let parent = super::tempfile::tempdir().unwrap();
+    let path = parent.path().join("native");
+    let store = Store::create_native_graph(&path, options(), None).unwrap();
+    for batch in 0..20 {
+        crate::property_graph::with_local_refs(|refs| {
+            let names: Vec<_> = (0..10).map(|n| format!("{batch}-{n}")).collect();
+            let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+            let mut writes: Vec<_> = names
+                .iter()
+                .map(|name| StructuredWrite {
+                    key: ApplicationKey::new(EntityKind::Node, "drain", name).unwrap(),
+                    revision: GraphRevision::new(1).unwrap(),
+                    operation: StructuredOperation::Create,
+                    image: Some(WriteImage::Node(&image)),
+                })
+                .collect();
+            writes.push(StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Relationship, "drain", &names[0]).unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Relationship {
+                    source: NodeRef::Local(refs.node(0).unwrap()),
+                    target: NodeRef::Local(refs.node(1).unwrap()),
+                    relationship_type: GraphName::new("LINKS").unwrap(),
+                    properties: &[],
+                }),
+            });
+            store
+                .apply_native_graph(&writes, &QueryControl::Cancel(CancelToken::new()))
+                .unwrap();
+        });
+    }
+    let records = |store: &Store, lease: &super::super::NativeReadLease| {
+        use crate::property_graph::query::resources::QueryMemory;
+        use crate::property_graph::query::runtime::{RuntimeContext, RuntimeLimits};
+        use crate::property_graph::storage::tree::directory::TreeResources;
+        use crate::property_graph::storage::{
+            GraphReadView, NativeCatalog, NativeQuerySource, NativeReadCapability,
+        };
+        let shared = crate::property_graph::resources::GraphResources::from_store(store).unwrap();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let mut result = BTreeMap::new();
+        for entity in
+            (1..=200)
+                .map(|id| EntityId::Node(crate::property_graph::NodeId::new(id).unwrap()))
+                .chain((1..=20).map(|id| {
+                    EntityId::Relationship(crate::property_graph::RelId::new(id).unwrap())
+                }))
+        {
+            let memory = QueryMemory::new(&shared, 8 * 1024 * 1024).unwrap();
+            let mut runtime =
+                RuntimeContext::new(lease, &control, &memory, RuntimeLimits::default()).unwrap();
+            let capability = NativeReadCapability::admit(lease, &runtime).unwrap();
+            let mut resources = TreeResources::for_query(&mut runtime).unwrap();
+            let source = NativeQuerySource::new(capability, &resources, 16).unwrap();
+            let catalog = NativeCatalog::open(&source, &mut resources).unwrap();
+            drop(resources);
+            let view = GraphReadView::new(&source, &catalog).unwrap();
+            let mut resources = TreeResources::for_query(&mut runtime).unwrap();
+            let mut capture =
+                |record: &crate::property_graph::storage::records::RecordView<'_, _>,
+                 resources: &mut TreeResources<'_>| {
+                    let mut canonical = vec![0; record.canonical_bytes().len() as usize];
+                    assert_eq!(
+                        record
+                            .canonical_bytes()
+                            .read_at(0, &mut canonical, resources)
+                            .unwrap(),
+                        canonical.len()
+                    );
+                    assert!(
+                        result
+                            .insert(record.incarnation(), (record.revision().get(), canonical))
+                            .is_none()
+                    );
+                };
+            match entity {
+                EntityId::Node(id) => {
+                    let node = view.lookup_node(id, &mut resources).unwrap().unwrap();
+                    capture(node.record(), &mut resources);
+                }
+                EntityId::Relationship(id) => {
+                    let relationship = view
+                        .lookup_relationship(id, &mut resources)
+                        .unwrap()
+                        .unwrap();
+                    capture(relationship.record(), &mut resources);
+                }
+            }
+        }
+        result
+    };
+    let bytes = || {
+        std::fs::read_dir(&path)
+            .unwrap()
+            .map(|entry| entry.unwrap().metadata().unwrap().len())
+            .sum::<u64>()
+    };
+    let lease = store.admit_native_read().unwrap();
+    let oldest = prepared_union_for_lease(&store, &lease)
+        .into_iter()
+        .min_by_key(|change| change.object.serial)
+        .unwrap()
+        .object
+        .artifact;
+    let oldest_path = crate::property_graph::storage::allocation::artifact_path(&path, oldest);
+    let before = records(&store, &lease);
+    drop(lease);
+    let before_bytes = bytes();
+    let mut removed = 0;
+    let mut subtypes = Vec::new();
+    const MAX_COMPLETED_CYCLES: usize = 8;
+    let mut completed_cycles = 0;
+    let mut first_cycle_bytes = None;
+    let mut previous_removed = 0;
+    // One preparation call plus intent, completion and retirement per cycle.
+    for _ in 0..MAX_COMPLETED_CYCLES * 4 {
+        // Historical WAL roots protect original packs until checkpointed.
+        store
+            .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+            .unwrap();
+        removed += commit_maintenance(&store).unwrap().removed_bytes;
+        let admission = store.admit_native_graph_maintenance().unwrap();
+        if admission.lease.bundle().reclaim().is_some() {
+            subtypes.push(
+                super::super::maintenance::active_reclaim_subtype(
+                    &store,
+                    &admission,
+                    &QueryControl::Cancel(CancelToken::new()),
+                )
+                .unwrap(),
+            );
+        } else if subtypes.last() == Some(&3) {
+            subtypes.push(0);
+            completed_cycles += 1;
+            eprintln!(
+                "S6_MUST_MAKE_IDLE_CYCLES_NET_NEGATIVE cycle={completed_cycles} bytes={} growth={} files={} removed_bytes={}",
+                bytes(),
+                i128::from(bytes()) - i128::from(before_bytes),
+                std::fs::read_dir(&path).unwrap().count(),
+                removed - previous_removed,
+            );
+            previous_removed = removed;
+            first_cycle_bytes.get_or_insert_with(bytes);
+            if completed_cycles == MAX_COMPLETED_CYCLES {
+                break;
+            }
+        }
+    }
+    // S6_MUST_MAKE_IDLE_CYCLES_NET_NEGATIVE: record idle growth above,
+    // without making S6 compaction amplification an S5 acceptance gate.
+    eprintln!(
+        "ZE260_S5 before_bytes={before_bytes} after_bytes={} removed_bytes={removed} completed_cycles={completed_cycles} max_completed_cycles={MAX_COMPLETED_CYCLES} first_cycle_bytes={first_cycle_bytes:?} subtypes={subtypes:?}",
+        bytes()
+    );
+    assert!(
+        (1..=MAX_COMPLETED_CYCLES).contains(&completed_cycles),
+        "must finish within the completed-cycle bound"
+    );
+    assert!(
+        subtypes.windows(3).any(|states| states == [2, 3, 0]),
+        "intent, completion, retirement must complete"
+    );
+    assert_eq!(subtypes.last(), Some(&0), "final cycle must be retired");
+    assert!(removed > 0, "full cycles removed no bytes");
+    assert!(
+        !oldest_path.exists(),
+        "oldest append-only pack remains live"
+    );
+    store.close().unwrap();
+    let reopened = Store::open_native_graph(&path, options(), None).unwrap();
+    let lease = reopened.admit_native_read().unwrap();
+    assert_eq!(records(&reopened, &lease), before);
+    drop(lease);
+    reopened.close().unwrap();
+}
+
+#[test]
 fn ze46_consolidation_rotates_through_every_node() {
     run_ze46_consolidation_rotates_through_every_node();
 }
@@ -6240,7 +6419,7 @@ pub(super) fn run_actual_probe(
     _seed: u64,
 ) -> crate::graph_reclaim_test_support::ReclaimProbeReport {
     use super::publication::{reset_verified_faults, take_verified_faults};
-    let bodies: [(&'static str, u64, fn()); 11] = [
+    let bodies: [(&'static str, u64, fn()); 12] = [
         ("property-graph.reclaim.physical-replacement", 2, || {
             run_ze46_real_consolidation_preserves_exact_state_and_reopens();
             run_ze46_consolidation_rotates_through_every_node();
@@ -6278,6 +6457,11 @@ pub(super) fn run_actual_probe(
             run_ze46_reconciles_real_prewal_orphans_without_touching_unknown_files();
             run_ze46_orphan_adoption_waits_for_a_quiescent_history();
         }),
+        (
+            "property-graph.reclaim.page-relocation",
+            1,
+            run_ze260_page_relocation_keeps_intent_before_unlink,
+        ),
         ("property-graph.reclaim.intent-unlink-completion", 2, || {
             run_ze46_intent_unlink_sync_completion_crashes_resume_idempotently();
             run_ze46_checkpoint_during_an_open_reclaim_cycle_reopens();
@@ -6384,4 +6568,188 @@ fn ze260_hundred_node_batches_write_bounded_pages() {
         assert!(bytes <= 512 * 1024, "batch {batch}: {bytes} bytes");
         previous = next;
     }
+}
+
+#[test]
+fn ze260_maintenance_copies_an_unchanged_membership_page() {
+    let parent = super::tempfile::tempdir().unwrap();
+    let path = parent.path().join("native");
+    let store = Store::create_native_graph(&path, options(), None).unwrap();
+    let mut labels = [GraphName::new("AppendOnly").unwrap()];
+    let image = CanonicalContents::node(&mut labels, &mut [], None, None).unwrap();
+    let key = "unchanged".repeat(1024);
+    let writes = [StructuredWrite {
+        key: ApplicationKey::new(EntityKind::Node, "pages", &key).unwrap(),
+        revision: GraphRevision::new(1).unwrap(),
+        operation: StructuredOperation::Create,
+        image: Some(WriteImage::Node(&image)),
+    }];
+    let control = QueryControl::Cancel(CancelToken::new());
+    let original = store.apply_native_graph(&writes, &control).unwrap();
+    let before = store
+        .admit_native_read()
+        .unwrap()
+        .bundle()
+        .roots()
+        .directory(TreeKind::Labels)
+        .unwrap()
+        .reference();
+    commit_maintenance(&store).unwrap();
+    let after = store
+        .admit_native_read()
+        .unwrap()
+        .bundle()
+        .roots()
+        .directory(TreeKind::Labels)
+        .unwrap()
+        .reference();
+    assert_ne!(
+        before, after,
+        "unchanged membership page must leave the old pack"
+    );
+    store.close().unwrap();
+    let reopened = Store::open_native_graph(&path, options(), None).unwrap();
+    let replay = reopened.apply_native_graph(&writes, &control).unwrap();
+    assert!(replay[0].replayed);
+    assert_eq!(replay[0].generation, original[0].generation);
+    reopened.close().unwrap();
+}
+
+#[test]
+fn ze260_maintenance_retargets_oldest_fence_payloads() {
+    use crate::property_graph::storage::{NativePreparationCatalog, records::verify_fence_entry};
+    let parent = super::tempfile::tempdir().unwrap();
+    let store = Store::create_native_graph(parent.path().join("native"), options(), None).unwrap();
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    store
+        .apply_native_graph(
+            &[StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "pages", "payload").unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            }],
+            &QueryControl::Cancel(CancelToken::new()),
+        )
+        .unwrap();
+    let lease = store.admit_native_read().unwrap();
+    let oldest = prepared_union_for_lease(&store, &lease)
+        .into_iter()
+        .min_by_key(|change| change.object.serial)
+        .unwrap()
+        .object
+        .artifact;
+    drop(lease);
+    commit_maintenance(&store).unwrap();
+    let lease = store.admit_native_read().unwrap();
+    let shared = crate::property_graph::resources::GraphResources::from_store(&store).unwrap();
+    let control = QueryControl::Cancel(CancelToken::new());
+    let writer = WriteMemory::new(&shared, WriteLimits::default()).unwrap();
+    let memory = StorageMemory::new(&writer, &control, 32 * 1024 * 1024).unwrap();
+    let source = NativePreparationSource::new(&lease, &memory, 64).unwrap();
+    let mut resources = source.resources(128 * 1024 * 1024).unwrap();
+    let catalog = NativePreparationCatalog::open(&source, &mut resources).unwrap();
+    let root = lease
+        .bundle()
+        .roots()
+        .directory(TreeKind::KeyFences)
+        .unwrap();
+    let mut cursor = DirectoryCursor::seek(&source, root, None, &mut resources).unwrap();
+    let mut count = 0;
+    while let Some(entry) = cursor.next_entry(&mut resources).unwrap() {
+        let fence =
+            verify_fence_entry(&source, root, entry, &catalog, None, &mut resources).unwrap();
+        let (provenance, canonical) = fence.required_payloads();
+        assert_ne!(
+            provenance.reference().artifact,
+            oldest,
+            "fence provenance still pins oldest pack"
+        );
+        assert_ne!(
+            canonical.unwrap().reference().artifact,
+            oldest,
+            "fence canonical still pins oldest pack"
+        );
+        count += 1;
+    }
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn ze260_page_relocation_keeps_intent_before_unlink() {
+    run_ze260_page_relocation_keeps_intent_before_unlink();
+}
+
+fn run_ze260_page_relocation_keeps_intent_before_unlink() {
+    use super::publication::FaultPoint;
+    let parent = super::tempfile::tempdir().unwrap();
+    let path = parent.path().join("native");
+    let vfs = Arc::new(RecordingVfs::default());
+    let store = create_reclaim_test_store(&path, &vfs);
+    let mut labels = [GraphName::new("AppendOnly").unwrap()];
+    let image = CanonicalContents::node(&mut labels, &mut [], None, None).unwrap();
+    let control = QueryControl::Cancel(CancelToken::new());
+    store
+        .apply_native_graph(
+            &[StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "pages", "fault").unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            }],
+            &control,
+        )
+        .unwrap();
+    commit_maintenance(&store).unwrap();
+    store.checkpoint_native_graph(&control).unwrap();
+    let before = store
+        .admit_native_read()
+        .unwrap()
+        .bundle()
+        .roots()
+        .directory(TreeKind::Labels)
+        .unwrap()
+        .reference();
+    vfs.take();
+    vfs.arm_fault(FaultPoint::Delete);
+    let intent = commit_maintenance(&store).unwrap();
+    assert_eq!(intent.removed_bytes, 0);
+    assert!(
+        delete_events(&vfs.take()).is_empty(),
+        "unlink before durable intent"
+    );
+    let pending = store.admit_native_read().unwrap();
+    assert!(pending.bundle().reclaim().is_some());
+    assert_ne!(
+        before,
+        pending
+            .bundle()
+            .roots()
+            .directory(TreeKind::Labels)
+            .unwrap()
+            .reference()
+    );
+    drop(pending);
+    commit_maintenance(&store).expect_err("scheduled Delete must fire");
+    vfs.assert_fired_once();
+    assert!(delete_events(&vfs.take()).is_empty());
+    store.close().unwrap();
+    let infrastructure: Arc<dyn Vfs> = vfs.clone();
+    let reopened = Store::open_native_graph_with_infrastructure(
+        &path,
+        options(),
+        None,
+        infrastructure,
+        Arc::new(crate::lifecycle::SystemMonotonicClock),
+    )
+    .unwrap();
+    assert!(
+        !delete_events(&vfs.take()).is_empty(),
+        "writable recovery must resume the authorized unlinks"
+    );
+    reopened
+        .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+        .unwrap();
+    commit_maintenance(&reopened).unwrap();
+    reopened.close().unwrap();
 }

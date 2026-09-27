@@ -28,6 +28,7 @@ pub const REQUIRED_GRAPH_SMOKE_COVERAGE: &[&str] = &[
     "property-graph.reclaim.spill-refusal",
     "property-graph.reclaim.orphan",
     "property-graph.reclaim.intent-unlink-completion",
+    "property-graph.reclaim.page-relocation",
     "property-graph.reclaim.corrupt-proof",
     "property-graph.reclaim.read-only-retirement",
     "property-graph.identity.replay",

@@ -14,6 +14,7 @@ const FIRED: &[&str] = &[
     "property-graph.reclaim.spill-refusal",
     "property-graph.reclaim.orphan",
     "property-graph.reclaim.intent-unlink-completion",
+    "property-graph.reclaim.page-relocation",
     "property-graph.reclaim.read-only-retirement",
 ];
 
@@ -93,7 +94,7 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
         }
         coverage.hit(receipt.key);
     }
-    if seen.len() != 11 {
+    if seen.len() != 12 {
         return Err("missing reclaim boundary receipts".into());
     }
     Ok(())

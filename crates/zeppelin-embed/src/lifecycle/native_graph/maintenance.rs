@@ -383,6 +383,9 @@ fn select_rooted_candidates<'m>(
 }
 
 struct PreparedReclaimProof<'m> {
+    pending_page_relocations:
+        StorageBuffer<'m, crate::property_graph::storage::consolidation::PageRelocation>,
+    page_relocation_floor: u64,
     /// Complete unregistered objects this commit roots as bookkeeping.
     adoptions: StorageBuffer<'m, InventoryChange>,
     durable: spill::PreparedDurableSpill,
@@ -660,7 +663,7 @@ fn load_completed_reclaim<'m>(
     })
 }
 
-fn active_reclaim_subtype(
+pub(super) fn active_reclaim_subtype(
     store: &crate::lifecycle::Store,
     admission: &NativeMaintenanceAdmission,
     control: &crate::lifecycle::QueryControl,
@@ -745,6 +748,20 @@ fn prepare_durable_proof<'m>(
         binding,
         crate::property_graph::storage::reclaim::SPILL_CHUNK_LIMIT,
     )?;
+
+    let mut pending_page_relocations = StorageBuffer::new(
+        storage,
+        crate::property_graph::storage::consolidation::PAGE_RELOCATION_LIMIT,
+    )?;
+    let page_relocation_floor = {
+        let source = NativePreparationSource::new(&admission.lease, storage, 64)?;
+        crate::property_graph::storage::consolidation::page_relocation_floor(
+            &source,
+            admitted.roots(),
+            admitted.prepared_inventories(),
+            resources,
+        )?
+    };
 
     for bundle in capture.bundles() {
         let class = if Arc::ptr_eq(bundle, admitted) {
@@ -834,6 +851,8 @@ fn prepare_durable_proof<'m>(
                 &mut range_scratch,
                 &mut mark,
                 &mut writer,
+                Arc::ptr_eq(bundle, admitted)
+                    .then_some((&mut pending_page_relocations, page_relocation_floor)),
                 resources,
             ) {
                 return Err(spill_error(&writer, error));
@@ -1124,6 +1143,8 @@ fn prepare_durable_proof<'m>(
         partial_count,
     )?;
     Ok(PreparedReclaimProof {
+        pending_page_relocations,
+        page_relocation_floor,
         adoptions,
         durable,
         candidates,
@@ -2016,6 +2037,8 @@ pub(super) fn commit_with_limits(
         admitted.document(),
         admitted.prepared_inventories(),
         folded_inventory,
+        proof.pending_page_relocations.as_slice(),
+        proof.page_relocation_floor,
         reclaim_pending.as_slice(),
         proof.adoptions.as_slice(),
         &storage,
@@ -2100,6 +2123,8 @@ pub(super) fn commit_with_limits(
         .ok_or(NativeGraphError::IdentityExhausted)?;
     let mut commit_artifacts = StorageBuffer::new(&storage, artifact_count)?;
     let PreparedReclaimProof {
+        pending_page_relocations: _,
+        page_relocation_floor: _,
         adoptions: _adoptions,
         durable,
         candidates,
