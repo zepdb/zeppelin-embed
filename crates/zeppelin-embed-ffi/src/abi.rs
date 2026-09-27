@@ -1641,3 +1641,23 @@ pub struct ZeQuerySnippets {
     /// Number of snippets; equals the query result's `hit_count`.
     pub snippet_count: usize,
 }
+
+/// One inspected user attribute, copied into caller-owned storage.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeSchemaColumnResult {
+    /// Caller-provided sizeof this structure.
+    pub abi_size: u32,
+    /// Must be zero.
+    pub abi_reserved: u32,
+    /// Total number of user attributes (excludes ts).
+    pub column_count: usize,
+    /// Required UTF-8 name bytes, without a trailing NUL.
+    pub name_len: usize,
+    /// Schema-local attribute id; zero when index equals column_count.
+    pub attribute_id: u32,
+    /// Same discriminants as ZeAttributeDefinition.
+    pub attribute_type: i32,
+    /// One when nullable.
+    pub nullable: u32,
+}

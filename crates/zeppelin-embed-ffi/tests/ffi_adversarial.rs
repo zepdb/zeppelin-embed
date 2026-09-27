@@ -96,6 +96,14 @@ const ABI_REGISTRY: &[AbiEntry] = &[
         coverage: AbiCoverage::DetailedMatrix,
     },
     AbiEntry {
+        name: "ze_open_inspection",
+        coverage: AbiCoverage::InvalidProbe(probe_open_inspection),
+    },
+    AbiEntry {
+        name: "ze_schema_column",
+        coverage: AbiCoverage::InvalidProbe(probe_schema_column),
+    },
+    AbiEntry {
         name: "ze_namespace_open",
         coverage: AbiCoverage::InvalidProbe(probe_namespace_open),
     },
@@ -1083,6 +1091,24 @@ fn probe_query_filtered(context: &MatrixContext) -> ProbeResult {
 
 fn probe_query_snippets_free(_: &MatrixContext) -> ProbeResult {
     ProbeResult::Status(ze_query_snippets_free(std::ptr::null_mut()))
+}
+
+fn probe_open_inspection(_: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_open_inspection(
+        std::ptr::null(),
+        0,
+        std::ptr::null_mut(),
+    ))
+}
+
+fn probe_schema_column(context: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_schema_column(
+        context.store.handle,
+        0,
+        std::ptr::null_mut(),
+        0,
+        std::ptr::null_mut(),
+    ))
 }
 
 fn probe_namespace_open(_: &MatrixContext) -> ProbeResult {

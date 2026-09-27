@@ -27,6 +27,7 @@ ze_namespace_list_result_free
 ze_namespace_open
 ze_namespace_open_with_tokenizer
 ze_open
+ze_open_inspection
 ze_open_with_epoch
 ze_purge
 ze_query
@@ -37,6 +38,7 @@ ze_query_with_snippets
 ze_scan
 ze_scan_ordered
 ze_scan_result_free
+ze_schema_column
 ze_seal
 ze_search
 ze_search_filtered

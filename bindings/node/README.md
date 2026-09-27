@@ -420,3 +420,55 @@ then separately notarize, staple, and assess distribution. No certificate or
 notarization credentials are required for this CI fixture.
 
 Zeppelin Embed is licensed under GPL-3.0-only.
+
+### Read-only diagnostics shell
+
+The package installs `zeppelin-shell` (Node 18+ and the packaged native addon).
+Run it against an extracted, quiescent **copy** of a store. Every open is
+read-only: the shell has no mutation commands or writable mode, never repairs a
+WAL, and does not create missing stores. A truncated WAL may prevent reads;
+`verify` works without opening the store and reports the damage.
+
+```sh
+zeppelin-shell /diagnostics/root namespaces
+zeppelin-shell /diagnostics/root/docs schema
+zeppelin-shell /diagnostics/root/docs get 18446744073709551617
+zeppelin-shell /diagnostics/root/docs scan '{"order":{"attributeId":1,"direction":"descending"},"limit":10,"filter":{"op":"exists","attributeId":1}}'
+zeppelin-shell /diagnostics/root/docs count '{"filter":{"op":"eq","attributeId":1,"values":[{"id":1,"type":"u64","value":{"$bigint":"42"}}]}}'
+zeppelin-shell /diagnostics/root/docs query '{"text":"hello world","k":10}'
+zeppelin-shell /diagnostics/root/docs dump '{"limit":100}' > documents.jsonl
+zeppelin-shell /diagnostics/root/docs verify
+```
+
+From this checkout, substitute `node bindings/node/bin/zeppelin-shell.js` for
+`zeppelin-shell`. `--help` lists the commands. `namespaces` takes a namespace
+root; all other commands take a store directory. Namespace listings include
+attribute ids, names, types and nullability (the built-in timestamp is omitted).
+
+Request objects use the Node API's `ScanRequest`, `CountRequest` and
+`QueryRequest` shapes. Represent bigint inputs as `{"$bigint":"123"}` to avoid
+JSON number rounding. `get` takes an unsigned decimal 128-bit id. `scan` returns
+one page; `dump` follows all pages, includes every stored field, and treats
+`limit` as page size. Its optional filter and order apply to the whole dump.
+JSON output encodes bigint values as decimal strings, vectors and metadata as
+arrays, and non-finite floats as `"NaN"`, `"Infinity"`, or `"-Infinity"`.
+Dump output is for inspection, not an import format. Errors go to stderr;
+exit codes are 0 for success, 1 for verify findings, and 2 for usage/open errors.
+
+The same inspection capabilities are available programmatically:
+
+```js
+const { openInspection } = require('@zepdb/zeppelin-embed');
+const store = openInspection('/diagnostics/root/docs');
+try {
+  console.log(store.schema());
+  console.log(store.count());
+} finally {
+  store.close();
+}
+```
+
+`openInspection` reads the persisted identity and schema without requiring the
+original application's namespace spec. It retains tokenizer compatibility
+checks and rejects writes. Ordinary `Store` and `openNamespace` epoch/schema
+validation is unchanged. This shell inspects document stores, not graph stores.

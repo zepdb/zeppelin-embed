@@ -5036,3 +5036,107 @@ mod graph_validate;
 #[cfg(feature = "graph-cypher")]
 #[doc(hidden)]
 pub mod graph_result;
+
+/// Opens an existing store read-only for diagnostics using its persisted epoch.
+/// The caller owns path bytes and out_handle; no repair or write is performed.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_open_inspection(
+    path: *const u8,
+    path_len: usize,
+    out_handle: *mut ZeHandle,
+) -> ZeErrorCode {
+    ffi_entry!(None, ZeErrorCode::ZeErrPanic, {
+        finish(
+            None,
+            (|| {
+                scalar_output(out_handle)?;
+                let path = marshal::utf8_without_nul(path, path_len)?;
+                if path.is_empty() {
+                    return Err(FfiError::invalid("store path must not be empty"));
+                }
+                let store = Store::open_for_inspection(path).map_err(FfiError::store)?;
+                let identity = store.epoch_identity();
+                let handle = registry::insert_store(store, identity)?;
+                marshal::write_scalar(out_handle, handle);
+                Ok(())
+            })(),
+        )
+    })
+}
+
+/// Inspects one user attribute by zero-based index. Index equal to column_count
+/// returns an empty column; larger indices fail. A zero name_capacity probes the
+/// required name_len. Otherwise name must hold name_capacity writable bytes,
+/// which must cover name_len. No pointers are retained or returned.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_schema_column(
+    handle: ZeHandle,
+    index: usize,
+    name: *mut u8,
+    name_capacity: usize,
+    out_result: *mut ZeSchemaColumnResult,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_schema_column");
+        finish(
+            Some(handle),
+            (|| {
+                let abi_size = marshal::validate_output(out_result)?;
+                let access = registry::lookup(handle)?;
+                let schema = access.store.schema();
+                let column_count = schema.user_column_count();
+                if index > column_count {
+                    return Err(FfiError::invalid("schema index out of range"));
+                }
+                let mut result = ZeSchemaColumnResult {
+                    abi_size,
+                    abi_reserved: 0,
+                    column_count,
+                    name_len: 0,
+                    attribute_id: 0,
+                    attribute_type: 0,
+                    nullable: 0,
+                };
+                if let Some(column) = schema
+                    .columns()
+                    .iter()
+                    .filter(|c| c.id().get() != 0)
+                    .nth(index)
+                {
+                    result.name_len = column.name().len();
+                    result.attribute_id = column.id().get();
+                    result.attribute_type = match column.column_type() {
+                        ColumnType::U64 => 1,
+                        ColumnType::I64 => 2,
+                        ColumnType::F64 => 3,
+                        ColumnType::Bool => 4,
+                        ColumnType::DictionaryString => 5,
+                        ColumnType::RawString => 6,
+                        ColumnType::Id128 => 7,
+                    };
+                    result.nullable = u32::from(column.is_nullable());
+                    if name_capacity != 0 {
+                        if name.is_null()
+                            || name_capacity < result.name_len
+                            || name_capacity > isize::MAX as usize
+                        {
+                            return Err(FfiError::invalid(
+                                "schema name buffer is null or too small",
+                            ));
+                        }
+                        copy_schema_name(column.name(), name);
+                    }
+                }
+                marshal::write_output(out_result, result);
+                Ok(())
+            })(),
+        )
+    })
+}
+
+fn copy_schema_name(source: &str, destination: *mut u8) {
+    // The caller validated a writable buffer covering source.len() bytes.
+    unsafe {
+        std::ptr::copy_nonoverlapping(source.as_ptr(), destination, source.len());
+    }
+}

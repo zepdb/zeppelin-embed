@@ -1459,6 +1459,7 @@ pub enum StoreState {
 /// Store-open configuration.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OpenOptions {
+    inspection: bool,
     access_mode: AccessMode,
     durability_mode: DurabilityMode,
     commit_tier: CommitTier,
@@ -1484,6 +1485,7 @@ impl OpenOptions {
     #[must_use]
     pub const fn new() -> Self {
         Self {
+            inspection: false,
             access_mode: AccessMode::ReadWrite,
             durability_mode: DurabilityMode::Derived,
             commit_tier: CommitTier::Ordered,
@@ -1500,6 +1502,7 @@ impl OpenOptions {
     #[must_use]
     pub const fn read_only() -> Self {
         Self {
+            inspection: false,
             access_mode: AccessMode::ReadOnly,
             durability_mode: DurabilityMode::Derived,
             commit_tier: CommitTier::Ordered,
@@ -2925,6 +2928,14 @@ impl Store {
         })
     }
 
+    /// Opens an existing diagnostics copy read-only using its persisted identity.
+    /// Tokenizer compatibility is still validated; this never repairs or writes.
+    pub fn open_for_inspection(path: impl AsRef<Path>) -> Result<Self, StoreError> {
+        let mut options = OpenOptions::read_only();
+        options.inspection = true;
+        Self::open(path, options)
+    }
+
     /// Opens a store directory with the requested access and durability policy.
     pub fn open(path: impl AsRef<Path>, options: OpenOptions) -> Result<Self, StoreError> {
         Self::open_with_infrastructure(
@@ -3048,10 +3059,14 @@ impl Store {
             options.access_mode,
         )?;
         let persisted_epoch = snapshot.epoch_alias();
-        let declared_epoch = options
-            .epoch
-            .as_ref()
-            .map(crate::epoch::StoreEpoch::identity);
+        let declared_epoch = if options.inspection {
+            persisted_epoch
+        } else {
+            options
+                .epoch
+                .as_ref()
+                .map(crate::epoch::StoreEpoch::identity)
+        };
         validate_epoch_identity(
             persisted_epoch,
             declared_epoch,

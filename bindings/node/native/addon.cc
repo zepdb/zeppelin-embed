@@ -1356,7 +1356,12 @@ napi_value ConstructStore(napi_env env, napi_callback_info info) {
     ze_handle handle = 0;
     ze_error_code status = ZE_OK;
     if (argc < 4) {
-      status = ze_open(&request, &handle);
+      bool inspection = false;
+      if (!GetOptionalBool(env, options, "inspection", false, &inspection))
+        return nullptr;
+      status = inspection
+          ? ze_open_inspection(reinterpret_cast<const uint8_t *>(path.data()), path.size(), &handle)
+          : ze_open(&request, &handle);
     } else {
       std::string name;
       if (!GetUtf8(env, args[2], "name", &name))
@@ -2513,6 +2518,50 @@ napi_value CountGrouped(napi_env env, NativeStore *store,
   if (free_status != ZE_OK)
     return ThrowZeppelin(env, store->handle, free_status);
   return result;
+}
+
+napi_value Schema(napi_env env, napi_callback_info info) {
+  return Guard(env, [&]() -> napi_value {
+    napi_value receiver;
+    size_t argc = 0;
+    if (!NapiOk(env, napi_get_cb_info(env, info, &argc, nullptr, &receiver, nullptr), "read schema receiver"))
+      return nullptr;
+    NativeStore *store = UnwrapStore(env, receiver);
+    if (store == nullptr) return nullptr;
+    napi_value result;
+    if (!NapiOk(env, napi_create_array(env, &result), "create schema array")) return nullptr;
+    for (size_t index = 0;; ++index) {
+      ZeSchemaColumnResult column{};
+      column.abi_size = sizeof(column);
+      auto status = ze_schema_column(store->handle, index, nullptr, 0, &column);
+      if (status != ZE_OK) return ThrowZeppelin(env, store->handle, status);
+      if (index == column.column_count) break;
+      std::vector<char> name(column.name_len + 1);
+      status = ze_schema_column(store->handle, index, reinterpret_cast<uint8_t *>(name.data()), name.size(), &column);
+      if (status != ZE_OK) return ThrowZeppelin(env, store->handle, status);
+      const char *type = nullptr;
+      switch (column.attribute_type) {
+        case 1: type = "u64"; break;
+        case 2: type = "i64"; break;
+        case 3: type = "f64"; break;
+        case 4: type = "bool"; break;
+        case 5: type = "dictionaryString"; break;
+        case 6: type = "rawString"; break;
+        case 7: type = "id128"; break;
+        default: napi_throw_error(env, "ERR_SCHEMA_TYPE", "unknown attribute type"); return nullptr;
+      }
+      napi_value entry, id, label, kind, nullable;
+      if (!NapiOk(env, napi_create_object(env, &entry), "create attribute") ||
+          !NapiOk(env, napi_create_uint32(env, column.attribute_id, &id), "create attribute id") ||
+          !NapiOk(env, napi_create_string_utf8(env, name.data(), column.name_len, &label), "create attribute name") ||
+          !NapiOk(env, napi_create_string_utf8(env, type, NAPI_AUTO_LENGTH, &kind), "create attribute type") ||
+          !NapiOk(env, napi_get_boolean(env, column.nullable != 0, &nullable), "create nullable") ||
+          !SetNamed(env, entry, "id", id) || !SetNamed(env, entry, "name", label) ||
+          !SetNamed(env, entry, "type", kind) || !SetNamed(env, entry, "nullable", nullable) ||
+          !NapiOk(env, napi_set_element(env, result, index, entry), "append attribute")) return nullptr;
+    }
+    return result;
+  });
 }
 
 napi_value Count(napi_env env, napi_callback_info info) {
@@ -3672,6 +3721,7 @@ napi_value Initialize(napi_env env, napi_value exports) {
       {"deleteWhere", nullptr, DeleteWhere, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"scan", nullptr, Scan, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"schema", nullptr, Schema, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"count", nullptr, Count, nullptr, nullptr, nullptr, napi_default,
        nullptr},
       {"searchFiltered", nullptr, SearchFiltered, nullptr, nullptr, nullptr,

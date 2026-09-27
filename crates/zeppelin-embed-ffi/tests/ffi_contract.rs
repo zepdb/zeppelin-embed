@@ -597,6 +597,7 @@ const POISON_TABLE_NAMES: &[&str] = &[
     "ze_scan",
     "ze_scan_ordered",
     "ze_scan_result_free",
+    "ze_schema_column",
     "ze_seal",
     "ze_search",
     "ze_search_filtered",
@@ -737,6 +738,16 @@ type PoisonCall = fn(&mut PoisonContext) -> ZeErrorCode;
 
 fn poison_function_table() -> Vec<(&'static str, PoisonCall)> {
     vec![
+        ("ze_schema_column", |context| {
+            let mut report: ZeSchemaColumnResult = common::sized_zeroed();
+            ze_schema_column(
+                context.store.handle,
+                0,
+                std::ptr::null_mut(),
+                0,
+                &mut report,
+            )
+        }),
         ("ze_state", |context| {
             let mut report: ZeStateReport = common::sized_zeroed();
             ze_state(context.store.handle, &mut report)

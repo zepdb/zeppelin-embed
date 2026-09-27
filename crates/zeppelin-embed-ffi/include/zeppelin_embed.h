@@ -2851,6 +2851,40 @@ typedef struct ZePurgeReport {
 } ZePurgeReport;
 
 /*
+ One inspected user attribute, copied into caller-owned storage.
+ */
+typedef struct ZeSchemaColumnResult {
+    /*
+     Caller-provided sizeof this structure.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Total number of user attributes (excludes ts).
+     */
+    size_t column_count;
+    /*
+     Required UTF-8 name bytes, without a trailing NUL.
+     */
+    size_t name_len;
+    /*
+     Schema-local attribute id; zero when index equals column_count.
+     */
+    uint32_t attribute_id;
+    /*
+     Same discriminants as ZeAttributeDefinition.
+     */
+    int32_t attribute_type;
+    /*
+     One when nullable.
+     */
+    uint32_t nullable;
+} ZeSchemaColumnResult;
+
+/*
  Store verification request.
  */
 typedef struct ZeVerifyRequest {
@@ -3422,6 +3456,26 @@ ze_error_code ze_cancel_token_free(ze_cancel_token token);
  `result` is caller-owned; only its `hits` allocation is released.
  */
 ze_error_code ze_search_result_free(struct ZeSearchResult *result);
+
+/*
+ Opens an existing store read-only for diagnostics using its persisted epoch.
+ The caller owns path bytes and out_handle; no repair or write is performed.
+ */
+ze_error_code ze_open_inspection(const uint8_t *path,
+                                 size_t path_len,
+                                 ze_handle *out_handle);
+
+/*
+ Inspects one user attribute by zero-based index. Index equal to column_count
+ returns an empty column; larger indices fail. A zero name_capacity probes the
+ required name_len. Otherwise name must hold name_capacity writable bytes,
+ which must cover name_len. No pointers are retained or returned.
+ */
+ze_error_code ze_schema_column(ze_handle handle,
+                               size_t index,
+                               uint8_t *name,
+                               size_t name_capacity,
+                               struct ZeSchemaColumnResult *out_result);
 
 /*
  Walks the store directory at `request.path` and reports every damaged

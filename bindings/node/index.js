@@ -245,6 +245,10 @@ class Store {
     return callNative(() => this._native.purge(ids));
   }
 
+  schema() {
+    return callNative(() => this._native.schema());
+  }
+
   scan(request) {
     return callNative(() => this._native.scan(request));
   }
@@ -371,6 +375,10 @@ function openNamespace(root, name, spec, options = {}) {
   );
 }
 
+function openInspection(storePath) {
+  return new Store(storePath, { readOnly: true, inspection: true });
+}
+
 function listNamespaces(root) {
   return callNative(() => binding.listNamespaces(root));
 }
@@ -394,6 +402,7 @@ module.exports = {
   idToUuid,
   listNamespaces,
   openNamespace,
+  openInspection,
   uuidToId,
   verify,
 };

@@ -604,6 +604,8 @@ export declare class Store {
    * explicitly to remove their historical bytes.
    */
   purge(ids: readonly DocumentId[]): PurgeReport;
+  /** Persisted user attributes, excluding the built-in timestamp column. Copies names and types. */
+  schema(): AttributeDefinition[];
   scan(request?: ScanRequest): ScanPage;
   /**
    * Count live documents matching the optional filter and timestamp range.
@@ -758,3 +760,12 @@ export interface VerifyReport {
  * write that is in flight.
  */
 export declare function verify(path: string): VerifyReport;
+
+/**
+ * Opens an existing diagnostics copy read-only without a caller-declared epoch
+ * or schema. Uses the persisted identity; tokenizer incompatibility and corrupt
+ * data still fail. Never repairs, creates, seals or writes; mutations throw
+ * ZE_ERR_ACCESS_MODE. Close the returned store when finished. Use verify(path)
+ * if corruption prevents opening. Inspect a quiescent copy, not a live writer.
+ */
+export declare function openInspection(path: string): Store;
