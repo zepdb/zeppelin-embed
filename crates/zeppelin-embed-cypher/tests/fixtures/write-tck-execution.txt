@@ -1,0 +1,480 @@
+#
+# Copyright (c) 2015-2023 "Neo Technology,"
+# Network Engine for Objects in Lund AB [http://neotechnology.com]
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Attribution Notice under the terms of the Apache License 2.0
+#
+# This work was created by the collective efforts of the openCypher community.
+# Without limiting the terms of Section 6, any Derivative Work that is not
+# approved by the public consensus process of the openCypher Implementers Group
+# should not be described as “Cypher” (and Cypher® is a registered trademark of
+# Neo4j Inc.) or as "openCypher". Extensions by implementers or prototypes or
+# proposals for change that have been documented or implemented should only be
+# described as "implementation extensions to Cypher" or as "proposed changes to
+# Cypher that are not yet approved by the openCypher community".
+#
+
+# Original openCypher TCK write coordinates for ZE-57 execution.
+# Source: https://github.com/opencypher/openCypher at 007895aff5f33097d67b2e48a0a2babd6bd18590.
+# 42 write scenarios are vendored; S1 executes Create1[1-12].
+# Setup, parameter, query and expectation text is copied verbatim.
+# Copyright (c) 2015-2023 "Neo Technology," Network Engine for Objects in Lund AB.
+# Licensed under the Apache License, Version 2.0. See OPENCYPHER-LICENSE-APACHE.
+# This work was created by the collective efforts of the openCypher community.
+# Cypher is a registered trademark of Neo4j Inc. These implementation extensions
+# are not approved by the public consensus process of the openCypher Implementers Group.
+# SHA-256 Create1.feature: ecc001e6ed2ef573bc3edac52f1270ed98d264df3b88730b7d058e9ebb4509e4
+# SHA-256 Set2.feature: 26094ad00d2bbd68b8d9e704d3e5de165b1896f7628b1ed3e1197c45d618159a
+# SHA-256 Set3.feature: 5536d4848eb982787338fbba0eb3a5271bbcdb0f12a2c791a9924690852c78c8
+# SHA-256 Set6.feature: 86e3f7baf259d3784626ca9838504fcbc26dd4465549c7948f9d340559c1dbc2
+# SHA-256 Delete1.feature: 4a7157705c1f6d3b33cfc3b82dce64c88049b3f82535fde7baa94ecbbb7b0b54
+# SHA-256 Remove1.feature: cfaac78754628f4c8f3f6a089cc32bc0688fb5223d9f4768854c6944d9e6fd01
+# SHA-256 Remove2.feature: c4890f765c32c9b946340045a4c9214a05c9d7a05b64f22e140fe0d0826fc7d3
+# SHA-256 Remove3.feature: 4848c5baf88161418580827fc7eb711e5e6ecc74bbdd64001d16fc428ae72ac0
+=== clauses/create/Create1.feature [1]
+query
+  CREATE ()
+expect empty
+side-effects
+  | +nodes | 1 |
+=== clauses/create/Create1.feature [2]
+query
+  CREATE (), ()
+expect empty
+side-effects
+  | +nodes | 2 |
+=== clauses/create/Create1.feature [3]
+query
+  CREATE (:Label)
+expect empty
+side-effects
+  | +nodes  | 1 |
+  | +labels | 1 |
+=== clauses/create/Create1.feature [4]
+query
+  CREATE (:Label), (:Label)
+expect empty
+side-effects
+  | +nodes  | 2 |
+  | +labels | 1 |
+=== clauses/create/Create1.feature [5]
+query
+  CREATE (:A:B:C:D)
+expect empty
+side-effects
+  | +nodes  | 1 |
+  | +labels | 4 |
+=== clauses/create/Create1.feature [6]
+query
+  CREATE (:B:A:D), (:B:C), (:D:E:B)
+expect empty
+side-effects
+  | +nodes  | 3 |
+  | +labels | 5 |
+=== clauses/create/Create1.feature [7]
+query
+  CREATE ({created: true})
+expect empty
+side-effects
+  | +nodes      | 1 |
+  | +properties | 1 |
+=== clauses/create/Create1.feature [8]
+query
+  CREATE (n {name: 'foo'})
+  RETURN n.name AS p
+expect bag
+  | p     |
+  | 'foo' |
+side-effects
+  | +nodes      | 1 |
+  | +properties | 1 |
+=== clauses/create/Create1.feature [9]
+query
+  CREATE (n {id: 12, name: 'foo'})
+expect empty
+side-effects
+  | +nodes      | 1 |
+  | +properties | 2 |
+=== clauses/create/Create1.feature [10]
+query
+  CREATE (n {id: 12, name: 'foo'})
+  RETURN n.id AS id, n.name AS p
+expect bag
+  | id | p     |
+  | 12 | 'foo' |
+side-effects
+  | +nodes      | 1 |
+  | +properties | 2 |
+=== clauses/create/Create1.feature [11]
+query
+  CREATE (n {id: 12, name: null})
+  RETURN n.id AS id, n.name AS p
+expect bag
+  | id | p    |
+  | 12 | null |
+side-effects
+  | +nodes      | 1 |
+  | +properties | 1 |
+=== clauses/create/Create1.feature [12]
+query
+  CREATE (p:TheLabel {id: 4611686018427387905})
+  RETURN p.id
+expect bag
+  | p.id                |
+  | 4611686018427387905 |
+side-effects
+  | +nodes      | 1 |
+  | +properties | 1 |
+  | +labels     | 1 |
+=== clauses/set/Set2.feature [1]
+setup
+  CREATE (:A {property1: 23, property2: 46})
+query
+  MATCH (n:A)
+  SET n.property1 = null
+  RETURN n
+expect bag
+  | n                    |
+  | (:A {property2: 46}) |
+side-effects
+  | -properties | 1 |
+=== clauses/set/Set2.feature [2]
+setup
+  CREATE (:A {name: 'Michael', age: 35})
+query
+  MATCH (n)
+  WHERE n.name = 'Michael'
+  SET n.name = null
+  RETURN n
+expect bag
+  | n              |
+  | (:A {age: 35}) |
+side-effects
+  | -properties | 1 |
+=== clauses/set/Set2.feature [3]
+setup
+  CREATE ()-[:REL {property1: 12, property2: 24}]->()
+query
+  MATCH ()-[r]->()
+  SET r.property1 = null
+  RETURN r
+expect bag
+  | r                      |
+  | [:REL {property2: 24}] |
+side-effects
+  | -properties | 1 |
+=== clauses/set/Set3.feature [1]
+setup
+  CREATE ()
+query
+  MATCH (n)
+  SET n:Foo
+  RETURN n
+expect bag
+  | n      |
+  | (:Foo) |
+side-effects
+  | +labels | 1 |
+=== clauses/set/Set3.feature [2]
+setup
+  CREATE ()
+query
+  MATCH (n)
+  SET n:Foo:Bar
+  RETURN n
+expect bag
+  | n          |
+  | (:Foo:Bar) |
+side-effects
+  | +labels | 2 |
+=== clauses/set/Set3.feature [3]
+setup
+  CREATE (:A)
+query
+  MATCH (n:A)
+  SET n:Foo
+  RETURN n
+expect bag
+  | n        |
+  | (:A:Foo) |
+side-effects
+  | +labels | 1 |
+=== clauses/set/Set3.feature [4]
+setup
+  CREATE (:A)
+query
+  MATCH (n)
+  SET n:Foo:Bar
+  RETURN n
+expect bag
+  | n            |
+  | (:A:Foo:Bar) |
+side-effects
+  | +labels | 2 |
+=== clauses/set/Set3.feature [5]
+setup
+  CREATE ()
+query
+  MATCH (n)
+  SET n :Foo
+  RETURN labels(n)
+expect bag
+  | labels(n) |
+  | ['Foo']   |
+side-effects
+  | +labels | 1 |
+=== clauses/set/Set3.feature [6]
+setup
+  CREATE ()
+query
+  MATCH (n)
+  SET n :Foo :Bar
+  RETURN labels(n)
+expect bag-lists-unordered
+  | labels(n)      |
+  | ['Foo', 'Bar'] |
+side-effects
+  | +labels | 2 |
+=== clauses/set/Set3.feature [7]
+setup
+  CREATE ()
+query
+  MATCH (n)
+  SET n :Foo:Bar
+  RETURN labels(n)
+expect bag-lists-unordered
+  | labels(n)      |
+  | ['Foo', 'Bar'] |
+side-effects
+  | +labels | 2 |
+=== clauses/set/Set3.feature [8]
+query
+  OPTIONAL MATCH (a:DoesNotExist)
+  SET a:L
+  RETURN a
+expect bag
+  | a    |
+  | null |
+side-effects none
+=== clauses/set/Set6.feature [5]
+setup
+  CREATE (:N {num: 1})
+  CREATE (:N {num: 2})
+  CREATE (:N {num: 3})
+  CREATE (:N {num: 4})
+  CREATE (:N {num: 5})
+query
+  MATCH (n:N)
+  SET n.num = n.num + 1
+  WITH n
+  WHERE n.num % 2 = 0
+  RETURN n.num AS num
+expect bag
+  | num |
+  | 2   |
+  | 4   |
+  | 6   |
+side-effects
+  | +properties | 5 |
+  | -properties | 5 |
+=== clauses/delete/Delete1.feature [1]
+setup
+  CREATE ()
+query
+  MATCH (n)
+  DELETE n
+expect empty
+side-effects
+  | -nodes | 1 |
+=== clauses/delete/Delete1.feature [2]
+setup
+  CREATE ()
+query
+  MATCH (n)
+  DETACH DELETE n
+expect empty
+side-effects
+  | -nodes | 1 |
+=== clauses/delete/Delete1.feature [3]
+setup
+  CREATE (x:X)
+  CREATE (x)-[:R]->()
+  CREATE (x)-[:R]->()
+  CREATE (x)-[:R]->()
+query
+  MATCH (n:X)
+  DETACH DELETE n
+expect empty
+side-effects
+  | -nodes         | 1 |
+  | -relationships | 3 |
+  | -labels        | 1 |
+=== clauses/delete/Delete1.feature [4]
+query
+  OPTIONAL MATCH (n)
+  DELETE n
+expect empty
+side-effects none
+=== clauses/delete/Delete1.feature [5]
+query
+  OPTIONAL MATCH (a:DoesNotExist)
+  DELETE a
+  RETURN a
+expect bag
+  | a    |
+  | null |
+side-effects none
+=== clauses/delete/Delete1.feature [6]
+query
+  OPTIONAL MATCH (n)
+  DETACH DELETE n
+expect empty
+side-effects none
+=== clauses/delete/Delete1.feature [7]
+setup
+  CREATE (x:X)
+  CREATE (x)-[:R]->()
+  CREATE (x)-[:R]->()
+  CREATE (x)-[:R]->()
+query
+  MATCH (n:X)
+  DELETE n
+expect runtime-error ConstraintVerificationFailed DeleteConnectedNode
+side-effects none
+=== clauses/remove/Remove1.feature [1]
+setup
+  CREATE (:L {num: 42})
+query
+  MATCH (n)
+  REMOVE n.num
+  RETURN n.num IS NOT NULL AS still_there
+expect bag
+  | still_there |
+  | false       |
+side-effects
+  | -properties | 1 |
+=== clauses/remove/Remove1.feature [3]
+setup
+  CREATE (a), (b), (a)-[:X {num: 42}]->(b)
+query
+  MATCH ()-[r]->()
+  REMOVE r.num
+  RETURN r.num IS NOT NULL AS still_there
+expect bag
+  | still_there |
+  | false       |
+side-effects
+  | -properties | 1 |
+=== clauses/remove/Remove1.feature [5]
+query
+  OPTIONAL MATCH (a:DoesNotExist)
+  REMOVE a.num
+  RETURN a
+expect bag
+  | a    |
+  | null |
+side-effects none
+=== clauses/remove/Remove1.feature [6]
+setup
+  CREATE ({num: 42})
+query
+  MATCH (n)
+  OPTIONAL MATCH (n)-[r]->()
+  REMOVE r.num
+  RETURN n
+expect bag
+  | n           |
+  | ({num: 42}) |
+side-effects none
+=== clauses/remove/Remove2.feature [1]
+setup
+  CREATE (:L {num: 42})
+query
+  MATCH (n)
+  REMOVE n:L
+  RETURN n.num
+expect bag
+  | n.num |
+  | 42    |
+side-effects
+  | -labels | 1 |
+=== clauses/remove/Remove2.feature [2]
+setup
+  CREATE (:Foo:Bar)
+query
+  MATCH (n)
+  REMOVE n:Foo
+  RETURN labels(n)
+expect bag
+  | labels(n) |
+  | ['Bar']   |
+side-effects
+  | -labels | 1 |
+=== clauses/remove/Remove2.feature [3]
+setup
+  CREATE (:L1:L2:L3 {num: 42})
+query
+  MATCH (n)
+  REMOVE n:L1:L3
+  RETURN labels(n)
+expect bag
+  | labels(n) |
+  | ['L2']    |
+side-effects
+  | -labels | 2 |
+=== clauses/remove/Remove2.feature [4]
+setup
+  CREATE (:Foo)
+query
+  MATCH (n)
+  REMOVE n:Bar
+  RETURN labels(n)
+expect bag
+  | labels(n) |
+  | ['Foo']   |
+side-effects none
+=== clauses/remove/Remove2.feature [5]
+query
+  OPTIONAL MATCH (a:DoesNotExist)
+  REMOVE a:L
+  RETURN a
+expect bag
+  | a    |
+  | null |
+side-effects none
+=== clauses/remove/Remove3.feature [1]
+setup
+  CREATE (:N {num: 42})
+query
+  MATCH (n:N)
+  REMOVE n.num
+  RETURN n
+  LIMIT 0
+expect bag
+  | n |
+side-effects
+  | -properties | 1 |
+=== clauses/remove/Remove3.feature [15]
+setup
+  CREATE ()-[r:R {num: 42}]->()
+query
+  MATCH ()-[r:R]->()
+  REMOVE r.num
+  RETURN r
+  LIMIT 0
+expect bag
+  | r |
+side-effects
+  | -properties | 1 |

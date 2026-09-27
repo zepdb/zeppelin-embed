@@ -219,6 +219,9 @@ pub(crate) fn actual_value(result: &CompletedGraphResult, pools: Pools<'_>, valu
         Value::F64(bits) => V::Float(f64::from_bits(bits)),
         Value::String(span) => V::Str(text(result, span)),
         Value::List { children, element } => {
+            if children.len == 0 {
+                return V::List(vec![]);
+            }
             assert_ne!(
                 element,
                 ListKind::Empty,
@@ -278,6 +281,11 @@ pub(crate) enum Expect {
         header: Vec<String>,
         rows: Vec<Vec<V>>,
     },
+    Empty,
+    RuntimeError {
+        category: String,
+        detail: String,
+    },
     CompileError(String),
     RejectProfile,
     /// An in-profile example row of a profile-rejected outline, with the
@@ -292,6 +300,7 @@ pub(crate) struct Scenario {
     pub(crate) parameters: Vec<(String, V)>,
     pub(crate) query: String,
     pub(crate) expect: Expect,
+    pub(crate) side_effects: BTreeMap<String, u64>,
 }
 
 fn cells(line: &str) -> Vec<String> {
@@ -309,6 +318,7 @@ pub(crate) fn scenarios(fixture: &str) -> Vec<Scenario> {
         let coordinate = lines.next().expect("coordinate").to_owned();
         let (mut setup, mut parameters, mut query) = (Vec::new(), Vec::new(), String::new());
         let mut expect = None;
+        let mut side_effects = BTreeMap::new();
         let mut section = "";
         let mut table: Vec<String> = Vec::new();
         for line in lines {
@@ -324,6 +334,19 @@ pub(crate) fn scenarios(fixture: &str) -> Vec<Scenario> {
                         query.push('\n');
                     }
                     "table" => table.push(body.to_owned()),
+                    "side-effects" => {
+                        let cells = cells(body);
+                        assert_eq!(cells.len(), 2, "{coordinate}: side-effect row");
+                        assert!(
+                            side_effects
+                                .insert(
+                                    cells[0].clone(),
+                                    cells[1].parse().expect("side-effect count")
+                                )
+                                .is_none(),
+                            "{coordinate}: duplicate effect"
+                        );
+                    }
                     other => panic!("indented line in {other:?} of {coordinate}"),
                 }
                 continue;
@@ -344,6 +367,19 @@ pub(crate) fn scenarios(fixture: &str) -> Vec<Scenario> {
                 expect = Some(Expect::LocalExample(None));
             } else if let Some(value) = line.strip_prefix("result ") {
                 expect = Some(Expect::LocalExample(Some(parse_value(value))));
+            } else if line == "expect empty" {
+                expect = Some(Expect::Empty);
+                section = "";
+            } else if let Some(error) = line.strip_prefix("expect runtime-error ") {
+                let (category, detail) =
+                    error.split_once(' ').expect("runtime category and detail");
+                expect = Some(Expect::RuntimeError {
+                    category: category.to_owned(),
+                    detail: detail.to_owned(),
+                });
+                section = "";
+            } else if line == "side-effects" {
+                section = "side-effects";
             } else if let Some(mode) = line.strip_prefix("expect ") {
                 expect = Some(Expect::Table {
                     mode: mode.to_owned(),
@@ -371,6 +407,7 @@ pub(crate) fn scenarios(fixture: &str) -> Vec<Scenario> {
             parameters,
             query,
             expect,
+            side_effects,
         });
     }
     out
