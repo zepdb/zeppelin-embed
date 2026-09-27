@@ -202,3 +202,26 @@ return diagnostic.operator_index.present != 1; }
         String::from_utf8_lossy(&result.stderr)
     );
 }
+
+#[test]
+fn graph_entry_prototypes_are_callable_from_c() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let result = Command::new("clang")
+        .args([
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-fsyntax-only",
+            "-I",
+        ])
+        .arg(root.join("include"))
+        .arg(root.join("tests/c/graph_entry.c"))
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}

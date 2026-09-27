@@ -2,8 +2,18 @@ mod common;
 use common::graph::*;
 use zeppelin_embed_ffi::*;
 
+/// The ABI panic probe is process-global; tests that arm it must not overlap.
+static PROBE_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn probe_guard() -> std::sync::MutexGuard<'static, ()> {
+    PROBE_GUARD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[test]
 fn a_panic_in_a_graph_entry_poisons_only_that_graph_handle() {
+    let _guard = probe_guard();
     let mut first = GraphTestStore::create();
     let mut second = GraphTestStore::create();
     let legacy = common::TestStore::new();
@@ -19,4 +29,31 @@ fn a_panic_in_a_graph_entry_poisons_only_that_graph_handle() {
     assert_eq!(second.close(), ZeErrorCode::ZeOk);
     let mut state = common::sized_zeroed();
     assert_eq!(ze_state(legacy.handle, &mut state), ZeErrorCode::ZeOk);
+}
+
+#[test]
+fn a_panic_after_a_committing_statement_keeps_the_known_outcome() {
+    let _guard = probe_guard();
+    let mut s = GraphTestStore::create();
+    let mut r = empty_response();
+    arm_abi_panic_probe("ze_graph_cypher:after-execute");
+    assert_eq!(
+        ze_graph_cypher(
+            s.handle,
+            &cypher_request(b"CREATE (:Doc {title:'p'})", &[], None),
+            &mut r
+        ),
+        ZeErrorCode::ZeErrPanic
+    );
+    assert_eq!(
+        (r.disposition, r.changed_generation, r.owner_token),
+        (2, 1, 0)
+    );
+    assert_eq!(s.close(), ZeErrorCode::ZeErrPoisoned);
+    let (code, h) = graph_open(&s.path, MODE_READ_WRITE);
+    assert_eq!(code, ZeErrorCode::ZeOk);
+    let mut r = cypher_ok(h, "MATCH (n:Doc) RETURN n.title AS title");
+    assert_eq!(string_of(&r, &rows(&r)[0][0]), "p");
+    ze_graph_response_free(&mut r);
+    ze_graph_close(h);
 }

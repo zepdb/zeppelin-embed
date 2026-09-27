@@ -252,3 +252,76 @@ pub fn single_node(builder: &mut PoolBuilder, key: &str) -> ZeGraphBatchItem {
     let image = builder.node_image(&[], 0..0, None);
     create_node_item(ns, key, 1, image)
 }
+
+pub fn cypher_request(
+    text: &[u8],
+    params: &[ZeGraphParameterValue],
+    pool: Option<&ZeGraphValuePool>,
+) -> ZeGraphCypherRequest {
+    let mut r: ZeGraphCypherRequest = sized_zeroed();
+    r.query = ZeGraphBytes {
+        data: text.as_ptr(),
+        count: text.len(),
+    };
+    r.parameters = params.as_ptr();
+    r.parameter_count = params.len();
+    r.parameter_pool = pool.map_or(std::ptr::null(), |p| p);
+    r
+}
+pub fn parameter(pool: &mut PoolBuilder, name: &str, value: u32) -> ZeGraphParameterValue {
+    let mut p: ZeGraphParameterValue = sized_zeroed();
+    p.name = pool.text(name);
+    p.value = value;
+    p
+}
+fn response_slice<T>(_response: &ZeGraphResponse, p: *const T, n: usize) -> &[T] {
+    if n == 0 {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(p, n) }
+    }
+}
+pub fn rows(r: &ZeGraphResponse) -> Vec<Vec<ZeGraphValue>> {
+    if r.column_count == 0 {
+        return vec![];
+    }
+    let values = response_slice(r, r.pool.values, r.pool.value_count);
+    response_slice(r, r.cells, r.cell_count)
+        .chunks(r.column_count)
+        .map(|row| row.iter().map(|i| values[*i as usize]).collect())
+        .collect()
+}
+fn range_string(r: &ZeGraphResponse, range: ZeGraphRange) -> String {
+    let bytes = response_slice(r, r.pool.bytes, r.pool.byte_count);
+    String::from_utf8(bytes[range.start as usize..(range.start + range.count) as usize].to_vec())
+        .unwrap()
+}
+pub fn string_of(r: &ZeGraphResponse, v: &ZeGraphValue) -> String {
+    range_string(r, v.range)
+}
+pub fn column_names(r: &ZeGraphResponse) -> Vec<String> {
+    response_slice(r, r.columns, r.column_count)
+        .iter()
+        .map(|c| range_string(r, c.name))
+        .collect()
+}
+pub fn cypher_ok(handle: ZeGraphHandle, text: &str) -> ZeGraphResponse {
+    let mut r = empty_response();
+    assert_eq!(
+        ze_graph_cypher(handle, &cypher_request(text.as_bytes(), &[], None), &mut r),
+        ZeErrorCode::ZeOk,
+        "{}",
+        last_error(handle.token)
+    );
+    r
+}
+
+impl PoolBuilder {
+    pub fn tagged_value(&mut self, tag: u32) -> u32 {
+        let mut v: ZeGraphValue = sized_zeroed();
+        v.tag = tag;
+        let index = self.values.len() as u32;
+        self.values.push(v);
+        index
+    }
+}

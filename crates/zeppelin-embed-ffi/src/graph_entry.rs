@@ -1,4 +1,5 @@
 //! Graph C entries, exported only with graph-cypher.
+use super::ZeGraphCypherRequest;
 use super::{ZeGraphBatchRequest, ZeGraphHandle, ZeGraphOpenRequest, ZeGraphResponse};
 use crate::ZeErrorCode;
 
@@ -54,5 +55,46 @@ pub extern "C" fn ze_graph_apply(
 pub extern "C" fn ze_graph_response_free(response: *mut ZeGraphResponse) -> ZeErrorCode {
     ffi_entry!(None, ZeErrorCode::ZeErrPanic, {
         crate::finish(None, crate::graph_abi::free(response))
+    })
+}
+
+/// Compiles and executes one Cypher statement with scalar parameters and a
+/// default maximum of 1,024 returned rows. Options must be null.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_graph_cypher(
+    handle: ZeGraphHandle,
+    request: *const ZeGraphCypherRequest,
+    out_response: *mut ZeGraphResponse,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle.token), ZeErrorCode::ZeErrPanic, {
+        crate::run_named_panic_probe("ze_graph_cypher");
+        crate::finish(
+            Some(handle.token),
+            crate::graph_abi::cypher(handle, request, out_response),
+        )
+    })
+}
+
+/// Executes Cypher using the frozen request layout and a caller-selected
+/// returned-row cap: 0 selects 1,024; 1..=65,536 is accepted. Exceeding the
+/// cap fails, never truncates. Other work and memory budgets still apply.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_graph_cypher_with_row_limit(
+    handle: ZeGraphHandle,
+    request: *const ZeGraphCypherRequest,
+    result_row_limit: u32,
+    out_response: *mut ZeGraphResponse,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle.token), ZeErrorCode::ZeErrPanic, {
+        crate::run_named_panic_probe("ze_graph_cypher_with_row_limit");
+        crate::finish(
+            Some(handle.token),
+            crate::graph_abi::cypher_with_row_limit(
+                handle,
+                request,
+                result_row_limit,
+                out_response,
+            ),
+        )
     })
 }

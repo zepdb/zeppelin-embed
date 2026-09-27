@@ -1793,6 +1793,206 @@ typedef struct ZeGraphResponse {
 } ZeGraphResponse;
 
 /*
+ Named nonentity parameter binding; no extra/duplicate/missing names.
+ */
+typedef struct ZeGraphParameterValue {
+    /*
+     Exact sizeof this version-one descriptor; fixed array stride.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Name bytes in the request parameter pool.
+     */
+    struct ZeGraphRange name;
+    /*
+     Value index in that parameter pool.
+     */
+    uint32_t value;
+    /*
+     Must be zero.
+     */
+    uint32_t reserved;
+} ZeGraphParameterValue;
+
+/*
+ Explicit tightened work allowance, including zero. Unknown/duplicate categories and widening hard limits reject. Omitted categories retain current hard defaults.
+ */
+typedef struct ZeGraphWorkLimit {
+    /*
+     Exact sizeof this version-one descriptor; fixed array stride.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     One runtime ZeGraphWorkKind 0..21; PeakOwnedBytes is not a work allowance.
+     */
+    uint32_t kind;
+    /*
+     Must be zero.
+     */
+    uint32_t reserved;
+    /*
+     Inclusive maximum actual cumulative units; zero is a real allowance.
+     */
+    uint64_t limit;
+} ZeGraphWorkLimit;
+
+/*
+ Optional query-local tightening, inside shared store accounting; these declarations never prove actual reservations or allocator ownership.
+ */
+typedef struct ZeGraphQueryLimits {
+    /*
+     Exact sizeof this version-one descriptor; fixed array stride.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     0/1 explicit memory ceiling presence; zero ceiling is permitted and execution may fail to reserve even its context.
+     */
+    uint32_t has_query_bytes;
+    /*
+     Must be zero.
+     */
+    uint32_t reserved;
+    /*
+     When present, actual retained-capacity ceiling <=24 MiB; zero if absent.
+     */
+    uint64_t query_bytes;
+    /*
+     At most one row per category; null only at zero count.
+     */
+    const struct ZeGraphWorkLimit *work;
+    /*
+     Between zero and 22; bounded validation before execution.
+     */
+    size_t work_count;
+} ZeGraphQueryLimits;
+
+/*
+ Query interpretation declaration. Query tower/alignment metadata does not alter the document interpretation stored at open.
+ */
+typedef struct ZeGraphQueryOptions {
+    /*
+     Exact sizeof this version-one descriptor; fixed array stride.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Optional declared query-tower identity; compatibility checked with document tower.
+     */
+    const ZeEmbeddingTower *query_tower;
+    /*
+     Optional opaque alignment digest bytes; empty means absent.
+     */
+    struct ZeGraphBytes alignment_digest;
+    /*
+     Optional typed memory/work tightening; null uses existing hard defaults.
+     */
+    const struct ZeGraphQueryLimits *limits;
+} ZeGraphQueryOptions;
+
+/*
+ Full caller-tightened outer compiler limits. Null request pointer selects defaults; when present every field is explicit, including zero. All compiler capacities still count inside the same query budget.
+ */
+typedef struct ZeGraphCompileLimits {
+    /*
+     Exact sizeof this version-one descriptor; fixed array stride.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     UTF-8 source bytes <=65536.
+     */
+    uint32_t text_bytes;
+    /*
+     Lexical tokens <=8192.
+     */
+    uint32_t tokens;
+    /*
+     AST nodes <=4096.
+     */
+    uint32_t ast_nodes;
+    /*
+     Nesting depth <=64.
+     */
+    uint32_t depth;
+    /*
+     Named parameters <=256.
+     */
+    uint32_t parameters;
+    /*
+     Projected columns per scope <=256.
+     */
+    uint32_t columns;
+    /*
+     Query list nesting <=16.
+     */
+    uint32_t list_depth;
+    /*
+     Finite path upper bound <=16.
+     */
+    uint32_t path_hops;
+} ZeGraphCompileLimits;
+
+/*
+ Outer compiler request; only typed plans enter core. Invalid/unsupported syntax returns owned bounded diagnostics and no effects.
+ */
+typedef struct ZeGraphCypherRequest {
+    /*
+     Exact sizeof this version-one descriptor; fixed array stride.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     One UTF-8 query text, at most 64 KiB; no binary plan encoding.
+     */
+    struct ZeGraphBytes query;
+    /*
+     Named typed bindings; null only at zero count.
+     */
+    const struct ZeGraphParameterValue *parameters;
+    /*
+     Number of parameter bindings.
+     */
+    size_t parameter_count;
+    /*
+     Required if bindings exist; otherwise optional.
+     */
+    const struct ZeGraphValuePool *parameter_pool;
+    /*
+     Optional query interpretation.
+     */
+    const struct ZeGraphQueryOptions *options;
+    /*
+     Optional controls covering parsing through completion.
+     */
+    const struct ZeGraphControl *control;
+    /*
+     Optional complete compiler limit tightening; null selects existing defaults.
+     */
+    const struct ZeGraphCompileLimits *compile_limits;
+} ZeGraphCypherRequest;
+
+/*
  Fixed expression descriptor. Fields not named by kind are zero. Aggregate uses operation, has_operand, left and distinct; unary uses operation/left; binary uses operation/left/right.
  */
 typedef struct ZeGraphExpression {
@@ -1915,32 +2115,6 @@ typedef struct ZeGraphParameter {
      */
     uint32_t reserved;
 } ZeGraphParameter;
-
-/*
- Named nonentity parameter binding; no extra/duplicate/missing names.
- */
-typedef struct ZeGraphParameterValue {
-    /*
-     Exact sizeof this version-one descriptor; fixed array stride.
-     */
-    uint32_t abi_size;
-    /*
-     Must be zero.
-     */
-    uint32_t abi_reserved;
-    /*
-     Name bytes in the request parameter pool.
-     */
-    struct ZeGraphRange name;
-    /*
-     Value index in that parameter pool.
-     */
-    uint32_t value;
-    /*
-     Must be zero.
-     */
-    uint32_t reserved;
-} ZeGraphParameterValue;
 
 /*
  Typed vector/lexical/fusion options. Irrelevant options reject; defaults and absent preferences retain existing Store semantics. Window is a separate evaluated expression in ZeGraphSearch.
@@ -2365,92 +2539,6 @@ typedef struct ZeGraphPlan {
 } ZeGraphPlan;
 
 /*
- Explicit tightened work allowance, including zero. Unknown/duplicate categories and widening hard limits reject. Omitted categories retain current hard defaults.
- */
-typedef struct ZeGraphWorkLimit {
-    /*
-     Exact sizeof this version-one descriptor; fixed array stride.
-     */
-    uint32_t abi_size;
-    /*
-     Must be zero.
-     */
-    uint32_t abi_reserved;
-    /*
-     One runtime ZeGraphWorkKind 0..21; PeakOwnedBytes is not a work allowance.
-     */
-    uint32_t kind;
-    /*
-     Must be zero.
-     */
-    uint32_t reserved;
-    /*
-     Inclusive maximum actual cumulative units; zero is a real allowance.
-     */
-    uint64_t limit;
-} ZeGraphWorkLimit;
-
-/*
- Optional query-local tightening, inside shared store accounting; these declarations never prove actual reservations or allocator ownership.
- */
-typedef struct ZeGraphQueryLimits {
-    /*
-     Exact sizeof this version-one descriptor; fixed array stride.
-     */
-    uint32_t abi_size;
-    /*
-     Must be zero.
-     */
-    uint32_t abi_reserved;
-    /*
-     0/1 explicit memory ceiling presence; zero ceiling is permitted and execution may fail to reserve even its context.
-     */
-    uint32_t has_query_bytes;
-    /*
-     Must be zero.
-     */
-    uint32_t reserved;
-    /*
-     When present, actual retained-capacity ceiling <=24 MiB; zero if absent.
-     */
-    uint64_t query_bytes;
-    /*
-     At most one row per category; null only at zero count.
-     */
-    const struct ZeGraphWorkLimit *work;
-    /*
-     Between zero and 22; bounded validation before execution.
-     */
-    size_t work_count;
-} ZeGraphQueryLimits;
-
-/*
- Query interpretation declaration. Query tower/alignment metadata does not alter the document interpretation stored at open.
- */
-typedef struct ZeGraphQueryOptions {
-    /*
-     Exact sizeof this version-one descriptor; fixed array stride.
-     */
-    uint32_t abi_size;
-    /*
-     Must be zero.
-     */
-    uint32_t abi_reserved;
-    /*
-     Optional declared query-tower identity; compatibility checked with document tower.
-     */
-    const ZeEmbeddingTower *query_tower;
-    /*
-     Optional opaque alignment digest bytes; empty means absent.
-     */
-    struct ZeGraphBytes alignment_digest;
-    /*
-     Optional typed memory/work tightening; null uses existing hard defaults.
-     */
-    const struct ZeGraphQueryLimits *limits;
-} ZeGraphQueryOptions;
-
-/*
  Synchronous structured query; caller buffers borrowed only until return. No result can retain a view or caller pointer.
  */
 typedef struct ZeGraphQueryRequest {
@@ -2487,94 +2575,6 @@ typedef struct ZeGraphQueryRequest {
      */
     const struct ZeGraphControl *control;
 } ZeGraphQueryRequest;
-
-/*
- Full caller-tightened outer compiler limits. Null request pointer selects defaults; when present every field is explicit, including zero. All compiler capacities still count inside the same query budget.
- */
-typedef struct ZeGraphCompileLimits {
-    /*
-     Exact sizeof this version-one descriptor; fixed array stride.
-     */
-    uint32_t abi_size;
-    /*
-     Must be zero.
-     */
-    uint32_t abi_reserved;
-    /*
-     UTF-8 source bytes <=65536.
-     */
-    uint32_t text_bytes;
-    /*
-     Lexical tokens <=8192.
-     */
-    uint32_t tokens;
-    /*
-     AST nodes <=4096.
-     */
-    uint32_t ast_nodes;
-    /*
-     Nesting depth <=64.
-     */
-    uint32_t depth;
-    /*
-     Named parameters <=256.
-     */
-    uint32_t parameters;
-    /*
-     Projected columns per scope <=256.
-     */
-    uint32_t columns;
-    /*
-     Query list nesting <=16.
-     */
-    uint32_t list_depth;
-    /*
-     Finite path upper bound <=16.
-     */
-    uint32_t path_hops;
-} ZeGraphCompileLimits;
-
-/*
- Outer compiler request; only typed plans enter core. Invalid/unsupported syntax returns owned bounded diagnostics and no effects.
- */
-typedef struct ZeGraphCypherRequest {
-    /*
-     Exact sizeof this version-one descriptor; fixed array stride.
-     */
-    uint32_t abi_size;
-    /*
-     Must be zero.
-     */
-    uint32_t abi_reserved;
-    /*
-     One UTF-8 query text, at most 64 KiB; no binary plan encoding.
-     */
-    struct ZeGraphBytes query;
-    /*
-     Named typed bindings; null only at zero count.
-     */
-    const struct ZeGraphParameterValue *parameters;
-    /*
-     Number of parameter bindings.
-     */
-    size_t parameter_count;
-    /*
-     Required if bindings exist; otherwise optional.
-     */
-    const struct ZeGraphValuePool *parameter_pool;
-    /*
-     Optional query interpretation.
-     */
-    const struct ZeGraphQueryOptions *options;
-    /*
-     Optional controls covering parsing through completion.
-     */
-    const struct ZeGraphControl *control;
-    /*
-     Optional complete compiler limit tightening; null selects existing defaults.
-     */
-    const struct ZeGraphCompileLimits *compile_limits;
-} ZeGraphCypherRequest;
 
 /*
  Single-admission typed entity read. Returns one column, one row per requested ID, explicit Null for missing IDs; no second snapshot or automatic query follow-up.
@@ -2682,6 +2682,24 @@ ze_error_code ze_graph_apply(struct ZeGraphHandle handle,
  is a no-op. A forged or altered descriptor is `ZE_ERR_INVALID_ARGUMENT`.
  */
 ze_error_code ze_graph_response_free(struct ZeGraphResponse *response);
+
+/*
+ Compiles and executes one Cypher statement with scalar parameters and a
+ default maximum of 1,024 returned rows. Options must be null.
+ */
+ze_error_code ze_graph_cypher(struct ZeGraphHandle handle,
+                              const struct ZeGraphCypherRequest *request,
+                              struct ZeGraphResponse *out_response);
+
+/*
+ Executes Cypher using the frozen request layout and a caller-selected
+ returned-row cap: 0 selects 1,024; 1..=65,536 is accepted. Exceeding the
+ cap fails, never truncates. Other work and memory budgets still apply.
+ */
+ze_error_code ze_graph_cypher_with_row_limit(struct ZeGraphHandle handle,
+                                             const struct ZeGraphCypherRequest *request,
+                                             uint32_t result_row_limit,
+                                             struct ZeGraphResponse *out_response);
 
 #ifdef __cplusplus
 }  // extern "C"

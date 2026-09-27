@@ -333,3 +333,260 @@ fn graph_apply_responses_survive_store_close() {
     assert_eq!(before, after);
     free(&mut r);
 }
+
+#[test]
+fn graph_cypher_write_then_read_returns_typed_rows() {
+    let s = GraphTestStore::create();
+    let mut r = cypher_ok(s.handle, "CREATE (:Doc {title: 'alpha'})");
+    assert_eq!(
+        (r.disposition, r.changed_generation, r.row_count),
+        (2, 1, 0)
+    );
+    assert_eq!(ze_graph_response_free(&mut r), ZeErrorCode::ZeOk);
+    let mut r = cypher_ok(s.handle, "MATCH (n:Doc) RETURN n.title AS title");
+    assert_eq!(
+        (r.disposition, r.has_admitted_generation, r.row_count),
+        (0, 1, 1)
+    );
+    assert_eq!(column_names(&r), ["title"]);
+    assert_eq!(rows(&r)[0][0].tag, 4);
+    assert_eq!(string_of(&r, &rows(&r)[0][0]), "alpha");
+    assert_eq!(ze_graph_response_free(&mut r), ZeErrorCode::ZeOk);
+}
+#[test]
+fn graph_cypher_reads_nodes_written_by_ze_graph_apply() {
+    let s = GraphTestStore::create();
+    let mut b = PoolBuilder::new();
+    let ns = b.text("docs");
+    let key = b.text("b");
+    let v = b.string_value("beta");
+    b.property("title", v);
+    let image = b.node_image(&["Doc"], 0..1, None);
+    let mut r = empty_response();
+    assert_eq!(
+        ze_graph_apply(
+            s.handle,
+            &batch_request(&[create_node_item(ns, key, 1, image)], &b.pool()),
+            &mut r
+        ),
+        ZeErrorCode::ZeOk
+    );
+    ze_graph_response_free(&mut r);
+    let mut r = cypher_ok(s.handle, "MATCH (n:Doc) RETURN n.title AS title");
+    assert_eq!(string_of(&r, &rows(&r)[0][0]), "beta");
+    ze_graph_response_free(&mut r);
+}
+#[test]
+fn graph_cypher_binds_scalar_parameters() {
+    let s = GraphTestStore::create();
+    let mut r = cypher_ok(s.handle, "CREATE (:Doc {title:'alpha'})");
+    ze_graph_response_free(&mut r);
+    let mut b = PoolBuilder::new();
+    let t = b.string_value("alpha");
+    let k = b.i64_value(7);
+    let params = [parameter(&mut b, "t", t), parameter(&mut b, "k", k)];
+    assert_eq!(
+        ze_graph_cypher(
+            s.handle,
+            &cypher_request(
+                b"MATCH (n:Doc) WHERE n.title = $t RETURN $k AS k",
+                &params,
+                Some(&b.pool())
+            ),
+            &mut r
+        ),
+        ZeErrorCode::ZeOk
+    );
+    assert_eq!(r.row_count, 1);
+    assert_eq!((rows(&r)[0][0].tag, rows(&r)[0][0].integer), (2, 7));
+    ze_graph_response_free(&mut r);
+}
+#[test]
+fn graph_cypher_compile_refusals_have_their_own_codes_and_run_nothing() {
+    let s = GraphTestStore::create();
+    for (text, code) in [
+        ("CREATE (", ZeErrorCode::ZeErrQuerySyntax),
+        ("MATCH (n) RETURN unknownVar", ZeErrorCode::ZeErrScope),
+        (
+            "MATCH (n) RETURN n UNION MATCH (m) RETURN m",
+            ZeErrorCode::ZeErrQueryUnsupported,
+        ),
+    ] {
+        let mut r = empty_response();
+        assert_eq!(
+            ze_graph_cypher(
+                s.handle,
+                &cypher_request(text.as_bytes(), &[], None),
+                &mut r
+            ),
+            code
+        );
+        assert_eq!(r.disposition, 1);
+        let mut r = cypher_ok(s.handle, "MATCH (n) RETURN n");
+        assert_eq!(r.row_count, 0);
+        ze_graph_response_free(&mut r);
+    }
+}
+#[test]
+fn graph_cypher_no_op_write_reports_no_op() {
+    let s = GraphTestStore::create();
+    let mut r = cypher_ok(s.handle, "MATCH (n:Nope) SET n.x = 1");
+    assert_eq!((r.disposition, r.has_changed_generation), (4, 0));
+    ze_graph_response_free(&mut r);
+}
+#[test]
+fn graph_cypher_on_a_read_only_store_reads_but_refuses_writes() {
+    let mut s = GraphTestStore::create();
+    assert_eq!(s.close(), ZeErrorCode::ZeOk);
+    let (code, h) = graph_open(&s.path, MODE_READ_ONLY);
+    assert_eq!(code, ZeErrorCode::ZeOk);
+    let mut r = cypher_ok(h, "MATCH (n) RETURN n");
+    ze_graph_response_free(&mut r);
+    assert_eq!(
+        ze_graph_cypher(h, &cypher_request(b"CREATE (:Doc)", &[], None), &mut r),
+        ZeErrorCode::ZeErrAccessMode
+    );
+    assert_eq!(r.disposition, 1);
+    ze_graph_close(h);
+}
+#[test]
+fn graph_cypher_rejects_invalid_utf8_text_and_non_null_options() {
+    let s = GraphTestStore::create();
+    let mut r = empty_response();
+    assert_eq!(
+        ze_graph_cypher(s.handle, &cypher_request(&[255], &[], None), &mut r),
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+    let options = common::sized_zeroed();
+    let mut q = cypher_request(b"CREATE (:Doc)", &[], None);
+    q.options = &options;
+    assert_eq!(
+        ze_graph_cypher(s.handle, &q, &mut r),
+        ZeErrorCode::ZeErrUnsupported
+    );
+    assert_eq!(r.disposition, 1);
+}
+#[test]
+fn graph_cypher_compile_limits_are_exact_and_tightening_only() {
+    let s = GraphTestStore::create();
+    for case in 0..3 {
+        let mut limits: ZeGraphCompileLimits = common::sized_zeroed();
+        limits.text_bytes = 65536;
+        limits.tokens = 8192;
+        limits.ast_nodes = 4096;
+        limits.depth = 64;
+        limits.parameters = 256;
+        limits.columns = 256;
+        limits.list_depth = 16;
+        limits.path_hops = 16;
+        match case {
+            0 => limits.text_bytes = 8,
+            1 => limits.path_hops = 17,
+            _ => limits.abi_size += 8,
+        }
+        let mut q = cypher_request(b"MATCH (n) RETURN n", &[], None);
+        q.compile_limits = &limits;
+        let mut r = empty_response();
+        assert_eq!(
+            ze_graph_cypher(s.handle, &q, &mut r),
+            if case == 0 {
+                ZeErrorCode::ZeErrBudgetExceeded
+            } else {
+                ZeErrorCode::ZeErrInvalidArgument
+            }
+        );
+        assert_eq!(r.disposition, 1);
+    }
+}
+
+#[test]
+fn graph_cypher_refuses_list_and_entity_parameters_before_any_effect() {
+    let s = GraphTestStore::create();
+    for case in 0..4 {
+        let mut b = PoolBuilder::new();
+        let v = b.tagged_value(if case == 0 {
+            7
+        } else if case == 1 {
+            5
+        } else {
+            0
+        });
+        let p = parameter(&mut b, "p", v);
+        let params = if case == 2 { vec![p, p] } else { vec![p] };
+        let pool = b.pool();
+        let q = cypher_request(
+            b"CREATE (:Doc)",
+            &params,
+            if case == 3 { None } else { Some(&pool) },
+        );
+        let mut r = empty_response();
+        let expected = match case {
+            0 => ZeErrorCode::ZeErrUnsupported,
+            1 | 2 => ZeErrorCode::ZeErrParameter,
+            _ => ZeErrorCode::ZeErrInvalidArgument,
+        };
+        assert_eq!(ze_graph_cypher(s.handle, &q, &mut r), expected);
+        assert_eq!(r.disposition, 1);
+        let mut r = cypher_ok(s.handle, "MATCH (n) RETURN n");
+        assert_eq!(r.row_count, 0);
+        ze_graph_response_free(&mut r);
+    }
+}
+
+#[test]
+fn graph_cypher_result_row_limit_is_configurable_and_bounded() {
+    let s = GraphTestStore::create();
+    let mut r = cypher_ok(s.handle, "CREATE (:Doc), (:Doc)");
+    ze_graph_response_free(&mut r);
+    let q = cypher_request(b"MATCH (n:Doc) RETURN 7 AS k", &[], None);
+    for (limit, code) in [
+        (1, ZeErrorCode::ZeErrBudgetExceeded),
+        (2, ZeErrorCode::ZeOk),
+        (0, ZeErrorCode::ZeOk),
+        (65536, ZeErrorCode::ZeOk),
+        (65537, ZeErrorCode::ZeErrInvalidArgument),
+    ] {
+        assert_eq!(
+            ze_graph_cypher_with_row_limit(s.handle, &q, limit, &mut r),
+            code,
+            "{}",
+            last_error(s.handle.token)
+        );
+        if code == ZeErrorCode::ZeOk {
+            assert_eq!(r.row_count, 2);
+        }
+        ze_graph_response_free(&mut r);
+    }
+}
+
+#[test]
+fn graph_cypher_result_row_limit_can_exceed_default() {
+    let s = GraphTestStore::create();
+    let mut b = PoolBuilder::new();
+    let items: Vec<_> = (0..33)
+        .map(|i| single_node(&mut b, &format!("n{i}")))
+        .collect();
+    let mut r = empty_response();
+    for chunk in items.chunks(64) {
+        assert_eq!(
+            ze_graph_apply(s.handle, &batch_request(chunk, &b.pool()), &mut r),
+            ZeErrorCode::ZeOk,
+            "{}",
+            last_error(s.handle.token)
+        );
+        ze_graph_response_free(&mut r);
+    }
+    let q = cypher_request(b"MATCH (a), (b) RETURN 7 AS k", &[], None);
+    assert_eq!(
+        ze_graph_cypher(s.handle, &q, &mut r),
+        ZeErrorCode::ZeErrBudgetExceeded
+    );
+    assert_eq!(
+        ze_graph_cypher_with_row_limit(s.handle, &q, 1089, &mut r),
+        ZeErrorCode::ZeOk,
+        "{}",
+        last_error(s.handle.token)
+    );
+    assert_eq!(r.row_count, 1089);
+    ze_graph_response_free(&mut r);
+}

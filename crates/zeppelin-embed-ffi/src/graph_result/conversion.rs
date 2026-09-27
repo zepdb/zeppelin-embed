@@ -1042,13 +1042,26 @@ pub(crate) fn run_query(
     let result = store
         .query(control, options, plan)
         .map_err(ProducerError::Store)?;
+    completed_response(registry, store, control, &result)
+}
+
+#[allow(
+    clippy::result_large_err,
+    reason = "retains the allocation-free core error"
+)]
+pub(crate) fn completed_response(
+    registry: &'static GraphResultRegistry,
+    store: &GraphStore,
+    control: &QueryControl,
+    result: &CompletedGraphResult,
+) -> Result<ZeGraphResponse, ProducerError> {
     // `expose()` runs inside the same closure as `prepare_with()`, for the
     // same reason `build_write_response` calls `detach()` there: it
     // consumes the `'m, 'g`-scoped `PreparedResponse` into a plain
     // `ZeGraphResponse` C struct before `with_producer_context`'s own
     // `QueryMemory` goes out of scope.
     let response = with_producer_context(store, control, |context| {
-        prepare_completed(registry, context, &result)
+        prepare_completed(registry, context, result)
             .map(|(prepared, outcome)| prepared.expose(outcome))
     })?
     .map_err(ProducerError::from)?;

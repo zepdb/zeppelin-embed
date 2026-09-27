@@ -299,10 +299,13 @@ pub fn arm_abi_panic_probe(entry_point: &'static str) {
 
 #[cfg(feature = "abi-panic-probe")]
 fn run_named_panic_probe(entry_point: &str) {
-    let armed = named_panic_probe()
-        .lock()
-        .ok()
-        .and_then(|mut probe| probe.take());
+    let armed = named_panic_probe().lock().ok().and_then(|mut probe| {
+        if *probe == Some(entry_point) {
+            probe.take()
+        } else {
+            None
+        }
+    });
     if armed == Some(entry_point) {
         std::panic::resume_unwind(Box::new(format!("abi panic probe in {entry_point}")));
     }

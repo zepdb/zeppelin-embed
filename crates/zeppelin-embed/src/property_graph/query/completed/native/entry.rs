@@ -67,6 +67,21 @@ pub struct GraphQueryOptions {
     pub(crate) image_capacity: usize,
 }
 
+impl GraphQueryOptions {
+    /// Sets the returned-row capacity (1..=65,536). Other operator, payload
+    /// and work budgets remain independent; exceeding any budget fails.
+    pub fn with_result_row_limit(
+        mut self,
+        rows: usize,
+    ) -> Result<Self, crate::property_graph::query::runtime::RuntimeError> {
+        if !(1..=65_536).contains(&rows) {
+            return Err(crate::property_graph::query::runtime::RuntimeError::BatchCapacity);
+        }
+        self.execution.result_rows = rows;
+        Ok(self)
+    }
+}
+
 impl Default for GraphQueryOptions {
     /// Capacities for small statements: at most 1,024 rows per operator and
     /// in the result, and 1,024 staged entities for a write.

@@ -1,4 +1,9 @@
-//! Graph handles and atomic structured batch C boundary.
+//! Graph handles, structured batches and Cypher C boundary.
+use crate::graph_result::conversion::completed_response;
+use crate::{ZeGraphCompileLimits, ZeGraphCypherRequest, ZeGraphParameterValue};
+use zeppelin_embed::property_graph::query::completed::{GraphQueryOptions, Outcome};
+use zeppelin_embed::property_graph::query::{QueryValue, plan::ParameterBinding};
+use zeppelin_embed_cypher::{CompileLimits, ErrorKind, StatementError};
 mod batch;
 use crate::error::FfiError;
 use crate::slots::{Access, CloseAccess, SlotTable};
@@ -452,6 +457,211 @@ pub(crate) fn free(response: *mut ZeGraphResponse) -> Result<(), FfiError> {
         .free(root)
         .map(|_| ())
         .map_err(|error| FfiError::new(owner_code(&error), format!("graph response free: {error}")))
+}
+
+fn compile_code(kind: ErrorKind) -> ZeErrorCode {
+    match kind {
+        ErrorKind::Syntax => ZeErrorCode::ZeErrQuerySyntax,
+        ErrorKind::Unsupported | ErrorKind::SearchContext => ZeErrorCode::ZeErrQueryUnsupported,
+        ErrorKind::InvalidParameterUse | ErrorKind::Parameter => ZeErrorCode::ZeErrParameter,
+        ErrorKind::Type => ZeErrorCode::ZeErrType,
+        ErrorKind::UnknownVariable | ErrorKind::DuplicateVariable => ZeErrorCode::ZeErrScope,
+        ErrorKind::DeletedEntity => ZeErrorCode::ZeErrDeletedEntity,
+        ErrorKind::Plan(error) => error.into(),
+        ErrorKind::Limit(_) => ZeErrorCode::ZeErrBudgetExceeded,
+        ErrorKind::Resource(resource) => {
+            use zeppelin_embed_cypher::ResourceError as R;
+            match resource {
+                R::Cancelled | R::ReadCancelled => ZeErrorCode::ZeErrCancelled,
+                R::Timeout => ZeErrorCode::ZeErrTimeout,
+                R::WorkLimit | R::Memory => ZeErrorCode::ZeErrBudgetExceeded,
+                R::Allocation => ZeErrorCode::ZeErrOutOfMemory,
+                R::Control => ZeErrorCode::ZeErrInternal,
+            }
+        }
+        ErrorKind::BindingInvariant => ZeErrorCode::ZeErrInternal,
+        ErrorKind::InvalidLiteral
+        | ErrorKind::InvalidRange
+        | ErrorKind::DuplicateProperty
+        | ErrorKind::InvalidLimits
+        | ErrorKind::RelationshipUniqueness => ZeErrorCode::ZeErrInvalidArgument,
+    }
+}
+
+fn compile_limits(pointer: *const ZeGraphCompileLimits) -> Result<CompileLimits, FfiError> {
+    if pointer.is_null() {
+        return Ok(CompileLimits::default());
+    }
+    let limits = read_exact(pointer, |limits| limits.abi_size, "graph compile limits")?;
+    limits
+        .validate_shape()
+        .map_err(|_| invalid("graph compile limits widen the documented profile ceilings"))?;
+    Ok(CompileLimits {
+        text_bytes: limits.text_bytes as usize,
+        tokens: limits.tokens as usize,
+        ast_nodes: limits.ast_nodes as usize,
+        depth: limits.depth as usize,
+        parameters: limits.parameters as usize,
+        columns: limits.columns as usize,
+        list_depth: limits.list_depth as usize,
+        path_hops: limits.path_hops,
+    })
+}
+
+fn parameters<'p>(
+    bindings: &'p [ZeGraphParameterValue],
+    pool: Option<&Pool<'p>>,
+) -> Result<Vec<ParameterBinding<'p>>, FfiError> {
+    use crate::ZeGraphValueTag as V;
+    let mut out: Vec<ParameterBinding<'p>> = Vec::new();
+    if bindings.is_empty() {
+        return Ok(out);
+    }
+    let pool = pool.ok_or_else(|| invalid("graph parameters require a parameter pool"))?;
+    out.try_reserve_exact(bindings.len()).map_err(|_| {
+        FfiError::new(
+            ZeErrorCode::ZeErrOutOfMemory,
+            "graph parameter allocation failed",
+        )
+    })?;
+    for (position, binding) in bindings.iter().enumerate() {
+        let what = format!("parameter {position}");
+        if binding.validate_header().is_err() || binding.reserved != 0 {
+            return Err(invalid(format!("{what} has an invalid descriptor")));
+        }
+        let name = pool.text(binding.name, &format!("{what} name"))?;
+        if out.iter().any(|existing| existing.name == name) {
+            return Err(FfiError::new(
+                ZeErrorCode::ZeErrParameter,
+                format!("parameter ${name} is bound more than once"),
+            ));
+        }
+        let value = pool.value(binding.value, &what)?;
+        let value = match value.tag {
+            tag if tag == V::ZeGraphValueNull as u32 => QueryValue::Null,
+            tag if tag == V::ZeGraphValueBool as u32 => QueryValue::Bool(value.boolean == 1),
+            tag if tag == V::ZeGraphValueI64 as u32 => QueryValue::I64(value.integer),
+            tag if tag == V::ZeGraphValueF64 as u32 => QueryValue::F64(value.floating),
+            tag if tag == V::ZeGraphValueString as u32 => {
+                QueryValue::String(pool.text(value.range, &what)?)
+            }
+            tag if tag == V::ZeGraphValueList as u32 => {
+                return Err(FfiError::new(
+                    ZeErrorCode::ZeErrUnsupported,
+                    format!("parameter ${name} is a list; list parameters are not supported yet"),
+                ));
+            }
+            _ => {
+                return Err(FfiError::new(
+                    ZeErrorCode::ZeErrParameter,
+                    format!(
+                        "parameter ${name} binds an entity; parameters cannot bind nodes or relationships"
+                    ),
+                ));
+            }
+        };
+        out.push(ParameterBinding { name, value });
+    }
+    Ok(out)
+}
+
+/// Compiles and runs one statement of the documented Cypher profile.
+pub(crate) fn cypher(
+    handle: ZeGraphHandle,
+    request: *const ZeGraphCypherRequest,
+    out: *mut ZeGraphResponse,
+) -> Result<(), FfiError> {
+    cypher_with_row_limit(handle, request, 0, out)
+}
+
+pub(crate) fn cypher_with_row_limit(
+    handle: ZeGraphHandle,
+    request: *const ZeGraphCypherRequest,
+    result_row_limit: u32,
+    out: *mut ZeGraphResponse,
+) -> Result<(), FfiError> {
+    begin_response(out)?;
+    let options = GraphQueryOptions::default()
+        .with_result_row_limit(if result_row_limit == 0 {
+            1024
+        } else {
+            result_row_limit as usize
+        })
+        .map_err(|_| invalid("result_row_limit must be 0 (default 1024) or 1..=65536"))?;
+    let request = read_exact(request, |request| request.abi_size, "graph cypher request")?;
+    if request.abi_reserved != 0 {
+        return Err(invalid("graph cypher reserved must be zero"));
+    }
+    if request.query.count > 65_536 {
+        return Err(invalid("graph query text exceeds 65536 bytes"));
+    }
+    let text = marshal::read_slice(request.query.data, request.query.count)
+        .map_err(|error| invalid(format!("graph query text: {}", error.0)))?;
+    let text = utf8(text, "graph query text")?;
+    if !request.options.is_null() {
+        return Err(FfiError::new(
+            ZeErrorCode::ZeErrUnsupported,
+            "graph query options are not supported by ze_graph_cypher yet; pass null",
+        ));
+    }
+    let bindings = marshal::read_slice(request.parameters, request.parameter_count)
+        .map_err(|error| invalid(format!("graph parameters: {}", error.0)))?;
+    let pool = if request.parameter_pool.is_null() {
+        None
+    } else {
+        Some(Pool::read(request.parameter_pool, "graph parameter pool")?)
+    };
+    let bindings = parameters(bindings, pool.as_ref())?;
+    let limits = compile_limits(request.compile_limits)?;
+    let control = read_control(request.control)?;
+    let access = lookup(handle)?;
+    let store = &access.store.store;
+    let _gate = response_gate();
+    set_disposition(out, ZeGraphDisposition::ZeGraphDispositionIndeterminate);
+    let result = zeppelin_embed_cypher::execute(
+        store.statement_store(),
+        &control,
+        &options,
+        text,
+        &bindings,
+        limits,
+    );
+    let result = match result {
+        Ok(result) => result,
+        Err(StatementError::Compile(error)) => {
+            set_outcome(out, OperationOutcome::NotCommitted);
+            return Err(FfiError::new(
+                compile_code(error.kind),
+                format!("cypher: {error}"),
+            ));
+        }
+        Err(StatementError::Query(error)) => {
+            let error = GraphStoreError::from(error);
+            if error.nothing_committed() {
+                set_outcome(out, OperationOutcome::NotCommitted);
+            }
+            return Err(store_error(&error, true));
+        }
+    };
+    set_outcome(
+        out,
+        OperationOutcome::Success(outcome_of(result.metadata().outcome)),
+    );
+    crate::run_named_panic_probe("ze_graph_cypher:after-execute");
+    let response = completed_response(&RESPONSES, store, &control, &result)
+        .map_err(|error| producer_error(&error, true))?;
+    marshal::write_output(out, response);
+    Ok(())
+}
+
+fn outcome_of(outcome: Outcome) -> SuccessfulOutcome {
+    match outcome {
+        Outcome::Read => SuccessfulOutcome::Read,
+        Outcome::Committed { changed } => std::num::NonZeroU64::new(changed.get())
+            .map_or(SuccessfulOutcome::NoOp, SuccessfulOutcome::Committed),
+        Outcome::Replayed => SuccessfulOutcome::Replayed,
+        Outcome::NoOp => SuccessfulOutcome::NoOp,
+    }
 }
 
 #[cfg(test)]

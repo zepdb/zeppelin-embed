@@ -94,3 +94,15 @@ fn graph_apply_and_free_loops_keep_the_heap_flat() {
         assert_eq!(store.close(), ZeErrorCode::ZeOk);
     });
 }
+
+#[test]
+fn graph_cypher_responses_free_in_a_flat_heap_loop() {
+    let _guard = HEAP_TEST_GUARD.lock().unwrap();
+    let s = GraphTestStore::create();
+    let mut r = cypher_ok(s.handle, "CREATE (:Doc {title:'alpha'})");
+    ze_graph_response_free(&mut r);
+    assert_heap_flat("cypher read/free", || {
+        let mut r = cypher_ok(s.handle, "MATCH (n:Doc) RETURN n.title AS title");
+        assert_eq!(ze_graph_response_free(&mut r), ZeErrorCode::ZeOk);
+    });
+}
