@@ -388,22 +388,21 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
                         create_relationship(scope, source, target, relationship_type, context)?;
                     self.bind_created(index, child, output, id, sources, created, context)?;
                 }
-                Mutation::Delete {
-                    entity,
-                    detach: false,
-                } => {
+                Mutation::Delete { entity, detach } => {
                     let Some(target) = self.mutation_target(index, entity, context)? else {
                         continue;
+                    };
+                    // DETACH affects nodes only; relationship tombstones must
+                    // remain Restrict participants in the graph WAL.
+                    let mode = if detach && matches!(target, BatchEntityRef::Node(_)) {
+                        GraphDeleteMode::Detach
+                    } else {
+                        GraphDeleteMode::Restrict
                     };
                     let scope = self.mutation.as_mut().ok_or(PlanError::Reference)?;
                     let control = context.values().control();
                     let mut control = |_: WritePhase| writer_checkpoint(control);
-                    scope
-                        .overlay
-                        .delete(target, GraphDeleteMode::Restrict, &mut control)?;
-                }
-                Mutation::Delete { detach: true, .. } => {
-                    return Err(PlanError::Reference.into());
+                    scope.overlay.delete(target, mode, &mut control)?;
                 }
             }
         }

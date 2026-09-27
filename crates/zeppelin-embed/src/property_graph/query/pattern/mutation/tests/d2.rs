@@ -50,7 +50,7 @@ enum M {
     Remove(u32, &'static str),
     Label(u32, &'static str, bool),
     Delete(u32),
-    /// `DETACH DELETE`, which this executor refuses at build time.
+    /// `DETACH DELETE`.
     DetachDelete(u32),
     /// `CreateNode(output, labels)`.
     CreateNode(u32, &'static [&'static str]),
@@ -1330,54 +1330,12 @@ fn ze52_slice_d2_image_capacity_limit_rejects_without_partial_commit() {
     store.store.close().expect("close d2 store");
 }
 
-/// DETACH DELETE is out of this executor's scope. Under a real writer
-/// scope, any `Mutate` holding a DETACH item, even beside a supported SET,
-/// CREATE or plain DELETE item, is refused when the pattern is built, before
-/// a row is pulled or anything is staged. Without a writer scope, even a
-/// supported `Mutate` is refused. (Plain DELETE was refused here too until
-/// slice D4 lifted it, and CREATE until slice D3.)
+/// Mutations require a writer scope, including after DETACH admission.
 #[test]
-fn ze52_slice_d4_detach_delete_is_rejected_at_build() {
+fn mutation_without_writer_is_rejected_at_build() {
     let store = D2Store::create(None);
     let nodes = three_nodes(&store);
-    let before = store.generation();
-    let read_p = vec![E::Slot(0), E::Property(0, "p")];
     let expressions = vec![E::Slot(0), E::Property(0, "p"), E::I64(1)];
-
-    for (label, items, expressions) in [
-        ("detach", vec![M::DetachDelete(0)], read_p.clone()),
-        (
-            "set beside detach",
-            vec![M::Set(0, "p", 2), M::DetachDelete(0)],
-            expressions.clone(),
-        ),
-        (
-            "create beside detach",
-            vec![M::CreateNode(7, &[]), M::DetachDelete(0)],
-            read_p.clone(),
-        ),
-        (
-            "plain delete beside detach",
-            vec![M::Delete(0), M::DetachDelete(0)],
-            read_p,
-        ),
-    ] {
-        let spec = scan_mutate(items, 1, expressions);
-        match mutate(&store, &spec, IMAGES) {
-            (
-                Err(NativeMutationError::Execution(NativeExecutionError::Plan(
-                    PlanError::Reference,
-                ))),
-                true,
-            ) => {}
-            (Err(error), refused) => {
-                panic!("{label}: expected a build-time Reference, got {error} (refused {refused})")
-            }
-            (Ok((_, report)), _) => panic!("{label}: committed {:?}", report.changed),
-        }
-        assert_eq!(store.generation(), before, "{label}: nothing may commit");
-    }
-
     let supported = scan_mutate(vec![M::Set(0, "p", 2)], 1, expressions);
     let refused = store
         .store

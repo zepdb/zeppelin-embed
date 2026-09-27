@@ -602,3 +602,5 @@ fn ze52_slice_d4_repeated_and_null_deletes() {
     assert_eq!(sorted(read(&store, &scan_p())), pairs(&nodes[1..], &[2, 3]));
     store.store.close().expect("close d4 store");
 }
+
+mod detach;

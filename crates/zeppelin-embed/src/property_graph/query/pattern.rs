@@ -2439,8 +2439,7 @@ fn writer_checkpoint(control: &crate::lifecycle::QueryControl) -> Result<(), Sta
     control.checkpoint().map_err(|_| StageError::Cancelled)
 }
 
-/// The mutation items this executor implements. DETACH DELETE is not one of
-/// them and stays refused; plain DELETE is.
+/// The mutation items this executor implements.
 fn supported_mutations(items: &[Mutation<'_>]) -> bool {
     items.iter().all(|item| {
         matches!(
@@ -2450,7 +2449,7 @@ fn supported_mutations(items: &[Mutation<'_>]) -> bool {
                 | Mutation::SetLabel { .. }
                 | Mutation::CreateNode { .. }
                 | Mutation::CreateRelationship { .. }
-                | Mutation::Delete { detach: false, .. }
+                | Mutation::Delete { .. }
         )
     })
 }
