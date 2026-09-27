@@ -920,6 +920,7 @@ fn authentic_staged_batch_prepares_native_directories_inside_one_memory_owner() 
             PackLimits {
                 artifact_bytes: 512 * 1024,
                 blocks: 256,
+                ..PackLimits::default()
             },
             &memory,
             &mut r,
@@ -1252,6 +1253,7 @@ fn packed<'a, 'b, S: BlockSource>(
         PackLimits {
             artifact_bytes: 512 * 1024,
             blocks: 256,
+            ..PackLimits::default()
         },
         memory,
         r,

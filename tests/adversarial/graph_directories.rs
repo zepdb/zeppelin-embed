@@ -217,6 +217,7 @@ fn run(seed: u64, fault: Fault) -> Result<Run, String> {
                 PackLimits {
                     artifact_bytes: 512 * 1024,
                     blocks: 256,
+                    ..PackLimits::default()
                 },
                 &memory,
                 &mut r,

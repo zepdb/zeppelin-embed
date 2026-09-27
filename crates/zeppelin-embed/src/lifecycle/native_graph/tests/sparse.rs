@@ -1615,6 +1615,7 @@ fn run_sparse_lifecycle_acceptance(
             PackLimits {
                 artifact_bytes: crate::property_graph::storage::artifact::MAX_ARTIFACT_BYTES,
                 blocks: 1,
+                ..PackLimits::default()
             },
             &store.tokenizer,
             &mut failed_resources,

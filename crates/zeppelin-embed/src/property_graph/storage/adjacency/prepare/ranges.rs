@@ -171,7 +171,7 @@ pub(crate) fn consolidate_pending_range(
     context: RangeEditContext,
     memory: &StorageMemory<'_>,
     r: &mut TreeResources<'_>,
-) -> Result<Option<DirectoryRoot>, TreeError> {
+) -> Result<Option<RangeDescriptor>, TreeError> {
     const RANGE_KEY_BYTES: usize = 40;
     let mut selected: Option<(usize, [u8; RANGE_KEY_BYTES])> = None;
     {
@@ -229,35 +229,36 @@ pub(crate) fn consolidate_pending_range(
         target.copy_from_slice(source);
     }
     drop(cursor);
-    let mut tree = TreeScratch::for_prepare(memory)?;
-    let root = remove_range(
-        sink,
-        root,
-        descriptor,
-        context,
-        &mut workspace.merged,
-        &mut tree,
-        r,
-    )?;
-    let mut writer = BaseWriter {
-        sink,
-        root,
-        context,
-        merged: &mut workspace.merged,
-        encoded: &mut workspace.encoded,
-        tree: Some(&mut tree),
-        pending: None,
-    };
-    writer.emit(
+    // The range topology is unchanged. Prepare its new payload and descriptor;
+    // maintenance combines this replacement with page hints in one tree apply.
+    let bytes = encode_base(
         descriptor.key(),
+        context.target_sequence(),
         workspace
             .old
             .as_slice()
             .get(..count)
             .ok_or(TreeError::Memory)?,
+        workspace.encoded.as_mut_slice(),
+        &mut |work| range::checkpoint(r, work),
+    )
+    .map_err(range::map_error)?;
+    let reference = sink.append(
+        BlockKind::AdjacencyBase,
+        context.target_generation(),
+        bytes,
         r,
     )?;
-    Ok(Some(writer.root))
+    let replacement = RangeDescriptor::new(
+        descriptor.key(),
+        context.target_sequence(),
+        count,
+        reference,
+        &[],
+        0,
+    )?;
+    range::check_prepared_range(sink, root, replacement, context, &mut workspace.merged, r)?;
+    Ok(Some(replacement))
 }
 
 fn descriptor(

@@ -16,14 +16,27 @@ pub struct PackLimits {
     pub artifact_bytes: usize,
     /// Maximum block descriptors in each packed object.
     pub blocks: usize,
+    /// Separate maintenance blocks by their expected lifetime.
+    pub streams: PackStreams,
 }
 impl Default for PackLimits {
     fn default() -> Self {
         Self {
             artifact_bytes: MAX_ARTIFACT_BYTES,
             blocks: 1024,
+            streams: PackStreams::Single,
         }
     }
+}
+
+/// Physical object routing within one private preparation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PackStreams {
+    /// Commit output shares one stream.
+    #[default]
+    Single,
+    /// Separate stable blocks, graph branches and inventory pages.
+    ByLifetime,
 }
 
 /// Immutable finalized object bytes that the sole coordinator may protect.
@@ -49,6 +62,7 @@ impl<'a> PreparedArtifact<'a> {
 /// exclusive filesystem creation remains mandatory before any commit protection.
 pub struct PreparedObjects<'a, 'b, S, F> {
     packs: StorageBuffer<'a, PrivateArtifact<'a>>,
+    open: [Option<usize>; 3],
     base: &'b S,
     identity_source: F,
     store: StoreInstanceId,
@@ -88,6 +102,7 @@ impl<'a, 'b, S: BlockSource, F: FnMut() -> Result<ArtifactIdentity, TreeError>>
         let packs = StorageBuffer::new(memory, MAX_STORAGE_PREPARE_BYTES / limits.artifact_bytes)?;
         Ok(Self {
             packs,
+            open: [None; 3],
             base,
             identity_source,
             store,
@@ -178,14 +193,38 @@ impl<'a, 'b, S: BlockSource, F: FnMut() -> Result<ArtifactIdentity, TreeError>>
         {
             return Err(TreeError::Memory);
         }
-        if self
-            .packs
-            .as_slice()
-            .last()
+        let stream = if self.limits.streams == PackStreams::Single || kind != BlockKind::TreePage {
+            0
+        } else {
+            let field = |offset| -> Result<u16, TreeError> {
+                let bytes = bytes
+                    .get(offset..offset + 2)
+                    .ok_or(TreeError::Invalid("short tree page"))?;
+                Ok(u16::from_le_bytes(
+                    bytes
+                        .try_into()
+                        .map_err(|_| TreeError::Invalid("tree page field"))?,
+                ))
+            };
+            if field(6)? == super::tree::TreeKind::ObjectInventory as u16 {
+                2
+            } else if field(16)? > 0 {
+                1
+            } else {
+                0
+            }
+        };
+        let open = *self.open.get(stream).ok_or(TreeError::Memory)?;
+        if open
+            .and_then(|index| self.packs.as_slice().get(index))
             .is_none_or(|pack| !pack.can_append(bytes.len()))
         {
-            if let Some(last) = self.packs.as_mut_slice().last_mut() {
-                last.seal(r)?;
+            if let Some(index) = open {
+                self.packs
+                    .as_mut_slice()
+                    .get_mut(index)
+                    .ok_or(TreeError::Memory)?
+                    .seal(r)?;
             }
             if self.packs.as_slice().len() == self.packs.capacity() {
                 return Err(TreeError::Memory);
@@ -195,9 +234,14 @@ impl<'a, 'b, S: BlockSource, F: FnMut() -> Result<ArtifactIdentity, TreeError>>
             if identity.store != self.store || identity.generation != self.generation {
                 return Err(TreeError::Invalid("candidate identity store/generation"));
             }
-            if self.packs.as_slice().last().is_some_and(|previous| {
-                previous.identity().creation_serial >= identity.creation_serial
-            }) {
+            if self
+                .packs
+                .as_slice()
+                .iter()
+                .map(|pack| pack.identity().creation_serial)
+                .max()
+                .is_some_and(|serial| serial >= identity.creation_serial)
+            {
                 return Err(TreeError::Invalid(
                     "candidate creation serial did not advance",
                 ));
@@ -215,11 +259,19 @@ impl<'a, 'b, S: BlockSource, F: FnMut() -> Result<ArtifactIdentity, TreeError>>
                 self.memory,
                 r,
             )?;
+            let index = self.packs.as_slice().len();
             self.packs.push(pack)?;
+            *self.open.get_mut(stream).ok_or(TreeError::Memory)? = Some(index);
         }
+        let index = self
+            .open
+            .get(stream)
+            .copied()
+            .flatten()
+            .ok_or(TreeError::Memory)?;
         self.packs
             .as_mut_slice()
-            .last_mut()
+            .get_mut(index)
             .ok_or(TreeError::Memory)?
             .append(kind, bytes, r)
     }
@@ -289,5 +341,154 @@ impl<S: BlockSource, F: FnMut() -> Result<ArtifactIdentity, TreeError>> BlockSin
         r.step(0)?;
         self.failed = false;
         Ok(reference)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod tests {
+    use super::super::artifact::{self, ArtifactId, ContainerKind};
+    use super::super::tree::{self, Cell, PAGE_BYTES, PageHeader, TreeKind};
+    use super::*;
+    use crate::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
+    use crate::property_graph::resources::GraphResources;
+    use crate::property_graph::staging::{WriteLimits, WriteMemory};
+
+    struct Empty;
+    impl BlockSource for Empty {
+        fn resolve<'a>(
+            &'a self,
+            _: PhysicalRef,
+            _: &mut TreeResources<'_>,
+        ) -> Result<FramedBlock<'a>, TreeError> {
+            Err(TreeError::Invalid("empty source"))
+        }
+    }
+
+    #[test]
+    fn by_lifetime_streams_never_mix_block_classes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(
+            dir.path().join("store"),
+            OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+        )
+        .unwrap();
+        let shared = GraphResources::from_store(&store).unwrap();
+        let writer = WriteMemory::new(&shared, WriteLimits::default()).unwrap();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let memory = StorageMemory::new(&writer, &control, 32 * 1024 * 1024).unwrap();
+        let mut r = TreeResources::for_prepare(&memory, u64::MAX).unwrap();
+        let id = StoreInstanceId::new(1).unwrap();
+        let generation = GraphGeneration::new(1);
+        for streams in [PackStreams::Single, PackStreams::ByLifetime] {
+            let mut serial = 0;
+            let mut objects = PreparedObjects::new(
+                &Empty,
+                || {
+                    serial += 1;
+                    Ok(ArtifactIdentity {
+                        store: id,
+                        artifact: ArtifactId::new(serial as u128).unwrap(),
+                        generation,
+                        creation_serial: serial,
+                    })
+                },
+                id,
+                generation,
+                PackLimits {
+                    streams,
+                    ..PackLimits::default()
+                },
+                &memory,
+                &mut r,
+            )
+            .unwrap();
+            let record = objects
+                .append(BlockKind::NodeRecord, generation, b"record", &mut r)
+                .unwrap();
+            let mut page = [0; PAGE_BYTES];
+            tree::encode_page(
+                PageHeader {
+                    kind: TreeKind::Nodes,
+                    level: 0,
+                    generation,
+                },
+                &[],
+                &mut page,
+            )
+            .unwrap();
+            let leaf = objects
+                .append(BlockKind::TreePage, generation, &page, &mut r)
+                .unwrap();
+            tree::encode_page(
+                PageHeader {
+                    kind: TreeKind::Nodes,
+                    level: 1,
+                    generation,
+                },
+                &[Cell::Branch {
+                    upper: None,
+                    child: leaf,
+                }],
+                &mut page,
+            )
+            .unwrap();
+            let branch = objects
+                .append(BlockKind::TreePage, generation, &page, &mut r)
+                .unwrap();
+            tree::encode_page(
+                PageHeader {
+                    kind: TreeKind::ObjectInventory,
+                    level: 0,
+                    generation,
+                },
+                &[],
+                &mut page,
+            )
+            .unwrap();
+            let inventory = objects
+                .append(BlockKind::TreePage, generation, &page, &mut r)
+                .unwrap();
+            // Return to the stable stream after opening both volatile streams.
+            let again = objects
+                .append(BlockKind::NodeRecord, generation, b"again", &mut r)
+                .unwrap();
+            objects.finish(&mut r).unwrap();
+            eprintln!("{streams:?}: sealed_objects={}", objects.len());
+            assert_eq!(
+                objects.len(),
+                if streams == PackStreams::Single { 1 } else { 3 }
+            );
+            assert_eq!(record.artifact, leaf.artifact);
+            assert_eq!(record.artifact, again.artifact);
+            for i in 0..objects.len() {
+                let object = objects.artifact(i).unwrap();
+                let frame = artifact::decode(ContainerKind::Object, None, object.bytes()).unwrap();
+                let classes: std::collections::BTreeSet<_> =
+                    [record, leaf, branch, inventory, again]
+                        .into_iter()
+                        .filter(|reference| reference.artifact == object.identity().artifact)
+                        .map(|reference| {
+                            let block = frame.framed_block(reference).unwrap();
+                            if reference.kind != BlockKind::TreePage {
+                                return 0;
+                            }
+                            let payload = block.payload();
+                            if u16::from_le_bytes(payload[6..8].try_into().unwrap())
+                                == TreeKind::ObjectInventory as u16
+                            {
+                                2
+                            } else if u16::from_le_bytes(payload[16..18].try_into().unwrap()) > 0 {
+                                1
+                            } else {
+                                0
+                            }
+                        })
+                        .collect();
+                if streams == PackStreams::ByLifetime {
+                    assert_eq!(classes.len(), 1);
+                }
+            }
+        }
     }
 }

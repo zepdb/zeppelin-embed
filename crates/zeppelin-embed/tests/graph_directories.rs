@@ -2470,6 +2470,7 @@ fn packed_private_sink_reopens_files_and_keeps_unchanged_old_roots() {
         PackLimits {
             artifact_bytes: 256 * 1024,
             blocks: 8,
+            ..PackLimits::default()
         },
         &memory,
         &mut r,

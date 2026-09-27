@@ -19,6 +19,7 @@ pub const REQUIRED_GRAPH_SMOKE_COVERAGE: &[&str] = &[
     "property-graph.recovery.serial-orphan",
     "property-graph.recovery.checkpoint",
     "property-graph.recovery.read-only",
+    "property-graph.reclaim.maintenance-output",
     "property-graph.reclaim.physical-replacement",
     "property-graph.reclaim.stale-recheck",
     "property-graph.reclaim.inventory-fold",

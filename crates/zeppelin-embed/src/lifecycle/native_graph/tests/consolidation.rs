@@ -340,11 +340,11 @@ fn durable_proof_for_lease(
     (records, artifacts)
 }
 
-fn maintenance_allocation_pair(
+fn maintenance_allocations(
     store: &Store,
     lease: &super::super::NativeReadLease,
     node: crate::property_graph::NodeId,
-) -> [ArtifactDescriptor; 2] {
+) -> Vec<ArtifactDescriptor> {
     let generation = lease.bundle().base().generation;
     let record_artifact = sparse_physical_for_lease(store, lease, node, Modality::Text)
         .record
@@ -384,17 +384,19 @@ fn maintenance_allocation_pair(
         "maintenance manifest does not authenticate relocated pack"
     );
     assert_ne!(pack, manifest.object);
-    for change in complete
+    // A maintenance manifest now authenticates multiple lifetime objects.
+    // Preserve exact accounting of every allocation, not just the record pack.
+    let authenticated = prepared_manifest_for_lease(store, lease, manifest);
+    let mut allocations: Vec<_> = complete
         .iter()
         .filter(|change| change.object.generation == generation)
-    {
-        assert!(
-            change.object == pack || change.object == manifest.object,
-            "unaccounted current-generation allocation: {:?}",
-            change.object
-        );
-    }
-    [pack, manifest.object]
+        .map(|change| change.object)
+        .collect();
+    allocations.sort_unstable_by_key(|object| object.artifact);
+    let mut expected: Vec<_> = authenticated.iter().map(|change| change.object).collect();
+    expected.sort_unstable_by_key(|object| object.artifact);
+    assert_eq!(allocations, expected, "unaccounted maintenance allocation");
+    allocations
 }
 
 fn assert_semantic_snapshot_advanced(
@@ -900,6 +902,156 @@ fn ze260_maintenance_drains_the_oldest_pack_in_one_call() {
         .unwrap()
         .close()
         .unwrap();
+}
+
+#[test]
+fn ze260_maintenance_emits_each_tree_root_once_per_call() {
+    run_ze260_maintenance_emits_each_tree_root_once_per_call();
+}
+
+fn run_ze260_maintenance_emits_each_tree_root_once_per_call() {
+    let parent = super::tempfile::tempdir().unwrap();
+    let path = parent.path().join("native");
+    let store = Store::create_native_graph(&path, options(), None).unwrap();
+    for batch in 0..20 {
+        crate::property_graph::with_local_refs(|refs| {
+            let names: Vec<_> = (0..10).map(|n| format!("{batch}-{n}")).collect();
+            let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+            let mut writes: Vec<_> = names
+                .iter()
+                .map(|name| StructuredWrite {
+                    key: ApplicationKey::new(EntityKind::Node, "drain", name).unwrap(),
+                    revision: GraphRevision::new(1).unwrap(),
+                    operation: StructuredOperation::Create,
+                    image: Some(WriteImage::Node(&image)),
+                })
+                .collect();
+            writes.push(StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Relationship, "drain", &names[0]).unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Relationship {
+                    source: NodeRef::Local(refs.node(0).unwrap()),
+                    target: NodeRef::Local(refs.node(1).unwrap()),
+                    relationship_type: GraphName::new("LINKS").unwrap(),
+                    properties: &[],
+                }),
+            });
+            store
+                .apply_native_graph(&writes, &QueryControl::Cancel(CancelToken::new()))
+                .unwrap();
+        });
+    }
+    use crate::property_graph::storage::artifact::{self, BlockKind, ContainerKind};
+    use crate::property_graph::storage::tree::{Cell, decode_page};
+    let before = directory_image(&path);
+    store
+        .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+        .unwrap();
+    let report = commit_maintenance(&store).unwrap();
+    let mut emitted = BTreeMap::<u16, usize>::new();
+    let mut all_pages = BTreeMap::<u16, usize>::new();
+    let mut mixed = 0;
+    let mut emitted_pages = std::collections::BTreeSet::new();
+    for (name, bytes) in directory_image(&path) {
+        if before.contains_key(&name) || !name.to_string_lossy().ends_with(".zgraph") {
+            continue;
+        }
+        let family = u16::from_le_bytes(bytes[8..10].try_into().unwrap());
+        if family == 18 {
+            artifact::decode(ContainerKind::RootEnvelope, None, &bytes).unwrap();
+            continue;
+        }
+        let frame = artifact::decode(ContainerKind::Object, None, &bytes).unwrap();
+        if frame.identity().generation != report.generation {
+            continue;
+        }
+        let mut inventory = false;
+        let mut other = false;
+        let count = u32::from_le_bytes(bytes[80..84].try_into().unwrap());
+        for i in 0..count as usize {
+            let reference = frame.reference(i).unwrap();
+            let block = frame.framed_block(reference).unwrap();
+            if reference.kind == BlockKind::TreePage {
+                let kind = u16::from_le_bytes(block.payload()[6..8].try_into().unwrap());
+                let level = u16::from_le_bytes(block.payload()[16..18].try_into().unwrap());
+                *all_pages.entry(kind).or_default() += 1;
+                if kind == TreeKind::ObjectInventory as u16 {
+                    inventory = true;
+                } else {
+                    other = true;
+                    emitted_pages.insert((reference.artifact.get(), reference.offset));
+                }
+                if level > 0 {
+                    *emitted.entry(kind).or_default() += 1;
+                }
+            } else {
+                other = true;
+            }
+        }
+        mixed += usize::from(inventory && other);
+    }
+    let lease = store.admit_native_read().unwrap();
+    let shared = crate::property_graph::resources::GraphResources::from_store(&store).unwrap();
+    let writer = WriteMemory::new(&shared, WriteLimits::default()).unwrap();
+    let control = QueryControl::Cancel(CancelToken::new());
+    let memory = StorageMemory::new(&writer, &control, 32 * 1024 * 1024).unwrap();
+    let source = NativePreparationSource::new(&lease, &memory, 128).unwrap();
+    let mut resources = source.resources(u64::MAX).unwrap();
+    let mut counts = Vec::new();
+    let mut reachable_pages = std::collections::BTreeSet::new();
+    for kind in [
+        TreeKind::Nodes,
+        TreeKind::Relationships,
+        TreeKind::KeyFences,
+        TreeKind::Labels,
+        TreeKind::RelationshipTypes,
+        TreeKind::OutRanges,
+        TreeKind::InRanges,
+    ] {
+        let mut pending: Vec<_> = lease
+            .bundle()
+            .roots()
+            .directory(kind)
+            .unwrap()
+            .reference()
+            .into_iter()
+            .collect();
+        let mut seen = std::collections::BTreeSet::new();
+        let mut reachable = 0;
+        while let Some(reference) = pending.pop() {
+            if !seen.insert((reference.artifact.get(), reference.offset)) {
+                continue;
+            }
+            reachable_pages.insert((reference.artifact.get(), reference.offset));
+            let block = source.resolve(reference, &mut resources).unwrap();
+            let page = decode_page(kind, block.payload()).unwrap();
+            if page.header().level == 0 {
+                continue;
+            }
+            reachable += 1;
+            let count = u32::from_le_bytes(block.payload()[12..16].try_into().unwrap());
+            for i in 0..count as usize {
+                if let Cell::Branch { child, .. } = page.cell(i).unwrap() {
+                    pending.push(child);
+                }
+            }
+        }
+        let emitted = emitted.get(&(kind as u16)).copied().unwrap_or(0);
+        eprintln!(
+            "{kind:?}: pages={} emitted_branches={emitted} reachable_branches={reachable}",
+            all_pages.get(&(kind as u16)).copied().unwrap_or(0)
+        );
+        counts.push((kind, emitted, reachable));
+    }
+    eprintln!("mixed_inventory_objects={mixed}");
+    let dead_pages = emitted_pages.difference(&reachable_pages).count();
+    eprintln!("dead_graph_pages={dead_pages}");
+    assert_eq!(dead_pages, 0, "graph pages must not be dead at birth");
+    assert_eq!(mixed, 0, "inventory must have its own lifetime stream");
+    for (kind, emitted, reachable) in counts {
+        assert_eq!(emitted, reachable, "dead-at-birth branch in {kind:?}");
+    }
 }
 
 #[test]
@@ -4171,7 +4323,7 @@ fn run_ze46_protected_union_keeps_partial_packs_and_actual_sparse_refs() {
                 && change.state == InventoryState::Retained),
         "partly live pack is absent from rooted retained inventory"
     );
-    let fold_allocations = maintenance_allocation_pair(&store, &retired, first);
+    let fold_allocations = maintenance_allocations(&store, &retired, first);
     let after_first = snapshot_for_lease(&store, &retired, first, peer, relationship, None);
     let after_peer = snapshot_for_lease(&store, &retired, peer, first, relationship, None);
     assert_eq!(after_first.generation, after_peer.generation);
@@ -4304,7 +4456,7 @@ fn run_ze46_protected_union_keeps_partial_packs_and_actual_sparse_refs() {
             let current_peer_text =
                 sparse_physical_for_lease(&store, &current, peer, Modality::Text);
             assert_eq!(current_peer_text.record, fold_peer_text.record);
-            let allocations = maintenance_allocation_pair(&store, &current, first);
+            let allocations = maintenance_allocations(&store, &current, first);
             assert!(
                 vfs.take()
                     .iter()
@@ -4453,7 +4605,7 @@ fn run_ze46_protected_union_keeps_partial_packs_and_actual_sparse_refs() {
     let reader_proof = store
         .admit_native_read()
         .expect("reader-only proof observation");
-    let reader_allocations = maintenance_allocation_pair(&store, &reader_proof, first);
+    let reader_allocations = maintenance_allocations(&store, &reader_proof, first);
     let candidates = if reader_proof.bundle().reclaim().is_some() {
         pending_reclaim_candidates(&store, &reader_proof)
     } else {
@@ -4536,14 +4688,12 @@ fn run_ze46_protected_union_keeps_partial_packs_and_actual_sparse_refs() {
         reader_allocations[0].generation.get(),
         historical_allocations[0].generation.get() + 1
     );
-    let replacement_descriptors = [
-        fold_allocations[0],
-        fold_allocations[1],
-        historical_allocations[0],
-        historical_allocations[1],
-        reader_allocations[0],
-        reader_allocations[1],
-    ];
+    let replacement_descriptors: Vec<_> = fold_allocations
+        .iter()
+        .chain(&historical_allocations)
+        .chain(&reader_allocations)
+        .copied()
+        .collect();
     let mut replacement_artifacts: Vec<_> = replacement_descriptors
         .iter()
         .map(|descriptor| descriptor.artifact)
@@ -4551,7 +4701,7 @@ fn run_ze46_protected_union_keeps_partial_packs_and_actual_sparse_refs() {
     replacement_artifacts.sort_unstable();
     replacement_artifacts.dedup();
     assert_eq!(replacement_artifacts.len(), replacement_descriptors.len());
-    for descriptor in replacement_descriptors {
+    for descriptor in replacement_descriptors.iter().copied() {
         assert_eq!(descriptor.store, checkpoint_manifest.object.store);
         assert_ne!(descriptor, checkpoint_manifest.object);
         assert_ne!(descriptor.artifact, partial_pack_artifact);
@@ -4564,12 +4714,16 @@ fn run_ze46_protected_union_keeps_partial_packs_and_actual_sparse_refs() {
         historical_allocations,
         reader_allocations,
     );
-    let replacement_paths = replacement_descriptors.map(|descriptor| {
-        crate::property_graph::storage::allocation::artifact_path(&path, descriptor.artifact)
-    });
-    let replacement_bytes: [Vec<u8>; 6] = std::array::from_fn(|index| {
-        std::fs::read(&replacement_paths[index]).expect("replacement allocation bytes")
-    });
+    let replacement_paths: Vec<_> = replacement_descriptors
+        .iter()
+        .map(|descriptor| {
+            crate::property_graph::storage::allocation::artifact_path(&path, descriptor.artifact)
+        })
+        .collect();
+    let replacement_bytes: Vec<_> = replacement_paths
+        .iter()
+        .map(|path| std::fs::read(path).expect("replacement allocation bytes"))
+        .collect();
 
     let registration_base = store
         .admit_native_read()
@@ -4606,10 +4760,14 @@ fn run_ze46_protected_union_keeps_partial_packs_and_actual_sparse_refs() {
     let prepared = registration_base
         .register_prepared(&registered)
         .expect("register exact prepared-only manifest");
-    let replacement_allocations = replacement_descriptors.map(|object| InventoryChange {
-        object,
-        state: InventoryState::Prepared,
-    });
+    let replacement_allocations: Vec<_> = replacement_descriptors
+        .iter()
+        .copied()
+        .map(|object| InventoryChange {
+            object,
+            state: InventoryState::Prepared,
+        })
+        .collect();
     let replacement_registration = registration_base
         .register_prepared(&replacement_allocations)
         .expect("register exact maintenance allocations");
@@ -4772,7 +4930,7 @@ fn run_ze46_protected_union_keeps_partial_packs_and_actual_sparse_refs() {
         prepared_mark.contains(&checkpoint_manifest.object.artifact),
         "prepared-only manifest is absent from completed mark"
     );
-    for descriptor in replacement_descriptors {
+    for descriptor in replacement_descriptors.iter().copied() {
         assert!(prepared_records.contains(&ProtectedRecord::descriptor(
             ProtectedClass::PreparedAllocation,
             descriptor,
@@ -4966,7 +5124,7 @@ fn run_ze46_protected_union_keeps_partial_packs_and_actual_sparse_refs() {
         !pending_mark.contains(&checkpoint_manifest.object.artifact),
         "released primary manifest remained in completed mark"
     );
-    for descriptor in replacement_descriptors {
+    for descriptor in replacement_descriptors.iter().copied() {
         assert!(
             pending_mark.contains(&descriptor.artifact),
             "registered replacement allocation left completed mark: {descriptor:?}"
@@ -6419,7 +6577,12 @@ pub(super) fn run_actual_probe(
     _seed: u64,
 ) -> crate::graph_reclaim_test_support::ReclaimProbeReport {
     use super::publication::{reset_verified_faults, take_verified_faults};
-    let bodies: [(&'static str, u64, fn()); 12] = [
+    let bodies: [(&'static str, u64, fn()); 13] = [
+        (
+            "property-graph.reclaim.maintenance-output",
+            1,
+            run_ze260_maintenance_emits_each_tree_root_once_per_call,
+        ),
         ("property-graph.reclaim.physical-replacement", 2, || {
             run_ze46_real_consolidation_preserves_exact_state_and_reopens();
             run_ze46_consolidation_rotates_through_every_node();

@@ -1724,7 +1724,10 @@ fn retire_completed_reclaim(
         identity_source,
         store_identity,
         generation,
-        PackLimits::default(),
+        PackLimits {
+            streams: crate::property_graph::storage::prepared::PackStreams::ByLifetime,
+            ..PackLimits::default()
+        },
         &storage,
         &mut resources,
     )?;
@@ -2024,7 +2027,10 @@ pub(super) fn commit_with_limits(
         identity_source,
         store_identity,
         generation,
-        PackLimits::default(),
+        PackLimits {
+            streams: crate::property_graph::storage::prepared::PackStreams::ByLifetime,
+            ..PackLimits::default()
+        },
         &storage,
         &mut resources,
     )?;

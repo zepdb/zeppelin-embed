@@ -248,67 +248,6 @@ where
         values.push(encoded_record)?;
         replaced_physical_refs += 3;
     }
-    for kind in [TreeKind::Nodes, TreeKind::Relationships] {
-        let mut ops = StorageBuffer::new(memory, RELOCATION_LIMIT)?;
-        for (selected, value) in selected.as_slice().iter().zip(values.as_slice()) {
-            resources.step(1)?;
-            if selected.kind() == kind {
-                ops.push(DirectoryOp::Insert {
-                    key: &selected.key,
-                    value,
-                })?;
-            }
-        }
-        if !ops.as_slice().is_empty() {
-            let root = apply_sorted_checked(
-                sink,
-                DirectoryMutation::new(
-                    roots.directory(kind)?,
-                    generation,
-                    NativeDirectoryValues::new(catalog, document),
-                ),
-                ops.as_slice(),
-                &mut tree,
-                resources,
-            )?;
-            roots.replace(root)?;
-            replaced_physical_refs += 1;
-        }
-    }
-
-    if !fences.as_slice().is_empty() {
-        let mut ops = StorageBuffer::new(memory, fences.as_slice().len())?;
-        for (key, value) in fences.as_slice() {
-            resources.step(1)?;
-            ops.push(DirectoryOp::Insert {
-                key: key.as_slice(),
-                value,
-            })?;
-        }
-        let root = apply_sorted_checked(
-            sink,
-            DirectoryMutation::new(
-                roots.directory(TreeKind::KeyFences)?,
-                generation,
-                NativeDirectoryValues::new(catalog, document),
-            ),
-            ops.as_slice(),
-            &mut tree,
-            resources,
-        )?;
-        roots.replace(root)?;
-        replaced_physical_refs += 1;
-    }
-
-    for kind in [TreeKind::OutRanges, TreeKind::InRanges] {
-        let root = roots.directory(kind)?;
-        if let Some(replaced) = consolidate_pending_range(sink, root, context, memory, resources)? {
-            roots.replace(replaced)?;
-            replaced_physical_refs = replaced_physical_refs
-                .checked_add(2)
-                .ok_or(TreeError::Work)?;
-        }
-    }
     let mut inventory_fold_root = roots.directory(TreeKind::ObjectInventory)?;
     if !inventory_fold.changes().is_empty() {
         let inventory_root = roots.directory(TreeKind::ObjectInventory)?;
@@ -358,12 +297,15 @@ where
             .checked_add(1)
             .ok_or(TreeError::Work)?;
     }
-    replaced_physical_refs += relocate_pages(
+    replaced_physical_refs += apply_replacements(
         sink,
         &mut roots,
         pages,
         page_floor,
-        context.target_sequence(),
+        context,
+        selected.as_slice(),
+        values.as_slice(),
+        fences.as_slice(),
         catalog,
         document,
         memory,
@@ -675,7 +617,7 @@ pub(crate) fn page_relocation_floor(
 
 struct PageValues<'a, 'm, C> {
     native: NativeDirectoryValues<'a, C>,
-    sequence: u64,
+    context: RangeEditContext,
     ranges: super::adjacency::RangeScratch<'m>,
 }
 impl<S: super::tree::directory::BlockSource, C: RecordCatalog<S>>
@@ -692,6 +634,7 @@ impl<S: super::tree::directory::BlockSource, C: RecordCatalog<S>>
         match root.kind() {
             TreeKind::ObjectInventory => verify_inventory_entry(root, entry, r).map(|_| ()),
             TreeKind::OutRanges | TreeKind::InRanges => {
+                entry.require_root(root)?;
                 let Key::Inline(key) = entry.key() else {
                     return Err(TreeError::Invalid("overflow adjacency key"));
                 };
@@ -701,7 +644,7 @@ impl<S: super::tree::directory::BlockSource, C: RecordCatalog<S>>
                     root.store(),
                     entry.creation_generation(),
                     descriptor,
-                    self.sequence,
+                    self.context.cutoff(entry)?,
                     &mut self.ranges,
                     r,
                 )?;
@@ -716,12 +659,15 @@ impl<S: super::tree::directory::BlockSource, C: RecordCatalog<S>>
 }
 
 #[allow(clippy::too_many_arguments)]
-fn relocate_pages<'m, T: BlockSink, C: RecordCatalog<T>>(
+fn apply_replacements<'m, T: BlockSink, C: RecordCatalog<T>>(
     sink: &mut T,
     roots: &mut GraphRoots,
     pages: &[PageRelocation],
     floor: u64,
-    sequence: u64,
+    context: RangeEditContext,
+    selected: &[SelectedRecord],
+    values: &[[u8; 48]],
+    fences: &[FenceRelocation<'_>],
     catalog: &C,
     document: Option<&EmbeddingTower>,
     memory: &'m StorageMemory<'m>,
@@ -824,8 +770,8 @@ fn relocate_pages<'m, T: BlockSink, C: RecordCatalog<T>>(
             }
             let entry = lookup_entry(sink, root, key.as_slice(), resources)?
                 .ok_or(TreeError::Invalid("relocation key disappeared"))?;
-            // Record/fence/range/inventory edits may already have copied this
-            // leaf and every ancestor. Do not emit that path a second time.
+            // Inventory applies remain separate for replay validation and may
+            // already have copied this leaf and every ancestor.
             if entry.creation_generation() == roots.generation() {
                 continue;
             }
@@ -837,20 +783,83 @@ fn relocate_pages<'m, T: BlockSink, C: RecordCatalog<T>>(
                 .ok_or(TreeError::Memory)?
                 .rotate_right(1);
         }
-        if rows.as_slice().is_empty() {
-            continue;
+        let range = if matches!(kind, TreeKind::OutRanges | TreeKind::InRanges) {
+            consolidate_pending_range(sink, root, context, memory, resources)?
+        } else {
+            None
+        };
+        let range_key = range
+            .map(|descriptor| descriptor.directory_key())
+            .transpose()?;
+        let mut range_value = [0; super::adjacency::RANGE_DESCRIPTOR_BYTES];
+        let mut ops = StorageBuffer::new(memory, RELOCATION_LIMIT + PAGE_RELOCATION_LIMIT + 1)?;
+        if matches!(kind, TreeKind::Nodes | TreeKind::Relationships) {
+            for (selected, value) in selected.iter().zip(values) {
+                resources.step(1)?;
+                if selected.kind() == kind {
+                    ops.push(DirectoryOp::Insert {
+                        key: &selected.key,
+                        value,
+                    })?;
+                }
+            }
+        } else if kind == TreeKind::KeyFences {
+            for (key, value) in fences {
+                resources.step(1)?;
+                ops.push(DirectoryOp::Insert {
+                    key: key.as_slice(),
+                    value,
+                })?;
+            }
         }
-        let mut ops = StorageBuffer::new(memory, rows.as_slice().len())?;
+        if let (Some(descriptor), Some(key)) = (range, range_key.as_ref()) {
+            descriptor.encode(&mut range_value)?;
+            ops.push(DirectoryOp::Insert {
+                key,
+                value: &range_value,
+            })?;
+        }
+        if !ops.as_slice().is_empty() {
+            replaced += if range.is_some() { 2 } else { 1 };
+        }
         for (key, value) in rows.as_slice() {
             resources.step(1)?;
+            let mut position = 0;
+            let mut duplicate = false;
+            for op in ops.as_slice() {
+                resources.step(1)?;
+                let (DirectoryOp::Insert { key: other, .. } | DirectoryOp::Remove { key: other }) =
+                    op;
+                let order = compare_relocation_keys(kind, key.as_slice(), other, resources)?;
+                if order.is_eq() {
+                    duplicate = true;
+                    break;
+                }
+                if order.is_lt() {
+                    break;
+                }
+                position += 1;
+            }
+            // A real edit takes precedence over an equal-value relocation hint.
+            if duplicate {
+                continue;
+            }
             ops.push(DirectoryOp::Insert {
                 key: key.as_slice(),
                 value: value.as_slice(),
             })?;
+            ops.as_mut_slice()
+                .get_mut(position..)
+                .ok_or(TreeError::Memory)?
+                .rotate_right(1);
+            replaced += 1;
+        }
+        if ops.as_slice().is_empty() {
+            continue;
         }
         let validator = PageValues {
             native: NativeDirectoryValues::new(catalog, document),
-            sequence,
+            context,
             ranges: super::adjacency::RangeScratch::for_prepare(memory, resources)?,
         };
         roots.replace(apply_sorted_checked(
@@ -860,7 +869,6 @@ fn relocate_pages<'m, T: BlockSink, C: RecordCatalog<T>>(
             tree,
             resources,
         )?)?;
-        replaced += rows.as_slice().len() as u64;
     }
     Ok(replaced)
 }

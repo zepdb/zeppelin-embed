@@ -49,7 +49,7 @@ impl RangeEditContext {
         }
         Ok(())
     }
-    pub(in crate::property_graph::storage::adjacency) fn cutoff(
+    pub(in crate::property_graph::storage) fn cutoff(
         self,
         entry: DirectoryEntry<'_>,
     ) -> Result<u64, TreeError> {

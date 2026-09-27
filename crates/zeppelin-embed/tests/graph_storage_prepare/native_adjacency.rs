@@ -291,6 +291,7 @@ fn lane_packed<'a, 'b, S: BlockSource>(
         PackLimits {
             artifact_bytes: 512 * 1024,
             blocks: 256,
+            ..PackLimits::default()
         },
         memory,
         r,

@@ -242,6 +242,7 @@ fn failed_private_append_seal_and_finish_keep_inventory_without_exposing_artifac
             PackLimits {
                 artifact_bytes: 1024,
                 blocks: 1,
+                ..PackLimits::default()
             },
             &memory,
             &mut r,

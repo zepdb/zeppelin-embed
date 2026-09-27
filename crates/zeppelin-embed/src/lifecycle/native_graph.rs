@@ -3140,6 +3140,7 @@ pub(crate) mod tests {
                 PackLimits {
                     artifact_bytes: crate::property_graph::storage::artifact::MAX_ARTIFACT_BYTES,
                     blocks: 8_192,
+                    ..PackLimits::default()
                 },
                 &store.tokenizer,
                 &mut resources,
@@ -3357,6 +3358,7 @@ pub(crate) mod tests {
             PackLimits {
                 artifact_bytes: crate::property_graph::storage::artifact::MAX_ARTIFACT_BYTES,
                 blocks: 8_192,
+                ..PackLimits::default()
             },
             &store.tokenizer,
             &mut resources,

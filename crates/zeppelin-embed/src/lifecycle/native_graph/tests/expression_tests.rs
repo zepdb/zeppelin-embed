@@ -237,6 +237,7 @@ fn expression_producer_bundle_with_extra_nodes(
             PackLimits {
                 artifact_bytes: crate::property_graph::storage::artifact::MAX_ARTIFACT_BYTES,
                 blocks: 8_192,
+                ..PackLimits::default()
             },
             &storage,
             &mut resources,
