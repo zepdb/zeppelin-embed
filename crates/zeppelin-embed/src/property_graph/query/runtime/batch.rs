@@ -158,10 +158,10 @@ impl<'v, 'm, 'g> VariableArena<'v, 'm, 'g> {
                     .checked_add(text.len())
                     .is_none_or(|n| n > self.bytes.capacity())
                 {
-                    return Err(RuntimeError::Batch);
+                    return Err(RuntimeError::BatchCapacity);
                 }
                 if payload.checked_add(text.len()).is_none_or(|n| n > limit) {
-                    return Err(RuntimeError::Batch);
+                    return Err(RuntimeError::BatchCapacity);
                 }
                 let start = self.bytes.len();
                 for chunk in text.as_bytes().chunks(65536) {
@@ -185,7 +185,7 @@ impl<'v, 'm, 'g> VariableArena<'v, 'm, 'g> {
                         .checked_add(ids.len())
                         .is_none_or(|n| n > self.nodes.capacity())
                     {
-                        return Err(RuntimeError::Batch);
+                        return Err(RuntimeError::BatchCapacity);
                     }
                     let start = self.nodes.len();
                     for id in ids {
@@ -205,7 +205,7 @@ impl<'v, 'm, 'g> VariableArena<'v, 'm, 'g> {
                         .checked_add(ids.len())
                         .is_none_or(|n| n > self.relationships.capacity())
                     {
-                        return Err(RuntimeError::Batch);
+                        return Err(RuntimeError::BatchCapacity);
                     }
                     let start = self.relationships.len();
                     for id in ids {
@@ -224,7 +224,7 @@ impl<'v, 'm, 'g> VariableArena<'v, 'm, 'g> {
                     .checked_add(list.len())
                     .is_none_or(|n| n > self.children.capacity())
                 {
-                    return Err(RuntimeError::Batch);
+                    return Err(RuntimeError::BatchCapacity);
                 }
                 let before = self.usage();
                 let start = self.children.len();
@@ -274,9 +274,11 @@ fn copied(
     limit: usize,
     bytes: usize,
 ) -> Result<(), RuntimeError> {
-    let next = payload.checked_add(bytes).ok_or(RuntimeError::Batch)?;
+    let next = payload
+        .checked_add(bytes)
+        .ok_or(RuntimeError::BatchCapacity)?;
     if next > limit {
-        return Err(RuntimeError::Batch);
+        return Err(RuntimeError::BatchCapacity);
     }
     context.charge(WorkKind::CopiedBytes, bytes as u64)?;
     *payload = next;
@@ -424,8 +426,11 @@ impl<'v, 'm, 'g> RowBatch<'v, 'm, 'g> {
         context: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<(), RuntimeError> {
         context.checkpoint()?;
-        if !self.belongs_to(context) || self.rows() >= self.max_rows {
+        if !self.belongs_to(context) {
             return Err(RuntimeError::Batch);
+        }
+        if self.rows() >= self.max_rows {
+            return Err(RuntimeError::BatchCapacity);
         }
         let start = self.cells.len();
         let prior_bytes = self.payload_bytes;
@@ -474,9 +479,11 @@ impl<'v, 'm, 'g> RowBatch<'v, 'm, 'g> {
         if !std::ptr::eq(self.view, source.view)
             || self.columns != source.columns
             || row >= source.rows()
-            || self.rows() >= self.max_rows
         {
             return Err(RuntimeError::Batch);
+        }
+        if self.rows() >= self.max_rows {
+            return Err(RuntimeError::BatchCapacity);
         }
         let start = self.cells.len();
         let prior_bytes = self.payload_bytes;

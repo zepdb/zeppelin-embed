@@ -365,9 +365,8 @@ fn ze56_read_over_result_capacity_is_refused_without_rows() {
             let StatementError::Query(error) = error else {
                 panic!("expected a capacity refusal, got {error}")
             };
-            // ZE-208: capacity exhaustion is grouped as InvalidPlan today;
-            // its fix must change this to GraphQueryErrorKind::Limit.
-            assert_eq!(error.kind(), GraphQueryErrorKind::InvalidPlan, "{error}");
+            // ZE-208: fixed capacity exhaustion is a limit, not an invalid plan.
+            assert_eq!(error.kind(), GraphQueryErrorKind::Limit, "{error}");
             assert!(error.nothing_committed());
         }
     }

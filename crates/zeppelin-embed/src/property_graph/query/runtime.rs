@@ -181,8 +181,10 @@ pub enum RuntimeError {
     Value(QueryError),
     /// Capacity reservation/allocation failed.
     Memory(MemoryError),
-    /// A pull produced an invalid shape, exceeded fixed batch bounds or mixed owners.
+    /// A pull produced an invalid shape or mixed owners.
     Batch,
+    /// A fixed row or payload arena capacity would be exceeded.
+    BatchCapacity,
     /// The process-unique runtime stamp space was exhausted without wrapping.
     IdentityExhausted,
 }
@@ -202,7 +204,8 @@ impl std::fmt::Display for RuntimeError {
             Self::Limit(k) => write!(f, "graph query work limit: {k:?}"),
             Self::Value(e) => e.fmt(f),
             Self::Memory(e) => e.fmt(f),
-            Self::Batch => f.write_str("invalid or exhausted flat query batch"),
+            Self::Batch => f.write_str("invalid flat query batch"),
+            Self::BatchCapacity => f.write_str("flat query batch capacity exhausted"),
             Self::IdentityExhausted => f.write_str("graph query runtime identity exhausted"),
         }
     }

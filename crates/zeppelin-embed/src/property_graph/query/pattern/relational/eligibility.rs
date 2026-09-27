@@ -187,6 +187,7 @@ fn build_set<'v, 'm, 'g>(
 fn expression_error(expression: ExprId, error: RuntimeError) -> NativeExecutionError {
     match error {
         RuntimeError::Limit(_)
+        | RuntimeError::BatchCapacity
         | RuntimeError::Memory(_)
         | RuntimeError::IdentityExhausted
         | RuntimeError::Value(

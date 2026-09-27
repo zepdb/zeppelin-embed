@@ -618,7 +618,7 @@ fn owner_failure(error: &OwnerError) -> NativeConversionFailure {
 fn runtime_failure(stage: NativeConversionStage, error: &RuntimeError) -> NativeConversionFailure {
     let refusal = match error {
         RuntimeError::Limit(WorkKind::CopiedBytes) => NativeConversionRefusal::Work,
-        RuntimeError::Limit(_) => NativeConversionRefusal::Limit,
+        RuntimeError::Limit(_) | RuntimeError::BatchCapacity => NativeConversionRefusal::Limit,
         RuntimeError::Value(
             QueryError::Cancelled | QueryError::ReadCancelled | QueryError::Timeout,
         ) => NativeConversionRefusal::Cancel,

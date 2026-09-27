@@ -343,6 +343,7 @@ fn runtime(error: &RuntimeError) -> Kind {
         RuntimeError::Value(error) => value(*error),
         RuntimeError::Memory(error) => memory(error),
         RuntimeError::Batch => Kind::InvalidPlan,
+        RuntimeError::BatchCapacity => Kind::Limit,
         RuntimeError::IdentityExhausted => Kind::Unavailable,
     }
 }
@@ -475,5 +476,17 @@ fn graph(error: &NativeGraphError) -> Kind {
         // A statement that only creates and deletes its own entities cannot
         // publish yet: an unsupported plan, not a store fault.
         NativeGraphError::FenceOnlyStatement => Kind::InvalidPlan,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ze208_invalid_shape_batch_remains_invalid_plan() {
+        let error = GraphQueryError::from(NativeExecutionError::from(RuntimeError::Batch));
+        assert_eq!(error.kind(), Kind::InvalidPlan);
+        assert!(error.nothing_committed());
     }
 }

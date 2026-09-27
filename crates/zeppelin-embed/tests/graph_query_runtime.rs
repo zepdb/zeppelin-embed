@@ -344,7 +344,7 @@ fn flat_batches_preserve_scalar_bags_and_fail_before_partial_row_exposure() {
     let root = tempfile::tempdir().expect("fixture");
     let store = Store::open(
         root.path(),
-        OpenOptions::new().with_max_resident_bytes(65536),
+        OpenOptions::new().with_max_resident_bytes(MAX_GRAPH_RESIDENT_BYTES),
     )
     .expect("store");
     let shared = GraphResources::from_store(&store).expect("accounting");
@@ -371,13 +371,25 @@ fn flat_batches_preserve_scalar_bags_and_fail_before_partial_row_exposure() {
         Some(QueryValue::I64(9007199254740993))
     ));
     assert!(matches!(batch.value(1, 1), Some(QueryValue::Null)));
-    assert!(batch.push_row(&row, &mut context).is_err());
+    let error = batch
+        .push_row(&row, &mut context)
+        .expect_err("row capacity");
+    assert!(matches!(
+        error,
+        zeppelin_embed::property_graph::query::runtime::RuntimeError::BatchCapacity
+    ));
     assert_eq!(batch.rows(), 2);
     assert_eq!(context.counters().get(WorkKind::RowsOut), 2);
     assert_eq!(context.counters().get(WorkKind::CopiedBytes), 16);
     batch.clear();
     assert_eq!(batch.rows(), 0);
-    assert!(batch.push_row(&[QueryValue::I64(1)], &mut context).is_err());
+    let error = batch
+        .push_row(&[QueryValue::I64(1)], &mut context)
+        .expect_err("invalid shape");
+    assert!(matches!(
+        error,
+        zeppelin_embed::property_graph::query::runtime::RuntimeError::Batch
+    ));
     assert_eq!(batch.rows(), 0);
     drop(batch);
     drop(context);
@@ -507,7 +519,7 @@ fn failed_variable_reservation_does_not_count_uncopied_bytes() {
     let root = tempfile::tempdir().expect("fixture");
     let store = Store::open(
         root.path(),
-        OpenOptions::new().with_max_resident_bytes(65536),
+        OpenOptions::new().with_max_resident_bytes(MAX_GRAPH_RESIDENT_BYTES),
     )
     .expect("store");
     let shared = GraphResources::from_store(&store).expect("accounting");
@@ -530,11 +542,13 @@ fn failed_variable_reservation_does_not_count_uncopied_bytes() {
         },
     )
     .expect("tiny capacity");
-    assert!(
-        batch
-            .push_row(&[QueryValue::String("three")], &mut context)
-            .is_err()
-    );
+    let error = batch
+        .push_row(&[QueryValue::String("three")], &mut context)
+        .expect_err("string arena capacity");
+    assert!(matches!(
+        error,
+        zeppelin_embed::property_graph::query::runtime::RuntimeError::BatchCapacity
+    ));
     assert_eq!(batch.rows(), 0);
     assert_eq!(batch.arena_usage(), ArenaCapacity::default());
     assert_eq!(
