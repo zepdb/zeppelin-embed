@@ -1398,3 +1398,7 @@ pub struct ZeGraphCompileLimits {
     /// Finite path upper bound <=16.
     pub path_hops: u32,
 }
+
+#[path = "graph_entry.rs"]
+mod graph_entry;
+pub use graph_entry::*;

@@ -892,6 +892,94 @@ typedef uint32_t ZeGraphWorkKind;
 #endif // __cplusplus
 
 /*
+ Fixed caller-owned byte span; length is bytes, not NUL termination.
+ */
+typedef struct ZeGraphBytes {
+    /*
+     Accessible bytes for the synchronous call; null only at count zero.
+     */
+    const uint8_t *data;
+    /*
+     Accessible byte count; UTF-8/domain rules depend on the named field.
+     */
+    size_t count;
+} ZeGraphBytes;
+
+/*
+ Cooperative request controls; existing cancellation token registry is reused.
+ */
+typedef struct ZeGraphControl {
+    /*
+     Exact sizeof this version-one descriptor; fixed array stride.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Zero means no explicit token; nonzero must name a live cancellation token.
+     */
+    uint64_t cancel_token;
+    /*
+     Relative monotonic deadline from call entry; zero means absent.
+     */
+    uint64_t deadline_ns;
+} ZeGraphControl;
+
+/*
+ Graph-only open declaration. Document-tower identity is persisted; query tower/alignment is intentionally absent. ZE-69/coordinator own locks, format admission and initialization.
+ */
+typedef struct ZeGraphOpenRequest {
+    /*
+     Exact sizeof this version-one descriptor; fixed array stride.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Nonempty UTF-8 filesystem path; embedded NUL forbidden.
+     */
+    struct ZeGraphBytes path;
+    /*
+     One ZeGraphOpenMode.
+     */
+    uint32_t mode;
+    /*
+     0 existing general-purpose tokenizer; unknown profiles reject.
+     */
+    uint32_t tokenizer_profile;
+    /*
+     Null declares graph without vector space; otherwise exact optional document interpretation.
+     */
+    const ZeEmbeddingTower *document_tower;
+    /*
+     Close drain grace period in milliseconds, using existing lifecycle semantics.
+     */
+    uint64_t reader_drain_timeout_ms;
+    /*
+     Nonzero shared store owned-capacity ceiling, at most 256 MiB; includes concurrent graph work.
+     */
+    uint64_t max_resident_bytes;
+    /*
+     Optional cancellation/deadline for bounded create/open work.
+     */
+    const struct ZeGraphControl *control;
+} ZeGraphOpenRequest;
+
+/*
+ Opaque graph-only generation-tagged handle. Zero is never a live handle.
+ */
+typedef struct ZeGraphHandle {
+    /*
+     The handle registry owns interpretation; this is not a store pointer.
+     */
+    uint64_t token;
+} ZeGraphHandle;
+
+/*
  Store-local nonzero node identity. No relationship or document conversion.
  */
 typedef struct ZeNodeId {
@@ -918,16 +1006,6 @@ typedef struct ZeRelId {
      */
     uint64_t low;
 } ZeRelId;
-
-/*
- Opaque graph-only generation-tagged handle. Zero is never a live handle.
- */
-typedef struct ZeGraphHandle {
-    /*
-     The handle registry owns interpretation; this is not a store pointer.
-     */
-    uint64_t token;
-} ZeGraphHandle;
 
 /*
  Fixed pool span. `start` and `count` use the named target array's elements.
@@ -989,42 +1067,6 @@ typedef struct ZeGraphValue {
      */
     struct ZeGraphRange range;
 } ZeGraphValue;
-
-/*
- Fixed caller-owned byte span; length is bytes, not NUL termination.
- */
-typedef struct ZeGraphBytes {
-    /*
-     Accessible bytes for the synchronous call; null only at count zero.
-     */
-    const uint8_t *data;
-    /*
-     Accessible byte count; UTF-8/domain rules depend on the named field.
-     */
-    size_t count;
-} ZeGraphBytes;
-
-/*
- Cooperative request controls; existing cancellation token registry is reused.
- */
-typedef struct ZeGraphControl {
-    /*
-     Exact sizeof this version-one descriptor; fixed array stride.
-     */
-    uint32_t abi_size;
-    /*
-     Must be zero.
-     */
-    uint32_t abi_reserved;
-    /*
-     Zero means no explicit token; nonzero must name a live cancellation token.
-     */
-    uint64_t cancel_token;
-    /*
-     Relative monotonic deadline from call entry; zero means absent.
-     */
-    uint64_t deadline_ns;
-} ZeGraphControl;
 
 /*
  Property entry. Input names are unique; null is not a stored value.
@@ -2091,48 +2133,6 @@ typedef struct ZeGraphQueryRequest {
 } ZeGraphQueryRequest;
 
 /*
- Graph-only open declaration. Document-tower identity is persisted; query tower/alignment is intentionally absent. ZE-69/coordinator own locks, format admission and initialization.
- */
-typedef struct ZeGraphOpenRequest {
-    /*
-     Exact sizeof this version-one descriptor; fixed array stride.
-     */
-    uint32_t abi_size;
-    /*
-     Must be zero.
-     */
-    uint32_t abi_reserved;
-    /*
-     Nonempty UTF-8 filesystem path; embedded NUL forbidden.
-     */
-    struct ZeGraphBytes path;
-    /*
-     One ZeGraphOpenMode.
-     */
-    uint32_t mode;
-    /*
-     0 existing general-purpose tokenizer; unknown profiles reject.
-     */
-    uint32_t tokenizer_profile;
-    /*
-     Null declares graph without vector space; otherwise exact optional document interpretation.
-     */
-    const ZeEmbeddingTower *document_tower;
-    /*
-     Close drain grace period in milliseconds, using existing lifecycle semantics.
-     */
-    uint64_t reader_drain_timeout_ms;
-    /*
-     Nonzero shared store owned-capacity ceiling, at most 256 MiB; includes concurrent graph work.
-     */
-    uint64_t max_resident_bytes;
-    /*
-     Optional cancellation/deadline for bounded create/open work.
-     */
-    const struct ZeGraphControl *control;
-} ZeGraphOpenRequest;
-
-/*
  Full caller-tightened outer compiler limits. Null request pointer selects defaults; when present every field is explicit, including zero. All compiler capacities still count inside the same query budget.
  */
 typedef struct ZeGraphCompileLimits {
@@ -2643,5 +2643,30 @@ typedef struct ZeGraphResponse {
      */
     struct ZeGraphRange global_work;
 } ZeGraphResponse;
+
+#ifdef __cplusplus
+extern "C" {
+#endif // __cplusplus
+
+/*
+ Opens (`mode` 1 read-write, 2 read-only) or creates (`mode` 0) one native
+ graph store; a legacy store directory is refused with
+ `ZE_ERR_STORE_KIND`. `max_resident_bytes` must be in 1..=256 MiB,
+ `tokenizer_profile` must be 0 and `control` must be null.
+ `document_tower` is null for a store without vectors; otherwise node
+ vectors are validated against it and it must match the persisted tower.
+ */
+ze_error_code ze_graph_open(const struct ZeGraphOpenRequest *request,
+                            struct ZeGraphHandle *out_handle);
+
+/*
+ Closes a graph store and releases its handle; outstanding responses stay
+ valid until freed. Closing a stale or closed handle is `ZE_ERR_CLOSED`.
+ */
+ze_error_code ze_graph_close(struct ZeGraphHandle handle);
+
+#ifdef __cplusplus
+}  // extern "C"
+#endif  // __cplusplus
 
 #endif  /* ZEPPELIN_GRAPH_CONTRACTS_H */

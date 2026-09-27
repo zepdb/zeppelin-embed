@@ -1,4 +1,4 @@
-# Contract-only graph data header. No unavailable runtime functions are declared.
+# Graph data contracts and implemented opt-in graph entry points.
 language = "C"
 include_guard = "ZEPPELIN_GRAPH_CONTRACTS_H"
 cpp_compat = true
@@ -80,3 +80,9 @@ parse_deps = false
 [enum]
 rename_variants = "ScreamingSnakeCase"
 prefix_with_name = false
+
+[export.rename]
+"ZeErrorCode" = "ze_error_code"
+
+[fn]
+args = "auto"

@@ -84,6 +84,13 @@ fn panic_message(payload: Box<dyn Any + Send>) -> String {
 }
 
 fn poison_handle(handle: Option<ZeHandle>, message: String) {
+    #[cfg(feature = "graph-cypher")]
+    if let Some(graph) = handle.filter(|handle| graph_abi::is_graph_handle(*handle)) {
+        if let Some(message) = graph_abi::poison(graph, message) {
+            registry::poison(None, message);
+        }
+        return;
+    }
     #[cfg(feature = "text")]
     if handle.is_some_and(text_registry::is_text_handle) {
         if let Some(message) = text_registry::poison(handle, message) {
@@ -95,6 +102,13 @@ fn poison_handle(handle: Option<ZeHandle>, message: String) {
 }
 
 fn set_handle_error(handle: Option<ZeHandle>, message: String) {
+    #[cfg(feature = "graph-cypher")]
+    if let Some(graph) = handle.filter(|handle| graph_abi::is_graph_handle(*handle)) {
+        if let Some(message) = graph_abi::set_error(graph, message) {
+            registry::set_error(None, message);
+        }
+        return;
+    }
     #[cfg(feature = "text")]
     if handle.is_some_and(text_registry::is_text_handle) {
         if let Some(message) = text_registry::set_error(handle, message) {
@@ -106,6 +120,10 @@ fn set_handle_error(handle: Option<ZeHandle>, message: String) {
 }
 
 fn handle_error(handle: ZeHandle) -> Result<String, FfiError> {
+    #[cfg(feature = "graph-cypher")]
+    if graph_abi::is_graph_handle(handle) {
+        return graph_abi::last_error(handle);
+    }
     #[cfg(feature = "text")]
     if text_registry::is_text_handle(handle) {
         return text_registry::last_error(handle);
@@ -4833,9 +4851,12 @@ mod verify;
 pub use verify::*;
 
 #[cfg(feature = "graph-cypher")]
+/// cbindgen:ignore
 mod graph_contracts;
 #[cfg(feature = "graph-cypher")]
 pub use graph_contracts::*;
+#[cfg(feature = "graph-cypher")]
+mod graph_abi;
 #[cfg(feature = "graph-cypher")]
 mod graph_error;
 #[cfg(feature = "graph-cypher")]

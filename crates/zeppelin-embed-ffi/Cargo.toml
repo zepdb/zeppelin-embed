@@ -44,3 +44,11 @@ required-features = ["graph-cypher"]
 [[test]]
 name = "ffi_graph_layout"
 required-features = ["graph-cypher"]
+
+[[test]]
+name = "ffi_graph_entry"
+required-features = ["graph-cypher"]
+
+[[test]]
+name = "ffi_graph_poison"
+required-features = ["graph-cypher", "abi-panic-probe"]

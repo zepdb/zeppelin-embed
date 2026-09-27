@@ -261,3 +261,6 @@ pub fn open_path_with_epoch(path: &Path, epoch: &EpochFixture) -> (ZeErrorCode, 
     let code = ze_open_with_epoch(&request, &epoch, &mut handle);
     (code, handle)
 }
+
+#[cfg(feature = "graph-cypher")]
+pub mod graph;
