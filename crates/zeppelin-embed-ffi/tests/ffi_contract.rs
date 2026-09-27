@@ -599,6 +599,7 @@ const POISON_TABLE_NAMES: &[&str] = &[
     "ze_scan_result_free",
     "ze_schema_column",
     "ze_seal",
+    "ze_merge_sealed",
     "ze_search",
     "ze_search_filtered",
     "ze_snapshot",
@@ -1072,6 +1073,15 @@ fn poison_function_table() -> Vec<(&'static str, PoisonCall)> {
             };
             let mut report: ZeGenerationReport = common::sized_zeroed();
             ze_seal(context.store.handle, &request, &mut report)
+        }),
+        ("ze_merge_sealed", |context| {
+            let request = ZeSealRequest {
+                abi_size: size_of::<ZeSealRequest>() as u32,
+                abi_reserved: 0,
+                cancel_token: 0,
+            };
+            let mut report: ZeGenerationReport = common::sized_zeroed();
+            ze_merge_sealed(context.store.handle, &request, &mut report)
         }),
         ("ze_snapshot", |context| {
             let target = std::env::temp_dir()

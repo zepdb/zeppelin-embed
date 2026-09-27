@@ -310,6 +310,11 @@ class Store {
     return report;
   }
 
+  /** Merge small sealed segments synchronously during application idle time. */
+  merge() {
+    return callNative(() => this._native.merge());
+  }
+
   /**
    * Writes a consistent snapshot of the store into `target` on a worker
    * thread and resolves to `{ generation }`, the generation it captured.

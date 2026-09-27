@@ -74,6 +74,7 @@ const DETAILED_MATRIX: &[(&str, MatrixCall)] = &[
     ("ze_search", search_cell),
     ("ze_query", query_cell),
     ("ze_seal", seal_cell),
+    ("ze_merge_sealed", merge_cell),
     ("ze_snapshot", snapshot_cell),
     ("ze_drop_partition", drop_cell),
     ("ze_apply_retention", retention_cell),
@@ -241,6 +242,10 @@ const ABI_REGISTRY: &[AbiEntry] = &[
     },
     AbiEntry {
         name: "ze_seal",
+        coverage: AbiCoverage::DetailedMatrix,
+    },
+    AbiEntry {
+        name: "ze_merge_sealed",
         coverage: AbiCoverage::DetailedMatrix,
     },
     AbiEntry {
@@ -792,6 +797,21 @@ fn seal_cell(context: &MatrixContext, cell: Cell) -> CellResult {
     )
 }
 
+fn merge_cell(context: &MatrixContext, cell: Cell) -> CellResult {
+    header_only_cell!(
+        context,
+        cell,
+        ZeSealRequest {
+            abi_size: size_of::<ZeSealRequest>() as u32,
+            abi_reserved: 0,
+            cancel_token: 0,
+        },
+        common::sized_zeroed::<ZeGenerationReport>(),
+        ze_merge_sealed,
+        "ZeSealRequest has no dimension, k, path, enum, or count buffer"
+    )
+}
+
 fn snapshot_cell(context: &MatrixContext, cell: Cell) -> CellResult {
     let target = context.path_bytes();
     let mut request = ZeSnapshotRequest {
@@ -1274,8 +1294,8 @@ fn every_exported_symbol_has_executable_adversarial_registry_coverage() {
 
 #[test]
 fn the_adversarial_input_matrix_returns_typed_errors_for_every_cell() {
-    const EXPECTED_EXECUTED: usize = 90;
-    const EXPECTED_SKIPPED: usize = 88;
+    const EXPECTED_EXECUTED: usize = 93;
+    const EXPECTED_SKIPPED: usize = 96;
     let context = MatrixContext {
         store: common::TestStore::new(),
         vector: vec![1.0_f32],

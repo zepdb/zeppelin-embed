@@ -4526,6 +4526,46 @@ pub extern "C" fn ze_seal(
     })
 }
 
+/// Merges small sealed scan segments during host-selected idle time.
+/// Uses the existing cancellation request layout. Each batch admits at most
+/// 16 inputs and 8 MiB of input files; active writes and WAL stay unchanged.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_merge_sealed(
+    handle: ZeHandle,
+    request: *const ZeSealRequest,
+    out_report: *mut ZeGenerationReport,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_merge_sealed");
+        finish(
+            Some(handle),
+            registry::with_writer(handle, |access| {
+                let request = marshal::read_struct(request)?;
+                let abi_size = marshal::validate_output(out_report)?;
+                let cancel = if request.cancel_token == 0 {
+                    None
+                } else {
+                    Some(registry::lookup_cancel(request.cancel_token)?)
+                };
+                let generation = match cancel.as_ref() {
+                    Some(cancel) => access.store.merge_sealed_with_cancel(cancel),
+                    None => access.store.merge_sealed(),
+                }
+                .map_err(FfiError::store)?;
+                marshal::write_output(
+                    out_report,
+                    ZeGenerationReport {
+                        abi_size,
+                        abi_reserved: 0,
+                        generation,
+                    },
+                );
+                Ok(())
+            }),
+        )
+    })
+}
+
 /// Writes a consistent snapshot of the store into `request.target` and
 /// reports the generation it captured. The target must not exist or must be
 /// an empty directory, its parent must exist, and it must not lie inside the

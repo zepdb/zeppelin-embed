@@ -829,7 +829,7 @@ fn live_versions(store: &Store) -> Vec<DocumentVersion> {
     let outcome = store
         .search(
             SearchRequest::new(&[1.0, 1.0]),
-            16,
+            1000,
             ScanOptions { thread_budget: 1 },
             QueryControl::Cancel(CancelToken::new()),
         )
@@ -1141,4 +1141,149 @@ impl Vfs for StepFaultVfs {
         self.step(format!("delete {}", step_name(path)))?;
         StdVfs.delete(path)
     }
+}
+
+#[test]
+fn idle_merge_bounds_segments_across_1000_seals_and_reopens() {
+    let directory = tempdir().expect("directory");
+    let mut store = Store::open(directory.path(), durable_options()).expect("open");
+    let mut seen = std::collections::HashSet::new();
+    let mut previous = std::collections::HashSet::new();
+    let mut observe_ids = |store: &Store| {
+        let snapshot = store.snapshot().expect("snapshot");
+        let current = snapshot
+            .segments()
+            .iter()
+            .map(|s| s.meta().id)
+            .collect::<std::collections::HashSet<_>>();
+        for id in current.difference(&previous) {
+            assert!(seen.insert(*id), "reused live or retired segment {id}");
+        }
+        previous = current;
+    };
+    for id in 1..=1000 {
+        ingest_one(&store, id);
+        store.seal().expect("seal");
+        observe_ids(&store);
+        // An idle interval every eight seals, including the final interval.
+        if id % 8 == 0 {
+            store.merge_sealed().expect("idle merge");
+        }
+        observe_ids(&store);
+        let count = store.snapshot().expect("snapshot").segments().len();
+        assert!(count <= 8, "small seals accumulated: {count}");
+        if id % 100 == 0 {
+            store.close().expect("close");
+            store = Store::open(directory.path(), durable_options()).expect("reopen");
+            assert_eq!(live_versions(&store).len(), id as usize);
+        }
+    }
+    assert_eq!(store.snapshot().expect("snapshot").segments().len(), 1);
+}
+
+#[test]
+fn idle_merge_preserves_wal_and_purge() {
+    let directory = tempdir().expect("directory");
+    let store = Store::open(directory.path(), durable_options()).expect("open");
+    for id in 1..=4 {
+        ingest_one(&store, id);
+        store.seal().expect("seal");
+    }
+    ingest_one(&store, 5);
+    let wal = std::fs::read(directory.path().join("wal.ze")).expect("WAL");
+    store.merge_sealed().expect("merge");
+    assert_eq!(store.snapshot().expect("snapshot").segments().len(), 1);
+    assert_eq!(
+        std::fs::read(directory.path().join("wal.ze")).expect("WAL"),
+        wal
+    );
+    let token = store.purge(&[DocId::new(2)]).expect("purge");
+    store.await_physical_purge(token).expect("purge completes");
+    store.close().expect("close");
+    let store = Store::open(directory.path(), durable_options()).expect("reopen");
+    let ids = live_versions(&store)
+        .iter()
+        .map(|v| v.doc_id().get())
+        .collect::<Vec<_>>();
+    assert_eq!(ids, vec![1, 3, 4, 5]);
+    store.seal().expect("seal WAL tail");
+    store.merge_sealed().expect("merge purge output");
+    assert_eq!(store.snapshot().expect("snapshot").segments().len(), 1);
+}
+
+#[test]
+fn interrupted_idle_merge_reopens_with_all_documents() {
+    fn seed(path: &Path) -> Store {
+        let store = Store::open(path, durable_options()).expect("open");
+        for id in 1..=3 {
+            ingest_one(&store, id);
+            store.seal().expect("seal");
+        }
+        store
+    }
+    let directory = tempdir().expect("directory");
+    let store = seed(directory.path());
+    let trace = StepFaultVfs::new(StepFault::DieAfter(usize::MAX));
+    store
+        .merge_sealed_with_cancel_on_vfs(&CancelToken::new(), &trace)
+        .expect("trace merge");
+    let steps = trace.steps();
+    assert!(!steps.is_empty(), "merge must publish a replacement");
+    for cut in 0..steps.len() {
+        let directory = tempdir().expect("crash directory");
+        let store = seed(directory.path());
+        let fault = StepFaultVfs::new(StepFault::DieAfter(cut));
+        store
+            .merge_sealed_with_cancel_on_vfs(&CancelToken::new(), &fault)
+            .expect_err("injected interruption");
+        drop(store);
+        let store = Store::open(directory.path(), durable_options()).expect("recover");
+        assert_eq!(live_versions(&store).len(), 3, "cut {cut}: {}", steps[cut]);
+        store.merge_sealed().expect("retry merge");
+        assert_eq!(store.snapshot().expect("snapshot").segments().len(), 1);
+    }
+}
+
+#[test]
+fn idle_merge_refuses_batches_over_the_input_byte_bound() {
+    let directory = tempdir().expect("directory");
+    let store = Store::open(directory.path(), durable_options()).expect("open");
+    for id in 1..=20 {
+        store
+            .ingest(IngestBatch::new(vec![
+                IngestDocument::new(
+                    DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                    vec![1.0, 0.0],
+                )
+                .with_metadata(vec![7; 512 * 1024]),
+            ]))
+            .expect("large payload");
+        if id % 10 == 0 {
+            store.seal().expect("seal");
+        }
+    }
+    let before = store.snapshot().expect("snapshot");
+    assert_eq!(
+        store.merge_sealed().expect("bounded no-op"),
+        before.generation()
+    );
+    assert_eq!(store.snapshot().expect("snapshot").segments().len(), 2);
+}
+
+#[test]
+fn idle_merge_respects_cancellation_read_only_and_closed_handles() {
+    let directory = tempdir().expect("directory");
+    let store = Store::open(directory.path(), durable_options()).expect("open");
+    ingest_one(&store, 1);
+    store.seal().expect("seal");
+    let cancel = CancelToken::new();
+    cancel.cancel();
+    assert!(matches!(
+        store.merge_sealed_with_cancel(&cancel),
+        Err(StoreError::SealCancelled)
+    ));
+    store.close().expect("close");
+    assert!(matches!(store.merge_sealed(), Err(StoreError::Closed)));
+    let reader = Store::open(directory.path(), OpenOptions::read_only()).expect("reader");
+    assert!(matches!(reader.merge_sealed(), Err(StoreError::ReadOnly)));
 }

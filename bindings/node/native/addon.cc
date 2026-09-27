@@ -2982,6 +2982,37 @@ napi_value SealStore(napi_env env, napi_callback_info info) {
   });
 }
 
+napi_value MergeStore(napi_env env, napi_callback_info info) {
+  return Guard(env, [&]() -> napi_value {
+    size_t argc = 0;
+    napi_value receiver;
+    if (!NapiOk(env,
+                napi_get_cb_info(env, info, &argc, nullptr, &receiver, nullptr),
+                "read merge receiver")) {
+      return nullptr;
+    }
+    NativeStore *store = UnwrapStore(env, receiver);
+    if (store == nullptr)
+      return nullptr;
+    ZeSealRequest request{};
+    request.abi_size = sizeof(request);
+    ZeGenerationReport report{};
+    report.abi_size = sizeof(report);
+    const ze_error_code status = ze_merge_sealed(store->handle, &request, &report);
+    if (status != ZE_OK)
+      return ThrowZeppelin(env, store->handle, status);
+    napi_value result;
+    napi_value generation;
+    if (!NapiOk(env, napi_create_object(env, &result), "create merge report") ||
+        !NapiOk(env,
+                napi_create_bigint_uint64(env, report.generation, &generation),
+                "create generation") ||
+        !SetNamed(env, result, "generation", generation))
+      return nullptr;
+    return result;
+  });
+}
+
 // One in-flight `snapshot(target)`. The copy runs on a libuv worker thread,
 // so JavaScript keeps writing through the same handle while it runs; the
 // engine blocks writers only while it pins the generation. The reference
@@ -3873,6 +3904,8 @@ napi_value Initialize(napi_env env, napi_value exports) {
       {"query", nullptr, Query, nullptr, nullptr, nullptr, napi_default,
        nullptr},
       {"seal", nullptr, SealStore, nullptr, nullptr, nullptr, napi_default,
+       nullptr},
+      {"merge", nullptr, MergeStore, nullptr, nullptr, nullptr, napi_default,
        nullptr},
       {"snapshot", nullptr, SnapshotStore, nullptr, nullptr, nullptr,
        napi_default, nullptr},

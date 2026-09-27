@@ -3,6 +3,7 @@
 mod active;
 mod atomic_batch;
 mod delete_matching;
+mod merge;
 mod purge;
 
 /// Survivor-rewrite helpers shared with graph-segment consolidation.

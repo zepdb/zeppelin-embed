@@ -695,6 +695,17 @@ export declare class Store {
    */
   seal(): SealReport;
   /**
+   * Merge small sealed scan segments during application idle time. Synchronous:
+   * blocks writers, repeats atomic batches of at most 16 inputs and 8 MiB of
+   * input files. Decoded working memory is larger than the input-byte bound.
+   * Large and graph segments remain separate. Call periodically alongside
+   * autoSealRows to avoid accumulating small segments and slow reopen queries.
+   * Active writes and WAL are unchanged; call seal() first to include them.
+   * Returns the final generation, unchanged if no compatible batch fits.
+   * Requires a writable store. A failure may follow completed atomic batches.
+   */
+  merge(): { readonly generation: bigint };
+  /**
    * Write a consistent snapshot of the store at one generation into
    * `target`, for a backup or an export. The copy runs on a worker thread,
    * so the application keeps reading and writing through this store; writers

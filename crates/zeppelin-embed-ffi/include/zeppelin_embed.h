@@ -2603,7 +2603,7 @@ typedef struct ZeQueryFilter {
 } ZeQueryFilter;
 
 /*
- Explicit seal request.
+ Explicit seal or idle-merge cancellation request.
  */
 typedef struct ZeSealRequest {
     /*
@@ -2621,7 +2621,7 @@ typedef struct ZeSealRequest {
 } ZeSealRequest;
 
 /*
- A generation returned by seal.
+ A generation returned by seal or idle merge.
  */
 typedef struct ZeGenerationReport {
     /*
@@ -3359,6 +3359,15 @@ ze_error_code ze_query_result_free(struct ZeQueryResult *result);
 ze_error_code ze_seal(ze_handle handle,
                       const struct ZeSealRequest *request,
                       struct ZeGenerationReport *out_report);
+
+/*
+ Merges small sealed scan segments during host-selected idle time.
+ Uses the existing cancellation request layout. Each batch admits at most
+ 16 inputs and 8 MiB of input files; active writes and WAL stay unchanged.
+ */
+ze_error_code ze_merge_sealed(ze_handle handle,
+                              const struct ZeSealRequest *request,
+                              struct ZeGenerationReport *out_report);
 
 /*
  Writes a consistent snapshot of the store into `request.target` and

@@ -1113,7 +1113,7 @@ pub struct ZeSearchResult {
     pub graph_segments_pruned_by_bound: u64,
 }
 
-/// Explicit seal request.
+/// Explicit seal or idle-merge cancellation request.
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct ZeSealRequest {
@@ -1125,7 +1125,7 @@ pub struct ZeSealRequest {
     pub cancel_token: ZeCancelToken,
 }
 
-/// A generation returned by seal.
+/// A generation returned by seal or idle merge.
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct ZeGenerationReport {

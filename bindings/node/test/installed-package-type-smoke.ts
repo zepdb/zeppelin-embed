@@ -29,6 +29,7 @@ const records = openNamespace(
   { autoSealRows: 2048 },
 );
 const sealed: bigint = records.seal().generation;
+const merged: bigint = records.merge().generation;
 const grouped = records.count({ groupBy: { attributeId: 1, limit: 16 } });
 const groups: CountGroup[] = grouped.groups;
 const missing: bigint = grouped.missingCount;
@@ -52,7 +53,7 @@ const report: VerifyReport = verify('typecheck-records/notes');
 const damage: VerifyFindingKind | undefined = report.findings[0]?.kind;
 const offset: bigint | undefined = report.findings[0]?.offset;
 
-console.log(ABI_VERSION, generation, sealed, groups, missing, plain, hits, mode, lexicalScore, effectiveAlpha, uuid);
+console.log(ABI_VERSION, generation, sealed, merged, groups, missing, plain, hits, mode, lexicalScore, effectiveAlpha, uuid);
 console.log(report.ok, damage, offset);
 token.close();
 records.close();

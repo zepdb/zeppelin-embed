@@ -176,7 +176,14 @@ store.seal(); // { generation }; a no-op when nothing is unsealed
 With `autoSealRows`, the store seals once at open and again before the write
 that follows that many written documents since the last seal. A smaller value
 keeps each write cheaper, because a write copies the active segment; a larger
-value makes fewer sealed segments.
+value makes fewer sealed segments. Call `store.merge()` periodically when the
+application is idle to combine small sealed segments and reduce the first-query
+cost after reopen. This synchronous call leaves active writes and the WAL alone;
+call `seal()` first to include the current writes. It publishes each replacement
+before removing the inputs, in batches of at most 16 segments and 8 MiB of input
+files. Decoded working memory exceeds those input bytes. Large segments and graph
+segments stay separate. The result is `{ generation }`, unchanged if no batch
+fits; a failure can follow already committed batches.
 
 `deleteWhere` deletes every document that matches a filter, in one mutation,
 and removes their bytes from disk. It takes the same `Filter` as `scan` and
