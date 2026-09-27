@@ -487,12 +487,14 @@ impl NativePreparationSource<'_, '_> {
         resources: &mut TreeResources<'_>,
     ) -> Result<Option<FramedBlock<'a>>, TreeError> {
         self.check_owner(resources)?;
-        for cell in self.slots.as_slice() {
-            if let Some(mapped) = cell.get()
-                && mapped.artifact == reference.artifact
-            {
-                return self.decode(mapped, reference, resources).map(Some);
-            }
+        let slot = crate::property_graph::storage::mapping_slot(
+            self.slots.as_slice(),
+            reference.artifact,
+            |mapped| mapped.artifact,
+            || resources.step(1),
+        )?;
+        if let Some(mapped) = slot.and_then(OnceCell::get) {
+            return self.decode(mapped, reference, resources).map(Some);
         }
         Ok(None)
     }
@@ -511,11 +513,12 @@ impl NativePreparationSource<'_, '_> {
         if let Some(block) = self.slot_hit(reference, resources)? {
             return Ok(Some(block));
         }
-        let Some(cell) = self
-            .slots
-            .as_slice()
-            .iter()
-            .find(|cell| cell.get().is_none())
+        let Some(cell) = crate::property_graph::storage::mapping_slot(
+            self.slots.as_slice(),
+            reference.artifact,
+            |mapped| mapped.artifact,
+            || resources.step(1),
+        )?
         else {
             return Ok(None);
         };

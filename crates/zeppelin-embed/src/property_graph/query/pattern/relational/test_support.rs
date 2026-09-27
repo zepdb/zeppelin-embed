@@ -2137,6 +2137,9 @@ pub(super) fn blocking_capacity_probe(store: &Store) -> Result<(), String> {
     ] {
         let mut options = GraphQueryOptions {
             memory_limit,
+            // This two-node probe isolates retained-row capacity. Keep its
+            // mapping reservation fixed as the production inventory grows.
+            source_slots: 64,
             ..GraphQueryOptions::default()
         };
         options.pattern.rows = StorageCapacity {

@@ -87,6 +87,10 @@ impl<'a> WalResources<'a> {
             .ok_or(WalError::WorkLimit)?;
         Ok(())
     }
+    pub(crate) const fn remaining(&self) -> u64 {
+        self.remaining
+    }
+
     /// Exact units successfully admitted by this context.
     pub const fn consumed(&self) -> u64 {
         self.consumed
@@ -310,6 +314,7 @@ pub struct Envelope<'a> {
 }
 mod codec;
 mod framing;
+pub(crate) use framing::envelope_size;
 pub use framing::{encode_envelope, encode_header};
 mod checkpoint;
 pub(crate) use checkpoint::{NativeCheckpoint, decode_checkpoint, encode_checkpoint};

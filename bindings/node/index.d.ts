@@ -1074,10 +1074,13 @@ export class GraphStore {
   static isSupported(): boolean;
   /** Throws ZE_ERR_UNSUPPORTED on builds without graph support. */
   static open(path: string, options?: GraphOpenOptions): GraphStore;
-  /** Idempotent. Subsequent operations throw ZE_ERR_CLOSED. */
+  /** Checkpoints acknowledged writes, then releases the store, even if checkpointing fails.
+   * Idempotent. Subsequent operations throw ZE_ERR_CLOSED. */
   close(): void;
   /**
    * Atomically applies at most 16384 keyed mutations; no partial batches.
+   * Build large graphs with bounded batches (for example 100 nodes per call).
+   * Each batch returns durable receipts before the next batch is admitted.
    * Missing endpoints, including endpoints deleted by this mutation, reject.
    * Declared relationship policies also apply with detach:true. Implicit
    * cascade deletes advance child revisions and retain deletion fences; receipts
@@ -1089,6 +1092,9 @@ export class GraphStore {
   apply(items: readonly GraphMutation[]): GraphResult;
   /**
    * Executes the engine's documented Cypher profile, including mutations.
+   * Global non-distinct count streams its input. ORDER BY immediately followed
+   * by LIMIT retains a bounded ordered prefix. Both evaluate the full input
+   * and enforce the query budgets.
    * Parameters are scalar only; bigint values must fit signed I64. Unknown
    * options, nonfinite numbers and malformed Unicode are rejected. No graph
    * search, vector input, or list parameters in this release.

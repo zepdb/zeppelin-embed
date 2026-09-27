@@ -257,10 +257,9 @@ pub(super) fn record(
 }
 /// Encodes one complete envelope into already reserved caller storage. Cancellation
 /// may leave private output bytes unfinished; they must never be appended on error.
-pub fn encode_envelope(
+pub(crate) fn envelope_size(
     base: CommitState<'_>,
     envelope: Envelope<'_>,
-    output: &mut [u8],
     r: &mut WalResources<'_>,
 ) -> Result<usize, WalError> {
     r.charge(0)?;
@@ -290,10 +289,20 @@ pub fn encode_envelope(
         pos: 0,
     };
     envelope_write(base, envelope, 0, &mut measured, r)?;
-    if output.len() < measured.pos {
+    Ok(measured.pos)
+}
+
+/// Encode into caller storage after measuring with the same bounded codec.
+pub fn encode_envelope(
+    base: CommitState<'_>,
+    envelope: Envelope<'_>,
+    output: &mut [u8],
+    r: &mut WalResources<'_>,
+) -> Result<usize, WalError> {
+    let size = envelope_size(base, envelope, r)?;
+    if output.len() < size {
         return Err(WalError::Capacity);
     }
-    let size = measured.pos;
     let mut writer = Writer {
         bytes: Some(output),
         pos: 0,
@@ -302,6 +311,7 @@ pub fn encode_envelope(
     r.charge(0)?;
     Ok(writer.pos)
 }
+
 fn envelope_write(
     base: CommitState<'_>,
     v: Envelope<'_>,

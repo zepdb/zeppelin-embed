@@ -635,3 +635,213 @@ fn relationship_cascade_revision_overflow_refuses_the_entire_mutation() {
     );
     store.close().unwrap();
 }
+
+#[test]
+fn ze257_small_batch_does_not_reserve_maximum_wal_envelope() {
+    let parent = tempfile::tempdir().expect("temporary parent");
+    let store =
+        GraphStore::create(parent.path().join("graph"), options(), None).expect("graph store");
+    let _schedule = crate::property_graph::storage::search::native_vector_index_test_schedule(
+        Some(8 * 1024 * 1024),
+        None,
+        |_| {},
+    );
+    create_node(&store, "small", 1);
+    store.close().expect("close graph store");
+}
+
+#[test]
+fn ze257_batch_work_is_admitted_per_mutation() {
+    let parent = tempfile::tempdir().expect("temporary parent");
+    let store =
+        GraphStore::create(parent.path().join("graph"), options(), None).expect("graph store");
+    let keys: Vec<_> = (0..100).map(|index| index.to_string()).collect();
+    let mut labels = [GraphName::new("Doc").expect("label")];
+    let mut properties = [GraphProperty::new(
+        GraphName::new("rank").expect("property"),
+        crate::property_graph::PropertyValue::new(crate::property_graph::PropertyData::I64(7))
+            .expect("value"),
+    )];
+    let image =
+        CanonicalContents::node(&mut labels, &mut properties, None, None).expect("node image");
+    let requests: Vec<_> = keys
+        .iter()
+        .map(|key| StructuredWrite {
+            key: node_key(key),
+            revision: revision(1),
+            operation: StructuredOperation::Create,
+            image: Some(WriteImage::Node(&image)),
+        })
+        .collect();
+    store
+        .apply_batch(&requests, &control())
+        .expect("100-node batch under defaults");
+    store.close().expect("close graph store");
+}
+
+#[test]
+#[ignore = "opens the explicitly supplied Node scale fixture"]
+fn ze257_recovery_of_node_scale_fixture() {
+    let path = std::env::var("ZE_GRAPH_SCALE_FIXTURE").expect("Node scale fixture path");
+    let store = GraphStore::open(&path, options(), None).expect("reopen Node scale fixture");
+    let metrics = crate::lifecycle::native_graph::open_metrics_for_test();
+    let serial_probes = crate::lifecycle::native_graph::serial_probes_for_test();
+    let mut files = 0_u64;
+    let mut bytes = 0_u64;
+    for entry in std::fs::read_dir(&path).unwrap() {
+        files += 1;
+        bytes += entry.unwrap().metadata().unwrap().len();
+    }
+    eprintln!(
+        "ZE257 recovery work/peak: {metrics:?}; serial_probes={serial_probes}; files={files}; bytes={bytes}"
+    );
+    assert!(metrics.1 <= 32 * 1024 * 1024);
+    assert!(metrics.3 <= 256 * 1024 * 1024);
+    assert!(serial_probes <= files * 8);
+    store.close().expect("close recovered scale fixture");
+}
+
+#[test]
+fn ze257_checkpoint_recovery_work_scales_linearly() {
+    for count in [128, 256, 512] {
+        let parent = tempfile::tempdir().unwrap();
+        let path = parent.path().join("graph");
+        let store = GraphStore::create(&path, options(), None).unwrap();
+        let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+        for first in (0..count).step_by(128) {
+            let keys: Vec<_> = (first..first + 128)
+                .map(|index| index.to_string())
+                .collect();
+            let requests: Vec<_> = keys
+                .iter()
+                .map(|key| StructuredWrite {
+                    key: node_key(key),
+                    revision: revision(1),
+                    operation: StructuredOperation::Create,
+                    image: Some(WriteImage::Node(&image)),
+                })
+                .collect();
+            store.apply_batch(&requests, &control()).unwrap();
+        }
+        store
+            .store_for_test()
+            .checkpoint_native_graph(&control())
+            .unwrap();
+        store.close().unwrap();
+        let store = GraphStore::open(&path, options(), None).unwrap();
+        let (work, peak, candidates, resident_peak) =
+            crate::lifecycle::native_graph::open_metrics_for_test();
+        let bytes: u64 = std::fs::read_dir(&path)
+            .unwrap()
+            .map(|entry| entry.unwrap().metadata().unwrap().len())
+            .sum();
+        eprintln!(
+            "ZE257 checkpoint nodes={count} work={work} peak={peak} bytes={bytes} fence_candidates={candidates} resident_peak={resident_peak}"
+        );
+        assert!(work > 0);
+        assert!(
+            work <= bytes * 8,
+            "recovery work {work} exceeds linear byte bound for {bytes} encoded bytes"
+        );
+        assert!(peak <= 32 * 1024 * 1024);
+        assert!(resident_peak <= 256 * 1024 * 1024);
+        assert_eq!(
+            candidates, count as u64,
+            "one indexed fence candidate per keyed node"
+        );
+        store.close().unwrap();
+    }
+}
+
+#[test]
+fn ze257_close_checkpoints_the_graph_replay_tail() {
+    let parent = tempfile::tempdir().unwrap();
+    let path = parent.path().join("graph");
+    let store = GraphStore::create(&path, options(), None).unwrap();
+    for key in ["one", "two", "three"] {
+        create_node(&store, key, 1);
+    }
+    store.close().unwrap();
+    store.close().unwrap();
+    let store = GraphStore::open(&path, options(), None).unwrap();
+    let (_, _, fence_candidates, _) = crate::lifecycle::native_graph::open_metrics_for_test();
+    assert_eq!(
+        fence_candidates, 3,
+        "clean close leaves only the checkpoint to validate"
+    );
+    store.close().unwrap();
+}
+
+#[test]
+fn ze257_close_checkpoint_failure_is_reported_and_releases_the_writer() {
+    use crate::lifecycle::native_graph::tests::publication::{FaultPoint, RecordingVfs};
+    use std::sync::Arc;
+    let parent = tempfile::tempdir().unwrap();
+    let path = parent.path().join("graph");
+    let vfs = Arc::new(RecordingVfs::default());
+    let store = GraphStore {
+        store: Store::create_native_graph_with_infrastructure(
+            &path,
+            options().with_durability(DurabilityMode::Durable, CommitTier::Durable),
+            None,
+            vfs.clone(),
+            Arc::new(crate::lifecycle::SystemMonotonicClock),
+            &mut crate::property_graph::storage::allocation::OsEntropy,
+        )
+        .unwrap(),
+    };
+    create_node(&store, "durable", 1);
+    vfs.arm_fault(FaultPoint::Create);
+    assert!(
+        store.close().is_err(),
+        "checkpoint failure must not be hidden"
+    );
+    vfs.assert_fired_once();
+    store.close().unwrap();
+    let reopened = GraphStore::open(&path, options(), None).unwrap();
+    assert_eq!(
+        create_node(&reopened, "next", 1).admitted_generation(),
+        generation(1)
+    );
+    reopened.close().unwrap();
+}
+
+#[test]
+fn ze257_recovery_sizes_serial_inventory_from_actual_artifacts() {
+    use crate::property_graph::storage::artifact::{
+        self, ArtifactId, ArtifactIdentity, ContainerKind,
+    };
+    let parent = tempfile::tempdir().unwrap();
+    let path = parent.path().join("graph");
+    let store = GraphStore::create(&path, options(), None).unwrap();
+    let lease = store.store_for_test().admit_native_read().unwrap();
+    let store_id = lease.bundle().base().store;
+    drop(lease);
+    store.close().unwrap();
+    // Valid pre-WAL orphan objects still consume serials. Their descriptors
+    // fit comfortably in the existing budget even beyond the old 8192 cap.
+    let mut bytes = vec![0; artifact::encoded_len(ContainerKind::Object, &[]).unwrap()];
+    for serial in 64..64 + 8192 {
+        let id = ArtifactId::new(0x25700000000000000000000000000000 + u128::from(serial)).unwrap();
+        artifact::encode_into(
+            ContainerKind::Object,
+            ArtifactIdentity {
+                store: store_id,
+                artifact: id,
+                generation: generation(0),
+                creation_serial: serial,
+            },
+            &[],
+            &mut bytes,
+        )
+        .unwrap();
+        std::fs::write(path.join(format!("graph-{:032x}.zgraph", id.get())), &bytes).unwrap();
+    }
+    let store = GraphStore::open(&path, options(), None)
+        .expect("actual descriptor count fits default memory");
+    let probes = crate::lifecycle::native_graph::serial_probes_for_test();
+    eprintln!("ZE257 serial inventory probes={probes}");
+    assert!(probes < 8192 * 8, "serial inventory probes: {probes}");
+    create_node(&store, "after-orphans", 1);
+    store.close().unwrap();
+}

@@ -161,8 +161,9 @@ impl GraphStore {
         Ok(Self { store })
     }
 
-    /// Closes the store: admissions stop, admitted reads drain, and the
-    /// writer lock is released. Values already returned, including every
+    /// Closes the store: admissions stop, acknowledged state is checkpointed,
+    /// admitted reads drain, and the writer lock is released.
+    /// Values already returned, including every
     /// [`GraphWriteResult`], are owned copies and stay valid. Closing again
     /// succeeds and has no further effect.
     ///
@@ -170,9 +171,12 @@ impl GraphStore {
     ///
     /// The classified teardown failure.
     pub fn close(&self) -> Result<(), GraphStoreError> {
-        self.store
-            .close()
-            .map_err(|error| GraphStoreError::graph(NativeGraphError::Store(error)))
+        let mut checkpoint = Ok(());
+        let closed = self.store.close_with_final_writer(|| {
+            checkpoint = self.store.checkpoint_native_graph_for_close();
+        });
+        checkpoint.map_err(GraphStoreError::graph)?;
+        closed.map_err(|error| GraphStoreError::graph(NativeGraphError::Store(error)))
     }
 
     /// Applies one atomic structured batch. Every item is classified against

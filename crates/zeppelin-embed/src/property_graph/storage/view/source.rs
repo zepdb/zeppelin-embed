@@ -231,19 +231,16 @@ impl BlockSource for NativeQuerySource<'_, '_, '_> {
         resources: &mut TreeResources<'_>,
     ) -> Result<FramedBlock<'a>, TreeError> {
         self.check_owner(resources)?;
-        for cell in self.slots.as_slice() {
-            if let Some(mapped) = cell.get()
-                && mapped.artifact == reference.artifact
-            {
-                return self.decode(mapped, reference, resources);
-            }
+        let cell = crate::property_graph::storage::mapping_slot(
+            self.slots.as_slice(),
+            reference.artifact,
+            |mapped| mapped.artifact,
+            || resources.step(1),
+        )?
+        .ok_or(TreeError::Memory)?;
+        if let Some(mapped) = cell.get() {
+            return self.decode(mapped, reference, resources);
         }
-        let cell = self
-            .slots
-            .as_slice()
-            .iter()
-            .find(|cell| cell.get().is_none())
-            .ok_or(TreeError::Memory)?;
         let (path, path_charge) = charged_artifact_path(
             self.memory,
             self.lease.bundle().directory(),

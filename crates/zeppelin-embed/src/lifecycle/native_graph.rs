@@ -29,6 +29,8 @@ mod maintenance;
 mod mutate;
 mod persistence;
 mod recovery;
+#[cfg(test)]
+pub(crate) use recovery::{open_metrics_for_test, serial_probes_for_test};
 mod write;
 
 // The structured execution seam drives a `Mutate` occurrence through the real

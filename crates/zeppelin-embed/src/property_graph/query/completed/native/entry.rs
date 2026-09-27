@@ -95,7 +95,7 @@ impl Default for GraphQueryOptions {
         Self {
             limits: RuntimeLimits::default(),
             memory_limit: 24 * 1024 * 1024,
-            source_slots: 64,
+            source_slots: crate::property_graph::storage::MAX_NATIVE_ARTIFACTS,
             pattern: PatternCapacity {
                 rows: StorageCapacity {
                     rows: 1024,

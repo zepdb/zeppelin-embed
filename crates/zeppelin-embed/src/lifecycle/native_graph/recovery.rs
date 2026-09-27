@@ -56,19 +56,31 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use xxhash_rust::xxh3::Xxh3;
 
-const MAX_RECOVERED_DESCRIPTORS: usize = 8_192;
-const RECOVERY_TREE_WORK: u64 = 512 * 1024 * 1024;
+const MAX_RECOVERED_DESCRIPTORS: usize = crate::property_graph::storage::MAX_NATIVE_ARTIFACTS;
 
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
     /// Full captured-state traversals on this thread, counting both the
     /// producer's proof and the recovery retrace. ZE-163 gates the count.
     static STATE_TRACE_COUNT: Cell<u64> = const { Cell::new(0) };
+    static SERIAL_PROBES: Cell<u64> = const { Cell::new(0) };
+    static FENCE_CANDIDATES: Cell<u64> = const { Cell::new(0) };
+    static OPEN_METRICS: Cell<(u64, usize, u64, u64)> = const { Cell::new((0, 0, 0, 0)) };
 }
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) fn take_state_trace_count_for_test() -> u64 {
     STATE_TRACE_COUNT.with(|count| count.replace(0))
+}
+
+#[cfg(test)]
+pub(crate) fn open_metrics_for_test() -> (u64, usize, u64, u64) {
+    OPEN_METRICS.with(Cell::get)
+}
+
+#[cfg(test)]
+pub(crate) fn serial_probes_for_test() -> u64 {
+    SERIAL_PROBES.with(Cell::get)
 }
 
 fn canonical_payload<S: BlockSource>(
@@ -724,13 +736,14 @@ impl<'a, 'm> RecoverySource<'a, 'm> {
         directory: &'a Path,
         state: CommitState<'_>,
         memory: &'m StorageMemory<'m>,
+        artifact_capacity: usize,
     ) -> Result<Self, TreeError> {
         Self::new_with_capacity(
             store,
             directory,
             state,
             memory,
-            MAX_RECOVERED_DESCRIPTORS,
+            artifact_capacity.checked_mul(2).ok_or(TreeError::Memory)?,
             false,
         )
     }
@@ -776,8 +789,8 @@ impl<'a, 'm> RecoverySource<'a, 'm> {
         })
     }
 
-    fn resources(&self) -> Result<TreeResources<'m>, TreeError> {
-        TreeResources::for_prepare(self.memory, RECOVERY_TREE_WORK)
+    fn resources(&self, work: u64) -> Result<TreeResources<'m>, TreeError> {
+        TreeResources::for_prepare(self.memory, work)
     }
 
     fn charged_path(
@@ -1803,12 +1816,14 @@ impl RecoverySource<'_, '_> {
     ) -> Result<Option<FramedBlock<'a>>, TreeError> {
         resources.require_preparation(self.memory)?;
         resources.step(0)?;
-        for slot in self.slots.as_slice() {
-            if let Some(mapped) = slot.get()
-                && mapped.artifact == reference.artifact
-            {
-                return self.decode(mapped, reference, resources).map(Some);
-            }
+        let slot = crate::property_graph::storage::mapping_slot(
+            self.slots.as_slice(),
+            reference.artifact,
+            |mapped| mapped.artifact,
+            || resources.step(1),
+        )?;
+        if let Some(mapped) = slot.and_then(OnceCell::get) {
+            return self.decode(mapped, reference, resources).map(Some);
         }
         Ok(None)
     }
@@ -1824,11 +1839,12 @@ impl RecoverySource<'_, '_> {
         if let Some(block) = self.slot_hit(reference, resources)? {
             return Ok(Some(block));
         }
-        let Some(slot) = self
-            .slots
-            .as_slice()
-            .iter()
-            .find(|slot| slot.get().is_none())
+        let Some(slot) = crate::property_graph::storage::mapping_slot(
+            self.slots.as_slice(),
+            reference.artifact,
+            |mapped| mapped.artifact,
+            || resources.step(1),
+        )?
         else {
             return Ok(None);
         };
@@ -2985,18 +3001,38 @@ fn find_fence_by_key<'s, 'store, 'm, 'catalog_memory>(
     resources: &mut TreeResources<'_>,
 ) -> Result<Option<FenceView<'s, RecoverySource<'store, 'm>>>, TreeError> {
     let root = roots.directory(TreeKind::KeyFences)?;
-    let mut cursor = DirectoryCursor::seek(source, root, None, resources)?;
-    while let Some(entry) = cursor.next_entry(resources)? {
-        let fence = verify_fence_entry(source, root, entry, catalog, document, resources)?;
-        let key = fence
-            .provenance()
-            .key()
-            .ok_or(TreeError::Invalid("recovery fence is unkeyed"))?;
-        if stored_keys_equal(wanted, key, resources)? {
-            return Ok(Some(fence));
-        }
+    let Symbol::Namespace(namespace) =
+        catalog.resolve(SymbolKind::Namespace, wanted.namespace(), resources)?
+    else {
+        return Err(TreeError::Invalid("recovery fence namespace domain"));
+    };
+    // One bounded application key, charged to the recovery owner. Looking it
+    // up in the existing key directory avoids scanning every fence per record.
+    let length = usize::try_from(wanted.key().len()).map_err(|_| TreeError::Memory)?;
+    let mut text = StorageBuffer::new(source.memory, length)?;
+    for _ in 0..length {
+        text.push(0_u8)?;
     }
-    Ok(None)
+    if wanted.key().read_at(0, text.as_mut_slice(), resources)? != length {
+        return Err(TreeError::Invalid("short recovery fence key"));
+    }
+    let text = std::str::from_utf8(text.as_slice())
+        .map_err(|_| TreeError::Invalid("recovery fence key UTF-8"))?;
+    let probe = FenceKey::new(wanted.kind(), namespace, text)?;
+    let Some(entry) = lookup_fence_entry(source, root, probe, resources)? else {
+        return Ok(None);
+    };
+    #[cfg(test)]
+    FENCE_CANDIDATES.with(|count| count.set(count.get() + 1));
+    let fence = verify_fence_entry(source, root, entry, catalog, document, resources)?;
+    let key = fence
+        .provenance()
+        .key()
+        .ok_or(TreeError::Invalid("recovery fence is unkeyed"))?;
+    if !stored_keys_equal(wanted, key, resources)? {
+        return Err(TreeError::Invalid("recovery fence lookup mismatch"));
+    }
+    Ok(Some(fence))
 }
 
 fn fences_equal(
@@ -3773,6 +3809,25 @@ fn artifact_name(path: &Path) -> Option<ArtifactId> {
     ArtifactId::new(u128::from_str_radix(digits, 16).ok()?).ok()
 }
 
+fn artifact_inventory_capacity(store: &Store, directory: &Path) -> Result<usize, NativeGraphError> {
+    let mut count = 0_usize;
+    store
+        .vfs
+        .for_each_direct_child(directory, &mut |path| {
+            if artifact_name(path).is_some() {
+                count = count
+                    .checked_add(1)
+                    .ok_or_else(|| std::io::Error::other("native artifact count overflow"))?;
+            }
+            Ok(())
+        })
+        .map_err(|source| NativeGraphError::Io {
+            path: directory.to_path_buf(),
+            source,
+        })?;
+    Ok(count.max(MAX_RECOVERED_DESCRIPTORS))
+}
+
 fn scan_creation_serials(
     store: &Store,
     resources: &GraphResources,
@@ -3782,17 +3837,23 @@ fn scan_creation_serials(
     initial: u64,
     control: &QueryControl,
 ) -> Result<u64, NativeGraphError> {
+    #[cfg(test)]
+    SERIAL_PROBES.with(|count| count.set(0));
+    let capacity = artifact_inventory_capacity(store, directory)?
+        .checked_mul(2)
+        .ok_or(NativeGraphError::Invalid("recovery serial scan capacity"))?;
     let mut maximum = initial;
     let mut first_error = None;
     let _serial_charge = resources.reserve(
-        MAX_RECOVERED_DESCRIPTORS
-            .checked_mul(std::mem::size_of::<u64>())
+        capacity
+            .checked_mul(std::mem::size_of::<OnceCell<ArtifactId>>())
             .ok_or(NativeGraphError::Invalid("recovery serial scan capacity"))?,
     )?;
     let mut serials = Vec::new();
     serials
-        .try_reserve_exact(MAX_RECOVERED_DESCRIPTORS)
+        .try_reserve_exact(capacity)
         .map_err(|_| NativeGraphError::Invalid("recovery serial scan allocation"))?;
+    serials.resize_with(capacity, OnceCell::new);
     store
         .vfs
         .for_each_direct_child(directory, &mut |path| {
@@ -3884,23 +3945,22 @@ fn scan_creation_serials(
                         "corrupt recognized native artifact header",
                     ));
                 }
-                if serials.len() == serials.capacity() {
-                    return Err(NativeGraphError::Invalid("recovery serial scan capacity"));
-                }
-                for previous in &serials {
-                    control
-                        .checkpoint()
-                        .map_err(
-                            crate::property_graph::storage::tree::directory::TreeError::Control,
-                        )
-                        .map_err(NativeGraphError::Read)?;
-                    if *previous == serial {
-                        return Err(NativeGraphError::Invalid(
-                            "duplicate native artifact creation serial",
-                        ));
-                    }
-                }
-                serials.push(serial);
+                let serial_key = ArtifactId::new(u128::from(serial) + 1)
+                    .map_err(|_| NativeGraphError::Invalid("recovery creation serial key"))?;
+                let slot = crate::property_graph::storage::mapping_slot(
+                    &serials,
+                    serial_key,
+                    |value| *value,
+                    || {
+                        #[cfg(test)]
+                        SERIAL_PROBES.with(|count| count.set(count.get() + 1));
+                        control.checkpoint().map_err(TreeError::Control)
+                    },
+                )?
+                .ok_or(NativeGraphError::Invalid("recovery serial scan capacity"))?;
+                slot.set(serial_key).map_err(|_| {
+                    NativeGraphError::Invalid("duplicate native artifact creation serial")
+                })?;
                 if length < declared {
                     maximum = maximum.max(serial);
                     return Ok(());
@@ -3994,6 +4054,7 @@ struct SemanticReplay<'a, 'm> {
     wal_identity: u128,
     wal_first_sequence: u64,
     wal_bytes: usize,
+    artifact_capacity: usize,
     resources: &'a GraphResources,
     memory: &'m StorageMemory<'m>,
     protected: Vec<ArtifactDescriptor>,
@@ -4026,10 +4087,11 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
         wal_identity: u128,
         wal_first_sequence: u64,
         wal_bytes: usize,
+        artifact_capacity: usize,
         resources: &'a GraphResources,
         memory: &'m StorageMemory<'m>,
     ) -> Result<Self, NativeGraphError> {
-        let descriptor_slots = MAX_RECOVERED_DESCRIPTORS
+        let descriptor_slots = artifact_capacity
             .checked_mul(2)
             .and_then(|slots| {
                 slots.checked_add(crate::property_graph::storage::reclaim::MAX_CANDIDATES * 3)
@@ -4041,11 +4103,11 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
         let charge = resources.reserve(bytes)?;
         let mut protected = Vec::new();
         protected
-            .try_reserve_exact(MAX_RECOVERED_DESCRIPTORS)
+            .try_reserve_exact(artifact_capacity)
             .map_err(|_| NativeGraphError::Invalid("recovery descriptor allocation"))?;
         let mut checkpoint_allocations = Vec::new();
         checkpoint_allocations
-            .try_reserve_exact(MAX_RECOVERED_DESCRIPTORS)
+            .try_reserve_exact(artifact_capacity)
             .map_err(|_| NativeGraphError::Invalid("recovery descriptor allocation"))?;
         let mut reclaim_inventory = Vec::new();
         reclaim_inventory
@@ -4068,6 +4130,7 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
             wal_identity,
             wal_first_sequence,
             wal_bytes,
+            artifact_capacity,
             resources,
             memory,
             protected,
@@ -4681,10 +4744,18 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
         resources: &mut WalResources<'_>,
     ) -> Result<(), WalError> {
         self.validate_state(state, resources)?;
-        let source = RecoverySource::new(self.store, self.directory, state, self.memory)
-            .map_err(|error| self.fail(NativeGraphError::Read(error), WalError::Capacity))?;
+        let source = RecoverySource::new(
+            self.store,
+            self.directory,
+            state,
+            self.memory,
+            self.artifact_capacity,
+        )
+        .map_err(|error| self.fail(NativeGraphError::Read(error), WalError::Capacity))?;
+        let mut tree = source
+            .resources(resources.remaining())
+            .map_err(|error| self.fail(NativeGraphError::Read(error), WalError::Participant))?;
         let result = (|| {
-            let mut tree = source.resources()?;
             if let Some(reclaim) = state.reclaim {
                 self.validate_state_reclaim(&source, state, None, reclaim, &mut tree)?;
             } else {
@@ -4754,7 +4825,7 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
                 )?;
             }
             let mut checkpoint_descriptors =
-                StorageBuffer::<ArtifactDescriptor>::new(self.memory, MAX_RECOVERED_DESCRIPTORS)?;
+                StorageBuffer::<ArtifactDescriptor>::new(self.memory, self.artifact_capacity)?;
             let inventory_count = state.prepared_inventories.len().map_err(|error| {
                 self.fail(NativeGraphError::Wal(error), error);
                 TreeError::Invalid("checkpoint prepared inventory list")
@@ -4852,7 +4923,7 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
                     .iter()
                     .any(|descriptor| descriptor.artifact == rooted.object.artifact)
                 {
-                    if self.checkpoint_allocations.len() == MAX_RECOVERED_DESCRIPTORS {
+                    if self.checkpoint_allocations.len() == self.artifact_capacity {
                         return Err(TreeError::Memory);
                     }
                     self.checkpoint_allocations.push(rooted.object);
@@ -4870,6 +4941,7 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
             }
             Ok::<(), TreeError>(())
         })();
+        resources.charge(tree.work())?;
         if let Err(error) = result {
             if let Some(source_error) = source.take_source_error() {
                 return Err(self.fail(source_error, WalError::Participant));
@@ -4910,9 +4982,16 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
     fn validate_deferred_checkpoint_allocations(
         &mut self,
         state: CommitState<'_>,
+        wal_resources: &mut WalResources<'_>,
     ) -> Result<(), NativeGraphError> {
-        let source = RecoverySource::new(self.store, self.directory, state, self.memory)?;
-        let mut resources = source.resources()?;
+        let source = RecoverySource::new(
+            self.store,
+            self.directory,
+            state,
+            self.memory,
+            self.artifact_capacity,
+        )?;
+        let mut resources = source.resources(wal_resources.remaining())?;
         let roots = GraphRoots::from_references(
             state.store,
             state.generation,
@@ -4950,6 +5029,7 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
                 return Err(NativeGraphError::Read(error));
             }
         }
+        wal_resources.charge(resources.work())?;
         Ok(())
     }
 }
@@ -5096,11 +5176,19 @@ impl ReplayValidator for SemanticReplay<'_, '_> {
         changes: ChangeReader<'_>,
         resources: &mut WalResources<'_>,
     ) -> Result<(), WalError> {
-        let source = RecoverySource::new(self.store, self.directory, target, self.memory)
-            .map_err(|error| self.fail(NativeGraphError::Read(error), WalError::Capacity))?;
+        let source = RecoverySource::new(
+            self.store,
+            self.directory,
+            target,
+            self.memory,
+            self.artifact_capacity,
+        )
+        .map_err(|error| self.fail(NativeGraphError::Read(error), WalError::Capacity))?;
         let mut replay_error = None;
+        let mut tree = source
+            .resources(resources.remaining())
+            .map_err(|error| self.fail(NativeGraphError::Read(error), WalError::Participant))?;
         let result = (|| {
-            let mut tree = source.resources()?;
             let clearing_completed = self.pending_intent.is_none()
                 && self.pending_completion.is_none()
                 && self.reclaim_completed
@@ -5527,6 +5615,7 @@ impl ReplayValidator for SemanticReplay<'_, '_> {
             }
             Ok::<(), TreeError>(())
         })();
+        resources.charge(tree.work())?;
         if let Err(error) = result {
             if let Some(error) = replay_error {
                 return Err(error);
@@ -5553,6 +5642,8 @@ pub(super) fn open(
     vfs: Arc<dyn Vfs>,
     clock: Arc<dyn MonotonicClock>,
 ) -> Result<Store, NativeGraphError> {
+    #[cfg(test)]
+    FENCE_CANDIDATES.with(|count| count.set(0));
     let writable = options.access_mode == AccessMode::ReadWrite;
     let store = Store::new_native_graph_recovery_owner(path, options, vfs, clock)?;
     let shared = GraphResources::from_store(&store)?;
@@ -5612,7 +5703,12 @@ pub(super) fn open(
         crate::property_graph::wal::HEADER_BYTES + MAX_ENVELOPE_BYTES,
     )?;
     let mut cancelled = || control.checkpoint().is_err();
-    let replay_work = u64::try_from(MAX_RECOVERED_DESCRIPTORS)
+    // A pending reclaim can legitimately name at most MAX_CANDIDATES files
+    // already unlinked. All other descriptors must name a present artifact.
+    let artifact_capacity = artifact_inventory_capacity(&store, path)?
+        .checked_add(crate::property_graph::storage::reclaim::MAX_CANDIDATES)
+        .ok_or(NativeGraphError::Invalid("recovery descriptor capacity"))?;
+    let replay_work = u64::try_from(artifact_capacity)
         .ok()
         .and_then(|count| count.checked_mul(MAX_ARTIFACT_BYTES as u64))
         .and_then(|bytes| bytes.checked_mul(8))
@@ -5644,6 +5740,7 @@ pub(super) fn open(
         checkpoint.wal_identity,
         checkpoint.first_sequence,
         wal_mapping.as_bytes().len(),
+        artifact_capacity,
         &shared,
         &storage,
     )?;
@@ -5683,7 +5780,7 @@ pub(super) fn open(
             }
         }
     };
-    validator.validate_deferred_checkpoint_allocations(final_state)?;
+    validator.validate_deferred_checkpoint_allocations(final_state, &mut resources)?;
     let resume_pending_reclaim =
         writable && final_state.reclaim.is_some() && !validator.reclaim_completed;
     let SemanticReplay {
@@ -5692,7 +5789,7 @@ pub(super) fn open(
         ..
     } = validator;
     let prepared_count = final_state.prepared_inventories.len()?;
-    if prepared_count > MAX_RECOVERED_DESCRIPTORS {
+    if prepared_count > artifact_capacity {
         return Err(NativeGraphError::Invalid(
             "prepared inventory recovery capacity",
         ));
@@ -5794,5 +5891,16 @@ pub(super) fn open(
     }
     drop(protected);
     drop(protected_charge);
+    #[cfg(test)]
+    let resident_peak = shared.peak_reserved_bytes()?;
+    #[cfg(test)]
+    OPEN_METRICS.with(|metrics| {
+        metrics.set((
+            resources.consumed(),
+            storage.peak_reserved_bytes(),
+            FENCE_CANDIDATES.with(Cell::get),
+            resident_peak,
+        ))
+    });
     Ok(store)
 }

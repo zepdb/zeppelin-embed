@@ -665,6 +665,7 @@ class GraphStore {
   static #create(native) {
     return new GraphStore(graphConstruction, native);
   }
+  // Native close consumes the handle even when its final checkpoint reports an error.
   close() { return callNative(() => binding.graphClose(this.#native)); }
   apply(items) { return this.#apply(items, false); }
   async applyAsync(items) {

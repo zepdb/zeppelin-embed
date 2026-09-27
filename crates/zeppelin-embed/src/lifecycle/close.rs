@@ -168,6 +168,16 @@ impl Store {
     /// before it unmaps segments. Calling `close` after completion is
     /// successful and has no further effect.
     pub fn close(&self) -> Result<(), StoreError> {
+        self.close_with_final_writer(|| {})
+    }
+
+    /// Run one facade-owned final write after admission stops, before releasing
+    /// writer ownership. The facade retains any typed failure; teardown always
+    /// runs, and repeated/concurrent close never repeats the callback.
+    pub(crate) fn close_with_final_writer(
+        &self,
+        before_close: impl FnOnce(),
+    ) -> Result<(), StoreError> {
         let mut state = self
             .state
             .lock()
@@ -189,6 +199,7 @@ impl Store {
         }
         drop(state);
         let reader_deadline = Instant::now().checked_add(self.reader_drain_timeout);
+        before_close();
 
         let mut background = self
             .background

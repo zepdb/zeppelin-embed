@@ -248,7 +248,14 @@ napi_value GraphClose(napi_env env, napi_callback_info info) {
   return GGuard(env, [&]() -> napi_value {
     napi_value arg; size_t argc = 1; GCheck(env, napi_get_cb_info(env, info, &argc, &arg, nullptr, nullptr)); GRequire(env, argc == 1, "graphClose arguments");
     void *data; GCheck(env, napi_get_value_external(env, arg, &data)); auto *owner = static_cast<GraphOwner *>(data);
-    if (owner && owner->handle.token != 0) { const auto status = ze_graph_close(owner->handle); if (status != ZE_OK) return ThrowZeppelin(env, owner->handle.token, status); owner->handle.token = 0; }
+    if (owner && owner->handle.token != 0) {
+      const auto handle = owner->handle;
+      const auto status = ze_graph_close(handle);
+      // Ordinary close failures still consume the C handle. A caught panic
+      // leaves a poisoned handle that must remain available for teardown.
+      if (status != ZE_ERR_PANIC) owner->handle.token = 0;
+      if (status != ZE_OK) return ThrowZeppelin(env, handle.token, status);
+    }
     napi_value result; GCheck(env, napi_get_undefined(env, &result)); return result;
   });
 }

@@ -1330,6 +1330,7 @@ fn verify_prepared_inventory(
 fn prepare_committed_transition<'p, 'source, 'a, 'b, S, F, C>(
     store: &crate::lifecycle::Store,
     shared: &GraphResources,
+    control: &crate::lifecycle::QueryControl,
     lease: &'p NativeReadLease,
     batch: &'p StagedBatch<'_>,
     prepared: &'p PreparedGraphArtifacts<'source, 'a, 'b, S, F>,
@@ -1339,7 +1340,7 @@ fn prepare_committed_transition<'p, 'source, 'a, 'b, S, F, C>(
     catalog_ref: RequiredRef,
     inventory_artifact: SupplementalArtifact<'p>,
     batch_id: BatchId,
-    output: &'p mut [u8],
+    output: &'p mut StorageBuffer<'a, u8>,
     commit_artifacts: &'p mut StorageBuffer<'_, NativeCommitArtifact<'p>>,
     tree_resources: &mut crate::property_graph::storage::tree::directory::TreeResources<'_>,
     wal_resources: &mut WalResources<'_>,
@@ -1523,17 +1524,17 @@ where
         }
     }
     let base_state = commit_state(admitted);
-    let encoded_length = encode_envelope(
-        base_state,
-        Envelope {
-            batch: batch_id,
-            kind: EnvelopeKind::Mutation,
-            changes: changes.as_slice(),
-            state,
-        },
-        output,
-        wal_resources,
-    )?;
+    let envelope = Envelope {
+        batch: batch_id,
+        kind: EnvelopeKind::Mutation,
+        changes: changes.as_slice(),
+        state,
+    };
+    let encoded_size =
+        crate::property_graph::wal::envelope_size(base_state, envelope, wal_resources)?;
+    *output = zeroed(prepared.objects().memory(), control, encoded_size)?;
+    let encoded_length =
+        encode_envelope(base_state, envelope, output.as_mut_slice(), wal_resources)?;
     let _input_charge = shared.reserve(
         reference_count
             .checked_mul(std::mem::size_of::<RequiredRef>())
@@ -1592,6 +1593,7 @@ where
         admitted: Arc::clone(admitted),
         next,
         encoded: output
+            .as_slice()
             .get(..encoded_length)
             .ok_or(NativeGraphError::Invalid("encoded WAL extent"))?,
         artifacts: commit_artifacts.as_slice(),
@@ -2316,17 +2318,9 @@ pub(super) fn commit_staged_batch<'m>(
         .map_err(|source| io(&writer.wal.path, source))?
         .get(),
     )?;
-    let envelope_capacity = MAX_ENVELOPE_BYTES;
-    #[cfg(all(feature = "graph-cypher", feature = "test-support"))]
-    let envelope_capacity =
-        if crate::property_graph::query::native_relational_test_support::capacity_fixture_active() {
-            // This bounded scalar fixture needs less than the 16 MiB format
-            // maximum, leaving room for its single-batch preparation.
-            4 * 1024 * 1024
-        } else {
-            envelope_capacity
-        };
-    let mut envelope_bytes = zeroed(storage, control, envelope_capacity)?;
+    // The format maximum is a refusal bound, not a reservation for every batch.
+    // The transition measures its exact envelope before allocating this buffer.
+    let mut envelope_bytes = StorageBuffer::new(storage, 0)?;
     let mut cancelled = || control.checkpoint().is_err();
     let mut wal_resources = WalResources::new(
         (MAX_ENVELOPE_BYTES as u64) * 4,
@@ -2373,6 +2367,7 @@ pub(super) fn commit_staged_batch<'m>(
     let transition = prepare_committed_transition(
         store,
         shared,
+        control,
         lease,
         staged_batch,
         &prepared,
@@ -2382,7 +2377,7 @@ pub(super) fn commit_staged_batch<'m>(
         catalog_ref,
         inventory_supplement,
         batch,
-        envelope_bytes.as_mut_slice(),
+        &mut envelope_bytes,
         &mut commit_artifacts,
         resources,
         &mut wal_resources,
@@ -2458,14 +2453,22 @@ impl crate::lifecycle::Store {
             let admitted = Arc::clone(lease.bundle());
             let shared = GraphResources::from_store(self)?;
             let write_memory = WriteMemory::new(&shared, WriteLimits::default())?;
+            // Each structured mutation performs its own bounded directory edits.
+            // Sharing one single-mutation allowance across a batch rejects valid
+            // batches before either the 8 MiB input or 32 MiB storage cap is met.
+            let mutation_count = u64::try_from(requests.len().max(1))
+                .map_err(|_| NativeGraphError::Read(TreeError::Work))?;
+            let default_preparation_work = (64_u64 * 1024 * 1024)
+                .checked_mul(mutation_count)
+                .ok_or(NativeGraphError::Read(TreeError::Work))?;
             #[cfg(any(test, feature = "test-support"))]
             let (storage_limit, preparation_work) =
                 crate::property_graph::storage::search::native_vector_index_test_limits(
                     32 * 1024 * 1024,
-                    64 * 1024 * 1024,
+                    default_preparation_work,
                 );
             #[cfg(not(any(test, feature = "test-support")))]
-            let (storage_limit, preparation_work) = (32 * 1024 * 1024, 64 * 1024 * 1024);
+            let (storage_limit, preparation_work) = (32 * 1024 * 1024, default_preparation_work);
             #[cfg(all(feature = "graph-cypher", feature = "test-support"))]
             let preparation_work =
                 crate::property_graph::query::native_relational_test_support::capacity_fixture_work(
@@ -2483,7 +2486,11 @@ impl crate::lifecycle::Store {
                     error,
                 ))),
             };
-            let source = NativePreparationSource::new(&lease, &storage, 64)?;
+            let source = NativePreparationSource::new(
+                &lease,
+                &storage,
+                crate::property_graph::storage::MAX_NATIVE_ARTIFACTS,
+            )?;
             let mut base_resources = source
                 .resources(preparation_work)?
                 .with_preparation_checkpoint(&preparation_checkpoint)?;
@@ -2556,6 +2563,40 @@ impl crate::lifecycle::Store {
                 ));
             }
         }
+    }
+
+    /// Called only by the GraphStore close owner after Open -> Closing. No new
+    /// writer can be admitted; an already admitted writer is drained by this
+    /// lock. Stopped writers retain their WAL for recovery, never guessed state.
+    pub(crate) fn checkpoint_native_graph_for_close(&self) -> Result<(), NativeGraphError> {
+        let mut writer_slot = self.native_graph.writer.lock().map_err(|_| {
+            NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
+                component: "native graph writer",
+            })
+        })?;
+        let Some(writer) = writer_slot.as_mut() else {
+            return Ok(());
+        };
+        if writer.stopped || writer.complete_envelopes == 0 {
+            return Ok(());
+        }
+        let admitted = self
+            .native_graph
+            .state
+            .lock()
+            .map_err(|_| {
+                NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
+                    component: "native graph publication",
+                })
+            })?
+            .current
+            .clone()
+            .ok_or(NativeGraphError::Invalid(
+                "native graph close has no current roots",
+            ))?;
+        let resources = GraphResources::from_store(self)?;
+        let control = crate::lifecycle::QueryControl::Cancel(crate::lifecycle::CancelToken::new());
+        checkpoint_current(self, writer, &admitted, &resources, &control)
     }
 
     pub(crate) fn checkpoint_native_graph(
