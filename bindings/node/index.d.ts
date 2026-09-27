@@ -285,6 +285,31 @@ export interface CountResult {
   readonly generation: bigint;
 }
 
+/** A scheduled purge; tokenId is single-use and belongs to this open Store. */
+export interface PurgeTokenReport {
+  readonly tokenId: bigint;
+  readonly generation: bigint;
+  readonly unknownIdCount: bigint;
+  readonly isNoOp: boolean;
+}
+
+export interface PartitionReport {
+  readonly generation: bigint;
+  readonly segmentsDropped: bigint;
+  /** Immutable file bytes actually reclaimed (excludes WAL bytes). */
+  readonly bytesReclaimed: bigint;
+  /** Overlapping sealed segments retained because they cross a boundary. */
+  readonly straddlersSkipped: bigint;
+  readonly isNoOp: boolean;
+}
+
+export interface RetentionRequest {
+  /** Positive signed-i64 window in the same units as document timestamps. */
+  readonly window: bigint;
+  /** Caller-supplied signed-i64 current timestamp; no wall clock is read. */
+  readonly nowTs: bigint;
+}
+
 export interface PurgeReport {
   readonly generation: bigint;
   readonly segmentsRewritten: bigint;
@@ -611,6 +636,35 @@ export declare class Store {
   purge(ids: readonly DocumentId[]): PurgeReport;
   /** Persisted user attributes, excluding the built-in timestamp column. Copies names and types. */
   schema(): AttributeDefinition[];
+  purge(ids: readonly DocumentId[], options?: { readonly wait?: true }): PurgeReport;
+  /**
+   * Schedule removal without rewriting artifacts yet. Pass tokenId to
+   * awaitPurge on this same open Store. Conflicting operations reject while
+   * pending; reopening completes pending work but invalidates the old token.
+   */
+  purge(ids: readonly DocumentId[], options: { readonly wait: false }): PurgeTokenReport;
+  purge(ids: readonly DocumentId[], options: { readonly wait?: boolean }): PurgeReport | PurgeTokenReport;
+  /**
+   * Synchronously complete physical removal, blocking the calling thread.
+   * Consumes the unsigned-u64 tokenId from purge(ids, {wait:false}); unknown,
+   * consumed or foreign-handle tokens throw ZE_ERR_INVALID_ARGUMENT.
+   * On failure, close and reopen before retrying.
+   */
+  awaitPurge(tokenId: bigint): PurgeReport;
+  /**
+   * Synchronously drop whole sealed segments contained in [start, end).
+   * Bounds are signed-i64 bigints and start must be less than end. Straddlers,
+   * unstamped segments and unsealed data remain; this is not per-document expiry.
+   * Inspect bytesReclaimed: the engine can report a committed drop even when
+   * unlinking an orphan fails. Use purge(ids) for a physical-removal guarantee.
+   */
+  dropPartition(range: TimestampRange): PartitionReport;
+  /**
+   * Apply dropPartition to timestamps below saturating(nowTs - window),
+   * using the same whole-segment selection and cleanup semantics. Explicit,
+   * synchronous and blocking; no automatic scheduling or background timer.
+   */
+  applyRetention(request: RetentionRequest): PartitionReport;
   scan(request?: ScanRequest): ScanPage;
   /**
    * Count live documents matching the optional filter and timestamp range.

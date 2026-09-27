@@ -244,8 +244,20 @@ class Store {
     return report;
   }
 
-  purge(ids) {
-    return callNative(() => this._native.purge(ids));
+  awaitPurge(tokenId) {
+    return callNative(() => this._native.awaitPurge(tokenId));
+  }
+
+  dropPartition(range) {
+    return callNative(() => this._native.dropPartition(range));
+  }
+
+  applyRetention(policy) {
+    return callNative(() => this._native.applyRetention(policy));
+  }
+
+  purge(ids, options = {}) {
+    return callNative(() => this._native.purge(ids, options));
   }
 
   schema() {

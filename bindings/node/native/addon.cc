@@ -1959,10 +1959,42 @@ napi_value DeleteDocuments(napi_env env, napi_callback_info info) {
   });
 }
 
+napi_value CompletePurge(napi_env env, NativeStore *store, uint64_t token_id) {
+  ZeAwaitPurgeRequest wait{};
+  wait.abi_size = sizeof(wait);
+  wait.token_id = token_id;
+  ZePurgeReport report{};
+  report.abi_size = sizeof(report);
+  const ze_error_code status = ze_await_physical_purge(store->handle, &wait, &report);
+  if (status != ZE_OK)
+    return ThrowZeppelin(env, store->handle, status);
+  napi_value result;
+  if (!NapiOk(env, napi_create_object(env, &result), "create purge report"))
+    return nullptr;
+  const std::pair<const char *, uint64_t> counts[] = {
+      {"generation", report.generation},
+      {"segmentsRewritten", report.segments_rewritten},
+      {"unknownIdCount", report.unknown_id_count}};
+  for (const auto &field : counts) {
+    napi_value value;
+    if (!NapiOk(env, napi_create_bigint_uint64(env, field.second, &value), "create purge count") ||
+        !SetNamed(env, result, field.first, value))
+      return nullptr;
+  }
+  napi_value wal_rewritten;
+  napi_value is_no_op;
+  if (!NapiOk(env, napi_get_boolean(env, report.wal_rewritten != 0, &wal_rewritten), "create WAL flag") ||
+      !SetNamed(env, result, "walRewritten", wal_rewritten) ||
+      !NapiOk(env, napi_get_boolean(env, report.is_no_op != 0, &is_no_op), "create no-op flag") ||
+      !SetNamed(env, result, "isNoOp", is_no_op))
+    return nullptr;
+  return result;
+}
+
 napi_value Purge(napi_env env, napi_callback_info info) {
   return Guard(env, [&]() -> napi_value {
-    size_t argc = 1;
-    napi_value args[1];
+    size_t argc = 2;
+    napi_value args[2];
     napi_value receiver;
     if (!NapiOk(env,
                 napi_get_cb_info(env, info, &argc, args, &receiver, nullptr),
@@ -1974,6 +2006,9 @@ napi_value Purge(napi_env env, napi_callback_info info) {
     }
     NativeStore *store = UnwrapStore(env, receiver);
     if (store == nullptr)
+      return nullptr;
+    bool wait_for_completion = true;
+    if (argc >= 2 && !GetOptionalBool(env, args[1], "wait", true, &wait_for_completion))
       return nullptr;
     bool is_array = false;
     uint32_t id_count = 0;
@@ -2001,36 +2036,126 @@ napi_value Purge(napi_env env, napi_callback_info info) {
     ze_error_code status = ze_purge(store->handle, &request, &token);
     if (status != ZE_OK)
       return ThrowZeppelin(env, store->handle, status);
-    ZeAwaitPurgeRequest wait{};
-    wait.abi_size = sizeof(wait);
-    wait.token_id = token.token_id;
-    ZePurgeReport report{};
-    report.abi_size = sizeof(report);
-    status = ze_await_physical_purge(store->handle, &wait, &report);
-    if (status != ZE_OK)
-      return ThrowZeppelin(env, store->handle, status);
+    if (wait_for_completion)
+      return CompletePurge(env, store, token.token_id);
     napi_value result;
-    if (!NapiOk(env, napi_create_object(env, &result), "create purge report"))
+    if (!NapiOk(env, napi_create_object(env, &result), "create purge token"))
       return nullptr;
-    const std::pair<const char *, uint64_t> counts[] = {
-        {"generation", report.generation},
-        {"segmentsRewritten", report.segments_rewritten},
-        {"unknownIdCount", report.unknown_id_count}};
-    for (const auto &field : counts) {
+    const std::pair<const char *, uint64_t> fields[] = {
+        {"tokenId", token.token_id}, {"generation", token.generation},
+        {"unknownIdCount", token.unknown_id_count}};
+    for (const auto &field : fields) {
       napi_value value;
-      if (!NapiOk(env, napi_create_bigint_uint64(env, field.second, &value), "create purge count") ||
+      if (!NapiOk(env, napi_create_bigint_uint64(env, field.second, &value), "create token field") ||
           !SetNamed(env, result, field.first, value))
         return nullptr;
     }
-    napi_value wal_rewritten;
-    napi_value is_no_op;
-    if (!NapiOk(env, napi_get_boolean(env, report.wal_rewritten != 0, &wal_rewritten), "create WAL flag") ||
-        !SetNamed(env, result, "walRewritten", wal_rewritten) ||
-        !NapiOk(env, napi_get_boolean(env, report.is_no_op != 0, &is_no_op), "create no-op flag") ||
-        !SetNamed(env, result, "isNoOp", is_no_op))
+    napi_value no_op;
+    if (!NapiOk(env, napi_get_boolean(env, token.is_no_op != 0, &no_op), "create no-op flag") ||
+        !SetNamed(env, result, "isNoOp", no_op))
       return nullptr;
     return result;
   });
+}
+
+napi_value AwaitPurge(napi_env env, napi_callback_info info) {
+  return Guard(env, [&]() -> napi_value {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_value receiver;
+    if (!NapiOk(env, napi_get_cb_info(env, info, &argc, args, &receiver, nullptr), "read awaitPurge arguments"))
+      return nullptr;
+    NativeStore *store = UnwrapStore(env, receiver);
+    if (store == nullptr)
+      return nullptr;
+    uint64_t token_id = 0;
+    bool lossless = false;
+    napi_valuetype type;
+    if (argc < 1 || !NapiOk(env, napi_typeof(env, args[0], &type), "inspect token") ||
+        type != napi_bigint ||
+        !NapiOk(env, napi_get_value_bigint_uint64(env, args[0], &token_id, &lossless), "read token") || !lossless) {
+      napi_throw_range_error(env, "ERR_OUT_OF_RANGE", "tokenId must be an unsigned 64-bit bigint");
+      return nullptr;
+    }
+    return CompletePurge(env, store, token_id);
+  });
+}
+
+bool GetRequiredTimestamp(napi_env env, napi_value object, const char *name, int64_t *output) {
+  napi_value value;
+  bool present = false;
+  if (!GetNamed(env, object, name, &value, &present))
+    return false;
+  if (!present) {
+    napi_throw_type_error(env, "ERR_MISSING_ARGS", name);
+    return false;
+  }
+  return GetOptionalBigInt64(env, object, name, 0, output);
+}
+
+napi_value PartitionMutation(napi_env env, napi_callback_info info, bool retention) {
+  return Guard(env, [&]() -> napi_value {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_value receiver;
+    if (!NapiOk(env, napi_get_cb_info(env, info, &argc, args, &receiver, nullptr), "read partition arguments"))
+      return nullptr;
+    NativeStore *store = UnwrapStore(env, receiver);
+    if (store == nullptr)
+      return nullptr;
+    if (argc < 1) {
+      napi_throw_type_error(env, "ERR_MISSING_ARGS", "request is required");
+      return nullptr;
+    }
+    int64_t first = 0;
+    int64_t second = 0;
+    if (!GetRequiredTimestamp(env, args[0], retention ? "window" : "start", &first) ||
+        !GetRequiredTimestamp(env, args[0], retention ? "nowTs" : "end", &second))
+      return nullptr;
+    ZePartitionReport report{};
+    report.abi_size = sizeof(report);
+    ze_error_code status;
+    if (retention) {
+      ZeRetentionRequest request{};
+      request.abi_size = sizeof(request);
+      request.window = first;
+      request.now_ts = second;
+      status = ze_apply_retention(store->handle, &request, &report);
+    } else {
+      ZeDropPartitionRequest request{};
+      request.abi_size = sizeof(request);
+      request.start_ts = first;
+      request.end_ts = second;
+      status = ze_drop_partition(store->handle, &request, &report);
+    }
+    if (status != ZE_OK)
+      return ThrowZeppelin(env, store->handle, status);
+    napi_value result;
+    if (!NapiOk(env, napi_create_object(env, &result), "create partition report"))
+      return nullptr;
+    const std::pair<const char *, uint64_t> fields[] = {
+        {"generation", report.generation}, {"segmentsDropped", report.segments_dropped},
+        {"bytesReclaimed", report.bytes_reclaimed}, {"straddlersSkipped", report.straddlers_skipped}};
+    for (const auto &field : fields) {
+      napi_value value;
+      if (!NapiOk(env, napi_create_bigint_uint64(env, field.second, &value), "create partition field") ||
+          !SetNamed(env, result, field.first, value))
+        return nullptr;
+    }
+    napi_value no_op;
+    if (!NapiOk(env, napi_get_boolean(env, report.is_no_op != 0, &no_op), "create no-op flag") ||
+        !SetNamed(env, result, "isNoOp", no_op))
+      return nullptr;
+    return result;
+  });
+}
+
+napi_value DropPartition(napi_env env, napi_callback_info info) {
+  return PartitionMutation(env, info, false);
+}
+
+napi_value ApplyRetention(napi_env env, napi_callback_info info) {
+  return PartitionMutation(env, info, true);
 }
 
 napi_value DeleteWhere(napi_env env, napi_callback_info info) {
@@ -3732,6 +3857,9 @@ napi_value Initialize(napi_env env, napi_value exports) {
       {"delete", nullptr, DeleteDocuments, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"purge", nullptr, Purge, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"awaitPurge", nullptr, AwaitPurge, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"dropPartition", nullptr, DropPartition, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"applyRetention", nullptr, ApplyRetention, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"deleteWhere", nullptr, DeleteWhere, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"scan", nullptr, Scan, nullptr, nullptr, nullptr, napi_default, nullptr},
