@@ -3,6 +3,7 @@
 mod active;
 mod atomic_batch;
 mod delete_matching;
+mod lookup;
 mod merge;
 mod purge;
 

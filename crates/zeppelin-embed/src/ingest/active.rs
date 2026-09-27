@@ -17,6 +17,7 @@ use crate::wal::{
     CleanWalReader, LogSeq, VisibleRecord, WalReadError, WalReader, WalWriter, encode_wal_image,
 };
 
+use super::lookup::{self, LookupSet};
 use super::wal_payload::MutationPayload;
 use super::{DocId, DocumentVersion, IngestDocument, IngestError, Revision, wal_payload};
 
@@ -725,14 +726,16 @@ impl ActiveSegment {
         let vectors = copy_accounted(accounting, &self.vectors, self.vectors.len())?;
         let codes = copy_accounted(accounting, &self.codes, self.codes.len())?;
         let factors = copy_accounted(accounting, &self.factors, self.factors.len())?;
+        // Keep the first row for each id and preserve request order, as before.
+        let mut first_rows = HashMap::with_capacity(self.row_count());
+        for (row, id) in self.doc_ids.iter().enumerate() {
+            lookup::work(1);
+            first_rows.entry(*id).or_insert(row);
+        }
         let mut rows = Vec::new();
         for doc_id in doc_ids {
-            if let Some(row) = self
-                .doc_ids
-                .iter()
-                .position(|candidate| candidate == doc_id)
-                && !rows.contains(&row)
-            {
+            lookup::work(1);
+            if let Some(row) = first_rows.remove(doc_id) {
                 rows.push(row);
             }
         }
@@ -742,10 +745,12 @@ impl ActiveSegment {
             .checked_add(rows.len())
             .ok_or(IngestError::Store(StoreError::ActiveRowOverflow))?;
         let mut tombstones = copy_accounted(accounting, &self.tombstones, tombstone_capacity)?;
+        let mut seen = lookup::set(&self.tombstones);
         for row in &rows {
             let row = u32::try_from(*row)
                 .map_err(|_| IngestError::Store(StoreError::ActiveRowOverflow))?;
-            if !tombstones.contains(&row) {
+            lookup::work(1);
+            if seen.insert(row) {
                 tombstones.push(row)?;
             }
         }
@@ -787,15 +792,17 @@ impl ActiveSegment {
         accounting: &Arc<Accounting>,
         analyzer: &Analyzer,
     ) -> Result<(Self, usize), StoreError> {
+        let doc_ids = lookup::set(doc_ids);
+        let old_tombstones = lookup::set(&self.tombstones);
         let removed = self
             .doc_ids
             .iter()
-            .filter(|doc_id| doc_ids.contains(doc_id))
+            .filter(|doc_id| lookup::contains(&doc_ids, doc_id))
             .count();
         if removed == 0 {
             return Ok((self.copy(accounting)?, 0));
         }
-        let capacities = self.retained_capacities(doc_ids, removed)?;
+        let capacities = self.retained_capacities(&doc_ids, removed)?;
         let rows = capacities.rows;
         let dims = capacities.dims;
         let row_stride = capacities.row_stride;
@@ -826,7 +833,7 @@ impl ActiveSegment {
                 .get(row)
                 .copied()
                 .ok_or(StoreError::ActiveRowOverflow)?;
-            if doc_ids.contains(&doc_id) {
+            if lookup::contains(&doc_ids, &doc_id) {
                 continue;
             }
             doc_id_rows.push(doc_id)?;
@@ -917,7 +924,7 @@ impl ActiveSegment {
                     .ok_or(StoreError::ActiveRowOverflow)?,
             )?;
             let old_row = u32::try_from(row).map_err(|_| StoreError::ActiveRowOverflow)?;
-            if self.tombstones.contains(&old_row) {
+            if lookup::contains(&old_tombstones, &old_row) {
                 tombstones.push(next_row)?;
             }
             next_row = next_row
@@ -1105,7 +1112,7 @@ impl ActiveSegment {
 
     fn retained_capacities(
         &self,
-        doc_ids: &[DocId],
+        doc_ids: &LookupSet<DocId>,
         removed: usize,
     ) -> Result<RetainedCapacities, StoreError> {
         let rows = self.row_count().saturating_sub(removed);
@@ -1121,7 +1128,7 @@ impl ActiveSegment {
             let keep = self
                 .doc_ids
                 .get(row)
-                .is_some_and(|doc_id| !doc_ids.contains(doc_id));
+                .is_some_and(|doc_id| !lookup::contains(doc_ids, doc_id));
             if !keep {
                 return Ok(total);
             }
@@ -1150,7 +1157,7 @@ impl ActiveSegment {
                 usize::try_from(**old_row)
                     .ok()
                     .and_then(|row| self.doc_ids.get(row))
-                    .is_some_and(|doc_id| !doc_ids.contains(doc_id))
+                    .is_some_and(|doc_id| !lookup::contains(doc_ids, doc_id))
             })
             .count();
         Ok(RetainedCapacities {
@@ -1601,7 +1608,7 @@ impl ActiveSegment {
 
     fn retained_row_bytes_capacity(
         &self,
-        removed_ids: &[DocId],
+        removed_ids: &LookupSet<DocId>,
         offsets: &[u64],
         bytes: &[u8],
     ) -> Result<usize, StoreError> {
@@ -1609,7 +1616,7 @@ impl ActiveSegment {
             let keep = self
                 .doc_ids
                 .get(row)
-                .is_some_and(|doc_id| !removed_ids.contains(doc_id));
+                .is_some_and(|doc_id| !lookup::contains(removed_ids, doc_id));
             if !keep {
                 return Ok(total);
             }
@@ -2142,6 +2149,78 @@ mod tests {
     use crate::fts::search::{TermQuery, search};
     use crate::fts::tokenizer::TokenizerConfig;
     use crate::meta::DocBitmap;
+
+    fn lookup_fixture(rows: usize) -> (ActiveSegment, Arc<Accounting>, Analyzer) {
+        let accounting = Arc::new(Accounting::new(u64::MAX, u64::MAX));
+        let analyzer = Analyzer::new(TokenizerConfig::text_default()).expect("analyzer");
+        let documents: Vec<_> = (0..rows)
+            .map(|id| texted(id as u128, 1, Some("alpha")))
+            .collect();
+        let mut segment = ActiveSegment::empty()
+            .copy_for_batch(documents.first().expect("first"), &documents, &accounting)
+            .expect("allocate");
+        for document in &documents {
+            segment
+                .insert_in_place(document, &accounting, &analyzer)
+                .expect("insert");
+        }
+        (segment, accounting, analyzer)
+    }
+
+    #[test]
+    fn active_delete_lookup_work_is_linear() {
+        for n in [128, 512, 2048] {
+            let (segment, accounting, _) = lookup_fixture(n);
+            let mut ids: Vec<_> = (0..n)
+                .step_by(2)
+                .rev()
+                .map(|id| DocId::new(id as u128))
+                .collect();
+            ids.extend([DocId::new(0), DocId::new(u128::MAX)]);
+            lookup::take_work();
+            let (deleted, rows) = segment.tombstone(&ids, &accounting).expect("delete");
+            let work = lookup::take_work();
+            assert_eq!(rows, (0..n).step_by(2).rev().collect::<Vec<_>>());
+            assert_eq!(deleted.tombstones.len(), n / 2);
+            assert!(work <= 8 * (n + ids.len()), "{n} rows: {work} lookup work");
+            lookup::take_work();
+            let (again, _) = deleted.tombstone(&ids, &accounting).expect("repeat");
+            assert_eq!(again.tombstones.len(), n / 2);
+            assert!(lookup::take_work() <= 8 * (n + ids.len()));
+        }
+    }
+
+    #[test]
+    fn active_purge_lookup_work_is_linear() {
+        for n in [128, 512, 2048] {
+            let (segment, accounting, analyzer) = lookup_fixture(n);
+            let deleted: Vec<_> = (0..n).step_by(2).map(|id| DocId::new(id as u128)).collect();
+            let (segment, _) = segment.tombstone(&deleted, &accounting).expect("delete");
+            let mut ids: Vec<_> = (0..n)
+                .step_by(3)
+                .rev()
+                .map(|id| DocId::new(id as u128))
+                .collect();
+            ids.extend([DocId::new(0), DocId::new(u128::MAX)]);
+            lookup::take_work();
+            let (purged, removed) = segment.purge(&ids, &accounting, &analyzer).expect("purge");
+            let work = lookup::take_work();
+            let survivors: Vec<_> = (0..n).filter(|id| id % 3 != 0).collect();
+            assert_eq!(removed, n - survivors.len());
+            assert_eq!(
+                purged.doc_ids(),
+                survivors
+                    .iter()
+                    .map(|id| DocId::new(*id as u128))
+                    .collect::<Vec<_>>()
+            );
+            for (row, id) in survivors.iter().enumerate() {
+                assert_eq!(purged.is_tombstoned(row), id % 2 == 0);
+                assert_eq!(purged.text(row).expect("text"), Some("alpha"));
+            }
+            assert!(work <= 8 * (n + ids.len()), "{n} rows: {work} lookup work");
+        }
+    }
 
     fn matching_rows(segment: Arc<crate::fts::sealed::SealedSegment>, term: &[u8]) -> Vec<u32> {
         let live_rows = DocBitmap::full(segment.row_count());

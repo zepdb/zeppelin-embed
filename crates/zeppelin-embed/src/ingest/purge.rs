@@ -203,12 +203,14 @@ pub(crate) fn prepare_sealed_tombstones(
     }
     let requested = ids.iter().copied().collect::<HashSet<_>>();
     let mut rows_by_segment = vec![Vec::<usize>::new(); snapshot.segments().len()];
+    let mut seen = HashSet::new();
     for matched in matches {
         if requested.contains(&matched.version.doc_id()) {
             let rows = rows_by_segment
                 .get_mut(matched.segment_index)
                 .ok_or(StoreError::ActiveRowOverflow)?;
-            if !rows.contains(&matched.row) {
+            super::lookup::work(1);
+            if seen.insert((matched.segment_index, matched.row)) {
                 rows.push(matched.row);
             }
         }
@@ -450,10 +452,14 @@ fn partition_known_ids(
 ) -> (Vec<DocId>, Vec<DocId>) {
     let mut known = Vec::new();
     let mut unknown = Vec::new();
+    let mut present = super::lookup::set(active.doc_ids());
+    for matched in sealed {
+        super::lookup::work(1);
+        present.insert(matched.version.doc_id());
+    }
     for id in requested {
-        let in_active = active.existing(id).is_some();
-        let in_sealed = sealed.iter().any(|matched| matched.version.doc_id() == id);
-        if in_active || in_sealed {
+        let in_active = super::lookup::contains(&present, &id);
+        if in_active {
             known.push(id);
         } else {
             unknown.push(id);
@@ -468,10 +474,14 @@ fn enforce_temp_space_for_targets(
     known: &[DocId],
     available: u64,
 ) -> Result<(), PurgeError> {
+    let known = super::lookup::set(known);
+    let targets: HashSet<_> = sealed
+        .iter()
+        .filter(|matched| super::lookup::contains(&known, &matched.version.doc_id()))
+        .map(|matched| matched.segment_index)
+        .collect();
     for (segment_index, segment) in snapshot.all_segments().iter().enumerate() {
-        if sealed.iter().any(|matched| {
-            matched.segment_index == segment_index && known.contains(&matched.version.doc_id())
-        }) {
+        if super::lookup::contains(&targets, &segment_index) {
             enforce_temp_space(segment.meta().file_size, available)?;
         }
     }
@@ -758,12 +768,12 @@ impl Store {
         manifest: &mut Manifest,
         active_state: &mut ActiveState,
         original: &SegmentMeta,
-        intent: &PurgeIntent,
+        ids: &super::lookup::LookupSet<DocId>,
         token_id: u64,
     ) -> Result<bool, PurgeError> {
         let path = self.directory.join(original.id.file_name());
         let reader = SegmentReader::open(vfs, &path, original.id).map_err(StoreError::Segment)?;
-        let survivors = survivor_rows(&reader, &intent.ids)?;
+        let survivors = survivor_rows(&reader, ids)?;
         if survivors.len() == original.row_count as usize {
             return Ok(false);
         }
@@ -1022,6 +1032,7 @@ impl Store {
             }
         };
         let mut rewritten = 0_usize;
+        let purge_ids = super::lookup::set(&intent.ids);
         let original_segments = manifest.segments.clone();
         for original in original_segments {
             if self.replace_one_purged_segment(
@@ -1029,7 +1040,7 @@ impl Store {
                 &mut manifest,
                 active_state,
                 &original,
-                &intent,
+                &purge_ids,
                 token.id,
             )? {
                 rewritten = rewritten.saturating_add(1);
@@ -1037,10 +1048,11 @@ impl Store {
         }
         sweep_purge_orphans(vfs, &self.directory, &manifest, self.durability_policy)?;
 
-        let active_has_target = intent
-            .ids
+        let active_has_target = active_state
+            .segment
+            .doc_ids()
             .iter()
-            .any(|id| active_state.segment.existing(*id).is_some());
+            .any(|id| super::lookup::contains(&purge_ids, id));
         let mut next_active = if active_has_target {
             let (purged, removed) =
                 active_state
@@ -1313,11 +1325,14 @@ fn cleanup_replacement_segments(
     Ok(())
 }
 
-fn survivor_rows(reader: &SegmentReader, ids: &[DocId]) -> Result<Vec<usize>, PurgeError> {
+fn survivor_rows(
+    reader: &SegmentReader,
+    ids: &super::lookup::LookupSet<DocId>,
+) -> Result<Vec<usize>, PurgeError> {
     let mut survivors = Vec::with_capacity(reader.meta().row_count as usize);
     for row in 0..reader.meta().row_count as usize {
         let version = reader.document_version(row).map_err(StoreError::Segment)?;
-        if version.is_none_or(|version| !ids.contains(&version.doc_id())) {
+        if version.is_none_or(|version| !super::lookup::contains(ids, &version.doc_id())) {
             survivors.push(row);
         }
     }
@@ -1431,12 +1446,15 @@ fn gather_survivor_alive(
     survivors: &[usize],
     additional_tombstones: &[usize],
 ) -> Result<AliveSet, StoreError> {
+    let additional_tombstones = super::lookup::set(additional_tombstones);
     let source_alive = reader.alive().map_err(StoreError::Segment)?;
     let row_count = u32::try_from(survivors.len()).map_err(|_| StoreError::ActiveRowOverflow)?;
     let mut alive = AliveSet::new(row_count);
     for (new_row, old_row) in survivors.iter().enumerate() {
         let old_row_u32 = u32::try_from(*old_row).map_err(|_| StoreError::ActiveRowOverflow)?;
-        if !source_alive.is_alive(old_row_u32) || additional_tombstones.contains(old_row) {
+        if !source_alive.is_alive(old_row_u32)
+            || super::lookup::contains(&additional_tombstones, old_row)
+        {
             alive
                 .tombstone(u32::try_from(new_row).map_err(|_| StoreError::ActiveRowOverflow)?)
                 .map_err(|_| StoreError::ActiveRowOverflow)?;
@@ -1727,6 +1745,7 @@ fn active_wal_records(segment: &super::ActiveSegment) -> Result<WalImageRecords,
     let mut records = Vec::with_capacity(segment.row_count().saturating_add(1));
     let mut tombstoned = Vec::with_capacity(segment.row_count());
     let mut deleted = Vec::new();
+    let alive = segment.alive()?;
     for row in 0..segment.row_count() {
         let start = row.checked_mul(dims).ok_or(StoreError::ActiveRowOverflow)?;
         let end = start
@@ -1759,7 +1778,8 @@ fn active_wal_records(segment: &super::ActiveSegment) -> Result<WalImageRecords,
         }
         document = document.with_columns(segment.column_values(row)?);
         records.push(super::encode_persisted_upsert(&document).map_err(purge_ingest_error)?);
-        let is_tombstoned = segment.is_tombstoned(row);
+        let row_u32 = u32::try_from(row).map_err(|_| StoreError::ActiveRowOverflow)?;
+        let is_tombstoned = !alive.is_alive(row_u32);
         tombstoned.push(is_tombstoned);
         if is_tombstoned {
             deleted.push(version.doc_id());
@@ -1782,6 +1802,19 @@ fn ensure_wal_rewrite_covers_retained(
     next_active: &super::ActiveSegment,
     sealed: &[SegmentReader],
 ) -> Result<(), PurgeError> {
+    let purged_ids = super::lookup::set(purged_ids);
+    let alive = next_active.alive()?;
+    let mut active_versions = std::collections::HashMap::new();
+    for (row, id) in next_active.doc_ids().iter().enumerate() {
+        super::lookup::work(1);
+        let version = next_active
+            .document(row)
+            .ok_or(StoreError::ActiveRowOverflow)?;
+        let row_u32 = u32::try_from(row).map_err(|_| StoreError::ActiveRowOverflow)?;
+        active_versions
+            .entry(*id)
+            .or_insert((version, !alive.is_alive(row_u32)));
+    }
     let wal_path = directory.join("wal.ze");
     let reader = crate::wal::WalReader::open(vfs, &wal_path).map_err(StoreError::Wal)?;
     let clean = reader.into_clean().map_err(StoreError::WalRecovery)?;
@@ -1792,18 +1825,18 @@ fn ensure_wal_rewrite_covers_retained(
         let covered = match mutation {
             super::wal_payload::MutationPayload::Upsert(document) => {
                 let version = document.version();
-                purged_ids.contains(&version.doc_id())
-                    || next_active
-                        .existing(version.doc_id())
-                        .is_some_and(|(_, existing, _)| existing.revision() >= version.revision())
+                super::lookup::contains(&purged_ids, &version.doc_id())
+                    || active_versions
+                        .get(&version.doc_id())
+                        .is_some_and(|(existing, _)| existing.revision() >= version.revision())
             }
             super::wal_payload::MutationPayload::Delete(ids) => {
                 let mut covered = true;
                 for id in ids {
-                    if !purged_ids.contains(&id)
-                        && !next_active
-                            .existing(id)
-                            .is_some_and(|(row, _, _)| next_active.is_tombstoned(row))
+                    if !super::lookup::contains(&purged_ids, &id)
+                        && !active_versions
+                            .get(&id)
+                            .is_some_and(|(_, tombstoned)| *tombstoned)
                         && !sealed_delete_is_persisted(sealed, id)?
                     {
                         covered = false;
@@ -1954,6 +1987,43 @@ mod tests {
     use crate::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
     use crate::vfs::StdVfs;
     use crate::wal::LogSeq;
+
+    #[test]
+    fn sealed_purge_lookup_work_is_linear() {
+        use crate::ingest::{DocumentVersion, IngestBatch, IngestDocument, Revision};
+        use crate::lifecycle::{OpenOptions, Store};
+        for n in [128, 512, 2048] {
+            let directory = tempfile::tempdir().expect("directory");
+            let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+            let documents = (0..n)
+                .map(|id| {
+                    IngestDocument::new(
+                        DocumentVersion::new(DocId::new(id as u128), Revision::new(1)),
+                        vec![1.0],
+                    )
+                })
+                .collect();
+            store.ingest(IngestBatch::new(documents)).expect("ingest");
+            store.seal().expect("seal");
+            let snapshot = store.snapshot().expect("snapshot");
+            let reader = snapshot.segments().first().expect("segment");
+            let mut ids: Vec<_> = (0..n)
+                .step_by(2)
+                .rev()
+                .map(|id| DocId::new(id as u128))
+                .collect();
+            ids.extend([DocId::new(0), DocId::new(u128::MAX)]);
+            super::super::lookup::take_work();
+            let requested = super::super::lookup::set(&ids);
+            let survivors = super::survivor_rows(reader, &requested).expect("survivors");
+            let work = super::super::lookup::take_work();
+            assert_eq!(
+                survivors,
+                (0..n).filter(|id| id % 2 != 0).collect::<Vec<_>>()
+            );
+            assert!(work <= 2 * (n + ids.len()), "{n} rows: {work} lookup work");
+        }
+    }
 
     #[test]
     fn purge_tokens_reports_and_errors_preserve_their_contract_values() {
