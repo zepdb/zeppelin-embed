@@ -486,13 +486,24 @@ impl From<StoreError> for IngestError {
 #[derive(Clone, Copy, Debug)]
 pub struct SearchRequest<'a> {
     vector: &'a [f32],
+    pub(crate) filter: Option<&'a crate::lifecycle::QueryFilter>,
 }
 
 impl<'a> SearchRequest<'a> {
     /// Constructs a full-precision vector request.
     #[must_use]
     pub const fn new(vector: &'a [f32]) -> Self {
-        Self { vector }
+        Self {
+            vector,
+            filter: None,
+        }
+    }
+
+    /// Restricts candidates before ranking, including both hybrid legs.
+    #[must_use]
+    pub const fn with_filter(mut self, filter: Option<&'a crate::lifecycle::QueryFilter>) -> Self {
+        self.filter = filter;
+        self
     }
 
     /// Returns the full-precision query coordinates.

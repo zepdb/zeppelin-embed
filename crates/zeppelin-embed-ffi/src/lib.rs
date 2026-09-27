@@ -3788,7 +3788,7 @@ pub extern "C" fn ze_query(
                 }
                 let abi_size = marshal::validate_output(out_result)?;
                 marshal::write_output(out_result, empty_query_result(abi_size));
-                let (mut result, hits, _) = run_query(&access, &request, abi_size, None)?;
+                let (mut result, hits, _) = run_query(&access, &request, abi_size, None, None)?;
                 let (hit_pointer, hit_count, allocation_generation) = publish_hits(hits)?;
                 result.abi_reserved = allocation_generation;
                 result.hits = hit_pointer;
@@ -3832,13 +3832,79 @@ pub extern "C" fn ze_query_with_snippets(
     out_result: *mut ZeQueryResult,
     out_snippets: *mut ZeQuerySnippets,
 ) -> ZeErrorCode {
+    query_filtered_entry(
+        handle,
+        request,
+        std::ptr::null(),
+        snippet_bytes,
+        out_result,
+        out_snippets,
+        true,
+    )
+}
+
+/// Runs a query with scan-compatible eligibility constraints before top-k and fusion.
+/// A zero `snippet_bytes` disables snippets and permits a null `out_snippets`.
+/// Release results with the existing query and snippet free functions.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_query_filtered(
+    handle: ZeHandle,
+    request: *const ZeQueryRequest,
+    constraints: *const ZeQueryFilter,
+    snippet_bytes: usize,
+    out_result: *mut ZeQueryResult,
+    out_snippets: *mut ZeQuerySnippets,
+) -> ZeErrorCode {
+    query_filtered_entry(
+        handle,
+        request,
+        constraints,
+        snippet_bytes,
+        out_result,
+        out_snippets,
+        false,
+    )
+}
+
+fn query_filtered_entry(
+    handle: ZeHandle,
+    request: *const ZeQueryRequest,
+    constraints: *const ZeQueryFilter,
+    snippet_bytes: usize,
+    out_result: *mut ZeQueryResult,
+    out_snippets: *mut ZeQuerySnippets,
+    require_snippets: bool,
+) -> ZeErrorCode {
     ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
-        run_named_panic_probe("ze_query_with_snippets");
+        run_named_panic_probe(if require_snippets {
+            "ze_query_with_snippets"
+        } else {
+            "ze_query_filtered"
+        });
         finish(
             Some(handle),
             (|| {
                 let access = registry::lookup(handle)?;
                 let request = marshal::read_struct(request)?;
+                let filter = if constraints.is_null() {
+                    None
+                } else {
+                    let constraints: ZeQueryFilter = marshal::read_struct(constraints)?;
+                    let has_range =
+                        parse_flag(constraints.has_timestamp_range, "has_timestamp_range")?;
+                    if !has_range && (constraints.start_ts != 0 || constraints.end_ts != 0) {
+                        return Err(FfiError::invalid(
+                            "query timestamp bounds require has_timestamp_range",
+                        ));
+                    }
+                    let predicate = decode_filter(constraints.filter, access.store.schema())?;
+                    zeppelin_embed::lifecycle::QueryFilter::new(
+                        access.store.schema(),
+                        predicate.as_ref(),
+                        has_range.then_some((constraints.start_ts, constraints.end_ts)),
+                    )
+                    .map_err(FfiError::query)?
+                };
                 if access.record_only && request.vector_len != 0 {
                     return Err(FfiError::new(
                         ZeErrorCode::ZeErrNoVectorSpace,
@@ -3846,13 +3912,29 @@ pub extern "C" fn ze_query_with_snippets(
                     ));
                 }
                 let abi_size = marshal::validate_output(out_result)?;
-                let snippets_abi_size = marshal::validate_output(out_snippets)?;
+                let snippets_abi_size = if snippet_bytes == 0 && !require_snippets {
+                    0
+                } else {
+                    marshal::validate_output(out_snippets)?
+                };
                 marshal::write_output(out_result, empty_query_result(abi_size));
-                marshal::write_output(out_snippets, empty_query_snippets(snippets_abi_size));
-                let window = NonZeroUsize::new(snippet_bytes)
-                    .ok_or_else(|| FfiError::invalid("snippet_bytes must be nonzero"))?;
+                if snippet_bytes != 0 || require_snippets {
+                    marshal::write_output(out_snippets, empty_query_snippets(snippets_abi_size));
+                }
+                let window = NonZeroUsize::new(snippet_bytes);
+                if require_snippets && window.is_none() {
+                    return Err(FfiError::invalid("snippet_bytes must be nonzero"));
+                }
                 let (mut result, hits, snippets) =
-                    run_query(&access, &request, abi_size, Some(window))?;
+                    run_query(&access, &request, abi_size, window, filter.as_ref())?;
+                if window.is_none() {
+                    let (hit_pointer, hit_count, allocation_generation) = publish_hits(hits)?;
+                    result.abi_reserved = allocation_generation;
+                    result.hits = hit_pointer;
+                    result.hit_count = hit_count;
+                    marshal::write_output(out_result, result);
+                    return Ok(());
+                }
                 if snippets.len() != hits.len() {
                     return Err(FfiError::new(
                         ZeErrorCode::ZeErrInternal,
@@ -3960,6 +4042,7 @@ fn run_query(
     request: &ZeQueryRequest,
     abi_size: u32,
     window: Option<NonZeroUsize>,
+    filter: Option<&zeppelin_embed::lifecycle::QueryFilter>,
 ) -> Result<QueryParts, FfiError> {
     if request.lexical_flags & !ZE_QUERY_LAST_AS_PREFIX != 0 {
         return Err(FfiError::invalid(
@@ -4041,7 +4124,7 @@ fn run_query(
                 (FfiLexicalQuery::Term(lexical), None) => access
                     .store
                     .search_hybrid(
-                        SearchRequest::new(&vector),
+                        SearchRequest::new(&vector).with_filter(filter),
                         lexical,
                         &hybrid,
                         options,
@@ -4051,7 +4134,7 @@ fn run_query(
                 (FfiLexicalQuery::Structured(lexical), None) => access
                     .store
                     .search_hybrid_structured(
-                        SearchRequest::new(&vector),
+                        SearchRequest::new(&vector).with_filter(filter),
                         lexical,
                         &hybrid,
                         options,
@@ -4062,7 +4145,7 @@ fn run_query(
                     let (outcome, found) = access
                         .store
                         .search_hybrid_with_snippets(
-                            SearchRequest::new(&vector),
+                            SearchRequest::new(&vector).with_filter(filter),
                             lexical,
                             &hybrid,
                             options,
@@ -4077,7 +4160,7 @@ fn run_query(
                     let (outcome, found) = access
                         .store
                         .search_hybrid_structured_with_snippets(
-                            SearchRequest::new(&vector),
+                            SearchRequest::new(&vector).with_filter(filter),
                             lexical,
                             &hybrid,
                             options,
@@ -4114,12 +4197,14 @@ fn run_query(
                 let outcome = match window {
                     None => access
                         .store
-                        .search_lexical(&lexical, request.k, control)
+                        .search_lexical_filtered(&lexical, request.k, control, filter)
                         .map_err(FfiError::lexical)?,
                     Some(window) => {
                         let (outcome, found) = access
                             .store
-                            .search_lexical_with_snippets(&lexical, request.k, window, control)
+                            .search_lexical_filtered_with_snippets(
+                                &lexical, request.k, window, control, filter,
+                            )
                             .map_err(FfiError::lexical)?;
                         snippets = found.into_iter().map(Some).collect();
                         outcome
@@ -4149,11 +4234,12 @@ fn run_query(
             FfiLexicalQuery::Structured(lexical) => {
                 let outcome = access
                     .store
-                    .search_lexical_structured(
+                    .search_lexical_structured_filtered(
                         &lexical,
                         request.k,
                         window.map_or(64, NonZeroUsize::get),
                         control,
+                        filter,
                     )
                     .map_err(FfiError::lexical)?;
                 result.mode = 1;
@@ -4184,7 +4270,12 @@ fn run_query(
         (true, None, None) => {
             let outcome = access
                 .store
-                .search(SearchRequest::new(&vector), request.k, options, control)
+                .search(
+                    SearchRequest::new(&vector).with_filter(filter),
+                    request.k,
+                    options,
+                    control,
+                )
                 .map_err(FfiError::query)?;
             result.mode = 0;
             fill_diagnostics(&mut result, &outcome.diagnostics)?;

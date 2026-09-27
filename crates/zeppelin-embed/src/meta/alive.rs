@@ -126,6 +126,13 @@ impl AliveSet {
         self.alive.iter()
     }
 
+    pub(crate) fn retain(&mut self, rows: &DocBitmap) {
+        let mut removed = self.alive.clone();
+        removed.subtract(rows);
+        self.tombstones.union_with(&removed);
+        self.alive.intersect_with(rows);
+    }
+
     pub(crate) const fn scan_mask(&self) -> &roaring::RoaringBitmap {
         self.alive.as_roaring()
     }

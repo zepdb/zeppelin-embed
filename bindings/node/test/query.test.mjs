@@ -297,3 +297,64 @@ test('a closed cancellation token refuses further use', () => {
     (error) => error instanceof ZeppelinError && error.code === 'ZE_ERR_CLOSED',
   );
 });
+
+for (const mode of ['lexical', 'hybrid']) {
+  test(`query filters ${mode} candidates before top-k across sealed and active rows`, () => {
+    const root = temporaryRoot('zeppelin-query-filter-');
+    const store = openNamespace(root, 'notes', {
+      vectorSpace: { dimensions: 2 },
+      attributes: [{ id: 1, name: 'speaker', type: 'rawString', nullable: true }],
+    });
+    const doc = (id, speaker, revision = 1n) => ({
+      id, revision, timestamp: id, text: 'harbour lights',
+      vector: new Float32Array([Number(id), 0]),
+      attributes: speaker === undefined ? [] : [{ id: 1, type: 'string', value: speaker }],
+    });
+    try {
+      store.upsert([doc(1n, 'ana'), doc(2n, 'bo'), doc(3n, 'ana'), doc(4n, 'ana')]);
+      store.seal();
+      store.upsert([doc(1n, 'bo', 2n), doc(5n, 'ana'), doc(6n, undefined)]);
+      store.delete([4n]);
+      const eq = { op: 'eq', attributeId: 1, values: [{ id: 1, type: 'string', value: 'ana' }] };
+      const requests = [
+        { filter: eq },
+        { timestampRange: { start: 3n, end: 6n } },
+        { filter: eq, timestampRange: { start: 5n, end: 6n } },
+        { filter: { op: 'and', children: [eq, { op: 'exists', attributeId: 1 }] } },
+        { filter: { op: 'not', children: [eq] } },
+        { filter: { op: 'or', children: [] } },
+        { timestampRange: { start: 5n, end: 5n } },
+      ];
+      const literalIds = [[3n, 5n], [3n, 5n], [5n], [3n, 5n], [1n, 2n, 6n], [], []];
+      for (const [index, constraints] of requests.entries()) {
+        const expected = store.scan({ ...constraints, limit: 20 }).documents.map(d => d.id).sort();
+        assert.deepEqual(expected, literalIds[index]);
+        const request = { text: 'harb', lastAsPrefix: true, k: 20,
+          ...(mode === 'hybrid' ? { vector: new Float32Array([1, 0]) } : {}), ...constraints };
+        for (const text of ['harb', 'harbour']) {
+          for (const snippets of [{}, { snippetBytes: 32 }]) {
+            assert.deepEqual(store.query({ ...request, text, lastAsPrefix: text === 'harb', ...snippets }).hits.map(h => h.id).sort(), expected);
+          }
+        }
+        const small = store.query({ ...request, k: 1 });
+        assert.equal(small.hits.length, Math.min(1, expected.length));
+        for (const hit of small.hits) assert.ok(expected.includes(hit.id));
+      }
+      // A constrained query must not contaminate the cached unfiltered index.
+      assert.equal(store.query({ text: 'harbour', k: 20 }).hits.length, 5);
+    } finally { store.close(); rmSync(root, { force: true, recursive: true }); }
+  });
+}
+
+test('query rejects unsupported filters and invalid timestamp ranges', () => {
+  const root = temporaryRoot('zeppelin-query-filter-invalid-');
+  const store = openNamespace(root, 'notes', {});
+  try {
+    store.upsert([{ id: 1n, text: 'harbour' }]);
+    for (const constraints of [
+      { filter: { op: 'unsupported' } },
+      { filter: { op: 'exists', attributeId: 999 } },
+      { timestampRange: { start: 2n, end: 1n } },
+    ]) assert.throws(() => store.query({ text: 'harbour', ...constraints }));
+  } finally { store.close(); rmSync(root, { force: true, recursive: true }); }
+});

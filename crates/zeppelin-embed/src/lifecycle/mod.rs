@@ -3805,7 +3805,22 @@ impl Store {
         k: usize,
         control: QueryControl,
     ) -> Result<crate::ingest::StoreLexicalSearchOutcome, crate::ingest::StoreLexicalError> {
-        self.search_lexical_then(query, k, control, |outcome, _, _, _, _, _| Ok(outcome))
+        self.search_lexical_then(query, k, control, None, |outcome, _, _, _, _, _| {
+            Ok(outcome)
+        })
+    }
+
+    /// Runs lexical ranking with scan-compatible eligibility constraints.
+    pub fn search_lexical_filtered(
+        &self,
+        query: &crate::fts::search::TermQuery,
+        k: usize,
+        control: QueryControl,
+        filter: Option<&QueryFilter>,
+    ) -> Result<crate::ingest::StoreLexicalSearchOutcome, crate::ingest::StoreLexicalError> {
+        self.search_lexical_then(query, k, control, filter, |outcome, _, _, _, _, _| {
+            Ok(outcome)
+        })
     }
 
     fn search_lexical_then<R>(
@@ -3813,6 +3828,7 @@ impl Store {
         query: &crate::fts::search::TermQuery,
         k: usize,
         control: QueryControl,
+        filter: Option<&QueryFilter>,
         finish: impl FnOnce(
             crate::ingest::StoreLexicalSearchOutcome,
             &PublishedSnapshot,
@@ -3839,6 +3855,7 @@ impl Store {
         cancellation.check_graph().map_err(QueryError::Scan)?;
         let assembly = assemble_lexical_index(
             LexicalInputs {
+                filter,
                 generation,
                 cache: &self.lexical_index_cache,
                 snapshot: &snapshot,
@@ -4227,6 +4244,20 @@ impl Store {
         control: QueryControl,
     ) -> Result<crate::ingest::StoreStructuredLexicalSearchOutcome, crate::ingest::StoreLexicalError>
     {
+        self.search_lexical_structured_filtered(query, k, snippet_bytes, control, None)
+    }
+
+    /// Runs structured lexical ranking with scan-compatible eligibility constraints.
+    #[allow(clippy::too_many_arguments)]
+    pub fn search_lexical_structured_filtered(
+        &self,
+        query: &crate::fts::query::LexicalQuery,
+        k: usize,
+        snippet_bytes: usize,
+        control: QueryControl,
+        filter: Option<&QueryFilter>,
+    ) -> Result<crate::ingest::StoreStructuredLexicalSearchOutcome, crate::ingest::StoreLexicalError>
+    {
         let control = control.with_clock(Arc::clone(&self.clock));
         let started = self.clock.now();
         let admission_started = timing_start(self.clock.as_ref());
@@ -4244,6 +4275,7 @@ impl Store {
         cancellation.check_graph().map_err(QueryError::Scan)?;
         let assembly = assemble_lexical_index(
             LexicalInputs {
+                filter,
                 generation,
                 cache: &self.lexical_index_cache,
                 snapshot: &snapshot,
@@ -4540,6 +4572,7 @@ impl Store {
     ) -> Result<R, crate::fusion::FusionError> {
         self.search_hybrid_prepared_then(
             || Ok::<_, std::convert::Infallible>(vector_query),
+            vector_query.filter,
             lexical_query,
             hybrid_query,
             options,
@@ -4557,6 +4590,7 @@ impl Store {
     fn search_hybrid_prepared_then<'vector, E, R>(
         &self,
         prepare_vector: impl FnOnce() -> Result<crate::ingest::SearchRequest<'vector>, E>,
+        filter: Option<&QueryFilter>,
         lexical_query: PinnedLexicalQuery<'_>,
         hybrid_query: &crate::fusion::HybridQuery,
         options: SearchOptions,
@@ -4622,6 +4656,7 @@ impl Store {
             ..Default::default()
         };
         let lexical_inputs = LexicalInputs {
+            filter,
             generation: admitted.generation,
             cache: &self.lexical_index_cache,
             snapshot: &admitted.snapshot,
@@ -4743,6 +4778,16 @@ impl Store {
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let vector_query =
                         prepare_vector().map_err(HybridPreparationError::Preparation)?;
+                    if vector_query.filter.is_some() && filter.is_none() {
+                        return Err(HybridPreparationError::Search(
+                            QueryError::Store(StoreError::InvalidScan {
+                                detail:
+                                    "deferred vector preparation cannot introduce a query filter"
+                                        .to_owned(),
+                            })
+                            .into(),
+                        ));
+                    }
                     let mut vector_preparation = prepared::PreparedVectorQuery::new(
                         vector_query.vector(),
                         self.epoch_identity(),
@@ -5321,6 +5366,42 @@ pub(crate) enum StructuredLexicalSource {
     Active,
 }
 
+/// Validated scan-compatible query constraints. Ranking statistics remain corpus-wide.
+#[derive(Clone, Debug)]
+pub struct QueryFilter {
+    predicate: crate::meta::Predicate,
+    schema: crate::meta::Schema,
+}
+
+impl QueryFilter {
+    /// Validates attributes and a half-open timestamp range against this schema.
+    pub fn new(
+        schema: &crate::meta::Schema,
+        predicate: Option<&crate::meta::Predicate>,
+        timestamp_range: Option<(i64, i64)>,
+    ) -> Result<Option<Self>, QueryError> {
+        let Some(predicate) = document_scan_predicate(predicate, timestamp_range)? else {
+            return Ok(None);
+        };
+        crate::planner::validate_predicate(&predicate, schema).map_err(|error| {
+            QueryError::Store(StoreError::InvalidScan {
+                detail: error.to_string(),
+            })
+        })?;
+        Ok(Some(Self {
+            predicate,
+            schema: schema.clone(),
+        }))
+    }
+
+    fn active_rows(
+        &self,
+        active: &crate::ingest::ActiveSegment,
+    ) -> Result<crate::meta::DocBitmap, QueryError> {
+        active_scan_rows(active, &self.schema, Some(&self.predicate))
+    }
+}
+
 struct LexicalAssembly {
     index: crate::fts::index::LexicalIndex,
     alive_sets: Vec<Arc<crate::meta::AliveSet>>,
@@ -5660,6 +5741,7 @@ impl LexicalIndexCache {
 /// standalone paths all pass exactly this set through unchanged.
 #[derive(Clone, Copy)]
 struct LexicalInputs<'a> {
+    filter: Option<&'a QueryFilter>,
     generation: u64,
     cache: &'a LexicalIndexCache,
     snapshot: &'a Arc<PublishedSnapshot>,
@@ -5684,7 +5766,74 @@ fn assemble_lexical_index(
     require_document_identity: bool,
     cancellation: Option<&QueryCancellation<'_>>,
 ) -> Result<LexicalAssemblyReceipt, LexicalAssemblyError> {
+    let receipt =
+        assemble_unfiltered_lexical_index(inputs, require_document_identity, cancellation)?;
+    let Some(filter) = inputs.filter else {
+        return Ok(receipt);
+    };
+    let mut alive_sets = Vec::with_capacity(receipt.alive_sets.len());
+    for (source, alive) in receipt.sources.iter().zip(&receipt.alive_sets) {
+        if let Some(control) = cancellation {
+            control
+                .check_graph()
+                .map_err(LexicalAssemblyError::Cancelled)?;
+        }
+        let rows = match source {
+            StructuredLexicalSource::Active => filter.active_rows(inputs.active),
+            StructuredLexicalSource::Sealed(ordinal) => inputs
+                .snapshot
+                .segments()
+                .get(*ordinal)
+                .ok_or(QueryError::Store(StoreError::ActiveRowOverflow))
+                .and_then(|segment| sealed_scan_rows(segment, Some(&filter.predicate))),
+        }
+        .map_err(|error| match error {
+            QueryError::Store(error) => LexicalAssemblyError::Store(error),
+            error => LexicalAssemblyError::Store(StoreError::InvalidScan {
+                detail: error.to_string(),
+            }),
+        })?;
+        let mut eligible = (**alive).clone();
+        eligible.retain(&rows);
+        alive_sets.push(Arc::new(eligible));
+    }
+    let memory =
+        stats::AccountedCounter::new(inputs.accounting, stats::AllocationComponent::Temporary)
+            .map_err(LexicalAssemblyError::Store)?;
+    let mut assembly = LexicalAssembly {
+        index: receipt.index.clone(),
+        alive_sets,
+        sources: receipt.sources.clone(),
+        contributions: receipt.contributions.clone(),
+        vocabulary: Mutex::new(None),
+        memory,
+    };
+    let bytes = assembly
+        .alive_sets
+        .iter()
+        .fold(assembly.owned_bytes(), |bytes, alive| {
+            bytes?.checked_add(alive.resident_bytes()?)?.checked_add(
+                std::mem::size_of::<crate::meta::AliveSet>() + 2 * std::mem::size_of::<usize>(),
+            )
+        })
+        .ok_or(LexicalAssemblyError::Store(StoreError::ActiveRowOverflow))?;
+    assembly
+        .memory
+        .set(bytes)
+        .map_err(LexicalAssemblyError::Store)?;
+    Ok(LexicalAssemblyReceipt {
+        cache_hit: receipt.cache_hit,
+        assembly: Arc::new(assembly),
+    })
+}
+
+fn assemble_unfiltered_lexical_index(
+    inputs: LexicalInputs<'_>,
+    require_document_identity: bool,
+    cancellation: Option<&QueryCancellation<'_>>,
+) -> Result<LexicalAssemblyReceipt, LexicalAssemblyError> {
     let LexicalInputs {
+        filter: _,
         generation,
         cache,
         snapshot,
@@ -6450,7 +6599,10 @@ fn search_pinned(
     };
 
     if !active.is_empty() {
-        let alive = active.alive().map_err(QueryError::Store)?;
+        let mut alive = active.alive().map_err(QueryError::Store)?;
+        if let Some(filter) = request.filter {
+            alive.retain(&filter.active_rows(active)?);
+        }
         let mut exact_score = full_precision;
         let mut approximate = false;
         let frontier = rescore_options
@@ -6598,7 +6750,15 @@ fn search_pinned(
     }
 
     for segment in ordered_segments {
-        let alive = segment.query_alive().map_err(QueryError::Store)?;
+        let original_alive = segment.query_alive().map_err(QueryError::Store)?;
+        let mut filtered_alive;
+        let alive = if let Some(filter) = request.filter {
+            filtered_alive = (*original_alive).clone();
+            filtered_alive.retain(&sealed_scan_rows(segment, Some(&filter.predicate))?);
+            &filtered_alive
+        } else {
+            original_alive.as_ref()
+        };
         let source = RowSource::Sealed(segment.meta().id);
         // Automatic tiering follows the artifact that is atomically published
         // now, not the tier policy's desired future state. A due-but-unbuilt
@@ -6626,7 +6786,7 @@ fn search_pinned(
                 _lease,
             } = traverse_segment_graph(
                 segment,
-                &alive,
+                alive,
                 source,
                 graph_options,
                 graph_bound_mode,
@@ -6644,7 +6804,7 @@ fn search_pinned(
             )?
             .merge_into(
                 segment,
-                &alive,
+                alive,
                 source,
                 &mut candidates,
                 &mut dims_touched,
@@ -6671,7 +6831,7 @@ fn search_pinned(
             pool,
             snapshot,
             segment,
-            &alive,
+            alive,
             generation,
             request,
             frontier,

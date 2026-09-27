@@ -37,6 +37,7 @@ fn fixture() -> (tempfile::TempDir, Store) {
 fn assemble(store: &Store, admission: &AdmittedLexicalQuery<'_>) -> Arc<LexicalAssembly> {
     assemble_lexical_index(
         LexicalInputs {
+            filter: None,
             generation: admission.generation,
             cache: &store.lexical_index_cache,
             snapshot: &admission.snapshot,
@@ -197,6 +198,7 @@ fn astra_16_refused_contribution_leaves_previous_cache_and_no_charge() {
     let refused = Arc::new(stats::Accounting::new(0, u64::MAX));
     let result = assemble_lexical_index(
         LexicalInputs {
+            filter: None,
             generation: current.generation,
             cache: &store.lexical_index_cache,
             snapshot: &current.snapshot,

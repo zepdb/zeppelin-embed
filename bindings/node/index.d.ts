@@ -357,6 +357,12 @@ export type SearchResult = SearchHit[];
 export type QueryMode = 'vector' | 'lexical' | 'hybrid';
 
 export interface QueryRequest {
+  /** Scan-compatible attribute AST, applied before top-k to every query leg.
+   * Unsupported operators, attributes and value types throw instead of being ignored.
+   */
+  readonly filter?: Filter;
+  /** Inclusive start, exclusive end; combined with filter using AND. */
+  readonly timestampRange?: TimestampRange;
   /**
    * Query text. Present selects the lexical leg; analysed with the same
    * tokenizer configuration ingest uses.

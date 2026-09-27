@@ -3224,6 +3224,21 @@ napi_value Query(napi_env env, napi_callback_info info) {
     ZeQueryRequest request{};
     request.abi_size = sizeof(request);
 
+    ZeQueryFilter constraints{};
+    constraints.abi_size = sizeof(constraints);
+    FilterStorage filter_storage;
+    napi_value filter_value;
+    bool has_filter = false;
+    if (!ParseTimestampRange(env, args[0], &constraints.has_timestamp_range,
+                             &constraints.start_ts, &constraints.end_ts) ||
+        !GetNamed(env, args[0], "filter", &filter_value, &has_filter))
+      return nullptr;
+    if (has_filter) {
+      if (!ParseFilter(env, filter_value, &filter_storage))
+        return nullptr;
+      constraints.filter = &filter_storage.filter;
+    }
+
     std::string text;
     bool has_text = false;
     if (!GetOptionalString(env, args[0], "text", &text, &has_text))
@@ -3386,7 +3401,10 @@ napi_value Query(napi_env env, napi_callback_info info) {
     ZeQuerySnippets snippets{};
     snippets.abi_size = sizeof(snippets);
     const ze_error_code status =
-        has_snippets ? ze_query_with_snippets(store->handle, &request,
+        (has_filter || constraints.has_timestamp_range)
+            ? ze_query_filtered(store->handle, &request, &constraints,
+                                snippet_bytes, &native, has_snippets ? &snippets : nullptr)
+            : has_snippets ? ze_query_with_snippets(store->handle, &request,
                                               snippet_bytes, &native, &snippets)
                      : ze_query(store->handle, &request, &native);
     if (status != ZE_OK)

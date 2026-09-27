@@ -389,6 +389,7 @@ impl Store {
     ) -> Result<(crate::ingest::StoreHybridSearchOutcome, R), HybridPreparationError<E>> {
         self.search_hybrid_pinned_with_text(
             prepare_vector,
+            None,
             super::PinnedLexicalQuery::Term(lexical),
             query,
             options.into(),
@@ -397,9 +398,11 @@ impl Store {
         )
     }
 
+    #[allow(clippy::too_many_arguments)] // Pinned query inputs plus its scoped continuation.
     fn search_hybrid_pinned_with_text<'vector, E, R>(
         &self,
         prepare_vector: impl FnOnce() -> Result<crate::ingest::SearchRequest<'vector>, E>,
+        filter: Option<&super::QueryFilter>,
         lexical: super::PinnedLexicalQuery<'_>,
         query: &crate::fusion::HybridQuery,
         options: super::SearchOptions,
@@ -408,6 +411,7 @@ impl Store {
     ) -> Result<(crate::ingest::StoreHybridSearchOutcome, R), HybridPreparationError<E>> {
         self.search_hybrid_prepared_then(
             prepare_vector,
+            filter,
             lexical,
             query,
             options,
@@ -491,11 +495,12 @@ impl Store {
         control: super::QueryControl,
         finish: impl FnOnce(&crate::ingest::StoreHybridSearchOutcome, &QueryMaterializer<'_>) -> R,
     ) -> Result<(crate::ingest::StoreHybridSearchOutcome, R), crate::fusion::FusionError> {
-        self.search_hybrid_with_text_deferred(
+        self.search_hybrid_pinned_with_text(
             || Ok::<_, std::convert::Infallible>(vector),
-            lexical,
+            vector.filter,
+            super::PinnedLexicalQuery::Term(lexical),
             query,
-            options,
+            options.into(),
             control,
             finish,
         )
@@ -528,10 +533,29 @@ impl Store {
         ),
         crate::ingest::StoreLexicalError,
     > {
+        self.search_lexical_filtered_with_snippets(query, k, window, control, None)
+    }
+
+    /// Searches eligible lexical rows and materializes snippets at the same generation.
+    pub fn search_lexical_filtered_with_snippets(
+        &self,
+        query: &crate::fts::search::TermQuery,
+        k: usize,
+        window: NonZeroUsize,
+        control: super::QueryControl,
+        filter: Option<&super::QueryFilter>,
+    ) -> Result<
+        (
+            crate::ingest::StoreLexicalSearchOutcome,
+            Vec<crate::fts::query::OwnedLexicalSnippet>,
+        ),
+        crate::ingest::StoreLexicalError,
+    > {
         self.search_lexical_then(
             query,
             k,
             control,
+            filter,
             |outcome, snapshot, active, assembly, hits, cancellation| {
                 let mut snippets = Vec::with_capacity(hits.len());
                 for hit in hits {
@@ -632,6 +656,7 @@ impl Store {
         };
         self.search_hybrid_pinned_with_text(
             || Ok::<_, std::convert::Infallible>(vector),
+            vector.filter,
             lexical,
             query,
             options,
@@ -688,6 +713,7 @@ impl Store {
             query,
             k,
             control,
+            None,
             |mut outcome, snapshot, active, assembly, hits, cancellation| {
                 cancellation.check_graph().map_err(super::map_scan_error)?;
                 let address = |rank| {

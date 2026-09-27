@@ -369,6 +369,7 @@ mod tests {
         let control = QueryControl::Cancel(CancelToken::new());
         let cancellation = QueryCancellation::new(&control, &lease);
         let inputs = LexicalInputs {
+            filter: None,
             generation: admitted.generation,
             cache: &store.lexical_index_cache,
             snapshot: &admitted.snapshot,
@@ -383,6 +384,7 @@ mod tests {
         for limit in [bytes - 1, bytes] {
             let accounting = Arc::new(Accounting::new(u64::MAX, limit));
             let inputs = LexicalInputs {
+                filter: None,
                 accounting: &accounting,
                 ..inputs
             };
@@ -423,6 +425,7 @@ mod tests {
                 ));
                 let foreign_cache = super::super::LexicalIndexCache::new();
                 let foreign_inputs = LexicalInputs {
+                    filter: None,
                     cache: &foreign_cache,
                     accounting: &store.accounting,
                     ..inputs
@@ -463,6 +466,7 @@ mod tests {
         assert!(matches!(
             context.prepare_structured(
                 LexicalInputs {
+                    filter: None,
                     accounting: &accounting,
                     ..inputs
                 },

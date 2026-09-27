@@ -349,6 +349,7 @@ mod tests {
         let admission = store.admit_lexical_query().expect("prime admission");
         let primed = assemble_lexical_index(
             LexicalInputs {
+                filter: None,
                 generation: admission.generation,
                 cache: &store.lexical_index_cache,
                 snapshot: &admission.snapshot,

@@ -2572,6 +2572,36 @@ typedef struct ZeQuerySnippets {
 } ZeQuerySnippets;
 
 /*
+ Eligibility constraints for `ze_query_filtered`; existing query layouts are unchanged.
+ */
+typedef struct ZeQueryFilter {
+    /*
+     Caller-provided structure size.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Optional scan-compatible filter AST.
+     */
+    const struct ZeFilter *filter;
+    /*
+     One enables the half-open timestamp range.
+     */
+    uint32_t has_timestamp_range;
+    /*
+     Inclusive timestamp start.
+     */
+    int64_t start_ts;
+    /*
+     Exclusive timestamp end.
+     */
+    int64_t end_ts;
+} ZeQueryFilter;
+
+/*
  Explicit seal request.
  */
 typedef struct ZeSealRequest {
@@ -3262,6 +3292,18 @@ ze_error_code ze_query_with_snippets(ze_handle handle,
                                      size_t snippet_bytes,
                                      struct ZeQueryResult *out_result,
                                      struct ZeQuerySnippets *out_snippets);
+
+/*
+ Runs a query with scan-compatible eligibility constraints before top-k and fusion.
+ A zero `snippet_bytes` disables snippets and permits a null `out_snippets`.
+ Release results with the existing query and snippet free functions.
+ */
+ze_error_code ze_query_filtered(ze_handle handle,
+                                const struct ZeQueryRequest *request,
+                                const struct ZeQueryFilter *constraints,
+                                size_t snippet_bytes,
+                                struct ZeQueryResult *out_result,
+                                struct ZeQuerySnippets *out_snippets);
 
 /*
  Releases callee-owned query snippets; a zeroed value is a successful

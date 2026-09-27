@@ -523,6 +523,10 @@ fn every_phase_two_struct_has_the_frozen_size_and_field_offsets() {
         has_rarest_exact_document_frequency: 132,
         rarest_exact_document_frequency: 136, cancel_token: 144, deadline_ns: 152
     });
+    assert_layout!(ZeQueryFilter, 40, 8, {
+        abi_size: 0, abi_reserved: 4, filter: 8, has_timestamp_range: 16,
+        start_ts: 24, end_ts: 32
+    });
     assert_layout!(ZeQueryHit, 64, 8, {
         has_document: 0, has_revision: 4, doc_id: 8, revision: 24, score: 32,
         has_vector_score: 40, has_lexical_score: 44, vector_squared_l2: 48,
@@ -589,6 +593,7 @@ const POISON_TABLE_NAMES: &[&str] = &[
     "ze_purge",
     "ze_query",
     "ze_query_with_snippets",
+    "ze_query_filtered",
     "ze_scan",
     "ze_scan_ordered",
     "ze_scan_result_free",
@@ -931,6 +936,19 @@ fn poison_function_table() -> Vec<(&'static str, PoisonCall)> {
             let request = common::valid_query_request(&context.vector);
             let mut result: ZeQueryResult = common::sized_zeroed();
             ze_query(context.store.handle, &request, &mut result)
+        }),
+        ("ze_query_filtered", |context| {
+            let request: ZeQueryRequest = common::sized_zeroed();
+            let constraints: ZeQueryFilter = common::sized_zeroed();
+            let mut result: ZeQueryResult = common::sized_zeroed();
+            ze_query_filtered(
+                context.store.handle,
+                &request,
+                &constraints,
+                0,
+                &mut result,
+                std::ptr::null_mut(),
+            )
         }),
         ("ze_query_with_snippets", |context| {
             let request = common::valid_query_request(&context.vector);

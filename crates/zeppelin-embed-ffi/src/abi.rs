@@ -1500,6 +1500,24 @@ pub struct ZeQueryRequest {
     pub deadline_ns: u64,
 }
 
+/// Eligibility constraints for `ze_query_filtered`; existing query layouts are unchanged.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeQueryFilter {
+    /// Caller-provided structure size.
+    pub abi_size: u32,
+    /// Must be zero.
+    pub abi_reserved: u32,
+    /// Optional scan-compatible filter AST.
+    pub filter: *const ZeFilter,
+    /// One enables the half-open timestamp range.
+    pub has_timestamp_range: u32,
+    /// Inclusive timestamp start.
+    pub start_ts: i64,
+    /// Exclusive timestamp end.
+    pub end_ts: i64,
+}
+
 /// One callee-owned structured-query hit.
 #[derive(Clone, Copy)]
 #[repr(C)]
