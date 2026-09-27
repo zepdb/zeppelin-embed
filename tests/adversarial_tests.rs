@@ -3155,6 +3155,16 @@ fn crash_fired_during_acked_op_is_recovered_not_reported_as_i1() {
 }
 
 #[test]
+fn storage_wal_rotation_crash_preserves_sealed_partition_model() {
+    // Seed 36 crashes at the WAL rename after seal's manifest is durable,
+    // then drops the sealed timestamp partition. The model must seal too.
+    let root = tempfile::tempdir().expect("WAL rotation crash fixture");
+    let outcome = adversarial::runner::run_program(36, FaultProfile::Crash, root.path())
+        .expect("WAL rotation crash episode");
+    assert!(outcome.violations.is_empty(), "{:?}", outcome.violations);
+}
+
+#[test]
 fn storage_durability_first_ack_survives_post_ack_wal_create_crash() {
     let violation =
         adversarial::runner::first_durable_ack_survives_wal_create_crash(0, FaultProfile::None)
@@ -19233,7 +19243,7 @@ fn one_runner_episode_reaches_required_native_response_contracts() {
 #[cfg(not(feature = "graph-cypher"))]
 #[test]
 fn native_graph_runner_keys_are_absent_without_graph_feature() {
-    // Measured 90 at HEAD and after ZE-51; the old 88 pin was stale.
+    // ZE-233 adds pre/post WAL rotation rename crash boundaries (88 -> 90).
     assert_eq!(adversarial::coverage::REQUIRED_SMOKE_COVERAGE.len(), 90);
     assert!(
         !adversarial::coverage::required_smoke_coverage()

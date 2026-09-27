@@ -2472,7 +2472,13 @@ fn observe_wal_prefix_from_operation_fixture(
         .iter()
         .map(|mutation| independent::expected_wal_record(&fixture, mutation))
         .collect::<Result<Vec<_>, _>>()?;
-    if clean_wal.records != expected_records {
+    let retained_records = expected_records
+        .iter()
+        .filter(|record| record.seq > fixture.absorbed_through)
+        .cloned()
+        .collect::<Vec<_>>();
+    if clean_wal.first_seq != fixture.absorbed_through + 1 || clean_wal.records != retained_records
+    {
         return Err("literal fixture WAL encoding differs from persisted clean WAL".to_owned());
     }
     let acknowledged_count = ack_ledger.iter().filter(|ack| ack.acknowledged).count();
@@ -2492,7 +2498,10 @@ fn observe_wal_prefix_from_operation_fixture(
         acknowledged: expected_records
             .get(..acknowledged_count)
             .unwrap_or_default()
-            .to_vec(),
+            .iter()
+            .filter(|record| record.seq > fixture.absorbed_through)
+            .cloned()
+            .collect(),
         optional_unacknowledged_tail: expected_records
             .get(acknowledged_count..)
             .unwrap_or_default()
@@ -4982,12 +4991,16 @@ pub(crate) mod tests {
             evidence
                 .ack_ledger
                 .iter()
-                .filter(|ack| ack.acknowledged)
+                .filter(|ack| ack.acknowledged && ack.planned_first_seq > primitive.absorbed_through)
                 .count()
         );
         assert_eq!(
             evidence.observed.reopened_ack_boundaries.len(),
-            evidence.expected.acknowledged.len(),
+            evidence
+                .ack_ledger
+                .iter()
+                .filter(|ack| ack.acknowledged)
+                .count(),
             "every returned durable ack must have its own public reopen"
         );
         assert_eq!(
@@ -5338,7 +5351,12 @@ pub(crate) mod tests {
     #[test]
     pub(crate) fn storage_oracle_i16_plant_is_rejected() {
         let mut reordered = observe_wal_prefix(53, 13, None).expect("observe clean WAL");
-        reordered.observed.records.swap(0, 1);
+        reordered
+            .observed
+            .records
+            .first_mut()
+            .expect("post-seal tail")
+            .seq += 1;
         assert_eq!(
             independent::check_i16(&reordered.expected, &reordered.observed)
                 .expect_err("reordered WAL plant must fail")
@@ -5346,18 +5364,19 @@ pub(crate) mod tests {
             "I16.storage-wal-prefix-v1: record sequence is not a prefix"
         );
         let mut dropped = observe_wal_prefix(53, 13, None).expect("observe clean WAL");
-        let retained = dropped
-            .expected
-            .acknowledged
-            .len()
-            .checked_sub(1)
+        dropped
+            .observed
+            .reopened_ack_boundaries
+            .last_mut()
+            .expect("durable acknowledgement boundary")
+            .records
+            .pop()
             .expect("acknowledged record to drop");
-        dropped.observed.records.truncate(retained);
         assert_eq!(
             independent::check_i16(&dropped.expected, &dropped.observed)
                 .expect_err("dropped acknowledged record plant must fail")
                 .to_string(),
-            "I16.storage-wal-prefix-v1: acknowledged record missing or changed"
+            "I16.storage-wal-prefix-v1: acknowledgement boundary reopen differs"
         );
         let mut torn = observe_wal_prefix(53, 13, Some(StorageFaultKind::TornWalBody))
             .expect("observe torn WAL");

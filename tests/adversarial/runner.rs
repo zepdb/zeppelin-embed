@@ -3820,6 +3820,17 @@ fn run_program_for_with_clock(
                 }
             }
             Err(error) => {
+                // Rotation faults occur after seal publication, including a
+                // refused corrupt temporary WAL. Preserve that partition in
+                // the model even when the public seal returned an error.
+                if matches!(op, Op::Seal)
+                    && fired_at_operation.iter().any(|event| {
+                        crash_path_is(event, "wal.ze") || crash_path_is(event, ".wal.ze.purge.tmp")
+                    })
+                {
+                    model.seal();
+                }
+
                 if simulated_crash_recovered
                     && matches!(
                         op,
@@ -17753,14 +17764,18 @@ fn reconcile_simulated_crash(
                 return Err(format!("Crash/{site:?} is not a durable purge boundary"));
             }
         },
-        // A scheduled Seal crash fires before the manifest rename is made
-        // directory-durable. The durable WAL independently preserves the
-        // logical document set in the active segment after reopen.
+        // ZE-233 rotates the WAL only after the seal manifest is durable.
+        // A crash in that rotation therefore retains the sealed partition,
+        // even though the seal call did not return an acknowledgement.
         Op::Seal => match crash.site {
             fault_vfs::FaultSite::Write
             | fault_vfs::FaultSite::Sync
             | fault_vfs::FaultSite::Rename
-            | fault_vfs::FaultSite::Delete => {}
+            | fault_vfs::FaultSite::Delete => {
+                if crash_path_is(crash, "wal.ze") || crash_path_is(crash, ".wal.ze.purge.tmp") {
+                    model.seal();
+                }
+            }
             site => {
                 return Err(format!("Crash/{site:?} is not a Seal boundary"));
             }

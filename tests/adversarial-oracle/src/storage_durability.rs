@@ -1326,7 +1326,12 @@ pub fn planned_wal_mutation_offset(
     }
     let mut record_start = WAL_HEADER_LEN as u64;
     let mut final_record = None;
-    for mutation in &fixture.mutations {
+    // Sealed mutations have been absorbed by the manifest and rotated out.
+    for mutation in fixture
+        .mutations
+        .iter()
+        .filter(|mutation| mutation.first_seq > fixture.absorbed_through)
+    {
         let record = expected_wal_record(fixture, mutation)?;
         let payload_length = u64::try_from(record.payload.len())
             .map_err(|_| "fixture WAL payload exceeds u64".to_owned())?;
@@ -3991,6 +3996,18 @@ mod tests {
         assert_eq!(segment.file_length, 4_096);
         assert_eq!(segment.header_checksum, 0x1122_3344_5566_7788);
         assert_eq!(segment.whole_file_checksum, 0x8877_6655_4433_2211);
+    }
+
+    #[test]
+    fn wal_damage_offset_targets_only_the_post_seal_record() {
+        let fixture = StorageFixtureV1::derive(7);
+        let tail = expected_wal_record(&fixture, fixture.mutations.last().expect("tail"))
+            .expect("literal tail record");
+        assert_eq!(
+            planned_wal_mutation_offset(&fixture, WalMutationKind::ChecksumFlip)
+                .expect("checksum offset"),
+            40 + 14 + tail.payload.len() as u64 + fixture.wal_mutation_offset % 8
+        );
     }
 
     #[test]
