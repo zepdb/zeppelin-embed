@@ -515,3 +515,50 @@ fn count_after_completion(run: &Path) -> u64 {
     let store = Store::open(run, options()).expect("reopen completed run");
     count(&store, 7)
 }
+
+#[test]
+fn delete_matching_after_sealed_delete_preserves_survivors_and_purges_history() {
+    for seal_before_delete in [false, true] {
+        let directory = tempdir().expect("store directory");
+        let store = Store::open(directory.path(), options()).expect("open store");
+        store
+            .ingest(IngestBatch::new(vec![document(1, 1, 7, MARKER)]))
+            .expect("old transcript");
+        store.seal().expect("seal old transcript");
+        store
+            .ingest(IngestBatch::new(vec![document(
+                2,
+                1,
+                7,
+                "currenttranscript",
+            )]))
+            .expect("replacement transcript");
+        store
+            .delete(zeppelin_embed::ingest::DeleteBatch::new(vec![DocId::new(
+                1,
+            )]))
+            .expect("delete old transcript");
+        if seal_before_delete {
+            store.seal().expect("seal replacement");
+        }
+        let report = store
+            .delete_matching(&note_is(7))
+            .expect("delete replacement");
+        assert_eq!(report.deleted_ids(), &[DocId::new(2)]);
+        store
+            .ingest(IngestBatch::new(vec![document(3, 1, 8, SURVIVOR_MARKER)]))
+            .expect("unrelated survivor");
+        assert!(!marker_files(directory.path()).is_empty());
+        let token = store.purge(&[DocId::new(1)]).expect("purge old ID");
+        store
+            .await_physical_purge(token)
+            .expect("complete old ID purge");
+        assert!(marker_files(directory.path()).is_empty());
+        assert!(files_containing(directory.path(), b"currenttranscript").is_empty());
+        assert_eq!(count(&store, 8), 1);
+        store.close().expect("close");
+        let reopened = Store::open(directory.path(), options()).expect("reopen");
+        assert_eq!(count(&reopened, 7), 0);
+        assert_eq!(count(&reopened, 8), 1);
+    }
+}

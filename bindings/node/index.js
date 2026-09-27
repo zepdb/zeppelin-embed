@@ -241,6 +241,10 @@ class Store {
     return report;
   }
 
+  purge(ids) {
+    return callNative(() => this._native.purge(ids));
+  }
+
   scan(request) {
     return callNative(() => this._native.scan(request));
   }

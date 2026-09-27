@@ -280,6 +280,15 @@ export interface CountResult {
   readonly generation: bigint;
 }
 
+export interface PurgeReport {
+  readonly generation: bigint;
+  readonly segmentsRewritten: bigint;
+  /** Number of distinct requested IDs absent from physical storage. */
+  readonly unknownIdCount: bigint;
+  readonly walRewritten: boolean;
+  readonly isNoOp: boolean;
+}
+
 export interface DeleteWhereReport {
   /** Number of documents deleted; `0n` when nothing matched. */
   readonly deleted: bigint;
@@ -570,6 +579,20 @@ export declare class Store {
    * and `ZE_ERR_ACCESS_MODE` on a read-only store.
    */
   deleteWhere(filter: Filter): DeleteWhereReport;
+  /**
+   * Synchronously removes all stored versions of these IDs, including text
+   * left by an earlier `delete`. IDs may be live or already deleted; unknown
+   * IDs are reported. Requires a nonempty array (`ZE_ERR_EMPTY_BATCH`).
+   *
+   * Returns only after affected segments and the WAL are rewritten and old
+   * files unlinked. If interrupted after scheduling, the next writable open
+   * completes the purge. On failure, close and reopen before retrying.
+   * Throws `ZE_ERR_ACCESS_MODE` for read-only stores and `ZE_ERR_BUSY` while
+   * a purge is pending. This may rewrite whole segments and blocks the caller.
+   * `deleteWhere` matches live documents only: purge earlier deleted IDs
+   * explicitly to remove their historical bytes.
+   */
+  purge(ids: readonly DocumentId[]): PurgeReport;
   scan(request?: ScanRequest): ScanPage;
   /**
    * Count live documents matching the optional filter and timestamp range.

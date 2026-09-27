@@ -178,3 +178,38 @@ test('deleteWhere on a read-only store throws ZE_ERR_ACCESS_MODE', () => {
     rmSync(root, { force: true, recursive: true });
   }
 });
+
+for (const sealBeforeDelete of [false, true]) {
+  test(`deleteWhere after replacement and delete (seal=${sealBeforeDelete})`, () => {
+    const root = temporaryRoot();
+    const durable = { durability: 'durable', commitTier: 'durable' };
+    let store = openNamespace(root, 'notes', spec, durable);
+    try {
+      store.upsert([segment(1n, 7n, MARKER)]);
+      store.seal();
+      store.upsert([segment(2n, 7n, 'currenttranscript')]);
+      store.delete([1n]);
+      if (sealBeforeDelete) store.seal();
+      assert.equal(store.deleteWhere(noteIs(7n)).deleted, 1n);
+      store.upsert([segment(3n, 8n, SURVIVOR)]);
+      assert.notDeepEqual(markerFiles(root), []);
+      const purged = store.purge([1n]);
+      assert.equal(purged.segmentsRewritten, 1n);
+      assert.equal(purged.unknownIdCount, 0n);
+      assert.equal(purged.walRewritten, true);
+      assert.equal(purged.isNoOp, false);
+      assert.equal(purged.generation, store.count().generation);
+      assert.deepEqual(markerFiles(root), []);
+      assert.deepEqual(filesContaining(root, 'currenttranscript'), []);
+      assert.equal(store.count({ filter: noteIs(8n) }).count, 1n);
+      store.close();
+      store = openNamespace(root, 'notes', spec, durable);
+      assert.equal(store.count({ filter: noteIs(7n) }).count, 0n);
+      assert.equal(store.get([3n], { text: true }).documents[0].text, SURVIVOR);
+      assert.equal(store.purge([999n]).isNoOp, true);
+    } finally {
+      store.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}

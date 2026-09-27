@@ -892,12 +892,20 @@ impl Store {
         );
         let durable_end = writer.durable_end();
         if durable_end >= retained_first_seq.get() {
+            let snapshot = self
+                .snapshot
+                .read()
+                .map_err(|_| StoreError::Synchronization {
+                    component: "published snapshot",
+                })?;
+            let snapshot = snapshot.as_ref().ok_or(StoreError::Closed)?;
             ensure_wal_rewrite_covers_retained(
                 vfs,
                 &self.directory,
                 retained_first_seq,
                 &intent.ids,
                 next_active,
+                snapshot.all_segments(),
             )?;
         }
         let rewrite_first_seq = LogSeq::new(durable_end.checked_add(1).ok_or(
@@ -1771,6 +1779,7 @@ fn ensure_wal_rewrite_covers_retained(
     first_seq: LogSeq,
     purged_ids: &[DocId],
     next_active: &super::ActiveSegment,
+    sealed: &[SegmentReader],
 ) -> Result<(), PurgeError> {
     let wal_path = directory.join("wal.ze");
     let reader = crate::wal::WalReader::open(vfs, &wal_path).map_err(StoreError::Wal)?;
@@ -1787,12 +1796,21 @@ fn ensure_wal_rewrite_covers_retained(
                         .existing(version.doc_id())
                         .is_some_and(|(_, existing, _)| existing.revision() >= version.revision())
             }
-            super::wal_payload::MutationPayload::Delete(ids) => ids.iter().all(|id| {
-                purged_ids.contains(id)
-                    || next_active
-                        .existing(*id)
-                        .is_some_and(|(row, _, _)| next_active.is_tombstoned(row))
-            }),
+            super::wal_payload::MutationPayload::Delete(ids) => {
+                let mut covered = true;
+                for id in ids {
+                    if !purged_ids.contains(&id)
+                        && !next_active
+                            .existing(id)
+                            .is_some_and(|(row, _, _)| next_active.is_tombstoned(row))
+                        && !sealed_delete_is_persisted(sealed, id)?
+                    {
+                        covered = false;
+                        break;
+                    }
+                }
+                covered
+            }
             super::wal_payload::MutationPayload::MetadataEdit(_)
             | super::wal_payload::MutationPayload::BatchMember { .. } => false,
         };
@@ -1801,6 +1819,24 @@ fn ensure_wal_rewrite_covers_retained(
         }
     }
     Ok(())
+}
+
+// A sealed delete commits its replacement alive bitmap before acknowledging
+// the WAL record, without advancing the manifest's active-WAL boundary.
+// Absence alone is not proof: require a stored tombstone and no live copy.
+fn sealed_delete_is_persisted(sealed: &[SegmentReader], id: DocId) -> Result<bool, StoreError> {
+    let mut found = false;
+    for segment in sealed {
+        let rows = segment.query_rows_with_doc_id(id)?;
+        if !rows.is_empty() {
+            let alive = segment.alive().map_err(StoreError::Segment)?;
+            if rows.iter().any(|row| alive.is_alive(*row)) {
+                return Ok(false);
+            }
+            found = true;
+        }
+    }
+    Ok(found)
 }
 
 fn purge_ingest_error(error: super::IngestError) -> PurgeError {

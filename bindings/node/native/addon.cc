@@ -1935,6 +1935,80 @@ napi_value DeleteDocuments(napi_env env, napi_callback_info info) {
   });
 }
 
+napi_value Purge(napi_env env, napi_callback_info info) {
+  return Guard(env, [&]() -> napi_value {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_value receiver;
+    if (!NapiOk(env,
+                napi_get_cb_info(env, info, &argc, args, &receiver, nullptr),
+                "read purge arguments"))
+      return nullptr;
+    if (argc < 1) {
+      napi_throw_type_error(env, "ERR_MISSING_ARGS", "ids are required");
+      return nullptr;
+    }
+    NativeStore *store = UnwrapStore(env, receiver);
+    if (store == nullptr)
+      return nullptr;
+    bool is_array = false;
+    uint32_t id_count = 0;
+    if (!NapiOk(env, napi_is_array(env, args[0], &is_array), "inspect ids"))
+      return nullptr;
+    if (!is_array) {
+      napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE", "ids must be an array");
+      return nullptr;
+    }
+    if (!NapiOk(env, napi_get_array_length(env, args[0], &id_count), "read id count"))
+      return nullptr;
+    std::vector<ZeDocId> ids(id_count);
+    for (uint32_t index = 0; index < id_count; ++index) {
+      napi_value id;
+      if (!NapiOk(env, napi_get_element(env, args[0], index, &id), "read document id") ||
+          !GetDocId(env, id, &ids[index]))
+        return nullptr;
+    }
+    ZePurgeRequest request{};
+    request.abi_size = sizeof(request);
+    request.doc_ids = ids.data();
+    request.doc_id_count = ids.size();
+    ZePurgeTokenReport token{};
+    token.abi_size = sizeof(token);
+    ze_error_code status = ze_purge(store->handle, &request, &token);
+    if (status != ZE_OK)
+      return ThrowZeppelin(env, store->handle, status);
+    ZeAwaitPurgeRequest wait{};
+    wait.abi_size = sizeof(wait);
+    wait.token_id = token.token_id;
+    ZePurgeReport report{};
+    report.abi_size = sizeof(report);
+    status = ze_await_physical_purge(store->handle, &wait, &report);
+    if (status != ZE_OK)
+      return ThrowZeppelin(env, store->handle, status);
+    napi_value result;
+    if (!NapiOk(env, napi_create_object(env, &result), "create purge report"))
+      return nullptr;
+    const std::pair<const char *, uint64_t> counts[] = {
+        {"generation", report.generation},
+        {"segmentsRewritten", report.segments_rewritten},
+        {"unknownIdCount", report.unknown_id_count}};
+    for (const auto &field : counts) {
+      napi_value value;
+      if (!NapiOk(env, napi_create_bigint_uint64(env, field.second, &value), "create purge count") ||
+          !SetNamed(env, result, field.first, value))
+        return nullptr;
+    }
+    napi_value wal_rewritten;
+    napi_value is_no_op;
+    if (!NapiOk(env, napi_get_boolean(env, report.wal_rewritten != 0, &wal_rewritten), "create WAL flag") ||
+        !SetNamed(env, result, "walRewritten", wal_rewritten) ||
+        !NapiOk(env, napi_get_boolean(env, report.is_no_op != 0, &is_no_op), "create no-op flag") ||
+        !SetNamed(env, result, "isNoOp", is_no_op))
+      return nullptr;
+    return result;
+  });
+}
+
 napi_value DeleteWhere(napi_env env, napi_callback_info info) {
   return Guard(env, [&]() -> napi_value {
     size_t argc = 1;
@@ -3561,6 +3635,7 @@ napi_value Initialize(napi_env env, napi_value exports) {
       {"get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"delete", nullptr, DeleteDocuments, nullptr, nullptr, nullptr,
        napi_default, nullptr},
+      {"purge", nullptr, Purge, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"deleteWhere", nullptr, DeleteWhere, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"scan", nullptr, Scan, nullptr, nullptr, nullptr, napi_default, nullptr},
