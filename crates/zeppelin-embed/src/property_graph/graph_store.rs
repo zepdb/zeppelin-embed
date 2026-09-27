@@ -228,6 +228,16 @@ impl GraphStore {
             .map_err(|error| GraphStoreError::graph(NativeGraphError::Store(error)))
     }
 
+    /// The native statement seam this store owns, for the outer Cypher
+    /// compiler (`zeppelin_embed_cypher::execute`) only. It grants no
+    /// capability the seam does not already check: every statement is
+    /// admitted, classified and written exactly as through [`query`](Self::query).
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn statement_store(&self) -> &Store {
+        &self.store
+    }
+
     #[cfg(test)]
     pub(crate) fn create_with_allocator_seed_for_test(
         path: impl AsRef<Path>,
