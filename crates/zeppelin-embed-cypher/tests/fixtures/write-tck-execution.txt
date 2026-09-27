@@ -28,7 +28,7 @@
 
 # Original openCypher TCK write coordinates for ZE-57 execution.
 # Source: https://github.com/opencypher/openCypher at 007895aff5f33097d67b2e48a0a2babd6bd18590.
-# 42 write scenarios are vendored; S1 executes Create1[1-12].
+# 42 accepted write scenarios and 3 profile rejections are executed by S1-S5.
 # Setup, parameter, query and expectation text is copied verbatim.
 # Copyright (c) 2015-2023 "Neo Technology," Network Engine for Objects in Lund AB.
 # Licensed under the Apache License, Version 2.0. See OPENCYPHER-LICENSE-APACHE.
@@ -478,3 +478,27 @@ expect bag
   | r |
 side-effects
   | -properties | 1 |
+
+=== clauses/remove/Remove1.feature [2]
+query
+  MATCH (n)
+  REMOVE n.num, n.name
+  RETURN size(keys(n)) AS props
+expect reject-profile
+side-effects none
+
+=== clauses/remove/Remove1.feature [4]
+query
+  MATCH ()-[r]->()
+  REMOVE r.num, r.a
+  RETURN size(keys(r)) AS props
+expect reject-profile
+side-effects none
+
+=== clauses/remove/Remove1.feature [7]
+query
+  MATCH (n)
+  REMOVE n.num
+  RETURN sum(size(keys(n))) AS totalNumberOfProps
+expect reject-profile
+side-effects none
