@@ -980,6 +980,21 @@ typedef struct ZeGraphHandle {
 } ZeGraphHandle;
 
 /*
+ Fixed pool span. `start` and `count` use the named target array's elements.
+ Checked addition and full containment are required before dereferencing.
+ */
+typedef struct ZeGraphRange {
+    /*
+     Zero-based first element; zero for an unused range.
+     */
+    uint32_t start;
+    /*
+     Number of elements; an empty range remains distinct from absent data.
+     */
+    uint32_t count;
+} ZeGraphRange;
+
+/*
  Store-local nonzero node identity. No relationship or document conversion.
  */
 typedef struct ZeNodeId {
@@ -1008,19 +1023,100 @@ typedef struct ZeRelId {
 } ZeRelId;
 
 /*
- Fixed pool span. `start` and `count` use the named target array's elements.
- Checked addition and full containment are required before dereferencing.
+ Tagged existing/local node endpoint. Inactive fields zero; kind Unused is only legal in non-relationship or delete items.
  */
-typedef struct ZeGraphRange {
+typedef struct ZeGraphEndpoint {
     /*
-     Zero-based first element; zero for an unused range.
+     Exact sizeof this version-one descriptor; fixed array stride.
      */
-    uint32_t start;
+    uint32_t abi_size;
     /*
-     Number of elements; an empty range remains distinct from absent data.
+     Must be zero.
      */
-    uint32_t count;
-} ZeGraphRange;
+    uint32_t abi_reserved;
+    /*
+     One ZeGraphEndpointKind value.
+     */
+    uint32_t kind;
+    /*
+     Batch item index for Local; zero otherwise.
+     */
+    uint32_t local_item;
+    /*
+     Nonzero NodeId for Node; zero otherwise.
+     */
+    struct ZeNodeId node;
+} ZeGraphEndpoint;
+
+/*
+ One keyed full-record operation, at most 16384 per atomic batch. No caller-selected fresh identity. Input image optional only for Delete; relationship endpoints are required for nondelete relationship items.
+ */
+typedef struct ZeGraphBatchItem {
+    /*
+     Exact sizeof this version-one descriptor; fixed array stride.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     One ZeGraphEntityKind.
+     */
+    uint32_t entity_kind;
+    /*
+     One ZeGraphBatchOperation.
+     */
+    uint32_t operation;
+    /*
+     Byte-exact application namespace (empty/NUL permitted) in request pool.bytes.
+     */
+    struct ZeGraphRange namespace_name;
+    /*
+     Byte-exact application key (empty/NUL permitted) in request pool.bytes.
+     */
+    struct ZeGraphRange key;
+    /*
+     Requested positive revision; checked against existing state.
+     */
+    uint64_t revision;
+    /*
+     Only node Put/Delete: expected nonzero incarnation; zero otherwise.
+     */
+    struct ZeNodeId expected_node;
+    /*
+     Only relationship Put/Delete: expected nonzero incarnation; zero otherwise.
+     */
+    struct ZeRelId expected_relationship;
+    /*
+     Positive only for Recreate; zero otherwise.
+     */
+    uint64_t expected_deletion_revision;
+    /*
+     Delete only: 0 Restrict, 1 Detach (nodes only); zero otherwise.
+     */
+    uint32_t delete_mode;
+    /*
+     Exactly 1 for Create/Put/Recreate, 0 for Delete.
+     */
+    uint32_t has_image;
+    /*
+     Index into pool.nodes or pool.relationships by entity_kind; zero if absent.
+     */
+    uint32_t image;
+    /*
+     Must be zero.
+     */
+    uint32_t reserved;
+    /*
+     Relationship source input; unused for nodes and deletes.
+     */
+    struct ZeGraphEndpoint source;
+    /*
+     Relationship target input; unused for nodes and deletes.
+     */
+    struct ZeGraphEndpoint target;
+} ZeGraphBatchItem;
 
 /*
  Version-one flat value descriptor. `abi_size` must equal sizeof this type.
@@ -1067,32 +1163,6 @@ typedef struct ZeGraphValue {
      */
     struct ZeGraphRange range;
 } ZeGraphValue;
-
-/*
- Property entry. Input names are unique; null is not a stored value.
- */
-typedef struct ZeGraphProperty {
-    /*
-     Exact sizeof this version-one descriptor; fixed array stride.
-     */
-    uint32_t abi_size;
-    /*
-     Must be zero.
-     */
-    uint32_t abi_reserved;
-    /*
-     UTF-8 name bytes in the value pool.
-     */
-    struct ZeGraphRange name;
-    /*
-     Index into pool.values.
-     */
-    uint32_t value;
-    /*
-     Must be zero.
-     */
-    uint32_t reserved;
-} ZeGraphProperty;
 
 /*
  Copied node record or full node input image. Input image identity and metadata are zero; key/revision come from the batch item. Output payload fields require explicit selection.
@@ -1219,6 +1289,32 @@ typedef struct ZeGraphRelationship {
 } ZeGraphRelationship;
 
 /*
+ Property entry. Input names are unique; null is not a stored value.
+ */
+typedef struct ZeGraphProperty {
+    /*
+     Exact sizeof this version-one descriptor; fixed array stride.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     UTF-8 name bytes in the value pool.
+     */
+    struct ZeGraphRange name;
+    /*
+     Index into pool.values.
+     */
+    uint32_t value;
+    /*
+     Must be zero.
+     */
+    uint32_t reserved;
+} ZeGraphProperty;
+
+/*
  Flat borrowed input or immutable owned output pool. Every pointer/count and range must be validated before traversal; ownership is supplied by the later adapter.
  */
 typedef struct ZeGraphValuePool {
@@ -1297,102 +1393,6 @@ typedef struct ZeGraphValuePool {
 } ZeGraphValuePool;
 
 /*
- Tagged existing/local node endpoint. Inactive fields zero; kind Unused is only legal in non-relationship or delete items.
- */
-typedef struct ZeGraphEndpoint {
-    /*
-     Exact sizeof this version-one descriptor; fixed array stride.
-     */
-    uint32_t abi_size;
-    /*
-     Must be zero.
-     */
-    uint32_t abi_reserved;
-    /*
-     One ZeGraphEndpointKind value.
-     */
-    uint32_t kind;
-    /*
-     Batch item index for Local; zero otherwise.
-     */
-    uint32_t local_item;
-    /*
-     Nonzero NodeId for Node; zero otherwise.
-     */
-    struct ZeNodeId node;
-} ZeGraphEndpoint;
-
-/*
- One keyed full-record operation, at most 16384 per atomic batch. No caller-selected fresh identity. Input image optional only for Delete; relationship endpoints are required for nondelete relationship items.
- */
-typedef struct ZeGraphBatchItem {
-    /*
-     Exact sizeof this version-one descriptor; fixed array stride.
-     */
-    uint32_t abi_size;
-    /*
-     Must be zero.
-     */
-    uint32_t abi_reserved;
-    /*
-     One ZeGraphEntityKind.
-     */
-    uint32_t entity_kind;
-    /*
-     One ZeGraphBatchOperation.
-     */
-    uint32_t operation;
-    /*
-     Byte-exact application namespace (empty/NUL permitted) in request pool.bytes.
-     */
-    struct ZeGraphRange namespace_name;
-    /*
-     Byte-exact application key (empty/NUL permitted) in request pool.bytes.
-     */
-    struct ZeGraphRange key;
-    /*
-     Requested positive revision; checked against existing state.
-     */
-    uint64_t revision;
-    /*
-     Only node Put/Delete: expected nonzero incarnation; zero otherwise.
-     */
-    struct ZeNodeId expected_node;
-    /*
-     Only relationship Put/Delete: expected nonzero incarnation; zero otherwise.
-     */
-    struct ZeRelId expected_relationship;
-    /*
-     Positive only for Recreate; zero otherwise.
-     */
-    uint64_t expected_deletion_revision;
-    /*
-     Delete only: 0 Restrict, 1 Detach (nodes only); zero otherwise.
-     */
-    uint32_t delete_mode;
-    /*
-     Exactly 1 for Create/Put/Recreate, 0 for Delete.
-     */
-    uint32_t has_image;
-    /*
-     Index into pool.nodes or pool.relationships by entity_kind; zero if absent.
-     */
-    uint32_t image;
-    /*
-     Must be zero.
-     */
-    uint32_t reserved;
-    /*
-     Relationship source input; unused for nodes and deletes.
-     */
-    struct ZeGraphEndpoint source;
-    /*
-     Relationship target input; unused for nodes and deletes.
-     */
-    struct ZeGraphEndpoint target;
-} ZeGraphBatchItem;
-
-/*
  One synchronous atomic structured batch. Total canonical input including framing is at most 8 MiB; runtime/staging validates ownership and exact replay.
  */
 typedef struct ZeGraphBatchRequest {
@@ -1423,6 +1423,192 @@ typedef struct ZeGraphBatchRequest {
 } ZeGraphBatchRequest;
 
 /*
+ One completed result column; order and duplicate display names are preserved.
+ */
+typedef struct ZeGraphColumn {
+    /*
+     Exact sizeof this version-one descriptor; fixed array stride.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     UTF-8 name bytes in response.pool.bytes.
+     */
+    struct ZeGraphRange name;
+    /*
+     Nonzero bitmask Null1 Bool2 I644 F648 String16 Node32 Rel64 List128.
+     */
+    uint32_t kinds;
+    /*
+     Must be zero.
+     */
+    uint32_t reserved;
+} ZeGraphColumn;
+
+/*
+ One successful structured item outcome; only Committed/Replayed dispositions. Receipts do not authorize generic Cypher retry.
+ */
+typedef struct ZeGraphReceipt {
+    /*
+     Exact sizeof this version-one descriptor; fixed array stride.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Zero-based original batch item index.
+     */
+    uint32_t item;
+    /*
+     One ZeGraphEntityKind.
+     */
+    uint32_t entity_kind;
+    /*
+     Committed for new change or Replayed for exact retry.
+     */
+    uint32_t disposition;
+    /*
+     0/1 deletion outcome; identity denotes affected incarnation.
+     */
+    uint32_t deleted;
+    /*
+     Nonzero only for node outcome.
+     */
+    struct ZeNodeId node;
+    /*
+     Nonzero only for relationship outcome.
+     */
+    struct ZeRelId relationship;
+    /*
+     Installed positive entity/deletion revision.
+     */
+    uint64_t revision;
+    /*
+     Original changed generation; mixed batches may retain older replay generations.
+     */
+    uint64_t generation;
+} ZeGraphReceipt;
+
+/*
+ One eager invocation report retained through projections/aggregations, even with zero result rows. Component yields distinguish absent membership from numeric zero; cross-scoring is complete for retained candidates.
+ */
+typedef struct ZeGraphSearchReport {
+    /*
+     Exact sizeof this version-one descriptor; fixed array stride.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Unique source-order invocation ID.
+     */
+    uint32_t call_id;
+    /*
+     One ZeGraphSearchKind.
+     */
+    uint32_t kind;
+    /*
+     Same admitted generation as response.
+     */
+    uint64_t generation;
+    /*
+     0/1, preserving omitted preference.
+     */
+    uint32_t has_requested_tier;
+    /*
+     One ZeGraphTier when present; zero otherwise.
+     */
+    uint32_t requested_tier;
+    /*
+     0/1; absent for lexical-only execution.
+     */
+    uint32_t has_actual_tier;
+    /*
+     Exact/Scan/Graph actual vector route; zero if absent.
+     */
+    uint32_t actual_tier;
+    /*
+     One ZeGraphScorePrecision; original scores do not imply exact coverage.
+     */
+    uint32_t precision;
+    /*
+     One ZeGraphCandidateCoverage.
+     */
+    uint32_t coverage;
+    /*
+     One ZeGraphLegState.
+     */
+    uint32_t vector_leg;
+    /*
+     One ZeGraphLegState.
+     */
+    uint32_t lexical_leg;
+    /*
+     0/1, selected stored document interpretation.
+     */
+    uint32_t has_document_epoch;
+    /*
+     0/1, declared/effective query interpretation.
+     */
+    uint32_t has_query_epoch;
+    /*
+     0/1, selected lexical interpretation.
+     */
+    uint32_t has_tokenizer_epoch;
+    /*
+     0/1: every retained hybrid candidate has all present components evaluated.
+     */
+    uint32_t cross_score_complete;
+    /*
+     Selected document epoch; zero if absent.
+     */
+    uint64_t document_epoch;
+    /*
+     Selected query epoch; zero if absent.
+     */
+    uint64_t query_epoch;
+    /*
+     Selected analyzer epoch; zero if absent.
+     */
+    uint64_t tokenizer_epoch;
+    /*
+     Effective query-level vector weight, finite in [0,1]; no per-node renormalization.
+     */
+    double effective_alpha;
+    /*
+     Actual scoring-anchor policy version.
+     */
+    uint32_t normalization_version;
+    /*
+     Actual alpha/rule policy version.
+     */
+    uint32_t rules_version;
+    /*
+     Actual retained candidate union size, deduplicated by full identity/version.
+     */
+    uint64_t candidate_count;
+    /*
+     Actual retained candidates whose present modalities were evaluated.
+     */
+    uint64_t cross_scored_count;
+    /*
+     Actual fallbacks; zero does not certify exactness.
+     */
+    uint64_t fallback_count;
+    /*
+     Invocation-specific rows in response.work; global_work names separate cumulative totals.
+     */
+    struct ZeGraphRange work;
+} ZeGraphSearchReport;
+
+/*
  Fixed optional pool/slot index. Presence exactly 0 or 1; absent index is zero. Index zero is legal when present.
  */
 typedef struct ZeGraphOptionalIndex {
@@ -1435,6 +1621,176 @@ typedef struct ZeGraphOptionalIndex {
      */
     uint32_t index;
 } ZeGraphOptionalIndex;
+
+/*
+ Bounded owned error diagnostic, separate from global mutable last-error. Ranges refer to the query source or response pool as named; no borrowed caller strings survive.
+ */
+typedef struct ZeGraphDiagnostic {
+    /*
+     Exact sizeof this version-one descriptor; fixed array stride.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     One append-only ZeErrorCode numeric value.
+     */
+    int32_t code;
+    /*
+     Must be zero.
+     */
+    uint32_t reserved;
+    /*
+     Optional originating plan operator index.
+     */
+    struct ZeGraphOptionalIndex operator_index;
+    /*
+     Exactly zero or one; absent source range is zero.
+     */
+    uint32_t has_source_span;
+    /*
+     Must be zero.
+     */
+    uint32_t source_reserved;
+    /*
+     Byte range in original UTF-8 query source, not character offsets.
+     */
+    struct ZeGraphRange source_span;
+    /*
+     Owned diagnostic UTF-8 bytes in response.pool.bytes.
+     */
+    struct ZeGraphRange message;
+} ZeGraphDiagnostic;
+
+/*
+ One actual counter; global totals include all invocations and normalization passes. Capacity counters are bytes, never logical lengths.
+ */
+typedef struct ZeGraphWorkCounter {
+    /*
+     Exact sizeof this version-one descriptor; fixed array stride.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     One ZeGraphWorkKind.
+     */
+    uint32_t kind;
+    /*
+     Must be zero.
+     */
+    uint32_t reserved;
+    /*
+     Actual measured count; never requested or estimated work.
+     */
+    uint64_t value;
+} ZeGraphWorkCounter;
+
+/*
+ Completed root descriptor. A valid output is emptied before request/handle validation; every nested pointer remains immutable until matching future response_free, including after store close. ABI arena <=4 MiB; registry/control capacity separately charged. This declaration does not implement ownership or exports.
+ */
+typedef struct ZeGraphResponse {
+    /*
+     Exact sizeof this version-one descriptor; fixed array stride.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Opaque registry generation; zero for an empty unowned response. ZE-68 supplies registration/free.
+     */
+    uint64_t owner_token;
+    /*
+     One ZeGraphDisposition; meaningful even on nonzero status.
+     */
+    uint32_t disposition;
+    /*
+     0/1; failure before admission leaves absent.
+     */
+    uint32_t has_admitted_generation;
+    /*
+     Single admitted view generation; zero if absent.
+     */
+    uint64_t admitted_generation;
+    /*
+     0/1; only known Committed outcome may expose a new generation.
+     */
+    uint32_t has_changed_generation;
+    /*
+     Must be zero.
+     */
+    uint32_t reserved;
+    /*
+     Known changed generation; zero if absent.
+     */
+    uint64_t changed_generation;
+    /*
+     Complete row count <=65536; rows preserve bag multiplicity.
+     */
+    size_t row_count;
+    /*
+     Immutable result columns; null only at zero count.
+     */
+    const struct ZeGraphColumn *columns;
+    /*
+     Columns per row, <=256.
+     */
+    size_t column_count;
+    /*
+     Row-major indices into pool.values; explicit Null cells represent missing values.
+     */
+    const uint32_t *cells;
+    /*
+     Checked row_count * column_count; no partially populated rows.
+     */
+    size_t cell_count;
+    /*
+     Root-owned immutable value/name/entity payload pools, independent of caller/store lifetimes.
+     */
+    struct ZeGraphValuePool pool;
+    /*
+     Per-item outcomes; no guessed IDs on Indeterminate. Null only at zero count.
+     */
+    const struct ZeGraphReceipt *receipts;
+    /*
+     Initialized elements in receipts.
+     */
+    size_t receipt_count;
+    /*
+     Every executed eager search report in source order. Null only at zero count.
+     */
+    const struct ZeGraphSearchReport *reports;
+    /*
+     Initialized elements in reports.
+     */
+    size_t report_count;
+    /*
+     Bounded owned diagnostics, including on errors. Null only at zero count.
+     */
+    const struct ZeGraphDiagnostic *diagnostics;
+    /*
+     Initialized elements in diagnostics.
+     */
+    size_t diagnostic_count;
+    /*
+     Actual counter rows; global and per-call ranges distinct. Null only at zero count.
+     */
+    const struct ZeGraphWorkCounter *work;
+    /*
+     Initialized elements in work.
+     */
+    size_t work_count;
+    /*
+     Whole-request cumulative counters in work; includes all preparation and searches.
+     */
+    struct ZeGraphRange global_work;
+} ZeGraphResponse;
 
 /*
  Fixed expression descriptor. Fields not named by kind are zero. Aggregate uses operation, has_operand, left and distinct; unary uses operation/left; binary uses operation/left/right.
@@ -2288,362 +2644,6 @@ typedef struct ZeGraphGetRelsRequest {
     const struct ZeGraphQueryLimits *limits;
 } ZeGraphGetRelsRequest;
 
-/*
- One successful structured item outcome; only Committed/Replayed dispositions. Receipts do not authorize generic Cypher retry.
- */
-typedef struct ZeGraphReceipt {
-    /*
-     Exact sizeof this version-one descriptor; fixed array stride.
-     */
-    uint32_t abi_size;
-    /*
-     Must be zero.
-     */
-    uint32_t abi_reserved;
-    /*
-     Zero-based original batch item index.
-     */
-    uint32_t item;
-    /*
-     One ZeGraphEntityKind.
-     */
-    uint32_t entity_kind;
-    /*
-     Committed for new change or Replayed for exact retry.
-     */
-    uint32_t disposition;
-    /*
-     0/1 deletion outcome; identity denotes affected incarnation.
-     */
-    uint32_t deleted;
-    /*
-     Nonzero only for node outcome.
-     */
-    struct ZeNodeId node;
-    /*
-     Nonzero only for relationship outcome.
-     */
-    struct ZeRelId relationship;
-    /*
-     Installed positive entity/deletion revision.
-     */
-    uint64_t revision;
-    /*
-     Original changed generation; mixed batches may retain older replay generations.
-     */
-    uint64_t generation;
-} ZeGraphReceipt;
-
-/*
- One completed result column; order and duplicate display names are preserved.
- */
-typedef struct ZeGraphColumn {
-    /*
-     Exact sizeof this version-one descriptor; fixed array stride.
-     */
-    uint32_t abi_size;
-    /*
-     Must be zero.
-     */
-    uint32_t abi_reserved;
-    /*
-     UTF-8 name bytes in response.pool.bytes.
-     */
-    struct ZeGraphRange name;
-    /*
-     Nonzero bitmask Null1 Bool2 I644 F648 String16 Node32 Rel64 List128.
-     */
-    uint32_t kinds;
-    /*
-     Must be zero.
-     */
-    uint32_t reserved;
-} ZeGraphColumn;
-
-/*
- Bounded owned error diagnostic, separate from global mutable last-error. Ranges refer to the query source or response pool as named; no borrowed caller strings survive.
- */
-typedef struct ZeGraphDiagnostic {
-    /*
-     Exact sizeof this version-one descriptor; fixed array stride.
-     */
-    uint32_t abi_size;
-    /*
-     Must be zero.
-     */
-    uint32_t abi_reserved;
-    /*
-     One append-only ZeErrorCode numeric value.
-     */
-    int32_t code;
-    /*
-     Must be zero.
-     */
-    uint32_t reserved;
-    /*
-     Optional originating plan operator index.
-     */
-    struct ZeGraphOptionalIndex operator_index;
-    /*
-     Exactly zero or one; absent source range is zero.
-     */
-    uint32_t has_source_span;
-    /*
-     Must be zero.
-     */
-    uint32_t source_reserved;
-    /*
-     Byte range in original UTF-8 query source, not character offsets.
-     */
-    struct ZeGraphRange source_span;
-    /*
-     Owned diagnostic UTF-8 bytes in response.pool.bytes.
-     */
-    struct ZeGraphRange message;
-} ZeGraphDiagnostic;
-
-/*
- One actual counter; global totals include all invocations and normalization passes. Capacity counters are bytes, never logical lengths.
- */
-typedef struct ZeGraphWorkCounter {
-    /*
-     Exact sizeof this version-one descriptor; fixed array stride.
-     */
-    uint32_t abi_size;
-    /*
-     Must be zero.
-     */
-    uint32_t abi_reserved;
-    /*
-     One ZeGraphWorkKind.
-     */
-    uint32_t kind;
-    /*
-     Must be zero.
-     */
-    uint32_t reserved;
-    /*
-     Actual measured count; never requested or estimated work.
-     */
-    uint64_t value;
-} ZeGraphWorkCounter;
-
-/*
- One eager invocation report retained through projections/aggregations, even with zero result rows. Component yields distinguish absent membership from numeric zero; cross-scoring is complete for retained candidates.
- */
-typedef struct ZeGraphSearchReport {
-    /*
-     Exact sizeof this version-one descriptor; fixed array stride.
-     */
-    uint32_t abi_size;
-    /*
-     Must be zero.
-     */
-    uint32_t abi_reserved;
-    /*
-     Unique source-order invocation ID.
-     */
-    uint32_t call_id;
-    /*
-     One ZeGraphSearchKind.
-     */
-    uint32_t kind;
-    /*
-     Same admitted generation as response.
-     */
-    uint64_t generation;
-    /*
-     0/1, preserving omitted preference.
-     */
-    uint32_t has_requested_tier;
-    /*
-     One ZeGraphTier when present; zero otherwise.
-     */
-    uint32_t requested_tier;
-    /*
-     0/1; absent for lexical-only execution.
-     */
-    uint32_t has_actual_tier;
-    /*
-     Exact/Scan/Graph actual vector route; zero if absent.
-     */
-    uint32_t actual_tier;
-    /*
-     One ZeGraphScorePrecision; original scores do not imply exact coverage.
-     */
-    uint32_t precision;
-    /*
-     One ZeGraphCandidateCoverage.
-     */
-    uint32_t coverage;
-    /*
-     One ZeGraphLegState.
-     */
-    uint32_t vector_leg;
-    /*
-     One ZeGraphLegState.
-     */
-    uint32_t lexical_leg;
-    /*
-     0/1, selected stored document interpretation.
-     */
-    uint32_t has_document_epoch;
-    /*
-     0/1, declared/effective query interpretation.
-     */
-    uint32_t has_query_epoch;
-    /*
-     0/1, selected lexical interpretation.
-     */
-    uint32_t has_tokenizer_epoch;
-    /*
-     0/1: every retained hybrid candidate has all present components evaluated.
-     */
-    uint32_t cross_score_complete;
-    /*
-     Selected document epoch; zero if absent.
-     */
-    uint64_t document_epoch;
-    /*
-     Selected query epoch; zero if absent.
-     */
-    uint64_t query_epoch;
-    /*
-     Selected analyzer epoch; zero if absent.
-     */
-    uint64_t tokenizer_epoch;
-    /*
-     Effective query-level vector weight, finite in [0,1]; no per-node renormalization.
-     */
-    double effective_alpha;
-    /*
-     Actual scoring-anchor policy version.
-     */
-    uint32_t normalization_version;
-    /*
-     Actual alpha/rule policy version.
-     */
-    uint32_t rules_version;
-    /*
-     Actual retained candidate union size, deduplicated by full identity/version.
-     */
-    uint64_t candidate_count;
-    /*
-     Actual retained candidates whose present modalities were evaluated.
-     */
-    uint64_t cross_scored_count;
-    /*
-     Actual fallbacks; zero does not certify exactness.
-     */
-    uint64_t fallback_count;
-    /*
-     Invocation-specific rows in response.work; global_work names separate cumulative totals.
-     */
-    struct ZeGraphRange work;
-} ZeGraphSearchReport;
-
-/*
- Completed root descriptor. A valid output is emptied before request/handle validation; every nested pointer remains immutable until matching future response_free, including after store close. ABI arena <=4 MiB; registry/control capacity separately charged. This declaration does not implement ownership or exports.
- */
-typedef struct ZeGraphResponse {
-    /*
-     Exact sizeof this version-one descriptor; fixed array stride.
-     */
-    uint32_t abi_size;
-    /*
-     Must be zero.
-     */
-    uint32_t abi_reserved;
-    /*
-     Opaque registry generation; zero for an empty unowned response. ZE-68 supplies registration/free.
-     */
-    uint64_t owner_token;
-    /*
-     One ZeGraphDisposition; meaningful even on nonzero status.
-     */
-    uint32_t disposition;
-    /*
-     0/1; failure before admission leaves absent.
-     */
-    uint32_t has_admitted_generation;
-    /*
-     Single admitted view generation; zero if absent.
-     */
-    uint64_t admitted_generation;
-    /*
-     0/1; only known Committed outcome may expose a new generation.
-     */
-    uint32_t has_changed_generation;
-    /*
-     Must be zero.
-     */
-    uint32_t reserved;
-    /*
-     Known changed generation; zero if absent.
-     */
-    uint64_t changed_generation;
-    /*
-     Complete row count <=65536; rows preserve bag multiplicity.
-     */
-    size_t row_count;
-    /*
-     Immutable result columns; null only at zero count.
-     */
-    const struct ZeGraphColumn *columns;
-    /*
-     Columns per row, <=256.
-     */
-    size_t column_count;
-    /*
-     Row-major indices into pool.values; explicit Null cells represent missing values.
-     */
-    const uint32_t *cells;
-    /*
-     Checked row_count * column_count; no partially populated rows.
-     */
-    size_t cell_count;
-    /*
-     Root-owned immutable value/name/entity payload pools, independent of caller/store lifetimes.
-     */
-    struct ZeGraphValuePool pool;
-    /*
-     Per-item outcomes; no guessed IDs on Indeterminate. Null only at zero count.
-     */
-    const struct ZeGraphReceipt *receipts;
-    /*
-     Initialized elements in receipts.
-     */
-    size_t receipt_count;
-    /*
-     Every executed eager search report in source order. Null only at zero count.
-     */
-    const struct ZeGraphSearchReport *reports;
-    /*
-     Initialized elements in reports.
-     */
-    size_t report_count;
-    /*
-     Bounded owned diagnostics, including on errors. Null only at zero count.
-     */
-    const struct ZeGraphDiagnostic *diagnostics;
-    /*
-     Initialized elements in diagnostics.
-     */
-    size_t diagnostic_count;
-    /*
-     Actual counter rows; global and per-call ranges distinct. Null only at zero count.
-     */
-    const struct ZeGraphWorkCounter *work;
-    /*
-     Initialized elements in work.
-     */
-    size_t work_count;
-    /*
-     Whole-request cumulative counters in work; includes all preparation and searches.
-     */
-    struct ZeGraphRange global_work;
-} ZeGraphResponse;
-
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -2664,6 +2664,24 @@ ze_error_code ze_graph_open(const struct ZeGraphOpenRequest *request,
  valid until freed. Closing a stale or closed handle is `ZE_ERR_CLOSED`.
  */
 ze_error_code ze_graph_close(struct ZeGraphHandle handle);
+
+/*
+ Applies one atomic structured batch: every node (document) and
+ relationship item commits durably together, or none does. On success
+ `out_response` holds one receipt per item in item order, the disposition
+ and the admitted and changed generations; free it with
+ `ze_graph_response_free`. An exact keyed retry replays.
+ */
+ze_error_code ze_graph_apply(struct ZeGraphHandle handle,
+                             const struct ZeGraphBatchRequest *request,
+                             struct ZeGraphResponse *out_response);
+
+/*
+ Releases one response and resets it to the empty descriptor. An empty
+ response, including one an error left behind, is accepted; freeing again
+ is a no-op. A forged or altered descriptor is `ZE_ERR_INVALID_ARGUMENT`.
+ */
+ze_error_code ze_graph_response_free(struct ZeGraphResponse *response);
 
 #ifdef __cplusplus
 }  // extern "C"

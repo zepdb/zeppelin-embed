@@ -31,6 +31,14 @@ pub struct WriteAttempt<'a> {
     cell: &'a OutcomeCell,
 }
 impl WriteAttempt<'_> {
+    /// The coordinator already decided this outcome; only delivering the C
+    /// response failed. Records the known outcome so it is never reported
+    /// as Indeterminate. Nothing is published.
+    pub fn delivery_failed(self, settlement: WriteSettlement) {
+        self.cell
+            .resolve_attempt(OperationOutcome::Success(settlement.outcome()));
+    }
+
     /// Post-commit settle: records the decided outcome in the guard's cell
     /// first, then stamps and publishes the pending result. Infallible and
     /// allocation-free; after it returns, free accepts the descriptor.

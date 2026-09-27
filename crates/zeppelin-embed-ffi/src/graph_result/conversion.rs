@@ -803,6 +803,10 @@ impl RetainedView for DetachedView {
 /// result into a C response. `control` is the same one the caller passed to
 /// the producing call, so a caller cancellation also interrupts response
 /// construction.
+#[allow(
+    clippy::result_large_err,
+    reason = "ProducerError retains the allocation-free core GraphStoreError"
+)]
 fn with_producer_context<T>(
     store: &GraphStore,
     control: &QueryControl,
@@ -914,12 +918,16 @@ pub(crate) fn apply_and_settle(
             }
         };
         // The write already resolved (committed, replayed or no-op); any
-        // failure from here on must not call `no_effect` -- that would
-        // misreport a real commit as none. Just return without resolving.
+        // failure from here on must retain that known outcome, even when
+        // its response cannot be delivered.
         build_write_response(registry, store, control, requests, attempt, result)
     })
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "ProducerError retains the allocation-free core GraphStoreError"
+)]
 fn build_write_response(
     registry: &'static GraphResultRegistry,
     store: &GraphStore,
@@ -949,12 +957,21 @@ fn build_write_response(
     // `'m, 'g` lifetime tied to `with_producer_context`'s own (function-
     // scoped) `QueryMemory`, so only the lifetime-free `PendingResponse` --
     // never a `PreparedResponse<'m, 'g>` -- escapes to here.
-    let pending = with_producer_context(store, control, |context| {
+    let pending = match with_producer_context(store, control, |context| {
         registry
             .prepare(context, parts, metadata)
             .map(PreparedResponse::detach)
-    })?
-    .map_err(|error| ProducerError::from(ConversionError::from(error)))?;
+    }) {
+        Ok(Ok(pending)) => pending,
+        Ok(Err(error)) => {
+            attempt.delivery_failed(settlement);
+            return Err(ProducerError::from(ConversionError::from(error)));
+        }
+        Err(error) => {
+            attempt.delivery_failed(settlement);
+            return Err(error);
+        }
+    };
     Ok(attempt.settle(pending, receipts, settlement))
 }
 
@@ -1011,6 +1028,10 @@ fn prepare_completed<'m, 'g>(
 /// call would not be caught as Indeterminate the way `apply_and_settle`'s
 /// is -- a known, documented asymmetry, not an oversight (see the ZE-68
 /// evidence file).
+#[allow(
+    clippy::result_large_err,
+    reason = "ProducerError retains the allocation-free core GraphStoreError"
+)]
 pub(crate) fn run_query(
     registry: &'static GraphResultRegistry,
     store: &GraphStore,

@@ -205,6 +205,10 @@ fn apply_and_settle_reports_nothing_committed_on_a_real_constraint_refusal() {
 }
 
 /// `MATCH (n) RETURN n`, through `run_query`.
+#[allow(
+    clippy::result_large_err,
+    reason = "ProducerError retains the allocation-free core GraphStoreError"
+)]
 fn read_all(
     registry: &'static GraphResultRegistry,
     store: &GraphStore,
@@ -335,4 +339,33 @@ fn write_receipt_deleted_flag_comes_from_the_request_not_the_receipt() {
         c.disposition,
         ZeGraphDisposition::ZeGraphDispositionReplayed as u32
     );
+}
+
+#[test]
+fn apply_and_settle_keeps_the_known_commit_when_response_preparation_fails() {
+    static FULL: GraphResultRegistry = GraphResultRegistry::new(0);
+    static AVAILABLE: GraphResultRegistry = GraphResultRegistry::new(16);
+    let dir = tempfile::tempdir().unwrap();
+    let store = GraphStore::create(dir.path().join("native"), store_options(), None).unwrap();
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    let requests = [create_request("alpha", &image)];
+    let guarded = apply_and_settle(&FULL, &store, &requests, &control());
+    assert!(matches!(
+        guarded.value,
+        Ok(Err(ProducerError::Conversion(_)))
+    ));
+    assert_eq!(
+        guarded.outcome,
+        OperationOutcome::Success(SuccessfulOutcome::Committed(
+            std::num::NonZeroU64::new(1).unwrap()
+        ))
+    );
+    let retry = apply_and_settle(&AVAILABLE, &store, &requests, &control());
+    assert_eq!(
+        retry.outcome,
+        OperationOutcome::Success(SuccessfulOutcome::Replayed)
+    );
+    let mut response = retry.value.unwrap().unwrap();
+    AVAILABLE.free(&mut response).unwrap();
+    store.close().unwrap();
 }

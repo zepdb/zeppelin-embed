@@ -119,3 +119,217 @@ fn graph_last_error_message_routes_by_graph_token() {
     assert!(!last_error(graph.handle.token).is_empty());
     assert_eq!(last_error(0), global);
 }
+
+fn document_batch() -> (PoolBuilder, Vec<ZeGraphBatchItem>) {
+    let mut b = PoolBuilder::new();
+    let ns = b.text("docs");
+    let alpha = b.text("alpha");
+    let beta = b.text("beta");
+    let v = b.string_value("alpha");
+    let p = b.property("title", v);
+    let a = b.node_image(&["Doc"], p..p + 1, Some("hello"));
+    let z = b.node_image(&[], 0..0, None);
+    let edges = b.text("edges");
+    let key = b.text("alpha-beta");
+    let r = b.relationship_image("LINKS", 0..0);
+    (
+        b,
+        vec![
+            create_node_item(ns, alpha, 1, a),
+            create_node_item(ns, beta, 1, z),
+            create_rel_item(edges, key, 1, r, local_endpoint(0), local_endpoint(1)),
+        ],
+    )
+}
+fn apply(
+    handle: ZeGraphHandle,
+    b: &PoolBuilder,
+    items: &[ZeGraphBatchItem],
+) -> (ZeErrorCode, ZeGraphResponse) {
+    let mut out = empty_response();
+    let code = ze_graph_apply(handle, &batch_request(items, &b.pool()), &mut out);
+    (code, out)
+}
+fn free(r: &mut ZeGraphResponse) {
+    assert_eq!(ze_graph_response_free(r), ZeErrorCode::ZeOk);
+}
+fn not_committed(r: &ZeGraphResponse) {
+    assert_eq!(r.disposition, 1);
+    assert_eq!(r.has_changed_generation, 0);
+    assert_eq!(r.owner_token, 0);
+}
+#[test]
+fn graph_apply_commits_a_document_node_and_its_edge_atomically() {
+    let s = GraphTestStore::create();
+    let (b, items) = document_batch();
+    let (code, mut r) = apply(s.handle, &b, &items);
+    assert_eq!(code, ZeErrorCode::ZeOk);
+    assert_eq!(r.disposition, 2);
+    assert_eq!(r.has_changed_generation, 1);
+    assert_eq!(r.changed_generation, 1);
+    assert_eq!(r.receipt_count, 3);
+    assert_ne!(r.owner_token, 0);
+    for (i, receipt) in receipts(&r).iter().enumerate() {
+        assert_eq!(receipt.item, i as u32);
+        assert_eq!(receipt.entity_kind, u32::from(i == 2));
+        assert_eq!(receipt.generation, 1);
+        if i == 2 {
+            assert_ne!(receipt.relationship, ZeRelId::default());
+        } else {
+            assert_ne!(receipt.node, ZeNodeId::default());
+        }
+    }
+    free(&mut r);
+    assert_eq!(r.owner_token, 0);
+    assert_eq!(r.disposition, 0);
+}
+#[test]
+fn graph_apply_replays_an_exact_retry_and_reports_replayed() {
+    let s = GraphTestStore::create();
+    let (b, items) = document_batch();
+    let (code, mut first) = apply(s.handle, &b, &items);
+    assert_eq!(code, ZeErrorCode::ZeOk);
+    let (code, mut second) = apply(s.handle, &b, &items);
+    assert_eq!(code, ZeErrorCode::ZeOk);
+    assert_eq!(second.disposition, 3);
+    assert_eq!(second.has_changed_generation, 0);
+    for (a, b) in receipts(&first).iter().zip(receipts(&second)) {
+        assert_eq!(a.node, b.node);
+        assert_eq!(a.relationship, b.relationship);
+    }
+    free(&mut first);
+    free(&mut second);
+}
+#[test]
+fn graph_apply_refuses_a_malformed_item_with_no_effect() {
+    let s = GraphTestStore::create();
+    let (mut b, mut items) = document_batch();
+    items[1].key.start = u32::MAX;
+    let (code, r) = apply(s.handle, &b, &items);
+    assert_eq!(code, ZeErrorCode::ZeErrInvalidArgument);
+    not_committed(&r);
+    let fresh = single_node(&mut b, "different");
+    let (code, mut r) = apply(s.handle, &b, &[fresh]);
+    assert_eq!(code, ZeErrorCode::ZeOk);
+    assert_eq!(r.changed_generation, 1);
+    free(&mut r);
+}
+#[test]
+fn graph_apply_reports_a_constraint_refusal_as_not_committed() {
+    let s = GraphTestStore::create();
+    let mut b = PoolBuilder::new();
+    let mut item = single_node(&mut b, "alpha");
+    let (code, mut r) = apply(s.handle, &b, &[item]);
+    assert_eq!(code, ZeErrorCode::ZeOk);
+    free(&mut r);
+    item.operation = 1;
+    item.revision = 2;
+    item.expected_node = ZeNodeId { high: 0, low: 1234 };
+    let (code, r) = apply(s.handle, &b, &[item]);
+    assert!(matches!(
+        code,
+        ZeErrorCode::ZeErrIncarnationConflict | ZeErrorCode::ZeErrKeyConflict
+    ));
+    not_committed(&r);
+}
+#[test]
+fn graph_apply_on_a_read_only_store_is_access_mode() {
+    let mut s = GraphTestStore::create();
+    assert_eq!(s.close(), ZeErrorCode::ZeOk);
+    let (code, h) = graph_open(&s.path, MODE_READ_ONLY);
+    assert_eq!(code, ZeErrorCode::ZeOk);
+    let mut b = PoolBuilder::new();
+    let item = single_node(&mut b, "alpha");
+    let (code, r) = apply(h, &b, &[item]);
+    assert_eq!(code, ZeErrorCode::ZeErrAccessMode);
+    not_committed(&r);
+    assert_eq!(ze_graph_close(h), ZeErrorCode::ZeOk);
+}
+#[test]
+fn graph_apply_rejects_bad_response_descriptors_before_any_work() {
+    let s = GraphTestStore::create();
+    let mut b = PoolBuilder::new();
+    let items = [single_node(&mut b, "alpha")];
+    let pool = b.pool();
+    let request = batch_request(&items, &pool);
+    assert_eq!(
+        ze_graph_apply(s.handle, &request, std::ptr::null_mut()),
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+    for reserved in [false, true] {
+        let mut r = empty_response();
+        if reserved {
+            r.abi_reserved = 1;
+        } else {
+            r.abi_size += 8;
+        }
+        assert_eq!(
+            ze_graph_apply(s.handle, &request, &mut r),
+            ZeErrorCode::ZeErrInvalidArgument
+        );
+    }
+    let (code, mut r) = apply(s.handle, &b, &items);
+    assert_eq!(code, ZeErrorCode::ZeOk);
+    assert_eq!(r.changed_generation, 1);
+    free(&mut r);
+}
+#[test]
+fn graph_apply_with_an_invalid_handle_never_touches_a_store() {
+    let mut s = GraphTestStore::create();
+    let closed = s.handle;
+    assert_eq!(s.close(), ZeErrorCode::ZeOk);
+    let legacy = common::TestStore::new();
+    let mut b = PoolBuilder::new();
+    let items = [single_node(&mut b, "alpha")];
+    for (token, expected) in [
+        (0, ZeErrorCode::ZeErrInvalidHandle),
+        (legacy.handle, ZeErrorCode::ZeErrInvalidHandle),
+        (closed.token, ZeErrorCode::ZeErrClosed),
+    ] {
+        let (code, r) = apply(ZeGraphHandle { token }, &b, &items);
+        assert_eq!(code, expected);
+        not_committed(&r);
+    }
+}
+#[test]
+fn graph_response_free_accepts_empty_and_rejects_forged_descriptors() {
+    free(&mut empty_response());
+    let mut error = empty_response();
+    error.disposition = 1;
+    free(&mut error);
+    let s = GraphTestStore::create();
+    let (b, items) = document_batch();
+    let (code, mut r) = apply(s.handle, &b, &items);
+    assert_eq!(code, ZeErrorCode::ZeOk);
+    let mut forged = r;
+    forged.owner_token += 1;
+    assert_eq!(
+        ze_graph_response_free(&mut forged),
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+    let mut forged = r;
+    forged.receipt_count += 1;
+    assert_eq!(
+        ze_graph_response_free(&mut forged),
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+    free(&mut r);
+    free(&mut r);
+    r.abi_size += 8;
+    assert_eq!(
+        ze_graph_response_free(&mut r),
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+}
+#[test]
+fn graph_apply_responses_survive_store_close() {
+    let mut s = GraphTestStore::create();
+    let (b, items) = document_batch();
+    let (code, mut r) = apply(s.handle, &b, &items);
+    assert_eq!(code, ZeErrorCode::ZeOk);
+    let before: Vec<String> = receipts(&r).iter().map(|r| format!("{r:?}")).collect();
+    assert_eq!(s.close(), ZeErrorCode::ZeOk);
+    let after: Vec<String> = receipts(&r).iter().map(|r| format!("{r:?}")).collect();
+    assert_eq!(before, after);
+    free(&mut r);
+}

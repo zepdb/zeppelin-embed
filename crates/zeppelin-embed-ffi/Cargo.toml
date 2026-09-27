@@ -52,3 +52,7 @@ required-features = ["graph-cypher"]
 [[test]]
 name = "ffi_graph_poison"
 required-features = ["graph-cypher", "abi-panic-probe"]
+
+[[test]]
+name = "ffi_graph_ownership"
+required-features = ["graph-cypher"]
