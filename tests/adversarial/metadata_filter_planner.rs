@@ -3254,6 +3254,9 @@ fn column_cell(column: &Column, row: u32) -> independent::ScalarCell {
             .map_or(independent::ScalarCell::Null, |value| {
                 independent::ScalarCell::Utf8(value.as_bytes().to_vec())
             }),
+        // The metadata campaign declares no id128 columns (ZE-240); the
+        // independent oracle has no id128 cell, so one appearing is a bug.
+        Column::Id128(_) => panic!("metadata campaign produced an id128 column"),
     }
 }
 
@@ -3265,6 +3268,9 @@ fn predicate_cell(value: Option<PredicateValue>) -> independent::ScalarCell {
         Some(PredicateValue::F64(value)) => independent::ScalarCell::F64Bits(value.to_bits()),
         Some(PredicateValue::Bool(value)) => independent::ScalarCell::Bool(value),
         Some(PredicateValue::String(value)) => independent::ScalarCell::Utf8(value.into_bytes()),
+        Some(PredicateValue::Id128(_)) => {
+            panic!("metadata campaign produced an id128 predicate value")
+        }
     }
 }
 

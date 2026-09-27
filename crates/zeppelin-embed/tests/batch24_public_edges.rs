@@ -177,6 +177,7 @@ fn empty_typed_columns_keep_all_physical_shapes_and_type_mismatches_atomic() {
             Column::Bool(column) => assert!(column.is_empty()),
             Column::DictionaryString(column) => assert!(column.is_empty()),
             Column::RawString(column) => assert!(column.is_empty()),
+            Column::Id128(column) => assert!(column.is_empty()),
         }
     }
 
