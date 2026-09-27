@@ -47,6 +47,7 @@ ze_merge_sealed
 ze_search
 ze_search_filtered
 ze_search_result_free
+ze_snapshot
 ze_state
 ze_stats
 ze_text_ingest
