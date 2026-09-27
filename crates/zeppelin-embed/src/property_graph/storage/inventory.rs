@@ -5,9 +5,9 @@ use super::NativePreparationSource;
 use super::artifact::{ArtifactId, MAX_ARTIFACT_BYTES, put};
 use super::memory::{StorageBuffer, StorageMemory};
 use super::tree::directory::{
-    BlockSink, BlockSource, DirectoryCursor, DirectoryEntry, DirectoryMutation, DirectoryRoot,
-    GraphRoots, LeafValidator, TreeError, TreeResources, TreeScratch, insert_checked, lookup_entry,
-    remove_checked,
+    BlockSink, BlockSource, BulkBuffer, DirectoryCursor, DirectoryEntry, DirectoryMutation,
+    DirectoryOp, DirectoryRoot, GraphRoots, LeafValidator, TreeError, TreeResources, TreeScratch,
+    apply_sorted_checked, lookup_entry,
 };
 use super::tree::{Key, TreeKind};
 use crate::format::FormatFamily;
@@ -788,18 +788,25 @@ pub fn apply_inventory(
             return Err(TreeError::Invalid("inventory immutable descriptor changed"));
         }
     }
-    let mut candidate = root;
+    let mut rows = BulkBuffer::new(changes.len(), r)?;
     for change in changes {
-        let bytes = encode(*change, r)?;
-        candidate = insert_checked(
-            store,
-            DirectoryMutation::new(candidate, generation, InventoryValues),
-            &change.object.artifact.get().to_le_bytes(),
-            &bytes,
-            scratch,
-            r,
-        )?;
+        rows.push((
+            change.object.artifact.get().to_le_bytes(),
+            encode(*change, r)?,
+        ))?;
     }
+    let mut ops = BulkBuffer::new(changes.len(), r)?;
+    for (key, value) in &rows.values {
+        r.step(1)?;
+        ops.push(DirectoryOp::Insert { key, value })?;
+    }
+    let candidate = apply_sorted_checked(
+        store,
+        DirectoryMutation::new(root, generation, InventoryValues),
+        &ops.values,
+        scratch,
+        r,
+    )?;
     r.step(0)?;
     DirectoryRoot::from_reference(root.store(), root.kind(), generation, candidate.reference())
 }
@@ -837,16 +844,23 @@ pub(crate) fn retire_reclaimed_inventory(
             return Err(TreeError::Invalid("inventory retirement row mismatch"));
         }
     }
-    let mut candidate = root;
+    let mut keys = BulkBuffer::new(reclaimed.len(), resources)?;
     for change in reclaimed {
-        candidate = remove_checked(
-            store,
-            DirectoryMutation::new(candidate, generation, InventoryValues),
-            &change.object.artifact.get().to_le_bytes(),
-            scratch,
-            resources,
-        )?;
+        resources.step(1)?;
+        keys.push(change.object.artifact.get().to_le_bytes())?;
     }
+    let mut ops = BulkBuffer::new(reclaimed.len(), resources)?;
+    for key in &keys.values {
+        resources.step(1)?;
+        ops.push(DirectoryOp::Remove { key })?;
+    }
+    let candidate = apply_sorted_checked(
+        store,
+        DirectoryMutation::new(root, generation, InventoryValues),
+        &ops.values,
+        scratch,
+        resources,
+    )?;
     DirectoryRoot::from_reference(root.store(), root.kind(), generation, candidate.reference())
 }
 fn validate(

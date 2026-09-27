@@ -1334,6 +1334,7 @@ fn run_ze46_atomic_capture_excludes_new_and_inflight_allocations() {
 
 #[test]
 fn ze46_inventory_fold_conserves_complete_allocation_union() {
+    crate::property_graph::storage::tree::directory::tests::inventory_fold_page_count();
     run_ze46_inventory_fold_conserves_complete_allocation_union();
 }
 

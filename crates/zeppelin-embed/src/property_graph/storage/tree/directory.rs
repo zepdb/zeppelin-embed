@@ -2080,13 +2080,16 @@ impl DirectoryOp<'_> {
 
 // Bulk descriptors outlive recursive calls, so charge their actual heap backing
 // to the same owner as the existing tree workspace. Capacity never grows.
-struct BulkBuffer<'a, T> {
-    values: Vec<T>,
+pub(crate) struct BulkBuffer<'a, T> {
+    pub(crate) values: Vec<T>,
     _reservation: CapacityReservation<'a>,
     limit: usize,
 }
 impl<'a, T> BulkBuffer<'a, T> {
-    fn new(capacity: usize, resources: &mut TreeResources<'a>) -> Result<Self, TreeError> {
+    pub(crate) fn new(
+        capacity: usize,
+        resources: &mut TreeResources<'a>,
+    ) -> Result<Self, TreeError> {
         resources.step(0)?;
         let bytes = capacity
             .checked_mul(std::mem::size_of::<T>())
@@ -2110,7 +2113,7 @@ impl<'a, T> BulkBuffer<'a, T> {
             limit: capacity,
         })
     }
-    fn push(&mut self, value: T) -> Result<(), TreeError> {
+    pub(crate) fn push(&mut self, value: T) -> Result<(), TreeError> {
         if self.values.len() == self.limit {
             return Err(TreeError::Memory);
         }
@@ -3439,7 +3442,7 @@ pub use roots::GraphRoots;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::lifecycle::{CancelToken, OpenOptions, Store};
     use crate::property_graph::storage::artifact::{self, ArtifactId, Block, ContainerKind};
@@ -3524,6 +3527,98 @@ mod tests {
         let shared = GraphResources::from_store(&store).unwrap();
         (dir, store, shared, Objects::new())
     }
+    pub(crate) fn inventory_fold_page_count() {
+        use crate::property_graph::storage::inventory::{
+            apply_inventory, retire_reclaimed_inventory,
+        };
+        use crate::property_graph::wal::{
+            ArtifactDescriptor, BatchId, InventoryChange, InventoryState,
+        };
+        let (_dir, _store, shared, mut objects) = fixture();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let mut resources = TreeResources::new(&control, &shared, u64::MAX).unwrap();
+        let mut scratch = TreeScratch::new(&shared, PAGE_BYTES).unwrap();
+        let root = DirectoryRoot::empty(
+            objects.store,
+            TreeKind::ObjectInventory,
+            GraphGeneration::new(0),
+        );
+        let mut changes: Vec<_> = (1..=32)
+            .map(|id| InventoryChange {
+                object: ArtifactDescriptor {
+                    store: objects.store,
+                    artifact: ArtifactId::new(id).unwrap(),
+                    generation: GraphGeneration::new(0),
+                    serial: id as u64,
+                    bytes: 104,
+                    family: 17,
+                    version: 1,
+                    checksum: 0,
+                },
+                state: InventoryState::Retained,
+            })
+            .collect();
+        let folded = apply_inventory(
+            &mut objects,
+            root,
+            &changes,
+            GraphGeneration::new(1),
+            &mut scratch,
+            &mut resources,
+        )
+        .unwrap();
+        assert_eq!(entries(&objects, folded, &mut resources).len(), 32);
+        eprintln!(
+            "32-change fold: {} pages, {} sink bytes",
+            objects.tree_pages,
+            objects.objects.values().map(Vec::len).sum::<usize>()
+        );
+        assert!(
+            objects.tree_pages <= 4,
+            "32-change inventory fold emitted {} TreePage blocks",
+            objects.tree_pages
+        );
+        for invalid in [[changes[1], changes[0]], [changes[0], changes[0]]] {
+            let before = objects.tree_pages;
+            assert!(matches!(
+                apply_inventory(
+                    &mut objects,
+                    folded,
+                    &invalid,
+                    GraphGeneration::new(2),
+                    &mut scratch,
+                    &mut resources,
+                ),
+                Err(TreeError::Invalid("duplicate/unordered inventory change"))
+            ));
+            assert_eq!(objects.tree_pages, before);
+        }
+        for change in &mut changes {
+            change.state = InventoryState::Reclaimed(BatchId::new(1).unwrap());
+        }
+        let reclaimed = apply_inventory(
+            &mut objects,
+            folded,
+            &changes,
+            GraphGeneration::new(2),
+            &mut scratch,
+            &mut resources,
+        )
+        .unwrap();
+        let before = objects.tree_pages;
+        let retired = retire_reclaimed_inventory(
+            &mut objects,
+            reclaimed,
+            &changes,
+            GraphGeneration::new(3),
+            &mut scratch,
+            &mut resources,
+        )
+        .unwrap();
+        assert!(entries(&objects, retired, &mut resources).is_empty());
+        assert!(objects.tree_pages - before <= 4);
+    }
+
     #[test]
     fn bulk_update_emits_each_touched_page_once() {
         let (_dir, _store, shared, mut objects) = fixture();
