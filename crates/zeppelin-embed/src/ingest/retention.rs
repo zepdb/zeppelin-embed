@@ -265,7 +265,7 @@ impl Store {
             // segment descriptor and mmap. POSIX unlink removes only the path;
             // the inode remains alive until the final pinned descriptor/mapping
             // is released, so their in-flight reads remain valid.
-            if vfs.delete(&path).is_err() {
+            if self.has_snapshot_views() || vfs.delete(&path).is_err() {
                 bytes_reclaimed = bytes_reclaimed.saturating_sub(segment.file_size);
                 orphaned_segments.push(segment.id);
             }

@@ -201,6 +201,10 @@ before removing the inputs, in batches of at most 16 segments and 8 MiB of input
 files. Decoded working memory exceeds those input bytes. Large segments and graph
 segments stay separate. The result is `{ generation }`, unchanged if no batch
 fits; a failure can follow already committed batches.
+With an open snapshot, explicit and automatic merges still publish replacements,
+but retain their input files. Close the snapshots and reopen the writable store
+to reclaim those retired files. Snapshot reads and cursors keep their original
+generation throughout sealing and merging.
 
 `deleteWhere` deletes every document that matches a filter, in one mutation,
 and removes their bytes from disk. It takes the same `Filter` as `scan` and
@@ -241,6 +245,34 @@ values; more values throw `ZE_ERR_BUDGET_EXCEEDED` and no group is dropped.
 Other attribute types throw `ZE_ERR_INVALID_ARGUMENT`. There is no timestamp
 bucketing: to count per day, store a day number as an `i64` attribute and
 group by it.
+
+`openSnapshot()` pins an in-place read-only view of the current generation:
+
+```js
+const view = store.openSnapshot();
+try {
+  const first = view.scan({ limit: 100 });
+  // Writes, seals and logical deletes on store do not change view or its cursors.
+  const next = first.cursor ? view.scan({ limit: 100, cursor: first.cursor }) : null;
+} finally {
+  view.close();
+}
+```
+
+The source must be writable. The view shares active data and sealed mappings;
+opening it creates no files. All its reads use the pinned generation, and its
+mutation methods return `ZE_ERR_ACCESS_MODE`. It remains readable after the
+source closes. Close every view explicitly: while any is open, `purge()` and
+`deleteWhere()` return `ZE_ERR_STORE_BUSY` before mutation. Retired segment paths
+remain until the next writable open (or a later physical purge). If the source
+closes first, its writer lock stays held until the views close, preventing a new
+writer from reclaiming their files.
+
+Use `openSnapshot()` on the existing namespace handle to pin it. Opening another
+writable `openNamespace()` is a second writer and returns `ZE_ERR_STORE_BUSY`.
+This is distinct from `ZE_ERR_BUSY`, which means concurrent FFI writer calls on
+one handle. Snapshot admission uses the existing handle and waits for core
+admission locks; it does not attempt either writer-lock admission path.
 
 `snapshot(target)` writes a consistent copy of the store at one generation
 into a directory, for a backup or an export, while the application keeps

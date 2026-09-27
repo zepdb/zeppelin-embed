@@ -266,6 +266,10 @@ const ABI_REGISTRY: &[AbiEntry] = &[
         coverage: AbiCoverage::DetailedMatrix,
     },
     AbiEntry {
+        name: "ze_open_snapshot",
+        coverage: AbiCoverage::InvalidProbe(probe_open_snapshot),
+    },
+    AbiEntry {
         name: "ze_snapshot",
         coverage: AbiCoverage::DetailedMatrix,
     },
@@ -993,6 +997,10 @@ fn probe_error_code_name(_: &MatrixContext) -> ProbeResult {
 
 fn probe_epoch_current(context: &MatrixContext) -> ProbeResult {
     ProbeResult::Status(ze_epoch_current(context.store.handle, std::ptr::null_mut()))
+}
+
+fn probe_open_snapshot(context: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_open_snapshot(context.store.handle, std::ptr::null_mut()))
 }
 
 fn probe_close(_: &MatrixContext) -> ProbeResult {

@@ -271,3 +271,93 @@ fn scan_documents_storage_order_crosses_sealed_and_active_and_pages_every_live_r
         );
     }
 }
+
+#[test]
+fn open_snapshot_shares_data_and_keeps_pages_stable() {
+    let directory = tempdir().expect("directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+    store
+        .ingest(IngestBatch::new(vec![document(1, 10)]))
+        .expect("ingest");
+    store.seal().expect("seal");
+    store
+        .ingest(IngestBatch::new(vec![document(2, 20)]))
+        .expect("active");
+    let snapshot = store.open_snapshot().expect("snapshot");
+    {
+        let live = store.admit_document_read().expect("live");
+        let pinned = snapshot.admit_document_read().expect("pinned");
+        assert!(std::sync::Arc::ptr_eq(&live.active, &pinned.active));
+        assert!(std::ptr::eq(
+            live.snapshot.segments().as_ptr(),
+            pinned.snapshot.segments().as_ptr()
+        ));
+    }
+    let first = snapshot.scan_documents(request(1)).expect("first");
+    std::thread::scope(|scope| {
+        let writer = scope.spawn(|| {
+            store
+                .delete(DeleteBatch::new(vec![DocId::new(1)]))
+                .expect("delete");
+            store.seal().expect("seal active");
+        });
+        for _ in 0..8 {
+            assert_eq!(
+                snapshot
+                    .scan_documents(request(10))
+                    .expect("concurrent scan")
+                    .documents
+                    .len(),
+                2
+            );
+        }
+        writer.join().expect("writer thread");
+    });
+    let second = snapshot
+        .scan_documents(request(1).with_cursor(first.continuation.expect("cursor")))
+        .expect("second");
+    assert_eq!(second.generation, first.generation);
+    assert_eq!(
+        ids(&snapshot.scan_documents(request(10)).expect("scan")),
+        vec![DocId::new(1), DocId::new(2)]
+    );
+    store.close().expect("close source independently");
+    assert_eq!(
+        snapshot
+            .scan_documents(request(10))
+            .expect("after source close")
+            .documents
+            .len(),
+        2
+    );
+    snapshot.close().expect("close snapshot");
+}
+
+#[test]
+fn snapshot_pin_refuses_purge_before_writing_an_intent() {
+    let directory = tempdir().expect("directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+    store
+        .ingest(IngestBatch::new(vec![document(1, 10)]))
+        .expect("ingest");
+    store.seal().expect("seal");
+    let snapshot = store.open_snapshot().expect("snapshot");
+    assert!(matches!(
+        store.purge(&[DocId::new(1)]),
+        Err(crate::ingest::PurgeError::Store(
+            StoreError::SnapshotViewsOpen
+        ))
+    ));
+    assert!(
+        !directory
+            .path()
+            .join(crate::ingest::purge_support::PURGE_INTENT_FILE)
+            .exists()
+    );
+    snapshot
+        .close()
+        .expect("release pin without dropping handle");
+    let token = store.purge(&[DocId::new(1)]).expect("schedule after close");
+    store.await_physical_purge(token).expect("physical purge");
+    store.close().expect("close");
+}

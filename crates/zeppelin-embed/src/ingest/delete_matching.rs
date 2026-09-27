@@ -116,6 +116,7 @@ impl Store {
         if writer_lock.is_none() {
             return Err(StoreError::ReadOnly.into());
         }
+        self.require_no_snapshot_views()?;
         let mut wal = self
             .wal_writer
             .lock()

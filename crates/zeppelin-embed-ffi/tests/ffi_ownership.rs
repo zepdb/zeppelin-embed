@@ -78,6 +78,14 @@ fn every_callee_owned_result_is_released_by_its_free_and_the_heap_stays_flat() {
         common::ingest_rows(store.handle, 32, DIMENSION),
         ZeErrorCode::ZeOk
     );
+    assert_heap_flat("ze_open_snapshot/ze_close", || {
+        let mut snapshot = 0;
+        assert_eq!(
+            ze_open_snapshot(store.handle, &mut snapshot),
+            ZeErrorCode::ZeOk
+        );
+        assert_eq!(ze_close(snapshot), ZeErrorCode::ZeOk);
+    });
     let probe = vec![0.5_f32; DIMENSION];
 
     let mut search_request = common::valid_search_request(&probe);

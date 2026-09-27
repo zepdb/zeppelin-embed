@@ -18,6 +18,8 @@
 
 namespace {
 
+constexpr napi_type_tag kStoreTag = {0xd0eaf8814cf24671ULL, 0x8592a010b60473eaULL};
+
 struct NativeStore {
   ze_handle handle = 0;
 };
@@ -1320,6 +1322,23 @@ void FinalizeStore(napi_env, void *data, void *) {
   }
 }
 
+napi_value WrapStore(napi_env env, napi_value receiver, ze_handle handle) {
+  if (!NapiOk(env, napi_type_tag_object(env, receiver, &kStoreTag), "tag store")) {
+    ze_close(handle);
+    return nullptr;
+  }
+  auto store = std::make_unique<NativeStore>(NativeStore{handle});
+  if (!NapiOk(env,
+              napi_wrap(env, receiver, store.get(), FinalizeStore, nullptr,
+                        nullptr),
+              "attach store handle")) {
+    ze_close(handle);
+    return nullptr;
+  }
+  store.release();
+  return receiver;
+}
+
 napi_value ConstructStore(napi_env env, napi_callback_info info) {
   return Guard(env, [&]() -> napi_value {
     size_t argc = 4;
@@ -1333,6 +1352,21 @@ napi_value ConstructStore(napi_env env, napi_callback_info info) {
     if (argc < 1) {
       napi_throw_type_error(env, "ERR_MISSING_ARGS", "path is required");
       return nullptr;
+    }
+    napi_valuetype argument_type;
+    if (!NapiOk(env, napi_typeof(env, args[0], &argument_type), "inspect source"))
+      return nullptr;
+    bool is_store = false;
+    if (argument_type == napi_object &&
+        !NapiOk(env, napi_check_object_type_tag(env, args[0], &kStoreTag, &is_store),
+                "inspect store source")) return nullptr;
+    if (is_store) {
+      NativeStore *source = UnwrapStore(env, args[0]);
+      if (source == nullptr) return nullptr;
+      ze_handle handle = 0;
+      const ze_error_code status = ze_open_snapshot(source->handle, &handle);
+      if (status != ZE_OK) return ThrowZeppelin(env, source->handle, status);
+      return WrapStore(env, receiver, handle);
     }
     std::string path;
     if (!GetUtf8(env, args[0], "path", &path))
@@ -1400,16 +1434,7 @@ napi_value ConstructStore(napi_env env, napi_callback_info info) {
     if (status != ZE_OK)
       return ThrowZeppelin(env, 0, status);
 
-    auto store = std::make_unique<NativeStore>(NativeStore{handle});
-    if (!NapiOk(env,
-                napi_wrap(env, receiver, store.get(), FinalizeStore, nullptr,
-                          nullptr),
-                "attach store handle")) {
-      ze_close(handle);
-      return nullptr;
-    }
-    store.release();
-    return receiver;
+    return WrapStore(env, receiver, handle);
   });
 }
 
@@ -2923,6 +2948,20 @@ napi_value SearchFiltered(napi_env env, napi_callback_info info) {
   });
 }
 
+napi_value OpenSnapshotStore(napi_env env, napi_callback_info info) {
+  return Guard(env, [&]() -> napi_value {
+    size_t argc = 0;
+    napi_value receiver, constructor, result;
+    if (!NapiOk(env, napi_get_cb_info(env, info, &argc, nullptr, &receiver, nullptr),
+                "read snapshot receiver") ||
+        !NapiOk(env, napi_get_named_property(env, receiver, "constructor", &constructor),
+                "read store constructor") ||
+        !NapiOk(env, napi_new_instance(env, constructor, 1, &receiver, &result),
+                "open snapshot handle")) return nullptr;
+    return result;
+  });
+}
+
 napi_value CloseStore(napi_env env, napi_callback_info info) {
   return Guard(env, [&]() -> napi_value {
     size_t argc = 0;
@@ -3984,6 +4023,8 @@ napi_value Initialize(napi_env env, napi_value exports) {
        nullptr},
       {"merge", nullptr, MergeStore, nullptr, nullptr, nullptr, napi_default,
        nullptr},
+      {"openSnapshot", nullptr, OpenSnapshotStore, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
       {"snapshot", nullptr, SnapshotStore, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"close", nullptr, CloseStore, nullptr, nullptr, nullptr, napi_default,

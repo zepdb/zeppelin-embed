@@ -345,6 +345,10 @@ class Store {
     return callNative(() => this._native.merge());
   }
 
+  openSnapshot() {
+    return attach(Object.create(Store.prototype), () => this._native.openSnapshot(), 0, false);
+  }
+
   /**
    * Writes a consistent snapshot of the store into `target` on a worker
    * thread and resolves to `{ generation }`, the generation it captured.

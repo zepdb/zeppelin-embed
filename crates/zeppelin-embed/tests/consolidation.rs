@@ -683,3 +683,47 @@ fn relabel_region(bytes: &mut [u8], from: RegionKind, to: u16) {
     let file_checksum = xxh3_64(&bytes[..trailer]).to_le_bytes();
     bytes[trailer..].copy_from_slice(&file_checksum);
 }
+
+#[test]
+fn open_snapshot_keeps_scan_cursor_and_files_through_consolidation() {
+    use zeppelin_embed::lifecycle::{DocumentFields, DocumentScanRequest};
+    let directory = tempdir().expect("snapshot consolidation directory");
+    let store = three_sealed_batches(directory.path());
+    let original_files = segment_files(directory.path());
+    let view = store.open_snapshot().expect("open read view");
+    let request = || {
+        DocumentScanRequest::new(
+            100,
+            DocumentFields::NONE,
+            QueryControl::Cancel(CancelToken::new()),
+        )
+    };
+    let first = view.scan_documents(request()).expect("first page");
+    let original_lexical = lexical_results(&view, 192);
+    let original_vectors = vector_results(&view, 1.0, 192);
+    let report = maintain(&store, u64::MAX, 64);
+    assert!(matches!(report.status, MaintenanceStatus::Complete));
+    assert_eq!(report.consolidations, 1);
+    for file in original_files {
+        assert!(
+            directory.path().join(file).exists(),
+            "pinned file was unlinked"
+        );
+    }
+    let second = view
+        .scan_documents(request().with_cursor(first.continuation.expect("cursor")))
+        .expect("second page after merge");
+    assert_eq!(second.generation, first.generation);
+    let mut ids = first
+        .documents
+        .into_iter()
+        .chain(second.documents)
+        .map(|row| row.doc_id.get())
+        .collect::<Vec<_>>();
+    ids.sort_unstable();
+    assert_eq!(ids, (1..=192).collect::<Vec<_>>());
+    assert_eq!(lexical_results(&view, 192), original_lexical);
+    assert_eq!(vector_results(&view, 1.0, 192), original_vectors);
+    view.close().expect("close view");
+    store.close().expect("close source");
+}

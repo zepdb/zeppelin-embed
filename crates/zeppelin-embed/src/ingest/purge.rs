@@ -589,6 +589,7 @@ impl Store {
         drop(published);
         drop(previous);
         unlink_replaced_segments(
+            self,
             self.vfs.as_ref(),
             &self.directory,
             &replaced_paths,
@@ -672,6 +673,7 @@ impl Store {
         available_bytes: u64,
         vfs: &dyn Vfs,
     ) -> Result<PurgeToken, PurgeError> {
+        self.require_no_snapshot_views()?;
         let intent_path = self.directory.join(PURGE_INTENT_FILE);
         match vfs.open(&intent_path) {
             Ok(_) => return Err(PurgeError::PurgeInProgress),
@@ -976,6 +978,7 @@ impl Store {
         if writer_lock.is_none() {
             return Err(StoreError::ReadOnly.into());
         }
+        self.require_no_snapshot_views()?;
         let mut wal = self
             .wal_writer
             .lock()
@@ -1280,11 +1283,15 @@ fn sync_directory(
 }
 
 pub(crate) fn unlink_replaced_segments(
+    store: &Store,
     vfs: &dyn Vfs,
     directory: &Path,
     replaced_paths: &[PathBuf],
     policy: DurabilityPolicy,
 ) {
+    if store.has_snapshot_views() {
+        return;
+    }
     for path in replaced_paths {
         // The replacement manifest and snapshot are already published. A
         // failed unlink leaves an unreachable orphan for open-time cleanup;

@@ -1220,6 +1220,9 @@ fn publish_consolidation(
     drop(writer);
     drop(state);
     for input in input_ids {
+        if store.has_snapshot_views() {
+            break;
+        }
         let path = store.directory.join(input.file_name());
         store
             .vfs
@@ -1401,6 +1404,9 @@ fn publish_transition(
     drop(wal);
     drop(writer);
     drop(state);
+    if store.has_snapshot_views() {
+        return Ok(true);
+    }
     let source_path = store.directory.join(source_id.file_name());
     store
         .vfs

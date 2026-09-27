@@ -24,6 +24,7 @@ impl Store {
     /// Decoding and rebuilding require additional bounded working memory. Large
     /// segments and graph segments stay separate. Repeats while a batch fits;
     /// this synchronous call blocks writers and does not seal active writes.
+    /// Open snapshot views defer input unlinking until later orphan cleanup.
     /// Returns the last publication generation, unchanged if no merge is due.
     pub fn merge_sealed(&self) -> Result<u64, StoreError> {
         self.merge_sealed_with_cancel(&CancelToken::new())
@@ -177,9 +178,13 @@ impl Store {
                 .map(|input| self.directory.join(input.meta().id.file_name()))
                 .collect::<Vec<_>>();
             drop(inputs);
-            for path in old_paths {
-                vfs.delete(&path)
-                    .map_err(|source| StoreError::Io { path, source })?;
+            // An open view retains the input paths as well as their mappings.
+            // After views close, writable-open orphan cleanup reclaims them.
+            if !self.has_snapshot_views() {
+                for path in old_paths {
+                    vfs.delete(&path)
+                        .map_err(|source| StoreError::Io { path, source })?;
+                }
             }
             if let SyncRequirement::Sync(kind) = self.durability_policy.directory_sync() {
                 vfs.sync(&self.directory, kind)

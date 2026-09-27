@@ -1426,6 +1426,7 @@ impl Store {
             self.publish_committed_active(&mut active, committed, generation, next)?;
         drop(active);
         purge::unlink_replaced_segments(
+            self,
             self.vfs.as_ref(),
             &self.directory,
             &replaced_paths,
@@ -1550,6 +1551,7 @@ impl Store {
             self.publish_committed_active(&mut active, committed, generation, next)?;
         drop(active);
         purge::unlink_replaced_segments(
+            self,
             self.vfs.as_ref(),
             &self.directory,
             &replaced_paths,

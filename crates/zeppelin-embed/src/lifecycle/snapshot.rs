@@ -301,11 +301,11 @@ pub struct PublishedSnapshot {
     graph_profile:
         Result<crate::graph::search::EpochGraphProfile, crate::graph::search::GraphProfileError>,
     schema: crate::meta::Schema,
-    segments: Accounted<Vec<SegmentReader>>,
+    segments: Arc<Accounted<Vec<SegmentReader>>>,
     query_segment_count: usize,
     cancelled: AtomicBool,
     reader_signal: Arc<ReaderSignal>,
-    _mapping_reservation: Option<MappingReservation>,
+    _mapping_reservation: Option<Arc<MappingReservation>>,
     #[cfg(test)]
     release_probe: SnapshotReleaseProbe,
 }
@@ -323,7 +323,7 @@ impl PublishedSnapshot {
             epoch_alias: None,
             graph_profile: Err(crate::graph::search::GraphProfileError::EpochUnstamped),
             schema: crate::meta::Schema::timestamp_only(),
-            segments: Accounted::unaccounted_empty(),
+            segments: Arc::new(Accounted::unaccounted_empty()),
             query_segment_count: 0,
             cancelled: AtomicBool::new(false),
             reader_signal,
@@ -484,11 +484,29 @@ impl PublishedSnapshot {
             epoch_alias: manifest.epoch_alias,
             graph_profile,
             schema: manifest.schema.clone(),
-            segments,
+            segments: Arc::new(segments),
             query_segment_count,
             cancelled: AtomicBool::new(false),
             reader_signal: ReaderSignal::accounted(accounting)?,
-            _mapping_reservation: Some(mapping_reservation),
+            _mapping_reservation: Some(Arc::new(mapping_reservation)),
+            #[cfg(test)]
+            release_probe: SnapshotReleaseProbe(None),
+        })
+    }
+
+    /// Shares immutable storage, with independent reader cancellation and drain.
+    pub(super) fn fork_read_view(&self, accounting: &Arc<Accounting>) -> Result<Self, StoreError> {
+        Ok(Self {
+            generation: self.generation,
+            absorbed_through: self.absorbed_through,
+            epoch_alias: self.epoch_alias,
+            graph_profile: self.graph_profile,
+            schema: self.schema.clone(),
+            segments: Arc::clone(&self.segments),
+            query_segment_count: self.query_segment_count,
+            cancelled: AtomicBool::new(false),
+            reader_signal: ReaderSignal::accounted(accounting)?,
+            _mapping_reservation: self._mapping_reservation.clone(),
             #[cfg(test)]
             release_probe: SnapshotReleaseProbe(None),
         })

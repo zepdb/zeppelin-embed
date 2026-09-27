@@ -29,6 +29,7 @@ ze_namespace_open
 ze_namespace_open_with_tokenizer
 ze_open
 ze_open_inspection
+ze_open_snapshot
 ze_open_with_epoch
 ze_purge
 ze_query

@@ -22,6 +22,7 @@ pub(crate) mod rescored_scan;
 mod shared_bound_tests;
 mod snapshot;
 mod snapshot_copy;
+mod snapshot_view;
 pub(crate) mod stats;
 
 use crate::diag::{timing_elapsed, timing_start};
@@ -2190,6 +2191,8 @@ pub enum StoreError {
     /// A physical purge is pending; a snapshot would copy bytes it must
     /// remove. Await the purge, then snapshot. Nothing was written.
     SnapshotPurgePending,
+    /// A physical removal must wait for open in-place snapshots to close.
+    SnapshotViewsOpen,
 }
 
 impl std::fmt::Display for StoreError {
@@ -2204,6 +2207,9 @@ impl std::fmt::Display for StoreError {
                     "store path is not a directory: {}",
                     path.display()
                 )
+            }
+            Self::SnapshotViewsOpen => {
+                formatter.write_str("close open snapshots before physical removal")
             }
             Self::StoreBusy { path } => {
                 write!(formatter, "store already has a writer: {}", path.display())
@@ -2467,7 +2473,7 @@ impl StoreError {
             | Self::InvalidScan { .. }
             | Self::NativeGraphDirectory { .. }
             | Self::SnapshotTarget { .. } => StoreErrorKind::InvalidArgument,
-            Self::StoreBusy { .. } => StoreErrorKind::StoreBusy,
+            Self::StoreBusy { .. } | Self::SnapshotViewsOpen => StoreErrorKind::StoreBusy,
             Self::Durability(_)
             | Self::Kernel(_)
             | Self::GraphUnavailable { .. }
@@ -2569,7 +2575,8 @@ impl std::error::Error for StoreError {
             | Self::NativeGraphDirectory { .. }
             | Self::SnapshotTarget { .. }
             | Self::SnapshotPin { .. }
-            | Self::SnapshotPurgePending => None,
+            | Self::SnapshotPurgePending
+            | Self::SnapshotViewsOpen => None,
         }
     }
 }
@@ -2603,7 +2610,9 @@ pub struct Store {
     // WAL descriptor all release before the kernel writer lock.
     pub(crate) active: Mutex<Option<crate::ingest::ActiveState>>,
     pub(crate) wal_writer: Mutex<Option<crate::ingest::StoreWal>>,
-    pub(crate) writer_lock: Mutex<Option<StoreLock>>,
+    pub(crate) writer_lock: Mutex<Option<Arc<StoreLock>>>,
+    snapshot_pins: Arc<AtomicU64>,
+    snapshot_pin: Mutex<Option<snapshot_view::SnapshotPin>>,
     pub(crate) maintenance: Mutex<()>,
     pub(crate) health_state: Mutex<crate::diag::HealthState>,
     pub(crate) durability_policy: DurabilityPolicy,
@@ -2907,7 +2916,9 @@ impl Store {
             snapshot: RwLock::new(None),
             active: Mutex::new(None),
             wal_writer: Mutex::new(None),
-            writer_lock: Mutex::new(writer_lock),
+            writer_lock: Mutex::new(writer_lock.map(Arc::new)),
+            snapshot_pins: Arc::new(AtomicU64::new(0)),
+            snapshot_pin: Mutex::new(None),
             maintenance: Mutex::new(()),
             health_state: Mutex::new(crate::diag::HealthState::default()),
             durability_policy,
@@ -3235,7 +3246,9 @@ impl Store {
             snapshot: RwLock::new(None),
             active: Mutex::new(Some(active)),
             wal_writer: Mutex::new(wal_writer),
-            writer_lock: Mutex::new(writer_lock),
+            writer_lock: Mutex::new(writer_lock.map(Arc::new)),
+            snapshot_pins: Arc::new(AtomicU64::new(0)),
+            snapshot_pin: Mutex::new(None),
             maintenance: Mutex::new(()),
             health_state: Mutex::new(crate::diag::HealthState::default()),
             durability_policy,

@@ -1287,3 +1287,70 @@ fn idle_merge_respects_cancellation_read_only_and_closed_handles() {
     let reader = Store::open(directory.path(), OpenOptions::read_only()).expect("reader");
     assert!(matches!(reader.merge_sealed(), Err(StoreError::ReadOnly)));
 }
+
+#[test]
+fn snapshot_cursor_survives_idle_merge_and_reopen() {
+    use zeppelin_embed::lifecycle::{DocumentFields, DocumentScanRequest};
+    let directory = tempdir().expect("snapshot merge directory");
+    let store = Store::open(directory.path(), durable_options()).expect("open");
+    for id in 1..=2 {
+        ingest_one(&store, id);
+        store.seal().expect("seal initial row");
+    }
+    let files = store
+        .snapshot()
+        .expect("published")
+        .segments()
+        .iter()
+        .map(|segment| directory.path().join(segment.meta().id.file_name()))
+        .collect::<Vec<_>>();
+    ingest_one(&store, 3);
+    let view = store.open_snapshot().expect("pin active and sealed rows");
+    let request = || {
+        DocumentScanRequest::new(
+            1,
+            DocumentFields::NONE,
+            QueryControl::Cancel(CancelToken::new()),
+        )
+    };
+    let first = view.scan_documents(request()).expect("first page");
+    store.seal().expect("seal pinned active rows");
+    ingest_one(&store, 4);
+    store.seal().expect("seal later row");
+    store.merge_sealed().expect("merge proceeds while pinned");
+    assert_eq!(store.snapshot().expect("merged").segments().len(), 1);
+    for path in &files {
+        assert!(
+            path.exists(),
+            "idle merge unlinked pinned input: {}",
+            path.display()
+        );
+    }
+    store.close().expect("close source");
+    let reader = Store::open(directory.path(), OpenOptions::read_only()).expect("reopen reader");
+    assert_eq!(live_versions(&reader).len(), 4);
+    let mut ids = first
+        .documents
+        .iter()
+        .map(|row| row.doc_id.get())
+        .collect::<Vec<_>>();
+    let mut cursor = first.continuation;
+    while let Some(next) = cursor {
+        let page = view
+            .scan_documents(request().with_cursor(next))
+            .expect("resume after reopen");
+        assert_eq!(page.generation, first.generation);
+        ids.extend(page.documents.iter().map(|row| row.doc_id.get()));
+        cursor = page.continuation;
+    }
+    ids.sort_unstable();
+    assert_eq!(ids, vec![1, 2, 3]);
+    reader.close().expect("close reader");
+    view.close().expect("release pin");
+    let reopened = Store::open(directory.path(), durable_options()).expect("reopen writer");
+    assert_eq!(live_versions(&reopened).len(), 4);
+    for path in files {
+        assert!(!path.exists(), "retired input not reclaimed");
+    }
+    reopened.close().expect("close reopened writer");
+}

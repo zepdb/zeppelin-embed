@@ -611,6 +611,7 @@ const POISON_TABLE_NAMES: &[&str] = &[
     "ze_search",
     "ze_search_filtered",
     "ze_snapshot",
+    "ze_open_snapshot",
     "ze_state",
     "ze_stats",
     "ze_upsert",
@@ -1102,6 +1103,10 @@ fn poison_function_table() -> Vec<(&'static str, PoisonCall)> {
             };
             let mut report: ZeGenerationReport = common::sized_zeroed();
             ze_merge_sealed(context.store.handle, &request, &mut report)
+        }),
+        ("ze_open_snapshot", |context| {
+            let mut handle = 0;
+            ze_open_snapshot(context.store.handle, &mut handle)
         }),
         ("ze_snapshot", |context| {
             let target = std::env::temp_dir()

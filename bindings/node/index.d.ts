@@ -665,7 +665,8 @@ export declare class Store {
    * read-only open leaves that pending removal to the next writable open.
    *
    * Throws `ZE_ERR_BUSY` while an earlier physical purge is still pending,
-   * and `ZE_ERR_ACCESS_MODE` on a read-only store.
+   * `ZE_ERR_STORE_BUSY` before mutation while snapshots are open, and
+   * `ZE_ERR_ACCESS_MODE` on a read-only store.
    */
   deleteWhere(filter: Filter): DeleteWhereReport;
   /**
@@ -676,8 +677,9 @@ export declare class Store {
    * Returns only after affected segments and the WAL are rewritten and old
    * files unlinked. If interrupted after scheduling, the next writable open
    * completes the purge. On failure, close and reopen before retrying.
-   * Throws `ZE_ERR_ACCESS_MODE` for read-only stores and `ZE_ERR_BUSY` while
-   * a purge is pending. This may rewrite whole segments and blocks the caller.
+   * Throws `ZE_ERR_ACCESS_MODE` for read-only stores, `ZE_ERR_BUSY` while
+   * a purge is pending, and `ZE_ERR_STORE_BUSY` before scheduling while
+   * snapshots are open. This may rewrite whole segments and blocks the caller.
    * `deleteWhere` matches live documents only: purge earlier deleted IDs
    * explicitly to remove their historical bytes.
    */
@@ -748,6 +750,8 @@ export declare class Store {
    * input files. Decoded working memory is larger than the input-byte bound.
    * Large and graph segments remain separate. Enable autoMerge alongside
    * autoSealRows to run this automatically after each seal.
+   * Open snapshots defer input-file deletion for both explicit and automatic
+   * merges. Close the snapshots and reopen the writer to reclaim retired files.
    * Active writes and WAL are unchanged; call seal() first to include them.
    * Returns the final generation, unchanged if no compatible batch fits.
    * Requires a writable store. A failure may follow completed atomic batches.
@@ -777,6 +781,18 @@ export declare class Store {
    * captured state.
    */
   snapshot(target: string): Promise<SnapshotReport>;
+  /**
+   * Pins this writable handle's current generation without copying files.
+   * Reads and scan cursors stay stable while the source changes or closes.
+   * The returned Store is read-only; call close() to release its pin.
+   * While pinned, purge() and deleteWhere() return ZE_ERR_STORE_BUSY before mutation.
+   * Retired segment files are reclaimed on the next writable open. If the
+   * source closes first, reopening a writer is busy until all views close.
+   * Admission uses the existing handle and does not reacquire a namespace
+   * writer lock. Opening a second writable namespace handle still returns Busy.
+   */
+  openSnapshot(): Store;
+
   close(): void;
 }
 

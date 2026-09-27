@@ -264,6 +264,12 @@ impl Store {
         let released_active = active.take();
         drop(active);
         drop(released_active);
+        self.snapshot_pin
+            .lock()
+            .map_err(|_| StoreError::Synchronization {
+                component: "snapshot pin",
+            })?
+            .take();
 
         let mut wal_writer = self
             .wal_writer

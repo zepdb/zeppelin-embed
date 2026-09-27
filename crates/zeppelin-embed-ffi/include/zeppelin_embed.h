@@ -3463,6 +3463,15 @@ ze_error_code ze_merge_sealed(ze_handle handle,
                               struct ZeGenerationReport *out_report);
 
 /*
+ Opens an in-place read-only handle over the source's current generation.
+ No files are copied. Close the returned handle with `ze_close`. It remains
+ readable after source close and protects retired files until it is closed.
+ The source must be writable. Physical purge returns `ZE_ERR_STORE_BUSY` while a
+ view is open; ordinary writes, seals and logical deletes may continue.
+ */
+ze_error_code ze_open_snapshot(ze_handle handle, ze_handle *out_handle);
+
+/*
  Writes a consistent snapshot of the store into `request.target` and
  reports the generation it captured. The target must not exist or must be
  an empty directory, its parent must exist, and it must not lie inside the

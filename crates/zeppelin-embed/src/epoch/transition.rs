@@ -14,7 +14,8 @@ use super::{EpochId, EpochIdentity};
 struct EpochTransitionAdmission<'a> {
     active: std::sync::MutexGuard<'a, Option<crate::ingest::ActiveState>>,
     wal: std::sync::MutexGuard<'a, Option<crate::ingest::StoreWal>>,
-    writer_lock: std::sync::MutexGuard<'a, Option<crate::lifecycle::lock::StoreLock>>,
+    writer_lock:
+        std::sync::MutexGuard<'a, Option<std::sync::Arc<crate::lifecycle::lock::StoreLock>>>,
     state: std::sync::MutexGuard<'a, StoreState>,
     manifest: crate::manifest::Manifest,
     _maintenance: std::sync::MutexGuard<'a, ()>,
@@ -384,6 +385,7 @@ impl Store {
             mut manifest,
         } = self.admit_epoch_transition(vfs, "drop epoch")?;
         let active_state = active.as_mut().ok_or(StoreError::Closed)?;
+        self.require_no_snapshot_views()?;
         if manifest
             .epoch_alias
             .is_some_and(|identity| identity.embedding == target)
