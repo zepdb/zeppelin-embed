@@ -2045,6 +2045,526 @@ pub fn insert_checked<S: BlockSink>(
         resources,
     )
 }
+/// One edit in a strictly comparator-ordered, duplicate-free bulk mutation.
+#[derive(Clone, Copy)]
+pub enum DirectoryOp<'a> {
+    /// Insert or replace the exact key's value.
+    Insert {
+        /// Logical key bytes in this tree's comparator domain.
+        key: &'a [u8],
+        /// Opaque value admitted by the owning role.
+        value: &'a [u8],
+    },
+    /// Remove the key if present.
+    Remove {
+        /// Logical key bytes in this tree's comparator domain.
+        key: &'a [u8],
+    },
+}
+impl DirectoryOp<'_> {
+    fn key(&self) -> Key<'_> {
+        match self {
+            Self::Insert { key, .. } | Self::Remove { key } => Key::Inline(key),
+        }
+    }
+    fn cell(&self) -> Option<Cell<'_>> {
+        match self {
+            Self::Insert { key, value } => Some(Cell::Leaf {
+                key: Key::Inline(key),
+                value,
+            }),
+            Self::Remove { .. } => None,
+        }
+    }
+}
+
+// Bulk descriptors outlive recursive calls, so charge their actual heap backing
+// to the same owner as the existing tree workspace. Capacity never grows.
+struct BulkBuffer<'a, T> {
+    values: Vec<T>,
+    _reservation: CapacityReservation<'a>,
+    limit: usize,
+}
+impl<'a, T> BulkBuffer<'a, T> {
+    fn new(capacity: usize, resources: &mut TreeResources<'a>) -> Result<Self, TreeError> {
+        resources.step(0)?;
+        let bytes = capacity
+            .checked_mul(std::mem::size_of::<T>())
+            .ok_or(TreeError::Memory)?;
+        let mut reservation = resources.owner.reserve(bytes)?;
+        let mut values = Vec::new();
+        #[cfg(feature = "allocation-audit")]
+        let allocation = crate::allocation_audit::attributed(|| values.try_reserve_exact(capacity));
+        #[cfg(not(feature = "allocation-audit"))]
+        let allocation = values.try_reserve_exact(capacity);
+        allocation.map_err(|_| TreeError::Memory)?;
+        reservation.resize(
+            values
+                .capacity()
+                .checked_mul(std::mem::size_of::<T>())
+                .ok_or(TreeError::Memory)?,
+        )?;
+        Ok(Self {
+            values,
+            _reservation: reservation,
+            limit: capacity,
+        })
+    }
+    fn push(&mut self, value: T) -> Result<(), TreeError> {
+        if self.values.len() == self.limit {
+            return Err(TreeError::Memory);
+        }
+        self.values.push(value);
+        Ok(())
+    }
+}
+struct BulkPage {
+    upper: Option<Separator>,
+    reference: PhysicalRef,
+}
+
+fn retained_bulk_page<'a>(
+    reference: Option<PhysicalRef>,
+    resources: &mut TreeResources<'a>,
+) -> Result<BulkBuffer<'a, BulkPage>, TreeError> {
+    let mut pages = BulkBuffer::new(usize::from(reference.is_some()), resources)?;
+    if let Some(reference) = reference {
+        pages.push(BulkPage {
+            upper: None,
+            reference,
+        })?;
+    }
+    Ok(pages)
+}
+
+fn emit_many<'a>(
+    store: &mut impl BlockSink,
+    root: DirectoryRoot,
+    header: PageHeader,
+    cells: &mut [Cell<'_>],
+    scratch: &mut TreeScratch<'_>,
+    resources: &mut TreeResources<'a>,
+) -> Result<BulkBuffer<'a, BulkPage>, TreeError> {
+    normalize_cells(store, root, header.generation, cells, resources)?;
+    let mut cuts = BulkBuffer::new(cells.len(), resources)?;
+    let mut used = 64usize;
+    let mut start = 0;
+    for (index, cell) in cells.iter().enumerate() {
+        resources.step(1)?;
+        let bytes = super::cell_len(*cell)?
+            .checked_add(8)
+            .ok_or(TreeError::Memory)?;
+        if 64 + bytes > PAGE_BYTES {
+            return Err(TreeError::Invalid("no bounded page split"));
+        }
+        if used + bytes > PAGE_BYTES || index - start == MAX_CELLS {
+            cuts.push(index)?;
+            used = 64;
+            start = index;
+        }
+        used += bytes;
+    }
+    if !cells.is_empty() {
+        cuts.push(cells.len())?;
+    }
+    let mut pages = BulkBuffer::new(cuts.values.len(), resources)?;
+    let mut start = 0;
+    for end in cuts.values {
+        resources.step(1)?;
+        let upper = if end == cells.len() {
+            None
+        } else if header.level == 0 {
+            let Cell::Leaf { key, .. } = *cells.get(end).ok_or(TreeError::Memory)? else {
+                return Err(TreeError::Invalid("leaf split"));
+            };
+            Some(Separator::new(key)?)
+        } else {
+            let last = cells.get_mut(end - 1).ok_or(TreeError::Memory)?;
+            let Cell::Branch {
+                upper: Some(key),
+                child,
+            } = *last
+            else {
+                return Err(TreeError::Invalid("branch split bound"));
+            };
+            let upper = Some(Separator::new(key)?);
+            *last = Cell::Branch { upper: None, child };
+            upper
+        };
+        let reference = append_page(
+            store,
+            root,
+            header,
+            cells.get(start..end).ok_or(TreeError::Memory)?,
+            scratch,
+            resources,
+        )?;
+        pages.push(BulkPage { upper, reference })?;
+        start = end;
+    }
+    Ok(pages)
+}
+
+struct BulkEdit<'a, 's, V> {
+    mutation: DirectoryMutation<V>,
+    scratch: &'s mut TreeScratch<'a>,
+}
+impl<V> BulkEdit<'_, '_, V> {
+    // The expected header bounds every child before recursion; levels strictly
+    // decrease. Page backing is heap charged, not PAGE_BYTES per stack frame.
+    #[allow(clippy::too_many_arguments)]
+    fn page<'a, S: BlockSink>(
+        &mut self,
+        store: &mut S,
+        reference: Option<PhysicalRef>,
+        expected: PageHeader,
+        lower: Option<Key<'_>>,
+        upper: Option<Key<'_>>,
+        ops: &[DirectoryOp<'_>],
+        resources: &mut TreeResources<'a>,
+    ) -> Result<BulkBuffer<'a, BulkPage>, TreeError>
+    where
+        V: LeafValidator<S>,
+    {
+        resources.step(1)?;
+        let root = self.mutation.root;
+        let mut old = resources.copied_span_buffer(PAGE_BYTES)?;
+        let header = if let Some(reference) = reference {
+            let header = store.with_scoped_reads(|| {
+                trace_page_scoped(
+                    store,
+                    root,
+                    reference,
+                    lower,
+                    upper,
+                    resources,
+                    |page, _, _, resources| {
+                        resources.step(PAGE_BYTES as u64)?;
+                        old.as_mut_slice().copy_from_slice(page.bytes);
+                        Ok(page.header())
+                    },
+                )
+            })?;
+            if header.level != expected.level || header.generation > expected.generation {
+                return Err(TreeError::Invalid("child level or creation generation"));
+            }
+            header
+        } else {
+            expected
+        };
+        let old_count = if reference.is_some() {
+            count(old.as_slice())?
+        } else {
+            0
+        };
+        let mut cells = BulkBuffer::new(old_count + 2 * ops.len(), resources)?;
+        let mut changed = false;
+        if header.level == 0 {
+            // Validate each old value exactly once, including replaced/removed
+            // entries, matching the checked single-key mutation contract.
+            store.with_scoped_reads(|| -> Result<(), TreeError> {
+                for index in 0..old_count {
+                    resources.step(1)?;
+                    let Cell::Leaf { key, value } = owned_page_cell(old.as_slice(), header, index)?
+                    else {
+                        return Err(TreeError::Invalid("leaf required"));
+                    };
+                    self.mutation.validator.verify(
+                        store,
+                        root,
+                        DirectoryEntry {
+                            root,
+                            generation: header.generation,
+                            key,
+                            value,
+                        },
+                        resources,
+                    )?;
+                }
+                let mut next = 0;
+                for index in 0..old_count {
+                    resources.step(1)?;
+                    let cell = owned_page_cell(old.as_slice(), header, index)?;
+                    let Cell::Leaf { key, .. } = cell else {
+                        return Err(TreeError::Invalid("leaf required"));
+                    };
+                    while let Some(op) = ops.get(next) {
+                        resources.step(1)?;
+                        if !compare(store, root, op.key(), key, resources)?.is_lt() {
+                            break;
+                        }
+                        if let Some(cell) = op.cell() {
+                            cells.push(cell)?;
+                            changed = true;
+                        }
+                        next += 1;
+                    }
+                    if let Some(op) = ops.get(next)
+                        && compare(store, root, op.key(), key, resources)?.is_eq()
+                    {
+                        changed = true;
+                        if let Some(cell) = op.cell() {
+                            cells.push(cell)?;
+                        }
+                        next += 1;
+                    } else {
+                        cells.push(cell)?;
+                    }
+                }
+                for op in ops.get(next..).ok_or(TreeError::Memory)? {
+                    resources.step(1)?;
+                    if let Some(cell) = op.cell() {
+                        cells.push(cell)?;
+                        changed = true;
+                    }
+                }
+                Ok(())
+            })?;
+            if !changed {
+                return retained_bulk_page(reference, resources);
+            }
+            return emit_many(
+                store,
+                root,
+                PageHeader {
+                    generation: self.mutation.generation,
+                    ..header
+                },
+                &mut cells.values,
+                self.scratch,
+                resources,
+            );
+        }
+        store.with_scoped_reads(|| -> Result<(), TreeError> {
+            let mut prior = lower;
+            for index in 0..old_count {
+                resources.step(1)?;
+                let Cell::Branch {
+                    upper: bound,
+                    child,
+                } = owned_page_cell(old.as_slice(), header, index)?
+                else {
+                    return Err(TreeError::Invalid("branch required"));
+                };
+                let child_root = DirectoryRoot {
+                    generation: header.generation,
+                    ..root
+                };
+                with_checked_block(store, child_root, child, resources, |block, resources| {
+                    let page = checked_page(
+                        store,
+                        child_root,
+                        block.identity(),
+                        block.payload(),
+                        prior,
+                        bound.or(upper),
+                        resources,
+                    )?;
+                    if page.header().level.checked_add(1) != Some(header.level) {
+                        return Err(TreeError::Invalid("child level before directory rewrite"));
+                    }
+                    Ok(())
+                })?;
+                prior = bound;
+            }
+            Ok(())
+        })?;
+        // Own separators until all child replacements have been collected.
+        let mut children = BulkBuffer::new(old_count + 2 * ops.len(), resources)?;
+        let mut prior = lower;
+        let mut next = 0;
+        for index in 0..old_count {
+            resources.step(1)?;
+            let Cell::Branch {
+                upper: bound,
+                child,
+            } = owned_page_cell(old.as_slice(), header, index)?
+            else {
+                return Err(TreeError::Invalid("branch required"));
+            };
+            let start = next;
+            while let Some(op) = ops.get(next) {
+                resources.step(1)?;
+                if let Some(bound) = bound
+                    && !store
+                        .with_scoped_reads(|| compare(store, root, op.key(), bound, resources))?
+                        .is_lt()
+                {
+                    break;
+                }
+                next += 1;
+            }
+            if start == next {
+                children.push(BulkPage {
+                    upper: bound.map(Separator::new).transpose()?,
+                    reference: child,
+                })?;
+            } else {
+                let mut replacement = self.page(
+                    store,
+                    Some(child),
+                    PageHeader {
+                        level: header
+                            .level
+                            .checked_sub(1)
+                            .ok_or(TreeError::Invalid("bulk child level underflow"))?,
+                        ..header
+                    },
+                    prior,
+                    bound.or(upper),
+                    ops.get(start..next).ok_or(TreeError::Memory)?,
+                    resources,
+                )?;
+                changed |= replacement.values.len() != 1
+                    || replacement
+                        .values
+                        .first()
+                        .is_none_or(|page| page.reference != child);
+                if let Some(last) = replacement.values.last_mut() {
+                    last.upper = bound.map(Separator::new).transpose()?;
+                }
+                for page in replacement.values {
+                    resources.step(1)?;
+                    children.push(page)?;
+                }
+            }
+            prior = bound;
+        }
+        if !changed {
+            return retained_bulk_page(reference, resources);
+        }
+        if let Some(last) = children.values.last_mut() {
+            last.upper = None;
+        }
+        for child in &children.values {
+            resources.step(1)?;
+            cells.push(Cell::Branch {
+                upper: child.upper.as_ref().map(Separator::key).transpose()?,
+                child: child.reference,
+            })?;
+        }
+        emit_many(
+            store,
+            root,
+            PageHeader {
+                generation: self.mutation.generation,
+                ..header
+            },
+            &mut cells.values,
+            self.scratch,
+            resources,
+        )
+    }
+}
+
+/// Apply at most 16,384 strictly ascending edits, copying each touched page once.
+/// Only private immutable blocks are appended; the caller owns publication.
+pub fn apply_sorted_checked<S: BlockSink>(
+    store: &mut S,
+    mutation: DirectoryMutation<impl LeafValidator<S>>,
+    ops: &[DirectoryOp<'_>],
+    scratch: &mut TreeScratch<'_>,
+    resources: &mut TreeResources<'_>,
+) -> Result<DirectoryRoot, TreeError> {
+    resources.step(1)?;
+    if ops.len() > 16_384 {
+        return Err(TreeError::Invalid("too many bulk ops"));
+    }
+    let (root, generation) = (mutation.root, mutation.generation);
+    if generation < root.generation {
+        return Err(TreeError::Invalid("generation regressed"));
+    }
+    let mut prior = None;
+    for op in ops {
+        resources.step(1)?;
+        validate_key(store, root, op.key(), resources)?;
+        if let Some(prior) = prior
+            && !compare(store, root, prior, op.key(), resources)?.is_lt()
+        {
+            return Err(TreeError::Invalid("bulk ops out of order"));
+        }
+        prior = Some(op.key());
+    }
+    if ops.is_empty() {
+        return Ok(root);
+    }
+    let mut level = if let Some(reference) = root.reference {
+        store.with_scoped_reads(|| {
+            trace_page_scoped(
+                store,
+                root,
+                reference,
+                None,
+                None,
+                resources,
+                |page, _, _, _| Ok(page.header().level),
+            )
+        })?
+    } else {
+        0
+    };
+    let mut edit = BulkEdit { mutation, scratch };
+    let mut pages = edit.page(
+        store,
+        root.reference,
+        PageHeader {
+            kind: root.kind,
+            level,
+            generation: root.generation,
+        },
+        None,
+        None,
+        ops,
+        resources,
+    )?;
+    while pages.values.len() > 1 {
+        resources.step(1)?;
+        level = level
+            .checked_add(1)
+            .ok_or(TreeError::Invalid("root level overflow"))?;
+        if level as usize >= MAX_DEPTH {
+            return Err(TreeError::Invalid("directory depth limit"));
+        }
+        let mut cells = BulkBuffer::new(pages.values.len(), resources)?;
+        for page in &pages.values {
+            resources.step(1)?;
+            cells.push(Cell::Branch {
+                upper: page.upper.as_ref().map(Separator::key).transpose()?,
+                child: page.reference,
+            })?;
+        }
+        let next = emit_many(
+            store,
+            root,
+            PageHeader {
+                kind: root.kind,
+                level,
+                generation,
+            },
+            &mut cells.values,
+            edit.scratch,
+            resources,
+        )?;
+        drop(cells);
+        pages = next;
+    }
+    resources.step(0)?;
+    let reference = pages.values.first().map(|page| page.reference);
+    if reference == root.reference {
+        return Ok(root);
+    }
+    collapse_root(
+        store,
+        DirectoryRoot {
+            generation,
+            reference,
+            ..root
+        },
+        (level, generation),
+        resources,
+    )
+}
+
 struct InsertionKey<'a> {
     stored: Key<'a>,
     probe: ProbeKey<'a>,
@@ -2413,54 +2933,67 @@ pub fn remove_checked<S: BlockSink>(
             }
         };
     }
-    // Repeated singleton roots can remain after sparse subtree removal.
-    let mut collapse_depth = 0usize;
-    while let Some(reference) = replacement {
-        if collapse_depth >= MAX_DEPTH {
-            return Err(TreeError::Invalid("collapse depth limit"));
-        }
-        collapse_depth += 1;
-        let candidate = DirectoryRoot {
+    collapse_root(
+        store,
+        DirectoryRoot {
             generation,
-            reference: Some(reference),
+            reference: replacement,
             ..root
-        };
-        let block = checked_block(store, candidate, reference, resources)?;
-        let page = checked_page(
-            store,
-            candidate,
-            block.identity(),
-            block.payload(),
-            None,
-            None,
-            resources,
-        )?;
-        if page.header().level != collapse_expected.0
-            || page.header().generation > collapse_expected.1
-        {
-            return Err(TreeError::Invalid("collapse child level/generation"));
+        },
+        collapse_expected,
+        resources,
+    )
+}
+
+// Repeated singleton roots can remain after sparse subtree removal. Both edit
+// paths preserve the old parent's level/generation bounds while collapsing.
+fn collapse_root(
+    source: &impl BlockSource,
+    mut root: DirectoryRoot,
+    mut expected: (u16, GraphGeneration),
+    resources: &mut TreeResources<'_>,
+) -> Result<DirectoryRoot, TreeError> {
+    source.with_scoped_reads(|| {
+        let mut depth = 0usize;
+        while let Some(reference) = root.reference {
+            resources.step(1)?;
+            if depth >= MAX_DEPTH {
+                return Err(TreeError::Invalid("collapse depth limit"));
+            }
+            depth += 1;
+            let next = trace_page_scoped(
+                source,
+                root,
+                reference,
+                None,
+                None,
+                resources,
+                |page, _, cells, _| {
+                    let header = page.header();
+                    if header.level != expected.0 || header.generation > expected.1 {
+                        return Err(TreeError::Invalid("collapse child level/generation"));
+                    }
+                    if header.level == 0 || cells != 1 {
+                        return Ok(None);
+                    }
+                    let Cell::Branch { upper: None, child } = page.cell(0)? else {
+                        return Err(TreeError::Invalid("singleton root"));
+                    };
+                    let level = header
+                        .level
+                        .checked_sub(1)
+                        .ok_or(TreeError::Invalid("collapse level underflow"))?;
+                    Ok(Some((child, level, header.generation)))
+                },
+            )?;
+            let Some((child, level, generation)) = next else {
+                break;
+            };
+            root.reference = Some(child);
+            expected = (level, generation);
         }
-        if page.header().level == 0 || count(block.payload())? != 1 {
-            break;
-        }
-        let Cell::Branch { upper: None, child } = page.cell(0)? else {
-            return Err(TreeError::Invalid("singleton root"));
-        };
-        collapse_expected = (
-            page.header()
-                .level
-                .checked_sub(1)
-                .ok_or(TreeError::Invalid("collapse level underflow"))?,
-            page.header().generation,
-        );
-        replacement = Some(child);
-        resources.step(1)?;
-    }
-    resources.step(0)?;
-    Ok(DirectoryRoot {
-        generation,
-        reference: replacement,
-        ..root
+        resources.step(0)?;
+        Ok(root)
     })
 }
 
@@ -2903,3 +3436,847 @@ pub fn verify_directory<'a>(
 
 mod roots;
 pub use roots::GraphRoots;
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+mod tests {
+    use super::*;
+    use crate::lifecycle::{CancelToken, OpenOptions, Store};
+    use crate::property_graph::storage::artifact::{self, ArtifactId, Block, ContainerKind};
+    use std::collections::BTreeMap;
+    #[derive(Clone)]
+    struct Objects {
+        store: StoreInstanceId,
+        next: u128,
+        tree_pages: usize,
+        objects: BTreeMap<u128, Vec<u8>>,
+    }
+    impl Objects {
+        fn new() -> Self {
+            Self {
+                store: StoreInstanceId::new(1u128 << 100).expect("source store identity"),
+                next: 1,
+                tree_pages: 0,
+                objects: BTreeMap::new(),
+            }
+        }
+    }
+    impl BlockSource for Objects {
+        fn resolve<'a>(
+            &'a self,
+            reference: PhysicalRef,
+            resources: &mut TreeResources<'_>,
+        ) -> Result<FramedBlock<'a>, TreeError> {
+            resources.step(1)?;
+            let bytes = self
+                .objects
+                .get(&reference.artifact.get())
+                .ok_or(TreeError::Missing)?;
+            let frame = artifact::decode(
+                ContainerKind::Object,
+                Some((self.store, reference.artifact)),
+                bytes,
+            )?;
+            Ok(frame.framed_block(reference)?)
+        }
+    }
+    impl BlockSink for Objects {
+        fn append(
+            &mut self,
+            kind: BlockKind,
+            generation: GraphGeneration,
+            bytes: &[u8],
+            resources: &mut TreeResources<'_>,
+        ) -> Result<PhysicalRef, TreeError> {
+            resources.step(1)?;
+            let artifact = ArtifactId::new(self.next)?;
+            let identity = ArtifactIdentity {
+                store: self.store,
+                artifact,
+                generation,
+                creation_serial: self.next as u64,
+            };
+            let blocks = [Block {
+                kind,
+                payload: bytes,
+            }];
+            let mut output = vec![0; artifact::encoded_len(ContainerKind::Object, &blocks)?];
+            artifact::encode_into(ContainerKind::Object, identity, &blocks, &mut output)?;
+            let reference =
+                artifact::decode(ContainerKind::Object, Some((self.store, artifact)), &output)?
+                    .reference(0)?;
+            if self.objects.insert(self.next, output).is_some() {
+                return Err(TreeError::Invalid("duplicate fixture artifact"));
+            }
+            self.tree_pages += usize::from(kind == BlockKind::TreePage);
+            self.next += 1;
+            Ok(reference)
+        }
+    }
+
+    fn fixture() -> (tempfile::TempDir, Store, GraphResources, Objects) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(
+            dir.path(),
+            OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+        )
+        .unwrap();
+        let shared = GraphResources::from_store(&store).unwrap();
+        (dir, store, shared, Objects::new())
+    }
+    #[test]
+    fn bulk_update_emits_each_touched_page_once() {
+        let (_dir, _store, shared, mut objects) = fixture();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let mut resources = TreeResources::new(&control, &shared, u64::MAX).unwrap();
+        let mut scratch = TreeScratch::new(&shared, PAGE_BYTES).unwrap();
+        let root = DirectoryRoot::empty(objects.store, TreeKind::Nodes, GraphGeneration::new(0));
+        let keys: Vec<_> = (1u128..=100).map(u128::to_le_bytes).collect();
+        let ops: Vec<_> = keys
+            .iter()
+            .map(|key| DirectoryOp::Insert {
+                key,
+                value: &[7; 64],
+            })
+            .collect();
+        let result = apply_sorted_checked(
+            &mut objects,
+            DirectoryMutation::new(root, GraphGeneration::new(1), OpaqueValues),
+            &ops,
+            &mut scratch,
+            &mut resources,
+        )
+        .unwrap();
+        assert_eq!(objects.tree_pages, 1);
+        assert_eq!(entries(&objects, result, &mut resources).len(), 100);
+        let absent = 101u128.to_le_bytes();
+        let before = objects.tree_pages;
+        let unchanged = apply_sorted_checked(
+            &mut objects,
+            DirectoryMutation::new(result, GraphGeneration::new(2), OpaqueValues),
+            &[DirectoryOp::Remove { key: &absent }],
+            &mut scratch,
+            &mut resources,
+        )
+        .unwrap();
+        assert_eq!(unchanged, result);
+        assert_eq!(objects.tree_pages, before);
+
+        // Construct exactly ten leaves with spare capacity; each receives ten
+        // new keys, so the only ancestor is emitted once.
+        let mut children = Vec::new();
+        let old_keys: Vec<_> = (0u128..10)
+            .map(|leaf| {
+                (1u128..=10)
+                    .map(|n| (leaf * 1000 + n).to_le_bytes())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        for keys in &old_keys {
+            let cells: Vec<_> = keys
+                .iter()
+                .map(|key| Cell::Leaf {
+                    key: Key::Inline(key),
+                    value: &[3; 64],
+                })
+                .collect();
+            children.push(
+                append_page(
+                    &mut objects,
+                    root,
+                    PageHeader {
+                        kind: root.kind,
+                        level: 0,
+                        generation: GraphGeneration::new(1),
+                    },
+                    &cells,
+                    &mut scratch,
+                    &mut resources,
+                )
+                .unwrap(),
+            );
+        }
+        let cells: Vec<_> = children
+            .iter()
+            .enumerate()
+            .map(|(index, child)| Cell::Branch {
+                upper: old_keys.get(index + 1).map(|keys| Key::Inline(&keys[0])),
+                child: *child,
+            })
+            .collect();
+        let reference = append_page(
+            &mut objects,
+            root,
+            PageHeader {
+                kind: root.kind,
+                level: 1,
+                generation: GraphGeneration::new(1),
+            },
+            &cells,
+            &mut scratch,
+            &mut resources,
+        )
+        .unwrap();
+        let root = DirectoryRoot {
+            reference: Some(reference),
+            generation: GraphGeneration::new(1),
+            ..root
+        };
+        let keys: Vec<_> = (0u128..10)
+            .flat_map(|leaf| (11u128..=20).map(move |n| (leaf * 1000 + n).to_le_bytes()))
+            .collect();
+        let ops: Vec<_> = keys
+            .iter()
+            .map(|key| DirectoryOp::Insert {
+                key,
+                value: &[7; 64],
+            })
+            .collect();
+        struct CountValues<'a>(&'a mut usize);
+        impl LeafValidator<Objects> for CountValues<'_> {
+            fn verify(
+                &mut self,
+                _: &Objects,
+                _: DirectoryRoot,
+                _: DirectoryEntry<'_>,
+                _: &mut TreeResources<'_>,
+            ) -> Result<(), TreeError> {
+                *self.0 += 1;
+                Ok(())
+            }
+        }
+        let mut validated = 0;
+        let before = objects.tree_pages;
+        let result = apply_sorted_checked(
+            &mut objects,
+            DirectoryMutation::new(root, GraphGeneration::new(2), CountValues(&mut validated)),
+            &ops,
+            &mut scratch,
+            &mut resources,
+        )
+        .unwrap();
+        assert_eq!(objects.tree_pages - before, 11);
+        assert_eq!(validated, 100);
+        assert_eq!(entries(&objects, result, &mut resources).len(), 200);
+    }
+    #[test]
+    fn bulk_update_rejects_unsorted_and_duplicate_keys() {
+        let (_dir, _store, shared, mut objects) = fixture();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let mut resources = TreeResources::new(&control, &shared, u64::MAX).unwrap();
+        let mut scratch = TreeScratch::new(&shared, PAGE_BYTES).unwrap();
+        let root = DirectoryRoot::empty(objects.store, TreeKind::Nodes, GraphGeneration::new(0));
+        for keys in [[256u128, 255], [7, 7]] {
+            let keys = keys.map(u128::to_le_bytes);
+            let ops = [
+                DirectoryOp::Insert {
+                    key: &keys[0],
+                    value: &[1],
+                },
+                DirectoryOp::Remove { key: &keys[1] },
+            ];
+            assert!(matches!(
+                apply_sorted_checked(
+                    &mut objects,
+                    DirectoryMutation::new(root, GraphGeneration::new(1), OpaqueValues),
+                    &ops,
+                    &mut scratch,
+                    &mut resources
+                ),
+                Err(TreeError::Invalid("bulk ops out of order"))
+            ));
+        }
+        let keys: Vec<_> = (1u128..=16_385).map(u128::to_le_bytes).collect();
+        let ops: Vec<_> = keys.iter().map(|key| DirectoryOp::Remove { key }).collect();
+        assert!(matches!(
+            apply_sorted_checked(
+                &mut objects,
+                DirectoryMutation::new(root, GraphGeneration::new(1), OpaqueValues),
+                &ops,
+                &mut scratch,
+                &mut resources
+            ),
+            Err(TreeError::Invalid("too many bulk ops"))
+        ));
+        assert_eq!(objects.tree_pages, 0);
+    }
+
+    #[test]
+    fn bulk_update_splits_a_leaf_into_many_pages() {
+        let (_dir, _store, shared, mut objects) = fixture();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let mut resources = TreeResources::new(&control, &shared, u64::MAX).unwrap();
+        let mut scratch = TreeScratch::new(&shared, PAGE_BYTES).unwrap();
+        let mut root =
+            DirectoryRoot::empty(objects.store, TreeKind::Nodes, GraphGeneration::new(0));
+        let keys: Vec<_> = (1u128..=16_384).map(u128::to_le_bytes).collect();
+        root = insert(
+            &mut objects,
+            root,
+            &keys[0],
+            &[9; 64],
+            GraphGeneration::new(1),
+            &mut scratch,
+            &mut resources,
+        )
+        .unwrap();
+        let old_root = root;
+        let ops: Vec<_> = keys
+            .iter()
+            .map(|key| DirectoryOp::Insert {
+                key,
+                value: &[7; 64],
+            })
+            .collect();
+        let before = objects.tree_pages;
+        root = apply_sorted_checked(
+            &mut objects,
+            DirectoryMutation::new(root, GraphGeneration::new(2), OpaqueValues),
+            &ops,
+            &mut scratch,
+            &mut resources,
+        )
+        .unwrap();
+        // 64 header bytes; each cell has an 8-byte slot, 12-byte key
+        // descriptor, 16-byte key, 8-byte leaf prefix and 64-byte value.
+        let per_leaf = (PAGE_BYTES - 64) / 108;
+        assert_eq!(
+            objects.tree_pages - before,
+            keys.len().div_ceil(per_leaf) + 1
+        );
+        let actual = entries(&objects, root, &mut resources);
+        assert_eq!(
+            actual,
+            keys.iter()
+                .map(|key| (key.to_vec(), vec![7; 64]))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            entries(&objects, old_root, &mut resources),
+            vec![(keys[0].to_vec(), vec![9; 64])]
+        );
+        let removes: Vec<_> = keys.iter().map(|key| DirectoryOp::Remove { key }).collect();
+        root = apply_sorted_checked(
+            &mut objects,
+            DirectoryMutation::new(root, GraphGeneration::new(3), OpaqueValues),
+            &removes,
+            &mut scratch,
+            &mut resources,
+        )
+        .unwrap();
+        assert!(root.reference.is_none());
+        // Wider values force more children than one branch page can hold,
+        // exercising branch cuts and repeated root growth as well as leaf cuts.
+        let keys = &keys[..512];
+        let ops: Vec<_> = keys
+            .iter()
+            .map(|key| DirectoryOp::Insert {
+                key,
+                value: &[5; 8000],
+            })
+            .collect();
+        root = apply_sorted_checked(
+            &mut objects,
+            DirectoryMutation::new(root, GraphGeneration::new(4), OpaqueValues),
+            &ops,
+            &mut scratch,
+            &mut resources,
+        )
+        .unwrap();
+        let block = checked_block(&objects, root, root.reference.unwrap(), &mut resources).unwrap();
+        assert_eq!(
+            decode_page(root.kind, block.payload())
+                .unwrap()
+                .header()
+                .level,
+            2
+        );
+        assert_eq!(
+            entries(&objects, root, &mut resources),
+            keys.iter()
+                .map(|key| (key.to_vec(), vec![5; 8000]))
+                .collect::<Vec<_>>()
+        );
+        // Touch both internal branches, then remove a complete subtree.
+        let ops: Vec<_> = keys
+            .iter()
+            .map(|key| DirectoryOp::Insert {
+                key,
+                value: &[6; 8000],
+            })
+            .collect();
+        root = apply_sorted_checked(
+            &mut objects,
+            DirectoryMutation::new(root, GraphGeneration::new(5), OpaqueValues),
+            &ops,
+            &mut scratch,
+            &mut resources,
+        )
+        .unwrap();
+        let sequential_base = root;
+        let removes: Vec<_> = keys[..500]
+            .iter()
+            .map(|key| DirectoryOp::Remove { key })
+            .collect();
+        root = apply_sorted_checked(
+            &mut objects,
+            DirectoryMutation::new(root, GraphGeneration::new(6), OpaqueValues),
+            &removes,
+            &mut scratch,
+            &mut resources,
+        )
+        .unwrap();
+        assert_eq!(
+            entries(&objects, root, &mut resources),
+            keys[500..]
+                .iter()
+                .map(|key| (key.to_vec(), vec![6; 8000]))
+                .collect::<Vec<_>>()
+        );
+        assert!(root_is_collapsed(&objects, root, &mut resources));
+        let mut sequential = sequential_base;
+        for key in &keys[..500] {
+            sequential = remove(
+                &mut objects,
+                sequential,
+                key,
+                GraphGeneration::new(6),
+                &mut scratch,
+                &mut resources,
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            tree_shape(&objects, root, &mut resources),
+            tree_shape(&objects, sequential, &mut resources)
+        );
+    }
+
+    #[test]
+    fn bulk_update_matches_sequential_inserts_and_removes() {
+        use proptest::prelude::*;
+        use proptest::test_runner::{Config, RngSeed, TestRunner};
+        use rand::RngCore;
+        let mut rng = crate::test_support::seeded_rng(concat!(
+            module_path!(),
+            "::bulk_update_matches_sequential_inserts_and_removes"
+        ));
+        let config = Config {
+            cases: 32,
+            rng_seed: RngSeed::Fixed(rng.next_u64()),
+            failure_persistence: None,
+            ..Config::default()
+        };
+        let mut runner = TestRunner::new(config);
+        let strategy = proptest::collection::btree_map(
+            1u128..600,
+            proptest::option::of(proptest::collection::vec(any::<u8>(), 1..128)),
+            1..180,
+        );
+        let (_dir, _store, shared, mut objects) = fixture();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let mut resources = TreeResources::new(&control, &shared, u64::MAX).unwrap();
+        let mut scratch = TreeScratch::new(&shared, PAGE_BYTES).unwrap();
+        let mut base =
+            DirectoryRoot::empty(objects.store, TreeKind::Nodes, GraphGeneration::new(0));
+        for key in 1u128..=300 {
+            base = insert(
+                &mut objects,
+                base,
+                &key.to_le_bytes(),
+                &[9; 64],
+                GraphGeneration::new(1),
+                &mut scratch,
+                &mut resources,
+            )
+            .unwrap();
+        }
+        runner
+            .run(&strategy, |edits| {
+                let mut objects = objects.clone();
+                let mut resources = TreeResources::new(&control, &shared, u64::MAX).unwrap();
+                let mut scratch = TreeScratch::new(&shared, PAGE_BYTES).unwrap();
+                let data: Vec<_> = edits
+                    .iter()
+                    .map(|(key, value)| (key.to_le_bytes(), value))
+                    .collect();
+                let ops: Vec<_> = data
+                    .iter()
+                    .map(|(key, value)| match value {
+                        Some(value) => DirectoryOp::Insert { key, value },
+                        None => DirectoryOp::Remove { key },
+                    })
+                    .collect();
+                let bulk = apply_sorted_checked(
+                    &mut objects,
+                    DirectoryMutation::new(base, GraphGeneration::new(2), OpaqueValues),
+                    &ops,
+                    &mut scratch,
+                    &mut resources,
+                )
+                .unwrap();
+                let mut sequential = base;
+                for op in &ops {
+                    sequential = match op {
+                        DirectoryOp::Insert { key, value } => insert(
+                            &mut objects,
+                            sequential,
+                            key,
+                            value,
+                            GraphGeneration::new(2),
+                            &mut scratch,
+                            &mut resources,
+                        ),
+                        DirectoryOp::Remove { key } => remove(
+                            &mut objects,
+                            sequential,
+                            key,
+                            GraphGeneration::new(2),
+                            &mut scratch,
+                            &mut resources,
+                        ),
+                    }
+                    .unwrap();
+                }
+                prop_assert!(root_is_collapsed(&objects, bulk, &mut resources));
+                prop_assert_eq!(
+                    tree_shape(&objects, bulk, &mut resources),
+                    tree_shape(&objects, sequential, &mut resources)
+                );
+                prop_assert_eq!(
+                    entries(&objects, bulk, &mut resources),
+                    entries(&objects, sequential, &mut resources)
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    fn root_is_collapsed(
+        objects: &Objects,
+        root: DirectoryRoot,
+        resources: &mut TreeResources<'_>,
+    ) -> bool {
+        let Some(reference) = root.reference else {
+            return true;
+        };
+        let block = checked_block(objects, root, reference, resources).unwrap();
+        let page = decode_page(root.kind, block.payload()).unwrap();
+        count(block.payload()).unwrap() > 1 || page.header().level == 0
+    }
+
+    fn tree_shape(
+        objects: &Objects,
+        root: DirectoryRoot,
+        resources: &mut TreeResources<'_>,
+    ) -> (Option<u16>, usize) {
+        let mut pending: Vec<_> = root.reference.into_iter().collect();
+        let mut level = None;
+        let mut pages = 0;
+        while let Some(reference) = pending.pop() {
+            let block = checked_block(objects, root, reference, resources).unwrap();
+            let page = decode_page(root.kind, block.payload()).unwrap();
+            level.get_or_insert(page.header().level);
+            pages += 1;
+            if page.header().level > 0 {
+                for index in 0..count(block.payload()).unwrap() {
+                    let Cell::Branch { child, .. } = page.cell(index).unwrap() else {
+                        unreachable!()
+                    };
+                    pending.push(child);
+                }
+            }
+        }
+        (level, pages)
+    }
+
+    // Like NativePreparationSource: resolve pins old artifacts; with_block can
+    // release incidental reads only inside with_scoped_reads. New sink blocks
+    // are resident preparation data and consume no base-source slots.
+    struct LimitedObjects {
+        objects: Objects,
+        base_end: u128,
+        pins: std::cell::RefCell<std::collections::BTreeSet<u128>>,
+        scoped: std::cell::Cell<bool>,
+        scoped_reads: std::cell::Cell<usize>,
+    }
+    impl BlockSource for LimitedObjects {
+        fn resolve<'a>(
+            &'a self,
+            reference: PhysicalRef,
+            resources: &mut TreeResources<'_>,
+        ) -> Result<FramedBlock<'a>, TreeError> {
+            if reference.artifact.get() < self.base_end {
+                let mut pins = self.pins.borrow_mut();
+                if !pins.contains(&reference.artifact.get()) && pins.len() == 4 {
+                    return Err(TreeError::Memory);
+                }
+                pins.insert(reference.artifact.get());
+            }
+            self.objects.resolve(reference, resources)
+        }
+        fn with_block<R>(
+            &self,
+            reference: PhysicalRef,
+            resources: &mut TreeResources<'_>,
+            callback: impl for<'a, 'r> FnOnce(
+                FramedBlock<'a>,
+                &'r mut TreeResources<'_>,
+            ) -> Result<R, TreeError>,
+        ) -> Result<R, TreeError> {
+            if self.scoped.get() {
+                self.scoped_reads.set(self.scoped_reads.get() + 1);
+                callback(self.objects.resolve(reference, resources)?, resources)
+            } else {
+                callback(self.resolve(reference, resources)?, resources)
+            }
+        }
+        fn scoped_blocks(&self) -> bool {
+            self.scoped.get()
+        }
+        fn with_scoped_reads<R>(&self, body: impl FnOnce() -> R) -> R {
+            let old = self.scoped.replace(true);
+            let result = body();
+            self.scoped.set(old);
+            result
+        }
+    }
+    impl BlockSink for LimitedObjects {
+        fn append(
+            &mut self,
+            kind: BlockKind,
+            generation: GraphGeneration,
+            bytes: &[u8],
+            resources: &mut TreeResources<'_>,
+        ) -> Result<PhysicalRef, TreeError> {
+            self.objects.append(kind, generation, bytes, resources)
+        }
+    }
+    struct ReadValues<'a> {
+        records: &'a BTreeMap<u128, PhysicalRef>,
+        verified: usize,
+    }
+    impl LeafValidator<LimitedObjects> for ReadValues<'_> {
+        fn verify(
+            &mut self,
+            source: &LimitedObjects,
+            _: DirectoryRoot,
+            entry: DirectoryEntry<'_>,
+            resources: &mut TreeResources<'_>,
+        ) -> Result<(), TreeError> {
+            let Key::Inline(key) = entry.key() else {
+                unreachable!()
+            };
+            let key = u128::from_le_bytes(key.try_into().unwrap());
+            self.verified += 1;
+            source.with_block(self.records[&key], resources, |block, _| {
+                assert_eq!(block.payload(), key.to_le_bytes());
+                Ok(())
+            })
+        }
+    }
+    impl LeafValidator<LimitedObjects> for &mut ReadValues<'_> {
+        fn verify(
+            &mut self,
+            source: &LimitedObjects,
+            root: DirectoryRoot,
+            entry: DirectoryEntry<'_>,
+            resources: &mut TreeResources<'_>,
+        ) -> Result<(), TreeError> {
+            (**self).verify(source, root, entry, resources)
+        }
+    }
+    fn limited_slots_bulk(leaves: usize) {
+        let (_dir, _store, shared, mut objects) = fixture();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let mut resources = TreeResources::new(&control, &shared, u64::MAX).unwrap();
+        let mut scratch = TreeScratch::new(&shared, PAGE_BYTES).unwrap();
+        let mut root =
+            DirectoryRoot::empty(objects.store, TreeKind::Nodes, GraphGeneration::new(1));
+        let keys: Vec<_> = (0..leaves)
+            .map(|leaf| {
+                (1..=8)
+                    .map(|n| ((leaf * 1000 + n) as u128).to_le_bytes())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let mut records = BTreeMap::new();
+        let mut children = Vec::new();
+        for keys in &keys {
+            for key in keys {
+                let reference = objects
+                    .append(BlockKind::NodeRecord, root.generation, key, &mut resources)
+                    .unwrap();
+                records.insert(u128::from_le_bytes(*key), reference);
+            }
+            let cells: Vec<_> = keys
+                .iter()
+                .map(|key| Cell::Leaf {
+                    key: Key::Inline(key),
+                    value: &[],
+                })
+                .collect();
+            children.push(
+                append_page(
+                    &mut objects,
+                    root,
+                    PageHeader {
+                        kind: root.kind,
+                        level: 0,
+                        generation: root.generation,
+                    },
+                    &cells,
+                    &mut scratch,
+                    &mut resources,
+                )
+                .unwrap(),
+            );
+        }
+        root.reference = Some(if leaves == 1 {
+            children[0]
+        } else {
+            let cells: Vec<_> = children
+                .iter()
+                .enumerate()
+                .map(|(i, child)| Cell::Branch {
+                    upper: keys.get(i + 1).map(|keys| Key::Inline(&keys[0])),
+                    child: *child,
+                })
+                .collect();
+            append_page(
+                &mut objects,
+                root,
+                PageHeader {
+                    kind: root.kind,
+                    level: 1,
+                    generation: root.generation,
+                },
+                &cells,
+                &mut scratch,
+                &mut resources,
+            )
+            .unwrap()
+        });
+        let mut source = LimitedObjects {
+            base_end: objects.next,
+            objects,
+            pins: Default::default(),
+            scoped: Default::default(),
+            scoped_reads: Default::default(),
+        };
+        let ops: Vec<_> = keys
+            .iter()
+            .map(|keys| DirectoryOp::Insert {
+                key: &keys[0],
+                value: &[7],
+            })
+            .collect();
+        let mut validator = ReadValues {
+            records: &records,
+            verified: 0,
+        };
+        let result = apply_sorted_checked(
+            &mut source,
+            DirectoryMutation::new(root, GraphGeneration::new(2), &mut validator),
+            &ops,
+            &mut scratch,
+            &mut resources,
+        )
+        .unwrap();
+        assert_eq!(validator.verified, leaves * 8);
+        assert!(source.pins.borrow().len() <= 4);
+        assert!(source.scoped_reads.get() >= leaves * 8);
+        let actual = entries(&source.objects, result, &mut resources);
+        assert_eq!(actual.len(), leaves * 8);
+        for (index, (_, value)) in actual.iter().enumerate() {
+            assert_eq!(
+                value.as_slice(),
+                if index % 8 == 0 { &[7][..] } else { &[] }
+            );
+        }
+    }
+    #[test]
+    fn bulk_update_scopes_leaf_validation() {
+        limited_slots_bulk(1);
+    }
+    #[test]
+    fn bulk_update_scopes_child_validation() {
+        limited_slots_bulk(70);
+    }
+
+    #[test]
+    fn bulk_update_splits_overflow_fence_keys() {
+        let (_dir, _store, shared, mut objects) = fixture();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let mut resources = TreeResources::new(&control, &shared, u64::MAX).unwrap();
+        let mut scratch = TreeScratch::new(&shared, PAGE_BYTES).unwrap();
+        let root =
+            DirectoryRoot::empty(objects.store, TreeKind::KeyFences, GraphGeneration::new(0));
+        let keys: Vec<_> = (0..300)
+            .map(|n| {
+                let mut key = vec![1];
+                key.extend_from_slice(&1u64.to_le_bytes());
+                key.extend_from_slice(format!("{n:04}{}", "x".repeat(600)).as_bytes());
+                key
+            })
+            .collect();
+        let ops: Vec<_> = keys
+            .iter()
+            .map(|key| DirectoryOp::Insert {
+                key,
+                value: &[7; 64],
+            })
+            .collect();
+        let root = apply_sorted_checked(
+            &mut objects,
+            DirectoryMutation::new(root, GraphGeneration::new(1), OpaqueValues),
+            &ops,
+            &mut scratch,
+            &mut resources,
+        )
+        .unwrap();
+        assert_eq!(tree_shape(&objects, root, &mut resources).0, Some(1));
+        let block = checked_block(&objects, root, root.reference.unwrap(), &mut resources).unwrap();
+        let page = decode_page(root.kind, block.payload()).unwrap();
+        assert!(matches!(
+            page.cell(0).unwrap(),
+            Cell::Branch {
+                upper: Some(Key::Overflow { .. }),
+                ..
+            }
+        ));
+        let mut cursor = DirectoryCursor::seek(&objects, root, None, &mut resources).unwrap();
+        for key in &keys {
+            let entry = cursor.next_entry(&mut resources).unwrap().unwrap();
+            assert!(matches!(entry.key(), Key::Overflow { .. }));
+            assert_eq!(
+                compare(
+                    &objects,
+                    root,
+                    entry.key(),
+                    Key::Inline(key),
+                    &mut resources
+                )
+                .unwrap(),
+                std::cmp::Ordering::Equal
+            );
+            assert_eq!(entry.value(), &[7; 64]);
+        }
+        assert!(cursor.next_entry(&mut resources).unwrap().is_none());
+    }
+    fn entries(
+        objects: &Objects,
+        root: DirectoryRoot,
+        resources: &mut TreeResources<'_>,
+    ) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let mut cursor = DirectoryCursor::seek(objects, root, None, resources).unwrap();
+        let mut result = Vec::new();
+        while let Some(entry) = cursor.next_entry(resources).unwrap() {
+            let Key::Inline(key) = entry.key() else {
+                unreachable!()
+            };
+            result.push((key.to_vec(), entry.value().to_vec()));
+        }
+        result
+    }
+}
