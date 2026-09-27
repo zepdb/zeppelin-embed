@@ -205,6 +205,7 @@ impl PayloadRef {
         if offset > self.length {
             return Err(TreeError::Invalid("read beyond logical end"));
         }
+        resources.step(1)?;
         source.with_block(self.reference, resources, |root, resources| {
             let root = checked_resolved_block(root, self.reference, store, generation)?;
             let root = self.check_root(root, resources)?;

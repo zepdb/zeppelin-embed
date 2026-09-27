@@ -1,11 +1,11 @@
 //! Read-only end-to-end store verification.
 //!
-//! [`verify_store`] walks one store directory with the decoders the engine
+//! [`verify_store`](crate::verify::verify_store) walks one store directory with the decoders the engine
 //! already uses to open it: the manifest frame, every referenced segment's
 //! header, region checksums, file trailer and region decoders, and the WAL
 //! prefix through the same replay that recovery runs. It reports every damaged
 //! artifact it finds instead of stopping at the first, and it never writes:
-//! the walk calls only the read half of [`Vfs`] (`open`, `read`,
+//! the walk calls only the read half of [`Vfs`](crate::vfs::Vfs) (`open`, `read`,
 //! `open_for_map` and `list`).
 //!
 //! A finding is damage, never a notice. Recovery refuses a WAL that does not

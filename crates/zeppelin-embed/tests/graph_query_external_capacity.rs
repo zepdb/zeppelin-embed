@@ -9,7 +9,7 @@ fn external_compiler_capacity_shares_query_and_store_budget_and_releases_exactly
     let directory = tempfile::tempdir().expect("fixture");
     let store = Store::open(
         directory.path(),
-        OpenOptions::new().with_max_resident_bytes(65536),
+        OpenOptions::new().with_max_resident_bytes(2 * 1024 * 1024),
     )
     .expect("store");
     let shared = GraphResources::from_store(&store).expect("shared owner");

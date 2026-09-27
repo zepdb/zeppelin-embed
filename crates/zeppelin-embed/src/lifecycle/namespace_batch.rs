@@ -137,6 +137,16 @@ fn routes(root: &Path) -> Result<Routes, StoreError> {
 
 /// Selects one complete committed namespace. No sibling is opened or repaired.
 pub(super) fn resolve(path: &Path) -> Result<PathBuf, StoreError> {
+    match std::fs::metadata(path) {
+        Ok(metadata) if !metadata.is_dir() => {
+            return Err(StoreError::NotDirectory {
+                path: path.to_path_buf(),
+            });
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(io(path, error)),
+    }
     let Some(parent) = path.parent() else {
         return Ok(path.to_path_buf());
     };

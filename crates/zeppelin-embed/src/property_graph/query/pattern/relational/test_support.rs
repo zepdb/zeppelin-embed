@@ -1160,19 +1160,31 @@ impl NativeReadConsumer<Result<PipelineExecution, RuntimeFailure<NativeExecution
 }
 
 fn probe_directory(seed: u64) -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let invocation = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut path = std::env::temp_dir();
     path.push(format!(
-        "zeppelin-native-relational-{}-{seed}",
+        "zeppelin-native-relational-{}-{seed}-{invocation}",
         std::process::id()
     ));
     path
 }
 
+struct ProbeDirectoryCleanup<'a>(&'a Path);
+
+impl Drop for ProbeDirectoryCleanup<'_> {
+    fn drop(&mut self) {
+        // Preserve the original probe error on early return; normal completion
+        // still reports a failed explicit cleanup below.
+        let _ = std::fs::remove_dir_all(self.0);
+    }
+}
+
 /// Runs the same real native relational helper used by focused tests and adapter.
 pub fn run_actual_probe(seed: u64) -> Result<NativeRelationalProbeReport, String> {
     let directory = probe_directory(seed);
-    let _ = std::fs::remove_dir_all(&directory);
-    std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    std::fs::create_dir(&directory).map_err(|error| error.to_string())?;
+    let _cleanup = ProbeDirectoryCleanup(&directory);
     let clock = Arc::new(ManualMonotonicClock::new());
     let vfs = Arc::new(ScheduledMapVfs::default());
     let mut entropy = OsEntropy;

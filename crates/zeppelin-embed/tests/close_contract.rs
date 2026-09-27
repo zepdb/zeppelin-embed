@@ -230,7 +230,7 @@ fn drop_without_close_best_effort_releases() {
     assert_eq!(reopened_stats.query_pool_bytes, 0);
     assert_eq!(
         reopened_stats.resident_owned_bytes,
-        reopened_stats.snapshot_bytes
+        reopened_stats.snapshot_bytes + reopened_stats.native_graph_bytes
     );
     reopened.close().expect("close reopened store");
 }

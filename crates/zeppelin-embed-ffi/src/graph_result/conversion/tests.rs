@@ -24,6 +24,8 @@ use zeppelin_embed::property_graph::{
     EntityKind, GraphGeneration, GraphRevision, NodeId, RelId, StoreInstanceId,
 };
 
+// Tests share a nonblocking registry; serialize complete owner lifetimes.
+static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static REGISTRY: GraphResultRegistry = GraphResultRegistry::new(64);
 
 struct CheckpointView {
@@ -282,6 +284,9 @@ unsafe fn output_slice<'a, T>(pointer: *const T, count: usize) -> &'a [T] {
 
 #[test]
 fn graph_result_native_all_pools_match_literal_field_oracle() {
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     super::super::tests::with_context(|context| {
         let bytes = b"a\0btext\0\xce\xbbkeynsreltypecolcol";
         let children = [
@@ -681,6 +686,9 @@ fn report_fixture(
 
 #[test]
 fn graph_result_native_reports_receipts_outcomes_are_lossless() {
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     use zeppelin_embed::lifecycle::GraphSearchOptions;
     use zeppelin_embed::property_graph::EntityId;
     use zeppelin_embed::property_graph::staging::ItemReceipt;
@@ -1120,6 +1128,9 @@ fn graph_result_native_reports_receipts_outcomes_are_lossless() {
 
 #[test]
 fn graph_result_native_context_identity_and_source_snapshot_are_single() {
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     struct Changing<'a> {
         first: ResultInput<'a>,
         second: ResultInput<'a>,
@@ -1237,6 +1248,9 @@ fn graph_result_native_context_identity_and_source_snapshot_are_single() {
 
 #[test]
 fn graph_result_native_driver_finalizes_all_23_exact_counters() {
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     super::super::tests::with_context(|context| {
         for (ordinal, (kind, _)) in WORK_KINDS.into_iter().enumerate() {
             let amount = if kind == WorkKind::SearchInvocations {
@@ -1296,6 +1310,9 @@ fn graph_result_native_driver_finalizes_all_23_exact_counters() {
 
 #[test]
 fn graph_result_native_geometry_limits_and_real_overlap_reject() {
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     use zeppelin_embed::property_graph::EntityId;
     use zeppelin_embed::property_graph::staging::ItemReceipt;
 
@@ -1621,6 +1638,9 @@ fn graph_result_native_geometry_limits_and_real_overlap_reject() {
 
 #[test]
 fn graph_result_native_every_allocation_and_copy_checkpoint_cleans() {
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     fn case(fail_at: usize) -> (Result<(), &'static str>, super::super::audit::Snapshot) {
         super::super::tests::with_context(|context| {
             let bytes = vec![b'x'; 65537];
@@ -2033,6 +2053,9 @@ fn graph_result_native_every_allocation_and_copy_checkpoint_cleans() {
 
 #[test]
 fn graph_result_native_c_copy_work_limit_rejects_missing_charge() {
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     with_checkpoint_limits(
         24 * 1024 * 1024,
         0,
@@ -2068,6 +2091,9 @@ fn graph_result_native_c_copy_work_limit_rejects_missing_charge() {
     reason = "the test deliberately ends every borrowed source lifetime before reading C backing"
 )]
 fn graph_result_native_private_drop_and_source_independence_are_heap_flat() {
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     super::super::tests::with_context(|context| {
         let baseline = context.memory().reserved_bytes();
         let empty = NativeSource {
@@ -2180,6 +2206,9 @@ fn graph_result_native_private_drop_and_source_independence_are_heap_flat() {
 
 #[test]
 fn graph_result_native_provisional_write_settles_through_pending_owner() {
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     use zeppelin_embed::property_graph::staging::ItemReceipt;
 
     let pending = super::super::tests::with_context(|context| {

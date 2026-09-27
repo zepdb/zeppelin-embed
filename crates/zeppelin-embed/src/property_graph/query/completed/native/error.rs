@@ -30,7 +30,7 @@ use crate::property_graph::staging::StageError;
 use crate::property_graph::storage::tree::directory::TreeError;
 
 /// The plan's error groups. A caller branches on this; the exact cause stays
-/// available through [`GraphQueryError::cause`].
+/// retained internally for diagnostics.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GraphQueryErrorKind {
     /// The plan is invalid or unsupported, or the statement driver broke its

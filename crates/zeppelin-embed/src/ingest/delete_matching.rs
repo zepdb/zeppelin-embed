@@ -85,7 +85,7 @@ impl Store {
     /// nothing; after it, the next writable open completes the purge.
     ///
     /// A cascade (ZE-225) extends the id set between resolution and
-    /// [`Self::delete_and_purge_locked`], inside the same held locks.
+    /// `delete_and_purge_locked`, inside the same held locks.
     pub fn delete_matching(
         &self,
         predicate: &Predicate,

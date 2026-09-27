@@ -1579,7 +1579,7 @@ typedef struct ZeGraphSearchReport {
      */
     uint64_t tokenizer_epoch;
     /*
-     Effective query-level vector weight, finite in [0,1]; no per-node renormalization.
+     Effective query-level vector weight, finite in `[0,1]`; no per-node renormalization.
      */
     double effective_alpha;
     /*
@@ -2183,7 +2183,7 @@ typedef struct ZeGraphSearchOptions {
      */
     uint32_t rules_enabled;
     /*
-     Explicit finite convex weight in [0,1].
+     Explicit finite convex weight in `[0,1]`.
      */
     double alpha;
     /*

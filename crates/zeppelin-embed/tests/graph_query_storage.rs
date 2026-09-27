@@ -115,6 +115,7 @@ fn query_tree_admission_preserves_deadline_and_close_priority_without_charges() 
         .expect("runtime");
     let before_query = memory.reserved_bytes();
     let before_shared = shared.reserved_bytes().expect("shared reserved bytes");
+    let registry_bytes = store.stats().expect("stats").native_graph_bytes;
     let close_store = std::sync::Arc::clone(&store);
     let closing = std::thread::spawn(move || close_store.close());
     retained
@@ -131,7 +132,7 @@ fn query_tree_admission_preserves_deadline_and_close_priority_without_charges() 
     assert_eq!(memory.reserved_bytes(), before_query);
     assert_eq!(
         shared.reserved_bytes().expect("shared reserved bytes"),
-        before_shared
+        before_shared - registry_bytes
     );
 
     drop(context);
@@ -203,6 +204,7 @@ fn query_range_scratch_checks_close_before_memory_refusal_without_charging() {
     let mut resources = TreeResources::for_query(&mut context).expect("query tree resources");
     let before_query = memory.reserved_bytes();
     let before_shared = shared.reserved_bytes().expect("shared reserved bytes");
+    let registry_bytes = store.stats().expect("stats").native_graph_bytes;
 
     let close_store = std::sync::Arc::clone(&store);
     let closing = std::thread::spawn(move || close_store.close());
@@ -220,7 +222,7 @@ fn query_range_scratch_checks_close_before_memory_refusal_without_charging() {
     assert_eq!(memory.reserved_bytes(), before_query);
     assert_eq!(
         shared.reserved_bytes().expect("shared reserved bytes"),
-        before_shared
+        before_shared - registry_bytes
     );
 
     drop(resources);
@@ -412,11 +414,15 @@ fn payload_copies_charge_only_bytes_actually_copied_before_refusal() {
     use zeppelin_embed::property_graph::storage::tree::directory::BlockSource;
 
     struct Source {
+        scoped: bool,
         bytes: Vec<u8>,
         reference: PhysicalRef,
         identity: ArtifactIdentity,
     }
     impl BlockSource for Source {
+        fn scoped_blocks(&self) -> bool {
+            self.scoped
+        }
         fn resolve<'a>(
             &'a self,
             reference: PhysicalRef,
@@ -457,6 +463,7 @@ fn payload_copies_charge_only_bytes_actually_copied_before_refusal() {
     .expect("decoded source");
     let reference = frame.reference(0).expect("payload reference");
     let source = Source {
+        scoped: false,
         bytes,
         reference,
         identity,
@@ -502,6 +509,43 @@ fn payload_copies_charge_only_bytes_actually_copied_before_refusal() {
     }
     assert_eq!(context.counters().get(WorkKind::CopiedBytes), 7);
 
+    drop(context);
+    let scoped_source = Source {
+        scoped: true,
+        ..source
+    };
+    let slice = PayloadSlice::new(&scoped_source, identity.store, identity.generation, payload);
+    let limits = RuntimeLimits::default()
+        .with_limit(WorkKind::CopiedBytes, 8)
+        .expect("cache fill plus first field");
+    let mut context = RuntimeContext::new(&retained, &control, &memory, limits).expect("runtime");
+    {
+        let mut resources = TreeResources::for_query(&mut context).expect("resources");
+        let mut cursor =
+            PayloadCursor::new_with_resources(slice, &mut resources).expect("copied cache");
+        assert_eq!(
+            cursor.read_array::<1>(&mut resources).expect("prime cache"),
+            *b"p"
+        );
+        let mut output = [0xaa];
+        let result = cursor.read_array::<1>(&mut resources);
+        if let Ok(value) = result.as_ref() {
+            output = *value;
+        }
+        assert!(matches!(
+            result,
+            Err(TreeError::Runtime(RuntimeError::Limit(
+                WorkKind::CopiedBytes
+            )))
+        ));
+        assert_eq!(output, [0xaa], "refusal returns no partial field");
+        assert_eq!(
+            cursor.position(),
+            1,
+            "refusal does not advance the cached cursor"
+        );
+    }
+    assert_eq!(context.counters().get(WorkKind::CopiedBytes), 8);
     drop(context);
     drop(retained);
     store.close().expect("close");

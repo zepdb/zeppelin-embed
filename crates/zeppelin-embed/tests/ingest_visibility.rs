@@ -953,6 +953,7 @@ fn every_active_segment_byte_is_accounted() {
             + stats.active_segment_bytes
             + stats.retired_active_segment_bytes
             + stats.wal_bytes
+            + stats.native_graph_bytes
     );
 }
 

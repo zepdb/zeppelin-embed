@@ -11,6 +11,8 @@ use super::*;
 use std::num::NonZeroU64;
 use zeppelin_embed::property_graph::{EntityId, GraphGeneration, GraphRevision, NodeId, RelId};
 
+// Tests share a nonblocking registry; serialize complete owner lifetimes.
+static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static REGISTRY: GraphResultRegistry = GraphResultRegistry::new(16);
 
 fn c_node(high: u64, low: u64, revision: u64, generation: u64) -> ZeGraphNode {
@@ -72,6 +74,9 @@ fn pending_fixture(context: &mut RuntimeContext<'_, '_, '_>) -> PendingResponse 
 
 #[test]
 fn graph_result_pending_detach_releases_charge_and_free_rejects_until_settled() {
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     with_context(|context| {
         let baseline = context.memory().reserved_bytes();
         let prepared = REGISTRY
@@ -136,6 +141,9 @@ fn graph_result_pending_detach_releases_charge_and_free_rejects_until_settled() 
 
 #[test]
 fn graph_result_pending_outlives_query_and_every_path_is_heap_flat() {
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // The pending owner leaves the query, its memory and its store behind.
     let pending = with_context(pending_fixture);
     let receipts = [node_receipt(1, 2, 7, 11)];
@@ -175,6 +183,9 @@ fn graph_result_pending_outlives_query_and_every_path_is_heap_flat() {
 
 #[test]
 fn graph_result_settle_stamps_changed_entities_and_allocates_nothing() {
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     with_context(|context| {
         // Node (1,2) is the binary-search midpoint; (1,9) is the last node.
         // Receipt generations above admitted 10 were staged by this write.
@@ -267,6 +278,9 @@ fn graph_result_settle_stamps_changed_entities_and_allocates_nothing() {
 
 #[test]
 fn graph_result_potential_write_guard_is_indeterminate_until_resolved() {
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // A caught panic before any resolution: unknown, never a stale
     // NotCommitted, and the pending owner is aborted during unwind.
     with_context(|context| {
@@ -278,7 +292,9 @@ fn graph_result_potential_write_guard_is_indeterminate_until_resolved() {
         let (guarded, heap) = audit::run(0, false, || {
             run_potential_write(|_attempt| {
                 let _pending = pending;
-                panic!("injected interruption before commit");
+                // Bypass libtest's panic-output capture allocation while still
+                // unwinding through the pending owner's Drop implementation.
+                std::panic::resume_unwind(Box::new("injected interruption before commit"));
             })
         });
         assert_eq!(guarded.outcome, OperationOutcome::Indeterminate);

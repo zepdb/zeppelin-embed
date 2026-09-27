@@ -621,7 +621,7 @@ pub struct ZeGraphSearchOptions {
     pub has_alpha: u32,
     /// Exactly 0 or 1; query-level alpha rules, ignored by explicit alpha.
     pub rules_enabled: u32,
-    /// Explicit finite convex weight in [0,1].
+    /// Explicit finite convex weight in `[0,1]`.
     pub alpha: f64,
     /// Exactly 0 or 1; absent max_rounds is zero.
     pub has_max_rounds: u32,
@@ -1283,7 +1283,7 @@ pub struct ZeGraphSearchReport {
     pub query_epoch: u64,
     /// Selected analyzer epoch; zero if absent.
     pub tokenizer_epoch: u64,
-    /// Effective query-level vector weight, finite in [0,1]; no per-node renormalization.
+    /// Effective query-level vector weight, finite in `[0,1]`; no per-node renormalization.
     pub effective_alpha: f64,
     /// Actual scoring-anchor policy version.
     pub normalization_version: u32,

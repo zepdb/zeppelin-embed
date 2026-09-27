@@ -93,7 +93,7 @@ fn retained_input_capabilities_charge_spare_capacity_once_and_reject_missing_spa
     let root = tempfile::tempdir().expect("store fixture");
     let store = Store::open(
         root.path(),
-        OpenOptions::new().with_max_resident_bytes(65_536),
+        OpenOptions::new().with_max_resident_bytes(2 * 1024 * 1024),
     )
     .expect("store");
     let shared = GraphResources::from_store(&store).expect("shared");
@@ -166,7 +166,7 @@ fn runtime_counters_enforce_limits_before_work_and_keep_one_view_control() {
     let root = tempfile::tempdir().expect("fixture");
     let store = Store::open(
         root.path(),
-        OpenOptions::new().with_max_resident_bytes(65536),
+        OpenOptions::new().with_max_resident_bytes(2 * 1024 * 1024),
     )
     .expect("store");
     let shared = GraphResources::from_store(&store).expect("accounting");
@@ -218,7 +218,7 @@ fn execution_plan_requires_retained_owners_for_every_visible_span() {
     let root = tempfile::tempdir().expect("fixture");
     let store = Store::open(
         root.path(),
-        OpenOptions::new().with_max_resident_bytes(262144),
+        OpenOptions::new().with_max_resident_bytes(2 * 1024 * 1024),
     )
     .expect("store");
     let shared = GraphResources::from_store(&store).expect("shared");
@@ -423,7 +423,7 @@ fn flat_variable_arenas_own_nested_strings_and_preserve_packed_full_ids() {
     let root = tempfile::tempdir().expect("fixture");
     let store = Store::open(
         root.path(),
-        OpenOptions::new().with_max_resident_bytes(65536),
+        OpenOptions::new().with_max_resident_bytes(2 * 1024 * 1024),
     )
     .expect("store");
     let shared = GraphResources::from_store(&store).expect("accounting");
@@ -568,12 +568,12 @@ fn query_and_writer_share_one_backing_charge_with_nested_local_limits() {
     let other_root = tempfile::tempdir().expect("other fixture");
     let store = Store::open(
         root.path(),
-        OpenOptions::new().with_max_resident_bytes(65536),
+        OpenOptions::new().with_max_resident_bytes(2 * 1024 * 1024),
     )
     .expect("store");
     let other_store = Store::open(
         other_root.path(),
-        OpenOptions::new().with_max_resident_bytes(65536),
+        OpenOptions::new().with_max_resident_bytes(2 * 1024 * 1024),
     )
     .expect("other store");
     let shared = GraphResources::from_store(&store).expect("shared");
@@ -691,7 +691,7 @@ fn pull_driver_drains_private_batches_before_completion() {
     let root = tempfile::tempdir().expect("fixture");
     let store = Store::open(
         root.path(),
-        OpenOptions::new().with_max_resident_bytes(262144),
+        OpenOptions::new().with_max_resident_bytes(2 * 1024 * 1024),
     )
     .expect("store");
     let shared = GraphResources::from_store(&store).expect("accounting");
@@ -744,7 +744,7 @@ fn pull_driver_drains_private_batches_before_completion() {
         let directory = tempfile::tempdir().expect("independent cold legacy fixture");
         let legacy_store = Store::open(
             directory.path(),
-            OpenOptions::new().with_max_resident_bytes(262144),
+            OpenOptions::new().with_max_resident_bytes(2 * 1024 * 1024),
         )
         .expect("legacy store");
         let lease = legacy_store.snapshot().expect("cold legacy lease");

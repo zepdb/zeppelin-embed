@@ -620,7 +620,7 @@ fn graph_reader_validates_every_node_after_forgeable_checksums() {
             codes: &graph_codes[0],
             factors: factors[0],
             flags: 0,
-            neighbors: &[0],
+            neighbors: &[1],
         },
         GraphNodeBlockInput {
             codes: &graph_codes[1],
@@ -849,11 +849,11 @@ fn prop_graph_node_block_round_trip_and_corruption_is_typed() {
         let padded_dims = dims.div_ceil(128) * 128;
         let layout = GraphNodeLayout::new(dims, padded_dims, max_degree).expect("layout");
         let node_count = id % 7 + 1;
-        let degree = requested_degree.min(max_degree).min(node_count as u8);
+        let degree = requested_degree.min(max_degree).min((node_count - 1) as u8);
         let neighbors = (0..node_count)
             .map(|node_id| {
-                (0..u32::from(degree))
-                    .map(|slot| (id.wrapping_add(node_id).wrapping_add(slot)) % node_count)
+                (1..=u32::from(degree))
+                    .map(|slot| (node_id + slot) % node_count)
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
@@ -1080,7 +1080,7 @@ fn graph_node_block_decoder_rejects_each_malformed_field() {
         codes: &codes,
         factors: Bit4Factors::from_persisted(1.0, 2.0, 3.0),
         flags: 0,
-        neighbors: &[0],
+        neighbors: &[],
     }];
     let valid = encode_node_blocks(GraphNodeBlockBuild {
         layout,
@@ -1136,7 +1136,17 @@ fn graph_node_block_decoder_rejects_each_malformed_field() {
     repair_graph_checksum(&mut non_finite);
     assert_decode_error(&non_finite, "non-finite");
 
+    let mut self_neighbor = valid.clone();
+    self_neighbor[76] = 1;
+    self_neighbor[80..84].copy_from_slice(&0_u32.to_le_bytes());
+    repair_graph_checksum(&mut self_neighbor);
+    assert_decode_error(
+        &self_neighbor,
+        "active neighbour slot 0 refers to its owner",
+    );
+
     let mut out_of_range = valid.clone();
+    out_of_range[76] = 1;
     out_of_range[80..84].copy_from_slice(&1_u32.to_le_bytes());
     repair_graph_checksum(&mut out_of_range);
     assert_decode_error(&out_of_range, "outside row count");

@@ -114,12 +114,11 @@ impl<'a, S: BlockSource> PayloadSlice<'a, S> {
                     |bytes, resources| {
                         let count = bytes.len().min((end - position) as usize);
                         let target = left_copy.get_mut(..count).ok_or(TreeError::Memory)?;
-                        target.copy_from_slice(
-                            bytes
-                                .get(..count)
-                                .ok_or(TreeError::Invalid("left window extent"))?,
-                        );
+                        let source = bytes
+                            .get(..count)
+                            .ok_or(TreeError::Invalid("left window extent"))?;
                         resources.read_event(NativeReadEvent::CopiedBytes(count as u64))?;
+                        target.copy_from_slice(source);
                         Ok(count)
                     },
                 )?;
@@ -238,13 +237,12 @@ impl<'a, S: BlockSource> PayloadSlice<'a, S> {
                     let target = output
                         .get_mut(copied..copied + count)
                         .ok_or(TreeError::Memory)?;
-                    target.copy_from_slice(
-                        bytes
-                            .get(..count)
-                            .ok_or(TreeError::Invalid("payload copy span"))?,
-                    );
+                    let source = bytes
+                        .get(..count)
+                        .ok_or(TreeError::Invalid("payload copy span"))?;
                     resources.step(count as u64)?;
                     resources.read_event(NativeReadEvent::CopiedBytes(count as u64))?;
+                    target.copy_from_slice(source);
                     Ok(count)
                 },
             )?;
@@ -394,17 +392,14 @@ impl<'a, 'm, S: BlockSource> PayloadCursor<'a, 'm, S> {
                 if count == 0 {
                     return Err(TreeError::Invalid("short fixed field"));
                 }
-                output
+                let target = output
                     .get_mut(copied..copied + count)
-                    .ok_or(TreeError::Memory)?
-                    .copy_from_slice(
-                        cache
-                            .as_slice()
-                            .get(start..start + count)
-                            .ok_or(TreeError::Invalid("copied field span"))?,
-                    );
-                resources.step(count as u64)?;
-                resources.read_event(NativeReadEvent::CopiedBytes(count as u64))?;
+                    .ok_or(TreeError::Memory)?;
+                let source = cache
+                    .as_slice()
+                    .get(start..start + count)
+                    .ok_or(TreeError::Invalid("copied field span"))?;
+                copy_cached_field(target, source, resources)?;
                 copied += count;
                 self.position += count as u64;
                 continue;
@@ -525,5 +520,74 @@ impl Utf8State {
             return Err(TreeError::Invalid("truncated UTF-8"));
         }
         Ok(())
+    }
+}
+
+// Separate the copy so tests can inspect its destination on refusal; read_array
+// discards its local array when it returns an error.
+fn copy_cached_field(
+    target: &mut [u8],
+    source: &[u8],
+    resources: &mut TreeResources<'_>,
+) -> Result<(), TreeError> {
+    resources.step(source.len() as u64)?;
+    resources.read_event(NativeReadEvent::CopiedBytes(source.len() as u64))?;
+    target.copy_from_slice(source);
+    Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+    use crate::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
+    use crate::property_graph::query::resources::QueryMemory;
+    use crate::property_graph::query::runtime::{
+        RetainedView, RuntimeContext, RuntimeError, RuntimeLimits, WorkKind,
+    };
+    use crate::property_graph::query::{QueryError, QueryView};
+    use crate::property_graph::resources::GraphResources;
+
+    struct View(QueryView);
+    impl RetainedView for View {
+        fn query_view(&self) -> &QueryView {
+            &self.0
+        }
+        fn check_active(&self) -> Result<(), QueryError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn cached_field_copy_refusal_preserves_destination() {
+        let directory = tempfile::tempdir().expect("directory");
+        let store = Store::open(
+            directory.path(),
+            OpenOptions::new().with_max_resident_bytes(2 * 1024 * 1024),
+        )
+        .expect("store");
+        let shared = GraphResources::from_store(&store).expect("accounting");
+        let memory = QueryMemory::new(&shared, 512 * 1024).expect("memory");
+        let view = View(QueryView::new(
+            StoreInstanceId::new(1).expect("identity"),
+            GraphGeneration::new(0),
+        ));
+        let control = QueryControl::Cancel(CancelToken::new());
+        let limits = RuntimeLimits::default()
+            .with_limit(WorkKind::CopiedBytes, 0)
+            .expect("limit");
+        let mut context = RuntimeContext::new(&view, &control, &memory, limits).expect("runtime");
+        {
+            let mut resources = TreeResources::for_query(&mut context).expect("resources");
+            let mut output = [0xaa];
+            assert!(matches!(
+                copy_cached_field(&mut output, b"p", &mut resources),
+                Err(TreeError::Runtime(RuntimeError::Limit(
+                    WorkKind::CopiedBytes
+                )))
+            ));
+            assert_eq!(output, [0xaa]);
+        }
+        assert_eq!(context.counters().get(WorkKind::CopiedBytes), 0);
     }
 }

@@ -173,7 +173,7 @@ pub struct SearchReport {
     pub query_epoch: Option<u64>,
     /// Optional lexical analyzer interpretation epoch.
     pub tokenizer_epoch: Option<u64>,
-    /// Exact finite query-level vector-weight bits in [0,1].
+    /// Exact finite query-level vector-weight bits in `[0,1]`.
     pub effective_alpha_bits: u64,
     /// Actual normalization-anchor policy version.
     pub normalization_version: u32,

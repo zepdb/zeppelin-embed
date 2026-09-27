@@ -1286,31 +1286,9 @@ impl crate::vfs::Vfs for StorageFaultVfs {
         directory: &Path,
         visitor: &mut dyn FnMut(&Path) -> std::io::Result<()>,
     ) -> std::io::Result<()> {
-        let omitted = match self.controller.armed_fault() {
-            Some(StorageTestFault::ListOmission { file_name }) => Some(file_name),
-            _ => None,
-        };
-        let mut fired = false;
-        self.inner.for_each_direct_child(directory, &mut |path| {
-            if omitted.as_ref().is_some_and(|file_name| {
-                path.file_name()
-                    .is_some_and(|name| name == file_name.as_str())
-            }) {
-                fired = true;
-                return Ok(());
-            }
-            visitor(path)
-        })?;
-        if fired && let Some(file_name) = omitted {
-            let _ = self.controller.emit(
-                StorageReceiptSite::OrphanCleanupList,
-                StorageReceiptObserved::Omission {
-                    artifact: file_name,
-                    deletion_observed: false,
-                },
-            );
-        }
-        Ok(())
+        // The omission belongs to OrphanCleanup.List, not the earlier native
+        // format admission scan. Only list() consumes that one-shot fault.
+        self.inner.for_each_direct_child(directory, visitor)
     }
 
     fn delete(&self, path: &Path) -> std::io::Result<()> {
