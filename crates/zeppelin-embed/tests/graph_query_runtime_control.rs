@@ -268,11 +268,7 @@ fn factory_composes_production_relational_owners_and_releases_failed_preparation
             &mut self,
             context: &mut RuntimeContext<'v, 'm, 'g>,
         ) -> Result<Self::Operator<'v>, RuntimeError> {
-            let capacity = StorageCapacity {
-                rows: 4,
-                payload_bytes: 1024,
-                variable: ArenaCapacity::default(),
-            };
+            let capacity = StorageCapacity::new(4, 1024, ArenaCapacity::default());
             let mut rows = Rows::new(context, &[SlotId(19)], capacity)?;
             for value in [3, 1, 3, 2] {
                 rows.push(&[QueryValue::I64(value)], context)?;
@@ -283,10 +279,7 @@ fn factory_composes_production_relational_owners_and_releases_failed_preparation
                 PlanNodeId(0),
                 source,
                 BlockingOperation::Distinct,
-                StorageCapacity {
-                    rows: 1,
-                    ..capacity
-                },
+                StorageCapacity::new(1, capacity.payload_bytes, capacity.variable),
                 capacity,
                 capacity,
             )?;
@@ -298,10 +291,7 @@ fn factory_composes_production_relational_owners_and_releases_failed_preparation
                 None,
                 1,
                 Some(2),
-                StorageCapacity {
-                    rows: 1,
-                    ..capacity
-                },
+                StorageCapacity::new(1, capacity.payload_bytes, capacity.variable),
             )?;
             if self.fail {
                 return Err(RuntimeError::Batch);

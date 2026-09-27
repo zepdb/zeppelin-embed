@@ -1,3 +1,8 @@
+#![allow(
+    clippy::result_large_err,
+    reason = "native typed errors remain allocation-free"
+)]
+
 use super::super::plan::{AggregateExpression, Expression, Projection, SortKey};
 use super::super::relational::{Aggregate, AggregateColumn, OrderKey, Rows, SlotProjection};
 use super::*;
@@ -5,6 +10,66 @@ use super::*;
 pub(super) mod eligibility;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod test_support;
+
+// One charged use list per raw row. Row descriptors grow in the same chunks
+// as Rows; empty-use rows reserve no relationship entries.
+struct RowUses<'m, 'g> {
+    chunks: QueryArena<'m, 'g, QueryArena<'m, 'g, QueryArena<'m, 'g, RelationshipUse>>>,
+    capacity: super::super::relational::StorageCapacity,
+    len: usize,
+}
+impl<'m, 'g> RowUses<'m, 'g> {
+    fn new(
+        capacity: super::super::relational::StorageCapacity,
+        context: &RuntimeContext<'_, 'm, 'g>,
+    ) -> Result<Self, RuntimeError> {
+        if capacity.rows == 0 && capacity.max_rows != 0 {
+            return Err(RuntimeError::Batch);
+        }
+        Ok(Self {
+            chunks: QueryArena::new(
+                context.memory(),
+                capacity.max_rows.div_ceil(capacity.rows.max(1)),
+            )?,
+            capacity,
+            len: 0,
+        })
+    }
+    fn push(
+        &mut self,
+        uses: &[RelationshipUse],
+        context: &RuntimeContext<'_, 'm, 'g>,
+    ) -> Result<(), RuntimeError> {
+        if self.len == self.capacity.max_rows {
+            return Err(RuntimeError::BatchCapacity);
+        }
+        let chunk = self.len / self.capacity.rows;
+        if chunk == self.chunks.len() {
+            self.chunks.push(QueryArena::new(
+                context.memory(),
+                self.capacity.rows.min(self.capacity.max_rows - self.len),
+            )?)?;
+        }
+        let mut row = QueryArena::new(context.memory(), uses.len())?;
+        row.extend_copy(uses)?;
+        self.chunks
+            .as_mut_slice()
+            .get_mut(chunk)
+            .ok_or(RuntimeError::Batch)?
+            .push(row)?;
+        self.len += 1;
+        Ok(())
+    }
+    fn get(&self, raw: usize) -> Result<&[RelationshipUse], RuntimeError> {
+        let size = self.capacity.rows.max(1);
+        self.chunks
+            .as_slice()
+            .get(raw / size)
+            .and_then(|chunk| chunk.as_slice().get(raw % size))
+            .map(QueryArena::as_slice)
+            .ok_or(RuntimeError::Batch)
+    }
+}
 
 pub(super) struct SortState<'v, 'm, 'g> {
     descriptors: QueryArena<'m, 'g, SortKey>,
@@ -14,8 +79,7 @@ pub(super) struct SortState<'v, 'm, 'g> {
     evaluated: QueryArena<'m, 'g, RowBatch<'v, 'm, 'g>>,
     visible: Option<Rows<'v, 'm, 'g>>,
     key_rows: Option<Rows<'v, 'm, 'g>>,
-    spans: QueryArena<'m, 'g, UseSpan>,
-    uses: QueryArena<'m, 'g, RelationshipUse>,
+    uses: RowUses<'m, 'g>,
     capacity: PatternCapacity,
     started: bool,
     next: usize,
@@ -24,8 +88,7 @@ pub(super) struct SortState<'v, 'm, 'g> {
 pub(super) struct DistinctState<'v, 'm, 'g> {
     slots: QueryArena<'m, 'g, SlotId>,
     rows: Option<Rows<'v, 'm, 'g>>,
-    spans: QueryArena<'m, 'g, UseSpan>,
-    uses: QueryArena<'m, 'g, RelationshipUse>,
+    uses: RowUses<'m, 'g>,
     capacity: PatternCapacity,
     started: bool,
     next: usize,
@@ -39,8 +102,7 @@ pub(super) struct AggregateState<'v, 'm, 'g> {
     evaluated: QueryArena<'m, 'g, RowBatch<'v, 'm, 'g>>,
     rows: Option<Rows<'v, 'm, 'g>>,
     representatives: Option<QueryArena<'m, 'g, Option<usize>>>,
-    spans: QueryArena<'m, 'g, UseSpan>,
-    uses: QueryArena<'m, 'g, RelationshipUse>,
+    uses: RowUses<'m, 'g>,
     capacity: PatternCapacity,
     started: bool,
     next: usize,
@@ -155,11 +217,6 @@ impl<'v, 'm, 'g> AggregateState<'v, 'm, 'g> {
                 .map_err(RuntimeError::Memory)?;
         }
         let rows = Rows::new(context, input_slots.as_slice(), capacity.rows)?;
-        let use_capacity = capacity
-            .rows
-            .rows
-            .checked_mul(16)
-            .ok_or(RuntimeError::Batch)?;
         owner
             .push(Self {
                 expressions,
@@ -169,10 +226,7 @@ impl<'v, 'm, 'g> AggregateState<'v, 'm, 'g> {
                 evaluated,
                 rows: Some(rows),
                 representatives: None,
-                spans: QueryArena::new(context.memory(), capacity.rows.rows)
-                    .map_err(RuntimeError::Memory)?,
-                uses: QueryArena::new(context.memory(), use_capacity)
-                    .map_err(RuntimeError::Memory)?,
+                uses: RowUses::new(capacity.rows, context)?,
                 capacity,
                 started: false,
                 next: 0,
@@ -196,8 +250,7 @@ impl<'v, 'm, 'g> AggregateState<'v, 'm, 'g> {
             context.checkpoint()?;
             value.clear();
         }
-        self.spans.clear();
-        self.uses.clear();
+        self.uses = RowUses::new(self.capacity.rows, context)?;
         self.started = false;
         self.next = 0;
         Ok(())
@@ -217,19 +270,11 @@ impl<'v, 'm, 'g> DistinctState<'v, 'm, 'g> {
             owned_slots.push(*slot).map_err(RuntimeError::Memory)?;
         }
         let rows = Rows::new(context, slots, capacity.rows)?;
-        let use_capacity = capacity
-            .rows
-            .rows
-            .checked_mul(16)
-            .ok_or(RuntimeError::Batch)?;
         owner
             .push(Self {
                 slots: owned_slots,
                 rows: Some(rows),
-                spans: QueryArena::new(context.memory(), capacity.rows.rows)
-                    .map_err(RuntimeError::Memory)?,
-                uses: QueryArena::new(context.memory(), use_capacity)
-                    .map_err(RuntimeError::Memory)?,
+                uses: RowUses::new(capacity.rows, context)?,
                 capacity,
                 started: false,
                 next: 0,
@@ -248,8 +293,7 @@ impl<'v, 'm, 'g> DistinctState<'v, 'm, 'g> {
             self.slots.as_slice(),
             self.capacity.rows,
         )?);
-        self.spans.clear();
-        self.uses.clear();
+        self.uses = RowUses::new(self.capacity.rows, context)?;
         self.started = false;
         self.next = 0;
         Ok(())
@@ -309,11 +353,6 @@ impl<'v, 'm, 'g> SortState<'v, 'm, 'g> {
         }
         let visible = Rows::new(context, visible_slots, capacity.rows)?;
         let key_rows = Rows::new(context, key_slots.as_slice(), capacity.rows)?;
-        let use_capacity = capacity
-            .rows
-            .rows
-            .checked_mul(16)
-            .ok_or(RuntimeError::Batch)?;
         owner
             .push(Self {
                 descriptors,
@@ -323,10 +362,7 @@ impl<'v, 'm, 'g> SortState<'v, 'm, 'g> {
                 evaluated,
                 visible: Some(visible),
                 key_rows: Some(key_rows),
-                spans: QueryArena::new(context.memory(), capacity.rows.rows)
-                    .map_err(RuntimeError::Memory)?,
-                uses: QueryArena::new(context.memory(), use_capacity)
-                    .map_err(RuntimeError::Memory)?,
+                uses: RowUses::new(capacity.rows, context)?,
                 capacity,
                 started: false,
                 next: 0,
@@ -355,8 +391,7 @@ impl<'v, 'm, 'g> SortState<'v, 'm, 'g> {
             context.checkpoint()?;
             value.clear();
         }
-        self.spans.clear();
-        self.uses.clear();
+        self.uses = RowUses::new(self.capacity.rows, context)?;
         self.started = false;
         self.next = 0;
         Ok(())
@@ -439,17 +474,9 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
                 visible.push(values.as_slice(), context)?;
                 drop(values);
 
-                let start = state.uses.len();
-                for usage in self.occurrence(child)?.uses.as_slice() {
-                    state.uses.push(*usage).map_err(RuntimeError::Memory)?;
-                }
                 state
-                    .spans
-                    .push(UseSpan {
-                        start,
-                        len: state.uses.len() - start,
-                    })
-                    .map_err(RuntimeError::Memory)?;
+                    .uses
+                    .push(self.occurrence(child)?.uses.as_slice(), context)?;
 
                 for position in 0..state.descriptors.len() {
                     let descriptor = *state
@@ -505,20 +532,7 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
             |column| visible.value(source, column).ok_or(RuntimeError::Batch),
             context,
         )?;
-        let span = state
-            .spans
-            .as_slice()
-            .get(source)
-            .ok_or(RuntimeError::Batch)?;
-        let end = span
-            .start
-            .checked_add(span.len)
-            .ok_or(RuntimeError::Batch)?;
-        let uses = state
-            .uses
-            .as_slice()
-            .get(span.start..end)
-            .ok_or(RuntimeError::Batch)?;
+        let uses = state.uses.get(source)?;
         copy_relationship_uses_slice(uses, &mut parent.uses)?;
         state.next += 1;
         Ok(true)
@@ -558,17 +572,9 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
                 }
                 rows.push(values.as_slice(), context)?;
                 drop(values);
-                let start = state.uses.len();
-                for usage in self.occurrence(child)?.uses.as_slice() {
-                    state.uses.push(*usage).map_err(RuntimeError::Memory)?;
-                }
                 state
-                    .spans
-                    .push(UseSpan {
-                        start,
-                        len: state.uses.len() - start,
-                    })
-                    .map_err(RuntimeError::Memory)?;
+                    .uses
+                    .push(self.occurrence(child)?.uses.as_slice(), context)?;
             }
             state.rows = Some(rows.distinct(context)?);
         }
@@ -582,20 +588,7 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
             |column| rows.value(state.next, column).ok_or(RuntimeError::Batch),
             context,
         )?;
-        let span = state
-            .spans
-            .as_slice()
-            .get(source)
-            .ok_or(RuntimeError::Batch)?;
-        let end = span
-            .start
-            .checked_add(span.len)
-            .ok_or(RuntimeError::Batch)?;
-        let uses = state
-            .uses
-            .as_slice()
-            .get(span.start..end)
-            .ok_or(RuntimeError::Batch)?;
+        let uses = state.uses.get(source)?;
         copy_relationship_uses_slice(uses, &mut parent.uses)?;
         state.next += 1;
         Ok(true)
@@ -658,17 +651,9 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
                 }
                 rows.push(values.as_slice(), context)?;
                 drop(values);
-                let start = state.uses.len();
-                for usage in self.occurrence(child)?.uses.as_slice() {
-                    state.uses.push(*usage).map_err(RuntimeError::Memory)?;
-                }
                 state
-                    .spans
-                    .push(UseSpan {
-                        start,
-                        len: state.uses.len() - start,
-                    })
-                    .map_err(RuntimeError::Memory)?;
+                    .uses
+                    .push(self.occurrence(child)?.uses.as_slice(), context)?;
             }
             let (rows, representatives) = rows.aggregate_with_representatives(
                 state.key_columns.as_slice(),
@@ -697,20 +682,7 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
             context,
         )?;
         if let Some(source) = representative {
-            let span = state
-                .spans
-                .as_slice()
-                .get(source)
-                .ok_or(RuntimeError::Batch)?;
-            let end = span
-                .start
-                .checked_add(span.len)
-                .ok_or(RuntimeError::Batch)?;
-            let uses = state
-                .uses
-                .as_slice()
-                .get(span.start..end)
-                .ok_or(RuntimeError::Batch)?;
+            let uses = state.uses.get(source)?;
             copy_relationship_uses_slice(uses, &mut parent.uses)?;
         }
         state.next += 1;

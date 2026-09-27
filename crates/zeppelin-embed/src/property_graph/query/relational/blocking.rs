@@ -112,6 +112,7 @@ impl<'v, 'm, 'g, O: RowOperator<'v, 'm, 'g, E>, E> BlockingRows<'v, 'm, 'g, O, E
         let rows = Rows::new(context, child.schema().slots(), input)?;
         let empty_capacity = StorageCapacity {
             rows: 0,
+            max_rows: 0,
             payload_bytes: 0,
             variable: ArenaCapacity::default(),
         };
@@ -190,6 +191,7 @@ impl<'v, 'm, 'g, O: RowOperator<'v, 'm, 'g, E>, E: From<RuntimeError>> PullOpera
                 &[],
                 StorageCapacity {
                     rows: 0,
+                    max_rows: 0,
                     payload_bytes: 0,
                     variable: ArenaCapacity::default(),
                 },
@@ -204,12 +206,10 @@ impl<'v, 'm, 'g, O: RowOperator<'v, 'm, 'g, E>, E: From<RuntimeError>> PullOpera
                 for row in 0..self.batch.rows() {
                     context.charge(WorkKind::OperatorRows, 1)?;
                     context.charge(WorkKind::RowsIn, 1)?;
-                    let raw = input.data.rows();
-                    input.data.push_from(
+                    input.push_from(
                         |column| self.batch.value(row, column).ok_or(RuntimeError::Batch),
                         context,
                     )?;
-                    input.order.push(raw).map_err(RuntimeError::from)?;
                 }
                 if state == PullState::Done {
                     break;

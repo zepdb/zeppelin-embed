@@ -408,9 +408,10 @@ fn ze57_local_limit_zero_and_skip_keep_writes() {
 #[test]
 fn ze57_local_late_row_capacity_refuses_the_whole_write() {
     // Default-budget probe: 11x11 is the largest committing square;
-    // 12..=32 hit read-work Limit, and 33 hits fixed-row InvalidPlan.
+    // 12..=32 hit read-work Limit, and 33 hits the query memory Limit
+    // (before ZE-51's chunked blocking rows it was fixed-row InvalidPlan).
     for (count, refusal) in [
-        (33, Some(GraphQueryErrorKind::InvalidPlan)),
+        (33, Some(GraphQueryErrorKind::Limit)),
         (12, Some(GraphQueryErrorKind::Limit)),
         (11, None),
     ] {

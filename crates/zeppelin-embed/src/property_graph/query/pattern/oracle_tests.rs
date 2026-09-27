@@ -696,6 +696,7 @@ impl NativeReadConsumer<OracleExecution> for OracleConsumer<'_> {
             PatternCapacity {
                 rows: StorageCapacity {
                     rows: 64,
+                    max_rows: 64,
                     payload_bytes: 8192,
                     variable: arena,
                 },

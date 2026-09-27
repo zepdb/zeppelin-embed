@@ -48,7 +48,7 @@ impl<'m, 'g> Index<'m, 'g> {
     ) -> Result<(usize, Option<usize>), RuntimeError> {
         let mut hash = 0x9e3779b97f4a7c15_u64;
         for column in columns {
-            let value = rows.data.value(raw, *column).ok_or(RuntimeError::Batch)?;
+            let value = rows.cell(raw, *column).ok_or(RuntimeError::Batch)?;
             hash = hash.rotate_left(13) ^ value.group_hash(context.values())?;
             hash = hash.wrapping_mul(0x9e3779b185ebca87);
         }
@@ -68,13 +68,10 @@ impl<'m, 'g> Index<'m, 'g> {
                 let mut equal = true;
                 for column in columns {
                     if !rows
-                        .data
-                        .value(raw, *column)
+                        .cell(raw, *column)
                         .ok_or(RuntimeError::Batch)?
                         .equivalent(
-                            rows.data
-                                .value(bucket.row, *column)
-                                .ok_or(RuntimeError::Batch)?,
+                            rows.cell(bucket.row, *column).ok_or(RuntimeError::Batch)?,
                             context.values(),
                         )?
                     {
@@ -103,8 +100,7 @@ impl<'m, 'g> Index<'m, 'g> {
         for column in columns {
             hash = (hash.rotate_left(13)
                 ^ rows
-                    .data
-                    .value(raw, *column)
+                    .cell(raw, *column)
                     .ok_or(RuntimeError::Batch)?
                     .group_hash(context.values())?)
             .wrapping_mul(0x9e3779b185ebca87);
@@ -129,7 +125,7 @@ impl<'v, 'm, 'g> Rows<'v, 'm, 'g> {
         mut self,
         context: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<Self, RuntimeError> {
-        if !self.data.belongs_to(context) {
+        if !self.belongs_to(context) {
             return Err(RuntimeError::Batch);
         }
         let mut columns = QueryArena::new(context.memory(), self.schema.slots().len())?;
@@ -165,7 +161,7 @@ impl<'v, 'm, 'g> Rows<'v, 'm, 'g> {
         context: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<Self, RuntimeError> {
         context.checkpoint()?;
-        if !self.data.belongs_to(context) || keys.len() > 256 {
+        if !self.belongs_to(context) || keys.len() > 256 {
             return Err(RuntimeError::Batch);
         }
         let mut columns = QueryArena::new(context.memory(), keys.len())?;
@@ -193,7 +189,7 @@ impl<'v, 'm, 'g> Rows<'v, 'm, 'g> {
                     let choose_left = right == end
                         || (left < mid
                             && compare(
-                                &self.data,
+                                &self,
                                 *self.order.as_slice().get(left).ok_or(RuntimeError::Batch)?,
                                 *self
                                     .order
@@ -228,20 +224,17 @@ impl<'v, 'm, 'g> Rows<'v, 'm, 'g> {
     }
 }
 fn compare(
-    data: &RowBatch<'_, '_, '_>,
+    data: &Rows<'_, '_, '_>,
     left: usize,
     right: usize,
     columns: &[(usize, bool)],
     context: &mut RuntimeContext<'_, '_, '_>,
 ) -> Result<Ordering, RuntimeError> {
     for (column, descending) in columns {
-        let order = data
-            .value(left, *column)
-            .ok_or(RuntimeError::Batch)?
-            .order(
-                data.value(right, *column).ok_or(RuntimeError::Batch)?,
-                context.values(),
-            )?;
+        let order = data.cell(left, *column).ok_or(RuntimeError::Batch)?.order(
+            data.cell(right, *column).ok_or(RuntimeError::Batch)?,
+            context.values(),
+        )?;
         let order = if *descending { order.reverse() } else { order };
         if order != Ordering::Equal {
             return Ok(order);

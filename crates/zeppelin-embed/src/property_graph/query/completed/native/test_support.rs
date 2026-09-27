@@ -48,6 +48,10 @@ struct MaterializeConsumer {
     arithmetic_failure: bool,
     cancel: Option<CancelToken>,
     staged_copied: Arc<AtomicU64>,
+    #[allow(
+        clippy::type_complexity,
+        reason = "test observer owns one fallible callback"
+    )]
     after_pull: Option<Box<dyn FnMut(usize) -> Result<(), NativeResultError>>>,
 }
 
@@ -279,6 +283,7 @@ impl NativeReadConsumer<Result<CompletedGraphResult, RuntimeFailure<NativeResult
             PatternCapacity {
                 rows: StorageCapacity {
                     rows: 4,
+                    max_rows: 4,
                     payload_bytes: 1024,
                     variable: ArenaCapacity::default(),
                 },
@@ -361,6 +366,10 @@ fn completed_row(result: &CompletedGraphResult) -> Result<(u128, i64, u64, u32),
 }
 
 /// Runs actual native source, completion, control, limit and release paths.
+#[allow(
+    clippy::indexing_slicing,
+    reason = "test fixture has one asserted write receipt"
+)]
 pub fn run_actual_probe(seed: u64) -> Result<ProbeReport, String> {
     let directory = probe_directory(seed);
     let _ = std::fs::remove_dir_all(&directory);

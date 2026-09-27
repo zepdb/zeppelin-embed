@@ -54,16 +54,16 @@ fn fixture(f: impl FnOnce(&mut RuntimeContext<'_, '_, '_>)) {
     store.close().expect("close");
 }
 fn capacity(rows: usize) -> StorageCapacity {
-    StorageCapacity {
+    StorageCapacity::new(
         rows,
-        payload_bytes: 1024 * 1024,
-        variable: ArenaCapacity {
+        1024 * 1024,
+        ArenaCapacity {
             string_bytes: 8192,
             list_cells: 4096,
             node_ids: 4096,
             relationship_ids: 64,
         },
-    }
+    )
 }
 
 #[test]
@@ -408,11 +408,7 @@ fn malformed_scopes_predicates_and_foreign_owners_fail_loudly() {
             Rows::new(
                 context,
                 &[],
-                StorageCapacity {
-                    rows: usize::MAX,
-                    payload_bytes: 0,
-                    variable: ArenaCapacity::default()
-                }
+                StorageCapacity::new(usize::MAX, 0, ArenaCapacity::default())
             )
             .is_err()
         );
@@ -601,11 +597,7 @@ fn sort_counts_actual_input_rows_and_does_not_inherit_completed_row_cap() {
         let mut rows = Rows::new(
             context,
             &[SlotId(2)],
-            StorageCapacity {
-                rows: 70000,
-                payload_bytes: 1024 * 1024,
-                variable: ArenaCapacity::default(),
-            },
+            StorageCapacity::new(70000, 1024 * 1024, ArenaCapacity::default()),
         )
         .expect("intermediate rows");
         for value in 0..70000 {

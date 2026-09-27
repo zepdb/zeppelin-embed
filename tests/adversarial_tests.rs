@@ -19233,7 +19233,8 @@ fn one_runner_episode_reaches_required_native_response_contracts() {
 #[cfg(not(feature = "graph-cypher"))]
 #[test]
 fn native_graph_runner_keys_are_absent_without_graph_feature() {
-    assert_eq!(adversarial::coverage::REQUIRED_SMOKE_COVERAGE.len(), 88);
+    // Measured 90 at HEAD and after ZE-51; the old 88 pin was stale.
+    assert_eq!(adversarial::coverage::REQUIRED_SMOKE_COVERAGE.len(), 90);
     assert!(
         !adversarial::coverage::required_smoke_coverage()
             .any(|key| key.starts_with("property-graph."))
@@ -19258,17 +19259,18 @@ fn native_graph_runner_keys_are_active_with_graph_feature() {
     // ZE-170 measured the pre-change lengths as 304 and 324; the committed 278
     // and 298 had drifted, so this pin was already red on main. Both are the
     // observed baseline plus the two ZE-170 read-view text receipts. ZE-53 S3
-    // adds eight query-entry keys; ZE-56 adds six cypher-entry keys and ZE-57
-    // adds four Cypher write refusal/drain keys.
+    // adds eight query-entry keys; ZE-56 adds six cypher-entry keys, ZE-57
+    // adds four Cypher write refusal/drain keys and ZE-51 adds the
+    // second-chunk reservation and blocking row-cap receipts.
     #[cfg(not(feature = "graph-result-test-support"))]
     assert_eq!(
         adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        324
+        326
     );
     #[cfg(feature = "graph-result-test-support")]
     assert_eq!(
         adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        344
+        346
     );
 }
 

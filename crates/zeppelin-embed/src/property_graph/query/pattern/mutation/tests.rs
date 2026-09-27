@@ -43,6 +43,7 @@ fn pattern_capacity(rows: usize) -> PatternCapacity {
     PatternCapacity {
         rows: StorageCapacity {
             rows,
+            max_rows: rows,
             payload_bytes: 8192,
             variable: ArenaCapacity {
                 string_bytes: 4096,
@@ -909,10 +910,10 @@ fn native_eager_capacity_limit_rejects_without_partial_rows() {
     );
     match barriered.result {
         Err(EagerExecutionFailure::Run(failure)) => match failure.error {
-            NativeExecutionError::Runtime(RuntimeError::Batch) => {}
-            other => panic!("eager row capacity must reject as Batch: {other:?}"),
+            NativeExecutionError::Runtime(RuntimeError::BatchCapacity) => {}
+            other => panic!("eager row capacity must reject as BatchCapacity: {other:?}"),
         },
-        Err(other) => panic!("a two-row eager bag must reject as Batch: {other}"),
+        Err(other) => panic!("a two-row eager bag must reject as BatchCapacity: {other}"),
         Ok(_) => panic!("a two-row eager bag must reject three input rows"),
     }
     let direct = direct

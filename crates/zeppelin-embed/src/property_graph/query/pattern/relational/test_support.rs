@@ -45,7 +45,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// Actual observations plus ten independently checked directed receipts.
+/// Actual observations plus twelve independently checked directed receipts.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeRelationalProbeReport {
     /// Completed pipeline rows from the native operator tree.
@@ -331,6 +331,11 @@ impl<'a, 'v, 'm, 'g> NativeReadConsumer<bool> for ForeignSetConsumer<'a, 'v, 'm,
 impl NativeReadConsumer<Result<EligibilityObservation, NativeExecutionError>>
     for EligibilityProbeConsumer
 {
+    #[allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "tooling-only validated fixture construction"
+    )]
     fn consume<'s, 'lease, 'm, 'g>(
         &mut self,
         view: &crate::property_graph::storage::GraphReadView<'s, 'lease, 'm, 'g>,
@@ -539,6 +544,7 @@ impl NativeReadConsumer<Result<EligibilityObservation, NativeExecutionError>>
             PatternCapacity {
                 rows: StorageCapacity {
                     rows: 16,
+                    max_rows: 16,
                     payload_bytes: 8192,
                     variable: ArenaCapacity {
                         string_bytes: 4096,
@@ -762,6 +768,11 @@ struct ScheduledCancelObservation {
 impl NativeReadConsumer<Result<PipelineExecution, RuntimeFailure<NativeExecutionError>>>
     for PipelineConsumer
 {
+    #[allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "tooling-only validated fixture construction"
+    )]
     fn consume<'s, 'lease, 'm, 'g>(
         &mut self,
         view: &crate::property_graph::storage::GraphReadView<'s, 'lease, 'm, 'g>,
@@ -1007,6 +1018,11 @@ impl NativeReadConsumer<Result<PipelineExecution, RuntimeFailure<NativeExecution
             PatternCapacity {
                 rows: StorageCapacity {
                     rows: if matches!(self.mode, ProbeMode::BlockingRows) {
+                        1
+                    } else {
+                        16
+                    },
+                    max_rows: if matches!(self.mode, ProbeMode::BlockingRows) {
                         1
                     } else {
                         16
@@ -1259,6 +1275,7 @@ pub fn run_actual_probe(seed: u64) -> Result<NativeRelationalProbeReport, String
         Some(EntityId::Relationship(id)) => id,
         _ => return Err(String::from("relational probe second relationship receipt")),
     };
+    blocking_capacity_probe(&store)?;
     let expected = vec![(target.get(), 1, second.get(), source.get())];
     let mut expected_eligibility = [source.get(), target.get()];
     expected_eligibility.sort_unstable();
@@ -1443,7 +1460,7 @@ pub fn run_actual_probe(seed: u64) -> Result<NativeRelationalProbeReport, String
             Err(failure)
                 if matches!(
                     failure.error,
-                    NativeExecutionError::Runtime(RuntimeError::Batch)
+                    NativeExecutionError::Runtime(RuntimeError::BatchCapacity)
                 ) && failure.counters.get(WorkKind::Lookups) > 0
                     && failure.counters.get(WorkKind::Scans) > 0
         ) && observation.released
@@ -1793,6 +1810,8 @@ pub fn run_actual_probe(seed: u64) -> Result<NativeRelationalProbeReport, String
             ("release", clean.released.min(paired.released)),
             ("same-seed", same_seed),
             ("oracle", oracle),
+            ("chunk-reservation", 1),
+            ("row-cap", 1),
         ],
     })
 }
@@ -1819,6 +1838,11 @@ pub fn run_actual_probe(seed: u64) -> Result<NativeRelationalProbeReport, String
 macro_rules! execute_relational_plan {
     ($view:expr, $runtime:expr, $operators:ident, $expressions:ident,
      $regions:expr, $owners:expr, $completion:expr) => {
+        execute_relational_plan!($view, $runtime, $operators, $expressions,
+            $regions, $owners, $completion, chunk_rows = 16)
+    };
+    ($view:expr, $runtime:expr, $operators:ident, $expressions:ident,
+     $regions:expr, $owners:expr, $completion:expr, chunk_rows = $chunk:expr) => {
         execute_relational_plan!(
             $view,
             $runtime,
@@ -1829,7 +1853,8 @@ macro_rules! execute_relational_plan {
             $completion,
             PatternCapacity {
                 rows: StorageCapacity {
-                    rows: 16,
+                    rows: $chunk,
+ max_rows: 16,
                     payload_bytes: 8192,
                     variable: ArenaCapacity {
                         string_bytes: 4096,
@@ -1994,3 +2019,232 @@ macro_rules! execute_relational_plan {
     reason = "only the cfg(test) occurrence suites expand this helper"
 )]
 pub(crate) use execute_relational_plan;
+
+thread_local! {
+    static CAPACITY_FIXTURE_WORK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+struct CapacityFixtureWork;
+impl CapacityFixtureWork {
+    fn enter() -> Self {
+        CAPACITY_FIXTURE_WORK.set(true);
+        Self
+    }
+}
+impl Drop for CapacityFixtureWork {
+    fn drop(&mut self) {
+        CAPACITY_FIXTURE_WORK.set(false);
+    }
+}
+
+pub(crate) fn capacity_fixture_active() -> bool {
+    CAPACITY_FIXTURE_WORK.get()
+}
+
+// Setup only: bulk seeding must not consume the query or blocking-row budget.
+pub(crate) fn capacity_fixture_work(default: u64) -> u64 {
+    if CAPACITY_FIXTURE_WORK.get() {
+        u64::MAX
+    } else {
+        default
+    }
+}
+
+/// Seeds the blocking-capacity fixture without exercising Cypher write limits.
+pub fn seed_capacity_store(store: &Store, count: usize, with_values: bool) -> Result<(), String> {
+    let started = std::time::Instant::now();
+    use crate::property_graph::{GraphProperty, PropertyData, PropertyValue};
+    let keys: Vec<_> = (0..count).map(|i| i.to_string()).collect();
+    let mut labels: Vec<_> = (0..count)
+        .map(|_| {
+            GraphName::new("Segment").map(|label| if with_values { vec![label] } else { vec![] })
+        })
+        .collect::<Result<_, _>>()
+        .map_err(|error| error.to_string())?;
+    let mut properties: Vec<_> = (0..count)
+        .map(|i| {
+            if !with_values {
+                return Ok(vec![]);
+            }
+            Ok(vec![
+                GraphProperty::new(
+                    GraphName::new("i")?,
+                    PropertyValue::new(PropertyData::I64(i as i64))?,
+                ),
+                GraphProperty::new(
+                    GraphName::new("k")?,
+                    PropertyValue::new(PropertyData::I64((i % 7) as i64))?,
+                ),
+            ])
+        })
+        .collect::<Result<_, crate::property_graph::DomainError>>()
+        .map_err(|error| error.to_string())?;
+    let contents: Vec<_> = labels
+        .iter_mut()
+        .zip(properties.iter_mut())
+        .map(|(labels, properties)| CanonicalContents::node(labels, properties, None, None))
+        .collect::<Result<_, _>>()
+        .map_err(|error| error.to_string())?;
+    let requests: Vec<_> = keys
+        .iter()
+        .zip(contents.iter())
+        .map(|(key, contents)| {
+            Ok(StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "ze51-capacity", key)?,
+                revision: GraphRevision::new(1)?,
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(contents)),
+            })
+        })
+        .collect::<Result<_, crate::property_graph::DomainError>>()
+        .map_err(|error| error.to_string())?;
+    let _setup = CapacityFixtureWork::enter();
+    let receipts = store
+        .apply_native_graph(&requests, &QueryControl::Cancel(CancelToken::new()))
+        .map_err(|error| error.to_string())?;
+    if receipts.len() != count
+        || receipts
+            .iter()
+            .any(|receipt| receipt.generation.get() != 1 || receipt.replayed)
+    {
+        return Err(String::from(
+            "capacity fixture must create every node in one commit",
+        ));
+    }
+
+    eprintln!(
+        "ZE51 seed rows={count} values={with_values} elapsed={:?}",
+        started.elapsed()
+    );
+    Ok(())
+}
+
+pub(super) fn blocking_capacity_probe(store: &Store) -> Result<(), String> {
+    use crate::property_graph::query::completed::native::GraphQueryCause;
+    use crate::property_graph::query::completed::native::entry_probe::{Backing, run_plan};
+    use crate::property_graph::query::completed::{GraphQueryErrorKind, GraphQueryOptions, Value};
+    use crate::property_graph::resources::GraphResources;
+    let resources = GraphResources::from_store(store).map_err(|error| error.to_string())?;
+    let baseline = resources
+        .reserved_bytes()
+        .map_err(|error| error.to_string())?;
+    for (memory_limit, max_rows, expected) in [
+        (6 * 1024 * 1024, 2, Some(GraphQueryErrorKind::Limit)),
+        (16 * 1024 * 1024, 1, Some(GraphQueryErrorKind::Limit)),
+        (16 * 1024 * 1024, 2, None),
+    ] {
+        let mut options = GraphQueryOptions {
+            memory_limit,
+            ..GraphQueryOptions::default()
+        };
+        options.pattern.rows = StorageCapacity {
+            rows: 1,
+            max_rows,
+            payload_bytes: 1024 * 1024,
+            variable: ArenaCapacity {
+                string_bytes: 1024 * 1024,
+                ..ArenaCapacity::default()
+            },
+        };
+        options.execution.batch = ArenaCapacity::default();
+        options.execution.result = ArenaCapacity::default();
+        let result = store.execute_graph_statement(
+            &QueryControl::Cancel(CancelToken::new()),
+            &options,
+            |runtime, executor| {
+                let unit = vec![PlanNodeId(0)];
+                let scan = vec![PlanNodeId(1)];
+                let aggregate = vec![PlanNodeId(2)];
+                let aggregates = vec![Projection {
+                    slot: SlotId(1),
+                    expression: ExprId(0),
+                }];
+                let expressions = vec![Expression::Aggregate {
+                    operation: AggregateExpression::Count { distinct: false },
+                    operand: None,
+                }];
+                let operators = vec![
+                    Operator {
+                        inputs: &[],
+                        kind: OperatorKind::Unit,
+                    },
+                    Operator {
+                        inputs: &unit,
+                        kind: OperatorKind::ScanNodes {
+                            output: SlotId(0),
+                            label: None,
+                        },
+                    },
+                    Operator {
+                        inputs: &scan,
+                        kind: OperatorKind::Aggregate {
+                            keys: &[],
+                            aggregates: &aggregates,
+                        },
+                    },
+                    Operator {
+                        inputs: &aggregate,
+                        kind: OperatorKind::Collect,
+                    },
+                ];
+                let mut backing = Backing::default();
+                backing.vec(&unit)?;
+                backing.vec(&scan)?;
+                backing.vec(&aggregate)?;
+                backing.vec(&aggregates)?;
+                run_plan(
+                    runtime,
+                    executor,
+                    &operators,
+                    &expressions,
+                    &Vec::new(),
+                    &backing,
+                    &["count"],
+                )
+            },
+        );
+        match (expected, result) {
+            (Some(kind), Err(error))
+                if error.kind() == kind
+                    && matches!(
+                        (max_rows, error.cause()),
+                        (
+                            2,
+                            GraphQueryCause::Execution(NativeExecutionError::Runtime(
+                                RuntimeError::Memory(
+                                    crate::property_graph::query::resources::MemoryError::Limit
+                                )
+                            ))
+                        ) | (
+                            1,
+                            GraphQueryCause::Execution(NativeExecutionError::Runtime(
+                                RuntimeError::BatchCapacity
+                            ))
+                        )
+                    )
+                    && error.counters().is_some_and(|counters| {
+                        counters.get(WorkKind::Scans) == 2
+                            // Unit + two scanned rows + one retained input: the
+                            // second retained row never completed its push.
+                            && counters.get(WorkKind::RowsOut) == 4
+                            && counters.get(WorkKind::CompletedRows) == 0
+                    }) => {}
+            (None, Ok(result))
+                if result.metadata().rows == 1 && result.pools().values == [Value::I64(2)] => {}
+            (expected, result) => {
+                return Err(format!(
+                    "blocking capacity expected {expected:?}, got {:?}",
+                    result.map(|result| result.metadata().rows)
+                ));
+            }
+        }
+        if resources
+            .reserved_bytes()
+            .map_err(|error| error.to_string())?
+            != baseline
+        {
+            return Err(String::from("blocking capacity leaked reservations"));
+        }
+    }
+    Ok(())
+}

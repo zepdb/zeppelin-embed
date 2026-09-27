@@ -68,19 +68,35 @@ impl<'m, 'g> Schema<'m, 'g> {
 /// Independent blocking storage capacity, never the scheduling-batch limit.
 #[derive(Clone, Copy)]
 pub struct StorageCapacity {
-    /// Complete retained row capacity; actual query bytes still bound it.
+    /// Rows per explicitly allocated chunk.
     pub rows: usize,
+    pub(crate) max_rows: usize,
     /// Initialized payload limit, within the same query allowance.
     pub payload_bytes: usize,
     /// Actual retained variable-value arena capacities.
     pub variable: ArenaCapacity,
 }
 
+impl StorageCapacity {
+    /// Fixed maximum for explicit kernel callers; native blocking operators may
+    /// select a larger crate-private maximum while retaining this chunk size.
+    pub fn new(rows: usize, payload_bytes: usize, variable: ArenaCapacity) -> Self {
+        Self {
+            rows,
+            max_rows: rows,
+            payload_bytes,
+            variable,
+        }
+    }
+}
+
 /// Actual owned rows and an order vector. Blocking operators may reorder or
 /// select indices without copying payloads or dropping their authentic charge.
 pub struct Rows<'v, 'm, 'g> {
     schema: Schema<'m, 'g>,
-    data: RowBatch<'v, 'm, 'g>,
+    chunks: QueryArena<'m, 'g, RowBatch<'v, 'm, 'g>>,
+    capacity: StorageCapacity,
+    stored: usize,
     order: QueryArena<'m, 'g, usize>,
 }
 impl<'v, 'm, 'g> Rows<'v, 'm, 'g> {
@@ -90,16 +106,26 @@ impl<'v, 'm, 'g> Rows<'v, 'm, 'g> {
         slots: &[SlotId],
         capacity: StorageCapacity,
     ) -> Result<Self, RuntimeError> {
+        if capacity.rows == 0 && capacity.max_rows != 0 {
+            return Err(RuntimeError::Batch);
+        }
+        let mut chunks = QueryArena::new(
+            context.memory(),
+            capacity.max_rows.div_ceil(capacity.rows.max(1)).max(1),
+        )?;
+        chunks.push(RowBatch::storage(
+            context,
+            slots.len(),
+            capacity.rows.min(capacity.max_rows),
+            capacity.payload_bytes,
+            capacity.variable,
+        )?)?;
         Ok(Self {
             schema: Schema::new(context, slots)?,
-            data: RowBatch::storage(
-                context,
-                slots.len(),
-                capacity.rows,
-                capacity.payload_bytes,
-                capacity.variable,
-            )?,
-            order: QueryArena::new(context.memory(), capacity.rows)?,
+            chunks,
+            capacity,
+            stored: 0,
+            order: QueryArena::new(context.memory(), capacity.max_rows)?,
         })
     }
     /// Appends one complete copied row, preserving bag multiplicity.
@@ -108,13 +134,58 @@ impl<'v, 'm, 'g> Rows<'v, 'm, 'g> {
         row: &[QueryValue<'_>],
         context: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<(), RuntimeError> {
-        if self.order.len() == self.order.capacity() {
+        if row.len() != self.schema.slots().len() {
             return Err(RuntimeError::Batch);
         }
-        let index = self.data.rows();
-        self.data.push_row(row, context)?;
-        self.order.push(index)?;
+        self.push_from(
+            |column| row.get(column).copied().ok_or(RuntimeError::Batch),
+            context,
+        )
+    }
+    fn push_from<'a>(
+        &mut self,
+        value: impl FnMut(usize) -> Result<QueryValue<'a>, RuntimeError>,
+        context: &mut RuntimeContext<'v, 'm, 'g>,
+    ) -> Result<(), RuntimeError> {
+        if !self.belongs_to(context) {
+            return Err(RuntimeError::Batch);
+        }
+        if self.stored == self.capacity.max_rows {
+            return Err(RuntimeError::BatchCapacity);
+        }
+        let chunk = self.stored / self.capacity.rows;
+        if chunk == self.chunks.len() {
+            // RowBatch reserves every backing arena before allocation. Growth
+            // is explicit here; QueryArena itself remains fixed-capacity.
+            self.chunks.push(RowBatch::storage(
+                context,
+                self.schema.slots().len(),
+                self.capacity.rows.min(self.capacity.max_rows - self.stored),
+                self.capacity.payload_bytes,
+                self.capacity.variable,
+            )?)?;
+        }
+        self.chunks
+            .as_mut_slice()
+            .get_mut(chunk)
+            .ok_or(RuntimeError::Batch)?
+            .push_from(value, context)?;
+        self.order.push(self.stored)?;
+        self.stored += 1;
         Ok(())
+    }
+    fn belongs_to(&self, context: &RuntimeContext<'v, 'm, 'g>) -> bool {
+        self.chunks
+            .as_slice()
+            .first()
+            .is_some_and(|chunk| chunk.belongs_to(context))
+    }
+    pub(crate) fn cell(&self, raw: usize, column: usize) -> Option<QueryValue<'_>> {
+        let size = self.capacity.rows.max(1);
+        self.chunks
+            .as_slice()
+            .get(raw / size)?
+            .value(raw % size, column)
     }
     /// Exact schema retained with the rows.
     pub fn schema(&self) -> &Schema<'m, 'g> {
@@ -130,7 +201,7 @@ impl<'v, 'm, 'g> Rows<'v, 'm, 'g> {
     }
     /// Checked physical-column access under the original view.
     pub fn value(&self, row: usize, column: usize) -> Option<QueryValue<'_>> {
-        self.data.value(*self.order.as_slice().get(row)?, column)
+        self.cell(*self.order.as_slice().get(row)?, column)
     }
     pub(crate) fn selected_source_row(&self, position: usize) -> Result<usize, RuntimeError> {
         self.order
@@ -146,7 +217,7 @@ impl<'v, 'm, 'g> Rows<'v, 'm, 'g> {
         context: &RuntimeContext<'v, 'm, 'g>,
     ) -> Result<RowSource<'v, 'm, 'g>, RuntimeError> {
         context.checkpoint()?;
-        if !self.data.belongs_to(context) {
+        if !self.belongs_to(context) {
             return Err(RuntimeError::Batch);
         }
         let control = context
@@ -195,7 +266,7 @@ impl<'v, 'm, 'g> PullOperator<'v, 'm, 'g> for RowSource<'v, 'm, 'g> {
         output: &mut RowBatch<'v, 'm, 'g>,
     ) -> Result<PullState, RuntimeError> {
         context.checkpoint()?;
-        if !self.rows.data.belongs_to(context) || output.columns() != self.schema().slots().len() {
+        if !self.rows.belongs_to(context) || output.columns() != self.schema().slots().len() {
             return Err(RuntimeError::Batch);
         }
         while self.next < self.rows.len() && output.rows() < output.capacity() {

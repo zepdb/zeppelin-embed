@@ -782,7 +782,7 @@ fn checkpoint_current_inner(
         root_identity,
         &[Block {
             kind: BlockKind::CheckpointPayload,
-            payload: &payload,
+            payload,
         }],
     )?;
     let next = NativeGraphBundle::checkpoint_transition(store, resources, admitted, root_envelope)?;
@@ -995,7 +995,7 @@ impl ResultMaterializer for ReceiptMaterializer {
         let mut copied = Vec::new();
         copied.try_reserve_exact(receipts.len()).map_err(|_| {
             StageError::Memory(crate::lifecycle::StoreError::AllocationFailed {
-                needed: (receipts.len() * std::mem::size_of::<ItemReceipt>()) as u64,
+                needed: std::mem::size_of_val(receipts) as u64,
                 component: "native graph result registration",
             })
         })?;
@@ -2173,11 +2173,22 @@ pub(super) fn commit_staged_batch<'m>(
             creation_serial,
         })
     };
+    let pack_limits = PackLimits::default();
+    #[cfg(all(feature = "graph-cypher", feature = "test-support"))]
+    let pack_limits =
+        if crate::property_graph::query::native_relational_test_support::capacity_fixture_active() {
+            PackLimits {
+                blocks: 16_384,
+                ..pack_limits
+            }
+        } else {
+            pack_limits
+        };
     let prepared_result = GraphPreparation::new(
         source,
         target_generation,
         identity_source,
-        PackLimits::default(),
+        pack_limits,
         &store.tokenizer,
         resources,
     )?
@@ -2304,7 +2315,17 @@ pub(super) fn commit_staged_batch<'m>(
         .map_err(|source| io(&writer.wal.path, source))?
         .get(),
     )?;
-    let mut envelope_bytes = zeroed(storage, control, MAX_ENVELOPE_BYTES)?;
+    let envelope_capacity = MAX_ENVELOPE_BYTES;
+    #[cfg(all(feature = "graph-cypher", feature = "test-support"))]
+    let envelope_capacity =
+        if crate::property_graph::query::native_relational_test_support::capacity_fixture_active() {
+            // This bounded scalar fixture needs less than the 16 MiB format
+            // maximum, leaving room for its single-batch preparation.
+            4 * 1024 * 1024
+        } else {
+            envelope_capacity
+        };
+    let mut envelope_bytes = zeroed(storage, control, envelope_capacity)?;
     let mut cancelled = || control.checkpoint().is_err();
     let mut wal_resources = WalResources::new(
         (MAX_ENVELOPE_BYTES as u64) * 4,
@@ -2444,6 +2465,11 @@ impl crate::lifecycle::Store {
                 );
             #[cfg(not(any(test, feature = "test-support")))]
             let (storage_limit, preparation_work) = (32 * 1024 * 1024, 64 * 1024 * 1024);
+            #[cfg(all(feature = "graph-cypher", feature = "test-support"))]
+            let preparation_work =
+                crate::property_graph::query::native_relational_test_support::capacity_fixture_work(
+                    preparation_work,
+                );
             let storage = StorageMemory::new(&write_memory, control, storage_limit)?;
             let preparation_checkpoint = || match self.state() {
                 Ok(crate::lifecycle::StoreState::Open) => Ok(()),

@@ -20,7 +20,10 @@ use zeppelin_embed::property_graph::query::{
 use zeppelin_embed_cypher::{ErrorKind, StatementError};
 
 fn rows(graph: &Graph, text: &str) -> Vec<Vec<V>> {
-    tck::actual_table(&graph.run(text, &[]).unwrap()).1
+    let started = std::time::Instant::now();
+    let result = graph.run(text, &[]).unwrap();
+    eprintln!("ZE51 execute {text:?} elapsed={:?}", started.elapsed());
+    tck::actual_table(&result).1
 }
 
 fn bag(mut rows: Vec<Vec<V>>) -> Vec<String> {
@@ -317,5 +320,87 @@ fn ze51_limit_does_not_reduce_charged_sort_work() {
     assert!(
         streaming.metadata().counters.get(WorkKind::RowsIn)
             < sorted.metadata().counters.get(WorkKind::RowsIn)
+    );
+}
+
+fn capacity_graph(count: i64) -> Graph {
+    let graph = Graph::new("ze51-capacity");
+    zeppelin_embed::property_graph::query::native_relational_test_support::seed_capacity_store(
+        graph.store(),
+        count as usize,
+        true,
+    )
+    .unwrap();
+    graph
+}
+
+#[test]
+fn ze51_aggregate_over_more_than_one_chunk_of_rows() {
+    let graph = capacity_graph(1025);
+    assert_eq!(
+        rows(&graph, "MATCH (s:Segment) RETURN count(s)"),
+        vec![vec![V::Int(1025)]]
+    );
+}
+
+#[test]
+fn ze51_sort_then_limit_over_more_than_one_chunk() {
+    let graph = capacity_graph(1025);
+    assert_eq!(
+        rows(
+            &graph,
+            "MATCH (n:Segment) RETURN n.i AS i ORDER BY i DESC LIMIT 3"
+        ),
+        vec![vec![V::Int(1024)], vec![V::Int(1023)], vec![V::Int(1022)]]
+    );
+}
+
+#[test]
+fn ze51_distinct_over_more_than_one_chunk() {
+    let graph = capacity_graph(2050);
+    assert_eq!(
+        bag(rows(&graph, "MATCH (n:Segment) RETURN DISTINCT n.k")),
+        bag((0..7).map(|i| vec![V::Int(i)]).collect())
+    );
+}
+
+#[test]
+fn ze51_blocking_operators_over_5000_nodes() {
+    let graph = Graph::new("ze51-5000");
+    zeppelin_embed::property_graph::query::native_relational_test_support::seed_capacity_store(
+        graph.store(),
+        5000,
+        false,
+    )
+    .unwrap();
+    let rows = |graph: &Graph, text: &str| {
+        let started = std::time::Instant::now();
+        let result = zeppelin_embed_cypher::execute(
+            graph.store(),
+            &zeppelin_embed::lifecycle::QueryControl::Cancel(
+                zeppelin_embed::lifecycle::CancelToken::new(),
+            ),
+            &zeppelin_embed::property_graph::query::completed::GraphQueryOptions::default(),
+            text,
+            &[],
+            zeppelin_embed_cypher::CompileLimits::default(),
+        )
+        .unwrap();
+        eprintln!("ZE51 execute {text:?} elapsed={:?}", started.elapsed());
+        tck::actual_table(&result).1
+    };
+    assert_eq!(
+        rows(&graph, "MATCH (n) RETURN count(n)"),
+        vec![vec![V::Int(5000)]]
+    );
+    // Constants keep the fixture minimal while Sort and DISTINCT must still
+    // drain 5,000 input rows. Property ordering is covered by the 1,025-row test.
+    assert_eq!(
+        rows(&graph, "MATCH (n) RETURN 1 AS i ORDER BY i LIMIT 3"),
+        vec![vec![V::Int(1)]; 3]
+    );
+    assert_eq!(
+        rows(&graph, "MATCH (n) RETURN DISTINCT 1 AS i"),
+        vec![vec![V::Int(1)]]
     );
 }

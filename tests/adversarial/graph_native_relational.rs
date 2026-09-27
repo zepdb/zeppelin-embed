@@ -2,9 +2,11 @@
 
 use super::coverage::CoverageRegistry;
 use std::collections::{BTreeMap, BTreeSet};
-use zeppelin_embed::property_graph::query::native_relational_test_support::run_actual_probe;
+use zeppelin_embed::property_graph::query::native_relational_test_support::{
+    NativeRelationalProbeReport, run_actual_probe,
+};
 
-const KEYS: [&str; 10] = [
+const KEYS: [&str; 12] = [
     "property-graph.native-relational.pipeline",
     "property-graph.native-relational.representative",
     "property-graph.native-relational.group",
@@ -15,6 +17,8 @@ const KEYS: [&str; 10] = [
     "property-graph.native-relational.release",
     "property-graph.native-relational.same-seed-control",
     "property-graph.native-relational.oracle.can-fire",
+    "property-graph.native-relational.chunk-reservation.fire",
+    "property-graph.native-relational.row-cap.fire",
 ];
 
 fn bag(rows: &[(u128, i64, u128, u128)]) -> BTreeMap<(u128, i64, u128, u128), usize> {
@@ -33,7 +37,13 @@ fn accepted(
 }
 
 pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
-    let report = run_actual_probe(seed)?;
+    register(run_actual_probe(seed)?, coverage)
+}
+
+fn register(
+    report: NativeRelationalProbeReport,
+    coverage: &mut CoverageRegistry,
+) -> Result<(), String> {
     if !accepted(&report.observations, &report.expected) {
         return Err(String::from("native relational receipt bag mismatch"));
     }
@@ -72,6 +82,8 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
         "release",
         "same-seed",
         "oracle",
+        "chunk-reservation",
+        "row-cap",
     ];
     if report.receipts.len() != expected_receipts.len() {
         return Err(String::from("native relational receipt count"));
@@ -94,4 +106,36 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
         coverage.hit(key);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_relational_directed_probe_can_fire() {
+        let seed = 0x5e15_4c01;
+        let report = run_actual_probe(seed).expect("actual blocking faults and clean controls");
+        for name in ["chunk-reservation", "row-cap"] {
+            let mut missed = report.clone();
+            missed
+                .receipts
+                .iter_mut()
+                .find(|(key, _)| *key == name)
+                .unwrap()
+                .1 = 0;
+            let mut coverage = CoverageRegistry::default();
+            let error = register(missed, &mut coverage)
+                .expect_err("a missing capacity fault must be rejected");
+            assert_eq!(
+                error,
+                format!("native relational receipt did not fire: {name}")
+            );
+            assert!(KEYS.iter().all(|key| coverage.count(key) == 0));
+        }
+        let mut coverage = CoverageRegistry::default();
+        register(report.clone(), &mut coverage).expect("register all receipts");
+        assert!(KEYS.iter().all(|key| coverage.count(key) > 0));
+        assert_eq!(run_actual_probe(seed).expect("same seed control"), report);
+    }
 }

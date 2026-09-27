@@ -284,6 +284,7 @@ impl
             PatternCapacity {
                 rows: StorageCapacity {
                     rows: 8,
+                    max_rows: 8,
                     payload_bytes: 4096,
                     variable: ArenaCapacity::default(),
                 },
@@ -495,6 +496,7 @@ fn native_relational_offset_scope_then_match() {
 
 struct SortScopeConsumer {
     source: NodeId,
+    chunk_rows: usize,
 }
 
 impl
@@ -629,7 +631,8 @@ impl
                 RetainedAllocation::string(&ordinal).unwrap(),
                 RetainedAllocation::string(&scratch).unwrap(),
             ],
-            &mut FreezeOffsetTuple
+            &mut FreezeOffsetTuple,
+            chunk_rows = self.chunk_rows
         ))
     }
 }
@@ -786,6 +789,15 @@ impl NativeReadConsumer<Result<Execution<([Option<u128>; 4], usize)>, Relational
 
 #[test]
 fn native_relational_sort_keys_ordered_collect() {
+    sort_chunk_fixture(16);
+}
+
+#[test]
+fn native_relational_sort_spans_two_chunks() {
+    distinct_chunk_fixture(1, false);
+}
+
+fn sort_chunk_fixture(chunk_rows: usize) {
     let directory = tempfile::tempdir().expect("native relational sort store");
     let store = Store::create_native_graph(
         directory.path().join("native"),
@@ -903,7 +915,10 @@ fn native_relational_sort_keys_ordered_collect() {
             RuntimeLimits::default(),
             16 * 1024 * 1024,
             64,
-            SortScopeConsumer { source: node(0) },
+            SortScopeConsumer {
+                source: node(0),
+                chunk_rows,
+            },
         )
         .expect("admit native relational sort view");
     assert!(
@@ -940,6 +955,8 @@ fn native_relational_sort_keys_ordered_collect() {
 
 struct DistinctScopeConsumer {
     source: NodeId,
+    chunk_rows: usize,
+    distinct: bool,
     later_pattern: PatternId,
 }
 
@@ -968,10 +985,16 @@ impl
             expression: ExprId(0),
             descending: false,
         }];
-        let with_projections = [Projection {
-            slot: SlotId(1_000),
-            expression: ExprId(1),
-        }];
+        let with_projections = [
+            Projection {
+                slot: SlotId(1_000),
+                expression: ExprId(1),
+            },
+            Projection {
+                slot: SlotId(1_010),
+                expression: ExprId(0),
+            },
+        ];
         let projections = [
             Projection {
                 slot: SlotId(2_000),
@@ -1022,11 +1045,22 @@ impl
             },
             Operator {
                 inputs: &with_inputs,
-                kind: OperatorKind::With(&with_projections),
+                kind: OperatorKind::With(
+                    with_projections
+                        .get(..if self.chunk_rows == 1 { 2 } else { 1 })
+                        .unwrap(),
+                ),
             },
             Operator {
                 inputs: &distinct_inputs,
-                kind: OperatorKind::Distinct,
+                kind: if self.distinct {
+                    OperatorKind::Distinct
+                } else {
+                    OperatorKind::OffsetLimit {
+                        offset: 0,
+                        limit: None,
+                    }
+                },
             },
             Operator {
                 inputs: &second_expand_inputs,
@@ -1079,13 +1113,23 @@ impl
                 RetainedAllocation::array(&with_projections).unwrap(),
                 RetainedAllocation::array(&projections).unwrap(),
             ],
-            &mut FreezeOffsetTuple
+            &mut FreezeOffsetTuple,
+            chunk_rows = self.chunk_rows
         ))
     }
 }
 
 #[test]
 fn native_relational_distinct_provenance_then_match() {
+    distinct_chunk_fixture(16, true);
+}
+
+#[test]
+fn native_relational_distinct_spans_two_chunks() {
+    distinct_chunk_fixture(1, true);
+}
+
+fn distinct_chunk_fixture(chunk_rows: usize, distinct: bool) {
     let directory = tempfile::tempdir().expect("native relational distinct store");
     let store = Store::create_native_graph(
         directory.path().join("native"),
@@ -1154,6 +1198,8 @@ fn native_relational_distinct_provenance_then_match() {
             64,
             DistinctScopeConsumer {
                 source: node(0),
+                chunk_rows,
+                distinct,
                 later_pattern: PatternId(0),
             },
         )
@@ -1164,6 +1210,21 @@ fn native_relational_distinct_provenance_then_match() {
         same_pattern.as_ref().err().unwrap()
     );
     let same_pattern = same_pattern.unwrap();
+    if chunk_rows == 1 {
+        // Both distinct representatives survive; the second row must suppress
+        // its own relationship, proving the second sidecar chunk is selected.
+        assert_eq!(same_pattern.output.1, 2);
+        assert_eq!(
+            same_pattern.output.0[..2],
+            [
+                Some((node(1).get(), relationship(3).get(), node(0).get())),
+                Some((node(1).get(), relationship(2).get(), node(0).get())),
+            ]
+        );
+        store.close().unwrap();
+        return;
+    }
+
     assert_eq!(same_pattern.output.1, 1);
     assert_eq!(
         same_pattern.output.0[0],
@@ -1178,6 +1239,8 @@ fn native_relational_distinct_provenance_then_match() {
             64,
             DistinctScopeConsumer {
                 source: node(0),
+                chunk_rows,
+                distinct,
                 later_pattern: PatternId(1),
             },
         )
@@ -1622,6 +1685,7 @@ impl<'m, 'g> Completion<'m, 'g, NativeExecutionError> for FreezeAggregateRows {
 
 struct AggregateScopeConsumer {
     source: NodeId,
+    chunk_rows: usize,
     later_pattern: PatternId,
 }
 
@@ -1649,10 +1713,16 @@ impl
             expression: ExprId(0),
             descending: false,
         }];
-        let keys = [Projection {
-            slot: SlotId(1_000),
-            expression: ExprId(1),
-        }];
+        let keys = [
+            Projection {
+                slot: SlotId(1_000),
+                expression: ExprId(1),
+            },
+            Projection {
+                slot: SlotId(1_010),
+                expression: ExprId(0),
+            },
+        ];
         let aggregates = [Projection {
             slot: SlotId(1_001),
             expression: ExprId(2),
@@ -1717,7 +1787,9 @@ impl
             Operator {
                 inputs: &aggregate_inputs,
                 kind: OperatorKind::Aggregate {
-                    keys: &keys,
+                    keys: keys
+                        .get(..if self.chunk_rows == 1 { 2 } else { 1 })
+                        .unwrap(),
                     aggregates: &aggregates,
                 },
             },
@@ -1772,13 +1844,23 @@ impl
                 RetainedAllocation::array(&aggregates).unwrap(),
                 RetainedAllocation::array(&projections).unwrap(),
             ],
-            &mut FreezeAggregateRows
+            &mut FreezeAggregateRows,
+            chunk_rows = self.chunk_rows
         ))
     }
 }
 
 #[test]
 fn native_relational_aggregate_native_empty_and_groups() {
+    aggregate_chunk_fixture(16);
+}
+
+#[test]
+fn native_relational_aggregate_spans_two_chunks() {
+    aggregate_chunk_fixture(1);
+}
+
+fn aggregate_chunk_fixture(chunk_rows: usize) {
     let directory = tempfile::tempdir().expect("native relational aggregate store");
     let store = Store::create_native_graph(
         directory.path().join("native"),
@@ -1878,11 +1960,26 @@ fn native_relational_aggregate_native_empty_and_groups() {
             64,
             AggregateScopeConsumer {
                 source: node(0),
+                chunk_rows,
                 later_pattern: PatternId(0),
             },
         )
         .expect("admit same-pattern aggregate view")
         .expect("execute same-pattern aggregate");
+    if chunk_rows == 1 {
+        // Separate groups retain both representatives and their own uses.
+        assert_eq!(same.output.1, 2);
+        assert_eq!(
+            same.output.0[..2],
+            [
+                Some((node(1).get(), 1, relationship(3).get(), node(0).get())),
+                Some((node(1).get(), 1, relationship(2).get(), node(0).get())),
+            ]
+        );
+        store.close().unwrap();
+        return;
+    }
+
     assert_eq!(same.output.1, 1);
     assert_eq!(
         same.output.0[0],
@@ -1896,6 +1993,7 @@ fn native_relational_aggregate_native_empty_and_groups() {
             64,
             AggregateScopeConsumer {
                 source: node(0),
+                chunk_rows,
                 later_pattern: PatternId(1),
             },
         )
@@ -2495,7 +2593,7 @@ fn relational_probe_receipts(
 }
 
 fn relational_receipt_oracle(receipts: &[(&'static str, u64)]) -> bool {
-    const EXPECTED: [&str; 10] = [
+    const EXPECTED: [&str; 12] = [
         "pipeline",
         "representative",
         "group",
@@ -2506,6 +2604,8 @@ fn relational_receipt_oracle(receipts: &[(&'static str, u64)]) -> bool {
         "release",
         "same-seed",
         "oracle",
+        "chunk-reservation",
+        "row-cap",
     ];
     receipts.len() == EXPECTED.len()
         && receipts
@@ -2540,7 +2640,7 @@ fn native_relational_limits_controls_errors_release() {
     let report = super::test_support::run_actual_probe(0x5e15_4c01)
         .expect("run actual native relational control probe");
     let receipts = relational_probe_receipts(&report);
-    assert_eq!(receipts.len(), 10);
+    assert_eq!(receipts.len(), 12);
     for name in ["limit", "cancel", "late-error", "release", "same-seed"] {
         assert!(
             receipts.get(name).copied().unwrap_or(0) > 0,
@@ -2583,6 +2683,15 @@ fn native_relational_directed_probe_can_fire() {
         );
     }
     assert!(relational_receipt_oracle(&report.receipts));
+    for name in ["chunk-reservation", "row-cap"] {
+        let mut absent = report.receipts.clone();
+        absent.iter_mut().find(|(key, _)| *key == name).unwrap().1 = 0;
+        assert!(
+            !relational_receipt_oracle(&absent),
+            "accepted non-firing {name}"
+        );
+    }
+
     let mut missing_receipt = report.receipts.clone();
     let _ = missing_receipt.pop();
     assert!(!relational_receipt_oracle(&missing_receipt));
@@ -2597,4 +2706,101 @@ fn native_relational_directed_probe_can_fire() {
     assert_eq!(repeated.observations, report.observations);
     assert_eq!(repeated.expected, report.expected);
     assert_eq!(repeated.receipts, report.receipts);
+}
+
+#[test]
+fn ze51_blocking_growth_stops_at_the_query_memory_cap_with_no_rows() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::create_native_graph(
+        directory.path().join("native"),
+        OpenOptions::new()
+            .with_durability(DurabilityMode::Durable, CommitTier::Durable)
+            .with_max_resident_bytes(256 * 1024 * 1024),
+        None,
+    )
+    .unwrap();
+    super::test_support::seed_capacity_store(&store, 2, true).unwrap();
+    super::test_support::blocking_capacity_probe(&store).unwrap();
+    store.close().unwrap();
+}
+
+#[test]
+fn ze51_default_memory_blocking_capacity_measurement() {
+    struct Measure(usize);
+    impl NativeReadConsumer<(usize, usize, usize)> for Measure {
+        fn consume<'s, 'lease, 'm, 'g>(
+            &mut self,
+            _: &crate::property_graph::storage::GraphReadView<'s, 'lease, 'm, 'g>,
+            runtime: &mut RuntimeContext<'lease, 'm, 'g>,
+        ) -> Result<(usize, usize, usize), crate::property_graph::storage::tree::directory::TreeError>
+        {
+            use crate::property_graph::query::completed::GraphQueryOptions;
+            use crate::property_graph::query::relational::Rows;
+            use crate::property_graph::query::resources::MemoryError;
+            let capacity = GraphQueryOptions::default().pattern.rows;
+            let before = runtime.memory().reserved_bytes();
+            let chunk = crate::property_graph::query::runtime::RowBatch::storage(
+                runtime,
+                1,
+                capacity.rows,
+                capacity.payload_bytes,
+                capacity.variable,
+            )
+            .unwrap();
+            let chunk_bytes = runtime.memory().reserved_bytes() - before;
+            drop(chunk);
+            let mut rows: Vec<_> = (0..self.0)
+                .map(|_| Rows::new(runtime, &[SlotId(0)], capacity).unwrap())
+                .collect();
+            let mut uses = super::RowUses::new(capacity, runtime).unwrap();
+            let initial = runtime.memory().reserved_bytes();
+            let mut count = 0;
+            loop {
+                let result = (|| {
+                    for row in &mut rows {
+                        row.push(&[QueryValue::I64(count as i64)], runtime)?;
+                    }
+                    uses.push(&[], runtime)
+                })();
+                match result {
+                    Ok(()) => count += 1,
+                    Err(RuntimeError::Memory(MemoryError::Limit)) => break,
+                    other => panic!("unexpected capacity result: {other:?}"),
+                }
+            }
+            eprintln!(
+                "ZE51 stores={} chunk_bytes={chunk_bytes} rows_per_chunk={} initial_bytes={initial} retained_rows={count} final_bytes={} sidecar_descriptor_bytes={}",
+                self.0,
+                capacity.rows,
+                runtime.memory().reserved_bytes(),
+                size_of::<QueryArena<'_, '_, super::RelationshipUse>>()
+            );
+            Ok((count, chunk_bytes, initial))
+        }
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::create_native_graph(
+        directory.path().join("native"),
+        OpenOptions::new()
+            .with_durability(DurabilityMode::Durable, CommitTier::Durable)
+            .with_max_resident_bytes(256 * 1024 * 1024),
+        None,
+    )
+    .unwrap();
+    for stores in [1, 2] {
+        let (count, _, _) = store
+            .with_native_read(
+                &QueryControl::Cancel(CancelToken::new()),
+                RuntimeLimits::default(),
+                crate::property_graph::query::MAX_QUERY_BYTES,
+                64,
+                Measure(stores),
+            )
+            .unwrap();
+        assert!(
+            count < 65_536,
+            "memory must fail before the existing row cap"
+        );
+    }
+    store.close().unwrap();
 }

@@ -452,6 +452,7 @@ impl NativeReadConsumer<Outcome> for SearchConsumer {
             PatternCapacity {
                 rows: StorageCapacity {
                     rows: 16,
+                    max_rows: 16,
                     payload_bytes: 8192,
                     variable,
                 },

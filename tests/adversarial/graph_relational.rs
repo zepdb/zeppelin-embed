@@ -111,14 +111,14 @@ fn trial(
             .map_err(|e| e.to_string())?;
         let before = memory.reserved_bytes();
         let result = (|| -> Result<Vec<u128>, RuntimeError> {
-            let capacity = StorageCapacity {
-                rows: numbers.len(),
-                payload_bytes: 32768,
-                variable: ArenaCapacity {
+            let capacity = StorageCapacity::new(
+                numbers.len(),
+                32768,
+                ArenaCapacity {
                     list_cells: numbers.len(),
                     ..ArenaCapacity::default()
                 },
-            };
+            );
             if phase == 2 {
                 clock.arm_query();
                 let values = nodes
@@ -163,10 +163,7 @@ fn trial(
                             distinct: true,
                         },
                     }],
-                    StorageCapacity {
-                        rows: 1,
-                        ..capacity
-                    },
+                    StorageCapacity::new(1, capacity.payload_bytes, capacity.variable),
                     &mut context,
                 )?;
                 let Some(QueryValue::List(list)) = rows.value(0, 0) else {

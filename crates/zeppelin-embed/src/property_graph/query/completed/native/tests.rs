@@ -218,6 +218,7 @@ macro_rules! run_native_result {
             PatternCapacity {
                 rows: StorageCapacity {
                     rows: 32,
+ max_rows: 32,
                     payload_bytes: 16 * 1024,
                     variable: ArenaCapacity {
                         string_bytes: 8192,
@@ -371,6 +372,7 @@ impl
             PatternCapacity {
                 rows: StorageCapacity {
                     rows: 4,
+                    max_rows: 4,
                     payload_bytes: 1024,
                     variable: ArenaCapacity::default(),
                 },

@@ -69,6 +69,10 @@ impl<'v, 'm, 'g> Rows<'v, 'm, 'g> {
         Ok((rows, representatives.ok_or(RuntimeError::Batch)?))
     }
 
+    #[allow(
+        clippy::type_complexity,
+        reason = "optional charged representative owner accompanies the row owner"
+    )]
     fn aggregate_inner(
         self,
         keys: &[SlotProjection],
@@ -77,7 +81,7 @@ impl<'v, 'm, 'g> Rows<'v, 'm, 'g> {
         mut representatives: Option<QueryArena<'m, 'g, Option<usize>>>,
         context: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<(Self, Option<QueryArena<'m, 'g, Option<usize>>>), RuntimeError> {
-        if !self.data.belongs_to(context)
+        if !self.belongs_to(context)
             || keys
                 .len()
                 .checked_add(aggregates.len())
@@ -201,7 +205,7 @@ impl<'v, 'm, 'g> Rows<'v, 'm, 'g> {
                         while row != usize::MAX {
                             context.charge(WorkKind::OperatorRows, 1)?;
                             let raw = *self.order.as_slice().get(row).ok_or(RuntimeError::Batch)?;
-                            let value = self.data.value(raw, column).ok_or(RuntimeError::Batch)?;
+                            let value = self.cell(raw, column).ok_or(RuntimeError::Batch)?;
                             if !matches!(value, QueryValue::Null) {
                                 let keep = if let Some(seen) = &mut seen {
                                     let (bucket, existing) =
@@ -241,19 +245,17 @@ impl<'v, 'm, 'g> Rows<'v, 'm, 'g> {
                     }
                 }
             }
-            let raw = output.data.rows();
-            output.data.push_from(
+            output.push_from(
                 |column| {
                     if column < keys.len() {
-                        self.data
-                            .value(
-                                group.first,
-                                *key_columns
-                                    .as_slice()
-                                    .get(column)
-                                    .ok_or(RuntimeError::Batch)?,
-                            )
-                            .ok_or(RuntimeError::Batch)
+                        self.cell(
+                            group.first,
+                            *key_columns
+                                .as_slice()
+                                .get(column)
+                                .ok_or(RuntimeError::Batch)?,
+                        )
+                        .ok_or(RuntimeError::Batch)
                     } else {
                         values
                             .value(column - keys.len(), 0)
@@ -262,7 +264,6 @@ impl<'v, 'm, 'g> Rows<'v, 'm, 'g> {
                 },
                 context,
             )?;
-            output.order.push(raw)?;
             if let Some(representatives) = &mut representatives {
                 representatives.push((group.first != usize::MAX).then_some(group.first))?;
             }
@@ -284,9 +285,7 @@ impl std::fmt::Debug for Gathered<'_, '_, '_, '_> {
 }
 impl ListArena for Gathered<'_, '_, '_, '_> {
     fn value(&self, index: usize) -> Option<QueryValue<'_>> {
-        self.rows
-            .data
-            .value(*self.selected.get(index)?, self.column)
+        self.rows.cell(*self.selected.get(index)?, self.column)
     }
 }
 fn collect<'v, 'm, 'g>(

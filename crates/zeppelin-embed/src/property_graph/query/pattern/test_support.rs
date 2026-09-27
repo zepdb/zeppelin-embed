@@ -270,21 +270,22 @@ where
         output: &mut crate::property_graph::query::runtime::RowBatch<'v, 'm, 'g>,
     ) -> Result<crate::property_graph::query::runtime::PullState, NativeExecutionError> {
         let state = self.source.pull(context, output)?;
-        if !self.armed && output.rows() != 0 {
-            if let Some(vfs) = &self.vfs {
-                vfs.arm_next();
-                self.armed = true;
-            }
+        if !self.armed
+            && output.rows() != 0
+            && let Some(vfs) = &self.vfs
+        {
+            vfs.arm_next();
+            self.armed = true;
         }
-        if output.rows() != 0 {
-            if let Some(publication) = self.publication.take() {
-                let result = Arc::clone(&publication.result);
-                let published = std::thread::spawn(move || publication.publish())
-                    .join()
-                    .map_err(|_| RuntimeError::Batch)?;
-                let mut slot = result.lock().map_err(|_| RuntimeError::Batch)?;
-                *slot = Some(published);
-            }
+        if output.rows() != 0
+            && let Some(publication) = self.publication.take()
+        {
+            let result = Arc::clone(&publication.result);
+            let published = std::thread::spawn(move || publication.publish())
+                .join()
+                .map_err(|_| RuntimeError::Batch)?;
+            let mut slot = result.lock().map_err(|_| RuntimeError::Batch)?;
+            *slot = Some(published);
         }
         Ok(state)
     }
@@ -688,6 +689,7 @@ impl NativeReadConsumer<Result<ProbeExecution, RuntimeFailure<NativeExecutionErr
             PatternCapacity {
                 rows: StorageCapacity {
                     rows: 16,
+                    max_rows: 16,
                     payload_bytes: 4096,
                     variable: ArenaCapacity {
                         string_bytes: 256,
@@ -895,6 +897,7 @@ impl NativeReadConsumer<Result<ScanExecution, RuntimeFailure<NativeExecutionErro
             PatternCapacity {
                 rows: StorageCapacity {
                     rows: 8,
+                    max_rows: 8,
                     payload_bytes: 1024,
                     variable: ArenaCapacity {
                         string_bytes: 0,

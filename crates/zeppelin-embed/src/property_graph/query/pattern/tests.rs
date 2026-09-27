@@ -252,6 +252,7 @@ impl
             PatternCapacity {
                 rows: StorageCapacity {
                     rows: 16,
+                    max_rows: 16,
                     payload_bytes: 4096,
                     variable: ArenaCapacity::default(),
                 },
@@ -541,6 +542,7 @@ macro_rules! execute_pattern {
             PatternCapacity {
                 rows: StorageCapacity {
                     rows: pattern_rows,
+ max_rows: pattern_rows,
                     payload_bytes: 8192,
                     variable: ArenaCapacity {
                         string_bytes: 8192,
@@ -1308,6 +1310,7 @@ impl NativeReadConsumer<Result<Execution<()>, RuntimeFailure<NativeExecutionErro
             PatternCapacity {
                 rows: StorageCapacity {
                     rows: 1,
+                    max_rows: 1,
                     payload_bytes: 64,
                     variable: ArenaCapacity {
                         string_bytes: 64,
@@ -5666,6 +5669,7 @@ impl NativeReadConsumer<Result<Execution<Box<PrimitiveRows>>, RuntimeFailure<Nat
             PatternCapacity {
                 rows: StorageCapacity {
                     rows: 1 << 20,
+                    max_rows: 1 << 20,
                     payload_bytes: 1 << 20,
                     variable: ArenaCapacity {
                         string_bytes: 1 << 20,
@@ -6199,7 +6203,7 @@ fn native_pattern_limits_cancel_close_no_output() {
     };
     assert!(matches!(
         result_failure.error,
-        NativeExecutionError::Runtime(RuntimeError::Batch)
+        NativeExecutionError::Runtime(RuntimeError::BatchCapacity)
     ));
     assert!(!result_completion_called.load(Ordering::SeqCst));
     assert!(result_released.load(Ordering::SeqCst));
@@ -6230,7 +6234,7 @@ fn native_pattern_limits_cancel_close_no_output() {
     };
     assert!(matches!(
         result_bytes_failure.error,
-        NativeExecutionError::Runtime(RuntimeError::Batch)
+        NativeExecutionError::Runtime(RuntimeError::BatchCapacity)
     ));
     assert!(!result_bytes_completion_called.load(Ordering::SeqCst));
     assert!(result_bytes_released.load(Ordering::SeqCst));

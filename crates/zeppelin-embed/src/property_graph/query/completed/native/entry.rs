@@ -83,8 +83,8 @@ impl GraphQueryOptions {
 }
 
 impl Default for GraphQueryOptions {
-    /// Capacities for small statements: at most 1,024 rows per operator and
-    /// in the result, and 1,024 staged entities for a write.
+    /// Blocking storage grows in 1,024-row chunks up to the query budget.
+    /// Results and staged write entities retain their separate 1,024 caps.
     fn default() -> Self {
         let variable = ArenaCapacity {
             string_bytes: 64 * 1024,
@@ -99,6 +99,7 @@ impl Default for GraphQueryOptions {
             pattern: PatternCapacity {
                 rows: StorageCapacity {
                     rows: 1024,
+                    max_rows: 65_536,
                     payload_bytes: 256 * 1024,
                     variable,
                 },

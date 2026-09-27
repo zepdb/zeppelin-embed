@@ -415,6 +415,7 @@ pub(crate) fn options(image_capacity: usize) -> GraphQueryOptions {
         pattern: PatternCapacity {
             rows: StorageCapacity {
                 rows: 16,
+                max_rows: 16,
                 payload_bytes: 8192,
                 variable,
             },

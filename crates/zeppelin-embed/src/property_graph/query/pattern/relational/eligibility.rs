@@ -86,6 +86,7 @@ pub(super) fn prepare<'s, 'r, 'plan, 'v, 'm, 'g>(
     drop(slots);
     let singleton_capacity = StorageCapacity {
         rows: 1,
+        max_rows: 1,
         payload_bytes: native_capacity.rows.payload_bytes,
         variable: native_capacity.rows.variable,
     };

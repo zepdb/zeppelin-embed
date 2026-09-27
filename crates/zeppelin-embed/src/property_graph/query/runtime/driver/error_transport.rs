@@ -280,6 +280,7 @@ impl<'v, 'm, 'g> PullOperator<'v, 'm, 'g, NativeExecutionError> for TypedRows<'m
 fn relational_capacity(rows: usize) -> StorageCapacity {
     StorageCapacity {
         rows,
+        max_rows: rows,
         payload_bytes: 64,
         variable: ArenaCapacity::default(),
     }

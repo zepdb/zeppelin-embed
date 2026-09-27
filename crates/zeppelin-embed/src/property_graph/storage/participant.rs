@@ -109,6 +109,15 @@ pub fn prepare_directories<'a, S: BlockSink>(
         memory,
         scratch: TreeScratch::for_prepare(memory)?,
     };
+    #[cfg(all(feature = "graph-cypher", feature = "test-support"))]
+    if crate::property_graph::query::native_relational_test_support::capacity_fixture_active() {
+        capacity_fixture::create(&mut state, sink, batch, r)?;
+        return Ok(NativeDirectoryCandidate {
+            expected: base.identity,
+            roots: state.roots,
+            _charge: charge,
+        });
+    }
     for delta in batch.deltas() {
         state.apply(sink, delta, r)?;
     }
@@ -498,3 +507,6 @@ impl<S: BlockSource> LeafValidator<S> for MembershipValues {
         r.step(0)
     }
 }
+
+#[cfg(all(feature = "graph-cypher", feature = "test-support"))]
+mod capacity_fixture;

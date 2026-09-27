@@ -19,7 +19,10 @@ pub mod pattern_test_support {
 /// Tooling-only native relational directed probes.
 pub mod native_relational_test_support {
     pub use super::pattern::relational::test_support::{
-        NativeRelationalProbeReport, run_actual_probe,
+        NativeRelationalProbeReport, run_actual_probe, seed_capacity_store,
+    };
+    pub(crate) use super::pattern::relational::test_support::{
+        capacity_fixture_active, capacity_fixture_work,
     };
 }
 /// Typed DAG validation, separate from execution and admission.
