@@ -230,3 +230,59 @@ test('the WAL stays bounded across many autoSealRows seals', () => {
     rmSync(root, { force: true, recursive: true });
   }
 });
+
+test('ZE-236 repeated seals and sealed replacements preserve every live document', () => {
+  const root = temporaryRoot('zeppelin-ze236-');
+  let store;
+  try {
+    store = openNamespace(root, 'notes', SPEC, { durability: 'derived' });
+    const revisions = new Map();
+    const ops = [0, 0, 0, 'seal', 0, 0, 0, 4, 0, 0, 0, 'seal', 0, 'seal',
+      0, 0, 0, 0, 0, 0, 3, 11, 'delete4', 17, 20, 'seal',
+      2, 3, 12, 22, 18, 'seal', 2];
+    for (const op of ops) {
+      if (op === 'seal') store.seal();
+      else if (op === 'delete4') store.delete([4n]);
+      else {
+        const revision = (revisions.get(op) ?? 0n) + 1n;
+        revisions.set(op, revision);
+        store.upsert([{ id: BigInt(op), revision, text: `document ${op}`, timestamp: 0n }]);
+      }
+    }
+    assert.equal(store.count().count, 9n);
+    for (const [id, revision] of revisions) {
+      const doc = store.get([BigInt(id)], { text: true }).documents[0];
+      if (id === 4) assert.equal(doc, null);
+      else {
+        assert.equal(doc.revision, revision);
+        assert.equal(doc.text, `document ${id}`);
+      }
+    }
+  } finally {
+    store?.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('ZE-242 seals all ten revisions across reopen', () => {
+  const root = temporaryRoot('zeppelin-ze242-');
+  let store;
+  try {
+    for (let revision = 1n; revision <= 10n; revision++) {
+      store = openNamespace(root, 'notes', {}, FAST);
+      if (revision === 1n) store.upsert([{ id: 2n, text: 'stable example.com' }]);
+      store.upsert([{ id: 1n, revision, text: 'saffron example.com' }]);
+      store.seal();
+      assert.equal(store.count().count, 2n);
+      assert.equal(store.get([1n]).documents[0].revision, revision);
+      store.close();
+      store = undefined;
+    }
+    store = openNamespace(root, 'notes', {}, FAST);
+    assert.equal(store.get([2n], { text: true }).documents[0].text, 'stable example.com');
+    assert.equal(store.get([1n]).documents[0].revision, 10n);
+  } finally {
+    store?.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

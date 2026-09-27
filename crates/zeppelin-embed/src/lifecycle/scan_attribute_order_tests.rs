@@ -294,6 +294,7 @@ fn attribute_order_cursor_is_stale_after_any_write_between_pages() {
 enum Op {
     Put { id: u8, value: Option<i8> },
     Delete { id: u8 },
+    Seal,
 }
 
 fn value_of(column: ColumnId, value: i8) -> PredicateValue {
@@ -349,51 +350,46 @@ fn attribute_order_pagination_matches_a_sort_oracle() {
             .prop_map(|value| value.map(|value| if value == -6 { i8::MIN } else { value })))
             .prop_map(|(id, value)| Op::Put { id, value }),
         1 => (0_u8..24).prop_map(|id| Op::Delete { id }),
+        1 => Just(Op::Seal),
     ];
-    // Each batch but the last is sealed, so a case spans up to three sealed
-    // segments plus the active segment, with superseded and tombstoned rows
-    // in any of them.
     let strategy = (
-        proptest::collection::vec(proptest::collection::vec(op, 0..16), 1..=4),
+        proptest::collection::vec(op, 1..60),
         prop_oneof![Just(U), Just(I), Just(F)],
         any::<bool>(),
         1_usize..8,
     );
-    let result = runner.run(&strategy, |(batches, column, descending, limit)| {
+    let result = runner.run(&strategy, |(ops, column, descending, limit)| {
         let directory = tempdir().expect("directory");
         let store = open(directory.path());
         let mut live = BTreeMap::<u8, Option<i8>>::new();
         let mut revisions = BTreeMap::<u8, u64>::new();
-        let batch_count = batches.len();
-        for (batch_index, batch) in batches.into_iter().enumerate() {
-            for op in batch {
-                match op {
-                    Op::Put { id, value } => {
-                        let revision = revisions.entry(id).or_insert(0);
-                        *revision += 1;
-                        let columns = value
-                            .map(|value| vec![(column, value_of(column, value))])
-                            .unwrap_or_default();
+        for op in ops {
+            match op {
+                Op::Put { id, value } => {
+                    let revision = revisions.entry(id).or_insert(0);
+                    *revision += 1;
+                    let columns = value
+                        .map(|value| vec![(column, value_of(column, value))])
+                        .unwrap_or_default();
+                    store
+                        .ingest(IngestBatch::new(vec![document(
+                            u128::from(id),
+                            *revision,
+                            columns,
+                        )]))
+                        .expect("put");
+                    live.insert(id, value);
+                }
+                Op::Delete { id } => {
+                    if live.remove(&id).is_some() {
                         store
-                            .ingest(IngestBatch::new(vec![document(
-                                u128::from(id),
-                                *revision,
-                                columns,
-                            )]))
-                            .expect("put");
-                        live.insert(id, value);
-                    }
-                    Op::Delete { id } => {
-                        if live.remove(&id).is_some() {
-                            store
-                                .delete(DeleteBatch::new(vec![DocId::new(u128::from(id))]))
-                                .expect("delete");
-                        }
+                            .delete(DeleteBatch::new(vec![DocId::new(u128::from(id))]))
+                            .expect("delete");
                     }
                 }
-            }
-            if batch_index + 1 < batch_count {
-                store.seal().expect("seal");
+                Op::Seal => {
+                    store.seal().expect("seal");
+                }
             }
         }
         let direction = if descending {

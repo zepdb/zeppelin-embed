@@ -1660,14 +1660,16 @@ pub(crate) fn clustering_range(
 }
 
 fn replacement_segment_id(original: SegmentId, token_id: u64, generation: u64) -> SegmentId {
-    let mut bytes = *original.as_bytes();
-    let first = generation.to_be_bytes();
-    let second = token_id.to_be_bytes();
-    for (target, value) in bytes.iter_mut().take(8).zip(first) {
-        *target ^= value;
+    // XOR with the previous ID can cancel earlier generations/nonces and
+    // overwrite another live segment. Keep the publication generation intact,
+    // and distinguish sources within that generation with a seeded hash.
+    let mut bytes = [0_u8; 16];
+    for (target, value) in bytes.iter_mut().take(8).zip(generation.to_be_bytes()) {
+        *target = value;
     }
-    for (target, value) in bytes.iter_mut().skip(8).zip(second) {
-        *target ^= value;
+    let source = xxhash_rust::xxh3::xxh3_64_with_seed(original.as_bytes(), token_id);
+    for (target, value) in bytes.iter_mut().skip(8).zip(source.to_be_bytes()) {
+        *target = value;
     }
     SegmentId::from_bytes(bytes)
 }

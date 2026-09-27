@@ -537,3 +537,7 @@ mod wal_truncation_crash_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "seal_id_tests.rs"]
+mod seal_id_tests;

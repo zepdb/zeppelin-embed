@@ -596,6 +596,7 @@ export declare class Store {
    * commits, the WAL file is replaced by an empty one (a 40-byte header), so
    * it holds only writes made since the last seal; a crash at any point of
    * that replacement loses nothing. An empty active segment is a no-op.
+   * Repeated upsert/seal cycles are supported, including across close/open.
    */
   seal(): SealReport;
   /**
