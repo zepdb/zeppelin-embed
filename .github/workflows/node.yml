@@ -10,6 +10,8 @@ on:
       - "crates/zeppelin-embed/**"
       - "crates/zeppelin-embed-ffi/**"
       - "bindings/node/**"
+      - "scripts/release/package-native.py"
+      - "scripts/tests/native-packaging.py"
       - "tests/electron-macos/**"
   push:
     branches: [main]
@@ -20,6 +22,8 @@ on:
       - "crates/zeppelin-embed/**"
       - "crates/zeppelin-embed-ffi/**"
       - "bindings/node/**"
+      - "scripts/release/package-native.py"
+      - "scripts/tests/native-packaging.py"
       - "tests/electron-macos/**"
   workflow_dispatch:
     inputs:
@@ -50,6 +54,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.93.0
+          components: llvm-tools-preview
           targets: aarch64-apple-darwin,x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
       - run: npm ci
@@ -62,13 +67,15 @@ jobs:
         run: |
           set -euo pipefail
           for t in aarch64-apple-darwin x86_64-apple-darwin; do
-            nm -gU "target/$t/release/libzeppelin_embed_ffi.a" | grep ' T _ze_graph_open$'
-            du -k "target/$t/release/libzeppelin_embed_ffi.a"
-            size "target/$t/release/libzeppelin_embed_ffi.a"
+            nm -gU "target/native-archives/$t/libzeppelin_embed_ffi.a" | grep ' T _ze_graph_open$'
+            du -k "target/native-archives/$t/libzeppelin_embed_ffi.a"
+            size "target/native-archives/$t/libzeppelin_embed_ffi.a"
           done
-          for slice in darwin-arm64 darwin-x64; do
-            nm -gU "bindings/node/prebuilds/$slice/zeppelin_embed.node" | grep ' T _ze_graph_open$'
-          done
+          python3 scripts/tests/native-packaging.py \
+            --archive target/aarch64-apple-darwin/release/libzeppelin_embed_ffi.a target/native-archives/aarch64-apple-darwin/libzeppelin_embed_ffi.a \
+            --archive target/x86_64-apple-darwin/release/libzeppelin_embed_ffi.a target/native-archives/x86_64-apple-darwin/libzeppelin_embed_ffi.a \
+            --addon bindings/node/prebuilds/darwin-arm64/zeppelin_embed.node \
+            --addon bindings/node/prebuilds/darwin-x64/zeppelin_embed.node
       - name: Install the graph header test generator
         run: cargo install cbindgen --version 0.29.4 --locked
       - name: Run the graph suites against the x86_64 target
@@ -177,6 +184,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.93.0
+          components: llvm-tools-preview
           targets: x86_64-pc-windows-msvc
       - uses: Swatinem/rust-cache@v2
       - run: npm ci
@@ -194,14 +202,21 @@ jobs:
       - name: Verify the FFI archive carries the graph entry points
         shell: cmd
         run: |
-          dumpbin /symbols target\x86_64-pc-windows-msvc\release\zeppelin_embed_ffi.lib | findstr /C:"ze_graph_open"
+          dumpbin /symbols target\native-archives\x86_64-pc-windows-msvc\zeppelin_embed_ffi.lib | findstr /C:"ze_graph_open"
           if errorlevel 1 exit /b 1
-          dumpbin /headers target\x86_64-pc-windows-msvc\release\zeppelin_embed_ffi.lib
+          dumpbin /headers target\native-archives\x86_64-pc-windows-msvc\zeppelin_embed_ffi.lib
           if errorlevel 1 exit /b 1
-          dir target\x86_64-pc-windows-msvc\release\zeppelin_embed_ffi.lib
+          dir target\native-archives\x86_64-pc-windows-msvc\zeppelin_embed_ffi.lib
       - name: Record Windows archive disk usage
         shell: bash
-        run: du -k target/x86_64-pc-windows-msvc/release/zeppelin_embed_ffi.lib
+        run: du -k target/native-archives/x86_64-pc-windows-msvc/zeppelin_embed_ffi.lib
+      - name: Verify Windows packaging contracts
+        shell: bash
+        run: |
+          python scripts/tests/native-packaging.py \
+            --archive target/x86_64-pc-windows-msvc/release/zeppelin_embed_ffi.lib target/native-archives/x86_64-pc-windows-msvc/zeppelin_embed_ffi.lib \
+            --addon bindings/node/prebuilds/win32-x64/node-napi8/zeppelin_embed.node \
+            --addon bindings/node/prebuilds/win32-x64/electron-44/zeppelin_embed.node
       - name: Record Windows native static libraries
         run: cargo rustc --locked --target x86_64-pc-windows-msvc -p zeppelin-embed-ffi --features graph-cypher --crate-type staticlib -- --print native-static-libs
       - name: Run the graph suites natively on Windows

@@ -31,7 +31,8 @@ lipo "$dynamic_library" -verify_arch arm64
 python3 "$ROOT_DIR/scripts/release/core_header.py" \
     "$ROOT_DIR/crates/zeppelin-embed-ffi/include/zeppelin_embed.h" \
     "$STAGE_DIR/include/zeppelin_embed.h"
-cp "$static_library" "$STAGE_DIR/lib/"
+python3 "$ROOT_DIR/scripts/release/package-native.py" archive \
+    "$static_library" "$STAGE_DIR/lib/libzeppelin_embed_ffi.a"
 cp "$dynamic_library" "$STAGE_DIR/lib/"
 install_name_tool -id '@rpath/libzeppelin_embed_ffi.dylib' \
     "$STAGE_DIR/lib/libzeppelin_embed_ffi.dylib"

@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -16,10 +16,21 @@ const packageDirectory = resolve(scriptDirectory, '..');
 const repository = resolve(packageDirectory, '..', '..');
 const ffiHeaders = join(repository, 'crates', 'zeppelin-embed-ffi', 'include');
 const source = join(packageDirectory, 'native', 'addon.cc');
+const exportsFile = join(packageDirectory, 'native', 'exports.txt');
+const packageNative = join(repository, 'scripts', 'release', 'package-native.py');
 const targetDirectory = resolve(process.env.CARGO_TARGET_DIR || join(repository, 'target'));
 
 const isDarwin = process.platform === 'darwin';
 const isWindowsX64 = process.platform === 'win32' && process.arch === 'x64';
+const python = process.env.PYTHON || (isDarwin ? 'python3' : 'python');
+
+// Keep Cargo outputs/rlibs intact; only these distribution copies lose bitcode.
+function distributionArchive(input, target) {
+  const output = join(targetDirectory, 'native-archives', target,
+    isDarwin ? 'libzeppelin_embed_ffi.a' : 'zeppelin_embed_ffi.lib');
+  run(python, [packageNative, 'archive', input, output]);
+  return output;
+}
 
 if (!isDarwin && !isWindowsX64) {
   throw new Error(
@@ -75,6 +86,7 @@ if (isDarwin) {
         '--features', 'graph-cypher'],
       { cwd: repository, env: environment },
     );
+    const archive = distributionArchive(staticLibrary, slice.rustTarget);
     mkdirSync(dirname(output), { recursive: true });
     run(
       'xcrun',
@@ -98,14 +110,17 @@ if (isDarwin) {
         '-undefined',
         'dynamic_lookup',
         source,
-        staticLibrary,
+        archive,
         '-liconv',
+        '-fvisibility=hidden',
+        `-Wl,-exported_symbols_list,${exportsFile}`,
         '-Wl,-dead_strip',
         '-o',
         output,
       ],
       { env: environment },
     );
+    run('xcrun', ['strip', '-S', '-x', output]);
     console.log(`built ${slice.directory} -> ${output}`);
   }
 } else {
@@ -136,6 +151,10 @@ if (isDarwin) {
   // The static *implementation* archive. Deliberately not
   // `zeppelin_embed_ffi.dll.lib`, which is the DLL's import library.
   const staticLibrary = join(targetDirectory, target, 'release', 'zeppelin_embed_ffi.lib');
+  const archive = distributionArchive(staticLibrary, target);
+  const exportsDefinition = join(targetDirectory, 'native-archives', target, 'node.def');
+  const exports = readFileSync(exportsFile, 'utf8').trim().split(/\r?\n/).map(name => name.slice(1));
+  writeFileSync(exportsDefinition, `EXPORTS\n${exports.join('\n')}\n`);
   const gypDirectory = join(packageDirectory, 'native', 'windows');
   const nodeGyp = join(packageDirectory, 'node_modules', 'node-gyp', 'bin', 'node-gyp.js');
 
@@ -154,7 +173,9 @@ if (isDarwin) {
         '--arch=x64',
         ...extraArgs,
         '--',
-        `-Dze_ffi_lib=${staticLibrary}`,
+        `-Dze_ffi_lib=${archive}`,
+        `-Dze_exports_def=${exportsDefinition}`,
+        '-Dze_link_options=/OPT:REF /OPT:ICF /INCREMENTAL:NO /DEBUG:NONE',
         `-Dze_ffi_include=${ffiHeaders}`,
       ],
       // CL supplies the graph define to both MSVC variants without changing gyp.
@@ -166,6 +187,7 @@ if (isDarwin) {
     const built = join(gypDirectory, 'build', 'Release', 'zeppelin_embed.node');
     mkdirSync(dirname(output), { recursive: true });
     copyFileSync(built, output);
+    run(python, [packageNative, 'windows-addon', output, output]);
     console.log(`built ${label} -> ${output}`);
   };
 

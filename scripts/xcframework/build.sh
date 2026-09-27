@@ -215,6 +215,10 @@ attempt_slice() {
         echo "ERROR: required slice $label was not built (exit $status)" >&2
         return 1
     fi
+    # Strip any remaining embedded IR from a staging copy, never Cargo inputs.
+    python3 "$ROOT_DIR/scripts/release/package-native.py" archive \
+        "$archive" "$WORK_DIR/$label-distribution.a" || return 1
+    archive="$WORK_DIR/$label-distribution.a"
     check_export_allowlist "$label" "$archive" || return 1
     check_privacy_symbols "$label" "$archive" || return 1
     measure_slice "$label" "$archive" || return 1

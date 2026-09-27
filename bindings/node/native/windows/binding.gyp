@@ -20,6 +20,8 @@
     'ze_ffi_lib%': '',
     # Absolute path to crates/zeppelin-embed-ffi/include.
     'ze_ffi_include%': '',
+    'ze_exports_def%': '',
+    'ze_link_options%': [],
   },
   'targets': [
     {
@@ -62,6 +64,8 @@
         'VCLinkerTool': {
           # Node addons are DLLs with a .node extension.
           'ImageHasSafeExceptionHandlers': 'false',
+          'ModuleDefinitionFile': '<(ze_exports_def)',
+          'AdditionalOptions': ['<@(ze_link_options)'],
         },
       },
       'configurations': {
@@ -72,6 +76,10 @@
               # never ends up holding two C runtimes.
               'RuntimeLibrary': 2,
               'Optimization': 2,
+            },
+            'VCLinkerTool': {
+              # Do not emit a PDB/debug directory before final PE stripping.
+              'GenerateDebugInformation': 'false',
             },
           },
         },
