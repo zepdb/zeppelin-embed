@@ -442,6 +442,10 @@ export interface QueryRequest {
  * `snippet.text.slice(start, end)` is the matched text.
  */
 export interface SnippetHighlight {
+  /** Inclusive absolute UTF-8 byte offset in the document's stored source text. */
+  readonly sourceByteStart: number;
+  /** Exclusive absolute UTF-8 byte offset; use Buffer.from(source).subarray(start, end). */
+  readonly sourceByteEnd: number;
   /** Inclusive start. */
   readonly start: number;
   /** Exclusive end. */
@@ -462,6 +466,10 @@ export interface SnippetHighlight {
  * then the earliest, so snippets are deterministic. No ellipsis is inserted.
  */
 export interface Snippet {
+  /** Inclusive absolute UTF-8 byte offset of this excerpt in the stored source text. */
+  readonly sourceByteStart: number;
+  /** Exclusive absolute UTF-8 byte offset of this excerpt in the stored source text. */
+  readonly sourceByteEnd: number;
   /** The excerpt. */
   readonly text: string;
   /**

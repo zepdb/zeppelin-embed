@@ -286,7 +286,9 @@ class Store {
    *
    * Which legs run is the engine's rule, not a second policy here: `text`
    * selects the lexical leg, `vector` the vector leg, and both together
-   * select fusion. `filter` and `timestampRange` constrain both legs before
+   * select fusion. With `snippetBytes`, excerpts and highlights include absolute
+   * sourceByteStart/sourceByteEnd (UTF-8); highlight start/end remain UTF-16.
+   * `filter` and `timestampRange` constrain both legs before
    * ranking, using the same semantics as scan(). A `cancelToken` is unwrapped to the native handle so the
    * caller passes the token object rather than a bare bigint.
    */

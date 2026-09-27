@@ -122,7 +122,7 @@ test('the excerpt is bounded by snippetBytes and reports where it was cut', () =
     assert.ok(snippet.text.startsWith('harbour'));
     assert.equal(snippet.truncatedStart, true);
     assert.equal(snippet.truncatedEnd, true);
-    assert.deepEqual(snippet.highlights, [{ start: 0, end: 7 }]);
+    assert.deepEqual(snippet.highlights, [{ start: 0, end: 7, sourceByteStart: 240, sourceByteEnd: 247 }]);
 
     // A window reaching the end is cut only at the start.
     const tail = store.query({ text: 'harbour', k: 1, snippetBytes: text.length }).hits[0];
@@ -181,4 +181,23 @@ test('snippetBytes is validated at the binding and at the engine', () => {
       );
     },
   );
+});
+
+test('absolute source byte ranges survive multibyte prefixes in both query paths', () => {
+  const text = '前 🚀 café harbour café tail';
+  withStore('zeppelin-node-source-ranges-', {}, [{ id: 1n, text, timestamp: 1n }], (store) => {
+    for (const extra of [{}, { timestampRange: { start: 0n, end: 2n } }]) {
+      const { snippet } = store.query({ text: 'harbour cafe', k: 1, snippetBytes: 22, ...extra }).hits[0];
+      const bytes = Buffer.from(text);
+      assert.equal(snippet.sourceByteStart, Buffer.byteLength('前 🚀 '));
+      assert.equal(snippet.sourceByteEnd, snippet.sourceByteStart + Buffer.byteLength(snippet.text));
+      assert.equal(bytes.subarray(snippet.sourceByteStart, snippet.sourceByteEnd).toString(), snippet.text);
+      assert.ok(snippet.highlights.length >= 3);
+      for (const mark of snippet.highlights) {
+        assert.equal(mark.sourceByteStart, snippet.sourceByteStart + Buffer.byteLength(snippet.text.slice(0, mark.start)));
+        assert.equal(mark.sourceByteEnd, snippet.sourceByteStart + Buffer.byteLength(snippet.text.slice(0, mark.end)));
+        assert.equal(bytes.subarray(mark.sourceByteStart, mark.sourceByteEnd).toString(), snippet.text.slice(mark.start, mark.end));
+      }
+    }
+  });
 });

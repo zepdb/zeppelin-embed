@@ -1591,13 +1591,14 @@ pub struct ZeQueryResult {
     pub postings_decoded: u64,
 }
 
-/// One matched range inside a snippet excerpt.
+/// One half-open matched UTF-8 byte range. `ZeQuerySnippet.highlights` are
+/// excerpt-relative; `ZeSnippetSourceRanges.highlights` are absolute in source text.
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct ZeSnippetHighlight {
-    /// Inclusive start, in UTF-8 bytes from the start of the excerpt `text`.
+    /// Inclusive byte start in the coordinate system of the containing result.
     pub start: usize,
-    /// Exclusive end, in UTF-8 bytes from the start of the excerpt `text`.
+    /// Exclusive byte end in the coordinate system of the containing result.
     pub end: usize,
 }
 
@@ -1660,4 +1661,24 @@ pub struct ZeSchemaColumnResult {
     pub attribute_type: i32,
     /// One when nullable.
     pub nullable: u32,
+}
+
+/// Absolute half-open UTF-8 byte ranges in the document's stored source text.
+/// Returned by `ze_query_snippet_source_ranges`; borrowed highlights remain
+/// valid until `ze_query_snippets_free`. No separate free is needed.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeSnippetSourceRanges {
+    /// Caller-provided structure size.
+    pub abi_size: u32,
+    /// Must be zero.
+    pub abi_reserved: u32,
+    /// Inclusive excerpt start in the source text.
+    pub source_start: usize,
+    /// Exclusive excerpt end in the source text.
+    pub source_end: usize,
+    /// Absolute source byte ranges, aligned with the snippet's highlights.
+    pub highlights: *const ZeSnippetHighlight,
+    /// Number of highlights; zero for a hit without a snippet.
+    pub highlight_count: usize,
 }

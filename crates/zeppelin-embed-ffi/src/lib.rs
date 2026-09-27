@@ -3999,6 +3999,53 @@ fn query_filtered_entry(
     })
 }
 
+/// Returns absolute source byte ranges for one hit from either
+/// `ze_query_with_snippets` or `ze_query_filtered`, without changing their
+/// frozen result layouts. `index` must be less than `snippet_count`.
+/// A hit without a snippet returns zero bounds and no highlights.
+/// The input must be the unmodified live result; do not free it concurrently.
+/// Highlight memory is borrowed until `ze_query_snippets_free`.
+/// Once validated, `out_ranges` is zeroed on failure (preserving `abi_size`).
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_query_snippet_source_ranges(
+    snippets: *const ZeQuerySnippets,
+    index: usize,
+    out_ranges: *mut ZeSnippetSourceRanges,
+) -> ZeErrorCode {
+    ffi_entry!(None, ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_query_snippet_source_ranges");
+        finish(
+            None,
+            (|| {
+                let abi_size = marshal::validate_output(out_ranges)?;
+                marshal::write_output(out_ranges, empty_snippet_source_ranges(abi_size));
+                if snippets.is_null() || snippets.align_offset(align_of::<ZeQuerySnippets>()) != 0 {
+                    return Err(FfiError::invalid(
+                        "query snippets pointer is null or misaligned",
+                    ));
+                }
+                marshal::validate_abi_size::<ZeQuerySnippets>(marshal::read_abi_size(snippets))?;
+                let current = marshal::read_value(snippets);
+                let mut ranges = registry::snippet_source_ranges(&current, index)?;
+                ranges.abi_size = abi_size;
+                marshal::write_output(out_ranges, ranges);
+                Ok(())
+            })(),
+        )
+    })
+}
+
+fn empty_snippet_source_ranges(abi_size: u32) -> ZeSnippetSourceRanges {
+    ZeSnippetSourceRanges {
+        abi_size,
+        abi_reserved: 0,
+        source_start: 0,
+        source_end: 0,
+        highlights: std::ptr::null(),
+        highlight_count: 0,
+    }
+}
+
 /// Releases callee-owned query snippets; a zeroed value is a successful
 /// no-op. `snippets` is caller-owned; only its `snippets` allocation, which
 /// also holds every excerpt and highlight, is released.
@@ -4345,7 +4392,7 @@ fn snippet_arena_error() -> FfiError {
 }
 
 /// Packs every snippet, its highlights and its excerpt bytes into one
-/// registered arena: the snippet array, then all highlights, then all text.
+/// registered arena: snippets, source metadata, relative and absolute highlights, text.
 fn publish_snippets(
     snippets: &[Option<zeppelin_embed::fts::query::OwnedLexicalSnippet>],
 ) -> Result<(*mut ZeQuerySnippet, usize, u32), FfiError> {
@@ -4363,13 +4410,22 @@ fn publish_snippets(
             .checked_add(snippet.text.len())
             .ok_or_else(snippet_arena_error)
     })?;
-    let highlight_offset = snippets
+    let source_offset = snippets
         .len()
         .checked_mul(size_of::<ZeQuerySnippet>())
         .ok_or_else(snippet_arena_error)?;
-    let text_offset = highlight_count
+    let highlight_offset = snippets
+        .len()
+        .checked_mul(size_of::<ZeSnippetSourceRanges>())
+        .and_then(|bytes| bytes.checked_add(source_offset))
+        .ok_or_else(snippet_arena_error)?;
+    let absolute_offset = highlight_count
         .checked_mul(size_of::<ZeSnippetHighlight>())
         .and_then(|bytes| bytes.checked_add(highlight_offset))
+        .ok_or_else(snippet_arena_error)?;
+    let text_offset = highlight_count
+        .checked_mul(size_of::<ZeSnippetHighlight>())
+        .and_then(|bytes| bytes.checked_add(absolute_offset))
         .ok_or_else(snippet_arena_error)?;
     let arena_bytes = text_offset
         .checked_add(text_bytes)
@@ -4388,8 +4444,13 @@ fn publish_snippets(
     let output_snippets = arena_pointer.cast::<ZeQuerySnippet>();
     let mut highlight_pointer =
         unsafe { arena_pointer.cast::<u8>().add(highlight_offset) }.cast::<ZeSnippetHighlight>();
+    let source_pointer =
+        unsafe { arena_pointer.cast::<u8>().add(source_offset) }.cast::<ZeSnippetSourceRanges>();
+    let mut absolute_pointer =
+        unsafe { arena_pointer.cast::<u8>().add(absolute_offset) }.cast::<ZeSnippetHighlight>();
     let mut text_pointer = unsafe { arena_pointer.cast::<u8>().add(text_offset) };
     for (index, snippet) in snippets.iter().enumerate() {
+        let mut source = empty_snippet_source_ranges(size_of::<ZeSnippetSourceRanges>() as u32);
         let mut output = ZeQuerySnippet {
             has_snippet: 0,
             truncated_start: 0,
@@ -4410,6 +4471,8 @@ fn publish_snippets(
             {
                 return Err(snippet_arena_error());
             }
+            source.source_start = source_start;
+            source.source_end = source_end;
             output.has_snippet = 1;
             output.truncated_start = bool_u32(source_start > 0);
             output.truncated_end = bool_u32(source_end < snippet.source_len);
@@ -4426,6 +4489,8 @@ fn publish_snippets(
                 }
             }
             if !snippet.highlights.is_empty() {
+                source.highlights = absolute_pointer;
+                source.highlight_count = snippet.highlights.len();
                 output.highlights = highlight_pointer;
                 output.highlight_count = snippet.highlights.len();
                 for highlight in &snippet.highlights {
@@ -4441,13 +4506,24 @@ fn publish_snippets(
                         return Err(snippet_arena_error());
                     }
                     unsafe {
+                        std::ptr::write(
+                            absolute_pointer,
+                            ZeSnippetHighlight {
+                                start: source_start + start,
+                                end: source_start + end,
+                            },
+                        );
+                        absolute_pointer = absolute_pointer.add(1);
                         std::ptr::write(highlight_pointer, ZeSnippetHighlight { start, end });
                         highlight_pointer = highlight_pointer.add(1);
                     }
                 }
             }
         }
-        unsafe { std::ptr::write(output_snippets.add(index), output) };
+        unsafe {
+            std::ptr::write(output_snippets.add(index), output);
+            std::ptr::write(source_pointer.add(index), source);
+        };
     }
     let generation = registry::register_result_arena(arena_pointer, arena.len(), snippets.len())?;
     let _raw = Box::into_raw(arena);

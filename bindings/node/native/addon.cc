@@ -3347,9 +3347,21 @@ bool AdvanceUtf16(napi_env env, const uint8_t *text, size_t text_len,
   return true;
 }
 
-/** One `ZeQuerySnippet` as `{ text, highlights, truncatedStart, truncatedEnd }`. */
+/** Attach absolute UTF-8 byte coordinates, alongside any UTF-16 coordinates. */
+bool SetSourceBytes(napi_env env, napi_value output, size_t start, size_t end) {
+  napi_value first;
+  napi_value last;
+  return NapiOk(env, napi_create_double(env, static_cast<double>(start), &first),
+                "create source byte start") &&
+         NapiOk(env, napi_create_double(env, static_cast<double>(end), &last),
+                "create source byte end") &&
+         SetNamed(env, output, "sourceByteStart", first) &&
+         SetNamed(env, output, "sourceByteEnd", last);
+}
+
+/** One excerpt with UTF-16 highlights and absolute source byte ranges. */
 bool CreateSnippet(napi_env env, const ZeQuerySnippet &snippet,
-                   napi_value *output) {
+                   const ZeSnippetSourceRanges &source, napi_value *output) {
   const uint8_t *text = snippet.text;
   napi_value excerpt;
   napi_value highlights;
@@ -3364,6 +3376,7 @@ bool CreateSnippet(napi_env env, const ZeQuerySnippet &snippet,
                   snippet.text_len, &excerpt),
               "create snippet text") ||
       !SetNamed(env, *output, "text", excerpt) ||
+      !SetSourceBytes(env, *output, source.source_start, source.source_end) ||
       !NapiOk(env,
               napi_create_array_with_length(env, snippet.highlight_count,
                                             &highlights),
@@ -3388,6 +3401,8 @@ bool CreateSnippet(napi_env env, const ZeQuerySnippet &snippet,
                 "create highlight") ||
         !SetNamed(env, highlight, "start", start) ||
         !SetNamed(env, highlight, "end", end) ||
+        !SetSourceBytes(env, highlight, source.highlights[index].start,
+                        source.highlights[index].end) ||
         !NapiOk(env, napi_set_element(env, highlights, index, highlight),
                 "append highlight"))
       return false;
@@ -3694,7 +3709,18 @@ napi_value Query(napi_env env, napi_callback_info info) {
       }
       if (has_snippets && snippets.snippets[index].has_snippet != 0) {
         napi_value snippet;
-        if (!CreateSnippet(env, snippets.snippets[index], &snippet) ||
+        ZeSnippetSourceRanges source{};
+        source.abi_size = sizeof(source);
+        const ze_error_code source_status =
+            ze_query_snippet_source_ranges(&snippets, index, &source);
+        if (source_status != ZE_OK)
+          return ThrowZeppelin(env, store->handle, source_status);
+        if (source.highlight_count != snippets.snippets[index].highlight_count) {
+          napi_throw_error(env, "ZE_ERR_INTERNAL",
+                           "snippet source highlights are not aligned");
+          return nullptr;
+        }
+        if (!CreateSnippet(env, snippets.snippets[index], source, &snippet) ||
             !SetNamed(env, result, "snippet", snippet))
           return nullptr;
       }

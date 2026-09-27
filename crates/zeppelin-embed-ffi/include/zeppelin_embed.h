@@ -2494,15 +2494,16 @@ typedef struct ZeQueryResult {
 } ZeQueryResult;
 
 /*
- One matched range inside a snippet excerpt.
+ One half-open matched UTF-8 byte range. `ZeQuerySnippet.highlights` are
+ excerpt-relative; `ZeSnippetSourceRanges.highlights` are absolute in source text.
  */
 typedef struct ZeSnippetHighlight {
     /*
-     Inclusive start, in UTF-8 bytes from the start of the excerpt `text`.
+     Inclusive byte start in the coordinate system of the containing result.
      */
     size_t start;
     /*
-     Exclusive end, in UTF-8 bytes from the start of the excerpt `text`.
+     Exclusive byte end in the coordinate system of the containing result.
      */
     size_t end;
 } ZeSnippetHighlight;
@@ -2601,6 +2602,38 @@ typedef struct ZeQueryFilter {
      */
     int64_t end_ts;
 } ZeQueryFilter;
+
+/*
+ Absolute half-open UTF-8 byte ranges in the document's stored source text.
+ Returned by `ze_query_snippet_source_ranges`; borrowed highlights remain
+ valid until `ze_query_snippets_free`. No separate free is needed.
+ */
+typedef struct ZeSnippetSourceRanges {
+    /*
+     Caller-provided structure size.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Inclusive excerpt start in the source text.
+     */
+    size_t source_start;
+    /*
+     Exclusive excerpt end in the source text.
+     */
+    size_t source_end;
+    /*
+     Absolute source byte ranges, aligned with the snippet's highlights.
+     */
+    const struct ZeSnippetHighlight *highlights;
+    /*
+     Number of highlights; zero for a hit without a snippet.
+     */
+    size_t highlight_count;
+} ZeSnippetSourceRanges;
 
 /*
  Explicit seal or idle-merge cancellation request.
@@ -3339,6 +3372,19 @@ ze_error_code ze_query_filtered(ze_handle handle,
                                 size_t snippet_bytes,
                                 struct ZeQueryResult *out_result,
                                 struct ZeQuerySnippets *out_snippets);
+
+/*
+ Returns absolute source byte ranges for one hit from either
+ `ze_query_with_snippets` or `ze_query_filtered`, without changing their
+ frozen result layouts. `index` must be less than `snippet_count`.
+ A hit without a snippet returns zero bounds and no highlights.
+ The input must be the unmodified live result; do not free it concurrently.
+ Highlight memory is borrowed until `ze_query_snippets_free`.
+ Once validated, `out_ranges` is zeroed on failure (preserving `abi_size`).
+ */
+ze_error_code ze_query_snippet_source_ranges(const struct ZeQuerySnippets *snippets,
+                                             size_t index,
+                                             struct ZeSnippetSourceRanges *out_ranges);
 
 /*
  Releases callee-owned query snippets; a zeroed value is a successful

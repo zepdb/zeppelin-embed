@@ -445,6 +445,58 @@ pub(crate) fn take_result_box<T: Copy + 'static>(
     Ok(unsafe { Box::from_raw(slice) })
 }
 
+/// Read source metadata only while the owning result is registered and locked.
+pub(crate) fn snippet_source_ranges(
+    snippets: &crate::abi::ZeQuerySnippets,
+    index: usize,
+) -> Result<crate::abi::ZeSnippetSourceRanges, FfiError> {
+    use crate::abi::{ZeQuerySnippet, ZeSnippetSourceRanges};
+    let allocations = result_allocations().lock().map_err(|_| {
+        FfiError::new(
+            ZeErrorCode::ZeErrSynchronization,
+            "result allocation registry mutex is poisoned",
+        )
+    })?;
+    let allocation = allocations
+        .allocations
+        .get(&(snippets.snippets as usize))
+        .ok_or_else(|| FfiError::invalid("query snippets are not a live allocation"))?;
+    if allocation.element != std::any::TypeId::of::<u64>()
+        || allocation.generation != snippets.abi_reserved
+        || allocation.reported_length != snippets.snippet_count
+        || index >= snippets.snippet_count
+    {
+        return Err(FfiError::invalid(
+            "invalid query snippet allocation or index",
+        ));
+    }
+    let offset = snippets
+        .snippet_count
+        .checked_mul(std::mem::size_of::<ZeQuerySnippet>())
+        .and_then(|base| {
+            index
+                .checked_mul(std::mem::size_of::<ZeSnippetSourceRanges>())
+                .and_then(|extra| base.checked_add(extra))
+        })
+        .ok_or_else(|| FfiError::invalid("query snippet source offset overflow"))?;
+    let end = offset.checked_add(std::mem::size_of::<ZeSnippetSourceRanges>());
+    let bytes = allocation.length.checked_mul(std::mem::size_of::<u64>());
+    if !matches!((end, bytes), (Some(end), Some(bytes)) if end <= bytes) {
+        return Err(FfiError::invalid(
+            "query snippet source range exceeds allocation",
+        ));
+    }
+    Ok(unsafe {
+        std::ptr::read(
+            snippets
+                .snippets
+                .cast::<u8>()
+                .add(offset)
+                .cast::<ZeSnippetSourceRanges>(),
+        )
+    })
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {

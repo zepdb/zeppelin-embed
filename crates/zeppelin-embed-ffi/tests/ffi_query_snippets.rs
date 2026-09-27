@@ -80,6 +80,19 @@ fn run(handle: ZeHandle, request: &ZeQueryRequest, snippet_bytes: usize) -> Vec<
         let hit = unsafe { *result.hits.add(index) };
         let snippet = unsafe { *snippets.snippets.add(index) };
         assert_eq!(snippet.reserved, 0);
+        let mut source: ZeSnippetSourceRanges = common::sized_zeroed();
+        assert_eq!(
+            ze_query_snippet_source_ranges(&snippets, index, &mut source),
+            ZeErrorCode::ZeOk
+        );
+        assert_eq!(source.highlight_count, snippet.highlight_count);
+        assert_eq!(source.source_end - source.source_start, snippet.text_len);
+        if snippet.has_snippet == 0 {
+            assert_eq!((source.source_start, source.source_end), (0, 0));
+        }
+        if source.highlight_count == 0 {
+            assert!(source.highlights.is_null());
+        }
         let decoded = (snippet.has_snippet == 1).then(|| {
             let text = unsafe { std::slice::from_raw_parts(snippet.text, snippet.text_len) };
             let text = std::str::from_utf8(text).expect("excerpt is UTF-8");
@@ -423,4 +436,70 @@ fn snippets_free_is_safe_twice_and_refuses_what_it_did_not_allocate() {
         ZeErrorCode::ZeErrInvalidArgument
     );
     assert_eq!(ze_query_result_free(&mut result), ZeErrorCode::ZeOk);
+}
+
+#[test]
+fn source_ranges_are_absolute_for_both_query_paths() {
+    let store = common::TestStore::new();
+    let source = "前 🚀 café harbour café tail";
+    ingest(store.handle, &[(1, [1.0, 0.0], Some(source))]);
+    for filtered in [false, true] {
+        let request = lexical(b"harbour cafe", false);
+        let mut result: ZeQueryResult = common::sized_zeroed();
+        let mut snippets: ZeQuerySnippets = common::sized_zeroed();
+        let mut constraints: ZeQueryFilter = common::sized_zeroed();
+        constraints.has_timestamp_range = 1;
+        constraints.start_ts = 0;
+        constraints.end_ts = 2;
+        let status = if filtered {
+            ze_query_filtered(
+                store.handle,
+                &request,
+                &constraints,
+                22,
+                &mut result,
+                &mut snippets,
+            )
+        } else {
+            ze_query_with_snippets(store.handle, &request, 22, &mut result, &mut snippets)
+        };
+        assert_eq!(status, ZeErrorCode::ZeOk);
+        let snippet = unsafe { *snippets.snippets };
+        let mut ranges: ZeSnippetSourceRanges = common::sized_zeroed();
+        assert_eq!(
+            ze_query_snippet_source_ranges(&snippets, 0, &mut ranges),
+            ZeErrorCode::ZeOk
+        );
+        assert_eq!(ranges.source_start, "前 🚀 ".len());
+        assert_eq!(ranges.source_end, ranges.source_start + snippet.text_len);
+        let excerpt = unsafe { std::slice::from_raw_parts(snippet.text, snippet.text_len) };
+        assert_eq!(
+            &source.as_bytes()[ranges.source_start..ranges.source_end],
+            excerpt
+        );
+        assert_eq!(ranges.highlight_count, snippet.highlight_count);
+        assert!(ranges.highlight_count >= 3);
+        for index in 0..ranges.highlight_count {
+            let absolute = unsafe { *ranges.highlights.add(index) };
+            let relative = unsafe { *snippet.highlights.add(index) };
+            assert_eq!(absolute.start, ranges.source_start + relative.start);
+            assert_eq!(absolute.end, ranges.source_start + relative.end);
+            assert_eq!(
+                &source.as_bytes()[absolute.start..absolute.end],
+                &excerpt[relative.start..relative.end]
+            );
+        }
+        ranges = common::sized_zeroed();
+        assert_eq!(
+            ze_query_snippet_source_ranges(&snippets, 1, &mut ranges),
+            ZeErrorCode::ZeErrInvalidArgument
+        );
+        let stale = snippets;
+        assert_eq!(ze_query_snippets_free(&mut snippets), ZeErrorCode::ZeOk);
+        assert_eq!(
+            ze_query_snippet_source_ranges(&stale, 0, &mut ranges),
+            ZeErrorCode::ZeErrInvalidArgument
+        );
+        assert_eq!(ze_query_result_free(&mut result), ZeErrorCode::ZeOk);
+    }
 }

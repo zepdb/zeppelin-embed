@@ -237,6 +237,10 @@ const ABI_REGISTRY: &[AbiEntry] = &[
         coverage: AbiCoverage::InvalidProbe(probe_query_filtered),
     },
     AbiEntry {
+        name: "ze_query_snippet_source_ranges",
+        coverage: AbiCoverage::InvalidProbe(probe_query_snippet_source_ranges),
+    },
+    AbiEntry {
         name: "ze_query_snippets_free",
         coverage: AbiCoverage::InvalidProbe(probe_query_snippets_free),
     },
@@ -1384,4 +1388,13 @@ fn two_handles_on_the_same_path_in_one_process_are_typed() {
     assert_eq!(second, 0);
     let mut state: ZeStateReport = common::sized_zeroed();
     assert_eq!(ze_state(store.handle, &mut state), ZeErrorCode::ZeOk);
+}
+
+fn probe_query_snippet_source_ranges(_: &MatrixContext) -> ProbeResult {
+    let mut ranges: ZeSnippetSourceRanges = common::sized_zeroed();
+    ProbeResult::Status(ze_query_snippet_source_ranges(
+        std::ptr::null(),
+        0,
+        &mut ranges,
+    ))
 }
