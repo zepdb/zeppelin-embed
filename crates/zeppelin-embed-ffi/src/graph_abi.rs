@@ -1,4 +1,5 @@
 //! Graph handle ownership and open/close validation.
+mod batch;
 use crate::error::FfiError;
 use crate::slots::{CloseAccess, SlotTable};
 use crate::sync::{Mutex, MutexGuard};

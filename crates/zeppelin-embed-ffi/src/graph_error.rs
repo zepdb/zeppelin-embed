@@ -59,8 +59,13 @@ impl From<DomainError> for ZeErrorCode {
 }
 impl From<CanonicalError> for ZeErrorCode {
     fn from(error: CanonicalError) -> Self {
+        Self::from(&error)
+    }
+}
+impl From<&CanonicalError> for ZeErrorCode {
+    fn from(error: &CanonicalError) -> Self {
         match error {
-            CanonicalError::Domain(error) => error.into(),
+            CanonicalError::Domain(error) => (*error).into(),
             CanonicalError::DuplicateProperty
             | CanonicalError::InvalidScratch
             | CanonicalError::ProvenanceKindMismatch => Self::ZeErrInvalidArgument,
@@ -73,6 +78,11 @@ impl From<CanonicalError> for ZeErrorCode {
 }
 impl From<KeyLifecycleError> for ZeErrorCode {
     fn from(error: KeyLifecycleError) -> Self {
+        Self::from(&error)
+    }
+}
+impl From<&KeyLifecycleError> for ZeErrorCode {
+    fn from(error: &KeyLifecycleError) -> Self {
         match error {
             KeyLifecycleError::Canonical(error) => error.into(),
             KeyLifecycleError::KindMismatch | KeyLifecycleError::MissingTarget => {
