@@ -159,47 +159,100 @@ pub(super) fn apply(
     r.step(0)
 }
 
-/// Merge the pending deltas of one adjacency range into a bounded base. The
-/// range with the most pending edges goes first, then the smallest key. A
-/// consolidated range has no pending edges, so successive calls move through
-/// every range that needs work, with no persisted cursor. A direction with
-/// nothing pending is left alone: rewriting an already bounded base would
-/// only copy bytes.
-pub(crate) fn consolidate_pending_range(
+/// Rewrite payloads in selected packs and merge one remaining pending range.
+/// Return descriptors for the caller's single checked directory apply.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn relocate_ranges<'m>(
     sink: &mut impl BlockSink,
     root: DirectoryRoot,
     context: RangeEditContext,
-    memory: &StorageMemory<'_>,
+    drain: &[crate::property_graph::storage::artifact::ArtifactId],
+    byte_limit: u64,
+    copied_bytes: &mut u64,
+    memory: &'m StorageMemory<'m>,
     r: &mut TreeResources<'_>,
-) -> Result<Option<RangeDescriptor>, TreeError> {
-    const RANGE_KEY_BYTES: usize = 40;
-    let mut selected: Option<(usize, [u8; RANGE_KEY_BYTES])> = None;
+) -> Result<StorageBuffer<'m, RangeDescriptor>, TreeError> {
+    let mut keys = StorageBuffer::new(
+        memory,
+        crate::property_graph::storage::consolidation::RELOCATION_LIMIT + 1,
+    )?;
+    let mut pending: Option<(usize, [u8; 40])> = None;
     {
         let mut scan = DirectoryCursor::seek(&*sink, root, None, r)?;
         while let Some(entry) = scan.next_entry(r)? {
-            let pending = descriptor(root, entry, r)?.pending_count();
-            if pending == 0 || selected.is_some_and(|(most, _)| pending <= most) {
-                continue;
+            let descriptor = descriptor(root, entry, r)?;
+            let key = descriptor.directory_key()?;
+            let mut relocated = false;
+            if std::iter::once(descriptor.base())
+                .chain(descriptor.deltas())
+                .any(|reference| drain.binary_search(&reference.artifact).is_ok())
+            {
+                let bytes = std::iter::once(descriptor.base())
+                    .chain(descriptor.deltas())
+                    .try_fold(0_u64, |total, reference| {
+                        total
+                            .checked_add(u64::from(reference.length))
+                            .ok_or(TreeError::Work)
+                    })?;
+                let next = copied_bytes.checked_add(bytes).ok_or(TreeError::Work)?;
+                // Leftover ranges keep their pack marked; the next cycle
+                // drains them. The spare slot is the pending merge's.
+                if keys.as_slice().len()
+                    < crate::property_graph::storage::consolidation::RELOCATION_LIMIT
+                    && (*copied_bytes == 0 || next <= byte_limit)
+                {
+                    keys.push(key)?;
+                    *copied_bytes = next;
+                    relocated = true;
+                }
             }
-            let Key::Inline(key) = entry.key() else {
-                return Err(TreeError::Invalid("adjacency range key overflow"));
-            };
-            selected = Some((
-                pending,
-                key.try_into()
-                    .map_err(|_| TreeError::Invalid("adjacency range key width"))?,
-            ));
+            if !relocated
+                && descriptor.pending_count() > 0
+                && pending.is_none_or(|(count, _)| descriptor.pending_count() > count)
+            {
+                pending = Some((descriptor.pending_count(), key));
+            }
         }
     }
-    let Some((_, selected_key)) = selected else {
-        return Ok(None);
-    };
+    // Preserve the ordinary one-range pending merge, excluding drained ranges.
+    if let Some((_, key)) = pending {
+        let mut position = 0;
+        for other in keys.as_slice() {
+            r.step(1)?;
+            if crate::property_graph::storage::tree::compare_inline_keys(root.kind(), &key, other)?
+                .is_lt()
+            {
+                break;
+            }
+            position += 1;
+        }
+        keys.push(key)?;
+        keys.as_mut_slice()
+            .get_mut(position..)
+            .ok_or(TreeError::Memory)?
+            .rotate_right(1);
+    }
+    let mut replacements = StorageBuffer::new(memory, keys.as_slice().len())?;
+    for key in keys.as_slice() {
+        replacements.push(rewrite_range(sink, root, context, key, memory, r)?)?;
+    }
+    Ok(replacements)
+}
+
+fn rewrite_range(
+    sink: &mut impl BlockSink,
+    root: DirectoryRoot,
+    context: RangeEditContext,
+    selected_key: &[u8; 40],
+    memory: &StorageMemory<'_>,
+    r: &mut TreeResources<'_>,
+) -> Result<RangeDescriptor, TreeError> {
     let mut workspace = Workspace::new(memory, r)?;
-    let mut cursor = DirectoryCursor::seek(&*sink, root, Some(&selected_key), r)?;
+    let mut cursor = DirectoryCursor::seek(&*sink, root, Some(selected_key), r)?;
     let Some(entry) = cursor.next_entry(r)? else {
         return Err(TreeError::Invalid("selected adjacency range disappeared"));
     };
-    if !matches!(entry.key(), Key::Inline(key) if key == selected_key) {
+    if !matches!(entry.key(), Key::Inline(key) if key == selected_key.as_slice()) {
         return Err(TreeError::Invalid("selected adjacency range disappeared"));
     }
     let descriptor = descriptor(root, entry, r)?;
@@ -258,7 +311,7 @@ pub(crate) fn consolidate_pending_range(
         0,
     )?;
     range::check_prepared_range(sink, root, replacement, context, &mut workspace.merged, r)?;
-    Ok(Some(replacement))
+    Ok(replacement)
 }
 
 fn descriptor(

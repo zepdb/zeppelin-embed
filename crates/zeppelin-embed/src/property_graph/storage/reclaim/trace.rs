@@ -436,65 +436,46 @@ pub(crate) fn trace_graph_bundle<'s, 'lease, 'm, T: SpillIo>(
     scratch: &mut RangeScratch<'_>,
     mark: &mut SpillMark<'m>,
     sink: &mut T,
-    pages: Option<(
-        &mut crate::property_graph::storage::memory::StorageBuffer<
-            'm,
-            crate::property_graph::storage::consolidation::PageRelocation,
-        >,
-        u64,
-    )>,
+    census: Option<&mut [crate::property_graph::storage::consolidation::PackCensus]>,
     resources: &mut TreeResources<'_>,
 ) -> Result<u64, TreeError> {
-    struct Visitor<'a, 's, 'lease, 'm, T> {
-        source: &'s NativePreparationSource<'lease, 'm>,
+    struct Visitor<'a, 'm, T> {
         mark: &'a mut SpillMark<'m>,
         sink: &'a mut T,
-        pages: Option<(
-            &'a mut crate::property_graph::storage::memory::StorageBuffer<
-                'm,
-                crate::property_graph::storage::consolidation::PageRelocation,
-            >,
-            u64,
-        )>,
+        census: Option<&'a mut [crate::property_graph::storage::consolidation::PackCensus]>,
     }
-    impl<T: SpillIo> TraceReferenceVisitor for Visitor<'_, '_, '_, '_, T> {
-        fn visit(
-            &mut self,
-            reference: PhysicalRef,
-            resources: &mut TreeResources<'_>,
-        ) -> Result<(), TreeError> {
-            self.mark.emit(reference.artifact, self.sink, resources)
-        }
+    impl<T: SpillIo> TraceReferenceVisitor for Visitor<'_, '_, T> {
         fn visit_page(
             &mut self,
             kind: TreeKind,
             reference: PhysicalRef,
             resources: &mut TreeResources<'_>,
         ) -> Result<(), TreeError> {
-            self.visit(reference, resources)?;
-            if let Some((pages, floor)) = self.pages.as_mut()
-                && pages.as_slice().len()
-                    < crate::property_graph::storage::consolidation::PAGE_RELOCATION_LIMIT
-                && self.source.with_block(reference, resources, |block, _| {
-                    Ok(block.identity().creation_serial <= *floor)
-                })?
-            {
-                pages.push(
-                    crate::property_graph::storage::consolidation::PageRelocation {
-                        kind,
-                        reference,
-                    },
+            // Inventory pages are rebuilt by the inventory fold/intent/adoption
+            // applies, not by the graph drain. They still participate in the
+            // complete protection mark.
+            if let Some(census) = self.census.as_deref_mut() {
+                crate::property_graph::storage::consolidation::count_live(
+                    census,
+                    reference,
+                    kind != TreeKind::ObjectInventory,
                 )?;
             }
-            Ok(())
+            self.mark.emit(reference.artifact, self.sink, resources)
+        }
+
+        fn visit(
+            &mut self,
+            reference: PhysicalRef,
+            resources: &mut TreeResources<'_>,
+        ) -> Result<(), TreeError> {
+            if let Some(census) = self.census.as_deref_mut() {
+                crate::property_graph::storage::consolidation::count_live(census, reference, true)?;
+            }
+            self.mark.emit(reference.artifact, self.sink, resources)
         }
     }
-    let mut visitor = Visitor {
-        source,
-        mark,
-        sink,
-        pages,
-    };
+    let mut visitor = Visitor { mark, sink, census };
     trace_graph_state(
         source,
         catalog,

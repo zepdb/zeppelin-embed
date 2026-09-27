@@ -16,7 +16,7 @@ use crate::property_graph::{
     wal::{self, CommitState, WalGraphRoots},
 };
 mod ranges;
-pub(crate) use ranges::consolidate_pending_range;
+pub(crate) use ranges::relocate_ranges;
 
 /// Exact metadata borrowed from the sole coordinator's retained base. The
 /// catalog/root-envelope token and this WAL state must have one admission owner.

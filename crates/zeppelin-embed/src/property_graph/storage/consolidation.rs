@@ -1,7 +1,7 @@
 //! Bounded physical replacement over one admitted native graph generation.
 
 use super::NativePreparationSource;
-use super::adjacency::{RangeEditContext, consolidate_pending_range};
+use super::adjacency::{RangeEditContext, relocate_ranges};
 use super::artifact::ArtifactId;
 use super::inventory::{
     PreparedInventoryFold, apply_inventory, for_each_prepared_descriptor, verify_inventory_entry,
@@ -32,7 +32,7 @@ thread_local! {
 
 /// Pin relocation to one node on this thread until the guard drops. A
 /// fixture that needs a fixed partly live pack uses it; production selection
-/// always rotates.
+/// uses the current census.
 #[cfg(any(test, feature = "test-support"))]
 #[must_use]
 pub(crate) fn pin_selection_for_test(node: NodeId) -> SelectionPin {
@@ -64,6 +64,7 @@ pub(crate) struct ConsolidationOutcome<'m> {
     source_token: u64,
     roots: GraphRoots,
     replaced_physical_refs: u64,
+    relocated_bytes: u64,
     inventory_fold: PreparedInventoryFold<'m>,
     inventory_fold_root: super::tree::directory::DirectoryRoot,
     adoptions: StorageBuffer<'m, crate::property_graph::wal::InventoryChange>,
@@ -71,6 +72,9 @@ pub(crate) struct ConsolidationOutcome<'m> {
 }
 
 impl ConsolidationOutcome<'_> {
+    pub(crate) const fn relocated_bytes(&self) -> u64 {
+        self.relocated_bytes
+    }
     pub(crate) const fn expected_base(&self) -> GraphRoots {
         self.expected_base
     }
@@ -117,10 +121,10 @@ pub(crate) fn prepare_one_replacement<'lease, 'm, T, C>(
     base_sequence: u64,
     catalog: &C,
     document: Option<&EmbeddingTower>,
-    manifests: &[RequiredRef],
+    drain: &[ArtifactId],
+    relocation_bytes: u64,
     inventory_fold: PreparedInventoryFold<'m>,
     pages: &[PageRelocation],
-    page_floor: u64,
     reclaim_pending: &[crate::property_graph::wal::InventoryChange],
     adoptions: &[crate::property_graph::wal::InventoryChange],
     memory: &'m StorageMemory<'m>,
@@ -143,8 +147,16 @@ where
     let mut relocations = StorageBuffer::new(memory, RELOCATION_LIMIT)?;
     let mut tree = TreeScratch::for_prepare(memory)?;
     let mut replaced_physical_refs = 0_u64;
-    let selected =
-        select_live_records_in_oldest_packs(source, base, catalog, document, manifests, resources)?;
+    let mut copied_bytes = 0_u64;
+    let selected = select_live_records_in_packs(
+        source,
+        base,
+        catalog,
+        document,
+        drain,
+        relocation_bytes,
+        resources,
+    )?;
     let mut values = StorageBuffer::new(memory, RELOCATION_LIMIT)?;
     let mut fences: StorageBuffer<'_, FenceRelocation<'_>> =
         StorageBuffer::new(memory, RELOCATION_LIMIT)?;
@@ -162,6 +174,11 @@ where
         )?;
         let [old_canonical, old_provenance] = record.required_payloads();
         let revision = record.revision().get();
+        copied_bytes = copied_bytes
+            .checked_add(record_reference.len())
+            .and_then(|n| n.checked_add(old_canonical.len()))
+            .and_then(|n| n.checked_add(old_provenance.len()))
+            .ok_or(TreeError::Work)?;
         let canonical_source =
             PayloadSlice::new(&scoped, base.store(), record_generation, old_canonical);
         let canonical = prepare_stream(
@@ -301,11 +318,13 @@ where
         sink,
         &mut roots,
         pages,
-        page_floor,
+        drain,
         context,
         selected.as_slice(),
         values.as_slice(),
         fences.as_slice(),
+        relocation_bytes,
+        &mut copied_bytes,
         catalog,
         document,
         memory,
@@ -318,6 +337,7 @@ where
         source_token: source.lease().token(),
         roots,
         replaced_physical_refs,
+        relocated_bytes: copied_bytes,
         inventory_fold,
         inventory_fold_root,
         adoptions: adopted,
@@ -325,14 +345,86 @@ where
     })
 }
 
-/// Oldest packs considered per selection round, and rounds per call. A pack
-/// may hold no live record (tree pages, sparse rows, tombstones), so a
-/// round that finds none moves its serial floor past that pack set.
-const OLDEST_PACKS: usize = 16;
-const SELECTION_ROUNDS: usize = 8;
+pub(crate) const RELOCATION_LIMIT: usize = 4096;
+pub(crate) const RELOCATION_BYTES: u64 = 8 * 1024 * 1024;
+const SMALL_PACK_BYTES: u32 = 64 * 1024;
+const MERGE_MIN_PACKS: usize = 8;
 
-const RELOCATION_LIMIT: usize = 512;
-const RELOCATION_BYTES: u64 = 1024 * 1024;
+#[derive(Clone, Copy)]
+pub(crate) struct PackCensus {
+    pub(crate) artifact: ArtifactId,
+    pub(crate) serial: u64,
+    pub(crate) bytes: u32,
+    pub(crate) live: u64,
+    pub(crate) live_pages: u32,
+    pub(crate) live_records: u32,
+    pub(crate) graph_live: bool,
+}
+
+pub(crate) fn count_live(
+    census: &mut [PackCensus],
+    reference: super::artifact::PhysicalRef,
+    graph: bool,
+) -> Result<(), TreeError> {
+    if let Ok(index) = census.binary_search_by_key(&reference.artifact, |row| row.artifact) {
+        let row = census.get_mut(index).ok_or(TreeError::Memory)?;
+        row.graph_live |= graph;
+        row.live = row
+            .live
+            .checked_add(u64::from(reference.length))
+            .ok_or(TreeError::Work)?;
+        if reference.kind == super::artifact::BlockKind::TreePage {
+            row.live_pages = row.live_pages.checked_add(1).ok_or(TreeError::Work)?;
+        }
+        if matches!(
+            reference.kind,
+            super::artifact::BlockKind::NodeRecord | super::artifact::BlockKind::RelRecord
+        ) {
+            row.live_records = row.live_records.checked_add(1).ok_or(TreeError::Work)?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn select_drain<'m>(
+    census: &mut [PackCensus],
+    bytes: u64,
+    memory: &'m StorageMemory<'m>,
+) -> Result<StorageBuffer<'m, ArtifactId>, TreeError> {
+    let small = census
+        .iter()
+        .filter(|row| row.graph_live && row.live > 0 && row.bytes < SMALL_PACK_BYTES)
+        .count();
+    census.sort_unstable_by_key(|row| row.serial);
+    let mut drain = StorageBuffer::new(memory, super::MAX_NATIVE_ARTIFACTS)?;
+    let (mut live, mut records, mut pages) = (0_u64, 0_u64, 0_u64);
+    for row in census.iter() {
+        if !row.graph_live
+            || row.live == 0
+            || !(row.live <= u64::from(row.bytes) * 3 / 4
+                || (row.bytes < SMALL_PACK_BYTES && small >= MERGE_MIN_PACKS))
+        {
+            continue;
+        }
+        let next = (
+            live + row.live,
+            records + u64::from(row.live_records),
+            pages + u64::from(row.live_pages),
+        );
+        if !drain.as_slice().is_empty()
+            && (next.0 > bytes
+                || next.1 > RELOCATION_LIMIT as u64
+                || next.2 > PAGE_RELOCATION_LIMIT as u64)
+        {
+            break;
+        }
+        drain.push(row.artifact)?;
+        (live, records, pages) = next;
+    }
+    drain.as_mut_slice().sort_unstable();
+    census.sort_unstable_by_key(|row| row.artifact);
+    Ok(drain)
+}
 
 struct SelectedRecord {
     key: [u8; 16],
@@ -401,67 +493,48 @@ fn scan_id_directory<'lease, 'm>(
     }
 }
 
-type OldestPacks = ([Option<(u64, ArtifactId)>; OLDEST_PACKS], usize);
-
-/// Keep `packs` as the ascending smallest serials seen; the newest falls off.
-fn offer_pack(packs: &mut OldestPacks, floor: u64, serial: u64, artifact: ArtifactId) {
-    let (slots, len) = packs;
-    let full = *len == OLDEST_PACKS;
-    if serial <= floor
-        || slots.iter().flatten().any(|(_, other)| *other == artifact)
-        || (full
-            && slots
-                .last()
-                .copied()
-                .flatten()
-                .is_some_and(|(newest, _)| serial >= newest))
-    {
-        return;
-    }
-    let position = slots
-        .iter()
-        .take(*len)
-        .position(|pack| pack.is_some_and(|(other, _)| serial < other))
-        .unwrap_or(*len);
-    *len = (*len + 1).min(OLDEST_PACKS);
-    if let Some(tail) = slots.get_mut(position..*len) {
-        tail.rotate_right(1);
-    }
-    if let Some(slot) = slots.get_mut(position) {
-        *slot = Some((serial, artifact));
-    }
-}
-
-/// The unreclaimed packs with the smallest creation serials above `floor`,
-/// over the complete allocation union: the rooted inventory plus every
-/// admitted prepared manifest. Memory is the fixed array, whatever the union
-/// size.
-fn oldest_packs<'lease, 'm>(
+/// Inventory union, deduplicated by artifact before current-root accounting.
+pub(crate) fn pack_census<'lease, 'm>(
     anchor: &NativePreparationSource<'lease, 'm>,
     base: GraphRoots,
     manifests: &[RequiredRef],
-    floor: u64,
     resources: &mut TreeResources<'_>,
-) -> Result<OldestPacks, TreeError> {
-    let inventory_root = base.directory(TreeKind::ObjectInventory)?;
-    let mut packs: OldestPacks = ([None; OLDEST_PACKS], 0);
-    scan_id_directory(anchor, inventory_root, resources, |_, entry, resources| {
-        let change = verify_inventory_entry(inventory_root, entry, resources)?;
+) -> Result<StorageBuffer<'m, PackCensus>, TreeError> {
+    let mut rows = StorageBuffer::new(anchor.memory(), super::MAX_NATIVE_ARTIFACTS)?;
+    let mut offer = |descriptor: crate::property_graph::wal::ArtifactDescriptor| match rows
+        .as_slice()
+        .binary_search_by_key(&descriptor.artifact, |row: &PackCensus| row.artifact)
+    {
+        Ok(_) => Ok(()),
+        Err(position) => {
+            rows.push(PackCensus {
+                artifact: descriptor.artifact,
+                serial: descriptor.serial,
+                bytes: descriptor.bytes,
+                live: 0,
+                live_pages: 0,
+                live_records: 0,
+                graph_live: false,
+            })?;
+            rows.as_mut_slice()
+                .get_mut(position..)
+                .ok_or(TreeError::Memory)?
+                .rotate_right(1);
+            Ok(())
+        }
+    };
+    let root = base.directory(TreeKind::ObjectInventory)?;
+    scan_id_directory(anchor, root, resources, |_, entry, resources| {
+        let change = verify_inventory_entry(root, entry, resources)?;
         if matches!(
             change.state,
             InventoryState::Prepared | InventoryState::Retained
         ) {
-            offer_pack(
-                &mut packs,
-                floor,
-                change.object.serial,
-                change.object.artifact,
-            );
+            offer(change.object)?;
         }
         Ok(true)
     })?;
     for required in manifests.iter().copied() {
-        // A scoped source releases each manifest's mapping on return.
         let scoped = NativePreparationSource::new_scoped(anchor.lease(), anchor.memory(), 1)?;
         for_each_prepared_descriptor(
             &scoped,
@@ -469,23 +542,21 @@ fn oldest_packs<'lease, 'm>(
             base.store(),
             base.generation(),
             resources,
-            |descriptor| {
-                offer_pack(&mut packs, floor, descriptor.serial, descriptor.artifact);
-                Ok(())
-            },
+            &mut offer,
         )?;
     }
-    Ok(packs)
+    Ok(rows)
 }
 
-/// Select live records in the oldest bounded pack set, in directory key order.
-/// Empty pack sets advance the floor; tombstones never hide live neighbours.
-fn select_live_records_in_oldest_packs<'lease, 'm, C>(
+/// Select live records from measured drain candidates; tombstones stay put.
+#[allow(clippy::too_many_arguments)]
+fn select_live_records_in_packs<'lease, 'm, C>(
     source: &NativePreparationSource<'lease, 'm>,
     base: GraphRoots,
     catalog: &C,
     document: Option<&EmbeddingTower>,
-    manifests: &[RequiredRef],
+    drain: &[ArtifactId],
+    relocation_bytes: u64,
     resources: &mut TreeResources<'_>,
 ) -> Result<StorageBuffer<'m, SelectedRecord>, TreeError>
 where
@@ -497,122 +568,129 @@ where
     let pinned = PINNED_SELECTION.with(std::cell::Cell::get);
     #[cfg(not(any(test, feature = "test-support")))]
     let pinned: Option<NodeId> = None;
-    let mut floor = 0_u64;
-    for _ in 0..SELECTION_ROUNDS {
-        let (packs, len) = oldest_packs(source, base, manifests, floor, resources)?;
-        let Some(packs) = packs.get(..len).filter(|packs| !packs.is_empty()) else {
-            return Ok(selected);
-        };
-        let mut full = false;
-        for kind in [TreeKind::Nodes, TreeKind::Relationships] {
-            if full {
-                break;
-            }
-            scan_id_directory(
-                source,
-                base.directory(kind)?,
-                resources,
-                |id, entry, resources| {
-                    resources.step(1)?;
-                    let entity = match kind {
-                        TreeKind::Nodes => EntityId::Node(
-                            NodeId::new(id)
-                                .map_err(|_| TreeError::Invalid("consolidation node identity"))?,
-                        ),
-                        TreeKind::Relationships => {
-                            EntityId::Relationship(crate::property_graph::RelId::new(id).map_err(
-                                |_| TreeError::Invalid("consolidation relationship identity"),
-                            )?)
-                        }
-                        _ => return Err(TreeError::Invalid("consolidation directory kind")),
-                    };
-                    if pinned.is_some_and(|node| entity != EntityId::Node(node)) {
-                        return Ok(true);
+    let mut full = false;
+    for kind in [TreeKind::Nodes, TreeKind::Relationships] {
+        if full {
+            break;
+        }
+        scan_id_directory(
+            source,
+            base.directory(kind)?,
+            resources,
+            |id, entry, resources| {
+                resources.step(1)?;
+                let entity = match kind {
+                    TreeKind::Nodes => EntityId::Node(
+                        NodeId::new(id)
+                            .map_err(|_| TreeError::Invalid("consolidation node identity"))?,
+                    ),
+                    TreeKind::Relationships => {
+                        EntityId::Relationship(crate::property_graph::RelId::new(id).map_err(
+                            |_| TreeError::Invalid("consolidation relationship identity"),
+                        )?)
                     }
-                    let reference = PayloadRef::decode(entry.value())?;
-                    if pinned.is_none()
-                        && !packs
-                            .iter()
-                            .flatten()
-                            .any(|(_, pack)| *pack == reference.reference().artifact)
-                    {
-                        return Ok(true);
-                    }
-                    let generation = entry.creation_generation();
-                    let scoped = NativePreparationSource::new(source.lease(), source.memory(), 64)?;
-                    let payload = PayloadSlice::new(&scoped, base.store(), generation, reference);
-                    let record = match entity {
-                        EntityId::Node(node) => {
-                            match verify_node_state(payload, node, catalog, document, resources)? {
-                                NodeRecordState::Live(record) => record,
-                                // Tombstones stay in their packs until ZE-166's sweep;
-                                // delete-heavy stores cannot fully shrink yet.
-                                NodeRecordState::Tombstone(_) => return Ok(true),
-                            }
+                    _ => return Err(TreeError::Invalid("consolidation directory kind")),
+                };
+                if pinned.is_some_and(|node| entity != EntityId::Node(node)) {
+                    return Ok(true);
+                }
+                let reference = PayloadRef::decode(entry.value())?;
+                if pinned.is_none()
+                    && drain
+                        .binary_search(&reference.reference().artifact)
+                        .is_err()
+                {
+                    return Ok(true);
+                }
+                let generation = entry.creation_generation();
+                let scoped = NativePreparationSource::new(source.lease(), source.memory(), 64)?;
+                let payload = PayloadSlice::new(&scoped, base.store(), generation, reference);
+                let record = match entity {
+                    EntityId::Node(node) => {
+                        match verify_node_state(payload, node, catalog, document, resources)? {
+                            NodeRecordState::Live(record) => record,
+                            // Tombstones stay in their packs until ZE-166's sweep;
+                            // delete-heavy stores cannot fully shrink yet.
+                            NodeRecordState::Tombstone(_) => return Ok(true),
                         }
-                        EntityId::Relationship(_) => {
-                            verify_record(payload, entity, catalog, document, resources)?
-                        }
-                    };
-                    let size = record
-                        .required_payloads()
-                        .iter()
-                        .try_fold(reference.len(), |total, payload| {
-                            total.checked_add(payload.len()).ok_or(TreeError::Work)
-                        })?;
-                    let next = bytes.checked_add(size).ok_or(TreeError::Work)?;
-                    // Admit an oversized first record alone so it cannot stall
-                    // the oldest pack forever behind the soft byte limit.
-                    if next > RELOCATION_BYTES && !selected.as_slice().is_empty() {
-                        full = true;
-                        return Ok(false);
                     }
-                    selected.push(SelectedRecord {
-                        key: id.to_le_bytes(),
-                        entity,
-                        reference,
-                        generation,
+                    EntityId::Relationship(_) => {
+                        verify_record(payload, entity, catalog, document, resources)?
+                    }
+                };
+                let size = record
+                    .required_payloads()
+                    .iter()
+                    .try_fold(reference.len(), |total, payload| {
+                        total.checked_add(payload.len()).ok_or(TreeError::Work)
                     })?;
-                    bytes = next;
-                    full =
-                        selected.as_slice().len() == RELOCATION_LIMIT || bytes >= RELOCATION_BYTES;
-                    Ok(!full)
-                },
-            )?;
-        }
-        if full || !selected.as_slice().is_empty() {
-            return Ok(selected);
-        }
-        floor = packs
-            .last()
-            .copied()
-            .flatten()
-            .map_or(u64::MAX, |(serial, _)| serial);
+                let next = bytes.checked_add(size).ok_or(TreeError::Work)?;
+                // Admit an oversized first record alone so it cannot stall
+                // the oldest pack forever behind the soft byte limit.
+                if next > relocation_bytes && !selected.as_slice().is_empty() {
+                    full = true;
+                    return Ok(false);
+                }
+                selected.push(SelectedRecord {
+                    key: id.to_le_bytes(),
+                    entity,
+                    reference,
+                    generation,
+                })?;
+                bytes = next;
+                full = selected.as_slice().len() == RELOCATION_LIMIT || bytes >= relocation_bytes;
+                Ok(!full)
+            },
+        )?;
     }
     Ok(selected)
 }
 
 /// Same-call hints only: losing them cannot change reclamation authority.
-pub(crate) const PAGE_RELOCATION_LIMIT: usize = 256;
+pub(crate) const PAGE_RELOCATION_LIMIT: usize = 1024;
 #[derive(Clone, Copy)]
 pub(crate) struct PageRelocation {
     pub(crate) kind: TreeKind,
     pub(crate) reference: super::artifact::PhysicalRef,
 }
 
-pub(crate) fn page_relocation_floor(
-    source: &NativePreparationSource<'_, '_>,
+pub(crate) fn collect_drain_pages<'m>(
+    source: &NativePreparationSource<'_, 'm>,
     roots: GraphRoots,
-    manifests: &[RequiredRef],
+    drain: &[ArtifactId],
+    memory: &'m StorageMemory<'m>,
     resources: &mut TreeResources<'_>,
-) -> Result<u64, TreeError> {
-    let (packs, len) = oldest_packs(source, roots, manifests, 0, resources)?;
-    Ok(packs
-        .get(..len)
-        .and_then(|p| p.last())
-        .copied()
-        .flatten()
-        .map_or(0, |p| p.0))
+) -> Result<StorageBuffer<'m, PageRelocation>, TreeError> {
+    use super::tree::directory::{DirectoryTraceEvent, DirectoryTraceState};
+    let mut pages = StorageBuffer::new(memory, PAGE_RELOCATION_LIMIT)?;
+    for kind in [
+        TreeKind::Nodes,
+        TreeKind::Relationships,
+        TreeKind::KeyFences,
+        TreeKind::Labels,
+        TreeKind::RelationshipTypes,
+        TreeKind::OutRanges,
+        TreeKind::InRanges,
+        TreeKind::ObjectInventory,
+    ] {
+        let mut cursor = DirectoryTraceState::new(roots.directory(kind)?, resources)?;
+        loop {
+            match cursor.next(source, resources)? {
+                DirectoryTraceEvent::Reference(reference)
+                    if reference.kind == super::artifact::BlockKind::TreePage
+                        && drain.binary_search(&reference.artifact).is_ok() =>
+                {
+                    if pages.as_slice().len() == PAGE_RELOCATION_LIMIT {
+                        return Ok(pages);
+                    }
+                    pages.push(PageRelocation { kind, reference })?;
+                }
+                DirectoryTraceEvent::Done => break,
+                _ => {}
+            }
+        }
+    }
+    Ok(pages)
 }
 
 struct PageValues<'a, 'm, C> {
@@ -663,11 +741,13 @@ fn apply_replacements<'m, T: BlockSink, C: RecordCatalog<T>>(
     sink: &mut T,
     roots: &mut GraphRoots,
     pages: &[PageRelocation],
-    floor: u64,
+    drain: &[ArtifactId],
     context: RangeEditContext,
     selected: &[SelectedRecord],
     values: &[[u8; 48]],
     fences: &[FenceRelocation<'_>],
+    relocation_bytes: u64,
+    copied_bytes: &mut u64,
     catalog: &C,
     document: Option<&EmbeddingTower>,
     memory: &'m StorageMemory<'m>,
@@ -692,10 +772,6 @@ fn apply_replacements<'m, T: BlockSink, C: RecordCatalog<T>>(
             StorageBuffer::new(memory, PAGE_RELOCATION_LIMIT)?;
         for page in pages.iter().filter(|page| page.kind == kind) {
             resources.step(1)?;
-            let block = sink.resolve(page.reference, resources)?;
-            if block.identity().creation_serial > floor {
-                continue;
-            }
             // Descend the first child: an exclusive upper separator need not
             // itself be a live key, and the final child has no separator.
             let mut reference = page.reference;
@@ -747,7 +823,7 @@ fn apply_replacements<'m, T: BlockSink, C: RecordCatalog<T>>(
                     }
                 }
             };
-            // At most 256 hints: bounded insertion sort with fallible exact
+            // At most 1024 hints: bounded insertion sort with fallible exact
             // comparators and cancellation at every comparison. Deduplicate
             // branch/leaf hints that select the same path.
             let mut position = 0;
@@ -777,22 +853,39 @@ fn apply_replacements<'m, T: BlockSink, C: RecordCatalog<T>>(
             }
             let mut value = StorageBuffer::new(memory, entry.value().len())?;
             value.extend_from_slice(entry.value())?;
+            *copied_bytes = copied_bytes
+                .checked_add(u64::from(page.reference.length))
+                .ok_or(TreeError::Work)?;
             rows.push((key, value))?;
             rows.as_mut_slice()
                 .get_mut(position..)
                 .ok_or(TreeError::Memory)?
                 .rotate_right(1);
         }
-        let range = if matches!(kind, TreeKind::OutRanges | TreeKind::InRanges) {
-            consolidate_pending_range(sink, root, context, memory, resources)?
+        let ranges = if matches!(kind, TreeKind::OutRanges | TreeKind::InRanges) {
+            relocate_ranges(
+                sink,
+                root,
+                context,
+                drain,
+                relocation_bytes,
+                copied_bytes,
+                memory,
+                resources,
+            )?
         } else {
-            None
+            StorageBuffer::new(memory, 0)?
         };
-        let range_key = range
-            .map(|descriptor| descriptor.directory_key())
-            .transpose()?;
-        let mut range_value = [0; super::adjacency::RANGE_DESCRIPTOR_BYTES];
-        let mut ops = StorageBuffer::new(memory, RELOCATION_LIMIT + PAGE_RELOCATION_LIMIT + 1)?;
+        let mut range_rows = StorageBuffer::new(memory, ranges.as_slice().len())?;
+        for descriptor in ranges.as_slice() {
+            let mut value = [0; super::adjacency::RANGE_DESCRIPTOR_BYTES];
+            descriptor.encode(&mut value)?;
+            range_rows.push((descriptor.directory_key()?, value))?;
+        }
+        let mut ops = StorageBuffer::new(
+            memory,
+            RELOCATION_LIMIT + PAGE_RELOCATION_LIMIT + range_rows.as_slice().len(),
+        )?;
         if matches!(kind, TreeKind::Nodes | TreeKind::Relationships) {
             for (selected, value) in selected.iter().zip(values) {
                 resources.step(1)?;
@@ -812,15 +905,12 @@ fn apply_replacements<'m, T: BlockSink, C: RecordCatalog<T>>(
                 })?;
             }
         }
-        if let (Some(descriptor), Some(key)) = (range, range_key.as_ref()) {
-            descriptor.encode(&mut range_value)?;
-            ops.push(DirectoryOp::Insert {
-                key,
-                value: &range_value,
-            })?;
+        for (key, value) in range_rows.as_slice() {
+            ops.push(DirectoryOp::Insert { key, value })?;
+            replaced += 2;
         }
         if !ops.as_slice().is_empty() {
-            replaced += if range.is_some() { 2 } else { 1 };
+            replaced += 1;
         }
         for (key, value) in rows.as_slice() {
             resources.step(1)?;

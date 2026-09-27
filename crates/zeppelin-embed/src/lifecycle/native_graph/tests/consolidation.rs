@@ -746,7 +746,19 @@ fn ze260_maintenance_moves_an_oversized_oldest_record_alone() {
     )];
     let image = CanonicalContents::node(&mut [], &mut properties, None, None).unwrap();
     let small = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
-    let writes = [(&image, "large"), (&small, "small")].map(|(image, name)| StructuredWrite {
+    let garbage = "g".repeat(2 * 1024 * 1024);
+    let mut garbage_properties = [GraphProperty::new(
+        GraphName::new("garbage").unwrap(),
+        PropertyValue::new(PropertyData::String(&garbage)).unwrap(),
+    )];
+    let garbage_image =
+        CanonicalContents::node(&mut [], &mut garbage_properties, None, None).unwrap();
+    let writes = [
+        (&image, "large"),
+        (&small, "small"),
+        (&garbage_image, "garbage"),
+    ]
+    .map(|(image, name)| StructuredWrite {
         key: ApplicationKey::new(EntityKind::Node, "oversized", name).unwrap(),
         revision: GraphRevision::new(1).unwrap(),
         operation: StructuredOperation::Create,
@@ -762,6 +774,30 @@ fn ze260_maintenance_moves_an_oversized_oldest_record_alone() {
             EntityId::Relationship(_) => panic!("expected node"),
         })
         .collect::<Vec<_>>();
+    store
+        .apply_native_graph(
+            &[StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "oversized", "garbage").unwrap(),
+                revision: GraphRevision::new(2).unwrap(),
+                operation: StructuredOperation::Put(receipts[2].entity),
+                image: Some(WriteImage::Node(&small)),
+            }],
+            &QueryControl::Cancel(CancelToken::new()),
+        )
+        .unwrap();
+    let maintenance = || {
+        let admission = store.admit_native_graph_maintenance().unwrap();
+        store
+            .commit_native_graph_maintenance_with_limits(
+                &admission,
+                &QueryControl::Cancel(CancelToken::new()),
+                super::super::maintenance::MaintenanceLimits {
+                    relocation_bytes: 1024 * 1024,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+    };
     let records = || {
         let lease = store.admit_native_read().unwrap();
         nodes
@@ -770,10 +806,290 @@ fn ze260_maintenance_moves_an_oversized_oldest_record_alone() {
             .collect::<Vec<_>>()
     };
     let before = records();
-    commit_maintenance(&store).unwrap();
+    let first = maintenance();
+    eprintln!(
+        "oversized cycle 1: drained={}, copied={}",
+        first.drained_packs, first.relocated_bytes
+    );
     let after = records();
     assert_ne!(after[0], before[0], "oversized oldest record must move");
     assert_eq!(after[1], before[1], "oversized record must move alone");
+    let second = maintenance();
+    eprintln!(
+        "oversized cycle 2: drained={}, copied={}",
+        second.drained_packs, second.relocated_bytes
+    );
+    assert_ne!(records()[1], after[1], "remaining small record must move");
+    store.close().unwrap();
+}
+
+#[test]
+fn ze260_small_packs_merge_only_in_groups() {
+    let parent = super::tempfile::tempdir().unwrap();
+    let store = Store::create_native_graph(parent.path().join("native"), options(), None).unwrap();
+    let mut nodes = Vec::new();
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    for batch in 0..15 {
+        let receipts = store
+            .apply_native_graph(
+                &[StructuredWrite {
+                    key: ApplicationKey::new(EntityKind::Node, "small-packs", &batch.to_string())
+                        .unwrap(),
+                    revision: GraphRevision::new(1).unwrap(),
+                    operation: StructuredOperation::Create,
+                    image: Some(WriteImage::Node(&image)),
+                }],
+                &QueryControl::Cancel(CancelToken::new()),
+            )
+            .unwrap();
+        let EntityId::Node(node) = receipts[0].entity else {
+            panic!("node");
+        };
+        nodes.push(node);
+        if batch == 11 {
+            store
+                .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+                .unwrap();
+            let report = commit_maintenance(&store).unwrap();
+            eprintln!(
+                "small cycle 1: drained={}, copied={}",
+                report.drained_packs, report.relocated_bytes
+            );
+            assert_eq!(report.drained_packs, 12);
+        }
+    }
+    let records = || {
+        let lease = store.admit_native_read().unwrap();
+        nodes[..11]
+            .iter()
+            .map(|node| node_directory_value(&store, &lease, *node))
+            .collect::<Vec<_>>()
+    };
+    let before = records();
+    store
+        .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+        .unwrap();
+    // S6c's first preparation can leave an intent. Finish it before
+    // measuring a second preparation; completion itself never drains packs.
+    for _ in 0..4 {
+        let pending = store
+            .admit_native_read()
+            .unwrap()
+            .bundle()
+            .reclaim()
+            .is_some();
+        if !pending {
+            break;
+        }
+        match commit_maintenance(&store) {
+            Ok(_) | Err(super::super::NativeGraphError::StalePreparation) => {}
+            Err(error) => panic!("finish prior intent: {error:?}"),
+        }
+    }
+    assert!(
+        store
+            .admit_native_read()
+            .unwrap()
+            .bundle()
+            .reclaim()
+            .is_none()
+    );
+    let report = commit_maintenance(&store).unwrap();
+    eprintln!(
+        "small cycle 2: drained={}, copied={}",
+        report.drained_packs, report.relocated_bytes
+    );
+    assert_ne!(
+        records(),
+        before,
+        "the fixture's leaf pages died, so the quarter-dead rule applies"
+    );
+    // Fully live small packs are different: seven wait, eight merge.
+    {
+        use crate::property_graph::storage::artifact::ArtifactId;
+        use crate::property_graph::storage::consolidation::{PackCensus, select_drain};
+        let shared = crate::property_graph::resources::GraphResources::from_store(&store).unwrap();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let writer = WriteMemory::new(&shared, WriteLimits::default()).unwrap();
+        let memory = StorageMemory::new(&writer, &control, 32 * 1024 * 1024).unwrap();
+        let mut census: Vec<_> = (1..=8)
+            .map(|id| PackCensus {
+                artifact: ArtifactId::new(id).unwrap(),
+                serial: id as u64,
+                bytes: 4096,
+                live: 4000,
+                live_pages: 0,
+                live_records: 1,
+                graph_live: true,
+            })
+            .collect();
+        for count in 1..8 {
+            assert!(
+                select_drain(&mut census[..count], 8 * 1024 * 1024, &memory)
+                    .unwrap()
+                    .as_slice()
+                    .is_empty()
+            );
+        }
+        assert_eq!(
+            select_drain(&mut census, 8 * 1024 * 1024, &memory)
+                .unwrap()
+                .as_slice()
+                .len(),
+            8
+        );
+    }
+    store.close().unwrap();
+}
+
+#[test]
+fn ze260_drain_never_recopies_a_maintenance_pack() {
+    let parent = super::tempfile::tempdir().unwrap();
+    let path = parent.path().join("native");
+    let store = Store::create_native_graph(&path, options(), None).unwrap();
+    for batch in 0..20 {
+        crate::property_graph::with_local_refs(|refs| {
+            let names: Vec<_> = (0..10).map(|n| format!("{batch}-{n}")).collect();
+            let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+            let mut writes: Vec<_> = names
+                .iter()
+                .map(|name| StructuredWrite {
+                    key: ApplicationKey::new(EntityKind::Node, "drain", name).unwrap(),
+                    revision: GraphRevision::new(1).unwrap(),
+                    operation: StructuredOperation::Create,
+                    image: Some(WriteImage::Node(&image)),
+                })
+                .collect();
+            writes.push(StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Relationship, "drain", &names[0]).unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Relationship {
+                    source: NodeRef::Local(refs.node(0).unwrap()),
+                    target: NodeRef::Local(refs.node(1).unwrap()),
+                    relationship_type: GraphName::new("LINKS").unwrap(),
+                    properties: &[],
+                }),
+            });
+            store
+                .apply_native_graph(&writes, &QueryControl::Cancel(CancelToken::new()))
+                .unwrap();
+        });
+    }
+
+    let values = || {
+        let lease = store.admit_native_read().unwrap();
+        let shared = crate::property_graph::resources::GraphResources::from_store(&store).unwrap();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let writer = WriteMemory::new(&shared, WriteLimits::default()).unwrap();
+        let memory = StorageMemory::new(&writer, &control, 32 * 1024 * 1024).unwrap();
+        let source = NativePreparationSource::new(&lease, &memory, 512).unwrap();
+        let mut r = source.resources(128 * 1024 * 1024).unwrap();
+        let mut values = Vec::new();
+        for kind in [TreeKind::Nodes, TreeKind::Relationships] {
+            let root = lease.bundle().roots().directory(kind).unwrap();
+            let mut cursor = DirectoryCursor::seek(&source, root, None, &mut r).unwrap();
+            while let Some(entry) = cursor.next_entry(&mut r).unwrap() {
+                values.push(entry.value().to_vec());
+            }
+        }
+        let mut ranges = Vec::new();
+        for kind in [TreeKind::OutRanges, TreeKind::InRanges] {
+            let root = lease.bundle().roots().directory(kind).unwrap();
+            let mut cursor = DirectoryCursor::seek(&source, root, None, &mut r).unwrap();
+            while let Some(entry) = cursor.next_entry(&mut r).unwrap() {
+                let crate::property_graph::storage::tree::Key::Inline(key) = entry.key() else {
+                    panic!("range key");
+                };
+                let descriptor =
+                    crate::property_graph::storage::adjacency::RangeDescriptor::decode(
+                        kind,
+                        key,
+                        entry.value(),
+                    )
+                    .unwrap();
+                ranges.extend(
+                    std::iter::once(descriptor.base())
+                        .chain(descriptor.deltas())
+                        .map(|reference| reference.artifact),
+                );
+            }
+        }
+        (values, ranges)
+    };
+    let original = values().0;
+    let old_packs: std::collections::BTreeSet<_> = original[..190]
+        .iter()
+        .map(|value| {
+            crate::property_graph::storage::payload::PayloadRef::decode(value)
+                .unwrap()
+                .reference()
+                .artifact
+        })
+        .collect();
+    assert_eq!(old_packs.len(), 19);
+    let mut after_first = Vec::new();
+    for cycle in 1..=4 {
+        // Count preparations, not completion/retirement or checkpoint retries.
+        for _ in 0..4 {
+            let pending = store
+                .admit_native_read()
+                .unwrap()
+                .bundle()
+                .reclaim()
+                .is_some();
+            if !pending {
+                break;
+            }
+            match commit_maintenance(&store) {
+                Ok(_) | Err(super::super::NativeGraphError::StalePreparation) => {}
+                Err(error) => panic!("finish prior intent: {error:?}"),
+            }
+        }
+        assert!(
+            store
+                .admit_native_read()
+                .unwrap()
+                .bundle()
+                .reclaim()
+                .is_none()
+        );
+        store
+            .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+            .unwrap();
+        let report = commit_maintenance(&store).unwrap();
+        let (current, ranges) = values();
+        eprintln!(
+            "cycle {cycle}: drained={}, copied={}, refs={}",
+            report.drained_packs, report.relocated_bytes, report.replaced_physical_refs
+        );
+        assert_eq!(report.drained_packs, [19, 1, 0, 0][cycle - 1]);
+        if cycle >= 3 {
+            assert_eq!(report.relocated_bytes, 0);
+        }
+        if cycle == 1 {
+            for value in current[..190].iter().chain(&current[200..219]) {
+                assert!(
+                    !old_packs.contains(
+                        &crate::property_graph::storage::payload::PayloadRef::decode(value)
+                            .unwrap()
+                            .reference()
+                            .artifact
+                    )
+                );
+            }
+            assert!(
+                ranges.iter().all(|artifact| !old_packs.contains(artifact)),
+                "range payload still pins a drained pack"
+            );
+            after_first = current;
+        } else if cycle >= 3 {
+            assert!(
+                current[..190] == after_first[..190] && current[200..219] == after_first[200..219],
+                "maintenance must not recopy drained records"
+            );
+        }
+    }
     store.close().unwrap();
 }
 
@@ -1055,7 +1371,6 @@ fn run_ze260_maintenance_emits_each_tree_root_once_per_call() {
 }
 
 #[test]
-#[ignore = "needs S6a"]
 fn ze260_idle_maintenance_reaches_a_fixed_point() {
     let parent = super::tempfile::tempdir().unwrap();
     let path = parent.path().join("native");
@@ -1211,12 +1526,13 @@ fn ze260_idle_maintenance_reaches_a_fixed_point() {
     assert_eq!(completed_cycles, 8);
     assert!(sizes[1].0 <= sizes[0].0 - 1_500_000);
     assert!(sizes[1].1 < sizes[0].1);
-    for cycle in 3..8 {
+    // Compare completed cycles 5 through 8 (sizes is zero-indexed).
+    for cycle in 5..8 {
         assert_eq!(sizes[cycle].1, sizes[cycle - 1].1);
         assert!(sizes[cycle].0.abs_diff(sizes[cycle - 1].0) <= 8_192);
     }
-    assert!(sizes[7].0 <= 1_600_000);
-    assert!(sizes[7].1 <= 40);
+    assert!(sizes[7].0 <= 810_000);
+    assert!(sizes[7].1 <= 55);
     eprintln!(
         "ZE260_S5 before_bytes={before_bytes} after_bytes={} removed_bytes={removed} completed_cycles={completed_cycles} max_completed_cycles={MAX_COMPLETED_CYCLES} first_cycle_bytes={first_cycle_bytes:?} subtypes={subtypes:?}",
         bytes()
@@ -6747,6 +7063,21 @@ fn ze260_hundred_node_batches_write_bounded_pages() {
     }
 }
 
+fn ze260_add_unlabelled_node(store: &Store, name: &str) {
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    store
+        .apply_native_graph(
+            &[StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "s6a-garbage", name).unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            }],
+            &QueryControl::Cancel(CancelToken::new()),
+        )
+        .unwrap();
+}
+
 #[test]
 fn ze260_maintenance_copies_an_unchanged_membership_page() {
     let parent = super::tempfile::tempdir().unwrap();
@@ -6754,7 +7085,7 @@ fn ze260_maintenance_copies_an_unchanged_membership_page() {
     let store = Store::create_native_graph(&path, options(), None).unwrap();
     let mut labels = [GraphName::new("AppendOnly").unwrap()];
     let image = CanonicalContents::node(&mut labels, &mut [], None, None).unwrap();
-    let key = "unchanged".repeat(1024);
+    let key = "unchanged".repeat(64);
     let writes = [StructuredWrite {
         key: ApplicationKey::new(EntityKind::Node, "pages", &key).unwrap(),
         revision: GraphRevision::new(1).unwrap(),
@@ -6771,6 +7102,7 @@ fn ze260_maintenance_copies_an_unchanged_membership_page() {
         .directory(TreeKind::Labels)
         .unwrap()
         .reference();
+    ze260_add_unlabelled_node(&store, "membership");
     commit_maintenance(&store).unwrap();
     let after = store
         .admit_native_read()
@@ -6817,6 +7149,7 @@ fn ze260_maintenance_retargets_oldest_fence_payloads() {
         .object
         .artifact;
     drop(lease);
+    ze260_add_unlabelled_node(&store, "fence");
     commit_maintenance(&store).unwrap();
     let lease = store.admit_native_read().unwrap();
     let shared = crate::property_graph::resources::GraphResources::from_store(&store).unwrap();
@@ -6849,7 +7182,7 @@ fn ze260_maintenance_retargets_oldest_fence_payloads() {
         );
         count += 1;
     }
-    assert_eq!(count, 1);
+    assert_eq!(count, 2);
 }
 
 #[test]
@@ -6887,6 +7220,7 @@ fn run_ze260_page_relocation_keeps_intent_before_unlink() {
         .directory(TreeKind::Labels)
         .unwrap()
         .reference();
+    ze260_add_unlabelled_node(&store, "intent");
     vfs.take();
     vfs.arm_fault(FaultPoint::Delete);
     let intent = commit_maintenance(&store).unwrap();

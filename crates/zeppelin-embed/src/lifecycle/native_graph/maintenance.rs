@@ -385,7 +385,7 @@ fn select_rooted_candidates<'m>(
 struct PreparedReclaimProof<'m> {
     pending_page_relocations:
         StorageBuffer<'m, crate::property_graph::storage::consolidation::PageRelocation>,
-    page_relocation_floor: u64,
+    drain: StorageBuffer<'m, crate::property_graph::storage::artifact::ArtifactId>,
     /// Complete unregistered objects this commit roots as bookkeeping.
     adoptions: StorageBuffer<'m, InventoryChange>,
     durable: spill::PreparedDurableSpill,
@@ -710,6 +710,7 @@ pub(super) fn active_reclaim_subtype(
 }
 
 fn prepare_durable_proof<'m>(
+    relocation_bytes: u64,
     store: &crate::lifecycle::Store,
     admission: &NativeMaintenanceAdmission,
     storage: &'m StorageMemory<'m>,
@@ -755,13 +756,9 @@ fn prepare_durable_proof<'m>(
         crate::property_graph::storage::reclaim::SPILL_CHUNK_LIMIT,
     )?;
 
-    let mut pending_page_relocations = StorageBuffer::new(
-        storage,
-        crate::property_graph::storage::consolidation::PAGE_RELOCATION_LIMIT,
-    )?;
-    let page_relocation_floor = {
+    let mut census = {
         let source = NativePreparationSource::new(&admission.lease, storage, 64)?;
-        crate::property_graph::storage::consolidation::page_relocation_floor(
+        crate::property_graph::storage::consolidation::pack_census(
             &source,
             admitted.roots(),
             admitted.prepared_inventories(),
@@ -857,8 +854,7 @@ fn prepare_durable_proof<'m>(
                 &mut range_scratch,
                 &mut mark,
                 &mut writer,
-                Arc::ptr_eq(bundle, admitted)
-                    .then_some((&mut pending_page_relocations, page_relocation_floor)),
+                Arc::ptr_eq(bundle, admitted).then_some(census.as_mut_slice()),
                 resources,
             ) {
                 return Err(spill_error(&writer, error));
@@ -1123,6 +1119,20 @@ fn prepare_durable_proof<'m>(
         Ok(value) => value,
         Err(error) => return Err(spill_error(&writer, error)),
     } {}
+    let drain = crate::property_graph::storage::consolidation::select_drain(
+        census.as_mut_slice(),
+        relocation_bytes,
+        storage,
+    )?;
+    let source = NativePreparationSource::new_scoped(&admission.lease, storage, 1)?;
+    let pending_page_relocations =
+        crate::property_graph::storage::consolidation::collect_drain_pages(
+            &source,
+            admitted.roots(),
+            drain.as_slice(),
+            storage,
+            resources,
+        )?;
     let mut candidates =
         select_rooted_candidates(&admission.lease, storage, mark, &writer, resources)?;
     // Both classes of unreachable file are selected before the intent is
@@ -1187,7 +1197,7 @@ fn prepare_durable_proof<'m>(
     )?;
     Ok(PreparedReclaimProof {
         pending_page_relocations,
-        page_relocation_floor,
+        drain,
         adoptions,
         durable,
         candidates,
@@ -1692,6 +1702,8 @@ fn resume_pending_reclaim(
         })
         .ok_or(NativeGraphError::IdentityExhausted)?;
     Ok(NativeMaintenanceReport {
+        relocated_bytes: 0,
+        drained_packs: 0,
         replaced_physical_refs: 0,
         new_pack_bytes,
         generation,
@@ -1920,6 +1932,8 @@ fn retire_completed_reclaim(
     let cleared_bundle = Arc::clone(cleared.bundle());
     super::write::checkpoint_current(store, writer, &cleared_bundle, &shared, control)?;
     Ok(NativeMaintenanceReport {
+        relocated_bytes: 0,
+        drained_packs: 0,
         replaced_physical_refs: 0,
         new_pack_bytes,
         generation,
@@ -1932,6 +1946,8 @@ fn retire_completed_reclaim(
 /// Observable result of one bounded native physical-maintenance commit.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NativeMaintenanceReport {
+    pub(crate) relocated_bytes: u64,
+    pub(crate) drained_packs: u32,
     pub(crate) replaced_physical_refs: u64,
     pub(crate) new_pack_bytes: u64,
     pub(crate) generation: GraphGeneration,
@@ -1945,6 +1961,7 @@ pub(crate) struct NativeMaintenanceReport {
 /// real path.
 #[derive(Clone, Copy)]
 pub(crate) struct MaintenanceLimits {
+    pub(crate) relocation_bytes: u64,
     pub(crate) inventory_additions: usize,
     pub(crate) storage_bytes: usize,
     pub(crate) work: u64,
@@ -1953,6 +1970,7 @@ pub(crate) struct MaintenanceLimits {
 impl Default for MaintenanceLimits {
     fn default() -> Self {
         Self {
+            relocation_bytes: crate::property_graph::storage::consolidation::RELOCATION_BYTES,
             inventory_additions: INVENTORY_FOLD_ADDITION_LIMIT,
             storage_bytes: 32 * 1024 * 1024,
             work: crate::property_graph::storage::reclaim::MARK_WORK_LIMIT,
@@ -1993,6 +2011,8 @@ pub(super) fn commit_with_limits(
         // exists to move, fold or reclaim. Publishing a Maintenance envelope
         // over the empty base would only burn a generation.
         return Ok(NativeMaintenanceReport {
+            relocated_bytes: 0,
+            drained_packs: 0,
             replaced_physical_refs: 0,
             new_pack_bytes: 0,
             generation: admitted.base().generation,
@@ -2024,7 +2044,14 @@ pub(super) fn commit_with_limits(
     };
     #[cfg(any(test, feature = "test-support"))]
     let work_before_proof = resources.work();
-    let proof = prepare_durable_proof(store, admission, &storage, control, &mut resources)?;
+    let proof = prepare_durable_proof(
+        limits.relocation_bytes,
+        store,
+        admission,
+        &storage,
+        control,
+        &mut resources,
+    )?;
     #[cfg(any(test, feature = "test-support"))]
     store.native_graph.proof_work.store(
         resources.work().saturating_sub(work_before_proof),
@@ -2089,6 +2116,8 @@ pub(super) fn commit_with_limits(
         &storage,
         &mut resources,
     )?;
+    let drained_packs = u32::try_from(proof.drain.as_slice().len())
+        .map_err(|_| NativeGraphError::IdentityExhausted)?;
     let consolidated = prepare_one_replacement(
         &source,
         &mut objects,
@@ -2096,10 +2125,10 @@ pub(super) fn commit_with_limits(
         admitted.sequence(),
         &catalog,
         admitted.document(),
-        admitted.prepared_inventories(),
+        proof.drain.as_slice(),
+        limits.relocation_bytes,
         folded_inventory,
         proof.pending_page_relocations.as_slice(),
-        proof.page_relocation_floor,
         reclaim_pending.as_slice(),
         proof.adoptions.as_slice(),
         &storage,
@@ -2185,7 +2214,7 @@ pub(super) fn commit_with_limits(
     let mut commit_artifacts = StorageBuffer::new(&storage, artifact_count)?;
     let PreparedReclaimProof {
         pending_page_relocations: _,
-        page_relocation_floor: _,
+        drain: _,
         adoptions: _adoptions,
         durable,
         candidates,
@@ -2246,6 +2275,8 @@ pub(super) fn commit_with_limits(
     }
     let _ = protect_and_commit(store, writer, transition, control, false)?;
     Ok(NativeMaintenanceReport {
+        relocated_bytes: consolidated.relocated_bytes(),
+        drained_packs,
         replaced_physical_refs: consolidated.replaced_physical_refs(),
         new_pack_bytes,
         generation,

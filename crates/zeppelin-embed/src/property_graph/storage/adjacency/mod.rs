@@ -12,7 +12,7 @@ pub use codec::{encode_base, encode_delta};
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use merge::exact_split_fixture;
 pub use merge::{MERGE_STATE_BYTES, Merged, Partition, merge};
-pub(crate) use prepare::consolidate_pending_range;
+pub(crate) use prepare::relocate_ranges;
 pub use prepare::{NativeGraphBase, NativeGraphCandidate, prepare_native_graph};
 pub(crate) use range::validate_descriptor;
 pub use range::{
