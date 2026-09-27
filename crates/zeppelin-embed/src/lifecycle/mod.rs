@@ -72,8 +72,8 @@ use self::close::BackgroundThread;
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Clone)]
 pub struct StoreTestDependencies {
-    vfs: Arc<dyn crate::vfs::Vfs>,
-    clock: Arc<dyn MonotonicClock>,
+    pub(crate) vfs: Arc<dyn crate::vfs::Vfs>,
+    pub(crate) clock: Arc<dyn MonotonicClock>,
     hybrid_leg_fault: Option<HybridLegTestFault>,
     storage_fault_controller: Option<StorageFaultController>,
     ingest_retention_fault_controller: Option<crate::ingest::IngestRetentionFaultController>,

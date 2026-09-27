@@ -17,13 +17,17 @@ use zeppelin_embed::property_graph::query::completed::{
 use zeppelin_embed::property_graph::query::plan::ParameterBinding;
 use zeppelin_embed_cypher::{CompileLimits, ErrorKind, StatementError, execute};
 
-pub const REQUIRED_COVERAGE: [&str; 6] = [
+pub const REQUIRED_COVERAGE: [&str; 10] = [
     "property-graph.cypher-entry.no-return.commit",
     "property-graph.cypher-entry.no-return-fault.fire",
     "property-graph.cypher-entry.profile-reject.fire",
     "property-graph.cypher-entry.reopen-read",
     "property-graph.cypher-entry.oracle.can-fire",
     "property-graph.cypher-entry.same-seed-control",
+    "property-graph.cypher-entry.delete-connected.fire",
+    "property-graph.cypher-entry.deleted-result.fire",
+    "property-graph.cypher-entry.list-type.fire",
+    "property-graph.cypher-entry.limit0-write.commit",
 ];
 
 /// Everything one seed observed, compared across two runs of the same seed.
@@ -31,10 +35,14 @@ pub const REQUIRED_COVERAGE: [&str; 6] = [
 struct Report {
     /// Values read back, in explicit ORDER BY order, before and after reopen.
     observations: Vec<i64>,
-    /// Generation after each step: setup, fault, reject, commit, reopen.
+    /// Generation after setup, each refusal, LIMIT 0, clean commit and reopen.
     generations: Vec<u64>,
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "preserve the typed public statement error in this test adapter"
+)]
 fn run(
     store: &Store,
     text: &str,
@@ -99,8 +107,12 @@ fn once(seed: u64, run_index: u32) -> Result<Report, String> {
         let store = Store::create_graph_store(&path, options()).map_err(|e| e.to_string())?;
         let mut generations = Vec::new();
 
-        let setup = run(&store, &format!("CREATE (:P {{v: {base}}})"), &[])
-            .map_err(|error| format!("cypher entry setup: {error}"))?;
+        let setup = run(
+            &store,
+            &format!("CREATE (:P {{v: {base}, s: 'x'}})-[:R]->(:Guard), (:D {{v: {base}}})"),
+            &[],
+        )
+        .map_err(|error| format!("cypher entry setup: {error}"))?;
         committed_no_rows(&setup)?;
         generations.push(read(&store)?.1);
 
@@ -139,6 +151,56 @@ fn once(seed: u64, run_index: u32) -> Result<Report, String> {
         }
         generations.push(read(&store)?.1);
 
+        // Seed-owned fixtures distinguish incident-edge refusal from a stale
+        // result on an isolated node; mixed types follow a staged assignment.
+        for (text, kind) in [
+            ("MATCH (n:P) DELETE n", GraphQueryErrorKind::Constraint),
+            (
+                "MATCH (n:D), (m:D) DELETE n RETURN m",
+                GraphQueryErrorKind::Constraint,
+            ),
+            (
+                "MATCH (n:P) SET n.v = n.v + 1, n.l = [n.v, n.s]",
+                GraphQueryErrorKind::Expression,
+            ),
+        ] {
+            let before = read(&store)?;
+            match run(&store, text, &[]) {
+                Err(StatementError::Query(error))
+                    if error.kind() == kind && error.nothing_committed() => {}
+                Err(error) => return Err(format!("cypher write refusal {text}: {error}")),
+                Ok(_) => {
+                    return Err(format!(
+                        "cypher write refusal unexpectedly executed: {text}"
+                    ));
+                }
+            }
+            let after = read(&store)?;
+            if after != before {
+                return Err(format!("cypher write refusal changed state: {text}"));
+            }
+            generations.push(after.1);
+        }
+        let before_limit = read(&store)?.1;
+        let limited = run(
+            &store,
+            &format!("CREATE (:P {{v: {}}}) RETURN 1 LIMIT 0", base + 2),
+            &[],
+        )
+        .map_err(|error| format!("cypher LIMIT 0 write: {error}"))?;
+        if limited.metadata().rows != 0
+            || !matches!(limited.metadata().outcome, Outcome::Committed { .. })
+        {
+            return Err(String::from("cypher LIMIT 0 skipped its write"));
+        }
+        let (limit_values, limit_generation) = read(&store)?;
+        if limit_values != [base, base + 2] || limit_generation != before_limit + 1 {
+            return Err(String::from(
+                "cypher LIMIT 0 write did not publish exactly once",
+            ));
+        }
+        generations.push(limit_generation);
+
         // The same statement with a nonzero divisor is the clean control.
         let clean = [
             ParameterBinding {
@@ -174,8 +236,17 @@ fn once(seed: u64, run_index: u32) -> Result<Report, String> {
 pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
     let report = once(seed, 0)?;
     let base = i64::try_from(seed % 1000).map_err(|error| error.to_string())? * 10;
-    // Independent oracle: the clean statement adds base+1 twice.
-    let expected = vec![base, base + 1, base + 1, base, base + 1, base + 1];
+    // Independent oracle: LIMIT 0 adds base+2, then clean adds base+1 twice.
+    let expected = vec![
+        base,
+        base + 1,
+        base + 1,
+        base + 2,
+        base,
+        base + 1,
+        base + 1,
+        base + 2,
+    ];
     if report.observations != expected {
         return Err(format!(
             "cypher entry oracle mismatch: {:?}",
@@ -184,10 +255,27 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
     }
     // Refusals publish nothing; the clean write publishes exactly once and
     // reopen preserves it.
-    let [setup, fault, reject, commit, reopen] = report.generations[..] else {
+    let [
+        setup,
+        fault,
+        reject,
+        connected,
+        deleted,
+        list,
+        limit,
+        commit,
+        reopen,
+    ] = report.generations[..]
+    else {
         return Err(String::from("cypher entry generation count mismatch"));
     };
-    if fault != setup || reject != setup || commit != setup + 1 || reopen != commit {
+    if [fault, reject, connected, deleted, list]
+        .iter()
+        .any(|value| *value != setup)
+        || limit != setup + 1
+        || commit != limit + 1
+        || reopen != commit
+    {
         return Err(format!("cypher entry generations {:?}", report.generations));
     }
     let mut perturbed = report.observations.clone();

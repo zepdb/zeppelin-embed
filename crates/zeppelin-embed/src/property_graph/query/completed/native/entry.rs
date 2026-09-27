@@ -467,6 +467,41 @@ impl Store {
         Ok(Self::create_native_graph(path, options, None)?)
     }
 
+    /// Creates a native graph store using the supplied test filesystem and clock.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn create_graph_store_with_test_dependencies(
+        path: impl AsRef<std::path::Path>,
+        options: crate::lifecycle::OpenOptions,
+        dependencies: crate::lifecycle::StoreTestDependencies,
+    ) -> Result<Self, GraphQueryError> {
+        Ok(Self::create_native_graph_with_infrastructure(
+            path,
+            options,
+            None,
+            dependencies.vfs,
+            dependencies.clock,
+            &mut crate::property_graph::storage::allocation::OsEntropy,
+        )?)
+    }
+
+    /// Opens a native graph store using the supplied test filesystem and clock.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn open_graph_store_with_test_dependencies(
+        path: impl AsRef<std::path::Path>,
+        options: crate::lifecycle::OpenOptions,
+        dependencies: crate::lifecycle::StoreTestDependencies,
+    ) -> Result<Self, GraphQueryError> {
+        Ok(Self::open_native_graph_with_infrastructure(
+            path,
+            options,
+            None,
+            dependencies.vfs,
+            dependencies.clock,
+        )?)
+    }
+
     /// Opens an existing native graph store with no document embedding tower,
     /// for tests outside this crate (see [`Store::create_graph_store`]).
     #[cfg(feature = "test-support")]

@@ -1023,6 +1023,17 @@ Its result has zero columns and zero rows and its outcome is Committed or
 NoOp; the driver still pulls and charges every driven row, so row/payload
 capacities apply to it exactly as to a returning statement.
 
+### ZE-57 write conformance
+
+The Cypher write harness compares public snapshots before/after execution and
+again after reopen. Its eight TCK side-effect counts use entity identity,
+global live label-name sets, and (entity, property key, typed value) tuples;
+these are tooling-derived counts, not a production counter API. NoOp and
+refused writes keep the generation unchanged. `ListKind::Empty` appears only
+inside copied entities for canonical stored empty lists; projected query lists
+use their query representation. Local extensions cover list refusal, deleted
+results, default-budget atomicity, indeterminate recovery and mixed revisions.
+
 ## ZE-218 additive schema evolution
 
 - A declared schema reconciles with the manifest schema by column id through
