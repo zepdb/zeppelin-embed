@@ -23,6 +23,8 @@ const GRAPH_ERRORS: &[(i32, &str)] = &[
     (53, "ZE_ERR_DUPLICATE_TARGET"),
     (54, "ZE_ERR_IDENTITY_OVERFLOW"),
     (55, "ZE_ERR_REVISION_CONFLICT"),
+    (56, "ZE_ERR_FORMAT_TOO_NEW"),
+    (57, "ZE_ERR_CASCADE_CYCLE"),
 ];
 
 #[test]
@@ -31,7 +33,7 @@ fn appended_graph_error_names_are_distinct_and_stable() {
         let actual = unsafe { std::ffi::CStr::from_ptr(ze_error_code_name(code)) };
         assert_eq!(actual.to_str().unwrap(), expected);
     }
-    for unknown in [-1, 56, i32::MAX] {
+    for unknown in [-1, 58, i32::MAX] {
         let actual = unsafe { std::ffi::CStr::from_ptr(ze_error_code_name(unknown)) };
         assert_eq!(actual.to_str().unwrap(), "ZE_ERR_UNKNOWN");
     }
