@@ -10,9 +10,23 @@ export interface OpenOptions {
    * tail an earlier session left unsealed, and again before the write that
    * follows this many written documents (upserted, ingested or deleted ids)
    * since the last seal. Smaller values keep each write cheaper; larger values
-   * make fewer sealed segments. Needs a writable store.
+   * make fewer sealed segments. Disabled when omitted; must be a positive safe
+   * integer. Counts documents, not calls or bytes; a batch can overshoot the
+   * threshold. Needs a writable store. Combine with autoMerge for consolidation.
    */
   readonly autoSealRows?: number;
+  /**
+   * Default false. When true, seal and merge once at open, then merge after
+   * every automatic or explicit seal. Pair with autoSealRows for maintenance
+   * during writes without application calls. Requires a writable store.
+   * Synchronous: blocks the caller; errors propagate before the pending write.
+   * Native merge requires at least two compatible small scan segments and
+   * repeats batches of at most 16 inputs / 8 MiB. Large and graph segments
+   * remain separate; this is not a retention policy or a total-store size cap.
+   * An explicit seal returns the final merge generation. A failure may follow
+   * a committed seal or merge batch; completed maintenance is not rolled back.
+   */
+  readonly autoMerge?: boolean;
 }
 
 export interface SealReport {
@@ -706,8 +720,8 @@ export declare class Store {
    * Merge small sealed scan segments during application idle time. Synchronous:
    * blocks writers, repeats atomic batches of at most 16 inputs and 8 MiB of
    * input files. Decoded working memory is larger than the input-byte bound.
-   * Large and graph segments remain separate. Call periodically alongside
-   * autoSealRows to avoid accumulating small segments and slow reopen queries.
+   * Large and graph segments remain separate. Enable autoMerge alongside
+   * autoSealRows to run this automatically after each seal.
    * Active writes and WAL are unchanged; call seal() first to include them.
    * Returns the final generation, unchanged if no compatible batch fits.
    * Requires a writable store. A failure may follow completed atomic batches.

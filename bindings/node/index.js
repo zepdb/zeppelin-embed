@@ -170,6 +170,18 @@ function autoSealRowsOption(options) {
   return rows;
 }
 
+function autoMergeOption(options) {
+  const enabled = options?.autoMerge;
+  if (enabled === undefined) return false;
+  if (typeof enabled !== 'boolean') {
+    throw new TypeError('autoMerge must be a boolean');
+  }
+  if (enabled && options.readOnly === true) {
+    throw new RangeError('autoMerge needs a writable store; readOnly is true');
+  }
+  return enabled;
+}
+
 /**
  * Attaches a freshly opened native handle and applies the auto-seal policy.
  *
@@ -179,11 +191,12 @@ function autoSealRowsOption(options) {
  * rather than after it means an error always reports a write that did not
  * happen, never one that did.
  */
-function attach(store, open, autoSealRows) {
+function attach(store, open, autoSealRows, autoMerge) {
   store._native = callNative(open);
   store._autoSealRows = autoSealRows;
+  store._autoMerge = autoMerge;
   store._unsealedWrites = 0;
-  if (autoSealRows > 0) {
+  if (autoSealRows > 0 || autoMerge) {
     try {
       store.seal();
     } catch (error) {
@@ -204,6 +217,7 @@ class Store {
       this,
       () => new binding.NativeStore(storePath, options),
       autoSealRowsOption(options),
+      autoMergeOption(options),
     );
   }
 
@@ -309,8 +323,9 @@ class Store {
    */
   seal() {
     const report = callNative(() => this._native.seal());
+    const finalReport = this._autoMerge ? this.merge() : report;
     this._unsealedWrites = 0;
-    return report;
+    return finalReport;
   }
 
   /** Merge small sealed segments synchronously during application idle time. */
@@ -395,6 +410,7 @@ function openNamespace(root, name, spec, options = {}) {
     Object.create(Store.prototype),
     () => new binding.NativeStore(root, options, name, spec),
     autoSealRowsOption(options),
+    autoMergeOption(options),
   );
 }
 

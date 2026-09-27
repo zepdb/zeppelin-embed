@@ -169,6 +169,7 @@ application is idle, or let the store do it with `autoSealRows`:
 ```js
 const store = openNamespace('my-database', 'notes', { attributes: [] }, {
   autoSealRows: 2048,
+  autoMerge: true,
 });
 store.seal(); // { generation }; a no-op when nothing is unsealed
 ```
@@ -176,9 +177,25 @@ store.seal(); // { generation }; a no-op when nothing is unsealed
 With `autoSealRows`, the store seals once at open and again before the write
 that follows that many written documents since the last seal. A smaller value
 keeps each write cheaper, because a write copies the active segment; a larger
-value makes fewer sealed segments. Call `store.merge()` periodically when the
-application is idle to combine small sealed segments and reduce the first-query
-cost after reopen. This synchronous call leaves active writes and the WAL alone;
+value makes fewer sealed segments. `autoSealRows` is disabled by default and
+must be a positive safe integer. It counts documents (including revisions and
+deleted IDs), not bytes or calls; a batch may exceed the threshold before the
+next write seals it.
+
+`autoMerge` defaults to `false`. With `true`, open seals and merges existing
+writes, and every subsequent automatic or explicit seal runs `merge()`. Pair
+both options as above so the application need not schedule maintenance. Both
+require a writable store. Merging starts when at least two compatible small
+scan segments fit the native batch limits below; there is no additional timer
+or configurable segment-count threshold. It drops dead revisions in selected
+segments, including stored text. Live retained data still consumes memory and
+disk; these options do not implement retention or cap total store size.
+
+Automatic maintenance is synchronous and adds latency to the triggering open,
+seal or write. Errors propagate before the pending write; already completed
+maintenance remains committed. `seal()` returns the final merge generation.
+With automatic merging disabled, call `store.merge()` during application idle
+time to combine small sealed segments and reduce first-query cost after reopen. This synchronous call leaves active writes and the WAL alone;
 call `seal()` first to include the current writes. It publishes each replacement
 before removing the inputs, in batches of at most 16 segments and 8 MiB of input
 files. Decoded working memory exceeds those input bytes. Large segments and graph
@@ -538,3 +555,12 @@ The [documented Cypher profile](https://github.com/zepdb/zeppelin-embed/blob/mai
 defines supported statements and functions. This binding does not add syntax,
 graph search, vector inputs, or list parameters. Calls are synchronous; Electron
 applications should run potentially long queries off the UI thread.
+
+The normal Node suite includes `test/bounded-soak.test.mjs`: eight compressed
+meeting hours (one transcript per second and one note edit per five seconds),
+then eight hours of note edits with a fixed live corpus. It samples process RSS,
+WAL and total store bytes hourly, without explicit maintenance or forced GC.
+Run `ZE_LONG_SOAK=1 node --test test/bounded-soak.test.mjs` for 48 hours per phase
+(up to 30 minutes instead of the normal three-minute deadline). The workload
+uses `commitTier: 'none'` to measure engine behavior without per-write fsync;
+it does not qualify power-loss durability or weeks of real-time use.

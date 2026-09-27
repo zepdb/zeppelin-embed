@@ -26,7 +26,7 @@ const records = openNamespace(
   'typecheck-records',
   'notes',
   { vectorSpace: { dimensions: 2 } },
-  { autoSealRows: 2048 },
+  { autoSealRows: 2048, autoMerge: true },
 );
 const sealed: bigint = records.seal().generation;
 const merged: bigint = records.merge().generation;
