@@ -91,6 +91,7 @@ impl Store {
             })),
             wal_writer: Mutex::new(None),
             writer_lock: Mutex::new(None),
+            logical_writer_lock: Mutex::new(None),
             snapshot_pins: Arc::clone(&self.snapshot_pins),
             snapshot_pin: Mutex::new(Some(pin)),
             maintenance: Mutex::new(()),

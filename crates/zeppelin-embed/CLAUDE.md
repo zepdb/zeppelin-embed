@@ -1095,3 +1095,22 @@ results, default-budget atomicity, indeterminate recovery and mixed revisions.
   increment revisions and preserve key fences; they have no separate caller
   retry receipt. Explicit input receipts remain one per item. A conflicting
   write or an exhausted revision/memory/work budget rejects the whole mutation.
+
+## ZE-239 root namespace commit
+
+- `namespace_batch` prepares complete private store snapshots, including sealed
+  tombstones, then selects them with one `.ze-namespaces` root-record rename.
+  The checksummed `ZENS0001` envelope wraps canonical routes, root references,
+  intents and participant preparation identities; no existing WAL op changes.
+- All prepared files/directories must be fully durable before that rename. A
+  writable open adopting a route syncs its root before subsequent writes, so an
+  interrupted decision sync cannot strand an acknowledged later mutation.
+- Logical namespace writer locks survive redirection for the entire handle
+  lifetime. Close releases physical ownership before logical ownership.
+- Read-only opens select a complete prepared store without sibling recovery or
+  filesystem writes. Old readers retain old snapshots. Missing/corrupt referenced
+  metadata fails; original store contents are never a recovery fallback.
+- This first API requires closed participant writers and retains old/abandoned
+  stores. Its deletes are logical, not physical erasure. Reclamation, incremental
+  preparation and live-writer participation are separate work. Export through
+  snapshot; moving an enlisted namespace away from its root is refused.

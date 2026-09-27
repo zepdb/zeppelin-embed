@@ -1697,6 +1697,113 @@ fn namespace_open(
     })
 }
 
+/// Commits all participant mutations with one fully synced root decision.
+/// Close participating writable handles and ze_open_snapshot views first.
+/// A view keeps its participant busy even after its source writer closes.
+/// Upserts, explicit deletes, then filter deletes execute privately per namespace.
+/// New namespace/direct-path opens select the entire committed local result even
+/// before any sibling opens; existing readers retain their old snapshot. Read-only
+/// opens perform no recovery writes. Missing/corrupt root or preparations fail.
+/// An I/O error at commit has an indeterminate outcome: reopen before retrying.
+/// Previous stores and abandoned preparations are retained; deletes are logical,
+/// not a physical-erasure promise. Keep the root intact and use ze_snapshot for
+/// independent exports. Ordinary writes issue no transaction/root I/O.
+/// No handle is accepted, so there is no handle poison state for this export.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_namespace_batch(request: *const ZeNamespaceBatchRequest) -> ZeErrorCode {
+    ffi_entry!(None, ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_namespace_batch");
+        finish(
+            None,
+            (|| {
+                let request = marshal::read_struct(request)?;
+                let root = marshal::utf8_without_nul(request.root, request.root_len)?;
+                if root.is_empty() || !(2..=128).contains(&request.participant_count) {
+                    return Err(FfiError::invalid(
+                        "root and 2..128 namespace participants are required",
+                    ));
+                }
+                let participants =
+                    marshal::read_slice(request.participants, request.participant_count)?;
+                if request.generations.is_null()
+                    || request.generations.align_offset(align_of::<u64>()) != 0
+                {
+                    return Err(FfiError::invalid(
+                        "generations must be an aligned output array",
+                    ));
+                }
+                let mut mutations = Vec::new();
+                for participant in participants {
+                    let participant =
+                        marshal::read_struct(participant as *const ZeNamespaceMutation)?;
+                    if participant.reserved != 0 {
+                        return Err(FfiError::invalid("participant reserved must be zero"));
+                    }
+                    let name = validate_namespace_name(marshal::read_slice(
+                        participant.name,
+                        participant.name_len,
+                    )?)?
+                    .to_owned();
+                    let spec = marshal::read_struct(participant.spec)?;
+                    let (schema, mut epoch) = parse_namespace_spec(participant.spec)?;
+                    let tokenizer = parse_tokenizer_profile(participant.tokenizer_profile)?;
+                    if !spec.epoch.is_null() && epoch.tokenizer != tokenizer.epoch() {
+                        return Err(FfiError::invalid("namespace and epoch tokenizers disagree"));
+                    }
+                    epoch.tokenizer = tokenizer.epoch();
+                    let conditional = marshal::read_struct(&participant.upserts)?;
+                    let upsert = marshal::read_struct(&conditional.batch)?;
+                    let conditions = revision_conditions(
+                        conditional.conditions,
+                        conditional.condition_count,
+                        upsert.document_count,
+                    )?;
+                    let upserts = if upsert.document_count == 0 {
+                        Vec::new()
+                    } else {
+                        decode_upsert_documents(spec.has_vector_space == 0, &schema, upsert)?
+                            .into_iter()
+                            .zip(conditions)
+                            .map(|(document, condition)| match condition {
+                                Some(expected) => document.with_expected_revision(expected),
+                                None => document,
+                            })
+                            .collect()
+                    };
+                    let deletes =
+                        marshal::read_slice(participant.deletes, participant.delete_count)?
+                            .iter()
+                            .copied()
+                            .map(doc_id)
+                            .collect();
+                    let delete_where = decode_filter(participant.filter, &schema)?;
+                    let options = OpenOptions::new()
+                        .with_tokenizer(tokenizer)
+                        .with_epoch(epoch)
+                        .with_schema(schema);
+                    mutations.push(zeppelin_embed::lifecycle::NamespaceMutation {
+                        name,
+                        options,
+                        upserts,
+                        deletes,
+                        delete_where,
+                    });
+                }
+                let generations =
+                    zeppelin_embed::lifecycle::namespace_batch(Path::new(root), mutations)
+                        .map_err(FfiError::store)?;
+                for (index, generation) in generations.into_iter().enumerate() {
+                    // The ABI requires participant_count writable u64 elements.
+                    unsafe {
+                        request.generations.add(index).write(generation);
+                    }
+                }
+                Ok(())
+            })(),
+        )
+    })
+}
+
 /// Lists direct child directories of `root` that contain a `manifest.ze`, in
 /// ascending byte order. The returned names share one callee-owned arena.
 #[unsafe(no_mangle)]
@@ -2499,7 +2606,14 @@ fn upsert_documents(
     access: &registry::HandleAccess,
     request: ZeUpsertRequest,
 ) -> Result<Vec<IngestDocument>, FfiError> {
-    let record_only = access.record_only;
+    decode_upsert_documents(access.record_only, access.store.schema(), request)
+}
+
+fn decode_upsert_documents(
+    record_only: bool,
+    schema: &Schema,
+    request: ZeUpsertRequest,
+) -> Result<Vec<IngestDocument>, FfiError> {
     if record_only && request.dimension > 1 {
         return Err(FfiError::invalid(
             "record-only upsert dimension must be zero or one",
@@ -2572,7 +2686,7 @@ fn upsert_documents(
                     column.get()
                 )));
             }
-            if let Some(value) = parse_attribute_value(access.store.schema(), *attribute)? {
+            if let Some(value) = parse_attribute_value(schema, *attribute)? {
                 columns.push(value);
             }
         }
@@ -5208,6 +5322,8 @@ const _: () = {
     assert!(size_of::<ZeQueryRequest>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
     assert!(size_of::<ZeQueryResult>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
     assert!(size_of::<ZeNamespaceOpenRequest>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
+    assert!(size_of::<ZeNamespaceMutation>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
+    assert!(size_of::<ZeNamespaceBatchRequest>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
     assert!(size_of::<ZeNamespaceListRequest>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
     assert!(size_of::<ZeNamespaceListResult>() <= ZE_ABI_MAX_STRUCT_SIZE as usize);
 };

@@ -1644,6 +1644,157 @@ napi_value VerifyStore(napi_env env, napi_callback_info info) {
   });
 }
 
+struct UpsertStorage {
+    std::vector<ZeUpsertDocument> documents;
+    std::vector<std::vector<float>> vectors;
+    std::vector<std::vector<uint8_t>> metadata;
+    std::vector<std::string> texts;
+    std::vector<std::vector<ZeAttributeValue>> attributes;
+    std::vector<std::vector<std::string>> attribute_strings;
+    std::vector<ZeRevisionCondition> conditions;
+    size_t dimension = 0;
+    ZeConditionalUpsertRequest conditional{};
+};
+
+bool ParseUpsertData(napi_env env, napi_value value, UpsertStorage *storage) {
+    bool is_array = false;
+    uint32_t document_count = 0;
+    if (!NapiOk(env, napi_is_array(env, value, &is_array),
+                "inspect upsert documents") ||
+        !is_array) {
+      napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE",
+                            "documents must be an array");
+      return false;
+    }
+    if (!NapiOk(env, napi_get_array_length(env, value, &document_count),
+                "read upsert document count"))
+      return false;
+
+    auto &documents = storage->documents;
+    auto &vectors = storage->vectors;
+    auto &metadata = storage->metadata;
+    auto &texts = storage->texts;
+    auto &attributes = storage->attributes;
+    auto &attribute_strings = storage->attribute_strings;
+    auto &conditions = storage->conditions;
+    auto &dimension = storage->dimension;
+    documents.resize(document_count);
+    vectors.resize(document_count);
+    metadata.resize(document_count);
+    texts.resize(document_count);
+    attributes.resize(document_count);
+    attribute_strings.resize(document_count);
+    conditions.resize(document_count);
+    for (uint32_t index = 0; index < document_count; ++index) {
+      napi_value document;
+      if (!NapiOk(env, napi_get_element(env, value, index, &document),
+                  "read upsert document"))
+        return false;
+      napi_value field;
+      bool present = false;
+      ZeUpsertDocument &native = documents[index];
+      native = ZeUpsertDocument{};
+      native.abi_size = sizeof(native);
+      native.document.abi_size = sizeof(native.document);
+      if (!GetNamed(env, document, "id", &field, &present) || !present) {
+        napi_throw_type_error(env, "ERR_MISSING_ARGS",
+                              "each document requires id");
+        return false;
+      }
+      if (!GetDocId(env, field, &native.document.doc_id) ||
+          !GetOptionalBigUint64(env, document, "revision", 1,
+                                &native.document.revision) ||
+          !GetOptionalBigInt64(env, document, "timestamp", 0,
+                               &native.document.timestamp) ||
+          !GetRevisionCondition(env, document, &conditions[index])) {
+        return false;
+      }
+
+      if (!GetNamed(env, document, "vector", &field, &present))
+        return false;
+      if (present) {
+        const float *data = nullptr;
+        size_t length = 0;
+        if (!GetFloat32Array(env, field, "document vector", &data, &length))
+          return false;
+        if (length != 0)
+          vectors[index].assign(data, data + length);
+        native.document.vector = vectors[index].data();
+        native.document.vector_len = vectors[index].size();
+        if (dimension == 0)
+          dimension = length;
+      }
+
+      if (!GetNamed(env, document, "metadata", &field, &present))
+        return false;
+      if (present) {
+        if (!GetUint8ArrayCopy(env, field, "document metadata",
+                               &metadata[index]))
+          return false;
+        native.document.metadata = metadata[index].data();
+        native.document.metadata_len = metadata[index].size();
+      }
+
+      if (!GetNamed(env, document, "text", &field, &present))
+        return false;
+      if (present) {
+        if (!GetUtf8(env, field, "document text", &texts[index]))
+          return false;
+        native.document.text =
+            reinterpret_cast<const uint8_t *>(texts[index].data());
+        native.document.text_len = texts[index].size();
+      }
+
+      napi_value js_attributes;
+      if (!GetNamed(env, document, "attributes", &js_attributes, &present))
+        return false;
+      uint32_t attribute_count = 0;
+      if (present) {
+        if (!NapiOk(env, napi_is_array(env, js_attributes, &is_array),
+                    "inspect document attributes") ||
+            !is_array) {
+          napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE",
+                                "document attributes must be an array");
+          return false;
+        }
+        if (!NapiOk(env,
+                    napi_get_array_length(env, js_attributes, &attribute_count),
+                    "read document attribute count"))
+          return false;
+      }
+      attributes[index].resize(attribute_count);
+      attribute_strings[index].resize(attribute_count);
+      for (uint32_t attribute_index = 0; attribute_index < attribute_count;
+           ++attribute_index) {
+        napi_value attribute;
+        if (!NapiOk(env,
+                    napi_get_element(env, js_attributes, attribute_index,
+                                     &attribute),
+                    "read document attribute") ||
+            !ParseAttributeValue(env, attribute,
+                                 &attributes[index][attribute_index],
+                                 &attribute_strings[index][attribute_index])) {
+          return false;
+        }
+      }
+      native.attributes =
+          attributes[index].empty() ? nullptr : attributes[index].data();
+      native.attribute_count = attributes[index].size();
+    }
+
+    ZeUpsertRequest request{};
+    request.abi_size = sizeof(request);
+    request.documents = documents.data();
+    request.document_count = documents.size();
+    request.dimension = dimension;
+    auto &conditional = storage->conditional;
+    conditional.abi_size = sizeof(conditional);
+    conditional.batch = request;
+    conditional.conditions = conditions.data();
+    conditional.condition_count = conditions.size();
+    return true;
+}
+
 napi_value Upsert(napi_env env, napi_callback_info info) {
   return Guard(env, [&]() -> napi_value {
     size_t argc = 1;
@@ -1661,134 +1812,9 @@ napi_value Upsert(napi_env env, napi_callback_info info) {
     NativeStore *store = UnwrapStore(env, receiver);
     if (store == nullptr)
       return nullptr;
-    bool is_array = false;
-    uint32_t document_count = 0;
-    if (!NapiOk(env, napi_is_array(env, args[0], &is_array),
-                "inspect upsert documents") ||
-        !is_array) {
-      napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE",
-                            "documents must be an array");
-      return nullptr;
-    }
-    if (!NapiOk(env, napi_get_array_length(env, args[0], &document_count),
-                "read upsert document count"))
-      return nullptr;
-
-    std::vector<ZeUpsertDocument> documents(document_count);
-    std::vector<std::vector<float>> vectors(document_count);
-    std::vector<std::vector<uint8_t>> metadata(document_count);
-    std::vector<std::string> texts(document_count);
-    std::vector<std::vector<ZeAttributeValue>> attributes(document_count);
-    std::vector<std::vector<std::string>> attribute_strings(document_count);
-    std::vector<ZeRevisionCondition> conditions(document_count);
-    size_t dimension = 0;
-    for (uint32_t index = 0; index < document_count; ++index) {
-      napi_value document;
-      if (!NapiOk(env, napi_get_element(env, args[0], index, &document),
-                  "read upsert document"))
-        return nullptr;
-      napi_value field;
-      bool present = false;
-      ZeUpsertDocument &native = documents[index];
-      native = ZeUpsertDocument{};
-      native.abi_size = sizeof(native);
-      native.document.abi_size = sizeof(native.document);
-      if (!GetNamed(env, document, "id", &field, &present) || !present) {
-        napi_throw_type_error(env, "ERR_MISSING_ARGS",
-                              "each document requires id");
-        return nullptr;
-      }
-      if (!GetDocId(env, field, &native.document.doc_id) ||
-          !GetOptionalBigUint64(env, document, "revision", 1,
-                                &native.document.revision) ||
-          !GetOptionalBigInt64(env, document, "timestamp", 0,
-                               &native.document.timestamp) ||
-          !GetRevisionCondition(env, document, &conditions[index])) {
-        return nullptr;
-      }
-
-      if (!GetNamed(env, document, "vector", &field, &present))
-        return nullptr;
-      if (present) {
-        const float *data = nullptr;
-        size_t length = 0;
-        if (!GetFloat32Array(env, field, "document vector", &data, &length))
-          return nullptr;
-        if (length != 0)
-          vectors[index].assign(data, data + length);
-        native.document.vector = vectors[index].data();
-        native.document.vector_len = vectors[index].size();
-        if (dimension == 0)
-          dimension = length;
-      }
-
-      if (!GetNamed(env, document, "metadata", &field, &present))
-        return nullptr;
-      if (present) {
-        if (!GetUint8ArrayCopy(env, field, "document metadata",
-                               &metadata[index]))
-          return nullptr;
-        native.document.metadata = metadata[index].data();
-        native.document.metadata_len = metadata[index].size();
-      }
-
-      if (!GetNamed(env, document, "text", &field, &present))
-        return nullptr;
-      if (present) {
-        if (!GetUtf8(env, field, "document text", &texts[index]))
-          return nullptr;
-        native.document.text =
-            reinterpret_cast<const uint8_t *>(texts[index].data());
-        native.document.text_len = texts[index].size();
-      }
-
-      napi_value js_attributes;
-      if (!GetNamed(env, document, "attributes", &js_attributes, &present))
-        return nullptr;
-      uint32_t attribute_count = 0;
-      if (present) {
-        if (!NapiOk(env, napi_is_array(env, js_attributes, &is_array),
-                    "inspect document attributes") ||
-            !is_array) {
-          napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE",
-                                "document attributes must be an array");
-          return nullptr;
-        }
-        if (!NapiOk(env,
-                    napi_get_array_length(env, js_attributes, &attribute_count),
-                    "read document attribute count"))
-          return nullptr;
-      }
-      attributes[index].resize(attribute_count);
-      attribute_strings[index].resize(attribute_count);
-      for (uint32_t attribute_index = 0; attribute_index < attribute_count;
-           ++attribute_index) {
-        napi_value attribute;
-        if (!NapiOk(env,
-                    napi_get_element(env, js_attributes, attribute_index,
-                                     &attribute),
-                    "read document attribute") ||
-            !ParseAttributeValue(env, attribute,
-                                 &attributes[index][attribute_index],
-                                 &attribute_strings[index][attribute_index])) {
-          return nullptr;
-        }
-      }
-      native.attributes =
-          attributes[index].empty() ? nullptr : attributes[index].data();
-      native.attribute_count = attributes[index].size();
-    }
-
-    ZeUpsertRequest request{};
-    request.abi_size = sizeof(request);
-    request.documents = documents.data();
-    request.document_count = documents.size();
-    request.dimension = dimension;
-    ZeConditionalUpsertRequest conditional{};
-    conditional.abi_size = sizeof(conditional);
-    conditional.batch = request;
-    conditional.conditions = conditions.data();
-    conditional.condition_count = conditions.size();
+    UpsertStorage storage;
+    if (!ParseUpsertData(env, args[0], &storage)) return nullptr;
+    auto &conditional = storage.conditional;
     ZeMutationReport report{};
     report.abi_size = sizeof(report);
     ZeRevisionConflict conflict{};
@@ -1811,6 +1837,84 @@ napi_value Upsert(napi_env env, napi_callback_info info) {
                 "create generation") ||
         !SetNamed(env, result, "generation", generation)) {
       return nullptr;
+    }
+    return result;
+  });
+}
+
+napi_value NamespaceBatch(napi_env env, napi_callback_info info) {
+  return Guard(env, [&]() -> napi_value {
+    size_t argc = 2;
+    napi_value args[2];
+    if (!NapiOk(env, napi_get_cb_info(env, info, &argc, args, nullptr, nullptr), "batch arguments")) return nullptr;
+    if (argc != 2) { napi_throw_type_error(env, "ERR_MISSING_ARGS", "root and participants required"); return nullptr; }
+    std::string root;
+    if (!GetUtf8(env, args[0], "root", &root)) return nullptr;
+    bool array = false;
+    uint32_t count = 0;
+    if (!NapiOk(env, napi_is_array(env, args[1], &array), "participants") || !array) {
+      napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE", "participants must be an array"); return nullptr;
+    }
+    if (!NapiOk(env, napi_get_array_length(env, args[1], &count), "participant count")) return nullptr;
+    if (count < 2 || count > 128) { napi_throw_range_error(env, "ERR_OUT_OF_RANGE", "2..128 participants required"); return nullptr; }
+    struct Participant {
+      std::string name;
+      ZeNamespaceSpec spec{};
+      std::vector<ZeAttributeDefinition> attributes;
+      std::vector<std::string> attribute_names;
+      UpsertStorage upserts;
+      std::vector<ZeDocId> deletes;
+      FilterStorage filter;
+    };
+    std::vector<Participant> storage(count);
+    std::vector<ZeNamespaceMutation> participants(count);
+    std::vector<uint64_t> generations(count);
+    for (uint32_t i = 0; i < count; ++i) {
+      napi_value value, field, spec;
+      bool present = false;
+      auto &owned = storage[i]; auto &native = participants[i];
+      native.abi_size = sizeof(native);
+      if (!NapiOk(env, napi_get_element(env, args[1], i, &value), "participant") ||
+          !GetNamed(env, value, "name", &field, &present)) return nullptr;
+      if (!present) { napi_throw_type_error(env, "ERR_MISSING_ARGS", "participant name required"); return nullptr; }
+      if (!GetUtf8(env, field, "name", &owned.name) || !GetNamed(env, value, "spec", &spec, &present)) return nullptr;
+      if (!present) { napi_throw_type_error(env, "ERR_MISSING_ARGS", "participant spec required"); return nullptr; }
+      if (!ParseNamespaceSpec(env, spec, &owned.spec, &owned.attributes, &owned.attribute_names)) return nullptr;
+      std::string profile = "textDefault";
+      if (!GetOptionalString(env, spec, "tokenizerProfile", &profile, &present)) return nullptr;
+      const char *profiles[] = {"textDefault", "code", "voice"};
+      if (!ParseEnum(profile, profiles, 3, &native.tokenizer_profile)) { napi_throw_range_error(env, "ERR_OUT_OF_RANGE", "tokenizerProfile is out of range"); return nullptr; }
+      native.name = reinterpret_cast<const uint8_t *>(owned.name.data()); native.name_len = owned.name.size(); native.spec = &owned.spec;
+      if (!GetNamed(env, value, "upserts", &field, &present)) return nullptr;
+      if (!present && !NapiOk(env, napi_create_array(env, &field), "empty upserts")) return nullptr;
+      if (!ParseUpsertData(env, field, &owned.upserts)) return nullptr;
+      native.upserts = owned.upserts.conditional;
+      if (!GetNamed(env, value, "deletes", &field, &present)) return nullptr;
+      if (present) {
+        uint32_t length = 0;
+        if (!NapiOk(env, napi_is_array(env, field, &array), "delete IDs") || !array) { napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE", "deletes must be an array"); return nullptr; }
+        if (!NapiOk(env, napi_get_array_length(env, field, &length), "delete count")) return nullptr;
+        owned.deletes.resize(length);
+        for (uint32_t j = 0; j < length; ++j) {
+          napi_value id;
+          if (!NapiOk(env, napi_get_element(env, field, j, &id), "delete ID") || !GetDocId(env, id, &owned.deletes[j])) return nullptr;
+        }
+      }
+      native.deletes = owned.deletes.data(); native.delete_count = owned.deletes.size();
+      if (!GetNamed(env, value, "deleteWhere", &field, &present)) return nullptr;
+      if (present) { if (!ParseFilter(env, field, &owned.filter)) return nullptr; native.filter = &owned.filter.filter; }
+    }
+    ZeNamespaceBatchRequest request{};
+    request.abi_size = sizeof(request); request.root = reinterpret_cast<const uint8_t *>(root.data()); request.root_len = root.size();
+    request.participants = participants.data(); request.participant_count = participants.size(); request.generations = generations.data();
+    const ze_error_code status = ze_namespace_batch(&request);
+    if (status != ZE_OK) return ThrowZeppelin(env, 0, status);
+    napi_value result;
+    if (!NapiOk(env, napi_create_array_with_length(env, count, &result), "batch generations")) return nullptr;
+    for (uint32_t i = 0; i < count; ++i) {
+      napi_value generation;
+      if (!NapiOk(env, napi_create_bigint_uint64(env, generations[i], &generation), "generation") ||
+          !NapiOk(env, napi_set_element(env, result, i, generation), "generation result")) return nullptr;
     }
     return result;
   });
@@ -4061,6 +4165,7 @@ napi_value Initialize(napi_env env, napi_value exports) {
       {"graphApply", GraphApply},
       {"graphCypher", GraphCypher},
 #endif
+      {"namespaceBatch", NamespaceBatch},
   };
   for (const auto &entry : functions) {
     napi_value function;

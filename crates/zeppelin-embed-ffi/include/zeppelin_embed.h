@@ -637,6 +637,376 @@ typedef struct ZeNamespaceOpenRequest {
 } ZeNamespaceOpenRequest;
 
 /*
+ Stable 128-bit application document identifier.
+ */
+typedef struct ZeDocId {
+    /*
+     Most-significant 64 bits.
+     */
+    uint64_t high;
+    /*
+     Least-significant 64 bits.
+     */
+    uint64_t low;
+} ZeDocId;
+
+/*
+ One document supplied to an ingest request.
+ */
+typedef struct ZeIngestDocument {
+    /*
+     Caller-provided structure size.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero in ABI v1.
+     */
+    uint32_t abi_reserved;
+    /*
+     Stable document identifier.
+     */
+    struct ZeDocId doc_id;
+    /*
+     Monotonic document revision.
+     */
+    uint64_t revision;
+    /*
+     Canonical clustering timestamp.
+     */
+    int64_t timestamp;
+    /*
+     Caller-owned aligned f32 vector.
+     */
+    const float *vector;
+    /*
+     Scalar count in `vector`.
+     */
+    size_t vector_len;
+    /*
+     Caller-owned opaque metadata bytes.
+     */
+    const uint8_t *metadata;
+    /*
+     Number of metadata bytes.
+     */
+    size_t metadata_len;
+    /*
+     Caller-owned UTF-8 document text for the lexical index, or null.
+     */
+    const uint8_t *text;
+    /*
+     Number of `text` bytes; zero means the document carries no text.
+     */
+    size_t text_len;
+} ZeIngestDocument;
+
+/*
+ One typed schema attribute value supplied to an upsert.
+ */
+typedef struct ZeAttributeValue {
+    /*
+     Schema-local identifier; zero is reserved for the `ts` column.
+     */
+    uint32_t attribute_id;
+    /*
+     `0` null, `1` U64, `2` I64, `3` F64, `4` Bool, `5` string, or `6` Id128.
+     */
+    int32_t value_type;
+    /*
+     Unsigned-integer payload when `value_type` is one; low 64 bits for Id128.
+     */
+    uint64_t u64_value;
+    /*
+     Signed-integer payload when `value_type` is two; high 64 bits for Id128
+     interpreted as an unsigned bit pattern (not a signed numeric value).
+     */
+    int64_t i64_value;
+    /*
+     Floating-point payload when `value_type` is three.
+     */
+    double f64_value;
+    /*
+     Boolean payload when `value_type` is four.
+     */
+    uint32_t bool_value;
+    /*
+     Caller-owned UTF-8 bytes when `value_type` is five.
+     */
+    const uint8_t *string_value;
+    /*
+     Number of string bytes.
+     */
+    size_t string_len;
+} ZeAttributeValue;
+
+/*
+ One ingest document plus its typed schema attributes.
+ */
+typedef struct ZeUpsertDocument {
+    /*
+     Caller-provided `sizeof(ZeUpsertDocument)`.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero in ABI v1.
+     */
+    uint32_t abi_reserved;
+    /*
+     Existing v1 ingest document, embedded by value.
+     */
+    struct ZeIngestDocument document;
+    /*
+     Caller-owned attribute-value array.
+     */
+    const struct ZeAttributeValue *attributes;
+    /*
+     Number of attribute values.
+     */
+    size_t attribute_count;
+} ZeUpsertDocument;
+
+/*
+ Atomic document upsert request with typed schema attributes.
+ */
+typedef struct ZeUpsertRequest {
+    /*
+     Caller-provided `sizeof(ZeUpsertRequest)`.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero in ABI v1.
+     */
+    uint32_t abi_reserved;
+    /*
+     Caller-owned `ZeUpsertDocument` array.
+     */
+    const struct ZeUpsertDocument *documents;
+    /*
+     Number of document records.
+     */
+    size_t document_count;
+    /*
+     Vector dimension for every record.
+     */
+    size_t dimension;
+} ZeUpsertRequest;
+
+/*
+ One document's live-revision precondition.
+
+ The live revision is the revision `ze_get` returns for the id; a deleted
+ id has none. Conditions are checked by the store's single writer against
+ the latest committed state, before the batch is applied and atomically
+ with it.
+ */
+typedef struct ZeRevisionCondition {
+    /*
+     One of the `ZE_REVISION_CONDITION_*` constants.
+     */
+    uint32_t kind;
+    /*
+     Must be zero.
+     */
+    uint32_t reserved;
+    /*
+     Expected live revision when `kind` is `ZE_REVISION_CONDITION_EXACTLY`;
+     must be zero otherwise.
+     */
+    uint64_t revision;
+} ZeRevisionCondition;
+
+/*
+ Atomic upsert that commits only when every document's condition holds.
+ */
+typedef struct ZeConditionalUpsertRequest {
+    /*
+     Caller-provided `sizeof(ZeConditionalUpsertRequest)`.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero in ABI v1.
+     */
+    uint32_t abi_reserved;
+    /*
+     Existing v1 upsert request, embedded by value.
+     */
+    struct ZeUpsertRequest batch;
+    /*
+     Caller-owned conditions; entry `i` applies to `batch.documents[i]`.
+     */
+    const struct ZeRevisionCondition *conditions;
+    /*
+     Must equal `batch.document_count`.
+     */
+    size_t condition_count;
+} ZeConditionalUpsertRequest;
+
+/*
+ One flat filter-AST node; child nodes are referenced by an index range.
+ */
+typedef struct ZeFilterNode {
+    /*
+     `1` eq, `2` not-eq, `3` in, `4` not-in, `5` range, `6` exists,
+     `7` is-null, `8` and, `9` or, or `10` not.
+     */
+    int32_t op;
+    /*
+     Schema-local column identifier for leaf operators.
+     */
+    uint32_t attribute_id;
+    /*
+     Caller-owned values for equality and membership operators.
+     */
+    const struct ZeAttributeValue *values;
+    /*
+     Number of entries in `values`.
+     */
+    size_t value_count;
+    /*
+     One when `lower` is present.
+     */
+    uint32_t has_lower;
+    /*
+     Lower range endpoint.
+     */
+    struct ZeAttributeValue lower;
+    /*
+     One when the lower endpoint is inclusive.
+     */
+    uint32_t lower_inclusive;
+    /*
+     One when `upper` is present.
+     */
+    uint32_t has_upper;
+    /*
+     Upper range endpoint.
+     */
+    struct ZeAttributeValue upper;
+    /*
+     One when the upper endpoint is inclusive.
+     */
+    uint32_t upper_inclusive;
+    /*
+     First child node index for logical operators.
+     */
+    uint32_t children_start;
+    /*
+     Number of consecutive child node indices.
+     */
+    uint32_t children_count;
+} ZeFilterNode;
+
+/*
+ Caller-owned flat structured filter.
+ */
+typedef struct ZeFilter {
+    /*
+     Caller-provided `sizeof(ZeFilter)`.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero in ABI v1.
+     */
+    uint32_t abi_reserved;
+    /*
+     Caller-owned flat node array.
+     */
+    const struct ZeFilterNode *nodes;
+    /*
+     Number of nodes in `nodes`.
+     */
+    size_t node_count;
+    /*
+     Root node index.
+     */
+    uint32_t root;
+} ZeFilter;
+
+/*
+ One participant of ze_namespace_batch; all pointers are caller-owned.
+ */
+typedef struct ZeNamespaceMutation {
+    /*
+     sizeof(ZeNamespaceMutation).
+     */
+    uint32_t abi_size;
+    /*
+     Zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Existing namespace name.
+     */
+    const uint8_t *name;
+    /*
+     Name byte length.
+     */
+    size_t name_len;
+    /*
+     Existing namespace declaration; schema evolution is not allowed here.
+     */
+    const struct ZeNamespaceSpec *spec;
+    /*
+     0 textDefault, 1 code, 2 voice.
+     */
+    int32_t tokenizer_profile;
+    /*
+     Zero.
+     */
+    uint32_t reserved;
+    /*
+     Upserts; document_count zero skips this phase.
+     */
+    struct ZeConditionalUpsertRequest upserts;
+    /*
+     Explicit document IDs to delete after upserts.
+     */
+    const struct ZeDocId *deletes;
+    /*
+     Number of delete IDs.
+     */
+    size_t delete_count;
+    /*
+     Optional predicate deletion after explicit changes; null skips it.
+     */
+    const struct ZeFilter *filter;
+} ZeNamespaceMutation;
+
+/*
+ One fully durable transaction over 2..128 existing namespaces of one root.
+ */
+typedef struct ZeNamespaceBatchRequest {
+    /*
+     sizeof(ZeNamespaceBatchRequest).
+     */
+    uint32_t abi_size;
+    /*
+     Zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     UTF-8 root path.
+     */
+    const uint8_t *root;
+    /*
+     Root byte length.
+     */
+    size_t root_len;
+    /*
+     Caller-owned participants; unique names, in result order.
+     */
+    const struct ZeNamespaceMutation *participants;
+    /*
+     Participant count.
+     */
+    size_t participant_count;
+    /*
+     Caller-owned output of participant_count u64 generations, written on success.
+     */
+    uint64_t *generations;
+} ZeNamespaceBatchRequest;
+
+/*
  Requests namespace discovery immediately below one database root.
  */
 typedef struct ZeNamespaceListRequest {
@@ -809,20 +1179,6 @@ typedef struct ZeTextOpenRequest {
      */
     size_t bundle_path_len;
 } ZeTextOpenRequest;
-
-/*
- Stable 128-bit application document identifier.
- */
-typedef struct ZeDocId {
-    /*
-     Most-significant 64 bits.
-     */
-    uint64_t high;
-    /*
-     Least-significant 64 bits.
-     */
-    uint64_t low;
-} ZeDocId;
 
 /*
  One caller-owned text document.
@@ -1189,56 +1545,6 @@ typedef struct ZeStatsReport {
 } ZeStatsReport;
 
 /*
- One document supplied to an ingest request.
- */
-typedef struct ZeIngestDocument {
-    /*
-     Caller-provided structure size.
-     */
-    uint32_t abi_size;
-    /*
-     Must be zero in ABI v1.
-     */
-    uint32_t abi_reserved;
-    /*
-     Stable document identifier.
-     */
-    struct ZeDocId doc_id;
-    /*
-     Monotonic document revision.
-     */
-    uint64_t revision;
-    /*
-     Canonical clustering timestamp.
-     */
-    int64_t timestamp;
-    /*
-     Caller-owned aligned f32 vector.
-     */
-    const float *vector;
-    /*
-     Scalar count in `vector`.
-     */
-    size_t vector_len;
-    /*
-     Caller-owned opaque metadata bytes.
-     */
-    const uint8_t *metadata;
-    /*
-     Number of metadata bytes.
-     */
-    size_t metadata_len;
-    /*
-     Caller-owned UTF-8 document text for the lexical index, or null.
-     */
-    const uint8_t *text;
-    /*
-     Number of `text` bytes; zero means the document carries no text.
-     */
-    size_t text_len;
-} ZeIngestDocument;
-
-/*
  Atomic document-ingest request.
  */
 typedef struct ZeIngestRequest {
@@ -1263,147 +1569,6 @@ typedef struct ZeIngestRequest {
      */
     size_t dimension;
 } ZeIngestRequest;
-
-/*
- One typed schema attribute value supplied to an upsert.
- */
-typedef struct ZeAttributeValue {
-    /*
-     Schema-local identifier; zero is reserved for the `ts` column.
-     */
-    uint32_t attribute_id;
-    /*
-     `0` null, `1` U64, `2` I64, `3` F64, `4` Bool, `5` string, or `6` Id128.
-     */
-    int32_t value_type;
-    /*
-     Unsigned-integer payload when `value_type` is one; low 64 bits for Id128.
-     */
-    uint64_t u64_value;
-    /*
-     Signed-integer payload when `value_type` is two; high 64 bits for Id128
-     interpreted as an unsigned bit pattern (not a signed numeric value).
-     */
-    int64_t i64_value;
-    /*
-     Floating-point payload when `value_type` is three.
-     */
-    double f64_value;
-    /*
-     Boolean payload when `value_type` is four.
-     */
-    uint32_t bool_value;
-    /*
-     Caller-owned UTF-8 bytes when `value_type` is five.
-     */
-    const uint8_t *string_value;
-    /*
-     Number of string bytes.
-     */
-    size_t string_len;
-} ZeAttributeValue;
-
-/*
- One ingest document plus its typed schema attributes.
- */
-typedef struct ZeUpsertDocument {
-    /*
-     Caller-provided `sizeof(ZeUpsertDocument)`.
-     */
-    uint32_t abi_size;
-    /*
-     Must be zero in ABI v1.
-     */
-    uint32_t abi_reserved;
-    /*
-     Existing v1 ingest document, embedded by value.
-     */
-    struct ZeIngestDocument document;
-    /*
-     Caller-owned attribute-value array.
-     */
-    const struct ZeAttributeValue *attributes;
-    /*
-     Number of attribute values.
-     */
-    size_t attribute_count;
-} ZeUpsertDocument;
-
-/*
- Atomic document upsert request with typed schema attributes.
- */
-typedef struct ZeUpsertRequest {
-    /*
-     Caller-provided `sizeof(ZeUpsertRequest)`.
-     */
-    uint32_t abi_size;
-    /*
-     Must be zero in ABI v1.
-     */
-    uint32_t abi_reserved;
-    /*
-     Caller-owned `ZeUpsertDocument` array.
-     */
-    const struct ZeUpsertDocument *documents;
-    /*
-     Number of document records.
-     */
-    size_t document_count;
-    /*
-     Vector dimension for every record.
-     */
-    size_t dimension;
-} ZeUpsertRequest;
-
-/*
- One document's live-revision precondition.
-
- The live revision is the revision `ze_get` returns for the id; a deleted
- id has none. Conditions are checked by the store's single writer against
- the latest committed state, before the batch is applied and atomically
- with it.
- */
-typedef struct ZeRevisionCondition {
-    /*
-     One of the `ZE_REVISION_CONDITION_*` constants.
-     */
-    uint32_t kind;
-    /*
-     Must be zero.
-     */
-    uint32_t reserved;
-    /*
-     Expected live revision when `kind` is `ZE_REVISION_CONDITION_EXACTLY`;
-     must be zero otherwise.
-     */
-    uint64_t revision;
-} ZeRevisionCondition;
-
-/*
- Atomic upsert that commits only when every document's condition holds.
- */
-typedef struct ZeConditionalUpsertRequest {
-    /*
-     Caller-provided `sizeof(ZeConditionalUpsertRequest)`.
-     */
-    uint32_t abi_size;
-    /*
-     Must be zero in ABI v1.
-     */
-    uint32_t abi_reserved;
-    /*
-     Existing v1 upsert request, embedded by value.
-     */
-    struct ZeUpsertRequest batch;
-    /*
-     Caller-owned conditions; entry `i` applies to `batch.documents[i]`.
-     */
-    const struct ZeRevisionCondition *conditions;
-    /*
-     Must equal `batch.document_count`.
-     */
-    size_t condition_count;
-} ZeConditionalUpsertRequest;
 
 /*
  The first condition that failed in a conditional write.
@@ -1589,87 +1754,6 @@ typedef struct ZeDeleteRequest {
      */
     size_t doc_id_count;
 } ZeDeleteRequest;
-
-/*
- One flat filter-AST node; child nodes are referenced by an index range.
- */
-typedef struct ZeFilterNode {
-    /*
-     `1` eq, `2` not-eq, `3` in, `4` not-in, `5` range, `6` exists,
-     `7` is-null, `8` and, `9` or, or `10` not.
-     */
-    int32_t op;
-    /*
-     Schema-local column identifier for leaf operators.
-     */
-    uint32_t attribute_id;
-    /*
-     Caller-owned values for equality and membership operators.
-     */
-    const struct ZeAttributeValue *values;
-    /*
-     Number of entries in `values`.
-     */
-    size_t value_count;
-    /*
-     One when `lower` is present.
-     */
-    uint32_t has_lower;
-    /*
-     Lower range endpoint.
-     */
-    struct ZeAttributeValue lower;
-    /*
-     One when the lower endpoint is inclusive.
-     */
-    uint32_t lower_inclusive;
-    /*
-     One when `upper` is present.
-     */
-    uint32_t has_upper;
-    /*
-     Upper range endpoint.
-     */
-    struct ZeAttributeValue upper;
-    /*
-     One when the upper endpoint is inclusive.
-     */
-    uint32_t upper_inclusive;
-    /*
-     First child node index for logical operators.
-     */
-    uint32_t children_start;
-    /*
-     Number of consecutive child node indices.
-     */
-    uint32_t children_count;
-} ZeFilterNode;
-
-/*
- Caller-owned flat structured filter.
- */
-typedef struct ZeFilter {
-    /*
-     Caller-provided `sizeof(ZeFilter)`.
-     */
-    uint32_t abi_size;
-    /*
-     Must be zero in ABI v1.
-     */
-    uint32_t abi_reserved;
-    /*
-     Caller-owned flat node array.
-     */
-    const struct ZeFilterNode *nodes;
-    /*
-     Number of nodes in `nodes`.
-     */
-    size_t node_count;
-    /*
-     Root node index.
-     */
-    uint32_t root;
-} ZeFilter;
 
 /*
  Delete-by-filter request for `ze_delete_where`.
@@ -3098,6 +3182,22 @@ ze_error_code ze_namespace_open(const struct ZeNamespaceOpenRequest *request,
 ze_error_code ze_namespace_open_with_tokenizer(const struct ZeNamespaceOpenRequest *request,
                                                int32_t tokenizer_profile,
                                                ze_handle *out_handle);
+
+/*
+ Commits all participant mutations with one fully synced root decision.
+ Close participating writable handles and ze_open_snapshot views first.
+ A view keeps its participant busy even after its source writer closes.
+ Upserts, explicit deletes, then filter deletes execute privately per namespace.
+ New namespace/direct-path opens select the entire committed local result even
+ before any sibling opens; existing readers retain their old snapshot. Read-only
+ opens perform no recovery writes. Missing/corrupt root or preparations fail.
+ An I/O error at commit has an indeterminate outcome: reopen before retrying.
+ Previous stores and abandoned preparations are retained; deletes are logical,
+ not a physical-erasure promise. Keep the root intact and use ze_snapshot for
+ independent exports. Ordinary writes issue no transaction/root I/O.
+ No handle is accepted, so there is no handle poison state for this export.
+ */
+ze_error_code ze_namespace_batch(const struct ZeNamespaceBatchRequest *request);
 
 /*
  Lists direct child directories of `root` that contain a `manifest.ze`, in

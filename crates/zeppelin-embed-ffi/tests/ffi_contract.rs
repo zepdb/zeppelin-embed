@@ -580,6 +580,7 @@ fn use_after_close_double_close_and_a_stale_generation_each_return_typed_errors(
 
 const PANIC_PROBE: u32 = 0x5041_4e49;
 const POISON_TABLE_NAMES: &[&str] = &[
+    "ze_namespace_batch",
     "ze_apply_retention",
     "ze_await_physical_purge",
     "ze_close",
@@ -757,6 +758,10 @@ fn poison_function_table() -> Vec<(&'static str, PoisonCall)> {
                 0,
                 &mut report,
             )
+        }),
+        // Root-only export: catches panics but owns no handle to poison.
+        ("ze_namespace_batch", |_| {
+            ze_namespace_batch(std::ptr::null())
         }),
         ("ze_state", |context| {
             let mut report: ZeStateReport = common::sized_zeroed();
@@ -1194,7 +1199,7 @@ fn every_entry_point_returns_ze_err_poisoned_after_a_caught_panic() {
         );
         if matches!(
             name,
-            "ze_scan_result_free" | "ze_query_snippet_source_ranges"
+            "ze_scan_result_free" | "ze_query_snippet_source_ranges" | "ze_namespace_batch"
         ) {
             assert_eq!(
                 call(&mut context),
@@ -1255,7 +1260,7 @@ fn the_poison_table_covers_every_exported_handle_taking_symbol() {
         .filter(|name| {
             !matches!(
                 name.as_str(),
-                "ze_scan_result_free" | "ze_query_snippet_source_ranges"
+                "ze_scan_result_free" | "ze_query_snippet_source_ranges" | "ze_namespace_batch"
             )
         })
         .collect::<std::collections::BTreeSet<_>>();
@@ -1535,4 +1540,17 @@ fn graph_declaration_export_is_registered_without_a_poison_handle() {
         ),
         ZeErrorCode::ZeErrInvalidArgument
     );
+}
+
+#[test]
+fn namespace_batch_structs_have_frozen_layouts() {
+    assert_layout!(ZeNamespaceMutation, 120, 8, {
+        abi_size: 0, abi_reserved: 4, name: 8, name_len: 16, spec: 24,
+        tokenizer_profile: 32, reserved: 36, upserts: 40, deletes: 96,
+        delete_count: 104, filter: 112
+    });
+    assert_layout!(ZeNamespaceBatchRequest, 48, 8, {
+        abi_size: 0, abi_reserved: 4, root: 8, root_len: 16,
+        participants: 24, participant_count: 32, generations: 40
+    });
 }

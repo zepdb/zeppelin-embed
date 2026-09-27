@@ -1665,6 +1665,34 @@ pub struct ZeSchemaColumnResult {
     pub nullable: u32,
 }
 
+/// One participant of ze_namespace_batch; all pointers are caller-owned.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeNamespaceMutation {
+    /// sizeof(ZeNamespaceMutation).
+    pub abi_size: u32,
+    /// Zero.
+    pub abi_reserved: u32,
+    /// Existing namespace name.
+    pub name: *const u8,
+    /// Name byte length.
+    pub name_len: usize,
+    /// Existing namespace declaration; schema evolution is not allowed here.
+    pub spec: *const ZeNamespaceSpec,
+    /// 0 textDefault, 1 code, 2 voice.
+    pub tokenizer_profile: i32,
+    /// Zero.
+    pub reserved: u32,
+    /// Upserts; document_count zero skips this phase.
+    pub upserts: ZeConditionalUpsertRequest,
+    /// Explicit document IDs to delete after upserts.
+    pub deletes: *const ZeDocId,
+    /// Number of delete IDs.
+    pub delete_count: usize,
+    /// Optional predicate deletion after explicit changes; null skips it.
+    pub filter: *const ZeFilter,
+}
+
 /// Absolute half-open UTF-8 byte ranges in the document's stored source text.
 /// Returned by `ze_query_snippet_source_ranges`; borrowed highlights remain
 /// valid until `ze_query_snippets_free`. No separate free is needed.
@@ -1701,4 +1729,24 @@ pub struct ZeOpenMigrations {
     pub manifest_version: u16,
     /// WAL format before and after these changes (currently 1).
     pub wal_version: u16,
+}
+
+/// One fully durable transaction over 2..128 existing namespaces of one root.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeNamespaceBatchRequest {
+    /// sizeof(ZeNamespaceBatchRequest).
+    pub abi_size: u32,
+    /// Zero.
+    pub abi_reserved: u32,
+    /// UTF-8 root path.
+    pub root: *const u8,
+    /// Root byte length.
+    pub root_len: usize,
+    /// Caller-owned participants; unique names, in result order.
+    pub participants: *const ZeNamespaceMutation,
+    /// Participant count.
+    pub participant_count: usize,
+    /// Caller-owned output of participant_count u64 generations, written on success.
+    pub generations: *mut u64,
 }

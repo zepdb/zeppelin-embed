@@ -434,6 +434,10 @@ function openInspection(storePath) {
   return new Store(storePath, { readOnly: true, inspection: true });
 }
 
+function namespaceBatch(root, participants) {
+  return callNative(() => binding.namespaceBatch(root, participants));
+}
+
 function listNamespaces(root) {
   return callNative(() => binding.listNamespaces(root));
 }
@@ -591,6 +595,7 @@ module.exports = {
   ZeppelinError,
   idToUuid,
   listNamespaces,
+  namespaceBatch,
   openNamespace,
   openInspection,
   uuidToId,

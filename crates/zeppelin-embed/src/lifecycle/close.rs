@@ -290,6 +290,14 @@ impl Store {
         let released = writer_lock.take();
         drop(writer_lock);
         drop(released);
+        drop(
+            self.logical_writer_lock
+                .lock()
+                .map_err(|_| StoreError::Synchronization {
+                    component: "logical writer lock",
+                })?
+                .take(),
+        );
 
         let mut state = self
             .state
@@ -376,6 +384,11 @@ impl Store {
         };
         let released = writer_slot.take();
         drop(released);
+        let logical = match self.logical_writer_lock.get_mut() {
+            Ok(slot) => slot,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        drop(logical.take());
         *state = StoreState::Closed;
         self.state_changed.notify_all();
     }

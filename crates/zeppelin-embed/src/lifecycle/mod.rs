@@ -11,6 +11,7 @@ mod group_count;
 mod hybrid;
 pub mod lock;
 pub(crate) mod materialize;
+mod namespace_batch;
 #[cfg(feature = "graph-cypher")]
 pub(crate) mod native_graph;
 mod pool;
@@ -23,6 +24,10 @@ mod shared_bound_tests;
 mod snapshot;
 mod snapshot_copy;
 mod snapshot_view;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub use namespace_batch::namespace_batch_with_steps;
+pub use namespace_batch::{NamespaceMutation, namespace_batch};
 pub(crate) mod stats;
 
 use crate::diag::{timing_elapsed, timing_start};
@@ -2613,6 +2618,7 @@ pub struct Store {
     pub(crate) writer_lock: Mutex<Option<Arc<StoreLock>>>,
     snapshot_pins: Arc<AtomicU64>,
     snapshot_pin: Mutex<Option<snapshot_view::SnapshotPin>>,
+    logical_writer_lock: Mutex<Option<StoreLock>>,
     pub(crate) maintenance: Mutex<()>,
     pub(crate) health_state: Mutex<crate::diag::HealthState>,
     pub(crate) durability_policy: DurabilityPolicy,
@@ -2919,6 +2925,7 @@ impl Store {
             writer_lock: Mutex::new(writer_lock.map(Arc::new)),
             snapshot_pins: Arc::new(AtomicU64::new(0)),
             snapshot_pin: Mutex::new(None),
+            logical_writer_lock: Mutex::new(None),
             maintenance: Mutex::new(()),
             health_state: Mutex::new(crate::diag::HealthState::default()),
             durability_policy,
@@ -2963,8 +2970,32 @@ impl Store {
 
     /// Opens a store directory with the requested access and durability policy.
     pub fn open(path: impl AsRef<Path>, options: OpenOptions) -> Result<Self, StoreError> {
-        Self::open_with_infrastructure(
-            path,
+        let path = path.as_ref();
+        let selected = namespace_batch::resolve(path)?;
+        let logical_lock = if selected != path {
+            acquire_writer_lock(path, options.access_mode)?
+        } else {
+            None
+        };
+        // A coordinator could commit between resolution and writer admission.
+        if logical_lock.is_some() && namespace_batch::resolve(path)? != selected {
+            return Err(StoreError::StoreBusy {
+                path: path.to_path_buf(),
+            });
+        }
+        if logical_lock.is_some() {
+            // Adopt a decision that may have survived an interrupted directory
+            // sync before acknowledging any later ordinary namespace write.
+            if let Some(root) = path.parent() {
+                crate::vfs::Vfs::sync(&crate::vfs::StdVfs, root, crate::vfs::SyncKind::Full)
+                    .map_err(|source| StoreError::Io {
+                        path: root.to_path_buf(),
+                        source,
+                    })?;
+            }
+        }
+        let store = Self::open_with_infrastructure(
+            &selected,
             options,
             Arc::new(crate::vfs::StdVfs),
             Arc::new(SystemMonotonicClock),
@@ -2982,7 +3013,27 @@ impl Store {
             None,
             #[cfg(any(test, feature = "test-support"))]
             None,
-        )
+        )?;
+        if store
+            .writer_lock
+            .lock()
+            .map_err(|_| StoreError::Synchronization {
+                component: "writer lock",
+            })?
+            .is_some()
+            && namespace_batch::resolve(path)? != selected
+        {
+            return Err(StoreError::StoreBusy {
+                path: path.to_path_buf(),
+            });
+        }
+        *store
+            .logical_writer_lock
+            .lock()
+            .map_err(|_| StoreError::Synchronization {
+                component: "logical writer lock",
+            })? = logical_lock;
+        Ok(store)
     }
 
     #[allow(
@@ -3249,6 +3300,7 @@ impl Store {
             writer_lock: Mutex::new(writer_lock.map(Arc::new)),
             snapshot_pins: Arc::new(AtomicU64::new(0)),
             snapshot_pin: Mutex::new(None),
+            logical_writer_lock: Mutex::new(None),
             maintenance: Mutex::new(()),
             health_state: Mutex::new(crate::diag::HealthState::default()),
             durability_policy,

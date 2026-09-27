@@ -600,12 +600,8 @@ export declare class UnsupportedRuntimeError extends Error {
  * power cut). Put documents that must change together, such as a note head
  * and its body, in one call.
  *
- * **One namespace only.** Atomicity does not span namespaces. Each namespace
- * has its own write-ahead log, so writes to two stores are two batches, and a
- * crash between them can keep the first and lose the second. Keep documents
- * that must change together in one namespace, or order the writes so that a
- * lost second write is repairable (write dependent documents first and the
- * pointer that makes them live last).
+ * These methods commit one namespace. Use `namespaceBatch` for an explicit
+ * cross-namespace mutation after closing participating writable handles.
  *
  * **Recovery.** A writable open cuts off a final write that a crash left
  * incomplete. A read-only open never repairs: while such a cut record remains,
@@ -1057,3 +1053,32 @@ export class GraphStore {
    */
   cypher(text: string, params?: Readonly<Record<string, GraphScalar>>, options?: GraphQueryOptions): GraphResult;
 }
+/** One participant; operations run in the listed phase order. */
+export interface NamespaceMutation {
+  readonly name: string;
+  /** Must match the existing namespace, including tokenizer. No schema evolution. */
+  readonly spec: NamespaceSpec;
+  readonly upserts?: readonly UpsertDocument[];
+  readonly deletes?: readonly bigint[];
+  /** Evaluated after upserts and explicit deletes, in the private prepared state. */
+  readonly deleteWhere?: Filter;
+}
+/**
+ * Fully durable atomic mutation over 2..128 existing namespaces of one root.
+ * Close their writable handles and openSnapshot views first; either refuses
+ * the batch, including a view whose source writer has already closed.
+ * Returns each namespace's generation in input order. Revision conditions on
+ * upserts apply to the original participant state, before its explicit deletes.
+ *
+ * New opens (including read-only or direct-path opens) select all of a committed
+ * participant's changes without waiting for any sibling to recover. Readers
+ * opened before commit retain their old snapshot. Invalid mutations publish none.
+ * An I/O error at commit can mean either outcome: reopen before retrying.
+ *
+ * This first version copies each participating store and retains old stores and
+ * abandoned preparations. Deletes are logical; deleted bytes may remain in those
+ * copies. Keep the root intact; use Store.snapshot for an independent export.
+ * Missing/corrupt transaction records fail loudly. Single-namespace writes issue
+ * no root transaction I/O; namespace open resolves the root decision.
+ */
+export declare function namespaceBatch(root: string, participants: readonly NamespaceMutation[]): bigint[];
