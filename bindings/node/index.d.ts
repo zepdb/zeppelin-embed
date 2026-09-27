@@ -508,6 +508,11 @@ export declare class ZeppelinError extends Error {
   readonly errorCode: number;
   /** Present when `code` is `ZE_ERR_REVISION_CONFLICT`. */
   readonly conflict?: RevisionConflict;
+  /** Graph operations preserve settlement status even on failure. */
+  readonly disposition?: GraphDisposition;
+  readonly generation?: bigint | null;
+  readonly admittedGeneration?: bigint | null;
+  readonly changedGeneration?: bigint | null;
 }
 
 export declare class UnsupportedPlatformError extends Error {
@@ -769,3 +774,134 @@ export declare function verify(path: string): VerifyReport;
  * if corruption prevents opening. Inspect a quiescent copy, not a live writer.
  */
 export declare function openInspection(path: string): Store;
+/** Graph scalar inputs: bigint is signed I64; finite number is F64. */
+export type GraphScalar = null | boolean | bigint | number | string;
+/** Stored lists contain one non-null scalar type (empty lists are allowed). */
+export type GraphProperty = GraphScalar | readonly boolean[] | readonly bigint[] | readonly number[] | readonly string[];
+export type GraphProperties = Readonly<Record<string, GraphProperty>>;
+export type GraphDisposition = 'NotApplicable' | 'NotCommitted' | 'Committed' | 'Replayed' | 'NoOp' | 'Indeterminate';
+
+export interface GraphNode {
+  readonly kind: 'node';
+  /** Store-local unsigned 128-bit identity. */
+  readonly id: bigint;
+  /** Absent for unkeyed nodes created by Cypher. */
+  readonly namespace?: string;
+  readonly key?: string;
+  readonly revision: bigint;
+  readonly lastChangeGeneration: bigint;
+  readonly labels: readonly string[];
+  readonly properties: GraphProperties;
+  /** Present only when selected by the engine; use ze.stored_text(n) to read text. */
+  readonly text?: string;
+}
+export interface GraphRelationship {
+  readonly kind: 'relationship';
+  readonly id: bigint;
+  readonly source: bigint;
+  readonly target: bigint;
+  readonly type: string;
+  readonly namespace?: string;
+  readonly key?: string;
+  readonly revision: bigint;
+  readonly lastChangeGeneration: bigint;
+  readonly properties: GraphProperties;
+}
+/** Query lists can contain mixed scalar/entity values and nested lists. */
+export type GraphValue = GraphScalar | GraphNode | GraphRelationship | readonly GraphValue[];
+export interface GraphReceipt {
+  readonly item: number;
+  readonly kind: 'node' | 'relationship';
+  readonly id: bigint;
+  readonly disposition: GraphDisposition;
+  readonly deleted: boolean;
+  readonly revision: bigint;
+  readonly generation: bigint;
+}
+export interface GraphResult {
+  readonly disposition: GraphDisposition;
+  /** Changed generation when present, otherwise admitted generation; null if neither is known. */
+  readonly generation: bigint | null;
+  readonly admittedGeneration: bigint | null;
+  readonly changedGeneration: bigint | null;
+  readonly columns: readonly string[];
+  readonly rows: readonly (readonly GraphValue[])[];
+  /** One receipt per apply item in input order; empty for read queries. */
+  readonly receipts: readonly GraphReceipt[];
+}
+export interface GraphOpenOptions {
+  /** Default create: creates a new store. Reopen explicitly; no legacy Store conversion. */
+  readonly mode?: 'create' | 'readWrite' | 'readOnly';
+  /** Resident budget in bytes, integer 1..268435456; default 268435456. */
+  readonly maxResidentBytes?: number;
+  /** Nonnegative safe integer milliseconds; default 250. */
+  readonly readerDrainTimeoutMs?: number;
+}
+export interface GraphQueryOptions {
+  /**
+   * Returned-row cap: integer 0..65536. Omitted or 0 selects 1024.
+   * Exceeding it throws ZeppelinError with ZE_ERR_BUDGET_EXCEEDED; never truncates.
+   * Other engine memory/work limits still apply.
+   */
+  readonly maxRows?: number;
+}
+/** Existing node ID or a zero-based node item in this same atomic batch. */
+export type GraphEndpoint = bigint | { readonly local: number };
+interface GraphKeyedMutation {
+  readonly namespace: string;
+  readonly key: string;
+  /** Positive unsigned 64-bit revision. Exact keyed retries return Replayed. */
+  readonly revision: bigint;
+}
+type GraphWriteOperation =
+  | { readonly operation: 'create' }
+  | { readonly operation: 'put'; readonly expectedId: bigint }
+  | { readonly operation: 'recreate'; readonly expectedDeletionRevision: bigint };
+/** Full replacement image: omitted labels/properties/text become empty/absent. No vectors. */
+export type GraphNodeWrite = GraphKeyedMutation & GraphWriteOperation & {
+  readonly kind: 'node';
+  readonly labels?: readonly string[];
+  readonly properties?: GraphProperties;
+  readonly text?: string;
+};
+export type GraphRelationshipWrite = GraphKeyedMutation & GraphWriteOperation & {
+  readonly kind: 'relationship';
+  readonly type: string;
+  readonly source: GraphEndpoint;
+  readonly target: GraphEndpoint;
+  readonly properties?: GraphProperties;
+};
+export type GraphDelete = GraphKeyedMutation & {
+  readonly operation: 'delete';
+  readonly expectedId: bigint;
+} & ({ readonly kind: 'node'; readonly detach?: boolean } | { readonly kind: 'relationship' });
+export type GraphMutation = GraphNodeWrite | GraphRelationshipWrite | GraphDelete;
+/**
+ * Synchronous graph/Cypher client, currently supported only on macOS arm64.
+ * Documents are nodes; apply commits nodes and relationships together. A legacy
+ * Store uses a different on-disk store kind and cannot share this transaction.
+ * Close explicitly to release the single-writer lock. Native finalization is
+ * only a cleanup safety net.
+ */
+export class GraphStore {
+  private constructor();
+  static isSupported(): boolean;
+  /** Throws ZE_ERR_UNSUPPORTED on builds without graph support. */
+  static open(path: string, options?: GraphOpenOptions): GraphStore;
+  /** Idempotent. Subsequent operations throw ZE_ERR_CLOSED. */
+  close(): void;
+  /**
+   * Atomically applies at most 16384 keyed mutations; no partial batches.
+   * Items and properties must be plain data objects. Invalid input is rejected
+   * before effects. Errors retain disposition and known generations: do not
+   * assume an Indeterminate or Committed error means nothing was written.
+   */
+  apply(items: readonly GraphMutation[]): GraphResult;
+  /**
+   * Executes the engine's documented Cypher profile, including mutations.
+   * Parameters are scalar only; bigint values must fit signed I64. Unknown
+   * options, nonfinite numbers and malformed Unicode are rejected. No graph
+   * search, vector input, or list parameters in this release.
+   */
+  cypher(text: string, params?: Readonly<Record<string, GraphScalar>>, options?: GraphQueryOptions): GraphResult;
+}

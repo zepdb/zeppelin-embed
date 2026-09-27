@@ -102,6 +102,9 @@ function translateError(error) {
     const translated = new ZeppelinError(error.message, error.code, error.errorCode);
     // A failed revision condition names the document the caller must re-read.
     if (error.conflict !== undefined) translated.conflict = error.conflict;
+    for (const key of ['disposition', 'generation', 'admittedGeneration', 'changedGeneration']) {
+      if (error[key] !== undefined) translated[key] = error[key];
+    }
     return translated;
   }
   return error;
@@ -392,7 +395,127 @@ function verify(storePath) {
   return callNative(() => binding.verify(storePath));
 }
 
+
+function graphInvalid(message) {
+  const error = new ZeppelinError(message, 'ZE_ERR_INVALID_ARGUMENT', 1);
+  error.disposition = 'NotCommitted';
+  throw error;
+}
+function graphObject(value, allowed, field) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value) ||
+      ![Object.prototype, null].includes(Object.getPrototypeOf(value))) graphInvalid(`${field} must be a plain object`);
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== 'string' || (allowed && !allowed.includes(key))) graphInvalid(`unknown ${field} field: ${String(key)}`);
+    if (!Object.getOwnPropertyDescriptor(value, key).hasOwnProperty('value')) graphInvalid(`${field} must not contain accessors`);
+  }
+}
+function graphString(value, field) {
+  if (typeof value !== 'string') graphInvalid(`${field} must be a string`);
+  // Reject unpaired UTF-16 surrogates instead of silently replacing input bytes.
+  for (let i = 0; i < value.length; i++) {
+    const c = value.charCodeAt(i);
+    if (c >= 0xd800 && c <= 0xdbff) {
+      const next = value.charCodeAt(++i);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) graphInvalid(`${field} must be valid Unicode`);
+    } else if (c >= 0xdc00 && c <= 0xdfff) graphInvalid(`${field} must be valid Unicode`);
+  }
+}
+function graphUnsigned(value, bits, field) {
+  if (typeof value !== 'bigint' || value <= 0n || value >= (1n << BigInt(bits))) graphInvalid(`${field} must be a positive ${bits}-bit bigint`);
+}
+function graphScalar(value) {
+  if (value === null || typeof value === 'boolean') return;
+  if (typeof value === 'string') return graphString(value, 'value');
+  if (typeof value === 'bigint' && value >= -(1n << 63n) && value < (1n << 63n)) return;
+  if (typeof value === 'number' && Number.isFinite(value)) return;
+  graphInvalid('values must be null, boolean, signed 64-bit bigint, finite number or string');
+}
+function graphProperties(properties) {
+  if (properties === undefined) return;
+  graphObject(properties, null, 'properties');
+  for (const [key, value] of Object.entries(properties)) {
+    graphString(key, 'property name');
+    if (Array.isArray(value)) {
+      for (const element of value) {
+        graphScalar(element);
+        if (element === null || typeof element !== typeof value[0]) graphInvalid('property lists must be homogeneous non-null scalars');
+      }
+    } else graphScalar(value);
+  }
+}
+function graphEndpoint(value) {
+  if (typeof value === 'bigint') return graphUnsigned(value, 128, 'endpoint');
+  graphObject(value, ['local'], 'endpoint');
+  if (!Number.isInteger(value.local) || value.local < 0 || value.local > 0xffffffff) graphInvalid('local endpoint must be an unsigned item index');
+}
+const graphConstruction = Symbol('graph construction');
+class GraphStore {
+  #native;
+  constructor(token, native) {
+    if (token !== graphConstruction) throw new TypeError('use GraphStore.open(path, options)');
+    this.#native = native;
+  }
+  static isSupported() { return binding.graphSupported === true; }
+  static open(storePath, options = {}) {
+    if (!GraphStore.isSupported()) throw new ZeppelinError('graph requires macOS arm64', 'ZE_ERR_UNSUPPORTED', 11);
+    graphString(storePath, 'path');
+    graphObject(options, ['mode', 'maxResidentBytes', 'readerDrainTimeoutMs'], 'open options');
+    const mode = options.mode ?? 'create';
+    if (!['create', 'readWrite', 'readOnly'].includes(mode)) graphInvalid('unknown graph open mode');
+    const maxResidentBytes = options.maxResidentBytes ?? 268435456;
+    const readerDrainTimeoutMs = options.readerDrainTimeoutMs ?? 250;
+    if (!Number.isSafeInteger(maxResidentBytes) || maxResidentBytes < 1 || maxResidentBytes > 268435456) graphInvalid('maxResidentBytes must be in 1..268435456');
+    if (!Number.isSafeInteger(readerDrainTimeoutMs) || readerDrainTimeoutMs < 0) graphInvalid('readerDrainTimeoutMs must be a nonnegative safe integer');
+    // Construct through a private token so the native handle cannot be supplied by a caller.
+    return GraphStore.#create(callNative(() => binding.graphOpen(storePath, ['create', 'readWrite', 'readOnly'].indexOf(mode), maxResidentBytes, readerDrainTimeoutMs)));
+  }
+  static #create(native) {
+    return new GraphStore(graphConstruction, native);
+  }
+  close() { return callNative(() => binding.graphClose(this.#native)); }
+  apply(items) {
+    if (!Array.isArray(items) || items.length > 16384) graphInvalid('items must be an array of at most 16384 mutations');
+    for (const item of items) {
+      graphObject(item, ['kind', 'operation', 'namespace', 'key', 'revision', 'expectedId', 'expectedDeletionRevision', 'detach', 'labels', 'properties', 'text', 'type', 'source', 'target'], 'item');
+      if (!['node', 'relationship'].includes(item.kind)) graphInvalid('kind must be node or relationship');
+      if (!['create', 'put', 'delete', 'recreate'].includes(item.operation)) graphInvalid('unknown operation');
+      graphString(item.namespace, 'namespace'); graphString(item.key, 'key'); graphUnsigned(item.revision, 64, 'revision');
+      if (['put', 'delete'].includes(item.operation)) graphUnsigned(item.expectedId, 128, 'expectedId');
+      else if (item.expectedId !== undefined) graphInvalid('expectedId is only valid for put/delete');
+      if (item.operation === 'recreate') graphUnsigned(item.expectedDeletionRevision, 64, 'expectedDeletionRevision');
+      else if (item.expectedDeletionRevision !== undefined) graphInvalid('expectedDeletionRevision is only valid for recreate');
+      if (item.detach !== undefined && (item.operation !== 'delete' || item.kind !== 'node' || typeof item.detach !== 'boolean')) graphInvalid('detach is only valid for node delete');
+      if (item.operation === 'delete') {
+        for (const key of ['labels', 'properties', 'text', 'type', 'source', 'target']) if (item[key] !== undefined) graphInvalid(`delete does not accept ${key}`);
+        continue;
+      }
+      graphProperties(item.properties);
+      if (item.kind === 'node') {
+        if (item.type !== undefined || item.source !== undefined || item.target !== undefined) graphInvalid('node cannot have relationship fields');
+        if (item.labels !== undefined) {
+          if (!Array.isArray(item.labels)) graphInvalid('labels must be an array');
+          for (const label of item.labels) graphString(label, 'label');
+        }
+        if (item.text !== undefined) graphString(item.text, 'text');
+      } else {
+        if (item.labels !== undefined || item.text !== undefined) graphInvalid('relationship cannot have node fields');
+        graphString(item.type, 'type'); graphEndpoint(item.source); graphEndpoint(item.target);
+      }
+    }
+    return callNative(() => binding.graphApply(this.#native, items));
+  }
+  cypher(text, params = {}, options = {}) {
+    graphString(text, 'query'); graphObject(params, null, 'parameters');
+    for (const [name, value] of Object.entries(params)) { graphString(name, 'parameter name'); graphScalar(value); }
+    graphObject(options, ['maxRows'], 'query options');
+    const maxRows = options.maxRows ?? 0;
+    if (!Number.isInteger(maxRows) || maxRows < 0 || maxRows > 65536) graphInvalid('maxRows must be in 0..65536');
+    return callNative(() => binding.graphCypher(this.#native, text, params, maxRows));
+  }
+}
+
 module.exports = {
+  GraphStore,
   ABI_VERSION: binding.abiVersion,
   CancellationToken,
   Store,

@@ -472,3 +472,62 @@ try {
 original application's namespace spec. It retains tokenizer compatibility
 checks and rejects writes. Ordinary `Store` and `openNamespace` epoch/schema
 validation is unchanged. This shell inspects document stores, not graph stores.
+## Graph documents and Cypher (macOS arm64)
+
+`GraphStore` uses the existing graph store format. A document is a node, so a
+single `apply` commits document nodes and relationships atomically. A legacy
+`Store` directory cannot be opened as a graph store or participate in its writes.
+`GraphStore.isSupported()` returns false on the Intel macOS and Windows builds;
+`open` then throws `ZeppelinError` with `ZE_ERR_UNSUPPORTED`.
+
+```js
+const { GraphStore } = require('@zepdb/zeppelin-embed');
+const graph = GraphStore.open('/path/to/new-graph');
+try {
+  const result = graph.apply([
+    { kind: 'node', operation: 'create', namespace: 'notes', key: 'note-1',
+      revision: 1n, labels: ['Note'], text: 'Meeting notes',
+      properties: { title: 'Planning', done: false } },
+    { kind: 'node', operation: 'create', namespace: 'folders', key: 'work',
+      revision: 1n, labels: ['Folder'], properties: { name: 'Work' } },
+    { kind: 'relationship', operation: 'create', namespace: 'filing', key: 'note-1/work',
+      revision: 1n, type: 'IN_FOLDER', source: { local: 0 }, target: { local: 1 } },
+  ]);
+  console.log(result.disposition, result.generation, result.receipts);
+  console.log(graph.cypher(
+    'MATCH (n:Note)-[:IN_FOLDER]->(f:Folder) WHERE f.name = $name RETURN n, ze.stored_text(n)',
+    { name: 'Work' }, { maxRows: 4096 },
+  ).rows);
+} finally {
+  graph.close();
+}
+// Reopen explicitly: GraphStore.open(path, { mode: 'readWrite' }) or 'readOnly'.
+```
+
+Mutations are keyed by `(namespace, key)` with positive unsigned 64-bit bigint
+revisions. Exact retries report `Replayed`. `put` replaces the full image and
+requires `expectedId`; `delete` also requires `expectedId` (node deletion accepts
+`detach: true`); `recreate` requires `expectedDeletionRevision`. Endpoints are
+node IDs (`bigint`) or `{ local: index }` references into the same batch. At most
+16,384 items are accepted. Omitted image fields are empty/absent, not patches.
+
+Query results contain `columns`, `rows`, `receipts`, `disposition`,
+`admittedGeneration`, `changedGeneration`, and `generation` (changed when known,
+otherwise admitted). Values are null, boolean, I64 bigint, F64 number, string,
+node/relationship objects with a `kind` discriminator, or lists. Properties use
+scalar values or homogeneous scalar lists. Parameters are scalar only. Pass a
+bigint for an integer; ordinary JavaScript numbers are F64. IDs are unsigned
+128-bit bigints. Source text is distinct from properties; read it with
+`ze.stored_text(n)`.
+
+`maxRows` accepts integers 0..65,536; omitted or zero selects 1,024. Exceeding the
+cap throws `ZE_ERR_BUDGET_EXCEEDED` without truncation. Raising it permits larger results,
+subject to the engine's separate memory/work limits. Errors preserve settlement
+dispositions, including `NotCommitted`, `Committed`, `Replayed`, and
+`Indeterminate`; do not blindly retry a write because it threw. Invalid JS inputs
+are rejected before calling the engine.
+
+The [documented Cypher profile](https://github.com/zepdb/zeppelin-embed/blob/main/crates/zeppelin-embed-cypher/README.md)
+defines supported statements and functions. This binding does not add syntax,
+graph search, vector inputs, or list parameters. Calls are synchronous; Electron
+applications should run potentially long queries off the UI thread.

@@ -70,7 +70,8 @@ if (isDarwin) {
     // from the bare `target/release` directory.
     run(
       'cargo',
-      ['build', '--locked', '--release', '--target', slice.rustTarget, '-p', 'zeppelin-embed-ffi'],
+      ['build', '--locked', '--release', '--target', slice.rustTarget, '-p', 'zeppelin-embed-ffi',
+        ...(slice.clangArch === 'arm64' ? ['--features', 'graph-cypher'] : [])],
       { cwd: repository, env: environment },
     );
     mkdirSync(dirname(output), { recursive: true });
@@ -87,6 +88,7 @@ if (isDarwin) {
         '-arch',
         slice.clangArch,
         '-DNAPI_VERSION=8',
+        ...(slice.clangArch === 'arm64' ? ['-DZE_GRAPH'] : []),
         '-I',
         nodeHeaders,
         '-I',

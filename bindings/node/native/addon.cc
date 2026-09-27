@@ -7,10 +7,14 @@
 #include <memory>
 #include <new>
 #include <string>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
 #include "zeppelin_embed.h"
+#ifdef ZE_GRAPH
+#include "zeppelin_graph_contracts.h"
+#endif
 
 namespace {
 
@@ -3708,7 +3712,17 @@ napi_value FreeCancelToken(napi_env env, napi_callback_info info) {
   });
 }
 
+#include "graph.inc"
+
 napi_value Initialize(napi_env env, napi_value exports) {
+  napi_value graph_supported;
+#ifdef ZE_GRAPH
+  const bool has_graph = true;
+#else
+  const bool has_graph = false;
+#endif
+  if (!NapiOk(env, napi_get_boolean(env, has_graph, &graph_supported), "graph support") ||
+      !SetNamed(env, exports, "graphSupported", graph_supported)) return nullptr;
   napi_property_descriptor methods[] = {
       {"ingest", nullptr, Ingest, nullptr, nullptr, nullptr, napi_default,
        nullptr},
@@ -3762,6 +3776,12 @@ napi_value Initialize(napi_env env, napi_value exports) {
       {"cancelToken", CancelToken},
       {"freeCancelToken", FreeCancelToken},
       {"verify", VerifyStore},
+#ifdef ZE_GRAPH
+      {"graphOpen", GraphOpen},
+      {"graphClose", GraphClose},
+      {"graphApply", GraphApply},
+      {"graphCypher", GraphCypher},
+#endif
   };
   for (const auto &entry : functions) {
     napi_value function;
