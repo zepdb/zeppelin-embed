@@ -617,7 +617,7 @@ fn run_ze46_real_consolidation_preserves_exact_state_and_reopens() {
         assert_eq!(old.lexical, new.lexical);
         assert_eq!(old.ordinal, new.ordinal);
         assert_eq!(old_peer.ordinal, new_peer.ordinal);
-        assert_eq!(old_peer.record, new_peer.record);
+        assert_ne!(old_peer.record, new_peer.record);
     }
     drop(current);
 
@@ -733,14 +733,183 @@ pub(crate) fn node_directory_value(
 }
 
 #[test]
+fn ze260_maintenance_moves_an_oversized_oldest_record_alone() {
+    use crate::property_graph::{GraphProperty, PropertyData, PropertyValue};
+    let parent = super::tempfile::tempdir().unwrap();
+    let store = Store::create_native_graph(parent.path().join("native"), options(), None).unwrap();
+    let large = "x".repeat(1024 * 1024 + 1);
+    let mut properties = [GraphProperty::new(
+        GraphName::new("large").unwrap(),
+        PropertyValue::new(PropertyData::String(&large)).unwrap(),
+    )];
+    let image = CanonicalContents::node(&mut [], &mut properties, None, None).unwrap();
+    let small = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    let writes = [(&image, "large"), (&small, "small")].map(|(image, name)| StructuredWrite {
+        key: ApplicationKey::new(EntityKind::Node, "oversized", name).unwrap(),
+        revision: GraphRevision::new(1).unwrap(),
+        operation: StructuredOperation::Create,
+        image: Some(WriteImage::Node(image)),
+    });
+    let receipts = store
+        .apply_native_graph(&writes, &QueryControl::Cancel(CancelToken::new()))
+        .unwrap();
+    let nodes = receipts
+        .iter()
+        .map(|receipt| match receipt.entity {
+            EntityId::Node(node) => node,
+            EntityId::Relationship(_) => panic!("expected node"),
+        })
+        .collect::<Vec<_>>();
+    let records = || {
+        let lease = store.admit_native_read().unwrap();
+        nodes
+            .iter()
+            .map(|node| node_directory_value(&store, &lease, *node))
+            .collect::<Vec<_>>()
+    };
+    let before = records();
+    commit_maintenance(&store).unwrap();
+    let after = records();
+    assert_ne!(after[0], before[0], "oversized oldest record must move");
+    assert_eq!(after[1], before[1], "oversized record must move alone");
+    store.close().unwrap();
+}
+
+#[test]
+fn ze260_maintenance_drains_the_oldest_pack_in_one_call() {
+    let parent = super::tempfile::tempdir().unwrap();
+    let path = parent.path().join("native");
+    let store = Store::create_native_graph(&path, options(), None).unwrap();
+    for batch in 0..20 {
+        crate::property_graph::with_local_refs(|refs| {
+            let names: Vec<_> = (0..10).map(|n| format!("{batch}-{n}")).collect();
+            let image = CanonicalContents::node(&mut [], &mut [], Some("payload"), None).unwrap();
+            let mut writes: Vec<_> = names
+                .iter()
+                .map(|name| StructuredWrite {
+                    key: ApplicationKey::new(EntityKind::Node, "drain", name).unwrap(),
+                    revision: GraphRevision::new(1).unwrap(),
+                    operation: StructuredOperation::Create,
+                    image: Some(WriteImage::Node(&image)),
+                })
+                .collect();
+            writes.push(StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Relationship, "drain", &names[0]).unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Relationship {
+                    source: NodeRef::Local(refs.node(0).unwrap()),
+                    target: NodeRef::Local(refs.node(1).unwrap()),
+                    relationship_type: GraphName::new("LINKS").unwrap(),
+                    properties: &[],
+                }),
+            });
+            store
+                .apply_native_graph(&writes, &QueryControl::Cancel(CancelToken::new()))
+                .unwrap();
+        });
+    }
+    let records = |lease: &super::super::NativeReadLease, newer_than: Option<u64>| {
+        use crate::property_graph::storage::{
+            NativePreparationCatalog, payload::PayloadRef, records::verify_record,
+            stream::PayloadSlice, tree::Key,
+        };
+        let shared = crate::property_graph::resources::GraphResources::from_store(&store).unwrap();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let writer = WriteMemory::new(&shared, WriteLimits::default()).unwrap();
+        let memory = StorageMemory::new(&writer, &control, 32 * 1024 * 1024).unwrap();
+        let source = NativePreparationSource::new(lease, &memory, 512).unwrap();
+        let mut resources = source.resources(128 * 1024 * 1024).unwrap();
+        let catalog = NativePreparationCatalog::open(&source, &mut resources).unwrap();
+        let mut records = BTreeMap::new();
+        let mut counts = [0; 2];
+        for (index, kind) in [TreeKind::Nodes, TreeKind::Relationships]
+            .into_iter()
+            .enumerate()
+        {
+            let root = lease.bundle().roots().directory(kind).unwrap();
+            let mut cursor = DirectoryCursor::seek(&source, root, None, &mut resources).unwrap();
+            while let Some(entry) = cursor.next_entry(&mut resources).unwrap() {
+                let Key::Inline(key) = entry.key() else {
+                    panic!("entity key must be inline");
+                };
+                let id = u128::from_le_bytes(key.try_into().unwrap());
+                let entity = if kind == TreeKind::Nodes {
+                    EntityId::Node(crate::property_graph::NodeId::new(id).unwrap())
+                } else {
+                    EntityId::Relationship(crate::property_graph::RelId::new(id).unwrap())
+                };
+                let reference = PayloadRef::decode(entry.value()).unwrap();
+                if let Some(oldest) = newer_than {
+                    let block = source
+                        .resolve(reference.reference(), &mut resources)
+                        .unwrap();
+                    assert!(
+                        block.identity().creation_serial > oldest,
+                        "record pack must be newer than oldest"
+                    );
+                }
+                let record = verify_record(
+                    PayloadSlice::new(
+                        &source,
+                        root.store(),
+                        entry.creation_generation(),
+                        reference,
+                    ),
+                    entity,
+                    &catalog,
+                    None,
+                    &mut resources,
+                )
+                .unwrap();
+                let mut canonical = vec![0; record.canonical_bytes().len() as usize];
+                assert_eq!(
+                    record
+                        .canonical_bytes()
+                        .read_at(0, &mut canonical, &mut resources)
+                        .unwrap(),
+                    canonical.len()
+                );
+                assert!(
+                    records
+                        .insert(entity, (record.revision().get(), canonical))
+                        .is_none()
+                );
+                counts[index] += 1;
+            }
+        }
+        assert_eq!(counts, [200, 20]);
+        records
+    };
+    let lease = store.admit_native_read().unwrap();
+    let oldest = prepared_union_for_lease(&store, &lease)
+        .into_iter()
+        .min_by_key(|change| change.object.serial)
+        .unwrap()
+        .object
+        .serial;
+    let before = records(&lease, None);
+    drop(lease);
+    let report = commit_maintenance(&store).unwrap();
+    let lease = store.admit_native_read().unwrap();
+    assert_eq!(records(&lease, Some(oldest)), before);
+    assert!(report.replaced_physical_refs >= 33);
+    drop(lease);
+    store.close().unwrap();
+    Store::open_native_graph(&path, options(), None)
+        .unwrap()
+        .close()
+        .unwrap();
+}
+
+#[test]
 fn ze46_consolidation_rotates_through_every_node() {
     run_ze46_consolidation_rotates_through_every_node();
 }
 
 fn run_ze46_consolidation_rotates_through_every_node() {
-    // Relocation must make progress over the whole directory. Each call moves
-    // the live node whose directory entry has waited longest; a moved entry
-    // becomes the newest, so N calls move N different nodes.
+    // Relocation must move every node before moving one again. A bounded
+    // call may move several nodes; this three-node store needs at most three.
     let parent = super::tempfile::tempdir().expect("temporary parent");
     let path = parent.path().join("native");
     let store = Store::create_native_graph(&path, options(), None).expect("fresh native store");
@@ -780,14 +949,18 @@ fn run_ze46_consolidation_rotates_through_every_node() {
         let changed: Vec<_> = (0..nodes.len())
             .filter(|index| current[*index] != previous[*index])
             .collect();
-        assert_eq!(changed.len(), 1, "call {call} moved nodes {changed:?}");
-        assert!(
-            !moved[changed[0]],
-            "call {call} moved node {} again before the others",
-            changed[0]
-        );
-        moved[changed[0]] = true;
+        assert!(!changed.is_empty(), "call {call} moved no nodes");
+        for index in changed {
+            assert!(
+                !moved[index],
+                "call {call} moved node {index} again before the others"
+            );
+            moved[index] = true;
+        }
         previous = current;
+        if moved.iter().all(|moved| *moved) {
+            break;
+        }
     }
     assert!(moved.iter().all(|moved| *moved));
     assert!(

@@ -581,6 +581,7 @@ pub(super) fn relocate_sparse_state<B: BlockSource, S: BlockSink>(
     mut state: SparseRootState,
     modality: Modality,
     relocation: RecordRelocation,
+    relocations: &[RecordRelocation],
     generation: GraphGeneration,
     sequence: u64,
     memory: &StorageMemory<'_>,
@@ -590,11 +591,20 @@ pub(super) fn relocate_sparse_state<B: BlockSource, S: BlockSink>(
     let miss_peer = MISS_NEXT_MAINTENANCE_PEER_RETARGET.with(|scheduled| scheduled.replace(false));
     #[cfg(not(any(test, feature = "test-support")))]
     let miss_peer = false;
-    let node_key = relocation.node.get().to_le_bytes();
-    let Some(member_entry) = lookup_entry(source, state.members, &node_key, resources)? else {
+    let crate::property_graph::EntityId::Node(node) = relocation.entity else {
+        return Ok(state);
+    };
+    let node_key = node.get().to_le_bytes();
+    let Some(member_entry) = lookup_entry(&*sink, state.members, &node_key, resources)? else {
         return Ok(state);
     };
     let selected_member = MembershipRow::decode(member_entry.value())?;
+    // A prior selected node in this cohort already patched all its relocations.
+    let current = sink.resolve(selected_member.source, resources)?;
+    let current_manifest = SourceManifest::decode(current.payload())?;
+    if current_manifest.generation == generation && current_manifest.sequence == sequence {
+        return Ok(state);
+    }
     let source_block = source.resolve(selected_member.source, resources)?;
     if source_block.reference() != selected_member.source
         || selected_member.source.kind != BlockKind::CommitParticipant
@@ -611,7 +621,7 @@ pub(super) fn relocate_sparse_state<B: BlockSource, S: BlockSink>(
     }
     let mut old_source_key = [0_u8; 32];
     artifact::encode_reference(selected_member.source, &mut old_source_key)?;
-    let source_entry = lookup_entry(source, state.sources, &old_source_key, resources)?
+    let source_entry = lookup_entry(&*sink, state.sources, &old_source_key, resources)?
         .ok_or(TreeError::Invalid("maintenance sparse source is absent"))?;
     let source_value = SourceValue::decode(source_entry.value())?;
     let mask = PayloadSlice::new(
@@ -636,7 +646,7 @@ pub(super) fn relocate_sparse_state<B: BlockSource, S: BlockSink>(
         return Err(TreeError::Invalid("short maintenance sparse selected row"));
     }
     let selected_row = SparseRow::decode(&selected_bytes)?;
-    if selected_row.node != relocation.node
+    if selected_row.node != node
         || selected_row.revision != relocation.revision
         || selected_row.record != relocation.old_record
     {
@@ -644,13 +654,47 @@ pub(super) fn relocate_sparse_state<B: BlockSource, S: BlockSink>(
             "maintenance sparse relocation correlation",
         ));
     }
-    let mut replacement_record = [0_u8; 48];
-    relocation.new_record.encode_into(&mut replacement_record)?;
-    let patch_start = u64::from(selected_member.row)
-        .checked_mul(ROW_BYTES as u64)
-        .and_then(|offset| offset.checked_add(24))
-        .ok_or(TreeError::Work)?;
-    let patch_end = patch_start.checked_add(48).ok_or(TreeError::Work)?;
+    let mut patches = StorageBuffer::new(memory, relocations.len())?;
+    for candidate in relocations {
+        resources.step(1)?;
+        let crate::property_graph::EntityId::Node(candidate_node) = candidate.entity else {
+            continue;
+        };
+        let Some(entry) = lookup_entry(
+            &*sink,
+            state.members,
+            &candidate_node.get().to_le_bytes(),
+            resources,
+        )?
+        else {
+            continue;
+        };
+        let member = MembershipRow::decode(entry.value())?;
+        if member.source != selected_member.source {
+            continue;
+        }
+        let mut bytes = [0_u8; ROW_BYTES];
+        if table.read_at(
+            u64::from(member.row) * ROW_BYTES as u64,
+            &mut bytes,
+            resources,
+        )? != ROW_BYTES
+        {
+            return Err(TreeError::Invalid("short maintenance sparse patch row"));
+        }
+        let row = SparseRow::decode(&bytes)?;
+        if row.node != candidate_node
+            || row.revision != candidate.revision
+            || row.record != candidate.old_record
+        {
+            return Err(TreeError::Invalid(
+                "maintenance sparse relocation correlation",
+            ));
+        }
+        let mut replacement = [0_u8; 48];
+        candidate.new_record.encode_into(&mut replacement)?;
+        patches.push((u64::from(member.row) * ROW_BYTES as u64 + 24, replacement))?;
+    }
     let table_length = usize::try_from(manifest.row_table.len()).map_err(|_| TreeError::Memory)?;
     let row_table = prepare_stream(
         sink,
@@ -665,23 +709,28 @@ pub(super) fn relocate_sparse_state<B: BlockSource, S: BlockSink>(
             let output_end = offset
                 .checked_add(output.len() as u64)
                 .ok_or(TreeError::Work)?;
-            let overlap_start = offset.max(patch_start);
-            let overlap_end = output_end.min(patch_end);
-            if overlap_start < overlap_end {
-                let target_start =
-                    usize::try_from(overlap_start - offset).map_err(|_| TreeError::Memory)?;
-                let source_start =
-                    usize::try_from(overlap_start - patch_start).map_err(|_| TreeError::Memory)?;
-                let length =
-                    usize::try_from(overlap_end - overlap_start).map_err(|_| TreeError::Memory)?;
-                output
-                    .get_mut(target_start..target_start + length)
-                    .ok_or(TreeError::Invalid("maintenance sparse patch extent"))?
-                    .copy_from_slice(
-                        replacement_record
-                            .get(source_start..source_start + length)
-                            .ok_or(TreeError::Invalid("maintenance sparse patch source"))?,
-                    );
+            for (patch_start, replacement_record) in patches.as_slice() {
+                r.step(1)?;
+                let patch_start = *patch_start;
+                let patch_end = patch_start + 48;
+                let overlap_start = offset.max(patch_start);
+                let overlap_end = output_end.min(patch_end);
+                if overlap_start < overlap_end {
+                    let target_start =
+                        usize::try_from(overlap_start - offset).map_err(|_| TreeError::Memory)?;
+                    let source_start = usize::try_from(overlap_start - patch_start)
+                        .map_err(|_| TreeError::Memory)?;
+                    let length = usize::try_from(overlap_end - overlap_start)
+                        .map_err(|_| TreeError::Memory)?;
+                    output
+                        .get_mut(target_start..target_start + length)
+                        .ok_or(TreeError::Invalid("maintenance sparse patch extent"))?
+                        .copy_from_slice(
+                            replacement_record
+                                .get(source_start..source_start + length)
+                                .ok_or(TreeError::Invalid("maintenance sparse patch source"))?,
+                        );
+                }
             }
             Ok(())
         },
@@ -778,7 +827,7 @@ pub(super) fn relocate_sparse_state<B: BlockSource, S: BlockSink>(
             row: ordinal,
         }
         .encode(&mut encoded)?;
-        if miss_peer && row.node != relocation.node {
+        if miss_peer && row.node != node {
             continue;
         }
         state.members = insert_checked(
@@ -795,7 +844,7 @@ pub(super) fn relocate_sparse_state<B: BlockSource, S: BlockSink>(
                 .checked_add(u64::from(row.analyzed_length))
                 .ok_or(TreeError::Work)?;
         }
-        observed_selected |= row.node == relocation.node && ordinal == selected_member.row;
+        observed_selected |= row.node == node && ordinal == selected_member.row;
     }
     if !observed_selected
         || live_rows != source_value.live_rows
@@ -822,8 +871,7 @@ pub(super) fn prepare_sparse_relocated_roots<B: BlockSource, S: BlockSink, C: Re
     memory: &StorageMemory<'_>,
     resources: &mut TreeResources<'_>,
 ) -> Result<SparsePhysicalRoots, TreeError> {
-    if relocations.len() > 1
-        || target_native.store() != base_native.store()
+    if target_native.store() != base_native.store()
         || target_native.generation().get()
             != base_native
                 .generation()
@@ -900,13 +948,14 @@ pub(super) fn prepare_sparse_relocated_roots<B: BlockSource, S: BlockSink, C: Re
             checkpoint: text_state.checkpoint,
         }
     };
-    if let Some(relocation) = relocations.first().copied() {
+    for relocation in relocations.iter().copied() {
         text_state = relocate_sparse_state(
             source,
             sink,
             text_state,
             Modality::Text,
             relocation,
+            relocations,
             generation,
             target_sequence,
             memory,
@@ -918,6 +967,7 @@ pub(super) fn prepare_sparse_relocated_roots<B: BlockSource, S: BlockSink, C: Re
             vector_state,
             Modality::Vector,
             relocation,
+            relocations,
             generation,
             target_sequence,
             memory,

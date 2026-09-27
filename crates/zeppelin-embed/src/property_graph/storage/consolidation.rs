@@ -10,14 +10,14 @@ use super::memory::{StorageBuffer, StorageMemory};
 use super::payload::{PayloadRef, prepare_stream};
 use super::records::{
     NativeDirectoryValues, NodeRecordState, RecordCatalog, RecordInput, prepare_record,
-    verify_node_state,
+    verify_node_state, verify_record,
 };
 use super::stream::PayloadSlice;
 use super::tree::Key;
 use super::tree::TreeKind;
 use super::tree::directory::{
-    BlockSink, DirectoryCursor, DirectoryMutation, GraphRoots, TreeError, TreeResources,
-    TreeScratch, insert_checked,
+    BlockSink, DirectoryCursor, DirectoryMutation, DirectoryOp, GraphRoots, TreeError,
+    TreeResources, TreeScratch, apply_sorted_checked,
 };
 use crate::epoch::EmbeddingTower;
 use crate::property_graph::wal::{InventoryState, RequiredRef};
@@ -52,7 +52,7 @@ impl Drop for SelectionPin {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct RecordRelocation {
-    pub(crate) node: NodeId,
+    pub(crate) entity: EntityId,
     pub(crate) revision: u64,
     pub(crate) old_record: PayloadRef,
     pub(crate) new_record: PayloadRef,
@@ -126,7 +126,7 @@ pub(crate) fn prepare_one_replacement<'lease, 'm, T, C>(
 ) -> Result<ConsolidationOutcome<'m>, TreeError>
 where
     T: BlockSink,
-    C: RecordCatalog<NativePreparationSource<'lease, 'm>> + RecordCatalog<T>,
+    C: for<'s> RecordCatalog<NativePreparationSource<'s, 'm>> + RecordCatalog<T>,
 {
     resources.require_preparation(memory)?;
     let generation = GraphGeneration::new(
@@ -138,17 +138,28 @@ where
     let context = RangeEditContext::new(base.generation(), base_sequence)?;
     let mut roots = base.for_generation(generation)?;
 
-    let node_root = base.directory(TreeKind::Nodes)?;
-    let mut relocations = StorageBuffer::new(memory, 1)?;
+    let mut relocations = StorageBuffer::new(memory, RELOCATION_LIMIT)?;
     let mut tree = TreeScratch::for_prepare(memory)?;
     let mut replaced_physical_refs = 0_u64;
-    if let Some((key, node, record_reference, record_generation, record)) = select_live_node(
-        source, base, node_root, catalog, document, manifests, resources,
-    )? {
+    let selected =
+        select_live_records_in_oldest_packs(source, base, catalog, document, manifests, resources)?;
+    let mut values = StorageBuffer::new(memory, RELOCATION_LIMIT)?;
+    for selected in selected.as_slice() {
+        resources.step(1)?;
+        let scoped = NativePreparationSource::new(source.lease(), memory, 64)?;
+        let record_reference = selected.reference;
+        let record_generation = selected.generation;
+        let record = verify_record(
+            PayloadSlice::new(&scoped, base.store(), record_generation, record_reference),
+            selected.entity,
+            catalog,
+            document,
+            resources,
+        )?;
         let [old_canonical, old_provenance] = record.required_payloads();
         let revision = record.revision().get();
         let canonical_source =
-            PayloadSlice::new(source, base.store(), record_generation, old_canonical);
+            PayloadSlice::new(&scoped, base.store(), record_generation, old_canonical);
         let canonical = prepare_stream(
             sink,
             base.store(),
@@ -165,7 +176,7 @@ where
             resources,
         )?;
         let provenance_source =
-            PayloadSlice::new(source, base.store(), record_generation, old_provenance);
+            PayloadSlice::new(&scoped, base.store(), record_generation, old_provenance);
         let provenance = prepare_stream(
             sink,
             base.store(),
@@ -186,7 +197,7 @@ where
             RecordInput {
                 store: base.store(),
                 generation,
-                entity: EntityId::Node(node),
+                entity: selected.entity,
                 canonical,
                 provenance,
             },
@@ -198,26 +209,40 @@ where
         let mut encoded_record = [0_u8; 48];
         record.encode_into(&mut encoded_record)?;
         relocations.push(RecordRelocation {
-            node,
+            entity: selected.entity,
             revision,
             old_record: record_reference,
             new_record: record,
         })?;
-        let node_root = insert_checked(
-            sink,
-            DirectoryMutation::new(
-                node_root,
-                generation,
-                NativeDirectoryValues::new(catalog, document),
-            ),
-            &key,
-            &encoded_record,
-            &mut tree,
-            resources,
-        )?;
-        roots.replace(node_root)?;
-        // The record, its two payload streams and the node root moved.
-        replaced_physical_refs = 4;
+        values.push(encoded_record)?;
+        replaced_physical_refs += 3;
+    }
+    for kind in [TreeKind::Nodes, TreeKind::Relationships] {
+        let mut ops = StorageBuffer::new(memory, RELOCATION_LIMIT)?;
+        for (selected, value) in selected.as_slice().iter().zip(values.as_slice()) {
+            resources.step(1)?;
+            if selected.kind() == kind {
+                ops.push(DirectoryOp::Insert {
+                    key: &selected.key,
+                    value,
+                })?;
+            }
+        }
+        if !ops.as_slice().is_empty() {
+            let root = apply_sorted_checked(
+                sink,
+                DirectoryMutation::new(
+                    base.directory(kind)?,
+                    generation,
+                    NativeDirectoryValues::new(catalog, document),
+                ),
+                ops.as_slice(),
+                &mut tree,
+                resources,
+            )?;
+            roots.replace(root)?;
+            replaced_physical_refs += 1;
+        }
     }
 
     for kind in [TreeKind::OutRanges, TreeKind::InRanges] {
@@ -292,18 +317,28 @@ where
 }
 
 /// Oldest packs considered per selection round, and rounds per call. A pack
-/// may hold no live node record (tree pages, sparse rows, tombstones), so a
+/// may hold no live record (tree pages, sparse rows, tombstones), so a
 /// round that finds none moves its serial floor past that pack set.
 const OLDEST_PACKS: usize = 16;
 const SELECTION_ROUNDS: usize = 8;
 
-type SelectedNode<'a, S> = (
-    [u8; 16],
-    NodeId,
-    PayloadRef,
-    GraphGeneration,
-    super::records::RecordView<'a, S>,
-);
+const RELOCATION_LIMIT: usize = 512;
+const RELOCATION_BYTES: u64 = 1024 * 1024;
+
+struct SelectedRecord {
+    key: [u8; 16],
+    entity: EntityId,
+    reference: PayloadRef,
+    generation: GraphGeneration,
+}
+impl SelectedRecord {
+    fn kind(&self) -> TreeKind {
+        match self.entity {
+            EntityId::Node(_) => TreeKind::Nodes,
+            EntityId::Relationship(_) => TreeKind::Relationships,
+        }
+    }
+}
 
 /// Entries read through one source before its mappings are released.
 const SCAN_WINDOW: usize = 64;
@@ -320,7 +355,7 @@ fn scan_id_directory<'lease, 'm>(
         u128,
         super::tree::directory::DirectoryEntry<'_>,
         &mut TreeResources<'_>,
-    ) -> Result<(), TreeError>,
+    ) -> Result<bool, TreeError>,
 ) -> Result<(), TreeError> {
     let mut lower: Option<[u8; 16]> = None;
     loop {
@@ -344,7 +379,9 @@ fn scan_id_directory<'lease, 'm>(
                 key.try_into()
                     .map_err(|_| TreeError::Invalid("consolidation scan key width"))?,
             );
-            visit(id, entry, resources)?;
+            if !visit(id, entry, resources)? {
+                return Ok(());
+            }
             last = Some(id);
             rows += 1;
         }
@@ -412,7 +449,7 @@ fn oldest_packs<'lease, 'm>(
                 change.object.artifact,
             );
         }
-        Ok(())
+        Ok(true)
     })?;
     for required in manifests.iter().copied() {
         // A scoped source releases each manifest's mapping on return.
@@ -432,96 +469,116 @@ fn oldest_packs<'lease, 'm>(
     Ok(packs)
 }
 
-/// The live node whose record lives in the oldest pack. The rooted object
-/// inventory gives each pack's creation serial; a relocated record moves to
-/// the newest pack, so successive calls rotate through every node and drain
-/// the oldest packs first, with no persisted cursor. Records in packs that
-/// are not folded into the inventory yet are the youngest and wait. An empty
-/// graph, or one whose oldest packs hold no live node, selects nothing: that
-/// is a valid maintenance base, and fold and reclaim work never depend on it.
-fn select_live_node<'a, 'lease, 'm, C>(
-    source: &'a NativePreparationSource<'lease, 'm>,
+/// Select live records in the oldest bounded pack set, in directory key order.
+/// Empty pack sets advance the floor; tombstones never hide live neighbours.
+fn select_live_records_in_oldest_packs<'lease, 'm, C>(
+    source: &NativePreparationSource<'lease, 'm>,
     base: GraphRoots,
-    node_root: super::tree::directory::DirectoryRoot,
     catalog: &C,
     document: Option<&EmbeddingTower>,
     manifests: &[RequiredRef],
     resources: &mut TreeResources<'_>,
-) -> Result<Option<SelectedNode<'a, NativePreparationSource<'lease, 'm>>>, TreeError>
+) -> Result<StorageBuffer<'m, SelectedRecord>, TreeError>
 where
-    C: RecordCatalog<NativePreparationSource<'lease, 'm>>,
+    C: for<'s> RecordCatalog<NativePreparationSource<'s, 'm>>,
 {
+    let mut selected = StorageBuffer::new(source.memory(), RELOCATION_LIMIT)?;
+    let mut bytes = 0_u64;
     #[cfg(any(test, feature = "test-support"))]
-    if let Some(node) = PINNED_SELECTION.with(std::cell::Cell::get) {
-        let key = node.get().to_le_bytes();
-        let entry = super::tree::directory::lookup_entry(source, node_root, &key, resources)?
-            .ok_or(TreeError::Invalid("pinned consolidation node is absent"))?;
-        let record_reference = PayloadRef::decode(entry.value())?;
-        let record_generation = entry.creation_generation();
-        return match verify_node_state(
-            PayloadSlice::new(source, base.store(), record_generation, record_reference),
-            node,
-            catalog,
-            document,
-            resources,
-        )? {
-            NodeRecordState::Live(record) => Ok(Some((
-                key,
-                node,
-                record_reference,
-                record_generation,
-                record,
-            ))),
-            NodeRecordState::Tombstone(_) => {
-                Err(TreeError::Invalid("pinned consolidation node is deleted"))
-            }
-        };
-    }
+    let pinned = PINNED_SELECTION.with(std::cell::Cell::get);
+    #[cfg(not(any(test, feature = "test-support")))]
+    let pinned: Option<NodeId> = None;
     let mut floor = 0_u64;
     for _ in 0..SELECTION_ROUNDS {
         let (packs, len) = oldest_packs(source, base, manifests, floor, resources)?;
         let Some(packs) = packs.get(..len).filter(|packs| !packs.is_empty()) else {
-            return Ok(None);
+            return Ok(selected);
         };
-        let mut oldest: Option<(u64, u128, PayloadRef, GraphGeneration)> = None;
-        scan_id_directory(source, node_root, resources, |id, entry, _| {
-            let record_reference = PayloadRef::decode(entry.value())?;
-            let artifact = record_reference.reference().artifact;
-            if let Some((serial, _)) = packs.iter().flatten().find(|(_, pack)| *pack == artifact)
-                && oldest.is_none_or(|(other, other_id, _, _)| (*serial, id) < (other, other_id))
-            {
-                oldest = Some((*serial, id, record_reference, entry.creation_generation()));
+        let mut full = false;
+        for kind in [TreeKind::Nodes, TreeKind::Relationships] {
+            if full {
+                break;
             }
-            Ok(())
-        })?;
-        if let Some((serial, id, record_reference, record_generation)) = oldest {
-            let node =
-                NodeId::new(id).map_err(|_| TreeError::Invalid("consolidation node identity"))?;
-            if let NodeRecordState::Live(record) = verify_node_state(
-                PayloadSlice::new(source, base.store(), record_generation, record_reference),
-                node,
-                catalog,
-                document,
+            scan_id_directory(
+                source,
+                base.directory(kind)?,
                 resources,
-            )? {
-                return Ok(Some((
-                    id.to_le_bytes(),
-                    node,
-                    record_reference,
-                    record_generation,
-                    record,
-                )));
-            }
-            // A tombstone: look past its pack's serial. Tombstones in one pack
-            // share the floor, which only delays their live neighbours a call.
-            floor = serial;
-        } else {
-            floor = packs
-                .last()
-                .copied()
-                .flatten()
-                .map_or(u64::MAX, |(serial, _)| serial);
+                |id, entry, resources| {
+                    resources.step(1)?;
+                    let entity = match kind {
+                        TreeKind::Nodes => EntityId::Node(
+                            NodeId::new(id)
+                                .map_err(|_| TreeError::Invalid("consolidation node identity"))?,
+                        ),
+                        TreeKind::Relationships => {
+                            EntityId::Relationship(crate::property_graph::RelId::new(id).map_err(
+                                |_| TreeError::Invalid("consolidation relationship identity"),
+                            )?)
+                        }
+                        _ => return Err(TreeError::Invalid("consolidation directory kind")),
+                    };
+                    if pinned.is_some_and(|node| entity != EntityId::Node(node)) {
+                        return Ok(true);
+                    }
+                    let reference = PayloadRef::decode(entry.value())?;
+                    if pinned.is_none()
+                        && !packs
+                            .iter()
+                            .flatten()
+                            .any(|(_, pack)| *pack == reference.reference().artifact)
+                    {
+                        return Ok(true);
+                    }
+                    let generation = entry.creation_generation();
+                    let scoped = NativePreparationSource::new(source.lease(), source.memory(), 64)?;
+                    let payload = PayloadSlice::new(&scoped, base.store(), generation, reference);
+                    let record = match entity {
+                        EntityId::Node(node) => {
+                            match verify_node_state(payload, node, catalog, document, resources)? {
+                                NodeRecordState::Live(record) => record,
+                                // Tombstones stay in their packs until ZE-166's sweep;
+                                // delete-heavy stores cannot fully shrink yet.
+                                NodeRecordState::Tombstone(_) => return Ok(true),
+                            }
+                        }
+                        EntityId::Relationship(_) => {
+                            verify_record(payload, entity, catalog, document, resources)?
+                        }
+                    };
+                    let size = record
+                        .required_payloads()
+                        .iter()
+                        .try_fold(reference.len(), |total, payload| {
+                            total.checked_add(payload.len()).ok_or(TreeError::Work)
+                        })?;
+                    let next = bytes.checked_add(size).ok_or(TreeError::Work)?;
+                    // Admit an oversized first record alone so it cannot stall
+                    // the oldest pack forever behind the soft byte limit.
+                    if next > RELOCATION_BYTES && !selected.as_slice().is_empty() {
+                        full = true;
+                        return Ok(false);
+                    }
+                    selected.push(SelectedRecord {
+                        key: id.to_le_bytes(),
+                        entity,
+                        reference,
+                        generation,
+                    })?;
+                    bytes = next;
+                    full =
+                        selected.as_slice().len() == RELOCATION_LIMIT || bytes >= RELOCATION_BYTES;
+                    Ok(!full)
+                },
+            )?;
         }
+        if full || !selected.as_slice().is_empty() {
+            return Ok(selected);
+        }
+        floor = packs
+            .last()
+            .copied()
+            .flatten()
+            .map_or(u64::MAX, |(serial, _)| serial);
     }
-    Ok(None)
+    Ok(selected)
 }
