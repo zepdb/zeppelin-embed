@@ -4,8 +4,12 @@
 //! A crash between object creation and its WAL envelope leaves a complete
 //! object file that no inventory names. Retired spill and proof pages are the
 //! same kind of file: complete native objects with no inventory row. Neither
-//! can ever become a reclaim candidate, because candidates come only from the
-//! inventory.
+//! can become a reclaim candidate only after entering the inventory.
+//!
+//! Superseded root envelopes and WALs are different: the same quiescent scan
+//! adds them directly to the existing intent candidate list when unmarked.
+//! They are never adopted into ObjectInventory and use the same validated
+//! intent/unlink/completion path as inventoried objects.
 //!
 //! Adoption repairs the bookkeeping and nothing else. It never deletes. An
 //! adopted row is ordinary allocation bookkeeping; a later maintenance selects
@@ -132,7 +136,7 @@ fn claimed_descriptor(
     let serial = read_u64(header, 88)?;
     if header.len() != HEADER_BYTES
         || header.get(..8)? != MAGIC
-        || family != crate::format::FormatFamily::NativeGraphObject.id()
+        || !matches!(family, 17 | 18)
         || version != 1
         || flags != 0
         || read_u64(header, 16)? != HEADER_BYTES as u64
@@ -246,17 +250,20 @@ pub(in crate::lifecycle::native_graph) fn observe_digest(
 enum Classified {
     /// A complete unregistered object: ZE-46 adopts it as bookkeeping.
     Object(ArtifactDescriptor),
+    /// Immutable root or superseded WAL: intent candidate, never adopted.
+    History(ArtifactDescriptor),
     /// An interrupted creation with an intact header: ZE-165 unlinks it under
     /// a durable intent. It never becomes an object.
     Partial(PartialTarget),
 }
 
-/// One directory pass, two disjoint results.
+/// One directory pass: adoptions, partial targets, and history candidates.
 pub(super) struct OrphanSelection<'m> {
     /// Complete unregistered objects, as inventory rows to adopt.
     pub(super) adoptions: StorageBuffer<'m, InventoryChange>,
     /// Interrupted creations, sorted by artifact, as reclaim targets.
     pub(super) partials: StorageBuffer<'m, PartialTarget>,
+    pub(super) history: StorageBuffer<'m, ArtifactDescriptor>,
 }
 
 /// Select complete unregistered objects for adoption and interrupted
@@ -269,13 +276,13 @@ pub(super) fn select_adoptions<'m>(
     writer: &NativeSpillWriter<'_, 'm>,
     storage: &'m StorageMemory<'m>,
     resources: &mut TreeResources<'_>,
+    candidate_capacity: usize,
 ) -> Result<OrphanSelection<'m>, NativeGraphError> {
     let mut adoptions = StorageBuffer::new(storage, ADOPTION_LIMIT)?;
     let mut partials = StorageBuffer::new(storage, ADOPTION_LIMIT)?;
-    let mut found: [Option<ArtifactDescriptor>; ADOPTION_LIMIT] = [None; ADOPTION_LIMIT];
-    let mut found_len = 0_usize;
-    let mut targets: [Option<PartialTarget>; ADOPTION_LIMIT] = [None; ADOPTION_LIMIT];
-    let mut targets_len = 0_usize;
+    let mut found = StorageBuffer::new(storage, ADOPTION_LIMIT)?;
+    let mut targets = StorageBuffer::new(storage, ADOPTION_LIMIT)?;
+    let mut history = StorageBuffer::new(storage, candidate_capacity)?;
     let admitted = admission.lease.bundle();
     let quiescent = capture
         .wal()
@@ -290,6 +297,7 @@ pub(super) fn select_adoptions<'m>(
         return Ok(OrphanSelection {
             adoptions,
             partials,
+            history,
         });
     }
     #[cfg(any(test, feature = "test-support"))]
@@ -297,6 +305,7 @@ pub(super) fn select_adoptions<'m>(
         return Ok(OrphanSelection {
             adoptions,
             partials,
+            history,
         });
     }
     let inventory_root = admitted.roots().directory(TreeKind::ObjectInventory)?;
@@ -304,15 +313,65 @@ pub(super) fn select_adoptions<'m>(
     let mut failure: Option<NativeGraphError> = None;
     let vfs = admitted.vfs();
     let streamed = vfs.for_each_direct_child(admitted.directory(), &mut |path| {
-        if found_len == ADOPTION_LIMIT && targets_len == ADOPTION_LIMIT {
+        if found.as_slice().len() == ADOPTION_LIMIT
+            && targets.as_slice().len() + history.as_slice().len() == candidate_capacity
+        {
             return Ok(());
         }
-        let Some(named) = artifact_of(path) else {
+        let wal_named = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_prefix("graph-wal-")?.strip_suffix(".ze"))
+            .filter(|digits| {
+                digits.len() == 32
+                    && digits
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
+            .and_then(|digits| u128::from_str_radix(digits, 16).ok())
+            .and_then(|id| ArtifactId::new(id).ok());
+        let Some(named) = wal_named.or_else(|| artifact_of(path)) else {
             return Ok(());
         };
         let mut inspect = || -> Result<Option<Classified>, NativeGraphError> {
             resources.step(1)?;
             let length = vfs.open(path).map_err(|source| io(path, source))?;
+            if wal_named.is_some() {
+                if targets.as_slice().len() + history.as_slice().len() == candidate_capacity
+                    || length < crate::property_graph::wal::HEADER_BYTES as u64
+                    || length > u32::MAX as u64
+                    || live.contains(named, writer, resources)?
+                {
+                    return Ok(None);
+                }
+                let header = vfs
+                    .read_range(path, 0, crate::property_graph::wal::HEADER_BYTES)
+                    .map_err(|source| io(path, source))?;
+                let first = match NativePreparationSource::wal_first_sequence(
+                    &header,
+                    admitted.base().store,
+                ) {
+                    Ok(first) => first,
+                    Err(TreeError::Invalid(_)) => return Ok(None),
+                    Err(error) => return Err(error.into()),
+                };
+                if capture.wal().is_none_or(|wal| first > wal.first_sequence()) {
+                    return Ok(None);
+                }
+                // WAL headers have no allocation serial/generation. These are
+                // capture fences; identity, exact length and digest bind the file.
+                let descriptor = ArtifactDescriptor {
+                    store: admitted.base().store,
+                    artifact: named,
+                    generation: admitted.base().generation,
+                    serial: capture.serial_fence(),
+                    bytes: length as u32,
+                    family: 19,
+                    version: 1,
+                    checksum: observe_digest(vfs, path, length, resources)?,
+                };
+                return Ok(Some(Classified::History(descriptor)));
+            }
             // Shorter than one header is not ownership: a name alone grants
             // nothing, and there is nothing to read the store out of.
             if length < HEADER_BYTES as u64 || length > MAX_ARTIFACT_BYTES as u64 {
@@ -355,7 +414,11 @@ pub(super) fn select_adoptions<'m>(
                 // A complete-looking file that fails validation is unknown
                 // input, not an interrupted preparation: it is retained.
                 return match writer.validate_candidate(descriptor, resources) {
-                    Ok(()) => Ok(Some(Classified::Object(descriptor))),
+                    Ok(()) => Ok(Some(if descriptor.family == 18 {
+                        Classified::History(descriptor)
+                    } else {
+                        Classified::Object(descriptor)
+                    })),
                     Err(TreeError::Format(_) | TreeError::Invalid(_)) => Ok(None),
                     Err(error) => Err(error.into()),
                 };
@@ -381,16 +444,22 @@ pub(super) fn select_adoptions<'m>(
         };
         match inspect() {
             Ok(Some(Classified::Object(descriptor))) => {
-                if let Some(slot) = found.get_mut(found_len) {
-                    *slot = Some(descriptor);
-                    found_len += 1;
+                if found.as_slice().len() < ADOPTION_LIMIT {
+                    found
+                        .push(Some(descriptor))
+                        .map_err(std::io::Error::other)?;
                 }
                 Ok(())
             }
             Ok(Some(Classified::Partial(target))) => {
-                if let Some(slot) = targets.get_mut(targets_len) {
-                    *slot = Some(target);
-                    targets_len += 1;
+                if targets.as_slice().len() + history.as_slice().len() < candidate_capacity {
+                    targets.push(Some(target)).map_err(std::io::Error::other)?;
+                }
+                Ok(())
+            }
+            Ok(Some(Classified::History(descriptor))) => {
+                if targets.as_slice().len() + history.as_slice().len() < candidate_capacity {
+                    history.push(descriptor).map_err(std::io::Error::other)?;
                 }
                 Ok(())
             }
@@ -418,8 +487,8 @@ pub(super) fn select_adoptions<'m>(
                 }
             }
         };
-        registered(&mut found, required.object);
-        registered_partial(&mut targets, required.object);
+        registered(found.as_mut_slice(), required.object);
+        registered_partial(targets.as_mut_slice(), required.object);
         let scoped = NativePreparationSource::new_scoped(&admission.lease, storage, 1)?;
         for_each_prepared_descriptor(
             &scoped,
@@ -428,13 +497,13 @@ pub(super) fn select_adoptions<'m>(
             admitted.base().generation,
             resources,
             |listed| {
-                registered(&mut found, listed);
-                registered_partial(&mut targets, listed);
+                registered(found.as_mut_slice(), listed);
+                registered_partial(targets.as_mut_slice(), listed);
                 Ok(())
             },
         )?;
     }
-    for descriptor in found.into_iter().flatten() {
+    for descriptor in found.as_slice().iter().copied().flatten() {
         adoptions.push(InventoryChange {
             object: descriptor,
             state: InventoryState::Retained,
@@ -443,7 +512,7 @@ pub(super) fn select_adoptions<'m>(
     adoptions
         .as_mut_slice()
         .sort_unstable_by_key(|change| change.object.artifact);
-    for target in targets.into_iter().flatten() {
+    for target in targets.as_slice().iter().copied().flatten() {
         partials.push(target)?;
     }
     partials
@@ -452,6 +521,7 @@ pub(super) fn select_adoptions<'m>(
     Ok(OrphanSelection {
         adoptions,
         partials,
+        history,
     })
 }
 

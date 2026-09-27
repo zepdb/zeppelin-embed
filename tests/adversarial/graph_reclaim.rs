@@ -15,6 +15,7 @@ const FIRED: &[&str] = &[
     "property-graph.reclaim.orphan",
     "property-graph.reclaim.intent-unlink-completion",
     "property-graph.reclaim.page-relocation",
+    "property-graph.reclaim.superseded-history",
     "property-graph.reclaim.read-only-retirement",
 ];
 

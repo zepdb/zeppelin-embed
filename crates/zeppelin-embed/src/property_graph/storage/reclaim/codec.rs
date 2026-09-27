@@ -589,7 +589,7 @@ pub(super) fn encode_pending_intent(
             candidate.store != binding.store
                 || candidate.serial == 0
                 || candidate.serial > binding.serial_fence
-                || candidate.family != FormatFamily::NativeGraphObject.id()
+                || !matches!(candidate.family, 17..=19)
                 || candidate.version != 1
         })
     {
@@ -790,7 +790,7 @@ pub(super) fn decode_pending_intent_manifest(
         if candidate.store != binding.store
             || candidate.serial == 0
             || candidate.serial > binding.serial_fence
-            || candidate.family != FormatFamily::NativeGraphObject.id()
+            || !matches!(candidate.family, 17..=19)
             || candidate.version != 1
             || previous.is_some_and(|artifact| artifact >= candidate.artifact)
         {
@@ -1011,7 +1011,7 @@ pub(super) fn decode_completed_intent_manifest(
         if candidate.store != binding.store
             || candidate.serial == 0
             || candidate.serial > binding.serial_fence
-            || candidate.family != FormatFamily::NativeGraphObject.id()
+            || !matches!(candidate.family, 17..=19)
             || candidate.version != 1
         {
             return Err(TreeError::Invalid("reclaim completion candidate domain"));

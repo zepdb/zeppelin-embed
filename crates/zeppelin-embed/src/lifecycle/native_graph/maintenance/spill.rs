@@ -321,7 +321,7 @@ impl<'a, 'm> NativeSpillWriter<'a, 'm> {
         if descriptor.store != self.binding.store
             || descriptor.serial == 0
             || descriptor.serial > self.binding.serial_fence
-            || descriptor.family != crate::format::FormatFamily::NativeGraphObject.id()
+            || !matches!(descriptor.family, 17..=19)
             || descriptor.version != 1
         {
             return Err(TreeError::Invalid("reclaim candidate descriptor domain"));

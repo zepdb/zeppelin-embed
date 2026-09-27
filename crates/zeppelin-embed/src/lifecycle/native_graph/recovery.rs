@@ -539,6 +539,7 @@ pub(super) struct CapturedWalCutoff {
 )]
 pub(super) enum CapturedStateVisit<'a> {
     Checkpoint {
+        wal_identity: u128,
         state: CommitState<'a>,
         complete_bytes: usize,
     },
@@ -653,6 +654,7 @@ pub(super) fn visit_captured_state(
     )?;
     visit(
         CapturedStateVisit::Checkpoint {
+            wal_identity: checkpoint.wal_identity,
             state: checkpoint.state,
             complete_bytes: watermark,
         },
@@ -1685,7 +1687,7 @@ fn validate_complete_reclaim_authority(
         &io,
         memory,
         resources,
-        |record, _resources| {
+        |record, resources| {
             let crate::property_graph::storage::reclaim::ProtectedValue::CapturedState {
                 checkpoint,
                 sequence,
@@ -1711,7 +1713,24 @@ fn validate_complete_reclaim_authority(
                 control,
                 |visit, wal_resources| {
                     let (state, changes, is_checkpoint) = match visit {
-                        CapturedStateVisit::Checkpoint { state, .. } => (state, None, true),
+                        CapturedStateVisit::Checkpoint {
+                            state,
+                            wal_identity,
+                            ..
+                        } => {
+                            // Older intents contain only object candidates and
+                            // did not mark historical checkpoint WAL identities.
+                            if candidates.iter().any(|candidate| candidate.family == 19) {
+                                validate_mark_reference(
+                                    mark_reader,
+                                    &io,
+                                    candidates,
+                                    ArtifactId::new(wal_identity).map_err(TreeError::Format)?,
+                                    resources,
+                                )?;
+                            }
+                            (state, None, true)
+                        }
                         CapturedStateVisit::Envelope { state, changes, .. } => {
                             (state, Some(changes), false)
                         }
@@ -4485,10 +4504,10 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
         candidates: &[ArtifactDescriptor],
         state: InventoryState,
     ) -> Result<(), TreeError> {
-        if self.reclaim_inventory.len() != candidates.len() {
+        if self.reclaim_inventory.len() != candidates.iter().filter(|v| v.family == 17).count() {
             return Err(TreeError::Invalid("recovery reclaim inventory count"));
         }
-        for candidate in candidates {
+        for candidate in candidates.iter().filter(|v| v.family == 17) {
             let expected_state = match state {
                 InventoryState::ReclaimPending(_) => InventoryState::ReclaimPending(id),
                 InventoryState::Reclaimed(_) => InventoryState::Reclaimed(id),
@@ -5234,6 +5253,9 @@ impl ReplayValidator for SemanticReplay<'_, '_> {
                             let object = self.reclaim_candidates.get(index).copied().ok_or(
                                 TreeError::Invalid("completed reclaim retirement candidate"),
                             )?;
+                            if object.family != 17 {
+                                continue;
+                            }
                             self.reclaim_inventory.push(InventoryChange {
                                 object,
                                 state: InventoryState::Reclaimed(id),

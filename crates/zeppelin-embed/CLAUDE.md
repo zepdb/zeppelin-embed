@@ -1114,3 +1114,18 @@ results, default-budget atomicity, indeterminate recovery and mixed revisions.
   stores. Its deletes are logical, not physical erasure. Reclamation, incremental
   preparation and live-writer participation are separate work. Export through
   snapshot; moving an enlisted namespace away from its root is refused.
+
+## ZE-260 S6c bookkeeping (S7 maintenance foundation)
+
+- Reclaim intent/completion candidate rows may carry family 18 (immutable root
+  envelopes) or 19 (superseded graph WALs), using the existing descriptor layout.
+  They never enter ObjectInventory; only family 17 has inventory transitions.
+  Older intents containing only family 17 remain readable.
+- Root candidates pass the ordinary root-envelope codec. WAL candidates bind
+  the canonical filename identity, valid same-store WAL header, exact length,
+  and xxh3 digest of every observed byte. WAL headers have no allocation serial
+  or generation; those descriptor fields record the capture fences instead.
+- Current WAL authority, every captured checkpoint WAL, and open proofs' WAL
+  authorities remain marked. History uses the existing bounded candidate list,
+  durable intent, revalidation, unlink, directory sync, completion, and retirement;
+  there is no independent cleanup/unlink path.

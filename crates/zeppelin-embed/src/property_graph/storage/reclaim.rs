@@ -571,10 +571,17 @@ impl<'m> SpillMark<'m> {
             OMITTED_MARK_EMISSIONS.with(|count| count.set(count.get().saturating_add(1)));
             return Ok(());
         }
+        if self.chunk.values.last() == Some(&artifact) {
+            return Ok(());
+        }
         self.chunk.push(artifact)?;
         self.max_batch = self.max_batch.max(self.chunk.values.len());
         if self.chunk.values.len() == self.requested_chunk {
-            self.flush_chunk(sink, resources)?;
+            self.chunk.values.sort_unstable();
+            self.chunk.values.dedup();
+            if self.chunk.values.len() == self.requested_chunk {
+                self.flush_chunk(sink, resources)?;
+            }
         }
         Ok(())
     }

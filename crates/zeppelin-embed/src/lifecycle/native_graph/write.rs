@@ -131,8 +131,8 @@ where
         || completion.block.artifact != completion.object.artifact
         || completion.block.kind != BlockKind::CommitParticipant
         || (candidates.is_empty() && partials.is_empty())
-        || candidates.len() != reclaimed.len()
-        || candidates.iter().zip(reclaimed).any(|(candidate, change)| {
+        || candidates.iter().filter(|v| v.family == 17).count() != reclaimed.len()
+        || candidates.iter().filter(|v| v.family == 17).zip(reclaimed).any(|(candidate, change)| {
             change.object != *candidate || change.state != InventoryState::Reclaimed(intent_id)
         })
         || inventory.len() != objects.len()
@@ -1686,10 +1686,10 @@ where
             || durable.partial_count() != reclaim_partials.len()
             || durable.intent().is_some()
                 != (!reclaim_candidates.is_empty() || !reclaim_partials.is_empty())
-            || reclaim_pending.len() != reclaim_candidates.len()
+            || reclaim_pending.len() != reclaim_candidates.iter().filter(|v| v.family == 17).count()
             || reclaim_pending
                 .iter()
-                .zip(reclaim_candidates)
+                .zip(reclaim_candidates.iter().filter(|v| v.family == 17))
                 .any(|(pending, candidate)| {
                     pending.object != *candidate
                         || pending.state != InventoryState::ReclaimPending(durable_id)

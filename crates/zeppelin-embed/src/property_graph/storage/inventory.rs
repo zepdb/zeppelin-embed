@@ -19,14 +19,14 @@ use crate::property_graph::{GraphGeneration, StoreInstanceId};
 use std::cell::Cell;
 
 const MAX_PREPARED_MANIFEST_DESCRIPTORS: usize = 8_192;
-pub(crate) const INVENTORY_FOLD_ADDITION_LIMIT: usize = 32;
+pub(crate) const INVENTORY_FOLD_ADDITION_LIMIT: usize = 256;
 /// Leading prepared manifests one maintenance commit may examine and retire.
 /// Every commit adds one manifest, so a fold must be able to retire several
 /// or the admitted list only grows (owner decision 2026-09-20).
-pub(crate) const INVENTORY_FOLD_MANIFEST_LIMIT: usize = 8;
+pub(crate) const INVENTORY_FOLD_MANIFEST_LIMIT: usize = 64;
 /// Complete unregistered objects one maintenance commit may root as
 /// bookkeeping. Rooting grants no deletion authority.
-pub(crate) const INVENTORY_ADOPTION_LIMIT: usize = 16;
+pub(crate) const INVENTORY_ADOPTION_LIMIT: usize = 256;
 
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {

@@ -47,6 +47,14 @@ pub(crate) fn charged_artifact_path<'m>(
     directory: &std::path::Path,
     artifact: ArtifactId,
 ) -> Result<(PathBuf, StorageReservation<'m>), TreeError> {
+    charged_container_path(memory, directory, artifact, false)
+}
+fn charged_container_path<'m>(
+    memory: &'m StorageMemory<'m>,
+    directory: &std::path::Path,
+    artifact: ArtifactId,
+    wal: bool,
+) -> Result<(PathBuf, StorageReservation<'m>), TreeError> {
     const FILENAME_BYTES: usize = b"graph-00000000000000000000000000000000.zgraph".len();
     let path_upper = directory
         .as_os_str()
@@ -63,7 +71,12 @@ pub(crate) fn charged_artifact_path<'m>(
     filename
         .try_reserve_exact(FILENAME_BYTES)
         .map_err(|_| TreeError::Memory)?;
-    write!(&mut filename, "graph-{:032x}.zgraph", artifact.get()).map_err(|_| TreeError::Memory)?;
+    if wal {
+        write!(&mut filename, "graph-wal-{:032x}.ze", artifact.get())
+    } else {
+        write!(&mut filename, "graph-{:032x}.zgraph", artifact.get())
+    }
+    .map_err(|_| TreeError::Memory)?;
     let mut raw = OsString::with_capacity(path_upper);
     raw.push(directory.as_os_str());
     let mut path = PathBuf::from(raw);
@@ -104,6 +117,34 @@ impl<'lease, 'm> NativePreparationSource<'lease, 'm> {
         artifact: ArtifactId,
     ) -> Result<(PathBuf, StorageReservation<'m>), TreeError> {
         charged_artifact_path(memory, directory, artifact)
+    }
+
+    pub(crate) fn charged_candidate_path(
+        memory: &'m StorageMemory<'m>,
+        directory: &std::path::Path,
+        descriptor: crate::property_graph::wal::ArtifactDescriptor,
+    ) -> Result<(PathBuf, StorageReservation<'m>), TreeError> {
+        charged_container_path(
+            memory,
+            directory,
+            descriptor.artifact,
+            descriptor.family == 19,
+        )
+    }
+
+    pub(crate) fn wal_first_sequence(
+        header: &[u8],
+        store: crate::property_graph::StoreInstanceId,
+    ) -> Result<u64, TreeError> {
+        let mut cancelled = || false;
+        let mut resources = crate::property_graph::wal::WalResources::new(
+            1024,
+            crate::property_graph::wal::STACK_RESERVATION_BYTES,
+            &mut cancelled,
+        )
+        .map_err(|_| TreeError::Memory)?;
+        crate::property_graph::wal::Replay::checked_first_sequence(header, store, &mut resources)
+            .map_err(|_| TreeError::Invalid("reclaim WAL header"))
     }
 
     pub(crate) fn new(
@@ -349,17 +390,52 @@ impl<'lease, 'm> NativePreparationSource<'lease, 'm> {
         self.check_owner(resources)?;
         let bundle = self.lease.bundle();
         if descriptor.store != bundle.base().store
-            || descriptor.family != crate::format::FormatFamily::NativeGraphObject.id()
+            || !matches!(descriptor.family, 17..=19)
             || descriptor.version != 1
         {
             return Err(TreeError::Invalid("inventory object descriptor domain"));
         }
         let (path, path_charge) =
-            charged_artifact_path(self.memory, bundle.directory(), descriptor.artifact)?;
+            Self::charged_candidate_path(self.memory, bundle.directory(), descriptor)?;
+        if descriptor.family == 19 {
+            let length = bundle.vfs().open(&path).map_err(TreeError::Io)?;
+            if length != u64::from(descriptor.bytes) {
+                return Err(TreeError::Invalid("reclaim WAL length"));
+            }
+            let header = bundle
+                .vfs()
+                .read_range(&path, 0, crate::property_graph::wal::HEADER_BYTES)
+                .map_err(TreeError::Io)?;
+            Self::wal_first_sequence(&header, descriptor.store)?;
+            let _charge = self.memory.reserve(64 * 1024)?;
+            let mut digest = xxhash_rust::xxh3::Xxh3::new();
+            let mut offset = 0;
+            while offset < length {
+                let take = (length - offset).min(64 * 1024) as usize;
+                resources.step(take as u64)?;
+                let bytes = bundle
+                    .vfs()
+                    .read_range(&path, offset, take)
+                    .map_err(TreeError::Io)?;
+                if bytes.len() != take {
+                    return Err(TreeError::Invalid("reclaim WAL short read"));
+                }
+                digest.update(&bytes);
+                offset += take as u64;
+            }
+            if digest.digest() != descriptor.checksum {
+                return Err(TreeError::Invalid("reclaim WAL digest"));
+            }
+            return Ok(());
+        }
         let file = bundle.vfs().open_for_map(&path).map_err(TreeError::Io)?;
         let mapping = NativeReadonlyMapping::open(file, &path, self.lease)?;
         let frame = artifact::decode_with_control(
-            ContainerKind::Object,
+            if descriptor.family == 18 {
+                ContainerKind::RootEnvelope
+            } else {
+                ContainerKind::Object
+            },
             Some((descriptor.store, descriptor.artifact)),
             mapping.as_bytes(),
             &mut |bytes| resources.step(bytes as u64),

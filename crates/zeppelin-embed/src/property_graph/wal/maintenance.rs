@@ -24,7 +24,15 @@ fn candidates(
     let mut previous = None;
     for index in 0..count {
         let candidate = v.get(index, r)?;
-        object(candidate, state)?;
+        candidate_descriptor(candidate)?;
+        if candidate.store != state.store {
+            return Err(WalError::Store);
+        }
+        if candidate.generation > state.generation
+            || candidate.serial > state.high_waters.creation_serial
+        {
+            return Err(WalError::HighWater);
+        }
         if candidate.serial > fence {
             return Err(WalError::HighWater);
         }
@@ -43,7 +51,7 @@ fn put_candidates(
     w.u32(u32::try_from(v.len()?).map_err(|_| WalError::Capacity)?, r)?;
     w.u32(0, r)?;
     for index in 0..v.len()? {
-        put_descriptor(v.get(index, r)?, w, r)?;
+        put_candidate_descriptor(v.get(index, r)?, w, r)?;
     }
     Ok(())
 }

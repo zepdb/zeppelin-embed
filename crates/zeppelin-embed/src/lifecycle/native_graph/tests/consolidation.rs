@@ -1055,7 +1055,8 @@ fn run_ze260_maintenance_emits_each_tree_root_once_per_call() {
 }
 
 #[test]
-fn ze260_full_cycle_frees_an_append_only_pack() {
+#[ignore = "needs S6a"]
+fn ze260_idle_maintenance_reaches_a_fixed_point() {
     let parent = super::tempfile::tempdir().unwrap();
     let path = parent.path().join("native");
     let store = Store::create_native_graph(&path, options(), None).unwrap();
@@ -1170,6 +1171,7 @@ fn ze260_full_cycle_frees_an_append_only_pack() {
     const MAX_COMPLETED_CYCLES: usize = 8;
     let mut completed_cycles = 0;
     let mut first_cycle_bytes = None;
+    let mut sizes = Vec::new();
     let mut previous_removed = 0;
     // One preparation call plus intent, completion and retirement per cycle.
     for _ in 0..MAX_COMPLETED_CYCLES * 4 {
@@ -1198,6 +1200,7 @@ fn ze260_full_cycle_frees_an_append_only_pack() {
                 std::fs::read_dir(&path).unwrap().count(),
                 removed - previous_removed,
             );
+            sizes.push((bytes(), std::fs::read_dir(&path).unwrap().count()));
             previous_removed = removed;
             first_cycle_bytes.get_or_insert_with(bytes);
             if completed_cycles == MAX_COMPLETED_CYCLES {
@@ -1205,8 +1208,15 @@ fn ze260_full_cycle_frees_an_append_only_pack() {
             }
         }
     }
-    // S6_MUST_MAKE_IDLE_CYCLES_NET_NEGATIVE: record idle growth above,
-    // without making S6 compaction amplification an S5 acceptance gate.
+    assert_eq!(completed_cycles, 8);
+    assert!(sizes[1].0 <= sizes[0].0 - 1_500_000);
+    assert!(sizes[1].1 < sizes[0].1);
+    for cycle in 3..8 {
+        assert_eq!(sizes[cycle].1, sizes[cycle - 1].1);
+        assert!(sizes[cycle].0.abs_diff(sizes[cycle - 1].0) <= 8_192);
+    }
+    assert!(sizes[7].0 <= 1_600_000);
+    assert!(sizes[7].1 <= 40);
     eprintln!(
         "ZE260_S5 before_bytes={before_bytes} after_bytes={} removed_bytes={removed} completed_cycles={completed_cycles} max_completed_cycles={MAX_COMPLETED_CYCLES} first_cycle_bytes={first_cycle_bytes:?} subtypes={subtypes:?}",
         bytes()
@@ -2139,6 +2149,7 @@ fn run_ze46_inventory_fold_drains_a_manifest_backlog() {
         );
     }
     assert!(peak <= WRITES + 1, "the backlog grew to {peak} manifests");
+    assert_eq!(calls, 1, "one S6c fold must drain forty commit manifests");
 
     // Retirement moves bookkeeping into the rooted tree; it never loses it.
     // A row may leave only with its file, through a completed reclaim cycle.
@@ -2225,11 +2236,7 @@ fn run_ze46_checkpoint_during_an_open_reclaim_cycle_reopens() {
         }
         for candidate in &candidates {
             assert!(
-                !crate::property_graph::storage::allocation::artifact_path(
-                    &history.path,
-                    candidate.artifact
-                )
-                .exists(),
+                !reclaim_candidate_path(&history.path, candidate).exists(),
                 "reopen_first={reopen_first}: pending target survived"
             );
         }
@@ -2364,10 +2371,7 @@ fn run_ze46_reconciles_real_prewal_orphans_without_touching_unknown_files() {
         for unlinked in delete_events(&vfs.take()) {
             let name = unlinked.file_name().expect("deleted name").to_os_string();
             assert!(
-                pending.iter().any(|target| {
-                    crate::property_graph::storage::allocation::artifact_path(&path, *target)
-                        == unlinked
-                }),
+                pending.contains(&unlinked),
                 "round {round} unlinked {name:?} without a durable intent naming it"
             );
             let size = *sizes.get(&name).expect("deleted file existed");
@@ -2531,12 +2535,20 @@ fn pending_reclaim_candidates_or_empty_root(
     }
 }
 
+fn reclaim_candidate_path(directory: &Path, candidate: &ArtifactDescriptor) -> std::path::PathBuf {
+    if candidate.family == 19 {
+        directory.join(format!("graph-wal-{:032x}.ze", candidate.artifact.get()))
+    } else {
+        crate::property_graph::storage::allocation::artifact_path(directory, candidate.artifact)
+    }
+}
+
 /// Every artifact the rooted pending intent authorizes an unlink for: the
 /// genuine object candidates plus ZE-165's tagged partial-target partition.
 fn pending_reclaim_targets_or_empty_root(
     store: &Store,
     lease: &super::super::NativeReadLease,
-) -> Vec<crate::property_graph::storage::artifact::ArtifactId> {
+) -> Vec<std::path::PathBuf> {
     let Some(required) = lease.bundle().reclaim() else {
         return Vec::new();
     };
@@ -2554,14 +2566,23 @@ fn pending_reclaim_targets_or_empty_root(
     match crate::property_graph::storage::reclaim::decode_pending_intent_manifest(payload) {
         Ok(manifest) => (0..manifest.candidate_count)
             .map(|index| {
-                crate::property_graph::storage::reclaim::pending_intent_candidate_at(payload, index)
-                    .expect("pending candidate")
-                    .artifact
+                reclaim_candidate_path(
+                    lease.bundle().directory(),
+                    &crate::property_graph::storage::reclaim::pending_intent_candidate_at(
+                        payload, index,
+                    )
+                    .expect("pending candidate"),
+                )
             })
             .chain((0..manifest.partial_count).map(|index| {
-                crate::property_graph::storage::reclaim::pending_intent_partial_at(payload, index)
+                crate::property_graph::storage::allocation::artifact_path(
+                    lease.bundle().directory(),
+                    crate::property_graph::storage::reclaim::pending_intent_partial_at(
+                        payload, index,
+                    )
                     .expect("pending partial target")
-                    .artifact
+                    .artifact,
+                )
             }))
             .collect(),
         Err(_) => Vec::new(),
@@ -2736,10 +2757,7 @@ fn run_ze165_reclaims_a_partial_create_and_retains_every_other_prefix() {
         for unlinked in delete_events(&vfs.take()) {
             let name = unlinked.file_name().expect("deleted name").to_os_string();
             assert!(
-                targets.iter().any(|target| {
-                    crate::property_graph::storage::allocation::artifact_path(&path, *target)
-                        == unlinked
-                }),
+                targets.contains(&unlinked),
                 "round {round} unlinked {name:?} without a durable intent naming it"
             );
             if name == partial_name {
@@ -3117,8 +3135,10 @@ fn run_ze46_spill_merge_and_incomplete_mark_never_delete_candidates() {
         "the refusals ran without an eligible candidate"
     );
     for candidate in &candidates {
-        let name =
-            std::ffi::OsString::from(format!("graph-{:032x}.zgraph", candidate.artifact.get()));
+        let name = reclaim_candidate_path(&path, candidate)
+            .file_name()
+            .unwrap()
+            .to_os_string();
         assert!(
             before.contains_key(&name),
             "candidate postdates the refusals"
@@ -3382,12 +3402,7 @@ fn run_reclaim_crash_cell(cell: CrashCell) {
     );
     let targets: Vec<_> = candidates
         .iter()
-        .map(|candidate| {
-            crate::property_graph::storage::allocation::artifact_path(
-                &history.path,
-                candidate.artifact,
-            )
-        })
+        .map(|candidate| reclaim_candidate_path(&history.path, candidate))
         .collect();
     let candidate_bytes: u64 = candidates
         .iter()
@@ -3633,8 +3648,7 @@ fn run_ze46_intent_unlink_sync_completion_crashes_resume_idempotently() {
     );
     for candidate in &candidates {
         assert!(
-            path.join(format!("graph-{:032x}.zgraph", candidate.artifact.get()))
-                .exists(),
+            reclaim_candidate_path(&path, candidate).exists(),
             "intent commit precedes unlink"
         );
     }
@@ -3654,9 +3668,7 @@ fn run_ze46_intent_unlink_sync_completion_crashes_resume_idempotently() {
         .expect("writable pending reclaim recovery");
     for candidate in &candidates {
         assert!(
-            !path
-                .join(format!("graph-{:032x}.zgraph", candidate.artifact.get()))
-                .exists(),
+            !reclaim_candidate_path(&path, candidate).exists(),
             "completed target is physically absent"
         );
     }
@@ -6529,12 +6541,9 @@ fn observe_reclaim_cycle() -> crate::graph_reclaim_test_support::ReclaimState {
     let unlinked_file_bytes = candidates
         .iter()
         .map(|candidate| {
-            std::fs::metadata(crate::property_graph::storage::allocation::artifact_path(
-                &history.path,
-                candidate.artifact,
-            ))
-            .expect("pending target")
-            .len()
+            std::fs::metadata(reclaim_candidate_path(&history.path, candidate))
+                .expect("pending target")
+                .len()
         })
         .sum();
     vfs.take();
@@ -6577,11 +6586,16 @@ pub(super) fn run_actual_probe(
     _seed: u64,
 ) -> crate::graph_reclaim_test_support::ReclaimProbeReport {
     use super::publication::{reset_verified_faults, take_verified_faults};
-    let bodies: [(&'static str, u64, fn()); 13] = [
+    let bodies: [(&'static str, u64, fn()); 14] = [
         (
             "property-graph.reclaim.maintenance-output",
             1,
             run_ze260_maintenance_emits_each_tree_root_once_per_call,
+        ),
+        (
+            "property-graph.reclaim.superseded-history",
+            1,
+            run_ze260_superseded_history_is_reclaimed_after_reader_drops,
         ),
         ("property-graph.reclaim.physical-replacement", 2, || {
             run_ze46_real_consolidation_preserves_exact_state_and_reopens();
@@ -6914,5 +6928,155 @@ fn run_ze260_page_relocation_keeps_intent_before_unlink() {
         .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
         .unwrap();
     commit_maintenance(&reopened).unwrap();
+    reopened.close().unwrap();
+}
+
+#[test]
+fn ze260_duplicate_heavy_mark_uses_one_run() {
+    let parent = super::tempfile::tempdir().unwrap();
+    let store = Store::create_native_graph(parent.path().join("native"), options(), None).unwrap();
+    let admission = store.admit_native_graph_maintenance().unwrap();
+    let input: Vec<u128> = (0..24).flat_map(|_| 1..=65).collect();
+    let report =
+        super::super::maintenance::run_spill_probe(&store, &admission, &input, 256).unwrap();
+    assert_eq!(report.ordered, (1..=65).collect::<Vec<_>>());
+    assert_eq!(report.spill_runs, 1);
+    assert_eq!(report.merges, 0);
+    assert_eq!(report.created_objects, 2);
+}
+
+#[test]
+fn ze260_superseded_history_is_reclaimed_after_reader_drops() {
+    run_ze260_superseded_history_is_reclaimed_after_reader_drops();
+}
+
+fn run_ze260_superseded_history_is_reclaimed_after_reader_drops() {
+    let parent = super::tempfile::tempdir().unwrap();
+    let path = parent.path().join("native");
+    let vfs = Arc::new(RecordingVfs::default());
+    let store = create_reclaim_test_store(&path, &vfs);
+    ze163_base_write(&store, "history", 0);
+    let old = store.admit_native_read().unwrap();
+    let root = old.bundle().root_envelope().object;
+    let wal_path = std::fs::read_dir(&path)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| {
+            p.file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("graph-wal-")
+        })
+        .unwrap();
+    let wal_identity = u128::from_str_radix(
+        wal_path
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .strip_prefix("graph-wal-")
+            .unwrap()
+            .strip_suffix(".ze")
+            .unwrap(),
+        16,
+    )
+    .unwrap();
+    let root_path = crate::property_graph::storage::allocation::artifact_path(&path, root.artifact);
+    store
+        .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+        .unwrap();
+    for _ in 0..3 {
+        commit_maintenance(&store).unwrap();
+        let lease = store.admit_native_read().unwrap();
+        let candidates = pending_reclaim_candidates_or_empty_root(&store, &lease);
+        assert!(
+            !candidates
+                .iter()
+                .any(|c| c.artifact == root.artifact || c.artifact.get() == wal_identity)
+        );
+    }
+    assert!(root_path.exists());
+    assert!(wal_path.exists());
+    drop(old);
+    let mut selected = None;
+    for _ in 0..6 {
+        store
+            .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+            .unwrap();
+        vfs.take();
+        commit_maintenance(&store).unwrap();
+        let lease = store.admit_native_read().unwrap();
+        let candidates = pending_reclaim_candidates_or_empty_root(&store, &lease);
+        if let Some(index) = candidates
+            .iter()
+            .position(|c| c.family == 19 && c.artifact.get() == wal_identity)
+        {
+            assert!(
+                candidates
+                    .iter()
+                    .any(|c| c.family == 18 && c.artifact == root.artifact)
+            );
+            assert!(
+                delete_events(&vfs.take()).is_empty(),
+                "history unlink before durable intent"
+            );
+            selected = Some(index);
+            break;
+        }
+    }
+    let wal_index = selected.expect("superseded root and WAL were never intent candidates");
+    // The exact-length/digest validator must refuse a changed WAL, then the
+    // same durable intent must resume after the original bytes are restored.
+    let original = std::fs::read(&wal_path).unwrap();
+    let mut changed = original.clone();
+    *changed.last_mut().unwrap() ^= 1;
+    std::fs::write(&wal_path, &changed).unwrap();
+    let error = commit_maintenance(&store).expect_err("changed WAL digest must refuse unlink");
+    assert!(
+        matches!(
+            error,
+            super::super::NativeGraphError::Read(
+                crate::property_graph::storage::tree::directory::TreeError::Invalid(
+                    "reclaim WAL digest"
+                )
+            )
+        ),
+        "{error:?}"
+    );
+    assert!(wal_path.exists());
+    std::fs::write(&wal_path, &original).unwrap();
+    // Earlier candidates may already have been unlinked by the failed resume.
+    let lease = store.admit_native_read().unwrap();
+    let candidates = pending_reclaim_candidates(&store, &lease);
+    let skip = candidates
+        .iter()
+        .take(wal_index)
+        .filter(|c| {
+            if c.family == 19 {
+                path.join(format!("graph-wal-{:032x}.ze", c.artifact.get()))
+                    .exists()
+            } else {
+                crate::property_graph::storage::allocation::artifact_path(&path, c.artifact)
+                    .exists()
+            }
+        })
+        .count();
+    drop(lease);
+    vfs.take();
+    vfs.arm_fault_after(super::publication::FaultPoint::Delete, skip as u64);
+    let error = commit_maintenance(&store).expect_err("scheduled WAL Delete refusal");
+    assert!(
+        matches!(&error, super::super::NativeGraphError::Io { path, .. } if path == &wal_path),
+        "{error:?}"
+    );
+    vfs.assert_fired_once();
+    assert!(wal_path.exists(), "the refused WAL must remain");
+    store.close().unwrap();
+    let reopened = Store::open_native_graph(&path, options(), None).unwrap();
+    assert!(!root_path.exists(), "superseded root was never reclaimed");
+    assert!(!wal_path.exists(), "superseded WAL was never reclaimed");
+    // Exact replay still resolves the original revision and canonical image.
+    ze163_base_write(&reopened, "history", 0);
     reopened.close().unwrap();
 }

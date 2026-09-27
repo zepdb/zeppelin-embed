@@ -106,12 +106,41 @@ pub(super) fn descriptor(v: ArtifactDescriptor) -> Result<(), WalError> {
     }
     Ok(())
 }
+pub(super) fn candidate_descriptor(v: ArtifactDescriptor) -> Result<(), WalError> {
+    if v.family == 17 {
+        return descriptor(v);
+    }
+    if !matches!(v.family, 18 | 19) || v.version != 1 {
+        return Err(WalError::Unsupported);
+    }
+    if v.serial == 0
+        || v.bytes
+            < if v.family == 19 {
+                HEADER_BYTES as u32
+            } else {
+                104
+            }
+        || (v.family == 18
+            && v.bytes as usize > super::super::storage::artifact::MAX_ARTIFACT_BYTES)
+    {
+        return Err(WalError::Malformed);
+    }
+    Ok(())
+}
 pub(super) fn put_descriptor(
     v: ArtifactDescriptor,
     w: &mut Writer<'_>,
     r: &mut WalResources<'_>,
 ) -> Result<(), WalError> {
     descriptor(v)?;
+    put_candidate_descriptor(v, w, r)
+}
+pub(super) fn put_candidate_descriptor(
+    v: ArtifactDescriptor,
+    w: &mut Writer<'_>,
+    r: &mut WalResources<'_>,
+) -> Result<(), WalError> {
+    candidate_descriptor(v)?;
     w.u128(v.store.get(), r)?;
     w.u128(v.artifact.get(), r)?;
     w.u64(v.generation.get(), r)?;
@@ -125,6 +154,14 @@ pub(super) fn get_descriptor(
     rd: &mut Reader<'_>,
     r: &mut WalResources<'_>,
 ) -> Result<ArtifactDescriptor, WalError> {
+    let v = get_candidate_descriptor(rd, r)?;
+    descriptor(v)?;
+    Ok(v)
+}
+pub(super) fn get_candidate_descriptor(
+    rd: &mut Reader<'_>,
+    r: &mut WalResources<'_>,
+) -> Result<ArtifactDescriptor, WalError> {
     let v = ArtifactDescriptor {
         store: StoreInstanceId::new(rd.u128(r)?).map_err(|_| WalError::Malformed)?,
         artifact: artifact_id(rd.u128(r)?)?,
@@ -135,7 +172,7 @@ pub(super) fn get_descriptor(
         version: rd.u16(r)?,
         checksum: rd.u64(r)?,
     };
-    descriptor(v)?;
+    candidate_descriptor(v)?;
     Ok(v)
 }
 fn artifact_id(value: u128) -> Result<ArtifactId, WalError> {
@@ -290,7 +327,7 @@ impl DescriptorList<'_> {
             Self::Values(v) => v.get(index).copied().ok_or(WalError::Malformed),
             Self::Encoded(v) => {
                 let start = index.checked_mul(64).ok_or(WalError::Malformed)?;
-                get_descriptor(
+                get_candidate_descriptor(
                     &mut Reader {
                         bytes: v
                             .get(start..start.checked_add(64).ok_or(WalError::Malformed)?)

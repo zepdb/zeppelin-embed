@@ -15,7 +15,7 @@ use crate::property_graph::resources::GraphResources;
 use crate::property_graph::staging::{StageError, WriteLimits, WriteMemory};
 use crate::property_graph::storage::adjacency::RangeScratch;
 use crate::property_graph::storage::artifact::{
-    ArtifactIdentity, Block, BlockKind, ContainerKind, PhysicalRef,
+    ArtifactId, ArtifactIdentity, Block, BlockKind, ContainerKind, PhysicalRef,
 };
 use crate::property_graph::storage::consolidation::prepare_one_replacement;
 use crate::property_graph::storage::inventory::{
@@ -478,6 +478,9 @@ fn load_pending_reclaim<'m>(
     for index in 0..manifest.candidate_count {
         let descriptor = pending_intent_candidate_at(payload, index)?;
         candidates.push(descriptor)?;
+        if descriptor.family != 17 {
+            continue;
+        }
         inventory.push(InventoryChange {
             object: descriptor,
             state: InventoryState::ReclaimPending(intent_id),
@@ -643,6 +646,9 @@ fn load_completed_reclaim<'m>(
             return Err(NativeGraphError::Invalid(
                 "completed reclaim target partition",
             ));
+        }
+        if completed.family != 17 {
+            continue;
         }
         reclaimed.push(InventoryChange {
             object: completed,
@@ -904,11 +910,6 @@ fn prepare_durable_proof<'m>(
         };
         let mut reached_target = false;
         let history_result = {
-            let mut emit_reference =
-                |reference: PhysicalRef,
-                 resources: &mut crate::property_graph::storage::tree::directory::TreeResources<
-                    '_,
-                >| { mark.emit(reference.artifact, &mut writer, resources) };
             super::recovery::visit_captured_state(
                 store,
                 bundle.directory(),
@@ -918,12 +919,20 @@ fn prepare_durable_proof<'m>(
                 control,
                 |visit, wal_resources| {
                     let (state, changes, is_checkpoint) = match visit {
-                        super::recovery::CapturedStateVisit::Checkpoint { state, .. } => {
+                        super::recovery::CapturedStateVisit::Checkpoint {
+                            state,
+                            wal_identity,
+                            ..
+                        } => {
+                            mark.emit(ArtifactId::new(wal_identity).map_err(crate::property_graph::storage::tree::directory::TreeError::Format)?, &mut writer, resources)?;
                             (state, None, true)
                         }
                         super::recovery::CapturedStateVisit::Envelope {
                             state, changes, ..
                         } => (state, Some(changes), false),
+                    };
+                    let mut emit_reference = |reference: PhysicalRef, resources: &mut crate::property_graph::storage::tree::directory::TreeResources<'_>| {
+                        mark.emit(reference.artifact, &mut writer, resources)
                     };
                     if let Some(changes) = changes {
                         super::recovery::trace_captured_change_references(
@@ -1031,6 +1040,24 @@ fn prepare_durable_proof<'m>(
         }
     }
     for proof in capture.proofs() {
+        // Open proofs may still replay a WAL superseded by a checkpoint.
+        let reader = spill::NativeSpillReader::new(
+            &admission.lease,
+            storage,
+            proof.mark.binding.target_generation,
+        )?;
+        validate_protected_stream(
+            proof.protected,
+            &reader,
+            storage,
+            resources,
+            |record, resources| {
+                if let ProtectedValue::WalAuthority { identity, .. } = record.value {
+                    mark.emit(ArtifactId::new(identity)?, &mut writer, resources)?;
+                }
+                Ok(())
+            },
+        )?;
         for required in [
             Some(proof.allocation_head),
             Some(proof.protected.head),
@@ -1096,14 +1123,30 @@ fn prepare_durable_proof<'m>(
         Ok(value) => value,
         Err(error) => return Err(spill_error(&writer, error)),
     } {}
-    let candidates = select_rooted_candidates(&admission.lease, storage, mark, &writer, resources)?;
+    let mut candidates =
+        select_rooted_candidates(&admission.lease, storage, mark, &writer, resources)?;
     // Both classes of unreachable file are selected before the intent is
     // written, because the intent is the one durable record that authorizes
     // either of them to be removed.
     let orphans::OrphanSelection {
         adoptions,
         partials,
-    } = orphans::select_adoptions(admission, &capture, mark, &writer, storage, resources)?;
+        history,
+    } = orphans::select_adoptions(
+        admission,
+        &capture,
+        mark,
+        &writer,
+        storage,
+        resources,
+        crate::property_graph::storage::reclaim::MAX_CANDIDATES - candidates.as_slice().len(),
+    )?;
+    for descriptor in history.as_slice().iter().copied() {
+        candidates.push(descriptor)?;
+    }
+    candidates
+        .as_mut_slice()
+        .sort_unstable_by_key(|v| v.artifact);
     let (intent, intent_digest) =
         if candidates.as_slice().is_empty() && partials.as_slice().is_empty() {
             (None, 0)
@@ -1358,7 +1401,13 @@ fn resume_pending_reclaim(
     )?;
     let intent_id = BatchId::new(pending.manifest.binding.session.get())?;
     let mut reclaimed = StorageBuffer::new(&storage, pending.candidates.as_slice().len())?;
-    for descriptor in pending.candidates.as_slice().iter().copied() {
+    for descriptor in pending
+        .candidates
+        .as_slice()
+        .iter()
+        .copied()
+        .filter(|v| v.family == 17)
+    {
         reclaimed.push(InventoryChange {
             object: descriptor,
             state: InventoryState::Reclaimed(intent_id),
@@ -1549,10 +1598,10 @@ fn resume_pending_reclaim(
         let validator = NativePreparationSource::new(&admission.lease, &storage, 1)?;
         match validator.validate_object_descriptor(candidate, &mut resources) {
             Ok(()) => {
-                let (path, path_charge) = NativePreparationSource::charged_path(
+                let (path, path_charge) = NativePreparationSource::charged_candidate_path(
                     &storage,
                     admitted.directory(),
-                    candidate.artifact,
+                    candidate,
                 )?;
                 match admitted.vfs().delete(&path) {
                     Ok(()) => {
@@ -1983,7 +2032,13 @@ pub(super) fn commit_with_limits(
     );
     let reclaim_id = BatchId::new(proof.durable.binding().session.get())?;
     let mut reclaim_pending = StorageBuffer::new(&storage, proof.candidates.as_slice().len())?;
-    for descriptor in proof.candidates.as_slice().iter().copied() {
+    for descriptor in proof
+        .candidates
+        .as_slice()
+        .iter()
+        .copied()
+        .filter(|v| v.family == 17)
+    {
         reclaim_pending.push(InventoryChange {
             object: descriptor,
             state: InventoryState::ReclaimPending(reclaim_id),
