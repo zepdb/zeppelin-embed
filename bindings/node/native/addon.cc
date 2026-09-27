@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 #include <exception>
+#include <functional>
 #include <memory>
 #include <new>
 #include <string>
@@ -330,6 +331,94 @@ bool GetOptionalBigInt64(napi_env env, napi_value object, const char *name,
   return true;
 }
 
+// Prepared requests own every byte used by the worker. Only completion touches
+// N-API. The captured handle is a value: close may clear the JS wrapper safely.
+struct NativeWork {
+  napi_async_work work = nullptr;
+  napi_deferred deferred = nullptr;
+  napi_ref receiver = nullptr;
+  ze_handle handle = 0;
+  ze_error_code status = ZE_OK;
+  std::string message;
+  std::function<ze_error_code()> execute;
+  std::function<napi_value(ze_error_code, const std::string &)> finish;
+};
+
+void ExecuteNative(napi_env, void *data) {
+  auto *work = static_cast<NativeWork *>(data);
+  try {
+    work->status = work->execute();
+    if (work->status == ZE_ERR_CLOSING) work->status = ZE_ERR_CLOSED;
+    if (work->status != ZE_OK) work->message = LastError(work->handle);
+  } catch (const std::exception &error) {
+    work->status = ZE_ERR_INTERNAL;
+    work->message = error.what();
+  } catch (...) {
+    work->status = ZE_ERR_INTERNAL;
+    work->message = "native worker failed";
+  }
+}
+
+void CompleteNative(napi_env env, napi_status status, void *data) {
+  std::unique_ptr<NativeWork> work(static_cast<NativeWork *>(data));
+  napi_value result = Guard(env, [&]() -> napi_value {
+    if (status != napi_ok) {
+      napi_throw_error(env, "ERR_ZEPPELIN_NATIVE", "native work did not run");
+      return nullptr;
+    }
+    return work->finish(work->status, work->message);
+  });
+  bool pending = false;
+  napi_is_exception_pending(env, &pending);
+  if (pending) {
+    napi_get_and_clear_last_exception(env, &result);
+    napi_reject_deferred(env, work->deferred, result);
+  } else if (result != nullptr) {
+    napi_resolve_deferred(env, work->deferred, result);
+  } else {
+    napi_value message;
+    napi_create_string_utf8(env, "native completion returned no result", NAPI_AUTO_LENGTH, &message);
+    napi_create_error(env, nullptr, message, &result);
+    napi_reject_deferred(env, work->deferred, result);
+  }
+  napi_delete_reference(env, work->receiver);
+  napi_delete_async_work(env, work->work);
+}
+
+template <bool Async, typename Execute, typename Finish>
+napi_value RunNative(napi_env env, napi_value receiver, ze_handle handle,
+                     Execute execute, Finish finish) {
+  if constexpr (!Async) {
+    const auto status = execute();
+    return finish(status, status == ZE_OK ? std::string() : LastError(handle));
+  }
+  auto work = std::make_unique<NativeWork>();
+  work->handle = handle;
+  work->execute = std::move(execute);
+  work->finish = std::move(finish);
+  napi_value promise, name;
+  if (!NapiOk(env, napi_create_promise(env, &work->deferred, &promise), "create promise") ||
+      !NapiOk(env, napi_create_string_utf8(env, "zeppelin.async", NAPI_AUTO_LENGTH, &name), "create work name") ||
+      !NapiOk(env, napi_create_reference(env, receiver, 1, &work->receiver), "retain receiver") ||
+      !NapiOk(env, napi_create_async_work(env, nullptr, name, ExecuteNative, CompleteNative, work.get(), &work->work), "create work")) {
+    if (work->receiver) napi_delete_reference(env, work->receiver);
+    return nullptr;
+  }
+  if (!NapiOk(env, napi_queue_async_work(env, work->work), "queue work")) {
+    napi_delete_reference(env, work->receiver);
+    napi_delete_async_work(env, work->work);
+    return nullptr;
+  }
+  work.release();
+  return promise;
+}
+
+napi_value ThrowWorkerError(napi_env env, ze_error_code status, const std::string &message) {
+  napi_value error;
+  if (CreateZeppelinErrorWithMessage(env, status, message, &error)) napi_throw(env, error);
+  return nullptr;
+}
+
 bool SetNamed(napi_env env, napi_value object, const char *name,
               napi_value value) {
   return NapiOk(env, napi_set_named_property(env, object, name, value),
@@ -355,16 +444,17 @@ bool CreateRevisionOrNull(napi_env env, bool present, uint64_t revision,
 // re-read it and retry.
 napi_value ThrowWriteFailure(napi_env env, ze_handle handle,
                              ze_error_code status,
-                             const ZeRevisionConflict &conflict) {
+                             const ZeRevisionConflict &conflict,
+                             const std::string *message = nullptr) {
   if (status != ZE_ERR_REVISION_CONFLICT)
-    return ThrowZeppelin(env, handle, status);
+    return message ? ThrowWorkerError(env, status, *message) : ThrowZeppelin(env, handle, status);
   napi_value error;
   napi_value detail;
   napi_value index;
   napi_value id;
   napi_value expected;
   napi_value current;
-  if (!CreateZeppelinError(env, handle, status, &error) ||
+  if (!(message ? CreateZeppelinErrorWithMessage(env, status, *message, &error) : CreateZeppelinError(env, handle, status, &error)) ||
       !NapiOk(env, napi_create_object(env, &detail), "create conflict") ||
       !NapiOk(env,
               napi_create_double(env, static_cast<double>(conflict.index),
@@ -1349,10 +1439,9 @@ napi_value ConstructStore(napi_env env, napi_callback_info info) {
                 "read constructor arguments")) {
       return nullptr;
     }
-    if (argc < 1) {
-      napi_throw_type_error(env, "ERR_MISSING_ARGS", "path is required");
-      return nullptr;
-    }
+    // Private empty instance used by OpenAsync completion before transferring
+    // the successfully opened handle. Public Store always supplies arguments.
+    if (argc == 0) return WrapStore(env, receiver, 0);
     napi_valuetype argument_type;
     if (!NapiOk(env, napi_typeof(env, args[0], &argument_type), "inspect source"))
       return nullptr;
@@ -1435,6 +1524,66 @@ napi_value ConstructStore(napi_env env, napi_callback_info info) {
       return ThrowZeppelin(env, 0, status);
 
     return WrapStore(env, receiver, handle);
+  });
+}
+
+// Open constructs a native instance on completion. Ownership transfers only
+// after successful construction; failed opens and completions close the handle.
+napi_value OpenAsync(napi_env env, napi_callback_info info) {
+  return Guard(env, [&]() -> napi_value {
+    napi_value args[4], receiver; size_t argc = 4;
+    if (!NapiOk(env, napi_get_cb_info(env, info, &argc, args, &receiver, nullptr), "read open arguments")) return nullptr;
+    if (argc < 2) { napi_throw_type_error(env, "ERR_MISSING_ARGS", "path and options required"); return nullptr; }
+    struct Data {
+      napi_env env = nullptr; napi_ref constructor = nullptr;
+      std::string path, name;
+      ZeOpenRequest request{};
+      ZeNamespaceOpenRequest ns{};
+      ZeNamespaceSpec spec{};
+      std::vector<ZeAttributeDefinition> attributes;
+      std::vector<std::string> attribute_names;
+      ze_handle handle = 0;
+      bool inspection = false, namespaced = false;
+      int32_t tokenizer_profile = 0;
+      ~Data() { if (handle != 0) ze_close(handle); if (constructor) napi_delete_reference(env, constructor); }
+    };
+    auto data = std::make_shared<Data>(); data->env = env;
+    napi_value constructor;
+    if (!NapiOk(env, napi_get_named_property(env, receiver, "NativeStore", &constructor), "read constructor") ||
+        !NapiOk(env, napi_create_reference(env, constructor, 1, &data->constructor), "retain constructor")) return nullptr;
+    if (!GetUtf8(env, args[0], "path", &data->path) ||
+        !ParseOpenRequest(env, args[1], data->path, &data->request) ||
+        !GetOptionalBool(env, args[1], "inspection", false, &data->inspection)) return nullptr;
+    if (argc == 4) {
+      data->namespaced = true;
+      if (!GetUtf8(env, args[2], "name", &data->name) ||
+          !ParseNamespaceSpec(env, args[3], &data->spec, &data->attributes, &data->attribute_names)) return nullptr;
+      auto &ns = data->ns;
+      ns.abi_size = sizeof(ns);
+      ns.root = reinterpret_cast<const uint8_t *>(data->path.data()); ns.root_len = data->path.size();
+      ns.name = reinterpret_cast<const uint8_t *>(data->name.data()); ns.name_len = data->name.size();
+      ns.open = data->request; ns.spec = &data->spec;
+      std::string profile = "textDefault"; bool present = false;
+      const char *profiles[] = {"textDefault", "code", "voice"};
+      if (!GetOptionalString(env, args[3], "tokenizerProfile", &profile, &present)) return nullptr;
+      if (!ParseEnum(profile, profiles, 3, &data->tokenizer_profile)) {
+        napi_throw_range_error(env, "ERR_OUT_OF_RANGE", "tokenizerProfile is out of range"); return nullptr;
+      }
+    }
+    return RunNative<true>(env, receiver, 0, [data]() {
+      return data->namespaced ? ze_namespace_open_with_tokenizer(&data->ns, data->tokenizer_profile, &data->handle)
+        : data->inspection ? ze_open_inspection(reinterpret_cast<const uint8_t *>(data->path.data()), data->path.size(), &data->handle)
+        : ze_open(&data->request, &data->handle);
+    }, [data, env](ze_error_code status, const std::string &message) -> napi_value {
+      if (status != ZE_OK) return ThrowWorkerError(env, status, message);
+      napi_value result, constructor;
+      if (!NapiOk(env, napi_get_reference_value(env, data->constructor, &constructor), "read constructor") ||
+          !NapiOk(env, napi_new_instance(env, constructor, 0, nullptr, &result), "create store")) return nullptr;
+      NativeStore *store = nullptr;
+      if (!NapiOk(env, napi_unwrap(env, result, reinterpret_cast<void **>(&store)), "unwrap new store")) return nullptr;
+      store->handle = data->handle; data->handle = 0;
+      return result;
+    });
   });
 }
 
@@ -1795,6 +1944,7 @@ bool ParseUpsertData(napi_env env, napi_value value, UpsertStorage *storage) {
     return true;
 }
 
+template <bool Async = false>
 napi_value Upsert(napi_env env, napi_callback_info info) {
   return Guard(env, [&]() -> napi_value {
     size_t argc = 1;
@@ -1812,17 +1962,29 @@ napi_value Upsert(napi_env env, napi_callback_info info) {
     NativeStore *store = UnwrapStore(env, receiver);
     if (store == nullptr)
       return nullptr;
-    UpsertStorage storage;
-    if (!ParseUpsertData(env, args[0], &storage)) return nullptr;
-    auto &conditional = storage.conditional;
-    ZeMutationReport report{};
+    struct Data {
+      UpsertStorage storage;
+      ZeMutationReport report{};
+      ZeRevisionConflict conflict{};
+    };
+    auto data = std::make_shared<Data>();
+    if (!ParseUpsertData(env, args[0], &data->storage)) return nullptr;
+    auto &report = data->report;
     report.abi_size = sizeof(report);
-    ZeRevisionConflict conflict{};
+    auto &conflict = data->conflict;
     conflict.abi_size = sizeof(conflict);
-    const ze_error_code status =
-        ze_upsert_conditional(store->handle, &conditional, &report, &conflict);
+    const auto handle = store->handle;
+    return RunNative<Async>(env, receiver, handle,
+      [data, handle]() {
+      auto &conditional = data->storage.conditional;
+      auto &report = data->report;
+      auto &conflict = data->conflict;
+        return ze_upsert_conditional(handle, &conditional, &report, &conflict);
+      }, [data, env, handle](ze_error_code status, const std::string &message) -> napi_value {
+      auto &report = data->report;
+      auto &conflict = data->conflict;
     if (status != ZE_OK)
-      return ThrowWriteFailure(env, store->handle, status, conflict);
+      return ThrowWriteFailure(env, handle, status, conflict, &message);
 
     napi_value result;
     napi_value sequence;
@@ -1839,6 +2001,7 @@ napi_value Upsert(napi_env env, napi_callback_info info) {
       return nullptr;
     }
     return result;
+      });
   });
 }
 
@@ -2088,15 +2251,7 @@ napi_value DeleteDocuments(napi_env env, napi_callback_info info) {
   });
 }
 
-napi_value CompletePurge(napi_env env, NativeStore *store, uint64_t token_id) {
-  ZeAwaitPurgeRequest wait{};
-  wait.abi_size = sizeof(wait);
-  wait.token_id = token_id;
-  ZePurgeReport report{};
-  report.abi_size = sizeof(report);
-  const ze_error_code status = ze_await_physical_purge(store->handle, &wait, &report);
-  if (status != ZE_OK)
-    return ThrowZeppelin(env, store->handle, status);
+napi_value PurgeReportValue(napi_env env, const ZePurgeReport &report) {
   napi_value result;
   if (!NapiOk(env, napi_create_object(env, &result), "create purge report"))
     return nullptr;
@@ -2120,6 +2275,22 @@ napi_value CompletePurge(napi_env env, NativeStore *store, uint64_t token_id) {
   return result;
 }
 
+template <bool Async = false>
+napi_value CompletePurge(napi_env env, napi_value receiver, NativeStore *store, uint64_t token_id) {
+  struct Data { ZeAwaitPurgeRequest wait{}; ZePurgeReport report{}; };
+  auto data = std::make_shared<Data>();
+  data->wait.abi_size = sizeof(data->wait); data->wait.token_id = token_id;
+  data->report.abi_size = sizeof(data->report);
+  const auto handle = store->handle;
+  return RunNative<Async>(env, receiver, handle,
+    [data, handle]() { return ze_await_physical_purge(handle, &data->wait, &data->report); },
+    [data, env](ze_error_code status, const std::string &message) {
+      if (status != ZE_OK) return ThrowWorkerError(env, status, message);
+      return PurgeReportValue(env, data->report);
+    });
+}
+
+template <bool Async = false>
 napi_value Purge(napi_env env, napi_callback_info info) {
   return Guard(env, [&]() -> napi_value {
     size_t argc = 2;
@@ -2149,24 +2320,33 @@ napi_value Purge(napi_env env, napi_callback_info info) {
     }
     if (!NapiOk(env, napi_get_array_length(env, args[0], &id_count), "read id count"))
       return nullptr;
-    std::vector<ZeDocId> ids(id_count);
+    struct Data { std::vector<ZeDocId> ids; ZePurgeRequest request{}; ZePurgeTokenReport token{}; ZePurgeReport report{}; };
+    auto data = std::make_shared<Data>();
+    auto &ids = data->ids; ids.resize(id_count);
     for (uint32_t index = 0; index < id_count; ++index) {
       napi_value id;
       if (!NapiOk(env, napi_get_element(env, args[0], index, &id), "read document id") ||
           !GetDocId(env, id, &ids[index]))
         return nullptr;
     }
-    ZePurgeRequest request{};
+    auto &request = data->request;
     request.abi_size = sizeof(request);
     request.doc_ids = ids.data();
     request.doc_id_count = ids.size();
-    ZePurgeTokenReport token{};
+    auto &token = data->token;
     token.abi_size = sizeof(token);
-    ze_error_code status = ze_purge(store->handle, &request, &token);
-    if (status != ZE_OK)
-      return ThrowZeppelin(env, store->handle, status);
-    if (wait_for_completion)
-      return CompletePurge(env, store, token.token_id);
+    data->report.abi_size = sizeof(data->report);
+    const auto handle = store->handle;
+    return RunNative<Async>(env, receiver, handle,
+      [data, handle, wait_for_completion]() {
+        auto status = ze_purge(handle, &data->request, &data->token);
+        if (status != ZE_OK || !wait_for_completion) return status;
+        ZeAwaitPurgeRequest wait{}; wait.abi_size = sizeof(wait); wait.token_id = data->token.token_id;
+        return ze_await_physical_purge(handle, &wait, &data->report);
+      }, [data, env, wait_for_completion](ze_error_code status, const std::string &message) -> napi_value {
+        if (status != ZE_OK) return ThrowWorkerError(env, status, message);
+        if (wait_for_completion) return PurgeReportValue(env, data->report);
+        auto &token = data->token;
     napi_value result;
     if (!NapiOk(env, napi_create_object(env, &result), "create purge token"))
       return nullptr;
@@ -2184,9 +2364,11 @@ napi_value Purge(napi_env env, napi_callback_info info) {
         !SetNamed(env, result, "isNoOp", no_op))
       return nullptr;
     return result;
+      });
   });
 }
 
+template <bool Async = false>
 napi_value AwaitPurge(napi_env env, napi_callback_info info) {
   return Guard(env, [&]() -> napi_value {
     size_t argc = 1;
@@ -2206,7 +2388,7 @@ napi_value AwaitPurge(napi_env env, napi_callback_info info) {
       napi_throw_range_error(env, "ERR_OUT_OF_RANGE", "tokenId must be an unsigned 64-bit bigint");
       return nullptr;
     }
-    return CompletePurge(env, store, token_id);
+    return CompletePurge<Async>(env, receiver, store, token_id);
   });
 }
 
@@ -2427,6 +2609,7 @@ bool ParseScanOrder(napi_env env, napi_value options, int32_t *order,
   return true;
 }
 
+template <bool Async = false>
 napi_value Scan(napi_env env, napi_callback_info info) {
   return Guard(env, [&]() -> napi_value {
     size_t argc = 1;
@@ -2453,7 +2636,14 @@ napi_value Scan(napi_env env, napi_callback_info info) {
       return nullptr;
     }
     const bool has_options = options != nullptr && options_type == napi_object;
-    ZeScanOrderedRequest ordered{};
+    struct Data {
+      ZeScanOrderedRequest ordered{};
+      FilterStorage filter_storage;
+      ZeScanResult native{};
+      ResultOwner<ZeScanResult, ze_scan_result_free> owner{&native};
+    };
+    auto data = std::make_shared<Data>();
+    auto &ordered = data->ordered;
     ordered.abi_size = sizeof(ordered);
     ZeScanRequest &request = ordered.scan;
     request.abi_size = sizeof(request);
@@ -2462,11 +2652,12 @@ napi_value Scan(napi_env env, napi_callback_info info) {
     request.include_text = 1;
     request.include_metadata = 1;
     request.include_attributes = 1;
-    FilterStorage filter_storage;
+    auto &filter_storage = data->filter_storage;
 
     napi_value field;
     bool present = false;
     if (has_options) {
+      if (!GetOptionalUint64(env, options, "cancelToken", 0, &request.cancel_token)) return nullptr;
       if (!GetNamed(env, options, "limit", &field, &present))
         return nullptr;
       if (present) {
@@ -2555,13 +2746,21 @@ napi_value Scan(napi_env env, napi_callback_info info) {
       }
     }
 
-    ZeScanResult native{};
+    auto &native = data->native;
     native.abi_size = sizeof(native);
-    const ze_error_code status =
-        ze_scan_ordered(store->handle, &ordered, &native);
+    const auto handle = store->handle;
+    return RunNative<Async>(env, receiver, handle,
+      [data, handle]() {
+      auto &ordered = data->ordered;
+      auto &native = data->native;
+        return ze_scan_ordered(handle, &ordered, &native);
+      }, [data, env, handle](ze_error_code status, const std::string &message) -> napi_value {
+      auto &ordered = data->ordered;
+      auto &native = data->native;
+      auto &request = ordered.scan;
+      auto &owner = data->owner;
     if (status != ZE_OK)
-      return ThrowZeppelin(env, store->handle, status);
-    ResultOwner<ZeScanResult, ze_scan_result_free> owner(&native);
+      return ThrowWorkerError(env, status, message);
     napi_value result;
     napi_value documents;
     napi_value generation;
@@ -2612,8 +2811,9 @@ napi_value Scan(napi_env env, napi_callback_info info) {
       return nullptr;
     const ze_error_code free_status = owner.FreeNow();
     if (free_status != ZE_OK)
-      return ThrowZeppelin(env, store->handle, free_status);
+      return ThrowZeppelin(env, handle, free_status);
     return result;
+      });
   });
 }
 
@@ -3094,6 +3294,7 @@ napi_value CloseStore(napi_env env, napi_callback_info info) {
 // Seals the active segment into an immutable segment and absorbs the WAL
 // prefix it covers, so reopening the store no longer replays those writes.
 // An empty active segment is a no-op that returns the current generation.
+template <bool Async = false>
 napi_value SealStore(napi_env env, napi_callback_info info) {
   return Guard(env, [&]() -> napi_value {
     size_t argc = 0;
@@ -3106,13 +3307,25 @@ napi_value SealStore(napi_env env, napi_callback_info info) {
     NativeStore *store = UnwrapStore(env, receiver);
     if (store == nullptr)
       return nullptr;
-    ZeSealRequest request{};
+    struct Data {
+      ZeSealRequest request{};
+      ZeGenerationReport report{};
+    };
+    auto data = std::make_shared<Data>();
+    auto &request = data->request;
     request.abi_size = sizeof(request);
-    ZeGenerationReport report{};
+    auto &report = data->report;
     report.abi_size = sizeof(report);
-    const ze_error_code status = ze_seal(store->handle, &request, &report);
+    const auto handle = store->handle;
+    return RunNative<Async>(env, receiver, handle,
+      [data, handle]() {
+      auto &request = data->request;
+      auto &report = data->report;
+        return ze_seal(handle, &request, &report);
+      }, [data, env](ze_error_code status, const std::string &message) -> napi_value {
+      auto &report = data->report;
     if (status != ZE_OK)
-      return ThrowZeppelin(env, store->handle, status);
+      return ThrowWorkerError(env, status, message);
     napi_value result;
     napi_value generation;
     if (!NapiOk(env, napi_create_object(env, &result), "create seal report") ||
@@ -3122,9 +3335,11 @@ napi_value SealStore(napi_env env, napi_callback_info info) {
         !SetNamed(env, result, "generation", generation))
       return nullptr;
     return result;
+      });
   });
 }
 
+template <bool Async = false>
 napi_value MergeStore(napi_env env, napi_callback_info info) {
   return Guard(env, [&]() -> napi_value {
     size_t argc = 0;
@@ -3137,13 +3352,25 @@ napi_value MergeStore(napi_env env, napi_callback_info info) {
     NativeStore *store = UnwrapStore(env, receiver);
     if (store == nullptr)
       return nullptr;
-    ZeSealRequest request{};
+    struct Data {
+      ZeSealRequest request{};
+      ZeGenerationReport report{};
+    };
+    auto data = std::make_shared<Data>();
+    auto &request = data->request;
     request.abi_size = sizeof(request);
-    ZeGenerationReport report{};
+    auto &report = data->report;
     report.abi_size = sizeof(report);
-    const ze_error_code status = ze_merge_sealed(store->handle, &request, &report);
+    const auto handle = store->handle;
+    return RunNative<Async>(env, receiver, handle,
+      [data, handle]() {
+      auto &request = data->request;
+      auto &report = data->report;
+        return ze_merge_sealed(handle, &request, &report);
+      }, [data, env](ze_error_code status, const std::string &message) -> napi_value {
+      auto &report = data->report;
     if (status != ZE_OK)
-      return ThrowZeppelin(env, store->handle, status);
+      return ThrowWorkerError(env, status, message);
     napi_value result;
     napi_value generation;
     if (!NapiOk(env, napi_create_object(env, &result), "create merge report") ||
@@ -3153,6 +3380,7 @@ napi_value MergeStore(napi_env env, napi_callback_info info) {
         !SetNamed(env, result, "generation", generation))
       return nullptr;
     return result;
+      });
   });
 }
 
@@ -3626,6 +3854,7 @@ bool CreateSnippet(napi_env env, const ZeQuerySnippet &snippet,
  * neither depends on a JavaScript object surviving the call. Every other field
  * is a scalar read straight into the request.
  */
+template <bool Async = false>
 napi_value Query(napi_env env, napi_callback_info info) {
   return Guard(env, [&]() -> napi_value {
     size_t argc = 1;
@@ -3652,14 +3881,29 @@ napi_value Query(napi_env env, napi_callback_info info) {
     if (store == nullptr)
       return nullptr;
 
-    ZeQueryRequest request{};
+    struct Data {
+      ZeQueryRequest request{};
+      ZeQueryFilter constraints{};
+      FilterStorage filter_storage;
+      bool has_filter = false;
+      std::string text;
+      std::vector<float> vector;
+      bool has_snippets = false;
+      size_t snippet_bytes = 0;
+      ZeQueryResult native{};
+      ZeQuerySnippets snippets{};
+      ResultOwner<ZeQueryResult, ze_query_result_free> owner{&native};
+      ResultOwner<ZeQuerySnippets, ze_query_snippets_free> snippet_owner{&snippets};
+    };
+    auto data = std::make_shared<Data>();
+    auto &request = data->request;
     request.abi_size = sizeof(request);
 
-    ZeQueryFilter constraints{};
+    auto &constraints = data->constraints;
     constraints.abi_size = sizeof(constraints);
-    FilterStorage filter_storage;
+    auto &filter_storage = data->filter_storage;
     napi_value filter_value;
-    bool has_filter = false;
+    auto &has_filter = data->has_filter;
     if (!ParseTimestampRange(env, args[0], &constraints.has_timestamp_range,
                              &constraints.start_ts, &constraints.end_ts) ||
         !GetNamed(env, args[0], "filter", &filter_value, &has_filter))
@@ -3670,12 +3914,12 @@ napi_value Query(napi_env env, napi_callback_info info) {
       constraints.filter = &filter_storage.filter;
     }
 
-    std::string text;
+    auto &text = data->text;
     bool has_text = false;
     if (!GetOptionalString(env, args[0], "text", &text, &has_text))
       return nullptr;
 
-    std::vector<float> vector;
+    auto &vector = data->vector;
     napi_value vector_value;
     bool has_vector = false;
     if (!GetNamed(env, args[0], "vector", &vector_value, &has_vector))
@@ -3799,8 +4043,8 @@ napi_value Query(napi_env env, napi_callback_info info) {
     // napi_get_value_uint32 would silently wrap a negative or fractional
     // value, so the number is read as a double and checked here.
     napi_value snippet_value;
-    bool has_snippets = false;
-    size_t snippet_bytes = 0;
+    auto &has_snippets = data->has_snippets;
+    auto &snippet_bytes = data->snippet_bytes;
     if (!GetNamed(env, args[0], "snippetBytes", &snippet_value, &has_snippets))
       return nullptr;
     if (has_snippets) {
@@ -3827,22 +4071,32 @@ napi_value Query(napi_env env, napi_callback_info info) {
       snippet_bytes = static_cast<size_t>(value);
     }
 
-    ZeQueryResult native{};
+    auto &native = data->native;
     native.abi_size = sizeof(native);
-    ZeQuerySnippets snippets{};
+    auto &snippets = data->snippets;
     snippets.abi_size = sizeof(snippets);
-    const ze_error_code status =
-        (has_filter || constraints.has_timestamp_range)
-            ? ze_query_filtered(store->handle, &request, &constraints,
-                                snippet_bytes, &native, has_snippets ? &snippets : nullptr)
-            : has_snippets ? ze_query_with_snippets(store->handle, &request,
-                                              snippet_bytes, &native, &snippets)
-                     : ze_query(store->handle, &request, &native);
+    const auto handle = store->handle;
+    return RunNative<Async>(env, receiver, handle,
+      [data, handle]() {
+      auto &request = data->request;
+      auto &constraints = data->constraints;
+      auto &has_filter = data->has_filter;
+      auto &has_snippets = data->has_snippets;
+      auto &snippet_bytes = data->snippet_bytes;
+      auto &native = data->native;
+      auto &snippets = data->snippets;
+        return (has_filter || constraints.has_timestamp_range)
+            ? ze_query_filtered(handle, &request, &constraints, snippet_bytes, &native, has_snippets ? &snippets : nullptr)
+            : has_snippets ? ze_query_with_snippets(handle, &request, snippet_bytes, &native, &snippets)
+            : ze_query(handle, &request, &native);
+      }, [data, env, handle](ze_error_code status, const std::string &message) -> napi_value {
+      auto &has_snippets = data->has_snippets;
+      auto &native = data->native;
+      auto &snippets = data->snippets;
+      auto &owner = data->owner;
+      auto &snippet_owner = data->snippet_owner;
     if (status != ZE_OK)
-      return ThrowZeppelin(env, store->handle, status);
-    ResultOwner<ZeQueryResult, ze_query_result_free> owner(&native);
-    ResultOwner<ZeQuerySnippets, ze_query_snippets_free> snippet_owner(
-        has_snippets ? &snippets : nullptr);
+      return ThrowWorkerError(env, status, message);
     if (has_snippets && snippets.snippet_count != native.hit_count) {
       napi_throw_error(env, "ERR_ZEPPELIN_NATIVE",
                        "query snippets are not aligned with its hits");
@@ -3906,7 +4160,7 @@ napi_value Query(napi_env env, napi_callback_info info) {
         const ze_error_code source_status =
             ze_query_snippet_source_ranges(&snippets, index, &source);
         if (source_status != ZE_OK)
-          return ThrowZeppelin(env, store->handle, source_status);
+          return ThrowZeppelin(env, handle, source_status);
         if (source.highlight_count != snippets.snippets[index].highlight_count) {
           napi_throw_error(env, "ZE_ERR_INTERNAL",
                            "snippet source highlights are not aligned");
@@ -3998,12 +4252,13 @@ napi_value Query(napi_env env, napi_callback_info info) {
     if (has_snippets) {
       const ze_error_code snippet_free_status = snippet_owner.FreeNow();
       if (snippet_free_status != ZE_OK)
-        return ThrowZeppelin(env, store->handle, snippet_free_status);
+        return ThrowZeppelin(env, handle, snippet_free_status);
     }
     const ze_error_code free_status = owner.FreeNow();
     if (free_status != ZE_OK)
-      return ThrowZeppelin(env, store->handle, free_status);
+      return ThrowZeppelin(env, handle, free_status);
     return result;
+      });
   });
 }
 
@@ -4100,18 +4355,22 @@ napi_value Initialize(napi_env env, napi_value exports) {
   napi_property_descriptor methods[] = {
       {"ingest", nullptr, Ingest, nullptr, nullptr, nullptr, napi_default,
        nullptr},
-      {"upsert", nullptr, Upsert, nullptr, nullptr, nullptr, napi_default,
+      {"upsertAsync", nullptr, Upsert<true>, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"upsert", nullptr, Upsert<false>, nullptr, nullptr, nullptr, napi_default,
        nullptr},
       {"get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"delete", nullptr, DeleteDocuments, nullptr, nullptr, nullptr,
        napi_default, nullptr},
-      {"purge", nullptr, Purge, nullptr, nullptr, nullptr, napi_default, nullptr},
-      {"awaitPurge", nullptr, AwaitPurge, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"purgeAsync", nullptr, Purge<true>, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"purge", nullptr, Purge<false>, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"awaitPurgeAsync", nullptr, AwaitPurge<true>, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"awaitPurge", nullptr, AwaitPurge<false>, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"dropPartition", nullptr, DropPartition, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"applyRetention", nullptr, ApplyRetention, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"deleteWhere", nullptr, DeleteWhere, nullptr, nullptr, nullptr,
        napi_default, nullptr},
-      {"scan", nullptr, Scan, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"scanAsync", nullptr, Scan<true>, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"scan", nullptr, Scan<false>, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"schema", nullptr, Schema, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"count", nullptr, Count, nullptr, nullptr, nullptr, napi_default,
        nullptr},
@@ -4119,13 +4378,16 @@ napi_value Initialize(napi_env env, napi_value exports) {
        napi_default, nullptr},
       {"search", nullptr, Search, nullptr, nullptr, nullptr, napi_default,
        nullptr},
-      {"query", nullptr, Query, nullptr, nullptr, nullptr, napi_default,
+      {"queryAsync", nullptr, Query<true>, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"query", nullptr, Query<false>, nullptr, nullptr, nullptr, napi_default,
        nullptr},
       {"openMigrations", nullptr, OpenMigrations, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"reindexText", nullptr, ReindexTextStore, nullptr, nullptr, nullptr, napi_default, nullptr},
-      {"seal", nullptr, SealStore, nullptr, nullptr, nullptr, napi_default,
+      {"sealAsync", nullptr, SealStore<true>, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"seal", nullptr, SealStore<false>, nullptr, nullptr, nullptr, napi_default,
        nullptr},
-      {"merge", nullptr, MergeStore, nullptr, nullptr, nullptr, napi_default,
+      {"mergeAsync", nullptr, MergeStore<true>, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"merge", nullptr, MergeStore<false>, nullptr, nullptr, nullptr, napi_default,
        nullptr},
       {"openSnapshot", nullptr, OpenSnapshotStore, nullptr, nullptr, nullptr,
        napi_default, nullptr},
@@ -4155,6 +4417,7 @@ napi_value Initialize(napi_env env, napi_value exports) {
     const char *name;
     napi_callback callback;
   } functions[] = {
+      {"openAsync", OpenAsync},
       {"createCancelToken", CreateCancelToken},
       {"cancelToken", CancelToken},
       {"freeCancelToken", FreeCancelToken},
@@ -4162,8 +4425,10 @@ napi_value Initialize(napi_env env, napi_value exports) {
 #ifdef ZE_GRAPH
       {"graphOpen", GraphOpen},
       {"graphClose", GraphClose},
-      {"graphApply", GraphApply},
-      {"graphCypher", GraphCypher},
+      {"graphApply", GraphApply<false>},
+      {"graphApplyAsync", GraphApply<true>},
+      {"graphCypher", GraphCypher<false>},
+      {"graphCypherAsync", GraphCypher<true>},
 #endif
       {"namespaceBatch", NamespaceBatch},
   };

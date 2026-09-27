@@ -217,7 +217,121 @@ function attach(store, open, autoSealRows, autoMerge) {
   return store;
 }
 
+// The token is kept alive until the native worker has actually stopped. Merely
+// racing its promise against an abort would leave work running in the engine.
+async function withSignal(signal, run) {
+  if (signal === undefined) return run(undefined);
+  if (!(signal instanceof AbortSignal)) throw new TypeError('signal must be an AbortSignal');
+  const token = new CancellationToken();
+  const cancel = () => token.cancel();
+  try {
+    signal.addEventListener('abort', cancel, { once: true });
+    if (signal.aborted) cancel();
+    return await run(token[nativeToken]);
+  } finally {
+    signal.removeEventListener('abort', cancel);
+    token.close();
+  }
+}
+
+async function attachAsync(storePath, options, name, spec) {
+  const autoSealRows = autoSealRowsOption(options);
+  const autoMerge = autoMergeOption(options);
+  let native;
+  try {
+    native = await (name === undefined ? binding.openAsync(storePath, options)
+      : binding.openAsync(storePath, options, name, spec));
+    const store = Object.create(Store.prototype);
+    store._native = native;
+    store._autoSealRows = autoSealRows;
+    store._autoMerge = autoMerge;
+    store._unsealedWrites = 0;
+    const report = native.openMigrations();
+    const migrations = [];
+    const add = (kind, format, generation, description) => migrations.push(Object.freeze({
+      kind, fromFormat: format, toFormat: format, generation, description,
+    }));
+    if (report.changes & 2) add('wal-tail-cut', 'wal/1', report.generation, 'Removed an incomplete final WAL record.');
+    if (report.changes & 1) add('schema-added', 'manifest/2', report.generation, 'Committed added nullable attributes; existing rows read null.');
+    if (autoSealRows > 0 || autoMerge) {
+      const sealed = await native.sealAsync();
+      if (sealed.generation > report.generation) add('wal-rotated', 'wal/1', sealed.generation, 'Sealed replayed writes and rotated the absorbed WAL to a header.');
+      if (autoMerge) await native.mergeAsync();
+    }
+    Object.defineProperty(store, 'migrations', { value: Object.freeze(migrations), enumerable: true });
+    return store;
+  } catch (error) {
+    if (native) { try { native.close(); } catch { /* Preserve open failure. */ } }
+    throw translateError(error);
+  }
+}
+
+async function openNamespaceAsync(root, name, spec, options = {}) {
+  return attachAsync(root, options, name, spec);
+}
+
 class Store {
+  static async openAsync(storePath, options = {}) {
+    return attachAsync(storePath, options);
+  }
+
+  // Serialize async mutations so auto-seal accounting follows committed writes.
+  _queueWrite(run) {
+    const result = (this._asyncWrites ?? Promise.resolve()).then(run);
+    this._asyncWrites = result.catch(() => {});
+    return result.catch(error => { throw translateError(error); });
+  }
+
+  async upsertAsync(documents) {
+    const owned = structuredClone(documents);
+    return this._queueWrite(async () => {
+      if (this._autoSealRows > 0 && this._unsealedWrites >= this._autoSealRows) {
+        await this._native.sealAsync();
+        if (this._autoMerge) await this._native.mergeAsync();
+        this._unsealedWrites = 0;
+      }
+      const report = await this._native.upsertAsync(owned);
+      this._unsealedWrites += owned?.length ?? 0;
+      return report;
+    });
+  }
+
+  async queryAsync(request) {
+    try {
+      if (request?.signal !== undefined && request?.cancelToken != null) {
+        throw new TypeError('use signal or cancelToken, not both');
+      }
+      return await withSignal(request?.signal, token => this._native.queryAsync({
+        ...request, cancelToken: token ?? request?.cancelToken?.[nativeToken] ?? request?.cancelToken ?? 0n,
+      }));
+    } catch (error) { throw translateError(error); }
+  }
+
+  async scanAsync(request = {}) {
+    try {
+      return await withSignal(request.signal, token => this._native.scanAsync({ ...request, cancelToken: token ?? 0n }));
+    } catch (error) { throw translateError(error); }
+  }
+
+  async sealAsync() {
+    return this._queueWrite(async () => {
+      const report = await this._native.sealAsync();
+      const result = this._autoMerge ? await this._native.mergeAsync() : report;
+      this._unsealedWrites = 0;
+      return result;
+    });
+  }
+  async mergeAsync() { return this._queueWrite(() => this._native.mergeAsync()); }
+  async maintainAsync() { return this.mergeAsync(); }
+  async purgeAsync(ids, options = {}) {
+    const owned = structuredClone(ids);
+    const ownedOptions = { ...options };
+    return this._queueWrite(() => this._native.purgeAsync(owned, ownedOptions));
+  }
+  async awaitPurgeAsync(tokenId) { return this._queueWrite(() => this._native.awaitPurgeAsync(tokenId)); }
+  async snapshotAsync(target) { return this.snapshot(target); }
+  async backupAsync(target) { return this.snapshot(target); }
+
   constructor(storePath, options = {}) {
     attach(
       this,
@@ -544,7 +658,11 @@ class GraphStore {
     return new GraphStore(graphConstruction, native);
   }
   close() { return callNative(() => binding.graphClose(this.#native)); }
-  apply(items) {
+  apply(items) { return this.#apply(items, false); }
+  async applyAsync(items) {
+    try { return await this.#apply(items, true); } catch (error) { throw translateError(error); }
+  }
+  #apply(items, async) {
     if (!Array.isArray(items) || items.length > 16384) graphInvalid('items must be an array of at most 16384 mutations');
     for (const item of items) {
       graphObject(item, ['kind', 'operation', 'namespace', 'key', 'revision', 'expectedId', 'expectedDeletionRevision', 'detach', 'labels', 'properties', 'text', 'type', 'source', 'target'], 'item');
@@ -573,15 +691,21 @@ class GraphStore {
         graphString(item.type, 'type'); graphEndpoint(item.source); graphEndpoint(item.target);
       }
     }
-    return callNative(() => binding.graphApply(this.#native, items));
+    return callNative(() => (async ? binding.graphApplyAsync : binding.graphApply)(this.#native, items));
   }
-  cypher(text, params = {}, options = {}) {
+  cypher(text, params = {}, options = {}) { return this.#cypher(text, params, options, false); }
+  async cypherAsync(text, params = {}, options = {}) {
+    try {
+      return await withSignal(options.signal, token => this.#cypher(text, params, options, true, token ?? 0n));
+    } catch (error) { throw translateError(error); }
+  }
+  #cypher(text, params, options, async, token) {
     graphString(text, 'query'); graphObject(params, null, 'parameters');
     for (const [name, value] of Object.entries(params)) { graphString(name, 'parameter name'); graphScalar(value); }
-    graphObject(options, ['maxRows'], 'query options');
+    graphObject(options, async ? ['maxRows', 'signal'] : ['maxRows'], 'query options');
     const maxRows = options.maxRows ?? 0;
     if (!Number.isInteger(maxRows) || maxRows < 0 || maxRows > 65536) graphInvalid('maxRows must be in 0..65536');
-    return callNative(() => binding.graphCypher(this.#native, text, params, maxRows));
+    return callNative(() => async ? binding.graphCypherAsync(this.#native, text, params, maxRows, token) : binding.graphCypher(this.#native, text, params, maxRows));
   }
 }
 
@@ -597,6 +721,7 @@ module.exports = {
   listNamespaces,
   namespaceBatch,
   openNamespace,
+  openNamespaceAsync,
   openInspection,
   uuidToId,
   verify,

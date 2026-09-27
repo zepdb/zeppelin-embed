@@ -196,9 +196,9 @@ napi_value GValue(napi_env env, const ZeGraphValuePool &p, uint32_t index, unsig
   default: throw std::runtime_error("invalid graph value tag");
   }
 }
-napi_value GResult(napi_env env, ZeGraphHandle handle, ze_error_code status, const ZeGraphResponse &r) {
+napi_value GResult(napi_env env, ZeGraphHandle handle, ze_error_code status, const ZeGraphResponse &r, const std::string *message = nullptr) {
   if (status != ZE_OK) {
-    napi_value error; if (!CreateZeppelinError(env, handle.token, status, &error)) throw GraphPending{};
+    napi_value error; if (!(message ? CreateZeppelinErrorWithMessage(env, status, *message, &error) : CreateZeppelinError(env, handle.token, status, &error))) throw GraphPending{};
     GMetadata(env, error, r); GCheck(env, napi_throw(env, error)); throw GraphPending{};
   }
   auto result = GObject(env); GMetadata(env, result, r);
@@ -252,10 +252,13 @@ napi_value GraphClose(napi_env env, napi_callback_info info) {
     napi_value result; GCheck(env, napi_get_undefined(env, &result)); return result;
   });
 }
+template <bool Async = false>
 napi_value GraphApply(napi_env env, napi_callback_info info) {
   return GGuard(env, [&]() {
     napi_value args[2]; size_t argc = 2; GCheck(env, napi_get_cb_info(env, info, &argc, args, nullptr, nullptr)); GRequire(env, argc == 2, "graphApply arguments");
-    auto *owner = GOwner(env, args[0]); GPool pool; std::vector<ZeGraphBatchItem> items;
+    const auto handle = GOwner(env, args[0])->handle;
+    struct Data { GPool pool; std::vector<ZeGraphBatchItem> items; GResponse response; };
+    auto data = std::make_shared<Data>(); auto &pool = data->pool; auto &items = data->items;
     const auto count = GLength(env, args[1]); items.reserve(count);
     for (uint32_t i = 0; i < count; ++i) {
       auto js = GAt(env, args[1], i); auto item = GStruct<ZeGraphBatchItem>();
@@ -289,24 +292,39 @@ napi_value GraphApply(napi_env env, napi_callback_info info) {
       }
       items.push_back(item);
     }
-    auto view = pool.view(); auto request = GStruct<ZeGraphBatchRequest>(); request.items = items.data(); request.item_count = items.size(); request.pool = &view;
-    GResponse response; const auto status = ze_graph_apply(owner->handle, &request, &response.value); return GResult(env, owner->handle, status, response.value);
+    return RunNative<Async>(env, args[0], handle.token, [data, handle]() {
+      auto view = data->pool.view(); auto request = GStruct<ZeGraphBatchRequest>();
+      request.items = data->items.data(); request.item_count = data->items.size(); request.pool = &view;
+      return ze_graph_apply(handle, &request, &data->response.value);
+    }, [data, env, handle](ze_error_code status, const std::string &message) {
+      return GGuard(env, [&]() { return GResult(env, handle, status, data->response.value, &message); });
+    });
   });
 }
+template <bool Async = false>
 napi_value GraphCypher(napi_env env, napi_callback_info info) {
   return GGuard(env, [&]() {
-    napi_value args[4]; size_t argc = 4; GCheck(env, napi_get_cb_info(env, info, &argc, args, nullptr, nullptr)); GRequire(env, argc == 4, "graphCypher arguments");
-    auto *owner = GOwner(env, args[0]); auto text = GText(env, args[1]); GPool pool; std::vector<ZeGraphParameterValue> parameters;
+    napi_value args[5]; size_t argc = 5; GCheck(env, napi_get_cb_info(env, info, &argc, args, nullptr, nullptr)); GRequire(env, argc == (Async ? 5 : 4), "graphCypher arguments");
+    const auto handle = GOwner(env, args[0])->handle;
+    struct Data { std::string text; GPool pool; std::vector<ZeGraphParameterValue> parameters; GResponse response; ZeGraphControl control = GStruct<ZeGraphControl>(); };
+    auto data = std::make_shared<Data>(); data->text = GText(env, args[1]);
+    auto &pool = data->pool; auto &parameters = data->parameters;
+    if constexpr (Async) data->control.cancel_token = GInteger(env, args[4]);
     napi_value names; GCheck(env, napi_get_property_names(env, args[2], &names));
     for (uint32_t i = 0; i < GLength(env, names); ++i) {
       auto name = GAt(env, names, i); napi_value value; GCheck(env, napi_get_property(env, args[2], name, &value));
       auto param = GStruct<ZeGraphParameterValue>(); param.name = pool.text(GText(env, name)); param.value = pool.scalar(env, value, false); parameters.push_back(param);
     }
-    auto view = pool.view(); auto request = GStruct<ZeGraphCypherRequest>(); request.query = {reinterpret_cast<const uint8_t *>(text.data()), text.size()};
-    request.parameters = parameters.data(); request.parameter_count = parameters.size(); request.parameter_pool = &view;
     const auto max_rows = GDouble(env, args[3]); GRequire(env, std::isfinite(max_rows) && max_rows >= 0 && max_rows <= 65536 && std::floor(max_rows) == max_rows, "invalid maxRows");
-    GResponse response; const auto status = ze_graph_cypher_with_row_limit(owner->handle, &request, static_cast<uint32_t>(max_rows), &response.value);
-    return GResult(env, owner->handle, status, response.value);
+    return RunNative<Async>(env, args[0], handle.token, [data, handle, max_rows]() {
+      auto view = data->pool.view(); auto request = GStruct<ZeGraphCypherRequest>();
+      request.query = {reinterpret_cast<const uint8_t *>(data->text.data()), data->text.size()};
+      request.parameters = data->parameters.data(); request.parameter_count = data->parameters.size(); request.parameter_pool = &view;
+      request.control = &data->control;
+      return ze_graph_cypher_with_row_limit(handle, &request, static_cast<uint32_t>(max_rows), &data->response.value);
+    }, [data, env, handle](ze_error_code status, const std::string &message) {
+      return GGuard(env, [&]() { return GResult(env, handle, status, data->response.value, &message); });
+    });
   });
 }
 #endif

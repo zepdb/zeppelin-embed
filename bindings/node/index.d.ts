@@ -609,6 +609,41 @@ export declare class UnsupportedRuntimeError extends Error {
  */
 export declare class Store {
   constructor(path: string, options?: OpenOptions);
+  /** Opens on a native worker, including recovery and auto-seal/auto-merge. */
+  static openAsync(path: string, options?: OpenOptions): Promise<Store>;
+  /** Async variants run engine work on native workers. Input parsing and result
+   * conversion run on JS. Async mutations are ordered per Store; await a mutation
+   * before reads or synchronous calls that depend on it. Inputs are copied.
+   * close() remains synchronous: admitted work may finish, queued work rejects
+   * with ZE_ERR_CLOSED. It may wait for admitted engine work to drain.
+   * All failures (including validation) reject with the sync API's error types.
+   */
+  upsertAsync(documents: readonly UpsertDocument[]): Promise<MutationReport>;
+  /** AbortSignal cancels engine work cooperatively and rejects with
+   * ZeppelinError (ZE_ERR_CANCELLED), never partial results. The promise settles
+   * after the worker stops. Use either signal or cancelToken, not both; keep a
+   * caller-owned cancelToken open until settlement. A completion may win an
+   * abort race. */
+  queryAsync(request: QueryRequest & { readonly signal?: AbortSignal }): Promise<QueryResult>;
+  /** Same cancellation contract as queryAsync; one complete page or an error. */
+  scanAsync(request?: ScanRequest & { readonly signal?: AbortSignal }): Promise<ScanPage>;
+  /** Off-thread seal, including configured auto-merge. */
+  sealAsync(): Promise<SealReport>;
+  /** Off-thread merge of sealed segments. */
+  mergeAsync(): Promise<SealReport>;
+  /** Alias for mergeAsync. */
+  maintainAsync(): Promise<SealReport>;
+  /** Off-thread purge; wait defaults to true. */
+  purgeAsync(ids: readonly DocumentId[], options?: { readonly wait?: true }): Promise<PurgeReport>;
+  purgeAsync(ids: readonly DocumentId[], options: { readonly wait: false }): Promise<PurgeTokenReport>;
+  purgeAsync(ids: readonly DocumentId[], options: { readonly wait?: boolean }): Promise<PurgeReport | PurgeTokenReport>;
+  /** Off-thread physical purge completion. */
+  awaitPurgeAsync(tokenId: bigint): Promise<PurgeReport>;
+  /** Alias for snapshot(), which already runs off-thread. Close cancels an
+   * admitted snapshot with ZE_ERR_CANCELLED; a queued snapshot may be CLOSED. */
+  snapshotAsync(target: string): Promise<SnapshotReport>;
+  /** Alias for snapshotAsync. */
+  backupAsync(target: string): Promise<SnapshotReport>;
   /** Changes completed by open, including its optional auto-seal. Empty for an
    * unchanged or read-only open. Supported Node baseline: 0.4.2. Manifest v1
    * predates Node releases and is refused with ZE_ERR_FORMAT_VERSION; newer
@@ -800,6 +835,13 @@ export declare function openNamespace(
   spec: NamespaceSpec,
   options?: OpenOptions,
 ): Store;
+/** Off-thread namespace open, with the same options and migrations. */
+export declare function openNamespaceAsync(
+  root: string,
+  name: string,
+  spec: NamespaceSpec,
+  options?: OpenOptions,
+): Promise<Store>;
 
 export declare function listNamespaces(root: string): string[];
 
@@ -1052,6 +1094,15 @@ export class GraphStore {
    * search, vector input, or list parameters in this release.
    */
   cypher(text: string, params?: Readonly<Record<string, GraphScalar>>, options?: GraphQueryOptions): GraphResult;
+  /** Off-thread atomic apply. Await dependent writes; concurrent writers may
+   * reject with ZE_ERR_BUSY. close() waits for admitted work or rejects pending
+   * calls with ZE_ERR_CLOSED. Inputs are copied before returning. */
+  applyAsync(items: readonly GraphMutation[]): Promise<GraphResult>;
+  /** Off-thread Cypher with cooperative AbortSignal cancellation. Cancellation
+   * stops the engine and rejects with ZE_ERR_CANCELLED, never partial results.
+   * Completion can win an abort race. Errors retain graph disposition metadata.
+   * close() has the same lifetime contract as applyAsync. */
+  cypherAsync(text: string, params?: Readonly<Record<string, GraphScalar>>, options?: GraphQueryOptions & { readonly signal?: AbortSignal }): Promise<GraphResult>;
 }
 /** One participant; operations run in the listed phase order. */
 export interface NamespaceMutation {
