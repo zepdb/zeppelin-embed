@@ -3606,6 +3606,56 @@ fn i23_purge_checker_rejects_completed_sentinel_hit() {
 }
 
 #[test]
+fn ingest_delete_where_checks_recovery_and_receipts() {
+    let artifacts = tempfile::tempdir().expect("delete-where artifacts");
+    let outcome = adversarial::runner::run_program_for(
+        CampaignKind::IngestRetention,
+        0,
+        FaultProfile::None,
+        artifacts.path(),
+    )
+    .expect("ingest episode");
+    assert!(
+        outcome.coverage.count("ingest.delete-where.checked") > 0,
+        "campaign never checked delete-where"
+    );
+    let receipt = outcome
+        .family_artifact_bytes
+        .get("delete-where.jsonl")
+        .expect("delete-where receipts must be retained");
+    assert!(String::from_utf8_lossy(receipt).contains("delete-where.v1"));
+}
+
+#[cfg(unix)]
+#[test]
+fn ingest_delete_where_replay_rejects_fabricated_receipts() {
+    let root = tempfile::tempdir().expect("delete-where replay");
+    adversarial::runner::run_program_for(
+        CampaignKind::IngestRetention,
+        0,
+        FaultProfile::None,
+        root.path(),
+    )
+    .expect("episode");
+    let directory = episode_artifact_directory(
+        root.path(),
+        CampaignKind::IngestRetention,
+        0,
+        FaultProfile::None,
+    );
+    replay_ingest_retained_episode(&directory).expect("unaltered receipts replay");
+    let path = directory.join("delete-where.jsonl");
+    let bytes = std::fs::read_to_string(&path).expect("receipts");
+    assert!(bytes.contains("\"signal\":6"), "receipt mutation must fire");
+    std::fs::write(path, bytes.replace("\"signal\":6", "\"signal\":9"))
+        .expect("plant receipt drift");
+    assert!(
+        replay_ingest_retained_episode(&directory).is_err(),
+        "replay accepted fabricated delete-where receipts"
+    );
+}
+
+#[test]
 fn clean_physical_purge_runs_i23_byte_and_reopen_checker() {
     let campaign = CampaignKind::IngestRetention;
     let seed = (0..12)
@@ -9239,6 +9289,20 @@ fn replay_ingest_retained_episode(expected: &Path) -> Result<String, String> {
     let seed = episode["seed"]
         .as_u64()
         .ok_or_else(|| "retained ingest episode seed is absent".to_owned())?;
+    #[cfg(unix)]
+    {
+        let mut coverage = adversarial::coverage::CoverageRegistry::default();
+        let replayed = adversarial::delete_where::probe(seed, false, &mut coverage)?;
+        let lines: Vec<_> = artifacts["delete-where.jsonl"]
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .collect();
+        if lines.is_empty() || lines.iter().any(|line| *line != replayed[0].as_bytes()) {
+            return Err("replay drifted artifact=delete-where.jsonl".to_owned());
+        }
+    }
+    #[cfg(not(unix))]
+    return Err("delete-where replay requires Unix process signals".to_owned());
     let fixture: zeppelin_embed_bench::harness_json::Value =
         zeppelin_embed_bench::harness_json::from_slice(&artifacts["fixture.json"])
             .map_err(|error| format!("parse retained ingest fixture: {error}"))?;
@@ -19601,4 +19665,62 @@ fn one_runner_episode_reaches_required_mutation_lowering_contracts() {
         outcome.operations,
         outcome.violations.len()
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn ingest_delete_where_checker_rejects_partial_visibility_and_retained_bytes() {
+    use adversarial::delete_where::{Observation, check};
+    let good = Observation {
+        live_targets: vec![],
+        survivors: vec![100],
+        marker_hits: 0,
+        pending_before: true,
+        pending_after: false,
+        completed: false,
+    };
+    assert!(check(0, &good).is_ok());
+    let mut partial = good.clone();
+    partial.live_targets = vec![1];
+    assert!(
+        check(0, &partial).is_err(),
+        "checker accepted partial deletion"
+    );
+    let mut bytes = good.clone();
+    bytes.marker_hits = 1;
+    assert!(check(0, &bytes).is_err(), "checker accepted purged bytes");
+    let mut pending = good.clone();
+    pending.pending_after = true;
+    assert!(
+        check(0, &pending).is_err(),
+        "checker accepted pending intent"
+    );
+    let mut unrecovered = good.clone();
+    unrecovered.live_targets = vec![1, 2];
+    assert!(
+        check(0, &unrecovered).is_err(),
+        "checker accepted unprocessed intent"
+    );
+    let mut survivor = good;
+    survivor.survivors.clear();
+    assert!(
+        check(0, &survivor).is_err(),
+        "checker accepted lost survivor"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn ingest_delete_where_every_filesystem_boundary_can_fire() {
+    let mut coverage = adversarial::coverage::CoverageRegistry::default();
+    let receipts =
+        adversarial::delete_where::probe(0, true, &mut coverage).expect("boundary sweep");
+    assert!(receipts.len() > 10, "sweep missed delete/purge steps");
+    for key in [
+        "ingest.delete-where.pending-intent-recovered",
+        "ingest.delete-where.all-deleted",
+        "ingest.delete-where.none-deleted",
+    ] {
+        assert!(coverage.count(key) > 0, "missing {key}");
+    }
 }

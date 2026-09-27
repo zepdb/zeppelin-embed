@@ -3230,6 +3230,7 @@ fn input_document(
 
 fn column_cell(column: &Column, row: u32) -> independent::ScalarCell {
     match column {
+        Column::Id128(_) => panic!("Id128 is outside the metadata campaign fixture contract"),
         Column::U64(column) => column
             .get(row)
             .map_or(independent::ScalarCell::Null, independent::ScalarCell::U64),
@@ -3262,6 +3263,9 @@ fn column_cell(column: &Column, row: u32) -> independent::ScalarCell {
 
 fn predicate_cell(value: Option<PredicateValue>) -> independent::ScalarCell {
     match value {
+        Some(PredicateValue::Id128(_)) => {
+            panic!("Id128 is outside the metadata campaign fixture contract")
+        }
         None => independent::ScalarCell::Null,
         Some(PredicateValue::U64(value)) => independent::ScalarCell::U64(value),
         Some(PredicateValue::I64(value)) => independent::ScalarCell::I64(value),

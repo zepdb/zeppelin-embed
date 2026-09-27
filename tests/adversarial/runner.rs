@@ -6981,6 +6981,15 @@ fn run_ingest_campaign_operation(
     family_artifact_records: &mut BTreeMap<&'static str, Vec<String>>,
     coverage: &mut CoverageRegistry,
 ) -> Result<Vec<ProductionFeatureReceipt>, String> {
+    if operation == super::campaign::IngestOperation::Purge {
+        #[cfg(unix)]
+        family_artifact_records
+            .entry("delete-where.jsonl")
+            .or_default()
+            .extend(super::delete_where::probe(seed, false, coverage)?);
+        #[cfg(not(unix))]
+        return Err("delete-where crash probe requires Unix process signals".to_owned());
+    }
     let matching_faults = selected_faults
         .iter()
         .copied()

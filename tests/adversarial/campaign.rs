@@ -2363,7 +2363,12 @@ fn storage_family_required_coverage() -> impl Iterator<Item = &'static str> {
     ]
     .into_iter()
 }
-const INGEST_COVERAGE: [&str; 3] = ["op.ingest", "op.seal", "op.purge"];
+const INGEST_COVERAGE: [&str; 4] = [
+    "op.ingest",
+    "op.seal",
+    "op.purge",
+    "ingest.delete-where.checked",
+];
 const VECTOR_COVERAGE: [&str; 0] = [];
 
 pub(crate) fn vector_family_required_coverage() -> Vec<String> {

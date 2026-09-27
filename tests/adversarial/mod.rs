@@ -171,3 +171,6 @@ pub mod graph_reclaim;
 pub mod graph_recovery;
 #[cfg(feature = "graph-cypher")]
 pub mod graph_storage_faults;
+
+#[cfg(unix)]
+pub mod delete_where;

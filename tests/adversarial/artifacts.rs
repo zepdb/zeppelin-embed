@@ -48,7 +48,8 @@ pub const VECTOR_REPLAY_ARTIFACTS: [&str; 8] = [
     "violations.jsonl",
     "episode-summary.json",
 ];
-pub const INGEST_REPLAY_ARTIFACTS: [&str; 2] = ["fixture.json", "observations.jsonl"];
+pub const INGEST_REPLAY_ARTIFACTS: [&str; 3] =
+    ["fixture.json", "observations.jsonl", "delete-where.jsonl"];
 
 #[must_use]
 pub fn replay_artifacts_for(campaign: CampaignKind) -> Vec<&'static str> {
