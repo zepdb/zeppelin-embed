@@ -2249,11 +2249,17 @@ pub(super) fn blocking_capacity_probe(store: &Store) -> Result<(), String> {
             (None, Ok(result))
                 if !streaming
                     && result.metadata().rows == 2
-                    && result
-                        .pools()
-                        .values
-                        .iter()
-                        .all(|value| matches!(value, Value::Node(_))) => {}
+                    // The value pool also contains the nodes' scalar properties.
+                    // Check row cells and their full identities instead.
+                    && matches!(
+                        (result.cell(0, 0), result.cell(1, 0)),
+                        (Some(Value::Node(a)), Some(Value::Node(b)))
+                            if matches!(
+                                (result.pools().nodes.get(*a as usize),
+                                 result.pools().nodes.get(*b as usize)),
+                                (Some(a), Some(b)) if a.id != b.id
+                            )
+                    ) => {}
             (expected, result) => {
                 return Err(format!(
                     "blocking capacity expected {expected:?}, got {:?}",
