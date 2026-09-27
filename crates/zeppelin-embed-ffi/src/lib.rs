@@ -1715,93 +1715,166 @@ pub extern "C" fn ze_namespace_batch(request: *const ZeNamespaceBatchRequest) ->
         run_named_panic_probe("ze_namespace_batch");
         finish(
             None,
+            namespace_operation(request, NamespaceOperation::Batch),
+        )
+    })
+}
+
+/// Declares a durable child-to-parent id128 cascade rule under the root lock.
+/// Participants contain existing specs and no mutations. Close their writers and
+/// snapshots first. Generations is required but is not written by declaration.
+/// Cycles fail with ZE_ERR_CASCADE_CYCLE and the namespace cycle in last_error.
+/// No handle is accepted; this export has no handle poison state.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_namespace_declare_cascade(
+    request: *const ZeNamespaceBatchRequest,
+    declaration: *const ZeCascadeDeclaration,
+) -> ZeErrorCode {
+    ffi_entry!(None, ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_namespace_declare_cascade");
+        finish(
+            None,
             (|| {
-                let request = marshal::read_struct(request)?;
-                let root = marshal::utf8_without_nul(request.root, request.root_len)?;
-                if root.is_empty() || !(2..=128).contains(&request.participant_count) {
-                    return Err(FfiError::invalid(
-                        "root and 2..128 namespace participants are required",
-                    ));
-                }
-                let participants =
-                    marshal::read_slice(request.participants, request.participant_count)?;
-                if request.generations.is_null()
-                    || request.generations.align_offset(align_of::<u64>()) != 0
-                {
-                    return Err(FfiError::invalid(
-                        "generations must be an aligned output array",
-                    ));
-                }
-                let mut mutations = Vec::new();
-                for participant in participants {
-                    let participant =
-                        marshal::read_struct(participant as *const ZeNamespaceMutation)?;
-                    if participant.reserved != 0 {
-                        return Err(FfiError::invalid("participant reserved must be zero"));
-                    }
-                    let name = validate_namespace_name(marshal::read_slice(
-                        participant.name,
-                        participant.name_len,
-                    )?)?
-                    .to_owned();
-                    let spec = marshal::read_struct(participant.spec)?;
-                    let (schema, mut epoch) = parse_namespace_spec(participant.spec)?;
-                    let tokenizer = parse_tokenizer_profile(participant.tokenizer_profile)?;
-                    if !spec.epoch.is_null() && epoch.tokenizer != tokenizer.epoch() {
-                        return Err(FfiError::invalid("namespace and epoch tokenizers disagree"));
-                    }
-                    epoch.tokenizer = tokenizer.epoch();
-                    let conditional = marshal::read_struct(&participant.upserts)?;
-                    let upsert = marshal::read_struct(&conditional.batch)?;
-                    let conditions = revision_conditions(
-                        conditional.conditions,
-                        conditional.condition_count,
-                        upsert.document_count,
-                    )?;
-                    let upserts = if upsert.document_count == 0 {
-                        Vec::new()
-                    } else {
-                        decode_upsert_documents(spec.has_vector_space == 0, &schema, upsert)?
-                            .into_iter()
-                            .zip(conditions)
-                            .map(|(document, condition)| match condition {
-                                Some(expected) => document.with_expected_revision(expected),
-                                None => document,
-                            })
-                            .collect()
-                    };
-                    let deletes =
-                        marshal::read_slice(participant.deletes, participant.delete_count)?
-                            .iter()
-                            .copied()
-                            .map(doc_id)
-                            .collect();
-                    let delete_where = decode_filter(participant.filter, &schema)?;
-                    let options = OpenOptions::new()
-                        .with_tokenizer(tokenizer)
-                        .with_epoch(epoch)
-                        .with_schema(schema);
-                    mutations.push(zeppelin_embed::lifecycle::NamespaceMutation {
-                        name,
-                        options,
-                        upserts,
-                        deletes,
-                        delete_where,
-                    });
-                }
-                let generations =
-                    zeppelin_embed::lifecycle::namespace_batch(Path::new(root), mutations)
-                        .map_err(FfiError::store)?;
-                for (index, generation) in generations.into_iter().enumerate() {
-                    // The ABI requires participant_count writable u64 elements.
-                    unsafe {
-                        request.generations.add(index).write(generation);
-                    }
-                }
-                Ok(())
+                let declaration = marshal::read_struct(declaration)?;
+                namespace_operation(request, NamespaceOperation::Declare(declaration))
             })(),
         )
     })
+}
+
+/// Atomically deletes explicit IDs and transitive declared dependants.
+/// Supply 1..128 participants including every reachable namespace; only deletes
+/// may be populated. Inherits ze_namespace_batch closed-writer, snapshot,
+/// indeterminate-outcome and logical-delete limits. No handle poison state.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_namespace_delete_cascade(
+    request: *const ZeNamespaceBatchRequest,
+) -> ZeErrorCode {
+    ffi_entry!(None, ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_namespace_delete_cascade");
+        finish(
+            None,
+            namespace_operation(request, NamespaceOperation::Cascade),
+        )
+    })
+}
+
+enum NamespaceOperation {
+    Batch,
+    Cascade,
+    Declare(ZeCascadeDeclaration),
+}
+fn namespace_operation(
+    request: *const ZeNamespaceBatchRequest,
+    operation: NamespaceOperation,
+) -> Result<(), FfiError> {
+    let request = marshal::read_struct(request)?;
+    let root = marshal::utf8_without_nul(request.root, request.root_len)?;
+    let minimum = if matches!(operation, NamespaceOperation::Batch) {
+        2
+    } else {
+        1
+    };
+    if root.is_empty() || !(minimum..=128).contains(&request.participant_count) {
+        return Err(FfiError::invalid(
+            "root and a valid namespace participant count are required",
+        ));
+    }
+    let participants = marshal::read_slice(request.participants, request.participant_count)?;
+    if request.generations.is_null() || request.generations.align_offset(align_of::<u64>()) != 0 {
+        return Err(FfiError::invalid(
+            "generations must be an aligned output array",
+        ));
+    }
+    let mut mutations = Vec::new();
+    for participant in participants {
+        let participant = marshal::read_struct(participant as *const ZeNamespaceMutation)?;
+        if participant.reserved != 0 {
+            return Err(FfiError::invalid("participant reserved must be zero"));
+        }
+        let name =
+            validate_namespace_name(marshal::read_slice(participant.name, participant.name_len)?)?
+                .to_owned();
+        let spec = marshal::read_struct(participant.spec)?;
+        let (schema, mut epoch) = parse_namespace_spec(participant.spec)?;
+        let tokenizer = parse_tokenizer_profile(participant.tokenizer_profile)?;
+        if !spec.epoch.is_null() && epoch.tokenizer != tokenizer.epoch() {
+            return Err(FfiError::invalid("namespace and epoch tokenizers disagree"));
+        }
+        epoch.tokenizer = tokenizer.epoch();
+        let conditional = marshal::read_struct(&participant.upserts)?;
+        let upsert = marshal::read_struct(&conditional.batch)?;
+        let conditions = revision_conditions(
+            conditional.conditions,
+            conditional.condition_count,
+            upsert.document_count,
+        )?;
+        let upserts = if upsert.document_count == 0 {
+            Vec::new()
+        } else {
+            decode_upsert_documents(spec.has_vector_space == 0, &schema, upsert)?
+                .into_iter()
+                .zip(conditions)
+                .map(|(document, condition)| match condition {
+                    Some(expected) => document.with_expected_revision(expected),
+                    None => document,
+                })
+                .collect()
+        };
+        let deletes = marshal::read_slice(participant.deletes, participant.delete_count)?
+            .iter()
+            .copied()
+            .map(doc_id)
+            .collect();
+        let delete_where = decode_filter(participant.filter, &schema)?;
+        let options = OpenOptions::new()
+            .with_tokenizer(tokenizer)
+            .with_epoch(epoch)
+            .with_schema(schema);
+        mutations.push(zeppelin_embed::lifecycle::NamespaceMutation {
+            name,
+            options,
+            upserts,
+            deletes,
+            delete_where,
+        });
+    }
+    let generations = match operation {
+        NamespaceOperation::Batch => {
+            zeppelin_embed::lifecycle::namespace_batch(Path::new(root), mutations)
+        }
+        NamespaceOperation::Cascade => {
+            zeppelin_embed::lifecycle::namespace_delete_cascade(Path::new(root), mutations)
+        }
+        NamespaceOperation::Declare(declaration) => {
+            let parent = mutations
+                .get(declaration.parent_index as usize)
+                .ok_or_else(|| FfiError::invalid("parent index out of bounds"))?
+                .name
+                .clone();
+            let child = mutations
+                .get(declaration.child_index as usize)
+                .ok_or_else(|| FfiError::invalid("child index out of bounds"))?
+                .name
+                .clone();
+            let rule = zeppelin_embed::lifecycle::CascadeRule {
+                parent,
+                child,
+                attribute: ColumnId::new(declaration.attribute_id),
+            };
+            zeppelin_embed::lifecycle::namespace_declare_cascade(Path::new(root), mutations, rule)
+                .map_err(FfiError::store)?;
+            return Ok(());
+        }
+    }
+    .map_err(FfiError::store)?;
+    for (index, generation) in generations.into_iter().enumerate() {
+        // The ABI requires participant_count writable u64 elements.
+        unsafe {
+            request.generations.add(index).write(generation);
+        }
+    }
+    Ok(())
 }
 
 /// Lists direct child directories of `root` that contain a `manifest.ze`, in
@@ -5232,6 +5305,7 @@ pub extern "C" fn ze_error_code_name(code: i32) -> *const c_char {
             54 => b"ZE_ERR_IDENTITY_OVERFLOW\0",
             55 => b"ZE_ERR_REVISION_CONFLICT\0",
             56 => b"ZE_ERR_FORMAT_TOO_NEW\0",
+            57 => b"ZE_ERR_CASCADE_CYCLE\0",
             _ => b"ZE_ERR_UNKNOWN\0",
         };
         bytes.as_ptr().cast::<c_char>()

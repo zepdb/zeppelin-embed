@@ -548,6 +548,14 @@ function openInspection(storePath) {
   return new Store(storePath, { readOnly: true, inspection: true });
 }
 
+function declareCascade(root, participants, declaration) {
+  return callNative(() => binding.declareCascade(root, participants, declaration));
+}
+
+function deleteCascade(root, participants) {
+  return callNative(() => binding.deleteCascade(root, participants));
+}
+
 function namespaceBatch(root, participants) {
   return callNative(() => binding.namespaceBatch(root, participants));
 }
@@ -720,6 +728,8 @@ module.exports = {
   idToUuid,
   listNamespaces,
   namespaceBatch,
+  declareCascade,
+  deleteCascade,
   openNamespace,
   openNamespaceAsync,
   openInspection,

@@ -68,6 +68,9 @@ impl FfiError {
             return Self::new(code, message);
         }
         let code = match &error {
+            zeppelin_embed::lifecycle::StoreError::CascadeCycle { .. } => {
+                ZeErrorCode::ZeErrCascadeCycle
+            }
             zeppelin_embed::lifecycle::StoreError::SchemaMismatch { .. } => {
                 ZeErrorCode::ZeErrSchemaMismatch
             }

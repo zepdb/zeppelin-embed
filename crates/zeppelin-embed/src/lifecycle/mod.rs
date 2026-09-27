@@ -2,6 +2,7 @@
 
 mod budget;
 mod cancel;
+mod cascade;
 mod clock;
 mod close;
 pub mod durability;
@@ -12,6 +13,10 @@ mod hybrid;
 pub mod lock;
 pub(crate) mod materialize;
 mod namespace_batch;
+pub use cascade::CascadeRule;
+#[cfg(any(test, feature = "test-support"))]
+pub use namespace_batch::namespace_delete_cascade_with_steps;
+pub use namespace_batch::{namespace_declare_cascade, namespace_delete_cascade};
 #[cfg(feature = "graph-cypher")]
 pub(crate) mod native_graph;
 mod pool;
@@ -1964,6 +1969,11 @@ pub const MAX_DOCUMENT_SCAN_LIMIT: usize = 1 << 20;
 /// An open, lifecycle, or close operation was rejected.
 #[derive(Debug)]
 pub enum StoreError {
+    /// A declaration would introduce a namespace ownership cycle.
+    CascadeCycle {
+        /// Closed path of namespace names, in traversal order.
+        cycle: Vec<String>,
+    },
     /// A filesystem operation failed for the named store path.
     Io {
         /// Store path being opened.
@@ -2203,6 +2213,9 @@ pub enum StoreError {
 impl std::fmt::Display for StoreError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::CascadeCycle { cycle } => {
+                write!(formatter, "cascade cycle: {}", cycle.join(" -> "))
+            }
             Self::Io { path, source } => {
                 write!(formatter, "store I/O {}: {source}", path.display())
             }
@@ -2471,7 +2484,8 @@ impl StoreError {
             | Self::QueryPoolStart { .. }
             | Self::WalWrite(_)
             | Self::WalRetire(_) => StoreErrorKind::Io,
-            Self::NotDirectory { .. }
+            Self::CascadeCycle { .. }
+            | Self::NotDirectory { .. }
             | Self::Tokenizer(_)
             | Self::SchemaMismatch { .. }
             | Self::ScanStale { .. }
@@ -2543,7 +2557,8 @@ impl std::error::Error for StoreError {
             Self::Statistics { source, .. } => Some(source),
             Self::BackgroundStart { source } => Some(source),
             Self::QueryPoolStart { source } => Some(source),
-            Self::NotDirectory { .. }
+            Self::CascadeCycle { .. }
+            | Self::NotDirectory { .. }
             | Self::StoreBusy { .. }
             | Self::EpochUndeclared
             | Self::EpochUnstamped

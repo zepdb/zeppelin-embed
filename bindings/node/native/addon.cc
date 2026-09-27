@@ -2005,12 +2005,14 @@ napi_value Upsert(napi_env env, napi_callback_info info) {
   });
 }
 
-napi_value NamespaceBatch(napi_env env, napi_callback_info info) {
+enum class NamespaceOperation { Batch, DeclareCascade, DeleteCascade };
+
+napi_value NamespaceOperationCall(napi_env env, napi_callback_info info, NamespaceOperation operation) {
   return Guard(env, [&]() -> napi_value {
-    size_t argc = 2;
-    napi_value args[2];
+    size_t argc = 3;
+    napi_value args[3];
     if (!NapiOk(env, napi_get_cb_info(env, info, &argc, args, nullptr, nullptr), "batch arguments")) return nullptr;
-    if (argc != 2) { napi_throw_type_error(env, "ERR_MISSING_ARGS", "root and participants required"); return nullptr; }
+    if (argc != (operation == NamespaceOperation::DeclareCascade ? 3u : 2u)) { napi_throw_type_error(env, "ERR_MISSING_ARGS", "root and participants required"); return nullptr; }
     std::string root;
     if (!GetUtf8(env, args[0], "root", &root)) return nullptr;
     bool array = false;
@@ -2019,7 +2021,7 @@ napi_value NamespaceBatch(napi_env env, napi_callback_info info) {
       napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE", "participants must be an array"); return nullptr;
     }
     if (!NapiOk(env, napi_get_array_length(env, args[1], &count), "participant count")) return nullptr;
-    if (count < 2 || count > 128) { napi_throw_range_error(env, "ERR_OUT_OF_RANGE", "2..128 participants required"); return nullptr; }
+    if (count < (operation == NamespaceOperation::Batch ? 2u : 1u) || count > 128) { napi_throw_range_error(env, "ERR_OUT_OF_RANGE", "invalid namespace participant count"); return nullptr; }
     struct Participant {
       std::string name;
       ZeNamespaceSpec spec{};
@@ -2070,8 +2072,22 @@ napi_value NamespaceBatch(napi_env env, napi_callback_info info) {
     ZeNamespaceBatchRequest request{};
     request.abi_size = sizeof(request); request.root = reinterpret_cast<const uint8_t *>(root.data()); request.root_len = root.size();
     request.participants = participants.data(); request.participant_count = participants.size(); request.generations = generations.data();
-    const ze_error_code status = ze_namespace_batch(&request);
+    ZeCascadeDeclaration declaration{};
+    declaration.abi_size = sizeof(declaration);
+    if (operation == NamespaceOperation::DeclareCascade) {
+      if (!GetRequiredUint32(env, args[2], "parentIndex", &declaration.parent_index) ||
+          !GetRequiredUint32(env, args[2], "childIndex", &declaration.child_index) ||
+          !GetRequiredUint32(env, args[2], "attributeId", &declaration.attribute_id)) return nullptr;
+    }
+    const ze_error_code status = operation == NamespaceOperation::Batch ? ze_namespace_batch(&request)
+        : operation == NamespaceOperation::DeleteCascade ? ze_namespace_delete_cascade(&request)
+        : ze_namespace_declare_cascade(&request, &declaration);
     if (status != ZE_OK) return ThrowZeppelin(env, 0, status);
+    if (operation == NamespaceOperation::DeclareCascade) {
+      napi_value result;
+      if (!NapiOk(env, napi_get_undefined(env, &result), "declaration result")) return nullptr;
+      return result;
+    }
     napi_value result;
     if (!NapiOk(env, napi_create_array_with_length(env, count, &result), "batch generations")) return nullptr;
     for (uint32_t i = 0; i < count; ++i) {
@@ -2081,6 +2097,16 @@ napi_value NamespaceBatch(napi_env env, napi_callback_info info) {
     }
     return result;
   });
+}
+
+napi_value NamespaceBatch(napi_env env, napi_callback_info info) {
+  return NamespaceOperationCall(env, info, NamespaceOperation::Batch);
+}
+napi_value DeclareCascade(napi_env env, napi_callback_info info) {
+  return NamespaceOperationCall(env, info, NamespaceOperation::DeclareCascade);
+}
+napi_value DeleteCascade(napi_env env, napi_callback_info info) {
+  return NamespaceOperationCall(env, info, NamespaceOperation::DeleteCascade);
 }
 
 napi_value Get(napi_env env, napi_callback_info info) {
@@ -4431,6 +4457,8 @@ napi_value Initialize(napi_env env, napi_value exports) {
       {"graphCypherAsync", GraphCypher<true>},
 #endif
       {"namespaceBatch", NamespaceBatch},
+      {"declareCascade", DeclareCascade},
+      {"deleteCascade", DeleteCascade},
   };
   for (const auto &entry : functions) {
     napi_value function;

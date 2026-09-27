@@ -63,3 +63,5 @@ ze_open_migrations
 ze_reindex_text
 
 ze_namespace_batch
+ze_namespace_declare_cascade
+ze_namespace_delete_cascade

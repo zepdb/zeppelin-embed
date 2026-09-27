@@ -1140,3 +1140,47 @@ export interface NamespaceMutation {
  * no root transaction I/O; namespace open resolves the root decision.
  */
 export declare function namespaceBatch(root: string, participants: readonly NamespaceMutation[]): bigint[];
+
+/** An existing namespace with its exact schema/epoch/tokenizer declaration. */
+export interface CascadeParticipant {
+  readonly name: string;
+  readonly spec: NamespaceSpec;
+}
+/** Rule owned by the child namespace, referring to participants by array index. */
+export interface CascadeDeclaration {
+  readonly parentIndex: number;
+  readonly childIndex: number;
+  /** Child attribute must have type id128; null values have no parent. */
+  readonly attributeId: number;
+}
+/**
+ * Durably declares a cascade between existing namespaces of one root. Supply the
+ * parent and child specs (one participant for a self-cycle, which is rejected).
+ * Exact redeclaration is idempotent. Multiple ownership rules are allowed; a
+ * child is deleted when any declared parent reference is deleted. Cycles throw
+ * ZE_ERR_CASCADE_CYCLE with the namespace path in the error message.
+ *
+ * Close participant writers and their openSnapshot views first. Rules survive
+ * reopen in root metadata; keep the root intact. This is a declaration for
+ * deleteCascade, not foreign-key validation on upsert or implicit behavior for
+ * Store.delete, Store.deleteWhere or namespaceBatch. No rule removal API yet.
+ */
+export declare function declareCascade(root: string, participants: readonly CascadeParticipant[], declaration: CascadeDeclaration): void;
+/** One namespace's explicit IDs; dependants are discovered by the engine. */
+export interface CascadeDeleteParticipant extends CascadeParticipant {
+  readonly deletes?: readonly DocumentId[];
+}
+/**
+ * Deletes parent IDs and every transitive dependant in ONE namespaceBatch-style
+ * atomic mutation. Supply 1..128 participants with the exact existing specs,
+ * including every namespace reachable through declared cascades. Omission fails
+ * before publication. IDs are unsigned 128-bit bigints; use uuidToId for UUID strings.
+ * Returns generations in participant order. Upserts and filters are rejected.
+ *
+ * Close all participant writers and openSnapshot views first. Existing readers
+ * keep their snapshots; newly opened stores resolve the shared root decision.
+ * An I/O error near commit is indeterminate: reopen before retrying. Whole stores
+ * are copied; old stores and abandoned preparations remain. Deletes are logical:
+ * bounded reclamation or physical erasure of deleted text is NOT provided.
+ */
+export declare function deleteCascade(root: string, participants: readonly CascadeDeleteParticipant[]): bigint[];

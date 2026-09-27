@@ -117,6 +117,8 @@ pub enum ZeErrorCode {
     ZeErrRevisionConflict = 55,
     /// A persisted format is newer than this build can read.
     ZeErrFormatTooNew = 56,
+    /// A namespace cascade declaration closes a cycle.
+    ZeErrCascadeCycle = 57,
 }
 
 /// Opaque generation-tagged store handle.
@@ -1749,4 +1751,20 @@ pub struct ZeNamespaceBatchRequest {
     pub participant_count: usize,
     /// Caller-owned output of participant_count u64 generations, written on success.
     pub generations: *mut u64,
+}
+
+/// One cascade declaration referencing participants of a namespace request.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeCascadeDeclaration {
+    /// sizeof(ZeCascadeDeclaration).
+    pub abi_size: u32,
+    /// Zero.
+    pub abi_reserved: u32,
+    /// Index of the existing parent namespace participant.
+    pub parent_index: u32,
+    /// Index of the existing child namespace participant.
+    pub child_index: u32,
+    /// Child schema's id128 attribute ID.
+    pub attribute_id: u32,
 }

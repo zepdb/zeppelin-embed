@@ -164,6 +164,7 @@ const ERROR_CODE_GOLDEN: &[(ZeErrorCode, i32, &str)] = &[
         "ZE_ERR_REVISION_CONFLICT",
     ),
     (ZeErrorCode::ZeErrFormatTooNew, 56, "ZE_ERR_FORMAT_TOO_NEW"),
+    (ZeErrorCode::ZeErrCascadeCycle, 57, "ZE_ERR_CASCADE_CYCLE"),
 ];
 
 fn header_error_codes() -> Vec<(String, i32)> {
@@ -581,6 +582,8 @@ fn use_after_close_double_close_and_a_stale_generation_each_return_typed_errors(
 const PANIC_PROBE: u32 = 0x5041_4e49;
 const POISON_TABLE_NAMES: &[&str] = &[
     "ze_namespace_batch",
+    "ze_namespace_declare_cascade",
+    "ze_namespace_delete_cascade",
     "ze_apply_retention",
     "ze_await_physical_purge",
     "ze_close",
@@ -760,6 +763,12 @@ fn poison_function_table() -> Vec<(&'static str, PoisonCall)> {
             )
         }),
         // Root-only export: catches panics but owns no handle to poison.
+        ("ze_namespace_declare_cascade", |_| {
+            ze_namespace_declare_cascade(std::ptr::null(), std::ptr::null())
+        }),
+        ("ze_namespace_delete_cascade", |_| {
+            ze_namespace_delete_cascade(std::ptr::null())
+        }),
         ("ze_namespace_batch", |_| {
             ze_namespace_batch(std::ptr::null())
         }),
@@ -1199,7 +1208,11 @@ fn every_entry_point_returns_ze_err_poisoned_after_a_caught_panic() {
         );
         if matches!(
             name,
-            "ze_scan_result_free" | "ze_query_snippet_source_ranges" | "ze_namespace_batch"
+            "ze_scan_result_free"
+                | "ze_query_snippet_source_ranges"
+                | "ze_namespace_batch"
+                | "ze_namespace_declare_cascade"
+                | "ze_namespace_delete_cascade"
         ) {
             assert_eq!(
                 call(&mut context),
@@ -1260,7 +1273,11 @@ fn the_poison_table_covers_every_exported_handle_taking_symbol() {
         .filter(|name| {
             !matches!(
                 name.as_str(),
-                "ze_scan_result_free" | "ze_query_snippet_source_ranges" | "ze_namespace_batch"
+                "ze_scan_result_free"
+                    | "ze_query_snippet_source_ranges"
+                    | "ze_namespace_batch"
+                    | "ze_namespace_declare_cascade"
+                    | "ze_namespace_delete_cascade"
             )
         })
         .collect::<std::collections::BTreeSet<_>>();
@@ -1552,5 +1569,12 @@ fn namespace_batch_structs_have_frozen_layouts() {
     assert_layout!(ZeNamespaceBatchRequest, 48, 8, {
         abi_size: 0, abi_reserved: 4, root: 8, root_len: 16,
         participants: 24, participant_count: 32, generations: 40
+    });
+}
+
+#[test]
+fn cascade_declaration_has_frozen_layout() {
+    assert_layout!(ZeCascadeDeclaration, 20, 4, {
+        abi_size: 0, abi_reserved: 4, parent_index: 8, child_index: 12, attribute_id: 16
     });
 }

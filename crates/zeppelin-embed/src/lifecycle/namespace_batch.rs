@@ -35,19 +35,19 @@ pub struct NamespaceMutation {
     pub delete_where: Option<Predicate>,
 }
 
-fn io(path: &Path, source: std::io::Error) -> StoreError {
+pub(super) fn io(path: &Path, source: std::io::Error) -> StoreError {
     StoreError::Io {
         path: path.to_path_buf(),
         source,
     }
 }
-fn invalid(path: &Path, message: &str) -> StoreError {
+pub(super) fn invalid(path: &Path, message: &str) -> StoreError {
     io(
         path,
         std::io::Error::new(std::io::ErrorKind::InvalidData, message),
     )
 }
-fn name_valid(name: &str) -> bool {
+pub(super) fn name_valid(name: &str) -> bool {
     name.as_bytes()
         .first()
         .is_some_and(u8::is_ascii_alphanumeric)
@@ -56,13 +56,13 @@ fn name_valid(name: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
-fn envelope(body: &[u8]) -> Vec<u8> {
+pub(super) fn envelope(body: &[u8]) -> Vec<u8> {
     let mut bytes = MAGIC.to_vec();
     bytes.extend_from_slice(body);
     bytes.extend_from_slice(&xxh3_64(&bytes).to_le_bytes());
     bytes
 }
-fn body<'a>(path: &Path, bytes: &'a [u8]) -> Result<&'a [u8], StoreError> {
+pub(super) fn body<'a>(path: &Path, bytes: &'a [u8]) -> Result<&'a [u8], StoreError> {
     let end = bytes
         .len()
         .checked_sub(8)
@@ -80,7 +80,7 @@ fn body<'a>(path: &Path, bytes: &'a [u8]) -> Result<&'a [u8], StoreError> {
         .get(MAGIC.len()..)
         .ok_or_else(|| invalid(path, "namespace record header"))
 }
-fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, StoreError> {
+pub(super) fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, StoreError> {
     match StdVfs.open(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(io(path, e)),
@@ -202,7 +202,7 @@ pub(super) fn resolve(path: &Path) -> Result<PathBuf, StoreError> {
     }
 }
 
-fn durable_write(
+pub(super) fn durable_write(
     vfs: &dyn Vfs,
     path: &Path,
     bytes: &[u8],
@@ -213,7 +213,7 @@ fn durable_write(
     vfs.sync(path, SyncKind::Full).map_err(|e| io(path, e))?;
     step("file sync").map_err(|e| io(path, e))
 }
-fn sync_dir(
+pub(super) fn sync_dir(
     vfs: &dyn Vfs,
     path: &Path,
     step: &mut dyn FnMut(&str) -> std::io::Result<()>,
@@ -297,7 +297,7 @@ pub fn namespace_batch(
     root: &Path,
     mutations: Vec<NamespaceMutation>,
 ) -> Result<Vec<u64>, StoreError> {
-    execute(root, mutations, &mut |_| Ok(()))
+    execute(root, mutations, Operation::Batch, &mut |_| Ok(()))
 }
 
 /// Protocol interruption seam for kill/fault tests; never enabled by environment.
@@ -308,19 +308,80 @@ pub fn namespace_batch_with_steps(
     mutations: Vec<NamespaceMutation>,
     step: &mut dyn FnMut(&str) -> std::io::Result<()>,
 ) -> Result<Vec<u64>, StoreError> {
-    execute(root, mutations, step)
+    execute(root, mutations, Operation::Batch, step)
+}
+
+/// Durably declares a cascade while owning the root and participant writer locks.
+/// Participants supply the existing parent/child specs; mutation fields must be empty.
+pub fn namespace_declare_cascade(
+    root: &Path,
+    participants: Vec<NamespaceMutation>,
+    rule: super::CascadeRule,
+) -> Result<(), StoreError> {
+    execute(
+        root,
+        participants,
+        Operation::Declare(rule),
+        &mut |_| Ok(()),
+    )
+    .map(|_| ())
+}
+
+/// Deletes explicit IDs and all declared transitive dependants in one root commit.
+/// Supply every reachable namespace with its existing options. Only `deletes`
+/// may be populated. All ZE-239 closed-writer and logical-deletion limits apply.
+pub fn namespace_delete_cascade(
+    root: &Path,
+    participants: Vec<NamespaceMutation>,
+) -> Result<Vec<u64>, StoreError> {
+    execute(root, participants, Operation::Cascade, &mut |_| Ok(()))
+}
+
+/// Protocol interruption seam for cascade kill tests.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn namespace_delete_cascade_with_steps(
+    root: &Path,
+    participants: Vec<NamespaceMutation>,
+    step: &mut dyn FnMut(&str) -> std::io::Result<()>,
+) -> Result<Vec<u64>, StoreError> {
+    execute(root, participants, Operation::Cascade, step)
+}
+
+enum Operation {
+    Batch,
+    Cascade,
+    Declare(super::CascadeRule),
 }
 
 fn execute(
     root: &Path,
-    mutations: Vec<NamespaceMutation>,
+    mut mutations: Vec<NamespaceMutation>,
+    operation: Operation,
     step: &mut dyn FnMut(&str) -> std::io::Result<()>,
 ) -> Result<Vec<u64>, StoreError> {
     let root = std::fs::canonicalize(root).map_err(|e| io(root, e))?;
-    if mutations.len() < 2 || mutations.len() > 128 {
+    let minimum = if matches!(operation, Operation::Batch) {
+        2
+    } else {
+        1
+    };
+    if mutations.len() < minimum || mutations.len() > 128 {
         return Err(invalid(
             &root,
             "namespace batch requires 2..128 participants",
+        ));
+    }
+    if !matches!(operation, Operation::Batch)
+        && mutations.iter().any(|m| {
+            !m.upserts.is_empty()
+                || m.delete_where.is_some()
+                || (matches!(operation, Operation::Declare(_)) && !m.deletes.is_empty())
+        })
+    {
+        return Err(invalid(
+            &root,
+            "cascade operations reject upserts/filters; declarations reject deletes",
         ));
     }
     let _coordinator = StoreLock::acquire(&root).map_err(StoreError::Lock)?;
@@ -360,6 +421,14 @@ fn execute(
         // Validate declarations without allowing additive schema evolution.
         drop(Store::open(&path, options)?);
         sources.insert(name.clone(), Store::open(&path, mutation.options.clone())?);
+    }
+    match operation {
+        Operation::Declare(rule) => {
+            super::cascade::declare(&root, &sources, rule, step)?;
+            return Ok(Vec::new());
+        }
+        Operation::Cascade => super::cascade::expand(&root, &sources, &mut mutations)?,
+        Operation::Batch => {}
     }
     let transaction = loop {
         let id = NEXT.fetch_add(1, Ordering::Relaxed);

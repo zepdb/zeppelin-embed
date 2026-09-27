@@ -352,6 +352,10 @@ enum ze_error_code
      A persisted format is newer than this build can read.
      */
     ZE_ERR_FORMAT_TOO_NEW = 56,
+    /*
+     A namespace cascade declaration closes a cycle.
+     */
+    ZE_ERR_CASCADE_CYCLE = 57,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -1005,6 +1009,32 @@ typedef struct ZeNamespaceBatchRequest {
      */
     uint64_t *generations;
 } ZeNamespaceBatchRequest;
+
+/*
+ One cascade declaration referencing participants of a namespace request.
+ */
+typedef struct ZeCascadeDeclaration {
+    /*
+     sizeof(ZeCascadeDeclaration).
+     */
+    uint32_t abi_size;
+    /*
+     Zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Index of the existing parent namespace participant.
+     */
+    uint32_t parent_index;
+    /*
+     Index of the existing child namespace participant.
+     */
+    uint32_t child_index;
+    /*
+     Child schema's id128 attribute ID.
+     */
+    uint32_t attribute_id;
+} ZeCascadeDeclaration;
 
 /*
  Requests namespace discovery immediately below one database root.
@@ -3198,6 +3228,24 @@ ze_error_code ze_namespace_open_with_tokenizer(const struct ZeNamespaceOpenReque
  No handle is accepted, so there is no handle poison state for this export.
  */
 ze_error_code ze_namespace_batch(const struct ZeNamespaceBatchRequest *request);
+
+/*
+ Declares a durable child-to-parent id128 cascade rule under the root lock.
+ Participants contain existing specs and no mutations. Close their writers and
+ snapshots first. Generations is required but is not written by declaration.
+ Cycles fail with ZE_ERR_CASCADE_CYCLE and the namespace cycle in last_error.
+ No handle is accepted; this export has no handle poison state.
+ */
+ze_error_code ze_namespace_declare_cascade(const struct ZeNamespaceBatchRequest *request,
+                                           const struct ZeCascadeDeclaration *declaration);
+
+/*
+ Atomically deletes explicit IDs and transitive declared dependants.
+ Supply 1..128 participants including every reachable namespace; only deletes
+ may be populated. Inherits ze_namespace_batch closed-writer, snapshot,
+ indeterminate-outcome and logical-delete limits. No handle poison state.
+ */
+ze_error_code ze_namespace_delete_cascade(const struct ZeNamespaceBatchRequest *request);
 
 /*
  Lists direct child directories of `root` that contain a `manifest.ze`, in

@@ -90,6 +90,14 @@ const ABI_REGISTRY: &[AbiEntry] = &[
         coverage: AbiCoverage::InvalidProbe(probe_graph_relationship_types),
     },
     AbiEntry {
+        name: "ze_namespace_declare_cascade",
+        coverage: AbiCoverage::InvalidProbe(probe_namespace_declare_cascade),
+    },
+    AbiEntry {
+        name: "ze_namespace_delete_cascade",
+        coverage: AbiCoverage::InvalidProbe(probe_namespace_delete_cascade),
+    },
+    AbiEntry {
         name: "ze_namespace_batch",
         coverage: AbiCoverage::InvalidProbe(probe_namespace_batch),
     },
@@ -1460,4 +1468,14 @@ fn probe_reindex_text(context: &MatrixContext) -> ProbeResult {
 
 fn probe_namespace_batch(_: &MatrixContext) -> ProbeResult {
     ProbeResult::Status(ze_namespace_batch(std::ptr::null()))
+}
+
+fn probe_namespace_declare_cascade(_: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_namespace_declare_cascade(
+        std::ptr::null(),
+        std::ptr::null(),
+    ))
+}
+fn probe_namespace_delete_cascade(_: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_namespace_delete_cascade(std::ptr::null()))
 }
