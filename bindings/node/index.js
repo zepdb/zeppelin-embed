@@ -1,6 +1,7 @@
 'use strict';
 
 const path = require('node:path');
+const os = require('node:os');
 
 class ZeppelinError extends Error {
   constructor(message, code, errorCode) {
@@ -474,9 +475,13 @@ class GraphStore {
     if (token !== graphConstruction) throw new TypeError('use GraphStore.open(path, options)');
     this.#native = native;
   }
-  static isSupported() { return binding.graphSupported === true; }
+  static isSupported() {
+    // Darwin 23 is macOS 14; the Rust constructors enforce the same floor.
+    return binding.graphSupported === true &&
+      (process.platform !== 'darwin' || Number.parseInt(os.release(), 10) >= 23);
+  }
   static open(storePath, options = {}) {
-    if (!GraphStore.isSupported()) throw new ZeppelinError('graph requires macOS arm64', 'ZE_ERR_UNSUPPORTED', 11);
+    if (!GraphStore.isSupported()) throw new ZeppelinError('graph requires macOS 14 or newer, or Windows x64', 'ZE_ERR_UNSUPPORTED', 11);
     graphString(storePath, 'path');
     graphObject(options, ['mode', 'maxResidentBytes', 'readerDrainTimeoutMs'], 'open options');
     const mode = options.mode ?? 'create';

@@ -28,7 +28,8 @@ if (!isDarwin && !isWindowsX64) {
 }
 
 /**
- * Every macOS architecture the package ships, built on either kind of Mac.
+ * Every prebuild carries graph: both macOS slices and Windows Node/Electron.
+ * Both macOS architectures are built on either kind of Mac.
  *
  * The addon is a `-bundle` with `-undefined dynamic_lookup`, so it links
  * against no Node library and its Node-API symbols resolve from whatever host
@@ -71,7 +72,7 @@ if (isDarwin) {
     run(
       'cargo',
       ['build', '--locked', '--release', '--target', slice.rustTarget, '-p', 'zeppelin-embed-ffi',
-        ...(slice.clangArch === 'arm64' ? ['--features', 'graph-cypher'] : [])],
+        '--features', 'graph-cypher'],
       { cwd: repository, env: environment },
     );
     mkdirSync(dirname(output), { recursive: true });
@@ -88,7 +89,7 @@ if (isDarwin) {
         '-arch',
         slice.clangArch,
         '-DNAPI_VERSION=8',
-        ...(slice.clangArch === 'arm64' ? ['-DZE_GRAPH'] : []),
+        '-DZE_GRAPH',
         '-I',
         nodeHeaders,
         '-I',
@@ -126,6 +127,8 @@ if (isDarwin) {
       '-p',
       'zeppelin-embed-ffi',
       '--no-default-features',
+      '--features',
+      'graph-cypher',
     ],
     { cwd: repository },
   );
@@ -154,7 +157,8 @@ if (isDarwin) {
         `-Dze_ffi_lib=${staticLibrary}`,
         `-Dze_ffi_include=${ffiHeaders}`,
       ],
-      { cwd: packageDirectory },
+      // CL supplies the graph define to both MSVC variants without changing gyp.
+      { cwd: packageDirectory, env: { ...process.env, CL: `${process.env.CL || ''} /DZE_GRAPH` } },
     );
 
     // Each node-gyp run overwrites `build/Release`, so every variant is copied

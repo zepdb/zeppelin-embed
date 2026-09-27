@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, release } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import test from 'node:test';
+import { spawnSync } from 'node:child_process';
 const { GraphStore, ZeppelinError } = createRequire(import.meta.url)('..');
-const supported = process.platform === 'darwin' && process.arch === 'arm64';
+const supported = (process.platform === 'darwin' && Number.parseInt(release(), 10) >= 23) ||
+  (process.platform === 'win32' && process.arch === 'x64');
 const node = (key, extra = {}) => ({ kind: 'node', operation: 'create', namespace: 'docs', key, revision: 1n, labels: ['Doc'], ...extra });
 function fixture(fn) {
   const dir = mkdtempSync(join(tmpdir(), 'ze-node-graph-'));
@@ -66,3 +68,14 @@ test('row limits fail without truncation and allow more than 1024 rows', { skip:
   for (const maxRows of [-1, 65537, 1.5, NaN]) assert.throws(() => s.cypher('CREATE (n) RETURN n', {}, { maxRows }), e => e.code === 'ZE_ERR_INVALID_ARGUMENT');
   assert.deepEqual(s.cypher('MATCH (n) RETURN count(n)').rows, [[33n]]);
 }));
+
+test('graph support refuses macOS below 14', { skip: process.platform !== 'darwin' }, () => {
+  const result = spawnSync(process.execPath, ['-e', `
+    require('node:os').release = () => '22.6.0';
+    const assert = require('node:assert/strict');
+    const { GraphStore } = require(${JSON.stringify(new URL('../index.js', import.meta.url).pathname)});
+    assert.equal(GraphStore.isSupported(), false);
+    assert.throws(() => GraphStore.open('unused'), e => e.code === 'ZE_ERR_UNSUPPORTED');
+  `], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+});

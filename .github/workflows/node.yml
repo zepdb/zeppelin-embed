@@ -31,6 +31,9 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_BUILD_JOBS: 4
+
 jobs:
   package:
     name: macOS package
@@ -55,6 +58,25 @@ jobs:
         run: xcrun clang-format --dry-run --Werror bindings/node/native/addon.cc
       - run: npm run build:native
         working-directory: bindings/node
+      - name: Verify each FFI archive carries the graph entry points
+        run: |
+          set -euo pipefail
+          for t in aarch64-apple-darwin x86_64-apple-darwin; do
+            nm -gU "target/$t/release/libzeppelin_embed_ffi.a" | grep ' T _ze_graph_open$'
+            du -k "target/$t/release/libzeppelin_embed_ffi.a"
+            size "target/$t/release/libzeppelin_embed_ffi.a"
+          done
+          for slice in darwin-arm64 darwin-x64; do
+            nm -gU "bindings/node/prebuilds/$slice/zeppelin_embed.node" | grep ' T _ze_graph_open$'
+          done
+      - name: Install the graph header test generator
+        run: cargo install cbindgen --version 0.29.4 --locked
+      - name: Run the graph suites against the x86_64 target
+        run: |
+          cargo test --locked --target x86_64-apple-darwin -p zeppelin-embed-ffi --features graph-cypher --test ffi_graph_entry --test ffi_graph_contract --test ffi_graph_layout --test ffi_graph_header
+          cargo test --locked --target x86_64-apple-darwin -p zeppelin-embed-cypher
+          cargo test --locked --target x86_64-apple-darwin -p zeppelin-embed --features graph-cypher --test graph_artifact
+          cargo test --locked --target x86_64-apple-darwin -p zeppelin-embed --lib --features graph-cypher lifecycle::lock
       # The package suite includes the crash-safety suite, which kills a
       # writer at seeded points and verifies the store; its per-round results
       # are kept with every run, including each release run.
@@ -166,6 +188,32 @@ jobs:
         working-directory: bindings/node
         env:
           ZE_ELECTRON_VERSION: 44.4.1
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Verify the FFI archive carries the graph entry points
+        shell: cmd
+        run: |
+          dumpbin /symbols target\x86_64-pc-windows-msvc\release\zeppelin_embed_ffi.lib | findstr /C:"ze_graph_open"
+          if errorlevel 1 exit /b 1
+          dumpbin /headers target\x86_64-pc-windows-msvc\release\zeppelin_embed_ffi.lib
+          if errorlevel 1 exit /b 1
+          dir target\x86_64-pc-windows-msvc\release\zeppelin_embed_ffi.lib
+      - name: Record Windows archive disk usage
+        shell: bash
+        run: du -k target/x86_64-pc-windows-msvc/release/zeppelin_embed_ffi.lib
+      - name: Record Windows native static libraries
+        run: cargo rustc --locked --target x86_64-pc-windows-msvc -p zeppelin-embed-ffi --features graph-cypher --crate-type staticlib -- --print native-static-libs
+      - name: Run the graph suites natively on Windows
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p zeppelin-embed-ffi --features graph-cypher --test ffi_graph_entry --test ffi_graph_contract --test ffi_graph_layout
+          cargo test --locked -p zeppelin-embed-cypher
+          cargo test --locked -p zeppelin-embed --features graph-cypher --test graph_artifact
+          cargo test --locked -p zeppelin-embed --lib --features graph-cypher lifecycle::lock
+          cargo test --locked -p zeppelin-embed --lib --features graph-cypher sys::windows::entropy_tests
+          cargo test --locked -p zeppelin-embed --lib --features graph-cypher lifecycle::native_graph
       # On Windows the crash-safety suite's kill is TerminateProcess.
       - run: npm test
         working-directory: bindings/node
