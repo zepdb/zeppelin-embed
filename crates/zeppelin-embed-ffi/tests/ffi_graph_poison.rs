@@ -57,3 +57,20 @@ fn a_panic_after_a_committing_statement_keeps_the_known_outcome() {
     ze_graph_response_free(&mut r);
     ze_graph_close(h);
 }
+
+#[test]
+fn declaration_open_panic_has_no_handle_to_poison() {
+    let _guard = probe_guard();
+    let mut existing = GraphTestStore::create();
+    arm_abi_panic_probe("ze_graph_open_with_relationship_types");
+    assert_eq!(
+        ze_graph_open_with_relationship_types(
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut()
+        ),
+        ZeErrorCode::ZeErrPanic
+    );
+    assert_eq!(existing.close(), ZeErrorCode::ZeOk);
+}

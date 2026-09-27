@@ -20,7 +20,7 @@ pub enum GraphOperation {
     StructuredDelete,
     /// An explicit recreate against a deletion revision.
     StructuredRecreate,
-    /// A statement edit; this is not a generic Cypher retry receipt.
+    /// An engine-normalized edit (statement or implicit cascade); no caller retry token.
     CypherEdit,
 }
 

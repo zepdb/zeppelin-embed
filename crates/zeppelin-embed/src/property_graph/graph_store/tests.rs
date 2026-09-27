@@ -504,3 +504,134 @@ fn unsupported_platform_error_reports_kind_and_versions() {
             .contains("could not determine the macOS version: probe failed")
     );
 }
+
+#[test]
+fn relationship_rules_enforce_restrict_and_transitive_cascade_after_reopen() {
+    use crate::property_graph::catalog::{OnDelete, RelationshipRule};
+    for policy in [OnDelete::Restrict, OnDelete::Cascade] {
+        let parent = tempfile::tempdir().unwrap();
+        let path = parent.path().join("rules");
+        let rules = [RelationshipRule {
+            relationship_type: GraphName::new("IN").unwrap(),
+            on_delete: policy,
+        }];
+        let store =
+            GraphStore::create_with_relationship_types(&path, options(), None, &rules).unwrap();
+        let a = node_id(&create_node(&store, "a", 1), 0);
+        let b = node_id(&create_node(&store, "b", 1), 0);
+        let c = node_id(&create_node(&store, "c", 1), 0);
+        for (key, source, target) in [("ab", a, b), ("bc", b, c)] {
+            store
+                .apply_batch(
+                    &[StructuredWrite {
+                        key: ApplicationKey::new(EntityKind::Relationship, "app", key).unwrap(),
+                        revision: revision(1),
+                        operation: StructuredOperation::Create,
+                        image: Some(WriteImage::Relationship {
+                            source: NodeRef::Existing(source),
+                            target: NodeRef::Existing(target),
+                            relationship_type: GraphName::new("IN").unwrap(),
+                            properties: &[],
+                        }),
+                    }],
+                    &control(),
+                )
+                .unwrap();
+        }
+        store.close().unwrap();
+        let store = GraphStore::open(&path, options(), None).unwrap();
+        let result = store.apply_batch(
+            &[StructuredWrite {
+                key: node_key("c"),
+                revision: revision(2),
+                operation: StructuredOperation::Delete(
+                    EntityId::Node(c),
+                    if policy == OnDelete::Cascade {
+                        GraphDeleteMode::Restrict
+                    } else {
+                        GraphDeleteMode::Detach
+                    },
+                ),
+                image: None,
+            }],
+            &control(),
+        );
+        if policy == OnDelete::Restrict {
+            assert!(result.unwrap_err().nothing_committed());
+        } else {
+            assert_eq!(result.unwrap().receipts().len(), 1);
+        }
+        store.close().unwrap();
+        let store = GraphStore::open(&path, options(), None).unwrap();
+        let nodes = store
+            .get_nodes(&[a, b, c], super::GraphGetOptions::default(), &control())
+            .unwrap();
+        assert!(
+            nodes
+                .nodes()
+                .iter()
+                .all(|n| n.is_some() == (policy == OnDelete::Restrict))
+        );
+        store.close().unwrap();
+    }
+}
+
+#[test]
+fn relationship_cascade_revision_overflow_refuses_the_entire_mutation() {
+    use crate::property_graph::catalog::{OnDelete, RelationshipRule};
+    let parent = tempfile::tempdir().unwrap();
+    let path = parent.path().join("rules");
+    let rules = [RelationshipRule {
+        relationship_type: GraphName::new("IN").unwrap(),
+        on_delete: OnDelete::Cascade,
+    }];
+    let store = GraphStore::create_with_relationship_types(&path, options(), None, &rules).unwrap();
+    let child = node_id(&create_node(&store, "child", u64::MAX), 0);
+    let target = node_id(&create_node(&store, "parent", 1), 0);
+    store
+        .apply_batch(
+            &[StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Relationship, "app", "in").unwrap(),
+                revision: revision(1),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Relationship {
+                    source: NodeRef::Existing(child),
+                    target: NodeRef::Existing(target),
+                    relationship_type: GraphName::new("IN").unwrap(),
+                    properties: &[],
+                }),
+            }],
+            &control(),
+        )
+        .unwrap();
+    let error = store
+        .apply_batch(
+            &[StructuredWrite {
+                key: node_key("parent"),
+                revision: revision(2),
+                operation: StructuredOperation::Delete(
+                    EntityId::Node(target),
+                    GraphDeleteMode::Detach,
+                ),
+                image: None,
+            }],
+            &control(),
+        )
+        .unwrap_err();
+    assert!(error.nothing_committed());
+    store.close().unwrap();
+    let store = GraphStore::open(&path, options(), None).unwrap();
+    assert!(
+        store
+            .get_nodes(
+                &[child, target],
+                super::GraphGetOptions::default(),
+                &control()
+            )
+            .unwrap()
+            .nodes()
+            .iter()
+            .all(Option::is_some)
+    );
+    store.close().unwrap();
+}

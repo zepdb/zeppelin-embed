@@ -125,7 +125,14 @@ fn legacy_header_and_exports_do_not_advertise_graph_contracts() {
         );
     }
     let symbols = std::fs::read_to_string(root.join("symbols.allowlist")).expect("legacy symbols");
-    assert!(!symbols.contains("ze_graph_"));
+    // Graph exports are allowlisted separately from the legacy header surface.
+    assert_eq!(
+        symbols
+            .lines()
+            .filter(|s| s.starts_with("ze_graph_"))
+            .collect::<Vec<_>>(),
+        ["ze_graph_open_with_relationship_types"]
+    );
 }
 
 fn compile_and_run(name: &str, source_text: &str) {

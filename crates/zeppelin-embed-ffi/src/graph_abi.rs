@@ -299,8 +299,66 @@ pub(crate) fn open(
     request: *const ZeGraphOpenRequest,
     out_handle: *mut ZeGraphHandle,
 ) -> Result<(), FfiError> {
+    open_declared(request, out_handle, None)
+}
+
+pub(crate) fn open_with_relationship_types(
+    request: *const ZeGraphOpenRequest,
+    rules: *const crate::ZeGraphRelationshipType,
+    rule_count: usize,
+    out_handle: *mut ZeGraphHandle,
+) -> Result<(), FfiError> {
+    use zeppelin_embed::property_graph::catalog::{OnDelete, RelationshipRule};
+    use zeppelin_embed::property_graph::{GraphName, MAX_GRAPH_CHANGES, MAX_GRAPH_INPUT_BYTES};
+    if rule_count > MAX_GRAPH_CHANGES {
+        return Err(invalid("too many relationship type declarations"));
+    }
+    let rules = marshal::read_slice(rules, rule_count).map_err(|error| invalid(error.0))?;
+    let mut declared = Vec::new();
+    declared
+        .try_reserve_exact(rule_count)
+        .map_err(|_| invalid("relationship declaration allocation"))?;
+    let mut bytes = 0usize;
+    for rule in rules {
+        rule.validate_header()
+            .map_err(|_| invalid("relationship type descriptor header"))?;
+        if rule.reserved != 0 {
+            return Err(invalid("relationship type reserved field"));
+        }
+        bytes = bytes
+            .checked_add(9)
+            .and_then(|n| n.checked_add(rule.name.count))
+            .ok_or_else(|| invalid("relationship declaration size"))?;
+        if bytes > MAX_GRAPH_INPUT_BYTES {
+            return Err(invalid("relationship declaration size"));
+        }
+        let name = marshal::read_slice(rule.name.data, rule.name.count)
+            .map_err(|error| invalid(error.0))?;
+        declared.push(RelationshipRule {
+            relationship_type: GraphName::new(utf8(name, "relationship type")?)
+                .map_err(|_| invalid("relationship type name"))?,
+            on_delete: match rule.on_delete {
+                1 => OnDelete::Restrict,
+                2 => OnDelete::Cascade,
+                _ => return Err(invalid("on_delete must be 1 restrict or 2 cascade")),
+            },
+        });
+    }
+    open_declared(request, out_handle, Some(&declared))
+}
+
+fn open_declared(
+    request: *const ZeGraphOpenRequest,
+    out_handle: *mut ZeGraphHandle,
+    rules: Option<&[zeppelin_embed::property_graph::catalog::RelationshipRule<'_>]>,
+) -> Result<(), FfiError> {
     crate::scalar_output(out_handle)?;
     let request = read_exact(request, |request| request.abi_size, "graph open request")?;
+    if rules.is_some() && request.mode != 0 {
+        return Err(invalid(
+            "relationship types can only be declared at creation",
+        ));
+    }
     let path = marshal::read_slice(request.path.data, request.path.count)
         .map_err(|error| invalid(format!("graph path: {}", error.0)))?;
     if path.is_empty() {
@@ -347,9 +405,12 @@ pub(crate) fn open(
         .with_max_resident_bytes(request.max_resident_bytes);
     use crate::ZeGraphOpenMode as M;
     let store = match request.mode {
-        mode if mode == M::ZeGraphOpenCreate as u32 => {
-            GraphStore::create(path, options, document.clone())
-        }
+        mode if mode == M::ZeGraphOpenCreate as u32 => match rules {
+            Some(rules) => {
+                GraphStore::create_with_relationship_types(path, options, document.clone(), rules)
+            }
+            None => GraphStore::create(path, options, document.clone()),
+        },
         mode if mode == M::ZeGraphOpenReadWrite as u32 => {
             GraphStore::open(path, options, document.clone())
         }

@@ -2258,6 +2258,7 @@ pub(super) fn commit_staged_batch<'m>(
             high.relationship,
             merged.as_slice(),
             high.symbols,
+            catalog.relationship_rules(),
         )?;
         let (bytes, required) = encode_framed(
             storage,

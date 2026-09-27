@@ -280,6 +280,7 @@ impl<'source, 'resources, 'm> LazyTargets<'source, 'resources, 'm> {
 pub(super) struct NativeAdmittedBase<'source, 'lease, 'resources, 'm> {
     lease: &'lease NativeReadLease,
     interpretation: GraphInterpretation<'lease>,
+    relationship_rules: crate::property_graph::catalog::RelationshipRules<'source>,
     source: &'source NativePreparationSource<'lease, 'm>,
     memory: &'m StorageMemory<'m>,
     cache: StorageBuffer<'m, CachedEntity<'source, 'resources, 'm>>,
@@ -721,6 +722,24 @@ where
             .map_err(|_| NativeGraphError::Invalid("native admitted base is cancelled"))?;
         let interpretation =
             GraphInterpretation::new(lease.bundle().lexical(), lease.bundle().document())?;
+        let relationship_rules = {
+            let mut resources = resources_cell
+                .try_borrow_mut()
+                .map_err(|_| NativeGraphError::Invalid("native base resources already borrowed"))?;
+            NativePreparationCatalog::open(source, &mut resources)?.relationship_rules()
+        };
+        let needs_cascade_targets = !relationship_rules.is_empty()
+            && requests.iter().any(|request| {
+                matches!(
+                    request.operation,
+                    StructuredOperation::Delete(EntityId::Node(_), _)
+                )
+            });
+        let lazy_capacity = if needs_cascade_targets {
+            Some(MAX_LAZY_TARGETS)
+        } else {
+            lazy_capacity
+        };
         let capacity = requests
             .len()
             .checked_mul(3)
@@ -887,6 +906,7 @@ where
         Ok(Self {
             lease,
             interpretation,
+            relationship_rules,
             source,
             memory,
             cache,
@@ -1020,6 +1040,68 @@ where
 }
 
 impl AdmittedBase for NativeAdmittedBase<'_, '_, '_, '_> {
+    fn has_relationship_rules(&self) -> bool {
+        !self.relationship_rules.is_empty()
+    }
+
+    fn visit_incoming_rules(
+        &self,
+        node: NodeId,
+        visit: &mut dyn FnMut(
+            RelId,
+            NodeId,
+            crate::property_graph::catalog::OnDelete,
+        ) -> Result<(), StageError>,
+        control: &mut WriteControl<'_>,
+    ) -> Result<(), StageError> {
+        use crate::property_graph::storage::adjacency::{
+            AdjacencyQuery, Direction, RelationshipRange, UpperBound,
+        };
+        control(crate::property_graph::staging::WritePhase::Incident)?;
+        let mut resources = self
+            .resources
+            .try_borrow_mut()
+            .map_err(|_| StageError::InvalidInput)?;
+        let catalog = NativePreparationCatalog::open(self.source, &mut resources)?;
+        let reader = NativeGraphReader::new(
+            self.source,
+            self.lease.bundle().roots(),
+            self.lease.bundle().sequence(),
+            &catalog,
+            self.lease.bundle().document(),
+        );
+        let mut scratch = RangeScratch::for_prepare(self.memory, &mut resources)?;
+        let mut failure = None;
+        let result = reader.visit_adjacency(
+            AdjacencyQuery {
+                node,
+                direction: Direction::In,
+                relationship_type: None,
+                relationships: RelationshipRange {
+                    lower: RelId::new(1).map_err(|_| StageError::InvalidInput)?,
+                    upper: UpperBound::Infinity,
+                },
+            },
+            &mut scratch,
+            &mut resources,
+            &mut |row, resources| {
+                if let Some(policy) = catalog.relationship_rule(row.relationship_type, resources)? {
+                    let result = control(crate::property_graph::staging::WritePhase::Incident)
+                        .and_then(|()| visit(row.edge.rel, row.edge.neighbor, policy));
+                    if let Err(error) = result {
+                        failure = Some(error);
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            },
+        );
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        result.map_err(StageError::from)
+    }
+
     fn identity(&self) -> BaseIdentity {
         self.lease.bundle().base()
     }
@@ -1089,9 +1171,44 @@ impl AdmittedBase for NativeAdmittedBase<'_, '_, '_, '_> {
             self.lease.bundle().document(),
         );
         let mut scratch = RangeScratch::for_prepare(self.memory, &mut resources)?;
-        reader
-            .has_live_incident(node, removed, &mut scratch, &mut resources)
-            .map_err(StageError::from)
+        if self.relationship_rules.is_empty() {
+            return reader
+                .has_live_incident(node, removed, &mut scratch, &mut resources)
+                .map_err(StageError::from);
+        }
+        use crate::property_graph::storage::adjacency::{
+            AdjacencyQuery, Direction, RelationshipRange, UpperBound,
+        };
+        let mut found = false;
+        for direction in [Direction::Out, Direction::In] {
+            reader.visit_adjacency(
+                AdjacencyQuery {
+                    node,
+                    direction,
+                    relationship_type: None,
+                    relationships: RelationshipRange {
+                        lower: RelId::new(1).map_err(|_| StageError::InvalidInput)?,
+                        upper: UpperBound::Infinity,
+                    },
+                },
+                &mut scratch,
+                &mut resources,
+                &mut |row, resources| {
+                    if !removed.contains(&row.edge.rel)
+                        && catalog
+                            .relationship_rule(row.relationship_type, resources)?
+                            .is_none()
+                    {
+                        found = true;
+                    }
+                    Ok(!found)
+                },
+            )?;
+            if found {
+                break;
+            }
+        }
+        Ok(found)
     }
 
     fn property(

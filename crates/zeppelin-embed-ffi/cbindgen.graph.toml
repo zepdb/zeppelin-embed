@@ -55,6 +55,7 @@ include = [
     "ZeGraphQueryRequest",
     "ZeGraphOpenMode",
     "ZeGraphOpenRequest",
+    "ZeGraphRelationshipType",
     "ZeGraphCypherRequest",
     "ZeGraphGetNodesRequest",
     "ZeGraphGetRelsRequest",

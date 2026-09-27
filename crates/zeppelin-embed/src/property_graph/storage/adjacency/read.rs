@@ -528,7 +528,7 @@ impl<'a, S: BlockSource, C: RecordCatalog<S>> NativeGraphReader<'a, S, C> {
         }
         r.step(0)
     }
-    fn visit_adjacency(
+    pub(crate) fn visit_adjacency(
         &self,
         query: AdjacencyQuery,
         scratch: &mut RangeScratch<'_>,

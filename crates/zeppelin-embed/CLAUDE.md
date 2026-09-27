@@ -1075,3 +1075,23 @@ results, default-budget atomicity, indeterminate recovery and mixed revisions.
 - C `ZeAttributeValue` tag 6 uses `u64_value` for the low half and the unsigned
   bit pattern of `i64_value` for the high half. Existing repr(C) layouts stay
   frozen. Node uses unsigned 128-bit bigints and the existing UUID helpers.
+
+## ZE-228: relationship reference policies
+
+- Creation may declare immutable per-type incoming-reference policies in the
+  graph catalog. Edges point child -> parent. Restrict rejects a surviving
+  referencing child; cascade closes transitively over source nodes, including
+  cycles. An explicit edge deletion releases that dependency. Both structured
+  writes and Cypher enforce declarations, including explicit Detach, before
+  result materialization/publication. Undeclared types retain existing behavior.
+- ZGCA v1 remains byte-for-byte unchanged for catalogs without declarations.
+  Declared catalogs use codec/required interpretation 2 with the same prefix
+  and symbol records, followed by policy records before the existing checksum:
+  action u8 (1 restrict, 2 cascade), name length u64, UTF-8 name. Record extent
+  ends at the checksum. Empty v2, duplicate names, unknown tags, invalid extents
+  or UTF-8 reject. Existing v1 stores remain readable; older readers fail loudly
+  on declared catalogs. Policies are retained with every catalog replacement.
+- Implicit cascade tombstones use normalized edit provenance (CypherEdit),
+  increment revisions and preserve key fences; they have no separate caller
+  retry receipt. Explicit input receipts remain one per item. A conflicting
+  write or an exhausted revision/memory/work budget rejects the whole mutation.

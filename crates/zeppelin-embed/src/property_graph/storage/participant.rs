@@ -26,6 +26,15 @@ pub struct DirectoryBase {
 /// adapter must retain its admitted lease, not synthesize a numeric generation.
 /// This module merges the batch's authentic new symbol assignments itself.
 pub trait PreparationCatalog<S: BlockSource>: RecordCatalog<S> {
+    /// Immutable incoming-reference action; undeclared types use ordinary DELETE.
+    fn relationship_on_delete(
+        &self,
+        _id: crate::property_graph::catalog::RelTypeId,
+        _resources: &mut TreeResources<'_>,
+    ) -> Result<Option<crate::property_graph::catalog::OnDelete>, TreeError> {
+        Ok(None)
+    }
+
     /// Complete store/generation/root-envelope identity of the retained catalog.
     fn base_identity(&self) -> BaseIdentity;
 }

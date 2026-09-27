@@ -1993,6 +1993,32 @@ typedef struct ZeGraphCypherRequest {
 } ZeGraphCypherRequest;
 
 /*
+ Immutable incoming-reference policy, accepted only during graph creation.
+ */
+typedef struct ZeGraphRelationshipType {
+    /*
+     Exact sizeof this descriptor.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Exact UTF-8 relationship type name.
+     */
+    struct ZeGraphBytes name;
+    /*
+     1 restrict, 2 cascade. Other values reject before creating any files.
+     */
+    uint32_t on_delete;
+    /*
+     Must be zero.
+     */
+    uint32_t reserved;
+} ZeGraphRelationshipType;
+
+/*
  Fixed expression descriptor. Fields not named by kind are zero. Aggregate uses operation, has_operand, left and distinct; unary uses operation/left; binary uses operation/left/right.
  */
 typedef struct ZeGraphExpression {
@@ -2701,6 +2727,19 @@ ze_error_code ze_graph_cypher_with_row_limit(struct ZeGraphHandle handle,
                                              const struct ZeGraphCypherRequest *request,
                                              uint32_t result_row_limit,
                                              struct ZeGraphResponse *out_response);
+
+/*
+ Creates a graph with immutable per-relationship-type incoming-reference rules.
+ `request.mode` must be create (0). Rules survive reopen through ze_graph_open.
+ A child is the source of an edge into the deleted target. Restrict refuses
+ surviving children; cascade deletes them transitively in the same mutation,
+ including Cypher DELETE/DETACH DELETE. Undeclared types keep existing semantics.
+ At most 16384 unique rules and 8 MiB of encoded declarations are accepted.
+ */
+ze_error_code ze_graph_open_with_relationship_types(const struct ZeGraphOpenRequest *request,
+                                                    const struct ZeGraphRelationshipType *rules,
+                                                    size_t rule_count,
+                                                    struct ZeGraphHandle *out_handle);
 
 #ifdef __cplusplus
 }  // extern "C"

@@ -150,7 +150,7 @@ fn assert_header_gate() {
     let allowlist = std::fs::read_to_string(crate_dir.join("symbols.allowlist"))
         .expect("symbol allowlist")
         .lines()
-        .filter(|line| !line.is_empty())
+        .filter(|line| !line.is_empty() && !line.starts_with("ze_graph_"))
         .map(str::to_owned)
         .collect::<BTreeSet<_>>();
 

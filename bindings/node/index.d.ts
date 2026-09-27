@@ -942,7 +942,26 @@ export interface GraphResult {
   /** One receipt per apply item in input order; empty for read queries. */
   readonly receipts: readonly GraphReceipt[];
 }
+/** A directed child -> parent edge type's immutable incoming-reference policy. */
+export interface GraphRelationshipType {
+  readonly type: string;
+  /**
+   * restrict refuses deletion while a surviving child references the parent.
+   * cascade deletes dependent source nodes transitively, including cycles.
+   * Both apply to apply() and Cypher DELETE/DETACH DELETE, atomically.
+   * Explicitly deleting an edge releases its dependency; any remaining restrict
+   * edge from outside the deletion set rejects the entire mutation.
+   */
+  readonly onDelete: 'restrict' | 'cascade';
+}
 export interface GraphOpenOptions {
+  /**
+   * Creation only: at most 16384 unique declarations, persisted in the catalog.
+   * Omit on reopen; supplying this option for readWrite/readOnly is an error.
+   * Undeclared types retain ordinary DELETE/DETACH DELETE behavior.
+   * Cascade work is bounded by engine limits; exceeding them rejects the batch.
+   */
+  readonly relationshipTypes?: readonly GraphRelationshipType[];
   /** Default create: creates a new store. Reopen explicitly; no legacy Store conversion. */
   readonly mode?: 'create' | 'readWrite' | 'readOnly';
   /** Resident budget in bytes, integer 1..268435456; default 268435456. */
@@ -1005,6 +1024,10 @@ export class GraphStore {
   close(): void;
   /**
    * Atomically applies at most 16384 keyed mutations; no partial batches.
+   * Missing endpoints, including endpoints deleted by this mutation, reject.
+   * Declared relationship policies also apply with detach:true. Implicit
+   * cascade deletes advance child revisions and retain deletion fences; receipts
+   * remain one per input item. Writes conflicting with a cascade reject.
    * Items and properties must be plain data objects. Invalid input is rejected
    * before effects. Errors retain disposition and known generations: do not
    * assume an Indeterminate or Committed error means nothing was written.

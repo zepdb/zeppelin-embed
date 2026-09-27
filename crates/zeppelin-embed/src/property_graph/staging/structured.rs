@@ -561,12 +561,13 @@ pub(super) fn stage_structured_with_preflight<'a>(
     if base.identity() != identity {
         return Err(StageError::ViewMismatch);
     }
-    Ok(StagedBatch {
+    StagedBatch {
         base: identity,
         high_waters,
         receipts,
         deltas,
         symbols,
         disposition: classification.disposition,
-    })
+    }
+    .enforce_relationship_rules(base, memory, control)
 }

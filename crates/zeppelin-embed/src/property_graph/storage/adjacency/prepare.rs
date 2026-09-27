@@ -382,9 +382,45 @@ fn check_restrict<S: BlockSource>(
         if delta.canonical().is_none()
             && fields.delete_mode == Some(GraphDeleteMode::Restrict)
             && let EntityId::Node(id) = fields.incarnation
-            && reader.has_live_incident(id, removed.as_slice(), &mut scratch, r)?
         {
-            return Err(invalid("plain node deletion retains a live incident"));
+            for direction in [Direction::Out, Direction::In] {
+                reader.visit_adjacency(
+                    AdjacencyQuery {
+                        node: id,
+                        direction,
+                        relationship_type: None,
+                        relationships: RelationshipRange {
+                            lower: RelId::new(1).map_err(|_| invalid("minimum relationship ID"))?,
+                            upper: UpperBound::Infinity,
+                        },
+                    },
+                    &mut scratch,
+                    r,
+                    &mut |row, r| {
+                        if removed.as_slice().binary_search(&row.edge.rel).is_ok() {
+                            return Ok(true);
+                        }
+                        if catalog
+                            .relationship_on_delete(row.relationship_type, r)?
+                            .is_some()
+                        {
+                            if direction == Direction::Out {
+                                return Ok(true);
+                            }
+                            for change in batch.deltas() {
+                                r.step(1)?;
+                                if change.canonical().is_none()
+                                    && change.provenance().fields().incarnation
+                                        == EntityId::Node(row.edge.neighbor)
+                                {
+                                    return Ok(true);
+                                }
+                            }
+                        }
+                        Err(invalid("plain node deletion retains a live incident"))
+                    },
+                )?;
+            }
         }
     }
     r.step(0)

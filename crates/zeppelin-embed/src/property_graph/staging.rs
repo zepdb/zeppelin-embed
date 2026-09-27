@@ -5,6 +5,7 @@ use super::*;
 mod bounded;
 mod encode;
 mod images;
+mod integrity;
 mod memory;
 mod overlay;
 mod symbols;
@@ -239,6 +240,21 @@ pub enum BaseKeyState<'a> {
 /// must stream/page their bounded probes and honor the supplied checkpoint;
 /// this trait has no mutation, traversal-overlay or publication method.
 pub trait AdmittedBase {
+    /// Whether this admitted catalog declares any incoming-reference policies.
+    fn has_relationship_rules(&self) -> bool {
+        false
+    }
+    /// Visits live incoming edges with declared policies. Empty catalogs never
+    /// invoke this operation; an adapter claiming policies must implement it.
+    fn visit_incoming_rules(
+        &self,
+        _node: NodeId,
+        _visit: &mut dyn FnMut(RelId, NodeId, catalog::OnDelete) -> Result<(), StageError>,
+        _control: &mut WriteControl<'_>,
+    ) -> Result<(), StageError> {
+        Err(StageError::InvalidInput)
+    }
+
     /// Exact coherent view identity, stable throughout admission.
     fn identity(&self) -> BaseIdentity;
     /// Inclusive persisted allocator fences.

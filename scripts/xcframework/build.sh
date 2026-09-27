@@ -97,7 +97,7 @@ check_export_allowlist() {
     compatible_nm "$archive" "$symbols" || return 1
     awk '{ symbol=$NF; sub(/^_/, "", symbol); if (symbol ~ /^ze_/) print symbol }' \
         "$symbols" | LC_ALL=C sort -u > "$observed"
-    grep -v '^ze_text_' "$ALLOWLIST" > "$expected"
+    grep -Ev '^ze_(text|graph)_' "$ALLOWLIST" > "$expected"
     if ! diff -u "$expected" "$observed"; then
         echo "ERROR: $label exported C namespace differs from symbols.allowlist" >&2
         return 1

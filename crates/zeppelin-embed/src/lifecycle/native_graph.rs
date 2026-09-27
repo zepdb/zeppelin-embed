@@ -2288,6 +2288,7 @@ pub(crate) mod tests {
             SymbolCatalog::reconstruct(&[], SymbolHighWaters::default(), 0, 0, &mut checkpoint)
                 .unwrap();
         let image = CatalogImage {
+            relationship_rules: crate::property_graph::catalog::RelationshipRules::EMPTY,
             declaration: CatalogDeclaration {
                 store,
                 node_high_water: 0,
@@ -2822,6 +2823,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         let image = CatalogImage {
+            relationship_rules: crate::property_graph::catalog::RelationshipRules::EMPTY,
             declaration: CatalogDeclaration {
                 store: identity.store,
                 node_high_water,
@@ -2871,6 +2873,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         let image = CatalogImage {
+            relationship_rules: crate::property_graph::catalog::RelationshipRules::EMPTY,
             declaration: CatalogDeclaration {
                 store: identity.store,
                 node_high_water: high.node,

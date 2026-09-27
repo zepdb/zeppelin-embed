@@ -4,9 +4,11 @@ use super::GraphName;
 
 mod codec;
 mod interpretation;
+mod rules;
 mod work;
 pub use codec::CatalogImage;
 pub use interpretation::{CatalogDeclaration, DocumentDeclaration, GraphInterpretation};
+pub use rules::{OnDelete, RelationshipRule, RelationshipRules};
 
 /// Invalid catalog identity or symbol allocation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

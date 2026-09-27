@@ -4,8 +4,9 @@ use rand::RngCore;
 use zeppelin_embed::epoch::{ComputeUnits, EmbeddingRuntime, EmbeddingTower, Normalization};
 use zeppelin_embed::fts::tokenizer::TokenizerConfig;
 use zeppelin_embed::property_graph::catalog::{
-    CatalogDeclaration, CatalogError, CatalogImage, GraphInterpretation, Symbol, SymbolCatalog,
-    SymbolEntry, SymbolHighWaters, SymbolKind,
+    CatalogDeclaration, CatalogError, CatalogImage, GraphInterpretation, OnDelete,
+    RelationshipRule, RelationshipRules, Symbol, SymbolCatalog, SymbolEntry, SymbolHighWaters,
+    SymbolKind,
 };
 use zeppelin_embed::property_graph::{GraphName, StoreInstanceId};
 use zeppelin_embed_adversarial_oracle::graph_catalog::{
@@ -25,6 +26,8 @@ pub const REQUIRED_COVERAGE: &[&str] = &[
     "property-graph.catalog.budget.clean",
     "property-graph.catalog.decode-error.fire",
     "property-graph.catalog.decode-error.clean",
+    "property-graph.catalog.policy.clean",
+    "property-graph.catalog.policy-duplicate.fire",
 ];
 fn waters(v: SymbolHighWaters) -> [u64; 4] {
     [v.label, v.relationship_type, v.property, v.namespace]
@@ -153,7 +156,19 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
         }
         coverage.hit(REQUIRED_COVERAGE[3]);
         let store = StoreInstanceId::new((u128::from(id) << 64) | 1).map_err(|e| e.to_string())?;
+        let rules = [RelationshipRule {
+            relationship_type: GraphName::new("IN").map_err(|e| e.to_string())?,
+            on_delete: OnDelete::Cascade,
+        }];
+        if !matches!(
+            RelationshipRules::new(&[rules[0], rules[0]]),
+            Err(CatalogError::Duplicate)
+        ) {
+            return Err("PG4 duplicate relationship policy did not reject".into());
+        }
+        coverage.hit("property-graph.catalog.policy-duplicate.fire");
         let image = CatalogImage {
+            relationship_rules: RelationshipRules::new(&rules).map_err(|e| e.to_string())?,
             declaration: CatalogDeclaration {
                 store,
                 node_high_water: u128::from(id) << 64,
@@ -173,6 +188,15 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
         let restored =
             CatalogImage::decode(&bytes, 4096, &mut || Ok(())).map_err(|e| e.to_string())?;
+        if restored
+            .relationship_rules
+            .lookup(rules[0].relationship_type, &mut || Ok(()))
+            .map_err(|e| e.to_string())?
+            != Some(OnDelete::Cascade)
+        {
+            return Err("PG4 persisted relationship policy changed".into());
+        }
+        coverage.hit("property-graph.catalog.policy.clean");
         if restored.declaration != image.declaration
             || restored.symbols.high_waters() != image.symbols.high_waters()
         {

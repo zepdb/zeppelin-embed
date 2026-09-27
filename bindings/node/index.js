@@ -511,15 +511,26 @@ class GraphStore {
   static open(storePath, options = {}) {
     if (!GraphStore.isSupported()) throw new ZeppelinError('graph requires macOS 14 or newer, or Windows x64', 'ZE_ERR_UNSUPPORTED', 11);
     graphString(storePath, 'path');
-    graphObject(options, ['mode', 'maxResidentBytes', 'readerDrainTimeoutMs'], 'open options');
+    graphObject(options, ['mode', 'maxResidentBytes', 'readerDrainTimeoutMs', 'relationshipTypes'], 'open options');
     const mode = options.mode ?? 'create';
     if (!['create', 'readWrite', 'readOnly'].includes(mode)) graphInvalid('unknown graph open mode');
+    const relationshipTypes = options.relationshipTypes === undefined ? [] : options.relationshipTypes;
+    if (options.relationshipTypes !== undefined && mode !== 'create') graphInvalid('relationshipTypes can only be declared at creation');
+    if (!Array.isArray(relationshipTypes) || relationshipTypes.length > 16384) graphInvalid('relationshipTypes must be an array of at most 16384 rules');
+    const names = new Set();
+    for (const rule of relationshipTypes) {
+      graphObject(rule, ['type', 'onDelete'], 'relationship type');
+      graphString(rule.type, 'relationship type');
+      if (!['restrict', 'cascade'].includes(rule.onDelete)) graphInvalid('onDelete must be restrict or cascade');
+      if (names.has(rule.type)) graphInvalid('duplicate relationship type declaration');
+      names.add(rule.type);
+    }
     const maxResidentBytes = options.maxResidentBytes ?? 268435456;
     const readerDrainTimeoutMs = options.readerDrainTimeoutMs ?? 250;
     if (!Number.isSafeInteger(maxResidentBytes) || maxResidentBytes < 1 || maxResidentBytes > 268435456) graphInvalid('maxResidentBytes must be in 1..268435456');
     if (!Number.isSafeInteger(readerDrainTimeoutMs) || readerDrainTimeoutMs < 0) graphInvalid('readerDrainTimeoutMs must be a nonnegative safe integer');
     // Construct through a private token so the native handle cannot be supplied by a caller.
-    return GraphStore.#create(callNative(() => binding.graphOpen(storePath, ['create', 'readWrite', 'readOnly'].indexOf(mode), maxResidentBytes, readerDrainTimeoutMs)));
+    return GraphStore.#create(callNative(() => binding.graphOpen(storePath, ['create', 'readWrite', 'readOnly'].indexOf(mode), maxResidentBytes, readerDrainTimeoutMs, relationshipTypes)));
   }
   static #create(native) {
     return new GraphStore(graphConstruction, native);

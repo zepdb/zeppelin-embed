@@ -84,6 +84,11 @@ const DETAILED_MATRIX: &[(&str, MatrixCall)] = &[
 ];
 
 const ABI_REGISTRY: &[AbiEntry] = &[
+    #[cfg(feature = "graph-cypher")]
+    AbiEntry {
+        name: "ze_graph_open_with_relationship_types",
+        coverage: AbiCoverage::InvalidProbe(probe_graph_relationship_types),
+    },
     AbiEntry {
         name: "ze_abi_version",
         coverage: AbiCoverage::ValueProbe(probe_abi_version),
@@ -1233,6 +1238,16 @@ fn probe_text_query_result_free(_: &MatrixContext) -> ProbeResult {
     ProbeResult::Status(ze_text_query_result_free(std::ptr::null_mut()))
 }
 
+#[cfg(feature = "graph-cypher")]
+fn probe_graph_relationship_types(_: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_graph_open_with_relationship_types(
+        std::ptr::null(),
+        std::ptr::null(),
+        0,
+        std::ptr::null_mut(),
+    ))
+}
+
 #[test]
 fn every_exported_symbol_has_executable_adversarial_registry_coverage() {
     let exported = [
@@ -1249,6 +1264,21 @@ fn every_exported_symbol_has_executable_adversarial_registry_coverage() {
             .map(str::to_owned)
     })
     .collect::<std::collections::BTreeSet<_>>();
+    #[cfg(feature = "graph-cypher")]
+    let exported = exported
+        .into_iter()
+        .chain(
+            include_str!("../src/graph_entry.rs")
+                .lines()
+                .filter_map(|line| {
+                    line.trim_start()
+                        .strip_prefix("pub extern \"C\" fn ")
+                        .and_then(|tail| tail.split('(').next())
+                        .filter(|name| *name == "ze_graph_open_with_relationship_types")
+                        .map(str::to_owned)
+                }),
+        )
+        .collect::<std::collections::BTreeSet<_>>();
     let registered = ABI_REGISTRY
         .iter()
         .map(|entry| entry.name.to_owned())

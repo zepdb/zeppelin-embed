@@ -593,6 +593,12 @@ impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
                                 {
                                     return Err(StageError::IncidentRelationship);
                                 }
+                                if base.has_relationship_rules()
+                                    && entry.deleted.is_none()
+                                    && node.deleted.is_some()
+                                {
+                                    return Err(StageError::Endpoint);
+                                }
                                 suppressed |= existing.is_none() && node.deleted.is_some();
                                 break;
                             }
@@ -872,13 +878,14 @@ impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
         };
         control(WritePhase::Finalize)?;
         self.check_view()?;
-        Ok(StagedBatch {
+        StagedBatch {
             base: self.identity,
             high_waters,
             receipts,
             deltas,
             symbols,
             disposition,
-        })
+        }
+        .enforce_relationship_rules(base, self.memory, control)
     }
 }

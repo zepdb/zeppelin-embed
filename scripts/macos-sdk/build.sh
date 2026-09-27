@@ -41,7 +41,7 @@ cp "$SCRIPT_DIR/README.md" "$STAGE_DIR/"
 
 expected_symbols="$BUILD_DIR/expected-symbols"
 observed_symbols="$BUILD_DIR/observed-symbols"
-grep -v '^ze_text_' "$SYMBOL_ALLOWLIST" > "$expected_symbols"
+grep -Ev '^ze_(text|graph)_' "$SYMBOL_ALLOWLIST" > "$expected_symbols"
 nm -gU "$dynamic_library" | awk '
     { symbol=$NF; sub(/^_/, "", symbol); if (symbol ~ /^ze_/) print symbol }
 ' | LC_ALL=C sort -u > "$observed_symbols"

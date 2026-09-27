@@ -60,6 +60,34 @@ impl std::fmt::Debug for GraphStore {
 }
 
 impl GraphStore {
+    /// Creates a store with immutable per-type incoming-reference policies.
+    /// Rules are persisted in the catalog and need not be supplied on reopen.
+    /// Undeclared types retain ordinary DELETE/DETACH DELETE semantics.
+    ///
+    /// # Errors
+    /// Invalid/duplicate declarations or the classified creation failure.
+    pub fn create_with_relationship_types(
+        path: impl AsRef<Path>,
+        options: OpenOptions,
+        document: Option<EmbeddingTower>,
+        rules: &[crate::property_graph::catalog::RelationshipRule<'_>],
+    ) -> Result<Self, GraphStoreError> {
+        refuse_unsupported_platform()?;
+        let path = path.as_ref();
+        refuse_legacy_directory(path)?;
+        let rules =
+            crate::property_graph::catalog::RelationshipRules::new(rules).map_err(|error| {
+                GraphStoreError::graph(NativeGraphError::Stage(StageError::Catalog(error)))
+            })?;
+        let store = Store::create_native_graph_with_relationship_types(
+            path,
+            graph_options(options, AccessMode::ReadWrite),
+            document,
+            rules,
+        )?;
+        Ok(Self { store })
+    }
+
     /// Creates a new, empty graph store at `path`, which must not exist yet.
     ///
     /// `options` supplies memory limits, the reader drain timeout and the

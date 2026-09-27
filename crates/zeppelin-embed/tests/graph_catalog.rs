@@ -502,6 +502,7 @@ fn catalog_utf8_spanning_work_chunks_is_preserved_and_invalid_continuations_fail
             )
             .unwrap();
         let image = CatalogImage {
+            relationship_rules: zeppelin_embed::property_graph::catalog::RelationshipRules::EMPTY,
             declaration: CatalogDeclaration {
                 store: StoreInstanceId::new(1).unwrap(),
                 node_high_water: 0,
@@ -556,6 +557,7 @@ fn logical_catalog_roundtrip_preserves_store_symbols_counters_and_optional_space
             )
             .unwrap();
         let image = CatalogImage {
+            relationship_rules: zeppelin_embed::property_graph::catalog::RelationshipRules::EMPTY,
             declaration: CatalogDeclaration {
                 store,
                 node_high_water: u128::MAX,
@@ -852,4 +854,48 @@ fn catalog_symbols_preserve_full_width_and_refuse_zero_or_overflow() {
     assert_eq!(RelTypeId::new(1).unwrap().next().unwrap().get(), 2);
     assert_eq!(PropertyKeyId::new(1).unwrap().next().unwrap().get(), 2);
     assert_eq!(NamespaceId::new(1).unwrap().next().unwrap().get(), 2);
+}
+
+#[test]
+fn catalog_relationship_rules_roundtrip_and_reject_corrupt_policy_records() {
+    use zeppelin_embed::property_graph::catalog::{
+        CatalogImage, OnDelete, RelationshipRule, RelationshipRules,
+    };
+    let old = plain_golden();
+    let mut image = CatalogImage::decode(&old, 4096, &mut || Ok(())).unwrap();
+    let rules = [RelationshipRule {
+        relationship_type: GraphName::new("IN").unwrap(),
+        on_delete: OnDelete::Cascade,
+    }];
+    image.relationship_rules = RelationshipRules::new(&rules).unwrap();
+    let mut encoded = vec![0; image.encoded_len(&mut || Ok(())).unwrap()];
+    image.encode_into(&mut encoded, &mut || Ok(())).unwrap();
+    assert_eq!(&encoded[4..8], &[2, 0, 2, 0]);
+    let start = old.len() - 8;
+    assert_eq!(
+        &encoded[start..start + 11],
+        &[2, 2, 0, 0, 0, 0, 0, 0, 0, b'I', b'N']
+    );
+    let decoded = CatalogImage::decode(&encoded, 4096, &mut || Ok(())).unwrap();
+    assert_eq!(
+        decoded
+            .relationship_rules
+            .lookup(GraphName::new("IN").unwrap(), &mut || Ok(()))
+            .unwrap(),
+        Some(OnDelete::Cascade)
+    );
+    assert_eq!(
+        decoded
+            .relationship_rules
+            .lookup(GraphName::new("OTHER").unwrap(), &mut || Ok(()))
+            .unwrap(),
+        None
+    );
+    for (offset, byte) in [(start, 0), (start + 1, 255), (start + 9, 255)] {
+        let mut corrupt = encoded.clone();
+        corrupt[offset] = byte;
+        repair(&mut corrupt);
+        assert!(CatalogImage::decode(&corrupt, 4096, &mut || Ok(())).is_err());
+    }
+    assert!(RelationshipRules::new(&[rules[0], rules[0]]).is_err());
 }

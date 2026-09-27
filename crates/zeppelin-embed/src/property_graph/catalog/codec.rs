@@ -16,6 +16,8 @@ type Checkpoint<'a> = &'a mut dyn FnMut() -> Result<(), CatalogError>;
 /// This does not validate a whole-store checkpoint or authorize recovery/cleanup.
 #[derive(Debug)]
 pub struct CatalogImage<'a> {
+    /// Immutable per-type incoming-reference policies.
+    pub relationship_rules: super::RelationshipRules<'a>,
     /// Interpretation and allocator metadata, with the original store identity.
     pub declaration: CatalogDeclaration<'a>,
     /// Bounded working descriptors; all name backing remains borrowed.
@@ -26,6 +28,10 @@ impl<'a> CatalogImage<'a> {
     pub fn encoded_len(&self, checkpoint: Checkpoint<'_>) -> Result<usize, CatalogError> {
         checkpoint()?;
         let mut bytes = PREFIX + 8;
+        for rule in self.relationship_rules.iter() {
+            checkpoint()?;
+            bytes = add(bytes, add(9, rule?.relationship_type.as_str().len())?)?;
+        }
         if let Some(doc) = self.declaration.interpretation.embedding {
             doc.validate()?;
             bytes = add(bytes, 47)?;
@@ -63,8 +69,13 @@ impl<'a> CatalogImage<'a> {
             checkpoint,
         };
         writer.emit(b"ZGCA")?;
-        writer.emit(&1_u16.to_le_bytes())?;
-        writer.emit(&1_u16.to_le_bytes())?;
+        let version = if self.relationship_rules.is_empty() {
+            1_u16
+        } else {
+            2_u16
+        };
+        writer.emit(&version.to_le_bytes())?;
+        writer.emit(&version.to_le_bytes())?;
         writer.emit(&(length as u64).to_le_bytes())?;
         writer.emit(&self.declaration.store.get().to_le_bytes())?;
         writer.emit(&self.declaration.node_high_water.to_le_bytes())?;
@@ -104,6 +115,11 @@ impl<'a> CatalogImage<'a> {
             writer.emit(&entry.symbol.get().to_le_bytes())?;
             writer.blob(entry.name.as_str().as_bytes())?;
         }
+        for rule in self.relationship_rules.iter() {
+            let rule = rule?;
+            writer.emit(&[rule.on_delete as u8])?;
+            writer.blob(rule.relationship_type.as_str().as_bytes())?;
+        }
         let data = writer
             .bytes
             .get(..writer.offset)
@@ -127,7 +143,8 @@ impl<'a> CatalogImage<'a> {
         if reader.take(4)? != b"ZGCA" {
             return Err(CatalogError::Malformed);
         }
-        if reader.u16()? != 1 || reader.u16()? != 1 {
+        let version = reader.u16()?;
+        if !matches!(version, 1 | 2) || reader.u16()? != version {
             return Err(CatalogError::Unsupported);
         }
         if reader.u64()? != bytes.len() as u64 {
@@ -224,11 +241,27 @@ impl<'a> CatalogImage<'a> {
                 GraphName::new(reader.text(checkpoint)?).map_err(|_| CatalogError::Malformed)?;
             symbols.entries.push(SymbolEntry { symbol, name });
         }
+        let relationship_rules = if version == 2 {
+            let rules = super::RelationshipRules::decode(
+                bytes
+                    .get(reader.offset..trailer)
+                    .ok_or(CatalogError::Malformed)?,
+                checkpoint,
+            )?;
+            if rules.is_empty() {
+                return Err(CatalogError::Malformed);
+            }
+            reader.offset = trailer;
+            rules
+        } else {
+            super::RelationshipRules::EMPTY
+        };
         if reader.offset != trailer {
             return Err(CatalogError::Malformed);
         }
         symbols.validate(checkpoint)?;
         Ok(Self {
+            relationship_rules,
             declaration,
             symbols,
         })

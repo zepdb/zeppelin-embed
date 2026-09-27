@@ -275,6 +275,7 @@ descriptor_headers!(
     ZeGraphQueryOptions,
     ZeGraphQueryRequest,
     ZeGraphOpenRequest,
+    ZeGraphRelationshipType,
     ZeGraphCypherRequest,
     ZeGraphGetNodesRequest,
     ZeGraphGetRelsRequest,

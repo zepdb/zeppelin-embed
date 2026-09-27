@@ -429,6 +429,7 @@ pub(super) fn catalog_payload<'a>(
     relationship_high_water: u128,
     entries: &[crate::property_graph::catalog::SymbolEntry<'_>],
     symbol_high_waters: SymbolHighWaters,
+    relationship_rules: crate::property_graph::catalog::RelationshipRules<'_>,
 ) -> Result<StorageBuffer<'a, u8>, NativeGraphError> {
     let mut checkpoint = || {
         control
@@ -450,6 +451,7 @@ pub(super) fn catalog_payload<'a>(
         &mut checkpoint,
     )?;
     let image = CatalogImage {
+        relationship_rules,
         declaration: CatalogDeclaration {
             store,
             node_high_water,
@@ -496,6 +498,7 @@ fn empty_catalog<'a>(
     document: Option<&EmbeddingTower>,
     node_high_water: u128,
     relationship_high_water: u128,
+    relationship_rules: crate::property_graph::catalog::RelationshipRules<'_>,
 ) -> Result<StorageBuffer<'a, u8>, NativeGraphError> {
     catalog_payload(
         memory,
@@ -507,6 +510,7 @@ fn empty_catalog<'a>(
         relationship_high_water,
         &[],
         SymbolHighWaters::default(),
+        relationship_rules,
     )
 }
 
@@ -532,7 +536,17 @@ pub(super) fn create(
     clock: Arc<dyn MonotonicClock>,
     entropy: &mut dyn EntropyProvider,
 ) -> Result<Store, NativeGraphError> {
-    create_with_high_waters(path, options, document, vfs, clock, entropy, 0, 0)
+    create_with_high_waters(
+        path,
+        options,
+        document,
+        vfs,
+        clock,
+        entropy,
+        0,
+        0,
+        crate::property_graph::catalog::RelationshipRules::EMPTY,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -545,6 +559,7 @@ fn create_with_high_waters(
     entropy: &mut dyn EntropyProvider,
     node_high_water: u128,
     relationship_high_water: u128,
+    relationship_rules: crate::property_graph::catalog::RelationshipRules<'_>,
 ) -> Result<Store, NativeGraphError> {
     if options.access_mode != crate::lifecycle::AccessMode::ReadWrite {
         return Err(NativeGraphError::Store(
@@ -606,6 +621,7 @@ fn create_with_high_waters(
         document.as_ref(),
         node_high_water,
         relationship_high_water,
+        relationship_rules,
     )?;
     let (catalog_bytes, catalog) = encode_framed(
         &storage,
@@ -767,6 +783,25 @@ fn create_with_high_waters(
 }
 
 impl Store {
+    pub(crate) fn create_native_graph_with_relationship_types(
+        path: &Path,
+        options: OpenOptions,
+        document: Option<EmbeddingTower>,
+        rules: crate::property_graph::catalog::RelationshipRules<'_>,
+    ) -> Result<Self, NativeGraphError> {
+        create_with_high_waters(
+            path,
+            options,
+            document,
+            Arc::new(crate::vfs::StdVfs),
+            Arc::new(SystemMonotonicClock),
+            &mut OsEntropy,
+            0,
+            0,
+            rules,
+        )
+    }
+
     pub(crate) fn create_native_graph(
         path: impl AsRef<Path>,
         options: OpenOptions,
@@ -810,6 +845,7 @@ impl Store {
             &mut OsEntropy,
             node_high_water,
             relationship_high_water,
+            crate::property_graph::catalog::RelationshipRules::EMPTY,
         )
     }
 

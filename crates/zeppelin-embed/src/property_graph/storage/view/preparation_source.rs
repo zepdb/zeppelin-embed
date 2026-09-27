@@ -806,6 +806,36 @@ impl<'source, 'lease, 'm> NativePreparationCatalog<'source, 'lease, 'm> {
         std::ptr::eq(self.source, source)
     }
 
+    pub(crate) fn relationship_rule(
+        &self,
+        id: crate::property_graph::catalog::RelTypeId,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<Option<crate::property_graph::catalog::OnDelete>, TreeError> {
+        for entry in self.image.symbols.entries() {
+            resources.step(1)?;
+            if entry.symbol == Symbol::RelationshipType(id) {
+                let mut failure = None;
+                let result = self.image.relationship_rules.lookup(entry.name, &mut || {
+                    resources.step(1).map_err(|error| {
+                        failure = Some(error);
+                        CatalogError::Cancelled
+                    })
+                });
+                if let Some(error) = failure {
+                    return Err(error);
+                }
+                return result.map_err(|_| TreeError::Invalid("invalid relationship policy"));
+            }
+        }
+        Err(TreeError::Invalid("relationship type absent from catalog"))
+    }
+
+    pub(crate) fn relationship_rules(
+        &self,
+    ) -> crate::property_graph::catalog::RelationshipRules<'source> {
+        self.image.relationship_rules
+    }
+
     pub(crate) fn symbol_entries(&self) -> &[SymbolEntry<'source>] {
         self.image.symbols.entries()
     }
@@ -860,6 +890,14 @@ impl<S: BlockSource> RecordCatalog<S> for NativePreparationCatalog<'_, '_, '_> {
 }
 
 impl<S: BlockSource> PreparationCatalog<S> for NativePreparationCatalog<'_, '_, '_> {
+    fn relationship_on_delete(
+        &self,
+        id: crate::property_graph::catalog::RelTypeId,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<Option<crate::property_graph::catalog::OnDelete>, TreeError> {
+        self.relationship_rule(id, resources)
+    }
+
     fn base_identity(&self) -> BaseIdentity {
         self.base
     }

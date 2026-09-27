@@ -220,11 +220,26 @@ napi_value GResult(napi_env env, ZeGraphHandle handle, ze_error_code status, con
 }
 napi_value GraphOpen(napi_env env, napi_callback_info info) {
   return GGuard(env, [&]() {
-    napi_value args[4]; size_t argc = 4; GCheck(env, napi_get_cb_info(env, info, &argc, args, nullptr, nullptr)); GRequire(env, argc == 4, "graphOpen arguments");
+    napi_value args[5]; size_t argc = 5; GCheck(env, napi_get_cb_info(env, info, &argc, args, nullptr, nullptr)); GRequire(env, argc == 5, "graphOpen arguments");
     auto path = GText(env, args[0]); auto request = GStruct<ZeGraphOpenRequest>();
     request.path = {reinterpret_cast<const uint8_t *>(path.data()), path.size()}; request.mode = static_cast<uint32_t>(GDouble(env, args[1]));
     request.max_resident_bytes = static_cast<uint64_t>(GDouble(env, args[2])); request.reader_drain_timeout_ms = static_cast<uint64_t>(GDouble(env, args[3]));
-    auto owner = std::make_unique<GraphOwner>(); const auto status = ze_graph_open(&request, &owner->handle);
+    uint32_t count; GCheck(env, napi_get_array_length(env, args[4], &count));
+    GRequire(env, count <= 16384, "too many relationship types");
+    std::vector<std::string> names; names.reserve(count);
+    std::vector<ZeGraphRelationshipType> rules; rules.reserve(count);
+    for (uint32_t i = 0; i < count; ++i) {
+      napi_value item; GCheck(env, napi_get_element(env, args[4], i, &item));
+      names.push_back(GText(env, GGet(env, item, "type")));
+      const auto action = GText(env, GGet(env, item, "onDelete"));
+      GRequire(env, action == "restrict" || action == "cascade", "invalid onDelete");
+      auto rule = GStruct<ZeGraphRelationshipType>();
+      rule.name = {reinterpret_cast<const uint8_t *>(names.back().data()), names.back().size()};
+      rule.on_delete = action == "restrict" ? 1 : 2; rules.push_back(rule);
+    }
+    auto owner = std::make_unique<GraphOwner>();
+    const auto status = count == 0 ? ze_graph_open(&request, &owner->handle) :
+      ze_graph_open_with_relationship_types(&request, rules.data(), rules.size(), &owner->handle);
     if (status != ZE_OK) return ThrowZeppelin(env, 0, status);
     napi_value external; GCheck(env, napi_create_external(env, owner.get(), GFinalize, nullptr, &external)); owner.release(); return external;
   });

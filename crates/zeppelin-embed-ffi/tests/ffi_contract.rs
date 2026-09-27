@@ -1505,3 +1505,29 @@ fn open_migrations_layout_is_frozen() {
     assert_eq!(offset_of!(ZeOpenMigrations, manifest_version), 20);
     assert_eq!(offset_of!(ZeOpenMigrations, wal_version), 22);
 }
+
+// Creation takes no existing handle, so this export is deliberately outside
+// poison_function_table: there is no existing owner for it to poison.
+#[cfg(feature = "graph-cypher")]
+const GRAPH_HANDLE_FREE_EXPORTS: &[&str] = &["ze_graph_open_with_relationship_types"];
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn graph_declaration_export_is_registered_without_a_poison_handle() {
+    let header = include_str!("../include/zeppelin_graph_contracts.h");
+    let allowlist = include_str!("../symbols.allowlist");
+    for name in GRAPH_HANDLE_FREE_EXPORTS {
+        assert!(header.contains(&format!("ze_error_code {name}(")));
+        assert!(allowlist.lines().any(|symbol| symbol == *name));
+        assert!(!POISON_TABLE_NAMES.contains(name));
+    }
+    assert_eq!(
+        ze_graph_open_with_relationship_types(
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut()
+        ),
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+}

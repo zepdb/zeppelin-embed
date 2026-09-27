@@ -967,6 +967,22 @@ pub struct ZeGraphOpenRequest {
     pub control: *const ZeGraphControl,
 }
 
+/// Immutable incoming-reference policy, accepted only during graph creation.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct ZeGraphRelationshipType {
+    /// Exact sizeof this descriptor.
+    pub abi_size: u32,
+    /// Must be zero.
+    pub abi_reserved: u32,
+    /// Exact UTF-8 relationship type name.
+    pub name: ZeGraphBytes,
+    /// 1 restrict, 2 cascade. Other values reject before creating any files.
+    pub on_delete: u32,
+    /// Must be zero.
+    pub reserved: u32,
+}
+
 /// Outer compiler request; only typed plans enter core. Invalid/unsupported syntax returns owned bounded diagnostics and no effects.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]

@@ -67,6 +67,9 @@ impl<'a, T> Arena<'a, T> {
             limit: capacity,
         })
     }
+    pub(super) fn drain(&mut self) -> impl Iterator<Item = T> + '_ {
+        self.values.drain(..)
+    }
     pub(super) fn into_parts(self) -> (Vec<T>, WriteReservation<'a>) {
         (self.values, self.charge)
     }

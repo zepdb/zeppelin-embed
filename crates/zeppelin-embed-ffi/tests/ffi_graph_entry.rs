@@ -606,3 +606,59 @@ fn graph_open_on_this_host_is_admitted_by_the_macos_floor() {
         assert_eq!(ze_graph_close(handle), ZeErrorCode::ZeOk);
     }
 }
+
+#[test]
+fn graph_relationship_declarations_validate_before_creation() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("rules");
+    let bytes = path.to_str().unwrap().as_bytes();
+    let mut request = open_request(bytes, MODE_CREATE);
+    let mut rule: ZeGraphRelationshipType = common::sized_zeroed();
+    rule.name = ZeGraphBytes {
+        data: b"IN".as_ptr(),
+        count: 2,
+    };
+    rule.on_delete = 2;
+    for case in 0..7 {
+        let mut bad = rule;
+        let mut handle = ZeGraphHandle { token: 0 };
+        let mut count = 1;
+        match case {
+            0 => bad.on_delete = 3,
+            1 => bad.abi_reserved = 1,
+            2 => bad.reserved = 1,
+            3 => bad.abi_size += 8,
+            4 => {
+                bad.name = ZeGraphBytes {
+                    data: b"\xff".as_ptr(),
+                    count: 1,
+                }
+            }
+            5 => count = 16385,
+            6 => request.mode = MODE_READ_WRITE,
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            ze_graph_open_with_relationship_types(&request, &bad, count, &mut handle),
+            ZeErrorCode::ZeErrInvalidArgument,
+            "case {case}"
+        );
+        assert_eq!(handle.token, 0);
+        assert!(!path.exists());
+    }
+    request.mode = MODE_CREATE;
+    let mut handle = ZeGraphHandle { token: 0 };
+    assert_eq!(
+        ze_graph_open_with_relationship_types(&request, [rule, rule].as_ptr(), 2, &mut handle),
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+    assert!(!path.exists());
+    assert_eq!(
+        ze_graph_open_with_relationship_types(&request, &rule, 1, &mut handle),
+        ZeErrorCode::ZeOk
+    );
+    assert_eq!(ze_graph_close(handle), ZeErrorCode::ZeOk);
+    request.mode = MODE_READ_WRITE;
+    assert_eq!(ze_graph_open(&request, &mut handle), ZeErrorCode::ZeOk);
+    assert_eq!(ze_graph_close(handle), ZeErrorCode::ZeOk);
+}

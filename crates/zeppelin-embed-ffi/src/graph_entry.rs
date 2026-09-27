@@ -99,3 +99,25 @@ pub extern "C" fn ze_graph_cypher_with_row_limit(
         )
     })
 }
+
+/// Creates a graph with immutable per-relationship-type incoming-reference rules.
+/// `request.mode` must be create (0). Rules survive reopen through ze_graph_open.
+/// A child is the source of an edge into the deleted target. Restrict refuses
+/// surviving children; cascade deletes them transitively in the same mutation,
+/// including Cypher DELETE/DETACH DELETE. Undeclared types keep existing semantics.
+/// At most 16384 unique rules and 8 MiB of encoded declarations are accepted.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_graph_open_with_relationship_types(
+    request: *const ZeGraphOpenRequest,
+    rules: *const crate::ZeGraphRelationshipType,
+    rule_count: usize,
+    out_handle: *mut ZeGraphHandle,
+) -> ZeErrorCode {
+    ffi_entry!(None, ZeErrorCode::ZeErrPanic, {
+        crate::run_named_panic_probe("ze_graph_open_with_relationship_types");
+        crate::finish(
+            None,
+            crate::graph_abi::open_with_relationship_types(request, rules, rule_count, out_handle),
+        )
+    })
+}
