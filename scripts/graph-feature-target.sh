@@ -38,12 +38,13 @@ graph_effective_target() {
 }
 
 graph_target_supports_native_graph() {
-    local host_os host_arch
-    host_os="$(uname -s)"
-    host_arch="$(uname -m)"
-    [[ "$host_os" == "Darwin" && \
-        ( "$host_arch" == "arm64" || "$host_arch" == "aarch64" ) && \
-        "$1" == "aarch64-apple-darwin" ]]
+    case "$(uname -s):$1" in
+        Darwin:aarch64-apple-darwin|Darwin:x86_64-apple-darwin|\
+        MINGW*:x86_64-pc-windows-msvc|MSYS*:x86_64-pc-windows-msvc|\
+        CYGWIN*:x86_64-pc-windows-msvc|Windows_NT:x86_64-pc-windows-msvc)
+            return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 graph_host_is_darwin() {

@@ -998,7 +998,7 @@ releases it. Never release registries on a path that has not drained.
 
 `graph-cypher` library tests are part of what must pass. `scripts/ci-gates.sh`
 runs them explicitly and unconditionally. The workspace run enables the feature
-only on `aarch64-apple-darwin`, through
+on macOS and Windows x64 hosts, through
 `zeppelin-embed-workspace-tests/graph-result-test-support`, so before ZE-180 no
 gate proved these tests on any other host.
 

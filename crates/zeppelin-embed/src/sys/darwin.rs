@@ -29,6 +29,10 @@ pub enum SysError {
     PerformanceCoreCount(io::Error),
     /// Darwin returned a zero or malformed performance-core count.
     InvalidPerformanceCoreCount,
+    /// `sysctlbyname(kern.osproductversion)` failed.
+    ProductVersion(io::Error),
+    /// Darwin returned an empty, oversized or malformed product version.
+    InvalidProductVersion,
     /// `pthread_set_qos_class_self_np` rejected the requested class.
     RequestQos(io::Error),
     /// `pthread_get_qos_class_np` could not report the calling thread.
@@ -60,6 +64,12 @@ impl fmt::Display for SysError {
             Self::InvalidPerformanceCoreCount => {
                 formatter.write_str("Darwin returned an invalid physical performance-core count")
             }
+            Self::ProductVersion(error) => {
+                write!(formatter, "kern.osproductversion failed: {error}")
+            }
+            Self::InvalidProductVersion => {
+                formatter.write_str("Darwin returned an invalid product version")
+            }
             Self::RequestQos(error) => write!(formatter, "could not request a QoS class: {error}"),
             Self::ObserveQos(error) => {
                 write!(formatter, "could not read the thread QoS class: {error}")
@@ -79,11 +89,13 @@ impl std::error::Error for SysError {
             | Self::PageSize(error)
             | Self::Mincore(error)
             | Self::PerformanceCoreCount(error)
+            | Self::ProductVersion(error)
             | Self::RequestQos(error)
             | Self::ObserveQos(error) => Some(error),
             Self::TaskVmInfo(_)
             | Self::RangeOverflow
             | Self::InvalidPerformanceCoreCount
+            | Self::InvalidProductVersion
             | Self::UnrequestableQos => None,
         }
     }
@@ -221,6 +233,67 @@ pub fn physical_performance_core_count() -> Result<usize, SysError> {
         return Err(SysError::InvalidPerformanceCoreCount);
     }
     usize::try_from(count).map_err(|_| SysError::InvalidPerformanceCoreCount)
+}
+
+/// Reads the macOS marketing version, refusing failed or malformed probes.
+pub fn os_product_version() -> Result<(u32, u32), SysError> {
+    let mut length = 0;
+    // SAFETY: the static name is NUL-terminated; a null output requests only
+    // its size and length is writable. No new sysctl value is supplied.
+    let status = unsafe {
+        libc::sysctlbyname(
+            c"kern.osproductversion".as_ptr(),
+            std::ptr::null_mut(),
+            &raw mut length,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if status == -1 {
+        return Err(SysError::ProductVersion(io::Error::last_os_error()));
+    }
+    let mut buffer = [0_u8; 64];
+    if length == 0 || length > buffer.len() {
+        return Err(SysError::InvalidProductVersion);
+    }
+    // SAFETY: length is bounded by the writable buffer. The kernel receives
+    // its capacity and updates length; no pointer is retained.
+    let status = unsafe {
+        libc::sysctlbyname(
+            c"kern.osproductversion".as_ptr(),
+            buffer.as_mut_ptr().cast(),
+            &raw mut length,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if status == -1 {
+        return Err(SysError::ProductVersion(io::Error::last_os_error()));
+    }
+    let bytes = buffer
+        .get(..length)
+        .ok_or(SysError::InvalidProductVersion)?;
+    let text = std::ffi::CStr::from_bytes_with_nul(bytes)
+        .map_err(|_| SysError::InvalidProductVersion)?
+        .to_str()
+        .map_err(|_| SysError::InvalidProductVersion)?;
+    parse_product_version(text).ok_or(SysError::InvalidProductVersion)
+}
+
+pub(crate) fn parse_product_version(text: &str) -> Option<(u32, u32)> {
+    fn component(text: &str) -> Option<u32> {
+        if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        text.parse().ok()
+    }
+    let mut parts = text.split('.');
+    let major = component(parts.next()?)?;
+    let minor = match parts.next() {
+        Some(text) => component(text)?,
+        None => 0,
+    };
+    Some((major, minor))
 }
 
 /// A Darwin scheduling quality-of-service class.
@@ -378,6 +451,34 @@ pub fn mincore_resident(range: &[u8]) -> Result<usize, SysError> {
     clippy::unwrap_used
 )]
 mod tests {
+    #[test]
+    fn product_version_parses_major_and_minor() {
+        for (text, expected) in [("14", (14, 0)), ("13.6", (13, 6)), ("15.1.2", (15, 1))] {
+            assert_eq!(super::parse_product_version(text), Some(expected));
+        }
+    }
+
+    #[test]
+    fn product_version_rejects_empty_and_non_numeric() {
+        for text in [
+            "",
+            "x",
+            "14.x",
+            ".1",
+            "14.",
+            "-1.0",
+            "+14.0",
+            "4294967296.0",
+        ] {
+            assert_eq!(super::parse_product_version(text), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn host_product_version_is_at_least_eleven() {
+        assert!(super::os_product_version().expect("host product version") >= (11, 0));
+    }
+
     use super::{
         QosClass, SysError, barrier_fsync, full_fsync, mincore_resident, observed_qos,
         phys_footprint, physical_performance_core_count, request_qos,

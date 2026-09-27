@@ -462,3 +462,45 @@ fn graph_write_results_stay_readable_after_close() {
     assert_eq!(receipts[0].revision, revision(1));
     assert_eq!(receipts[0].generation, generation(1));
 }
+
+#[test]
+fn macos_thirteen_is_refused_and_fourteen_admitted() {
+    assert!(!super::macos_admits_graph((13, 6)));
+    assert!(super::macos_admits_graph((14, 0)));
+    assert!(super::macos_admits_graph((15, 1)));
+}
+
+#[test]
+fn unsupported_platform_error_reports_kind_and_versions() {
+    let error = super::GraphStoreError {
+        cause: super::Cause::UnsupportedPlatform {
+            required: (14, 0),
+            observed: Some((13, 6)),
+            probe_error: String::new(),
+        },
+    };
+    assert_eq!(error.kind(), GraphStoreErrorKind::Unsupported);
+    assert!(error.nothing_committed());
+    assert_eq!(error.operator(), None);
+    assert!(error.counters().is_none());
+    assert!(error.legacy_store_path().is_none());
+    assert!(
+        error
+            .to_string()
+            .contains("graph store requires macOS 14.0 or newer; this host reports 13.6")
+    );
+    let error = super::GraphStoreError {
+        cause: super::Cause::UnsupportedPlatform {
+            required: (14, 0),
+            observed: None,
+            probe_error: "probe failed".to_owned(),
+        },
+    };
+    assert_eq!(error.kind(), GraphStoreErrorKind::Unsupported);
+    assert!(error.nothing_committed());
+    assert!(
+        error
+            .to_string()
+            .contains("could not determine the macOS version: probe failed")
+    );
+}

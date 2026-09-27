@@ -29,9 +29,12 @@
 
 #[cfg(all(
     feature = "graph-cypher",
-    not(all(target_os = "macos", target_arch = "aarch64"))
+    not(any(
+        target_os = "macos",
+        all(target_os = "windows", target_arch = "x86_64")
+    ))
 ))]
-compile_error!("graph-cypher requires macOS arm64; graph packaging requires macOS 14+");
+compile_error!("graph-cypher supports macOS (arm64, x86_64) and Windows x64 only");
 
 #[cfg(feature = "allocation-audit")]
 mod allocation_audit;

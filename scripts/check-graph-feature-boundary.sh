@@ -227,19 +227,27 @@ cargo check \
     --target x86_64-apple-darwin \
     --target-dir "$target_root/x86_64-legacy"
 
-x86_graph_log="$temporary/x86-graph.log"
+for graph_target in x86_64-apple-darwin x86_64-pc-windows-msvc; do
+    cargo check \
+        --manifest-path "$repo_root/crates/zeppelin-embed/Cargo.toml" \
+        --features graph-cypher \
+        --target "$graph_target" \
+        --target-dir "$target_root/$graph_target-graph"
+done
+
+linux_graph_log="$temporary/linux-graph.log"
 if cargo check \
     --manifest-path "$repo_root/crates/zeppelin-embed/Cargo.toml" \
     --features graph-cypher \
-    --target x86_64-apple-darwin \
-    --target-dir "$target_root/x86_64-graph" \
-    >"$x86_graph_log" 2>&1; then
-    echo "x86_64 graph feature unexpectedly compiled" >&2
+    --target x86_64-unknown-linux-gnu \
+    --target-dir "$target_root/linux-graph" \
+    >"$linux_graph_log" 2>&1; then
+    echo "Linux graph feature unexpectedly compiled" >&2
     exit 1
 fi
-if ! grep -q 'graph-cypher requires macOS arm64' "$x86_graph_log"; then
-    cat "$x86_graph_log" >&2
-    echo "x86_64 graph failure was not the intentional unsupported-target diagnostic" >&2
+if ! grep -q 'graph-cypher supports macOS' "$linux_graph_log"; then
+    cat "$linux_graph_log" >&2
+    echo "Linux graph failure was not the intentional unsupported-target diagnostic" >&2
     exit 1
 fi
 

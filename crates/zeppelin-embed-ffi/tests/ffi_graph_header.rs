@@ -1,5 +1,5 @@
 //! Compile the opt-in graph data contract as an actual external C consumer.
-#![cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#![cfg(target_os = "macos")]
 use std::path::Path;
 use std::process::Command;
 

@@ -242,25 +242,30 @@ fn store_error(error: &GraphStoreError, statement: bool) -> FfiError {
     let code = if let Some(stage) = error.stage_error() {
         stage_code(stage)
     } else {
-        match error.kind() {
-            GraphStoreErrorKind::LegacyStore => ZeErrorCode::ZeErrStoreKind,
-            GraphStoreErrorKind::Busy => ZeErrorCode::ZeErrStoreBusy,
-            GraphStoreErrorKind::ReadOnly | GraphStoreErrorKind::Unavailable => {
-                ZeErrorCode::ZeErrAccessMode
-            }
-            GraphStoreErrorKind::InvalidRequest => ZeErrorCode::ZeErrInvalidArgument,
-            GraphStoreErrorKind::Constraint if statement => ZeErrorCode::ZeErrEndpoint,
-            GraphStoreErrorKind::Constraint => ZeErrorCode::ZeErrKeyConflict,
-            GraphStoreErrorKind::Limit => ZeErrorCode::ZeErrBudgetExceeded,
-            GraphStoreErrorKind::Cancelled => ZeErrorCode::ZeErrCancelled,
-            GraphStoreErrorKind::Timeout => ZeErrorCode::ZeErrTimeout,
-            GraphStoreErrorKind::Closed => ZeErrorCode::ZeErrClosed,
-            GraphStoreErrorKind::Corruption => ZeErrorCode::ZeErrCorrupt,
-            GraphStoreErrorKind::Storage => ZeErrorCode::ZeErrIo,
-            GraphStoreErrorKind::WriteIndeterminate => ZeErrorCode::ZeErrIndeterminateCommit,
-        }
+        store_error_code(error.kind(), statement)
     };
     FfiError::new(code, error.to_string())
+}
+
+fn store_error_code(kind: GraphStoreErrorKind, statement: bool) -> ZeErrorCode {
+    match kind {
+        GraphStoreErrorKind::Unsupported => ZeErrorCode::ZeErrUnsupported,
+        GraphStoreErrorKind::LegacyStore => ZeErrorCode::ZeErrStoreKind,
+        GraphStoreErrorKind::Busy => ZeErrorCode::ZeErrStoreBusy,
+        GraphStoreErrorKind::ReadOnly | GraphStoreErrorKind::Unavailable => {
+            ZeErrorCode::ZeErrAccessMode
+        }
+        GraphStoreErrorKind::InvalidRequest => ZeErrorCode::ZeErrInvalidArgument,
+        GraphStoreErrorKind::Constraint if statement => ZeErrorCode::ZeErrEndpoint,
+        GraphStoreErrorKind::Constraint => ZeErrorCode::ZeErrKeyConflict,
+        GraphStoreErrorKind::Limit => ZeErrorCode::ZeErrBudgetExceeded,
+        GraphStoreErrorKind::Cancelled => ZeErrorCode::ZeErrCancelled,
+        GraphStoreErrorKind::Timeout => ZeErrorCode::ZeErrTimeout,
+        GraphStoreErrorKind::Closed => ZeErrorCode::ZeErrClosed,
+        GraphStoreErrorKind::Corruption => ZeErrorCode::ZeErrCorrupt,
+        GraphStoreErrorKind::Storage => ZeErrorCode::ZeErrIo,
+        GraphStoreErrorKind::WriteIndeterminate => ZeErrorCode::ZeErrIndeterminateCommit,
+    }
 }
 
 fn owner_code(error: &OwnerError) -> ZeErrorCode {
@@ -668,6 +673,16 @@ fn outcome_of(outcome: Outcome) -> SuccessfulOutcome {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    #[test]
+    fn an_unsupported_platform_maps_to_ze_err_unsupported() {
+        for statement in [false, true] {
+            assert_eq!(
+                store_error_code(GraphStoreErrorKind::Unsupported, statement),
+                ZeErrorCode::ZeErrUnsupported
+            );
+        }
+    }
+
     #[test]
     fn a_second_writer_on_the_same_graph_handle_is_busy() {
         let dir = tempfile::tempdir().unwrap();

@@ -123,18 +123,16 @@ require_text "$route_output" 'native graph campaigns: selected for aarch64-apple
 require_text "$route_log" '--features graph-result-test-support'
 
 run_route ci-intel Darwin x86_64 x86_64-apple-darwin '<unset>' clippy ci-gates.sh
-require_text "$route_output" 'native graph qualification: not selected for x86_64-apple-darwin'
-require_text "$route_log" '--exclude zeppelin-embed-cypher'
-reject_text "$route_log" 'graph-result-test-support'
+require_text "$route_output" 'native graph qualification: selected for x86_64-apple-darwin'
+require_text "$route_log" 'graph-result-test-support'
 
 run_route coverage-intel Darwin x86_64 x86_64-apple-darwin '<unset>' llvm-cov coverage.sh
-require_text "$route_output" 'native graph coverage: not selected for x86_64-apple-darwin'
-require_text "$route_log" '--exclude zeppelin-embed-cypher'
-reject_text "$route_log" 'graph-result-test-support'
+require_text "$route_output" 'native graph coverage: selected for x86_64-apple-darwin'
+require_text "$route_log" 'graph-result-test-support'
 
 run_route adversarial-intel Darwin x86_64 x86_64-apple-darwin '<unset>' test adversarial.sh smoke
-require_text "$route_output" 'native graph campaigns: not selected for x86_64-apple-darwin'
-reject_text "$route_log" 'graph-result-test-support'
+require_text "$route_output" 'native graph campaigns: selected for x86_64-apple-darwin'
+require_text "$route_log" 'graph-result-test-support'
 
 run_route ci-linux Linux x86_64 x86_64-unknown-linux-gnu '<unset>' clippy ci-gates.sh
 require_text "$route_log" '--exclude zeppelin-embed-cypher'
@@ -150,22 +148,20 @@ run_route adversarial-linux Linux x86_64 x86_64-unknown-linux-gnu '<unset>' test
 reject_text "$route_log" 'graph-result-test-support'
 
 run_route adversarial-windows MINGW64_NT x86_64 x86_64-pc-windows-msvc '<unset>' test adversarial.sh smoke
-reject_text "$route_log" 'graph-result-test-support'
+require_text "$route_log" '--features graph-result-test-support'
 
 run_route ci-arm-x86-target Darwin arm64 aarch64-apple-darwin x86_64-apple-darwin clippy ci-gates.sh
-require_text "$route_output" 'native graph qualification: not selected for x86_64-apple-darwin'
-require_text "$route_log" '--exclude zeppelin-embed-cypher'
-reject_text "$route_log" 'graph-result-test-support'
+require_text "$route_output" 'native graph qualification: selected for x86_64-apple-darwin'
+require_text "$route_log" 'graph-result-test-support'
 
 run_route adversarial-arm-x86-target Darwin arm64 aarch64-apple-darwin x86_64-apple-darwin test adversarial.sh smoke
-require_text "$route_output" 'native graph campaigns: not selected for x86_64-apple-darwin'
-reject_text "$route_log" 'graph-result-test-support'
+require_text "$route_output" 'native graph campaigns: selected for x86_64-apple-darwin'
+require_text "$route_log" 'graph-result-test-support'
 
 run_route coverage-cli-target Darwin arm64 aarch64-apple-darwin aarch64-apple-darwin llvm-cov \
   coverage.sh --target x86_64-apple-darwin
-require_text "$route_output" 'native graph coverage: not selected for x86_64-apple-darwin'
-require_text "$route_log" '--exclude zeppelin-embed-cypher'
-reject_text "$route_log" 'graph-result-test-support'
+require_text "$route_output" 'native graph coverage: selected for x86_64-apple-darwin'
+require_text "$route_log" 'graph-result-test-support'
 
 run_route ci-linux-arm-target Linux x86_64 x86_64-unknown-linux-gnu aarch64-apple-darwin clippy ci-gates.sh
 require_text "$route_output" 'native graph qualification: not selected for aarch64-apple-darwin'
@@ -173,8 +169,7 @@ require_text "$route_log" '--exclude zeppelin-embed-cypher'
 reject_text "$route_log" 'graph-result-test-support'
 
 run_route ci-arm-x86-rustc Darwin arm64 x86_64-apple-darwin '<unset>' clippy ci-gates.sh
-require_text "$route_output" 'native graph qualification: not selected for x86_64-apple-darwin'
-require_text "$route_log" '--exclude zeppelin-embed-cypher'
-reject_text "$route_log" 'graph-result-test-support'
+require_text "$route_output" 'native graph qualification: selected for x86_64-apple-darwin'
+require_text "$route_log" 'graph-result-test-support'
 
 echo 'graph feature command routing: PASS'

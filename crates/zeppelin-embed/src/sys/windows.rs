@@ -132,6 +132,42 @@ struct SYSTEM_INFO {
     wProcessorRevision: u16,
 }
 
+#[cfg(any(feature = "graph-cypher", test))]
+const BCRYPT_USE_SYSTEM_PREFERRED_RNG: DWORD = 0x0000_0002;
+
+#[cfg(any(feature = "graph-cypher", test))]
+#[link(name = "bcrypt")]
+unsafe extern "system" {
+    fn BCryptGenRandom(
+        hAlgorithm: *mut c_void,
+        pbBuffer: *mut u8,
+        cbBuffer: DWORD,
+        dwFlags: DWORD,
+    ) -> i32;
+}
+
+#[cfg(any(feature = "graph-cypher", test))]
+pub(crate) fn fill_entropy(output: &mut [u8]) -> io::Result<()> {
+    let length = DWORD::try_from(output.len())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "entropy buffer exceeds DWORD"))?;
+    // SAFETY: output provides length writable bytes; the system-preferred RNG
+    // requires a null algorithm handle and retains no pointer after the call.
+    let status = unsafe {
+        BCryptGenRandom(
+            std::ptr::null_mut(),
+            output.as_mut_ptr(),
+            length,
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        )
+    };
+    if status != 0 {
+        return Err(io::Error::other(format!(
+            "BCryptGenRandom failed: NTSTATUS {status:#x}"
+        )));
+    }
+    Ok(())
+}
+
 unsafe extern "system" {
     fn CreateFileW(
         lpFileName: *const u16,
@@ -1187,5 +1223,20 @@ mod lock_tests {
 
         drop(reader);
         let _ = std::fs::remove_dir_all(path.parent().expect("scratch parent"));
+    }
+}
+
+#[cfg(all(test, windows))]
+#[allow(clippy::expect_used)]
+mod entropy_tests {
+    #[test]
+    fn system_preferred_rng_fills_sixteen_bytes_and_two_calls_differ() {
+        let mut first = [0; 16];
+        let mut second = [0; 16];
+        super::fill_entropy(&mut first).expect("system entropy");
+        super::fill_entropy(&mut second).expect("system entropy");
+        assert_ne!(first, [0; 16]);
+        assert_ne!(second, [0; 16]);
+        assert_ne!(first, second);
     }
 }

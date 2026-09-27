@@ -76,6 +76,7 @@ impl GraphStore {
         options: OpenOptions,
         document: Option<EmbeddingTower>,
     ) -> Result<Self, GraphStoreError> {
+        refuse_unsupported_platform()?;
         let path = path.as_ref();
         refuse_legacy_directory(path)?;
         let store = Store::create_native_graph(
@@ -126,6 +127,7 @@ impl GraphStore {
         document: Option<EmbeddingTower>,
         access: AccessMode,
     ) -> Result<Self, GraphStoreError> {
+        refuse_unsupported_platform()?;
         refuse_legacy_directory(path)?;
         let store = Store::open_native_graph(path, graph_options(options, access), document)?;
         Ok(Self { store })
@@ -271,6 +273,42 @@ const fn graph_options(options: OpenOptions, access: AccessMode) -> OpenOptions 
         .with_durability(DurabilityMode::Durable, CommitTier::Durable)
 }
 
+#[cfg(any(target_os = "macos", test))]
+pub(crate) const GRAPH_MIN_MACOS: (u32, u32) = (14, 0);
+
+#[cfg(any(target_os = "macos", test))]
+pub(crate) const fn macos_admits_graph(observed: (u32, u32)) -> bool {
+    observed.0 > GRAPH_MIN_MACOS.0
+        || (observed.0 == GRAPH_MIN_MACOS.0 && observed.1 >= GRAPH_MIN_MACOS.1)
+}
+
+fn refuse_unsupported_platform() -> Result<(), GraphStoreError> {
+    #[cfg(target_os = "macos")]
+    {
+        match crate::sys::darwin::os_product_version() {
+            Ok(observed) if macos_admits_graph(observed) => Ok(()),
+            Ok(observed) => Err(GraphStoreError {
+                cause: Cause::UnsupportedPlatform {
+                    required: GRAPH_MIN_MACOS,
+                    observed: Some(observed),
+                    probe_error: String::new(),
+                },
+            }),
+            Err(error) => Err(GraphStoreError {
+                cause: Cause::UnsupportedPlatform {
+                    required: GRAPH_MIN_MACOS,
+                    observed: None,
+                    probe_error: error.to_string(),
+                },
+            }),
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(())
+    }
+}
+
 fn refuse_legacy_directory(path: &Path) -> Result<(), GraphStoreError> {
     let legacy = crate::lifecycle::is_legacy_store_directory(&crate::vfs::StdVfs, path)
         .map_err(|error| GraphStoreError::graph(NativeGraphError::Store(error)))?;
@@ -370,6 +408,8 @@ pub enum GraphStoreErrorKind {
     /// The commit was attempted and its outcome is unknown. The write may be
     /// durable; the store stops admitting writes until it is reopened.
     WriteIndeterminate,
+    /// The host platform or OS version cannot run a graph store.
+    Unsupported,
 }
 
 #[derive(Debug)]
@@ -378,6 +418,12 @@ pub enum GraphStoreErrorKind {
     reason = "the typed graph and query causes stay unboxed and allocation-free, as in GraphQueryError"
 )]
 enum Cause {
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    UnsupportedPlatform {
+        required: (u32, u32),
+        observed: Option<(u32, u32)>,
+        probe_error: String,
+    },
     LegacyStore {
         path: PathBuf,
     },
@@ -447,6 +493,7 @@ impl GraphStoreError {
     #[must_use]
     pub fn kind(&self) -> GraphStoreErrorKind {
         match &self.cause {
+            Cause::UnsupportedPlatform { .. } => GraphStoreErrorKind::Unsupported,
             Cause::LegacyStore { .. } => GraphStoreErrorKind::LegacyStore,
             Cause::Contract(_) => GraphStoreErrorKind::Corruption,
             Cause::Limit(_) => GraphStoreErrorKind::Limit,
@@ -481,9 +528,11 @@ impl GraphStoreError {
     pub const fn operator(&self) -> Option<PlanNodeId> {
         match &self.cause {
             Cause::Query(error) => error.operator(),
-            Cause::LegacyStore { .. } | Cause::Graph(_) | Cause::Contract(_) | Cause::Limit(_) => {
-                None
-            }
+            Cause::UnsupportedPlatform { .. }
+            | Cause::LegacyStore { .. }
+            | Cause::Graph(_)
+            | Cause::Contract(_)
+            | Cause::Limit(_) => None,
         }
     }
 
@@ -493,9 +542,11 @@ impl GraphStoreError {
     pub const fn counters(&self) -> Option<WorkCounters> {
         match &self.cause {
             Cause::Query(error) => error.counters(),
-            Cause::LegacyStore { .. } | Cause::Graph(_) | Cause::Contract(_) | Cause::Limit(_) => {
-                None
-            }
+            Cause::UnsupportedPlatform { .. }
+            | Cause::LegacyStore { .. }
+            | Cause::Graph(_)
+            | Cause::Contract(_)
+            | Cause::Limit(_) => None,
         }
     }
 
@@ -545,6 +596,26 @@ impl std::fmt::Display for GraphStoreError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(formatter, "graph store rejected ({:?}): ", self.kind())?;
         match &self.cause {
+            Cause::UnsupportedPlatform {
+                required,
+                observed,
+                probe_error,
+            } => {
+                write!(
+                    formatter,
+                    "graph store requires macOS {}.{} or newer; ",
+                    required.0, required.1
+                )?;
+                if let Some(observed) = observed {
+                    write!(formatter, "this host reports {}.{}", observed.0, observed.1)
+                } else {
+                    write!(
+                        formatter,
+                        "could not determine the macOS version: {}",
+                        probe_error
+                    )
+                }
+            }
             Cause::LegacyStore { path } => write!(
                 formatter,
                 "legacy store directory cannot be opened as a graph store: {}",
@@ -562,7 +633,10 @@ impl std::error::Error for GraphStoreError {
         match &self.cause {
             Cause::Graph(error) => Some(error),
             Cause::Query(error) => Some(error),
-            Cause::LegacyStore { .. } | Cause::Contract(_) | Cause::Limit(_) => None,
+            Cause::UnsupportedPlatform { .. }
+            | Cause::LegacyStore { .. }
+            | Cause::Contract(_)
+            | Cause::Limit(_) => None,
         }
     }
 }

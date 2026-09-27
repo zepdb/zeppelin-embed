@@ -116,9 +116,9 @@ fn entropy_and_collisions_fail_without_replacing_published_or_orphan_objects() {
         fresh_store_identity(&mut Failed).unwrap_err().kind(),
         std::io::ErrorKind::PermissionDenied
     );
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     assert_ne!(fresh_store_identity(&mut OsEntropy).unwrap().get(), 0);
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     assert_eq!(
         fresh_store_identity(&mut OsEntropy).unwrap_err().kind(),
         std::io::ErrorKind::Unsupported

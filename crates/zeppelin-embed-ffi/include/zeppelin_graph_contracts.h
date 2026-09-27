@@ -2651,7 +2651,8 @@ extern "C" {
 /*
  Opens (`mode` 1 read-write, 2 read-only) or creates (`mode` 0) one native
  graph store; a legacy store directory is refused with
- `ZE_ERR_STORE_KIND`. `max_resident_bytes` must be in 1..=256 MiB,
+ `ZE_ERR_STORE_KIND`; below macOS 14 it is `ZE_ERR_UNSUPPORTED`.
+ `max_resident_bytes` must be in 1..=256 MiB,
  `tokenizer_profile` must be 0 and `control` must be null.
  `document_tower` is null for a store without vectors; otherwise node
  vectors are validated against it and it must match the persisted tower.

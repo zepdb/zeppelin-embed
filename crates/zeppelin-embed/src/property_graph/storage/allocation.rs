@@ -27,7 +27,11 @@ impl EntropyProvider for OsEntropy {
                 Err(std::io::Error::last_os_error())
             }
         }
-        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        #[cfg(windows)]
+        {
+            crate::sys::windows::fill_entropy(output)
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
         {
             let _ = output;
             Err(std::io::Error::new(

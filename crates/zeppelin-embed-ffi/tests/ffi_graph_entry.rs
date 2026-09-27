@@ -590,3 +590,19 @@ fn graph_cypher_result_row_limit_can_exceed_default() {
     assert_eq!(r.row_count, 1089);
     ze_graph_response_free(&mut r);
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn graph_open_on_this_host_is_admitted_by_the_macos_floor() {
+    // The refusal path is covered by the pure core rule; this supported host
+    // proves real probing and the C entry admit create and both open modes.
+    let mut store = GraphTestStore::create();
+    assert!(last_error(store.handle.token).is_empty());
+    assert_eq!(store.close(), ZeErrorCode::ZeOk);
+    for mode in [MODE_READ_WRITE, MODE_READ_ONLY] {
+        let (code, handle) = graph_open(&store.path, mode);
+        assert_eq!(code, ZeErrorCode::ZeOk);
+        assert!(last_error(handle.token).is_empty());
+        assert_eq!(ze_graph_close(handle), ZeErrorCode::ZeOk);
+    }
+}
