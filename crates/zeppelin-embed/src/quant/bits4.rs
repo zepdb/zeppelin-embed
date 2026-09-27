@@ -419,23 +419,3 @@ fn apply_event(event: &CriticalValue, numerator: &mut f64, norm_squared: &mut f6
     *numerator += event.magnitude;
     *norm_squared += 2.0 * f64::from(event.level);
 }
-
-fn pack(v: &[f32], magnitudes: &[u8], out: &mut [u8]) {
-    for ((values, levels), byte) in v
-        .chunks(CODES_PER_BYTE)
-        .zip(magnitudes.chunks(CODES_PER_BYTE))
-        .zip(out.iter_mut())
-    {
-        let mut packed = 0_u8;
-        for (field, (&value, &level)) in values.iter().zip(levels).enumerate() {
-            let unsigned = if value < 0.0 {
-                MAX_MAGNITUDE_LEVEL - level
-            } else {
-                MAX_MAGNITUDE_LEVEL + 1 + level
-            };
-            let shift = 4_u32.saturating_sub((field as u32) * 4);
-            packed |= unsigned << shift;
-        }
-        *byte = packed;
-    }
-}

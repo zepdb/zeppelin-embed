@@ -2,6 +2,10 @@
 
 mod prepare;
 #[cfg(any(test, feature = "test-support"))]
+#[allow(
+    missing_docs,
+    reason = "test-only probe fields are exposed to integration tests, not as a documented API"
+)]
 pub(crate) mod test_support;
 
 use super::codec::{decode_required, validate_catalog_interpretation};
@@ -70,7 +74,6 @@ pub(crate) struct NativeVectorIndex<'m> {
     rescore: IndexFloats<'m>,
     rows: u32,
     dimensions: u32,
-    padded_dimensions: u32,
     profile: u8,
     graph_offset: usize,
     graph_length: usize,
@@ -187,6 +190,10 @@ impl NativeVectorIndex<'_> {
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "independent resource owners and lifetimes are explicit at this private seam"
+)]
 pub(super) fn open_vector_index<'m, S: BlockSource>(
     source: &S,
     store: StoreInstanceId,
@@ -445,7 +452,6 @@ pub(super) fn open_vector_index<'m, S: BlockSource>(
         rescore,
         rows,
         dimensions,
-        padded_dimensions,
         profile,
         graph_offset,
         graph_length,

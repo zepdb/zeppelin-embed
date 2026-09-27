@@ -143,6 +143,10 @@ impl<'v, 'm, 'g> RetainedRows<'v, 'm, 'g> {
     }
 }
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "row executor state stays allocation-free"
+)]
 enum PhysicalState<'s, 'plan, 'v, 'm, 'g> {
     Vacant,
     Anchor {
@@ -367,6 +371,10 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
         clippy::too_many_arguments,
         reason = "all authentic native owners stay explicit"
     )]
+    #[allow(
+        clippy::result_large_err,
+        reason = "keep typed graph errors allocation-free on failure paths"
+    )]
     pub(crate) fn new(
         view: &'s GraphReadView<'s, 'v, 'm, 'g>,
         plan: &'r RuntimePlan<'r, 'plan, 'r, 'm, 'g, 'r>,
@@ -419,6 +427,10 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
         dead_code,
         reason = "ZE-52 slice D2 lands the executor; the Cypher statement driver is a later slice"
     )]
+    #[allow(
+        clippy::result_large_err,
+        reason = "keep typed graph errors allocation-free on failure paths"
+    )]
     pub(crate) fn new_with_mutation(
         view: &'s GraphReadView<'s, 'v, 'm, 'g>,
         plan: &'r RuntimePlan<'r, 'plan, 'r, 'm, 'g, 'r>,
@@ -453,6 +465,10 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
     #[allow(
         clippy::too_many_arguments,
         reason = "all authentic native owners stay explicit"
+    )]
+    #[allow(
+        clippy::result_large_err,
+        reason = "keep typed graph errors allocation-free on failure paths"
     )]
     fn build(
         view: &'s GraphReadView<'s, 'v, 'm, 'g>,
@@ -548,6 +564,10 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
         })
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "keep typed graph errors allocation-free on failure paths"
+    )]
     fn next_occurrence(
         &mut self,
         index: usize,
@@ -821,7 +841,7 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
                     };
                     value.push_row(&[evaluated], context)?;
                 }
-                self.push_projection(index, *projections, values, context)?;
+                self.push_projection(index, projections, values, context)?;
                 self.copy_uses(index, *child)?;
                 Ok(true)
             }
@@ -1033,6 +1053,10 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
         result
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "keep typed graph errors allocation-free on failure paths"
+    )]
     fn next_scan(
         &mut self,
         index: usize,
@@ -1073,6 +1097,10 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::result_large_err,
+        reason = "keep typed graph errors allocation-free on failure paths"
+    )]
     fn next_key(
         &mut self,
         index: usize,
@@ -1147,6 +1175,10 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::result_large_err,
+        reason = "keep typed graph errors allocation-free on failure paths"
+    )]
     fn next_expand(
         &mut self,
         index: usize,
@@ -1223,6 +1255,10 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::result_large_err,
+        reason = "keep typed graph errors allocation-free on failure paths"
+    )]
     fn next_bounded_expand(
         &mut self,
         index: usize,
@@ -1545,6 +1581,10 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::result_large_err,
+        reason = "keep typed graph errors allocation-free on failure paths"
+    )]
     fn next_join(
         &mut self,
         index: usize,
@@ -1599,6 +1639,10 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::result_large_err,
+        reason = "keep typed graph errors allocation-free on failure paths"
+    )]
     fn next_nested_join(
         &mut self,
         index: usize,
@@ -1639,6 +1683,10 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::result_large_err,
+        reason = "keep typed graph errors allocation-free on failure paths"
+    )]
     fn next_hash_join(
         &mut self,
         index: usize,
@@ -1722,6 +1770,10 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
         }
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "keep typed graph errors allocation-free on failure paths"
+    )]
     fn join_predicate_retained(
         &mut self,
         index: usize,
@@ -1757,6 +1809,10 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::result_large_err,
+        reason = "keep typed graph errors allocation-free on failure paths"
+    )]
     fn next_optional(
         &mut self,
         index: usize,
@@ -1804,6 +1860,10 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
         }
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "keep typed graph errors allocation-free on failure paths"
+    )]
     fn drain_occurrence(
         &mut self,
         child: usize,
@@ -2415,6 +2475,10 @@ fn occurrence_count(
     clippy::too_many_arguments,
     reason = "the scalar boundary keeps every authentic owner explicit"
 )]
+#[allow(
+    clippy::result_large_err,
+    reason = "keep typed graph errors allocation-free on failure paths"
+)]
 fn evaluate_at<'a, 'r, 'plan, 'v, 'm, 'g>(
     evaluator: &'a mut NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g>,
     mutation: Option<&mut MutationScope<'_, '_>>,
@@ -2455,6 +2519,10 @@ fn supported_mutations(items: &[Mutation<'_>]) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::result_large_err,
+    reason = "keep typed graph errors allocation-free on failure paths"
+)]
 fn build_occurrence<'s, 'r, 'plan, 'v, 'm, 'g>(
     view: &'s GraphReadView<'s, 'v, 'm, 'g>,
     plan: &'r RuntimePlan<'r, 'plan, 'r, 'm, 'g, 'r>,
@@ -3096,6 +3164,10 @@ fn build_occurrence<'s, 'r, 'plan, 'v, 'm, 'g>(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::result_large_err,
+    reason = "keep typed graph errors allocation-free on failure paths"
+)]
 fn build_unary<'s, 'r, 'plan, 'v, 'm, 'g>(
     view: &'s GraphReadView<'s, 'v, 'm, 'g>,
     plan: &'r RuntimePlan<'r, 'plan, 'r, 'm, 'g, 'r>,
@@ -3117,6 +3189,10 @@ fn build_unary<'s, 'r, 'plan, 'v, 'm, 'g>(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::result_large_err,
+    reason = "keep typed graph errors allocation-free on failure paths"
+)]
 fn build_binary<'s, 'r, 'plan, 'v, 'm, 'g>(
     view: &'s GraphReadView<'s, 'v, 'm, 'g>,
     plan: &'r RuntimePlan<'r, 'plan, 'r, 'm, 'g, 'r>,
@@ -3145,6 +3221,10 @@ fn build_binary<'s, 'r, 'plan, 'v, 'm, 'g>(
     ))
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "keep typed graph errors allocation-free on failure paths"
+)]
 fn slot_inherited_from_anchor(
     occurrences: &[Occurrence<'_, '_, '_, '_, '_>],
     expressions: &[super::plan::Expression<'_>],
@@ -3233,6 +3313,10 @@ fn slot_inherited_from_anchor(
     Ok(inherited)
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "keep typed graph errors allocation-free on failure paths"
+)]
 fn shared_slots<'m, 'g>(
     occurrences: &QueryArena<'m, 'g, Occurrence<'_, '_, '_, 'm, 'g>>,
     left: usize,
@@ -3257,6 +3341,10 @@ fn shared_slots<'m, 'g>(
     Ok(shared)
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "keep typed graph errors allocation-free on failure paths"
+)]
 fn schema_for<'r, 'plan, 'm, 'g>(
     plan: &RuntimePlan<'r, 'plan, 'r, 'm, 'g, 'r>,
     node: PlanNodeId,
@@ -3273,6 +3361,10 @@ fn schema_for<'r, 'plan, 'm, 'g>(
     Ok(Schema::new(context, slots.as_slice())?)
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "keep typed graph errors allocation-free on failure paths"
+)]
 fn private_schema<'m, 'g>(
     input: &[SlotId],
     additions: &[SlotId],
@@ -3289,6 +3381,10 @@ fn private_schema<'m, 'g>(
     Ok(Schema::new(context, slots.as_slice())?)
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "keep typed graph errors allocation-free on failure paths"
+)]
 fn resolve_relationship_types<'m, 'g>(
     view: &GraphReadView<'_, '_, 'm, 'g>,
     names: &[GraphName<'_>],
@@ -3368,6 +3464,10 @@ fn key_expression_error(expression: ExprId, error: RuntimeError) -> NativeExecut
     })
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "keep typed graph errors allocation-free on failure paths"
+)]
 fn validate_lookup_key_bounds(
     namespace_bytes: usize,
     key_bytes: usize,

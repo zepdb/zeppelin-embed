@@ -87,12 +87,6 @@ impl SparseBase {
 }
 
 impl PreparedSparseCandidate<'_> {
-    pub(crate) const fn generation(&self) -> GraphGeneration {
-        self.generation
-    }
-    pub(crate) const fn sequence(&self) -> u64 {
-        self.sequence
-    }
     pub(crate) fn changes(&self) -> &[PreparedMembershipChange] {
         self.changes.as_slice()
     }
@@ -149,6 +143,10 @@ fn lexical_error(error: GraphLexicalError) -> TreeError {
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "independent resource owners and lifetimes are explicit at this private seam"
+)]
 fn read_root<S: BlockSource>(
     source: &S,
     required: Option<RequiredRef>,
@@ -232,6 +230,10 @@ fn read_root<S: BlockSource>(
     })
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "independent resource owners and lifetimes are explicit at this private seam"
+)]
 fn prepare_source<S: BlockSink>(
     sink: &mut S,
     store: crate::property_graph::StoreInstanceId,
@@ -508,6 +510,10 @@ fn remove_member<S: BlockSink>(
     Ok((state, true))
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "independent resource owners and lifetimes are explicit at this private seam"
+)]
 fn install_source<S: BlockSink>(
     sink: &mut S,
     mut state: SparseRootState,
@@ -845,7 +851,6 @@ pub(super) fn prepare_sparse_relocated_roots<B: BlockSource, S: BlockSink, C: Re
     view.validate_all(Modality::Text, resources)?;
     view.validate_all(Modality::Vector, resources)?;
     let interpretation_catalog = view.interpretation_catalog();
-    drop(view);
 
     let generation = target_native.generation();
     let mut text_state = read_root(
@@ -951,6 +956,10 @@ pub(super) fn prepare_sparse_relocated_roots<B: BlockSource, S: BlockSink, C: Re
     })
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "independent resource owners and lifetimes are explicit at this private seam"
+)]
 fn append_root<S: BlockSink>(
     sink: &mut S,
     modality: Modality,
@@ -1317,7 +1326,14 @@ pub(crate) fn prepare_sparse<'m, S: BlockSink, C: RecordCatalog<S>>(
     })
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    reason = "test assertions and fixed fixture indices"
+)]
 mod tests {
     use super::*;
     use crate::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};

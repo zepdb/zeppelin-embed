@@ -333,7 +333,6 @@ impl<'lease, 'm> NativePreparationSource<'lease, 'm> {
         resources.step(payload.len() as u64)?;
         target.copy_from_slice(payload);
         let length = payload.len();
-        drop(frame);
         drop(mapping);
         drop(path);
         drop(path_charge);
@@ -385,7 +384,6 @@ impl<'lease, 'm> NativePreparationSource<'lease, 'm> {
         {
             return Err(TreeError::Invalid("inventory object descriptor mismatch"));
         }
-        drop(frame);
         drop(mapping);
         drop(path);
         drop(path_charge);
@@ -444,7 +442,6 @@ impl<'lease, 'm> NativePreparationSource<'lease, 'm> {
         {
             return Err(TreeError::Invalid("required reference descriptor mismatch"));
         }
-        drop(frame);
         drop(mapping);
         drop(path);
         drop(path_charge);

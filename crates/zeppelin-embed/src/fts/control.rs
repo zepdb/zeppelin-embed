@@ -45,8 +45,11 @@ pub(crate) enum TestStage {
 }
 
 #[cfg(test)]
+type StageHook = Box<dyn FnMut(TestStage)>;
+
+#[cfg(test)]
 std::thread_local! {
-    static TEST_STAGE_HOOK: std::cell::RefCell<Option<Box<dyn FnMut(TestStage)>>> =
+    static TEST_STAGE_HOOK: std::cell::RefCell<Option<StageHook>> =
         const { std::cell::RefCell::new(None) };
 }
 

@@ -174,10 +174,10 @@ pub(crate) fn observe_physical_read(
     reference: crate::property_graph::storage::artifact::PhysicalRef,
 ) {
     PHYSICAL_READS.with(|slot| {
-        if let Some(state) = slot.borrow_mut().as_mut() {
-            if state.paused == 0 {
-                state.events.push(PhysicalReadEvent { origin, reference });
-            }
+        if let Some(state) = slot.borrow_mut().as_mut()
+            && state.paused == 0
+        {
+            state.events.push(PhysicalReadEvent { origin, reference });
         }
     });
 }
@@ -356,10 +356,7 @@ mod kernel_probe {
         ApplicationKey, CanonicalContents, CanonicalEmbedding, EntityId, EntityKind, GraphRevision,
         NodeId,
     };
-    use crate::quant::{
-        begin_query_preparation_test_observations, est_dot_bit4, prepare_bit4_query,
-        take_query_preparation_test_observations,
-    };
+    use crate::quant::{est_dot_bit4, prepare_bit4_query};
     use std::cell::RefCell;
     use std::collections::BTreeSet;
     use std::path::{Path, PathBuf};
@@ -502,10 +499,11 @@ mod kernel_probe {
                 let index = source
                     .vector_index(&mut resources)?
                     .ok_or(TreeError::Invalid("missing native vector index"))?;
-                if index.row_count() == 1 && index.identity(0)? == (self.node, 1) {
-                    if target.replace(index).is_some() {
-                        return Err(TreeError::Invalid("duplicate native vector target source"));
-                    }
+                if index.row_count() == 1
+                    && index.identity(0)? == (self.node, 1)
+                    && target.replace(index).is_some()
+                {
+                    return Err(TreeError::Invalid("duplicate native vector target source"));
                 }
             }
             let index = target.ok_or(TreeError::Invalid("missing native vector target source"))?;
@@ -668,6 +666,7 @@ mod kernel_probe {
         pub(crate) rows: u32,
         pub(crate) live_rows: usize,
         pub(crate) identities: Vec<(NodeId, u64)>,
+        #[cfg(test)]
         pub(crate) live_identities: Vec<(NodeId, u64)>,
         pub(crate) fingerprint: u64,
         pub(crate) seed_count: usize,
@@ -713,6 +712,7 @@ mod kernel_probe {
                     source.vector_index_physical_references_for_test(&mut resources)?
                 };
                 let mut identities = Vec::new();
+                #[cfg(test)]
                 let mut live_identities = Vec::new();
                 let mut live_rows = 0;
                 let mut seed_count = 0;
@@ -727,6 +727,7 @@ mod kernel_probe {
                     }
                     if source.is_live(row, &mut resources)? {
                         live_rows += 1;
+                        #[cfg(test)]
                         live_identities.push(identity);
                     }
                     let block = graph
@@ -787,6 +788,7 @@ mod kernel_probe {
                     rows: index.row_count(),
                     live_rows,
                     identities,
+                    #[cfg(test)]
                     live_identities,
                     fingerprint: xxh3_64(index.encoded_bytes()),
                     seed_count,
@@ -853,7 +855,9 @@ mod kernel_probe {
     }
 
     pub(crate) struct SmallWritesFixture {
+        #[cfg(test)]
         pub(crate) separate: Vec<NodeId>,
+        #[cfg(test)]
         pub(crate) before: Vec<SourceReport>,
         pub(crate) report: SmallWritesProbeReport,
     }
@@ -883,7 +887,9 @@ mod kernel_probe {
             );
             drop(scope);
             let read_events = reads.finish();
-            preparation_index_resolutions[index] = read_events.iter().filter(|event| event.origin == PhysicalReadOrigin::Preparation && event.reference.kind == crate::property_graph::storage::artifact::BlockKind::RetrievalVectorIndex).count();
+            *preparation_index_resolutions
+                .get_mut(index)
+                .ok_or_else(|| "preparation slot missing".to_owned())? = read_events.iter().filter(|event| event.origin == PhysicalReadOrigin::Preparation && event.reference.kind == crate::property_graph::storage::artifact::BlockKind::RetrievalVectorIndex).count();
             separate.push(result?);
             *image_count = events
                 .borrow()
@@ -996,7 +1002,9 @@ mod kernel_probe {
             }
         }
         Ok(SmallWritesFixture {
+            #[cfg(test)]
             separate: separate.clone(),
+            #[cfg(test)]
             before,
             report: SmallWritesProbeReport {
                 key: SMALL_WRITES_REPORT_KEY,
@@ -1101,17 +1109,18 @@ mod kernel_probe {
     }
 }
 
-#[cfg(any(test, all(feature = "graph-cypher", feature = "test-support")))]
+#[cfg(test)]
 pub(crate) use kernel_probe::{
-    InspectVectorSources, KernelObservation, SourceReport, apply_repeated_vectors_checked,
-    apply_vector_checked, document_tower, inspect_sources_checked, kernel_coordinates,
-    native_options, prepare_small_writes_fixture, read_kernel, write_and_read_kernel,
+    InspectVectorSources, SourceReport, apply_vector_checked, inspect_sources_checked,
+    kernel_coordinates, prepare_small_writes_fixture, read_kernel, write_and_read_kernel,
 };
 #[cfg(any(test, all(feature = "graph-cypher", feature = "test-support")))]
 pub use kernel_probe::{
     KernelProbeReport, SmallWriteSourceObservation, SmallWritesProbeReport, run_kernel_probe,
     run_small_writes_probe,
 };
+#[cfg(any(test, all(feature = "graph-cypher", feature = "test-support")))]
+pub(crate) use kernel_probe::{apply_repeated_vectors_checked, document_tower, native_options};
 
 #[cfg(any(test, all(feature = "graph-cypher", feature = "test-support")))]
 #[allow(
@@ -1155,13 +1164,15 @@ mod actual_cases {
     }
 
     /// Full-width identities and real source-local search observations.
+    type IdentitySourceObservation = (Vec<(u128, u64)>, Vec<u32>, Vec<u32>, usize);
+
     #[derive(Clone, Debug, Eq, PartialEq)]
     pub struct IdentityProbeReport {
         pub key: &'static str,
         pub seed: u64,
         pub write_identities: [u128; 3],
         pub relationship: u128,
-        pub sources: Vec<(Vec<(u128, u64)>, Vec<u32>, Vec<u32>, usize)>,
+        pub sources: Vec<IdentitySourceObservation>,
     }
 
     pub fn run_identity_probe(seed: u64) -> IdentityProbeReport {
@@ -1943,7 +1954,7 @@ mod actual_cases {
         pub checkpoint_prepare_events: usize,
     }
     pub(crate) struct ReopenFixture {
-        directory: ProbeDirectory,
+        _directory: ProbeDirectory,
         seed: u64,
         wal_nodes: Vec<NodeId>,
         checkpoint_nodes: Vec<NodeId>,
@@ -1955,9 +1966,10 @@ mod actual_cases {
         pub(crate) wal_before: SourceReport,
         pub(crate) checkpoint_before: SourceReport,
     }
+    #[cfg(test)]
     impl ReopenFixture {
         pub(crate) fn path(&self) -> &std::path::Path {
-            self.directory.path()
+            self._directory.path()
         }
     }
     fn assert_same_index(expected: &SourceReport, actual: &SourceReport) {
@@ -2075,7 +2087,7 @@ mod actual_cases {
         drop(checkpoint_store);
 
         ReopenFixture {
-            directory,
+            _directory: directory,
             seed,
             wal_nodes,
             checkpoint_nodes,
@@ -2478,7 +2490,6 @@ mod actual_cases {
             drop(source);
             drop(memory);
             drop(control);
-            drop(writer);
             drop(lease);
             let released_reserved_bytes = shared.reserved_bytes().expect("directed released bytes");
             let released = released_reserved_bytes == baseline;
@@ -2887,6 +2898,8 @@ mod actual_cases {
     }
 }
 
+#[cfg(test)]
+pub(crate) use actual_cases::try_apply_repeated_vectors;
 #[cfg(any(test, all(feature = "graph-cypher", feature = "test-support")))]
 pub use actual_cases::{
     ControlProbeReport, IdentityProbeReport, LimitProbeReport, run_identity_probe,
@@ -2894,16 +2907,13 @@ pub use actual_cases::{
 };
 
 #[cfg(any(test, all(feature = "graph-cypher", feature = "test-support")))]
-pub(crate) use actual_cases::try_apply_repeated_vectors;
-
-#[cfg(any(test, all(feature = "graph-cypher", feature = "test-support")))]
 pub use actual_cases::{ReopenProbeReport, run_reopen_probe};
-#[cfg(any(test, all(feature = "graph-cypher", feature = "test-support")))]
+#[cfg(test)]
 pub(crate) use actual_cases::{prepare_reopen_fixture, verify_reopen_fixture};
 
 #[cfg(any(test, all(feature = "graph-cypher", feature = "test-support")))]
 pub use actual_cases::{TraceProbeReport, run_trace_probe};
-#[cfg(any(test, all(feature = "graph-cypher", feature = "test-support")))]
+#[cfg(test)]
 pub(crate) use actual_cases::{prepare_trace_fixture, verify_trace_fixture};
 
 #[cfg(any(test, all(feature = "graph-cypher", feature = "test-support")))]

@@ -212,6 +212,10 @@ fn overflowing() -> Vec<E> {
     ]
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "test keeps typed failure path allocation-free"
+)]
 fn read_result(store: &D2Store, spec: &Spec) -> Result<Vec<(u128, i64)>, EagerExecutionFailure> {
     store
         .store

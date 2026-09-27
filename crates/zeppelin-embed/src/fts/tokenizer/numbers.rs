@@ -99,6 +99,7 @@ pub(crate) fn classify(term: &str) -> Option<NumberWord> {
 ///
 /// Returns `None` when the run does not compose into a number, for example
 /// a lone `and` or a trailing connective.
+#[cfg(test)]
 pub(crate) fn compose(words: &[NumberWord]) -> Option<u64> {
     match compose_impl(words, || Ok::<(), std::convert::Infallible>(())) {
         Ok(value) => value,
@@ -173,6 +174,7 @@ fn compose_impl<E>(
 /// Spells a value as the joined word form, for example `25` -> `twentyfive`.
 ///
 /// Returns `None` beyond [`MAX_NUMBER`].
+#[cfg(test)]
 pub(crate) fn spell_joined(value: u64) -> Option<String> {
     if value > MAX_NUMBER {
         return None;
@@ -286,6 +288,7 @@ fn spell_into_controlled<'m, P: BuildPolicy<'m>>(
     Ok(false)
 }
 
+#[cfg(test)]
 fn spell_into(value: u64, out: &mut String) -> Option<()> {
     if value < 20 {
         let (word, _) = UNITS.iter().find(|(_, candidate)| *candidate == value)?;
@@ -317,6 +320,7 @@ fn spell_into(value: u64, out: &mut String) -> Option<()> {
 }
 
 /// Parses a bare digit term into a value within range.
+#[cfg(test)]
 pub(crate) fn parse_digits(term: &str) -> Option<u64> {
     if term.is_empty() || term.len() > 12 {
         return None;

@@ -327,6 +327,13 @@ impl<'v, 'm, 'g> RuntimeContext<'v, 'm, 'g> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    reason = "test assertion on identity exhaustion"
+)]
 mod native_read_identity_tests {
     use super::*;
     use std::sync::atomic::AtomicU64;

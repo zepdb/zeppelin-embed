@@ -656,12 +656,11 @@ impl<'m, C> GraphSealed<'m, C> {
             let list_end = spans
                 .as_slice()
                 .get(index.saturating_add(1))
-                .map(|next| {
+                .and_then(|next| {
                     usize::try_from(next.meta_start)
                         .unwrap_or(usize::MAX)
                         .checked_sub(HEADER_LEN)
                 })
-                .flatten()
                 .unwrap_or(blob.len());
             let list = blob.as_slice().get(list_start..list_end).ok_or_else(|| {
                 P::Error::from(SealedSegmentError::Geometry(

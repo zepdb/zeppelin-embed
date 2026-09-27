@@ -2463,7 +2463,7 @@ fn run_ze46_spill_merge_and_incomplete_mark_never_delete_candidates() {
         (
             lease.bundle().base().generation,
             path.join(format!("graph-{:032x}.zgraph", text.object.artifact.get())),
-            u64::from(text.block.offset) + u64::from(text.block.length) / 2,
+            text.block.offset + u64::from(text.block.length) / 2,
         )
     };
     // Work budgets come from the measured stage boundaries of this fixture:
@@ -2706,12 +2706,12 @@ fn apply_crash_history_writes(
 ) -> super::super::write::NativePreparedResult<super::super::write::ReceiptRegistration> {
     crate::property_graph::with_local_refs(|refs| {
         let first_embedding =
-            CanonicalEmbedding::new(&document, &[0.25_f32, 0.75_f32]).expect("embedding");
+            CanonicalEmbedding::new(document, &[0.25_f32, 0.75_f32]).expect("embedding");
         let first =
             CanonicalContents::node(&mut [], &mut [], Some("crash first"), Some(first_embedding))
                 .expect("first node");
         let peer_embedding =
-            CanonicalEmbedding::new(&document, &[0.5_f32, 1.0_f32]).expect("peer embedding");
+            CanonicalEmbedding::new(document, &[0.5_f32, 1.0_f32]).expect("peer embedding");
         let peer =
             CanonicalContents::node(&mut [], &mut [], Some("crash peer"), Some(peer_embedding))
                 .expect("peer node");

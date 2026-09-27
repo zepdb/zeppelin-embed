@@ -521,6 +521,10 @@ pub(super) struct CapturedWalCutoff {
     pub(super) bytes: usize,
 }
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "captured WAL state keeps failure handling allocation-free"
+)]
 pub(super) enum CapturedStateVisit<'a> {
     Checkpoint {
         state: CommitState<'a>,
@@ -601,12 +605,11 @@ pub(super) fn visit_captured_state(
     {
         return Err(NativeGraphError::Invalid("captured checkpoint state"));
     }
-    if let Some(cutoff) = exact_wal_cutoff {
-        if cutoff.identity != checkpoint.wal_identity
-            || cutoff.first_sequence != checkpoint.first_sequence
-        {
-            return Err(NativeGraphError::Invalid("captured WAL authority"));
-        }
+    if let Some(cutoff) = exact_wal_cutoff
+        && (cutoff.identity != checkpoint.wal_identity
+            || cutoff.first_sequence != checkpoint.first_sequence)
+    {
+        return Err(NativeGraphError::Invalid("captured WAL authority"));
     }
     let wal_path = directory.join(format!("graph-wal-{:032x}.ze", checkpoint.wal_identity));
     let wal_mapping = map_file(
@@ -2398,6 +2401,10 @@ fn require_live_record_fence(
     Ok(())
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "independent resource owners and lifetimes are explicit at this private seam"
+)]
 fn validate_native_checkpoint(
     source: &RecoverySource<'_, '_>,
     catalog: &RecoveryCatalog<'_, '_>,
@@ -2703,9 +2710,7 @@ fn validate_native_checkpoint(
                     return Err(TreeError::Invalid("unsupported recovery inventory proof"));
                 };
                 if id != expected_id
-                    || !candidates
-                        .iter()
-                        .any(|candidate| *candidate == change.object)
+                    || !candidates.contains(&change.object)
                     || (matches!(change.state, InventoryState::Reclaimed(_)) && !completed)
                 {
                     return Err(TreeError::Invalid("recovery inventory proof mismatch"));
@@ -4008,6 +4013,10 @@ struct SemanticReplay<'a, 'm> {
 }
 
 impl<'a, 'm> SemanticReplay<'a, 'm> {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "independent resource owners and lifetimes are explicit at this private seam"
+    )]
     fn new(
         store: &'a Store,
         directory: &'a Path,
@@ -4256,8 +4265,8 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
         {
             return Err(TreeError::Invalid("recovery reclaim intent binding"));
         }
-        if let Some(expected) = expected {
-            if expected.id.get() != manifest.binding.session.get()
+        if let Some(expected) = expected
+            && (expected.id.get() != manifest.binding.session.get()
                 || expected.capture_generation != manifest.binding.capture_generation
                 || expected.capture_sequence != manifest.binding.sequence
                 || expected.serial_fence != manifest.binding.serial_fence
@@ -4265,10 +4274,9 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
                 || expected.protected_digest != manifest.protected.digest
                 || expected.completed_mark != manifest.mark.root
                 || expected.mark_digest != manifest.mark.digest
-                || self.reclaim_candidates.len() != manifest.candidate_count
-            {
-                return Err(TreeError::Invalid("recovery WAL reclaim intent mismatch"));
-            }
+                || self.reclaim_candidates.len() != manifest.candidate_count)
+        {
+            return Err(TreeError::Invalid("recovery WAL reclaim intent mismatch"));
         }
         let mut encoded_candidates = StorageBuffer::new(self.memory, manifest.candidate_count)?;
         for index in 0..manifest.candidate_count {
@@ -4476,17 +4484,16 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
         {
             return Err(TreeError::Invalid("recovery reclaim completion binding"));
         }
-        if let Some(expected) = expected {
-            if expected.id.get() != completion.binding.session.get()
+        if let Some(expected) = expected
+            && (expected.id.get() != completion.binding.session.get()
                 || expected.intent != completion.intent
                 || expected.completed_count != completion.completed_count
                 || self.reclaim_candidates.len() != completion.completed_count
-                || self.reclaim_remaining.len() != completion.remaining_count
-            {
-                return Err(TreeError::Invalid(
-                    "recovery WAL reclaim completion mismatch",
-                ));
-            }
+                || self.reclaim_remaining.len() != completion.remaining_count)
+        {
+            return Err(TreeError::Invalid(
+                "recovery WAL reclaim completion mismatch",
+            ));
         }
         let mut completed = StorageBuffer::new(self.memory, completion.completed_count)?;
         let mut remaining = StorageBuffer::new(self.memory, completion.remaining_count)?;
@@ -4819,10 +4826,7 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
                         "checkpoint inventory proof state is absent",
                     ))?;
                     if id.get() != manifest.binding.session.get()
-                        || !self
-                            .reclaim_candidates
-                            .iter()
-                            .any(|candidate| *candidate == rooted.object)
+                        || !self.reclaim_candidates.contains(&rooted.object)
                         || (matches!(rooted.state, InventoryState::Reclaimed(_))
                             && !self.reclaim_completed)
                     {
@@ -4890,10 +4894,7 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
         self.active_reclaim.is_some_and(|manifest| {
             manifest.binding.store == descriptor.store
                 && manifest.binding.target_generation <= state.generation
-        }) && self
-            .reclaim_candidates
-            .iter()
-            .any(|candidate| *candidate == descriptor)
+        }) && self.reclaim_candidates.contains(&descriptor)
     }
 
     /// Proves every inventoried artifact exists exactly once, against the

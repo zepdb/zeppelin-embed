@@ -2911,6 +2911,10 @@ pub(crate) mod tests {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "independent resource owners and lifetimes are explicit at this private seam"
+    )]
     fn actual_producer_bundle_with_dimensions(
         store: &Store,
         directory: &Path,

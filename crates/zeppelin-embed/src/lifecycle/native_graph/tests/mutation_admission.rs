@@ -219,6 +219,10 @@ impl NativeMutationConsumer<Vec<NodeId>> for ScanThenStage<'_> {
 }
 
 /// Runs one consumer through the admission under this module's defaults.
+#[allow(
+    clippy::result_large_err,
+    reason = "test keeps typed failure path allocation-free"
+)]
 fn admit(
     store: &Store,
     control: &QueryControl,

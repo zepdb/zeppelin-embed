@@ -475,7 +475,13 @@ pub(super) fn lookup_node_state<'a, S: BlockSource>(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+    #![allow(
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unwrap_used,
+        clippy::indexing_slicing,
+        reason = "test assertions and fixed fixture indices"
+    )]
 
     use super::*;
     use crate::epoch::{ComputeUnits, EmbeddingRuntime, Normalization};
@@ -813,7 +819,6 @@ mod tests {
             GraphRoots::from_references(source_store, generation, references).expect("graph roots")
         };
         drop(memory);
-        drop(writer);
 
         let query_memory = QueryMemory::new(&shared, 2 * 1024 * 1024).expect("query memory");
         let retained = View {

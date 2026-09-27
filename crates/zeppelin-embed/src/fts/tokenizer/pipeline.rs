@@ -74,6 +74,10 @@ pub(crate) struct ControlledToken<'m, C> {
     flags: TokenFlags,
 }
 
+type Parts<'m, C> = GuardedVec<'m, (usize, usize), C>;
+type Emissions<'m, C> = GuardedVec<'m, Emission<'m, C>, C>;
+pub(crate) type ControlledTokens<'m, C> = GuardedVec<'m, ControlledToken<'m, C>, C>;
+
 impl<C> ControlledToken<'_, C> {
     pub(crate) fn term(&self) -> &str {
         self.term.as_str()
@@ -112,7 +116,7 @@ fn split_parts<'m, P: BuildPolicy<'m>>(
     start: usize,
     end: usize,
     policy: &mut P,
-) -> Result<GuardedVec<'m, (usize, usize), P::Charge>, P::Error> {
+) -> Result<Parts<'m, P::Charge>, P::Error> {
     let Some(slice) = text.get(start..end) else {
         return GuardedVec::with_capacity(policy, 0);
     };
@@ -202,7 +206,7 @@ fn emit_surface<'m, P: BuildPolicy<'m>>(
     config: &TokenizerConfig,
     text: &str,
     policy: &mut P,
-) -> Result<(GuardedVec<'m, Emission<'m, P::Charge>, P::Charge>, u32), P::Error> {
+) -> Result<(Emissions<'m, P::Charge>, u32), P::Error> {
     let mut emissions = GuardedVec::with_capacity(policy, 0)?;
     let mut position: u32 = 0;
 
@@ -652,9 +656,9 @@ fn decimal_string<'m, P: BuildPolicy<'m>>(
 /// Stage 4: stopword removal and stemming, applied to surface terms only.
 fn filter_and_stem<'m, P: BuildPolicy<'m>>(
     config: &TokenizerConfig,
-    emissions: GuardedVec<'m, Emission<'m, P::Charge>, P::Charge>,
+    emissions: Emissions<'m, P::Charge>,
     policy: &mut P,
-) -> Result<GuardedVec<'m, Emission<'m, P::Charge>, P::Charge>, P::Error> {
+) -> Result<Emissions<'m, P::Charge>, P::Error> {
     let capacity = emissions.len();
     let mut kept = GuardedVec::with_capacity(policy, capacity)?;
     let (values, charge) = emissions.into_parts();
@@ -705,7 +709,7 @@ pub(crate) fn analyze_with_policy<'m, P: BuildPolicy<'m>>(
     config: &TokenizerConfig,
     text: &str,
     policy: &mut P,
-) -> Result<GuardedVec<'m, ControlledToken<'m, P::Charge>, P::Charge>, P::Error> {
+) -> Result<ControlledTokens<'m, P::Charge>, P::Error> {
     if text.is_empty() {
         return GuardedVec::with_capacity(policy, 0);
     }
@@ -806,19 +810,17 @@ pub(crate) fn analyze_with_policy<'m, P: BuildPolicy<'m>>(
 }
 
 fn into_public(tokens: GuardedVec<'static, ControlledToken<'static, ()>, ()>) -> Vec<Token> {
-    let (values, charge) = tokens.into_parts();
+    let (values, _charge) = tokens.into_parts();
     let mut output = Vec::with_capacity(values.len());
     for token in values {
-        let (term, term_charge) = token.term.into_parts();
+        let (term, _term_charge) = token.term.into_parts();
         output.push(Token {
             term,
             position: token.position,
             offset: token.offset,
             flags: token.flags,
         });
-        let _ = term_charge;
     }
-    let _ = charge;
     output
 }
 

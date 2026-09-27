@@ -1,3 +1,10 @@
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    reason = "test fixtures use assertions and checked fixed indices"
+)]
 //! ZE-53 S3: the structured execution seam, through `Store::execute_graph_query`.
 //!
 //! Every statement is built inside its admission by the same builders the
@@ -5,8 +12,6 @@
 //! does not read the result collector: the fixture's own values, the
 //! statement's arithmetic, the published generation and a fresh read, often
 //! after a reopen.
-
-#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
 use super::super::{
     CandidateCoverage, CompletedGraphResult, LegState, Outcome, ScorePrecision, SearchKind,

@@ -2,9 +2,7 @@
 
 mod native;
 
-pub(crate) use native::{
-    NativeGraphBuildError, build_native_graph, native_graph_reservation_bytes,
-};
+pub(crate) use native::{NativeGraphBuildError, build_native_graph};
 
 use std::path::{Path, PathBuf};
 
@@ -13,7 +11,7 @@ use xxhash_rust::xxh3::xxh3_64;
 use crate::graph::GraphParams;
 use crate::graph::block::{
     GraphNodeBlockBuild, GraphNodeBlockInput, GraphNodeError, GraphNodeLayout,
-    NODE_BLOCK_TRAILER_LEN, encode_node_blocks, encode_node_blocks_controlled,
+    NODE_BLOCK_TRAILER_LEN, encode_node_blocks_controlled,
 };
 use crate::lifecycle::QueryCancellation;
 use crate::lifecycle::durability::{DurabilityPolicy, SyncRequirement};
@@ -783,19 +781,6 @@ impl<'a> SegmentVectors<'a> {
             GraphBuildError::Geometry(format!("Bit4 factor {node_id} is unavailable"))
         })
     }
-
-    fn exact_distance(&self, left: u32, right: u32) -> Result<f64, GraphBuildError> {
-        let left = self.f32_row(left)?;
-        let right = self.f32_row(right)?;
-        Ok(left
-            .iter()
-            .zip(right)
-            .map(|(left, right)| {
-                let difference = f64::from(*left) - f64::from(*right);
-                difference * difference
-            })
-            .sum())
-    }
 }
 
 fn build_native_graph_inner(
@@ -996,6 +981,7 @@ struct Adjacency {
 }
 
 impl Adjacency {
+    #[cfg(test)]
     fn new(node_count: u32, r_max: u8) -> Result<Self, GraphBuildError> {
         Self::new_controlled(node_count, r_max, &mut BuildControl::disabled())
     }
@@ -1137,42 +1123,6 @@ fn build_arena_bytes(node_count: u32, params: GraphParams) -> Result<usize, Grap
         .and_then(|bytes| bytes.checked_add(ENTRY_POINT_COUNT * std::mem::size_of::<u32>()))
         .and_then(|bytes| bytes.checked_add(scratch))
         .ok_or_else(|| GraphBuildError::Geometry("graph build arena overflow".to_owned()))
-}
-
-fn native_build_peak_bytes(
-    node_count: u32,
-    dimensions: usize,
-    params: GraphParams,
-) -> Result<usize, GraphBuildError> {
-    let dimensions_u32 = u32::try_from(dimensions)
-        .map_err(|_| GraphBuildError::Geometry("dimensions exceed u32".to_owned()))?;
-    let padded_dimensions = dimensions_u32
-        .checked_add(127)
-        .map(|value| value / 128 * 128)
-        .ok_or_else(|| GraphBuildError::Geometry("padded dimensions overflow".to_owned()))?;
-    let layout = GraphNodeLayout::new(dimensions_u32, padded_dimensions, params.r_max())?;
-    let rows = node_count as usize;
-    let encode = rows
-        .checked_mul(layout.code_bytes())
-        .and_then(|bytes| {
-            rows.checked_mul(std::mem::size_of::<GraphNodeBlockInput<'_>>())
-                .and_then(|inputs| bytes.checked_add(inputs))
-        })
-        .and_then(|bytes| {
-            rows.checked_mul(layout.stride() as usize)
-                .and_then(|graph| graph.checked_add(NODE_BLOCK_TRAILER_LEN))
-                .and_then(|graph| bytes.checked_add(graph))
-        })
-        .and_then(|bytes| bytes.checked_add(ENTRY_POINT_COUNT * std::mem::size_of::<u32>()))
-        .and_then(|bytes| {
-            dimensions
-                .checked_mul(2)
-                .and_then(|query| bytes.checked_add(query))
-        })
-        .ok_or_else(|| GraphBuildError::Geometry("native encode arena overflow".to_owned()))?;
-    build_arena_bytes(node_count, params)?
-        .checked_add(encode)
-        .ok_or_else(|| GraphBuildError::Geometry("native build arena overflow".to_owned()))
 }
 
 struct BuildState {
@@ -2450,21 +2400,6 @@ fn validate_exact_node(node_id: u32, node_count: u32) -> Result<(), GraphBuildEr
     Ok(())
 }
 
-fn exact_row_distance(
-    rescore: &[f32],
-    dimensions: usize,
-    left: u32,
-    right: u32,
-) -> Result<f64, GraphBuildError> {
-    exact_row_distance_controlled(
-        rescore,
-        dimensions,
-        left,
-        right,
-        &mut BuildControl::disabled(),
-    )
-}
-
 fn exact_row_distance_controlled(
     rescore: &[f32],
     dimensions: usize,
@@ -2658,7 +2593,7 @@ fn encode_artifact(
     params: GraphParams,
     entries: &[u32],
     adjacency: &Adjacency,
-    mut memory: Option<AccountedCounter>,
+    memory: Option<AccountedCounter>,
 ) -> Result<GraphBuildArtifact, GraphBuildError> {
     encode_artifact_controlled(
         vectors,

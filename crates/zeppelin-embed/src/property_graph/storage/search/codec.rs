@@ -602,6 +602,13 @@ fn read_u128(bytes: &[u8], offset: usize) -> Result<u128, TreeError> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    reason = "test assertions and fixed fixture indices"
+)]
 mod tests {
     use super::*;
 

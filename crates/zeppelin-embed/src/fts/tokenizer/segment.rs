@@ -20,7 +20,9 @@
 //! fixture so task 21 can migrate it deliberately.
 
 use super::fold::segmentation_equivalent;
-use crate::fts::control::{BuildPolicy, GuardedVec, LegacyPolicy};
+#[cfg(test)]
+use crate::fts::control::LegacyPolicy;
+use crate::fts::control::{BuildPolicy, GuardedVec};
 
 /// One segmented span of the input, addressed by byte offsets.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -62,6 +64,7 @@ fn is_word_character(value: char) -> bool {
 ///
 /// Offsets are byte offsets into `text` itself, never into a normalized
 /// copy, so every emitted token can be sliced back to its surface form.
+#[cfg(test)]
 pub(crate) fn segment(text: &str) -> Vec<Span> {
     let mut policy = LegacyPolicy;
     match segment_controlled(text, &mut policy) {
@@ -178,6 +181,7 @@ pub(crate) fn segment_controlled<'m, P: BuildPolicy<'m>>(
 ///
 /// A single ideograph yields one unigram span so a one-character query is
 /// still findable.
+#[cfg(test)]
 pub(crate) fn ideograph_bigrams(text: &str, span: Span) -> Vec<Span> {
     let mut policy = LegacyPolicy;
     match ideograph_bigrams_controlled(text, span, &mut policy) {

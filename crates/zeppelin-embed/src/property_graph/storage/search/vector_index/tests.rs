@@ -1,16 +1,20 @@
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    reason = "test fixtures use assertions and checked fixed indices"
+)]
 use super::test_support::{
     InspectVectorSources, SourceReport, apply_repeated_vectors_checked, apply_vector_checked,
     document_tower, inspect_sources_checked, kernel_coordinates, native_options,
     prepare_small_writes_fixture, read_kernel, try_apply_repeated_vectors, write_and_read_kernel,
 };
 use crate::epoch::{EmbeddingTower, Normalization};
-use crate::graph::search::{
-    FilteredGraphSearchOutcome, GraphSearchRequest, GraphSearchScratch, GraphSearcher,
-};
+use crate::graph::search::{GraphSearchRequest, GraphSearchScratch, GraphSearcher};
 use crate::lifecycle::durability::{CommitTier, DurabilityMode};
 use crate::lifecycle::native_graph::{NativeReadConsumer, NativeReadLease};
 use crate::lifecycle::{CancelToken, QueryControl, Store};
-use crate::meta::DocBitmap;
 use crate::property_graph::query::resources::QueryMemory;
 use crate::property_graph::query::runtime::{RuntimeContext, RuntimeLimits};
 use crate::property_graph::resources::GraphResources;
@@ -23,9 +27,8 @@ use crate::property_graph::storage::{
 };
 use crate::property_graph::{
     ApplicationKey, CanonicalContents, CanonicalEmbedding, EntityId, EntityKind, GraphDeleteMode,
-    GraphName, GraphRevision, NodeId, NodeRef, RelId,
+    GraphName, GraphRevision, NodeId,
 };
-use crate::quant::est_dot_bit4;
 use xxhash_rust::xxh3::xxh3_64;
 
 fn apply_vector(
@@ -1488,7 +1491,7 @@ fn native_vector_index_prepare_limits_controls_release() {
     })
     .expect("controlled graph output validation");
     assert!(decode_chunks.iter().all(|units| *units <= 256));
-    assert!(decode_chunks.iter().any(|units| *units == 256));
+    assert!(decode_chunks.contains(&256));
     let mut decode_calls = 0_usize;
     let cancelled_decode = decode_node_blocks_controlled(clean.encoded_region(), &mut |_| {
         decode_calls += 1;
@@ -1661,8 +1664,8 @@ fn native_vector_index_publication_reopen_required_refs() {
     use crate::vfs::Vfs;
     use std::io::{Read, Seek, SeekFrom, Write};
     use std::path::Path;
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
 
     fn copy_store(source: &Path, target: &Path) {
         std::fs::create_dir_all(target).expect("create scratch store directory");
@@ -1700,7 +1703,8 @@ fn native_vector_index_publication_reopen_required_refs() {
         );
         let metadata = std::fs::metadata(&artifact).expect("index artifact metadata");
         let mut permissions = metadata.permissions();
-        permissions.set_readonly(false);
+        use std::os::unix::fs::PermissionsExt;
+        permissions.set_mode(permissions.mode() | 0o200);
         std::fs::set_permissions(&artifact, permissions).expect("make corruption fixture writable");
         let mut file = std::fs::OpenOptions::new()
             .read(true)
@@ -1871,7 +1875,7 @@ fn native_vector_index_trace_complete_and_owner() {
         .find(|report| report.rows == 24)
         .expect("extent-backed native vector index");
 
-    let shared = GraphResources::from_store(&store).expect("trace shared resources");
+    let shared = GraphResources::from_store(store).expect("trace shared resources");
     let baseline = shared.reserved_bytes().expect("trace baseline");
     {
         let lease = store.admit_native_read().expect("trace admission");
@@ -1910,7 +1914,6 @@ fn native_vector_index_trace_complete_and_owner() {
         drop(foreign_source);
         drop(foreign_memory);
         drop(foreign_control);
-        drop(foreign_writer);
 
         let missing_reference = extent
             .index_payload
@@ -1974,7 +1977,6 @@ fn native_vector_index_trace_complete_and_owner() {
         drop(source);
         drop(memory);
         drop(control);
-        drop(writer);
         drop(lease);
     }
     assert_eq!(

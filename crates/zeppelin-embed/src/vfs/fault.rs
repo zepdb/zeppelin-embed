@@ -184,8 +184,7 @@ impl Vfs for FaultVfs {
                     .visible
                     .keys()
                     .filter(|path| path.parent() == Some(directory))
-                    .filter(|path| previous.as_ref().is_none_or(|value| *path > value))
-                    .next()
+                    .find(|path| previous.as_ref().is_none_or(|value| *path > value))
                     .cloned()
             };
             let Some(path) = next else { break };

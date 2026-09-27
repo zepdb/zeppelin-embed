@@ -330,6 +330,10 @@ impl<'a, 'm> NativeSpillWriter<'a, 'm> {
             .validate_object_descriptor(descriptor, resources)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "independent resource owners and lifetimes are explicit at this private seam"
+    )]
     pub(super) fn finish(
         self,
         capture: NativeProtectedRoots,

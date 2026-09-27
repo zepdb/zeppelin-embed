@@ -69,6 +69,10 @@ type Written = Result<(CompletedGraphResult, NativeMutationReport), NativeMutati
 
 /// Runs `spec` as one write statement and settles its result, counting how
 /// often the statement ran and how often its result was settled.
+#[allow(
+    clippy::result_large_err,
+    reason = "test keeps typed failure path allocation-free"
+)]
 fn write_counted(
     store: &D2Store,
     spec: &Spec,
@@ -97,6 +101,10 @@ fn write_counted(
     )
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "test keeps typed failure path allocation-free"
+)]
 fn write(store: &D2Store, spec: &Spec, columns: &[&'static str]) -> Written {
     write_counted(
         store,
@@ -209,9 +217,9 @@ fn committed_at(generation: u64) -> Outcome {
 
 /// `(id, projected p, copied properties, revision, generation)` per row,
 /// sorted by id.
-fn increment_rows(
-    result: &CompletedGraphResult,
-) -> Vec<(u128, i64, Vec<(String, String)>, u64, u64)> {
+type IncrementRow = (u128, i64, Vec<(String, String)>, u64, u64);
+
+fn increment_rows(result: &CompletedGraphResult) -> Vec<IncrementRow> {
     let mut rows: Vec<_> = (0..result.metadata().rows as usize)
         .map(|row| {
             let node = node_at(result, row, 0);

@@ -41,7 +41,9 @@
 //! epoch-digest input like everything else here.
 
 use super::fold_table::{FOLD_BLOB, FOLD_KEYS, FOLD_OFFSETS, UNICODE_VERSION};
-use crate::fts::control::{BuildPolicy, GuardedString, LegacyPolicy};
+#[cfg(test)]
+use crate::fts::control::LegacyPolicy;
+use crate::fts::control::{BuildPolicy, GuardedString};
 
 /// The folding rule revision, an epoch-digest input.
 ///
@@ -90,24 +92,9 @@ fn table_fold(value: char) -> Option<&'static str> {
     FOLD_BLOB.get(start..end)
 }
 
-/// Folds one character into `output`.
-///
-/// A character whose fold is empty — a combining mark — appends nothing.
-pub(crate) fn fold_char(value: char, output: &mut String) {
-    let value = punctuation_equivalent(value);
-    // ASCII is the overwhelmingly common case and needs no table probe.
-    if value.is_ascii() {
-        output.push(value.to_ascii_lowercase());
-        return;
-    }
-    match table_fold(value) {
-        Some(folded) => output.push_str(folded),
-        None => output.push(value),
-    }
-}
-
 /// Folds a whole string.
 #[must_use]
+#[cfg(test)]
 pub(crate) fn fold(input: &str) -> String {
     let mut policy = LegacyPolicy;
     match fold_controlled(input, &mut policy) {

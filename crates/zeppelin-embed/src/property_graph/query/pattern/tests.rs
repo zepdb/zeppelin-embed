@@ -1,4 +1,10 @@
-#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+#![allow(
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_used,
+    clippy::indexing_slicing,
+    reason = "test assertions and fixed fixture indices"
+)]
 
 use super::*;
 use crate::lifecycle::durability::{CommitTier, DurabilityMode};
@@ -50,7 +56,7 @@ impl<'m, 'g> Completion<'m, 'g, NativeExecutionError> for FreezePrimitiveRows {
         if rows.rows() > output.len() || rows.columns() != 4 {
             return Err(RuntimeError::Batch.into());
         }
-        for row in 0..rows.rows() {
+        for (row, slot) in output.iter_mut().enumerate().take(rows.rows()) {
             let source = match rows.value(row, 0) {
                 Some(super::super::QueryValue::NodeRef(value)) => value.id(),
                 _ => return Err(RuntimeError::Batch.into()),
@@ -67,7 +73,7 @@ impl<'m, 'g> Completion<'m, 'g, NativeExecutionError> for FreezePrimitiveRows {
                 Some(super::super::QueryValue::I64(value)) => value,
                 _ => return Err(RuntimeError::Batch.into()),
             };
-            output[row] = Some((
+            *slot = Some((
                 source.get(),
                 relationship.get(),
                 source.get(),
@@ -464,6 +470,35 @@ impl<'m, 'g> Completion<'m, 'g, NativeExecutionError> for RecordingCompletion {
 }
 
 macro_rules! execute_pattern {
+    (@wrap $source:expr, $wrap:expr) => {
+        $wrap($source)
+    };
+    (@wrap $source:expr) => {
+        $source
+    };
+    (@execution $execution:expr) => {
+        $execution
+    };
+    (@execution) => {
+        ExecutionCapacity {
+            batch_rows: 1,
+            result_rows: 16,
+            batch_payload_bytes: 8192,
+            result_payload_bytes: 8192,
+            batch: ArenaCapacity {
+                string_bytes: 8192,
+                list_cells: 256,
+                node_ids: 64,
+                relationship_ids: 256,
+            },
+            result: ArenaCapacity {
+                string_bytes: 8192,
+                list_cells: 256,
+                node_ids: 64,
+                relationship_ids: 256,
+            },
+        }
+    };
     (@pattern_rows $rows:expr) => {
         $rows
     };
@@ -534,7 +569,7 @@ macro_rules! execute_pattern {
         .admit_plan(&plan, $runtime.values())
         .expect("admit pattern plan");
         let pattern_rows = execute_pattern!(@pattern_rows $($pattern_rows)?);
-        let mut source = NativePattern::new(
+        let source = NativePattern::new(
             $view,
             &admitted,
             PlanNodeId(u32::try_from($operators.len() - 1).unwrap()),
@@ -559,26 +594,8 @@ macro_rules! execute_pattern {
             $runtime,
         )
         .expect("construct native pattern");
-        $(let mut source = $wrap(source);)?
-        let execution_capacity = ExecutionCapacity {
-            batch_rows: 1,
-            result_rows: 16,
-            batch_payload_bytes: 8192,
-            result_payload_bytes: 8192,
-            batch: ArenaCapacity {
-                string_bytes: 8192,
-                list_cells: 256,
-                node_ids: 64,
-                relationship_ids: 256,
-            },
-            result: ArenaCapacity {
-                string_bytes: 8192,
-                list_cells: 256,
-                node_ids: 64,
-                relationship_ids: 256,
-            },
-        };
-        $(let execution_capacity = $execution;)?
+        let mut source = execute_pattern!(@wrap source $(, $wrap)?);
+        let execution_capacity = execute_pattern!(@execution $($execution)?);
         execute_in(
             $runtime,
             &admitted,
@@ -635,10 +652,10 @@ where
         output: &mut RowBatch<'v, 'm, 'g>,
     ) -> Result<PullState, NativeExecutionError> {
         let state = self.source.pull(context, output)?;
-        if output.rows() != 0 {
-            if let Some(action) = self.action.take() {
-                action();
-            }
+        if output.rows() != 0
+            && let Some(action) = self.action.take()
+        {
+            action();
         }
         Ok(state)
     }
@@ -781,78 +798,77 @@ where
         output: &mut RowBatch<'v, 'm, 'g>,
     ) -> Result<PullState, NativeExecutionError> {
         let state = self.source.pull(context, output)?;
-        if output.rows() != 0 {
-            if let Some(action) = self.action.take() {
-                std::thread::spawn(move || {
-                    crate::property_graph::with_local_refs(|refs| {
-                        let mut labels = [GraphName::new("Target").expect("publication label")];
-                        let mut properties = [GraphProperty::new(
-                            GraphName::new("name").expect("publication property name"),
-                            PropertyValue::new(PropertyData::String("new-target"))
-                                .expect("publication property value"),
-                        )];
-                        let node = CanonicalContents::node(
-                            &mut labels,
-                            &mut properties,
-                            Some("new-text"),
-                            None,
+        if output.rows() != 0
+            && let Some(action) = self.action.take()
+        {
+            std::thread::spawn(move || {
+                crate::property_graph::with_local_refs(|refs| {
+                    let mut labels = [GraphName::new("Target").expect("publication label")];
+                    let mut properties = [GraphProperty::new(
+                        GraphName::new("name").expect("publication property name"),
+                        PropertyValue::new(PropertyData::String("new-target"))
+                            .expect("publication property value"),
+                    )];
+                    let node = CanonicalContents::node(
+                        &mut labels,
+                        &mut properties,
+                        Some("new-text"),
+                        None,
+                    )
+                    .expect("publication node");
+                    let published = action
+                        .store
+                        .apply_native_graph(
+                            &[
+                                StructuredWrite {
+                                    key: ApplicationKey::new(
+                                        EntityKind::Node,
+                                        "publication",
+                                        "new",
+                                    )
+                                    .expect("publication key"),
+                                    revision: GraphRevision::new(1).expect("publication revision"),
+                                    operation: StructuredOperation::Create,
+                                    image: Some(WriteImage::Node(&node)),
+                                },
+                                StructuredWrite {
+                                    key: ApplicationKey::new(
+                                        EntityKind::Relationship,
+                                        "publication",
+                                        "new-link",
+                                    )
+                                    .expect("publication relationship key"),
+                                    revision: GraphRevision::new(1)
+                                        .expect("publication relationship revision"),
+                                    operation: StructuredOperation::Create,
+                                    image: Some(WriteImage::Relationship {
+                                        source: NodeRef::Existing(action.source),
+                                        target: NodeRef::Local(
+                                            refs.node(0).expect("publication local node"),
+                                        ),
+                                        relationship_type: GraphName::new("NEW_LINK")
+                                            .expect("publication relationship type"),
+                                        properties: &[],
+                                    }),
+                                },
+                            ],
+                            &QueryControl::Cancel(CancelToken::new()),
                         )
-                        .expect("publication node");
-                        let published = action
-                            .store
-                            .apply_native_graph(
-                                &[
-                                    StructuredWrite {
-                                        key: ApplicationKey::new(
-                                            EntityKind::Node,
-                                            "publication",
-                                            "new",
-                                        )
-                                        .expect("publication key"),
-                                        revision: GraphRevision::new(1)
-                                            .expect("publication revision"),
-                                        operation: StructuredOperation::Create,
-                                        image: Some(WriteImage::Node(&node)),
-                                    },
-                                    StructuredWrite {
-                                        key: ApplicationKey::new(
-                                            EntityKind::Relationship,
-                                            "publication",
-                                            "new-link",
-                                        )
-                                        .expect("publication relationship key"),
-                                        revision: GraphRevision::new(1)
-                                            .expect("publication relationship revision"),
-                                        operation: StructuredOperation::Create,
-                                        image: Some(WriteImage::Relationship {
-                                            source: NodeRef::Existing(action.source),
-                                            target: NodeRef::Local(
-                                                refs.node(0).expect("publication local node"),
-                                            ),
-                                            relationship_type: GraphName::new("NEW_LINK")
-                                                .expect("publication relationship type"),
-                                            properties: &[],
-                                        }),
-                                    },
-                                ],
-                                &QueryControl::Cancel(CancelToken::new()),
-                            )
-                            .expect("publish while old graph view is paused");
-                        let node = match published[0].entity {
-                            EntityId::Node(id) => id,
-                            _ => panic!("publication node receipt kind"),
-                        };
-                        let relationship = match published[1].entity {
-                            EntityId::Relationship(id) => id,
-                            _ => panic!("publication relationship receipt kind"),
-                        };
-                        *action.receipts.lock().expect("publication receipt lock") =
-                            Some((node, relationship));
-                    });
-                })
-                .join()
-                .expect("publication thread");
-            }
+                        .expect("publish while old graph view is paused");
+                    let node = match published[0].entity {
+                        EntityId::Node(id) => id,
+                        _ => panic!("publication node receipt kind"),
+                    };
+                    let relationship = match published[1].entity {
+                        EntityId::Relationship(id) => id,
+                        _ => panic!("publication relationship receipt kind"),
+                    };
+                    *action.receipts.lock().expect("publication receipt lock") =
+                        Some((node, relationship));
+                });
+            })
+            .join()
+            .expect("publication thread");
         }
         Ok(state)
     }

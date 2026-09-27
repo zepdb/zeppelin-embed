@@ -67,6 +67,10 @@ struct DirectoryWalk<'m> {
     trace: DirectoryTraceState<'m>,
 }
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "directory traversal events retain bounded inline state"
+)]
 enum DirectoryEvent {
     Reference(PhysicalRef),
     Member,
@@ -115,11 +119,9 @@ impl<'m> DirectoryWalk<'m> {
         resources: &mut TreeResources<'_>,
     ) -> Result<DirectoryEvent, TreeError> {
         match self.trace.next(source, resources)? {
-            DirectoryTraceEvent::Reference(reference) => {
-                return Ok(DirectoryEvent::Reference(reference));
-            }
+            DirectoryTraceEvent::Reference(reference) => Ok(DirectoryEvent::Reference(reference)),
             DirectoryTraceEvent::Leaf(leaf) => {
-                return self.trace.with_leaf(leaf, resources, |entry, resources| {
+                self.trace.with_leaf(leaf, resources, |entry, resources| {
                     let Key::Inline(key) = entry.key() else {
                         return Err(TreeError::Invalid("sparse trace overflow key"));
                     };
@@ -200,9 +202,9 @@ impl<'m> DirectoryWalk<'m> {
                             }))
                         }
                     }
-                });
+                })
             }
-            DirectoryTraceEvent::Done => return Ok(DirectoryEvent::Done),
+            DirectoryTraceEvent::Done => Ok(DirectoryEvent::Done),
         }
     }
 }
@@ -364,7 +366,6 @@ impl<'m> SearchTraceState<'m> {
         let generation = view.generation();
         let sequence = view.sequence();
         let store = native.store();
-        drop(view);
         let reservation = resources.reserve_trace(std::mem::size_of::<Self>())?;
         Ok(Self {
             store,
@@ -461,7 +462,7 @@ impl<'m> SearchTraceState<'m> {
     fn next_reference<S: BlockSource, C: RecordCatalog<S>, F, V>(
         &mut self,
         source: &S,
-        catalog: &C,
+        _catalog: &C,
         document: Option<&crate::epoch::EmbeddingTower>,
         memory: &'m crate::property_graph::storage::memory::StorageMemory<'m>,
         verify_row: &mut F,

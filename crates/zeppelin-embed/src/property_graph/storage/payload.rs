@@ -188,6 +188,10 @@ impl PayloadRef {
     /// Run one bounded span read without allowing the source mapping lifetime
     /// to escape. Ordinary sources delegate to their retained borrowed resolve;
     /// captured trace sources release backing before this method returns.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "independent resource owners and lifetimes are explicit at this private seam"
+    )]
     pub(super) fn with_span_at<R>(
         self,
         source: &impl BlockSource,
@@ -509,11 +513,11 @@ impl PayloadRef {
 }
 
 fn role_limit(role: BlockKind) -> usize {
-    if matches!(role, BlockKind::NodeRecord | BlockKind::RelRecord) {
-        MAX_RECORD_BYTES
-    } else if matches!(
+    if matches!(
         role,
-        BlockKind::RetrievalRows
+        BlockKind::NodeRecord
+            | BlockKind::RelRecord
+            | BlockKind::RetrievalRows
             | BlockKind::RetrievalLexical
             | BlockKind::RetrievalLiveRows
             | BlockKind::RetrievalVectorIndex

@@ -329,6 +329,10 @@ fn rewrite_installed_membership(
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "fixture spells out independent bounds and resource owners"
+)]
 fn materialize_sparse_generation<'source, 'a, 'b, S, F>(
     artifacts: crate::property_graph::storage::PreparedGraphArtifacts<'source, 'a, 'b, S, F>,
     admitted: &NativeGraphBundle,
@@ -2390,7 +2394,8 @@ fn run_sparse_lifecycle_acceptance(
                     (Ok(()), _) => panic!("{case:?} corruption was accepted"),
                 }
             }
-            for family in [FormatFamily::NativeGraphObject.id() + 1] {
+            {
+                let family = FormatFamily::NativeGraphObject.id() + 1;
                 let mut roots = prepared2.sparse_roots();
                 roots.text.as_mut().unwrap().object.family = family;
                 assert!(matches!(

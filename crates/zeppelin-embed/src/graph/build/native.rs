@@ -1,6 +1,6 @@
 use super::{
     BuildControl, BuildMemoryEvent, GraphBuildArtifact, GraphBuildError, SegmentVectors,
-    build_native_graph_inner, native_build_peak_bytes,
+    build_native_graph_inner,
 };
 use crate::graph::GraphParams;
 use crate::quant::Bit4Factors;
@@ -11,16 +11,10 @@ pub(crate) enum NativeGraphBuildError<E> {
     Control(E),
 }
 
-pub(crate) fn native_graph_reservation_bytes(
-    rows: usize,
-    dimensions: usize,
-    params: GraphParams,
-) -> Result<usize, GraphBuildError> {
-    let rows = u32::try_from(rows)
-        .map_err(|_| GraphBuildError::Geometry("native row count exceeds u32".to_owned()))?;
-    native_build_peak_bytes(rows, dimensions, params)
-}
-
+#[allow(
+    clippy::too_many_arguments,
+    reason = "independent resource owners and lifetimes are explicit at this private seam"
+)]
 pub(crate) fn build_native_graph<E>(
     dimensions: usize,
     codes: &[u8],

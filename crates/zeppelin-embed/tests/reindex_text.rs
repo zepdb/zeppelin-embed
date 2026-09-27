@@ -28,13 +28,13 @@ fn reindex_text_replaces_postings_preserves_other_regions_and_reopens() {
     for (old, new) in before.segments().iter().zip(after.segments()) {
         assert_ne!(old.meta().id, new.meta().id);
         for entry in old.directory() {
-            if let Some(kind) = RegionKind::from_id(entry.kind) {
-                if kind != RegionKind::ChecksumTable {
-                    assert_eq!(
-                        old.region(kind).expect("old region"),
-                        new.region(kind).expect("new region")
-                    );
-                }
+            if let Some(kind) = RegionKind::from_id(entry.kind)
+                && kind != RegionKind::ChecksumTable
+            {
+                assert_eq!(
+                    old.region(kind).expect("old region"),
+                    new.region(kind).expect("new region")
+                );
             }
         }
     }

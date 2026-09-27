@@ -254,6 +254,7 @@ pub(super) fn decode_lexical_prepare<'m, S: BlockSource>(
 pub(crate) struct SparseMember<'a, S: BlockSource> {
     pub(crate) node: NodeId,
     pub(crate) revision: u64,
+    #[cfg(test)]
     pub(crate) row: u32,
     pub(crate) analyzed_length: u32,
     pub(crate) vector: Option<StoredVector<'a, S>>,
@@ -308,6 +309,10 @@ pub(crate) struct SparseView<'a, 'm, S, C> {
     owner: SparseOwner<'m>,
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "independent resource owners and lifetimes are explicit at this private seam"
+)]
 fn open_descriptor<S: BlockSource>(
     source: &S,
     required: RequiredRef,
@@ -512,6 +517,7 @@ impl<'a, 'm, S: BlockSource, C: RecordCatalog<S>> SparseView<'a, 'm, S, C> {
             None => 0,
         }
     }
+    #[cfg(test)]
     pub(crate) const fn text_length(&self) -> u64 {
         match self.text {
             Some(descriptor) => descriptor.live_length,
@@ -563,6 +569,10 @@ impl<'a, 'm, S: BlockSource, C: RecordCatalog<S>> SparseView<'a, 'm, S, C> {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "independent resource owners and lifetimes are explicit at this private seam"
+    )]
     fn resolve_member_row(
         &self,
         descriptor: RootDescriptor,
@@ -630,6 +640,7 @@ impl<'a, 'm, S: BlockSource, C: RecordCatalog<S>> SparseView<'a, 'm, S, C> {
         Ok(SparseMember {
             node,
             revision: row.revision,
+            #[cfg(test)]
             row: ordinal,
             analyzed_length: row.analyzed_length,
             vector,
@@ -1380,7 +1391,7 @@ impl<'v, 'a, 'm, 'r, S: BlockSource, C: RecordCatalog<S>> SparseSources<'v, 'a, 
             return Err(TreeError::Invalid("sparse source reference mismatch"));
         }
         let manifest = SourceManifest::decode(block.payload())?;
-        let mask_length = (u64::from(manifest.rows) + 7) / 8;
+        let mask_length = u64::from(manifest.rows).div_ceil(8);
         if manifest.modality != self.modality
             || block.identity().generation != manifest.generation
             || manifest.generation > descriptor.generation
@@ -1519,7 +1530,7 @@ impl<'v, 'a, 'm, S: BlockSource, C: RecordCatalog<S>> SparseSource<'v, 'a, 'm, S
     }
 
     #[cfg(test)]
-    pub(crate) const fn format_for_test(&self) -> SourceFormat {
+    pub(super) const fn format_for_test(&self) -> SourceFormat {
         self.manifest.format
     }
 
@@ -1592,7 +1603,7 @@ impl<'v, 'a, 'm, S: BlockSource, C: RecordCatalog<S>> SparseSource<'v, 'a, 'm, S
     }
 
     #[cfg(test)]
-    pub(crate) fn validate_physical_row_rewrite_for_test(
+    pub(super) fn validate_physical_row_rewrite_for_test(
         &self,
         index: &NativeVectorIndex<'_>,
         resources: &mut TreeResources<'_>,

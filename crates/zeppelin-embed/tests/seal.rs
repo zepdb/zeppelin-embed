@@ -1229,7 +1229,7 @@ fn interrupted_idle_merge_reopens_with_all_documents() {
         .expect("trace merge");
     let steps = trace.steps();
     assert!(!steps.is_empty(), "merge must publish a replacement");
-    for cut in 0..steps.len() {
+    for (cut, step) in steps.iter().enumerate() {
         let directory = tempdir().expect("crash directory");
         let store = seed(directory.path());
         let fault = StepFaultVfs::new(StepFault::DieAfter(cut));
@@ -1238,7 +1238,7 @@ fn interrupted_idle_merge_reopens_with_all_documents() {
             .expect_err("injected interruption");
         drop(store);
         let store = Store::open(directory.path(), durable_options()).expect("recover");
-        assert_eq!(live_versions(&store).len(), 3, "cut {cut}: {}", steps[cut]);
+        assert_eq!(live_versions(&store).len(), 3, "cut {cut}: {step}");
         store.merge_sealed().expect("retry merge");
         assert_eq!(store.snapshot().expect("snapshot").segments().len(), 1);
     }

@@ -1,24 +1,38 @@
 //! Checked read-only checkpoint and replay-transition adapters for sparse retrieval.
 
-use super::codec::{ROOT_BYTES, RootDescriptor, SparsePhysicalRoots};
+use super::codec::SparsePhysicalRoots;
+#[cfg(test)]
+use super::codec::{ROOT_BYTES, RootDescriptor};
 use super::{Modality, PreparedMembershipChange, SparseRoots, SparseView};
 use crate::epoch::EmbeddingTower;
 use crate::fts::tokenizer::TokenizerEpoch;
+use crate::property_graph::EntityId;
+#[cfg(test)]
+use crate::property_graph::NodeId;
+#[cfg(test)]
 use crate::property_graph::staging::{NormalizedDelta, StagedBatch};
-use crate::property_graph::storage::artifact::{BlockKind, PhysicalRef};
+#[cfg(test)]
+use crate::property_graph::storage::artifact::BlockKind;
+use crate::property_graph::storage::artifact::PhysicalRef;
 use crate::property_graph::storage::consolidation::RecordRelocation;
 use crate::property_graph::storage::memory::{StorageBuffer, StorageMemory};
+#[cfg(test)]
 use crate::property_graph::storage::payload::PayloadRef;
-use crate::property_graph::storage::records::{NodeRecordState, RecordCatalog, verify_node_state};
+use crate::property_graph::storage::records::RecordCatalog;
+#[cfg(test)]
+use crate::property_graph::storage::records::{NodeRecordState, verify_node_state};
+#[cfg(test)]
 use crate::property_graph::storage::stream::PayloadSlice;
+#[cfg(test)]
 use crate::property_graph::storage::tree::TreeKind;
+#[cfg(test)]
+use crate::property_graph::storage::tree::directory::lookup_entry;
 use crate::property_graph::storage::tree::directory::{
-    BlockSink, BlockSource, GraphRoots, TreeError, TreeResources, lookup_entry,
+    BlockSink, BlockSource, GraphRoots, TreeError, TreeResources,
 };
 use crate::property_graph::wal::{
     Change, ChangeReader, InventoryChange, RequiredRef, WalError, WalResources,
 };
-use crate::property_graph::{EntityId, NodeId};
 
 /// Logical sparse cutoff with both complete root descriptors.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -88,6 +102,7 @@ impl PreparedSparseCheckpoint {
     clippy::too_many_arguments,
     reason = "checkpoint preparation binds every interpretation owner"
 )]
+#[cfg(test)]
 pub(crate) fn prepare_sparse_checkpoint<'m, S: BlockSink, C: RecordCatalog<S>>(
     sink: &mut S,
     active: SparseRoots,
@@ -123,7 +138,6 @@ pub(crate) fn prepare_sparse_checkpoint<'m, S: BlockSink, C: RecordCatalog<S>>(
         .root_state(Modality::Text)
         .ok_or(TreeError::Invalid("missing sparse text checkpoint state"))?;
     let vector_state = view.root_state(Modality::Vector);
-    drop(view);
     let append = |sink: &mut S,
                   modality: Modality,
                   state: super::codec::SparseRootState,
@@ -257,6 +271,7 @@ fn transition_count(count: u64, before: bool, after: bool) -> Result<u64, TreeEr
     }
 }
 
+#[cfg(test)]
 fn validate_target_origin<S: BlockSource, C: RecordCatalog<S>>(
     source: &S,
     native: GraphRoots,
@@ -308,6 +323,7 @@ fn validate_target_origin<S: BlockSource, C: RecordCatalog<S>>(
     clippy::too_many_arguments,
     reason = "replay validation binds both complete states and owners"
 )]
+#[cfg(test)]
 pub(crate) fn validate_replay_transition<'a, 'm, S: BlockSource, C: RecordCatalog<S>>(
     source: &'a S,
     base: SparseCheckpoint,

@@ -451,6 +451,10 @@ fn streamed_fingerprint<S: crate::property_graph::storage::tree::directory::Bloc
         .map_err(|_| TreeError::Invalid("invalid canonical fingerprint"))
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "independent resource owners and lifetimes are explicit at this private seam"
+)]
 fn cached_from_record<'source, 'resources, 'm>(
     source: &'source NativePreparationSource<'source, 'm>,
     record: &RecordView<'_, NativePreparationSource<'source, 'm>>,
@@ -498,6 +502,10 @@ fn cached_from_record<'source, 'resources, 'm>(
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "independent resource owners and lifetimes are explicit at this private seam"
+)]
 fn cached_from_parts<'source, 'resources, 'm>(
     source: &'source NativePreparationSource<'source, 'm>,
     provenance: &StoredProvenance<'_, NativePreparationSource<'source, 'm>>,

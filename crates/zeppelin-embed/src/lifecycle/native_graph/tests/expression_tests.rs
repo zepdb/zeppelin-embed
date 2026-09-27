@@ -378,13 +378,11 @@ fn expression_producer_bundle_with_extra_nodes(
     })
 }
 
+type CloseWorker = Arc<std::sync::Mutex<Option<std::thread::JoinHandle<Result<(), StoreError>>>>>;
+
 struct ScalarOwnershipTracer {
     exact_expression_limit: bool,
-    close_first: Option<(
-        Arc<Store>,
-        CancelToken,
-        Arc<std::sync::Mutex<Option<std::thread::JoinHandle<Result<(), StoreError>>>>>,
-    )>,
+    close_first: Option<(Arc<Store>, CancelToken, CloseWorker)>,
 }
 
 impl NativeReadConsumer<()> for ScalarOwnershipTracer {
@@ -1747,8 +1745,8 @@ fn native_expression_preserves_view_and_output_ownership() {
     .unwrap()
     .admit_plan(&plan, runtime.values())
     .unwrap();
-    let schema = Schema::new(&mut runtime, &[]).unwrap();
-    let mut input = RowBatch::new(&mut runtime, 0, 1, 0).unwrap();
+    let schema = Schema::new(&runtime, &[]).unwrap();
+    let mut input = RowBatch::new(&runtime, 0, 1, 0).unwrap();
     input.push_row(&[], &mut runtime).unwrap();
     let mut evaluator = NativeExpressionEvaluator::new(
         &runtime_plan,
@@ -1764,7 +1762,7 @@ fn native_expression_preserves_view_and_output_ownership() {
         .evaluate(ExprId(0), &schema, &input, 0, &view, &mut runtime)
         .unwrap();
     let mut copied = RowBatch::with_arenas(
-        &mut runtime,
+        &runtime,
         1,
         1,
         32,

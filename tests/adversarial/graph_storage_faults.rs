@@ -152,7 +152,7 @@ fn check_split(schedule: StorageFaultSchedule, state: &StorageFaultState) -> Res
         ));
     }
     if state.pre_split_keys == 0
-        || state.pre_split_keys % SPLIT_CHUNK_KEYS != 0
+        || !state.pre_split_keys.is_multiple_of(SPLIT_CHUNK_KEYS)
         || state.pre_split_keys + SPLIT_CHUNK_KEYS > schedule.split_keys
     {
         return Err(format!(

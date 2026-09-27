@@ -150,6 +150,10 @@ impl crate::lifecycle::Store {
         clippy::too_many_arguments,
         reason = "one admission carries its control, limits and five capacities"
     )]
+    #[allow(
+        clippy::result_large_err,
+        reason = "keep typed graph errors allocation-free on failure paths"
+    )]
     pub(crate) fn with_native_mutation<T, C: NativeMutationConsumer<T>>(
         &self,
         control: &crate::lifecycle::QueryControl,
@@ -232,6 +236,10 @@ impl crate::lifecycle::Store {
         clippy::too_many_arguments,
         clippy::type_complexity,
         reason = "one admission carries its control, limits, five capacities and its settle step"
+    )]
+    #[allow(
+        clippy::result_large_err,
+        reason = "keep typed graph errors allocation-free on failure paths"
     )]
     fn native_mutation_attempts<S, T, E, C, F>(
         &self,

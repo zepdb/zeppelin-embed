@@ -8,19 +8,17 @@ mod vector_index;
 mod view;
 
 pub(crate) use checkpoint::{
-    PreparedSparseCheckpoint, SparseCheckpoint, prepare_sparse_checkpoint,
-    prepare_sparse_maintenance, validate_checkpoint, validate_persisted_maintenance_transition,
-    validate_persisted_replay_transition, validate_replay_transition,
+    PreparedSparseCheckpoint, SparseCheckpoint, prepare_sparse_maintenance, validate_checkpoint,
+    validate_persisted_maintenance_transition, validate_persisted_replay_transition,
 };
+#[cfg(test)]
+pub(crate) use checkpoint::{prepare_sparse_checkpoint, validate_replay_transition};
 pub(crate) use codec::{Modality, SparseRoots};
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use prepare::miss_next_maintenance_peer_retarget;
 pub(crate) use prepare::{PreparedMembershipChange, PreparedSparseCandidate, prepare_sparse};
-pub(crate) use trace::{
-    SearchTraceCursor, SearchTraceResult, SearchTraceState, SparseTraceRecordFacts,
-    verify_sparse_trace_record,
-};
-#[cfg(any(test, feature = "test-support"))]
+pub(crate) use trace::{SearchTraceCursor, SearchTraceState, verify_sparse_trace_record};
+#[cfg(test)]
 pub(crate) use vector_index::test_support::install as native_vector_index_test_schedule;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use vector_index::test_support::limits as native_vector_index_test_limits;
@@ -48,7 +46,7 @@ pub(crate) use vector_index::{
 };
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use view::SparsePhysicalSnapshot;
-pub(crate) use view::{SparseMember, SparseSource, SparseSources, SparseView};
+pub(crate) use view::SparseView;
 
 #[cfg(any(test, feature = "test-support"))]
 mod tests;

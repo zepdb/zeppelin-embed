@@ -1,7 +1,12 @@
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    reason = "test fixtures use assertions and checked fixed indices"
+)]
 //! ZE-64: the real `NativeSearchAdapter` through the ZE-53 seam, ranking
 //! against a real store with real ZE-62/63 producers (no mock adapter).
-
-#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
 use super::super::{
     ActualTier, CandidateCoverage, CompletedGraphResult, LegState, ScorePrecision, SearchKind,

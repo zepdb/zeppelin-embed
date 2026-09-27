@@ -19,7 +19,6 @@ use crate::property_graph::{GraphGeneration, StoreInstanceId};
 use std::cell::Cell;
 
 const MAX_PREPARED_MANIFEST_DESCRIPTORS: usize = 8_192;
-const INVENTORY_MAPPING_WINDOW_ROWS: usize = 8;
 pub(crate) const INVENTORY_FOLD_ADDITION_LIMIT: usize = 32;
 /// Leading prepared manifests one maintenance commit may examine and retire.
 /// Every commit adds one manifest, so a fold must be able to retire several
@@ -461,7 +460,7 @@ const fn inventory_mapping_window_rows() -> usize {
     }
     #[cfg(not(any(test, feature = "test-support")))]
     {
-        INVENTORY_MAPPING_WINDOW_ROWS
+        8
     }
 }
 

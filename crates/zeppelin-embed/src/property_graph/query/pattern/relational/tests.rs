@@ -1,4 +1,10 @@
-#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+#![allow(
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_used,
+    clippy::indexing_slicing,
+    reason = "test assertions and fixed fixture indices"
+)]
 
 use super::super::{NativePattern, PatternCapacity};
 use crate::lifecycle::durability::{CommitTier, DurabilityMode};

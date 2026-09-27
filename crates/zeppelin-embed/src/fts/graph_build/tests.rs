@@ -208,7 +208,6 @@ fn lexical_capacity_is_owned_through_finish_decode_and_drop() {
     drop(tight);
     drop(resources);
     drop(memory);
-    drop(writer);
     drop(shared);
     store.close().expect("close");
 }
@@ -453,7 +452,6 @@ fn lexical_long_work_stops_inside_analysis_sort_and_codec() {
         Err(TreeError::Control(QueryError::Timeout { partial: false }))
     ));
 
-    drop(writer);
     drop(shared);
     store.close().expect("close");
 }

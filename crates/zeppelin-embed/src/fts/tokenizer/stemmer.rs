@@ -64,6 +64,7 @@ fn ends_with(word: &[char], suffix: &str) -> bool {
 }
 
 /// Computes the R1 and R2 region starts, in character indices.
+#[cfg(test)]
 fn regions(word: &[char]) -> (usize, usize) {
     let length = word.len();
     let exceptional = ["gener", "commun", "arsen"]
@@ -83,6 +84,7 @@ fn starts_with(word: &[char], prefix: &str) -> bool {
 }
 
 /// Returns the index after the first non-vowel that follows a vowel.
+#[cfg(test)]
 fn region_after(word: &[char], from: usize) -> usize {
     let length = word.len();
     let mut index = from;
@@ -197,6 +199,7 @@ fn slice_equals(word: &[char], text: &str) -> bool {
 /// pipeline only stems all-alphabetic terms, because stemming an identifier
 /// such as `put_if_match` produces a term nobody will ever query.
 #[must_use]
+#[cfg(test)]
 pub(crate) fn stem(term: &str) -> String {
     if term.chars().count() <= 2 {
         return term.to_owned();
@@ -427,6 +430,7 @@ fn step_1b_controlled<'m, P: BuildPolicy<'m>>(
     Ok(())
 }
 
+#[cfg(test)]
 fn restore_y(word: &[char]) -> String {
     word.iter()
         .map(|value| if *value == CONSONANT_Y { 'y' } else { *value })
@@ -443,6 +447,7 @@ fn step_0(word: &mut Vec<char>) {
     }
 }
 
+#[cfg(test)]
 fn step_1a(word: &mut Vec<char>) {
     if ends_with(word, "sses") {
         replace_suffix(word, 4, "ss");
@@ -470,6 +475,7 @@ fn step_1a(word: &mut Vec<char>) {
     }
 }
 
+#[cfg(test)]
 fn step_1b(word: &mut Vec<char>, r1: usize) {
     for suffix in ["eedly", "eed"] {
         if ends_with(word, suffix) {

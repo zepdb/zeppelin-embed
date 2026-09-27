@@ -1,11 +1,16 @@
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    reason = "test fixtures use assertions and checked fixed indices"
+)]
 //! ZE-53 S1: eager search sources through the real native completion path.
 //!
 //! A scripted adapter stands in for ranking (ZE-64 binds the real one). It
 //! records every invocation, so each test proves the call count, order and
 //! eligibility it saw, and returns an independently chosen report that the
 //! completed result must carry back exactly.
-
-#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
 use super::super::{
     ActualTier, CandidateCoverage, CompletedGraphResult, LegState, ScorePrecision, SearchKind,

@@ -84,6 +84,10 @@ pub(super) struct EagerState<'v, 'm, 'g> {
 }
 
 impl<'v, 'm, 'g> EagerState<'v, 'm, 'g> {
+    #[allow(
+        clippy::result_large_err,
+        reason = "keep typed graph errors allocation-free on failure paths"
+    )]
     pub(super) fn new(
         slots: &[SlotId],
         capacity: PatternCapacity,
@@ -95,6 +99,10 @@ impl<'v, 'm, 'g> EagerState<'v, 'm, 'g> {
     /// The state of a `Mutate` whose output schema is `slots` over an input
     /// with schema `input`. Output columns absent from the input are the
     /// columns its CREATE items bind.
+    #[allow(
+        clippy::result_large_err,
+        reason = "keep typed graph errors allocation-free on failure paths"
+    )]
     pub(super) fn mutate(
         slots: &[SlotId],
         input: &Schema<'m, 'g>,
@@ -104,6 +112,10 @@ impl<'v, 'm, 'g> EagerState<'v, 'm, 'g> {
         Self::build(slots, Some(input), capacity, context)
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "keep typed graph errors allocation-free on failure paths"
+    )]
     fn build(
         slots: &[SlotId],
         input: Option<&Schema<'m, 'g>>,
@@ -170,6 +182,10 @@ impl<'v, 'm, 'g> EagerState<'v, 'm, 'g> {
 }
 
 impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> {
+    #[allow(
+        clippy::result_large_err,
+        reason = "keep typed graph errors allocation-free on failure paths"
+    )]
     pub(super) fn next_eager(
         &mut self,
         index: usize,
@@ -180,6 +196,10 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
         self.next_barrier(index, child, state, None, context)
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "keep typed graph errors allocation-free on failure paths"
+    )]
     pub(super) fn next_mutate(
         &mut self,
         index: usize,
@@ -193,6 +213,10 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
 
     /// Drains `child` completely on the first pull, applying `items` to each
     /// row as it arrives, and only then emits the retained rows in order.
+    #[allow(
+        clippy::result_large_err,
+        reason = "keep typed graph errors allocation-free on failure paths"
+    )]
     fn next_barrier(
         &mut self,
         index: usize,
@@ -294,6 +318,10 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
     #[allow(
         clippy::too_many_arguments,
         reason = "the row mapping stays explicit beside both occurrences"
+    )]
+    #[allow(
+        clippy::result_large_err,
+        reason = "keep typed graph errors allocation-free on failure paths"
     )]
     fn apply_mutations(
         &mut self,
@@ -412,6 +440,10 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
     /// Replaces occurrence `index`'s output with one row: every input column
     /// copied from `child`'s current row, and every created column holding
     /// the identity bound so far, or null before its CREATE item has run.
+    #[allow(
+        clippy::result_large_err,
+        reason = "keep typed graph errors allocation-free on failure paths"
+    )]
     fn stage_row(
         &mut self,
         index: usize,
@@ -443,6 +475,10 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
         clippy::too_many_arguments,
         reason = "the row mapping stays explicit beside both occurrences"
     )]
+    #[allow(
+        clippy::result_large_err,
+        reason = "keep typed graph errors allocation-free on failure paths"
+    )]
     fn bind_created(
         &mut self,
         index: usize,
@@ -468,6 +504,10 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
     /// Resolves one relationship endpoint. A null endpoint cannot be created
     /// against and is a typed endpoint failure; anything but a node is a type
     /// error.
+    #[allow(
+        clippy::result_large_err,
+        reason = "keep typed graph errors allocation-free on failure paths"
+    )]
     fn endpoint(
         &mut self,
         index: usize,
@@ -498,6 +538,10 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
 
     /// Resolves one item's receiver against occurrence `index`'s staged row.
     /// Null skips the item; anything but an entity reference is a type error.
+    #[allow(
+        clippy::result_large_err,
+        reason = "keep typed graph errors allocation-free on failure paths"
+    )]
     fn mutation_target(
         &mut self,
         index: usize,
@@ -535,6 +579,10 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
 /// Stages one new node carrying exactly `labels` and returns its identity.
 /// A CREATE has no prior image to measure: its budget is the labels alone,
 /// and its properties arrive through the SET items that follow it.
+#[allow(
+    clippy::result_large_err,
+    reason = "keep typed graph errors allocation-free on failure paths"
+)]
 fn create_node(
     scope: &mut MutationScope<'_, '_>,
     labels: &[GraphName<'_>],
@@ -565,6 +613,10 @@ fn create_node(
 /// Stages one new relationship with no properties and returns its identity.
 /// Either endpoint may be a node this statement created; neither may be one
 /// it deleted.
+#[allow(
+    clippy::result_large_err,
+    reason = "keep typed graph errors allocation-free on failure paths"
+)]
 fn create_relationship(
     scope: &mut MutationScope<'_, '_>,
     source: NodeId,
@@ -619,6 +671,10 @@ impl Edit<'_> {
 
 /// Converts one SET value into a storable property through the shared query
 /// assignment rules, then stages it. Null removes the property.
+#[allow(
+    clippy::result_large_err,
+    reason = "keep typed graph errors allocation-free on failure paths"
+)]
 fn assign<'s, 'v, 'm, 'g>(
     scope: &mut MutationScope<'s, '_>,
     view: &'s GraphReadView<'s, 'v, 'm, 'g>,
@@ -673,6 +729,10 @@ fn assign<'s, 'v, 'm, 'g>(
 }
 
 /// One charged, fully initialized list-conversion buffer.
+#[allow(
+    clippy::result_large_err,
+    reason = "keep typed graph errors allocation-free on failure paths"
+)]
 fn list_scratch<'m, 'g, T: Copy>(
     length: usize,
     fill: T,
@@ -691,6 +751,10 @@ fn list_scratch<'m, 'g, T: Copy>(
 /// what makes later items read earlier ones. The image is walked twice: once
 /// to measure every buffer exactly, and once to copy into buffers of exactly
 /// that size.
+#[allow(
+    clippy::result_large_err,
+    reason = "keep typed graph errors allocation-free on failure paths"
+)]
 fn rebuild<'s, 'v, 'm, 'g>(
     scope: &mut MutationScope<'s, '_>,
     view: &'s GraphReadView<'s, 'v, 'm, 'g>,
@@ -988,6 +1052,10 @@ fn unnamed() -> TreeError {
     clippy::too_many_arguments,
     reason = "the walk keeps the view, overlay, sink and both controls explicit"
 )]
+#[allow(
+    clippy::result_large_err,
+    reason = "keep typed graph errors allocation-free on failure paths"
+)]
 fn walk_node<'s, 'v, 'm, 'g>(
     source: &NodeSource<'s, 'v, 'm, 'g>,
     id: NodeId,
@@ -1077,6 +1145,10 @@ fn walk_node<'s, 'v, 'm, 'g>(
 #[allow(
     clippy::too_many_arguments,
     reason = "the walk keeps the view, overlay, sink and both controls explicit"
+)]
+#[allow(
+    clippy::result_large_err,
+    reason = "keep typed graph errors allocation-free on failure paths"
 )]
 fn walk_relationship<'s, 'v, 'm, 'g>(
     source: &RelationshipSource<'s, 'v, 'm, 'g>,

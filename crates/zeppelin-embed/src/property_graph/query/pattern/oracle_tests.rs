@@ -792,6 +792,10 @@ pub(super) fn expand(
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "fixture spells out independent bounds and resource owners"
+)]
 pub(super) fn bounded(
     input: TinyPattern,
     source: u32,

@@ -3,7 +3,7 @@
 use crate::graph::refine::RefinementPasses;
 use crate::kernels::Bit4Row;
 use crate::quant::Bit4Factors;
-use xxhash_rust::xxh3::{Xxh3, xxh3_64};
+use xxhash_rust::xxh3::Xxh3;
 
 /// Cache-line width frozen by the graph node-block v1 format.
 pub const CACHE_LINE_BYTES: usize = 128;
@@ -1055,14 +1055,6 @@ fn encode_node(
         .ok_or(GraphNodeError::ArithmeticOverflow)?;
     output.resize(end, 0);
     Ok(())
-}
-
-fn validate_code_padding(
-    layout: GraphNodeLayout,
-    node_id: u32,
-    codes: &[u8],
-) -> Result<(), GraphNodeError> {
-    validate_code_padding_controlled(layout, node_id, codes, &mut |_| true)
 }
 
 fn validate_code_padding_controlled(

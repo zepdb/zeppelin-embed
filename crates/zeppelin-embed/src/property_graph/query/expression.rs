@@ -623,6 +623,10 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
         self.test_poll.arm_cancel(polls, cancel);
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "keep typed graph errors allocation-free on failure paths"
+    )]
     pub(crate) fn evaluate<'a>(
         &'a mut self,
         expression: ExprId,
@@ -642,6 +646,10 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
         clippy::too_many_arguments,
         reason = "the scalar boundary keeps every authentic owner explicit"
     )]
+    #[allow(
+        clippy::result_large_err,
+        reason = "keep typed graph errors allocation-free on failure paths"
+    )]
     pub(crate) fn evaluate_with_overlay<'a>(
         &'a mut self,
         expression: ExprId,
@@ -659,6 +667,10 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
         clippy::too_many_arguments,
         reason = "the scalar boundary keeps every authentic owner explicit"
     )]
+    #[allow(
+        clippy::result_large_err,
+        reason = "keep typed graph errors allocation-free on failure paths"
+    )]
     fn evaluate_over<'a>(
         &'a mut self,
         expression: ExprId,
@@ -672,7 +684,7 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
         self.reset();
         let result: Result<ScratchCell, ExpressionFailure> = (|| {
             view.validate_expression_owner(context)?;
-            if self.memory != context.memory() as *const _
+            if !std::ptr::eq(self.memory, context.memory())
                 || !std::ptr::eq(self.scratch.view, context.view())
                 || !input.belongs_to(context)
                 || input.columns() != schema.slots().len()

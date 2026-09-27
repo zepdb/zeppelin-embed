@@ -396,7 +396,9 @@ impl<'c> Oracle<'c> {
     }
 }
 
-fn hit_bits(hits: &[OracleHit]) -> Vec<(u128, u64, u64, Option<u64>, Option<u64>)> {
+type HitBits = (u128, u64, u64, Option<u64>, Option<u64>);
+
+fn hit_bits(hits: &[OracleHit]) -> Vec<HitBits> {
     hits.iter()
         .map(|hit| {
             (
@@ -677,7 +679,7 @@ fn ze63_exact_hybrid_matches_full_eligible_union_oracle() {
             match (hit.vector, hit.lexical) {
                 (None, Some(_)) => text_only_hits += 1,
                 (Some(_), None) => vector_only_hits += 1,
-                (Some(_), Some(score)) if score == 0.0 => nonmatching_text_hits += 1,
+                (Some(_), Some(0.0)) => nonmatching_text_hits += 1,
                 _ => {}
             }
         }

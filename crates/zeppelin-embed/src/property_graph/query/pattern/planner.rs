@@ -52,9 +52,7 @@ fn safe_source_rank(operators: &[Operator<'_>], node: PlanNodeId, depth: usize) 
     if depth >= MAX_PLAN_DEPTH {
         return None;
     }
-    let Some(operator) = operators.get(node.0 as usize) else {
-        return None;
-    };
+    let operator = operators.get(node.0 as usize)?;
     match operator.kind {
         OperatorKind::LookupNode { .. }
         | OperatorKind::LookupRelationship { .. }

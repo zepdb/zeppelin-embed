@@ -163,7 +163,7 @@ pub(crate) struct TreeTraceReservation<'a> {
 /// the cursor. Backing is declared before its reservation so it drops first.
 pub(crate) struct TreeReadBuffer<'a> {
     output: Vec<u8>,
-    reservation: CapacityReservation<'a>,
+    _reservation: CapacityReservation<'a>,
 }
 impl TreeReadBuffer<'_> {
     pub(crate) fn as_slice(&self) -> &[u8] {
@@ -429,7 +429,7 @@ impl<'a> TreeResources<'a> {
         output.resize(bytes, 0);
         Ok(TreeReadBuffer {
             output,
-            reservation,
+            _reservation: reservation,
         })
     }
     #[cfg(feature = "graph-cypher")]
@@ -787,30 +787,6 @@ fn checked_page<'a>(
         }
     }
     Ok(page)
-}
-
-/// Resolve and fully validate one directory page for a bounded descendant trace.
-pub(crate) fn trace_page<'s>(
-    source: &'s impl BlockSource,
-    root: DirectoryRoot,
-    reference: PhysicalRef,
-    lower: Option<Key<'_>>,
-    upper: Option<Key<'_>>,
-    resources: &mut TreeResources<'_>,
-) -> Result<(super::FramedPage<'s>, usize), TreeError> {
-    let block = checked_block(source, root, reference, resources)?;
-    let bytes = block.payload();
-    let page = checked_page(
-        source,
-        root,
-        block.identity(),
-        bytes,
-        lower,
-        upper,
-        resources,
-    )?;
-    let cells = count(bytes)?;
-    Ok((page, cells))
 }
 
 /// Fully validate one directory page inside a scoped source callback and

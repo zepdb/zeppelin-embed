@@ -1,4 +1,10 @@
-#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+#![allow(
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_used,
+    clippy::indexing_slicing,
+    reason = "test assertions and fixed fixture indices"
+)]
 
 use super::super::Value;
 use super::*;
@@ -2064,7 +2070,7 @@ fn native_result_directed_probe_can_fire() {
         "release",
         "oracle.can-fire",
     ];
-    let report = super::test_support::run_actual_probe(0x1565_eed)
+    let report = super::test_support::run_actual_probe(0x0156_5eed)
         .expect("actual native result directed probe");
     assert_eq!(report.observations, report.expected);
     assert_eq!(report.receipts.len(), RECEIPTS.len());
@@ -2075,7 +2081,7 @@ fn native_result_directed_probe_can_fire() {
     let mut perturbed = report.observations.clone();
     perturbed[0].1 ^= 1;
     assert_ne!(perturbed, report.expected);
-    let paired = super::test_support::run_actual_probe(0x1565_eed)
+    let paired = super::test_support::run_actual_probe(0x0156_5eed)
         .expect("paired actual native result directed probe");
     assert_eq!(paired, report);
 }

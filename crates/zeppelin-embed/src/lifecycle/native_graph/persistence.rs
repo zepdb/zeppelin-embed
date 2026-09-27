@@ -419,6 +419,10 @@ pub(super) fn next_artifact(
     ArtifactId::new(value).map_err(|_| NativeGraphError::Invalid("reserved artifact identity"))
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "independent resource owners and lifetimes are explicit at this private seam"
+)]
 pub(super) fn catalog_payload<'a>(
     memory: &'a StorageMemory<'a>,
     control: &QueryControl,
@@ -490,6 +494,10 @@ pub(super) fn catalog_payload<'a>(
     Ok(payload)
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "independent resource owners and lifetimes are explicit at this private seam"
+)]
 fn empty_catalog<'a>(
     memory: &'a StorageMemory<'a>,
     control: &QueryControl,

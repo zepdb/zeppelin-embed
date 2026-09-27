@@ -78,10 +78,12 @@ struct FaultSchedule {
     fires: u64,
 }
 
+type SyncGate = Arc<Mutex<Option<(Arc<Barrier>, Arc<Barrier>)>>>;
+
 #[derive(Default)]
 pub(crate) struct RecordingVfs {
     events: Arc<Mutex<Vec<DurabilityEvent>>>,
-    wal_sync_gate: Arc<Mutex<Option<(Arc<Barrier>, Arc<Barrier>)>>>,
+    wal_sync_gate: SyncGate,
     faults: Arc<Mutex<FaultSchedule>>,
     after_create: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     list_calls: AtomicU64,
@@ -92,7 +94,7 @@ struct RecordingFile {
     inner: Box<dyn VfsFile>,
     path: PathBuf,
     events: Arc<Mutex<Vec<DurabilityEvent>>>,
-    wal_sync_gate: Arc<Mutex<Option<(Arc<Barrier>, Arc<Barrier>)>>>,
+    wal_sync_gate: SyncGate,
     faults: Arc<Mutex<FaultSchedule>>,
 }
 
@@ -2349,35 +2351,35 @@ fn ze39_fresh_mixed_commit_is_durable_and_coherent() {
 }
 #[cfg_attr(test, test)]
 fn ze39_retained_reader_and_new_admission_observe_whole_generations() {
-    let _ = run_ze39_retained_reader_and_new_admission_observe_whole_generations();
+    run_ze39_retained_reader_and_new_admission_observe_whole_generations();
 }
 #[cfg_attr(test, test)]
 fn ze39_noop_replay_and_mixed_receipts_do_not_publish_extra_work() {
-    let _ = run_ze39_noop_replay_and_mixed_receipts_do_not_publish_extra_work();
+    run_ze39_noop_replay_and_mixed_receipts_do_not_publish_extra_work();
 }
 #[cfg_attr(test, test)]
 fn ze39_checkpoint_thresholds_and_failure_preserve_acknowledged_state() {
-    let _ = run_ze39_checkpoint_thresholds_and_failure_preserve_acknowledged_state();
+    run_ze39_checkpoint_thresholds_and_failure_preserve_acknowledged_state();
 }
 #[cfg_attr(test, test)]
 fn ze39_protection_capture_and_maintenance_recheck_are_atomic() {
-    let _ = run_ze39_protection_capture_and_maintenance_recheck_are_atomic();
+    run_ze39_protection_capture_and_maintenance_recheck_are_atomic();
 }
 #[cfg_attr(test, test)]
 fn ze39_precommit_failure_keeps_graph_and_path_ownership_private() {
-    let _ = run_ze39_precommit_failure_keeps_graph_and_path_ownership_private();
+    run_ze39_precommit_failure_keeps_graph_and_path_ownership_private();
 }
 #[cfg_attr(test, test)]
 fn ze39_commit_attempt_errors_are_indeterminate_and_stop_admission() {
-    let _ = run_ze39_commit_attempt_errors_are_indeterminate_and_stop_admission();
+    run_ze39_commit_attempt_errors_are_indeterminate_and_stop_admission();
 }
 #[cfg_attr(test, test)]
 fn ze39_result_preparation_and_postcommit_cancel_obey_commit_boundary() {
-    let _ = run_ze39_result_preparation_and_postcommit_cancel_obey_commit_boundary();
+    run_ze39_result_preparation_and_postcommit_cancel_obey_commit_boundary();
 }
 #[cfg_attr(test, test)]
 fn ze39_fresh_create_failures_never_adopt_or_replace_identity() {
-    let _ = run_ze39_fresh_create_failures_never_adopt_or_replace_identity();
+    run_ze39_fresh_create_failures_never_adopt_or_replace_identity();
 }
 
 #[cfg(feature = "test-support")]

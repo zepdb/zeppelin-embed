@@ -47,8 +47,8 @@ fn view(store: &Store) -> View {
     }
 }
 
-fn build<'a, 'm>(
-    analyzer: &'a Analyzer,
+fn build<'m>(
+    analyzer: &Analyzer,
     memory: &'m StorageMemory<'m>,
     resources: &mut TreeResources<'_>,
     texts: &[&str],
@@ -216,7 +216,6 @@ fn lexical_rows_skip_analyzed_empty_and_match_region_golden() {
     drop(prepared);
     drop(resources);
     drop(memory);
-    drop(writer);
     drop(shared);
     store.close().expect("close store");
 }
@@ -286,7 +285,6 @@ fn lexical_positions_keep_gaps_and_stacked_variants() {
     drop(prepared);
     drop(resources);
     drop(memory);
-    drop(writer);
     drop(shared);
     store.close().expect("close");
 }
@@ -365,7 +363,6 @@ fn lexical_owner_mismatch_and_failed_builder_are_terminal() {
     drop(resources);
     drop(other);
     drop(memory);
-    drop(writer);
     drop(shared);
     store.close().expect("close");
 }
@@ -580,7 +577,6 @@ fn lexical_decode_rejects_corruption_without_retaining_memory() {
     assert_eq!(memory.reserved_bytes(), baseline);
     drop(resources);
     drop(memory);
-    drop(writer);
     drop(shared);
     store.close().expect("close");
 }

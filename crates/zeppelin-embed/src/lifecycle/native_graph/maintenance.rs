@@ -228,17 +228,17 @@ fn capture_record_at(
             index -= 1;
         }
     }
-    if let Some(wal) = capture.wal() {
-        if index == 0 {
-            return Some(ProtectedRecord {
-                class: ProtectedClass::Wal,
-                value: ProtectedValue::WalAuthority {
-                    identity: wal.identity(),
-                    first_sequence: wal.first_sequence(),
-                    bytes: u64::try_from(wal.bytes()).ok()?,
-                },
-            });
-        }
+    if let Some(wal) = capture.wal()
+        && index == 0
+    {
+        return Some(ProtectedRecord {
+            class: ProtectedClass::Wal,
+            value: ProtectedValue::WalAuthority {
+                identity: wal.identity(),
+                first_sequence: wal.first_sequence(),
+                bytes: u64::try_from(wal.bytes()).ok()?,
+            },
+        });
     }
     None
 }

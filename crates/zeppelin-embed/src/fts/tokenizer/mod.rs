@@ -404,10 +404,7 @@ impl Analyzer {
         &self,
         text: &str,
         policy: &mut P,
-    ) -> Result<
-        super::control::GuardedVec<'m, pipeline::ControlledToken<'m, P::Charge>, P::Charge>,
-        P::Error,
-    >
+    ) -> Result<pipeline::ControlledTokens<'m, P::Charge>, P::Error>
     where
         P::Error: From<TokenizerError>,
     {

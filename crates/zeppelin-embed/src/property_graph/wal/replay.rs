@@ -120,8 +120,16 @@ pub(crate) struct FramedCaptureEnvelope<'a> {
     pub(crate) complete_bytes: usize,
 }
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "framed WAL capture preserves inline terminal evidence"
+)]
 pub(crate) enum FramedCaptureStep<'a> {
     Envelope(FramedCaptureEnvelope<'a>),
+    #[allow(
+        dead_code,
+        reason = "retain typed terminal WAL evidence beside the framed envelope"
+    )]
     End(ReplayEnd),
 }
 /// Latched private recovery scanner borrowing immutable WAL and checkpoint state.
