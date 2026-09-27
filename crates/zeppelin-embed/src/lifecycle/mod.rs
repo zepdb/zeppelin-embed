@@ -16,6 +16,7 @@ pub(crate) mod native_graph;
 mod pool;
 pub(crate) mod prepared;
 mod prepared_lexical;
+mod reindex;
 pub(crate) mod rescored_scan;
 #[cfg(test)]
 mod shared_bound_tests;
@@ -2573,8 +2574,20 @@ impl std::error::Error for StoreError {
     }
 }
 
+/// Changes completed by this open. Format versions remain manifest v2 / WAL v1.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct OpenMigrations {
+    /// A nullable schema extension was committed.
+    pub schema_added: bool,
+    /// An incomplete final WAL record was cut atomically.
+    pub wal_tail_cut: bool,
+    /// Generation visible when open completed.
+    pub generation: u64,
+}
+
 /// One explicitly closeable embedded-store handle.
 pub struct Store {
+    open_migrations: OpenMigrations,
     pub(crate) directory: PathBuf,
     pub(crate) vfs: Arc<dyn crate::vfs::Vfs>,
     pub(crate) clock: Arc<dyn MonotonicClock>,
@@ -2881,6 +2894,7 @@ impl Store {
         #[cfg(test)]
         let teardown_probe = Arc::new(close::TeardownProbe::new());
         Ok(Self {
+            open_migrations: OpenMigrations::default(),
             directory: path.to_path_buf(),
             vfs,
             clock,
@@ -3030,10 +3044,12 @@ impl Store {
             });
         }
         let writer_lock = acquire_writer_lock(path, options.access_mode)?;
+        let mut wal_tail_cut = false;
         if options.access_mode == AccessMode::ReadWrite {
             // The single writer owns the WAL tail: a crash mid-append is cut
             // off here so recovery sees whole batches only (ZE-216).
-            crate::ingest::cut_interrupted_append(vfs.as_ref(), path, durability_policy)?;
+            wal_tail_cut =
+                crate::ingest::cut_interrupted_append(vfs.as_ref(), path, durability_policy)?;
         }
         let manifest_path = path.join(crate::manifest::io::MANIFEST_FILE);
         let manifest_exists = match vfs.open(&manifest_path) {
@@ -3200,7 +3216,12 @@ impl Store {
             }
             (snapshot, background, teardown_probe)
         };
-        let store = Self {
+        let mut store = Self {
+            open_migrations: OpenMigrations {
+                schema_added: schema_evolved,
+                wal_tail_cut,
+                generation: active.generation,
+            },
             directory: path.to_path_buf(),
             vfs,
             clock,
@@ -3278,6 +3299,15 @@ impl Store {
                 );
             }
         }
+        store.open_migrations.generation = store
+            .active
+            .lock()
+            .map_err(|_| StoreError::Synchronization {
+                component: "active segment",
+            })?
+            .as_ref()
+            .ok_or(StoreError::Closed)?
+            .generation;
         Ok(store)
     }
 
@@ -3337,6 +3367,11 @@ impl Store {
         } else {
             prior.to_vec()
         }
+    }
+
+    /// Returns the immutable report of changes completed by this open.
+    pub fn open_migrations(&self) -> OpenMigrations {
+        self.open_migrations
     }
 
     /// Returns the published embedding and tokenizer identity, or `None`

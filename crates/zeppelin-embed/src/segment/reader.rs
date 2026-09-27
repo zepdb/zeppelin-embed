@@ -2610,9 +2610,8 @@ fn parse_segment_header(
         if let Some(kind) = RegionKind::from_id(entry.kind)
             && let Some(family) = kind.family()
         {
-            FormatRegistry::require(family.id(), entry.version).map_err(|error| {
-                FormatError::new(artifact, FormatCheck::Version, error.to_string())
-            })?;
+            FormatRegistry::require(family.id(), entry.version)
+                .map_err(|error| crate::format::frame::registry_error(artifact, error))?;
         }
         entries.push(entry);
     }

@@ -4564,6 +4564,66 @@ pub extern "C" fn ze_query_result_free(result: *mut ZeQueryResult) -> ZeErrorCod
     })
 }
 
+/// Returns changes completed by this handle's open; repeated calls return the same report.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_open_migrations(
+    handle: ZeHandle,
+    out_report: *mut ZeOpenMigrations,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_open_migrations");
+        finish(
+            Some(handle),
+            (|| {
+                let abi_size = marshal::validate_output(out_report)?;
+                let access = registry::lookup(handle)?;
+                let report = access.store.open_migrations();
+                marshal::write_output(
+                    out_report,
+                    ZeOpenMigrations {
+                        abi_size,
+                        abi_reserved: 0,
+                        generation: report.generation,
+                        changes: u32::from(report.schema_added)
+                            | (u32::from(report.wal_tail_cut) << 1),
+                        manifest_version: 2,
+                        wal_version: 1,
+                    },
+                );
+                Ok(())
+            })(),
+        )
+    })
+}
+
+/// Rebuilds text postings from stored text using the current tokenizer.
+/// Seals pending writes first. Close and reopen after a publication failure.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_reindex_text(
+    handle: ZeHandle,
+    out_report: *mut ZeGenerationReport,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_reindex_text");
+        finish(
+            Some(handle),
+            registry::with_writer(handle, |access| {
+                let abi_size = marshal::validate_output(out_report)?;
+                let generation = access.store.reindex_text().map_err(FfiError::store)?;
+                marshal::write_output(
+                    out_report,
+                    ZeGenerationReport {
+                        abi_size,
+                        abi_reserved: 0,
+                        generation,
+                    },
+                );
+                Ok(())
+            }),
+        )
+    })
+}
+
 /// Seals the active segment. Cancellable through `request.cancel_token`.
 #[unsafe(no_mangle)]
 pub extern "C" fn ze_seal(
@@ -5033,6 +5093,7 @@ pub extern "C" fn ze_error_code_name(code: i32) -> *const c_char {
             53 => b"ZE_ERR_DUPLICATE_TARGET\0",
             54 => b"ZE_ERR_IDENTITY_OVERFLOW\0",
             55 => b"ZE_ERR_REVISION_CONFLICT\0",
+            56 => b"ZE_ERR_FORMAT_TOO_NEW\0",
             _ => b"ZE_ERR_UNKNOWN\0",
         };
         bytes.as_ptr().cast::<c_char>()

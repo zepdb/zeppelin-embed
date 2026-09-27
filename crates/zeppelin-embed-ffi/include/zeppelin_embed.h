@@ -348,6 +348,10 @@ enum ze_error_code
      written.
      */
     ZE_ERR_REVISION_CONFLICT = 55,
+    /*
+     A persisted format is newer than this build can read.
+     */
+    ZE_ERR_FORMAT_TOO_NEW = 56,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -2636,22 +2640,34 @@ typedef struct ZeSnippetSourceRanges {
 } ZeSnippetSourceRanges;
 
 /*
- Explicit seal or idle-merge cancellation request.
+ Immutable changes completed during open. No allocation needs freeing.
  */
-typedef struct ZeSealRequest {
+typedef struct ZeOpenMigrations {
     /*
-     Caller-provided structure size.
+     Caller-provided struct size.
      */
     uint32_t abi_size;
     /*
-     Must be zero in ABI v1.
+     Must be zero.
      */
     uint32_t abi_reserved;
     /*
-     Optional generation-tagged cancellation token.
+     Generation visible at completion of open.
      */
-    ze_cancel_token cancel_token;
-} ZeSealRequest;
+    uint64_t generation;
+    /*
+     Bit 0: additive schema committed; bit 1: incomplete WAL tail cut.
+     */
+    uint32_t changes;
+    /*
+     Manifest format before and after these changes (currently 2).
+     */
+    uint16_t manifest_version;
+    /*
+     WAL format before and after these changes (currently 1).
+     */
+    uint16_t wal_version;
+} ZeOpenMigrations;
 
 /*
  A generation returned by seal or idle merge.
@@ -2670,6 +2686,24 @@ typedef struct ZeGenerationReport {
      */
     uint64_t generation;
 } ZeGenerationReport;
+
+/*
+ Explicit seal or idle-merge cancellation request.
+ */
+typedef struct ZeSealRequest {
+    /*
+     Caller-provided structure size.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero in ABI v1.
+     */
+    uint32_t abi_reserved;
+    /*
+     Optional generation-tagged cancellation token.
+     */
+    ze_cancel_token cancel_token;
+} ZeSealRequest;
 
 /*
  Consistent-snapshot request: the directory `ze_snapshot` writes.
@@ -3398,6 +3432,19 @@ ze_error_code ze_query_snippets_free(struct ZeQuerySnippets *snippets);
  no-op. `result` is caller-owned; only its `hits` allocation is released.
  */
 ze_error_code ze_query_result_free(struct ZeQueryResult *result);
+
+/*
+ Returns changes completed by this handle's open; repeated calls return the same report.
+ */
+ze_error_code ze_open_migrations(ze_handle handle,
+                                 struct ZeOpenMigrations *out_report);
+
+/*
+ Rebuilds text postings from stored text using the current tokenizer.
+ Seals pending writes first. Close and reopen after a publication failure.
+ */
+ze_error_code ze_reindex_text(ze_handle handle,
+                              struct ZeGenerationReport *out_report);
 
 /*
  Seals the active segment. Cancellable through `request.cancel_token`.

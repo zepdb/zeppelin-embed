@@ -396,3 +396,23 @@ fn drop_epoch_commits_the_manifest_before_unlinking() {
         vec![DropEvent::ManifestCommit, DropEvent::Unlink]
     );
 }
+
+#[test]
+fn reindex_preserves_retained_embedding_epochs() {
+    let fixture = publish_two_epoch_fixture();
+    let store = Store::open(
+        fixture.directory.path(),
+        OpenOptions::default().with_epoch(fixture.epoch_a.clone()),
+    )
+    .expect("open");
+    let before = search_bits(&store);
+    store.reindex_text().expect("reindex all epochs");
+    assert_eq!(search_bits(&store), before);
+    store
+        .switch_epoch_alias(fixture.epoch_b.identity())
+        .expect("retained epoch B remains complete");
+    store
+        .switch_epoch_alias(fixture.epoch_a.identity())
+        .expect("epoch A remains complete");
+    assert_eq!(search_bits(&store), before);
+}

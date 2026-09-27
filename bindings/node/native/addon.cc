@@ -3013,6 +3013,55 @@ napi_value MergeStore(napi_env env, napi_callback_info info) {
   });
 }
 
+napi_value ReindexTextStore(napi_env env, napi_callback_info info) {
+  return Guard(env, [&]() -> napi_value {
+    size_t argc = 0;
+    napi_value receiver;
+    if (!NapiOk(env,
+                napi_get_cb_info(env, info, &argc, nullptr, &receiver, nullptr),
+                "read seal receiver")) {
+      return nullptr;
+    }
+    NativeStore *store = UnwrapStore(env, receiver);
+    if (store == nullptr)
+      return nullptr;
+    ZeGenerationReport report{};
+    report.abi_size = sizeof(report);
+    const ze_error_code status = ze_reindex_text(store->handle, &report);
+    if (status != ZE_OK)
+      return ThrowZeppelin(env, store->handle, status);
+    napi_value result;
+    napi_value generation;
+    if (!NapiOk(env, napi_create_object(env, &result), "create seal report") ||
+        !NapiOk(env,
+                napi_create_bigint_uint64(env, report.generation, &generation),
+                "create generation") ||
+        !SetNamed(env, result, "generation", generation))
+      return nullptr;
+    return result;
+  });
+}
+
+napi_value OpenMigrations(napi_env env, napi_callback_info info) {
+  return Guard(env, [&]() -> napi_value {
+    size_t argc = 0;
+    napi_value receiver;
+    if (!NapiOk(env, napi_get_cb_info(env, info, &argc, nullptr, &receiver, nullptr), "read migrations receiver")) return nullptr;
+    NativeStore *store = UnwrapStore(env, receiver);
+    if (store == nullptr) return nullptr;
+    ZeOpenMigrations report{};
+    report.abi_size = sizeof(report);
+    const ze_error_code status = ze_open_migrations(store->handle, &report);
+    if (status != ZE_OK) return ThrowZeppelin(env, store->handle, status);
+    napi_value result, generation, changes;
+    if (!NapiOk(env, napi_create_object(env, &result), "create migrations") ||
+        !NapiOk(env, napi_create_bigint_uint64(env, report.generation, &generation), "create generation") ||
+        !NapiOk(env, napi_create_uint32(env, report.changes, &changes), "create changes") ||
+        !SetNamed(env, result, "generation", generation) || !SetNamed(env, result, "changes", changes)) return nullptr;
+    return result;
+  });
+}
+
 // One in-flight `snapshot(target)`. The copy runs on a libuv worker thread,
 // so JavaScript keeps writing through the same handle while it runs; the
 // engine blocks writers only while it pins the generation. The reference
@@ -3929,6 +3978,8 @@ napi_value Initialize(napi_env env, napi_value exports) {
        nullptr},
       {"query", nullptr, Query, nullptr, nullptr, nullptr, napi_default,
        nullptr},
+      {"openMigrations", nullptr, OpenMigrations, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"reindexText", nullptr, ReindexTextStore, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"seal", nullptr, SealStore, nullptr, nullptr, nullptr, napi_default,
        nullptr},
       {"merge", nullptr, MergeStore, nullptr, nullptr, nullptr, napi_default,

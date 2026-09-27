@@ -196,17 +196,23 @@ function attach(store, open, autoSealRows, autoMerge) {
   store._autoSealRows = autoSealRows;
   store._autoMerge = autoMerge;
   store._unsealedWrites = 0;
-  if (autoSealRows > 0 || autoMerge) {
-    try {
-      store.seal();
-    } catch (error) {
-      try {
-        store._native.close();
-      } catch {
-        // The seal error is the one to report.
-      }
-      throw error;
+  try {
+    const report = callNative(() => store._native.openMigrations());
+    const migrations = [];
+    const add = (kind, format, generation, description) => migrations.push(Object.freeze({
+      kind, fromFormat: format, toFormat: format, generation, description,
+    }));
+    if (report.changes & 2) add('wal-tail-cut', 'wal/1', report.generation, 'Removed an incomplete final WAL record.');
+    if (report.changes & 1) add('schema-added', 'manifest/2', report.generation, 'Committed added nullable attributes; existing rows read null.');
+    if (autoSealRows > 0 || autoMerge) {
+      const sealed = callNative(() => store._native.seal());
+      if (sealed.generation > report.generation) add('wal-rotated', 'wal/1', sealed.generation, 'Sealed replayed writes and rotated the absorbed WAL to a header.');
+      if (autoMerge) store.merge();
     }
+    Object.defineProperty(store, 'migrations', {value: Object.freeze(migrations), enumerable: true});
+  } catch (error) {
+    try { store._native.close(); } catch { /* Preserve the open error. */ }
+    throw error;
   }
   return store;
 }
@@ -321,6 +327,12 @@ class Store {
    * prefix it covers, so a later open does not replay those writes. An empty
    * active segment is a no-op that returns the current generation.
    */
+  reindexText() {
+    const report = callNative(() => this._native.reindexText());
+    this._unsealedWrites = 0;
+    return report;
+  }
+
   seal() {
     const report = callNative(() => this._native.seal());
     const finalReport = this._autoMerge ? this.merge() : report;

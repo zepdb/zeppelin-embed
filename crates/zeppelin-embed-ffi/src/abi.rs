@@ -115,6 +115,8 @@ pub enum ZeErrorCode {
     /// A document's expected-revision condition did not hold; nothing was
     /// written.
     ZeErrRevisionConflict = 55,
+    /// A persisted format is newer than this build can read.
+    ZeErrFormatTooNew = 56,
 }
 
 /// Opaque generation-tagged store handle.
@@ -1681,4 +1683,22 @@ pub struct ZeSnippetSourceRanges {
     pub highlights: *const ZeSnippetHighlight,
     /// Number of highlights; zero for a hit without a snippet.
     pub highlight_count: usize,
+}
+
+/// Immutable changes completed during open. No allocation needs freeing.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ZeOpenMigrations {
+    /// Caller-provided struct size.
+    pub abi_size: u32,
+    /// Must be zero.
+    pub abi_reserved: u32,
+    /// Generation visible at completion of open.
+    pub generation: u64,
+    /// Bit 0: additive schema committed; bit 1: incomplete WAL tail cut.
+    pub changes: u32,
+    /// Manifest format before and after these changes (currently 2).
+    pub manifest_version: u16,
+    /// WAL format before and after these changes (currently 1).
+    pub wal_version: u16,
 }

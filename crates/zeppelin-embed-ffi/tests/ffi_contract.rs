@@ -163,6 +163,7 @@ const ERROR_CODE_GOLDEN: &[(ZeErrorCode, i32, &str)] = &[
         55,
         "ZE_ERR_REVISION_CONFLICT",
     ),
+    (ZeErrorCode::ZeErrFormatTooNew, 56, "ZE_ERR_FORMAT_TOO_NEW"),
 ];
 
 fn header_error_codes() -> Vec<(String, i32)> {
@@ -605,6 +606,8 @@ const POISON_TABLE_NAMES: &[&str] = &[
     "ze_schema_column",
     "ze_seal",
     "ze_merge_sealed",
+    "ze_open_migrations",
+    "ze_reindex_text",
     "ze_search",
     "ze_search_filtered",
     "ze_snapshot",
@@ -1074,6 +1077,14 @@ fn poison_function_table() -> Vec<(&'static str, PoisonCall)> {
             let mut report: ZeEpochDropReport = common::sized_zeroed();
             ze_epoch_drop(context.store.handle, &request, &mut report)
         }),
+        ("ze_open_migrations", |context| {
+            let mut report: ZeOpenMigrations = common::sized_zeroed();
+            ze_open_migrations(context.store.handle, &mut report)
+        }),
+        ("ze_reindex_text", |context| {
+            let mut report: ZeGenerationReport = common::sized_zeroed();
+            ze_reindex_text(context.store.handle, &mut report)
+        }),
         ("ze_seal", |context| {
             let request = ZeSealRequest {
                 abi_size: size_of::<ZeSealRequest>() as u32,
@@ -1482,4 +1493,15 @@ fn namespace_tokenizer_open_catches_its_named_panic_probe() {
         ze_namespace_open_with_tokenizer(std::ptr::null(), 2, std::ptr::null_mut()),
         ZeErrorCode::ZeErrInvalidArgument
     );
+}
+
+#[test]
+fn open_migrations_layout_is_frozen() {
+    assert_eq!(size_of::<ZeOpenMigrations>(), 24);
+    assert_eq!(offset_of!(ZeOpenMigrations, abi_size), 0);
+    assert_eq!(offset_of!(ZeOpenMigrations, abi_reserved), 4);
+    assert_eq!(offset_of!(ZeOpenMigrations, generation), 8);
+    assert_eq!(offset_of!(ZeOpenMigrations, changes), 16);
+    assert_eq!(offset_of!(ZeOpenMigrations, manifest_version), 20);
+    assert_eq!(offset_of!(ZeOpenMigrations, wal_version), 22);
 }

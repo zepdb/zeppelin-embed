@@ -245,6 +245,14 @@ const ABI_REGISTRY: &[AbiEntry] = &[
         coverage: AbiCoverage::InvalidProbe(probe_query_snippets_free),
     },
     AbiEntry {
+        name: "ze_open_migrations",
+        coverage: AbiCoverage::InvalidProbe(probe_open_migrations),
+    },
+    AbiEntry {
+        name: "ze_reindex_text",
+        coverage: AbiCoverage::InvalidProbe(probe_reindex_text),
+    },
+    AbiEntry {
         name: "ze_seal",
         coverage: AbiCoverage::DetailedMatrix,
     },
@@ -1397,4 +1405,13 @@ fn probe_query_snippet_source_ranges(_: &MatrixContext) -> ProbeResult {
         0,
         &mut ranges,
     ))
+}
+fn probe_open_migrations(context: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_open_migrations(
+        context.store.handle,
+        std::ptr::null_mut(),
+    ))
+}
+fn probe_reindex_text(context: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_reindex_text(context.store.handle, std::ptr::null_mut()))
 }

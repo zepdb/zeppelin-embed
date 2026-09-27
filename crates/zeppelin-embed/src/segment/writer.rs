@@ -995,3 +995,75 @@ fn publish_segment(
 fn temporary_path(directory: &Path, id: SegmentId) -> PathBuf {
     directory.join(format!(".{}.tmp", id.file_name()))
 }
+
+/// Rebuilds only postings; all other source regions remain byte-identical.
+pub(crate) fn reindex_segment(
+    vfs: &dyn Vfs,
+    directory: &Path,
+    input: &super::reader::SegmentReader,
+    id: SegmentId,
+    analyzer: &crate::fts::tokenizer::Analyzer,
+    policy: DurabilityPolicy,
+) -> Result<SegmentMeta, SegmentError> {
+    use crate::fts::{
+        index::{Document, SegmentIndex},
+        sealed::SealedSegment,
+    };
+    let text = input.stored_text()?;
+    if text.is_none() && input.postings()?.is_some() {
+        return Err(SegmentError::Geometry(
+            "cannot reindex postings without stored text".to_owned(),
+        ));
+    }
+    let mut index = SegmentIndex::new();
+    for row in 0..input.meta().row_count as usize {
+        let source = match text.as_ref() {
+            Some(text) => text
+                .row(row)
+                .ok_or_else(|| SegmentError::Geometry("missing stored text row".to_owned()))?,
+            None => None,
+        };
+        let document = source.map_or_else(Document::new, Document::with_text);
+        index
+            .push_document(analyzer, &document)
+            .map_err(|error| SegmentError::Geometry(error.to_string()))?;
+    }
+    let postings = SealedSegment::seal(&index)
+        .map_err(|error| SegmentError::Geometry(error.to_string()))?
+        .encode_region()
+        .map_err(|error| SegmentError::Geometry(error.to_string()))?;
+    let mut copied = Vec::new();
+    for entry in input.directory() {
+        if entry.kind != RegionKind::Postings.id() && entry.kind != RegionKind::ChecksumTable.id() {
+            copied.push(SegmentCopiedRegion {
+                kind: entry.kind,
+                version: entry.version,
+                bytes: input.region_by_id(entry.kind)?,
+            });
+        }
+    }
+    copied.push(SegmentCopiedRegion {
+        kind: RegionKind::Postings.id(),
+        version: FormatFamily::Postings.current_version(),
+        bytes: &postings,
+    });
+    copied.sort_by_key(|region| region.kind);
+    let columns = input.columns()?;
+    let alive = input.alive()?;
+    // encode_regions uses only identity/geometry; vector bytes are copied above.
+    let build = SegmentBuild {
+        id,
+        scheme: input.meta().scheme,
+        dims: input.meta().dims,
+        codes: &[],
+        factors: SegmentFactors::F32,
+        rescore: &[],
+        columns: &columns,
+        alive: &alive,
+    };
+    let bytes = encode_regions(build, &[], &copied)?;
+    let mut meta = publish_segment(vfs, directory, build, policy, &bytes)?;
+    meta.epoch_id = input.meta().epoch_id;
+    meta.clustering_key_range = input.meta().clustering_key_range;
+    Ok(meta)
+}

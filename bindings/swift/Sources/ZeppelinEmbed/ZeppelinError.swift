@@ -57,4 +57,5 @@ public enum ZeppelinError: Int32, Error, Sendable, CaseIterable {
     case duplicateTarget = 53
     case identityOverflow = 54
     case revisionConflict = 55
+    case formatTooNew = 56
 }

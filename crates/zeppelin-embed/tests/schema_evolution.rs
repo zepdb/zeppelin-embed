@@ -663,7 +663,7 @@ fn open_crashing_at(path: &Path, crash_at: usize) -> (bool, usize) {
 #[test]
 fn a_crash_at_any_step_of_the_evolving_open_leaves_the_old_or_the_new_schema() {
     let base = tempdir().expect("base store");
-    build_release_one_store(base.path(), 4, 6);
+    copy_store(&v0_4_2_fixture(), base.path());
 
     let probe = tempdir().expect("probe store");
     copy_store(base.path(), probe.path());
@@ -696,8 +696,18 @@ fn a_crash_at_any_step_of_the_evolving_open_leaves_the_old_or_the_new_schema() {
 
         let evolved = Store::open(scratch.path(), options(release_two_schema()))
             .unwrap_or_else(|error| panic!("evolve after crash at {crash_at}: {error}"));
-        assert_eq!(matching_ids(&evolved, &Predicate::IsNull(LANG)), ids(1..=6));
-        assert_eq!(matching_ids(&evolved, &Predicate::Exists(RANK)), ids(1..=6));
+        assert_eq!(
+            evolved.open_migrations().schema_added,
+            schema == release_one_schema()
+        );
+        assert_eq!(
+            matching_ids(&evolved, &Predicate::IsNull(LANG)),
+            ids(1..=12)
+        );
+        assert_eq!(
+            matching_ids(&evolved, &Predicate::Exists(RANK)),
+            ids(1..=12)
+        );
         evolved.close().expect("close evolved");
     }
     assert!(saw_old && saw_new, "the matrix spans the commit point");
@@ -718,6 +728,8 @@ fn a_store_written_by_v0_4_2_opens_with_an_added_attribute_and_filters_on_it() {
 
     let store = Store::open(directory.path(), options(release_two_schema()))
         .expect("open the v0.4.2 store with added attributes");
+    assert!(store.open_migrations().schema_added);
+    assert!(!store.open_migrations().wal_tail_cut);
     assert_eq!(store.schema(), &release_two_schema());
     assert_eq!(matching_ids(&store, &Predicate::IsNull(LANG)), ids(1..=12));
     ingest_release_two(
@@ -763,6 +775,7 @@ fn a_store_written_by_v0_4_2_opens_with_an_added_attribute_and_filters_on_it() {
     let reopened = Store::open(directory.path(), options(release_two_schema()))
         .expect("reopen the evolved fixture");
     check(&reopened);
+    assert!(!reopened.open_migrations().schema_added);
     reopened.close().expect("close reopened fixture");
 }
 

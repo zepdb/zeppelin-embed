@@ -64,6 +64,9 @@ impl FfiError {
 
     pub(crate) fn store(error: zeppelin_embed::lifecycle::StoreError) -> Self {
         let message = error.to_string();
+        if let Some(code) = format_version_code(&error) {
+            return Self::new(code, message);
+        }
         let code = match &error {
             zeppelin_embed::lifecycle::StoreError::SchemaMismatch { .. } => {
                 ZeErrorCode::ZeErrSchemaMismatch
@@ -517,4 +520,54 @@ mod tests {
         let overflow = FfiError::query(QueryError::Scan(ScanError::ArithmeticOverflow));
         assert_eq!(overflow.code, ZeErrorCode::ZeErrInvalidArgument);
     }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod format_version_tests {
+    use super::*;
+    #[test]
+    fn old_and_new_manifest_versions_have_specific_codes() {
+        for (version, expected) in [(1_u16, "ZeErrFormatVersion"), (3, "ZeErrFormatTooNew")] {
+            let mut bytes = vec![0_u8; 32];
+            bytes.get_mut(..8).unwrap().copy_from_slice(b"ZEPEMBED");
+            bytes
+                .get_mut(8..10)
+                .unwrap()
+                .copy_from_slice(&10_u16.to_le_bytes());
+            bytes
+                .get_mut(10..12)
+                .unwrap()
+                .copy_from_slice(&version.to_le_bytes());
+            let error =
+                zeppelin_embed::manifest::decode_manifest("manifest.ze", &bytes).unwrap_err();
+            let error = FfiError::store(zeppelin_embed::lifecycle::StoreError::Manifest(error));
+            assert_eq!(format!("{:?}", error.code), expected);
+        }
+    }
+}
+
+fn format_version_code(error: &(dyn std::error::Error + 'static)) -> Option<ZeErrorCode> {
+    use zeppelin_embed::format::frame::FormatError;
+    use zeppelin_embed::wal::header::WalHeaderError;
+    let range = error
+        .downcast_ref::<FormatError>()
+        .and_then(FormatError::version_range)
+        .or_else(|| match error.downcast_ref::<WalHeaderError>() {
+            Some(WalHeaderError::UnsupportedVersion {
+                version,
+                minimum,
+                maximum,
+                ..
+            }) => Some((*version, *minimum, *maximum)),
+            _ => None,
+        });
+    if let Some((found, _, maximum)) = range {
+        return Some(if found > maximum {
+            ZeErrorCode::ZeErrFormatTooNew
+        } else {
+            ZeErrorCode::ZeErrFormatVersion
+        });
+    }
+    error.source().and_then(format_version_code)
 }

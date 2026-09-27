@@ -84,6 +84,7 @@ pub struct FormatError {
     check: FormatCheck,
     values: FormatValues,
     detail: String,
+    version_range: Option<(u16, u16, u16)>,
 }
 
 impl FormatError {
@@ -93,6 +94,7 @@ impl FormatError {
         Self {
             artifact: artifact.into(),
             check,
+            version_range: None,
             values: FormatValues::None,
             detail: detail.into(),
         }
@@ -104,6 +106,7 @@ impl FormatError {
         Self {
             artifact: artifact.into(),
             check: FormatCheck::Family,
+            version_range: None,
             values: FormatValues::Family { expected, actual },
             detail: format!("expected {expected}, got {actual}"),
         }
@@ -120,6 +123,7 @@ impl FormatError {
         Self {
             artifact: artifact.into(),
             check,
+            version_range: None,
             values: FormatValues::Checksum { expected, actual },
             detail: format!("expected {expected:#018x}, computed {actual:#018x}"),
         }
@@ -141,6 +145,12 @@ impl FormatError {
     #[must_use]
     pub const fn values(&self) -> &FormatValues {
         &self.values
+    }
+
+    /// Returns (found, minimum, maximum) for an unsupported format version.
+    #[must_use]
+    pub const fn version_range(&self) -> Option<(u16, u16, u16)> {
+        self.version_range
     }
 
     /// Returns the value-bearing failure detail.
@@ -348,8 +358,18 @@ pub fn decode_artifact<'a>(
     Ok(DecodedArtifact { header, payload })
 }
 
-fn registry_error(artifact: &str, error: RegistryError) -> FormatError {
-    FormatError::new(artifact, FormatCheck::Version, error.to_string())
+pub(crate) fn registry_error(artifact: &str, error: RegistryError) -> FormatError {
+    let mut result = FormatError::new(artifact, FormatCheck::Version, error.to_string());
+    if let RegistryError::UnsupportedVersion {
+        version,
+        minimum,
+        maximum,
+        ..
+    } = error
+    {
+        result.version_range = Some((version, minimum, maximum));
+    }
+    result
 }
 
 pub(crate) fn read_u16(artifact: &str, bytes: &[u8], offset: usize) -> Result<u16, FormatError> {

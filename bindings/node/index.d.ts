@@ -29,6 +29,17 @@ export interface OpenOptions {
   readonly autoMerge?: boolean;
 }
 
+/** An actual change completed during this open, not a history of earlier opens.
+ * Same from/to versions mean recovery or schema evolution within that format.
+ */
+export interface Migration {
+  readonly kind: 'schema-added' | 'wal-tail-cut' | 'wal-rotated';
+  readonly fromFormat: 'manifest/2' | 'wal/1';
+  readonly toFormat: 'manifest/2' | 'wal/1';
+  readonly generation: bigint;
+  readonly description: string;
+}
+
 export interface SealReport {
   /** The committed generation; unchanged when there was nothing to seal. */
   readonly generation: bigint;
@@ -602,6 +613,21 @@ export declare class UnsupportedRuntimeError extends Error {
  */
 export declare class Store {
   constructor(path: string, options?: OpenOptions);
+  /** Changes completed by open, including its optional auto-seal. Empty for an
+   * unchanged or read-only open. Supported Node baseline: 0.4.2. Manifest v1
+   * predates Node releases and is refused with ZE_ERR_FORMAT_VERSION; newer
+   * unsupported formats fail with ZE_ERR_FORMAT_TOO_NEW. No epoch is inferred.
+   */
+  readonly migrations: readonly Migration[];
+  /** Rebuilds every sealed text index from stored text with the current tokenizer.
+   * Seals active writes first; preserves IDs, revisions, vectors and metadata.
+   * Requires a writer. Missing text needed by existing postings fails loudly.
+   * Retained embedding epochs are preserved; a different retained tokenizer
+   * epoch returns ZE_ERR_EPOCH_MISMATCH instead of reinterpreting its text.
+   * Empty stores are a no-op. On publication failure, close and reopen before
+   * retrying. Sealing and reindex publication are separate durable commits.
+   */
+  reindexText(): SealReport;
   /** Writes `documents` as one atomic batch; see the class notes. */
   ingest(documents: readonly Document[], dimension: number): MutationReport;
   /**
