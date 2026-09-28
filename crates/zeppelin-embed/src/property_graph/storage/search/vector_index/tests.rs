@@ -1703,8 +1703,8 @@ fn native_vector_index_publication_reopen_required_refs() {
         );
         let metadata = std::fs::metadata(&artifact).expect("index artifact metadata");
         let mut permissions = metadata.permissions();
-        use std::os::unix::fs::PermissionsExt;
-        permissions.set_mode(permissions.mode() | 0o200);
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
         std::fs::set_permissions(&artifact, permissions).expect("make corruption fixture writable");
         let mut file = std::fs::OpenOptions::new()
             .read(true)
