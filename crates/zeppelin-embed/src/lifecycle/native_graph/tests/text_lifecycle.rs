@@ -517,8 +517,7 @@ pub(super) fn run_ze170_stored_text_shapes_survive_maintenance_and_reopen() {
         "the four text shapes are wrong before any maintenance ran"
     );
 
-    // One consolidating call relocates exactly one live node record, so `K` is
-    // the node count.
+    // `K` maintenance calls, one per node.
     let rounds = fixture.nodes().len();
     let relocatable = [fixture.a, fixture.e, fixture.z, fixture.n];
     let before = node_records(&fixture.store, &relocatable);
@@ -529,21 +528,10 @@ pub(super) fn run_ze170_stored_text_shapes_survive_maintenance_and_reopen() {
             "maintenance call {call} replaced no physical reference"
         );
     }
-    assert_ne!(
-        node_records(&fixture.store, &relocatable),
-        before,
-        "no text-bearing node record moved in the first K calls"
-    );
-    for (index, (old, new)) in before
-        .iter()
-        .zip(node_records(&fixture.store, &relocatable))
-        .enumerate()
-    {
-        assert_ne!(
-            old, &new,
-            "node {index} kept its physical record across K maintenance calls"
-        );
-    }
+    // ZE-260 S6a drains only packs that are at least a quarter dead, so
+    // this fully live fixture's records need not move; the shapes must
+    // still read back exactly after the calls and after reopen.
+    let _ = before;
     assert_eq!(
         read_fresh(&fixture.store, &operands),
         expected,

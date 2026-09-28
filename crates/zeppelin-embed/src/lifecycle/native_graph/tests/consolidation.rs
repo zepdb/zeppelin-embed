@@ -2851,7 +2851,10 @@ fn pending_reclaim_candidates_or_empty_root(
     }
 }
 
-fn reclaim_candidate_path(directory: &Path, candidate: &ArtifactDescriptor) -> std::path::PathBuf {
+pub(super) fn reclaim_candidate_path(
+    directory: &Path,
+    candidate: &ArtifactDescriptor,
+) -> std::path::PathBuf {
     if candidate.family == 19 {
         directory.join(format!("graph-wal-{:032x}.ze", candidate.artifact.get()))
     } else {

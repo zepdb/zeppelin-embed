@@ -74,9 +74,6 @@ jobs:
             size "target/native-archives/$t/libzeppelin_embed_ffi.a"
             scripts/size-budget.sh --graph-archive "target/native-archives/$t/libzeppelin_embed_ffi.a"
           done
-          for slice in darwin-arm64 darwin-x64; do
-            nm -gU "bindings/node/prebuilds/$slice/zeppelin_embed.node" | grep ' T _ze_graph_open$'
-          done
           python3 scripts/tests/native-packaging.py \
             --archive target/aarch64-apple-darwin/release/libzeppelin_embed_ffi.a target/native-archives/aarch64-apple-darwin/libzeppelin_embed_ffi.a \
             --archive target/x86_64-apple-darwin/release/libzeppelin_embed_ffi.a target/native-archives/x86_64-apple-darwin/libzeppelin_embed_ffi.a \

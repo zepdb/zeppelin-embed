@@ -552,11 +552,7 @@ fn ze106_read_only_child_recovers_torn_tail_and_pending_intent_without_disk_muta
     // disk, and the WAL still carries the torn tail.
     for candidate in &candidates {
         assert!(
-            crate::property_graph::storage::allocation::artifact_path(
-                &fixture.path,
-                candidate.artifact
-            )
-            .exists(),
+            super::consolidation::reclaim_candidate_path(&fixture.path, candidate).exists(),
             "pending reclaim candidate was already swept before the read-only open"
         );
     }
@@ -595,11 +591,7 @@ fn ze106_read_only_child_recovers_torn_tail_and_pending_intent_without_disk_muta
     resumed.close().expect("close resumed store");
     for candidate in &candidates {
         assert!(
-            !crate::property_graph::storage::allocation::artifact_path(
-                &fixture.path,
-                candidate.artifact
-            )
-            .exists(),
+            !super::consolidation::reclaim_candidate_path(&fixture.path, candidate).exists(),
             "writable resume left a pending reclaim candidate on disk"
         );
     }
