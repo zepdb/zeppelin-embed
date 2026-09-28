@@ -82,7 +82,6 @@ jobs:
       - name: Install the graph header test generator
         run: cargo install cbindgen --version 0.29.4 --locked
       - name: Run the graph suites against the x86_64 target
-        continue-on-error: true
         run: |
           cargo test --locked --target x86_64-apple-darwin -p zeppelin-embed-ffi --features graph-cypher --test ffi_graph_entry --test ffi_graph_contract --test ffi_graph_layout --test ffi_graph_header
           cargo test --locked --target x86_64-apple-darwin -p zeppelin-embed-cypher
@@ -92,7 +91,6 @@ jobs:
       # writer at seeded points and verifies the store; its per-round results
       # are kept with every run, including each release run.
       - run: npm test
-        continue-on-error: true
         working-directory: bindings/node
         env:
           ZE_CRASH_EVIDENCE: ${{ runner.temp }}/crash-safety-darwin-arm64.json
@@ -225,7 +223,6 @@ jobs:
       - name: Record Windows native static libraries
         run: cargo rustc --locked --target x86_64-pc-windows-msvc -p zeppelin-embed-ffi --features graph-cypher --crate-type staticlib -- --print native-static-libs
       - name: Run the graph suites natively on Windows
-        continue-on-error: true
         # pwsh, not bash: Git's /usr/bin/link shadows the MSVC linker.
         shell: pwsh
         run: |
@@ -239,7 +236,6 @@ jobs:
           cargo test --locked -p zeppelin-embed --lib --features graph-cypher lifecycle::native_graph
       # On Windows the crash-safety suite's kill is TerminateProcess.
       - run: npm test
-        continue-on-error: true
         working-directory: bindings/node
         env:
           ZE_CRASH_EVIDENCE: ${{ runner.temp }}/crash-safety-win32-x64.json
@@ -267,7 +263,6 @@ jobs:
           if-no-files-found: error
 
   electron-package:
-    continue-on-error: true
     name: Signed Electron lifecycle (${{ matrix.arch }})
     needs: package
     runs-on: macos-14
@@ -302,7 +297,6 @@ jobs:
           if-no-files-found: error
 
   electron-isolation:
-    continue-on-error: true
     name: Electron and Node isolation (${{ matrix.arch }})
     needs: package
     runs-on: macos-14
