@@ -181,7 +181,7 @@ final class ZeppelinStoreTests: XCTestCase {
     }
 
     func testEveryGeneratedErrorCodeHasATypedSwiftCase() {
-        XCTAssertEqual(ZeppelinError.allCases.map(\.rawValue), Array(0...34))
+        XCTAssertEqual(ZeppelinError.allCases.map(\.rawValue), Array(0...57))
     }
 
     func testSwiftMatchesRustCrossBindingParityFixture() async throws {
