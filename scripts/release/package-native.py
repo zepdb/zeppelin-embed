@@ -76,7 +76,8 @@ def clean_coff_archive(source, output):
                                 str(member)], check=True)
             members.append(member)
         response = work / 'members.rsp'
-        response.write_text('\n'.join(shlex.quote(str(member)) for member in members), encoding='utf-8')
+        # Forward slashes: POSIX response quoting treats backslashes as escapes.
+        response.write_text('\n'.join(shlex.quote(member.as_posix()) for member in members), encoding='utf-8')
         # Rebuild both COFF linker indexes after member lengths changed.
         output.unlink()
         subprocess.run([llvm_tool('llvm-ar'), '--format=coff', '--rsp-quoting=posix',
