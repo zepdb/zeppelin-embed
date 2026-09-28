@@ -2019,6 +2019,66 @@ typedef struct ZeGraphRelationshipType {
 } ZeGraphRelationshipType;
 
 /*
+ Per-open graph writer maintenance policy.
+ */
+typedef struct ZeGraphMaintenancePolicy {
+    /*
+     Exact sizeof this descriptor.
+     */
+    uint32_t abi_size;
+    /*
+     0 disables automatic maintenance; 1 enables it.
+     */
+    uint32_t automatic;
+    /*
+     Trigger after this many committed artifact bytes; at least 1 MiB.
+     */
+    uint64_t reclaim_after_bytes;
+} ZeGraphMaintenancePolicy;
+
+/*
+ Owned scalar report for one bounded maintenance step; no free is needed.
+ */
+typedef struct ZeGraphMaintainReport {
+    /*
+     Exact sizeof this descriptor, initialized by the caller.
+     */
+    uint32_t abi_size;
+    /*
+     1 when the cycle finishes; 0 when another bounded step is needed.
+     */
+    uint32_t cycle_complete;
+    /*
+     Last published generation.
+     */
+    uint64_t generation;
+    /*
+     Physical references replaced.
+     */
+    uint64_t replaced_physical_refs;
+    /*
+     Artifact bytes written.
+     */
+    uint64_t new_pack_bytes;
+    /*
+     Live bytes copied from selected packs.
+     */
+    uint64_t relocated_bytes;
+    /*
+     Packs selected for draining.
+     */
+    uint64_t drained_packs;
+    /*
+     Bytes covered by reclamation.
+     */
+    uint64_t reclaimed_bytes;
+    /*
+     Bytes actually removed.
+     */
+    uint64_t removed_bytes;
+} ZeGraphMaintainReport;
+
+/*
  Fixed expression descriptor. Fields not named by kind are zero. Aggregate uses operation, has_operand, left and distinct; unary uses operation/left; binary uses operation/left/right.
  */
 typedef struct ZeGraphExpression {
@@ -2740,6 +2800,22 @@ ze_error_code ze_graph_open_with_relationship_types(const struct ZeGraphOpenRequ
                                                     const struct ZeGraphRelationshipType *rules,
                                                     size_t rule_count,
                                                     struct ZeGraphHandle *out_handle);
+
+/*
+ Sets the per-open writer policy. Read-only handles and thresholds below
+ 1 MiB are refused. A concurrent writer call returns ZE_ERR_BUSY.
+ */
+ze_error_code ze_graph_set_maintenance_policy(struct ZeGraphHandle handle,
+                                              const struct ZeGraphMaintenancePolicy *policy);
+
+/*
+ Performs one bounded maintenance step. Loop until cycle_complete is 1
+ to finish a cycle. The caller initializes out_report.abi_size; the report
+ owns no allocations. A concurrent writer call returns ZE_ERR_BUSY.
+ */
+ze_error_code ze_graph_maintain(struct ZeGraphHandle handle,
+                                const struct ZeGraphControl *control,
+                                struct ZeGraphMaintainReport *out_report);
 
 #ifdef __cplusplus
 }  // extern "C"

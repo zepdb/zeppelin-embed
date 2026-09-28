@@ -74,3 +74,28 @@ fn declaration_open_panic_has_no_handle_to_poison() {
     );
     assert_eq!(existing.close(), ZeErrorCode::ZeOk);
 }
+
+#[test]
+fn graph_maintenance_entries_poison_their_graph_handle() {
+    let _guard = probe_guard();
+    for name in ["ze_graph_maintain", "ze_graph_set_maintenance_policy"] {
+        let mut store = GraphTestStore::create();
+        let call = || {
+            if name == "ze_graph_maintain" {
+                let mut report = common::sized_zeroed();
+                ze_graph_maintain(store.handle, std::ptr::null(), &mut report)
+            } else {
+                let policy = ZeGraphMaintenancePolicy {
+                    abi_size: 16,
+                    automatic: 0,
+                    reclaim_after_bytes: 1024 * 1024,
+                };
+                ze_graph_set_maintenance_policy(store.handle, &policy)
+            }
+        };
+        arm_abi_panic_probe(name);
+        assert_eq!(call(), ZeErrorCode::ZeErrPanic, "{name}");
+        assert_eq!(call(), ZeErrorCode::ZeErrPoisoned, "{name}");
+        assert_eq!(store.close(), ZeErrorCode::ZeErrPoisoned);
+    }
+}

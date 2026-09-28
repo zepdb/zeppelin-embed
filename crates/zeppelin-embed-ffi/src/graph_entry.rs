@@ -121,3 +121,37 @@ pub extern "C" fn ze_graph_open_with_relationship_types(
         )
     })
 }
+
+/// Sets the per-open writer policy. Read-only handles and thresholds below
+/// 1 MiB are refused. A concurrent writer call returns ZE_ERR_BUSY.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_graph_set_maintenance_policy(
+    handle: ZeGraphHandle,
+    policy: *const super::ZeGraphMaintenancePolicy,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle.token), ZeErrorCode::ZeErrPanic, {
+        crate::run_named_panic_probe("ze_graph_set_maintenance_policy");
+        crate::finish(
+            Some(handle.token),
+            crate::graph_abi::set_maintenance_policy(handle, policy),
+        )
+    })
+}
+
+/// Performs one bounded maintenance step. Loop until cycle_complete is 1
+/// to finish a cycle. The caller initializes out_report.abi_size; the report
+/// owns no allocations. A concurrent writer call returns ZE_ERR_BUSY.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_graph_maintain(
+    handle: ZeGraphHandle,
+    control: *const super::ZeGraphControl,
+    out_report: *mut super::ZeGraphMaintainReport,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle.token), ZeErrorCode::ZeErrPanic, {
+        crate::run_named_panic_probe("ze_graph_maintain");
+        crate::finish(
+            Some(handle.token),
+            crate::graph_abi::maintain(handle, control, out_report),
+        )
+    })
+}

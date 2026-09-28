@@ -730,6 +730,89 @@ fn outcome_of(outcome: Outcome) -> SuccessfulOutcome {
     }
 }
 
+// These two frozen descriptors use their second u32 as data, not abi_reserved.
+fn validate_maintenance_descriptor<T>(pointer: *const T) -> Result<(), FfiError> {
+    if pointer.is_null() || pointer.align_offset(std::mem::align_of::<T>()) != 0 {
+        return Err(invalid(
+            "graph maintenance descriptor is null or misaligned",
+        ));
+    }
+    if marshal::read_abi_size(pointer) as usize != std::mem::size_of::<T>() {
+        return Err(invalid("graph maintenance descriptor abi_size mismatch"));
+    }
+    Ok(())
+}
+
+pub(crate) fn set_maintenance_policy(
+    handle: ZeGraphHandle,
+    policy: *const crate::ZeGraphMaintenancePolicy,
+) -> Result<(), FfiError> {
+    with_graph_writer(handle, |access| {
+        validate_maintenance_descriptor(policy)?;
+        let policy = marshal::read_value(policy);
+        if policy.automatic > 1 || policy.reclaim_after_bytes < 1024 * 1024 {
+            return Err(invalid(
+                "automatic must be 0 or 1 and reclaim_after_bytes at least 1 MiB",
+            ));
+        }
+        access
+            .store
+            .store
+            .set_maintenance_policy(zeppelin_embed::property_graph::GraphMaintenancePolicy {
+                automatic: policy.automatic == 1,
+                reclaim_after_bytes: policy.reclaim_after_bytes,
+            })
+            .map_err(|error| store_error(&error, false))
+    })
+}
+
+pub(crate) fn maintain(
+    handle: ZeGraphHandle,
+    control: *const ZeGraphControl,
+    out: *mut crate::ZeGraphMaintainReport,
+) -> Result<(), FfiError> {
+    with_graph_writer(handle, |access| {
+        validate_maintenance_descriptor(out.cast_const())?;
+        let size = std::mem::size_of::<crate::ZeGraphMaintainReport>() as u32;
+        let empty = crate::ZeGraphMaintainReport {
+            abi_size: size,
+            cycle_complete: 0,
+            generation: 0,
+            replaced_physical_refs: 0,
+            new_pack_bytes: 0,
+            relocated_bytes: 0,
+            drained_packs: 0,
+            reclaimed_bytes: 0,
+            removed_bytes: 0,
+        };
+        // SAFETY: descriptor validation checked size and alignment; caller provides writable storage.
+        unsafe {
+            out.write(empty);
+        }
+        let control = read_control(control)?;
+        let report = access
+            .store
+            .store
+            .maintain(&control)
+            .map_err(|error| store_error(&error, false))?;
+        // SAFETY: same validated caller-owned report, with no retained pointers.
+        unsafe {
+            out.write(crate::ZeGraphMaintainReport {
+                abi_size: size,
+                cycle_complete: u32::from(report.cycle_complete),
+                generation: report.generation.get(),
+                replaced_physical_refs: report.replaced_physical_refs,
+                new_pack_bytes: report.new_pack_bytes,
+                relocated_bytes: report.relocated_bytes,
+                drained_packs: u64::from(report.drained_packs),
+                reclaimed_bytes: report.reclaimed_bytes,
+                removed_bytes: report.removed_bytes,
+            });
+        }
+        Ok(())
+    })
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -769,6 +852,18 @@ mod tests {
         let held = access.writer.lock().unwrap();
         assert_eq!(
             with_graph_writer(handle, |_| Ok(())).unwrap_err().code,
+            ZeErrorCode::ZeErrBusy
+        );
+        assert_eq!(
+            set_maintenance_policy(handle, std::ptr::null())
+                .unwrap_err()
+                .code,
+            ZeErrorCode::ZeErrBusy
+        );
+        assert_eq!(
+            maintain(handle, std::ptr::null(), std::ptr::null_mut())
+                .unwrap_err()
+                .code,
             ZeErrorCode::ZeErrBusy
         );
         drop(held);

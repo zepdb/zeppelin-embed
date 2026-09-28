@@ -1578,3 +1578,27 @@ fn cascade_declaration_has_frozen_layout() {
         abi_size: 0, abi_reserved: 4, parent_index: 8, child_index: 12, attribute_id: 16
     });
 }
+
+// Graph handles have their own registry; never send them through legacy poison calls.
+#[cfg(feature = "graph-cypher")]
+const GRAPH_MAINTENANCE_POISON_TABLE: &[&str] =
+    &["ze_graph_maintain", "ze_graph_set_maintenance_policy"];
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn graph_maintenance_exports_and_frozen_layouts() {
+    assert_layout!(ZeGraphMaintenancePolicy, 16, 8, { abi_size: 0, automatic: 4, reclaim_after_bytes: 8 });
+    assert_layout!(ZeGraphMaintainReport, 64, 8, { abi_size: 0, cycle_complete: 4, generation: 8, replaced_physical_refs: 16, new_pack_bytes: 24, relocated_bytes: 32, drained_packs: 40, reclaimed_bytes: 48, removed_bytes: 56 });
+    for name in GRAPH_MAINTENANCE_POISON_TABLE {
+        assert!(
+            include_str!("../include/zeppelin_graph_contracts.h")
+                .contains(&format!("ze_error_code {name}("))
+        );
+        assert!(
+            include_str!("../symbols.allowlist")
+                .lines()
+                .any(|symbol| symbol == *name)
+        );
+        assert!(include_str!("ffi_graph_poison.rs").contains(&format!("\"{name}\"")));
+    }
+}

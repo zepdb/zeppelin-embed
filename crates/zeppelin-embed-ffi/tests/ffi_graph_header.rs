@@ -131,7 +131,11 @@ fn legacy_header_and_exports_do_not_advertise_graph_contracts() {
             .lines()
             .filter(|s| s.starts_with("ze_graph_"))
             .collect::<Vec<_>>(),
-        ["ze_graph_open_with_relationship_types"]
+        [
+            "ze_graph_maintain",
+            "ze_graph_set_maintenance_policy",
+            "ze_graph_open_with_relationship_types"
+        ]
     );
 }
 

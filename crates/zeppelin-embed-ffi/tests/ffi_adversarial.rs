@@ -86,6 +86,16 @@ const DETAILED_MATRIX: &[(&str, MatrixCall)] = &[
 const ABI_REGISTRY: &[AbiEntry] = &[
     #[cfg(feature = "graph-cypher")]
     AbiEntry {
+        name: "ze_graph_maintain",
+        coverage: AbiCoverage::InvalidProbe(probe_graph_maintain),
+    },
+    #[cfg(feature = "graph-cypher")]
+    AbiEntry {
+        name: "ze_graph_set_maintenance_policy",
+        coverage: AbiCoverage::InvalidProbe(probe_graph_maintenance_policy),
+    },
+    #[cfg(feature = "graph-cypher")]
+    AbiEntry {
         name: "ze_graph_open_with_relationship_types",
         coverage: AbiCoverage::InvalidProbe(probe_graph_relationship_types),
     },
@@ -1478,4 +1488,22 @@ fn probe_namespace_declare_cascade(_: &MatrixContext) -> ProbeResult {
 }
 fn probe_namespace_delete_cascade(_: &MatrixContext) -> ProbeResult {
     ProbeResult::Status(ze_namespace_delete_cascade(std::ptr::null()))
+}
+
+#[cfg(feature = "graph-cypher")]
+fn probe_graph_maintain(_: &MatrixContext) -> ProbeResult {
+    let store = common::graph::GraphTestStore::create();
+    ProbeResult::Status(ze_graph_maintain(
+        store.handle,
+        std::ptr::null(),
+        std::ptr::null_mut(),
+    ))
+}
+#[cfg(feature = "graph-cypher")]
+fn probe_graph_maintenance_policy(_: &MatrixContext) -> ProbeResult {
+    let store = common::graph::GraphTestStore::create();
+    ProbeResult::Status(ze_graph_set_maintenance_policy(
+        store.handle,
+        std::ptr::null(),
+    ))
 }

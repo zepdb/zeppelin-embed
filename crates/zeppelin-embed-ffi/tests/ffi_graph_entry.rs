@@ -662,3 +662,101 @@ fn graph_relationship_declarations_validate_before_creation() {
     assert_eq!(ze_graph_open(&request, &mut handle), ZeErrorCode::ZeOk);
     assert_eq!(ze_graph_close(handle), ZeErrorCode::ZeOk);
 }
+
+#[test]
+fn ze_graph_set_maintenance_policy_rejects_a_zero_threshold() {
+    let store = GraphTestStore::create();
+    let mut policy: ZeGraphMaintenancePolicy = common::sized_zeroed();
+    assert_eq!(
+        ze_graph_set_maintenance_policy(store.handle, &policy),
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+    policy.reclaim_after_bytes = 1024 * 1024;
+    policy.automatic = 2;
+    assert_eq!(
+        ze_graph_set_maintenance_policy(store.handle, &policy),
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+    policy.automatic = 1;
+    assert_eq!(
+        ze_graph_set_maintenance_policy(store.handle, &policy),
+        ZeErrorCode::ZeOk
+    );
+}
+
+#[test]
+fn ze_graph_maintain_runs_one_step_and_reports() {
+    let mut store = GraphTestStore::create();
+    let mut policy: ZeGraphMaintenancePolicy = common::sized_zeroed();
+    policy.reclaim_after_bytes = 1024 * 1024;
+    assert_eq!(
+        ze_graph_set_maintenance_policy(store.handle, &policy),
+        ZeErrorCode::ZeOk
+    );
+    for i in 0..3 {
+        let mut builder = PoolBuilder::new();
+        let items = [single_node(&mut builder, &format!("n{i}"))];
+        let mut response = empty_response();
+        assert_eq!(
+            ze_graph_apply(
+                store.handle,
+                &batch_request(&items, &builder.pool()),
+                &mut response
+            ),
+            ZeErrorCode::ZeOk
+        );
+        assert_eq!(ze_graph_response_free(&mut response), ZeErrorCode::ZeOk);
+    }
+    assert_eq!(store.close(), ZeErrorCode::ZeOk);
+    let (code, handle) = graph_open(&store.path, MODE_READ_WRITE);
+    assert_eq!(code, ZeErrorCode::ZeOk);
+    store.handle = handle;
+    let mut complete = false;
+    for _ in 0..4 {
+        let before: std::collections::BTreeMap<_, _> = std::fs::read_dir(&store.path)
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                (entry.path(), entry.metadata().unwrap().len())
+            })
+            .collect();
+        let mut report: ZeGraphMaintainReport = common::sized_zeroed();
+        assert_eq!(
+            ze_graph_maintain(handle, std::ptr::null(), &mut report),
+            ZeErrorCode::ZeOk,
+            "{}",
+            last_error(handle.token)
+        );
+        let removed: u64 = before
+            .iter()
+            .filter(|(path, _)| !path.exists())
+            .map(|(_, bytes)| *bytes)
+            .sum();
+        assert_eq!(report.removed_bytes, removed);
+        assert!(report.generation >= 3);
+        if report.cycle_complete == 1 {
+            complete = true;
+            break;
+        }
+    }
+    assert!(complete);
+    let mut invalid: ZeGraphMaintainReport = common::sized_zeroed();
+    invalid.abi_size = 0;
+    assert_eq!(
+        ze_graph_maintain(handle, std::ptr::null(), &mut invalid),
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+    assert_eq!(store.close(), ZeErrorCode::ZeOk);
+    let (code, reader) = graph_open(&store.path, MODE_READ_ONLY);
+    assert_eq!(code, ZeErrorCode::ZeOk);
+    let mut report = common::sized_zeroed();
+    assert_eq!(
+        ze_graph_maintain(reader, std::ptr::null(), &mut report),
+        ZeErrorCode::ZeErrAccessMode
+    );
+    assert_eq!(
+        ze_graph_set_maintenance_policy(reader, &policy),
+        ZeErrorCode::ZeErrAccessMode
+    );
+    assert_eq!(ze_graph_close(reader), ZeErrorCode::ZeOk);
+}

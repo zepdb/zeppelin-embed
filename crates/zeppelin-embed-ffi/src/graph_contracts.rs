@@ -1415,6 +1415,42 @@ pub struct ZeGraphCompileLimits {
     pub path_hops: u32,
 }
 
+/// Per-open graph writer maintenance policy.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct ZeGraphMaintenancePolicy {
+    /// Exact sizeof this descriptor.
+    pub abi_size: u32,
+    /// 0 disables automatic maintenance; 1 enables it.
+    pub automatic: u32,
+    /// Trigger after this many committed artifact bytes; at least 1 MiB.
+    pub reclaim_after_bytes: u64,
+}
+
+/// Owned scalar report for one bounded maintenance step; no free is needed.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct ZeGraphMaintainReport {
+    /// Exact sizeof this descriptor, initialized by the caller.
+    pub abi_size: u32,
+    /// 1 when the cycle finishes; 0 when another bounded step is needed.
+    pub cycle_complete: u32,
+    /// Last published generation.
+    pub generation: u64,
+    /// Physical references replaced.
+    pub replaced_physical_refs: u64,
+    /// Artifact bytes written.
+    pub new_pack_bytes: u64,
+    /// Live bytes copied from selected packs.
+    pub relocated_bytes: u64,
+    /// Packs selected for draining.
+    pub drained_packs: u64,
+    /// Bytes covered by reclamation.
+    pub reclaimed_bytes: u64,
+    /// Bytes actually removed.
+    pub removed_bytes: u64,
+}
+
 #[path = "graph_entry.rs"]
 mod graph_entry;
 pub use graph_entry::*;
