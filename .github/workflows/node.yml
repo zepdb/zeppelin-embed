@@ -223,9 +223,11 @@ jobs:
       - name: Record Windows native static libraries
         run: cargo rustc --locked --target x86_64-pc-windows-msvc -p zeppelin-embed-ffi --features graph-cypher --crate-type staticlib -- --print native-static-libs
       - name: Run the graph suites natively on Windows
-        shell: bash
+        # pwsh, not bash: Git's /usr/bin/link shadows the MSVC linker.
+        shell: pwsh
         run: |
-          set -euo pipefail
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           cargo test --locked -p zeppelin-embed-ffi --features graph-cypher --test ffi_graph_entry --test ffi_graph_contract --test ffi_graph_layout
           cargo test --locked -p zeppelin-embed-cypher
           cargo test --locked -p zeppelin-embed --features graph-cypher --test graph_artifact

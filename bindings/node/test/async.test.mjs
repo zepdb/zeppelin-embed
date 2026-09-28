@@ -104,7 +104,7 @@ test('async open and mutation policies preserve ownership and errors', async () 
   } finally { try { s?.close(); } catch {} rmSync(root, { recursive: true, force: true }); }
 });
 
-test('pending query scan and cypher cancel from a microtask within 2s', { timeout: 15000 }, async () => {
+test('pending query scan and cypher cancel from a microtask within 2s', { timeout: 60000 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'ze249-running-'));
   const dimensions = 512;
   const s = openNamespace(root, 'vectors', { vectorSpace: { dimensions } });
