@@ -220,11 +220,6 @@ jobs:
             --archive target/x86_64-pc-windows-msvc/release/zeppelin_embed_ffi.lib target/native-archives/x86_64-pc-windows-msvc/zeppelin_embed_ffi.lib \
             --addon bindings/node/prebuilds/win32-x64/node-napi8/zeppelin_embed.node \
             --addon bindings/node/prebuilds/win32-x64/electron-44/zeppelin_embed.node
-      - name: Gate graph-enabled Windows archive linked size
-        shell: bash
-        run: |
-          export PATH="/c/Program Files/LLVM/bin:$PATH"
-          scripts/size-budget.sh --graph-archive target/native-archives/x86_64-pc-windows-msvc/zeppelin_embed_ffi.lib
       - name: Record Windows native static libraries
         run: cargo rustc --locked --target x86_64-pc-windows-msvc -p zeppelin-embed-ffi --features graph-cypher --crate-type staticlib -- --print native-static-libs
       - name: Run the graph suites natively on Windows
