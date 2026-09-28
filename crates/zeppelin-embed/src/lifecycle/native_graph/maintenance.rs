@@ -1931,6 +1931,10 @@ fn retire_completed_reclaim(
     let cleared = store.admit_native_read()?;
     let cleared_bundle = Arc::clone(cleared.bundle());
     super::write::checkpoint_current(store, writer, &cleared_bundle, &shared, control)?;
+    store
+        .native_graph
+        .pack_bytes_since_reclaim
+        .store(0, std::sync::atomic::Ordering::Relaxed);
     Ok(NativeMaintenanceReport {
         relocated_bytes: 0,
         drained_packs: 0,
@@ -2110,6 +2114,9 @@ pub(super) fn commit_with_limits(
         store_identity,
         generation,
         PackLimits {
+            // The subsequent WAL envelope reserves 16 MiB from the same
+            // 32 MiB storage allowance, so bound maintenance's output packs.
+            artifact_bytes: 2 * 1024 * 1024,
             streams: crate::property_graph::storage::prepared::PackStreams::ByLifetime,
             ..PackLimits::default()
         },

@@ -1973,6 +1973,13 @@ pub(super) fn protect_and_commit(
     control: &crate::lifecycle::QueryControl,
     audit_publication: bool,
 ) -> Result<NativeCommitAudit, NativeGraphError> {
+    let committed_bytes = transition
+        .artifacts
+        .iter()
+        .try_fold(0_u64, |sum, artifact| {
+            sum.checked_add(artifact.bytes.len() as u64)
+                .ok_or(NativeGraphError::IdentityExhausted)
+        })?;
     writer.can_protect(transition.artifacts.len())?;
     if transition.durable.is_some() {
         writer.can_protect_durable()?;
@@ -2075,6 +2082,11 @@ pub(super) fn protect_and_commit(
                 source: None,
             });
         }
+        let _ = store.native_graph.pack_bytes_since_reclaim.fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |bytes| Some(bytes.saturating_add(committed_bytes)),
+        );
         writer.complete_envelopes = next_complete_envelopes;
         Ok(())
     };
@@ -2436,6 +2448,7 @@ impl crate::lifecycle::Store {
         mut allow_pending_checkpoint: bool,
     ) -> Result<NativePreparedResult<M::Registration>, NativeGraphError> {
         self.native_graph.require_writable()?;
+        self.auto_maintain_native_graph(control)?;
         loop {
             let mut writer_slot = self.native_graph.writer.lock().map_err(|_| {
                 NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {

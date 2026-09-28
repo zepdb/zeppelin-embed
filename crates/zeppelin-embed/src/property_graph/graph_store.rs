@@ -30,6 +30,8 @@ use crate::property_graph::staging::{ItemReceipt, StageError, StructuredWrite};
 use crate::property_graph::{BatchDisposition, GraphGeneration};
 use std::path::{Path, PathBuf};
 
+mod maintenance;
+pub use maintenance::{GraphMaintenancePolicy, GraphMaintenanceReport};
 mod query;
 pub use query::{GraphPlanBacking, GraphQueryPlan};
 
@@ -216,7 +218,8 @@ impl GraphStore {
     ///
     /// A classified rejection. Unless
     /// [`nothing_committed`](GraphStoreError::nothing_committed) is false,
-    /// the store did not change.
+    /// the requested batch did not commit. Automatic maintenance may have
+    /// completed before the batch was admitted.
     pub fn apply_batch(
         &self,
         requests: &[StructuredWrite<'_, '_>],

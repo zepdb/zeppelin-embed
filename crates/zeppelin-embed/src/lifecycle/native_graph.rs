@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::Instant;
 
+pub(crate) mod automatic;
 mod base;
 mod maintenance;
 mod mutate;
@@ -664,6 +665,8 @@ pub(crate) struct NativeGraphPublication {
     changed: Condvar,
     accounting: Arc<super::stats::Accounting>,
     writer: Mutex<Option<write::NativeWriter>>,
+    pub(crate) pack_bytes_since_reclaim: std::sync::atomic::AtomicU64,
+    maintenance_policy: Mutex<crate::property_graph::GraphMaintenancePolicy>,
     read_only: AtomicBool,
     #[cfg(any(test, feature = "test-support"))]
     fail_next_publication: AtomicBool,
@@ -794,6 +797,8 @@ impl NativeGraphPublication {
             changed: Condvar::new(),
             accounting: Arc::clone(accounting),
             writer: Mutex::new(None),
+            pack_bytes_since_reclaim: std::sync::atomic::AtomicU64::new(0),
+            maintenance_policy: Mutex::new(crate::property_graph::GraphMaintenancePolicy::default()),
             read_only: AtomicBool::new(false),
             #[cfg(any(test, feature = "test-support"))]
             fail_next_publication: AtomicBool::new(false),

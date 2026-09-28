@@ -859,3 +859,178 @@ fn ze257_recovery_sizes_serial_inventory_from_actual_artifacts() {
     create_node(&store, "after-orphans", 1);
     store.close().unwrap();
 }
+
+#[test]
+fn ze260_maintenance_policy_and_public_step() {
+    use super::GraphMaintenancePolicy;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("graph");
+    let store = GraphStore::create(&path, options(), None).unwrap();
+    let policy = GraphMaintenancePolicy::default();
+    assert!(policy.automatic);
+    assert_eq!(policy.reclaim_after_bytes, 64 * 1024 * 1024);
+    assert_eq!(
+        store
+            .set_maintenance_policy(GraphMaintenancePolicy {
+                automatic: false,
+                reclaim_after_bytes: 0
+            })
+            .unwrap_err()
+            .kind(),
+        GraphStoreErrorKind::InvalidRequest
+    );
+    store
+        .set_maintenance_policy(GraphMaintenancePolicy {
+            automatic: false,
+            reclaim_after_bytes: 1024 * 1024,
+        })
+        .unwrap();
+    let report = store.maintain(&control()).unwrap();
+    assert!(report.cycle_complete);
+    assert_eq!(report.new_pack_bytes, 0);
+    store.close().unwrap();
+    let reader = GraphStore::open_read_only(&path, options(), None).unwrap();
+    assert_eq!(
+        reader.set_maintenance_policy(policy).unwrap_err().kind(),
+        GraphStoreErrorKind::ReadOnly
+    );
+    assert_eq!(
+        reader.maintain(&control()).unwrap_err().kind(),
+        GraphStoreErrorKind::ReadOnly
+    );
+}
+
+#[test]
+fn ze260_automatic_reclaim_failure_commits_nothing() {
+    use super::GraphMaintenancePolicy;
+    use std::sync::atomic::Ordering;
+    let dir = tempfile::tempdir().unwrap();
+    let store = GraphStore::create(dir.path().join("graph"), options(), None).unwrap();
+    create_node(&store, "seed", 1);
+    store
+        .set_maintenance_policy(GraphMaintenancePolicy {
+            automatic: true,
+            reclaim_after_bytes: 1024 * 1024,
+        })
+        .unwrap();
+    let native = store.store_for_test();
+    let written = native
+        .native_graph
+        .pack_bytes_since_reclaim
+        .load(Ordering::Relaxed);
+    assert!(written > 0);
+    native
+        .native_graph
+        .pack_bytes_since_reclaim
+        .store(1024 * 1024, Ordering::Relaxed);
+    let generation = native
+        .admit_native_read()
+        .unwrap()
+        .bundle()
+        .base()
+        .generation;
+    crate::lifecycle::native_graph::automatic::PARTIAL_FOLD.with(|limit| limit.set(true));
+    crate::property_graph::storage::inventory::force_next_incomplete_inventory_retirement();
+    let error = store.apply_batch(&[], &control()).unwrap_err();
+    crate::lifecycle::native_graph::automatic::PARTIAL_FOLD.with(|limit| limit.set(false));
+    assert!(error.nothing_committed());
+    assert_eq!(
+        native
+            .admit_native_read()
+            .unwrap()
+            .bundle()
+            .base()
+            .generation,
+        generation
+    );
+    store
+        .set_maintenance_policy(GraphMaintenancePolicy {
+            automatic: false,
+            reclaim_after_bytes: 1024 * 1024,
+        })
+        .unwrap();
+    store.apply_batch(&[], &control()).unwrap();
+    assert!(store.maintain_cycle(&control()).unwrap().cycle_complete);
+}
+
+#[test]
+#[ignore = "slow: ~200 s in release; run explicitly"]
+fn ze260_automatic_reclaim_keeps_an_append_only_store_bounded() {
+    use super::GraphMaintenancePolicy;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("graph");
+    let store = GraphStore::create(&path, options(), None).unwrap();
+    store
+        .set_maintenance_policy(GraphMaintenancePolicy {
+            automatic: true,
+            reclaim_after_bytes: 4 * 1024 * 1024,
+        })
+        .unwrap();
+    let image = CanonicalContents::node(&mut [], &mut [], Some("text"), None).unwrap();
+    let mut ids = Vec::new();
+    for batch in 0..20 {
+        let keys: Vec<_> = (0..100).map(|i| format!("n{}", batch * 100 + i)).collect();
+        let edge_key = format!("edge{batch}");
+        let result = with_local_refs(|refs| {
+            let mut writes: Vec<_> = keys
+                .iter()
+                .map(|key| StructuredWrite {
+                    key: node_key(key),
+                    revision: revision(1),
+                    operation: StructuredOperation::Create,
+                    image: Some(WriteImage::Node(&image)),
+                })
+                .collect();
+            writes.push(StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Relationship, "app", &edge_key).unwrap(),
+                revision: revision(1),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Relationship {
+                    source: NodeRef::Local(refs.node(0).unwrap()),
+                    target: NodeRef::Local(refs.node(1).unwrap()),
+                    relationship_type: GraphName::new("LINK").unwrap(),
+                    properties: &[],
+                }),
+            });
+            store.apply_batch(&writes, &control())
+        })
+        .unwrap();
+        ids.extend(result.receipts().iter().take(100).map(|r| r.entity));
+    }
+    for batch in 0..10 {
+        let keys: Vec<_> = (0..10).map(|i| format!("n{}", batch * 10 + i)).collect();
+        let writes: Vec<_> = keys
+            .iter()
+            .enumerate()
+            .map(|(i, key)| StructuredWrite {
+                key: node_key(key),
+                revision: revision(2),
+                operation: StructuredOperation::Put(ids[batch * 10 + i]),
+                image: Some(WriteImage::Node(&image)),
+            })
+            .collect();
+        store.apply_batch(&writes, &control()).unwrap();
+    }
+    let files = snapshot(&path);
+    assert!(files.values().map(Vec::len).sum::<usize>() <= 8_000_000);
+    assert!(files.len() <= 120);
+    store.close().unwrap();
+    let reopened = GraphStore::open(&path, options(), None).unwrap();
+    let nodes: Vec<_> = ids
+        .into_iter()
+        .map(|id| match id {
+            EntityId::Node(id) => id,
+            _ => panic!("node"),
+        })
+        .collect();
+    assert_eq!(
+        reopened
+            .get_nodes(&nodes, super::GraphGetOptions::default(), &control())
+            .unwrap()
+            .nodes()
+            .iter()
+            .filter(|node| node.is_some())
+            .count(),
+        2000
+    );
+}

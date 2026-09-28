@@ -258,6 +258,7 @@ impl crate::lifecycle::Store {
         F: FnOnce(S, &[ItemReceipt], Option<GraphGeneration>) -> T,
     {
         self.native_graph.require_writable()?;
+        self.auto_maintain_native_graph(control)?;
         let mut allow_pending_checkpoint = true;
         loop {
             let mut writer_slot = self.native_graph.writer.lock().map_err(|_| {

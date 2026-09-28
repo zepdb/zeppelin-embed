@@ -345,8 +345,11 @@ where
     })
 }
 
-pub(crate) const RELOCATION_LIMIT: usize = 4096;
-pub(crate) const RELOCATION_BYTES: u64 = 8 * 1024 * 1024;
+// Keep each maintenance pass bounded within its fixed 32 MiB storage allowance:
+// it also reserves a 16 MiB WAL envelope and census/selection scratch. Leftover
+// garbage beyond these caps drains on the next maintenance cycle.
+pub(crate) const RELOCATION_LIMIT: usize = 512;
+pub(crate) const RELOCATION_BYTES: u64 = 1024 * 1024;
 const SMALL_PACK_BYTES: u32 = 64 * 1024;
 const MERGE_MIN_PACKS: usize = 8;
 
@@ -647,7 +650,7 @@ where
 }
 
 /// Same-call hints only: losing them cannot change reclamation authority.
-pub(crate) const PAGE_RELOCATION_LIMIT: usize = 1024;
+pub(crate) const PAGE_RELOCATION_LIMIT: usize = 256;
 #[derive(Clone, Copy)]
 pub(crate) struct PageRelocation {
     pub(crate) kind: TreeKind,
