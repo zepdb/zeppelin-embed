@@ -7,8 +7,8 @@
 #include <functional>
 #include <memory>
 #include <new>
-#include <string>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -19,7 +19,8 @@
 
 namespace {
 
-constexpr napi_type_tag kStoreTag = {0xd0eaf8814cf24671ULL, 0x8592a010b60473eaULL};
+constexpr napi_type_tag kStoreTag = {0xd0eaf8814cf24671ULL,
+                                     0x8592a010b60473eaULL};
 
 struct NativeStore {
   ze_handle handle = 0;
@@ -348,8 +349,10 @@ void ExecuteNative(napi_env, void *data) {
   auto *work = static_cast<NativeWork *>(data);
   try {
     work->status = work->execute();
-    if (work->status == ZE_ERR_CLOSING) work->status = ZE_ERR_CLOSED;
-    if (work->status != ZE_OK) work->message = LastError(work->handle);
+    if (work->status == ZE_ERR_CLOSING)
+      work->status = ZE_ERR_CLOSED;
+    if (work->status != ZE_OK)
+      work->message = LastError(work->handle);
   } catch (const std::exception &error) {
     work->status = ZE_ERR_INTERNAL;
     work->message = error.what();
@@ -377,7 +380,8 @@ void CompleteNative(napi_env env, napi_status status, void *data) {
     napi_resolve_deferred(env, work->deferred, result);
   } else {
     napi_value message;
-    napi_create_string_utf8(env, "native completion returned no result", NAPI_AUTO_LENGTH, &message);
+    napi_create_string_utf8(env, "native completion returned no result",
+                            NAPI_AUTO_LENGTH, &message);
     napi_create_error(env, nullptr, message, &result);
     napi_reject_deferred(env, work->deferred, result);
   }
@@ -397,11 +401,20 @@ napi_value RunNative(napi_env env, napi_value receiver, ze_handle handle,
   work->execute = std::move(execute);
   work->finish = std::move(finish);
   napi_value promise, name;
-  if (!NapiOk(env, napi_create_promise(env, &work->deferred, &promise), "create promise") ||
-      !NapiOk(env, napi_create_string_utf8(env, "zeppelin.async", NAPI_AUTO_LENGTH, &name), "create work name") ||
-      !NapiOk(env, napi_create_reference(env, receiver, 1, &work->receiver), "retain receiver") ||
-      !NapiOk(env, napi_create_async_work(env, nullptr, name, ExecuteNative, CompleteNative, work.get(), &work->work), "create work")) {
-    if (work->receiver) napi_delete_reference(env, work->receiver);
+  if (!NapiOk(env, napi_create_promise(env, &work->deferred, &promise),
+              "create promise") ||
+      !NapiOk(env,
+              napi_create_string_utf8(env, "zeppelin.async", NAPI_AUTO_LENGTH,
+                                      &name),
+              "create work name") ||
+      !NapiOk(env, napi_create_reference(env, receiver, 1, &work->receiver),
+              "retain receiver") ||
+      !NapiOk(env,
+              napi_create_async_work(env, nullptr, name, ExecuteNative,
+                                     CompleteNative, work.get(), &work->work),
+              "create work")) {
+    if (work->receiver)
+      napi_delete_reference(env, work->receiver);
     return nullptr;
   }
   if (!NapiOk(env, napi_queue_async_work(env, work->work), "queue work")) {
@@ -413,9 +426,11 @@ napi_value RunNative(napi_env env, napi_value receiver, ze_handle handle,
   return promise;
 }
 
-napi_value ThrowWorkerError(napi_env env, ze_error_code status, const std::string &message) {
+napi_value ThrowWorkerError(napi_env env, ze_error_code status,
+                            const std::string &message) {
   napi_value error;
-  if (CreateZeppelinErrorWithMessage(env, status, message, &error)) napi_throw(env, error);
+  if (CreateZeppelinErrorWithMessage(env, status, message, &error))
+    napi_throw(env, error);
   return nullptr;
 }
 
@@ -447,26 +462,27 @@ napi_value ThrowWriteFailure(napi_env env, ze_handle handle,
                              const ZeRevisionConflict &conflict,
                              const std::string *message = nullptr) {
   if (status != ZE_ERR_REVISION_CONFLICT)
-    return message ? ThrowWorkerError(env, status, *message) : ThrowZeppelin(env, handle, status);
+    return message ? ThrowWorkerError(env, status, *message)
+                   : ThrowZeppelin(env, handle, status);
   napi_value error;
   napi_value detail;
   napi_value index;
   napi_value id;
   napi_value expected;
   napi_value current;
-  if (!(message ? CreateZeppelinErrorWithMessage(env, status, *message, &error) : CreateZeppelinError(env, handle, status, &error)) ||
+  if (!(message ? CreateZeppelinErrorWithMessage(env, status, *message, &error)
+                : CreateZeppelinError(env, handle, status, &error)) ||
       !NapiOk(env, napi_create_object(env, &detail), "create conflict") ||
-      !NapiOk(env,
-              napi_create_double(env, static_cast<double>(conflict.index),
-                                 &index),
-              "create conflict index") ||
+      !NapiOk(
+          env,
+          napi_create_double(env, static_cast<double>(conflict.index), &index),
+          "create conflict index") ||
       !SetNamed(env, detail, "index", index) ||
       !CreateUint128(env, conflict.doc_id, &id) ||
       !SetNamed(env, detail, "id", id) ||
-      !CreateRevisionOrNull(env,
-                            conflict.expected_kind ==
-                                ZE_REVISION_CONDITION_EXACTLY,
-                            conflict.expected_revision, &expected) ||
+      !CreateRevisionOrNull(
+          env, conflict.expected_kind == ZE_REVISION_CONDITION_EXACTLY,
+          conflict.expected_revision, &expected) ||
       !SetNamed(env, detail, "expectedRevision", expected) ||
       !CreateRevisionOrNull(env, conflict.has_current != 0,
                             conflict.current_revision, &current) ||
@@ -510,8 +526,9 @@ bool GetRevisionCondition(napi_env env, napi_value target,
                                            &lossless),
               "read expectedRevision") ||
       !lossless) {
-    napi_throw_range_error(env, "ERR_OUT_OF_RANGE",
-                           "expectedRevision must be an unsigned 64-bit bigint");
+    napi_throw_range_error(
+        env, "ERR_OUT_OF_RANGE",
+        "expectedRevision must be an unsigned 64-bit bigint");
     return false;
   }
   output->kind = ZE_REVISION_CONDITION_EXACTLY;
@@ -644,7 +661,8 @@ bool ParseAttributeValue(napi_env env, napi_value value,
   std::string type;
   if (!GetUtf8(env, js_type, "attribute value type", &type))
     return false;
-  const char *types[] = {"null", "u64", "i64", "f64", "bool", "string", "id128"};
+  const char *types[] = {"null", "u64",    "i64",  "f64",
+                         "bool", "string", "id128"};
   if (!ParseEnum(type, types, 7, &attribute->value_type)) {
     napi_throw_range_error(env, "ERR_OUT_OF_RANGE",
                            "attribute value type is out of range");
@@ -660,7 +678,8 @@ bool ParseAttributeValue(napi_env env, napi_value value,
   switch (attribute->value_type) {
   case 6: {
     ZeDocId id{};
-    if (!GetDocId(env, js_value, &id)) return false;
+    if (!GetDocId(env, js_value, &id))
+      return false;
     attribute->u64_value = id.low;
     std::memcpy(&attribute->i64_value, &id.high, sizeof(id.high));
     break;
@@ -822,7 +841,8 @@ bool CreateAttributeValue(napi_env env, const ZeAttributeValue &native,
     ZeDocId id{};
     id.low = native.u64_value;
     std::memcpy(&id.high, &native.i64_value, sizeof(id.high));
-    if (!CreateUint128(env, id, &value)) return false;
+    if (!CreateUint128(env, id, &value))
+      return false;
     break;
   }
   case 0:
@@ -1326,8 +1346,8 @@ bool ParseNamespaceSpec(napi_env env, napi_value value, ZeNamespaceSpec *spec,
     std::string attribute_type;
     if (!GetUtf8(env, field, "attribute type", &attribute_type))
       return false;
-    const char *names[] = {"u64",      "i64", "f64", "bool", "dictionaryString",
-                           "rawString", "id128"};
+    const char *names[] = {
+        "u64", "i64", "f64", "bool", "dictionaryString", "rawString", "id128"};
     int32_t parsed_type = 0;
     if (!ParseEnum(attribute_type, names, 7, &parsed_type)) {
       napi_throw_range_error(env, "ERR_OUT_OF_RANGE",
@@ -1413,7 +1433,8 @@ void FinalizeStore(napi_env, void *data, void *) {
 }
 
 napi_value WrapStore(napi_env env, napi_value receiver, ze_handle handle) {
-  if (!NapiOk(env, napi_type_tag_object(env, receiver, &kStoreTag), "tag store")) {
+  if (!NapiOk(env, napi_type_tag_object(env, receiver, &kStoreTag),
+              "tag store")) {
     ze_close(handle);
     return nullptr;
   }
@@ -1441,20 +1462,26 @@ napi_value ConstructStore(napi_env env, napi_callback_info info) {
     }
     // Private empty instance used by OpenAsync completion before transferring
     // the successfully opened handle. Public Store always supplies arguments.
-    if (argc == 0) return WrapStore(env, receiver, 0);
+    if (argc == 0)
+      return WrapStore(env, receiver, 0);
     napi_valuetype argument_type;
-    if (!NapiOk(env, napi_typeof(env, args[0], &argument_type), "inspect source"))
+    if (!NapiOk(env, napi_typeof(env, args[0], &argument_type),
+                "inspect source"))
       return nullptr;
     bool is_store = false;
     if (argument_type == napi_object &&
-        !NapiOk(env, napi_check_object_type_tag(env, args[0], &kStoreTag, &is_store),
-                "inspect store source")) return nullptr;
+        !NapiOk(env,
+                napi_check_object_type_tag(env, args[0], &kStoreTag, &is_store),
+                "inspect store source"))
+      return nullptr;
     if (is_store) {
       NativeStore *source = UnwrapStore(env, args[0]);
-      if (source == nullptr) return nullptr;
+      if (source == nullptr)
+        return nullptr;
       ze_handle handle = 0;
       const ze_error_code status = ze_open_snapshot(source->handle, &handle);
-      if (status != ZE_OK) return ThrowZeppelin(env, source->handle, status);
+      if (status != ZE_OK)
+        return ThrowZeppelin(env, source->handle, status);
       return WrapStore(env, receiver, handle);
     }
     std::string path;
@@ -1486,9 +1513,10 @@ napi_value ConstructStore(napi_env env, napi_callback_info info) {
       bool inspection = false;
       if (!GetOptionalBool(env, options, "inspection", false, &inspection))
         return nullptr;
-      status = inspection
-          ? ze_open_inspection(reinterpret_cast<const uint8_t *>(path.data()), path.size(), &handle)
-          : ze_open(&request, &handle);
+      status = inspection ? ze_open_inspection(
+                                reinterpret_cast<const uint8_t *>(path.data()),
+                                path.size(), &handle)
+                          : ze_open(&request, &handle);
     } else {
       std::string name;
       if (!GetUtf8(env, args[2], "name", &name))
@@ -1510,15 +1538,18 @@ napi_value ConstructStore(napi_env env, napi_callback_info info) {
       namespace_request.spec = &spec;
       std::string profile = "textDefault";
       bool has_profile = false;
-      if (!GetOptionalString(env, args[3], "tokenizerProfile", &profile, &has_profile))
+      if (!GetOptionalString(env, args[3], "tokenizerProfile", &profile,
+                             &has_profile))
         return nullptr;
       const char *profiles[] = {"textDefault", "code", "voice"};
       int32_t tokenizer_profile = 0;
       if (!ParseEnum(profile, profiles, 3, &tokenizer_profile)) {
-        napi_throw_range_error(env, "ERR_OUT_OF_RANGE", "tokenizerProfile is out of range");
+        napi_throw_range_error(env, "ERR_OUT_OF_RANGE",
+                               "tokenizerProfile is out of range");
         return nullptr;
       }
-      status = ze_namespace_open_with_tokenizer(&namespace_request, tokenizer_profile, &handle);
+      status = ze_namespace_open_with_tokenizer(&namespace_request,
+                                                tokenizer_profile, &handle);
     }
     if (status != ZE_OK)
       return ThrowZeppelin(env, 0, status);
@@ -1531,11 +1562,20 @@ napi_value ConstructStore(napi_env env, napi_callback_info info) {
 // after successful construction; failed opens and completions close the handle.
 napi_value OpenAsync(napi_env env, napi_callback_info info) {
   return Guard(env, [&]() -> napi_value {
-    napi_value args[4], receiver; size_t argc = 4;
-    if (!NapiOk(env, napi_get_cb_info(env, info, &argc, args, &receiver, nullptr), "read open arguments")) return nullptr;
-    if (argc < 2) { napi_throw_type_error(env, "ERR_MISSING_ARGS", "path and options required"); return nullptr; }
+    napi_value args[4], receiver;
+    size_t argc = 4;
+    if (!NapiOk(env,
+                napi_get_cb_info(env, info, &argc, args, &receiver, nullptr),
+                "read open arguments"))
+      return nullptr;
+    if (argc < 2) {
+      napi_throw_type_error(env, "ERR_MISSING_ARGS",
+                            "path and options required");
+      return nullptr;
+    }
     struct Data {
-      napi_env env = nullptr; napi_ref constructor = nullptr;
+      napi_env env = nullptr;
+      napi_ref constructor = nullptr;
       std::string path, name;
       ZeOpenRequest request{};
       ZeNamespaceOpenRequest ns{};
@@ -1545,45 +1585,89 @@ napi_value OpenAsync(napi_env env, napi_callback_info info) {
       ze_handle handle = 0;
       bool inspection = false, namespaced = false;
       int32_t tokenizer_profile = 0;
-      ~Data() { if (handle != 0) ze_close(handle); if (constructor) napi_delete_reference(env, constructor); }
+      ~Data() {
+        if (handle != 0)
+          ze_close(handle);
+        if (constructor)
+          napi_delete_reference(env, constructor);
+      }
     };
-    auto data = std::make_shared<Data>(); data->env = env;
+    auto data = std::make_shared<Data>();
+    data->env = env;
     napi_value constructor;
-    if (!NapiOk(env, napi_get_named_property(env, receiver, "NativeStore", &constructor), "read constructor") ||
-        !NapiOk(env, napi_create_reference(env, constructor, 1, &data->constructor), "retain constructor")) return nullptr;
+    if (!NapiOk(
+            env,
+            napi_get_named_property(env, receiver, "NativeStore", &constructor),
+            "read constructor") ||
+        !NapiOk(env,
+                napi_create_reference(env, constructor, 1, &data->constructor),
+                "retain constructor"))
+      return nullptr;
     if (!GetUtf8(env, args[0], "path", &data->path) ||
         !ParseOpenRequest(env, args[1], data->path, &data->request) ||
-        !GetOptionalBool(env, args[1], "inspection", false, &data->inspection)) return nullptr;
+        !GetOptionalBool(env, args[1], "inspection", false, &data->inspection))
+      return nullptr;
     if (argc == 4) {
       data->namespaced = true;
       if (!GetUtf8(env, args[2], "name", &data->name) ||
-          !ParseNamespaceSpec(env, args[3], &data->spec, &data->attributes, &data->attribute_names)) return nullptr;
+          !ParseNamespaceSpec(env, args[3], &data->spec, &data->attributes,
+                              &data->attribute_names))
+        return nullptr;
       auto &ns = data->ns;
       ns.abi_size = sizeof(ns);
-      ns.root = reinterpret_cast<const uint8_t *>(data->path.data()); ns.root_len = data->path.size();
-      ns.name = reinterpret_cast<const uint8_t *>(data->name.data()); ns.name_len = data->name.size();
-      ns.open = data->request; ns.spec = &data->spec;
-      std::string profile = "textDefault"; bool present = false;
+      ns.root = reinterpret_cast<const uint8_t *>(data->path.data());
+      ns.root_len = data->path.size();
+      ns.name = reinterpret_cast<const uint8_t *>(data->name.data());
+      ns.name_len = data->name.size();
+      ns.open = data->request;
+      ns.spec = &data->spec;
+      std::string profile = "textDefault";
+      bool present = false;
       const char *profiles[] = {"textDefault", "code", "voice"};
-      if (!GetOptionalString(env, args[3], "tokenizerProfile", &profile, &present)) return nullptr;
+      if (!GetOptionalString(env, args[3], "tokenizerProfile", &profile,
+                             &present))
+        return nullptr;
       if (!ParseEnum(profile, profiles, 3, &data->tokenizer_profile)) {
-        napi_throw_range_error(env, "ERR_OUT_OF_RANGE", "tokenizerProfile is out of range"); return nullptr;
+        napi_throw_range_error(env, "ERR_OUT_OF_RANGE",
+                               "tokenizerProfile is out of range");
+        return nullptr;
       }
     }
-    return RunNative<true>(env, receiver, 0, [data]() {
-      return data->namespaced ? ze_namespace_open_with_tokenizer(&data->ns, data->tokenizer_profile, &data->handle)
-        : data->inspection ? ze_open_inspection(reinterpret_cast<const uint8_t *>(data->path.data()), data->path.size(), &data->handle)
-        : ze_open(&data->request, &data->handle);
-    }, [data, env](ze_error_code status, const std::string &message) -> napi_value {
-      if (status != ZE_OK) return ThrowWorkerError(env, status, message);
-      napi_value result, constructor;
-      if (!NapiOk(env, napi_get_reference_value(env, data->constructor, &constructor), "read constructor") ||
-          !NapiOk(env, napi_new_instance(env, constructor, 0, nullptr, &result), "create store")) return nullptr;
-      NativeStore *store = nullptr;
-      if (!NapiOk(env, napi_unwrap(env, result, reinterpret_cast<void **>(&store)), "unwrap new store")) return nullptr;
-      store->handle = data->handle; data->handle = 0;
-      return result;
-    });
+    return RunNative<true>(
+        env, receiver, 0,
+        [data]() {
+          return data->namespaced
+                     ? ze_namespace_open_with_tokenizer(
+                           &data->ns, data->tokenizer_profile, &data->handle)
+                 : data->inspection
+                     ? ze_open_inspection(
+                           reinterpret_cast<const uint8_t *>(data->path.data()),
+                           data->path.size(), &data->handle)
+                     : ze_open(&data->request, &data->handle);
+        },
+        [data, env](ze_error_code status,
+                    const std::string &message) -> napi_value {
+          if (status != ZE_OK)
+            return ThrowWorkerError(env, status, message);
+          napi_value result, constructor;
+          if (!NapiOk(env,
+                      napi_get_reference_value(env, data->constructor,
+                                               &constructor),
+                      "read constructor") ||
+              !NapiOk(env,
+                      napi_new_instance(env, constructor, 0, nullptr, &result),
+                      "create store"))
+            return nullptr;
+          NativeStore *store = nullptr;
+          if (!NapiOk(
+                  env,
+                  napi_unwrap(env, result, reinterpret_cast<void **>(&store)),
+                  "unwrap new store"))
+            return nullptr;
+          store->handle = data->handle;
+          data->handle = 0;
+          return result;
+        });
   });
 }
 
@@ -1794,154 +1878,153 @@ napi_value VerifyStore(napi_env env, napi_callback_info info) {
 }
 
 struct UpsertStorage {
-    std::vector<ZeUpsertDocument> documents;
-    std::vector<std::vector<float>> vectors;
-    std::vector<std::vector<uint8_t>> metadata;
-    std::vector<std::string> texts;
-    std::vector<std::vector<ZeAttributeValue>> attributes;
-    std::vector<std::vector<std::string>> attribute_strings;
-    std::vector<ZeRevisionCondition> conditions;
-    size_t dimension = 0;
-    ZeConditionalUpsertRequest conditional{};
+  std::vector<ZeUpsertDocument> documents;
+  std::vector<std::vector<float>> vectors;
+  std::vector<std::vector<uint8_t>> metadata;
+  std::vector<std::string> texts;
+  std::vector<std::vector<ZeAttributeValue>> attributes;
+  std::vector<std::vector<std::string>> attribute_strings;
+  std::vector<ZeRevisionCondition> conditions;
+  size_t dimension = 0;
+  ZeConditionalUpsertRequest conditional{};
 };
 
 bool ParseUpsertData(napi_env env, napi_value value, UpsertStorage *storage) {
-    bool is_array = false;
-    uint32_t document_count = 0;
-    if (!NapiOk(env, napi_is_array(env, value, &is_array),
-                "inspect upsert documents") ||
-        !is_array) {
-      napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE",
-                            "documents must be an array");
+  bool is_array = false;
+  uint32_t document_count = 0;
+  if (!NapiOk(env, napi_is_array(env, value, &is_array),
+              "inspect upsert documents") ||
+      !is_array) {
+    napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE",
+                          "documents must be an array");
+    return false;
+  }
+  if (!NapiOk(env, napi_get_array_length(env, value, &document_count),
+              "read upsert document count"))
+    return false;
+
+  auto &documents = storage->documents;
+  auto &vectors = storage->vectors;
+  auto &metadata = storage->metadata;
+  auto &texts = storage->texts;
+  auto &attributes = storage->attributes;
+  auto &attribute_strings = storage->attribute_strings;
+  auto &conditions = storage->conditions;
+  auto &dimension = storage->dimension;
+  documents.resize(document_count);
+  vectors.resize(document_count);
+  metadata.resize(document_count);
+  texts.resize(document_count);
+  attributes.resize(document_count);
+  attribute_strings.resize(document_count);
+  conditions.resize(document_count);
+  for (uint32_t index = 0; index < document_count; ++index) {
+    napi_value document;
+    if (!NapiOk(env, napi_get_element(env, value, index, &document),
+                "read upsert document"))
+      return false;
+    napi_value field;
+    bool present = false;
+    ZeUpsertDocument &native = documents[index];
+    native = ZeUpsertDocument{};
+    native.abi_size = sizeof(native);
+    native.document.abi_size = sizeof(native.document);
+    if (!GetNamed(env, document, "id", &field, &present) || !present) {
+      napi_throw_type_error(env, "ERR_MISSING_ARGS",
+                            "each document requires id");
       return false;
     }
-    if (!NapiOk(env, napi_get_array_length(env, value, &document_count),
-                "read upsert document count"))
+    if (!GetDocId(env, field, &native.document.doc_id) ||
+        !GetOptionalBigUint64(env, document, "revision", 1,
+                              &native.document.revision) ||
+        !GetOptionalBigInt64(env, document, "timestamp", 0,
+                             &native.document.timestamp) ||
+        !GetRevisionCondition(env, document, &conditions[index])) {
       return false;
-
-    auto &documents = storage->documents;
-    auto &vectors = storage->vectors;
-    auto &metadata = storage->metadata;
-    auto &texts = storage->texts;
-    auto &attributes = storage->attributes;
-    auto &attribute_strings = storage->attribute_strings;
-    auto &conditions = storage->conditions;
-    auto &dimension = storage->dimension;
-    documents.resize(document_count);
-    vectors.resize(document_count);
-    metadata.resize(document_count);
-    texts.resize(document_count);
-    attributes.resize(document_count);
-    attribute_strings.resize(document_count);
-    conditions.resize(document_count);
-    for (uint32_t index = 0; index < document_count; ++index) {
-      napi_value document;
-      if (!NapiOk(env, napi_get_element(env, value, index, &document),
-                  "read upsert document"))
-        return false;
-      napi_value field;
-      bool present = false;
-      ZeUpsertDocument &native = documents[index];
-      native = ZeUpsertDocument{};
-      native.abi_size = sizeof(native);
-      native.document.abi_size = sizeof(native.document);
-      if (!GetNamed(env, document, "id", &field, &present) || !present) {
-        napi_throw_type_error(env, "ERR_MISSING_ARGS",
-                              "each document requires id");
-        return false;
-      }
-      if (!GetDocId(env, field, &native.document.doc_id) ||
-          !GetOptionalBigUint64(env, document, "revision", 1,
-                                &native.document.revision) ||
-          !GetOptionalBigInt64(env, document, "timestamp", 0,
-                               &native.document.timestamp) ||
-          !GetRevisionCondition(env, document, &conditions[index])) {
-        return false;
-      }
-
-      if (!GetNamed(env, document, "vector", &field, &present))
-        return false;
-      if (present) {
-        const float *data = nullptr;
-        size_t length = 0;
-        if (!GetFloat32Array(env, field, "document vector", &data, &length))
-          return false;
-        if (length != 0)
-          vectors[index].assign(data, data + length);
-        native.document.vector = vectors[index].data();
-        native.document.vector_len = vectors[index].size();
-        if (dimension == 0)
-          dimension = length;
-      }
-
-      if (!GetNamed(env, document, "metadata", &field, &present))
-        return false;
-      if (present) {
-        if (!GetUint8ArrayCopy(env, field, "document metadata",
-                               &metadata[index]))
-          return false;
-        native.document.metadata = metadata[index].data();
-        native.document.metadata_len = metadata[index].size();
-      }
-
-      if (!GetNamed(env, document, "text", &field, &present))
-        return false;
-      if (present) {
-        if (!GetUtf8(env, field, "document text", &texts[index]))
-          return false;
-        native.document.text =
-            reinterpret_cast<const uint8_t *>(texts[index].data());
-        native.document.text_len = texts[index].size();
-      }
-
-      napi_value js_attributes;
-      if (!GetNamed(env, document, "attributes", &js_attributes, &present))
-        return false;
-      uint32_t attribute_count = 0;
-      if (present) {
-        if (!NapiOk(env, napi_is_array(env, js_attributes, &is_array),
-                    "inspect document attributes") ||
-            !is_array) {
-          napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE",
-                                "document attributes must be an array");
-          return false;
-        }
-        if (!NapiOk(env,
-                    napi_get_array_length(env, js_attributes, &attribute_count),
-                    "read document attribute count"))
-          return false;
-      }
-      attributes[index].resize(attribute_count);
-      attribute_strings[index].resize(attribute_count);
-      for (uint32_t attribute_index = 0; attribute_index < attribute_count;
-           ++attribute_index) {
-        napi_value attribute;
-        if (!NapiOk(env,
-                    napi_get_element(env, js_attributes, attribute_index,
-                                     &attribute),
-                    "read document attribute") ||
-            !ParseAttributeValue(env, attribute,
-                                 &attributes[index][attribute_index],
-                                 &attribute_strings[index][attribute_index])) {
-          return false;
-        }
-      }
-      native.attributes =
-          attributes[index].empty() ? nullptr : attributes[index].data();
-      native.attribute_count = attributes[index].size();
     }
 
-    ZeUpsertRequest request{};
-    request.abi_size = sizeof(request);
-    request.documents = documents.data();
-    request.document_count = documents.size();
-    request.dimension = dimension;
-    auto &conditional = storage->conditional;
-    conditional.abi_size = sizeof(conditional);
-    conditional.batch = request;
-    conditional.conditions = conditions.data();
-    conditional.condition_count = conditions.size();
-    return true;
+    if (!GetNamed(env, document, "vector", &field, &present))
+      return false;
+    if (present) {
+      const float *data = nullptr;
+      size_t length = 0;
+      if (!GetFloat32Array(env, field, "document vector", &data, &length))
+        return false;
+      if (length != 0)
+        vectors[index].assign(data, data + length);
+      native.document.vector = vectors[index].data();
+      native.document.vector_len = vectors[index].size();
+      if (dimension == 0)
+        dimension = length;
+    }
+
+    if (!GetNamed(env, document, "metadata", &field, &present))
+      return false;
+    if (present) {
+      if (!GetUint8ArrayCopy(env, field, "document metadata", &metadata[index]))
+        return false;
+      native.document.metadata = metadata[index].data();
+      native.document.metadata_len = metadata[index].size();
+    }
+
+    if (!GetNamed(env, document, "text", &field, &present))
+      return false;
+    if (present) {
+      if (!GetUtf8(env, field, "document text", &texts[index]))
+        return false;
+      native.document.text =
+          reinterpret_cast<const uint8_t *>(texts[index].data());
+      native.document.text_len = texts[index].size();
+    }
+
+    napi_value js_attributes;
+    if (!GetNamed(env, document, "attributes", &js_attributes, &present))
+      return false;
+    uint32_t attribute_count = 0;
+    if (present) {
+      if (!NapiOk(env, napi_is_array(env, js_attributes, &is_array),
+                  "inspect document attributes") ||
+          !is_array) {
+        napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE",
+                              "document attributes must be an array");
+        return false;
+      }
+      if (!NapiOk(env,
+                  napi_get_array_length(env, js_attributes, &attribute_count),
+                  "read document attribute count"))
+        return false;
+    }
+    attributes[index].resize(attribute_count);
+    attribute_strings[index].resize(attribute_count);
+    for (uint32_t attribute_index = 0; attribute_index < attribute_count;
+         ++attribute_index) {
+      napi_value attribute;
+      if (!NapiOk(
+              env,
+              napi_get_element(env, js_attributes, attribute_index, &attribute),
+              "read document attribute") ||
+          !ParseAttributeValue(env, attribute,
+                               &attributes[index][attribute_index],
+                               &attribute_strings[index][attribute_index])) {
+        return false;
+      }
+    }
+    native.attributes =
+        attributes[index].empty() ? nullptr : attributes[index].data();
+    native.attribute_count = attributes[index].size();
+  }
+
+  ZeUpsertRequest request{};
+  request.abi_size = sizeof(request);
+  request.documents = documents.data();
+  request.document_count = documents.size();
+  request.dimension = dimension;
+  auto &conditional = storage->conditional;
+  conditional.abi_size = sizeof(conditional);
+  conditional.batch = request;
+  conditional.conditions = conditions.data();
+  conditional.condition_count = conditions.size();
+  return true;
 }
 
 template <bool Async = false>
@@ -1968,60 +2051,86 @@ napi_value Upsert(napi_env env, napi_callback_info info) {
       ZeRevisionConflict conflict{};
     };
     auto data = std::make_shared<Data>();
-    if (!ParseUpsertData(env, args[0], &data->storage)) return nullptr;
+    if (!ParseUpsertData(env, args[0], &data->storage))
+      return nullptr;
     auto &report = data->report;
     report.abi_size = sizeof(report);
     auto &conflict = data->conflict;
     conflict.abi_size = sizeof(conflict);
     const auto handle = store->handle;
-    return RunNative<Async>(env, receiver, handle,
-      [data, handle]() {
-      auto &conditional = data->storage.conditional;
-      auto &report = data->report;
-      auto &conflict = data->conflict;
-        return ze_upsert_conditional(handle, &conditional, &report, &conflict);
-      }, [data, env, handle](ze_error_code status, const std::string &message) -> napi_value {
-      auto &report = data->report;
-      auto &conflict = data->conflict;
-    if (status != ZE_OK)
-      return ThrowWriteFailure(env, handle, status, conflict, &message);
+    return RunNative<Async>(
+        env, receiver, handle,
+        [data, handle]() {
+          auto &conditional = data->storage.conditional;
+          auto &report = data->report;
+          auto &conflict = data->conflict;
+          return ze_upsert_conditional(handle, &conditional, &report,
+                                       &conflict);
+        },
+        [data, env, handle](ze_error_code status,
+                            const std::string &message) -> napi_value {
+          auto &report = data->report;
+          auto &conflict = data->conflict;
+          if (status != ZE_OK)
+            return ThrowWriteFailure(env, handle, status, conflict, &message);
 
-    napi_value result;
-    napi_value sequence;
-    napi_value generation;
-    if (!NapiOk(env, napi_create_object(env, &result),
-                "create mutation report") ||
-        !NapiOk(env, napi_create_bigint_uint64(env, report.sequence, &sequence),
-                "create sequence") ||
-        !SetNamed(env, result, "sequence", sequence) ||
-        !NapiOk(env,
-                napi_create_bigint_uint64(env, report.generation, &generation),
-                "create generation") ||
-        !SetNamed(env, result, "generation", generation)) {
-      return nullptr;
-    }
-    return result;
-      });
+          napi_value result;
+          napi_value sequence;
+          napi_value generation;
+          if (!NapiOk(env, napi_create_object(env, &result),
+                      "create mutation report") ||
+              !NapiOk(
+                  env,
+                  napi_create_bigint_uint64(env, report.sequence, &sequence),
+                  "create sequence") ||
+              !SetNamed(env, result, "sequence", sequence) ||
+              !NapiOk(env,
+                      napi_create_bigint_uint64(env, report.generation,
+                                                &generation),
+                      "create generation") ||
+              !SetNamed(env, result, "generation", generation)) {
+            return nullptr;
+          }
+          return result;
+        });
   });
 }
 
 enum class NamespaceOperation { Batch, DeclareCascade, DeleteCascade };
 
-napi_value NamespaceOperationCall(napi_env env, napi_callback_info info, NamespaceOperation operation) {
+napi_value NamespaceOperationCall(napi_env env, napi_callback_info info,
+                                  NamespaceOperation operation) {
   return Guard(env, [&]() -> napi_value {
     size_t argc = 3;
     napi_value args[3];
-    if (!NapiOk(env, napi_get_cb_info(env, info, &argc, args, nullptr, nullptr), "batch arguments")) return nullptr;
-    if (argc != (operation == NamespaceOperation::DeclareCascade ? 3u : 2u)) { napi_throw_type_error(env, "ERR_MISSING_ARGS", "root and participants required"); return nullptr; }
+    if (!NapiOk(env, napi_get_cb_info(env, info, &argc, args, nullptr, nullptr),
+                "batch arguments"))
+      return nullptr;
+    if (argc != (operation == NamespaceOperation::DeclareCascade ? 3u : 2u)) {
+      napi_throw_type_error(env, "ERR_MISSING_ARGS",
+                            "root and participants required");
+      return nullptr;
+    }
     std::string root;
-    if (!GetUtf8(env, args[0], "root", &root)) return nullptr;
+    if (!GetUtf8(env, args[0], "root", &root))
+      return nullptr;
     bool array = false;
     uint32_t count = 0;
-    if (!NapiOk(env, napi_is_array(env, args[1], &array), "participants") || !array) {
-      napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE", "participants must be an array"); return nullptr;
+    if (!NapiOk(env, napi_is_array(env, args[1], &array), "participants") ||
+        !array) {
+      napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE",
+                            "participants must be an array");
+      return nullptr;
     }
-    if (!NapiOk(env, napi_get_array_length(env, args[1], &count), "participant count")) return nullptr;
-    if (count < (operation == NamespaceOperation::Batch ? 2u : 1u) || count > 128) { napi_throw_range_error(env, "ERR_OUT_OF_RANGE", "invalid namespace participant count"); return nullptr; }
+    if (!NapiOk(env, napi_get_array_length(env, args[1], &count),
+                "participant count"))
+      return nullptr;
+    if (count < (operation == NamespaceOperation::Batch ? 2u : 1u) ||
+        count > 128) {
+      napi_throw_range_error(env, "ERR_OUT_OF_RANGE",
+                             "invalid namespace participant count");
+      return nullptr;
+    }
     struct Participant {
       std::string name;
       ZeNamespaceSpec spec{};
@@ -2037,63 +2146,123 @@ napi_value NamespaceOperationCall(napi_env env, napi_callback_info info, Namespa
     for (uint32_t i = 0; i < count; ++i) {
       napi_value value, field, spec;
       bool present = false;
-      auto &owned = storage[i]; auto &native = participants[i];
+      auto &owned = storage[i];
+      auto &native = participants[i];
       native.abi_size = sizeof(native);
-      if (!NapiOk(env, napi_get_element(env, args[1], i, &value), "participant") ||
-          !GetNamed(env, value, "name", &field, &present)) return nullptr;
-      if (!present) { napi_throw_type_error(env, "ERR_MISSING_ARGS", "participant name required"); return nullptr; }
-      if (!GetUtf8(env, field, "name", &owned.name) || !GetNamed(env, value, "spec", &spec, &present)) return nullptr;
-      if (!present) { napi_throw_type_error(env, "ERR_MISSING_ARGS", "participant spec required"); return nullptr; }
-      if (!ParseNamespaceSpec(env, spec, &owned.spec, &owned.attributes, &owned.attribute_names)) return nullptr;
+      if (!NapiOk(env, napi_get_element(env, args[1], i, &value),
+                  "participant") ||
+          !GetNamed(env, value, "name", &field, &present))
+        return nullptr;
+      if (!present) {
+        napi_throw_type_error(env, "ERR_MISSING_ARGS",
+                              "participant name required");
+        return nullptr;
+      }
+      if (!GetUtf8(env, field, "name", &owned.name) ||
+          !GetNamed(env, value, "spec", &spec, &present))
+        return nullptr;
+      if (!present) {
+        napi_throw_type_error(env, "ERR_MISSING_ARGS",
+                              "participant spec required");
+        return nullptr;
+      }
+      if (!ParseNamespaceSpec(env, spec, &owned.spec, &owned.attributes,
+                              &owned.attribute_names))
+        return nullptr;
       std::string profile = "textDefault";
-      if (!GetOptionalString(env, spec, "tokenizerProfile", &profile, &present)) return nullptr;
+      if (!GetOptionalString(env, spec, "tokenizerProfile", &profile, &present))
+        return nullptr;
       const char *profiles[] = {"textDefault", "code", "voice"};
-      if (!ParseEnum(profile, profiles, 3, &native.tokenizer_profile)) { napi_throw_range_error(env, "ERR_OUT_OF_RANGE", "tokenizerProfile is out of range"); return nullptr; }
-      native.name = reinterpret_cast<const uint8_t *>(owned.name.data()); native.name_len = owned.name.size(); native.spec = &owned.spec;
-      if (!GetNamed(env, value, "upserts", &field, &present)) return nullptr;
-      if (!present && !NapiOk(env, napi_create_array(env, &field), "empty upserts")) return nullptr;
-      if (!ParseUpsertData(env, field, &owned.upserts)) return nullptr;
+      if (!ParseEnum(profile, profiles, 3, &native.tokenizer_profile)) {
+        napi_throw_range_error(env, "ERR_OUT_OF_RANGE",
+                               "tokenizerProfile is out of range");
+        return nullptr;
+      }
+      native.name = reinterpret_cast<const uint8_t *>(owned.name.data());
+      native.name_len = owned.name.size();
+      native.spec = &owned.spec;
+      if (!GetNamed(env, value, "upserts", &field, &present))
+        return nullptr;
+      if (!present &&
+          !NapiOk(env, napi_create_array(env, &field), "empty upserts"))
+        return nullptr;
+      if (!ParseUpsertData(env, field, &owned.upserts))
+        return nullptr;
       native.upserts = owned.upserts.conditional;
-      if (!GetNamed(env, value, "deletes", &field, &present)) return nullptr;
+      if (!GetNamed(env, value, "deletes", &field, &present))
+        return nullptr;
       if (present) {
         uint32_t length = 0;
-        if (!NapiOk(env, napi_is_array(env, field, &array), "delete IDs") || !array) { napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE", "deletes must be an array"); return nullptr; }
-        if (!NapiOk(env, napi_get_array_length(env, field, &length), "delete count")) return nullptr;
+        if (!NapiOk(env, napi_is_array(env, field, &array), "delete IDs") ||
+            !array) {
+          napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE",
+                                "deletes must be an array");
+          return nullptr;
+        }
+        if (!NapiOk(env, napi_get_array_length(env, field, &length),
+                    "delete count"))
+          return nullptr;
         owned.deletes.resize(length);
         for (uint32_t j = 0; j < length; ++j) {
           napi_value id;
-          if (!NapiOk(env, napi_get_element(env, field, j, &id), "delete ID") || !GetDocId(env, id, &owned.deletes[j])) return nullptr;
+          if (!NapiOk(env, napi_get_element(env, field, j, &id), "delete ID") ||
+              !GetDocId(env, id, &owned.deletes[j]))
+            return nullptr;
         }
       }
-      native.deletes = owned.deletes.data(); native.delete_count = owned.deletes.size();
-      if (!GetNamed(env, value, "deleteWhere", &field, &present)) return nullptr;
-      if (present) { if (!ParseFilter(env, field, &owned.filter)) return nullptr; native.filter = &owned.filter.filter; }
+      native.deletes = owned.deletes.data();
+      native.delete_count = owned.deletes.size();
+      if (!GetNamed(env, value, "deleteWhere", &field, &present))
+        return nullptr;
+      if (present) {
+        if (!ParseFilter(env, field, &owned.filter))
+          return nullptr;
+        native.filter = &owned.filter.filter;
+      }
     }
     ZeNamespaceBatchRequest request{};
-    request.abi_size = sizeof(request); request.root = reinterpret_cast<const uint8_t *>(root.data()); request.root_len = root.size();
-    request.participants = participants.data(); request.participant_count = participants.size(); request.generations = generations.data();
+    request.abi_size = sizeof(request);
+    request.root = reinterpret_cast<const uint8_t *>(root.data());
+    request.root_len = root.size();
+    request.participants = participants.data();
+    request.participant_count = participants.size();
+    request.generations = generations.data();
     ZeCascadeDeclaration declaration{};
     declaration.abi_size = sizeof(declaration);
     if (operation == NamespaceOperation::DeclareCascade) {
-      if (!GetRequiredUint32(env, args[2], "parentIndex", &declaration.parent_index) ||
-          !GetRequiredUint32(env, args[2], "childIndex", &declaration.child_index) ||
-          !GetRequiredUint32(env, args[2], "attributeId", &declaration.attribute_id)) return nullptr;
+      if (!GetRequiredUint32(env, args[2], "parentIndex",
+                             &declaration.parent_index) ||
+          !GetRequiredUint32(env, args[2], "childIndex",
+                             &declaration.child_index) ||
+          !GetRequiredUint32(env, args[2], "attributeId",
+                             &declaration.attribute_id))
+        return nullptr;
     }
-    const ze_error_code status = operation == NamespaceOperation::Batch ? ze_namespace_batch(&request)
-        : operation == NamespaceOperation::DeleteCascade ? ze_namespace_delete_cascade(&request)
-        : ze_namespace_declare_cascade(&request, &declaration);
-    if (status != ZE_OK) return ThrowZeppelin(env, 0, status);
+    const ze_error_code status =
+        operation == NamespaceOperation::Batch ? ze_namespace_batch(&request)
+        : operation == NamespaceOperation::DeleteCascade
+            ? ze_namespace_delete_cascade(&request)
+            : ze_namespace_declare_cascade(&request, &declaration);
+    if (status != ZE_OK)
+      return ThrowZeppelin(env, 0, status);
     if (operation == NamespaceOperation::DeclareCascade) {
       napi_value result;
-      if (!NapiOk(env, napi_get_undefined(env, &result), "declaration result")) return nullptr;
+      if (!NapiOk(env, napi_get_undefined(env, &result), "declaration result"))
+        return nullptr;
       return result;
     }
     napi_value result;
-    if (!NapiOk(env, napi_create_array_with_length(env, count, &result), "batch generations")) return nullptr;
+    if (!NapiOk(env, napi_create_array_with_length(env, count, &result),
+                "batch generations"))
+      return nullptr;
     for (uint32_t i = 0; i < count; ++i) {
       napi_value generation;
-      if (!NapiOk(env, napi_create_bigint_uint64(env, generations[i], &generation), "generation") ||
-          !NapiOk(env, napi_set_element(env, result, i, generation), "generation result")) return nullptr;
+      if (!NapiOk(env,
+                  napi_create_bigint_uint64(env, generations[i], &generation),
+                  "generation") ||
+          !NapiOk(env, napi_set_element(env, result, i, generation),
+                  "generation result"))
+        return nullptr;
     }
     return result;
   });
@@ -2287,33 +2456,46 @@ napi_value PurgeReportValue(napi_env env, const ZePurgeReport &report) {
       {"unknownIdCount", report.unknown_id_count}};
   for (const auto &field : counts) {
     napi_value value;
-    if (!NapiOk(env, napi_create_bigint_uint64(env, field.second, &value), "create purge count") ||
+    if (!NapiOk(env, napi_create_bigint_uint64(env, field.second, &value),
+                "create purge count") ||
         !SetNamed(env, result, field.first, value))
       return nullptr;
   }
   napi_value wal_rewritten;
   napi_value is_no_op;
-  if (!NapiOk(env, napi_get_boolean(env, report.wal_rewritten != 0, &wal_rewritten), "create WAL flag") ||
+  if (!NapiOk(env,
+              napi_get_boolean(env, report.wal_rewritten != 0, &wal_rewritten),
+              "create WAL flag") ||
       !SetNamed(env, result, "walRewritten", wal_rewritten) ||
-      !NapiOk(env, napi_get_boolean(env, report.is_no_op != 0, &is_no_op), "create no-op flag") ||
+      !NapiOk(env, napi_get_boolean(env, report.is_no_op != 0, &is_no_op),
+              "create no-op flag") ||
       !SetNamed(env, result, "isNoOp", is_no_op))
     return nullptr;
   return result;
 }
 
 template <bool Async = false>
-napi_value CompletePurge(napi_env env, napi_value receiver, NativeStore *store, uint64_t token_id) {
-  struct Data { ZeAwaitPurgeRequest wait{}; ZePurgeReport report{}; };
+napi_value CompletePurge(napi_env env, napi_value receiver, NativeStore *store,
+                         uint64_t token_id) {
+  struct Data {
+    ZeAwaitPurgeRequest wait{};
+    ZePurgeReport report{};
+  };
   auto data = std::make_shared<Data>();
-  data->wait.abi_size = sizeof(data->wait); data->wait.token_id = token_id;
+  data->wait.abi_size = sizeof(data->wait);
+  data->wait.token_id = token_id;
   data->report.abi_size = sizeof(data->report);
   const auto handle = store->handle;
-  return RunNative<Async>(env, receiver, handle,
-    [data, handle]() { return ze_await_physical_purge(handle, &data->wait, &data->report); },
-    [data, env](ze_error_code status, const std::string &message) {
-      if (status != ZE_OK) return ThrowWorkerError(env, status, message);
-      return PurgeReportValue(env, data->report);
-    });
+  return RunNative<Async>(
+      env, receiver, handle,
+      [data, handle]() {
+        return ze_await_physical_purge(handle, &data->wait, &data->report);
+      },
+      [data, env](ze_error_code status, const std::string &message) {
+        if (status != ZE_OK)
+          return ThrowWorkerError(env, status, message);
+        return PurgeReportValue(env, data->report);
+      });
 }
 
 template <bool Async = false>
@@ -2334,24 +2516,34 @@ napi_value Purge(napi_env env, napi_callback_info info) {
     if (store == nullptr)
       return nullptr;
     bool wait_for_completion = true;
-    if (argc >= 2 && !GetOptionalBool(env, args[1], "wait", true, &wait_for_completion))
+    if (argc >= 2 &&
+        !GetOptionalBool(env, args[1], "wait", true, &wait_for_completion))
       return nullptr;
     bool is_array = false;
     uint32_t id_count = 0;
     if (!NapiOk(env, napi_is_array(env, args[0], &is_array), "inspect ids"))
       return nullptr;
     if (!is_array) {
-      napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE", "ids must be an array");
+      napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE",
+                            "ids must be an array");
       return nullptr;
     }
-    if (!NapiOk(env, napi_get_array_length(env, args[0], &id_count), "read id count"))
+    if (!NapiOk(env, napi_get_array_length(env, args[0], &id_count),
+                "read id count"))
       return nullptr;
-    struct Data { std::vector<ZeDocId> ids; ZePurgeRequest request{}; ZePurgeTokenReport token{}; ZePurgeReport report{}; };
+    struct Data {
+      std::vector<ZeDocId> ids;
+      ZePurgeRequest request{};
+      ZePurgeTokenReport token{};
+      ZePurgeReport report{};
+    };
     auto data = std::make_shared<Data>();
-    auto &ids = data->ids; ids.resize(id_count);
+    auto &ids = data->ids;
+    ids.resize(id_count);
     for (uint32_t index = 0; index < id_count; ++index) {
       napi_value id;
-      if (!NapiOk(env, napi_get_element(env, args[0], index, &id), "read document id") ||
+      if (!NapiOk(env, napi_get_element(env, args[0], index, &id),
+                  "read document id") ||
           !GetDocId(env, id, &ids[index]))
         return nullptr;
     }
@@ -2363,34 +2555,47 @@ napi_value Purge(napi_env env, napi_callback_info info) {
     token.abi_size = sizeof(token);
     data->report.abi_size = sizeof(data->report);
     const auto handle = store->handle;
-    return RunNative<Async>(env, receiver, handle,
-      [data, handle, wait_for_completion]() {
-        auto status = ze_purge(handle, &data->request, &data->token);
-        if (status != ZE_OK || !wait_for_completion) return status;
-        ZeAwaitPurgeRequest wait{}; wait.abi_size = sizeof(wait); wait.token_id = data->token.token_id;
-        return ze_await_physical_purge(handle, &wait, &data->report);
-      }, [data, env, wait_for_completion](ze_error_code status, const std::string &message) -> napi_value {
-        if (status != ZE_OK) return ThrowWorkerError(env, status, message);
-        if (wait_for_completion) return PurgeReportValue(env, data->report);
-        auto &token = data->token;
-    napi_value result;
-    if (!NapiOk(env, napi_create_object(env, &result), "create purge token"))
-      return nullptr;
-    const std::pair<const char *, uint64_t> fields[] = {
-        {"tokenId", token.token_id}, {"generation", token.generation},
-        {"unknownIdCount", token.unknown_id_count}};
-    for (const auto &field : fields) {
-      napi_value value;
-      if (!NapiOk(env, napi_create_bigint_uint64(env, field.second, &value), "create token field") ||
-          !SetNamed(env, result, field.first, value))
-        return nullptr;
-    }
-    napi_value no_op;
-    if (!NapiOk(env, napi_get_boolean(env, token.is_no_op != 0, &no_op), "create no-op flag") ||
-        !SetNamed(env, result, "isNoOp", no_op))
-      return nullptr;
-    return result;
-      });
+    return RunNative<Async>(
+        env, receiver, handle,
+        [data, handle, wait_for_completion]() {
+          auto status = ze_purge(handle, &data->request, &data->token);
+          if (status != ZE_OK || !wait_for_completion)
+            return status;
+          ZeAwaitPurgeRequest wait{};
+          wait.abi_size = sizeof(wait);
+          wait.token_id = data->token.token_id;
+          return ze_await_physical_purge(handle, &wait, &data->report);
+        },
+        [data, env, wait_for_completion](
+            ze_error_code status, const std::string &message) -> napi_value {
+          if (status != ZE_OK)
+            return ThrowWorkerError(env, status, message);
+          if (wait_for_completion)
+            return PurgeReportValue(env, data->report);
+          auto &token = data->token;
+          napi_value result;
+          if (!NapiOk(env, napi_create_object(env, &result),
+                      "create purge token"))
+            return nullptr;
+          const std::pair<const char *, uint64_t> fields[] = {
+              {"tokenId", token.token_id},
+              {"generation", token.generation},
+              {"unknownIdCount", token.unknown_id_count}};
+          for (const auto &field : fields) {
+            napi_value value;
+            if (!NapiOk(env,
+                        napi_create_bigint_uint64(env, field.second, &value),
+                        "create token field") ||
+                !SetNamed(env, result, field.first, value))
+              return nullptr;
+          }
+          napi_value no_op;
+          if (!NapiOk(env, napi_get_boolean(env, token.is_no_op != 0, &no_op),
+                      "create no-op flag") ||
+              !SetNamed(env, result, "isNoOp", no_op))
+            return nullptr;
+          return result;
+        });
   });
 }
 
@@ -2400,7 +2605,9 @@ napi_value AwaitPurge(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value args[1];
     napi_value receiver;
-    if (!NapiOk(env, napi_get_cb_info(env, info, &argc, args, &receiver, nullptr), "read awaitPurge arguments"))
+    if (!NapiOk(env,
+                napi_get_cb_info(env, info, &argc, args, &receiver, nullptr),
+                "read awaitPurge arguments"))
       return nullptr;
     NativeStore *store = UnwrapStore(env, receiver);
     if (store == nullptr)
@@ -2408,17 +2615,24 @@ napi_value AwaitPurge(napi_env env, napi_callback_info info) {
     uint64_t token_id = 0;
     bool lossless = false;
     napi_valuetype type;
-    if (argc < 1 || !NapiOk(env, napi_typeof(env, args[0], &type), "inspect token") ||
+    if (argc < 1 ||
+        !NapiOk(env, napi_typeof(env, args[0], &type), "inspect token") ||
         type != napi_bigint ||
-        !NapiOk(env, napi_get_value_bigint_uint64(env, args[0], &token_id, &lossless), "read token") || !lossless) {
-      napi_throw_range_error(env, "ERR_OUT_OF_RANGE", "tokenId must be an unsigned 64-bit bigint");
+        !NapiOk(
+            env,
+            napi_get_value_bigint_uint64(env, args[0], &token_id, &lossless),
+            "read token") ||
+        !lossless) {
+      napi_throw_range_error(env, "ERR_OUT_OF_RANGE",
+                             "tokenId must be an unsigned 64-bit bigint");
       return nullptr;
     }
     return CompletePurge<Async>(env, receiver, store, token_id);
   });
 }
 
-bool GetRequiredTimestamp(napi_env env, napi_value object, const char *name, int64_t *output) {
+bool GetRequiredTimestamp(napi_env env, napi_value object, const char *name,
+                          int64_t *output) {
   napi_value value;
   bool present = false;
   if (!GetNamed(env, object, name, &value, &present))
@@ -2430,12 +2644,15 @@ bool GetRequiredTimestamp(napi_env env, napi_value object, const char *name, int
   return GetOptionalBigInt64(env, object, name, 0, output);
 }
 
-napi_value PartitionMutation(napi_env env, napi_callback_info info, bool retention) {
+napi_value PartitionMutation(napi_env env, napi_callback_info info,
+                             bool retention) {
   return Guard(env, [&]() -> napi_value {
     size_t argc = 1;
     napi_value args[1];
     napi_value receiver;
-    if (!NapiOk(env, napi_get_cb_info(env, info, &argc, args, &receiver, nullptr), "read partition arguments"))
+    if (!NapiOk(env,
+                napi_get_cb_info(env, info, &argc, args, &receiver, nullptr),
+                "read partition arguments"))
       return nullptr;
     NativeStore *store = UnwrapStore(env, receiver);
     if (store == nullptr)
@@ -2446,8 +2663,10 @@ napi_value PartitionMutation(napi_env env, napi_callback_info info, bool retenti
     }
     int64_t first = 0;
     int64_t second = 0;
-    if (!GetRequiredTimestamp(env, args[0], retention ? "window" : "start", &first) ||
-        !GetRequiredTimestamp(env, args[0], retention ? "nowTs" : "end", &second))
+    if (!GetRequiredTimestamp(env, args[0], retention ? "window" : "start",
+                              &first) ||
+        !GetRequiredTimestamp(env, args[0], retention ? "nowTs" : "end",
+                              &second))
       return nullptr;
     ZePartitionReport report{};
     report.abi_size = sizeof(report);
@@ -2468,19 +2687,24 @@ napi_value PartitionMutation(napi_env env, napi_callback_info info, bool retenti
     if (status != ZE_OK)
       return ThrowZeppelin(env, store->handle, status);
     napi_value result;
-    if (!NapiOk(env, napi_create_object(env, &result), "create partition report"))
+    if (!NapiOk(env, napi_create_object(env, &result),
+                "create partition report"))
       return nullptr;
     const std::pair<const char *, uint64_t> fields[] = {
-        {"generation", report.generation}, {"segmentsDropped", report.segments_dropped},
-        {"bytesReclaimed", report.bytes_reclaimed}, {"straddlersSkipped", report.straddlers_skipped}};
+        {"generation", report.generation},
+        {"segmentsDropped", report.segments_dropped},
+        {"bytesReclaimed", report.bytes_reclaimed},
+        {"straddlersSkipped", report.straddlers_skipped}};
     for (const auto &field : fields) {
       napi_value value;
-      if (!NapiOk(env, napi_create_bigint_uint64(env, field.second, &value), "create partition field") ||
+      if (!NapiOk(env, napi_create_bigint_uint64(env, field.second, &value),
+                  "create partition field") ||
           !SetNamed(env, result, field.first, value))
         return nullptr;
     }
     napi_value no_op;
-    if (!NapiOk(env, napi_get_boolean(env, report.is_no_op != 0, &no_op), "create no-op flag") ||
+    if (!NapiOk(env, napi_get_boolean(env, report.is_no_op != 0, &no_op),
+                "create no-op flag") ||
         !SetNamed(env, result, "isNoOp", no_op))
       return nullptr;
     return result;
@@ -2508,9 +2732,8 @@ napi_value DeleteWhere(napi_env env, napi_callback_info info) {
     if (store == nullptr)
       return nullptr;
     napi_valuetype filter_type = napi_undefined;
-    if (argc >= 1 &&
-        !NapiOk(env, napi_typeof(env, args[0], &filter_type),
-                "inspect deleteWhere filter"))
+    if (argc >= 1 && !NapiOk(env, napi_typeof(env, args[0], &filter_type),
+                             "inspect deleteWhere filter"))
       return nullptr;
     if (filter_type == napi_undefined || filter_type == napi_null) {
       napi_throw_type_error(env, "ERR_MISSING_ARGS",
@@ -2607,8 +2830,8 @@ bool ParseScanOrder(napi_env env, napi_value options, int32_t *order,
   if (!NapiOk(env, napi_get_value_double(env, js_id, &id),
               "read scan order attributeId"))
     return false;
-  if (!(id >= 0 && id <= 4294967295.0) || id != static_cast<double>(
-                                                    static_cast<uint32_t>(id))) {
+  if (!(id >= 0 && id <= 4294967295.0) ||
+      id != static_cast<double>(static_cast<uint32_t>(id))) {
     napi_throw_range_error(
         env, "ERR_OUT_OF_RANGE",
         "scan order attributeId must be an integer in 0..4294967295");
@@ -2683,7 +2906,9 @@ napi_value Scan(napi_env env, napi_callback_info info) {
     napi_value field;
     bool present = false;
     if (has_options) {
-      if (!GetOptionalUint64(env, options, "cancelToken", 0, &request.cancel_token)) return nullptr;
+      if (!GetOptionalUint64(env, options, "cancelToken", 0,
+                             &request.cancel_token))
+        return nullptr;
       if (!GetNamed(env, options, "limit", &field, &present))
         return nullptr;
       if (present) {
@@ -2775,71 +3000,79 @@ napi_value Scan(napi_env env, napi_callback_info info) {
     auto &native = data->native;
     native.abi_size = sizeof(native);
     const auto handle = store->handle;
-    return RunNative<Async>(env, receiver, handle,
-      [data, handle]() {
-      auto &ordered = data->ordered;
-      auto &native = data->native;
-        return ze_scan_ordered(handle, &ordered, &native);
-      }, [data, env, handle](ze_error_code status, const std::string &message) -> napi_value {
-      auto &ordered = data->ordered;
-      auto &native = data->native;
-      auto &request = ordered.scan;
-      auto &owner = data->owner;
-    if (status != ZE_OK)
-      return ThrowWorkerError(env, status, message);
-    napi_value result;
-    napi_value documents;
-    napi_value generation;
-    napi_value cursor;
-    if (!NapiOk(env, napi_create_object(env, &result), "create scan page") ||
-        !CreateStoredDocuments(env, native.documents, native.document_count,
-                               &documents) ||
-        !SetNamed(env, result, "documents", documents) ||
-        !NapiOk(env,
-                napi_create_bigint_uint64(env, native.generation, &generation),
-                "create scan generation") ||
-        !SetNamed(env, result, "generation", generation))
-      return nullptr;
-    if (native.has_more == 0) {
-      if (!NapiOk(env, napi_get_null(env, &cursor), "create empty cursor"))
-        return nullptr;
-    } else {
-      napi_value segment_id;
-      napi_value next_row;
-      napi_value phase;
-      napi_value cursor_order;
-      napi_value cursor_attribute;
-      if (!NapiOk(env, napi_create_object(env, &cursor),
-                  "create scan cursor") ||
-          !SetNamed(env, cursor, "generation", generation) ||
-          !CreateByteArray(env, native.next_segment_id,
-                           sizeof(native.next_segment_id), &segment_id) ||
-          !SetNamed(env, cursor, "segmentId", segment_id) ||
-          !NapiOk(env, napi_create_uint32(env, native.next_row, &next_row),
-                  "create cursor row") ||
-          !SetNamed(env, cursor, "nextRow", next_row) ||
-          !NapiOk(env, napi_create_uint32(env, native.next_phase, &phase),
-                  "create cursor phase") ||
-          !SetNamed(env, cursor, "phase", phase) ||
-          !NapiOk(env,
-                  napi_create_uint32(env, static_cast<uint32_t>(request.order),
-                                     &cursor_order),
-                  "create cursor order") ||
-          !SetNamed(env, cursor, "order", cursor_order) ||
-          !NapiOk(env,
-                  napi_create_uint32(env, ordered.order_attribute_id,
-                                     &cursor_attribute),
-                  "create cursor order attribute") ||
-          !SetNamed(env, cursor, "orderAttributeId", cursor_attribute))
-        return nullptr;
-    }
-    if (!SetNamed(env, result, "cursor", cursor))
-      return nullptr;
-    const ze_error_code free_status = owner.FreeNow();
-    if (free_status != ZE_OK)
-      return ThrowZeppelin(env, handle, free_status);
-    return result;
-      });
+    return RunNative<Async>(
+        env, receiver, handle,
+        [data, handle]() {
+          auto &ordered = data->ordered;
+          auto &native = data->native;
+          return ze_scan_ordered(handle, &ordered, &native);
+        },
+        [data, env, handle](ze_error_code status,
+                            const std::string &message) -> napi_value {
+          auto &ordered = data->ordered;
+          auto &native = data->native;
+          auto &request = ordered.scan;
+          auto &owner = data->owner;
+          if (status != ZE_OK)
+            return ThrowWorkerError(env, status, message);
+          napi_value result;
+          napi_value documents;
+          napi_value generation;
+          napi_value cursor;
+          if (!NapiOk(env, napi_create_object(env, &result),
+                      "create scan page") ||
+              !CreateStoredDocuments(env, native.documents,
+                                     native.document_count, &documents) ||
+              !SetNamed(env, result, "documents", documents) ||
+              !NapiOk(env,
+                      napi_create_bigint_uint64(env, native.generation,
+                                                &generation),
+                      "create scan generation") ||
+              !SetNamed(env, result, "generation", generation))
+            return nullptr;
+          if (native.has_more == 0) {
+            if (!NapiOk(env, napi_get_null(env, &cursor),
+                        "create empty cursor"))
+              return nullptr;
+          } else {
+            napi_value segment_id;
+            napi_value next_row;
+            napi_value phase;
+            napi_value cursor_order;
+            napi_value cursor_attribute;
+            if (!NapiOk(env, napi_create_object(env, &cursor),
+                        "create scan cursor") ||
+                !SetNamed(env, cursor, "generation", generation) ||
+                !CreateByteArray(env, native.next_segment_id,
+                                 sizeof(native.next_segment_id), &segment_id) ||
+                !SetNamed(env, cursor, "segmentId", segment_id) ||
+                !NapiOk(env,
+                        napi_create_uint32(env, native.next_row, &next_row),
+                        "create cursor row") ||
+                !SetNamed(env, cursor, "nextRow", next_row) ||
+                !NapiOk(env, napi_create_uint32(env, native.next_phase, &phase),
+                        "create cursor phase") ||
+                !SetNamed(env, cursor, "phase", phase) ||
+                !NapiOk(env,
+                        napi_create_uint32(env,
+                                           static_cast<uint32_t>(request.order),
+                                           &cursor_order),
+                        "create cursor order") ||
+                !SetNamed(env, cursor, "order", cursor_order) ||
+                !NapiOk(env,
+                        napi_create_uint32(env, ordered.order_attribute_id,
+                                           &cursor_attribute),
+                        "create cursor order attribute") ||
+                !SetNamed(env, cursor, "orderAttributeId", cursor_attribute))
+              return nullptr;
+          }
+          if (!SetNamed(env, result, "cursor", cursor))
+            return nullptr;
+          const ze_error_code free_status = owner.FreeNow();
+          if (free_status != ZE_OK)
+            return ThrowZeppelin(env, handle, free_status);
+          return result;
+        });
   });
 }
 
@@ -2929,10 +3162,10 @@ bool CreateCountGroup(napi_env env, const ZeCountGroup &group,
         group.value.string_value == nullptr
             ? ""
             : reinterpret_cast<const char *>(group.value.string_value);
-    if (!NapiOk(env,
-                napi_create_string_utf8(env, text, group.value.string_len,
-                                        &value),
-                "create string group value"))
+    if (!NapiOk(
+            env,
+            napi_create_string_utf8(env, text, group.value.string_len, &value),
+            "create string group value"))
       return false;
     break;
   }
@@ -2986,10 +3219,10 @@ napi_value CountGrouped(napi_env env, NativeStore *store,
   for (size_t index = 0; index < native.group_count; ++index) {
     napi_value group;
     if (!CreateCountGroup(env, native.groups[index], &group) ||
-        !NapiOk(env,
-                napi_set_element(env, groups, static_cast<uint32_t>(index),
-                                 group),
-                "set count group"))
+        !NapiOk(
+            env,
+            napi_set_element(env, groups, static_cast<uint32_t>(index), group),
+            "set count group"))
       return nullptr;
   }
   if (!SetNamed(env, result, "groups", groups) ||
@@ -3008,41 +3241,77 @@ napi_value Schema(napi_env env, napi_callback_info info) {
   return Guard(env, [&]() -> napi_value {
     napi_value receiver;
     size_t argc = 0;
-    if (!NapiOk(env, napi_get_cb_info(env, info, &argc, nullptr, &receiver, nullptr), "read schema receiver"))
+    if (!NapiOk(env,
+                napi_get_cb_info(env, info, &argc, nullptr, &receiver, nullptr),
+                "read schema receiver"))
       return nullptr;
     NativeStore *store = UnwrapStore(env, receiver);
-    if (store == nullptr) return nullptr;
+    if (store == nullptr)
+      return nullptr;
     napi_value result;
-    if (!NapiOk(env, napi_create_array(env, &result), "create schema array")) return nullptr;
+    if (!NapiOk(env, napi_create_array(env, &result), "create schema array"))
+      return nullptr;
     for (size_t index = 0;; ++index) {
       ZeSchemaColumnResult column{};
       column.abi_size = sizeof(column);
       auto status = ze_schema_column(store->handle, index, nullptr, 0, &column);
-      if (status != ZE_OK) return ThrowZeppelin(env, store->handle, status);
-      if (index == column.column_count) break;
+      if (status != ZE_OK)
+        return ThrowZeppelin(env, store->handle, status);
+      if (index == column.column_count)
+        break;
       std::vector<char> name(column.name_len + 1);
-      status = ze_schema_column(store->handle, index, reinterpret_cast<uint8_t *>(name.data()), name.size(), &column);
-      if (status != ZE_OK) return ThrowZeppelin(env, store->handle, status);
+      status = ze_schema_column(store->handle, index,
+                                reinterpret_cast<uint8_t *>(name.data()),
+                                name.size(), &column);
+      if (status != ZE_OK)
+        return ThrowZeppelin(env, store->handle, status);
       const char *type = nullptr;
       switch (column.attribute_type) {
-        case 1: type = "u64"; break;
-        case 2: type = "i64"; break;
-        case 3: type = "f64"; break;
-        case 4: type = "bool"; break;
-        case 5: type = "dictionaryString"; break;
-        case 6: type = "rawString"; break;
-        case 7: type = "id128"; break;
-        default: napi_throw_error(env, "ERR_SCHEMA_TYPE", "unknown attribute type"); return nullptr;
+      case 1:
+        type = "u64";
+        break;
+      case 2:
+        type = "i64";
+        break;
+      case 3:
+        type = "f64";
+        break;
+      case 4:
+        type = "bool";
+        break;
+      case 5:
+        type = "dictionaryString";
+        break;
+      case 6:
+        type = "rawString";
+        break;
+      case 7:
+        type = "id128";
+        break;
+      default:
+        napi_throw_error(env, "ERR_SCHEMA_TYPE", "unknown attribute type");
+        return nullptr;
       }
       napi_value entry, id, label, kind, nullable;
       if (!NapiOk(env, napi_create_object(env, &entry), "create attribute") ||
-          !NapiOk(env, napi_create_uint32(env, column.attribute_id, &id), "create attribute id") ||
-          !NapiOk(env, napi_create_string_utf8(env, name.data(), column.name_len, &label), "create attribute name") ||
-          !NapiOk(env, napi_create_string_utf8(env, type, NAPI_AUTO_LENGTH, &kind), "create attribute type") ||
-          !NapiOk(env, napi_get_boolean(env, column.nullable != 0, &nullable), "create nullable") ||
-          !SetNamed(env, entry, "id", id) || !SetNamed(env, entry, "name", label) ||
-          !SetNamed(env, entry, "type", kind) || !SetNamed(env, entry, "nullable", nullable) ||
-          !NapiOk(env, napi_set_element(env, result, index, entry), "append attribute")) return nullptr;
+          !NapiOk(env, napi_create_uint32(env, column.attribute_id, &id),
+                  "create attribute id") ||
+          !NapiOk(env,
+                  napi_create_string_utf8(env, name.data(), column.name_len,
+                                          &label),
+                  "create attribute name") ||
+          !NapiOk(env,
+                  napi_create_string_utf8(env, type, NAPI_AUTO_LENGTH, &kind),
+                  "create attribute type") ||
+          !NapiOk(env, napi_get_boolean(env, column.nullable != 0, &nullable),
+                  "create nullable") ||
+          !SetNamed(env, entry, "id", id) ||
+          !SetNamed(env, entry, "name", label) ||
+          !SetNamed(env, entry, "type", kind) ||
+          !SetNamed(env, entry, "nullable", nullable) ||
+          !NapiOk(env, napi_set_element(env, result, index, entry),
+                  "append attribute"))
+        return nullptr;
     }
     return result;
   });
@@ -3092,9 +3361,8 @@ napi_value Count(napi_env env, napi_callback_info info) {
       napi_valuetype group_by_type = napi_undefined;
       if (!GetNamed(env, options, "groupBy", &group_by, &present))
         return nullptr;
-      if (present &&
-          !NapiOk(env, napi_typeof(env, group_by, &group_by_type),
-                  "inspect groupBy"))
+      if (present && !NapiOk(env, napi_typeof(env, group_by, &group_by_type),
+                             "inspect groupBy"))
         return nullptr;
       if (present && group_by_type != napi_undefined) {
         uint32_t attribute_id = 0;
@@ -3282,12 +3550,16 @@ napi_value OpenSnapshotStore(napi_env env, napi_callback_info info) {
   return Guard(env, [&]() -> napi_value {
     size_t argc = 0;
     napi_value receiver, constructor, result;
-    if (!NapiOk(env, napi_get_cb_info(env, info, &argc, nullptr, &receiver, nullptr),
+    if (!NapiOk(env,
+                napi_get_cb_info(env, info, &argc, nullptr, &receiver, nullptr),
                 "read snapshot receiver") ||
-        !NapiOk(env, napi_get_named_property(env, receiver, "constructor", &constructor),
-                "read store constructor") ||
+        !NapiOk(
+            env,
+            napi_get_named_property(env, receiver, "constructor", &constructor),
+            "read store constructor") ||
         !NapiOk(env, napi_new_instance(env, constructor, 1, &receiver, &result),
-                "open snapshot handle")) return nullptr;
+                "open snapshot handle"))
+      return nullptr;
     return result;
   });
 }
@@ -3343,25 +3615,30 @@ napi_value SealStore(napi_env env, napi_callback_info info) {
     auto &report = data->report;
     report.abi_size = sizeof(report);
     const auto handle = store->handle;
-    return RunNative<Async>(env, receiver, handle,
-      [data, handle]() {
-      auto &request = data->request;
-      auto &report = data->report;
-        return ze_seal(handle, &request, &report);
-      }, [data, env](ze_error_code status, const std::string &message) -> napi_value {
-      auto &report = data->report;
-    if (status != ZE_OK)
-      return ThrowWorkerError(env, status, message);
-    napi_value result;
-    napi_value generation;
-    if (!NapiOk(env, napi_create_object(env, &result), "create seal report") ||
-        !NapiOk(env,
-                napi_create_bigint_uint64(env, report.generation, &generation),
-                "create generation") ||
-        !SetNamed(env, result, "generation", generation))
-      return nullptr;
-    return result;
-      });
+    return RunNative<Async>(
+        env, receiver, handle,
+        [data, handle]() {
+          auto &request = data->request;
+          auto &report = data->report;
+          return ze_seal(handle, &request, &report);
+        },
+        [data, env](ze_error_code status,
+                    const std::string &message) -> napi_value {
+          auto &report = data->report;
+          if (status != ZE_OK)
+            return ThrowWorkerError(env, status, message);
+          napi_value result;
+          napi_value generation;
+          if (!NapiOk(env, napi_create_object(env, &result),
+                      "create seal report") ||
+              !NapiOk(env,
+                      napi_create_bigint_uint64(env, report.generation,
+                                                &generation),
+                      "create generation") ||
+              !SetNamed(env, result, "generation", generation))
+            return nullptr;
+          return result;
+        });
   });
 }
 
@@ -3388,25 +3665,30 @@ napi_value MergeStore(napi_env env, napi_callback_info info) {
     auto &report = data->report;
     report.abi_size = sizeof(report);
     const auto handle = store->handle;
-    return RunNative<Async>(env, receiver, handle,
-      [data, handle]() {
-      auto &request = data->request;
-      auto &report = data->report;
-        return ze_merge_sealed(handle, &request, &report);
-      }, [data, env](ze_error_code status, const std::string &message) -> napi_value {
-      auto &report = data->report;
-    if (status != ZE_OK)
-      return ThrowWorkerError(env, status, message);
-    napi_value result;
-    napi_value generation;
-    if (!NapiOk(env, napi_create_object(env, &result), "create merge report") ||
-        !NapiOk(env,
-                napi_create_bigint_uint64(env, report.generation, &generation),
-                "create generation") ||
-        !SetNamed(env, result, "generation", generation))
-      return nullptr;
-    return result;
-      });
+    return RunNative<Async>(
+        env, receiver, handle,
+        [data, handle]() {
+          auto &request = data->request;
+          auto &report = data->report;
+          return ze_merge_sealed(handle, &request, &report);
+        },
+        [data, env](ze_error_code status,
+                    const std::string &message) -> napi_value {
+          auto &report = data->report;
+          if (status != ZE_OK)
+            return ThrowWorkerError(env, status, message);
+          napi_value result;
+          napi_value generation;
+          if (!NapiOk(env, napi_create_object(env, &result),
+                      "create merge report") ||
+              !NapiOk(env,
+                      napi_create_bigint_uint64(env, report.generation,
+                                                &generation),
+                      "create generation") ||
+              !SetNamed(env, result, "generation", generation))
+            return nullptr;
+          return result;
+        });
   });
 }
 
@@ -3443,18 +3725,28 @@ napi_value OpenMigrations(napi_env env, napi_callback_info info) {
   return Guard(env, [&]() -> napi_value {
     size_t argc = 0;
     napi_value receiver;
-    if (!NapiOk(env, napi_get_cb_info(env, info, &argc, nullptr, &receiver, nullptr), "read migrations receiver")) return nullptr;
+    if (!NapiOk(env,
+                napi_get_cb_info(env, info, &argc, nullptr, &receiver, nullptr),
+                "read migrations receiver"))
+      return nullptr;
     NativeStore *store = UnwrapStore(env, receiver);
-    if (store == nullptr) return nullptr;
+    if (store == nullptr)
+      return nullptr;
     ZeOpenMigrations report{};
     report.abi_size = sizeof(report);
     const ze_error_code status = ze_open_migrations(store->handle, &report);
-    if (status != ZE_OK) return ThrowZeppelin(env, store->handle, status);
+    if (status != ZE_OK)
+      return ThrowZeppelin(env, store->handle, status);
     napi_value result, generation, changes;
     if (!NapiOk(env, napi_create_object(env, &result), "create migrations") ||
-        !NapiOk(env, napi_create_bigint_uint64(env, report.generation, &generation), "create generation") ||
-        !NapiOk(env, napi_create_uint32(env, report.changes, &changes), "create changes") ||
-        !SetNamed(env, result, "generation", generation) || !SetNamed(env, result, "changes", changes)) return nullptr;
+        !NapiOk(env,
+                napi_create_bigint_uint64(env, report.generation, &generation),
+                "create generation") ||
+        !NapiOk(env, napi_create_uint32(env, report.changes, &changes),
+                "create changes") ||
+        !SetNamed(env, result, "generation", generation) ||
+        !SetNamed(env, result, "changes", changes))
+      return nullptr;
     return result;
   });
 }
@@ -3509,12 +3801,11 @@ void CompleteSnapshot(napi_env env, napi_status status, void *data) {
       outcome = nullptr;
   } else {
     napi_value generation;
-    resolved =
-        napi_create_object(env, &outcome) == napi_ok &&
-        napi_create_bigint_uint64(env, work->generation, &generation) ==
-            napi_ok &&
-        napi_set_named_property(env, outcome, "generation", generation) ==
-            napi_ok;
+    resolved = napi_create_object(env, &outcome) == napi_ok &&
+               napi_create_bigint_uint64(env, work->generation, &generation) ==
+                   napi_ok &&
+               napi_set_named_property(env, outcome, "generation",
+                                       generation) == napi_ok;
   }
   if (!resolved && outcome == nullptr) {
     bool pending = false;
@@ -3797,7 +4088,8 @@ bool AdvanceUtf16(napi_env env, const uint8_t *text, size_t text_len,
 bool SetSourceBytes(napi_env env, napi_value output, size_t start, size_t end) {
   napi_value first;
   napi_value last;
-  return NapiOk(env, napi_create_double(env, static_cast<double>(start), &first),
+  return NapiOk(env,
+                napi_create_double(env, static_cast<double>(start), &first),
                 "create source byte start") &&
          NapiOk(env, napi_create_double(env, static_cast<double>(end), &last),
                 "create source byte end") &&
@@ -3814,13 +4106,13 @@ bool CreateSnippet(napi_env env, const ZeQuerySnippet &snippet,
   napi_value truncated_start;
   napi_value truncated_end;
   if (!NapiOk(env, napi_create_object(env, output), "create snippet") ||
-      !NapiOk(env,
-              napi_create_string_utf8(
-                  env,
-                  snippet.text_len == 0 ? ""
-                                        : reinterpret_cast<const char *>(text),
-                  snippet.text_len, &excerpt),
-              "create snippet text") ||
+      !NapiOk(
+          env,
+          napi_create_string_utf8(
+              env,
+              snippet.text_len == 0 ? "" : reinterpret_cast<const char *>(text),
+              snippet.text_len, &excerpt),
+          "create snippet text") ||
       !SetNamed(env, *output, "text", excerpt) ||
       !SetSourceBytes(env, *output, source.source_start, source.source_end) ||
       !NapiOk(env,
@@ -3843,8 +4135,7 @@ bool CreateSnippet(napi_env env, const ZeQuerySnippet &snippet,
                       &unit_cursor) ||
         !NapiOk(env, napi_create_uint32(env, unit_cursor, &end),
                 "create highlight end") ||
-        !NapiOk(env, napi_create_object(env, &highlight),
-                "create highlight") ||
+        !NapiOk(env, napi_create_object(env, &highlight), "create highlight") ||
         !SetNamed(env, highlight, "start", start) ||
         !SetNamed(env, highlight, "end", end) ||
         !SetSourceBytes(env, highlight, source.highlights[index].start,
@@ -3859,10 +4150,10 @@ bool CreateSnippet(napi_env env, const ZeQuerySnippet &snippet,
                                  &truncated_start),
                 "create truncatedStart") &&
          SetNamed(env, *output, "truncatedStart", truncated_start) &&
-         NapiOk(env,
-                napi_get_boolean(env, snippet.truncated_end != 0,
-                                 &truncated_end),
-                "create truncatedEnd") &&
+         NapiOk(
+             env,
+             napi_get_boolean(env, snippet.truncated_end != 0, &truncated_end),
+             "create truncatedEnd") &&
          SetNamed(env, *output, "truncatedEnd", truncated_end);
 }
 
@@ -3919,7 +4210,8 @@ napi_value Query(napi_env env, napi_callback_info info) {
       ZeQueryResult native{};
       ZeQuerySnippets snippets{};
       ResultOwner<ZeQueryResult, ze_query_result_free> owner{&native};
-      ResultOwner<ZeQuerySnippets, ze_query_snippets_free> snippet_owner{&snippets};
+      ResultOwner<ZeQuerySnippets, ze_query_snippets_free> snippet_owner{
+          &snippets};
     };
     auto data = std::make_shared<Data>();
     auto &request = data->request;
@@ -4102,189 +4394,207 @@ napi_value Query(napi_env env, napi_callback_info info) {
     auto &snippets = data->snippets;
     snippets.abi_size = sizeof(snippets);
     const auto handle = store->handle;
-    return RunNative<Async>(env, receiver, handle,
-      [data, handle]() {
-      auto &request = data->request;
-      auto &constraints = data->constraints;
-      auto &has_filter = data->has_filter;
-      auto &has_snippets = data->has_snippets;
-      auto &snippet_bytes = data->snippet_bytes;
-      auto &native = data->native;
-      auto &snippets = data->snippets;
-        return (has_filter || constraints.has_timestamp_range)
-            ? ze_query_filtered(handle, &request, &constraints, snippet_bytes, &native, has_snippets ? &snippets : nullptr)
-            : has_snippets ? ze_query_with_snippets(handle, &request, snippet_bytes, &native, &snippets)
-            : ze_query(handle, &request, &native);
-      }, [data, env, handle](ze_error_code status, const std::string &message) -> napi_value {
-      auto &has_snippets = data->has_snippets;
-      auto &native = data->native;
-      auto &snippets = data->snippets;
-      auto &owner = data->owner;
-      auto &snippet_owner = data->snippet_owner;
-    if (status != ZE_OK)
-      return ThrowWorkerError(env, status, message);
-    if (has_snippets && snippets.snippet_count != native.hit_count) {
-      napi_throw_error(env, "ERR_ZEPPELIN_NATIVE",
-                       "query snippets are not aligned with its hits");
-      return nullptr;
-    }
+    return RunNative<Async>(
+        env, receiver, handle,
+        [data, handle]() {
+          auto &request = data->request;
+          auto &constraints = data->constraints;
+          auto &has_filter = data->has_filter;
+          auto &has_snippets = data->has_snippets;
+          auto &snippet_bytes = data->snippet_bytes;
+          auto &native = data->native;
+          auto &snippets = data->snippets;
+          return (has_filter || constraints.has_timestamp_range)
+                     ? ze_query_filtered(handle, &request, &constraints,
+                                         snippet_bytes, &native,
+                                         has_snippets ? &snippets : nullptr)
+                 : has_snippets
+                     ? ze_query_with_snippets(handle, &request, snippet_bytes,
+                                              &native, &snippets)
+                     : ze_query(handle, &request, &native);
+        },
+        [data, env, handle](ze_error_code status,
+                            const std::string &message) -> napi_value {
+          auto &has_snippets = data->has_snippets;
+          auto &native = data->native;
+          auto &snippets = data->snippets;
+          auto &owner = data->owner;
+          auto &snippet_owner = data->snippet_owner;
+          if (status != ZE_OK)
+            return ThrowWorkerError(env, status, message);
+          if (has_snippets && snippets.snippet_count != native.hit_count) {
+            napi_throw_error(env, "ERR_ZEPPELIN_NATIVE",
+                             "query snippets are not aligned with its hits");
+            return nullptr;
+          }
 
-    napi_value hits;
-    if (!NapiOk(env,
-                napi_create_array_with_length(env, native.hit_count, &hits),
-                "create query hit array"))
-      return nullptr;
-    for (size_t index = 0; index < native.hit_count; ++index) {
-      const ZeQueryHit &hit = native.hits[index];
-      if (hit.has_document == 0) {
-        napi_throw_error(env, "ERR_ZEPPELIN_NATIVE",
-                         "query returned a hit without a document id");
-        return nullptr;
-      }
-      napi_value result;
-      napi_value id;
-      napi_value score;
-      if (!NapiOk(env, napi_create_object(env, &result), "create query hit") ||
-          !CreateUint128(env, hit.doc_id, &id) ||
-          !SetNamed(env, result, "id", id) ||
-          !NapiOk(env, napi_create_double(env, hit.score, &score),
-                  "create query score") ||
-          !SetNamed(env, result, "score", score))
-        return nullptr;
-      // A fused hit carries identity only, so revision and the per-leg scores
-      // are present or absent rather than defaulted to a number the engine
-      // never computed.
-      if (hit.has_revision != 0) {
-        napi_value revision;
-        if (!NapiOk(env,
-                    napi_create_bigint_uint64(env, hit.revision, &revision),
-                    "create query revision") ||
-            !SetNamed(env, result, "revision", revision))
-          return nullptr;
-      }
-      if (hit.has_vector_score != 0) {
-        napi_value vector_score;
-        if (!NapiOk(
-                env,
-                napi_create_double(env, hit.vector_squared_l2, &vector_score),
-                "create vector score") ||
-            !SetNamed(env, result, "vectorSquaredL2", vector_score))
-          return nullptr;
-      }
-      if (hit.has_lexical_score != 0) {
-        napi_value lexical_score;
-        if (!NapiOk(env,
-                    napi_create_double(env, hit.lexical_bm25, &lexical_score),
-                    "create lexical score") ||
-            !SetNamed(env, result, "lexicalBm25", lexical_score))
-          return nullptr;
-      }
-      if (has_snippets && snippets.snippets[index].has_snippet != 0) {
-        napi_value snippet;
-        ZeSnippetSourceRanges source{};
-        source.abi_size = sizeof(source);
-        const ze_error_code source_status =
-            ze_query_snippet_source_ranges(&snippets, index, &source);
-        if (source_status != ZE_OK)
-          return ThrowZeppelin(env, handle, source_status);
-        if (source.highlight_count != snippets.snippets[index].highlight_count) {
-          napi_throw_error(env, "ZE_ERR_INTERNAL",
-                           "snippet source highlights are not aligned");
-          return nullptr;
-        }
-        if (!CreateSnippet(env, snippets.snippets[index], source, &snippet) ||
-            !SetNamed(env, result, "snippet", snippet))
-          return nullptr;
-      }
-      if (!NapiOk(env, napi_set_element(env, hits, index, result),
-                  "append query hit"))
-        return nullptr;
-    }
+          napi_value hits;
+          if (!NapiOk(
+                  env,
+                  napi_create_array_with_length(env, native.hit_count, &hits),
+                  "create query hit array"))
+            return nullptr;
+          for (size_t index = 0; index < native.hit_count; ++index) {
+            const ZeQueryHit &hit = native.hits[index];
+            if (hit.has_document == 0) {
+              napi_throw_error(env, "ERR_ZEPPELIN_NATIVE",
+                               "query returned a hit without a document id");
+              return nullptr;
+            }
+            napi_value result;
+            napi_value id;
+            napi_value score;
+            if (!NapiOk(env, napi_create_object(env, &result),
+                        "create query hit") ||
+                !CreateUint128(env, hit.doc_id, &id) ||
+                !SetNamed(env, result, "id", id) ||
+                !NapiOk(env, napi_create_double(env, hit.score, &score),
+                        "create query score") ||
+                !SetNamed(env, result, "score", score))
+              return nullptr;
+            // A fused hit carries identity only, so revision and the per-leg
+            // scores are present or absent rather than defaulted to a number
+            // the engine never computed.
+            if (hit.has_revision != 0) {
+              napi_value revision;
+              if (!NapiOk(
+                      env,
+                      napi_create_bigint_uint64(env, hit.revision, &revision),
+                      "create query revision") ||
+                  !SetNamed(env, result, "revision", revision))
+                return nullptr;
+            }
+            if (hit.has_vector_score != 0) {
+              napi_value vector_score;
+              if (!NapiOk(env,
+                          napi_create_double(env, hit.vector_squared_l2,
+                                             &vector_score),
+                          "create vector score") ||
+                  !SetNamed(env, result, "vectorSquaredL2", vector_score))
+                return nullptr;
+            }
+            if (hit.has_lexical_score != 0) {
+              napi_value lexical_score;
+              if (!NapiOk(
+                      env,
+                      napi_create_double(env, hit.lexical_bm25, &lexical_score),
+                      "create lexical score") ||
+                  !SetNamed(env, result, "lexicalBm25", lexical_score))
+                return nullptr;
+            }
+            if (has_snippets && snippets.snippets[index].has_snippet != 0) {
+              napi_value snippet;
+              ZeSnippetSourceRanges source{};
+              source.abi_size = sizeof(source);
+              const ze_error_code source_status =
+                  ze_query_snippet_source_ranges(&snippets, index, &source);
+              if (source_status != ZE_OK)
+                return ThrowZeppelin(env, handle, source_status);
+              if (source.highlight_count !=
+                  snippets.snippets[index].highlight_count) {
+                napi_throw_error(env, "ZE_ERR_INTERNAL",
+                                 "snippet source highlights are not aligned");
+                return nullptr;
+              }
+              if (!CreateSnippet(env, snippets.snippets[index], source,
+                                 &snippet) ||
+                  !SetNamed(env, result, "snippet", snippet))
+                return nullptr;
+            }
+            if (!NapiOk(env, napi_set_element(env, hits, index, result),
+                        "append query hit"))
+              return nullptr;
+          }
 
-    const char *modes[] = {"vector", "lexical", "hybrid"};
-    if (native.mode < 0 ||
-        static_cast<size_t>(native.mode) >= sizeof(modes) / sizeof(modes[0])) {
-      napi_throw_error(env, "ERR_ZEPPELIN_NATIVE",
-                       "query returned an unknown execution mode");
-      return nullptr;
-    }
+          const char *modes[] = {"vector", "lexical", "hybrid"};
+          if (native.mode < 0 || static_cast<size_t>(native.mode) >=
+                                     sizeof(modes) / sizeof(modes[0])) {
+            napi_throw_error(env, "ERR_ZEPPELIN_NATIVE",
+                             "query returned an unknown execution mode");
+            return nullptr;
+          }
 
-    napi_value result;
-    napi_value generation;
-    napi_value mode;
-    napi_value approximate;
-    napi_value exact_rescore;
-    napi_value budget_exhausted;
-    if (!NapiOk(env, napi_create_object(env, &result), "create query result") ||
-        !SetNamed(env, result, "hits", hits) ||
-        !NapiOk(env,
-                napi_create_bigint_uint64(env, native.generation, &generation),
-                "create query generation") ||
-        !SetNamed(env, result, "generation", generation) ||
-        !NapiOk(env,
-                napi_create_string_utf8(env, modes[native.mode],
-                                        NAPI_AUTO_LENGTH, &mode),
-                "create query mode") ||
-        !SetNamed(env, result, "mode", mode) ||
-        !NapiOk(env,
-                napi_get_boolean(env, native.approximate != 0, &approximate),
-                "create approximate flag") ||
-        !SetNamed(env, result, "approximate", approximate) ||
-        !NapiOk(
-            env,
-            napi_get_boolean(env, native.exact_rescore != 0, &exact_rescore),
-            "create exact rescore flag") ||
-        !SetNamed(env, result, "exactRescore", exact_rescore) ||
-        !NapiOk(env,
-                napi_get_boolean(env, native.budget_exhausted != 0,
-                                 &budget_exhausted),
-                "create budget exhausted flag") ||
-        !SetNamed(env, result, "budgetExhausted", budget_exhausted))
-      return nullptr;
+          napi_value result;
+          napi_value generation;
+          napi_value mode;
+          napi_value approximate;
+          napi_value exact_rescore;
+          napi_value budget_exhausted;
+          if (!NapiOk(env, napi_create_object(env, &result),
+                      "create query result") ||
+              !SetNamed(env, result, "hits", hits) ||
+              !NapiOk(env,
+                      napi_create_bigint_uint64(env, native.generation,
+                                                &generation),
+                      "create query generation") ||
+              !SetNamed(env, result, "generation", generation) ||
+              !NapiOk(env,
+                      napi_create_string_utf8(env, modes[native.mode],
+                                              NAPI_AUTO_LENGTH, &mode),
+                      "create query mode") ||
+              !SetNamed(env, result, "mode", mode) ||
+              !NapiOk(
+                  env,
+                  napi_get_boolean(env, native.approximate != 0, &approximate),
+                  "create approximate flag") ||
+              !SetNamed(env, result, "approximate", approximate) ||
+              !NapiOk(env,
+                      napi_get_boolean(env, native.exact_rescore != 0,
+                                       &exact_rescore),
+                      "create exact rescore flag") ||
+              !SetNamed(env, result, "exactRescore", exact_rescore) ||
+              !NapiOk(env,
+                      napi_get_boolean(env, native.budget_exhausted != 0,
+                                       &budget_exhausted),
+                      "create budget exhausted flag") ||
+              !SetNamed(env, result, "budgetExhausted", budget_exhausted))
+            return nullptr;
 
-    if (native.has_fusion != 0) {
-      const char *methods[] = {"convex", "reciprocalRank"};
-      if (native.fusion_method < 0 ||
-          static_cast<size_t>(native.fusion_method) >=
-              sizeof(methods) / sizeof(methods[0])) {
-        napi_throw_error(env, "ERR_ZEPPELIN_NATIVE",
-                         "query returned an unknown fusion method");
-        return nullptr;
-      }
-      napi_value fusion;
-      napi_value method;
-      napi_value effective_alpha;
-      napi_value rounds;
-      if (!NapiOk(env, napi_create_object(env, &fusion),
-                  "create fusion report") ||
-          !NapiOk(env,
-                  napi_create_string_utf8(env, methods[native.fusion_method],
-                                          NAPI_AUTO_LENGTH, &method),
-                  "create fusion method") ||
-          !SetNamed(env, fusion, "method", method) ||
-          !NapiOk(
-              env,
-              napi_create_double(env, native.effective_alpha, &effective_alpha),
-              "create effective alpha") ||
-          !SetNamed(env, fusion, "effectiveAlpha", effective_alpha) ||
-          !NapiOk(env,
-                  napi_create_bigint_uint64(env, native.fusion_rounds, &rounds),
-                  "create fusion rounds") ||
-          !SetNamed(env, fusion, "rounds", rounds) ||
-          !SetNamed(env, result, "fusion", fusion))
-        return nullptr;
-    }
+          if (native.has_fusion != 0) {
+            const char *methods[] = {"convex", "reciprocalRank"};
+            if (native.fusion_method < 0 ||
+                static_cast<size_t>(native.fusion_method) >=
+                    sizeof(methods) / sizeof(methods[0])) {
+              napi_throw_error(env, "ERR_ZEPPELIN_NATIVE",
+                               "query returned an unknown fusion method");
+              return nullptr;
+            }
+            napi_value fusion;
+            napi_value method;
+            napi_value effective_alpha;
+            napi_value rounds;
+            if (!NapiOk(env, napi_create_object(env, &fusion),
+                        "create fusion report") ||
+                !NapiOk(env,
+                        napi_create_string_utf8(env,
+                                                methods[native.fusion_method],
+                                                NAPI_AUTO_LENGTH, &method),
+                        "create fusion method") ||
+                !SetNamed(env, fusion, "method", method) ||
+                !NapiOk(env,
+                        napi_create_double(env, native.effective_alpha,
+                                           &effective_alpha),
+                        "create effective alpha") ||
+                !SetNamed(env, fusion, "effectiveAlpha", effective_alpha) ||
+                !NapiOk(env,
+                        napi_create_bigint_uint64(env, native.fusion_rounds,
+                                                  &rounds),
+                        "create fusion rounds") ||
+                !SetNamed(env, fusion, "rounds", rounds) ||
+                !SetNamed(env, result, "fusion", fusion))
+              return nullptr;
+          }
 
-    if (has_snippets) {
-      const ze_error_code snippet_free_status = snippet_owner.FreeNow();
-      if (snippet_free_status != ZE_OK)
-        return ThrowZeppelin(env, handle, snippet_free_status);
-    }
-    const ze_error_code free_status = owner.FreeNow();
-    if (free_status != ZE_OK)
-      return ThrowZeppelin(env, handle, free_status);
-    return result;
-      });
+          if (has_snippets) {
+            const ze_error_code snippet_free_status = snippet_owner.FreeNow();
+            if (snippet_free_status != ZE_OK)
+              return ThrowZeppelin(env, handle, snippet_free_status);
+          }
+          const ze_error_code free_status = owner.FreeNow();
+          if (free_status != ZE_OK)
+            return ThrowZeppelin(env, handle, free_status);
+          return result;
+        });
   });
 }
 
@@ -4376,45 +4686,62 @@ napi_value Initialize(napi_env env, napi_value exports) {
 #else
   const bool has_graph = false;
 #endif
-  if (!NapiOk(env, napi_get_boolean(env, has_graph, &graph_supported), "graph support") ||
-      !SetNamed(env, exports, "graphSupported", graph_supported)) return nullptr;
+  if (!NapiOk(env, napi_get_boolean(env, has_graph, &graph_supported),
+              "graph support") ||
+      !SetNamed(env, exports, "graphSupported", graph_supported))
+    return nullptr;
   napi_property_descriptor methods[] = {
       {"ingest", nullptr, Ingest, nullptr, nullptr, nullptr, napi_default,
        nullptr},
-      {"upsertAsync", nullptr, Upsert<true>, nullptr, nullptr, nullptr, napi_default, nullptr},
-      {"upsert", nullptr, Upsert<false>, nullptr, nullptr, nullptr, napi_default,
-       nullptr},
+      {"upsertAsync", nullptr, Upsert<true>, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"upsert", nullptr, Upsert<false>, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
       {"get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"delete", nullptr, DeleteDocuments, nullptr, nullptr, nullptr,
        napi_default, nullptr},
-      {"purgeAsync", nullptr, Purge<true>, nullptr, nullptr, nullptr, napi_default, nullptr},
-      {"purge", nullptr, Purge<false>, nullptr, nullptr, nullptr, napi_default, nullptr},
-      {"awaitPurgeAsync", nullptr, AwaitPurge<true>, nullptr, nullptr, nullptr, napi_default, nullptr},
-      {"awaitPurge", nullptr, AwaitPurge<false>, nullptr, nullptr, nullptr, napi_default, nullptr},
-      {"dropPartition", nullptr, DropPartition, nullptr, nullptr, nullptr, napi_default, nullptr},
-      {"applyRetention", nullptr, ApplyRetention, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"purgeAsync", nullptr, Purge<true>, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"purge", nullptr, Purge<false>, nullptr, nullptr, nullptr, napi_default,
+       nullptr},
+      {"awaitPurgeAsync", nullptr, AwaitPurge<true>, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"awaitPurge", nullptr, AwaitPurge<false>, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"dropPartition", nullptr, DropPartition, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"applyRetention", nullptr, ApplyRetention, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
       {"deleteWhere", nullptr, DeleteWhere, nullptr, nullptr, nullptr,
        napi_default, nullptr},
-      {"scanAsync", nullptr, Scan<true>, nullptr, nullptr, nullptr, napi_default, nullptr},
-      {"scan", nullptr, Scan<false>, nullptr, nullptr, nullptr, napi_default, nullptr},
-      {"schema", nullptr, Schema, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"scanAsync", nullptr, Scan<true>, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"scan", nullptr, Scan<false>, nullptr, nullptr, nullptr, napi_default,
+       nullptr},
+      {"schema", nullptr, Schema, nullptr, nullptr, nullptr, napi_default,
+       nullptr},
       {"count", nullptr, Count, nullptr, nullptr, nullptr, napi_default,
        nullptr},
       {"searchFiltered", nullptr, SearchFiltered, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"search", nullptr, Search, nullptr, nullptr, nullptr, napi_default,
        nullptr},
-      {"queryAsync", nullptr, Query<true>, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"queryAsync", nullptr, Query<true>, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
       {"query", nullptr, Query<false>, nullptr, nullptr, nullptr, napi_default,
        nullptr},
-      {"openMigrations", nullptr, OpenMigrations, nullptr, nullptr, nullptr, napi_default, nullptr},
-      {"reindexText", nullptr, ReindexTextStore, nullptr, nullptr, nullptr, napi_default, nullptr},
-      {"sealAsync", nullptr, SealStore<true>, nullptr, nullptr, nullptr, napi_default, nullptr},
-      {"seal", nullptr, SealStore<false>, nullptr, nullptr, nullptr, napi_default,
-       nullptr},
-      {"mergeAsync", nullptr, MergeStore<true>, nullptr, nullptr, nullptr, napi_default, nullptr},
-      {"merge", nullptr, MergeStore<false>, nullptr, nullptr, nullptr, napi_default,
-       nullptr},
+      {"openMigrations", nullptr, OpenMigrations, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"reindexText", nullptr, ReindexTextStore, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"sealAsync", nullptr, SealStore<true>, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"seal", nullptr, SealStore<false>, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"mergeAsync", nullptr, MergeStore<true>, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"merge", nullptr, MergeStore<false>, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
       {"openSnapshot", nullptr, OpenSnapshotStore, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"snapshot", nullptr, SnapshotStore, nullptr, nullptr, nullptr,
