@@ -1304,7 +1304,14 @@ fn every_exported_symbol_has_executable_adversarial_registry_coverage() {
                     line.trim_start()
                         .strip_prefix("pub extern \"C\" fn ")
                         .and_then(|tail| tail.split('(').next())
-                        .filter(|name| *name == "ze_graph_open_with_relationship_types")
+                        .filter(|name| {
+                            matches!(
+                                *name,
+                                "ze_graph_open_with_relationship_types"
+                                    | "ze_graph_maintain"
+                                    | "ze_graph_set_maintenance_policy"
+                            )
+                        })
                         .map(str::to_owned)
                 }),
         )
