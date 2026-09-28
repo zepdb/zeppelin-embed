@@ -641,9 +641,14 @@ class GraphStore {
   static open(storePath, options = {}) {
     if (!GraphStore.isSupported()) throw new ZeppelinError('graph requires macOS 14 or newer, or Windows x64', 'ZE_ERR_UNSUPPORTED', 11);
     graphString(storePath, 'path');
-    graphObject(options, ['mode', 'maxResidentBytes', 'readerDrainTimeoutMs', 'relationshipTypes'], 'open options');
+    graphObject(options, ['mode', 'maxResidentBytes', 'readerDrainTimeoutMs', 'relationshipTypes', 'autoReclaim', 'reclaimAfterBytes'], 'open options');
     const mode = options.mode ?? 'create';
     if (!['create', 'readWrite', 'readOnly'].includes(mode)) graphInvalid('unknown graph open mode');
+    const autoReclaim = options.autoReclaim === undefined ? true : options.autoReclaim;
+    const reclaimAfterBytes = options.reclaimAfterBytes === undefined ? 67108864 : options.reclaimAfterBytes;
+    if (typeof autoReclaim !== 'boolean') graphInvalid('autoReclaim must be boolean');
+    if (!Number.isSafeInteger(reclaimAfterBytes) || reclaimAfterBytes < 1048576) graphInvalid('reclaimAfterBytes must be a safe integer of at least 1048576');
+    if (mode === 'readOnly' && (options.autoReclaim !== undefined || options.reclaimAfterBytes !== undefined)) graphInvalid('maintenance options require a writable graph');
     const relationshipTypes = options.relationshipTypes === undefined ? [] : options.relationshipTypes;
     if (options.relationshipTypes !== undefined && mode !== 'create') graphInvalid('relationshipTypes can only be declared at creation');
     if (!Array.isArray(relationshipTypes) || relationshipTypes.length > 16384) graphInvalid('relationshipTypes must be an array of at most 16384 rules');
@@ -660,13 +665,24 @@ class GraphStore {
     if (!Number.isSafeInteger(maxResidentBytes) || maxResidentBytes < 1 || maxResidentBytes > 268435456) graphInvalid('maxResidentBytes must be in 1..268435456');
     if (!Number.isSafeInteger(readerDrainTimeoutMs) || readerDrainTimeoutMs < 0) graphInvalid('readerDrainTimeoutMs must be a nonnegative safe integer');
     // Construct through a private token so the native handle cannot be supplied by a caller.
-    return GraphStore.#create(callNative(() => binding.graphOpen(storePath, ['create', 'readWrite', 'readOnly'].indexOf(mode), maxResidentBytes, readerDrainTimeoutMs, relationshipTypes)));
+    const native = callNative(() => binding.graphOpen(storePath, ['create', 'readWrite', 'readOnly'].indexOf(mode), maxResidentBytes, readerDrainTimeoutMs, relationshipTypes));
+    try {
+      if (mode !== 'readOnly') callNative(() => binding.graphSetMaintenancePolicy(native, autoReclaim, reclaimAfterBytes));
+      return GraphStore.#create(native);
+    } catch (error) {
+      callNative(() => binding.graphClose(native));
+      throw error;
+    }
   }
   static #create(native) {
     return new GraphStore(graphConstruction, native);
   }
   // Native close consumes the handle even when its final checkpoint reports an error.
   close() { return callNative(() => binding.graphClose(this.#native)); }
+  maintain() { return callNative(() => binding.graphMaintain(this.#native)); }
+  async maintainAsync() {
+    try { return await binding.graphMaintainAsync(this.#native); } catch (error) { throw translateError(error); }
+  }
   apply(items) { return this.#apply(items, false); }
   async applyAsync(items) {
     try { return await this.#apply(items, true); } catch (error) { throw translateError(error); }

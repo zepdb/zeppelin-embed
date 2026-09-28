@@ -530,6 +530,16 @@ checks and rejects writes. Ordinary `Store` and `openNamespace` epoch/schema
 validation is unchanged. This shell inspects document stores, not graph stores.
 ## Graph documents and Cypher (macOS arm64)
 
+**Disk reclamation.** Writable graph stores default to `autoReclaim: true`
+with `reclaimAfterBytes: 67108864` (64 MiB). Set a safe integer threshold of
+at least 1 MiB to reclaim more often, or set `autoReclaim: false` and call
+`maintain()` / `maintainAsync()` explicitly. Each call returns a scalar report;
+loop until `cycleComplete` to finish a cycle. Automatic work runs before the
+next write after the threshold, taking up to eight cycles of at most four
+bounded steps each. It can add write latency and propagates maintenance errors
+before staging that write. The options are refused on read-only opens.
+
+
 `GraphStore` uses the existing graph store format. A document is a node, so a
 single `apply` commits document nodes and relationships atomically. A legacy
 `Store` directory cannot be opened as a graph store or participate in its writes.

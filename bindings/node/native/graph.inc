@@ -259,6 +259,49 @@ napi_value GraphClose(napi_env env, napi_callback_info info) {
     napi_value result; GCheck(env, napi_get_undefined(env, &result)); return result;
   });
 }
+napi_value GraphSetMaintenancePolicy(napi_env env, napi_callback_info info) {
+  return GGuard(env, [&]() -> napi_value {
+    napi_value args[3]; size_t argc = 3;
+    GCheck(env, napi_get_cb_info(env, info, &argc, args, nullptr, nullptr));
+    GRequire(env, argc == 3, "graphSetMaintenancePolicy arguments");
+    const auto handle = GOwner(env, args[0])->handle;
+    bool automatic; GCheck(env, napi_get_value_bool(env, args[1], &automatic));
+    const double bytes = GDouble(env, args[2]);
+    GRequire(env, std::isfinite(bytes) && bytes >= 1048576 && bytes <= 9007199254740991.0 && std::floor(bytes) == bytes, "invalid reclaimAfterBytes");
+    auto policy = GStruct<ZeGraphMaintenancePolicy>();
+    policy.automatic = automatic; policy.reclaim_after_bytes = static_cast<uint64_t>(bytes);
+    const auto status = ze_graph_set_maintenance_policy(handle, &policy);
+    if (status != ZE_OK) return ThrowZeppelin(env, handle.token, status);
+    napi_value result; GCheck(env, napi_get_undefined(env, &result)); return result;
+  });
+}
+template <bool Async = false>
+napi_value GraphMaintain(napi_env env, napi_callback_info info) {
+  return GGuard(env, [&]() {
+    napi_value arg; size_t argc = 1;
+    GCheck(env, napi_get_cb_info(env, info, &argc, &arg, nullptr, nullptr));
+    GRequire(env, argc == 1, "graphMaintain arguments");
+    const auto handle = GOwner(env, arg)->handle;
+    auto report = std::make_shared<ZeGraphMaintainReport>(GStruct<ZeGraphMaintainReport>());
+    return RunNative<Async>(env, arg, handle.token, [report, handle]() {
+      return ze_graph_maintain(handle, nullptr, report.get());
+    }, [report, env](ze_error_code status, const std::string &message) {
+      return GGuard(env, [&]() -> napi_value {
+        if (status != ZE_OK) return ThrowWorkerError(env, status, message);
+        auto result = GObject(env);
+        GSet(env, result, "cycleComplete", GBool(env, report->cycle_complete != 0));
+        GSet(env, result, "generation", GU64(env, report->generation));
+        GSet(env, result, "replacedPhysicalRefs", GU64(env, report->replaced_physical_refs));
+        GSet(env, result, "newPackBytes", GU64(env, report->new_pack_bytes));
+        GSet(env, result, "relocatedBytes", GU64(env, report->relocated_bytes));
+        GSet(env, result, "drainedPacks", GU64(env, report->drained_packs));
+        GSet(env, result, "reclaimedBytes", GU64(env, report->reclaimed_bytes));
+        GSet(env, result, "removedBytes", GU64(env, report->removed_bytes));
+        return result;
+      });
+    });
+  });
+}
 template <bool Async = false>
 napi_value GraphApply(napi_env env, napi_callback_info info) {
   return GGuard(env, [&]() {

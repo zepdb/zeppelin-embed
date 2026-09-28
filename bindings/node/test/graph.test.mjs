@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir, release } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -78,4 +78,66 @@ test('graph support refuses macOS below 14', { skip: process.platform !== 'darwi
     assert.throws(() => GraphStore.open('unused'), e => e.code === 'ZE_ERR_UNSUPPORTED');
   `], { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
+});
+
+
+test('autoReclaim validates before open', { skip: !supported }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ze-maintenance-options-'));
+  const path = join(dir, 'graph');
+  try {
+    for (const options of [{ autoReclaim: 1 }, { autoReclaim: null },
+      { reclaimAfterBytes: 0 }, { reclaimAfterBytes: 1048575 },
+      { reclaimAfterBytes: 1048576.5 }, { reclaimAfterBytes: Number.MAX_SAFE_INTEGER + 1 },
+      { mode: 'readOnly', autoReclaim: false }, { mode: 'readOnly', reclaimAfterBytes: 1048576 }]) {
+      assert.throws(() => GraphStore.open(path, options), e => e.code === 'ZE_ERR_INVALID_ARGUMENT');
+      assert.equal(existsSync(path), false);
+    }
+    const store = GraphStore.open(path, { autoReclaim: false, reclaimAfterBytes: 1048576 });
+    store.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('maintain() returns a report and reclaims a dead pack', { skip: !supported }, async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'ze-maintenance-'));
+  const path = join(dir, 'graph');
+  let store = GraphStore.open(path);
+  try {
+    assert.equal(typeof store.maintain, 'function');
+    store.close();
+    store = GraphStore.open(path, { mode: 'readWrite', autoReclaim: false });
+    let ids;
+    // Revisions make old packs dead without relying on the concurrent S6 drain work.
+    for (let batch = 0; batch < 20; ++batch) {
+      const result = store.apply(Array.from({ length: 10 }, (_, i) => node(`n${i}`, batch === 0 ? {} : {
+        operation: 'put', expectedId: ids[i], revision: BigInt(batch + 1), properties: { revision: BigInt(batch) },
+      })));
+      ids = result.receipts.map(receipt => receipt.id);
+    }
+    store.close();
+    store = GraphStore.open(path, { mode: 'readWrite', autoReclaim: false });
+    const census = () => new Map(readdirSync(path).map(file => [file, statSync(join(path, file)).size]));
+    const before = census();
+    let report;
+    let removed = 0n;
+    // A preparation can finish without an intent; reclamation follows publication.
+    for (let step = 0; step < 8 * 4; ++step) {
+      report = store.maintain();
+      for (const field of ['generation', 'replacedPhysicalRefs', 'newPackBytes', 'relocatedBytes', 'drainedPacks', 'reclaimedBytes', 'removedBytes']) assert.equal(typeof report[field], 'bigint', field);
+      assert.equal(typeof report.cycleComplete, 'boolean');
+      removed += report.removedBytes;
+      if (report.cycleComplete && removed > 0n) break;
+    }
+    assert.equal(report.cycleComplete, true);
+    const after = census();
+    const bytes = files => [...files.values()].reduce((a, b) => a + b, 0);
+    t.diagnostic(`bytes ${bytes(before)} -> ${bytes(after)}; files ${before.size} -> ${after.size}; removed ${removed}`);
+    assert.ok(bytes(after) < bytes(before), `bytes ${bytes(before)} -> ${bytes(after)}, removed ${removed}`);
+    assert.ok([...before.keys()].some(file => !after.has(file)), 'a preexisting dead artifact was removed');
+    await t.test('total file count falls', () => {
+      assert.ok(after.size < before.size, `files ${before.size} -> ${after.size}`);
+    });
+    assert.ok(removed > 0n);
+    assert.deepEqual(store.cypher('MATCH (n) RETURN count(n)').rows, [[10n]]);
+    assert.equal(typeof (await store.maintainAsync()).cycleComplete, 'boolean');
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

@@ -1008,7 +1008,21 @@ export interface GraphRelationshipType {
    */
   readonly onDelete: 'restrict' | 'cascade';
 }
+export interface GraphMaintenanceReport {
+  readonly generation: bigint;
+  readonly replacedPhysicalRefs: bigint;
+  readonly newPackBytes: bigint;
+  readonly relocatedBytes: bigint;
+  readonly drainedPacks: bigint;
+  readonly reclaimedBytes: bigint;
+  readonly removedBytes: bigint;
+  readonly cycleComplete: boolean;
+}
 export interface GraphOpenOptions {
+  /** Automatic reclamation before writes; default true. Refused with readOnly. */
+  readonly autoReclaim?: boolean;
+  /** Safe integer >= 1048576; default 67108864 (64 MiB). Refused with readOnly. */
+  readonly reclaimAfterBytes?: number;
   /**
    * Creation only: at most 16384 unique declarations, persisted in the catalog.
    * Omit on reopen; supplying this option for readWrite/readOnly is an error.
@@ -1077,6 +1091,10 @@ export class GraphStore {
   /** Checkpoints acknowledged writes, then releases the store, even if checkpointing fails.
    * Idempotent. Subsequent operations throw ZE_ERR_CLOSED. */
   close(): void;
+  /** One bounded maintenance step. Loop until cycleComplete to finish a cycle. */
+  maintain(): GraphMaintenanceReport;
+  /** One step on a worker; shares the per-handle writer busy rule with applyAsync. */
+  maintainAsync(): Promise<GraphMaintenanceReport>;
   /**
    * Atomically applies at most 16384 keyed mutations; no partial batches.
    * Build large graphs with bounded batches (for example 100 nodes per call).

@@ -4451,6 +4451,9 @@ napi_value Initialize(napi_env env, napi_value exports) {
 #ifdef ZE_GRAPH
       {"graphOpen", GraphOpen},
       {"graphClose", GraphClose},
+      {"graphMaintain", GraphMaintain<false>},
+      {"graphMaintainAsync", GraphMaintain<true>},
+      {"graphSetMaintenancePolicy", GraphSetMaintenancePolicy},
       {"graphApply", GraphApply<false>},
       {"graphApplyAsync", GraphApply<true>},
       {"graphCypher", GraphCypher<false>},
