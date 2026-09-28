@@ -56,7 +56,9 @@ class NativePackaging(unittest.TestCase):
                 if Path(addon).read_bytes()[:2] == b'MZ':
                     headers = llvm('llvm-readobj', '--file-headers', addon)
                     self.assertRegex(headers, r'SymbolCount: 0\b')
-                    self.assertRegex(headers, r'DebugSize: 0x0\b')
+                    # MSVC keeps small POGO/feature records; forbid only a PDB link.
+                    debug = llvm('llvm-readobj', '--coff-debug-directory', addon)
+                    self.assertNotIn('IMAGE_DEBUG_TYPE_CODEVIEW', debug)
                 else:
                     symbols = llvm('llvm-readobj', '--symbols', addon)
                     for symbol in symbols.split('  Symbol {')[1:]:
