@@ -95,7 +95,12 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
         }
         coverage.hit(receipt.key);
     }
-    if seen.len() != 13 {
+    let required: BTreeSet<_> = super::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE
+        .iter()
+        .copied()
+        .filter(|key| key.starts_with("property-graph.reclaim."))
+        .collect();
+    if seen != required {
         return Err("missing reclaim boundary receipts".into());
     }
     Ok(())
@@ -109,6 +114,7 @@ mod tests {
         let mut coverage = super::CoverageRegistry::default();
         super::probe(0x5a45_0046, &mut coverage).expect("reclaim probe");
         assert_eq!(coverage.count("property-graph.reclaim.wal-only"), 1);
+        assert_eq!(coverage.count("property-graph.reclaim.superseded-history"), 1);
         assert_eq!(
             coverage.count("property-graph.reclaim.maintenance-output"),
             1
