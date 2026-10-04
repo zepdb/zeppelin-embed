@@ -52,7 +52,7 @@ pub enum GraphQueryErrorKind {
     Timeout,
     /// The store closed, or began closing, under the statement.
     Closed,
-    /// Stored bytes or an internal invariant failed validation.
+    /// Stored bytes failed validation.
     Corruption,
     /// A filesystem operation failed before anything could commit.
     Storage,
@@ -63,6 +63,8 @@ pub enum GraphQueryErrorKind {
     /// The commit was attempted and its outcome is unknown. The write may be
     /// durable; the store stops admitting work until it is reopened.
     WriteIndeterminate,
+    /// An engine invariant was violated.
+    Internal,
 }
 
 /// The typed cause, exactly as the failing layer produced it.
@@ -384,7 +386,8 @@ fn stage(error: &StageError) -> Kind {
         | StageError::IncidentRelationship
         | StageError::DeletedEntity
         | StageError::Lifecycle(_) => Kind::Constraint,
-        StageError::ViewMismatch | StageError::Catalog(_) => Kind::Corruption,
+        StageError::ViewMismatch => Kind::Internal,
+        StageError::Catalog(_) => Kind::Corruption,
         StageError::IdentityOverflow => Kind::Unavailable,
         StageError::Canonical(error) => canonical(error),
         StageError::Memory(error) => store(error),
@@ -461,7 +464,8 @@ fn graph(error: &NativeGraphError) -> Kind {
         NativeGraphError::Invalid(_) | NativeGraphError::Catalog(_) | NativeGraphError::Wal(_) => {
             Kind::Corruption
         }
-        NativeGraphError::LeaseLimit => Kind::Limit,
+        NativeGraphError::LeaseLimit | NativeGraphError::WalTailBoundExceeded => Kind::Limit,
+        NativeGraphError::PreparedBaseChanged | NativeGraphError::WriterAbsent => Kind::Internal,
         NativeGraphError::NotInstalled
         | NativeGraphError::IdentityExhausted
         | NativeGraphError::WritesStopped
@@ -482,6 +486,51 @@ fn graph(error: &NativeGraphError) -> Kind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ze200_tail_bound_is_limit() {
+        let error = GraphQueryError::from(NativeGraphError::WalTailBoundExceeded);
+        assert_eq!(error.kind(), Kind::Limit);
+        assert!(error.nothing_committed());
+    }
+
+    #[test]
+    fn ze200_prepared_base_changed_is_internal() {
+        let error = GraphQueryError::from(NativeGraphError::PreparedBaseChanged);
+        assert_eq!(error.kind(), Kind::Internal);
+        assert!(error.nothing_committed());
+    }
+
+    #[test]
+    fn ze200_open_store_writer_absent_is_internal() {
+        let error = GraphQueryError::from(NativeGraphError::WriterAbsent);
+        assert_eq!(error.kind(), Kind::Internal);
+        assert!(error.nothing_committed());
+    }
+
+    #[test]
+    fn ze200_stage_view_mismatch_is_internal() {
+        let error = GraphQueryError::from(NativeGraphError::Stage(StageError::ViewMismatch));
+        assert_eq!(error.kind(), Kind::Internal);
+        assert!(error.nothing_committed());
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn ze200_malformed_directory_remains_corruption() {
+        use crate::property_graph::storage::tree::{TreeKind, decode_page};
+        let damaged = decode_page(TreeKind::Nodes, &[])
+            .err()
+            .expect("invalid persisted page");
+        let error = GraphQueryError::from(NativeGraphError::Read(TreeError::Format(damaged)));
+        assert_eq!(error.kind(), Kind::Corruption);
+        assert!(error.nothing_committed());
+        let error = GraphQueryError::from(NativeGraphError::Read(TreeError::Invalid(
+            "directory key order",
+        )));
+        assert_eq!(error.kind(), Kind::Corruption);
+        assert!(error.nothing_committed());
+    }
 
     #[test]
     fn ze208_invalid_shape_batch_remains_invalid_plan() {

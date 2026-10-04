@@ -79,6 +79,9 @@ pub(crate) enum NativeGraphError {
     /// again: staging marks it changed with no delta, and native preparation
     /// has no root to publish at a new generation for it yet.
     FenceOnlyStatement,
+    WalTailBoundExceeded,
+    PreparedBaseChanged,
+    WriterAbsent,
 }
 
 impl From<StoreError> for NativeGraphError {
@@ -91,6 +94,15 @@ impl std::fmt::Display for NativeGraphError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Store(error) => error.fmt(f),
+            Self::WalTailBoundExceeded => f.write_str(
+                "invalid native graph bundle: single native WAL envelope exceeds tail bound",
+            ),
+            Self::PreparedBaseChanged => {
+                f.write_str("invalid native graph bundle: prepared native base changed")
+            }
+            Self::WriterAbsent => {
+                f.write_str("invalid native graph bundle: native graph writer is absent")
+            }
             Self::Invalid(reason) => write!(f, "invalid native graph bundle: {reason}"),
             Self::NotInstalled => f.write_str("native graph bundle is not installed"),
             Self::LeaseLimit => f.write_str("native graph read lease capacity exhausted"),
@@ -639,6 +651,8 @@ struct PublicationState {
     #[cfg(any(test, feature = "test-support"))]
     admission_hook: Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>,
     #[cfg(any(test, feature = "test-support"))]
+    maintenance_writer_hook: Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>,
+    #[cfg(any(test, feature = "test-support"))]
     close_owner_hook: Option<(u64, Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>,
 }
 
@@ -791,6 +805,8 @@ impl NativeGraphPublication {
                 admissions_stopped: false,
                 #[cfg(any(test, feature = "test-support"))]
                 admission_hook: None,
+                #[cfg(any(test, feature = "test-support"))]
+                maintenance_writer_hook: None,
                 #[cfg(any(test, feature = "test-support"))]
                 close_owner_hook: None,
             }),
@@ -946,6 +962,13 @@ impl NativeGraphPublication {
             },
             _reservation: reservation,
         })
+    }
+
+    pub(crate) fn has_publication(&self) -> Result<bool, StoreError> {
+        let state = self.state.lock().map_err(|_| StoreError::Synchronization {
+            component: "native graph publication",
+        })?;
+        Ok(state.current.is_some())
     }
 
     pub(crate) fn mapping_stats(&self) -> Result<(u64, u64), StoreError> {
@@ -1890,6 +1913,26 @@ impl NativeProtectedWal {
 }
 
 impl Store {
+    fn absent_native_graph_writer(&self) -> NativeGraphError {
+        match self.state() {
+            Ok(StoreState::Closing) => NativeGraphError::Store(StoreError::Closing),
+            Ok(StoreState::Closed) => NativeGraphError::Store(StoreError::Closed),
+            Ok(StoreState::Open) => NativeGraphError::WriterAbsent,
+            Err(error) => NativeGraphError::Store(error),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn native_graph_writer_drained_for_test(&self) -> Result<bool, StoreError> {
+        self.native_graph
+            .writer
+            .lock()
+            .map(|writer| writer.is_none())
+            .map_err(|_| StoreError::Synchronization {
+                component: "native graph writer",
+            })
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn fail_next_native_graph_publication_for_test(&self) {
         self.native_graph

@@ -13,7 +13,6 @@ use super::entry_probe::{Assign, Fixture, control, node_values, options, write_p
 use super::entry_tests::{FixedHits, lexical, search_nodes};
 use super::error::GraphQueryErrorKind;
 use crate::lifecycle::durability::{CommitTier, DurabilityMode};
-use crate::lifecycle::native_graph::NativeGraphError;
 use crate::lifecycle::{CancelToken, OpenOptions, QueryControl, Store, StoreState};
 use crate::property_graph::GraphGeneration;
 use crate::property_graph::query::plan::SearchCallId;
@@ -207,15 +206,10 @@ fn ze53_s4_close_between_classification_and_the_writer_is_closed() {
                 builds.set(builds.get() + 1);
                 if builds.get() == 1 {
                     closer = Some(scope.spawn(|| store.close()));
-                    // The structured writer reaches the writer slot first; it
-                    // finds the slot empty once close has drained it, and
-                    // still reports that as `Invalid` (ZE-201 tracks that
-                    // path; fixing it must replace this probe).
                     wait_until("close has drained the writer", || {
-                        matches!(
-                            store.apply_native_graph(&[], &control()),
-                            Err(NativeGraphError::Invalid(_))
-                        )
+                        store
+                            .native_graph_writer_drained_for_test()
+                            .expect("writer slot")
                     });
                 }
                 write_p(runtime, executor, Assign::Increment)

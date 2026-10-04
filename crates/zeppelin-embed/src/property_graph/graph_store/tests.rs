@@ -441,12 +441,10 @@ fn graph_write_results_stay_readable_after_close() {
     // Closing twice is harmless.
     store.close().expect("close again");
 
-    // A closed store admits nothing. The writer admission still groups its
-    // drained writer slot as `Corruption`, not `Closed`; ZE-201 owns that
-    // fix for every writer path, so only the refusal is pinned here.
     let late = store
         .apply_batch(&[], &control())
         .expect_err("a closed store admits nothing");
+    assert_eq!(late.kind(), GraphStoreErrorKind::Closed);
     assert!(late.nothing_committed(), "{late}");
     drop(store);
 
@@ -1107,4 +1105,47 @@ fn ze260_automatic_reclaim_keeps_an_append_only_store_bounded() {
             .count(),
         2000
     );
+}
+
+#[test]
+fn ze201_maintain_after_close_is_closed() {
+    let parent = tempfile::tempdir().expect("parent");
+    let store = GraphStore::create(parent.path().join("native"), options(), None).expect("store");
+    store.close().expect("close");
+    let error = store.maintain(&control()).expect_err("closed");
+    assert_eq!(error.kind(), GraphStoreErrorKind::Closed);
+    assert!(error.nothing_committed());
+}
+
+#[test]
+fn ze201_maintain_cycle_after_close_is_closed() {
+    let parent = tempfile::tempdir().expect("parent");
+    let store = GraphStore::create(parent.path().join("native"), options(), None).expect("store");
+    store.close().expect("close");
+    let error = store.maintain_cycle(&control()).expect_err("closed");
+    assert_eq!(error.kind(), GraphStoreErrorKind::Closed);
+    assert!(error.nothing_committed());
+}
+
+#[test]
+fn ze200_facade_preserves_internal_and_limit_kinds() {
+    use crate::lifecycle::native_graph::NativeGraphError;
+    use crate::property_graph::query::completed::GraphQueryError;
+    for cause in [
+        NativeGraphError::PreparedBaseChanged,
+        NativeGraphError::WriterAbsent,
+        NativeGraphError::Stage(StageError::ViewMismatch),
+    ] {
+        let error = super::GraphStoreError::from(cause);
+        assert_eq!(error.kind(), GraphStoreErrorKind::Internal);
+        assert!(error.nothing_committed());
+    }
+    let error = super::GraphStoreError::from(GraphQueryError::from(NativeGraphError::Stage(
+        StageError::ViewMismatch,
+    )));
+    assert_eq!(error.kind(), GraphStoreErrorKind::Internal);
+    assert!(error.nothing_committed());
+    let error = super::GraphStoreError::from(NativeGraphError::WalTailBoundExceeded);
+    assert_eq!(error.kind(), GraphStoreErrorKind::Limit);
+    assert!(error.nothing_committed());
 }

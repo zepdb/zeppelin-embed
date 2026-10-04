@@ -266,23 +266,9 @@ impl crate::lifecycle::Store {
                     component: "native graph writer",
                 })
             })?;
-            // `Store::close` drains the writer slot of a writable store, so a
-            // statement that reaches it after close began is closed, not an
-            // invalid store. An empty slot on an open store stays invalid.
-            let Some(writer) = writer_slot.as_mut() else {
-                return Err(match self.state() {
-                    Ok(crate::lifecycle::StoreState::Closing) => {
-                        NativeGraphError::Store(crate::lifecycle::StoreError::Closing)
-                    }
-                    Ok(crate::lifecycle::StoreState::Closed) => {
-                        NativeGraphError::Store(crate::lifecycle::StoreError::Closed)
-                    }
-                    Ok(crate::lifecycle::StoreState::Open) | Err(_) => {
-                        NativeGraphError::Invalid("native graph writer is absent")
-                    }
-                }
-                .into());
-            };
+            let writer = writer_slot
+                .as_mut()
+                .ok_or_else(|| self.absent_native_graph_writer())?;
             if writer.stopped {
                 return Err(NativeGraphError::WritesStopped.into());
             }

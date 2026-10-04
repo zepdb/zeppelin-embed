@@ -2212,7 +2212,7 @@ pub(super) fn commit_staged_batch<'m>(
         NativeGraphError::Read(error)
     })?;
     if !prepared.matches_base(lease) {
-        return Err(NativeGraphError::Invalid("prepared native base changed"));
+        return Err(NativeGraphError::PreparedBaseChanged);
     }
 
     let catalog = NativePreparationCatalog::open(source, resources)?;
@@ -2405,9 +2405,7 @@ pub(super) fn commit_staged_batch<'m>(
         .ok_or(NativeGraphError::IdentityExhausted)?;
     if pending_tail_bytes > MAX_ENVELOPE_BYTES {
         if !*allow_pending_checkpoint {
-            return Err(NativeGraphError::Invalid(
-                "single native WAL envelope exceeds tail bound",
-            ));
+            return Err(NativeGraphError::WalTailBoundExceeded);
         }
         checkpoint_current(store, writer, admitted, shared, control)?;
         *allow_pending_checkpoint = false;
@@ -2457,7 +2455,7 @@ impl crate::lifecycle::Store {
             })?;
             let writer = writer_slot
                 .as_mut()
-                .ok_or(NativeGraphError::Invalid("native graph writer is absent"))?;
+                .ok_or_else(|| self.absent_native_graph_writer())?;
             if writer.stopped {
                 return Err(NativeGraphError::WritesStopped);
             }
@@ -2624,7 +2622,7 @@ impl crate::lifecycle::Store {
         })?;
         let writer = writer_slot
             .as_mut()
-            .ok_or(NativeGraphError::Invalid("native graph writer is absent"))?;
+            .ok_or_else(|| self.absent_native_graph_writer())?;
         if writer.stopped {
             return Err(NativeGraphError::WritesStopped);
         }
@@ -2645,7 +2643,7 @@ impl crate::lifecycle::Store {
         })?;
         let writer = writer_slot
             .as_ref()
-            .ok_or(NativeGraphError::Invalid("native graph writer is absent"))?;
+            .ok_or_else(|| self.absent_native_graph_writer())?;
         if writer.stopped {
             return Err(NativeGraphError::WritesStopped);
         }

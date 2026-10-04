@@ -1580,7 +1580,7 @@ fn resume_pending_reclaim(
     })?;
     let writer = writer_slot
         .as_mut()
-        .ok_or(NativeGraphError::Invalid("native graph writer is absent"))?;
+        .ok_or_else(|| store.absent_native_graph_writer())?;
     if writer.stopped {
         return Err(NativeGraphError::WritesStopped);
     }
@@ -1728,7 +1728,7 @@ fn retire_completed_reclaim(
         })?;
         let writer = writer_slot
             .as_mut()
-            .ok_or(NativeGraphError::Invalid("native graph writer is absent"))?;
+            .ok_or_else(|| store.absent_native_graph_writer())?;
         if writer.stopped {
             return Err(NativeGraphError::WritesStopped);
         }
@@ -1905,7 +1905,7 @@ fn retire_completed_reclaim(
     })?;
     let writer = writer_slot
         .as_mut()
-        .ok_or(NativeGraphError::Invalid("native graph writer is absent"))?;
+        .ok_or_else(|| store.absent_native_graph_writer())?;
     if writer.stopped {
         return Err(NativeGraphError::WritesStopped);
     }
@@ -2250,6 +2250,24 @@ pub(super) fn commit_with_limits(
         &mut wal_resources,
     )?;
 
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        let hook = store
+            .native_graph
+            .state
+            .lock()
+            .map_err(|_| {
+                NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
+                    component: "native graph publication",
+                })
+            })?
+            .maintenance_writer_hook
+            .take();
+        if let Some((entered, release)) = hook {
+            entered.wait();
+            release.wait();
+        }
+    }
     let mut writer_slot = store.native_graph.writer.lock().map_err(|_| {
         NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
             component: "native graph writer",
@@ -2257,7 +2275,7 @@ pub(super) fn commit_with_limits(
     })?;
     let writer = writer_slot
         .as_mut()
-        .ok_or(NativeGraphError::Invalid("native graph writer is absent"))?;
+        .ok_or_else(|| store.absent_native_graph_writer())?;
     if writer.stopped {
         return Err(NativeGraphError::WritesStopped);
     }

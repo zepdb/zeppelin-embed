@@ -263,6 +263,7 @@ fn store_error_code(kind: GraphStoreErrorKind, statement: bool) -> ZeErrorCode {
         GraphStoreErrorKind::Timeout => ZeErrorCode::ZeErrTimeout,
         GraphStoreErrorKind::Closed => ZeErrorCode::ZeErrClosed,
         GraphStoreErrorKind::Corruption => ZeErrorCode::ZeErrCorrupt,
+        GraphStoreErrorKind::Internal => ZeErrorCode::ZeErrInternal,
         GraphStoreErrorKind::Storage => ZeErrorCode::ZeErrIo,
         GraphStoreErrorKind::WriteIndeterminate => ZeErrorCode::ZeErrIndeterminateCommit,
     }
@@ -817,6 +818,16 @@ pub(crate) fn maintain(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    #[test]
+    fn ze200_internal_maps_to_existing_ffi_code() {
+        for statement in [false, true] {
+            assert_eq!(
+                store_error_code(GraphStoreErrorKind::Internal, statement),
+                ZeErrorCode::ZeErrInternal
+            );
+        }
+    }
+
     #[test]
     fn an_unsupported_platform_maps_to_ze_err_unsupported() {
         for statement in [false, true] {

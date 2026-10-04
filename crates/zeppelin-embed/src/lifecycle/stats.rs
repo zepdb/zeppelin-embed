@@ -755,16 +755,29 @@ impl Store {
             .map_err(|_| StoreError::Synchronization {
                 component: "active segment",
             })?;
-        let active_state = active_guard.as_ref().ok_or(StoreError::Closed)?;
-        let active_segment_bytes = active_state.segment.resident_bytes();
-        let active_row_count = u64::try_from(active_state.segment.row_count()).map_err(|_| {
-            StoreError::Statistics {
-                component: "active row count",
-                source: std::io::Error::other("active row count exceeds u64"),
-            }
-        })?;
-        let tombstone_count = active_state.segment.tombstone_count();
-        let tombstone_bytes = active_state.segment.tombstone_bytes();
+        #[cfg(feature = "graph-cypher")]
+        let native_only = active_guard.is_none() && self.native_graph.has_publication()?;
+        #[cfg(not(feature = "graph-cypher"))]
+        let native_only = false;
+        let (active_segment_bytes, active_row_count, tombstone_count, tombstone_bytes) =
+            if let Some(active_state) = active_guard.as_ref() {
+                let rows = u64::try_from(active_state.segment.row_count()).map_err(|_| {
+                    StoreError::Statistics {
+                        component: "active row count",
+                        source: std::io::Error::other("active row count exceeds u64"),
+                    }
+                })?;
+                (
+                    active_state.segment.resident_bytes(),
+                    rows,
+                    active_state.segment.tombstone_count(),
+                    active_state.segment.tombstone_bytes(),
+                )
+            } else if native_only {
+                (0, 0, 0, 0)
+            } else {
+                return Err(StoreError::Closed);
+            };
         let active_queries = self
             .active_queries
             .load(std::sync::atomic::Ordering::Relaxed);
@@ -792,15 +805,26 @@ impl Store {
             .map_err(|_| StoreError::Synchronization {
                 component: "published snapshot",
             })?;
-        let snapshot = snapshot_guard.as_ref().ok_or(StoreError::Closed)?;
-        let active_snapshot_leases = u64::try_from(Arc::strong_count(snapshot).saturating_sub(1))
-            .map_err(|_| StoreError::Statistics {
-            component: "active snapshot leases",
-            source: std::io::Error::other("snapshot lease count exceeds u64"),
-        })?;
+        let snapshot = snapshot_guard.as_ref();
+        if snapshot.is_none() != native_only {
+            return Err(StoreError::Closed);
+        }
+        let active_snapshot_leases = if let Some(snapshot) = snapshot {
+            u64::try_from(Arc::strong_count(snapshot).saturating_sub(1)).map_err(|_| {
+                StoreError::Statistics {
+                    component: "active snapshot leases",
+                    source: std::io::Error::other("snapshot lease count exceeds u64"),
+                }
+            })?
+        } else {
+            0
+        };
         let mut mapped_resident_bytes = 0_u64;
         let mut segment_bytes = 0_u64;
-        for segment in snapshot.all_segments() {
+        for segment in snapshot
+            .into_iter()
+            .flat_map(|snapshot| snapshot.all_segments())
+        {
             let bytes =
                 u64::try_from(segment.mapped_bytes()).map_err(|_| StoreError::Statistics {
                     component: "segment mapped bytes",
@@ -922,6 +946,38 @@ mod tests {
     use crate::segment::reader::SegmentReader;
     use crate::segment::writer::{SegmentBuild, SegmentFactors, write_segment};
     use crate::vfs::StdVfs;
+
+    #[cfg(feature = "graph-cypher")]
+    #[test]
+    fn ze204_native_only_stats_succeed_until_close() {
+        let directory = tempdir().expect("directory");
+        let store = Store::create_native_graph(
+            directory.path().join("native"),
+            OpenOptions::new()
+                .with_durability(DurabilityMode::Durable, CommitTier::Durable)
+                .with_max_resident_bytes(256 * 1024 * 1024),
+            None,
+        )
+        .expect("native store");
+        assert!(store.active.lock().expect("active").is_none());
+        assert!(store.snapshot.read().expect("snapshot").is_none());
+        let stats = store.stats().expect("open native stats");
+        assert_eq!(stats.segment_bytes, 0);
+        assert_eq!(stats.active_segment_bytes, 0);
+        assert_eq!(stats.retired_active_segment_bytes, 0);
+        assert_eq!(stats.active_row_count, 0);
+        assert_eq!(stats.tombstone_count, 0);
+        assert_eq!(stats.tombstone_bytes, 0);
+        assert_eq!(stats.snapshot_bytes, 0);
+        assert_eq!(stats.active_snapshot_leases, 0);
+        assert!(stats.native_graph_bytes > 0);
+        assert_eq!(
+            stats.resident_owned_bytes,
+            store.accounting.audit().expect("audit").component_sum()
+        );
+        store.close().expect("close");
+        assert!(matches!(store.stats(), Err(StoreError::Closed)));
+    }
 
     #[test]
     fn stats_bytes_are_conserved() {

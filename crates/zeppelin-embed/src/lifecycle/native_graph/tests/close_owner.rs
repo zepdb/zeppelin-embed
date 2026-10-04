@@ -349,3 +349,63 @@ pub(super) fn native_close_best_effort_releases_last_temporary_owner() {
 pub(super) fn native_close_owner_walk_preserves_poison_policy() {
     run_bounded(run_poison_probe);
 }
+
+fn ze201_drained_writer_states(operation: impl Fn(&Store) -> Result<(), NativeGraphError>) {
+    let parent = tempfile::tempdir().expect("parent");
+    let store = Store::create_native_graph(parent.path().join("native"), native_options(), None)
+        .expect("store");
+    // Exercise the same drainage as close, retaining the publication so an
+    // earlier read cancellation cannot hide the writer admission under test.
+    *store.state.lock().expect("state") = crate::lifecycle::StoreState::Closing;
+    store.native_graph.drain_writer_for_close().expect("drain");
+    assert!(matches!(
+        operation(&store),
+        Err(NativeGraphError::Store(StoreError::Closing))
+    ));
+    *store.state.lock().expect("state") = crate::lifecycle::StoreState::Closed;
+    assert!(matches!(
+        operation(&store),
+        Err(NativeGraphError::Store(StoreError::Closed))
+    ));
+    *store.state.lock().expect("state") = crate::lifecycle::StoreState::Open;
+    store.close().expect("cleanup");
+}
+
+#[test]
+fn ze201_apply_native_graph_drained_writer_is_closed() {
+    ze201_drained_writer_states(|store| {
+        store
+            .apply_native_graph(
+                &[],
+                &crate::lifecycle::QueryControl::Cancel(crate::lifecycle::CancelToken::new()),
+            )
+            .map(|_| ())
+    });
+}
+
+#[test]
+fn ze201_checkpoint_native_graph_drained_writer_is_closed() {
+    ze201_drained_writer_states(|store| {
+        store.checkpoint_native_graph(&crate::lifecycle::QueryControl::Cancel(
+            crate::lifecycle::CancelToken::new(),
+        ))
+    });
+}
+
+#[test]
+fn ze201_maintenance_admission_drained_writer_is_closed() {
+    ze201_drained_writer_states(|store| store.admit_native_graph_maintenance().map(|_| ()));
+}
+
+#[test]
+fn ze201_open_store_missing_writer_is_internal() {
+    let parent = tempfile::tempdir().expect("parent");
+    let store = Store::create_native_graph(parent.path().join("native"), native_options(), None)
+        .expect("store");
+    store.native_graph.drain_writer_for_close().expect("drain");
+    assert!(matches!(
+        store.admit_native_graph_maintenance(),
+        Err(NativeGraphError::WriterAbsent)
+    ));
+    store.close().expect("cleanup");
+}

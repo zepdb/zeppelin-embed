@@ -432,7 +432,7 @@ pub enum GraphStoreErrorKind {
     Timeout,
     /// The store closed, or began closing, under the operation.
     Closed,
-    /// Stored bytes or an internal invariant failed validation.
+    /// Stored bytes failed validation.
     Corruption,
     /// A filesystem operation failed before anything could commit.
     Storage,
@@ -445,6 +445,8 @@ pub enum GraphStoreErrorKind {
     WriteIndeterminate,
     /// The host platform or OS version cannot run a graph store.
     Unsupported,
+    /// An engine invariant was violated.
+    Internal,
 }
 
 #[derive(Debug)]
@@ -493,6 +495,7 @@ const fn from_graph_query_kind(kind: GraphQueryErrorKind) -> GraphStoreErrorKind
         GraphQueryErrorKind::Timeout => GraphStoreErrorKind::Timeout,
         GraphQueryErrorKind::Closed => GraphStoreErrorKind::Closed,
         GraphQueryErrorKind::Corruption => GraphStoreErrorKind::Corruption,
+        GraphQueryErrorKind::Internal => GraphStoreErrorKind::Internal,
         GraphQueryErrorKind::Storage => GraphStoreErrorKind::Storage,
         GraphQueryErrorKind::Unavailable => GraphStoreErrorKind::Unavailable,
         GraphQueryErrorKind::WriteIndeterminate => GraphStoreErrorKind::WriteIndeterminate,

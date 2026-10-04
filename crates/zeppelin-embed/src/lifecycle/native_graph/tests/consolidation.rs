@@ -7417,3 +7417,110 @@ fn run_ze260_superseded_history_is_reclaimed_after_reader_drops() {
     ze163_base_write(&reopened, "history", 0);
     reopened.close().unwrap();
 }
+
+// Retain a real nonempty admission and its readable publication while
+// reproducing close's drained writer at each maintenance branch.
+fn ze201_retained_maintenance_drained_writer(phase: u8) {
+    for state in [
+        crate::lifecycle::StoreState::Closing,
+        crate::lifecycle::StoreState::Closed,
+    ] {
+        let (_history, store) = seed_crash_history();
+        let control = QueryControl::Cancel(CancelToken::new());
+        if phase >= 1 {
+            commit_maintenance(&store).expect("pending intent");
+        }
+        if phase >= 2 {
+            commit_maintenance(&store).expect("completion");
+        }
+        if phase >= 3 {
+            assert!(matches!(
+                commit_maintenance(&store),
+                Err(super::super::NativeGraphError::StalePreparation)
+            ));
+        }
+        let admission = store
+            .admit_native_graph_maintenance()
+            .expect("retain admission");
+        let before = Arc::clone(admission.lease.bundle());
+        assert!(before.sequence() > 0);
+        assert_eq!(before.reclaim().is_some(), phase > 0);
+        if phase >= 2 {
+            assert_eq!(
+                before.root_envelope().object.generation == before.base().generation,
+                phase == 3
+            );
+        }
+        let error = if phase == 0 {
+            let entered = Arc::new(std::sync::Barrier::new(2));
+            let release = Arc::new(std::sync::Barrier::new(2));
+            *store.state.lock().expect("state") = crate::lifecycle::StoreState::Open;
+            store
+                .native_graph
+                .state
+                .lock()
+                .expect("publication")
+                .maintenance_writer_hook = Some((Arc::clone(&entered), Arc::clone(&release)));
+            std::thread::scope(|scope| {
+                let attempt =
+                    scope.spawn(|| store.commit_native_graph_maintenance(&admission, &control));
+                entered.wait();
+                store
+                    .native_graph
+                    .drain_writer_for_close()
+                    .expect("drain writer");
+                *store.state.lock().expect("state") = state;
+                release.wait();
+                attempt.join().expect("join").expect_err("drained writer")
+            })
+        } else {
+            store
+                .native_graph
+                .drain_writer_for_close()
+                .expect("drain writer");
+            *store.state.lock().expect("state") = state;
+            store
+                .commit_native_graph_maintenance(&admission, &control)
+                .expect_err("drained writer")
+        };
+        assert!(
+            matches!(
+                (&error, state),
+                (
+                    super::super::NativeGraphError::Store(crate::lifecycle::StoreError::Closing),
+                    crate::lifecycle::StoreState::Closing
+                ) | (
+                    super::super::NativeGraphError::Store(crate::lifecycle::StoreError::Closed),
+                    crate::lifecycle::StoreState::Closed
+                )
+            ),
+            "{error:?}"
+        );
+        assert!(
+            store
+                .native_graph
+                .is_current_bundle(&before)
+                .expect("publication")
+        );
+        *store.state.lock().expect("state") = crate::lifecycle::StoreState::Open;
+        drop(admission);
+        store.close().expect("cleanup");
+    }
+}
+
+#[test]
+fn ze201_retained_maintenance_commit_is_closed() {
+    ze201_retained_maintenance_drained_writer(0);
+}
+#[test]
+fn ze201_pending_reclaim_completion_is_closed() {
+    ze201_retained_maintenance_drained_writer(1);
+}
+#[test]
+fn ze201_retirement_checkpoint_is_closed() {
+    ze201_retained_maintenance_drained_writer(2);
+}
+#[test]
+fn ze201_retirement_clear_is_closed() {
+    ze201_retained_maintenance_drained_writer(3);
+}
