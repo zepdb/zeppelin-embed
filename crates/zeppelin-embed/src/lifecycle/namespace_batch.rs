@@ -100,11 +100,27 @@ fn encode(routes: &Routes) -> Vec<u8> {
     }
     envelope(text.as_bytes())
 }
+enum RootDescriptor {
+    Legacy(Routes),
+    Staged(StagedDescriptor),
+}
 fn routes(root: &Path) -> Result<Routes, StoreError> {
+    match root_descriptor(root)? {
+        RootDescriptor::Legacy(routes) => Ok(routes),
+        RootDescriptor::Staged(_) => Err(invalid(
+            &root.join(RECORD),
+            "staged manifest requires transaction adoption",
+        )),
+    }
+}
+fn root_descriptor(root: &Path) -> Result<RootDescriptor, StoreError> {
     let path = root.join(RECORD);
     let Some(bytes) = read_optional(&path)? else {
-        return Ok(Routes::new());
+        return Ok(RootDescriptor::Legacy(Routes::new()));
     };
+    if bytes.starts_with(STAGED_MAGIC) {
+        return decode_staged(&path, &bytes).map(RootDescriptor::Staged);
+    }
     let text = std::str::from_utf8(body(&path, &bytes)?)
         .map_err(|_| invalid(&path, "namespace record UTF-8"))?;
     let mut result = Routes::new();
@@ -132,7 +148,7 @@ fn routes(root: &Path) -> Result<Routes, StoreError> {
     if encode(&result) != bytes {
         return Err(invalid(&path, "noncanonical namespace record"));
     }
-    Ok(result)
+    Ok(RootDescriptor::Legacy(result))
 }
 
 /// Selects one complete committed namespace. No sibling is opened or repaired.
@@ -166,7 +182,18 @@ pub(super) fn resolve(path: &Path) -> Result<PathBuf, StoreError> {
             ));
         }
     }
-    let selected = routes(parent)?.remove(name);
+    let selected = match root_descriptor(parent)? {
+        RootDescriptor::Legacy(mut routes) => routes.remove(name),
+        RootDescriptor::Staged(descriptor) => {
+            if descriptor.0.contains_key(name) {
+                return Err(invalid(
+                    path,
+                    "selected staged manifest requires transaction adoption",
+                ));
+            }
+            return Ok(path.to_path_buf());
+        }
+    };
     match selected {
         None => Ok(path.to_path_buf()),
         Some(destination) => {
@@ -573,4 +600,165 @@ mod tests {
         }
         eprintln!("ZE-239 root power-cut states: {}", states.len());
     }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod descriptor_tests {
+    use super::*;
+    #[test]
+    fn staged_descriptor_round_trips_and_old_reader_rejects() {
+        let binding = crate::ingest::wal_payload::TransactionBinding {
+            transaction: 1,
+            participant: 2,
+            first_seq: 3,
+            last_seq: 3,
+            manifest_digest: 4,
+            final_generation: 5,
+        };
+        let descriptor = StagedDescriptor(BTreeMap::from([(
+            "a".into(),
+            StagedSelection {
+                manifest: ".ze-manifest-1".into(),
+                binding,
+            },
+        )]));
+        let bytes = encode_staged(&descriptor).expect("encode");
+        assert_eq!(
+            bytes.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+            "5a454e5330303032010000000100610e002e7a652d6d616e69666573742d3101000000000000000000000000000000020000000000000000000000000000000300000000000000030000000000000004000000000000000500000000000000530352a537e8f10e"
+        );
+        for end in 0..bytes.len() {
+            assert!(decode_staged(Path::new("root"), &bytes[..end]).is_err());
+        }
+        let mut bad = bytes.clone();
+        bad[7] = b'3';
+        assert!(decode_staged(Path::new("root"), &bad).is_err());
+        let mut bad = bytes.clone();
+        bad[40] ^= 1;
+        assert!(decode_staged(Path::new("root"), &bad).is_err());
+        assert!(body(Path::new("root"), &bytes).is_err());
+        assert_eq!(
+            decode_staged(Path::new("root"), &bytes).expect("decode"),
+            descriptor
+        );
+    }
+}
+
+// ZE-256 v2 is a format seam only. Adoption is deliberately a later step.
+// V1 readers reject the distinct magic before interpreting any route.
+const STAGED_MAGIC: &[u8] = b"ZENS0002";
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct StagedSelection {
+    manifest: String,
+    binding: crate::ingest::wal_payload::TransactionBinding,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct StagedDescriptor(BTreeMap<String, StagedSelection>);
+
+fn encode_staged(descriptor: &StagedDescriptor) -> Result<Vec<u8>, StoreError> {
+    let path = Path::new(RECORD);
+    let mut bytes = STAGED_MAGIC.to_vec();
+    let count =
+        u32::try_from(descriptor.0.len()).map_err(|_| invalid(path, "participant count"))?;
+    if count == 0 {
+        return Err(invalid(path, "empty staged decision"));
+    }
+    bytes.extend_from_slice(&count.to_le_bytes());
+    let mut transaction = None;
+    let mut identities = std::collections::BTreeSet::new();
+    for (name, selection) in &descriptor.0 {
+        if !name_valid(name)
+            || !selection.manifest.starts_with(".ze-manifest-")
+            || !name_valid(selection.manifest.trim_start_matches('.'))
+            || selection.manifest.contains("..")
+            || transaction.is_some_and(|id| id != selection.binding.transaction)
+            || !identities.insert(selection.binding.participant)
+        {
+            return Err(invalid(path, "staged participant identity or manifest"));
+        }
+        transaction = Some(selection.binding.transaction);
+        for text in [name, &selection.manifest] {
+            let length =
+                u16::try_from(text.len()).map_err(|_| invalid(path, "selection length"))?;
+            bytes.extend_from_slice(&length.to_le_bytes());
+            bytes.extend_from_slice(text.as_bytes());
+        }
+        bytes.extend_from_slice(
+            &selection
+                .binding
+                .encode()
+                .map_err(|_| invalid(path, "transaction binding"))?,
+        );
+    }
+    bytes.extend_from_slice(&xxh3_64(&bytes).to_le_bytes());
+    if bytes.len() > MAX_RECORD {
+        return Err(invalid(path, "staged decision too large"));
+    }
+    Ok(bytes)
+}
+fn decode_staged(path: &Path, bytes: &[u8]) -> Result<StagedDescriptor, StoreError> {
+    let end = bytes
+        .len()
+        .checked_sub(8)
+        .ok_or_else(|| invalid(path, "short staged decision"))?;
+    let prefix = bytes
+        .get(..end)
+        .ok_or_else(|| invalid(path, "staged bounds"))?;
+    if bytes.len() > MAX_RECORD
+        || !prefix.starts_with(STAGED_MAGIC)
+        || bytes.get(end..) != Some(xxh3_64(prefix).to_le_bytes().as_slice())
+    {
+        return Err(invalid(path, "staged checksum/version"));
+    }
+    let mut remaining = prefix
+        .get(8..)
+        .ok_or_else(|| invalid(path, "staged header"))?;
+    fn take<'a>(path: &Path, bytes: &mut &'a [u8], n: usize) -> Result<&'a [u8], StoreError> {
+        let result = bytes
+            .get(..n)
+            .ok_or_else(|| invalid(path, "truncated staged decision"))?;
+        *bytes = bytes
+            .get(n..)
+            .ok_or_else(|| invalid(path, "staged bounds"))?;
+        Ok(result)
+    }
+    let count = u32::from_le_bytes(
+        take(path, &mut remaining, 4)?
+            .try_into()
+            .map_err(|_| invalid(path, "count"))?,
+    );
+    let mut result = BTreeMap::new();
+    for _ in 0..count {
+        let mut texts = Vec::new();
+        for _ in 0..2 {
+            let n = u16::from_le_bytes(
+                take(path, &mut remaining, 2)?
+                    .try_into()
+                    .map_err(|_| invalid(path, "length"))?,
+            );
+            texts.push(
+                std::str::from_utf8(take(path, &mut remaining, usize::from(n))?)
+                    .map_err(|_| invalid(path, "selection UTF-8"))?
+                    .to_owned(),
+            );
+        }
+        let mut texts = texts.into_iter();
+        let name = texts.next().ok_or_else(|| invalid(path, "name"))?;
+        let manifest = texts.next().ok_or_else(|| invalid(path, "manifest"))?;
+        let binding =
+            crate::ingest::wal_payload::TransactionBinding::decode(take(path, &mut remaining, 64)?)
+                .map_err(|_| invalid(path, "transaction binding"))?;
+        if result
+            .insert(name, StagedSelection { manifest, binding })
+            .is_some()
+        {
+            return Err(invalid(path, "duplicate participant"));
+        }
+    }
+    let descriptor = StagedDescriptor(result);
+    if !remaining.is_empty() || encode_staged(&descriptor)? != bytes {
+        return Err(invalid(path, "noncanonical staged decision"));
+    }
+    Ok(descriptor)
 }

@@ -141,6 +141,16 @@ pub(crate) fn committed_mutations(
     records: &[VisibleRecord],
     absorbed_through: u64,
 ) -> Result<Vec<(LogSeq, u16, MutationPayload)>, StoreError> {
+    committed_mutations_with_decisions(records, absorbed_through, |_| None)
+}
+
+fn committed_mutations_with_decisions(
+    records: &[VisibleRecord],
+    absorbed_through: u64,
+    decision: impl Fn(wal_payload::TransactionBinding) -> Option<wal_payload::TransactionBinding>,
+) -> Result<Vec<(LogSeq, u16, MutationPayload)>, StoreError> {
+    use wal_payload::{PreparedMutation, TransactionDecision, transaction_decision};
+    let mut prepared_run: Vec<(LogSeq, PreparedMutation)> = Vec::new();
     let mut committed = Vec::new();
     let mut run: Vec<(LogSeq, u16, MutationPayload)> = Vec::new();
     let mut run_count = 0_u32;
@@ -152,6 +162,75 @@ pub(crate) fn committed_mutations(
             seq: record.seq,
             source,
         })?;
+        if record.op == wal_payload::PREPARED_MUTATION_V1 {
+            run.clear();
+            let member = wal_payload::decode_prepared(payload).map_err(|source| {
+                StoreError::WalMutation {
+                    seq: record.seq,
+                    op: record.op,
+                    source,
+                }
+            })?;
+            let mismatch = || StoreError::WalMutation {
+                seq: record.seq,
+                op: record.op,
+                source: PayloadError::TransactionBinding,
+            };
+            if member
+                .binding
+                .first_seq
+                .checked_add(u64::from(member.index))
+                != Some(record.seq.get())
+            {
+                return Err(mismatch());
+            }
+            if member.index == 0 {
+                if prepared_run.first().is_some_and(|(_, prior)| {
+                    transaction_decision(prior.binding, decision(prior.binding))
+                        == TransactionDecision::Committed
+                }) {
+                    return Err(mismatch());
+                }
+                prepared_run.clear();
+            }
+            if usize::try_from(member.index).ok() != Some(prepared_run.len())
+                || prepared_run
+                    .first()
+                    .is_some_and(|(_, first)| first.binding != member.binding)
+            {
+                return Err(mismatch());
+            }
+            let status = transaction_decision(member.binding, decision(member.binding));
+            if status == TransactionDecision::Mismatch {
+                return Err(mismatch());
+            }
+            let complete = member.index.checked_add(1) == Some(member.count);
+            prepared_run.push((record.seq, member));
+            if complete {
+                if status == TransactionDecision::Committed {
+                    committed.extend(
+                        prepared_run
+                            .drain(..)
+                            .map(|(seq, member)| (seq, member.op, member.mutation)),
+                    );
+                } else {
+                    prepared_run.clear();
+                }
+            }
+            continue;
+        }
+        if let Some((_, member)) = prepared_run.first() {
+            if transaction_decision(member.binding, decision(member.binding))
+                == TransactionDecision::Committed
+            {
+                return Err(StoreError::WalMutation {
+                    seq: record.seq,
+                    op: record.op,
+                    source: PayloadError::TransactionBinding,
+                });
+            }
+        }
+        prepared_run.clear();
         let mutation = wal_payload::decode_mutation(record.op, payload).map_err(|source| {
             StoreError::WalMutation {
                 seq: record.seq,
@@ -182,6 +261,17 @@ pub(crate) fn committed_mutations(
         run.push((record.seq, record.op, MutationPayload::Upsert(document)));
         if index.checked_add(1) == Some(count) {
             committed.append(&mut run);
+        }
+    }
+    if let Some((seq, member)) = prepared_run.first() {
+        if transaction_decision(member.binding, decision(member.binding))
+            == TransactionDecision::Committed
+        {
+            return Err(StoreError::WalMutation {
+                seq: *seq,
+                op: wal_payload::PREPARED_MUTATION_V1,
+                source: PayloadError::TransactionBinding,
+            });
         }
     }
     Ok(committed)
@@ -296,5 +386,91 @@ mod tests {
         let (cut, after, torn, _) = cut_with_short_read(2);
         assert!(!cut);
         assert_eq!(after, torn);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod prepared_tests {
+    use super::*;
+    use crate::vfs::crash::MemoryVfs;
+    use crate::wal::{WalReader, encode_wal_image};
+    fn binding() -> wal_payload::TransactionBinding {
+        wal_payload::TransactionBinding {
+            transaction: 1,
+            participant: 2,
+            first_seq: 3,
+            last_seq: 4,
+            manifest_digest: 5,
+            final_generation: 6,
+        }
+    }
+    fn records(members: &[(wal_payload::TransactionBinding, u32)]) -> WalReader {
+        let body = wal_payload::encode_delete(&[crate::ingest::DocId::new(7)]).expect("delete");
+        let frames = members
+            .iter()
+            .map(|(binding, index)| {
+                (
+                    wal_payload::PREPARED_MUTATION_V1,
+                    wal_payload::encode_prepared(
+                        *binding,
+                        *index,
+                        2,
+                        wal_payload::DELETE_V1,
+                        &body,
+                    )
+                    .expect("member"),
+                )
+            })
+            .collect::<Vec<_>>();
+        let image = encode_wal_image(LogSeq::new(3), &frames).expect("WAL");
+        let vfs = MemoryVfs::new();
+        vfs.insert(Path::new("wal"), image).expect("seed");
+        WalReader::open(&vfs, Path::new("wal")).expect("reader")
+    }
+    #[test]
+    fn prepared_frames_require_exact_complete_decision() {
+        let reader = records(&[(binding(), 0), (binding(), 1)]);
+        assert!(
+            committed_mutations(reader.records(), 0)
+                .expect("undecided")
+                .is_empty()
+        );
+        assert_eq!(
+            committed_mutations_with_decisions(reader.records(), 0, |_| Some(binding()))
+                .expect("committed")
+                .len(),
+            2
+        );
+        let mut wrong = binding();
+        wrong.manifest_digest += 1;
+        assert!(committed_mutations_with_decisions(reader.records(), 0, |_| Some(wrong)).is_err());
+        let partial = records(&[(binding(), 0)]);
+        assert!(
+            committed_mutations(partial.records(), 0)
+                .expect("undecided prefix")
+                .is_empty()
+        );
+        assert!(
+            committed_mutations_with_decisions(partial.records(), 0, |_| Some(binding())).is_err()
+        );
+    }
+    #[test]
+    fn a_new_preparation_cannot_hide_an_incomplete_committed_range() {
+        let mut later = binding();
+        later.transaction = 9;
+        later.first_seq = 4;
+        later.last_seq = 5;
+        let reader = records(&[(binding(), 0), (later, 0)]);
+        assert!(
+            committed_mutations_with_decisions(reader.records(), 0, |evidence| {
+                if evidence.transaction == 1 {
+                    Some(binding())
+                } else {
+                    None
+                }
+            })
+            .is_err()
+        );
     }
 }

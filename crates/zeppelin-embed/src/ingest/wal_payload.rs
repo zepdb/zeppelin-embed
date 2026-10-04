@@ -86,6 +86,8 @@ const VALUE_STRING: u8 = 5;
 pub enum PayloadError {
     /// A WAL operation id has no assigned payload contract.
     UnknownOperation(u16),
+    /// Invalid transaction identity, generation or sequence range.
+    TransactionBinding,
     /// A count or byte length does not fit its frozen field.
     LengthOverflow,
     /// The payload is shorter than the required fixed prefix or declared body.
@@ -147,6 +149,7 @@ pub enum PayloadError {
 impl std::fmt::Display for PayloadError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::TransactionBinding => write!(formatter, "invalid transaction binding"),
             Self::UnknownOperation(op) => {
                 write!(formatter, "WAL mutation operation {op} is unknown")
             }
@@ -988,5 +991,270 @@ mod id128_tests {
         for length in [0, 8, 15, 17] {
             assert!(decode_metadata_value(6, &vec![0; length]).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod transaction_format_tests {
+    use super::*;
+    fn binding() -> TransactionBinding {
+        TransactionBinding {
+            transaction: 1,
+            participant: 2,
+            first_seq: 3,
+            last_seq: 3,
+            manifest_digest: 4,
+            final_generation: 5,
+        }
+    }
+    #[test]
+    fn prepared_encoding_golden_and_rejections() {
+        let body = encode_delete(&[DocId::new(6)]).unwrap();
+        let bytes = encode_prepared(binding(), 0, 1, DELETE_V1, &body).unwrap();
+        let hex = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        assert_eq!(
+            hex,
+            "010000000100000000000000000000000000000002000000000000000000000000000000030000000000000003000000000000000400000000000000050000000000000000000000010000000200010000000100000006000000000000000000000000000000"
+        );
+        let decoded = decode_prepared(&bytes).unwrap();
+        assert_eq!(decoded.binding, binding());
+        assert_eq!(
+            decoded.mutation,
+            MutationPayload::Delete(vec![DocId::new(6)])
+        );
+        for end in 0..bytes.len() {
+            assert!(decode_prepared(&bytes[..end]).is_err(), "{end}");
+        }
+        for offset in [0, 2, 4, 20, 36, 60, 68, 72, 76] {
+            let mut bad = bytes.clone();
+            bad[offset] = 255;
+            if matches!(offset, 4 | 20 | 36 | 60) {
+                // These are valid different bindings, but cannot satisfy the original decision.
+                if let Ok(member) = decode_prepared(&bad) {
+                    assert_eq!(
+                        transaction_decision(member.binding, Some(binding())),
+                        TransactionDecision::Mismatch
+                    );
+                }
+            } else {
+                assert!(decode_prepared(&bad).is_err(), "{offset}");
+            }
+        }
+        assert!(encode_prepared(binding(), 0, 1, PREPARED_MUTATION_V1, &bytes).is_err());
+        let mut trailing = bytes.clone();
+        trailing.push(0);
+        assert!(decode_prepared(&trailing).is_err());
+    }
+    #[test]
+    fn transaction_decision_table() {
+        assert_eq!(
+            transaction_decision(binding(), None),
+            TransactionDecision::Undecided
+        );
+        assert_eq!(
+            transaction_decision(binding(), Some(binding())),
+            TransactionDecision::Committed
+        );
+        for field in 0..6 {
+            let mut changed = binding();
+            match field {
+                0 => changed.transaction += 1,
+                1 => changed.participant += 1,
+                2 => changed.first_seq += 1,
+                3 => changed.last_seq += 1,
+                4 => changed.manifest_digest += 1,
+                _ => changed.final_generation += 1,
+            }
+            assert_eq!(
+                transaction_decision(binding(), Some(changed)),
+                TransactionDecision::Mismatch
+            );
+        }
+        let mut invalid = binding();
+        invalid.transaction = 0;
+        assert_eq!(
+            transaction_decision(invalid, None),
+            TransactionDecision::Mismatch
+        );
+    }
+    #[test]
+    fn prepared_operation_is_recognized() {
+        // Valid v1 envelope: tx=1, participant=2, range=3..3,
+        // digest=4, generation=5, index=0, count=1, delete doc=6.
+        let mut bytes = vec![1, 0, 0, 0];
+        bytes.extend_from_slice(&1_u128.to_le_bytes());
+        bytes.extend_from_slice(&2_u128.to_le_bytes());
+        for value in [3_u64, 3, 4, 5] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
+        bytes.extend_from_slice(&1_u32.to_le_bytes());
+        bytes.extend_from_slice(&2_u16.to_le_bytes());
+        bytes.extend_from_slice(&super::encode_delete(&[super::DocId::new(6)]).unwrap());
+        assert!(super::decode_prepared(&bytes).is_ok());
+    }
+}
+
+/// Cross-namespace prepared mutation (append-only operation 9).
+pub const PREPARED_MUTATION_V1: u16 = 9;
+
+/// Exact participant evidence bound by a root decision. All integers are LE;
+/// identities are 128 bits, sequence/digest/generation fields are 64 bits.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TransactionBinding {
+    /// Coordinator transaction identity.
+    pub transaction: u128,
+    /// Stable participant identity, independent of its route.
+    pub participant: u128,
+    /// Inclusive first prepared WAL sequence.
+    pub first_seq: u64,
+    /// Inclusive last prepared WAL sequence.
+    pub last_seq: u64,
+    /// Xxh3-64 of the selected complete manifest bytes.
+    pub manifest_digest: u64,
+    /// Generation installed by this transaction.
+    pub final_generation: u64,
+}
+impl TransactionBinding {
+    /// Frozen 64-byte binding, shared by root and prepared frames.
+    pub fn encode(self) -> Result<Vec<u8>, PayloadError> {
+        self.member_count()?;
+        let mut bytes = Vec::with_capacity(64);
+        bytes.extend_from_slice(&self.transaction.to_le_bytes());
+        bytes.extend_from_slice(&self.participant.to_le_bytes());
+        for value in [
+            self.first_seq,
+            self.last_seq,
+            self.manifest_digest,
+            self.final_generation,
+        ] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        Ok(bytes)
+    }
+    /// Decodes exactly one frozen binding.
+    pub fn decode(bytes: &[u8]) -> Result<Self, PayloadError> {
+        let mut cursor = Cursor::new(bytes);
+        let binding = Self {
+            transaction: cursor.read_u128()?,
+            participant: cursor.read_u128()?,
+            first_seq: cursor.read_u64()?,
+            last_seq: cursor.read_u64()?,
+            manifest_digest: cursor.read_u64()?,
+            final_generation: cursor.read_u64()?,
+        };
+        cursor.finish()?;
+        binding.member_count()?;
+        Ok(binding)
+    }
+    fn member_count(self) -> Result<u32, PayloadError> {
+        if self.transaction == 0
+            || self.participant == 0
+            || self.first_seq == 0
+            || self.final_generation == 0
+        {
+            return Err(PayloadError::TransactionBinding);
+        }
+        self.last_seq
+            .checked_sub(self.first_seq)
+            .and_then(|n| n.checked_add(1))
+            .and_then(|n| u32::try_from(n).ok())
+            .ok_or(PayloadError::TransactionBinding)
+    }
+}
+
+/// Decoded prepared member; it is not itself a committed mutation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PreparedMutation {
+    /// Exact evidence required from the root decision.
+    pub binding: TransactionBinding,
+    /// Zero-based member position.
+    pub index: u32,
+    /// Number of members in the participant's prepared range.
+    pub count: u32,
+    /// Existing standalone operation (never another envelope).
+    pub op: u16,
+    /// Validated standalone mutation.
+    pub mutation: MutationPayload,
+}
+
+/// `[version:u16,flags:u16,binding:64,index:u32,count:u32,op:u16,body]`.
+pub fn encode_prepared(
+    binding: TransactionBinding,
+    index: u32,
+    count: u32,
+    op: u16,
+    body: &[u8],
+) -> Result<Vec<u8>, PayloadError> {
+    if count != binding.member_count()? || index >= count {
+        return Err(PayloadError::BatchPosition { index, count });
+    }
+    standalone_mutation(op, body)?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(
+            body.len()
+                .checked_add(78)
+                .ok_or(PayloadError::LengthOverflow)?,
+        )
+        .map_err(|_| PayloadError::LengthOverflow)?;
+    append_header(&mut bytes);
+    bytes.extend_from_slice(&binding.encode()?);
+    bytes.extend_from_slice(&index.to_le_bytes());
+    bytes.extend_from_slice(&count.to_le_bytes());
+    bytes.extend_from_slice(&op.to_le_bytes());
+    bytes.extend_from_slice(body);
+    Ok(bytes)
+}
+
+/// Validates an envelope without deciding whether it committed.
+pub fn decode_prepared(bytes: &[u8]) -> Result<PreparedMutation, PayloadError> {
+    let mut cursor = Cursor::new(bytes);
+    cursor.require_header()?;
+    let binding = TransactionBinding::decode(cursor.read_bytes(64)?)?;
+    let index = cursor.read_u32()?;
+    let count = cursor.read_u32()?;
+    if count != binding.member_count()? || index >= count {
+        return Err(PayloadError::BatchPosition { index, count });
+    }
+    let op = cursor.read_u16()?;
+    let mutation = standalone_mutation(op, cursor.read_bytes(cursor.remaining())?)?;
+    Ok(PreparedMutation {
+        binding,
+        index,
+        count,
+        op,
+        mutation,
+    })
+}
+fn standalone_mutation(op: u16, bytes: &[u8]) -> Result<MutationPayload, PayloadError> {
+    if !(UPSERT_V1..=UPSERT_V2).contains(&op) {
+        return Err(PayloadError::UnknownOperation(op));
+    }
+    decode_mutation(op, bytes)
+}
+
+/// Pure root-decision result; absence is explicitly uncommitted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransactionDecision {
+    /// All participant evidence agrees.
+    Committed,
+    /// No decision exists for these frames.
+    Undecided,
+    /// A decision exists but contradicts the participant evidence.
+    Mismatch,
+}
+/// Compares identities, inclusive WAL range, manifest digest and generation.
+pub fn transaction_decision(
+    prepared: TransactionBinding,
+    selected: Option<TransactionBinding>,
+) -> TransactionDecision {
+    match selected {
+        None if prepared.member_count().is_ok() => TransactionDecision::Undecided,
+        Some(binding) if prepared.member_count().is_ok() && binding == prepared => {
+            TransactionDecision::Committed
+        }
+        _ => TransactionDecision::Mismatch,
     }
 }
