@@ -651,6 +651,80 @@ fn ze257_small_batch_does_not_reserve_maximum_wal_envelope() {
 }
 
 #[test]
+fn ze194_single_batch_400_nodes_with_and_without_vectors() {
+    use crate::epoch::{ComputeUnits, EmbeddingRuntime, EmbeddingTower, Normalization};
+    use crate::property_graph::CanonicalEmbedding;
+
+    for with_vectors in [false, true] {
+        let parent = tempfile::tempdir().expect("temporary parent");
+        let tower = EmbeddingTower {
+            model_id: "ze194-document".into(),
+            model_version: "1".into(),
+            weights_digest: vec![0x19, 0x4],
+            dims: 2,
+            normalization: Normalization::None,
+            prompt_prefix: String::new(),
+            max_tokens: 32,
+            runtime: EmbeddingRuntime::CpuReference,
+            compute_units: ComputeUnits::Cpu,
+            os_build: None,
+        };
+        let store = GraphStore::create(
+            parent.path().join("graph"),
+            options(),
+            with_vectors.then(|| tower.clone()),
+        )
+        .expect("graph store");
+        let embedding = with_vectors
+            .then(|| CanonicalEmbedding::new(&tower, &[0.25, 0.75]).expect("embedding"));
+        let image = CanonicalContents::node(&mut [], &mut [], None, embedding).expect("node image");
+        let keys: Vec<_> = (0..400).map(|index| format!("ze194-{index}")).collect();
+        let requests: Vec<_> = keys
+            .iter()
+            .map(|key| StructuredWrite {
+                key: node_key(key),
+                revision: revision(1),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            })
+            .collect();
+        let result = store
+            .apply_batch(&requests, &control())
+            .expect("400-node single batch under production preparation allowance");
+        assert_eq!(result.admitted_generation(), generation(0));
+        assert_eq!(
+            result.outcome(),
+            GraphWriteOutcome::Committed {
+                generation: generation(1),
+            }
+        );
+        assert_eq!(result.receipts().len(), 400);
+        assert!(
+            result
+                .receipts()
+                .iter()
+                .all(|receipt| receipt.generation == generation(1) && !receipt.replayed)
+        );
+        let nodes: Vec<_> = (0..400).map(|index| node_id(&result, index)).collect();
+        assert_eq!(
+            nodes
+                .iter()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            400
+        );
+        let read = store
+            .get_nodes(&nodes, super::GraphGetOptions::default(), &control())
+            .expect("read every committed node");
+        assert_eq!(read.nodes().len(), 400);
+        assert!(read.nodes().iter().all(Option::is_some));
+        drop(read);
+        store.close().expect("close graph store");
+    }
+}
+
+#[test]
 fn ze257_batch_work_is_admitted_per_mutation() {
     let parent = tempfile::tempdir().expect("temporary parent");
     let store =
