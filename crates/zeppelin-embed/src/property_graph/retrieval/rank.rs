@@ -383,7 +383,12 @@ impl<'q, 'm, 'g> Ranking<'q, 'm, 'g> {
     ) -> Result<(), RetrievalError> {
         let mut charge = self
             .memory
-            .reserve(self.query.len())
+            .reserve(
+                self.query
+                    .len()
+                    .checked_mul(2)
+                    .ok_or(RetrievalError::Memory)?,
+            )
             .map_err(memory_error)?;
         let prepared = crate::quant::prepare_bit4_query(self.query, QUERY_SEED)
             .map_err(RetrievalError::Vector)?;
@@ -517,7 +522,6 @@ impl<'q, 'm, 'g> Ranking<'q, 'm, 'g> {
                 | FilteredGraphSearchOutcome::VisitedBudgetExceeded { .. } => break None,
             }
         };
-        drop(searcher);
         drop(scratch);
         match traversed {
             Some(result) => {
@@ -701,5 +705,125 @@ impl<'view, 's, 'lease, 'm, 'g> NativeRetrievalContext<'view, 's, 'lease, 'm, 'g
                 fallback_count: ranking.fallbacks,
             },
         })
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    reason = "scoped regression fixtures"
+)]
+mod tests {
+    use super::*;
+    use crate::lifecycle::native_graph::NativeReadConsumer;
+    use crate::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
+    use crate::property_graph::query::runtime::RuntimeLimits;
+    use crate::property_graph::storage::GraphReadView;
+
+    struct ScanPeak;
+    impl NativeReadConsumer<()> for ScanPeak {
+        fn consume<'s, 'lease, 'm, 'g>(
+            &mut self,
+            view: &GraphReadView<'s, 'lease, 'm, 'g>,
+            runtime: &mut RuntimeContext<'lease, 'm, 'g>,
+        ) -> Result<(), TreeError> {
+            let memory = runtime.memory();
+            let sparse = view.sparse_view(runtime)?;
+            let mut resources = TreeResources::for_query(runtime)?;
+            let mut sources = sparse.sources(Modality::Vector, &mut resources)?;
+            let source = sources.next(&mut resources)?.unwrap();
+            let index = source.vector_index(&mut resources)?.unwrap();
+            // Leave three bytes: enough for the old two-byte reservation,
+            // insufficient for the four-byte simultaneous query buffers.
+            let _occupied = memory
+                .reserve(8 * 1024 * 1024 - memory.reserved_bytes() - 3)
+                .unwrap();
+            let mut ranking = Ranking {
+                memory,
+                query: &[0.0, 0.0],
+                k: 1,
+                window: 16,
+                top: None,
+                exact_scratch: None,
+                live: 0,
+                eligible: 0,
+                sources: 0,
+                traversed: 0,
+                fallbacks: 0,
+            };
+            crate::quant::begin_query_preparation_test_observations();
+            let result = ranking.scan_rows(&index, &DocBitmap::new(), &mut resources);
+            let observations = crate::quant::take_query_preparation_test_observations();
+            assert!(matches!(
+                result,
+                Err(RetrievalError::Control(RuntimeError::Memory(
+                    crate::property_graph::query::resources::MemoryError::Limit
+                )))
+            ));
+            assert!(
+                observations.bit4.is_empty(),
+                "preparation ran before peak reservation: {:?}",
+                observations.bit4
+            );
+            Ok(())
+        }
+    }
+    #[test]
+    fn ze195_scan_reserves_peak_before_preparing() {
+        use crate::epoch::{ComputeUnits, EmbeddingRuntime, EmbeddingTower, Normalization};
+        use crate::property_graph::staging::{StructuredOperation, StructuredWrite, WriteImage};
+        use crate::property_graph::{
+            ApplicationKey, CanonicalContents, CanonicalEmbedding, EntityKind, GraphRevision,
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let document = EmbeddingTower {
+            model_id: "ze195".into(),
+            model_version: "1".into(),
+            weights_digest: vec![1],
+            dims: 2,
+            normalization: Normalization::None,
+            prompt_prefix: "".into(),
+            max_tokens: 32,
+            runtime: EmbeddingRuntime::CpuReference,
+            compute_units: ComputeUnits::Cpu,
+            os_build: None,
+        };
+        let store = Store::create_native_graph(
+            directory.path().join("native"),
+            OpenOptions::new()
+                .with_durability(
+                    crate::lifecycle::durability::DurabilityMode::Durable,
+                    crate::lifecycle::durability::CommitTier::Durable,
+                )
+                .with_max_resident_bytes(128 * 1024 * 1024),
+            Some(document.clone()),
+        )
+        .unwrap();
+        let embedding = CanonicalEmbedding::new(&document, &[0.0, 0.0]).unwrap();
+        let image = CanonicalContents::node(&mut [], &mut [], None, Some(embedding)).unwrap();
+        let control = QueryControl::Cancel(CancelToken::new());
+        store
+            .apply_native_graph(
+                &[StructuredWrite {
+                    key: ApplicationKey::new(EntityKind::Node, "app", "a").unwrap(),
+                    revision: GraphRevision::new(1).unwrap(),
+                    operation: StructuredOperation::Create,
+                    image: Some(WriteImage::Node(&image)),
+                }],
+                &control,
+            )
+            .unwrap();
+        store
+            .with_native_read(
+                &control,
+                RuntimeLimits::default(),
+                8 * 1024 * 1024,
+                32,
+                ScanPeak,
+            )
+            .unwrap();
     }
 }

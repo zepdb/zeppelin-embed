@@ -840,3 +840,222 @@ fn ze62_budget_exhaustion_returns_no_partial_ranking() {
         assert!(memory_refusals > 0, "{mode:?}");
     }
 }
+
+#[test]
+fn ze195_mixed_traversal_and_fallback_stays_approximate() {
+    let mut corpus = Corpus::new();
+    corpus.create(&[Some([0.0, 0.0]), Some([1.0, 0.0]), Some([2.0, 0.0])]);
+    corpus.create(&(0..48).map(|i| Some([i as f32, 1.0])).collect::<Vec<_>>());
+    crate::property_graph::retrieval::rank::with_visited_budget_override(3, || {
+        let (_, report) = rank(&corpus, [0.0, 0.0], SearchMode::Default, None, 1).unwrap();
+        assert_eq!(report.traversed_sources, 1);
+        assert_eq!(report.fallback_count, 1);
+        assert_eq!(report.actual_tier, Some(ActualTier::Graph));
+        assert_eq!(report.precision, ScorePrecision::Original);
+        assert_eq!(report.coverage, CandidateCoverage::Approximate);
+    });
+}
+
+#[test]
+fn ze195_foreign_prepared_vector_is_rejected() {
+    use crate::property_graph::query::resources::QueryMemory;
+    use crate::property_graph::resources::GraphResources;
+    use crate::property_graph::storage::tree::directory::TreeResources;
+    use crate::property_graph::storage::{NativeCatalog, NativeQuerySource, NativeReadCapability};
+    let mut corpus = Corpus::new();
+    corpus.create(&[Some([0.0, 0.0])]);
+    let first = corpus.store.admit_native_read().unwrap();
+    let second = corpus.store.admit_native_read().unwrap();
+    assert_eq!(first.bundle().base(), second.bundle().base());
+    let shared = GraphResources::from_store(&corpus.store).unwrap();
+    let first_memory = QueryMemory::new(&shared, 8 * 1024 * 1024).unwrap();
+    let second_memory = QueryMemory::new(&shared, 8 * 1024 * 1024).unwrap();
+    let control = QueryControl::Cancel(CancelToken::new());
+    let mut first_runtime =
+        RuntimeContext::new(&first, &control, &first_memory, RuntimeLimits::default()).unwrap();
+    let mut second_runtime =
+        RuntimeContext::new(&second, &control, &second_memory, RuntimeLimits::default()).unwrap();
+    let first_capability = NativeReadCapability::admit(&first, &first_runtime).unwrap();
+    let mut resources = TreeResources::for_query(&mut first_runtime).unwrap();
+    let first_source = NativeQuerySource::new(first_capability, &resources, 16).unwrap();
+    let first_catalog = NativeCatalog::open(&first_source, &mut resources).unwrap();
+    drop(resources);
+    let first_view = GraphReadView::new(&first_source, &first_catalog).unwrap();
+    let first_context = NativeRetrievalContext::new(&first_view, &mut first_runtime).unwrap();
+    let prepared = first_context
+        .prepare_vector(
+            &[0.0, 0.0],
+            SearchMode::Exact,
+            Eligibility::AllIndexed,
+            &mut first_runtime,
+        )
+        .unwrap();
+    let second_capability = NativeReadCapability::admit(&second, &second_runtime).unwrap();
+    let mut resources = TreeResources::for_query(&mut second_runtime).unwrap();
+    let second_source = NativeQuerySource::new(second_capability, &resources, 16).unwrap();
+    let second_catalog = NativeCatalog::open(&second_source, &mut resources).unwrap();
+    drop(resources);
+    let second_view = GraphReadView::new(&second_source, &second_catalog).unwrap();
+    let second_context = NativeRetrievalContext::new(&second_view, &mut second_runtime).unwrap();
+    assert!(matches!(
+        second_context.rank_vector(
+            &prepared,
+            SearchBounds::new(1, 16).unwrap(),
+            &mut second_runtime
+        ),
+        Err(RetrievalError::Storage(TreeError::Invalid(
+            "foreign prepared native vector"
+        )))
+    ));
+}
+
+#[test]
+fn ze195_unindexed_v1_refuses_scan_and_graph() {
+    use crate::property_graph::StoreInstanceId;
+    use crate::property_graph::storage::allocation::artifact_path;
+    use crate::property_graph::storage::artifact::{self, Block, BlockKind, ContainerKind};
+    use xxhash_rust::xxh3::xxh3_64;
+    // Build an unpublished fixture, then replace its V2 source with a raw V1
+    // manifest. Retain original rows and liveness; no opened artifact is edited.
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(
+        directory.path(),
+        OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+    )
+    .unwrap();
+    let mut bundle = super::actual_producer_bundle_with_dimensions(
+        &store,
+        directory.path(),
+        StoreInstanceId::new(195).unwrap(),
+        0,
+        true,
+        0,
+        false,
+        2,
+    );
+    let mut objects = Vec::new();
+    for entry in std::fs::read_dir(directory.path()).unwrap() {
+        let path = entry.unwrap().path();
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        let Ok(frame) = artifact::decode(ContainerKind::Object, None, &bytes) else {
+            continue;
+        };
+        let mut payloads = Vec::new();
+        let mut index = 0;
+        while let Ok(reference) = frame.reference(index) {
+            payloads.push((
+                reference,
+                frame.framed_block(reference).unwrap().payload().to_vec(),
+            ));
+            index += 1;
+        }
+        objects.push((frame.identity(), payloads));
+    }
+    let old = objects
+        .iter()
+        .flat_map(|(_, blocks)| blocks)
+        .find(|(reference, payload)| {
+            reference.kind == BlockKind::CommitParticipant
+                && payload.len() == 200
+                && payload[8] == 2
+                && payload[9] == 2
+        })
+        .unwrap()
+        .0;
+    let new = artifact::PhysicalRef {
+        length: 24 + 144,
+        ..old
+    };
+    let mut old_bytes = [0; 32];
+    let mut new_bytes = [0; 32];
+    artifact::encode_reference(old, &mut old_bytes).unwrap();
+    artifact::encode_reference(new, &mut new_bytes).unwrap();
+    for (identity, payloads) in objects {
+        let mut changed = false;
+        let mut blocks = Vec::new();
+        for (reference, mut payload) in payloads {
+            if reference == old {
+                payload.truncate(144);
+                payload[6..8].copy_from_slice(&1_u16.to_le_bytes());
+                blocks.push((reference.kind, payload));
+                // Preserve following block offsets while filling the removed
+                // 56 bytes with an unreferenced, valid framed block.
+                blocks.push((BlockKind::RetrievalRows, vec![0; 32]));
+                changed = true;
+                continue;
+            }
+            let mut replaced = false;
+            if matches!(reference.kind, BlockKind::TreePage) {
+                for offset in 0..payload.len().saturating_sub(31) {
+                    if payload[offset..offset + 32] == old_bytes {
+                        payload[offset..offset + 32].copy_from_slice(&new_bytes);
+                        replaced = true;
+                    }
+                }
+                if replaced {
+                    payload[56..64].fill(0);
+                    let checksum = xxh3_64(&payload);
+                    payload[56..64].copy_from_slice(&checksum.to_le_bytes());
+                }
+            }
+            changed |= replaced;
+            blocks.push((reference.kind, payload));
+        }
+        if !changed {
+            continue;
+        }
+        let blocks = blocks
+            .iter()
+            .map(|(kind, payload)| Block {
+                kind: *kind,
+                payload,
+            })
+            .collect::<Vec<_>>();
+        let mut bytes = vec![0; artifact::encoded_len(ContainerKind::Object, &blocks).unwrap()];
+        artifact::encode_into(ContainerKind::Object, identity, &blocks, &mut bytes).unwrap();
+        let frame = artifact::decode(ContainerKind::Object, None, &bytes).unwrap();
+        let checksum = frame
+            .framed_block(frame.reference(0).unwrap())
+            .unwrap()
+            .file_checksum();
+        for required in bundle
+            .wal_roots
+            .slots
+            .iter_mut()
+            .flatten()
+            .chain([&mut bundle.catalog, &mut bundle.root_envelope])
+            .chain(bundle.vector.iter_mut())
+            .chain(bundle.text.iter_mut())
+        {
+            if required.object.artifact == identity.artifact {
+                required.object.bytes = bytes.len() as u32;
+                required.object.checksum = checksum;
+            }
+        }
+        std::fs::write(artifact_path(directory.path(), identity.artifact), &bytes).unwrap();
+    }
+    store.install_native_graph_for_test(bundle).unwrap();
+    let corpus = Corpus {
+        store,
+        _directory: directory,
+        document: tower(),
+        live: BTreeMap::new(),
+        outside: vec![],
+        next_key: 0,
+        keys: BTreeMap::new(),
+    };
+    let (hits, report) = rank(&corpus, [0.0, 0.0], SearchMode::Exact, None, 1).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert!(report.live_members > 0);
+    for mode in [SearchMode::Scan, SearchMode::Default, SearchMode::Auto] {
+        assert!(
+            matches!(
+                rank(&corpus, [0.0, 0.0], mode, None, 1),
+                Err(RetrievalError::UnindexedVectorSource)
+            ),
+            "mode {mode:?}"
+        );
+    }
+}

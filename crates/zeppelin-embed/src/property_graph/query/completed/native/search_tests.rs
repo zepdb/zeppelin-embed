@@ -179,6 +179,8 @@ fn vector_empty(call: SearchCallId, generation: GraphGeneration, count: u64) -> 
 enum Shape {
     /// Two independent calls joined, then projected to the two nodes only.
     Cartesian,
+    /// Search inside two OptionalApply levels, replayed for each outer hit.
+    NestedOptional,
     /// One call under `LIMIT 0`.
     LimitZero,
     /// One call restricted to an explicit empty eligibility list.
@@ -205,6 +207,9 @@ impl NativeReadConsumer<Outcome> for SearchConsumer {
         let first_search = [PlanNodeId(1)];
         let join_inputs = [PlanNodeId(1), PlanNodeId(3)];
         let project_join = [PlanNodeId(4)];
+        let inner_optional = [PlanNodeId(2), PlanNodeId(3)];
+        let outer_optional = [PlanNodeId(1), PlanNodeId(4)];
+        let project_optional = [PlanNodeId(5)];
         let coordinates = [ExprId(5), ExprId(6)];
         let vector_coords = [ExprId(4), ExprId(5)];
         let no_members: [ExprId; 0] = [];
@@ -237,8 +242,8 @@ impl NativeReadConsumer<Outcome> for SearchConsumer {
         };
         let (operators, expressions, eager): (Vec<Operator<'_>>, Vec<Expression<'_>>, Vec<_>) =
             match self.shape {
-                Shape::Cartesian => (
-                    vec![
+                Shape::Cartesian | Shape::NestedOptional => {
+                    let mut operators = vec![
                         Operator {
                             inputs: &[],
                             kind: OperatorKind::Unit,
@@ -276,8 +281,8 @@ impl NativeReadConsumer<Outcome> for SearchConsumer {
                             inputs: &project_join,
                             kind: OperatorKind::Project(&cartesian_projection),
                         },
-                    ],
-                    vec![
+                    ];
+                    let mut expressions = vec![
                         Expression::Literal(Literal::String(&query)),
                         Expression::Literal(Literal::I64(2)),
                         Expression::List(&coordinates),
@@ -285,9 +290,34 @@ impl NativeReadConsumer<Outcome> for SearchConsumer {
                         Expression::Slot(SlotId(2)),
                         Expression::Literal(Literal::F64(1.0)),
                         Expression::Literal(Literal::F64(0.0)),
-                    ],
-                    vec![PlanNodeId(1), PlanNodeId(3)],
-                ),
+                    ];
+                    if matches!(self.shape, Shape::NestedOptional) {
+                        expressions[1] = Expression::Literal(Literal::I64(3));
+                        expressions.push(Expression::Binary {
+                            operation:
+                                crate::property_graph::query::plan::BinaryExpression::Comparison(
+                                    crate::property_graph::query::Comparison::Equal,
+                                ),
+                            left: ExprId(3),
+                            right: ExprId(4),
+                        });
+                        operators[4] = Operator {
+                            inputs: &inner_optional,
+                            kind: OperatorKind::OptionalApply { predicate: None },
+                        };
+                        operators[5] = Operator {
+                            inputs: &outer_optional,
+                            kind: OperatorKind::OptionalApply {
+                                predicate: Some(ExprId(7)),
+                            },
+                        };
+                        operators.push(Operator {
+                            inputs: &project_optional,
+                            kind: OperatorKind::Project(&cartesian_projection),
+                        });
+                    }
+                    (operators, expressions, vec![PlanNodeId(1), PlanNodeId(3)])
+                }
                 Shape::LimitZero => (
                     vec![
                         Operator {
@@ -371,6 +401,9 @@ impl NativeReadConsumer<Outcome> for SearchConsumer {
             RetainedRegion::slice(&first_search).unwrap(),
             RetainedRegion::slice(&join_inputs).unwrap(),
             RetainedRegion::slice(&project_join).unwrap(),
+            RetainedRegion::slice(&inner_optional).unwrap(),
+            RetainedRegion::slice(&outer_optional).unwrap(),
+            RetainedRegion::slice(&project_optional).unwrap(),
             RetainedRegion::slice(&coordinates).unwrap(),
             RetainedRegion::slice(&vector_coords).unwrap(),
             RetainedRegion::slice(&cartesian_projection).unwrap(),
@@ -418,6 +451,9 @@ impl NativeReadConsumer<Outcome> for SearchConsumer {
             RetainedAllocation::array(&first_search).unwrap(),
             RetainedAllocation::array(&join_inputs).unwrap(),
             RetainedAllocation::array(&project_join).unwrap(),
+            RetainedAllocation::array(&inner_optional).unwrap(),
+            RetainedAllocation::array(&outer_optional).unwrap(),
+            RetainedAllocation::array(&project_optional).unwrap(),
             RetainedAllocation::array(&coordinates).unwrap(),
             RetainedAllocation::array(&vector_coords).unwrap(),
             RetainedAllocation::array(&cartesian_projection).unwrap(),
@@ -432,7 +468,7 @@ impl NativeReadConsumer<Outcome> for SearchConsumer {
         .admit_plan(&plan, runtime.values())
         .expect("admit search plan");
         let columns: Vec<GraphName<'_>> = match self.shape {
-            Shape::Cartesian => vec![
+            Shape::Cartesian | Shape::NestedOptional => vec![
                 GraphName::new("left").unwrap(),
                 GraphName::new("right").unwrap(),
             ],
@@ -713,4 +749,104 @@ fn ze53_s1_adapter_error_returns_no_result() {
             ADAPTER_FAILURE
         )))
     ));
+}
+
+#[test]
+fn ze198_report_call_and_generation_mismatch_return_batch() {
+    fn wrong_call(call: SearchCallId, generation: GraphGeneration, count: u64) -> SearchReport {
+        lexical(SearchCallId(call.0 + 1), generation, count)
+    }
+    fn stale_generation(
+        call: SearchCallId,
+        generation: GraphGeneration,
+        count: u64,
+    ) -> SearchReport {
+        lexical(call, GraphGeneration::new(generation.get() - 1), count)
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let (store, [a, _, _]) = fixture(directory.path());
+    for report in [wrong_call as fn(_, _, _) -> _, stale_generation] {
+        let (outcome, seen) = run(
+            &store,
+            Shape::LimitZero,
+            vec![Script {
+                hits: vec![(a, 0.9)],
+                report,
+                fail: false,
+            }],
+        );
+        let Err(failure) = outcome else {
+            panic!("mismatched report produced a result")
+        };
+        assert_eq!(seen.len(), 1);
+        assert_eq!(failure.operator, PlanNodeId(1), "reject at eager Search");
+        assert!(matches!(
+            failure.error,
+            NativeResultError::Native(NativeExecutionError::Runtime(RuntimeError::Batch))
+        ));
+    }
+}
+
+#[test]
+fn ze198_nested_optional_replays_search_and_preserves_reports() {
+    let directory = tempfile::tempdir().unwrap();
+    let (store, [a, b, c]) = fixture(directory.path());
+    let (outcome, seen) = run(
+        &store,
+        Shape::NestedOptional,
+        vec![
+            Script {
+                hits: vec![(a, 0.9), (a, 0.8), (b, 0.5)],
+                report: lexical,
+                fail: false,
+            },
+            Script {
+                hits: vec![(a, 0.1), (c, 0.4)],
+                report: approximate,
+                fail: false,
+            },
+        ],
+    );
+    let result = outcome.expect("nested optional search result");
+    assert_eq!(
+        seen,
+        vec![
+            Seen {
+                call: 0,
+                k: 3,
+                eligible: None
+            },
+            Seen {
+                call: 1,
+                k: 3,
+                eligible: None
+            }
+        ]
+    );
+    let mut rows = (0..result.metadata().rows as usize)
+        .map(|row| {
+            let right = match result.cell(row, 1).unwrap() {
+                Value::Null => None,
+                Value::Node(_) => Some(node(&result, row, 1)),
+                _ => panic!("optional node kind"),
+            };
+            (node(&result, row, 0), right)
+        })
+        .collect::<Vec<_>>();
+    rows.sort();
+    let mut expected = vec![(a, Some(a)), (a, Some(a)), (b, None)];
+    expected.sort();
+    assert_eq!(rows, expected);
+    let generation = result.metadata().generation;
+    assert_eq!(
+        result.pools().reports,
+        [
+            lexical(SearchCallId(0), generation, 3),
+            approximate(SearchCallId(1), generation, 2)
+        ]
+    );
+    assert_eq!(
+        result.metadata().counters.get(WorkKind::SearchInvocations),
+        2
+    );
 }

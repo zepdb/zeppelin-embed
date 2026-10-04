@@ -2085,3 +2085,52 @@ fn native_result_directed_probe_can_fire() {
         .expect("paired actual native result directed probe");
     assert_eq!(paired, report);
 }
+
+struct PostHandoffConsumer;
+
+impl NativeReadConsumer<()> for PostHandoffConsumer {
+    fn consume<'s, 'lease, 'm, 'g>(
+        &mut self,
+        _: &GraphReadView<'s, 'lease, 'm, 'g>,
+        runtime: &mut RuntimeContext<'lease, 'm, 'g>,
+    ) -> Result<(), crate::property_graph::storage::tree::directory::TreeError> {
+        let handoff = Cell::new(None);
+        // None is the state after the overlay has been handed to completion.
+        let mut source = WriteSource {
+            root: PlanNodeId(0),
+            pattern: None,
+            handoff: &handoff,
+        };
+        let mut output = RowBatch::new(runtime, 1, 1, 64).unwrap();
+        assert!(matches!(
+            source.pull(runtime, &mut output),
+            Err(NativeResultError::Native(NativeExecutionError::Runtime(
+                RuntimeError::Batch
+            )))
+        ));
+        assert_eq!(output.rows(), 0);
+        Ok(())
+    }
+}
+
+#[test]
+fn ze199_write_source_pull_after_handoff_returns_batch() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::create_native_graph(
+        directory.path().join("native"),
+        OpenOptions::new()
+            .with_durability(DurabilityMode::Durable, CommitTier::Durable)
+            .with_max_resident_bytes(128 * 1024 * 1024),
+        None,
+    )
+    .unwrap();
+    store
+        .with_native_read(
+            &QueryControl::Cancel(CancelToken::new()),
+            RuntimeLimits::default(),
+            8 * 1024 * 1024,
+            32,
+            PostHandoffConsumer,
+        )
+        .unwrap();
+}
