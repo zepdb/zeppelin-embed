@@ -7740,3 +7740,174 @@ fn ze189_inventory_only_artifact_is_required_on_reopen() {
         "{error:?}"
     );
 }
+
+#[test]
+fn ze186_reader_graph_only_artifact_survives_reclaim() {
+    let parent = tempfile::tempdir().expect("parent");
+    let path = parent.path().join("native");
+    let vfs = Arc::new(RecordingVfs::default());
+    let store = create_reclaim_test_store(&path, &vfs);
+    let control = QueryControl::Cancel(CancelToken::new());
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).expect("node");
+    let names: Vec<_> = (0..64).map(|n| format!("node-{n:04}")).collect();
+    let mut nodes = Vec::new();
+    for batch in names.chunks(8) {
+        let writes: Vec<_> = batch
+            .iter()
+            .map(|name| StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "ze186", name).expect("key"),
+                revision: GraphRevision::new(1).expect("revision"),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            })
+            .collect();
+        let receipts = store.apply_native_graph(&writes, &control).expect("seed");
+        nodes.extend(receipts.iter().copied());
+    }
+    store
+        .checkpoint_native_graph(&control)
+        .expect("reader checkpoint");
+    let reader = store.admit_native_read().expect("retained reader");
+    let old = graph_references_for_lease(&store, &reader);
+    let EntityId::Node(node) = nodes[0].entity else {
+        panic!("node")
+    };
+    let lazy_value = node_directory_value(&store, &reader, node);
+    for (batch, receipts) in names.chunks(8).zip(nodes.chunks(8)) {
+        let writes: Vec<_> = batch
+            .iter()
+            .zip(receipts)
+            .map(|(name, receipt)| StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "ze186", name).expect("key"),
+                revision: GraphRevision::new(2).expect("revision"),
+                operation: StructuredOperation::Put(receipt.entity),
+                image: Some(WriteImage::Node(&image)),
+            })
+            .collect();
+        store
+            .apply_native_graph(&writes, &control)
+            .expect("replace");
+    }
+    store
+        .checkpoint_native_graph(&control)
+        .expect("current checkpoint");
+    let current = store.admit_native_read().expect("current");
+    {
+        let capture = store.capture_native_read_roots().expect("registrations");
+        assert_eq!(capture.bundles().len(), 2);
+        assert!(capture.prepared().is_empty());
+    }
+    let mut other: Vec<_> = graph_references_for_lease(&store, &current)
+        .iter()
+        .map(|r| r.artifact)
+        .collect();
+    for lease in [&reader, &current] {
+        other.extend(
+            sparse_references_for_lease(&store, lease)
+                .iter()
+                .map(|r| r.artifact),
+        );
+        other.extend(
+            std::iter::once(lease.bundle().root_envelope())
+                .chain(lease.bundle().wal_roots().slots.into_iter().flatten())
+                .chain(
+                    [
+                        Some(lease.bundle().catalog()),
+                        lease.bundle().text(),
+                        lease.bundle().vector(),
+                        lease.bundle().reclaim(),
+                    ]
+                    .into_iter()
+                    .flatten(),
+                )
+                .chain(lease.bundle().prepared_inventories().iter().copied())
+                .map(|r| r.object.artifact),
+        );
+    }
+    // At each target checkpoint, history emits only its WAL identity:
+    // the complete graph retrace is skipped at the target sequence.
+    for lease in [&reader, &current] {
+        let mut checkpoints = 0;
+        super::super::recovery::visit_captured_state(
+            &store,
+            &path,
+            lease.bundle().root_envelope(),
+            lease.bundle().sequence(),
+            None,
+            &control,
+            |visit, _| {
+                match visit {
+                    super::super::recovery::CapturedStateVisit::Checkpoint {
+                        state,
+                        wal_identity,
+                        ..
+                    } => {
+                        assert_eq!(state.sequence, lease.bundle().sequence());
+                        checkpoints += 1;
+                        other.push(
+                            crate::property_graph::storage::artifact::ArtifactId::new(wal_identity)
+                                .expect("WAL identity"),
+                        );
+                    }
+                    super::super::recovery::CapturedStateVisit::Envelope { .. } => {
+                        panic!("unexpected history envelope")
+                    }
+                }
+                Ok(())
+            },
+        )
+        .expect("history isolation");
+        assert_eq!(checkpoints, 1);
+    }
+    let mut witnesses: Vec<_> = old
+        .iter()
+        .filter(|r| !other.contains(&r.artifact))
+        .map(|r| r.artifact)
+        .collect();
+    witnesses.sort_unstable();
+    witnesses.dedup();
+    let witness_bytes: Vec<_> = witnesses
+        .iter()
+        .map(|artifact| {
+            let file = crate::property_graph::storage::allocation::artifact_path(&path, *artifact);
+            let bytes = std::fs::read(&file).expect("witness bytes");
+            (file, bytes)
+        })
+        .collect();
+    assert!(
+        !witnesses.is_empty(),
+        "no Reader-only pack among {} graph references",
+        old.len()
+    );
+    // The lighter witness is an old node-record pack. Its directory
+    // reference is indirect; no direct root or sparse trace protects it.
+    eprintln!("ZE186 witness packs: {}", witnesses.len());
+    let before = directory_image(&path);
+    drop(current);
+    vfs.take();
+    let mut removed = 0;
+    for _ in 0..2 {
+        removed += commit_maintenance(&store)
+            .expect("reclaim under reader")
+            .removed_bytes;
+    }
+    assert!(removed > 0, "reclaim must unlink unrelated packs");
+    let proof = store.admit_native_read().expect("proof");
+    let (_, mark) = durable_proof_for_lease(&store, &proof);
+    for witness in witnesses {
+        assert!(
+            mark.contains(&witness),
+            "Reader-only witness absent from mark: {witness:?}"
+        );
+    }
+    for (file, bytes) in witness_bytes {
+        assert_eq!(std::fs::read(file).expect("surviving witness"), bytes);
+    }
+    for deleted in delete_events(&vfs.take()) {
+        assert!(!deleted.exists());
+        assert!(before.contains_key(deleted.file_name().expect("filename")));
+    }
+    assert_eq!(node_directory_value(&store, &reader, node), lazy_value);
+    assert_eq!(graph_references_for_lease(&store, &reader), old);
+    eprintln!("ZE186 removed bytes: {removed}");
+}
