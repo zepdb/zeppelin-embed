@@ -291,3 +291,204 @@ fn astra_17_live_df_cache_memory_released_with_reader() {
     store.close().expect("close");
     assert_eq!(accounting.audit().expect("closed").cache_bytes, 0);
 }
+
+fn filtered_assembly(store: &Store, predicate: &crate::meta::Predicate) -> Arc<LexicalAssembly> {
+    let filter = QueryFilter::new(store.schema(), Some(predicate), None)
+        .expect("filter")
+        .expect("present");
+    let admission = store.admit_lexical_query().expect("admit");
+    assemble_lexical_index(
+        LexicalInputs {
+            filter: Some(&filter),
+            generation: admission.generation,
+            cache: &store.lexical_index_cache,
+            snapshot: &admission.snapshot,
+            active: &admission.active,
+            accounting: &store.accounting,
+        },
+        true,
+        None,
+    )
+    .unwrap_or_else(|_| panic!("filtered assembly"))
+    .assembly
+}
+
+#[test]
+fn ze_262_repeated_filter_reuses_eligible_rows() {
+    let (_dir, store) = fixture();
+    let predicate = crate::meta::Predicate::Exists(crate::meta::TIMESTAMP_COLUMN);
+    let first = filtered_assembly(&store, &predicate);
+    crate::fts::preparation_observer::begin();
+    let second = filtered_assembly(&store, &predicate);
+    assert_eq!(first.alive_sets, second.alive_sets);
+    assert_eq!(
+        crate::fts::preparation_observer::filter_work().0,
+        0,
+        "cached predicate evaluations"
+    );
+    assert_eq!(
+        crate::fts::preparation_observer::filter_work().2,
+        0,
+        "cached intersections"
+    );
+    assert!(
+        first
+            .alive_sets
+            .iter()
+            .zip(&second.alive_sets)
+            .all(|(a, b)| Arc::ptr_eq(a, b))
+    );
+}
+
+#[test]
+fn ze_262_changed_predicate_and_mutations_invalidate_eligibility() {
+    let (_dir, store) = fixture();
+    let all = crate::meta::Predicate::Exists(crate::meta::TIMESTAMP_COLUMN);
+    let none = crate::meta::Predicate::IsNull(crate::meta::TIMESTAMP_COLUMN);
+    let first = filtered_assembly(&store, &all);
+    let weak = Arc::downgrade(first.alive_sets.first().expect("set"));
+    assert_eq!(
+        filtered_assembly(&store, &none)
+            .alive_sets
+            .iter()
+            .map(|a| a.alive_bitmap().cardinality())
+            .sum::<u64>(),
+        0
+    );
+    drop(first);
+    assert!(
+        weak.upgrade().is_none(),
+        "replacement releases eligible rows"
+    );
+    append(&store, 4);
+    assert_eq!(
+        filtered_assembly(&store, &all)
+            .alive_sets
+            .iter()
+            .map(|a| a.alive_bitmap().cardinality())
+            .sum::<u64>(),
+        4
+    );
+    store
+        .delete(crate::ingest::DeleteBatch::new(vec![DocId::new(1)]))
+        .expect("delete");
+    assert_eq!(
+        filtered_assembly(&store, &all)
+            .alive_sets
+            .iter()
+            .map(|a| a.alive_bitmap().cardinality())
+            .sum::<u64>(),
+        3
+    );
+    store.seal().expect("seal");
+    assert_eq!(
+        filtered_assembly(&store, &all)
+            .alive_sets
+            .iter()
+            .map(|a| a.alive_bitmap().cardinality())
+            .sum::<u64>(),
+        3
+    );
+}
+
+fn reopened_fixture() -> (tempfile::TempDir, Store) {
+    let (directory, store) = fixture();
+    store.close().expect("close");
+    let reopened = Store::open(directory.path(), OpenOptions::default()).expect("reopen");
+    (directory, reopened)
+}
+fn exact_query(store: &Store) -> crate::ingest::StoreLexicalSearchOutcome {
+    store
+        .search_lexical(
+            &crate::fts::search::TermQuery::flat(
+                vec![b"common".to_vec()],
+                &[crate::fts::index::DEFAULT_FIELD],
+            ),
+            10,
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("query")
+}
+
+#[test]
+fn ze_265_warm_prepares_first_query() {
+    let (_dir, store) = reopened_fixture();
+    assert_eq!(store.lexical_index_cache_counters().1, 0);
+    crate::fts::preparation_observer::begin();
+    store
+        .warm_lexical(QueryControl::Cancel(CancelToken::new()))
+        .expect("warm");
+    assert_eq!(
+        store.lexical_index_cache_counters().1,
+        1,
+        "warm must prepare assembly"
+    );
+    assert!(
+        store
+            .lexical_index_cache
+            .entry
+            .lock()
+            .expect("cache")
+            .as_ref()
+            .expect("assembly")
+            .document_identity_verified
+    );
+    let first = exact_query(&store);
+    assert_eq!(first.candidates.len(), 3);
+    assert_eq!(first.candidates, exact_query(&store).candidates);
+    assert_eq!(
+        store.lexical_index_cache_counters().1,
+        1,
+        "first query builds zero assemblies"
+    );
+    assert_eq!(
+        crate::fts::preparation_observer::vocabulary_work().builds,
+        0
+    );
+    assert_eq!(crate::fts::preparation_observer::filter_work(), (0, 0, 0));
+    crate::fts::preparation_observer::take();
+}
+
+#[test]
+fn ze_265_repeated_warm_and_mutation() {
+    let (_dir, store) = reopened_fixture();
+    for _ in 0..2 {
+        store
+            .warm_lexical(QueryControl::Cancel(CancelToken::new()))
+            .expect("warm");
+    }
+    assert_eq!(store.lexical_index_cache_counters().1, 1);
+    append(&store, 4);
+    store
+        .warm_lexical(QueryControl::Cancel(CancelToken::new()))
+        .expect("warm mutation");
+    assert_eq!(store.lexical_index_cache_counters().1, 2);
+    assert_eq!(exact_query(&store).candidates.len(), 4);
+    assert_eq!(store.lexical_index_cache_counters().1, 2);
+}
+
+#[test]
+fn ze_265_cancelled_warm_publishes_no_assembly() {
+    let (_dir, store) = reopened_fixture();
+    let token = CancelToken::new();
+    token.cancel();
+    assert!(matches!(
+        store.warm_lexical(QueryControl::Cancel(token)),
+        Err(crate::ingest::StoreLexicalError::Query(QueryError::Scan(
+            crate::scan::ScanError::Cancelled { partial: false }
+        )))
+    ));
+    assert_eq!(store.lexical_index_cache_counters().1, 0);
+    assert!(
+        store
+            .lexical_index_cache
+            .entry
+            .lock()
+            .expect("cache")
+            .is_none()
+    );
+    store
+        .warm_lexical(QueryControl::Cancel(CancelToken::new()))
+        .expect("retry with fresh control");
+    assert_eq!(store.lexical_index_cache_counters().1, 1);
+}

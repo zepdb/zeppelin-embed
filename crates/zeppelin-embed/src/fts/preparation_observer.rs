@@ -7,6 +7,9 @@ use std::sync::{
 
 #[derive(Default)]
 struct Counts {
+    filter_evaluations: AtomicUsize,
+    filter_rows: AtomicUsize,
+    eligibility_intersections: AtomicUsize,
     scorers: AtomicUsize,
     frequencies: AtomicUsize,
     expansions: AtomicUsize,
@@ -33,6 +36,31 @@ struct Counts {
     phonetic_encodings: AtomicUsize,
     phonetic_builds: AtomicUsize,
     phonetic_bucket_terms: AtomicUsize,
+}
+
+/// Predicate evaluations, raw-string row visits, and eligibility intersections.
+pub fn filter_work() -> (usize, usize, usize) {
+    CURRENT.with(|current| {
+        current.borrow().as_ref().map_or((0, 0, 0), |o| {
+            (
+                o.0.filter_evaluations.load(Ordering::Relaxed),
+                o.0.filter_rows.load(Ordering::Relaxed),
+                o.0.eligibility_intersections.load(Ordering::Relaxed),
+            )
+        })
+    })
+}
+
+pub(crate) fn record_filter_work(evaluations: usize, rows: usize, intersections: usize) {
+    CURRENT.with(|current| {
+        if let Some(o) = current.borrow().as_ref() {
+            o.0.filter_evaluations
+                .fetch_add(evaluations, Ordering::Relaxed);
+            o.0.filter_rows.fetch_add(rows, Ordering::Relaxed);
+            o.0.eligibility_intersections
+                .fetch_add(intersections, Ordering::Relaxed);
+        }
+    });
 }
 
 /// Actual dictionary construction and prefix traversal in one query window.

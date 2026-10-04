@@ -110,6 +110,40 @@ pub enum Predicate {
     Not(Box<Predicate>),
 }
 
+impl Predicate {
+    pub(crate) fn heap_bytes(&self) -> Option<usize> {
+        fn value_bytes(value: &PredicateValue) -> usize {
+            match value {
+                PredicateValue::String(s) => s.capacity(),
+                _ => 0,
+            }
+        }
+        match self {
+            Self::Eq { value, .. } => Some(value_bytes(value)),
+            Self::In { values, .. } => values.iter().try_fold(
+                values
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<PredicateValue>())?,
+                |bytes, value| bytes.checked_add(value_bytes(value)),
+            ),
+            Self::And(children) | Self::Or(children) => children.iter().try_fold(
+                children
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<Self>())?,
+                |bytes, child| bytes.checked_add(child.heap_bytes()?),
+            ),
+            Self::Not(child) => std::mem::size_of::<Self>().checked_add(child.heap_bytes()?),
+            Self::Range(range) => [range.lower.as_ref(), range.upper.as_ref()]
+                .into_iter()
+                .flatten()
+                .try_fold(0usize, |bytes, bound| {
+                    bytes.checked_add(value_bytes(&bound.value))
+                }),
+            Self::Exists(_) | Self::IsNull(_) => Some(0),
+        }
+    }
+}
+
 /// A typed predicate-evaluation failure.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EvalError {
@@ -167,6 +201,8 @@ pub fn evaluate(
     columns: &ColumnStore,
     alive: &AliveSet,
 ) -> Result<DocBitmap, EvalError> {
+    #[cfg(any(test, feature = "test-support"))]
+    crate::fts::preparation_observer::record_filter_work(1, 0, 0);
     if columns.row_count() != alive.row_count() {
         return Err(EvalError::RowCountMismatch {
             columns: columns.row_count(),
@@ -347,6 +383,8 @@ fn eval_dictionary_eq(column: &DictionaryColumn, query: &str, scope: &DocBitmap)
 
 fn eval_raw_string_eq(column: &RawStringColumn, query: &str, scope: &DocBitmap) -> DocBitmap {
     let mut result = DocBitmap::new();
+    #[cfg(any(test, feature = "test-support"))]
+    crate::fts::preparation_observer::record_filter_work(0, column.len(), 0);
     for position in 0..column.len() {
         let Some(row) = u32::try_from(position).ok() else {
             break;
@@ -370,6 +408,38 @@ fn eval_in(
     let column = get_column(columns, id)?;
     for query in queries {
         ensure_type(id, column, query)?;
+    }
+    if let Column::RawString(column) = column {
+        if queries.is_empty() {
+            return Ok(DocBitmap::new());
+        }
+        let members: std::collections::HashSet<&str> = queries
+            .iter()
+            .filter_map(|value| {
+                if let PredicateValue::String(value) = value {
+                    Some(value.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let mut result = DocBitmap::new();
+        #[cfg(any(test, feature = "test-support"))]
+        crate::fts::preparation_observer::record_filter_work(0, column.len(), 0);
+        for position in 0..column.len() {
+            let Some(row) = u32::try_from(position).ok() else {
+                break;
+            };
+            if scope.contains(row)
+                && column.present().contains(row)
+                && column
+                    .physical_get(position)
+                    .is_some_and(|value| members.contains(value))
+            {
+                result.insert(row);
+            }
+        }
+        return Ok(result);
     }
     let mut result = DocBitmap::new();
     for query in queries {
@@ -580,6 +650,74 @@ mod tests {
     use proptest::prelude::*;
     use proptest::test_runner::{Config, RngSeed, TestRunner};
     use rand::RngCore;
+
+    #[test]
+    fn ze_262_raw_string_in_visits_rows_once() {
+        let id = ColumnId::new(1);
+        let schema = Schema::new(vec![ColumnDefinition::new(
+            id,
+            "note",
+            ColumnType::RawString,
+            true,
+        )])
+        .expect("schema");
+        let mut builder = ColumnStoreBuilder::new(schema);
+        for value in [
+            Some("note-0"),
+            Some("note-499"),
+            None,
+            Some("note-0"),
+            Some("missing"),
+        ] {
+            let inputs = value.map(|v| ColumnInput {
+                column: id,
+                value: ColumnValue::String(v),
+            });
+            builder.push_row(0, inputs.as_slice()).expect("row");
+        }
+        let columns = builder.finish().expect("columns");
+        let mut alive = AliveSet::new(5);
+        alive.tombstone(3).expect("tombstone");
+        let mut values: Vec<_> = (0..500)
+            .map(|n| PredicateValue::String(format!("note-{n}")))
+            .collect();
+        values.push(PredicateValue::String("note-0".into()));
+        crate::fts::preparation_observer::begin();
+        let hits = evaluate(
+            &Predicate::In {
+                column: id,
+                values: values.clone(),
+            },
+            &columns,
+            &alive,
+        )
+        .expect("eval");
+        assert_eq!(hits.iter().collect::<Vec<_>>(), vec![0, 1]);
+        assert!(
+            crate::fts::preparation_observer::filter_work().1 <= 5,
+            "membership must visit each row at most once"
+        );
+        crate::fts::preparation_observer::begin();
+        values.push(PredicateValue::Bool(false));
+        assert!(matches!(
+            evaluate(&Predicate::In { column: id, values }, &columns, &alive),
+            Err(EvalError::TypeMismatch { .. })
+        ));
+        assert_eq!(crate::fts::preparation_observer::filter_work().1, 0);
+        assert_eq!(
+            evaluate(
+                &Predicate::In {
+                    column: id,
+                    values: vec![]
+                },
+                &columns,
+                &alive
+            )
+            .expect("empty")
+            .cardinality(),
+            0
+        );
+    }
 
     #[derive(Clone, Copy, Debug)]
     enum ModelType {

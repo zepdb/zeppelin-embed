@@ -21,6 +21,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             store.ingest(IngestBatch::new(docs))?;
             store.seal()?;
         }
+        store.close()?;
+        let reopening = reopening_cost(&directory)?;
+        let store = Store::open(&directory, OpenOptions::default())?;
         let absent = TermQuery::flat(vec![b"absent".to_vec()], &[DEFAULT_FIELD]);
         let present = TermQuery::flat(vec![b"common".to_vec()], &[DEFAULT_FIELD]);
         let query =
@@ -65,10 +68,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             peak_cache_bytes = peak_cache_bytes.max(store.stats()?.cache_bytes);
         }
         let final_cache_bytes = store.stats()?.cache_bytes;
-        cases.push(json!({"sealed_rows":rows,"sealed_segments":segments,
+        cases.push(
+            json!({"sealed_rows":rows,"sealed_segments":segments,"reopening":reopening,
             "warmups":20,"warm_us":warm_us,"setup_us":setup_us,"present_us":present_us,
             "controls":controls,"initial_cache_bytes":initial_cache_bytes,
-            "final_cache_bytes":final_cache_bytes,"peak_sampled_cache_bytes":peak_cache_bytes}));
+            "final_cache_bytes":final_cache_bytes,"peak_sampled_cache_bytes":peak_cache_bytes}),
+        );
         store.close()?;
     }
     std::fs::write(
@@ -88,4 +93,53 @@ fn document(id: u128) -> IngestDocument {
         1 => "common common",
         _ => "other",
     })
+}
+
+fn reopening_cost(directory: &std::path::Path) -> Result<serde_json::Value, Box<dyn Error>> {
+    let query = TermQuery::flat(vec![b"common".to_vec()], &[DEFAULT_FIELD]);
+    let mut observations = Vec::new();
+    let mut expected = None;
+    for warmed in [false, true] {
+        let start = Instant::now();
+        let store = Store::open(directory, OpenOptions::default())?;
+        let open_us = start.elapsed().as_secs_f64() * 1e6;
+        let start = Instant::now();
+        if warmed {
+            store.warm_lexical(QueryControl::Cancel(CancelToken::new()))?;
+        }
+        let warm_us = if warmed {
+            start.elapsed().as_secs_f64() * 1e6
+        } else {
+            0.0
+        };
+        let builds_before = store.lexical_index_cache_counters().1;
+        let start = Instant::now();
+        let first = store.search_lexical(&query, 10, QueryControl::Cancel(CancelToken::new()))?;
+        let first_query_us = start.elapsed().as_secs_f64() * 1e6;
+        let builds_added = store.lexical_index_cache_counters().1 - builds_before;
+        let mut repeated_query_us = Vec::new();
+        for _ in 0..5 {
+            let start = Instant::now();
+            let repeated =
+                store.search_lexical(&query, 10, QueryControl::Cancel(CancelToken::new()))?;
+            repeated_query_us.push(start.elapsed().as_secs_f64() * 1e6);
+            if repeated.candidates != first.candidates {
+                return Err("repeated query changed results".into());
+            }
+        }
+        if let Some(expected) = &expected {
+            if expected != &first.candidates {
+                return Err("warming changed results".into());
+            }
+        } else {
+            expected = Some(first.candidates.clone());
+        }
+        observations.push(
+            json!({"warmed": warmed, "open_us": open_us, "warm_us": warm_us,
+            "first_query_us": first_query_us, "repeated_query_us": repeated_query_us,
+            "first_query_builds": builds_added, "warm_builds": builds_before}),
+        );
+        store.close()?;
+    }
+    Ok(json!(observations))
 }

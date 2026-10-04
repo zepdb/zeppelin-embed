@@ -168,6 +168,126 @@ mod tests {
     use crate::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
 
     #[test]
+    #[allow(clippy::panic)]
+    fn ze_264_filtered_assembly_retains_shared_slot_accounting() {
+        let dir = tempfile::tempdir().expect("directory");
+        let store = Store::open(dir.path(), OpenOptions::default()).expect("store");
+        ingest(&store, 1, "night");
+        let predicate = crate::meta::Predicate::Exists(crate::meta::TIMESTAMP_COLUMN);
+        let filter = QueryFilter::new(store.schema(), Some(&predicate), None).expect("filter");
+        let admission = store.admit_lexical_query().expect("admit");
+        let filtered = assemble_lexical_index(
+            LexicalInputs {
+                filter: filter.as_ref(),
+                generation: admission.generation,
+                cache: &store.lexical_index_cache,
+                snapshot: &admission.snapshot,
+                active: &admission.active,
+                accounting: &store.accounting,
+            },
+            true,
+            None,
+        )
+        .unwrap_or_else(|_| panic!("assembly"));
+        let old = Arc::downgrade(
+            &store
+                .lexical_index_cache
+                .entry
+                .lock()
+                .expect("cache")
+                .as_ref()
+                .expect("base")
+                .assembly,
+        );
+        ingest(&store, 2, "newcomer");
+        store
+            .search_lexical(
+                &crate::fts::search::TermQuery::flat(vec![b"night".to_vec()], &[DEFAULT_FIELD]),
+                10,
+                QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect("fresh base");
+        assert!(
+            old.upgrade().is_some(),
+            "shared vocabulary slot retains its base charge"
+        );
+        drop(filtered);
+        assert!(
+            old.upgrade().is_none(),
+            "last filtered query releases base charge"
+        );
+    }
+
+    #[test]
+    fn ze_264_filtered_prefix_shares_vocabulary() {
+        for filtered_first in [false, true] {
+            let dir = tempfile::tempdir().expect("directory");
+            let store = Store::open(dir.path(), OpenOptions::default()).expect("store");
+            ingest(&store, 1, "night knight");
+            ingest(&store, 2, "night knight");
+            store.seal().expect("seal");
+            ingest(&store, 3, "night knight");
+            let predicate = crate::meta::Predicate::Exists(crate::meta::TIMESTAMP_COLUMN);
+            let filter = QueryFilter::new(store.schema(), Some(&predicate), None).expect("filter");
+            let prefix = query::LexicalQuery::prefix(b"n".to_vec(), DEFAULT_FIELD);
+            let run = |filtered| {
+                store
+                    .search_lexical_structured_filtered(
+                        &prefix,
+                        10,
+                        64,
+                        QueryControl::Cancel(CancelToken::new()),
+                        if filtered { filter.as_ref() } else { None },
+                    )
+                    .expect("prefix")
+            };
+            observer::begin();
+            let first = run(filtered_first);
+            let initial = observer::vocabulary_work();
+            assert_eq!(initial.builds, 1);
+            assert_eq!(first.candidates.len(), 3);
+            for filtered in [!filtered_first, true, true] {
+                let answer = run(filtered);
+                assert_eq!(answer.expansions, first.expansions);
+                assert_eq!(answer.candidates, first.candidates);
+            }
+            let reused = observer::vocabulary_work();
+            assert_eq!(reused.builds, 1, "one dictionary across query orders");
+            assert_eq!(
+                reused.copied_bytes, initial.copied_bytes,
+                "reuse copies zero dictionary bytes"
+            );
+            let empty_predicate = crate::meta::Predicate::IsNull(crate::meta::TIMESTAMP_COLUMN);
+            let empty_filter = QueryFilter::new(store.schema(), Some(&empty_predicate), None)
+                .expect("empty filter");
+            let empty = store
+                .search_lexical_structured_filtered(
+                    &prefix,
+                    10,
+                    64,
+                    QueryControl::Cancel(CancelToken::new()),
+                    empty_filter.as_ref(),
+                )
+                .expect("empty");
+            assert!(empty.candidates.is_empty());
+            assert_eq!(
+                empty.expansions, first.expansions,
+                "eligibility does not restrict vocabulary"
+            );
+            assert_eq!(observer::vocabulary_work().builds, 1);
+            ingest(&store, 4, "newcomer");
+            let changed = run(true);
+            assert_eq!(changed.candidates.len(), 4);
+            assert_eq!(
+                observer::vocabulary_work().builds,
+                2,
+                "mutation builds fresh dictionary"
+            );
+            observer::take();
+        }
+    }
+
+    #[test]
     fn astra_18_public_cold_active_seal_cancels_without_cache_publication() {
         use crate::fts::sealed::SEAL_LENGTH_PROBES;
         use std::time::{Duration, Instant};
