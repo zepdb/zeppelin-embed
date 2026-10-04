@@ -629,3 +629,86 @@ proptest! {
         prop_assert_eq!(first, second);
     }
 }
+
+#[test]
+fn ze263_prefix_cap_selects_highest_live_df() {
+    use zeppelin_embed::fts::query::{LexicalMatchKind, LexicalQuery};
+    use zeppelin_embed::fts::search::FieldWeights;
+    use zeppelin_embed::ingest::{
+        DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, Revision,
+    };
+    use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
+    let directory = tempfile::tempdir().expect("directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("store");
+    let mut documents = Vec::new();
+    for row in 0..5 {
+        let terms = (0..40)
+            .filter(|term| row < if *term >= 20 { 4 } else { 1 })
+            .map(|term| format!("topic{term:02}"))
+            .collect::<Vec<_>>();
+        documents.push(
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(row), Revision::new(1)),
+                vec![1.0, 0.0],
+            )
+            .with_text(terms.join(" ")),
+        );
+    }
+    documents.push(
+        IngestDocument::new(
+            DocumentVersion::new(DocId::new(99), Revision::new(1)),
+            vec![1.0, 0.0],
+        )
+        .with_text("topicdead"),
+    );
+    store.ingest(IngestBatch::new(documents)).expect("ingest");
+    store.seal().expect("seal");
+    // Leave the early term physically present, but with zero live DF.
+    store
+        .delete(DeleteBatch::new(vec![DocId::new(99)]))
+        .expect("delete");
+    let query = LexicalQuery::TermsWithPrefix {
+        terms: vec![b"topic39".to_vec(), b"topic39".to_vec()],
+        prefix: b"top".to_vec(),
+        fields: FieldWeights::flat(&[DEFAULT_FIELD]),
+    };
+    let result = store
+        .search_lexical_structured(&query, 10, 64, QueryControl::Cancel(CancelToken::new()))
+        .expect("search");
+    assert_eq!(result.expansions.len(), 34);
+    assert!(
+        result.expansions[..2]
+            .iter()
+            .all(|e| e.kind == LexicalMatchKind::Term
+                && e.boost_thousandths == 1000
+                && e.term == b"topic39")
+    );
+    let expected = std::iter::once(b"topic".to_vec())
+        .chain(
+            (0..11)
+                .chain(20..40)
+                .map(|term| format!("topic{term:02}").into_bytes()),
+        )
+        .collect::<Vec<_>>();
+    assert_eq!(
+        result.expansions[2..]
+            .iter()
+            .map(|e| e.term.clone())
+            .collect::<Vec<_>>(),
+        expected
+    );
+    assert!(
+        result.expansions[2..]
+            .iter()
+            .all(|e| e.boost_thousandths == 1000 / 32)
+    );
+    let exhaustive = store
+        .search_lexical_structured(
+            &LexicalQuery::prefix(b"top".to_vec(), DEFAULT_FIELD),
+            1,
+            64,
+            QueryControl::Cancel(CancelToken::new()),
+        )
+        .expect("explicit exhaustive prefix");
+    assert_eq!(exhaustive.expansions.len(), 42);
+}

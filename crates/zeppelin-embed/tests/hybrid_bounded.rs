@@ -1203,7 +1203,8 @@ fn astra_10_structured_collector_reserves_and_releases_its_capacity() {
     store.close().expect("close writer");
     let store = Store::open(
         directory.path(),
-        OpenOptions::default().with_max_temp_bytes(2_048),
+        // Two scheduling heaps add 64 bytes for the two expansions.
+        OpenOptions::default().with_max_temp_bytes(2_112),
     )
     .expect("limited query handle");
     let query = LexicalQuery::term(TermQuery::flat(
@@ -1226,7 +1227,7 @@ fn astra_10_structured_collector_reserves_and_releases_its_capacity() {
                 }
             )))
         ),
-        "the 130-slot collector alone exceeds this budget"
+        "the large collector and cursor scratch exceed this budget"
     );
     assert_eq!(
         store.stats().expect("reservation released").temporary_bytes,

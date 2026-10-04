@@ -168,6 +168,9 @@ pub enum LexicalQuery {
         field: FieldId,
     },
     /// Leading exact terms plus a prefix on the trailing term. Used for type-ahead.
+    /// Store queries retain at most 32 prefix contributions by highest live
+    /// document frequency (ties by term bytes), reducing recall above that
+    /// limit. Exact contributions are unchanged; `Prefix` remains exhaustive.
     TermsWithPrefix {
         /// Analyzed leading terms matched exactly.
         terms: Vec<Vec<u8>>,

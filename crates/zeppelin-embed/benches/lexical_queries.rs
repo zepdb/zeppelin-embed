@@ -7,7 +7,7 @@ use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use tempfile::TempDir;
 use zeppelin_embed::fts::index::DEFAULT_FIELD;
 use zeppelin_embed::fts::query::LexicalQuery;
-use zeppelin_embed::fts::search::TermQuery;
+use zeppelin_embed::fts::search::{FieldWeights, TermQuery};
 use zeppelin_embed::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
 use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
 
@@ -94,6 +94,63 @@ fn print_load_taint() {
 }
 
 fn lexical_queries(criterion: &mut Criterion) {
+    let directory = tempfile::tempdir().expect("ze263 directory");
+    let store = Store::open(directory.path(), OpenOptions::default()).expect("ze263 store");
+    for batch in 0..150 {
+        store
+            .ingest(IngestBatch::new(
+                (batch * 1000..(batch + 1) * 1000)
+                    .map(|row| {
+                        IngestDocument::new(
+                            DocumentVersion::new(DocId::new(row), Revision::new(1)),
+                            vec![1.0, 0.0],
+                        )
+                        .with_text(format!("topic{}", row % 500))
+                    })
+                    .collect(),
+            ))
+            .expect("ze263 ingest");
+    }
+    store.seal().expect("ze263 seal");
+    let query = LexicalQuery::TermsWithPrefix {
+        terms: Vec::new(),
+        prefix: b"top".to_vec(),
+        fields: FieldWeights::flat(&[DEFAULT_FIELD]),
+    };
+    for snippets in [0, 64] {
+        criterion.bench_function(
+            &format!("ze263/150000_rows/500_terms/k10/snippets_{snippets}"),
+            |bencher| {
+                bencher.iter(|| {
+                    if snippets == 0 {
+                        black_box(
+                            store
+                                .search_hybrid_structured(
+                                    zeppelin_embed::ingest::SearchRequest::new(&[1.0, 0.0]),
+                                    black_box(&query),
+                                    &zeppelin_embed::fusion::HybridQuery::new(10).with_alpha(0.0),
+                                    zeppelin_embed::lifecycle::SearchOptions::default(),
+                                    QueryControl::Cancel(CancelToken::new()),
+                                )
+                                .expect("ze263 snippet-free search"),
+                        );
+                    } else {
+                        black_box(
+                            store
+                                .search_lexical_structured(
+                                    black_box(&query),
+                                    10,
+                                    snippets,
+                                    QueryControl::Cancel(CancelToken::new()),
+                                )
+                                .expect("ze263 search"),
+                        );
+                    }
+                });
+            },
+        );
+    }
+    store.close().expect("ze263 close");
     let fixture = Fixture::build();
     let control = CancelToken::new();
     let term = TermQuery::flat(vec![b"zeppelin".to_vec()], &[DEFAULT_FIELD]);

@@ -5,6 +5,7 @@ use crate::fts::{phonetic, phonetic_index::PhoneticIndex, query};
 pub(super) enum ExpansionError {
     Query(QueryError),
     Shape(query::LexicalQueryError),
+    Index(crate::fts::index::IndexError),
 }
 impl From<QueryError> for ExpansionError {
     fn from(error: QueryError) -> Self {
@@ -90,20 +91,70 @@ impl LexicalAssembly {
                 .map_err(QueryError::Scan)
                 .map_err(ExpansionError::Query)
         });
-        query::expand_with_phonetic_controlled(query, view, &mut work, |code| {
-            // The same immutable assembly supplies the dictionary and its index.
-            // Both owners stay alive until all selected term bytes are copied.
-            let vocabulary = self.vocabulary(accounting, cancellation)?;
-            let cached =
-                vocabulary.phonetic(phonetic::ENCODER_VERSION, accounting, cancellation)?;
-            let mut work = crate::fts::control::WorkCheck::new(|| {
-                cancellation
-                    .check_graph()
-                    .map_err(QueryError::Scan)
-                    .map_err(ExpansionError::Query)
-            });
-            query::phonetic_expansions_controlled(&vocabulary.view, &cached.index, code, &mut work)
-        })
+        let mut expansions =
+            query::expand_with_phonetic_controlled(query, view, &mut work, |code| {
+                // The same immutable assembly supplies the dictionary and its index.
+                // Both owners stay alive until all selected term bytes are copied.
+                let vocabulary = self.vocabulary(accounting, cancellation)?;
+                let cached =
+                    vocabulary.phonetic(phonetic::ENCODER_VERSION, accounting, cancellation)?;
+                let mut work = crate::fts::control::WorkCheck::new(|| {
+                    cancellation
+                        .check_graph()
+                        .map_err(QueryError::Scan)
+                        .map_err(ExpansionError::Query)
+                });
+                query::phonetic_expansions_controlled(
+                    &vocabulary.view,
+                    &cached.index,
+                    code,
+                    &mut work,
+                )
+            })?;
+        if let query::LexicalQuery::TermsWithPrefix { terms, fields, .. } = query {
+            const CAP: usize = 32;
+            if expansions.len().saturating_sub(terms.len()) > CAP {
+                // The heap root is the worst retained candidate: lowest live
+                // DF, then largest term bytes. Enumeration order is unchanged.
+                let fields = fields.fields_controlled(&mut work)?;
+                let mut selected = std::collections::BinaryHeap::with_capacity(CAP + 1);
+                for (slot, expansion) in expansions.iter().enumerate().skip(terms.len()) {
+                    work.step()?;
+                    let df = self
+                        .index
+                        .prepared_document_frequency_controlled(&expansion.term, &fields, || {
+                            cancellation.check_graph()
+                        })
+                        .map_err(|error| match error {
+                            crate::fts::search::ControlledSearchError::Index(error) => {
+                                ExpansionError::Index(error)
+                            }
+                            crate::fts::search::ControlledSearchError::Control(error) => {
+                                ExpansionError::Query(QueryError::Scan(error))
+                            }
+                        })?;
+                    selected.push((std::cmp::Reverse(df), expansion.term.as_slice(), slot));
+                    if selected.len() > CAP {
+                        selected.pop();
+                    }
+                }
+                let mut slots = selected
+                    .into_iter()
+                    .map(|(_, _, slot)| slot)
+                    .collect::<Vec<_>>();
+                slots.sort_unstable();
+                let mut slot = 0;
+                expansions.retain_mut(|expansion| {
+                    let keep = slot < terms.len() || slots.binary_search(&slot).is_ok();
+                    if keep && slot >= terms.len() {
+                        expansion.boost_thousandths = 1000 / CAP as u16;
+                    }
+                    slot += 1;
+                    keep
+                });
+            }
+        }
+        Ok(expansions)
     }
 }
 

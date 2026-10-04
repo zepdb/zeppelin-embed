@@ -4405,6 +4405,9 @@ impl Store {
                 expansion::ExpansionError::Query(error) => {
                     crate::ingest::StoreLexicalError::Query(error)
                 }
+                expansion::ExpansionError::Index(error) => crate::ingest::StoreLexicalError::from(
+                    crate::planner::LexicalFilterError::from(error),
+                ),
                 expansion::ExpansionError::Shape(error) => {
                     crate::ingest::StoreLexicalError::Structured(error)
                 }

@@ -193,6 +193,9 @@ impl<'query> PreparedLexicalQuery<'query> {
                 .expand(query, inputs.accounting, cancellation)
                 .map_err(|error| match error {
                     super::expansion::ExpansionError::Query(error) => FusionError::from(error),
+                    super::expansion::ExpansionError::Index(error) => {
+                        lexical_failure(&error.to_string())
+                    }
                     super::expansion::ExpansionError::Shape(error) => {
                         lexical_failure(&error.to_string())
                     }

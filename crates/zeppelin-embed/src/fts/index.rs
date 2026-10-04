@@ -58,6 +58,11 @@ pub struct TermKey {
 /// An index construction failure.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum IndexError {
+    /// The weighted cursor scheduler referenced an absent cursor slot.
+    CursorSlotMissing {
+        /// Invalid scheduler slot.
+        slot: usize,
+    },
     /// Exact live-frequency memoization refused inconsistent state or a
     /// poisoned lock. No cache failure is interpreted as a zero frequency.
     LiveFrequencyCache {
@@ -107,6 +112,9 @@ pub enum IndexError {
 impl std::fmt::Display for IndexError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::CursorSlotMissing { slot } => {
+                write!(formatter, "weighted cursor slot {slot} is absent")
+            }
             Self::LiveFrequencyCache { reason } => {
                 write!(formatter, "live document frequency cache failed: {reason}")
             }

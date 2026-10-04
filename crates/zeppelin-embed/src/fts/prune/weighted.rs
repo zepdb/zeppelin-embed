@@ -11,10 +11,30 @@ use crate::fts::query::PreparedWeightedQuery;
 use crate::fts::sealed::TermStream;
 use crate::fts::search::{ControlledSearchError, GlobalDocId, SearchCounters};
 use crate::meta::DocBitmap;
+use std::{cmp::Reverse, collections::BinaryHeap};
 
 #[cfg(test)]
 thread_local! {
+    static HEAD_SEEKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static HEAD_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static OMIT_BOUND_BOOST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+// Order heads by row, then expansion slot. This also fixes score-addition
+// order when several contributions share a row.
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct CursorHead(Reverse<(u32, usize)>);
+impl Ord for CursorHead {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        #[cfg(test)]
+        HEAD_WORK.with(|count| count.set(count.get() + 1));
+        self.0.cmp(&other.0)
+    }
+}
+impl PartialOrd for CursorHead {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 struct WeightedCursor<'segment> {
@@ -164,6 +184,64 @@ mod tests {
     }
 
     #[test]
+    fn ze263_cursor_merge_work_scales_with_postings() {
+        let analyzer = Analyzer::new(Profile::Code.config()).expect("analyzer");
+        let mut segment = SegmentIndex::new();
+        for row in 0..2048 {
+            let mut document = Document::new();
+            document.set(FieldId(0), &format!("topic{}", row % 256));
+            segment
+                .push_document(&analyzer, &document)
+                .expect("document");
+        }
+        let mut index = LexicalIndex::new();
+        index.push_sealed(SealedSegment::seal(&segment).expect("seal"));
+        let expansions = (0..256)
+            .map(|term| LexicalExpansion {
+                term: format!("topic{term}").into_bytes(),
+                boost_thousandths: 1000,
+                kind: LexicalMatchKind::Term,
+            })
+            .collect();
+        let query =
+            PreparedWeightedQuery::new(&index, expansions, FieldWeights::flat(&[FieldId(0)]))
+                .expect("prepare");
+        HEAD_WORK.with(|count| count.set(0));
+        let result = search(
+            &index,
+            &query,
+            2048,
+            &[],
+            || Ok::<_, ()>(()),
+            |_| Ok(true),
+            |_| Ok(()),
+        )
+        .unwrap_or_else(|_| panic!("search"));
+        let work = HEAD_WORK.with(std::cell::Cell::get);
+        let mut full = std::collections::BTreeMap::<GlobalDocId, f64>::new();
+        for expansion in query.expansions() {
+            let term =
+                crate::fts::search::TermQuery::flat(vec![expansion.term.clone()], &[FieldId(0)]);
+            for hit in crate::fts::search::search(
+                &index,
+                &term,
+                2048,
+                crate::fts::bm25::Bm25Params::beir(),
+            )
+            .expect("exhaustive")
+            .hits
+            {
+                *full.entry(hit.doc).or_default() += hit.score;
+            }
+        }
+        let mut full = full.into_iter().collect::<Vec<_>>();
+        full.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        assert_eq!(result.hits, full);
+        println!("head scheduling inspections/comparisons={work}");
+        assert!(work < 2048 * 32, "head scheduling work={work}");
+    }
+
+    #[test]
     fn astra_10_weighted_bounds_dominate_combined_score() {
         OMIT_BOUND_BOOST
             .with(|plant| plant.set(std::env::var_os("ZE_ASTRA10_BOUND_PLANT").is_some()));
@@ -216,7 +294,8 @@ mod tests {
     }
 
     #[test]
-    fn astra_10_weighted_topk_matches_literal_fields_duplicates_tombstones_and_ties() {
+    fn ze263_heap_merge_preserves_seeks_and_score_order() {
+        HEAD_SEEKS.with(|count| count.set(0));
         let fixture = fixture();
         for boosts in [[0, 0, 0, 0], [1, 65535, 250, 0], [1000, 500, 1000, 1]] {
             let query = prepared(&fixture, boosts);
@@ -297,6 +376,10 @@ mod tests {
                 );
             }
         }
+        assert!(
+            HEAD_SEEKS.with(std::cell::Cell::get) > 0,
+            "oracle must exercise pruning seeks"
+        );
     }
 }
 
@@ -334,6 +417,32 @@ fn bound_through_controlled<E>(
             0.0
         })
     }))
+}
+
+// Every live cursor owns exactly one heap entry. Seeks replace only entries
+// below the target, preserving expansion slots for bit-exact score folding.
+fn seek_heads<E: From<crate::fts::index::IndexError>>(
+    heads: &mut BinaryHeap<CursorHead>,
+    cursors: &mut [WeightedCursor<'_>],
+    target: u32,
+    work: &mut crate::fts::control::WorkCheck<impl FnMut() -> Result<(), E>>,
+) -> Result<(), E> {
+    while heads.peek().is_some_and(|head| (head.0).0.0 < target) {
+        work.step()?;
+        let Some(CursorHead(Reverse((_, slot)))) = heads.pop() else {
+            break;
+        };
+        let cursor = cursors
+            .get_mut(slot)
+            .ok_or(crate::fts::index::IndexError::CursorSlotMissing { slot })?;
+        #[cfg(test)]
+        HEAD_SEEKS.with(|count| count.set(count.get() + 1));
+        cursor.term.stream.seek_controlled(target, work)?;
+        if let Some(row) = cursor.term.current() {
+            heads.push(CursorHead(Reverse((row, slot))));
+        }
+    }
+    Ok(())
 }
 
 /// One bounded producer for both structured Store seams. `allow_lists` belongs
@@ -382,12 +491,17 @@ pub(crate) fn search<Control>(
             prepared
                 .expansions()
                 .len()
-                .checked_mul(std::mem::size_of::<WeightedCursor<'_>>() + std::mem::size_of::<u32>())
+                .checked_mul(
+                    std::mem::size_of::<WeightedCursor<'_>>()
+                        + 2 * std::mem::size_of::<Reverse<(u32, usize)>>()
+                        + std::mem::size_of::<u32>(),
+                )
                 .and_then(|scratch| bytes.checked_add(scratch))
         });
         reserve(scratch_bytes).map_err(ControlledSearchError::Control)?;
         let mut cursors = Vec::with_capacity(prepared.expansions().len());
         let mut live = Vec::with_capacity(prepared.expansions().len());
+        let mut heads = BinaryHeap::with_capacity(prepared.expansions().len());
         for (slot, expansion) in prepared.expansions().iter().enumerate() {
             if slot.is_multiple_of(64) {
                 work.check_now()?;
@@ -419,6 +533,9 @@ pub(crate) fn search<Control>(
                 continue;
             }
             let upper_bound = stream.upper_bound_controlled(&scorer, &mut work)?;
+            if let Some(row) = stream.current_row() {
+                heads.push(CursorHead(Reverse((row, cursors.len()))));
+            }
             cursors.push(WeightedCursor {
                 term: TermCursor {
                     stream,
@@ -431,50 +548,49 @@ pub(crate) fn search<Control>(
         }
         loop {
             work.check_now()?;
-            live.clear();
-            for cursor in &cursors {
-                work.step()?;
-                if let Some(row) = cursor.term.current() {
-                    live.push(row);
-                }
-            }
-            live.sort_unstable();
-            live.dedup();
-            let Some(&first) = live.first() else { break };
+            #[cfg(test)]
+            HEAD_WORK.with(|count| count.set(count.get() + 1));
+            let Some(&CursorHead(Reverse((first, _)))) = heads.peek() else {
+                break;
+            };
             let threshold = heap.threshold();
             let mut pivot = first;
             if heap.is_full() {
-                // This monotone search costs O(terms * log distinct heads),
-                // while keeping each bound in original contribution order.
-                let mut failure = None;
-                let position = live.partition_point(|row| {
-                    if failure.is_some() {
-                        return false;
-                    }
-                    bound_terms = bound_terms.saturating_add(cursors.len());
-                    match bound_through_controlled(&cursors, *row, &mut work) {
-                        Ok(bound) => bound < threshold,
-                        Err(error) => {
-                            failure = Some(error);
-                            false
+                bound_terms = bound_terms.saturating_add(cursors.len());
+                if bound_through_controlled(&cursors, first, &mut work)? < threshold {
+                    live.clear();
+                    let mut ordered = heads.clone();
+                    while let Some(CursorHead(Reverse((row, _)))) = ordered.pop() {
+                        work.step()?;
+                        if live.last() != Some(&row) {
+                            live.push(row);
                         }
                     }
-                });
-                if let Some(error) = failure {
-                    return Err(error);
+                    let mut failure = None;
+                    let position = live.partition_point(|row| {
+                        if failure.is_some() {
+                            return false;
+                        }
+                        bound_terms = bound_terms.saturating_add(cursors.len());
+                        match bound_through_controlled(&cursors, *row, &mut work) {
+                            Ok(bound) => bound < threshold,
+                            Err(error) => {
+                                failure = Some(error);
+                                false
+                            }
+                        }
+                    });
+                    if let Some(error) = failure {
+                        return Err(error);
+                    }
+                    let Some(&row) = live.get(position) else {
+                        break;
+                    };
+                    pivot = row;
                 }
-                let Some(&row) = live.get(position) else {
-                    break;
-                };
-                pivot = row;
             }
             if first < pivot {
-                for cursor in &mut cursors {
-                    work.step()?;
-                    if cursor.term.current().is_some_and(|row| row < pivot) {
-                        cursor.term.stream.seek_controlled(pivot, &mut work)?;
-                    }
-                }
+                seek_heads(&mut heads, &mut cursors, pivot, &mut work)?;
                 continue;
             }
             if heap.is_full() {
@@ -496,12 +612,7 @@ pub(crate) fn search<Control>(
                     let Some(next) = edge.and_then(|row| row.checked_add(1)) else {
                         break;
                     };
-                    for cursor in &mut cursors {
-                        work.step()?;
-                        if cursor.term.current().is_some_and(|row| row < next) {
-                            cursor.term.stream.seek_controlled(next, &mut work)?;
-                        }
-                    }
+                    seek_heads(&mut heads, &mut cursors, next, &mut work)?;
                     continue;
                 }
             }
@@ -515,11 +626,16 @@ pub(crate) fn search<Control>(
                 }
             };
             let mut score = 0.0;
-            for cursor in &mut cursors {
+            while heads.peek().is_some_and(|head| (head.0).0.0 == pivot) {
                 work.step()?;
-                if cursor.term.current() != Some(pivot) {
-                    continue;
-                }
+                #[cfg(test)]
+                HEAD_WORK.with(|count| count.set(count.get() + 1));
+                let Some(CursorHead(Reverse((_, slot)))) = heads.pop() else {
+                    break;
+                };
+                let cursor = cursors.get_mut(slot).ok_or(ControlledSearchError::Index(
+                    crate::fts::index::IndexError::CursorSlotMissing { slot },
+                ))?;
                 counters.postings_decoded = counters.postings_decoded.saturating_add(1);
                 let tf = Tf(cursor
                     .term
@@ -528,6 +644,9 @@ pub(crate) fn search<Control>(
                     .unwrap_or(0));
                 score += cursor.term.scorer.score(tf, DocLen(length)) * cursor.boost;
                 cursor.term.stream.advance_controlled(&mut work)?;
+                if let Some(row) = cursor.term.current() {
+                    heads.push(CursorHead(Reverse((row, slot))));
+                }
             }
             counters.docs_evaluated = counters.docs_evaluated.saturating_add(1);
             let doc = GlobalDocId {
