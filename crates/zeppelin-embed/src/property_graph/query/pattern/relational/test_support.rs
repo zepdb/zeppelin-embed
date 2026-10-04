@@ -300,6 +300,7 @@ enum EligibilityProbeMode {
     Empty,
     Scalar,
     Capacity,
+    Boundary(usize),
     Duplicate(NodeId),
     NullMember(NodeId),
     RelationshipMember(NodeId),
@@ -396,6 +397,7 @@ impl NativeReadConsumer<Result<EligibilityObservation, NativeExecutionError>>
             }
             EligibilityProbeMode::Explicit
             | EligibilityProbeMode::Capacity
+            | EligibilityProbeMode::Boundary(_)
             | EligibilityProbeMode::Duplicate(_)
             | EligibilityProbeMode::RelationshipMember(_)
             | EligibilityProbeMode::Foreign => {
@@ -558,13 +560,10 @@ impl NativeReadConsumer<Result<EligibilityObservation, NativeExecutionError>>
                     string_bytes: 4096,
                 },
             },
-            if matches!(
-                self.mode,
-                EligibilityProbeMode::Capacity | EligibilityProbeMode::Duplicate(_)
-            ) {
-                1
-            } else {
-                2
+            match self.mode {
+                EligibilityProbeMode::Boundary(capacity) => capacity,
+                EligibilityProbeMode::Capacity | EligibilityProbeMode::Duplicate(_) => 1,
+                _ => 2,
             },
             runtime,
         ) {
@@ -656,7 +655,7 @@ pub(super) fn run_actual_eligibility_controls(
         store.with_native_read(
             &QueryControl::Cancel(CancelToken::new()),
             RuntimeLimits::default(),
-            16 * 1024 * 1024,
+            24 * 1024 * 1024,
             64,
             EligibilityProbeConsumer {
                 mode,
@@ -668,6 +667,23 @@ pub(super) fn run_actual_eligibility_controls(
             },
         )
     };
+    // Capacity is deliberately independent of populated input length.
+    let maximum = run(EligibilityProbeMode::Boundary(524_288))
+        .map_err(|error| error.to_string())?
+        .map_err(|error| format!("maximum eligibility capacity: {error:?}"))?;
+    if maximum.eligible.as_deref() != Some(expected) {
+        return Err(format!("maximum eligibility identities: {maximum:?}"));
+    }
+    let over = run(EligibilityProbeMode::Boundary(524_289)).map_err(|error| error.to_string())?;
+    if !matches!(over,
+        Err(NativeExecutionError::Expression(ref error))
+            if error.expression == ExprId(4)
+                && matches!(error.failure,
+                    ExpressionFailure::Runtime(RuntimeError::Value(
+                        crate::property_graph::query::QueryError::ListLimit))))
+    {
+        return Err(format!("one-over eligibility capacity: {over:?}"));
+    }
     let omitted = run(EligibilityProbeMode::Omitted)
         .map_err(|error| error.to_string())?
         .map_err(|error| format!("omitted eligibility: {error:?}"))?;
@@ -1975,6 +1991,8 @@ macro_rules! execute_relational_plan {
                 .unwrap(),
         ];
         regions.extend($regions);
+        // Empty table dimensions have no retained address span.
+        regions.retain(|region| region.start() != region.end());
         regions.sort();
         let retained_bytes = regions
             .iter()
