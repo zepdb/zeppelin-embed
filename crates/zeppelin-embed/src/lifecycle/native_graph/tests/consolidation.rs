@@ -7524,3 +7524,219 @@ fn ze201_retirement_checkpoint_is_closed() {
 fn ze201_retirement_clear_is_closed() {
     ze201_retained_maintenance_drained_writer(3);
 }
+
+#[test]
+fn ze188_retirement_reopens_after_trailing_checkpoint_failure() {
+    use super::publication::FaultPoint;
+    let (history, store) = seed_crash_history();
+    let oracle = history.oracle(&store);
+    commit_maintenance(&store).expect("publish reclaim intent");
+    history.vfs.take();
+    let completed = commit_maintenance(&store).expect("complete reclaim");
+    assert!(completed.removed_bytes > 0);
+    let deleted = delete_events(&history.vfs.take());
+    assert!(!deleted.is_empty());
+    assert!(deleted.iter().all(|path| !path.exists()));
+    store
+        .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+        .expect("checkpoint completed reclaim");
+    let before = directory_image(&history.path);
+    history.vfs.arm_fault(FaultPoint::OpenAppend);
+    commit_maintenance(&store).expect_err("trailing checkpoint must fail");
+    history.vfs.assert_fired_once();
+    let lease = store.admit_native_read().expect("cleared state");
+    assert!(lease.bundle().reclaim().is_none());
+    drop(lease);
+    assert_same_logical_state(&oracle, &history.oracle(&store));
+    let after = directory_image(&history.path);
+    let selector = std::ffi::OsStr::new("graph-root.ze");
+    assert_eq!(after.get(selector), before.get(selector));
+    drop(store);
+    let readonly = history
+        .open(
+            OpenOptions::read_only()
+                .with_durability(DurabilityMode::Durable, CommitTier::Durable)
+                .with_max_resident_bytes(256 * 1024 * 1024),
+        )
+        .expect("read-only reopen after interrupted retirement");
+    assert_same_logical_state(&oracle, &history.oracle(&readonly));
+    readonly.close().expect("close read-only");
+    let writable = history
+        .open(options())
+        .expect("writable reopen after interrupted retirement");
+    assert_same_logical_state(&oracle, &history.oracle(&writable));
+    writable.close().expect("close writable");
+}
+
+fn graph_references_for_lease(
+    store: &Store,
+    lease: &super::super::NativeReadLease,
+) -> Vec<crate::property_graph::storage::artifact::PhysicalRef> {
+    let shared =
+        crate::property_graph::resources::GraphResources::from_store(store).expect("resources");
+    let control = QueryControl::Cancel(CancelToken::new());
+    let writer = WriteMemory::new(&shared, WriteLimits::default()).expect("memory");
+    let memory = StorageMemory::new(&writer, &control, 8 * 1024 * 1024).expect("storage");
+    let source = NativePreparationSource::new(lease, &memory, 64).expect("source");
+    let mut resources = source.resources(64 * 1024 * 1024).expect("work");
+    let catalog =
+        crate::property_graph::storage::NativePreparationCatalog::open(&source, &mut resources)
+            .expect("catalog");
+    let mut scratch = crate::property_graph::storage::adjacency::RangeScratch::for_prepare(
+        &memory,
+        &mut resources,
+    )
+    .expect("scratch");
+    let mut references = Vec::new();
+    crate::property_graph::storage::reclaim::trace_graph_state(
+        &source, &catalog, lease.bundle().roots(), lease.bundle().sequence(),
+        lease.bundle().document(), &mut scratch,
+        &mut |reference, _: &mut crate::property_graph::storage::tree::directory::TreeResources<'_>| {
+            references.push(reference);
+            Ok(())
+        }, &mut resources,
+    ).expect("graph trace");
+    references
+}
+
+fn sparse_references_for_lease(
+    store: &Store,
+    lease: &super::super::NativeReadLease,
+) -> Vec<crate::property_graph::storage::artifact::PhysicalRef> {
+    let shared =
+        crate::property_graph::resources::GraphResources::from_store(store).expect("resources");
+    let control = QueryControl::Cancel(CancelToken::new());
+    let writer = WriteMemory::new(&shared, WriteLimits::default()).expect("memory");
+    let memory = StorageMemory::new(&writer, &control, 8 * 1024 * 1024).expect("storage");
+    let source = NativePreparationSource::new(lease, &memory, 64).expect("source");
+    let mut resources = source.resources(64 * 1024 * 1024).expect("work");
+    let catalog =
+        crate::property_graph::storage::NativePreparationCatalog::open(&source, &mut resources)
+            .expect("catalog");
+    let mut state = crate::property_graph::storage::search::SearchTraceCursor::for_preparation(
+        &source,
+        &catalog,
+        &mut resources,
+    )
+    .expect("sparse trace")
+    .into_state();
+    let mut output = [None; crate::property_graph::storage::reclaim::TRACE_OUTPUT_LIMIT];
+    let mut references = Vec::new();
+    loop {
+        let result = state
+            .trace_preparation(&source, &catalog, &mut output, &mut resources)
+            .expect("sparse references");
+        references.extend(output.iter().take(result.count).flatten().copied());
+        if result.complete {
+            break;
+        }
+    }
+    references
+}
+
+#[test]
+fn ze189_inventory_only_artifact_is_required_on_reopen() {
+    use super::publication::FaultPoint;
+    let parent = super::tempfile::tempdir().expect("parent");
+    let path = parent.path().join("native");
+    let vfs = Arc::new(RecordingVfs::default());
+    let store = create_reclaim_test_store(&path, &vfs);
+    ze163_base_write(&store, "ze189", 0);
+    let before = directory_image(&path);
+    vfs.arm_fault(FaultPoint::ObjectSync);
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).expect("node");
+    assert!(
+        store
+            .apply_native_graph(
+                &[StructuredWrite {
+                    key: ApplicationKey::new(EntityKind::Node, "ze189", "orphan").expect("key"),
+                    revision: GraphRevision::new(1).expect("revision"),
+                    operation: StructuredOperation::Create,
+                    image: Some(WriteImage::Node(&image)),
+                }],
+                &QueryControl::Cancel(CancelToken::new())
+            )
+            .is_err(),
+        "complete pre-WAL orphan fault"
+    );
+    vfs.assert_fired_once();
+    let orphans: Vec<_> = directory_image(&path)
+        .into_iter()
+        .filter(|(name, _)| {
+            !before.contains_key(name) && name.to_string_lossy().ends_with(".zgraph")
+        })
+        .collect();
+    assert!(!orphans.is_empty());
+    ze163_base_write(&store, "ze189", 1);
+    store
+        .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+        .expect("advance durable fences before adoption");
+    let checkpoint = store.admit_native_read().expect("checkpoint inventory");
+    let checkpoint_inventory = complete_inventory_union_for_lease(&store, &checkpoint);
+    drop(checkpoint);
+    let selector = std::fs::read(path.join("graph-root.ze")).expect("selector");
+    commit_maintenance(&store).expect("adopt orphan without checkpoint");
+    assert_eq!(
+        std::fs::read(path.join("graph-root.ze")).expect("selector after adoption"),
+        selector
+    );
+    let lease = store.admit_native_read().expect("adopted inventory");
+    let inventory = rooted_inventory_for_lease(&store, &lease);
+    let victim = inventory
+        .iter()
+        .find(|change| {
+            change.state == InventoryState::Retained
+                && orphans.iter().any(|(name, _)| {
+                    crate::property_graph::storage::allocation::artifact_path(
+                        &path,
+                        change.object.artifact,
+                    ) == path.join(name)
+                })
+        })
+        .expect("complete orphan adopted as Retained")
+        .object;
+    assert!(
+        !checkpoint_inventory
+            .iter()
+            .any(|change| change.object == victim)
+    );
+    assert!(
+        !graph_references_for_lease(&store, &lease)
+            .iter()
+            .any(|reference| reference.artifact == victim.artifact)
+    );
+    assert!(
+        !sparse_references_for_lease(&store, &lease)
+            .iter()
+            .any(|reference| reference.artifact == victim.artifact)
+    );
+    if lease.bundle().reclaim().is_some() {
+        assert!(!pending_reclaim_candidates(&store, &lease).contains(&victim));
+    }
+    let generation = lease.bundle().base().generation;
+    drop(lease);
+    drop(store);
+    let intact = Store::open_native_graph(
+        &path,
+        OpenOptions::read_only()
+            .with_durability(DurabilityMode::Durable, CommitTier::Durable)
+            .with_max_resident_bytes(256 * 1024 * 1024),
+        None,
+    )
+    .expect("intact orphan reopens");
+    let lease = intact.admit_native_read().expect("intact generation");
+    assert_eq!(lease.bundle().base().generation, generation);
+    drop(lease);
+    intact.close().expect("close intact read-only");
+    let victim_path =
+        crate::property_graph::storage::allocation::artifact_path(&path, victim.artifact);
+    std::fs::remove_file(&victim_path).expect("remove inventory-only artifact");
+    let Err(error) = Store::open_native_graph(&path, options(), None) else {
+        panic!("inventory-only missing artifact incorrectly reopened");
+    };
+    assert!(
+        matches!(&error, super::super::NativeGraphError::Io { path: missing, source }
+        if missing == &victim_path && source.kind() == std::io::ErrorKind::NotFound),
+        "{error:?}"
+    );
+}

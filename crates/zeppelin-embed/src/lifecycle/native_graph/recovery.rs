@@ -4996,8 +4996,9 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
     /// checkpoint and `state` legitimately unlinks artifacts the checkpoint
     /// still lists. Replayed envelopes carry the same superseded claim, so
     /// their inventories are proved here too, through `state`'s inventory:
-    /// rows only leave it through a reclaim retirement, which is fenced by a
-    /// checkpoint at the retiring generation.
+    /// rows only leave it through a validated reclaim retirement. Its exact
+    /// candidates discharge older checkpoint descriptors even if the trailing
+    /// checkpoint is interrupted.
     fn validate_deferred_checkpoint_allocations(
         &mut self,
         state: CommitState<'_>,
@@ -5207,12 +5208,12 @@ impl ReplayValidator for SemanticReplay<'_, '_> {
         let mut tree = source
             .resources(resources.remaining())
             .map_err(|error| self.fail(NativeGraphError::Read(error), WalError::Participant))?;
+        let clearing_completed = self.pending_intent.is_none()
+            && self.pending_completion.is_none()
+            && self.reclaim_completed
+            && base.reclaim.is_some()
+            && target.reclaim.is_none();
         let result = (|| {
-            let clearing_completed = self.pending_intent.is_none()
-                && self.pending_completion.is_none()
-                && self.reclaim_completed
-                && base.reclaim.is_some()
-                && target.reclaim.is_none();
             match (self.pending_intent, self.pending_completion) {
                 (Some(_), None) if base.reclaim.is_none() && target.reclaim.is_some() => {}
                 (None, Some(complete))
@@ -5649,6 +5650,11 @@ impl ReplayValidator for SemanticReplay<'_, '_> {
         }
         self.inventory_start = self.protected.len();
         self.validate_state(target, resources)?;
+        if clearing_completed {
+            self.checkpoint_allocations
+                .retain(|descriptor| !self.reclaim_candidates.contains(descriptor));
+            self.reclaim_candidates.clear();
+        }
         self.reclaim_inventory.clear();
         self.reclaim_remaining.clear();
         self.pending_intent = None;
