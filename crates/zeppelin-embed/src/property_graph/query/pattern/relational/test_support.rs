@@ -301,6 +301,8 @@ enum EligibilityProbeMode {
     Scalar,
     Capacity,
     Boundary(usize),
+    PreparationRows,
+    PreparationPayload,
     Duplicate(NodeId),
     NullMember(NodeId),
     RelationshipMember(NodeId),
@@ -397,6 +399,8 @@ impl NativeReadConsumer<Result<EligibilityObservation, NativeExecutionError>>
             }
             EligibilityProbeMode::Explicit
             | EligibilityProbeMode::Capacity
+            | EligibilityProbeMode::PreparationRows
+            | EligibilityProbeMode::PreparationPayload
             | EligibilityProbeMode::Boundary(_)
             | EligibilityProbeMode::Duplicate(_)
             | EligibilityProbeMode::RelationshipMember(_)
@@ -538,6 +542,7 @@ impl NativeReadConsumer<Result<EligibilityObservation, NativeExecutionError>>
         .expect("retain singleton eligibility plan")
         .admit_plan(&plan, runtime.values())
         .expect("admit singleton eligibility plan");
+        let held = runtime.memory().reserved_bytes();
         let prepared = match super::eligibility::prepare(
             view,
             &admitted,
@@ -545,9 +550,22 @@ impl NativeReadConsumer<Result<EligibilityObservation, NativeExecutionError>>
             &[],
             PatternCapacity {
                 rows: StorageCapacity {
-                    rows: 16,
-                    max_rows: 16,
-                    payload_bytes: 8192,
+                    rows: if matches!(self.mode, EligibilityProbeMode::PreparationRows) {
+                        0
+                    } else {
+                        16
+                    },
+                    max_rows: if matches!(self.mode, EligibilityProbeMode::PreparationRows) {
+                        0
+                    } else {
+                        16
+                    },
+                    payload_bytes: if matches!(self.mode, EligibilityProbeMode::PreparationPayload)
+                    {
+                        0
+                    } else {
+                        8192
+                    },
                     variable: ArenaCapacity {
                         string_bytes: 4096,
                         list_cells: 128,
@@ -568,7 +586,10 @@ impl NativeReadConsumer<Result<EligibilityObservation, NativeExecutionError>>
             runtime,
         ) {
             Ok(prepared) => prepared,
-            Err(error) => return Ok(Err(error)),
+            Err(error) => {
+                assert_eq!(runtime.memory().reserved_bytes(), held);
+                return Ok(Err(error));
+            }
         };
         Ok((|| {
             let binding = match prepared.value(SlotId(10)) {
@@ -668,6 +689,23 @@ pub(super) fn run_actual_eligibility_controls(
         )
     };
     // Capacity is deliberately independent of populated input length.
+    for mode in [
+        EligibilityProbeMode::PreparationRows,
+        EligibilityProbeMode::PreparationPayload,
+    ] {
+        let refused = run(mode).map_err(|error| error.to_string())?;
+        if !matches!(
+            refused,
+            Err(NativeExecutionError::Runtime(RuntimeError::BatchCapacity))
+        ) {
+            return Err(format!(
+                "eligibility preparation capacity did not fire: {refused:?}"
+            ));
+        }
+        run(EligibilityProbeMode::Explicit)
+            .map_err(|error| error.to_string())?
+            .map_err(|error| format!("eligibility clean control: {error:?}"))?;
+    }
     let maximum = run(EligibilityProbeMode::Boundary(524_288))
         .map_err(|error| error.to_string())?
         .map_err(|error| format!("maximum eligibility capacity: {error:?}"))?;
@@ -1308,6 +1346,40 @@ pub fn run_actual_probe(seed: u64) -> Result<NativeRelationalProbeReport, String
     let mut expected_eligibility = [source.get(), target.get()];
     expected_eligibility.sort_unstable();
     let eligibility_entries = run_actual_eligibility_probe(&store, &expected_eligibility)?;
+    for kind in [
+        WorkKind::OperatorRows,
+        WorkKind::Expressions,
+        WorkKind::CopiedBytes,
+        WorkKind::EligibilityEntries,
+        WorkKind::HashProbes,
+    ] {
+        let refused = store
+            .with_native_read(
+                &QueryControl::Cancel(CancelToken::new()),
+                RuntimeLimits::default()
+                    .with_limit(kind, 0)
+                    .map_err(|error| format!("{error:?}"))?,
+                24 * 1024 * 1024,
+                64,
+                EligibilityProbeConsumer {
+                    mode: EligibilityProbeMode::Explicit,
+                    foreign_store: None,
+                },
+            )
+            .map_err(|error| error.to_string())?;
+        if !matches!(&refused,
+            Err(NativeExecutionError::Runtime(RuntimeError::Limit(actual))
+                | NativeExecutionError::Tree(crate::property_graph::storage::tree::directory::TreeError::Runtime(RuntimeError::Limit(actual)))) if *actual == kind)
+            && !matches!(&refused, Err(NativeExecutionError::Expression(error))
+                if matches!(error.failure, ExpressionFailure::Runtime(RuntimeError::Limit(actual)) if actual == kind))
+        {
+            return Err(format!(
+                "eligibility {kind:?} limit did not fire: {refused:?}"
+            ));
+        }
+        run_actual_eligibility_probe(&store, &expected_eligibility)?;
+    }
+
     let clean = store
         .with_native_read(
             &QueryControl::Cancel(CancelToken::new()),

@@ -2801,11 +2801,11 @@ fn relational_probe_oracle(
 
 #[test]
 fn native_relational_limits_controls_errors_release() {
-    qualify_native_operator_failures();
     use rand::RngCore;
     let mut rng = crate::test_support::seeded_rng("ze161-native-operator-failures");
     for _ in 0..3 {
         let seed = rng.next_u64();
+        qualify_native_operator_failures(seed);
         eprintln!("ZE161 native failure fixture seed={seed:#x}");
         let report = super::test_support::run_actual_probe(seed)
             .unwrap_or_else(|error| panic!("seed={seed:#x}: {error}"));
@@ -4609,6 +4609,8 @@ struct OperatorFailureConsumer {
     rows: usize,
     payload: usize,
     audit: bool,
+    sweep: bool,
+    work: Option<crate::property_graph::query::runtime::WorkKind>,
 }
 struct FreezeOperatorFailure {
     called: bool,
@@ -4738,84 +4740,99 @@ impl NativeReadConsumer<()> for OperatorFailureConsumer {
         };
         let before = runtime.memory().reserved_bytes();
         execute_relational_plan!(@admit runtime, operators, expressions,
-                vec![RetainedRegion::slice(&inputs).unwrap(), RetainedRegion::vector(&projection).unwrap(),
-                    RetainedRegion::slice(&keys).unwrap(), RetainedRegion::slice(&aggregates).unwrap(),
-                RetainedRegion::declared(text.as_ptr() as usize, text.capacity()).unwrap()],
-                vec![RetainedAllocation::array(&inputs).unwrap(), RetainedAllocation::vector(&projection).unwrap(),
-                    RetainedAllocation::array(&keys).unwrap(), RetainedAllocation::array(&aggregates).unwrap(),
-                RetainedAllocation::string(&text).unwrap()],
-                vector, (admitted, root) => {
-                    let held = runtime.memory().reserved_bytes();
-                    let run = |runtime: &mut RuntimeContext<'lease, 'm, 'g>| {
-                        let mut completion = FreezeOperatorFailure { called: false, aggregate: self.barrier == 3 };
-                        let result = match NativePattern::new(view, &admitted, root, &[], pattern_capacity, runtime) {
-                            Err(error) => Err(RelationalExecutionFailure::Build(error)),
-                            Ok(mut source) => {
-                                if let Some(cancel) = &self.cancel { source.cancel_after_expression_polls(0, cancel.clone()); }
-                                execute_in(runtime, &admitted, &mut source, &mut completion,
-                                    execution_capacity).map_err(RelationalExecutionFailure::Run)
-                            },
+        vec![RetainedRegion::slice(&inputs).unwrap(), RetainedRegion::vector(&projection).unwrap(),
+            RetainedRegion::slice(&keys).unwrap(), RetainedRegion::slice(&aggregates).unwrap(),
+        RetainedRegion::declared(text.as_ptr() as usize, text.capacity()).unwrap()],
+        vec![RetainedAllocation::array(&inputs).unwrap(), RetainedAllocation::vector(&projection).unwrap(),
+            RetainedAllocation::array(&keys).unwrap(), RetainedAllocation::array(&aggregates).unwrap(),
+        RetainedAllocation::string(&text).unwrap()],
+        vector, (admitted, root) => {
+            let held = runtime.memory().reserved_bytes();
+            let run = |runtime: &mut RuntimeContext<'lease, 'm, 'g>| {
+                let mut completion = FreezeOperatorFailure { called: false, aggregate: self.barrier == 3 };
+                let result = match NativePattern::new(view, &admitted, root, &[], pattern_capacity, runtime) {
+                    Err(error) => Err(RelationalExecutionFailure::Build(error)),
+                    Ok(mut source) => {
+                        if let Some(cancel) = &self.cancel { source.cancel_after_expression_polls(0, cancel.clone()); }
+                        execute_in(runtime, &admitted, &mut source, &mut completion,
+                            execution_capacity).map_err(RelationalExecutionFailure::Run)
+                    },
+                };
+                assert_eq!(completion.called, result.is_ok(), "no completion after failure");
+                result
+            };
+            if self.audit {
+                #[cfg(feature = "allocation-audit")]
+                if self.sweep {
+                    use crate::adversarial_test_support::{audit_engine_path, fail_attributed_allocation};
+                    let (result, audit) = audit_engine_path(|| run(runtime));
+                    result.unwrap();
+                    assert!(audit.allocations > 0);
+                    assert_eq!(audit.unattributed_bytes, 0);
+                    eprintln!("ZE161 barrier={} allocation positions={}", self.barrier, audit.allocations);
+                    for ordinal in 1..=audit.allocations {
+                        let (result, fires) = fail_attributed_allocation(ordinal, || run(runtime));
+                        assert_eq!(fires, 1, "barrier={} ordinal={ordinal}", self.barrier);
+                        let error = match result {
+                            Err(RelationalExecutionFailure::Build(error)) => error,
+                            Err(RelationalExecutionFailure::Run(failure)) => failure.error,
+                            Ok(_) => panic!("allocation failure returned success"),
                         };
-                        assert_eq!(completion.called, result.is_ok(), "no completion after failure");
-                        result
-                    };
-                    if self.audit {
-                        #[cfg(feature = "allocation-audit")]
-                        {
-                            use crate::adversarial_test_support::{audit_engine_path, fail_attributed_allocation};
-                            let (result, audit) = audit_engine_path(|| run(runtime));
-                            result.unwrap();
-                            assert!(audit.allocations > 0);
-                            assert_eq!(audit.unattributed_bytes, 0);
-                            eprintln!("ZE161 barrier={} allocation positions={}", self.barrier, audit.allocations);
-                            for ordinal in 1..=audit.allocations {
-                                let (result, fires) = fail_attributed_allocation(ordinal, || run(runtime));
-                                assert_eq!(fires, 1, "barrier={} ordinal={ordinal}", self.barrier);
-                                let error = match result {
-                                    Err(RelationalExecutionFailure::Build(error)) => error,
-                                    Err(RelationalExecutionFailure::Run(failure)) => failure.error,
-                                    Ok(_) => panic!("allocation failure returned success"),
-                                };
-                                assert!(matches!(error, NativeExecutionError::Runtime(RuntimeError::Memory(_))
-                                    | NativeExecutionError::Expression(crate::property_graph::query::expression::ExpressionError {
-                                        failure: crate::property_graph::query::expression::ExpressionFailure::Runtime(RuntimeError::Memory(_)), .. })),
-                                    "barrier={} ordinal={ordinal}: {error:?}", self.barrier);
-                                assert_eq!(runtime.memory().reserved_bytes(), held);
-                            }
-                        }
-                        run(runtime).unwrap();
-                    } else if let Some(cancel) = &self.cancel {
-                        let result = run(runtime);
-                        assert!(cancel.is_cancelled(), "expression poll cancellation actually fired");
-                        assert!(matches!(result, Err(RelationalExecutionFailure::Run(ref failure))
-                            if matches!(failure.error, NativeExecutionError::Expression(ref error)
-                                if matches!(error.failure, crate::property_graph::query::expression::ExpressionFailure::Runtime(
-                                    RuntimeError::Value(crate::property_graph::query::QueryError::Cancelled))))
-                                || matches!(failure.error, NativeExecutionError::Runtime(RuntimeError::Value(
-                                    crate::property_graph::query::QueryError::Cancelled)))));
-                    } else {
-                        let result = run(runtime);
-                        let result_error = result.as_ref().err();
-        assert!(matches!(result, Err(RelationalExecutionFailure::Run(ref failure))
-                            if matches!(failure.error, NativeExecutionError::Runtime(RuntimeError::BatchCapacity)
-                                | NativeExecutionError::Runtime(RuntimeError::Limit(_)))), "{result_error:?}");
+                        assert!(matches!(error, NativeExecutionError::Runtime(RuntimeError::Memory(_))
+                            | NativeExecutionError::Expression(crate::property_graph::query::expression::ExpressionError {
+                                failure: crate::property_graph::query::expression::ExpressionFailure::Runtime(RuntimeError::Memory(_)), .. })),
+                            "barrier={} ordinal={ordinal}: {error:?}", self.barrier);
+                        assert_eq!(runtime.memory().reserved_bytes(), held);
                     }
-                    assert_eq!(runtime.memory().reserved_bytes(), held);
-                });
+                }
+                run(runtime).unwrap();
+            } else if let Some(cancel) = &self.cancel {
+                let result = run(runtime);
+                assert!(cancel.is_cancelled(), "expression poll cancellation actually fired");
+                assert!(matches!(result, Err(RelationalExecutionFailure::Run(ref failure))
+                    if matches!(failure.error, NativeExecutionError::Expression(ref error)
+                        if matches!(error.failure, crate::property_graph::query::expression::ExpressionFailure::Runtime(
+                            RuntimeError::Value(crate::property_graph::query::QueryError::Cancelled))))
+                        || matches!(failure.error, NativeExecutionError::Runtime(RuntimeError::Value(
+                            crate::property_graph::query::QueryError::Cancelled)))));
+            } else {
+                let result = run(runtime);
+                let failure = match result {
+                    Err(RelationalExecutionFailure::Run(failure)) => failure,
+                    Err(RelationalExecutionFailure::Build(error)) => panic!("unexpected build refusal: {error:?}"),
+                            Ok(_) => panic!("execution refusal returned success"),
+                };
+                if let Some(expected) = self.work {
+                    assert!(matches!(failure.error, NativeExecutionError::Runtime(RuntimeError::Limit(actual)) if actual == expected)
+                        || matches!(failure.error, NativeExecutionError::Expression(ref error)
+                            if matches!(error.failure, crate::property_graph::query::expression::ExpressionFailure::Runtime(RuntimeError::Limit(actual)) if actual == expected)),
+                        "wrong work refusal: {:?}", failure.error);
+                } else {
+                    assert!(matches!(failure.error, NativeExecutionError::Runtime(RuntimeError::BatchCapacity)),
+                        "wrong capacity refusal: {:?}", failure.error);
+                }
+            }
+            assert_eq!(runtime.memory().reserved_bytes(), held);
+        });
         assert_eq!(runtime.memory().reserved_bytes(), before);
         Ok(())
     }
 }
 
-fn qualify_native_operator_failures() {
+fn qualify_native_operator_failures(seed: u64) {
     use crate::property_graph::query::runtime::WorkKind;
     let (_directory, store, _, _, _) = native_value_table_store();
-    for barrier in 0..4 {
-        for (rows, payload, work) in [(0, 8192, false), (1, 0, false), (1, 8192, true)] {
-            let limits = if work {
-                RuntimeLimits::default()
-                    .with_limit(WorkKind::OperatorRows, 0)
-                    .unwrap()
+    for index in 0..4 {
+        let barrier = (index + seed as usize % 4) % 4;
+        for (rows, payload, work) in [
+            (0, 8192, None),
+            (1, 0, None),
+            (1, 8192, Some(WorkKind::OperatorRows)),
+            (1, 8192, Some(WorkKind::Expressions)),
+            (1, 8192, Some(WorkKind::CopiedBytes)),
+        ] {
+            let limits = if let Some(work) = work {
+                RuntimeLimits::default().with_limit(work, 0).unwrap()
             } else {
                 RuntimeLimits::default()
             };
@@ -4831,6 +4848,25 @@ fn qualify_native_operator_failures() {
                         rows,
                         payload,
                         audit: false,
+                        sweep: false,
+                        work,
+                    },
+                )
+                .unwrap();
+            store
+                .with_native_read(
+                    &QueryControl::Cancel(CancelToken::new()),
+                    RuntimeLimits::default(),
+                    24 * 1024 * 1024,
+                    64,
+                    OperatorFailureConsumer {
+                        cancel: None,
+                        barrier,
+                        rows: 1,
+                        payload: 8192,
+                        audit: true,
+                        sweep: false,
+                        work: None,
                     },
                 )
                 .unwrap();
@@ -4849,6 +4885,8 @@ fn qualify_native_operator_failures() {
                 rows: 1,
                 payload: 8192,
                 audit: false,
+                sweep: false,
+                work: None,
             },
         );
         assert!(matches!(
@@ -4871,6 +4909,8 @@ fn qualify_native_operator_failures() {
                     rows: 1,
                     payload: 8192,
                     audit: true,
+                    sweep: true,
+                    work: None,
                 },
             )
             .unwrap();
