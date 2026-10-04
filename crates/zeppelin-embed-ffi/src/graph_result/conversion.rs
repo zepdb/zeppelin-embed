@@ -1019,15 +1019,14 @@ fn prepare_completed<'m, 'g>(
 
 /// Runs one real [`GraphStore::query`] and builds/publishes its C response.
 ///
-/// This does not go through `run_potential_write`: `query` can itself run a
-/// committing Cypher statement, but by the time it returns `Ok`, core has
-/// already durably committed and fully settled the result (the same
-/// already-resolved shape as `apply_batch`); per this slice's scope, the
-/// read path uses the pending/settle guard only through `apply_batch`, not
-/// here. A panic while building the response after a committing `query`
-/// call would not be caught as Indeterminate the way `apply_and_settle`'s
-/// is -- a known, documented asymmetry, not an oversight (see the ZE-68
-/// evidence file).
+/// This private helper has no current production callers and does not use
+/// `run_potential_write`. Although `query` supports committing plans, a panic
+/// during response conversion here has no typed Indeterminate resolution.
+/// Production Cypher entries instead record the outcome and generation before
+/// calling `completed_response`, outside its conversion/unwind scope; the C
+/// boundary catches panics and poisons the handle while retaining that outcome.
+/// Any future committing caller of this helper must provide equivalent outcome
+/// protection. See `tasks/evidence/ze-212-resolution.md` for the decision.
 #[allow(
     clippy::result_large_err,
     reason = "ProducerError retains the allocation-free core GraphStoreError"
