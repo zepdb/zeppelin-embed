@@ -157,7 +157,8 @@ Run `scripts/ci-gates.sh` at the repository root. For focused work, run
   retain `Bit4Factors::persisted_fields()` order.
 - Degree is u8, flags use only bits 0 (entry seed) and 1 (hub), the following
   two bytes are zero, active neighbours are little-endian dense row ids, and
-  every unused slot is `u32::MAX`. Cache-line tail padding is zero.
+  every unused slot is `u32::MAX`. An active neighbour slot must not name
+  its owning node. Cache-line tail padding is zero.
 - A 128-byte trailer follows `node_count * stride` block bytes. Its xxh3-64
   authenticates every block plus the interpretation-critical trailer prefix;
   the task-07 directory checksum, 64-KB chunk checksums, and whole-file
