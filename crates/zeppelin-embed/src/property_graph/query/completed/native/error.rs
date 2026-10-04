@@ -519,9 +519,7 @@ mod tests {
     #[allow(clippy::expect_used)]
     fn ze200_malformed_directory_remains_corruption() {
         use crate::property_graph::storage::tree::{TreeKind, decode_page};
-        let damaged = decode_page(TreeKind::Nodes, &[])
-            .err()
-            .expect("invalid persisted page");
+        let damaged = decode_page(TreeKind::Nodes, &[]).expect_err("invalid persisted page");
         let error = GraphQueryError::from(NativeGraphError::Read(TreeError::Format(damaged)));
         assert_eq!(error.kind(), Kind::Corruption);
         assert!(error.nothing_committed());

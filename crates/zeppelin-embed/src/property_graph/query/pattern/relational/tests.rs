@@ -4409,7 +4409,7 @@ impl<'m, 'g> Completion<'m, 'g, NativeExecutionError> for FreezeSortPayload {
         assert_eq!(text.len(), self.bytes);
         assert_eq!(
             text,
-            "é".repeat(self.bytes / 2) + if self.bytes % 2 == 0 { "" } else { "x" }
+            "é".repeat(self.bytes / 2) + if self.bytes.is_multiple_of(2) { "" } else { "x" }
         );
         FrozenOutput::new(self.bytes, 1, size_of::<usize>(), 0).map_err(Into::into)
     }
@@ -4420,7 +4420,7 @@ impl NativeReadConsumer<()> for SortPayloadConsumer {
         view: &crate::property_graph::storage::GraphReadView<'s, 'lease, 'm, 'g>,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<(), crate::property_graph::storage::tree::directory::TreeError> {
-        let text = "é".repeat(self.bytes / 2) + if self.bytes % 2 == 0 { "" } else { "x" };
+        let text = "é".repeat(self.bytes / 2) + if self.bytes.is_multiple_of(2) { "" } else { "x" };
         let lists: Vec<_> = (0..self.depth).map(|i| [ExprId(i as u32)]).collect();
         let mut expressions = vec![Expression::Literal(Literal::String(&text))];
         for list in &lists {
@@ -4609,6 +4609,7 @@ struct OperatorFailureConsumer {
     rows: usize,
     payload: usize,
     audit: bool,
+    #[cfg_attr(not(feature = "allocation-audit"), allow(dead_code))]
     sweep: bool,
     work: Option<crate::property_graph::query::runtime::WorkKind>,
 }
