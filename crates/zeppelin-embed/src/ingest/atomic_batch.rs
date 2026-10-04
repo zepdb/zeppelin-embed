@@ -163,7 +163,13 @@ fn committed_mutations_with_decisions(
             source,
         })?;
         if record.op == wal_payload::PREPARED_MUTATION_V1 {
-            run.clear();
+            if !run.is_empty() {
+                return Err(StoreError::WalMutation {
+                    seq: record.seq,
+                    op: record.op,
+                    source: PayloadError::TransactionBinding,
+                });
+            }
             let member = wal_payload::decode_prepared(payload).map_err(|source| {
                 StoreError::WalMutation {
                     seq: record.seq,

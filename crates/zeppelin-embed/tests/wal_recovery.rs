@@ -2524,3 +2524,48 @@ fn wal_committed_supersede_leaves_no_stale_sealed_revision_after_manifest_commit
 const _: Option<PathBuf> = None;
 const _: Option<SyncKind> = None;
 fn _vfs_file_type(_: Option<Box<dyn VfsFile>>) {}
+
+#[test]
+fn prepared_frame_interrupting_single_store_batch_fails_loudly() {
+    use zeppelin_embed::ingest::wal_payload as payload;
+    let directory = tempdir().expect("directory");
+    Store::open(directory.path(), StoreOpenOptions::default())
+        .expect("create store")
+        .close()
+        .expect("close");
+    let path = directory.path().join("wal.ze");
+    std::fs::remove_file(&path).expect("replace WAL");
+    let writer = WalWriter::create(&StdVfs, &path, LogSeq::new(1), policy(CommitTier::Durable))
+        .expect("writer");
+    let document = IngestDocument::new(
+        DocumentVersion::new(DocId::new(1), Revision::new(1)),
+        vec![1.0, 0.0],
+    );
+    let upsert = payload::encode_upsert_v2(&document).expect("upsert");
+    let first = payload::encode_upsert_v2_batch_member(0, 2, &upsert).expect("member");
+    writer
+        .commit(payload::UPSERT_V2_BATCH_MEMBER, &first)
+        .expect("first member");
+    let binding = payload::TransactionBinding {
+        transaction: 1,
+        participant: 2,
+        first_seq: 2,
+        last_seq: 2,
+        manifest_digest: 3,
+        final_generation: 4,
+    };
+    let delete = payload::encode_delete(&[DocId::new(2)]).expect("delete");
+    let prepared =
+        payload::encode_prepared(binding, 0, 1, payload::DELETE_V1, &delete).expect("prepared");
+    writer
+        .commit(payload::PREPARED_MUTATION_V1, &prepared)
+        .expect("append prepared");
+    drop(writer);
+    assert!(matches!(
+        Store::open(directory.path(), StoreOpenOptions::default()),
+        Err(StoreError::WalMutation {
+            source: payload::PayloadError::TransactionBinding,
+            ..
+        })
+    ));
+}
