@@ -121,7 +121,10 @@ fn root_descriptor(root: &Path) -> Result<RootDescriptor, StoreError> {
     if bytes.starts_with(STAGED_MAGIC) {
         return decode_staged(&path, &bytes).map(RootDescriptor::Staged);
     }
-    let text = std::str::from_utf8(body(&path, &bytes)?)
+    decode_routes(&path, &bytes).map(RootDescriptor::Legacy)
+}
+fn decode_routes(path: &Path, bytes: &[u8]) -> Result<Routes, StoreError> {
+    let text = std::str::from_utf8(body(path, bytes)?)
         .map_err(|_| invalid(&path, "namespace record UTF-8"))?;
     let mut result = Routes::new();
     for line in text.split_terminator('\n') {
@@ -148,7 +151,7 @@ fn root_descriptor(root: &Path) -> Result<RootDescriptor, StoreError> {
     if encode(&result) != bytes {
         return Err(invalid(&path, "noncanonical namespace record"));
     }
-    Ok(RootDescriptor::Legacy(result))
+    Ok(result)
 }
 
 /// Selects one complete committed namespace. No sibling is opened or repaired.
@@ -184,14 +187,14 @@ pub(super) fn resolve(path: &Path) -> Result<PathBuf, StoreError> {
     }
     let selected = match root_descriptor(parent)? {
         RootDescriptor::Legacy(mut routes) => routes.remove(name),
-        RootDescriptor::Staged(descriptor) => {
+        RootDescriptor::Staged(mut descriptor) => {
             if descriptor.0.contains_key(name) {
                 return Err(invalid(
                     path,
                     "selected staged manifest requires transaction adoption",
                 ));
             }
-            return Ok(path.to_path_buf());
+            descriptor.1.remove(name)
         }
     };
     match selected {
@@ -607,6 +610,50 @@ mod tests {
 mod descriptor_tests {
     use super::*;
     #[test]
+    fn nonparticipant_route_survives_v2_publish() {
+        let temporary = tempfile::tempdir().expect("root");
+        let root = temporary.path();
+        let destination = ".ze-batch-1/c";
+        let selected = root.join(destination);
+        std::fs::create_dir_all(&selected).expect("selected directory");
+        std::fs::create_dir(root.join("c")).expect("logical directory");
+        let routes = Routes::from([("c".into(), destination.into())]);
+        std::fs::write(root.join(".ze-batch-1/intent.ze"), encode(&routes)).expect("intent");
+        std::fs::write(selected.join(PREPARED), envelope(destination.as_bytes()))
+            .expect("prepared marker");
+        for filename in ["manifest.ze", "wal.ze"] {
+            std::fs::write(selected.join(filename), b"retained").expect("payload");
+        }
+        publish(&StdVfs, root, &encode(&routes), &mut |_| Ok(())).expect("legacy publish");
+        assert_eq!(resolve(&root.join("c")).expect("legacy resolve"), selected);
+        let descriptor = StagedDescriptor(
+            BTreeMap::from([(
+                "a".into(),
+                StagedSelection {
+                    manifest: ".ze-manifest-1".into(),
+                    binding: crate::ingest::wal_payload::TransactionBinding {
+                        transaction: 1,
+                        participant: 2,
+                        first_seq: 3,
+                        last_seq: 3,
+                        manifest_digest: 4,
+                        final_generation: 5,
+                    },
+                },
+            )]),
+            routes,
+        );
+        publish(
+            &StdVfs,
+            root,
+            &encode_staged(&descriptor).expect("v2"),
+            &mut |_| Ok(()),
+        )
+        .expect("v2 publish");
+        assert_eq!(resolve(&root.join("c")).expect("v2 resolve"), selected);
+    }
+
+    #[test]
     fn staged_descriptor_round_trips_and_old_reader_rejects() {
         let binding = crate::ingest::wal_payload::TransactionBinding {
             transaction: 1,
@@ -616,17 +663,20 @@ mod descriptor_tests {
             manifest_digest: 4,
             final_generation: 5,
         };
-        let descriptor = StagedDescriptor(BTreeMap::from([(
-            "a".into(),
-            StagedSelection {
-                manifest: ".ze-manifest-1".into(),
-                binding,
-            },
-        )]));
+        let descriptor = StagedDescriptor(
+            BTreeMap::from([(
+                "a".into(),
+                StagedSelection {
+                    manifest: ".ze-manifest-1".into(),
+                    binding,
+                },
+            )]),
+            Routes::new(),
+        );
         let bytes = encode_staged(&descriptor).expect("encode");
         assert_eq!(
             bytes.iter().map(|b| format!("{b:02x}")).collect::<String>(),
-            "5a454e5330303032010000000100610e002e7a652d6d616e69666573742d3101000000000000000000000000000000020000000000000000000000000000000300000000000000030000000000000004000000000000000500000000000000530352a537e8f10e"
+            "5a454e5330303032010000000100610e002e7a652d6d616e69666573742d3101000000000000000000000000000000020000000000000000000000000000000300000000000000030000000000000004000000000000000500000000000000100000005a454e5330303031a3d24bff963b33d2986d4df50a4f2e73"
         );
         for end in 0..bytes.len() {
             assert!(decode_staged(Path::new("root"), &bytes[..end]).is_err());
@@ -645,7 +695,7 @@ mod descriptor_tests {
     }
 }
 
-// ZE-256 v2 is a format seam only. Adoption is deliberately a later step.
+// ZE-256 v2 carries staged selections and the complete existing route table.
 // V1 readers reject the distinct magic before interpreting any route.
 const STAGED_MAGIC: &[u8] = b"ZENS0002";
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -654,7 +704,7 @@ struct StagedSelection {
     binding: crate::ingest::wal_payload::TransactionBinding,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct StagedDescriptor(BTreeMap<String, StagedSelection>);
+struct StagedDescriptor(BTreeMap<String, StagedSelection>, Routes);
 
 fn encode_staged(descriptor: &StagedDescriptor) -> Result<Vec<u8>, StoreError> {
     let path = Path::new(RECORD);
@@ -691,6 +741,10 @@ fn encode_staged(descriptor: &StagedDescriptor) -> Result<Vec<u8>, StoreError> {
                 .map_err(|_| invalid(path, "transaction binding"))?,
         );
     }
+    let routes = encode(&descriptor.1);
+    let length = u32::try_from(routes.len()).map_err(|_| invalid(path, "route table length"))?;
+    bytes.extend_from_slice(&length.to_le_bytes());
+    bytes.extend_from_slice(&routes);
     bytes.extend_from_slice(&xxh3_64(&bytes).to_le_bytes());
     if bytes.len() > MAX_RECORD {
         return Err(invalid(path, "staged decision too large"));
@@ -756,7 +810,15 @@ fn decode_staged(path: &Path, bytes: &[u8]) -> Result<StagedDescriptor, StoreErr
             return Err(invalid(path, "duplicate participant"));
         }
     }
-    let descriptor = StagedDescriptor(result);
+    let route_length = u32::from_le_bytes(
+        take(path, &mut remaining, 4)?
+            .try_into()
+            .map_err(|_| invalid(path, "route table length"))?,
+    );
+    let route_length =
+        usize::try_from(route_length).map_err(|_| invalid(path, "route table length"))?;
+    let routes = decode_routes(path, take(path, &mut remaining, route_length)?)?;
+    let descriptor = StagedDescriptor(result, routes);
     if !remaining.is_empty() || encode_staged(&descriptor)? != bytes {
         return Err(invalid(path, "noncanonical staged decision"));
     }
