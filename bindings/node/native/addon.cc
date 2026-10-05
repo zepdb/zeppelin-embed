@@ -2096,7 +2096,12 @@ napi_value Upsert(napi_env env, napi_callback_info info) {
   });
 }
 
-enum class NamespaceOperation { Batch, LiveBatch, DeclareCascade, DeleteCascade };
+enum class NamespaceOperation {
+  Batch,
+  LiveBatch,
+  DeclareCascade,
+  DeleteCascade
+};
 
 napi_value NamespaceOperationCall(napi_env env, napi_callback_info info,
                                   NamespaceOperation operation) {
@@ -2125,7 +2130,10 @@ napi_value NamespaceOperationCall(napi_env env, napi_callback_info info,
     if (!NapiOk(env, napi_get_array_length(env, args[1], &count),
                 "participant count"))
       return nullptr;
-    if (count < ((operation == NamespaceOperation::Batch || operation == NamespaceOperation::LiveBatch) ? 2u : 1u) ||
+    if (count < ((operation == NamespaceOperation::Batch ||
+                  operation == NamespaceOperation::LiveBatch)
+                     ? 2u
+                     : 1u) ||
         count > 128) {
       napi_throw_range_error(env, "ERR_OUT_OF_RANGE",
                              "invalid namespace participant count");
@@ -2150,17 +2158,20 @@ napi_value NamespaceOperationCall(napi_env env, napi_callback_info info,
       auto &owned = storage[i];
       auto &native = participants[i];
       native.abi_size = sizeof(native);
-      if (!NapiOk(env, napi_get_element(env, args[1], i, &value), "participant"))
+      if (!NapiOk(env, napi_get_element(env, args[1], i, &value),
+                  "participant"))
         return nullptr;
       if (operation == NamespaceOperation::LiveBatch) {
         if (!GetNamed(env, value, "store", &field, &present))
           return nullptr;
         if (!present) {
-          napi_throw_type_error(env, "ERR_MISSING_ARGS", "participant store required");
+          napi_throw_type_error(env, "ERR_MISSING_ARGS",
+                                "participant store required");
           return nullptr;
         }
         NativeStore *store = UnwrapStore(env, field);
-        if (store == nullptr) return nullptr;
+        if (store == nullptr)
+          return nullptr;
         handles[i] = store->handle;
       }
       if (!GetNamed(env, value, "name", &field, &present))
@@ -2255,7 +2266,8 @@ napi_value NamespaceOperationCall(napi_env env, napi_callback_info info,
     live_request.batch = request;
     live_request.handles = handles.data();
     const ze_error_code status =
-        operation == NamespaceOperation::LiveBatch ? ze_namespace_batch_live(&live_request)
+        operation == NamespaceOperation::LiveBatch
+            ? ze_namespace_batch_live(&live_request)
         : operation == NamespaceOperation::Batch ? ze_namespace_batch(&request)
         : operation == NamespaceOperation::DeleteCascade
             ? ze_namespace_delete_cascade(&request)
