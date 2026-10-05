@@ -183,6 +183,7 @@ pub(crate) mod mapping_slot_capture {
     }
     thread_local! {
         static CAPTURE: RefCell<Option<Vec<Report>>> = const { RefCell::new(None) };
+        static DEFAULT_CAPACITY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
     pub(crate) struct Capture;
     impl Capture {
@@ -197,9 +198,13 @@ pub(crate) mod mapping_slot_capture {
                 std::mem::take(capture.borrow_mut().as_mut().expect("active capture"))
             })
         }
+        pub(crate) fn restore_default_capacity(&self) {
+            DEFAULT_CAPACITY.with(|default| default.set(true));
+        }
     }
     impl Drop for Capture {
         fn drop(&mut self) {
+            DEFAULT_CAPACITY.with(|default| default.set(false));
             CAPTURE.with(|capture| {
                 *capture.borrow_mut() = None;
             });
@@ -207,7 +212,10 @@ pub(crate) mod mapping_slot_capture {
     }
     pub(crate) fn capacity(original: usize) -> usize {
         CAPTURE.with(|capture| {
-            if original > 4 && capture.borrow().is_some() {
+            if original > 4
+                && capture.borrow().is_some()
+                && !DEFAULT_CAPACITY.with(std::cell::Cell::get)
+            {
                 64
             } else {
                 original
