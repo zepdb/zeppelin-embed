@@ -1395,8 +1395,8 @@ fn accepted(
     }
     Ok(true)
 }
-// Local acceptance is the durable authority for a namespace purge even
-// after root retirement. Ordinary purge tokens retain their store policy.
+// The committed root authorizes purges before local acceptance is written.
+// Local acceptance retains that authority after root retirement.
 pub(crate) fn owns_purge_obligation(
     vfs: &dyn Vfs,
     directory: &Path,
@@ -1420,6 +1420,12 @@ pub(crate) fn owns_purge_obligation(
         if binding.transaction != transaction {
             return Err(invalid(&path, "purge acceptance transaction mismatch"));
         }
+        return Ok(true);
+    }
+    if let Some(selected) = selection(vfs, directory)?
+        && xxh3_64(&selected.binding.transaction.to_le_bytes()) == token
+    {
+        staged_manifest(vfs, directory, &selected)?;
         return Ok(true);
     }
     Ok(false)

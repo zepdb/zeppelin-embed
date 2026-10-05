@@ -1649,7 +1649,7 @@ fn interrupted_namespace_purge_resumes_after_reopen() {
             .is_err()
         );
         drop(stores);
-        if boundary == "accept binding rename" {
+        if boundary != "live states installed" {
             let reader = Store::open(root.path().join("a"), OpenOptions::read_only())
                 .expect("accepted namespace purge permits a logical read");
             assert!(
@@ -1682,6 +1682,27 @@ fn interrupted_namespace_purge_resumes_after_reopen() {
         }
         assert_no_deleted_bytes(root.path(), sentinel);
     }
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn read_only_open_refuses_undecided_namespace_purge() {
+    use zeppelin_embed::lifecycle::namespace_batch_with_steps;
+    let root = tempfile::tempdir().expect("root");
+    seed(root.path());
+    assert!(
+        namespace_batch_with_steps(root.path(), mixed(), &mut |step| {
+            if step == "purge obligation adopted" {
+                Err(std::io::Error::other("interrupt before acceptance"))
+            } else {
+                Ok(())
+            }
+        })
+        .is_err()
+    );
+    assert!(root.path().join("a/purge.ze").exists());
+    std::fs::remove_file(root.path().join(".ze-namespaces")).expect("remove root decision");
+    assert!(Store::open(root.path().join("a"), OpenOptions::read_only()).is_err());
 }
 
 // CrashVfs owns the authoritative bytes. Anonymous native files provide only
