@@ -481,6 +481,12 @@ pub mod graph_recovery_test_support {
     }
 }
 
+/// Nonshipping public-facade observations for seeded ZE-41 qualification.
+#[cfg(all(feature = "graph-cypher", any(test, feature = "test-support")))]
+pub mod graph_commit_recovery_test_support {
+    pub use crate::property_graph::commit_recovery_test_support::*;
+}
+
 /// Query diagnostics and health reporting.
 pub mod diag;
 /// Epoch identity and migration.

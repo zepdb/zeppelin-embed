@@ -30,6 +30,9 @@ use crate::property_graph::staging::{ItemReceipt, StageError, StructuredWrite};
 use crate::property_graph::{BatchDisposition, GraphGeneration};
 use std::path::{Path, PathBuf};
 
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod commit_recovery_test_support;
+
 mod maintenance;
 pub use maintenance::{GraphMaintenancePolicy, GraphMaintenanceReport};
 mod query;

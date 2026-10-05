@@ -8190,3 +8190,40 @@ fn ze176_race_probe_requires_measured_controls() {
     assert_eq!(report.observation.0, 1);
     assert!(report.observation.2 && report.observation.3);
 }
+
+/// Reuse the existing real reclaim partitions, each beside a fresh clean control.
+#[cfg(feature = "test-support")]
+pub(crate) fn run_ze41_reclaim_boundaries() -> Vec<crate::graph_read_view_test_support::PathReceipt>
+{
+    use super::publication::{reset_verified_faults, take_verified_faults};
+    [
+        (
+            "property-graph.recovery.commit.reclaim-unlink",
+            CrashCell::BeforeFirstUnlink,
+        ),
+        (
+            "property-graph.recovery.commit.reclaim-sync",
+            CrashCell::DirectorySync,
+        ),
+        (
+            "property-graph.recovery.commit.reclaim-completion",
+            CrashCell::LostCompletionAck,
+        ),
+    ]
+    .into_iter()
+    .map(|(key, cell)| {
+        reset_verified_faults();
+        run_reclaim_crash_cell(cell);
+        let fires = take_verified_faults();
+        assert_eq!(fires, 1, "{key}");
+        reset_verified_faults();
+        run_reclaim_crash_cell(CrashCell::Control);
+        assert_eq!(take_verified_faults(), 0);
+        crate::graph_read_view_test_support::PathReceipt {
+            key,
+            fires,
+            clean_controls: 1,
+        }
+    })
+    .collect()
+}

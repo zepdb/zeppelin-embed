@@ -457,6 +457,11 @@ impl<V: Vfs> VfsFile for SimulatedCrashFile<V> {
 }
 
 impl<V: Vfs + 'static> Vfs for SimulatedCrashVfs<V> {
+    fn create_directory(&self, path: &Path) -> std::io::Result<()> {
+        self.check_live()?;
+        self.inner.create_directory(path)
+    }
+
     fn create_new(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         self.check_live()?;
         self.track_file(path)?;
@@ -652,6 +657,7 @@ type CrashCallback = Arc<dyn Fn() -> std::io::Result<()> + Send + Sync>;
 /// durability boundary. The parent then reopens the same directory and checks
 /// it against the logical model.
 pub struct ProcessCrashVfs {
+    native_after_sync: bool,
     inner: ScheduledVfs<StdVfs>,
     boundary: CrashBoundary,
     armed: Arc<AtomicBool>,
@@ -663,8 +669,15 @@ impl ProcessCrashVfs {
         Self {
             inner,
             boundary,
+            native_after_sync: false,
             armed: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Native complete commit after Full sync, before publication/ack.
+    pub fn after_native_wal_sync(mut self) -> Self {
+        self.native_after_sync = true;
+        self
     }
 
     pub fn arm(&self) {
@@ -677,6 +690,7 @@ impl ProcessCrashVfs {
 }
 
 struct ProcessCrashFile {
+    native_after_sync: bool,
     inner: Box<dyn VfsFile>,
     path: PathBuf,
     boundary: CrashBoundary,
@@ -687,13 +701,17 @@ impl ProcessCrashFile {
     fn should_crash_mid_wal(&self) -> bool {
         self.boundary == CrashBoundary::MidWalGroup
             && self.armed.load(Ordering::SeqCst)
-            && file_name_is(&self.path, "wal.ze")
+            && !self.native_after_sync
+            && (file_name_is(&self.path, "wal.ze") || is_native_graph_wal(&self.path))
     }
 
     fn append_then_crash(&mut self, bytes: &[u8]) -> std::io::Result<()> {
-        // Stop after the WAL group bytes reach the file but before its
-        // durability sync/ack. Recovery must use the durable boundary and
-        // therefore expose a clean pre-group prefix.
+        // Process loss preserves kernel-cached bytes, unlike modeled power
+        // loss. A native complete envelope may therefore recover before ack.
+        if is_native_graph_wal(&self.path) {
+            self.inner.append(bytes)?;
+            kill_native_graph_process(&self.path, "append");
+        }
         let _ = self.inner.append(bytes);
         std::process::abort();
     }
@@ -719,11 +737,48 @@ impl VfsFile for ProcessCrashFile {
     }
 
     fn sync(&self, kind: SyncKind) -> std::io::Result<()> {
-        self.inner.sync(kind)
+        self.inner.sync(kind)?;
+        if self.native_after_sync
+            && kind == SyncKind::Full
+            && self.armed.load(Ordering::SeqCst)
+            && is_native_graph_wal(&self.path)
+        {
+            kill_native_graph_process(&self.path, "full-sync");
+        }
+        Ok(())
     }
 }
 
+fn is_native_graph_wal(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("graph-wal-") && name.ends_with(".ze"))
+}
+
+pub(super) fn kill_native_graph_process(path: &Path, operation: &str) {
+    let receipt = path
+        .parent()
+        .expect("native WAL directory")
+        .with_extension("kill-receipt");
+    std::fs::write(receipt, format!("{operation} {}", path.display()))
+        .expect("native boundary receipt");
+    #[cfg(unix)]
+    {
+        // No destructors or graceful checkpoint run in the killed process.
+        let status = std::process::Command::new("/bin/kill")
+            .args(["-KILL", &std::process::id().to_string()])
+            .status()
+            .expect("send native SIGKILL");
+        assert!(status.success());
+    }
+    panic!("native graph SIGKILL returned");
+}
+
 impl Vfs for ProcessCrashVfs {
+    fn create_directory(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.create_directory(path)
+    }
+
     fn create_new(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         self.inner.create_new(path, bytes)
     }
@@ -765,6 +820,7 @@ impl Vfs for ProcessCrashVfs {
 
     fn open_append(&self, path: &Path) -> std::io::Result<Box<dyn VfsFile>> {
         Ok(Box::new(ProcessCrashFile {
+            native_after_sync: self.native_after_sync,
             inner: self.inner.open_append(path)?,
             path: path.to_path_buf(),
             boundary: self.boundary,
@@ -1485,6 +1541,10 @@ impl VfsFile for ScheduledFile {
 }
 
 impl<V: Vfs> Vfs for ScheduledVfs<V> {
+    fn create_directory(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.create_directory(path)
+    }
+
     fn create_new(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         match self.action(FaultSite::Write, path)? {
             Some(FaultMode::Crash) => {

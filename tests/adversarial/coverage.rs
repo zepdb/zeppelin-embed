@@ -10,6 +10,35 @@ pub const REQUIRED_GRAPH_SMOKE_COVERAGE: &[&str] = &[
     "property-graph.native-vector-index.reopen",
     "property-graph.native-vector-index.trace",
     "property-graph.native-vector-index.oracle.can-fire",
+    "property-graph.recovery.commit.artifact-create",
+    "property-graph.recovery.commit.artifact-write",
+    "property-graph.recovery.commit.artifact-sync",
+    "property-graph.recovery.commit.directory-sync",
+    "property-graph.recovery.commit.wal-append",
+    "property-graph.recovery.commit.wal-partial-append",
+    "property-graph.recovery.commit.wal-sync",
+    "property-graph.recovery.commit.publication",
+    "property-graph.recovery.commit.checkpoint-replace",
+    "property-graph.recovery.commit.checkpoint-sync",
+    "property-graph.recovery.commit.reclaim-unlink",
+    "property-graph.recovery.commit.reclaim-sync",
+    "property-graph.recovery.commit.reclaim-completion",
+    "property-graph.recovery.commit.comparator",
+    "property-graph.recovery.commit.resources",
+    #[cfg(unix)]
+    "property-graph.recovery.commit.process-kill",
+    #[cfg(unix)]
+    "property-graph.recovery.commit.durable-process-kill",
+    #[cfg(unix)]
+    "property-graph.recovery.commit.power-cut",
+    #[cfg(unix)]
+    "property-graph.recovery.commit.durable-power-cut",
+    #[cfg(unix)]
+    "property-graph.recovery.commit.corruption",
+    #[cfg(unix)]
+    "property-graph.recovery.commit.missing-object",
+    #[cfg(unix)]
+    "property-graph.recovery.commit.published-process-kill",
     "property-graph.recovery.complete-reopen",
     "property-graph.recovery.refusal",
     "property-graph.recovery.lost-ack",

@@ -19278,12 +19278,12 @@ fn native_graph_runner_keys_are_active_with_graph_feature() {
     #[cfg(not(feature = "graph-result-test-support"))]
     assert_eq!(
         adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        337
+        352 + if cfg!(unix) { 7 } else { 0 }
     );
     #[cfg(feature = "graph-result-test-support")]
     assert_eq!(
         adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        357
+        372 + if cfg!(unix) { 7 } else { 0 }
     );
 }
 
@@ -19773,6 +19773,127 @@ fn graph_sweep_race_probe_fires_and_matches_same_seed_control() {
                 coverage.count(&format!("property-graph.reclaim.{key}")),
                 1,
                 "{key}"
+            );
+        }
+    }
+}
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn ze41_fault_boundaries_fire_with_same_seed_clean_controls() {
+    for seed in [0, 7] {
+        let mut coverage = adversarial::coverage::CoverageRegistry::default();
+        adversarial::graph_recovery::probe(seed, &mut coverage).expect("ZE-41 boundaries");
+        for boundary in [
+            "artifact-create",
+            "artifact-write",
+            "artifact-sync",
+            "directory-sync",
+            "wal-append",
+            "wal-partial-append",
+            "wal-sync",
+            "publication",
+            "checkpoint-replace",
+            "checkpoint-sync",
+            "reclaim-unlink",
+            "reclaim-sync",
+            "reclaim-completion",
+        ] {
+            let key = format!("property-graph.recovery.commit.{boundary}");
+            assert_eq!(coverage.count(&key), 1, "missing measured boundary {key}");
+        }
+    }
+}
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn ze41_complete_batch_comparator_rejects_each_mutated_observation() {
+    let (fixture, _) = adversarial::graph_recovery::schedule_for(7);
+    let root = tempfile::tempdir().unwrap();
+    let store = zeppelin_embed::graph_commit_recovery_test_support::ProbeStore::create(
+        &root.path().join("native"),
+        &fixture,
+        std::sync::Arc::new(zeppelin_embed::vfs::StdVfs),
+    );
+    store.apply(&fixture).unwrap();
+    let actual = store.observe().unwrap();
+    assert_eq!(
+        adversarial::graph_recovery::comparator_mutations(&fixture, &actual).unwrap(),
+        28
+    );
+    let retry = store.apply(&fixture).unwrap();
+    assert_eq!(
+        adversarial::graph_recovery::retry_comparator_mutations(&retry, true).unwrap(),
+        17
+    );
+    assert_eq!(store.close(), 0);
+}
+
+#[cfg(all(feature = "graph-cypher", unix))]
+#[test]
+fn ze41_process_kill_power_cut_and_corruption_have_distinct_outcomes() {
+    let mut coverage = adversarial::coverage::CoverageRegistry::default();
+    adversarial::graph_recovery::probe_loss_modes(7, &mut coverage).unwrap();
+    for key in adversarial::graph_recovery::LOSS_KEYS {
+        assert_eq!(coverage.count(key), 1, "{key}");
+    }
+}
+
+#[cfg(all(feature = "graph-cypher", unix))]
+#[test]
+#[ignore = "only invoked as the native SIGKILL child"]
+fn ze41_process_crash_child() {
+    adversarial::graph_recovery::process_child();
+}
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn ze41_retained_roots_and_reservations_survive_faulted_maintenance() {
+    let mut coverage = adversarial::coverage::CoverageRegistry::default();
+    adversarial::graph_reclaim::race_probe(7, &mut coverage).unwrap();
+    for key in [
+        "capture-race",
+        "publication-race",
+        "lazy-after-sweep",
+        "release-unlink",
+    ] {
+        assert_eq!(coverage.count(&format!("property-graph.reclaim.{key}")), 1);
+    }
+    let (fixture, _) = adversarial::graph_recovery::schedule_for(7);
+    let root = tempfile::tempdir().unwrap();
+    let store = zeppelin_embed::graph_commit_recovery_test_support::ProbeStore::create(
+        &root.path().join("native"),
+        &fixture,
+        std::sync::Arc::new(zeppelin_embed::vfs::StdVfs),
+    );
+    store.apply(&fixture).unwrap();
+    let held = store.maintain_retained();
+    adversarial::graph_recovery::compare_batch(&fixture, &held).unwrap();
+    assert_eq!(store.close(), 0);
+    for receipt in zeppelin_embed::graph_commit_recovery_test_support::run_reclaim_boundaries() {
+        assert_eq!((receipt.fires, receipt.clean_controls), (1, 1));
+    }
+}
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn graph_commit_recovery_scoped_adversarial_smoke() {
+    let root = tempfile::tempdir().unwrap();
+    for seed in [256, 257] {
+        let outcome =
+            adversarial::runner::run_program(seed, FaultProfile::None, root.path()).unwrap();
+        assert!(
+            outcome.violations.is_empty(),
+            "seed={seed}: {:?}",
+            outcome.violations
+        );
+        for key in adversarial::graph_recovery::COMMIT_KEYS
+            .iter()
+            .chain(adversarial::graph_recovery::LOSS_KEYS)
+        {
+            assert!(
+                outcome.coverage.count(key) > 0,
+                "seed={seed}: missing {key}"
             );
         }
     }

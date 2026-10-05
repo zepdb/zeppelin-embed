@@ -21,6 +21,8 @@ pub(crate) mod retrieval;
 
 #[cfg(feature = "graph-cypher")]
 mod graph_store;
+#[cfg(all(feature = "graph-cypher", any(test, feature = "test-support")))]
+pub(crate) use graph_store::commit_recovery_test_support;
 #[cfg(feature = "graph-cypher")]
 pub use graph_store::{
     GraphGetOptions, GraphMaintenancePolicy, GraphMaintenanceReport, GraphNodesResult,

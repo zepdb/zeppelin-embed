@@ -103,6 +103,29 @@ impl RecordingVfs {
         std::mem::take(&mut *self.events.lock().expect("recording VFS events"))
     }
 
+    pub(crate) fn clear_events(&self) {
+        self.events.lock().expect("recording VFS events").clear();
+    }
+
+    /// Actual Full-sync ordinal of the first directory protection or final
+    /// checkpoint selector directory sync in a completed control.
+    pub(crate) fn directory_sync_ordinal(&self, selector: bool) -> usize {
+        let events = self.events.lock().expect("recording VFS events");
+        let syncs: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                DurabilityEvent::Sync(path, crate::vfs::SyncKind::Full) => Some(path),
+                _ => None,
+            })
+            .collect();
+        let index = if selector {
+            syncs.iter().rposition(|path| path.is_dir())
+        } else {
+            syncs.iter().position(|path| path.is_dir())
+        };
+        index.expect("control completed its directory boundary") + 1
+    }
+
     fn record(&self, event: DurabilityEvent) {
         self.events
             .lock()
