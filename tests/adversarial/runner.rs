@@ -2901,6 +2901,9 @@ fn run_program_for_with_clock(
     let mut model = Model::default();
     let mut violations = Vec::new();
     let mut coverage = CoverageRegistry::default();
+    if campaign == CampaignKind::StorageDurability {
+        storage_adapter::namespace_probe(seed, &mut coverage)?;
+    }
     #[cfg(feature = "graph-cypher")]
     {
         super::property_graph::probe(seed, &mut coverage)?;

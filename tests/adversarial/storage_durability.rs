@@ -5499,3 +5499,407 @@ pub(crate) mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod namespace_probe_tests {
+    #[test]
+    fn live_namespace_faults_have_clean_controls_and_can_fire() {
+        let mut coverage = super::super::coverage::CoverageRegistry::default();
+        for seed in [256, 257] {
+            super::namespace_probe(seed, &mut coverage).expect("namespace fault pairs");
+        }
+        assert_eq!(
+            super::super::coverage::REQUIRED_NAMESPACE_COVERAGE.len(),
+            29
+        );
+        let required = super::super::campaign::CampaignSpec::for_kind(
+            super::super::campaign::CampaignKind::StorageDurability,
+        )
+        .all_required_coverage();
+        for key in super::super::coverage::REQUIRED_NAMESPACE_COVERAGE {
+            assert!(
+                required.iter().any(|candidate| candidate == key),
+                "namespace key is not required by campaign: {key}"
+            );
+            assert!(coverage.count(key) > 0, "missing registered key {key}");
+        }
+        for site in [
+            "prepare-append",
+            "publish",
+            "adopt-binding",
+            "cleanup-unlink",
+            "purge-unlink",
+        ] {
+            assert!(
+                coverage.count(&format!("storage.namespace.{site}.fire")) > 0,
+                "missing live namespace fault: {site}"
+            );
+        }
+    }
+}
+
+/// Closed namespace fault registry. Callbacks are emitted by the real protocol;
+/// purge unlink uses the existing scheduled VFS after durable adoption.
+#[derive(Clone, Copy, Debug)]
+pub enum NamespaceFault {
+    PrepareAppend,
+    PrepareSync,
+    Publish,
+    AdoptManifest,
+    AdoptBinding,
+    CleanupIntent,
+    CleanupUnlink,
+    CleanupCompletion,
+    PurgeUnlink,
+}
+impl NamespaceFault {
+    pub const ALL: [Self; 9] = [
+        Self::PrepareAppend,
+        Self::PrepareSync,
+        Self::Publish,
+        Self::AdoptManifest,
+        Self::AdoptBinding,
+        Self::CleanupIntent,
+        Self::CleanupUnlink,
+        Self::CleanupCompletion,
+        Self::PurgeUnlink,
+    ];
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::PrepareAppend => "prepare-append",
+            Self::PrepareSync => "prepare-sync",
+            Self::Publish => "publish",
+            Self::AdoptManifest => "adopt-manifest",
+            Self::AdoptBinding => "adopt-binding",
+            Self::CleanupIntent => "cleanup-intent",
+            Self::CleanupUnlink => "cleanup-unlink",
+            Self::CleanupCompletion => "cleanup-completion",
+            Self::PurgeUnlink => "purge-unlink",
+        }
+    }
+    const fn step(self) -> &'static str {
+        match self {
+            Self::PrepareAppend => "prepared append",
+            Self::PrepareSync => "prepared WAL sync",
+            Self::Publish => "commit rename",
+            Self::AdoptManifest => "accept manifest rename",
+            Self::AdoptBinding => "accept binding rename",
+            Self::CleanupIntent => "cleanup intent rename",
+            Self::CleanupUnlink => "cleanup unlink",
+            Self::CleanupCompletion => "cleanup completion",
+            Self::PurgeUnlink => "purge obligation adopted",
+        }
+    }
+    const fn committed(self) -> bool {
+        !matches!(self, Self::PrepareAppend | Self::PrepareSync)
+    }
+    const fn requires_delete(self) -> bool {
+        matches!(
+            self,
+            Self::CleanupIntent | Self::CleanupUnlink | Self::CleanupCompletion | Self::PurgeUnlink
+        )
+    }
+}
+
+fn namespace_document(id: u128, revision: u64, sentinel: &[u8]) -> IngestDocument {
+    IngestDocument::new(
+        DocumentVersion::new(DocId::new(id), Revision::new(revision)),
+        vec![1.0, 2.0],
+    )
+    .with_metadata(sentinel.to_vec())
+}
+
+fn namespace_observe(root: &Path) -> Result<independent::NamespaceImage, String> {
+    use zeppelin_embed::lifecycle::DocumentFields;
+    let mut image = independent::NamespaceImage::new();
+    // Reopen in the reverse order: siblings must not supply recovery state.
+    for name in ["b", "a"] {
+        let store = Store::open(root.join(name), OpenOptions::new())
+            .map_err(|e| format!("namespace recovery {name}: {e}"))?;
+        let mut rows = std::collections::BTreeMap::new();
+        let mut cursor = None;
+        loop {
+            let mut request = zeppelin_embed::lifecycle::DocumentScanRequest::new(
+                2,
+                DocumentFields::NONE,
+                QueryControl::Cancel(CancelToken::new()),
+            );
+            if let Some(next) = cursor {
+                request = request.with_cursor(next);
+            }
+            let page = store.scan_documents(request).map_err(|e| e.to_string())?;
+            for document in page.documents {
+                if rows
+                    .insert(document.doc_id.get(), document.revision.get())
+                    .is_some()
+                {
+                    return Err(format!("duplicate namespace row in {name}"));
+                }
+            }
+            cursor = page.continuation;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        image.insert(name.into(), rows);
+        store.close().map_err(|e| e.to_string())?;
+    }
+    Ok(image)
+}
+
+fn namespace_assert_erased(directory: &Path, sentinel: &[u8]) -> Result<(), String> {
+    for entry in std::fs::read_dir(directory).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+            namespace_assert_erased(&entry.path(), sentinel)?;
+        } else if std::fs::read(entry.path())
+            .map_err(|e| e.to_string())?
+            .windows(sentinel.len())
+            .any(|bytes| bytes == sentinel)
+        {
+            return Err(format!(
+                "deleted namespace bytes retained in {}",
+                entry.path().display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Same seed, same requests and baseline for clean and interrupted executions.
+fn namespace_run(
+    seed: u64,
+    deleting: bool,
+    fault: NamespaceFault,
+    inject: bool,
+) -> Result<independent::NamespaceImage, String> {
+    use super::fault_vfs::{FaultEvent, FaultMode, FaultSchedule, FaultSite, Layer, ScheduledVfs};
+    use zeppelin_embed::lifecycle::{
+        LiveNamespaceMutation, NamespaceMutation, SystemMonotonicClock,
+        namespace_batch_live_with_steps, namespace_reclaim,
+    };
+    let fixture = independent::NamespaceFixture::derive(seed, deleting);
+    let sentinel = format!("ZE256-deleted-{seed:016x}").into_bytes();
+    let root = tempdir().map_err(|e| e.to_string())?;
+    let vfs = Arc::new(ScheduledVfs::new(
+        StdVfs,
+        FaultSchedule::single(FaultEvent {
+            id: "namespace-purge-unlink".into(),
+            op_index: 0,
+            layer: Layer::Io,
+            site: FaultSite::Delete,
+            mode: FaultMode::PostCommitError,
+            nth_match: 1,
+            expected_matches: None,
+            deadline_budget_seconds: None,
+            path_contains: Some(".zseg".into()),
+            fired: false,
+            fire_count: 0,
+            path: None,
+        }),
+    ));
+    let stores = ["a", "b"]
+        .into_iter()
+        .map(|name| {
+            Store::open_with_test_dependencies(
+                root.path().join(name),
+                OpenOptions::new(),
+                StoreTestDependencies::new(vfs.clone(), Arc::new(SystemMonotonicClock)),
+            )
+            .map_err(|e| e.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let participants = stores
+        .iter()
+        .zip(["a", "b"])
+        .map(|(store, name)| LiveNamespaceMutation {
+            store,
+            mutation: NamespaceMutation {
+                name: name.into(),
+                options: OpenOptions::new(),
+                upserts: fixture.before[name]
+                    .iter()
+                    .enumerate()
+                    .map(|(index, (&id, &rev))| {
+                        namespace_document(
+                            id,
+                            rev,
+                            if index == 0 { &sentinel } else { b"survivor" },
+                        )
+                    })
+                    .collect(),
+                deletes: vec![],
+                delete_where: None,
+            },
+        })
+        .collect();
+    // Establish the root first so the publish fault cannot hit bootstrap rename.
+    namespace_batch_live_with_steps(root.path(), participants, &mut |_| Ok(()))
+        .map_err(|e| e.to_string())?;
+    for store in &stores {
+        store.seal().map_err(|e| e.to_string())?;
+    }
+    if deleting {
+        // Recognized abandoned child holds a historical copy of deleted bytes.
+        let abandoned = root.path().join(".ze-batch-abandoned/a");
+        std::fs::create_dir_all(&abandoned).map_err(|e| e.to_string())?;
+        for entry in std::fs::read_dir(root.path().join("a")).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name == "manifest.ze" || name == "wal.ze" || name.ends_with(".zseg") {
+                std::fs::copy(entry.path(), abandoned.join(name.as_ref()))
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    let mut participants = stores
+        .iter()
+        .zip(["a", "b"])
+        .map(|(store, name)| LiveNamespaceMutation {
+            store,
+            mutation: NamespaceMutation {
+                name: name.into(),
+                options: OpenOptions::new(),
+                upserts: fixture.upserts[name]
+                    .iter()
+                    .map(|(&id, &rev)| namespace_document(id, rev, b"new-survivor"))
+                    .collect(),
+                deletes: fixture.deletes[name]
+                    .iter()
+                    .copied()
+                    .map(DocId::new)
+                    .collect(),
+                delete_where: None,
+            },
+        })
+        .collect::<Vec<_>>();
+    if seed & 1 == 1 {
+        participants.reverse();
+    }
+    let mut matches = 0;
+    let mut published = false;
+    let mut fired = false;
+    let result = namespace_batch_live_with_steps(root.path(), participants, &mut |step| {
+        if step == "commit rename" {
+            published = true;
+        }
+        if deleting && step == "live states installed" {
+            // A recognized abandoned child guarantees postcommit unlink runs,
+            // even when precommit cleanup already reclaimed historical copies.
+            let abandoned = root.path().join(".ze-batch-cleanup/a");
+            std::fs::create_dir_all(&abandoned)?;
+            std::fs::write(abandoned.join("wal.ze"), &sentinel)?;
+        }
+        if inject && matches!(fault, NamespaceFault::PurgeUnlink) && step == fault.step() {
+            vfs.set_operation(0);
+        } else if step == fault.step() && (published || !fault.committed()) {
+            matches += 1;
+            let nth = if matches!(
+                fault,
+                NamespaceFault::PrepareAppend
+                    | NamespaceFault::PrepareSync
+                    | NamespaceFault::AdoptManifest
+                    | NamespaceFault::AdoptBinding
+            ) {
+                (seed % 2) + 1
+            } else {
+                1
+            };
+            if inject && matches == nth {
+                fired = true;
+                return Err(std::io::Error::other("seeded namespace interruption"));
+            }
+        }
+        Ok(())
+    });
+    if inject && matches!(fault, NamespaceFault::PurgeUnlink) {
+        fired = vfs.events().iter().any(|event| event.fire_count == 1);
+    }
+    vfs.set_operation(usize::MAX);
+    if inject && (!fired || result.is_ok()) {
+        return Err(format!(
+            "namespace fault {} cannot fire: fired={fired} result={result:?}",
+            fault.key()
+        ));
+    }
+    if !inject {
+        result.map_err(|e| e.to_string())?;
+    }
+    drop(stores);
+    let observed = namespace_observe(root.path())?;
+    let committed = !inject || fault.committed();
+    independent::check_namespace_publication(
+        &fixture.before,
+        &fixture.after,
+        &observed,
+        committed,
+    )?;
+    // Repeat recovery and cleanup; no retired or abandoned data may resurface.
+    namespace_reclaim(root.path()).map_err(|e| e.to_string())?;
+    let repeated = namespace_observe(root.path())?;
+    if repeated != observed {
+        return Err("namespace repeated recovery changed state".into());
+    }
+    if deleting && committed {
+        namespace_assert_erased(root.path(), &sentinel)?;
+    }
+    Ok(observed)
+}
+
+/// Executable fault family, like the catalog probes: credit follows comparator
+/// success and an actual protocol callback/VFS firing, never a planned schedule.
+pub fn namespace_probe(
+    seed: u64,
+    coverage: &mut super::coverage::CoverageRegistry,
+) -> Result<(), String> {
+    for deleting in [false, true] {
+        let fixture = independent::NamespaceFixture::derive(seed, deleting);
+        let clean = namespace_run(seed, deleting, NamespaceFault::Publish, false)
+            .map_err(|e| format!("deleting={deleting} clean: {e}"))?;
+        for fault in NamespaceFault::ALL {
+            if !deleting && fault.requires_delete() {
+                continue;
+            }
+            let observed = namespace_run(seed, deleting, fault, true)
+                .map_err(|e| format!("{} deleting={deleting} fault: {e}", fault.key()))?;
+            independent::check_namespace_publication(
+                &fixture.before,
+                &fixture.after,
+                &clean,
+                true,
+            )?;
+            // Test-only planted partial publication: one participant is selected
+            // from the opposite decision. The same comparator must reject it.
+            let mut partial = observed.clone();
+            let opposite = if fault.committed() {
+                &fixture.before
+            } else {
+                &fixture.after
+            };
+            partial.insert("b".into(), opposite["b"].clone());
+            if independent::check_namespace_publication(
+                &fixture.before,
+                &fixture.after,
+                &partial,
+                fault.committed(),
+            )
+            .is_ok()
+            {
+                return Err(format!(
+                    "namespace {} comparator accepted partial publication",
+                    fault.key()
+                ));
+            }
+            for suffix in ["clean", "fire", "can-fire"] {
+                coverage.hit(format!("storage.namespace.{}.{suffix}", fault.key()));
+            }
+        }
+        coverage.hit(if deleting {
+            "storage.namespace.deleting-batch"
+        } else {
+            "storage.namespace.live-batch"
+        });
+    }
+    Ok(())
+}

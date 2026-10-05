@@ -558,3 +558,36 @@ impl CoverageRegistry {
 fn json_escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
+
+/// Executed live namespace fault pairs and independent comparator controls.
+pub const REQUIRED_NAMESPACE_COVERAGE: &[&str] = &[
+    "storage.namespace.prepare-append.clean",
+    "storage.namespace.prepare-append.fire",
+    "storage.namespace.prepare-append.can-fire",
+    "storage.namespace.prepare-sync.clean",
+    "storage.namespace.prepare-sync.fire",
+    "storage.namespace.prepare-sync.can-fire",
+    "storage.namespace.publish.clean",
+    "storage.namespace.publish.fire",
+    "storage.namespace.publish.can-fire",
+    "storage.namespace.adopt-manifest.clean",
+    "storage.namespace.adopt-manifest.fire",
+    "storage.namespace.adopt-manifest.can-fire",
+    "storage.namespace.adopt-binding.clean",
+    "storage.namespace.adopt-binding.fire",
+    "storage.namespace.adopt-binding.can-fire",
+    "storage.namespace.cleanup-intent.clean",
+    "storage.namespace.cleanup-intent.fire",
+    "storage.namespace.cleanup-intent.can-fire",
+    "storage.namespace.cleanup-unlink.clean",
+    "storage.namespace.cleanup-unlink.fire",
+    "storage.namespace.cleanup-unlink.can-fire",
+    "storage.namespace.cleanup-completion.clean",
+    "storage.namespace.cleanup-completion.fire",
+    "storage.namespace.cleanup-completion.can-fire",
+    "storage.namespace.purge-unlink.clean",
+    "storage.namespace.purge-unlink.fire",
+    "storage.namespace.purge-unlink.can-fire",
+    "storage.namespace.live-batch",
+    "storage.namespace.deleting-batch",
+];

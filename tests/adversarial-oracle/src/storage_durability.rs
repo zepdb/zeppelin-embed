@@ -4116,3 +4116,81 @@ mod tests {
         assert_eq!(expected.eligible_orphans.len(), 3);
     }
 }
+
+/// Independent namespace image: names map to live document IDs/revisions.
+pub type NamespaceImage = BTreeMap<String, BTreeMap<u128, u64>>;
+
+/// A root decision must select the entire old or entire new namespace image.
+pub fn check_namespace_publication(
+    before: &NamespaceImage,
+    after: &NamespaceImage,
+    observed: &NamespaceImage,
+    committed: bool,
+) -> Result<(), String> {
+    let expected = if committed { after } else { before };
+    if observed != expected {
+        return Err(format!(
+            "namespace publication mismatch: committed={committed} expected={expected:?} observed={observed:?}"
+        ));
+    }
+    Ok(())
+}
+
+/// Seeded requests and expected states, independent of engine output.
+#[derive(Clone, Debug)]
+pub struct NamespaceFixture {
+    pub before: NamespaceImage,
+    pub after: NamespaceImage,
+    pub upserts: NamespaceImage,
+    pub deletes: BTreeMap<String, Vec<u128>>,
+}
+impl NamespaceFixture {
+    pub fn derive(seed: u64, deleting: bool) -> Self {
+        let mut before = NamespaceImage::new();
+        let mut after = NamespaceImage::new();
+        let mut upserts = NamespaceImage::new();
+        let mut deletes = BTreeMap::new();
+        for (offset, name) in [(0_u128, "a"), (4, "b")] {
+            let base = u128::from(seed) * 16 + offset + 1;
+            let old = BTreeMap::from([(base, 1), (base + 1, 1)]);
+            let changes = BTreeMap::from([(base + 1, 2), (base + 2, 1)]);
+            let mut new = old.clone();
+            new.extend(changes.clone());
+            if deleting {
+                new.remove(&base);
+            }
+            before.insert(name.into(), old);
+            after.insert(name.into(), new);
+            upserts.insert(name.into(), changes);
+            deletes.insert(name.into(), if deleting { vec![base] } else { vec![] });
+        }
+        Self {
+            before,
+            after,
+            upserts,
+            deletes,
+        }
+    }
+}
+
+#[cfg(test)]
+mod namespace_model_tests {
+    use super::*;
+    #[test]
+    fn namespace_oracle_rejects_partial_publication() {
+        let before = BTreeMap::from([
+            ("a".into(), BTreeMap::from([(1, 1)])),
+            ("b".into(), BTreeMap::from([(2, 1)])),
+        ]);
+        let after = BTreeMap::from([
+            ("a".into(), BTreeMap::from([(3, 2)])),
+            ("b".into(), BTreeMap::from([(4, 2)])),
+        ]);
+        let mut partial = after.clone();
+        partial.insert("b".into(), before["b"].clone());
+        assert!(check_namespace_publication(&before, &after, &partial, true).is_err());
+        assert!(check_namespace_publication(&before, &after, &partial, false).is_err());
+        assert!(check_namespace_publication(&before, &after, &after, true).is_ok());
+        assert!(check_namespace_publication(&before, &after, &before, false).is_ok());
+    }
+}

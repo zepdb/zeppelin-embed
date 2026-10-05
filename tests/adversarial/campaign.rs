@@ -1917,6 +1917,11 @@ impl CampaignSpec {
             .collect::<Vec<_>>();
         if self.kind == CampaignKind::StorageDurability {
             keys.extend(storage_family_required_coverage().map(str::to_owned));
+            keys.extend(
+                super::coverage::REQUIRED_NAMESPACE_COVERAGE
+                    .iter()
+                    .map(|key| (*key).to_owned()),
+            );
         }
         if self.kind == CampaignKind::VectorExecution {
             keys.extend(vector_family_required_coverage());
@@ -1989,6 +1994,13 @@ impl CampaignSpec {
         }
         for event in &plan.feature {
             coverage.insert(event.fault.coverage_key());
+        }
+        if self.kind == CampaignKind::StorageDurability {
+            coverage.extend(
+                super::coverage::REQUIRED_NAMESPACE_COVERAGE
+                    .iter()
+                    .map(|key| (*key).to_owned()),
+            );
         }
         if self.kind == CampaignKind::StorageDurability
             && plan
