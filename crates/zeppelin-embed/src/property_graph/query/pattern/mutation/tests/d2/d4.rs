@@ -363,58 +363,137 @@ fn ze52_slice_d4_deleted_creates_burn_identities_beside_a_change() {
     store.store.close().expect("close d4 store");
 }
 
-/// `CREATE (m:T)-[r:R]->(k) SET m.p = 5 DELETE m, k, r RETURN m, 9`. The
-/// statement's only effect is the identities it consumed. Staging marks it
-/// `Changed` with no delta, which the native commit path cannot publish yet
-/// (it prepares no root at the new generation), so the admission refuses it
-/// with a typed error before preparation: nothing publishes, no identity is
-/// consumed, and no returned identity can later be reused.
+/// Consumed identities commit without changing surviving entities.
 #[test]
-fn ze52_slice_d4_fence_only_statement_is_refused_before_commit() {
-    let store = D2Store::create(None);
-    let nodes = three_nodes(&store);
-    let fence = nodes.iter().map(|node| node.get()).max().unwrap();
-    let before = store.generation();
-    let spec = Spec {
-        operators: vec![
-            (vec![], K::Unit),
-            (vec![0], K::Eager),
-            (
-                vec![1],
-                K::Mutate(vec![
-                    M::CreateNode(0, &["T"]),
-                    M::Set(0, "p", 3),
-                    M::CreateNode(1, &[]),
-                    M::CreateRelationship(2, 0, 1, "R"),
-                    M::Delete(0),
-                    M::Delete(1),
-                    M::Delete(2),
-                ]),
-            ),
-            (vec![2], K::Project(vec![(100, 0), (101, 4)])),
-            (vec![3], K::Collect),
-        ],
-        expressions: vec![E::Slot(0), E::Slot(1), E::Slot(2), E::I64(5), E::I64(9)],
-    };
-
-    rejected(
-        "fence-only statement",
-        mutate(&store, &spec, IMAGES),
-        |error| {
-            matches!(
-                error,
-                NativeMutationError::Graph(NativeGraphError::FenceOnlyStatement)
+fn ze190_fence_only_statement_commits_and_reopens() {
+    for checkpoint in [false, true] {
+        let store = D2Store::create(Some(document()));
+        let nodes = three_nodes(&store);
+        let mut properties = [GraphProperty::new(
+            GraphName::new("p").unwrap(),
+            PropertyValue::new(PropertyData::I64(1)).unwrap(),
+        )];
+        let coordinates = COORDINATES.map(f32::from_bits);
+        let embedding =
+            CanonicalEmbedding::new(store.document.as_ref().unwrap(), &coordinates).unwrap();
+        let image =
+            CanonicalContents::node(&mut [], &mut properties, Some(RICH_TEXT), Some(embedding))
+                .unwrap();
+        store
+            .store
+            .apply_native_graph(
+                &[StructuredWrite {
+                    key: ApplicationKey::new(EntityKind::Node, "d2", "one").unwrap(),
+                    revision: GraphRevision::new(2).unwrap(),
+                    operation: StructuredOperation::Put(EntityId::Node(nodes[0])),
+                    image: Some(WriteImage::Node(&image)),
+                }],
+                &control(),
             )
-        },
-    );
-    assert_eq!(store.generation(), before);
+            .unwrap();
 
-    let store = store.reopen();
-    assert_eq!(store.generation(), before);
-    assert_eq!(sorted(read(&store, &scan_p())), pairs(&nodes, &[1, 2, 3]));
-    assert_eq!(structured_node(&store, "after").get(), fence + 1);
-    assert_eq!(next_relationship(&store), 1);
-    store.store.close().expect("close d4 store");
+        let fence = nodes.iter().map(|node| node.get()).max().unwrap();
+        let before = store.generation();
+        store.store.checkpoint_native_graph(&control()).unwrap();
+        let lease = store.store.admit_native_read().unwrap();
+        let roots = lease.bundle().roots().references();
+        let high = lease.bundle().high_waters();
+        let symbols = catalog_symbols(&store.path, lease.bundle().catalog());
+        let membership = search_membership(&store.path, lease.bundle().text());
+        let vectors = search_membership(&store.path, lease.bundle().vector());
+        assert!(membership.is_some() && vectors.is_some());
+        drop(lease);
+
+        let spec = Spec {
+            operators: vec![
+                (vec![], K::Unit),
+                (vec![0], K::Eager),
+                (
+                    vec![1],
+                    K::Mutate(vec![
+                        M::CreateNode(0, &["T"]),
+                        M::Set(0, "p", 3),
+                        M::CreateNode(1, &[]),
+                        M::CreateRelationship(2, 0, 1, "R"),
+                        M::Delete(0),
+                        M::Delete(1),
+                        M::Delete(2),
+                    ]),
+                ),
+                (vec![2], K::Project(vec![(100, 0), (101, 4)])),
+                (vec![3], K::Collect),
+            ],
+            expressions: vec![E::Slot(0), E::Slot(1), E::Slot(2), E::I64(5), E::I64(9)],
+        };
+
+        let (rows, report) = committed(mutate(&store, &spec, IMAGES));
+        assert_eq!(rows, vec![(fence + 1, 9)]);
+        assert_eq!(report.disposition, BatchDisposition::Changed);
+        assert_eq!(report.changed.map(GraphGeneration::get), Some(before + 1));
+        assert_eq!(store.generation(), before + 1);
+        let lease = store.store.admit_native_read().unwrap();
+        assert_eq!(lease.bundle().roots().references(), roots);
+        assert_eq!(lease.bundle().high_waters().node, high.node + 2);
+        assert_eq!(
+            lease.bundle().high_waters().relationship,
+            high.relationship + 1
+        );
+        assert_eq!(lease.bundle().high_waters().symbols, high.symbols);
+        assert_eq!(
+            catalog_symbols(&store.path, lease.bundle().catalog()),
+            symbols
+        );
+        assert_eq!(
+            search_membership(&store.path, lease.bundle().text()),
+            membership
+        );
+        assert_eq!(
+            search_membership(&store.path, lease.bundle().vector()),
+            vectors
+        );
+        drop(lease);
+        assert_fence_only_wal(&store.path);
+
+        let store = if checkpoint {
+            store.reopen()
+        } else {
+            let D2Store {
+                _directory,
+                path,
+                store,
+                document,
+            } = store;
+            drop(store);
+            let store = Store::open_native_graph(&path, options(), document.clone()).unwrap();
+            D2Store {
+                _directory,
+                path,
+                store,
+                document,
+            }
+        };
+        assert_eq!(store.generation(), before + 1);
+        assert_eq!(sorted(read(&store, &scan_p())), pairs(&nodes, &[1, 2, 3]));
+        assert_eq!(revisions(&store, &nodes), vec![2, 1, 1]);
+        let lease = store.store.admit_native_read().unwrap();
+        assert_eq!(lease.bundle().roots().references(), roots);
+        assert_eq!(
+            catalog_symbols(&store.path, lease.bundle().catalog()),
+            symbols
+        );
+        assert_eq!(
+            search_membership(&store.path, lease.bundle().text()),
+            membership
+        );
+        assert_eq!(
+            search_membership(&store.path, lease.bundle().vector()),
+            vectors
+        );
+        drop(lease);
+        assert_eq!(structured_node(&store, "after").get(), fence + 3);
+        assert_eq!(next_relationship(&store), 2);
+        store.store.close().expect("close d4 store");
+    }
 }
 
 /// Once an entity is deleted, every later read or write of it in the same
@@ -604,3 +683,95 @@ fn ze52_slice_d4_repeated_and_null_deletes() {
 }
 
 mod detach;
+
+// Read the existing participant layouts: only metadata envelopes may change.
+fn participant_payload(
+    path: &std::path::Path,
+    required: crate::property_graph::wal::RequiredRef,
+) -> Vec<u8> {
+    use crate::property_graph::storage::{allocation::artifact_path, artifact};
+    let bytes = std::fs::read(artifact_path(path, required.object.artifact)).unwrap();
+    let frame = artifact::decode(
+        artifact::ContainerKind::Object,
+        Some((required.object.store, required.object.artifact)),
+        &bytes,
+    )
+    .unwrap();
+    frame
+        .framed_block(required.block)
+        .unwrap()
+        .payload()
+        .to_vec()
+}
+
+fn catalog_symbols(
+    path: &std::path::Path,
+    required: crate::property_graph::wal::RequiredRef,
+) -> Vec<(crate::property_graph::catalog::Symbol, String)> {
+    let payload = participant_payload(path, required);
+    let image = crate::property_graph::catalog::CatalogImage::decode(
+        &payload[8..],
+        usize::MAX,
+        &mut || Ok(()),
+    )
+    .unwrap();
+    image
+        .symbols
+        .entries()
+        .iter()
+        .map(|entry| (entry.symbol, entry.name.as_str().to_owned()))
+        .collect()
+}
+
+fn search_membership(
+    path: &std::path::Path,
+    required: Option<crate::property_graph::wal::RequiredRef>,
+) -> Option<Vec<u8>> {
+    required.map(|required| {
+        let payload = participant_payload(path, required);
+        // RootDescriptor: membership and source roots, live rows and length.
+        assert_eq!(payload.len(), 256);
+        payload[160..256].to_vec()
+    })
+}
+
+fn assert_fence_only_wal(path: &std::path::Path) {
+    let bytes = std::fs::read_dir(path)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("graph-wal-")
+        })
+        .map(|path| std::fs::read(path).unwrap())
+        .max_by_key(|bytes| u64::from_le_bytes(bytes[48..56].try_into().unwrap()))
+        .unwrap();
+    let mut offset = crate::property_graph::wal::HEADER_BYTES;
+    let mut commits = 0;
+    let mut mutations = 0;
+    let mut last_mutations = None;
+    while offset < bytes.len() {
+        let kind = u16::from_le_bytes(bytes[offset + 4..offset + 6].try_into().unwrap());
+        if kind == 1 {
+            mutations = 0;
+        }
+        mutations += usize::from(kind == 2);
+        if kind == 6 {
+            last_mutations = Some(mutations);
+            commits += 1;
+        }
+        let length =
+            u32::from_le_bytes(bytes[offset + 8..offset + 12].try_into().unwrap()) as usize;
+        offset += 72 + length;
+    }
+    assert_eq!(offset, bytes.len());
+    assert!(commits > 0);
+    assert_eq!(
+        last_mutations,
+        Some(0),
+        "fence-only WAL batch has entity mutations"
+    );
+}

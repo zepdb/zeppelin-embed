@@ -479,7 +479,6 @@ fn graph(error: &NativeGraphError) -> Kind {
         NativeGraphError::CommitIndeterminate { .. } => Kind::WriteIndeterminate,
         // A statement that only creates and deletes its own entities cannot
         // publish yet: an unsupported plan, not a store fault.
-        NativeGraphError::FenceOnlyStatement => Kind::InvalidPlan,
     }
 }
 

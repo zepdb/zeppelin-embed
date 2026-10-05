@@ -75,10 +75,6 @@ pub(crate) enum NativeGraphError {
     CheckpointRequired,
     StalePreparation,
     StoreInitializationIncomplete,
-    /// A query statement's only effect is identities it created and deleted
-    /// again: staging marks it changed with no delta, and native preparation
-    /// has no root to publish at a new generation for it yet.
-    FenceOnlyStatement,
     WalTailBoundExceeded,
     PreparedBaseChanged,
     WriterAbsent,
@@ -136,9 +132,6 @@ impl std::fmt::Display for NativeGraphError {
             Self::StoreInitializationIncomplete => {
                 f.write_str("native graph store initialization is incomplete")
             }
-            Self::FenceOnlyStatement => f.write_str(
-                "native graph statement only consumes identities and cannot publish yet",
-            ),
         }
     }
 }

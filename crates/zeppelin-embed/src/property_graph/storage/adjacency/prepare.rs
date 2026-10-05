@@ -128,10 +128,7 @@ pub fn prepare_native_graph<'a, S: BlockSink>(
                 .map_err(TreeError::WalMetadata)?,
         )?;
     }
-    #[cfg(any(test, feature = "test-support"))]
     let unchanged = batch.disposition() != crate::property_graph::BatchDisposition::Changed;
-    #[cfg(not(any(test, feature = "test-support")))]
-    let unchanged = batch.deltas().is_empty();
     let context = if unchanged {
         None
     } else {

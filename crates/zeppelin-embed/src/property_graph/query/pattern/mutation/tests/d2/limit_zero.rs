@@ -9,7 +9,6 @@
 
 use super::d3::node_id;
 use super::*;
-use crate::lifecycle::native_graph::NativeGraphError;
 
 /// `<spine> -> Project(n, <projected>) -> OffsetLimit(0, 0) -> Collect`,
 /// where `spine` ends with the `Mutate` and `n` is slot 0.
@@ -98,8 +97,7 @@ fn ze52_limit_zero_still_applies_a_create() {
 
 /// `MATCH (n) WHERE id(n) = <first> DELETE n RETURN n, 0 LIMIT 0`: no row is
 /// returned, yet the node is gone after reopen. A statement whose only
-/// effect is a created-then-deleted node is refused with the typed
-/// `FenceOnlyStatement` under `LIMIT 0` too, rather than reporting `NoOp`.
+/// effect is a created-then-deleted node commits its allocator fence too.
 #[test]
 fn ze52_limit_zero_still_applies_a_delete() {
     let store = D2Store::create(None);
@@ -133,16 +131,19 @@ fn ze52_limit_zero_still_applies_a_delete() {
         1,
         vec![E::Slot(0), E::I64(0)],
     );
-    match mutate(&store, &fence_only, IMAGES) {
-        (Err(NativeMutationError::Graph(NativeGraphError::FenceOnlyStatement)), false) => {}
-        (Err(error), refused) => panic!("wrong rejection {error:?} (refused {refused})"),
-        (Ok((_, report)), _) => panic!("fence-only LIMIT 0 reported {:?}", report.disposition),
-    }
-    assert_eq!(store.generation(), before + 1);
+    let (rows, report) = committed(mutate(&store, &fence_only, IMAGES));
+    assert!(rows.is_empty());
+    assert_eq!(report.disposition, BatchDisposition::Changed);
+    assert_eq!(report.changed.map(GraphGeneration::get), Some(before + 2));
+    assert_eq!(store.generation(), before + 2);
 
     let store = store.reopen();
-    assert_eq!(store.generation(), before + 1);
+    assert_eq!(store.generation(), before + 2);
     assert_eq!(sorted(read(&store, &scan_p())), pairs(&nodes[1..], &[2, 3]));
+    assert_eq!(
+        super::d3::structured_node(&store, "after").get(),
+        nodes[2].get() + 2
+    );
     store.store.close().expect("close limit-zero store");
 }
 

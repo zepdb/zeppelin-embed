@@ -48,22 +48,37 @@ fn ze57_local_set_runtime_mixed_list_rejects_atomically() {
     }
 }
 
-/// Local pin: ZE-190 owns enabling fence-only publication; flip this when it lands.
+/// The exact ticket statement burns two nodes and one relationship.
 #[test]
-fn ze57_fence_only_statement_is_refused_until_ze190() {
-    let graph = graph::Graph::new("ze57-fence-only");
-    let before = graph.generation().unwrap();
-    match graph.run("CREATE (m)-[r:R]->(k) DELETE m, k, r", &[]) {
-        Err(StatementError::Query(error)) => {
-            assert_eq!(error.kind(), GraphQueryErrorKind::InvalidPlan);
-            assert!(error.nothing_committed());
-        }
-        Err(error) => panic!("expected query refusal, got {error}"),
-        Ok(_) => panic!("expected fence-only refusal, executed"),
-    }
-    assert_eq!(graph.generation().unwrap(), before);
-    graph.setup("CREATE ()");
-    assert!(graph.generation().unwrap() > before);
+fn ze190_cypher_fence_only_statement_commits_and_reopens() {
+    let mut graph = graph::Graph::new("ze190-fence-only");
+    let before = graph.generation().unwrap().get();
+    let snapshot = graph.snapshot().unwrap();
+    let result = graph
+        .run("CREATE (m)-[r:R]->(k) DELETE m, k, r", &[])
+        .unwrap();
+    assert!(matches!(
+        result.metadata().outcome,
+        Outcome::Committed { .. }
+    ));
+    assert_eq!(graph.generation().unwrap().get(), before + 1);
+    assert_eq!(graph.snapshot().unwrap(), snapshot);
+    graph.reopen();
+    assert_eq!(graph.generation().unwrap().get(), before + 1);
+    assert_eq!(graph.snapshot().unwrap(), snapshot);
+    let result = graph
+        .run(
+            "CREATE (m)-[r:R]->(k) RETURN ze.node_id(m), ze.relationship_id(r)",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(
+        tck::actual_table(&result).1,
+        vec![vec![
+            V::Str(format!("{:032x}", 3)),
+            V::Str(format!("{:032x}", 2))
+        ]]
+    );
 }
 
 use graph::Graph;

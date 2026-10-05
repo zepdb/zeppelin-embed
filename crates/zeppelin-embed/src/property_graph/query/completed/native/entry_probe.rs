@@ -343,19 +343,39 @@ pub(crate) fn create_then_delete<'lease, 'm, 'g>(
     let unit = vec![PlanNodeId(0)];
     let eager = vec![PlanNodeId(1)];
     let mutate = vec![PlanNodeId(2)];
+    let relationship_type = String::from("R");
     let mutations = vec![
         Mutation::CreateNode {
             output: SlotId(0),
             labels: &[],
         },
+        Mutation::CreateNode {
+            output: SlotId(1),
+            labels: &[],
+        },
+        Mutation::CreateRelationship {
+            output: SlotId(2),
+            source: ExprId(0),
+            target: ExprId(1),
+            relationship_type: GraphName::new(&relationship_type)
+                .map_err(|_| GraphQueryError::contract("probe relationship type"))?,
+        },
         Mutation::Delete {
             entity: ExprId(0),
+            detach: false,
+        },
+        Mutation::Delete {
+            entity: ExprId(1),
+            detach: false,
+        },
+        Mutation::Delete {
+            entity: ExprId(2),
             detach: false,
         },
     ];
     let projections = vec![Projection {
         slot: SlotId(10),
-        expression: ExprId(1),
+        expression: ExprId(3),
     }];
     let operators = vec![
         Operator {
@@ -377,9 +397,12 @@ pub(crate) fn create_then_delete<'lease, 'm, 'g>(
     ];
     let expressions = vec![
         Expression::Slot(SlotId(0)),
+        Expression::Slot(SlotId(1)),
+        Expression::Slot(SlotId(2)),
         Expression::Literal(Literal::I64(0)),
     ];
     let mut backing = Backing::default();
+    backing.string(&relationship_type)?;
     backing.vec(&unit)?;
     backing.vec(&eager)?;
     backing.vec(&mutate)?;
@@ -788,6 +811,149 @@ fn refused(
     Ok(1)
 }
 
+type IdentityObservations = Vec<(u128, i64)>;
+
+/// Isolated allocator-only publication, with a clean control and the existing
+/// durable-commit/publication fault. Expected fences count the plan's creates.
+pub(crate) fn fence_only_probe(
+    seed: u64,
+    base: i64,
+    inject: bool,
+) -> Result<(IdentityObservations, IdentityObservations), String> {
+    use crate::lifecycle::native_graph::NativeGraphError;
+    use crate::lifecycle::native_graph::tests::publication::{
+        arm_query_publication_fault, query_publication_fault_fired,
+    };
+    let fixture = Fixture::create(
+        probe_directory(
+            seed,
+            if inject {
+                "fence-recovery"
+            } else {
+                "fence-commit"
+            },
+        ),
+        base,
+    )?;
+    let lease = fixture
+        .store
+        .admit_native_read()
+        .map_err(|e| e.to_string())?;
+    let before = lease.bundle().base().generation.get();
+    let roots = lease.bundle().roots().references();
+    let high = lease.bundle().high_waters();
+    drop(lease);
+    let unchanged = node_values(&fixture.read().map_err(|e| e.to_string())?)?;
+    if inject {
+        arm_query_publication_fault(&fixture.store);
+    }
+    let result = fixture.store.execute_graph_query(
+        &control(),
+        &options(16),
+        None::<&mut NoSearch>,
+        create_then_delete,
+    );
+    if inject {
+        if !matches!(result, Err(ref e) if e.kind() == GraphQueryErrorKind::WriteIndeterminate && !e.nothing_committed())
+            || !query_publication_fault_fired(&fixture.store)
+            || !matches!(
+                fixture.store.admit_native_read(),
+                Err(NativeGraphError::ReadAdmissionsStopped)
+            )
+            || !matches!(fixture.write(&control(), 16, Assign::Increment), Err(e) if e.kind() == GraphQueryErrorKind::Unavailable)
+        {
+            return Err(String::from(
+                "fence-only durable commit did not stop admissions",
+            ));
+        }
+    } else {
+        let result = result.map_err(|e| e.to_string())?;
+        if result.metadata().outcome
+            != (Outcome::Committed {
+                changed: crate::property_graph::GraphGeneration::new(before + 1),
+            })
+        {
+            return Err(String::from("fence-only statement did not advance once"));
+        }
+    }
+    let Fixture {
+        directory, store, ..
+    } = fixture;
+    // Recover from WAL, without writing a checkpoint via close.
+    drop(store);
+    let store = Store::open_native_graph(directory.join("native"), store_options(), None)
+        .map_err(|e| e.to_string())?;
+    let lease = store.admit_native_read().map_err(|e| e.to_string())?;
+    let recovered = lease.bundle().high_waters();
+    if lease.bundle().base().generation.get() != before + 1
+        || lease.bundle().roots().references() != roots
+        || recovered.node != high.node + 2
+        || recovered.relationship != high.relationship + 1
+        || recovered.symbols != high.symbols
+    {
+        return Err(String::from(
+            "fence-only recovery changed graph or lost counted fences",
+        ));
+    }
+    drop(lease);
+    let rows = store
+        .execute_graph_query(&control(), &options(16), None::<&mut NoSearch>, read_p)
+        .map_err(|e| e.to_string())?;
+    if node_values(&rows)? != unchanged {
+        return Err(String::from("fence-only recovery changed records"));
+    }
+    let mut properties = [];
+    let image =
+        CanonicalContents::node(&mut [], &mut properties, None, None).map_err(|e| e.to_string())?;
+    let receipt = store
+        .apply_native_graph(
+            &[StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "ze190", "next")
+                    .map_err(|e| e.to_string())?,
+                revision: GraphRevision::new(1).map_err(|e| e.to_string())?,
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            }],
+            &control(),
+        )
+        .map_err(|e| e.to_string())?;
+    let node = match receipt.iter().next().map(|r| r.entity) {
+        Some(EntityId::Node(node)) => node,
+        _ => return Err(String::from("fence-only next node receipt missing")),
+    };
+    drop(receipt);
+    let receipt = store
+        .apply_native_graph(
+            &[StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Relationship, "ze190", "next")
+                    .map_err(|e| e.to_string())?,
+                revision: GraphRevision::new(1).map_err(|e| e.to_string())?,
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Relationship {
+                    source: crate::property_graph::NodeRef::Existing(node),
+                    target: crate::property_graph::NodeRef::Existing(node),
+                    relationship_type: GraphName::new("R").map_err(|e| e.to_string())?,
+                    properties: &[],
+                }),
+            }],
+            &control(),
+        )
+        .map_err(|e| e.to_string())?;
+    let rel = match receipt.iter().next().map(|r| r.entity) {
+        Some(EntityId::Relationship(rel)) => rel,
+        _ => return Err(String::from("fence-only next relationship receipt missing")),
+    };
+    drop(receipt);
+    let actual = vec![(node.get(), 0), (rel.get(), 0)];
+    let expected = vec![(high.node + 3, 0), (high.relationship + 2, 0)];
+    if actual != expected {
+        return Err(String::from("fence-only next identities reused burned ids"));
+    }
+    store.close().map_err(|e| e.to_string())?;
+    std::fs::remove_dir_all(directory).map_err(|e| e.to_string())?;
+    Ok((actual, expected))
+}
+
 /// Drives the seam's write path through its fault sites, each refused with
 /// its typed group and a proved unchanged store, then through a cancellation
 /// that arrives after the commit attempt, which must commit.
@@ -808,18 +974,6 @@ pub fn run_actual_probe(seed: u64) -> Result<ProbeReport, String> {
         &fixture,
         fixture.write(&control(), 2, Assign::Increment),
         GraphQueryErrorKind::Limit,
-        before,
-    )?;
-    // A statement that only consumes an identity cannot publish.
-    let fence_only = refused(
-        &fixture,
-        fixture.store.execute_graph_query(
-            &control(),
-            &options(16),
-            None::<&mut NoSearch>,
-            create_then_delete,
-        ),
-        GraphQueryErrorKind::InvalidPlan,
         before,
     )?;
     // Cancellation inside the commit tail, before its point of no return:
@@ -876,6 +1030,12 @@ pub fn run_actual_probe(seed: u64) -> Result<ProbeReport, String> {
     expected.extend(expected_rows);
     expected.push((0, 1));
     fixture.remove()?;
+
+    for inject in [false, true] {
+        let (actual, oracle) = fence_only_probe(seed, base, inject)?;
+        observations.extend(actual);
+        expected.extend(oracle);
+    }
 
     let incident = incident_probe(seed, base)?;
     let mut fault_receipts = Vec::new();
@@ -961,7 +1121,8 @@ pub fn run_actual_probe(seed: u64) -> Result<ProbeReport, String> {
             receipts.extend([
                 ("mid-drain.fire", mid_drain),
                 ("image-limit.fire", images),
-                ("fence-only.fire", fence_only),
+                ("fence-only.commit", 1),
+                ("fence-only.recovery", 1),
                 ("precommit-cancel.fire", precommit),
                 ("indeterminate.fire", 1),
                 ("post-commit-cancel.commit", post_commit),

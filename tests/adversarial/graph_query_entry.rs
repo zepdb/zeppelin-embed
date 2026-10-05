@@ -5,14 +5,15 @@ use super::coverage::CoverageRegistry;
 use std::collections::BTreeSet;
 use zeppelin_embed::property_graph::query::query_entry_test_support::run_actual_probe;
 
-const RECEIPTS: [&str; 14] = [
+const RECEIPTS: [&str; 15] = [
     "incident.fire",
     "partial-append.fire",
     "wal-sync.fire",
     "publish.fire",
     "mid-drain.fire",
     "image-limit.fire",
-    "fence-only.fire",
+    "fence-only.commit",
+    "fence-only.recovery",
     "precommit-cancel.fire",
     "indeterminate.fire",
     "post-commit-cancel.commit",
@@ -22,14 +23,15 @@ const RECEIPTS: [&str; 14] = [
     "search-publication.same-view",
 ];
 
-const KEYS: [&str; 15] = [
+const KEYS: [&str; 16] = [
     "property-graph.query-entry.incident.fire",
     "property-graph.query-entry.partial-append.fire",
     "property-graph.query-entry.wal-sync.fire",
     "property-graph.query-entry.publish.fire",
     "property-graph.query-entry.mid-drain.fire",
     "property-graph.query-entry.image-limit.fire",
-    "property-graph.query-entry.fence-only.fire",
+    "property-graph.query-entry.fence-only.commit",
+    "property-graph.query-entry.fence-only.recovery",
     "property-graph.query-entry.precommit-cancel.fire",
     "property-graph.query-entry.indeterminate.fire",
     "property-graph.query-entry.post-commit-cancel.commit",
@@ -59,13 +61,13 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
         }
     }
     let mut perturbed = report.observations.clone();
-    let Some(first) = perturbed.first_mut() else {
+    let Some(fence) = perturbed.last_mut() else {
         return Err(String::from("query entry probe returned no observation"));
     };
-    first.1 ^= 1;
+    fence.0 ^= 1;
     if perturbed == report.expected {
         return Err(String::from(
-            "query entry oracle accepted a perturbed value",
+            "query entry oracle accepted a perturbed fence identity",
         ));
     }
     let paired = run_actual_probe(seed)?;

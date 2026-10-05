@@ -373,14 +373,6 @@ impl crate::lifecycle::Store {
             }
             let staged = staged?;
             let disposition = staged.disposition();
-            // A statement that only creates and deletes again its own
-            // entities is `Changed` with no delta: it consumed identities
-            // that must stay fenced, but native preparation derives the new
-            // generation's roots from deltas and has none to publish. Refuse
-            // it here, typed, before any private object is prepared.
-            if disposition == BatchDisposition::Changed && staged.deltas().is_empty() {
-                return Err(NativeGraphError::FenceOnlyStatement.into());
-            }
             let admitted_generation = admitted.base().generation;
 
             let step = commit_staged_batch(

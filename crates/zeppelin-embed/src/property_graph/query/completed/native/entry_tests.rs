@@ -19,8 +19,7 @@ use super::super::{
 };
 use super::entry::{Executed, GraphQueryExecutor, NoSearch};
 use super::entry_probe::{
-    Assign, Backing, Fixture, control, create_then_delete, node_values, options, read_p, run_plan,
-    write_p,
+    Assign, Backing, Fixture, control, node_values, options, read_p, run_plan, write_p,
 };
 use super::error::{GraphQueryCause, GraphQueryError, GraphQueryErrorKind};
 use crate::lifecycle::durability::{CommitTier, DurabilityMode};
@@ -205,8 +204,7 @@ fn ze53_s3_mid_drain_failure_keeps_its_group_operator_and_counters() {
 }
 
 /// The write path's other definite refusals keep their own causes: an image
-/// arena smaller than the statement is a limit, and a statement that only
-/// consumes an identity is an unsupported plan.
+/// arena smaller than the statement is a limit.
 #[test]
 fn ze53_s3_write_refusals_are_typed_and_publish_nothing() {
     let fixture = new_fixture("refusals");
@@ -223,24 +221,6 @@ fn ze53_s3_write_refusals_are_typed_and_publish_nothing() {
             GraphQueryCause::Execution(NativeExecutionError::Stage(_))
         ),
         "{limit}"
-    );
-    let fence = refused_unchanged(
-        &fixture,
-        fixture.store.execute_graph_query(
-            &control(),
-            &options(16),
-            None::<&mut NoSearch>,
-            create_then_delete,
-        ),
-        GraphQueryErrorKind::InvalidPlan,
-        before,
-    );
-    assert!(
-        matches!(
-            fence.cause(),
-            GraphQueryCause::Graph(NativeGraphError::FenceOnlyStatement)
-        ),
-        "{fence}"
     );
     fixture.remove().unwrap();
 }
@@ -814,5 +794,17 @@ fn ze192_query_probe_requires_remaining_fault_receipts() {
             Some(1),
             "missing measured receipt: {key}"
         );
+    }
+}
+
+/// The marker is durable even when publication fails before acknowledgement.
+#[test]
+fn ze190_fence_only_commit_marker_recovers_before_ack() {
+    for inject in [false, true] {
+        let (actual, expected) = super::entry_probe::fence_only_probe(190, 0, inject).unwrap();
+        assert_eq!(actual, expected);
+        let mut perturbed = expected;
+        perturbed[0].0 -= 1;
+        assert_ne!(actual, perturbed, "oracle must catch a reused identity");
     }
 }
