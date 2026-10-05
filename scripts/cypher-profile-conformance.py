@@ -129,6 +129,10 @@ def verify_expectations(sources):
                     raise ValueError(f'altered empty expectation: {coordinate}')
             else:
                 table = re.search(r'Then the result should be, (.*?):(.*?)(?=\n    And|\Z)', original, re.S)
+                if table is None:
+                    unordered = re.search(r'Then the result should be \(ignoring element order for lists\):(.*?)(?=\n    And|\Z)', original, re.S)
+                    if unordered:
+                        table = (None, 'in any order, ignoring element order for lists', unordered[1])
                 mode = {'in any order': 'bag', 'in order': 'ordered',
                         'in any order, ignoring element order for lists': 'bag-lists-unordered'}
                 if not table or expectation != 'expect ' + mode.get(table[1], 'unknown') or cells(parts['expectation'][1:]) != cells(table[2].splitlines()):

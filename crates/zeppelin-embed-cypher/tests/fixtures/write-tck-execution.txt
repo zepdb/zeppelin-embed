@@ -45,439 +45,480 @@
 # SHA-256 Remove3.feature: 4848c5baf88161418580827fc7eb711e5e6ecc74bbdd64001d16fc428ae72ac0
 === clauses/create/Create1.feature [1]
 query
-  CREATE ()
+      CREATE ()
 expect empty
 side-effects
-  | +nodes | 1 |
+      | +nodes | 1 |
+
 === clauses/create/Create1.feature [2]
 query
-  CREATE (), ()
+      CREATE (), ()
 expect empty
 side-effects
-  | +nodes | 2 |
+      | +nodes | 2 |
+
 === clauses/create/Create1.feature [3]
 query
-  CREATE (:Label)
+      CREATE (:Label)
 expect empty
 side-effects
-  | +nodes  | 1 |
-  | +labels | 1 |
+      | +nodes  | 1 |
+      | +labels | 1 |
+
 === clauses/create/Create1.feature [4]
 query
-  CREATE (:Label), (:Label)
+      CREATE (:Label), (:Label)
 expect empty
 side-effects
-  | +nodes  | 2 |
-  | +labels | 1 |
+      | +nodes  | 2 |
+      | +labels | 1 |
+
 === clauses/create/Create1.feature [5]
 query
-  CREATE (:A:B:C:D)
+      CREATE (:A:B:C:D)
 expect empty
 side-effects
-  | +nodes  | 1 |
-  | +labels | 4 |
+      | +nodes  | 1 |
+      | +labels | 4 |
+
 === clauses/create/Create1.feature [6]
 query
-  CREATE (:B:A:D), (:B:C), (:D:E:B)
+      CREATE (:B:A:D), (:B:C), (:D:E:B)
 expect empty
 side-effects
-  | +nodes  | 3 |
-  | +labels | 5 |
+      | +nodes  | 3 |
+      | +labels | 5 |
+
 === clauses/create/Create1.feature [7]
 query
-  CREATE ({created: true})
+      CREATE ({created: true})
 expect empty
 side-effects
-  | +nodes      | 1 |
-  | +properties | 1 |
+      | +nodes      | 1 |
+      | +properties | 1 |
+
 === clauses/create/Create1.feature [8]
 query
-  CREATE (n {name: 'foo'})
-  RETURN n.name AS p
+      CREATE (n {name: 'foo'})
+      RETURN n.name AS p
 expect bag
-  | p     |
-  | 'foo' |
+      | p     |
+      | 'foo' |
 side-effects
-  | +nodes      | 1 |
-  | +properties | 1 |
+      | +nodes      | 1 |
+      | +properties | 1 |
+
 === clauses/create/Create1.feature [9]
 query
-  CREATE (n {id: 12, name: 'foo'})
+      CREATE (n {id: 12, name: 'foo'})
 expect empty
 side-effects
-  | +nodes      | 1 |
-  | +properties | 2 |
+      | +nodes      | 1 |
+      | +properties | 2 |
+
 === clauses/create/Create1.feature [10]
 query
-  CREATE (n {id: 12, name: 'foo'})
-  RETURN n.id AS id, n.name AS p
+      CREATE (n {id: 12, name: 'foo'})
+      RETURN n.id AS id, n.name AS p
 expect bag
-  | id | p     |
-  | 12 | 'foo' |
+      | id | p     |
+      | 12 | 'foo' |
 side-effects
-  | +nodes      | 1 |
-  | +properties | 2 |
+      | +nodes      | 1 |
+      | +properties | 2 |
+
 === clauses/create/Create1.feature [11]
 query
-  CREATE (n {id: 12, name: null})
-  RETURN n.id AS id, n.name AS p
+      CREATE (n {id: 12, name: null})
+      RETURN n.id AS id, n.name AS p
 expect bag
-  | id | p    |
-  | 12 | null |
+      | id | p    |
+      | 12 | null |
 side-effects
-  | +nodes      | 1 |
-  | +properties | 1 |
+      | +nodes      | 1 |
+      | +properties | 1 |
+
 === clauses/create/Create1.feature [12]
 query
-  CREATE (p:TheLabel {id: 4611686018427387905})
-  RETURN p.id
+      CREATE (p:TheLabel {id: 4611686018427387905})
+      RETURN p.id
 expect bag
-  | p.id                |
-  | 4611686018427387905 |
+      | p.id                |
+      | 4611686018427387905 |
 side-effects
-  | +nodes      | 1 |
-  | +properties | 1 |
-  | +labels     | 1 |
+      | +nodes      | 1 |
+      | +properties | 1 |
+      | +labels     | 1 |
+
 === clauses/set/Set2.feature [1]
 setup
-  CREATE (:A {property1: 23, property2: 46})
+      CREATE (:A {property1: 23, property2: 46})
 query
-  MATCH (n:A)
-  SET n.property1 = null
-  RETURN n
+      MATCH (n:A)
+      SET n.property1 = null
+      RETURN n
 expect bag
-  | n                    |
-  | (:A {property2: 46}) |
+      | n                    |
+      | (:A {property2: 46}) |
 side-effects
-  | -properties | 1 |
+      | -properties | 1 |
+
 === clauses/set/Set2.feature [2]
 setup
-  CREATE (:A {name: 'Michael', age: 35})
+      CREATE (:A {name: 'Michael', age: 35})
 query
-  MATCH (n)
-  WHERE n.name = 'Michael'
-  SET n.name = null
-  RETURN n
+      MATCH (n)
+      WHERE n.name = 'Michael'
+      SET n.name = null
+      RETURN n
 expect bag
-  | n              |
-  | (:A {age: 35}) |
+      | n              |
+      | (:A {age: 35}) |
 side-effects
-  | -properties | 1 |
+      | -properties | 1 |
+
 === clauses/set/Set2.feature [3]
 setup
-  CREATE ()-[:REL {property1: 12, property2: 24}]->()
+      CREATE ()-[:REL {property1: 12, property2: 24}]->()
 query
-  MATCH ()-[r]->()
-  SET r.property1 = null
-  RETURN r
+      MATCH ()-[r]->()
+      SET r.property1 = null
+      RETURN r
 expect bag
-  | r                      |
-  | [:REL {property2: 24}] |
+      | r                      |
+      | [:REL {property2: 24}] |
 side-effects
-  | -properties | 1 |
+      | -properties | 1 |
+
 === clauses/set/Set3.feature [1]
 setup
-  CREATE ()
+      CREATE ()
 query
-  MATCH (n)
-  SET n:Foo
-  RETURN n
+      MATCH (n)
+      SET n:Foo
+      RETURN n
 expect bag
-  | n      |
-  | (:Foo) |
+      | n      |
+      | (:Foo) |
 side-effects
-  | +labels | 1 |
+      | +labels | 1 |
+
 === clauses/set/Set3.feature [2]
 setup
-  CREATE ()
+      CREATE ()
 query
-  MATCH (n)
-  SET n:Foo:Bar
-  RETURN n
+      MATCH (n)
+      SET n:Foo:Bar
+      RETURN n
 expect bag
-  | n          |
-  | (:Foo:Bar) |
+      | n          |
+      | (:Foo:Bar) |
 side-effects
-  | +labels | 2 |
+      | +labels | 2 |
+
 === clauses/set/Set3.feature [3]
 setup
-  CREATE (:A)
+      CREATE (:A)
 query
-  MATCH (n:A)
-  SET n:Foo
-  RETURN n
+      MATCH (n:A)
+      SET n:Foo
+      RETURN n
 expect bag
-  | n        |
-  | (:A:Foo) |
+      | n        |
+      | (:A:Foo) |
 side-effects
-  | +labels | 1 |
+      | +labels | 1 |
+
 === clauses/set/Set3.feature [4]
 setup
-  CREATE (:A)
+      CREATE (:A)
 query
-  MATCH (n)
-  SET n:Foo:Bar
-  RETURN n
+      MATCH (n)
+      SET n:Foo:Bar
+      RETURN n
 expect bag
-  | n            |
-  | (:A:Foo:Bar) |
+      | n            |
+      | (:A:Foo:Bar) |
 side-effects
-  | +labels | 2 |
+      | +labels | 2 |
+
 === clauses/set/Set3.feature [5]
 setup
-  CREATE ()
+      CREATE ()
 query
-  MATCH (n)
-  SET n :Foo
-  RETURN labels(n)
+      MATCH (n)
+      SET n :Foo
+      RETURN labels(n)
 expect bag
-  | labels(n) |
-  | ['Foo']   |
+      | labels(n) |
+      | ['Foo']   |
 side-effects
-  | +labels | 1 |
+      | +labels | 1 |
+
 === clauses/set/Set3.feature [6]
 setup
-  CREATE ()
+      CREATE ()
 query
-  MATCH (n)
-  SET n :Foo :Bar
-  RETURN labels(n)
+      MATCH (n)
+      SET n :Foo :Bar
+      RETURN labels(n)
 expect bag-lists-unordered
-  | labels(n)      |
-  | ['Foo', 'Bar'] |
+      | labels(n)      |
+      | ['Foo', 'Bar'] |
 side-effects
-  | +labels | 2 |
+      | +labels | 2 |
+
 === clauses/set/Set3.feature [7]
 setup
-  CREATE ()
+      CREATE ()
 query
-  MATCH (n)
-  SET n :Foo:Bar
-  RETURN labels(n)
+      MATCH (n)
+      SET n :Foo:Bar
+      RETURN labels(n)
 expect bag-lists-unordered
-  | labels(n)      |
-  | ['Foo', 'Bar'] |
+      | labels(n)      |
+      | ['Foo', 'Bar'] |
 side-effects
-  | +labels | 2 |
+      | +labels | 2 |
+
 === clauses/set/Set3.feature [8]
 query
-  OPTIONAL MATCH (a:DoesNotExist)
-  SET a:L
-  RETURN a
+      OPTIONAL MATCH (a:DoesNotExist)
+      SET a:L
+      RETURN a
 expect bag
-  | a    |
-  | null |
+      | a    |
+      | null |
 side-effects none
+
 === clauses/set/Set6.feature [5]
 setup
-  CREATE (:N {num: 1})
-  CREATE (:N {num: 2})
-  CREATE (:N {num: 3})
-  CREATE (:N {num: 4})
-  CREATE (:N {num: 5})
+      CREATE (:N {num: 1})
+      CREATE (:N {num: 2})
+      CREATE (:N {num: 3})
+      CREATE (:N {num: 4})
+      CREATE (:N {num: 5})
 query
-  MATCH (n:N)
-  SET n.num = n.num + 1
-  WITH n
-  WHERE n.num % 2 = 0
-  RETURN n.num AS num
+      MATCH (n:N)
+      SET n.num = n.num + 1
+      WITH n
+      WHERE n.num % 2 = 0
+      RETURN n.num AS num
 expect bag
-  | num |
-  | 2   |
-  | 4   |
-  | 6   |
+      | num |
+      | 2   |
+      | 4   |
+      | 6   |
 side-effects
-  | +properties | 5 |
-  | -properties | 5 |
+      | +properties | 5 |
+      | -properties | 5 |
+
 === clauses/delete/Delete1.feature [1]
 setup
-  CREATE ()
+      CREATE ()
 query
-  MATCH (n)
-  DELETE n
+      MATCH (n)
+      DELETE n
 expect empty
 side-effects
-  | -nodes | 1 |
+      | -nodes | 1 |
+
 === clauses/delete/Delete1.feature [2]
 setup
-  CREATE ()
+      CREATE ()
 query
-  MATCH (n)
-  DETACH DELETE n
+      MATCH (n)
+      DETACH DELETE n
 expect empty
 side-effects
-  | -nodes | 1 |
+      | -nodes | 1 |
+
 === clauses/delete/Delete1.feature [3]
 setup
-  CREATE (x:X)
-  CREATE (x)-[:R]->()
-  CREATE (x)-[:R]->()
-  CREATE (x)-[:R]->()
+      CREATE (x:X)
+      CREATE (x)-[:R]->()
+      CREATE (x)-[:R]->()
+      CREATE (x)-[:R]->()
 query
-  MATCH (n:X)
-  DETACH DELETE n
+      MATCH (n:X)
+      DETACH DELETE n
 expect empty
 side-effects
-  | -nodes         | 1 |
-  | -relationships | 3 |
-  | -labels        | 1 |
+      | -nodes         | 1 |
+      | -relationships | 3 |
+      | -labels        | 1 |
+
 === clauses/delete/Delete1.feature [4]
 query
-  OPTIONAL MATCH (n)
-  DELETE n
+      OPTIONAL MATCH (n)
+      DELETE n
 expect empty
 side-effects none
+
 === clauses/delete/Delete1.feature [5]
 query
-  OPTIONAL MATCH (a:DoesNotExist)
-  DELETE a
-  RETURN a
+      OPTIONAL MATCH (a:DoesNotExist)
+      DELETE a
+      RETURN a
 expect bag
-  | a    |
-  | null |
+      | a    |
+      | null |
 side-effects none
+
 === clauses/delete/Delete1.feature [6]
 query
-  OPTIONAL MATCH (n)
-  DETACH DELETE n
+      OPTIONAL MATCH (n)
+      DETACH DELETE n
 expect empty
 side-effects none
+
 === clauses/delete/Delete1.feature [7]
 setup
-  CREATE (x:X)
-  CREATE (x)-[:R]->()
-  CREATE (x)-[:R]->()
-  CREATE (x)-[:R]->()
+      CREATE (x:X)
+      CREATE (x)-[:R]->()
+      CREATE (x)-[:R]->()
+      CREATE (x)-[:R]->()
 query
-  MATCH (n:X)
-  DELETE n
+      MATCH (n:X)
+      DELETE n
 expect runtime-error ConstraintVerificationFailed DeleteConnectedNode
 side-effects none
+
 === clauses/remove/Remove1.feature [1]
 setup
-  CREATE (:L {num: 42})
+      CREATE (:L {num: 42})
 query
-  MATCH (n)
-  REMOVE n.num
-  RETURN n.num IS NOT NULL AS still_there
+      MATCH (n)
+      REMOVE n.num
+      RETURN n.num IS NOT NULL AS still_there
 expect bag
-  | still_there |
-  | false       |
+      | still_there |
+      | false       |
 side-effects
-  | -properties | 1 |
+      | -properties | 1 |
+
 === clauses/remove/Remove1.feature [3]
 setup
-  CREATE (a), (b), (a)-[:X {num: 42}]->(b)
+      CREATE (a), (b), (a)-[:X {num: 42}]->(b)
 query
-  MATCH ()-[r]->()
-  REMOVE r.num
-  RETURN r.num IS NOT NULL AS still_there
+      MATCH ()-[r]->()
+      REMOVE r.num
+      RETURN r.num IS NOT NULL AS still_there
 expect bag
-  | still_there |
-  | false       |
+      | still_there |
+      | false       |
 side-effects
-  | -properties | 1 |
+      | -properties | 1 |
+
 === clauses/remove/Remove1.feature [5]
 query
-  OPTIONAL MATCH (a:DoesNotExist)
-  REMOVE a.num
-  RETURN a
+      OPTIONAL MATCH (a:DoesNotExist)
+      REMOVE a.num
+      RETURN a
 expect bag
-  | a    |
-  | null |
+      | a    |
+      | null |
 side-effects none
+
 === clauses/remove/Remove1.feature [6]
 setup
-  CREATE ({num: 42})
+      CREATE ({num: 42})
 query
-  MATCH (n)
-  OPTIONAL MATCH (n)-[r]->()
-  REMOVE r.num
-  RETURN n
+      MATCH (n)
+      OPTIONAL MATCH (n)-[r]->()
+      REMOVE r.num
+      RETURN n
 expect bag
-  | n           |
-  | ({num: 42}) |
+      | n           |
+      | ({num: 42}) |
 side-effects none
+
 === clauses/remove/Remove2.feature [1]
 setup
-  CREATE (:L {num: 42})
+      CREATE (:L {num: 42})
 query
-  MATCH (n)
-  REMOVE n:L
-  RETURN n.num
+      MATCH (n)
+      REMOVE n:L
+      RETURN n.num
 expect bag
-  | n.num |
-  | 42    |
+      | n.num |
+      | 42    |
 side-effects
-  | -labels | 1 |
+      | -labels | 1 |
+
 === clauses/remove/Remove2.feature [2]
 setup
-  CREATE (:Foo:Bar)
+      CREATE (:Foo:Bar)
 query
-  MATCH (n)
-  REMOVE n:Foo
-  RETURN labels(n)
+      MATCH (n)
+      REMOVE n:Foo
+      RETURN labels(n)
 expect bag
-  | labels(n) |
-  | ['Bar']   |
+      | labels(n) |
+      | ['Bar']   |
 side-effects
-  | -labels | 1 |
+      | -labels | 1 |
+
 === clauses/remove/Remove2.feature [3]
 setup
-  CREATE (:L1:L2:L3 {num: 42})
+      CREATE (:L1:L2:L3 {num: 42})
 query
-  MATCH (n)
-  REMOVE n:L1:L3
-  RETURN labels(n)
+      MATCH (n)
+      REMOVE n:L1:L3
+      RETURN labels(n)
 expect bag
-  | labels(n) |
-  | ['L2']    |
+      | labels(n) |
+      | ['L2']    |
 side-effects
-  | -labels | 2 |
+      | -labels | 2 |
+
 === clauses/remove/Remove2.feature [4]
 setup
-  CREATE (:Foo)
+      CREATE (:Foo)
 query
-  MATCH (n)
-  REMOVE n:Bar
-  RETURN labels(n)
+      MATCH (n)
+      REMOVE n:Bar
+      RETURN labels(n)
 expect bag
-  | labels(n) |
-  | ['Foo']   |
+      | labels(n) |
+      | ['Foo']   |
 side-effects none
+
 === clauses/remove/Remove2.feature [5]
 query
-  OPTIONAL MATCH (a:DoesNotExist)
-  REMOVE a:L
-  RETURN a
+      OPTIONAL MATCH (a:DoesNotExist)
+      REMOVE a:L
+      RETURN a
 expect bag
-  | a    |
-  | null |
+      | a    |
+      | null |
 side-effects none
+
 === clauses/remove/Remove3.feature [1]
 setup
-  CREATE (:N {num: 42})
+      CREATE (:N {num: 42})
 query
-  MATCH (n:N)
-  REMOVE n.num
-  RETURN n
-  LIMIT 0
+      MATCH (n:N)
+      REMOVE n.num
+      RETURN n
+      LIMIT 0
 expect bag
-  | n |
+      | n |
 side-effects
-  | -properties | 1 |
+      | -properties | 1 |
+
 === clauses/remove/Remove3.feature [15]
 setup
-  CREATE ()-[r:R {num: 42}]->()
+      CREATE ()-[r:R {num: 42}]->()
 query
-  MATCH ()-[r:R]->()
-  REMOVE r.num
-  RETURN r
-  LIMIT 0
+      MATCH ()-[r:R]->()
+      REMOVE r.num
+      RETURN r
+      LIMIT 0
 expect bag
-  | r |
+      | r |
 side-effects
-  | -properties | 1 |
+      | -properties | 1 |
 
 === clauses/remove/Remove1.feature [2]
 query

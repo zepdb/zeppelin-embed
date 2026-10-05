@@ -87,6 +87,27 @@ class ConformanceControls(unittest.TestCase):
             finally:
                 self.profile.FIXTURES = saved
 
+    def test_pinned_unordered_list_spelling_preserves_rows(self):
+        with tempfile.TemporaryDirectory(prefix='ze59-list-control-') as directory:
+            root = Path(directory)
+            (root / 'read-tck-execution.txt').write_text(
+                '\n=== local/control.feature [1]\nquery\n  RETURN [1, 2] AS v\n'
+                'expect bag-lists-unordered\n  | v |\n  | [1, 2] |\nside-effects none\n')
+            (root / 'write-tck-execution.txt').write_text('')
+            body = ('  Scenario: [1] control\n    When executing query:\n'
+                    '      """\n      RETURN [1, 2] AS v\n      """\n'
+                    '    Then the result should be (ignoring element order for lists):\n'
+                    '      | v |\n      | [1, 2] |\n    And no side effects\n')
+            saved = self.profile.FIXTURES
+            self.profile.FIXTURES = root
+            try:
+                self.profile.verify_expectations({'local/control.feature [1]': {'original_body': body}})
+                with self.assertRaisesRegex(ValueError, 'altered original results'):
+                    self.profile.verify_expectations({'local/control.feature [1]': {
+                        'original_body': body.replace('| [1, 2] |', '| [1, 3] |')}})
+            finally:
+                self.profile.FIXTURES = saved
+
     def test_public_execution_requires_receipts(self):
         command = ['cargo', 'test', '-p', 'zeppelin-embed-cypher', '--test',
                    'read_tck_execution', '--test', 'write_tck_execution',
