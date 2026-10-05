@@ -1649,6 +1649,19 @@ fn interrupted_namespace_purge_resumes_after_reopen() {
             .is_err()
         );
         drop(stores);
+        if boundary == "accept binding rename" {
+            let reader = Store::open(root.path().join("a"), OpenOptions::read_only())
+                .expect("accepted namespace purge permits a logical read");
+            assert!(
+                reader
+                    .get_documents(&[DocId::new(1)], DocumentFields::NONE)
+                    .expect("committed delete")
+                    .iter()
+                    .all(Option::is_none)
+            );
+            assert!(root.path().join("a/purge.ze").exists());
+            reader.close().expect("close without purge recovery");
+        }
         for name in ["b", "a"] {
             let store =
                 Store::open(root.path().join(name), OpenOptions::new()).expect("resume purge");

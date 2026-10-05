@@ -1121,8 +1121,8 @@ impl Store {
         match self.vfs.open(&path) {
             Ok(_) => {
                 let intent = read_intent(self.vfs.as_ref(), &self.directory)?;
-                // A read-only open observes the committed logical state and
-                // validates the obligation, but never performs recovery writes.
+                // Accepted namespace deletes already have a committed logical
+                // state. Ordinary purge intents still require writable recovery.
                 if self
                     .writer_lock
                     .lock()
@@ -1131,7 +1131,15 @@ impl Store {
                     })?
                     .is_none()
                 {
-                    return Ok(());
+                    return if crate::lifecycle::namespace_batch::owns_purge_obligation(
+                        self.vfs.as_ref(),
+                        &self.directory,
+                        intent.token_id,
+                    )? {
+                        Ok(())
+                    } else {
+                        Err(StoreError::ReadOnly.into())
+                    };
                 }
                 let generation = self
                     .active

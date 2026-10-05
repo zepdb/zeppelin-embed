@@ -1405,6 +1405,16 @@ fn read_only_open_preserves_a_committed_purge_intent_and_all_store_bytes() {
         .purge_with_available_space(&[DocId::new(92)], u64::MAX)
         .expect("commit purge intent");
     assert!(!token.is_no_op());
+    assert!(
+        store
+            .get_documents(
+                &[DocId::new(92)],
+                zeppelin_embed::lifecycle::DocumentFields::NONE,
+            )
+            .expect("ordinary purge has not committed a logical delete")
+            .iter()
+            .all(Option::is_some)
+    );
     store.close().expect("close with committed purge intent");
     assert!(directory.path().join("purge.ze").exists());
     let before = directory_bytes(directory.path());
