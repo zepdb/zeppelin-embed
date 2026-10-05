@@ -3113,7 +3113,7 @@ impl Store {
         let _reclamation_admission =
             namespace_batch::reader_admission(path, options.access_mode == AccessMode::ReadWrite)?;
         #[cfg(any(test, feature = "test-support"))]
-        let reclamation_pin = match std::fs::metadata(path) {
+        let reclamation_pin = match crate::vfs::Vfs::ensure_directory(&crate::vfs::StdVfs, path, false) {
             Ok(_) => {
                 namespace_batch::reader_lease(path, options.access_mode == AccessMode::ReadWrite)?
                     .map(Arc::new)
