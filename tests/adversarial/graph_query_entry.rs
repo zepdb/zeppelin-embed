@@ -5,7 +5,7 @@ use super::coverage::CoverageRegistry;
 use std::collections::BTreeSet;
 use zeppelin_embed::property_graph::query::query_entry_test_support::run_actual_probe;
 
-const RECEIPTS: [&str; 15] = [
+const RECEIPTS: [&str; 18] = [
     "incident.fire",
     "partial-append.fire",
     "wal-sync.fire",
@@ -17,13 +17,16 @@ const RECEIPTS: [&str; 15] = [
     "precommit-cancel.fire",
     "indeterminate.fire",
     "post-commit-cancel.commit",
+    "runtime-close.fire",
+    "pre-append-close.fire",
+    "post-append-close.commit",
     "oracle.can-fire",
     "search-preparation.fire",
     "search-report.retain",
     "search-publication.same-view",
 ];
 
-const KEYS: [&str; 16] = [
+const KEYS: [&str; 19] = [
     "property-graph.query-entry.incident.fire",
     "property-graph.query-entry.partial-append.fire",
     "property-graph.query-entry.wal-sync.fire",
@@ -35,6 +38,9 @@ const KEYS: [&str; 16] = [
     "property-graph.query-entry.precommit-cancel.fire",
     "property-graph.query-entry.indeterminate.fire",
     "property-graph.query-entry.post-commit-cancel.commit",
+    "property-graph.query-entry.runtime-close.fire",
+    "property-graph.query-entry.pre-append-close.fire",
+    "property-graph.query-entry.post-append-close.commit",
     "property-graph.query-entry.oracle.can-fire",
     "property-graph.query-entry.same-seed-control",
     "property-graph.query-entry.search-preparation.fire",

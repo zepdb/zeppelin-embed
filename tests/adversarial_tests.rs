@@ -19274,16 +19274,17 @@ fn native_graph_runner_keys_are_active_with_graph_feature() {
     // second-chunk reservation and blocking row-cap receipts. ZE-255 adds
     // streaming retention under a one-row storage capacity. ZE-192 and
     // ZE-176 add seven receipt keys; the pin had drifted by three, so it
-    // is reset to the observed lengths. ZE-190 adds fence-only recovery.
+    // is reset to the observed lengths. ZE-190 adds fence-only recovery;
+    // ZE-275 adds three close schedules.
     #[cfg(not(feature = "graph-result-test-support"))]
     assert_eq!(
         adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        356 + if cfg!(unix) { 7 } else { 0 }
+        359 + if cfg!(unix) { 7 } else { 0 }
     );
     #[cfg(feature = "graph-result-test-support")]
     assert_eq!(
         adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        376 + if cfg!(unix) { 7 } else { 0 }
+        379 + if cfg!(unix) { 7 } else { 0 }
     );
 }
 
@@ -19326,6 +19327,9 @@ fn query_entry_probe_fires_every_write_fault_site() {
             "property-graph.query-entry.precommit-cancel.fire",
             "property-graph.query-entry.indeterminate.fire",
             "property-graph.query-entry.post-commit-cancel.commit",
+            "property-graph.query-entry.runtime-close.fire",
+            "property-graph.query-entry.pre-append-close.fire",
+            "property-graph.query-entry.post-append-close.commit",
             "property-graph.query-entry.same-seed-control",
             "property-graph.query-entry.search-preparation.fire",
             "property-graph.query-entry.search-report.retain",

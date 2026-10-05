@@ -954,6 +954,165 @@ pub(crate) fn fence_only_probe(
     Ok((actual, expected))
 }
 
+/// Directed close schedules shared by the lifetime tests and runner.
+#[derive(Clone, Copy)]
+pub(crate) enum CloseSchedule {
+    Runtime,
+    BeforeAppend,
+    AfterAppend,
+}
+
+pub(crate) fn close_probe(seed: u64, schedule: CloseSchedule) -> Result<u64, String> {
+    use crate::lifecycle::StoreState;
+    use std::cell::Cell;
+    use std::sync::Barrier;
+    use std::time::{Duration, Instant};
+
+    let label = match schedule {
+        CloseSchedule::Runtime => "runtime-close",
+        CloseSchedule::BeforeAppend => "pre-append-close",
+        CloseSchedule::AfterAppend => "post-append-close",
+    };
+    let fixture = Fixture::create(probe_directory(seed, label), (seed % 1000) as i64 * 10)?;
+    let before = fixture.generation()?;
+    let wait_closing = || -> Result<(), String> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while fixture.store.state().map_err(|e| e.to_string())? != StoreState::Closing {
+            if Instant::now() >= deadline {
+                return Err(String::from("close did not begin"));
+            }
+            std::thread::yield_now();
+        }
+        Ok(())
+    };
+    let builds = Cell::new(0);
+    let checkpoint = Cell::new(None);
+    let outcome = std::thread::scope(|scope| -> Result<_, String> {
+        let mut closer = None;
+        let outcome = match schedule {
+            CloseSchedule::Runtime => fixture.store.execute_graph_query(
+                &control(),
+                &options(16),
+                None::<&mut NoSearch>,
+                |runtime, executor| {
+                    builds.set(builds.get() + 1);
+                    let executed = write_p(runtime, executor, Assign::Increment)?;
+                    if builds.get() == 2 {
+                        closer = Some(scope.spawn(|| fixture.store.close()));
+                        wait_closing().map_err(|_| GraphQueryError::contract("close wait"))?;
+                        let observed = runtime.checkpoint();
+                        checkpoint.set(Some(matches!(
+                            observed,
+                            Err(crate::property_graph::query::runtime::RuntimeError::Value(
+                                crate::property_graph::query::QueryError::ReadCancelled
+                            ))
+                        )));
+                    }
+                    Ok(executed)
+                },
+            ),
+            CloseSchedule::BeforeAppend | CloseSchedule::AfterAppend => {
+                let (entered, release) = if matches!(schedule, CloseSchedule::AfterAppend) {
+                    fixture.vfs.arm_wal_full_sync()
+                } else {
+                    let entered = Arc::new(Barrier::new(2));
+                    let release = Arc::new(Barrier::new(2));
+                    let e = Arc::clone(&entered);
+                    let r = Arc::clone(&release);
+                    fixture.vfs.after_next_create(move || {
+                        e.wait();
+                        r.wait();
+                    });
+                    (entered, release)
+                };
+                let writer = scope.spawn(|| fixture.write(&control(), 16, Assign::Increment));
+                entered.wait();
+                closer = Some(scope.spawn(|| fixture.store.close()));
+                let closing = wait_closing();
+                release.wait();
+                let outcome = writer.join().map_err(|_| String::from("writer panicked"))?;
+                closing?;
+                outcome
+            }
+        };
+        closer
+            .ok_or("close was not started")?
+            .join()
+            .map_err(|_| String::from("closer panicked"))?
+            .map_err(|e| e.to_string())?;
+        Ok(outcome)
+    })?;
+    // Assertions happen after both threads have drained.
+    let committed = matches!(schedule, CloseSchedule::AfterAppend);
+    let outcome_check = if committed {
+        match outcome {
+            Ok(result)
+                if result.metadata().outcome
+                    == (Outcome::Committed {
+                        changed: crate::property_graph::GraphGeneration::new(before + 1),
+                    }) =>
+            {
+                Ok(())
+            }
+            other => Err(format!(
+                "post-append close lost the commit: {:?}",
+                other.err()
+            )),
+        }
+    } else {
+        match outcome {
+            Err(e) if e.kind() == GraphQueryErrorKind::Closed && e.nothing_committed() => Ok(()),
+            other => Err(format!(
+                "pre-append close did not refuse: {:?}",
+                other.err()
+            )),
+        }
+    };
+    let Fixture {
+        directory,
+        store,
+        vfs,
+        nodes,
+        values,
+    } = fixture;
+    drop(store);
+    let reopened = Fixture {
+        store: Store::open_native_graph(directory.join("native"), store_options(), None)
+            .map_err(|e| e.to_string())?,
+        directory,
+        vfs,
+        nodes,
+        values,
+    };
+    let observed = (
+        reopened.generation()?,
+        node_values(&reopened.read().map_err(|e| e.to_string())?)?,
+    );
+    let delta = i64::from(committed);
+    let expected = (
+        before + u64::from(committed),
+        nodes
+            .iter()
+            .zip(values)
+            .map(|(n, p)| (n.get(), p + delta))
+            .collect(),
+    );
+    reopened.remove()?;
+    if matches!(schedule, CloseSchedule::Runtime) && checkpoint.get() != Some(true) {
+        return Err(format!(
+            "writer runtime checkpoint missed close: {:?}",
+            checkpoint.get()
+        ));
+    }
+    outcome_check?;
+    if observed != expected {
+        return Err(format!(
+            "close reopen mismatch: {observed:?} != {expected:?}"
+        ));
+    }
+    Ok(1)
+}
+
 /// Drives the seam's write path through its fault sites, each refused with
 /// its typed group and a proved unchanged store, then through a cancellation
 /// that arrives after the commit attempt, which must commit.
@@ -1036,6 +1195,9 @@ pub fn run_actual_probe(seed: u64) -> Result<ProbeReport, String> {
         observations.extend(actual);
         expected.extend(oracle);
     }
+    let runtime_close = close_probe(seed, CloseSchedule::Runtime)?;
+    let pre_append_close = close_probe(seed, CloseSchedule::BeforeAppend)?;
+    let post_append_close = close_probe(seed, CloseSchedule::AfterAppend)?;
 
     let incident = incident_probe(seed, base)?;
     let mut fault_receipts = Vec::new();
@@ -1126,6 +1288,9 @@ pub fn run_actual_probe(seed: u64) -> Result<ProbeReport, String> {
                 ("precommit-cancel.fire", precommit),
                 ("indeterminate.fire", 1),
                 ("post-commit-cancel.commit", post_commit),
+                ("runtime-close.fire", runtime_close),
+                ("pre-append-close.fire", pre_append_close),
+                ("post-append-close.commit", post_append_close),
                 ("oracle.can-fire", oracle),
                 ("search-preparation.fire", 1),
                 ("search-report.retain", 1),

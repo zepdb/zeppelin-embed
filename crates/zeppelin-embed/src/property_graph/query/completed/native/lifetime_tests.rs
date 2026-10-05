@@ -423,3 +423,18 @@ fn ze53_s4_repeated_statements_return_accounting_to_baseline() {
     assert_eq!(fixture.generation().unwrap(), start + 32);
     fixture.remove().unwrap();
 }
+
+#[test]
+fn ze275_close_is_observed_at_a_write_runtime_checkpoint_without_storage_read() {
+    super::entry_probe::close_probe(0, super::entry_probe::CloseSchedule::Runtime).unwrap();
+}
+
+#[test]
+fn ze275_close_before_wal_append_refuses_the_write() {
+    super::entry_probe::close_probe(0, super::entry_probe::CloseSchedule::BeforeAppend).unwrap();
+}
+
+#[test]
+fn ze275_close_after_wal_append_reports_the_commit() {
+    super::entry_probe::close_probe(0, super::entry_probe::CloseSchedule::AfterAppend).unwrap();
+}

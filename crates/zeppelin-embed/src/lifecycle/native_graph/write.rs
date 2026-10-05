@@ -2033,9 +2033,6 @@ pub(super) fn protect_and_commit(
         .vfs()
         .sync(directory, SyncKind::Full)
         .map_err(|source| io(directory, source))?;
-    control
-        .checkpoint()
-        .map_err(|_| NativeGraphError::Stage(StageError::Cancelled))?;
 
     // Both counters are established before append. Once append begins, every
     // failure is indeterminate and stops admission rather than recomputing state.
@@ -2049,6 +2046,23 @@ pub(super) fn protect_and_commit(
         .checked_add(1)
         .ok_or(NativeGraphError::IdentityExhausted)?;
     let failure_path = writer.wal.path.clone();
+    // Close wins over caller cancellation, only before the irreversible append.
+    match store.state().map_err(NativeGraphError::Store)? {
+        crate::lifecycle::StoreState::Open => {}
+        crate::lifecycle::StoreState::Closing => {
+            return Err(NativeGraphError::Store(
+                crate::lifecycle::StoreError::Closing,
+            ));
+        }
+        crate::lifecycle::StoreState::Closed => {
+            return Err(NativeGraphError::Store(
+                crate::lifecycle::StoreError::Closed,
+            ));
+        }
+    }
+    control
+        .checkpoint()
+        .map_err(|_| NativeGraphError::Stage(StageError::Cancelled))?;
     if let Err(source) = writer.wal.handle.append(transition.wal_bytes()) {
         writer.stopped = true;
         let _ = store.native_graph.stop_admissions();

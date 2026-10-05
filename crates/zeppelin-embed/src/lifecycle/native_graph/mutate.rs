@@ -32,6 +32,29 @@ use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+/// Writer runtime checkpoints observe close while close drains the writer.
+/// The lease still owns the exact query-view token and its ordinary lifetime.
+struct WriterRetainedView<'a> {
+    store: &'a crate::lifecycle::Store,
+    lease: &'a super::NativeReadLease,
+}
+
+impl crate::property_graph::query::runtime::RetainedView for WriterRetainedView<'_> {
+    fn query_view(&self) -> &crate::property_graph::query::QueryView {
+        self.lease.query_view()
+    }
+
+    fn check_active(&self) -> Result<(), crate::property_graph::query::QueryError> {
+        use crate::property_graph::query::QueryError;
+        match self.store.state().map_err(|_| QueryError::Control)? {
+            crate::lifecycle::StoreState::Open => self.lease.check_active(),
+            crate::lifecycle::StoreState::Closing | crate::lifecycle::StoreState::Closed => {
+                Err(QueryError::ReadCancelled)
+            }
+        }
+    }
+}
+
 /// One statement's worth of work under an admitted writer lease.
 ///
 /// The consumer receives the read view and runtime it needs to resolve MATCH
@@ -322,7 +345,11 @@ impl crate::lifecycle::Store {
             let memory = QueryMemory::new(&shared, memory_limit)
                 .map_err(RuntimeError::Memory)
                 .map_err(TreeError::Runtime)?;
-            let mut runtime = RuntimeContext::new(&lease, control, &memory, limits)
+            let retained = WriterRetainedView {
+                store: self,
+                lease: &lease,
+            };
+            let mut runtime = RuntimeContext::new(&retained, control, &memory, limits)
                 .map_err(TreeError::Runtime)?;
             let capability = NativeReadCapability::admit(&lease, &runtime)?;
             let mut query_resources = TreeResources::for_query(&mut runtime)?;
