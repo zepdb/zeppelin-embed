@@ -88,6 +88,15 @@ fn coverage_script_fails_below_threshold() -> Result<(), Box<dyn Error>> {
         Some(1),
         "coverage gate did not reject the known-low-coverage crate via its threshold:\n{text}"
     );
+    assert!(
+        text.lines()
+            .find(|line| line.starts_with("TOTAL"))
+            .and_then(|line| line.split_whitespace().nth(9))
+            .and_then(|percent| percent.strip_suffix('%'))
+            .and_then(|percent| percent.parse::<f64>().ok())
+            .is_some_and(|percent| percent < 90.0),
+        "coverage gate did not report line coverage below 90%:\n{text}"
+    );
     fs::remove_dir_all(fixture)?;
     Ok(())
 }

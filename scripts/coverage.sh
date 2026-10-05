@@ -12,7 +12,22 @@ fi
 
 cd "$PROJECT_ROOT"
 
+REPOSITORY_MANIFEST=true
+ARGS=("$@")
+for ((i = 0; i < ${#ARGS[@]}; i++)); do
+    manifest=""
+    case "${ARGS[i]}" in
+        --manifest-path) manifest="${ARGS[i+1]:?missing manifest path}" ;;
+        --manifest-path=*) manifest="${ARGS[i]#--manifest-path=}" ;;
+    esac
+    if [[ -n "$manifest" ]]; then
+        manifest="$(cd "$(dirname "$manifest")" && pwd)/$(basename "$manifest")"
+        [[ "$manifest" == "$PROJECT_ROOT/Cargo.toml" ]] || REPOSITORY_MANIFEST=false
+    fi
+done
+
 WORKSPACE_ARGS=(--workspace)
+if $REPOSITORY_MANIFEST; then
 GRAPH_TARGET="$(graph_effective_target "$@")"
 if graph_target_supports_native_graph "$GRAPH_TARGET"; then
     WORKSPACE_ARGS+=(--features zeppelin-embed-workspace-tests/graph-result-test-support)
@@ -28,6 +43,8 @@ else
         )
     fi
     echo "native graph coverage: not selected for $GRAPH_TARGET; running legacy coverage"
+fi
+
 fi
 
 # Line coverage is the contract. LLVM's function count includes closures,
@@ -52,7 +69,7 @@ cargo llvm-cov \
     --ignore-filename-regex '(^|/)(registry/|crates/zeppelin-embed-bench|fuzz/|target/)' \
     "$@"
 
-if [[ "$(uname -s)" == "Darwin" ]]; then
+if $REPOSITORY_MANIFEST && [[ "$(uname -s)" == "Darwin" ]]; then
     cargo llvm-cov \
         -p zeppelin-embed-bench \
         --lib \
