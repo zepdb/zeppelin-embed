@@ -98,7 +98,7 @@ fn logical_state(store: &Store, nodes: &[NodeId]) -> Vec<NodeState> {
 
 /// Each commit writes its own pack, so validator-mode leaf verification touches
 /// one artifact per earlier record. Retaining every mapping exhausts the fixed
-/// 64-slot preparation table at commit index 63; scoped reads must not.
+/// mapping table without scoped reads. The default table now has 8,192 slots.
 #[test]
 fn sequential_single_node_commits_outlive_the_mapping_slot_table() {
     let parent = super::tempfile::tempdir().expect("temporary parent");
@@ -144,4 +144,156 @@ fn ten_thousand_small_commits_checkpoint_and_reopen() {
     let after = logical_state(&reopened, &sampled);
     assert_eq!(before, after);
     reopened.close().expect("close reopened store");
+}
+
+#[cfg(test)]
+fn check_slot_reports(
+    reports: &[crate::property_graph::storage::mapping_slot_capture::Report],
+    context: &str,
+) -> Result<(), String> {
+    use crate::property_graph::storage::tree::directory::RESERVED_PINNED_SLOTS;
+    if reports.is_empty() {
+        return Err(format!("{context}: missing source observations"));
+    }
+    for report in reports {
+        if report.filled > report.capacity - RESERVED_PINNED_SLOTS
+            || report.post_exhaustion_resolves > RESERVED_PINNED_SLOTS
+        {
+            return Err(format!("{context}: {report:?}"));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn ze168_mapping_slots_per_commit() {
+    use crate::property_graph::storage::mapping_slot_capture::{Capture, Kind};
+    let capture = Capture::start();
+    let parent = super::tempfile::tempdir().expect("temporary parent");
+    let path = parent.path().join("counter-slots");
+    let store = Store::create_native_graph(&path, durable_options(), None).expect("create store");
+    capture.take();
+    let mut nodes = Vec::new();
+    let mut all = Vec::new();
+    for index in 0..320 {
+        nodes.push(commit_probe_node(&store, index));
+        let reports = capture.take();
+        let preparation: Vec<_> = reports
+            .iter()
+            .copied()
+            .filter(|r| r.kind == Kind::Preparation)
+            .collect();
+        check_slot_reports(&preparation, &format!("commit {index}")).unwrap();
+        check_slot_reports(&reports, &format!("commit {index}")).unwrap();
+        all.extend(reports);
+    }
+    let sampled: Vec<_> = nodes.iter().step_by(37).copied().collect();
+    let before = logical_state(&store, &sampled);
+    store.close().expect("close");
+    let reopened = Store::open_native_graph(&path, durable_options(), None).expect("reopen");
+    let reports = capture.take();
+    let recovery: Vec<_> = reports
+        .iter()
+        .copied()
+        .filter(|r| r.kind == Kind::Recovery)
+        .collect();
+    check_slot_reports(&recovery, "reopen").unwrap();
+    check_slot_reports(&reports, "close/reopen").unwrap();
+    all.extend(reports);
+    for kind in [Kind::Preparation, Kind::Recovery] {
+        let reports: Vec<_> = all.iter().filter(|r| r.kind == kind).collect();
+        assert!(
+            reports.iter().any(|r| r.filled == 60),
+            "{kind:?}: threshold never reached"
+        );
+        println!(
+            "{kind:?}: sources={}, max fills={}, max post-exhaustion resolves={}, generations={:?}",
+            reports.len(),
+            reports.iter().map(|r| r.filled).max().unwrap(),
+            reports
+                .iter()
+                .map(|r| r.post_exhaustion_resolves)
+                .max()
+                .unwrap(),
+            reports
+                .iter()
+                .map(|r| r.generation)
+                .min()
+                .zip(reports.iter().map(|r| r.generation).max())
+        );
+    }
+    assert_eq!(before, logical_state(&reopened, &sampled));
+    reopened.close().expect("close reopened");
+}
+
+#[test]
+fn ze168_mapping_slot_gate_rejects_missing_and_exceeded_bounds() {
+    use crate::property_graph::storage::mapping_slot_capture::{Kind, Report};
+    let report = Report {
+        kind: Kind::Preparation,
+        generation: 1,
+        capacity: 64,
+        filled: 60,
+        post_exhaustion_resolves: 4,
+    };
+    assert!(check_slot_reports(&[], "missing").is_err());
+    assert!(check_slot_reports(&[report], "boundary").is_ok());
+    assert!(
+        check_slot_reports(
+            &[Report {
+                filled: 61,
+                ..report
+            }],
+            "fills"
+        )
+        .is_err()
+    );
+    assert!(
+        check_slot_reports(
+            &[Report {
+                post_exhaustion_resolves: 5,
+                ..report
+            }],
+            "resolves"
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn ze168_post_exhaustion_hit_and_fill_are_distinct() {
+    use crate::property_graph::resources::GraphResources;
+    use crate::property_graph::staging::{WriteLimits, WriteMemory};
+    use crate::property_graph::storage::NativePreparationSource;
+    use crate::property_graph::storage::memory::StorageMemory;
+    use crate::property_graph::storage::tree::directory::BlockSource;
+    let parent = super::tempfile::tempdir().expect("temporary parent");
+    let path = parent.path().join("boundary");
+    let store = Store::create_native_graph(&path, durable_options(), None).expect("create");
+    commit_probe_node(&store, 0);
+    let old_catalog = store.admit_native_read().unwrap().bundle().catalog().block;
+    commit_probe_node(&store, 1);
+    let lease = store.admit_native_read().unwrap();
+    let catalog = lease.bundle().catalog().block;
+    assert_ne!(old_catalog.artifact, catalog.artifact);
+    let shared = GraphResources::from_store(&store).unwrap();
+    let writer = WriteMemory::new(&shared, WriteLimits::default()).unwrap();
+    let control = QueryControl::Cancel(CancelToken::new());
+    let memory = StorageMemory::new(&writer, &control, 32 * 1024 * 1024).unwrap();
+    let source = NativePreparationSource::new(&lease, &memory, 5).unwrap();
+    let mut resources = source.resources(u64::MAX).unwrap();
+    source.resolve(catalog, &mut resources).unwrap();
+    let first = source.mapping_slot_report();
+    assert_eq!((first.filled, first.post_exhaustion_resolves), (1, 0));
+    source.resolve(catalog, &mut resources).unwrap();
+    let hit = source.mapping_slot_report();
+    assert_eq!((hit.filled, hit.post_exhaustion_resolves), (1, 1));
+    source.resolve(old_catalog, &mut resources).unwrap();
+    let fill = source.mapping_slot_report();
+    assert_eq!((fill.filled, fill.post_exhaustion_resolves), (2, 2));
+    if let QueryControl::Cancel(token) = &control {
+        token.cancel();
+    }
+    assert!(source.resolve(catalog, &mut resources).is_err());
+    assert_eq!(source.mapping_slot_report().post_exhaustion_resolves, 3);
 }

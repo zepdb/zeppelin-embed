@@ -127,3 +127,100 @@ mod mapping_index_tests {
         assert!(probes < 4096 * 8, "mapping table probes: {probes}");
     }
 }
+
+// Private fixture controls; descriptor and auxiliary source capacities stay intact.
+#[cfg(all(test, feature = "graph-cypher"))]
+pub(crate) mod mapping_slot_capture {
+    #![allow(clippy::expect_used, clippy::panic)]
+    use std::cell::RefCell;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub(crate) enum Kind {
+        Preparation,
+        Recovery,
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) struct Report {
+        pub kind: Kind,
+        pub generation: u64,
+        pub capacity: usize,
+        pub filled: usize,
+        pub post_exhaustion_resolves: usize,
+    }
+    pub(crate) struct Observation(std::cell::Cell<Report>);
+    impl Observation {
+        pub(crate) fn new(kind: Kind, generation: u64, capacity: usize) -> Self {
+            Self(std::cell::Cell::new(Report {
+                kind,
+                generation,
+                capacity,
+                filled: 0,
+                post_exhaustion_resolves: 0,
+            }))
+        }
+        pub(crate) fn report(&self) -> Report {
+            self.0.get()
+        }
+        pub(crate) fn filled(&self, filled: usize) {
+            self.0.set(Report {
+                filled,
+                ..self.report()
+            });
+        }
+        pub(crate) fn resolve(&self, exhausted: bool) {
+            if exhausted {
+                self.0.set(Report {
+                    post_exhaustion_resolves: self.report().post_exhaustion_resolves + 1,
+                    ..self.report()
+                });
+            }
+        }
+    }
+    impl Drop for Observation {
+        fn drop(&mut self) {
+            publish(self.report());
+        }
+    }
+    thread_local! {
+        static CAPTURE: RefCell<Option<Vec<Report>>> = const { RefCell::new(None) };
+    }
+    pub(crate) struct Capture;
+    impl Capture {
+        pub(crate) fn start() -> Self {
+            CAPTURE.with(|capture| {
+                assert!(capture.borrow_mut().replace(Vec::new()).is_none());
+            });
+            Self
+        }
+        pub(crate) fn take(&self) -> Vec<Report> {
+            CAPTURE.with(|capture| {
+                std::mem::take(capture.borrow_mut().as_mut().expect("active capture"))
+            })
+        }
+    }
+    impl Drop for Capture {
+        fn drop(&mut self) {
+            CAPTURE.with(|capture| {
+                *capture.borrow_mut() = None;
+            });
+        }
+    }
+    pub(crate) fn capacity(original: usize) -> usize {
+        CAPTURE.with(|capture| {
+            if original > 4 && capture.borrow().is_some() {
+                64
+            } else {
+                original
+            }
+        })
+    }
+    pub(crate) fn publish(report: Report) {
+        CAPTURE.with(|capture| {
+            if report.capacity > 4
+                && let Some(reports) = capture.borrow_mut().as_mut()
+            {
+                reports.push(report);
+            }
+        });
+    }
+}

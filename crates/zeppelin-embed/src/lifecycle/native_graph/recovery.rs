@@ -729,6 +729,8 @@ struct RecoverySource<'a, 'm> {
     window: RefCell<Option<RecoveryMappedArtifact>>,
     retain_window: Cell<bool>,
     filled: Cell<usize>,
+    #[cfg(test)]
+    slot_observation: crate::property_graph::storage::mapping_slot_capture::Observation,
     source_error: RefCell<Option<NativeGraphError>>,
 }
 
@@ -771,6 +773,8 @@ impl<'a, 'm> RecoverySource<'a, 'm> {
         if capacity == 0 {
             return Err(TreeError::Memory);
         }
+        #[cfg(test)]
+        let capacity = crate::property_graph::storage::mapping_slot_capture::capacity(capacity);
         let mut slots = StorageBuffer::new(memory, capacity)?;
         for _ in 0..capacity {
             slots.push(OnceCell::new())?;
@@ -787,6 +791,13 @@ impl<'a, 'm> RecoverySource<'a, 'm> {
             window: RefCell::new(None),
             retain_window: Cell::new(false),
             filled: Cell::new(0),
+            #[cfg(test)]
+            slot_observation:
+                crate::property_graph::storage::mapping_slot_capture::Observation::new(
+                    crate::property_graph::storage::mapping_slot_capture::Kind::Recovery,
+                    state.generation.get(),
+                    capacity,
+                ),
             source_error: RefCell::new(None),
         })
     }
@@ -1870,6 +1881,8 @@ impl RecoverySource<'_, '_> {
         slot.set(self.open_mapping(reference, resources)?)
             .map_err(|_| TreeError::Invalid("native recovery source slot initialized twice"))?;
         self.filled.set(self.filled.get().saturating_add(1));
+        #[cfg(test)]
+        self.slot_observation.filled(self.filled.get());
         self.decode(
             slot.get().ok_or(TreeError::Invalid(
                 "native recovery source slot remained empty",
@@ -1897,6 +1910,8 @@ impl BlockSource for RecoverySource<'_, '_> {
         reference: PhysicalRef,
         resources: &mut TreeResources<'_>,
     ) -> Result<FramedBlock<'a>, TreeError> {
+        #[cfg(test)]
+        self.slot_observation.resolve(self.slots_exhausted());
         self.slot_block(reference, resources)?
             .ok_or(TreeError::Memory)
     }
