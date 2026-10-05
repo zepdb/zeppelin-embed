@@ -274,11 +274,17 @@ enum SearchTraceBinding {
 /// corruption tests. Maintenance consumes its value state between windows.
 pub(crate) struct SearchTraceCursor<'s, 'm, S, C> {
     state: SearchTraceState<'m>,
+    #[cfg(any(test, feature = "test-support"))]
     source: &'s S,
+    #[cfg(any(test, feature = "test-support"))]
     catalog: &'s C,
+    #[cfg(any(test, feature = "test-support"))]
     lease: &'s NativeReadLease,
+    #[cfg(any(test, feature = "test-support"))]
     document: Option<&'s crate::epoch::EmbeddingTower>,
+    #[cfg(any(test, feature = "test-support"))]
     memory: &'m crate::property_graph::storage::memory::StorageMemory<'m>,
+    borrowed: core::marker::PhantomData<(&'s S, &'s C)>,
 }
 
 impl<'s, 'lease, 'm>
@@ -316,11 +322,17 @@ impl<'s, 'lease, 'm>
         )?;
         Ok(Self {
             state,
+            #[cfg(any(test, feature = "test-support"))]
             source,
+            #[cfg(any(test, feature = "test-support"))]
             catalog,
+            #[cfg(any(test, feature = "test-support"))]
             lease: source.lease(),
+            #[cfg(any(test, feature = "test-support"))]
             document: bundle.document(),
+            #[cfg(any(test, feature = "test-support"))]
             memory: source.memory(),
+            borrowed: core::marker::PhantomData,
         })
     }
 
@@ -1085,9 +1097,11 @@ impl<'s, 'm, S: BlockSource, C: RecordCatalog<S>> SearchTraceCursor<'s, 'm, S, C
             lease,
             document,
             memory,
+            borrowed: core::marker::PhantomData,
         })
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn trace(
         &mut self,
         output: &mut [Option<PhysicalRef>],

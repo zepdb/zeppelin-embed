@@ -69,6 +69,7 @@ impl<'m> IndexFloats<'m> {
 
 /// Complete checked source-local vector index retained under its sparse owner.
 pub(crate) struct NativeVectorIndex<'m> {
+    #[cfg(any(test, feature = "test-support"))]
     payload: PayloadRef,
     encoded: SparseBytes<'m>,
     rescore: IndexFloats<'m>,
@@ -447,6 +448,7 @@ pub(super) fn open_vector_index<'m, S: BlockSource>(
         }
     }
     Ok(NativeVectorIndex {
+        #[cfg(any(test, feature = "test-support"))]
         payload,
         encoded,
         rescore,

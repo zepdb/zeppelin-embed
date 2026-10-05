@@ -40,7 +40,7 @@ struct TestPollControl {
 
 #[cfg(not(any(test, feature = "test-support")))]
 #[derive(Default)]
-struct TestPollControl;
+struct TestPollControl {}
 
 impl TestPollControl {
     #[cfg(any(test, feature = "test-support"))]

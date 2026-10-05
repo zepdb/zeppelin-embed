@@ -7815,6 +7815,7 @@ fn traverse_segment_graph<'a>(
         graph_options.profile(),
     );
     let caller_thread = std::thread::current().id();
+    #[cfg(any(test, feature = "test-support"))]
     drop(searcher);
     Ok(SegmentGraphResult::Traversed {
         result,
@@ -8129,6 +8130,10 @@ pub(crate) fn exact_rescore_rows(
         .map_err(|source| QueryError::Store(StoreError::Segment(source)))
 }
 
+#[cfg(not(any(test, feature = "test-support")))]
+use exact_rescore_rows as exact_rescore_rows_for_search;
+
+#[cfg(any(test, feature = "test-support"))]
 fn exact_rescore_rows_for_search<'a>(
     segment: &'a crate::segment::reader::SegmentReader,
     #[cfg(any(test, feature = "test-support"))] controller: Option<
@@ -8158,6 +8163,10 @@ pub(crate) fn query_rescore_rows(
         .map_err(|source| QueryError::Store(StoreError::Segment(source)))
 }
 
+#[cfg(not(any(test, feature = "test-support")))]
+use query_rescore_rows as query_rescore_rows_for_search;
+
+#[cfg(any(test, feature = "test-support"))]
 fn query_rescore_rows_for_search<'a>(
     segment: &'a crate::segment::reader::SegmentReader,
     #[cfg(any(test, feature = "test-support"))] controller: Option<

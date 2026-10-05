@@ -505,12 +505,14 @@ impl<'a, 'm, S: BlockSource, C: RecordCatalog<S>> SparseView<'a, 'm, S, C> {
         })
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) const fn text_count(&self) -> u64 {
         match self.text {
             Some(descriptor) => descriptor.live_rows,
             None => 0,
         }
     }
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) const fn vector_count(&self) -> u64 {
         match self.vector {
             Some(descriptor) => descriptor.live_rows,
