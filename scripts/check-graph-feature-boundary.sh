@@ -105,6 +105,8 @@ core_graph_tests = {
     "graph_completed_results",
     "graph_directories",
     "graph_key_lifecycle",
+    "graph_lexical_prepare",
+    "graph_memory_intervals",
     "graph_query_allocation",
     "graph_query_external_capacity",
     "graph_query_plan",
@@ -145,8 +147,10 @@ if core_targets["graph_node_blocks"].get("required-features"):
 
 ffi_graph_tests = {
     "ffi_graph_contract",
+    "ffi_graph_entry",
     "ffi_graph_header",
     "ffi_graph_layout",
+    "ffi_graph_ownership",
 }
 observed_ffi = selected_targets("zeppelin-embed-ffi", "graph-cypher")
 if observed_ffi != ffi_graph_tests:
