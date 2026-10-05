@@ -920,3 +920,64 @@ fn crash_at_every_prepare_publish_adopt_step() {
         "ZE-256 uncapped prepare/publish/adopt crash states: {total}, clean recoveries: {successes}"
     );
 }
+
+#[test]
+fn namespace_batch_after_torn_single_store_batch_reopens() {
+    use zeppelin_embed::lifecycle::{LiveNamespaceMutation, namespace_batch_live};
+    use zeppelin_embed::wal::replay::{ReplayTerminator, replay};
+    let root = tempfile::tempdir().expect("root");
+    let path = root.path().join("a");
+    let store = Store::open(&path, OpenOptions::new()).expect("create");
+    store
+        .ingest(IngestBatch::new(vec![doc(1, 1)]))
+        .expect("baseline");
+    let baseline = std::fs::metadata(path.join("wal.ze"))
+        .expect("metadata")
+        .len() as usize;
+    store
+        .ingest(IngestBatch::new(vec![
+            doc(1, 2),
+            doc(3, 1),
+            doc(4, 1),
+            doc(5, 1),
+        ]))
+        .expect("batch to tear");
+    store.close().expect("close source");
+    let wal = std::fs::read(path.join("wal.ze")).expect("WAL");
+    // Keep exactly members 0 and 1 of the unreturned four-document batch.
+    let cut = (baseline + 1..wal.len())
+        .find(|&cut| {
+            let prefix = replay(&wal[..cut]);
+            matches!(prefix.terminator, ReplayTerminator::CleanEnd) && prefix.records.len() == 3
+        })
+        .expect("inner record boundary");
+    std::fs::write(path.join("wal.ze"), &wal[..cut]).expect("tear");
+    let writer = Store::open(&path, OpenOptions::new()).expect("recover writer");
+    let sibling = Store::open(root.path().join("b"), OpenOptions::new()).expect("sibling");
+    namespace_batch_live(
+        root.path(),
+        vec![
+            LiveNamespaceMutation {
+                store: &writer,
+                mutation: mutation("a", vec![doc(2, 1)]),
+            },
+            LiveNamespaceMutation {
+                store: &sibling,
+                mutation: mutation("b", vec![doc(2, 1)]),
+            },
+        ],
+    )
+    .expect("acknowledged live namespace batch");
+    writer.close().expect("close writer");
+    let reopened = Store::open(&path, OpenOptions::new()).expect("reopen acknowledged batch");
+    let documents = reopened
+        .get_documents(&[1, 2, 3, 4, 5].map(DocId::new), DocumentFields::NONE)
+        .expect("documents");
+    assert_eq!(
+        documents
+            .into_iter()
+            .map(|d| d.map(|d| d.revision.get()))
+            .collect::<Vec<_>>(),
+        [Some(1), Some(1), None, None, None]
+    );
+}

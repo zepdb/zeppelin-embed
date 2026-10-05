@@ -163,13 +163,9 @@ pub(crate) fn committed_mutations_with_decisions(
             source,
         })?;
         if record.op == wal_payload::PREPARED_MUTATION_V1 {
-            if !run.is_empty() {
-                return Err(StoreError::WalMutation {
-                    seq: record.seq,
-                    op: record.op,
-                    source: PayloadError::TransactionBinding,
-                });
-            }
+            // A writer may resume after a crash left whole members of an
+            // unreturned local batch at the tail. Preparation cuts it short.
+            run.clear();
             let member = wal_payload::decode_prepared(payload).map_err(|source| {
                 StoreError::WalMutation {
                     seq: record.seq,

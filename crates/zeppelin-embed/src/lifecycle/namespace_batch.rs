@@ -1384,7 +1384,13 @@ fn staged_manifest(
         .iter()
         .filter(|r| (selected.binding.first_seq..=selected.binding.last_seq).contains(&r.seq.get()))
         .collect::<Vec<_>>();
-    if selected_records.len() as u64 != selected.binding.last_seq - selected.binding.first_seq + 1 {
+    let member_count = selected
+        .binding
+        .last_seq
+        .checked_sub(selected.binding.first_seq)
+        .and_then(|count| count.checked_add(1))
+        .ok_or_else(|| invalid(&path, "invalid committed prepared range"))?;
+    if selected_records.len() as u64 != member_count {
         return Err(invalid(&path, "committed prepared range incomplete"));
     }
     for (record, index) in selected_records.iter().zip(0_u32..) {
