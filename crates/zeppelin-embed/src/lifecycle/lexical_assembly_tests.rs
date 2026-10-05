@@ -314,81 +314,53 @@ fn filtered_assembly(store: &Store, predicate: &crate::meta::Predicate) -> Arc<L
 }
 
 #[test]
-fn ze_262_repeated_filter_reuses_eligible_rows() {
+fn ze_292_repeated_filter_recomputes_and_releases_rows() {
     let (_dir, store) = fixture();
+    let admission = store.admit_lexical_query().expect("admit");
+    let base = assemble(&store, &admission);
+    let baseline = store.accounting.audit().expect("baseline");
     let predicate = crate::meta::Predicate::Exists(crate::meta::TIMESTAMP_COLUMN);
+    crate::fts::preparation_observer::begin();
     let first = filtered_assembly(&store, &predicate);
+    let first_work = crate::fts::preparation_observer::filter_work();
+    assert!(first_work.0 > 0 && first_work.2 > 0);
+    let weak = Arc::downgrade(first.alive_sets.first().expect("set"));
     crate::fts::preparation_observer::begin();
     let second = filtered_assembly(&store, &predicate);
     assert_eq!(first.alive_sets, second.alive_sets);
+    assert_eq!(crate::fts::preparation_observer::filter_work(), first_work);
+    let eligible_bytes = first
+        .alive_sets
+        .iter()
+        .map(|alive| {
+            alive.resident_bytes().expect("bitmap bytes")
+                + std::mem::size_of::<crate::meta::AliveSet>()
+                + 2 * std::mem::size_of::<usize>()
+        })
+        .sum::<usize>();
     assert_eq!(
-        crate::fts::preparation_observer::filter_work().0,
-        0,
-        "cached predicate evaluations"
+        first.memory.bytes(),
+        u64::try_from(first.owned_bytes().expect("owned") + eligible_bytes).expect("charge")
     );
     assert_eq!(
-        crate::fts::preparation_observer::filter_work().2,
-        0,
-        "cached intersections"
+        store.accounting.audit().expect("filtered").temporary_bytes,
+        baseline.temporary_bytes + first.memory.bytes() + second.memory.bytes()
     );
-    assert!(
-        first
-            .alive_sets
-            .iter()
-            .zip(&second.alive_sets)
-            .all(|(a, b)| Arc::ptr_eq(a, b))
-    );
-}
-
-#[test]
-fn ze_262_changed_predicate_and_mutations_invalidate_eligibility() {
-    let (_dir, store) = fixture();
-    let all = crate::meta::Predicate::Exists(crate::meta::TIMESTAMP_COLUMN);
-    let none = crate::meta::Predicate::IsNull(crate::meta::TIMESTAMP_COLUMN);
-    let first = filtered_assembly(&store, &all);
-    let weak = Arc::downgrade(first.alive_sets.first().expect("set"));
     assert_eq!(
-        filtered_assembly(&store, &none)
-            .alive_sets
-            .iter()
-            .map(|a| a.alive_bitmap().cardinality())
-            .sum::<u64>(),
-        0
+        store.accounting.audit().expect("cache").cache_bytes,
+        baseline.cache_bytes
     );
     drop(first);
     assert!(
         weak.upgrade().is_none(),
-        "replacement releases eligible rows"
+        "eligible rows released with filtered assembly"
     );
-    append(&store, 4);
+    drop(second);
     assert_eq!(
-        filtered_assembly(&store, &all)
-            .alive_sets
-            .iter()
-            .map(|a| a.alive_bitmap().cardinality())
-            .sum::<u64>(),
-        4
+        store.accounting.audit().expect("released").temporary_bytes,
+        baseline.temporary_bytes
     );
-    store
-        .delete(crate::ingest::DeleteBatch::new(vec![DocId::new(1)]))
-        .expect("delete");
-    assert_eq!(
-        filtered_assembly(&store, &all)
-            .alive_sets
-            .iter()
-            .map(|a| a.alive_bitmap().cardinality())
-            .sum::<u64>(),
-        3
-    );
-    store.seal().expect("seal");
-    assert_eq!(
-        filtered_assembly(&store, &all)
-            .alive_sets
-            .iter()
-            .map(|a| a.alive_bitmap().cardinality())
-            .sum::<u64>(),
-        3
-    );
+    assert!(Arc::ptr_eq(&base, &assemble(&store, &admission)));
 }
 
 fn reopened_fixture() -> (tempfile::TempDir, Store) {

@@ -5620,18 +5620,10 @@ struct LexicalAssembly {
     sources: Vec<StructuredLexicalSource>,
     contributions: Vec<Arc<CachedLexicalContribution>>,
     vocabulary: Arc<Mutex<Option<Arc<CachedVocabulary>>>>,
-    eligibility: Mutex<Option<Arc<CachedEligibility>>>,
     // Filtered readers retain the owner of the shared vocabulary-slot charge.
     _base: Option<Arc<LexicalAssembly>>,
     // The last cache/query owner releases this charge, even after eviction.
     memory: stats::AccountedCounter,
-}
-
-struct CachedEligibility {
-    predicate: crate::meta::Predicate,
-    alive_sets: Vec<Arc<crate::meta::AliveSet>>,
-    // Queries retain this charge even after the last-predicate slot changes.
-    _memory: stats::AccountedCounter,
 }
 
 struct CachedVocabulary {
@@ -6003,98 +5995,55 @@ fn assemble_lexical_index(
     let Some(filter) = inputs.filter else {
         return Ok(receipt);
     };
-    let mut slot = if let Some(control) = cancellation {
+    let mut alive_sets = Vec::with_capacity(receipt.alive_sets.len());
+    for (source, alive) in receipt.sources.iter().zip(&receipt.alive_sets) {
+        if let Some(control) = cancellation {
+            control
+                .check_graph()
+                .map_err(LexicalAssemblyError::Cancelled)?;
+        }
+        let rows = match source {
+            StructuredLexicalSource::Active => filter.active_rows(inputs.active),
+            StructuredLexicalSource::Sealed(ordinal) => inputs
+                .snapshot
+                .segments()
+                .get(*ordinal)
+                .ok_or(QueryError::Store(StoreError::ActiveRowOverflow))
+                .and_then(|segment| sealed_scan_rows(segment, Some(&filter.predicate))),
+        }
+        .map_err(map_eligibility_error)?;
+        let mut eligible = (**alive).clone();
+        #[cfg(any(test, feature = "test-support"))]
+        crate::fts::preparation_observer::record_filter_work(0, 0, 1);
+        eligible.retain(&rows);
+        alive_sets.push(Arc::new(eligible));
+    }
+    if let Some(control) = cancellation {
         control
-            .cache_lock(&receipt.eligibility, "lexical eligibility cache")
-            .map_err(map_eligibility_error)?
-    } else {
-        receipt.eligibility.lock().map_err(|_| {
-            LexicalAssemblyError::Store(StoreError::Synchronization {
-                component: "lexical eligibility cache",
-            })
-        })?
-    };
-    let eligibility =
-        if let Some(cached) = slot.as_ref().filter(|c| c.predicate == filter.predicate) {
-            Arc::clone(cached)
-        } else {
-            let mut alive_sets = Vec::with_capacity(receipt.alive_sets.len());
-            for (source, alive) in receipt.sources.iter().zip(&receipt.alive_sets) {
-                if let Some(control) = cancellation {
-                    control
-                        .check_graph()
-                        .map_err(LexicalAssemblyError::Cancelled)?;
-                }
-                let rows = match source {
-                    StructuredLexicalSource::Active => filter.active_rows(inputs.active),
-                    StructuredLexicalSource::Sealed(ordinal) => inputs
-                        .snapshot
-                        .segments()
-                        .get(*ordinal)
-                        .ok_or(QueryError::Store(StoreError::ActiveRowOverflow))
-                        .and_then(|segment| sealed_scan_rows(segment, Some(&filter.predicate))),
-                }
-                .map_err(map_eligibility_error)?;
-                let mut eligible = (**alive).clone();
-                #[cfg(any(test, feature = "test-support"))]
-                crate::fts::preparation_observer::record_filter_work(0, 0, 1);
-                eligible.retain(&rows);
-                alive_sets.push(Arc::new(eligible));
-            }
-            let predicate = filter.predicate.clone();
-            let bytes =
-                alive_sets
-                    .iter()
-                    .fold(
-                        std::mem::size_of::<CachedEligibility>()
-                            .checked_add(2 * std::mem::size_of::<usize>())
-                            .and_then(|n| n.checked_add(predicate.heap_bytes()?))
-                            .and_then(|n| {
-                                n.checked_add(alive_sets.capacity().checked_mul(
-                                    std::mem::size_of::<Arc<crate::meta::AliveSet>>(),
-                                )?)
-                            }),
-                        |bytes, alive| {
-                            bytes?.checked_add(alive.resident_bytes()?)?.checked_add(
-                                std::mem::size_of::<crate::meta::AliveSet>()
-                                    + 2 * std::mem::size_of::<usize>(),
-                            )
-                        },
-                    )
-                    .ok_or(LexicalAssemblyError::Store(StoreError::ActiveRowOverflow))?;
-            let mut memory =
-                stats::AccountedCounter::new(inputs.accounting, stats::AllocationComponent::Cache)
-                    .map_err(LexicalAssemblyError::Store)?;
-            memory.set(bytes).map_err(LexicalAssemblyError::Store)?;
-            if let Some(control) = cancellation {
-                control
-                    .check_graph()
-                    .map_err(LexicalAssemblyError::Cancelled)?;
-            }
-            let cached = Arc::new(CachedEligibility {
-                predicate,
-                alive_sets,
-                _memory: memory,
-            });
-            *slot = Some(Arc::clone(&cached));
-            cached
-        };
-    drop(slot);
+            .check_graph()
+            .map_err(LexicalAssemblyError::Cancelled)?;
+    }
     let memory =
         stats::AccountedCounter::new(inputs.accounting, stats::AllocationComponent::Temporary)
             .map_err(LexicalAssemblyError::Store)?;
     let mut assembly = LexicalAssembly {
         index: receipt.index.clone(),
-        alive_sets: eligibility.alive_sets.clone(),
+        alive_sets,
         sources: receipt.sources.clone(),
         contributions: receipt.contributions.clone(),
         vocabulary: Arc::clone(&receipt.vocabulary),
-        eligibility: Mutex::new(Some(eligibility)),
         _base: Some(Arc::clone(&receipt.assembly)),
         memory,
     };
     let bytes = assembly
-        .owned_bytes()
+        .alive_sets
+        .iter()
+        .fold(assembly.owned_bytes(), |bytes, alive| {
+            bytes?
+                .checked_add(alive.resident_bytes()?)?
+                .checked_add(std::mem::size_of::<crate::meta::AliveSet>())?
+                .checked_add(2 * std::mem::size_of::<usize>())
+        })
         .ok_or(LexicalAssemblyError::Store(StoreError::ActiveRowOverflow))?;
     assembly
         .memory
@@ -6342,7 +6291,6 @@ fn build_lexical_assembly(
         sources,
         contributions,
         vocabulary: Arc::new(Mutex::new(None)),
-        eligibility: Mutex::new(None),
         _base: None,
         memory: stats::AccountedCounter::new(accounting, stats::AllocationComponent::Cache)
             .map_err(LexicalAssemblyError::Store)?,

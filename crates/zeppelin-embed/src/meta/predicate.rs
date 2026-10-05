@@ -110,40 +110,6 @@ pub enum Predicate {
     Not(Box<Predicate>),
 }
 
-impl Predicate {
-    pub(crate) fn heap_bytes(&self) -> Option<usize> {
-        fn value_bytes(value: &PredicateValue) -> usize {
-            match value {
-                PredicateValue::String(s) => s.capacity(),
-                _ => 0,
-            }
-        }
-        match self {
-            Self::Eq { value, .. } => Some(value_bytes(value)),
-            Self::In { values, .. } => values.iter().try_fold(
-                values
-                    .capacity()
-                    .checked_mul(std::mem::size_of::<PredicateValue>())?,
-                |bytes, value| bytes.checked_add(value_bytes(value)),
-            ),
-            Self::And(children) | Self::Or(children) => children.iter().try_fold(
-                children
-                    .capacity()
-                    .checked_mul(std::mem::size_of::<Self>())?,
-                |bytes, child| bytes.checked_add(child.heap_bytes()?),
-            ),
-            Self::Not(child) => std::mem::size_of::<Self>().checked_add(child.heap_bytes()?),
-            Self::Range(range) => [range.lower.as_ref(), range.upper.as_ref()]
-                .into_iter()
-                .flatten()
-                .try_fold(0usize, |bytes, bound| {
-                    bytes.checked_add(value_bytes(&bound.value))
-                }),
-            Self::Exists(_) | Self::IsNull(_) => Some(0),
-        }
-    }
-}
-
 /// A typed predicate-evaluation failure.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EvalError {
