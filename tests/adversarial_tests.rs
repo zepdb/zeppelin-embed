@@ -19272,16 +19272,18 @@ fn native_graph_runner_keys_are_active_with_graph_feature() {
     // adds eight query-entry keys; ZE-56 adds six cypher-entry keys, ZE-57
     // adds four Cypher write refusal/drain keys and ZE-51 adds the
     // second-chunk reservation and blocking row-cap receipts. ZE-255 adds
-    // streaming retention under a one-row storage capacity.
+    // streaming retention under a one-row storage capacity. ZE-192 and
+    // ZE-176 add seven receipt keys; the pin had drifted by three, so it
+    // is reset to the observed lengths.
     #[cfg(not(feature = "graph-result-test-support"))]
     assert_eq!(
         adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        334
+        337
     );
     #[cfg(feature = "graph-result-test-support")]
     assert_eq!(
         adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        354
+        357
     );
 }
 
