@@ -404,6 +404,22 @@ fn directories(root: &Path) -> Result<Vec<String>, StoreError> {
     Ok(result)
 }
 
+// A deleting batch cannot acknowledge erasure while an older engine-owned
+// copy remains pinned. The ordinary collector may skip it; deleting admission
+// must instead refuse before publication.
+pub(super) fn require_retired_erased(vfs: &dyn Vfs, root: &Path) -> Result<(), StoreError> {
+    let (routes, pending) = routes_and_marks(vfs, root)?;
+    for relative in directories(root)? {
+        let item = garbage(vfs, root, &relative, &routes, &pending)?;
+        if item.retired && !item.files.is_empty() {
+            return Err(StoreError::StoreBusy {
+                path: root.join(relative),
+            });
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn run(
     vfs: &dyn Vfs,
     root: &Path,

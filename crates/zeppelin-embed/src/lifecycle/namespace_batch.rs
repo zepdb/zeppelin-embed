@@ -95,6 +95,12 @@ fn execute_live(
         None => StoreLock::acquire(&root).map_err(StoreError::Lock)?,
     };
     reclamation::run(vfs, &root, step)?;
+    let deleting = participants
+        .iter()
+        .any(|p| !p.mutation.deletes.is_empty() || p.mutation.delete_where.is_some());
+    if deleting {
+        reclamation::require_retired_erased(vfs, &root)?;
+    }
     normalize_accepted(vfs, &root, step)?;
     let existing_routes = match root_descriptor_vfs(vfs, &root)? {
         RootDescriptor::Legacy(routes) => routes,
@@ -200,6 +206,16 @@ fn execute_live(
     // All declarations and mutations validate before any WAL append/publication.
     for ((p, wal), active) in ordered.iter().zip(&wals).zip(&actives) {
         wal.as_ref().ok_or(StoreError::ReadOnly)?;
+        if read_optional_vfs(
+            p.store.vfs.as_ref(),
+            &p.store.directory.join(crate::ingest::PURGE_INTENT_FILE),
+        )?
+        .is_some()
+        {
+            return Err(StoreError::StoreBusy {
+                path: p.store.directory.clone(),
+            });
+        }
         active.as_ref().ok_or(StoreError::Closed)?;
         if !p.mutation.deletes.is_empty() || p.mutation.delete_where.is_some() {
             p.store.require_no_snapshot_views()?;
@@ -455,13 +471,40 @@ fn execute_live(
         }
         return Err(error);
     }
-    let by_name = ordered
-        .iter()
-        .zip(&staged)
-        .map(|(p, stage)| (p.mutation.name.clone(), stage.active.generation))
-        .collect::<BTreeMap<_, _>>();
     drop(snapshots);
     drop(actives);
+    let mut completed = BTreeMap::new();
+    for ((p, stage), wal) in ordered.iter().zip(&staged).zip(&mut wals) {
+        let generation = if read_optional_vfs(
+            p.store.vfs.as_ref(),
+            &p.store.directory.join(crate::ingest::PURGE_INTENT_FILE),
+        )?
+        .is_some()
+        {
+            match p
+                .store
+                .complete_namespace_purge_locked(wal.as_mut().ok_or(StoreError::ReadOnly)?)
+            {
+                Ok(generation) => generation,
+                Err(error) => {
+                    for wal in &mut wals {
+                        **wal = None;
+                    }
+                    return Err(StoreError::PurgeRecovery {
+                        detail: error.to_string(),
+                    });
+                }
+            }
+        } else {
+            stage.active.generation
+        };
+        completed.insert(p.mutation.name.clone(), generation);
+    }
+    if deleting {
+        reclamation::run(vfs, &root, step)?;
+        reclamation::require_retired_erased(vfs, &root)?;
+    }
+    let by_name = completed;
     drop(wals);
     drop(owners);
     drop(states);
@@ -1352,6 +1395,36 @@ fn accepted(
     }
     Ok(true)
 }
+// Local acceptance is the durable authority for a namespace purge even
+// after root retirement. Ordinary purge tokens retain their store policy.
+pub(crate) fn owns_purge_obligation(
+    vfs: &dyn Vfs,
+    directory: &Path,
+    token: u64,
+) -> Result<bool, StoreError> {
+    for path in vfs.list(directory).map_err(|e| io(directory, e))? {
+        let Some(transaction) = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_prefix(".ze-accepted-"))
+            .and_then(|name| name.parse::<u128>().ok())
+        else {
+            continue;
+        };
+        if xxh3_64(&transaction.to_le_bytes()) != token {
+            continue;
+        }
+        let bytes = vfs.read(&path).map_err(|e| io(&path, e))?;
+        let binding = crate::ingest::wal_payload::TransactionBinding::decode(body(&path, &bytes)?)
+            .map_err(|e| invalid(&path, &e.to_string()))?;
+        if binding.transaction != transaction {
+            return Err(invalid(&path, "purge acceptance transaction mismatch"));
+        }
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 fn selection(vfs: &dyn Vfs, directory: &Path) -> Result<Option<StagedSelection>, StoreError> {
     let (root, name) = location(directory)?;
     let RootDescriptor::Staged(mut descriptor) = root_descriptor_vfs(vfs, root)? else {
@@ -1458,6 +1531,35 @@ fn accept(
     manifest: &crate::manifest::Manifest,
     step: &mut dyn FnMut(&str) -> std::io::Result<()>,
 ) -> Result<(), StoreError> {
+    // These frames were synced before the root commit and validated against
+    // its binding. Derive obligations only for this committed transaction.
+    let wal = crate::wal::WalReader::open(vfs, &directory.join("wal.ze"))
+        .map_err(StoreError::Wal)?
+        .into_clean()
+        .map_err(StoreError::WalRecovery)?;
+    let mut ids = Vec::new();
+    for record in wal.records().iter().filter(|record| {
+        (selected.binding.first_seq..=selected.binding.last_seq).contains(&record.seq.get())
+    }) {
+        let payload = record
+            .payload()
+            .map_err(|e| invalid(directory, &e.to_string()))?;
+        let member = crate::ingest::wal_payload::decode_prepared(payload)
+            .map_err(|e| invalid(directory, &e.to_string()))?;
+        if member.binding != selected.binding {
+            return Err(invalid(directory, "purge binding mismatch"));
+        }
+        if let crate::ingest::wal_payload::MutationPayload::Delete(deleted) = member.mutation {
+            ids.extend(deleted);
+        }
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    crate::ingest::namespace_purge_intent(vfs, directory, selected.binding.transaction, ids)
+        .map_err(|e| StoreError::PurgeRecovery {
+            detail: e.to_string(),
+        })?;
+    step("purge obligation adopted").map_err(|e| io(directory, e))?;
     let bytes = crate::manifest::encode_manifest(manifest).map_err(StoreError::Manifest)?;
     let temporary = directory.join(".manifest.ze.tmp");
     durable_write(vfs, &temporary, &bytes, step)?;

@@ -99,12 +99,13 @@ fn standalone_reader_resolves_commit_before_sibling_recovery() {
     assert_eq!(state(root.path(), "a"), [false, true, false]);
     let current =
         Store::open(root.path().join("a"), OpenOptions::read_only()).expect("decided generation");
-    assert_eq!(
+    assert!(
         current
             .get_documents_with_generation(&[], DocumentFields::NONE)
             .expect("generation")
-            .0,
-        *generations.first().expect("first participant generation")
+            .0
+            >= *generations.first().expect("first participant generation"),
+        "purge recovery must preserve the acknowledged generation"
     );
     assert!(
         old.get_documents(&[DocId::new(1)], DocumentFields::NONE)
@@ -301,7 +302,7 @@ fn live_writers_preserve_before_batch_and_after_batch_writes() {
         ],
     )
     .expect("live commit");
-    assert_eq!(generations, [3, 3]);
+    assert_eq!(generations, [4, 4]);
     for store in [&a, &b] {
         store
             .ingest(IngestBatch::new(vec![doc(3, 1)]))
@@ -1095,6 +1096,11 @@ fn namespace_envelope(body: &[u8]) -> Vec<u8> {
 #[cfg(feature = "test-support")]
 fn legacy_reclamation_fixture(root: &std::path::Path) {
     seed(root);
+    legacy_routes_from_current(root);
+}
+
+#[cfg(feature = "test-support")]
+fn legacy_routes_from_current(root: &std::path::Path) {
     for (transaction, names) in [
         (".ze-batch-old", vec!["a", "b"]),
         (".ze-batch-new", vec!["a"]),
@@ -1513,4 +1519,363 @@ fn namespace_cleanup_resume_syncs_authorities_before_unlink() {
         let retired_unlink = operations.iter().position(|op| matches!(op, CrashOperation::Delete { path } if path == &directory.join("intent.ze"))).expect("retired transaction unlink");
         assert!(operations.iter().take(retired_unlink).any(|op| matches!(op, CrashOperation::Sync { path, kind: SyncKind::Full } if path == &directory)), "surviving retirement marker must be durable before unlink");
     }
+}
+
+fn assert_no_deleted_bytes(root: &std::path::Path, sentinel: &[u8]) {
+    for entry in std::fs::read_dir(root).expect("list") {
+        let path = entry.expect("entry").path();
+        if path.is_dir() {
+            assert_no_deleted_bytes(&path, sentinel);
+        } else {
+            let bytes = std::fs::read(&path).expect("read every file");
+            assert!(
+                !bytes.windows(sentinel.len()).any(|b| b == sentinel),
+                "deleted bytes in {}",
+                path.display()
+            );
+        }
+    }
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn physical_delete_erases_current_original_retired_and_abandoned_files() {
+    let root = tempfile::tempdir().expect("root");
+    let sentinel = b"ZE256-deleted-metadata-and-text-sentinel";
+    let vector = vec![13.125_f32, -27.75];
+    let vector_bytes = vector
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect::<Vec<_>>();
+    let deleted = |id, rev| {
+        IngestDocument::new(
+            DocumentVersion::new(DocId::new(id), Revision::new(rev)),
+            vector.clone(),
+        )
+        .with_timestamp(id as i64)
+        .with_metadata(sentinel.to_vec())
+        .with_text("ZE256-unique-deleted-text")
+    };
+    for name in ["a", "b"] {
+        let store = Store::open(root.path().join(name), OpenOptions::new()).expect("open");
+        store
+            .ingest(IngestBatch::new(vec![
+                deleted(1, 1),
+                deleted(3, 1),
+                doc(4, 1),
+            ]))
+            .expect("seed");
+        store.seal().expect("seal");
+        store
+            .ingest(IngestBatch::new(vec![deleted(1, 2)]))
+            .expect("active");
+    }
+    legacy_routes_from_current(root.path());
+    let retained = Store::open(
+        root.path().join(".ze-batch-old/a"),
+        OpenOptions::read_only(),
+    )
+    .expect("retained historical route");
+    assert!(
+        namespace_batch(root.path(), mixed()).is_err(),
+        "retained bytes must refuse precommit"
+    );
+    assert_eq!(state(root.path(), "a"), [true, false, true]);
+    retained.close().expect("release historical route");
+    let mut changes = mixed();
+    for change in &mut changes {
+        change.deletes.push(DocId::new(999));
+    }
+    namespace_batch(root.path(), changes).expect("physical commit");
+    assert_no_deleted_bytes(root.path(), sentinel);
+    assert_no_deleted_bytes(root.path(), b"ZE256-unique-deleted-text");
+    assert_no_deleted_bytes(root.path(), &vector_bytes);
+    for name in ["a", "b"] {
+        assert_eq!(state(root.path(), name), [false, true, false]);
+    }
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn interrupted_namespace_purge_resumes_after_reopen() {
+    use zeppelin_embed::lifecycle::{LiveNamespaceMutation, namespace_batch_live_with_steps};
+    for boundary in [
+        "live states installed",
+        "purge obligation adopted",
+        "accept binding rename",
+    ] {
+        let root = tempfile::tempdir().expect("root");
+        let sentinel = b"ZE256-interrupted-purge-sentinel";
+        let stores = ["a", "b"].map(|name| {
+            let store = Store::open(root.path().join(name), OpenOptions::new()).expect("open");
+            store
+                .ingest(IngestBatch::new(vec![
+                    doc(1, 1).with_metadata(sentinel.to_vec()),
+                    doc(4, 1),
+                ]))
+                .expect("seed");
+            store.seal().expect("seal");
+            store
+        });
+        let participants = stores
+            .iter()
+            .zip(["a", "b"])
+            .map(|(store, name)| {
+                let mut mutation = mutation(name, vec![]);
+                mutation.deletes = vec![DocId::new(1)];
+                LiveNamespaceMutation { store, mutation }
+            })
+            .collect();
+        assert!(
+            namespace_batch_live_with_steps(root.path(), participants, &mut |step| {
+                if step == boundary {
+                    Err(std::io::Error::other("interrupted purge"))
+                } else {
+                    Ok(())
+                }
+            })
+            .is_err()
+        );
+        drop(stores);
+        for name in ["b", "a"] {
+            let store =
+                Store::open(root.path().join(name), OpenOptions::new()).expect("resume purge");
+            assert!(
+                store
+                    .get_documents(&[DocId::new(1)], DocumentFields::NONE)
+                    .expect("deleted")
+                    .iter()
+                    .all(Option::is_none)
+            );
+            assert!(
+                store
+                    .get_documents(&[DocId::new(4)], DocumentFields::NONE)
+                    .expect("survivor")
+                    .iter()
+                    .all(Option::is_some)
+            );
+        }
+        assert_no_deleted_bytes(root.path(), sentinel);
+    }
+}
+
+// CrashVfs owns the authoritative bytes. Anonymous native files provide only
+// the mmap interface required by sealed-segment readers, without persisting
+// anything outside the image or changing the recorded mutation stream.
+#[cfg(feature = "test-support")]
+struct MappedCrashImage<V>(V);
+#[cfg(feature = "test-support")]
+impl<V: zeppelin_embed::vfs::Vfs> zeppelin_embed::vfs::Vfs for MappedCrashImage<V> {
+    fn ensure_directory(&self, p: &std::path::Path, c: bool) -> std::io::Result<bool> {
+        self.0.ensure_directory(p, c)
+    }
+    fn open(&self, p: &std::path::Path) -> std::io::Result<u64> {
+        self.0.open(p)
+    }
+    fn open_for_map(&self, p: &std::path::Path) -> std::io::Result<std::fs::File> {
+        use std::io::Write;
+        let mut file = tempfile::tempfile()?;
+        file.write_all(&self.0.read(p)?)?;
+        Ok(file)
+    }
+    fn read(&self, p: &std::path::Path) -> std::io::Result<Vec<u8>> {
+        self.0.read(p)
+    }
+    fn read_range(&self, p: &std::path::Path, o: u64, n: usize) -> std::io::Result<Vec<u8>> {
+        self.0.read_range(p, o, n)
+    }
+    fn write(&self, p: &std::path::Path, b: &[u8]) -> std::io::Result<()> {
+        self.0.write(p, b)
+    }
+    fn open_append(
+        &self,
+        p: &std::path::Path,
+    ) -> std::io::Result<Box<dyn zeppelin_embed::vfs::VfsFile>> {
+        self.0.open_append(p)
+    }
+    fn rename(&self, a: &std::path::Path, b: &std::path::Path) -> std::io::Result<()> {
+        self.0.rename(a, b)
+    }
+    fn sync(&self, p: &std::path::Path, k: zeppelin_embed::vfs::SyncKind) -> std::io::Result<()> {
+        self.0.sync(p, k)
+    }
+    fn list(&self, p: &std::path::Path) -> std::io::Result<Vec<std::path::PathBuf>> {
+        self.0.list(p)
+    }
+    fn for_each_direct_child(
+        &self,
+        p: &std::path::Path,
+        v: &mut dyn FnMut(&std::path::Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        self.0.for_each_direct_child(p, v)
+    }
+    fn delete(&self, p: &std::path::Path) -> std::io::Result<()> {
+        self.0.delete(p)
+    }
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn crash_at_every_namespace_purge_step() {
+    use std::sync::Arc;
+    use zeppelin_embed::lifecycle::{
+        LiveNamespaceMutation, StoreTestDependencies, SystemMonotonicClock,
+        namespace_batch_live_on_vfs,
+    };
+    use zeppelin_embed::vfs::crash::{CrashStateKind, CrashVfs, MemoryVfs};
+    let root = tempfile::tempdir().expect("root");
+    let root = std::fs::canonicalize(root.path()).expect("canonical");
+    for name in ["a", "b"] {
+        std::fs::create_dir(root.join(name)).expect("directory");
+    }
+    let initial = Arc::new(MappedCrashImage(MemoryVfs::new()));
+    let sentinel = b"ZE256-purge-bytes";
+    for name in ["a", "b"] {
+        let store = Store::open_with_test_dependencies(
+            root.join(name),
+            OpenOptions::new().with_durability(
+                zeppelin_embed::lifecycle::durability::DurabilityMode::Derived,
+                zeppelin_embed::lifecycle::durability::CommitTier::None,
+            ),
+            StoreTestDependencies::new(initial.clone(), Arc::new(SystemMonotonicClock)),
+        )
+        .expect("seed open");
+        store
+            .ingest(IngestBatch::new(vec![
+                doc(1, 1).with_metadata(sentinel.to_vec()),
+                doc(4, 1),
+            ]))
+            .expect("seed");
+        store.seal().expect("seal");
+        store
+            .ingest(IngestBatch::new(vec![
+                doc(3, 1).with_metadata(sentinel.to_vec()),
+            ]))
+            .expect("active target");
+    }
+    let crash = Arc::new(MappedCrashImage(
+        CrashVfs::new(initial.0.snapshot().expect("image")).expect("recorder"),
+    ));
+    let stores = ["a", "b"].map(|name| {
+        Store::open_with_test_dependencies(
+            root.join(name),
+            OpenOptions::new().with_durability(
+                zeppelin_embed::lifecycle::durability::DurabilityMode::Derived,
+                zeppelin_embed::lifecycle::durability::CommitTier::None,
+            ),
+            StoreTestDependencies::new(crash.clone(), Arc::new(SystemMonotonicClock)),
+        )
+        .expect("participant")
+    });
+    let participants = stores
+        .iter()
+        .zip(["a", "b"])
+        .map(|(store, name)| {
+            let mut mutation = mutation(name, vec![]);
+            mutation.deletes = vec![DocId::new(1)];
+            mutation.delete_where = Some(zeppelin_embed::meta::Predicate::Eq {
+                column: zeppelin_embed::meta::TIMESTAMP_COLUMN,
+                value: zeppelin_embed::meta::PredicateValue::I64(3),
+            });
+            LiveNamespaceMutation { store, mutation }
+        })
+        .collect();
+    namespace_batch_live_on_vfs(&root, participants, crash.as_ref())
+        .expect("record deleting protocol");
+    drop(stores);
+    let operations = crash.0.operations().expect("purge operations");
+    for name in ["a", "b"] {
+        let temporary = root.join(name).join(".wal.ze.purge.tmp");
+        assert!(operations.iter().any(|operation| matches!(operation,
+            zeppelin_embed::vfs::crash::CrashOperation::Sync { path, kind: zeppelin_embed::vfs::SyncKind::Full }
+                if path == &temporary)), "namespace purge must durably sync survivor WAL even for Derived/None");
+        let completion = operations
+            .iter()
+            .position(|operation| {
+                matches!(operation,
+            zeppelin_embed::vfs::crash::CrashOperation::Delete { path }
+                if path == &root.join(name).join("purge.ze"))
+            })
+            .expect("purge completion");
+        let wal_rename = operations
+            .iter()
+            .position(|operation| {
+                matches!(operation,
+            zeppelin_embed::vfs::crash::CrashOperation::Rename { from, .. }
+                if from == &temporary)
+            })
+            .expect("survivor WAL rename");
+        assert!(operations.iter().skip(wal_rename + 1).take(completion - wal_rename - 1).any(|operation| matches!(operation,
+            zeppelin_embed::vfs::crash::CrashOperation::Sync { path, kind: zeppelin_embed::vfs::SyncKind::Full }
+                if path == &root.join(name))), "obligation removal follows durable survivor WAL directory sync");
+    }
+    let states = crash.0.crash_states().expect("enumerate");
+    assert!(
+        !states.was_capped(),
+        "purge crash enumeration must be uncapped"
+    );
+    let mut recovered = 0;
+    for state in states.iter() {
+        let vfs = Arc::new(MappedCrashImage(
+            state.vfs().snapshot().expect("crash image"),
+        ));
+        let mut rows = Vec::new();
+        let mut error = None;
+        for name in ["b", "a"] {
+            match Store::open_with_test_dependencies(
+                root.join(name),
+                OpenOptions::new().with_durability(
+                    zeppelin_embed::lifecycle::durability::DurabilityMode::Derived,
+                    zeppelin_embed::lifecycle::durability::CommitTier::None,
+                ),
+                StoreTestDependencies::new(vfs.clone(), Arc::new(SystemMonotonicClock)),
+            ) {
+                Ok(store) => rows.push(
+                    store
+                        .get_documents(
+                            &[DocId::new(1), DocId::new(3), DocId::new(4)],
+                            DocumentFields::NONE,
+                        )
+                        .expect("recovered rows")
+                        .iter()
+                        .map(Option::is_some)
+                        .collect::<Vec<_>>(),
+                ),
+                Err(failure) => {
+                    error = Some(failure);
+                    break;
+                }
+            }
+        }
+        if let Some(error) = error {
+            assert!(
+                !matches!(state.kind(), CrashStateKind::Prefix { .. }),
+                "prefix {:?}: {error}",
+                state.kind()
+            );
+            continue;
+        }
+        assert_eq!(rows[0], rows[1], "atomic decision {:?}", state.kind());
+        assert!(
+            rows[0] == [true, true, true] || rows[0] == [false, false, true],
+            "{:?}: {rows:?}",
+            state.kind()
+        );
+        if rows[0] == [false, false, true] {
+            for (path, bytes) in vfs.0.files().expect("all engine files") {
+                assert!(
+                    !bytes.windows(sentinel.len()).any(|b| b == sentinel),
+                    "{:?}: deleted bytes in {}",
+                    state.kind(),
+                    path.display()
+                );
+            }
+        }
+        recovered += 1;
+    }
+    eprintln!(
+        "ZE-256 uncapped purge crash states: {}, recovered: {recovered}",
+        states.len()
+    );
+    assert!(recovered > 0);
 }

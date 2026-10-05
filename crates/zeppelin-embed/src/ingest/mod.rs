@@ -15,7 +15,7 @@ mod purge;
 /// concatenates their survivor-order output across N inputs without forking
 /// the rewrite logic; purge's own behavior stays byte-identical.
 /// The pending purge intent decoder, for read-only store verification.
-pub(crate) use purge::{PURGE_INTENT_FILE, read_intent};
+pub(crate) use purge::{PURGE_INTENT_FILE, namespace_purge_intent, read_intent};
 
 pub(crate) mod purge_support {
     pub(crate) use super::purge::{

@@ -776,6 +776,7 @@ impl Store {
         original: &SegmentMeta,
         ids: &super::lookup::LookupSet<DocId>,
         token_id: u64,
+        policy: DurabilityPolicy,
     ) -> Result<bool, PurgeError> {
         let path = self.directory.join(original.id.file_name());
         let reader = SegmentReader::open(vfs, &path, original.id).map_err(StoreError::Segment)?;
@@ -796,7 +797,7 @@ impl Store {
             &survivors,
             &[],
             replacement_id,
-            self.durability_policy,
+            policy,
         )?;
         replacement.epoch_id = original.epoch_id;
         drop(reader);
@@ -815,8 +816,7 @@ impl Store {
         manifest.epochs = self.epoch_registry(&manifest.epochs);
         let remapped =
             PublishedSnapshot::from_manifest(vfs, &self.directory, manifest, &self.accounting)?;
-        commit_manifest(vfs, &self.directory, manifest, self.durability_policy)
-            .map_err(StoreError::Manifest)?;
+        commit_manifest(vfs, &self.directory, manifest, policy).map_err(StoreError::Manifest)?;
         let mut published = self
             .snapshot
             .write()
@@ -861,7 +861,7 @@ impl Store {
             }
             .into());
         }
-        sync_directory(vfs, &self.directory, self.durability_policy)?;
+        sync_directory(vfs, &self.directory, policy)?;
         Ok(true)
     }
 
@@ -870,13 +870,13 @@ impl Store {
         vfs: &dyn Vfs,
         manifest: &mut Manifest,
         generation: u64,
+        policy: DurabilityPolicy,
     ) -> Result<(), PurgeError> {
         manifest.generation = generation;
         manifest.epochs = self.epoch_registry(&manifest.epochs);
         let remapped =
             PublishedSnapshot::from_manifest(vfs, &self.directory, manifest, &self.accounting)?;
-        commit_manifest(vfs, &self.directory, manifest, self.durability_policy)
-            .map_err(StoreError::Manifest)?;
+        commit_manifest(vfs, &self.directory, manifest, policy).map_err(StoreError::Manifest)?;
         let mut published = self
             .snapshot
             .write()
@@ -899,6 +899,7 @@ impl Store {
         next_active: &mut super::ActiveSegment,
         records: &[(u16, Vec<u8>)],
         tombstoned: &[bool],
+        policy: DurabilityPolicy,
     ) -> Result<(), PurgeError> {
         let retained_first_seq = LogSeq::new(
             manifest
@@ -927,13 +928,7 @@ impl Store {
         let rewrite_first_seq = LogSeq::new(durable_end.checked_add(1).ok_or(
             StoreError::WalWrite(crate::wal::WalWriteError::SequenceExhausted),
         )?);
-        writer.rewrite(
-            vfs,
-            &self.directory,
-            self.durability_policy,
-            rewrite_first_seq,
-            records,
-        )?;
+        writer.rewrite(vfs, &self.directory, policy, rewrite_first_seq, records)?;
         assign_rewritten_sequences(next_active, rewrite_first_seq, tombstoned)?;
         Ok(())
     }
@@ -1006,6 +1001,19 @@ impl Store {
         token: PurgeToken,
     ) -> Result<PurgeReport, PurgeError> {
         let intent = read_intent(vfs, &self.directory)?;
+        let policy = if crate::lifecycle::namespace_batch::owns_purge_obligation(
+            vfs,
+            &self.directory,
+            intent.token_id,
+        )? {
+            DurabilityPolicy::new(
+                crate::lifecycle::durability::DurabilityMode::Durable,
+                crate::lifecycle::durability::CommitTier::Durable,
+            )
+            .map_err(StoreError::Durability)?
+        } else {
+            self.durability_policy
+        };
         if intent.token_id != token.id {
             return Err(PurgeError::UnknownToken { token_id: token.id });
         }
@@ -1049,11 +1057,12 @@ impl Store {
                 &original,
                 &purge_ids,
                 token.id,
+                policy,
             )? {
                 rewritten = rewritten.saturating_add(1);
             }
         }
-        sweep_purge_orphans(vfs, &self.directory, &manifest, self.durability_policy)?;
+        sweep_purge_orphans(vfs, &self.directory, &manifest, policy)?;
 
         let active_has_target = active_state
             .segment
@@ -1083,7 +1092,7 @@ impl Store {
         };
         let (records, tombstoned) = active_wal_records(&next_active)?;
         if manifest.generation < active_state.generation {
-            self.commit_bumped_manifest(vfs, &mut manifest, active_state.generation)?;
+            self.commit_bumped_manifest(vfs, &mut manifest, active_state.generation, policy)?;
         }
         self.rewrite_wal_for_purge(
             vfs,
@@ -1093,9 +1102,10 @@ impl Store {
             &mut next_active,
             &records,
             &tombstoned,
+            policy,
         )?;
         active_state.segment = Arc::new(next_active);
-        remove_intent(vfs, &self.directory, self.durability_policy)?;
+        remove_intent(vfs, &self.directory, policy)?;
         let generation = active_state.generation;
         drop(active);
         Ok(PurgeReport {
@@ -1111,6 +1121,18 @@ impl Store {
         match self.vfs.open(&path) {
             Ok(_) => {
                 let intent = read_intent(self.vfs.as_ref(), &self.directory)?;
+                // A read-only open observes the committed logical state and
+                // validates the obligation, but never performs recovery writes.
+                if self
+                    .writer_lock
+                    .lock()
+                    .map_err(|_| StoreError::Synchronization {
+                        component: "writer lock",
+                    })?
+                    .is_none()
+                {
+                    return Ok(());
+                }
                 let generation = self
                     .active
                     .lock()
@@ -1131,6 +1153,49 @@ impl Store {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(source) => Err(StoreError::Io { path, source }.into()),
         }
+    }
+}
+
+// Prepared delete records are the transaction-gated obligation. Adoption
+// materializes the ordinary intent before recording local acceptance.
+pub(crate) fn namespace_purge_intent(
+    vfs: &dyn Vfs,
+    directory: &Path,
+    transaction: u128,
+    ids: Vec<DocId>,
+) -> Result<(), PurgeError> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    write_intent(
+        vfs,
+        directory,
+        &PurgeIntent {
+            token_id: xxh3_64(&transaction.to_le_bytes()),
+            ids,
+        },
+        DurabilityPolicy::new(
+            crate::lifecycle::durability::DurabilityMode::Durable,
+            crate::lifecycle::durability::CommitTier::Durable,
+        )
+        .map_err(StoreError::Durability)?,
+    )
+}
+
+impl Store {
+    pub(crate) fn complete_namespace_purge_locked(
+        &self,
+        writer: &mut super::StoreWal,
+    ) -> Result<u64, PurgeError> {
+        let intent = read_intent(self.vfs.as_ref(), &self.directory)?;
+        let token = PurgeToken {
+            id: intent.token_id,
+            generation: 0,
+            unknown_ids: Vec::new(),
+            no_op: false,
+        };
+        self.complete_physical_purge_locked(self.vfs.as_ref(), writer, token)
+            .map(|report| report.generation())
     }
 }
 
@@ -1830,9 +1895,22 @@ fn ensure_wal_rewrite_covers_retained(
     let reader = crate::wal::WalReader::open(vfs, &wal_path).map_err(StoreError::Wal)?;
     let clean = reader.into_clean().map_err(StoreError::WalRecovery)?;
     let absorbed_through = first_seq.get().saturating_sub(1);
-    for (seq, _, mutation) in
+    let decisions = crate::lifecycle::namespace_batch::transaction_decisions(
+        vfs,
+        directory,
+        clean.records(),
+        absorbed_through,
+    )?;
+    let mutations = if decisions.is_empty() {
         super::atomic_batch::committed_mutations(clean.records(), absorbed_through)?
-    {
+    } else {
+        super::atomic_batch::committed_mutations_with_decisions(
+            clean.records(),
+            absorbed_through,
+            |binding| decisions.get(&binding.transaction).copied(),
+        )?
+    };
+    for (seq, _, mutation) in mutations {
         let covered = match mutation {
             super::wal_payload::MutationPayload::Upsert(document) => {
                 let version = document.version();
