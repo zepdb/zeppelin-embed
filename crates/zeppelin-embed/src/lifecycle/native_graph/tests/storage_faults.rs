@@ -1,7 +1,7 @@
-//! ZE-47 directed native storage fault classes 1-4. Each body drives a real
+//! ZE-47 / ZE-172 directed native storage fault classes 1-6. Each body drives a real
 //! native store through a faulty VFS and returns only actual observations;
 //! every expected answer and comparator lives in the independent adversarial
-//! oracle crate.
+//! family.
 
 use super::publication::{
     FaultPoint, RecordingVfs, record_verified_fault, reset_verified_faults, take_verified_faults,
@@ -107,6 +107,9 @@ fn payload_offset(bytes: &[u8], seeded: u64) -> usize {
 struct MisdirectVfs {
     substitute: Mutex<Option<PathBuf>>,
     fires: AtomicU64,
+    recording: RecordingVfs,
+    target: Mutex<Option<(PathBuf, Option<PathBuf>)>>,
+    opens: Mutex<Vec<PathBuf>>,
 }
 
 impl MisdirectVfs {
@@ -114,6 +117,9 @@ impl MisdirectVfs {
         Self {
             substitute: Mutex::new(None),
             fires: AtomicU64::new(0),
+            recording: RecordingVfs::default(),
+            target: Mutex::new(None),
+            opens: Mutex::new(Vec::new()),
         }
     }
 
@@ -128,63 +134,84 @@ impl MisdirectVfs {
 
 impl Vfs for MisdirectVfs {
     fn segment_data_read_counter(&self) -> Option<Arc<AtomicU64>> {
-        StdVfs.segment_data_read_counter()
+        self.recording.segment_data_read_counter()
     }
 
     fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
-        StdVfs.ensure_directory(path, create)
+        self.recording.ensure_directory(path, create)
     }
 
     fn create_directory(&self, path: &Path) -> std::io::Result<()> {
-        StdVfs.create_directory(path)
+        self.recording.create_directory(path)
     }
 
     fn open(&self, path: &Path) -> std::io::Result<u64> {
-        StdVfs.open(path)
+        self.recording.open(path)
     }
 
     fn open_for_map(&self, path: &Path) -> std::io::Result<File> {
+        self.opens
+            .lock()
+            .expect("open log")
+            .push(path.to_path_buf());
+        let mut target = self.target.lock().expect("exact target");
+        if target
+            .as_ref()
+            .is_some_and(|(expected, _)| expected == path)
+        {
+            let (_, substitute) = target.take().expect("targeted open");
+            drop(target);
+            self.fires.fetch_add(1, Ordering::Relaxed);
+            return match substitute {
+                Some(other) => self.recording.open_for_map(&other),
+                None => {
+                    drop(self.recording.open_for_map(path)?);
+                    Err(std::io::Error::other("ZE-172 PostCommitError"))
+                }
+            };
+        }
+        drop(target);
         let mut armed = self.substitute.lock().expect("misdirect target");
         if armed.as_deref().is_some_and(|other| other != path) {
             let other = armed.take().expect("armed substitute");
             drop(armed);
             self.fires.fetch_add(1, Ordering::Relaxed);
-            return StdVfs.open_for_map(&other);
+            return self.recording.open_for_map(&other);
         }
         drop(armed);
-        StdVfs.open_for_map(path)
+        self.recording.open_for_map(path)
     }
 
     fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
-        StdVfs.read(path)
+        self.recording.read(path)
     }
 
     fn read_range(&self, path: &Path, offset: u64, length: usize) -> std::io::Result<Vec<u8>> {
-        StdVfs.read_range(path, offset, length)
+        self.recording.read_range(path, offset, length)
     }
 
     fn write(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-        StdVfs.write(path, bytes)
+        self.recording.write(path, bytes)
     }
 
     fn create_new(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-        StdVfs.create_new(path, bytes)
+        self.recording.create_new(path, bytes)
     }
 
     fn open_append(&self, path: &Path) -> std::io::Result<Box<dyn VfsFile>> {
-        StdVfs.open_append(path)
+        self.recording.open_append(path)
     }
 
     fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
-        StdVfs.rename(from, to)
+        self.recording.rename(from, to)
     }
 
     fn sync(&self, path: &Path, kind: SyncKind) -> std::io::Result<()> {
-        StdVfs.sync(path, kind)
+        self.recording.sync(path, kind)
     }
 
     fn list(&self, directory: &Path) -> std::io::Result<Vec<PathBuf>> {
-        StdVfs.list(directory)
+        self.recording.list(directory)
     }
 
     fn for_each_direct_child(
@@ -192,11 +219,11 @@ impl Vfs for MisdirectVfs {
         directory: &Path,
         visitor: &mut dyn FnMut(&Path) -> std::io::Result<()>,
     ) -> std::io::Result<()> {
-        StdVfs.for_each_direct_child(directory, visitor)
+        self.recording.for_each_direct_child(directory, visitor)
     }
 
     fn delete(&self, path: &Path) -> std::io::Result<()> {
-        StdVfs.delete(path)
+        self.recording.delete(path)
     }
 }
 
@@ -1224,6 +1251,53 @@ pub(super) fn run_actual_probe(
     let root = run_root_replacement_class(schedule);
     push(ROOT_FIRE, ROOT_CLEAN, take_verified_faults());
 
+    let mut qualification = run_qualification_probe(schedule.qualification_seed, false);
+    let mapping = run_qualification_probe(schedule.qualification_seed, true);
+    qualification.cells.extend(mapping.cells);
+    qualification.commits = mapping.commits;
+    for cell in &qualification.cells {
+        let (fire, clean) = match cell.name.as_str() {
+            "spill" => (
+                "property-graph.storage-faults.spill.fire",
+                "property-graph.storage-faults.spill.clean",
+            ),
+            "proof" => (
+                "property-graph.storage-faults.proof.fire",
+                "property-graph.storage-faults.proof.clean",
+            ),
+            "delete" => (
+                "property-graph.storage-faults.delete.fire",
+                "property-graph.storage-faults.delete.clean",
+            ),
+            "fold" => (
+                "property-graph.storage-faults.fold.fire",
+                "property-graph.storage-faults.fold.clean",
+            ),
+            "mapping-bit-flip" => (
+                "property-graph.storage-faults.mapping-bit-flip.fire",
+                "property-graph.storage-faults.mapping-bit-flip.clean",
+            ),
+            "mapping-WrongObject" => (
+                "property-graph.storage-faults.mapping-WrongObject.fire",
+                "property-graph.storage-faults.mapping-WrongObject.clean",
+            ),
+            "mapping-PostCommitError" => (
+                "property-graph.storage-faults.mapping-PostCommitError.fire",
+                "property-graph.storage-faults.mapping-PostCommitError.clean",
+            ),
+            other => panic!("unknown qualification receipt {other}"),
+        };
+        receipts.push(PathReceipt {
+            key: fire,
+            fires: cell.fires,
+            clean_controls: cell.controls,
+        });
+        receipts.push(PathReceipt {
+            key: clean,
+            fires: 0,
+            clean_controls: cell.controls,
+        });
+    }
     StorageFaultProbeReport {
         receipts,
         state: StorageFaultState {
@@ -1245,6 +1319,672 @@ pub(super) fn run_actual_probe(
             root_refusals: root.refusals,
             reopened_generation: root.reopened_generation,
             previous_generation: root.previous_generation,
+            qualification,
         },
     }
+}
+
+fn targeted_damage(vfs: &MisdirectVfs, target: &Path, substitute: Option<PathBuf>) {
+    *vfs.target.lock().expect("target") = Some((target.to_path_buf(), substitute));
+}
+
+fn deletes(vfs: &MisdirectVfs) -> Vec<PathBuf> {
+    vfs.recording
+        .take()
+        .into_iter()
+        .filter_map(|event| match event {
+            super::publication::DurabilityEvent::Delete(path) => Some(path),
+            _ => None,
+        })
+        .collect()
+}
+
+fn protected_changes(before: &BTreeMap<PathBuf, Vec<u8>>, candidates: &[PathBuf]) -> u64 {
+    before
+        .iter()
+        .filter(|(path, bytes)| {
+            path.extension().is_some_and(|ext| ext == "zgraph")
+                && !candidates.contains(path)
+                && std::fs::read(path).ok().as_ref() != Some(*bytes)
+        })
+        .count() as u64
+}
+
+fn run_reclaim_cell(
+    seed: u64,
+    name: &str,
+    fault: bool,
+) -> crate::graph_storage_fault_test_support::QualificationCell {
+    use super::consolidation::{
+        commit_maintenance, pending_reclaim_proof_for_lease, reclaim_candidate_path,
+        seed_reclaimable_manifest,
+    };
+    use crate::graph_storage_fault_test_support::QualificationCell;
+    let parent = tempfile::tempdir().expect("reclaim qualification parent");
+    let path = parent.path().join("native");
+    let vfs = Arc::new(MisdirectVfs::new());
+    let infrastructure: Arc<dyn Vfs> = vfs.clone();
+    let store = create_store(&path, &infrastructure);
+    let mut cell = QualificationCell {
+        name: name.into(),
+        intent_preserved: true,
+        ..Default::default()
+    };
+    if name == "spill" {
+        for index in 0..3 {
+            commit_node(&store, &format!("spill-{index}"), "mark input");
+        }
+        store
+            .checkpoint_native_graph(&control())
+            .expect("cut spill history");
+        let before = file_snapshot(&path);
+        let before_authority = store
+            .admit_native_read()
+            .expect("before failed mark")
+            .bundle()
+            .base();
+        deletes(&vfs);
+        let damaged = parent.path().join("damaged");
+        let hook_vfs = vfs.clone();
+        let hook_path = path.clone();
+        let counts = Arc::new(Mutex::new((0, 0)));
+        let observed = counts.clone();
+        let mut armed = fault;
+        let _guard = super::super::maintenance::spill::qualification::start(move |reference| {
+            let merge = crate::property_graph::storage::reclaim::QUALIFICATION_MERGE
+                .with(std::cell::Cell::get);
+            if armed && merge.0 >= 2 && merge.1 > 0 {
+                let target = crate::property_graph::storage::allocation::artifact_path(
+                    &hook_path,
+                    reference.object.artifact,
+                );
+                let mut bytes = std::fs::read(&target).expect("merge input bytes");
+                let frame = crate::property_graph::storage::artifact::decode(
+                    crate::property_graph::storage::artifact::ContainerKind::Object,
+                    None,
+                    &bytes,
+                )
+                .expect("merge input frame");
+                if frame
+                    .framed_block(reference.block)
+                    .expect("merge input block")
+                    .payload()
+                    .get(..8)
+                    != Some(b"ZGCP\x04\0\x01\0".as_slice())
+                {
+                    return;
+                }
+                let payload_length = frame
+                    .framed_block(reference.block)
+                    .expect("merge input block")
+                    .payload()
+                    .len();
+                let offset = reference.block.offset as usize + reference.block.length as usize
+                    - payload_length
+                    + seed as usize % payload_length;
+                println!(
+                    "ZE-172 spill merge input offset={offset} payload_bytes={payload_length} runs={} merges={}",
+                    merge.0, merge.1
+                );
+                bytes[offset] ^= 1;
+                std::fs::write(&damaged, bytes).expect("damaged private merge input");
+                targeted_damage(&hook_vfs, &target, Some(damaged.clone()));
+                *observed.lock().expect("merge observations") = merge;
+                armed = false;
+            }
+        });
+        crate::property_graph::storage::reclaim::QUALIFICATION_MERGE
+            .with(|counts| counts.set((0, 0)));
+        let result = commit_maintenance(&store);
+        let first_deletes = deletes(&vfs);
+        if fault {
+            cell.refusal = format!(
+                "bit-flip:{}",
+                classify_native_error(&result.expect_err("real merge refuses byte flip"))
+            );
+            cell.fires = vfs.fires();
+            (cell.runs, cell.merges) = *counts.lock().expect("merge observations");
+            cell.intent_preserved = store
+                .admit_native_read()
+                .expect("after failed mark")
+                .bundle()
+                .base()
+                == before_authority;
+            cell.changed_live_files = protected_changes(&before, &[]);
+            cell.unauthorized_unlinks = first_deletes.len() as u64;
+            drop(_guard);
+            commit_maintenance(&store).expect("spill preparation resumes after restoration");
+        } else {
+            result.expect("same-seed clean mark/merge");
+            (cell.runs, cell.merges) = crate::property_graph::storage::reclaim::QUALIFICATION_MERGE
+                .with(std::cell::Cell::get);
+        }
+        cell.resumed = true;
+        store.close().expect("close spill cell");
+        reopen_store(&path, &infrastructure)
+            .close()
+            .expect("close reopened spill");
+        return cell;
+    }
+    if name == "fold" {
+        seed_reclaimable_manifest(&store, &format!("fold-seed-{seed}"));
+        for index in 0..7 {
+            commit_node(&store, &format!("fold-{index}"), "inventory fold");
+        }
+        assert_eq!(
+            store
+                .admit_native_read()
+                .expect("before fold")
+                .bundle()
+                .prepared_inventories()
+                .len(),
+            8
+        );
+        store
+            .checkpoint_native_graph(&control())
+            .expect("cut fold history");
+    } else {
+        seed_reclaimable_manifest(&store, &format!("seed-{seed}"));
+    }
+    let previous_inventory = store
+        .admit_native_read()
+        .expect("inventory before folding")
+        .bundle()
+        .roots()
+        .directory(TreeKind::ObjectInventory)
+        .expect("previous inventory")
+        .reference();
+    commit_maintenance(&store).expect("commit pending intent and genuine fold");
+    let pending = store.admit_native_read().expect("pending reader");
+    let pending_root = pending.bundle().reclaim();
+    let (manifest, candidates) = pending_reclaim_proof_for_lease(&store, &pending);
+    let targets: Vec<_> = candidates
+        .iter()
+        .map(|candidate| reclaim_candidate_path(&path, candidate))
+        .collect();
+    assert!(targets.len() >= 2, "fixture must reach second candidate");
+    let inventory = pending
+        .bundle()
+        .roots()
+        .directory(TreeKind::ObjectInventory)
+        .expect("fold inventory")
+        .reference()
+        .expect("rewritten inventory page");
+    if name == "fold" {
+        assert_ne!(
+            Some(inventory),
+            previous_inventory,
+            "fold rewrote the targeted inventory page"
+        );
+        cell.folded = 8 + 1 - pending.bundle().prepared_inventories().len();
+        assert_eq!(cell.folded, 8);
+    }
+    drop(pending);
+    let before = file_snapshot(&path);
+    deletes(&vfs);
+    if fault {
+        match name {
+            "proof" => {
+                let target = crate::property_graph::storage::allocation::artifact_path(
+                    &path,
+                    manifest.mark.root.object.artifact,
+                );
+                let mut bytes = std::fs::read(&target).expect("completed mark bytes");
+                bytes.truncate(HEADER_BYTES + (seed as usize % (bytes.len() - HEADER_BYTES)));
+                let damaged = parent.path().join("truncated");
+                std::fs::write(&damaged, bytes).expect("truncated private mark copy");
+                targeted_damage(&vfs, &target, Some(damaged));
+            }
+            "fold" => {
+                let target = crate::property_graph::storage::allocation::artifact_path(
+                    &path,
+                    inventory.artifact,
+                );
+                let mut bytes = std::fs::read(&target).expect("rewritten inventory bytes");
+                let frame = crate::property_graph::storage::artifact::decode(
+                    crate::property_graph::storage::artifact::ContainerKind::Object,
+                    None,
+                    &bytes,
+                )
+                .expect("folded inventory pack");
+                let payload = frame
+                    .framed_block(inventory)
+                    .expect("inventory block")
+                    .payload();
+                decode_page(TreeKind::ObjectInventory, payload)
+                    .expect("actual rewritten ObjectInventory page");
+                let payload_length = payload.len();
+                let offset = inventory.offset as usize + inventory.length as usize - payload_length
+                    + seed as usize % payload_length;
+                println!(
+                    "ZE-172 rewritten inventory offset={offset} payload_bytes={payload_length} folded={}",
+                    cell.folded
+                );
+                bytes[offset] ^= 1;
+                let damaged = parent.path().join("inventory-damage");
+                std::fs::write(&damaged, bytes).expect("private damaged inventory");
+                targeted_damage(&vfs, &target, Some(damaged));
+            }
+            "delete" => vfs.recording.arm_fault_after(FaultPoint::Delete, 1),
+            _ => panic!("unknown reclaim cell"),
+        }
+        let result = commit_maintenance(&store);
+        println!(
+            "ZE-172 reclaim {name} seed={seed} fault fires={} target={:?} result={result:?}",
+            vfs.fires(),
+            vfs.target.lock().expect("target")
+        );
+        let error = result.expect_err("targeted reclaim fault must refuse");
+        let initial = deletes(&vfs);
+        if name == "delete" {
+            vfs.recording.assert_fired_once();
+            cell.fires = 1;
+            assert_eq!(initial.len(), 1);
+        } else {
+            cell.fires = vfs.fires();
+            assert!(initial.is_empty(), "byte refusal precedes unlink");
+        }
+        cell.refusal = format!("{name}:{}", classify_native_error(&error));
+        cell.unauthorized_unlinks = initial
+            .iter()
+            .filter(|target| !targets.contains(target))
+            .count() as u64;
+        cell.changed_live_files = protected_changes(&before, &targets);
+        cell.intent_preserved = store
+            .admit_native_read()
+            .expect("authority after refusal")
+            .bundle()
+            .reclaim()
+            == pending_root;
+        let report = commit_maintenance(&store).expect("resume remaining targets");
+        let remaining = deletes(&vfs);
+        cell.removed_bytes = report.removed_bytes;
+        cell.unlinked_bytes = remaining
+            .iter()
+            .map(|target| before[target].len() as u64)
+            .sum();
+        let mut all = initial;
+        all.extend(remaining);
+        all.sort();
+        let mut expected = targets.clone();
+        expected.sort();
+        cell.resumed = all == expected && targets.iter().all(|path| !path.exists());
+    } else {
+        let report = commit_maintenance(&store).expect("same-seed clean reclaim");
+        let clean = deletes(&vfs);
+        cell.removed_bytes = report.removed_bytes;
+        cell.unlinked_bytes = clean.iter().map(|target| before[target].len() as u64).sum();
+        let mut clean = clean;
+        clean.sort();
+        let mut expected = targets;
+        expected.sort();
+        cell.resumed = clean == expected;
+        assert_eq!(
+            cell.removed_bytes, cell.unlinked_bytes,
+            "clean physical byte accounting"
+        );
+        assert!(cell.resumed);
+    }
+    store.close().expect("close reclaim cell");
+    reopen_store(&path, &infrastructure)
+        .close()
+        .expect("close reopened reclaimed store");
+    cell
+}
+
+fn classify_native_error(error: &super::super::NativeGraphError) -> &'static str {
+    match error {
+        super::super::NativeGraphError::Io { .. } => "Io",
+        super::super::NativeGraphError::Read(error) => classify_tree_error(error),
+        super::super::NativeGraphError::Invalid(_) => "Invalid",
+        other => panic!("unexpected fault outcome: {other:?}"),
+    }
+}
+
+fn run_scoped_mapping_fault_class(
+    seed: u64,
+) -> crate::graph_storage_fault_test_support::QualificationReport {
+    use crate::graph_storage_fault_test_support::{QualificationCell, QualificationReport};
+    use crate::property_graph::staging::{WriteLimits, WriteMemory};
+    use crate::property_graph::storage::NativePreparationSource;
+    use crate::property_graph::storage::mapping_slot_capture::Capture;
+    use crate::property_graph::storage::memory::StorageMemory;
+    let capture = Capture::start();
+    let parent = tempfile::tempdir().expect("mapping parent");
+    let path = parent.path().join("native");
+    let vfs = Arc::new(MisdirectVfs::new());
+    let infrastructure: Arc<dyn Vfs> = vfs.clone();
+    let store = create_store(&path, &infrastructure);
+    capture.take();
+    vfs.opens.lock().expect("log").clear();
+    let mut commits = Vec::new();
+    let mut references = Vec::new();
+    let mut keys = Vec::new();
+    for index in 0..66 {
+        let key = format!("window-{index}");
+        let node = commit_node(&store, &key, "mapping qualification");
+        keys.push((key.into_bytes(), node));
+        references.push(
+            store
+                .admit_native_read()
+                .expect("pack reader")
+                .bundle()
+                .catalog()
+                .block,
+        );
+        let reports = capture.take();
+        for observed in &reports {
+            assert!(observed.generation <= index as u64 + 1);
+            assert!(observed.filled <= observed.capacity);
+            if observed.kind
+                == crate::property_graph::storage::mapping_slot_capture::Kind::Preparation
+                && observed.capacity > 4
+            {
+                assert!(observed.filled <= 60);
+            }
+        }
+        let logged = std::mem::take(&mut *vfs.opens.lock().expect("commit open log"));
+        let opens = reports.iter().map(|report| report.opens).sum::<usize>();
+        assert_eq!(
+            opens,
+            logged.len(),
+            "commit {index} independent open counter"
+        );
+        commits.push(
+            crate::graph_storage_fault_test_support::QualificationCommit {
+                generation: store
+                    .admit_native_read()
+                    .expect("commit generation")
+                    .bundle()
+                    .base()
+                    .generation
+                    .get(),
+                opens,
+                logged_opens: logged.len(),
+                filled: reports
+                    .iter()
+                    .filter(|report| report.capacity == 64)
+                    .map(|report| report.filled)
+                    .max()
+                    .unwrap_or(0),
+                scoped_opens: reports.iter().map(|report| report.scoped_opens).sum(),
+            },
+        );
+    }
+    let lease = store.admit_native_read().expect("mapping read lease");
+    let nodes: Vec<_> = keys.iter().map(|(_, node)| *node).collect();
+    let before = mapping_logical_state(&store, &nodes);
+    let foreign_path = parent.path().join("foreign");
+    let foreign = create_store(&foreign_path, &infrastructure);
+    commit_node(&foreign, "foreign", "checksum valid foreign store");
+    let foreign_reference = foreign
+        .admit_native_read()
+        .expect("foreign reader")
+        .bundle()
+        .catalog()
+        .block;
+    let foreign_file = crate::property_graph::storage::allocation::artifact_path(
+        &foreign_path,
+        foreign_reference.artifact,
+    );
+    let target =
+        crate::property_graph::storage::allocation::artifact_path(&path, references[65].artifact);
+    let original = std::fs::read(&target).expect("scoped target bytes");
+    let mut report = QualificationReport {
+        commits,
+        ..Default::default()
+    };
+    for name in [
+        "mapping-bit-flip",
+        "mapping-WrongObject",
+        "mapping-PostCommitError",
+    ] {
+        let damaged = parent.path().join("damaged-pack");
+        let mut bytes = original.clone();
+        let offset = payload_offset(&bytes, seed);
+        bytes[offset] ^= 1;
+        std::fs::write(&damaged, bytes).expect("damaged temporary file");
+        let replacement = match name {
+            "mapping-bit-flip" => Some(damaged),
+            "mapping-WrongObject" => Some(foreign_file.clone()),
+            _ => None,
+        };
+        let mut cell = QualificationCell {
+            name: name.into(),
+            intent_preserved: true,
+            ..Default::default()
+        };
+        for fault in [true, false] {
+            let shared = GraphResources::from_store(&store).expect("shared");
+            let writer = WriteMemory::new(&shared, WriteLimits::default()).expect("write memory");
+            let guard = control();
+            let memory =
+                StorageMemory::new(&writer, &guard, 32 * 1024 * 1024).expect("storage memory");
+            let source =
+                NativePreparationSource::new(&lease, &memory, 64).expect("64 slot fixture");
+            let mut resources = source.resources(u64::MAX).expect("resources");
+            vfs.opens.lock().expect("log").clear();
+            let fires = vfs.fires();
+            source.with_scoped_reads(|| {
+                for reference in &references[..60] {
+                    assert!(
+                        !source.scoped_blocks(),
+                        "prefix still pins before threshold"
+                    );
+                    source
+                        .with_block(*reference, &mut resources, |block, _| {
+                            assert_eq!(block.reference(), *reference);
+                            Ok(())
+                        })
+                        .expect("fill unique pack");
+                }
+                assert!(source.scoped_blocks(), "actual scoped transition");
+                assert_eq!(source.mapping_slot_report().filled, 60);
+                if fault {
+                    targeted_damage(&vfs, &target, replacement.clone());
+                }
+                let result = source.with_block(references[65], &mut resources, |block, _| {
+                    if fault {
+                        cell.exposed_blocks += 1;
+                    }
+                    assert_eq!(block.reference(), references[65]);
+                    assert_eq!(block.identity().store, lease.bundle().base().store);
+                    Ok(())
+                });
+                if fault {
+                    let error = result.expect_err("scoped path validates target and refuses");
+                    cell.refusal = format!("{name}:{}", classify_tree_error(&error));
+                    cell.fires = vfs.fires() - fires;
+                    let observed = source.mapping_slot_report();
+                    cell.filled = observed.filled;
+                    cell.opens = observed.opens;
+                    cell.scoped_opens = observed.scoped_opens;
+                    cell.logged_opens = vfs.opens.lock().expect("log").len();
+                } else {
+                    result.expect("same-seed scoped clean control");
+                    let observed = source.mapping_slot_report();
+                    assert_eq!(observed.opens, vfs.opens.lock().expect("clean log").len());
+                    assert_eq!(
+                        (observed.filled, observed.opens, observed.scoped_opens),
+                        (60, 61, 1)
+                    );
+                    cell.controls += 1;
+                }
+            });
+        }
+        cell.changed_live_files =
+            u64::from(std::fs::read(&target).expect("original target") != original);
+        cell.resumed = mapping_logical_state(&store, &nodes) == before;
+        report.cells.push(cell);
+    }
+    drop(lease);
+    foreign.close().expect("close foreign");
+    store.close().expect("close mapping store");
+    capture.restore_default_capacity();
+    let reopened = reopen_store(&path, &infrastructure);
+    let lease = reopened
+        .admit_native_read()
+        .expect("reopened logical lease");
+    assert_eq!(before, mapping_logical_state(&reopened, &nodes));
+    drop(lease);
+    reopened.close().expect("close reopen mapping");
+    report
+}
+
+pub(crate) fn run_qualification_probe(
+    seed: u64,
+    mapping: bool,
+) -> crate::graph_storage_fault_test_support::QualificationReport {
+    if mapping {
+        return run_scoped_mapping_fault_class(seed);
+    }
+    let mut report = crate::graph_storage_fault_test_support::QualificationReport::default();
+    let clean_selection = run_selection_probe(seed);
+    let mut selection = run_selection_probe(seed);
+    selection.clean_serials = clean_selection.selected_serials;
+    selection.clean_ranges = clean_selection.selected_ranges;
+    report.selection = Some(selection);
+    for name in ["spill", "proof", "delete", "fold"] {
+        let clean = run_reclaim_cell(seed, name, false);
+        assert!(clean.resumed, "same-seed clean execution {name}");
+        let mut cell = run_reclaim_cell(seed, name, true);
+        cell.controls = 1;
+        report.cells.push(cell);
+    }
+    report
+}
+
+fn run_selection_probe(
+    seed: u64,
+) -> crate::graph_storage_fault_test_support::QualificationSelection {
+    use crate::graph_storage_fault_test_support::{QualificationPack, QualificationSelection};
+    use crate::property_graph::storage::adjacency::QUALIFICATION_RANGES;
+    use crate::property_graph::storage::consolidation::{
+        QUALIFICATION_PACKS, QUALIFICATION_SELECTION,
+    };
+    struct Capture;
+    impl Drop for Capture {
+        fn drop(&mut self) {
+            QUALIFICATION_SELECTION.with(|active| active.set(false));
+        }
+    }
+    let parent = tempfile::tempdir().expect("selection fixture");
+    let path = parent.path().join("native");
+    let vfs: Arc<dyn Vfs> = Arc::new(RecordingVfs::default());
+    let store = create_store(&path, &vfs);
+    let mut groups = Vec::new();
+    let mut pending_counts = Vec::new();
+    // Each group has its own real base and independently sized pending deltas.
+    // Rotate creation order so oldest selection is seed-dependent too.
+    for order in 0..3 {
+        let group = (order + seed as usize % 3) % 3;
+        let (source, target, _) = commit_linked_pair(&store, &format!("selection-{group}"));
+        let pending = 1 + ((group + seed as usize % 3) % 3);
+        groups.push((group, source, target));
+        pending_counts.push((group, pending));
+        for index in 0..pending {
+            let key = format!("selection-{group}-{index}");
+            store
+                .apply_native_graph(
+                    &[StructuredWrite {
+                        key: ApplicationKey::new(EntityKind::Relationship, "ze47", &key)
+                            .expect("selection rel key"),
+                        revision: GraphRevision::new(1).expect("revision"),
+                        operation: StructuredOperation::Create,
+                        image: Some(WriteImage::Relationship {
+                            source: NodeRef::Existing(source),
+                            target: NodeRef::Existing(target),
+                            relationship_type: GraphName::new("LINKS").expect("type"),
+                            properties: &[],
+                        }),
+                    }],
+                    &control(),
+                )
+                .expect("seed-sized pending delta");
+        }
+    }
+    store
+        .checkpoint_native_graph(&control())
+        .expect("selection checkpoint");
+    QUALIFICATION_PACKS.with(|packs| packs.borrow_mut().clear());
+    QUALIFICATION_RANGES.with(|ranges| ranges.borrow_mut().clear());
+    QUALIFICATION_SELECTION.with(|active| active.set(true));
+    let capture = Capture;
+    let admission = store
+        .admit_native_graph_maintenance()
+        .expect("selection maintenance");
+    super::super::maintenance::commit_with_limits(
+        &store,
+        &admission,
+        &control(),
+        super::super::maintenance::MaintenanceLimits {
+            relocation_bytes: 1,
+            ..Default::default()
+        },
+    )
+    .expect("oldest pack and largest pending range maintenance");
+    drop(admission);
+    drop(capture);
+    let packs = QUALIFICATION_PACKS.with(|packs| std::mem::take(&mut *packs.borrow_mut()));
+    assert_eq!(packs.len(), 1, "one actual pack selection");
+    let (census, serials, byte_limit) = packs.into_iter().next().expect("pack observation");
+    let mut observed = QualificationSelection {
+        packs: census
+            .into_iter()
+            .map(|row| QualificationPack {
+                serial: row.serial,
+                bytes: row.bytes,
+                live: row.live,
+                pages: row.live_pages,
+                records: row.live_records,
+                graph_live: row.graph_live,
+            })
+            .collect(),
+        selected_serials: serials,
+        byte_limit,
+        ..Default::default()
+    };
+    pending_counts.sort();
+    observed.fixture_pending = pending_counts.into_iter().map(|(_, count)| count).collect();
+    let range_group = |kind: TreeKind, key: [u8; 40]| {
+        let node = u128::from_le_bytes(key[..16].try_into().expect("range node identity"));
+        groups
+            .iter()
+            .find(|(_, source, target)| {
+                if kind == TreeKind::OutRanges {
+                    source.get() == node
+                } else {
+                    target.get() == node
+                }
+            })
+            .expect("known fixture range")
+            .0
+    };
+    for (kind, candidates, selected) in
+        QUALIFICATION_RANGES.with(|ranges| std::mem::take(&mut *ranges.borrow_mut()))
+    {
+        for (key, count) in candidates {
+            observed
+                .ranges
+                .push((kind as u8, range_group(kind, key), count));
+        }
+        if let Some(key) = selected {
+            observed
+                .selected_ranges
+                .push((kind as u8, range_group(kind, key)));
+        }
+    }
+    assert!(
+        !observed.ranges.is_empty(),
+        "fixture exercises pending selection after oldest pack drain"
+    );
+    store.close().expect("close selection store");
+    observed
+}
+
+fn mapping_logical_state(store: &Store, nodes: &[NodeId]) -> Vec<super::mapping_slots::NodeState> {
+    nodes
+        .chunks(8)
+        .flat_map(|chunk| super::mapping_slots::logical_state(store, chunk))
+        .collect()
 }

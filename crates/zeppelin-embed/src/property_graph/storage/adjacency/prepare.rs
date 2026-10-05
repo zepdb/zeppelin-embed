@@ -16,6 +16,8 @@ use crate::property_graph::{
     wal::{self, CommitState, WalGraphRoots},
 };
 mod ranges;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use ranges::QUALIFICATION_RANGES;
 pub(crate) use ranges::relocate_ranges;
 
 /// Exact metadata borrowed from the sole coordinator's retained base. The

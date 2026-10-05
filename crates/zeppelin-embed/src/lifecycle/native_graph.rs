@@ -2053,7 +2053,7 @@ pub(crate) mod tests {
     pub(crate) mod recovery;
     mod retrieval;
     mod sparse;
-    mod storage_faults;
+    pub(crate) mod storage_faults;
     mod text_lifecycle;
 
     #[cfg(feature = "test-support")]

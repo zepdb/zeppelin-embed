@@ -750,11 +750,11 @@ fn prepare_durable_proof<'m>(
         64 * 1024 * 1024,
     )?;
     let mut protected = ProtectedStreamBuilder::new(storage, binding)?;
-    let mut mark = SpillMark::new(
-        storage,
-        binding,
-        crate::property_graph::storage::reclaim::SPILL_CHUNK_LIMIT,
-    )?;
+    #[cfg(any(test, feature = "test-support"))]
+    let chunk = spill::qualification::chunk();
+    #[cfg(not(any(test, feature = "test-support")))]
+    let chunk = crate::property_graph::storage::reclaim::SPILL_CHUNK_LIMIT;
+    let mut mark = SpillMark::new(storage, binding, chunk)?;
 
     let mut census = {
         let source = NativePreparationSource::new(&admission.lease, storage, 64)?;

@@ -490,6 +490,19 @@ pub(crate) fn select_drain<'m>(
         (live, records, pages) = next;
     }
     drain.as_mut_slice().sort_unstable();
+    #[cfg(any(test, feature = "test-support"))]
+    if QUALIFICATION_SELECTION.with(std::cell::Cell::get) {
+        let selected = census
+            .iter()
+            .filter(|row| drain.as_slice().contains(&row.artifact))
+            .map(|row| row.serial)
+            .collect();
+        QUALIFICATION_PACKS.with(|observed| {
+            observed
+                .borrow_mut()
+                .push((census.to_vec(), selected, bytes))
+        });
+    }
     census.sort_unstable_by_key(|row| row.artifact);
     Ok(drain)
 }
@@ -1383,4 +1396,12 @@ pub(crate) fn select_finished_tombstones<'m, S: super::tree::directory::BlockSou
         }
     }
     Ok(selected)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+type PackSelection = (Vec<PackCensus>, Vec<u64>, u64);
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    pub(crate) static QUALIFICATION_SELECTION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    pub(crate) static QUALIFICATION_PACKS: std::cell::RefCell<Vec<PackSelection>> = const { std::cell::RefCell::new(Vec::new()) };
 }

@@ -129,7 +129,7 @@ mod mapping_index_tests {
 }
 
 // Private fixture controls; descriptor and auxiliary source capacities stay intact.
-#[cfg(all(test, feature = "graph-cypher"))]
+#[cfg(all(any(test, feature = "test-support"), feature = "graph-cypher"))]
 pub(crate) mod mapping_slot_capture {
     #![allow(clippy::expect_used, clippy::panic)]
     use std::cell::RefCell;
@@ -146,6 +146,8 @@ pub(crate) mod mapping_slot_capture {
         pub capacity: usize,
         pub filled: usize,
         pub post_exhaustion_resolves: usize,
+        pub opens: usize,
+        pub scoped_opens: usize,
     }
     pub(crate) struct Observation(std::cell::Cell<Report>);
     impl Observation {
@@ -156,6 +158,8 @@ pub(crate) mod mapping_slot_capture {
                 capacity,
                 filled: 0,
                 post_exhaustion_resolves: 0,
+                opens: 0,
+                scoped_opens: 0,
             }))
         }
         pub(crate) fn report(&self) -> Report {
@@ -165,6 +169,14 @@ pub(crate) mod mapping_slot_capture {
             self.0.set(Report {
                 filled,
                 ..self.report()
+            });
+        }
+        pub(crate) fn open(&self, scoped: bool) {
+            let report = self.report();
+            self.0.set(Report {
+                opens: report.opens + 1,
+                scoped_opens: report.scoped_opens + usize::from(scoped),
+                ..report
             });
         }
         pub(crate) fn resolve(&self, exhausted: bool) {
@@ -224,9 +236,7 @@ pub(crate) mod mapping_slot_capture {
     }
     pub(crate) fn publish(report: Report) {
         CAPTURE.with(|capture| {
-            if report.capacity > 4
-                && let Some(reports) = capture.borrow_mut().as_mut()
-            {
+            if let Some(reports) = capture.borrow_mut().as_mut() {
                 reports.push(report);
             }
         });

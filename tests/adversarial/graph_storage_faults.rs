@@ -1,4 +1,4 @@
-//! ZE-47 native storage fault classes 1-4.
+//! ZE-47 / ZE-172 native storage fault classes 1-6.
 //!
 //! This family owns the seeded schedule and every comparator. The engine
 //! crate executes the schedule against a real native store under a faulty VFS
@@ -23,6 +23,24 @@ pub const REQUIRED_COVERAGE: &[&str] = &[
     "property-graph.storage-faults.root-replacement.fire",
     "property-graph.storage-faults.root-replacement.clean",
     "property-graph.storage-faults.oracle.can-fire",
+    "property-graph.storage-faults.spill.fire",
+    "property-graph.storage-faults.spill.clean",
+    "property-graph.storage-faults.proof.fire",
+    "property-graph.storage-faults.proof.clean",
+    "property-graph.storage-faults.delete.fire",
+    "property-graph.storage-faults.delete.clean",
+    "property-graph.storage-faults.fold.fire",
+    "property-graph.storage-faults.fold.clean",
+    "property-graph.storage-faults.mapping-bit-flip.fire",
+    "property-graph.storage-faults.mapping-bit-flip.clean",
+    "property-graph.storage-faults.mapping-WrongObject.fire",
+    "property-graph.storage-faults.mapping-WrongObject.clean",
+    "property-graph.storage-faults.mapping-PostCommitError.fire",
+    "property-graph.storage-faults.mapping-PostCommitError.clean",
+    "property-graph.storage-faults.oldest-pack",
+    "property-graph.storage-faults.largest-pending-range",
+    "property-graph.storage-faults.mapping-opens-per-commit",
+    "property-graph.storage-faults.ze172.can-fire",
 ];
 
 /// Keys whose body must have fired at least one scheduled fault or refusal.
@@ -31,6 +49,13 @@ const FIRED: &[&str] = &[
     "property-graph.storage-faults.split.fire",
     "property-graph.storage-faults.out-in.fire",
     "property-graph.storage-faults.root-replacement.fire",
+    "property-graph.storage-faults.spill.fire",
+    "property-graph.storage-faults.proof.fire",
+    "property-graph.storage-faults.delete.fire",
+    "property-graph.storage-faults.fold.fire",
+    "property-graph.storage-faults.mapping-bit-flip.fire",
+    "property-graph.storage-faults.mapping-WrongObject.fire",
+    "property-graph.storage-faults.mapping-PostCommitError.fire",
 ];
 
 /// Smallest discovery cap that still reaches a real 16 KiB leaf split. A node
@@ -62,6 +87,7 @@ fn schedule_for(seed: u64) -> StorageFaultSchedule {
         split_skip: (rng.next_u64() % 2) as u32,
         out_in_append: (rng.next_u64() % 3) as u32 + 1,
         root_variant: (rng.next_u64() % 4) as u8,
+        qualification_seed: rng.next_u64(),
     }
 }
 
@@ -325,7 +351,12 @@ fn check_receipts(
         }
         coverage.hit(receipt.key);
     }
-    if seen.len() != 8 {
+    if seen.len() != 22
+        || REQUIRED_COVERAGE[..8]
+            .iter()
+            .chain(REQUIRED_COVERAGE[9..23].iter())
+            .any(|key| !seen.contains(key))
+    {
         return Err("ZE-47 missing storage-fault boundary receipts".into());
     }
     Ok(())
@@ -340,6 +371,7 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
     check_split(schedule, &report.state)?;
     check_out_in(&report.state)?;
     check_root(&report.state)?;
+    check_qualification_report(&report.state.qualification, None, coverage)?;
     check_receipts(&report, coverage)
 }
 
@@ -409,4 +441,390 @@ mod tests {
         assert!(first.split_keys >= super::MINIMUM_SPLIT_KEYS);
         assert!(second.split_keys >= super::MINIMUM_SPLIT_KEYS);
     }
+}
+
+fn check_qualification(
+    cell: &zeppelin_embed::graph_storage_fault_test_support::QualificationCell,
+    mapping: bool,
+) -> Result<(), String> {
+    if cell.fires != 1 || cell.controls != 1 {
+        return Err("ZE-172 missing fire/control".into());
+    }
+    check_loud("ZE-172", std::slice::from_ref(&cell.refusal))?;
+    if cell.unauthorized_unlinks != 0 {
+        return Err("ZE-172 unauthorized unlink".into());
+    }
+    if cell.changed_live_files != 0 {
+        return Err("ZE-172 changed live bytes".into());
+    }
+    if !cell.intent_preserved {
+        return Err("ZE-172 lost intent".into());
+    }
+    if !cell.resumed {
+        return Err("ZE-172 not resumable".into());
+    }
+    if cell.removed_bytes != cell.unlinked_bytes {
+        return Err("ZE-172 wrong byte accounting".into());
+    }
+    if cell.exposed_blocks != 0 {
+        return Err("ZE-172 stale/foreign block exposed".into());
+    }
+    if mapping
+        && (cell.filled != 60
+            || cell.scoped_opens != 1
+            || cell.opens != 61
+            || cell.opens != cell.logged_opens)
+    {
+        return Err("ZE-172 missing/lying counters".into());
+    }
+    if cell.name == "spill" && (cell.runs < 2 || cell.merges == 0) {
+        return Err("ZE-172 missing real merge".into());
+    }
+    if cell.name == "fold" && cell.folded != 8 {
+        return Err("ZE-172 missing eight-manifest fold".into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod ze172_tests {
+    use super::*;
+    use zeppelin_embed::graph_storage_fault_test_support::{
+        QualificationCell, run_qualification_probe,
+    };
+
+    #[test]
+    fn ze172_comparators_reject_bad_observations() {
+        let good = QualificationCell {
+            name: "mapping".into(),
+            fires: 1,
+            controls: 1,
+            refusal: "bit-flip:Invalid".into(),
+            intent_preserved: true,
+            resumed: true,
+            filled: 60,
+            opens: 61,
+            logged_opens: 61,
+            scoped_opens: 1,
+            ..Default::default()
+        };
+        assert!(check_qualification(&good, true).is_ok());
+        for (field, reason) in [
+            (0, "unauthorized unlink"),
+            (1, "changed live bytes"),
+            (2, "lost intent"),
+            (3, "not resumable"),
+            (4, "wrong byte accounting"),
+            (5, "stale/foreign block"),
+            (6, "missing/lying counters"),
+            (7, "missing/lying counters"),
+            (8, "missing/lying counters"),
+        ] {
+            let mut bad = good.clone();
+            match field {
+                0 => bad.unauthorized_unlinks = 1,
+                1 => bad.changed_live_files = 1,
+                2 => bad.intent_preserved = false,
+                3 => bad.resumed = false,
+                4 => bad.removed_bytes = 1,
+                5 => bad.exposed_blocks = 1,
+                6 => bad.opens = 0,
+                7 => bad.logged_opens += 1,
+                _ => bad.scoped_opens += 1,
+            }
+            assert!(
+                check_qualification(&bad, true)
+                    .unwrap_err()
+                    .contains(reason),
+                "{reason}"
+            );
+        }
+        use zeppelin_embed::graph_storage_fault_test_support::{
+            QualificationCommit, QualificationPack, QualificationSelection,
+        };
+        let selection = QualificationSelection {
+            packs: (1..=3)
+                .map(|serial| QualificationPack {
+                    serial,
+                    bytes: 100,
+                    live: 50,
+                    pages: 1,
+                    records: 1,
+                    graph_live: true,
+                })
+                .collect(),
+            selected_serials: vec![1],
+            clean_serials: vec![1],
+            byte_limit: 1,
+            fixture_pending: vec![1, 2, 3],
+            ranges: vec![
+                (6, 0, 2),
+                (6, 1, 3),
+                (6, 2, 4),
+                (7, 0, 2),
+                (7, 1, 3),
+                (7, 2, 4),
+            ],
+            selected_ranges: vec![(6, 2), (7, 2)],
+            clean_ranges: vec![(6, 2), (7, 2)],
+        };
+        check_selection(&selection).expect("independent selection golden");
+        let mut wrong = selection.clone();
+        wrong.selected_serials = vec![2];
+        assert!(check_selection(&wrong).unwrap_err().contains("oldest-pack"));
+        let mut wrong = selection;
+        wrong.selected_ranges = vec![(6, 0), (7, 0)];
+        assert!(
+            check_selection(&wrong)
+                .unwrap_err()
+                .contains("largest-pending-range")
+        );
+        let commits: Vec<_> = (1..=66)
+            .map(|generation| QualificationCommit {
+                generation,
+                opens: 61,
+                logged_opens: 61,
+                filled: 60,
+                scoped_opens: 1,
+            })
+            .collect();
+        check_commits(&commits).expect("counter golden");
+        assert!(check_commits(&[]).unwrap_err().contains("missing"));
+        let mut wrong = commits;
+        wrong[0].opens = 60;
+        assert!(check_commits(&wrong).unwrap_err().contains("lying"));
+    }
+
+    fn bind(mapping: bool) {
+        for seed in [0, 1, 42, u64::MAX] {
+            let schedule = super::schedule_for(seed);
+            let report = run_qualification_probe(schedule.qualification_seed, mapping);
+            println!("ZE-172 seed={seed} mapping={mapping} schedule={schedule:?}: {report:?}");
+            assert_eq!(
+                report.cells.len(),
+                if mapping { 3 } else { 4 },
+                "missing class-5/6 observations"
+            );
+            let mut coverage = CoverageRegistry::default();
+            check_qualification_report(&report, Some(mapping), &mut coverage)
+                .expect("ZE-172 comparators and coverage");
+            for key in qualification_keys(mapping) {
+                assert_eq!(coverage.count(key), 1, "missing {key}");
+            }
+        }
+    }
+    #[test]
+    fn ze172_reclaim_byte_faults() {
+        bind(false);
+    }
+    #[test]
+    fn ze172_scoped_mapping_faults() {
+        bind(true);
+    }
+}
+
+fn qualification_keys(mapping: bool) -> Vec<&'static str> {
+    let mut keys = if mapping {
+        REQUIRED_COVERAGE[17..23].to_vec()
+    } else {
+        REQUIRED_COVERAGE[9..17].to_vec()
+    };
+    if mapping {
+        keys.push(REQUIRED_COVERAGE[25]);
+    } else {
+        keys.extend_from_slice(&REQUIRED_COVERAGE[23..25]);
+    }
+    keys.push(REQUIRED_COVERAGE[26]);
+    keys
+}
+
+fn check_selection(
+    selection: &zeppelin_embed::graph_storage_fault_test_support::QualificationSelection,
+) -> Result<(), String> {
+    if selection.byte_limit != 1 || selection.packs.len() < 3 {
+        return Err("ZE-172 missing selection fixture".into());
+    }
+    let small = selection
+        .packs
+        .iter()
+        .filter(|pack| pack.graph_live && pack.live > 0 && pack.bytes < 65536)
+        .count();
+    let oldest = selection
+        .packs
+        .iter()
+        .filter(|pack| {
+            pack.graph_live
+                && pack.live > 0
+                && (pack.live <= u64::from(pack.bytes) * 3 / 4
+                    || (pack.bytes < 65536 && small >= 8))
+        })
+        .min_by_key(|pack| pack.serial)
+        .ok_or("ZE-172 no eligible pack")?;
+    if selection.selected_serials != [oldest.serial]
+        || selection.selected_serials != selection.clean_serials
+    {
+        return Err("ZE-172 wrong oldest-pack selection".into());
+    }
+    if selection.ranges.is_empty() || selection.fixture_pending.len() != 3 {
+        return Err("ZE-172 missing pending ranges".into());
+    }
+    let mut expected = Vec::new();
+    for direction in [6, 7] {
+        let candidates: Vec<_> = selection
+            .ranges
+            .iter()
+            .filter(|(kind, _, _)| *kind == direction)
+            .collect();
+        for (_, group, count) in &candidates {
+            if selection.fixture_pending.get(*group).map(|value| value + 1) != Some(*count) {
+                return Err("ZE-172 wrong pending fixture count".into());
+            }
+        }
+        let maximum = candidates
+            .iter()
+            .map(|(_, _, count)| *count)
+            .max()
+            .ok_or("ZE-172 missing pending direction")?;
+        let winner = candidates
+            .iter()
+            .filter(|(_, _, count)| *count == maximum)
+            .collect::<Vec<_>>();
+        if winner.len() != 1 {
+            return Err("ZE-172 ambiguous fixture maximum".into());
+        }
+        expected.push((direction, winner[0].1));
+    }
+    if selection.selected_ranges != expected || selection.selected_ranges != selection.clean_ranges
+    {
+        return Err("ZE-172 wrong largest-pending-range selection".into());
+    }
+    Ok(())
+}
+
+fn check_commits(
+    commits: &[zeppelin_embed::graph_storage_fault_test_support::QualificationCommit],
+) -> Result<(), String> {
+    if commits.len() != 66 {
+        return Err("ZE-172 missing per-commit counters".into());
+    }
+    for (index, commit) in commits.iter().enumerate() {
+        if commit.generation != index as u64 + 1
+            || commit.opens == 0
+            || commit.opens != commit.logged_opens
+            || commit.filled > 60
+            || commit.scoped_opens > commit.opens
+        {
+            return Err("ZE-172 lying per-commit counters".into());
+        }
+    }
+    if !commits
+        .iter()
+        .any(|commit| commit.filled == 60 && commit.scoped_opens > 0)
+    {
+        return Err("ZE-172 missing commit scoped transition".into());
+    }
+    Ok(())
+}
+
+fn check_qualification_report(
+    report: &zeppelin_embed::graph_storage_fault_test_support::QualificationReport,
+    only: Option<bool>,
+    coverage: &mut CoverageRegistry,
+) -> Result<(), String> {
+    let names: &[&str] = match only {
+        Some(false) => &["spill", "proof", "delete", "fold"],
+        Some(true) => &[
+            "mapping-bit-flip",
+            "mapping-WrongObject",
+            "mapping-PostCommitError",
+        ],
+        None => &[
+            "spill",
+            "proof",
+            "delete",
+            "fold",
+            "mapping-bit-flip",
+            "mapping-WrongObject",
+            "mapping-PostCommitError",
+        ],
+    };
+    if report.cells.len() != names.len() {
+        return Err("ZE-172 missing fault cells".into());
+    }
+    for name in names {
+        let cell = report
+            .cells
+            .iter()
+            .find(|cell| cell.name == *name)
+            .ok_or("ZE-172 missing named cell")?;
+        let mapping = name.starts_with("mapping-");
+        check_qualification(cell, mapping)?;
+        for reason in 0..10 {
+            let mut bad = cell.clone();
+            match reason {
+                0 => bad.fires = 0,
+                1 => bad.controls = 0,
+                2 => bad.unauthorized_unlinks = 1,
+                3 => bad.changed_live_files = 1,
+                4 => bad.intent_preserved = false,
+                5 => bad.resumed = false,
+                6 => bad.removed_bytes = bad.unlinked_bytes + 1,
+                7 => bad.exposed_blocks = 1,
+                8 => bad.refusal = "fault:silent-answer".into(),
+                _ => {
+                    if mapping {
+                        bad.logged_opens += 1;
+                    } else {
+                        bad.fires = 0;
+                    }
+                }
+            }
+            if check_qualification(&bad, mapping).is_ok() {
+                return Err(format!(
+                    "ZE-172 comparator accepted planted violation {name}/{reason}"
+                ));
+            }
+        }
+        let index = REQUIRED_COVERAGE
+            .iter()
+            .position(|key| *key == format!("property-graph.storage-faults.{name}.fire"))
+            .ok_or("ZE-172 unregistered fault")?;
+        if only.is_some() {
+            coverage.hit(REQUIRED_COVERAGE[index]);
+            coverage.hit(REQUIRED_COVERAGE[index + 1]);
+        }
+    }
+    if only != Some(true) {
+        let selection = report
+            .selection
+            .as_ref()
+            .ok_or("ZE-172 missing selection observation")?;
+        check_selection(selection)?;
+        let mut wrong = selection.clone();
+        wrong.selected_serials.push(u64::MAX);
+        if !check_selection(&wrong).is_err_and(|reason| reason.contains("oldest-pack")) {
+            return Err("ZE-172 oldest comparator cannot fire".into());
+        }
+        let mut wrong = selection.clone();
+        wrong.selected_ranges.clear();
+        if !check_selection(&wrong).is_err_and(|reason| reason.contains("largest-pending-range")) {
+            return Err("ZE-172 pending comparator cannot fire".into());
+        }
+        coverage.hit(REQUIRED_COVERAGE[23]);
+        coverage.hit(REQUIRED_COVERAGE[24]);
+    }
+    if only != Some(false) {
+        check_commits(&report.commits)?;
+        if check_commits(&[]).is_ok() {
+            return Err("ZE-172 counter comparator accepted missing observations".into());
+        }
+        let mut wrong = report.commits.clone();
+        wrong[0].opens += 1;
+        if !check_commits(&wrong).is_err_and(|reason| reason.contains("lying")) {
+            return Err("ZE-172 commit counter comparator cannot fire".into());
+        }
+        coverage.hit(REQUIRED_COVERAGE[25]);
+    }
+    coverage.hit(REQUIRED_COVERAGE[26]);
+    Ok(())
 }

@@ -729,7 +729,7 @@ struct RecoverySource<'a, 'm> {
     window: RefCell<Option<RecoveryMappedArtifact>>,
     retain_window: Cell<bool>,
     filled: Cell<usize>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     slot_observation: crate::property_graph::storage::mapping_slot_capture::Observation,
     source_error: RefCell<Option<NativeGraphError>>,
 }
@@ -773,7 +773,7 @@ impl<'a, 'm> RecoverySource<'a, 'm> {
         if capacity == 0 {
             return Err(TreeError::Memory);
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let capacity = crate::property_graph::storage::mapping_slot_capture::capacity(capacity);
         let mut slots = StorageBuffer::new(memory, capacity)?;
         for _ in 0..capacity {
@@ -791,7 +791,7 @@ impl<'a, 'm> RecoverySource<'a, 'm> {
             window: RefCell::new(None),
             retain_window: Cell::new(false),
             filled: Cell::new(0),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             slot_observation:
                 crate::property_graph::storage::mapping_slot_capture::Observation::new(
                     crate::property_graph::storage::mapping_slot_capture::Kind::Recovery,
@@ -1825,6 +1825,8 @@ impl RecoverySource<'_, '_> {
         resources: &mut TreeResources<'_>,
     ) -> Result<RecoveryMappedArtifact, TreeError> {
         let (path, path_charge) = self.charged_path(reference.artifact)?;
+        #[cfg(any(test, feature = "test-support"))]
+        self.slot_observation.open(self.scoped_blocks());
         let mapping = map_file(self.store, &path, MAX_ARTIFACT_BYTES)
             .map_err(|error| self.latch_source(error))?;
         drop(path);
@@ -1881,7 +1883,7 @@ impl RecoverySource<'_, '_> {
         slot.set(self.open_mapping(reference, resources)?)
             .map_err(|_| TreeError::Invalid("native recovery source slot initialized twice"))?;
         self.filled.set(self.filled.get().saturating_add(1));
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         self.slot_observation.filled(self.filled.get());
         self.decode(
             slot.get().ok_or(TreeError::Invalid(
@@ -1910,7 +1912,7 @@ impl BlockSource for RecoverySource<'_, '_> {
         reference: PhysicalRef,
         resources: &mut TreeResources<'_>,
     ) -> Result<FramedBlock<'a>, TreeError> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         self.slot_observation.resolve(self.slots_exhausted());
         self.slot_block(reference, resources)?
             .ok_or(TreeError::Memory)

@@ -19262,6 +19262,11 @@ fn native_graph_runner_keys_are_absent_without_graph_feature() {
 #[cfg(feature = "graph-cypher")]
 #[test]
 fn native_graph_runner_keys_are_active_with_graph_feature() {
+    println!(
+        "ZE-172 graph-result-test-support={} observed native graph keys={}",
+        cfg!(feature = "graph-result-test-support"),
+        adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len()
+    );
     let active = adversarial::coverage::required_smoke_coverage().collect::<BTreeSet<_>>();
     for key in adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE {
         assert!(active.contains(key), "enabled graph runner omitted {key}");
@@ -19276,16 +19281,17 @@ fn native_graph_runner_keys_are_active_with_graph_feature() {
     // streaming retention under a one-row storage capacity. ZE-192 and
     // ZE-176 add seven receipt keys; the pin had drifted by three, so it
     // is reset to the observed lengths. ZE-190 adds fence-only recovery;
-    // ZE-275 adds three close schedules.
+    // ZE-275 adds three close schedules. ZE-172 adds eighteen byte-fault,
+    // clean-control, selection, open-counter and can-fire keys.
     #[cfg(not(feature = "graph-result-test-support"))]
     assert_eq!(
         adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        380 + if cfg!(unix) { 7 } else { 0 }
+        398 + if cfg!(unix) { 7 } else { 0 }
     );
     #[cfg(feature = "graph-result-test-support")]
     assert_eq!(
         adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        400 + if cfg!(unix) { 7 } else { 0 }
+        418 + if cfg!(unix) { 7 } else { 0 }
     );
 }
 

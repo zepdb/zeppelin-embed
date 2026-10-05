@@ -218,6 +218,8 @@ pub(crate) fn relocate_ranges<'m>(
         }
     }
     let mut pending: Option<(usize, [u8; 40])> = None;
+    #[cfg(any(test, feature = "test-support"))]
+    let mut qualification_candidates = Vec::new();
     {
         let lower = *resume;
         let mut scan =
@@ -261,6 +263,14 @@ pub(crate) fn relocate_ranges<'m>(
                     relocated = true;
                 }
             }
+            #[cfg(any(test, feature = "test-support"))]
+            if crate::property_graph::storage::consolidation::QUALIFICATION_SELECTION
+                .with(std::cell::Cell::get)
+                && !relocated
+                && descriptor.pending_count() > 0
+            {
+                qualification_candidates.push((key, descriptor.pending_count()));
+            }
             if !relocated
                 && descriptor.pending_count() > 0
                 && pending.is_none_or(|(count, _)| descriptor.pending_count() > count)
@@ -268,6 +278,18 @@ pub(crate) fn relocate_ranges<'m>(
                 pending = Some((descriptor.pending_count(), key));
             }
         }
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    if crate::property_graph::storage::consolidation::QUALIFICATION_SELECTION
+        .with(std::cell::Cell::get)
+    {
+        QUALIFICATION_RANGES.with(|observed| {
+            observed.borrow_mut().push((
+                root.kind(),
+                qualification_candidates,
+                pending.map(|(_, key)| key),
+            ))
+        });
     }
     // Preserve the ordinary one-range pending merge, excluding drained ranges.
     if let Some((_, key)) = pending {
@@ -761,4 +783,11 @@ fn queue_range(
     descriptor.encode(&mut bytes)?;
     pending.push(&descriptor.directory_key()?, Some(&bytes), r)?;
     descriptors.push(descriptor)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+type RangeSelection = (TreeKind, Vec<([u8; 40], usize)>, Option<[u8; 40]>);
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    pub(crate) static QUALIFICATION_RANGES: std::cell::RefCell<Vec<RangeSelection>> = const { std::cell::RefCell::new(Vec::new()) };
 }

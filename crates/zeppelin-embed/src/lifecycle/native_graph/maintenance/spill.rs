@@ -556,6 +556,8 @@ impl SpillIo for NativeSpillWriter<'_, '_> {
         output: &mut [u8],
         resources: &mut TreeResources<'_>,
     ) -> Result<usize, TreeError> {
+        #[cfg(any(test, feature = "test-support"))]
+        qualification::read(reference);
         let reserved_before = self.memory.reserved_bytes();
         let length = self.source.copy_spill_page(
             reference,
@@ -630,4 +632,40 @@ fn put_required(
     crate::property_graph::storage::artifact::encode_reference(required.block, &mut reference)
         .map_err(|_| NativeGraphError::Invalid("native spill predecessor reference"))?;
     put(output, offset + 64, &reference)
+}
+
+/// Thread-local, one-shot qualification seam at a real merge input read.
+#[cfg(any(test, feature = "test-support"))]
+pub(in crate::lifecycle::native_graph) mod qualification {
+    use crate::property_graph::wal::RequiredRef;
+    use std::cell::{Cell, RefCell};
+    type Hook = Box<dyn FnMut(RequiredRef)>;
+    thread_local! {
+        static HOOK: RefCell<Option<Hook>> = const { RefCell::new(None) };
+        static CHUNK: Cell<usize> = const { Cell::new(crate::property_graph::storage::reclaim::SPILL_CHUNK_LIMIT) };
+    }
+    pub(crate) struct Guard;
+    pub(crate) fn start(hook: impl FnMut(RequiredRef) + 'static) -> Guard {
+        CHUNK.with(|chunk| chunk.set(2));
+        HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+        Guard
+    }
+    pub(crate) fn chunk() -> usize {
+        CHUNK.with(Cell::get)
+    }
+    pub(crate) fn read(reference: RequiredRef) {
+        HOOK.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().as_mut() {
+                hook(reference);
+            }
+        });
+    }
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            CHUNK.with(|chunk| {
+                chunk.set(crate::property_graph::storage::reclaim::SPILL_CHUNK_LIMIT)
+            });
+            HOOK.with(|hook| *hook.borrow_mut() = None);
+        }
+    }
 }

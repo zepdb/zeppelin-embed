@@ -680,6 +680,8 @@ impl<'m> SpillMark<'m> {
         resources: &mut TreeResources<'_>,
     ) -> Result<DurableRun, TreeError> {
         self.merges = self.merges.checked_add(1).ok_or(TreeError::Work)?;
+        #[cfg(any(test, feature = "test-support"))]
+        QUALIFICATION_MERGE.with(|counts| counts.set((self.spill_runs, self.merges)));
         let (count, digest, first, last) = {
             let mut reader = MergeReader::new(left, right, self.memory)?;
             let mut count = 0_u64;
@@ -1564,4 +1566,9 @@ fn read<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], TreeErro
         .get(offset..offset.checked_add(N).ok_or(TreeError::Memory)?)
         .and_then(|value| value.try_into().ok())
         .ok_or(TreeError::Invalid("mark stream field extent"))
+}
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    pub(crate) static QUALIFICATION_MERGE: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
 }

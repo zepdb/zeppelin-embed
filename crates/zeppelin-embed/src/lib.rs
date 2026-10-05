@@ -342,9 +342,93 @@ pub mod graph_storage_fault_test_support {
         pub out_in_append: u32,
         /// Selects the class-4 root-replacement variant order.
         pub root_variant: u8,
+        /// Seeded byte offsets and selection fixture order for classes 5-6.
+        pub qualification_seed: u64,
     }
 
-    /// Actual state observed by one complete ZE-47 storage-fault execution.
+    /// Measured reclamation or scoped-mapping fault cell and its clean control.
+    #[derive(Clone, Debug, Default, Eq, PartialEq)]
+    pub struct QualificationCell {
+        /// Fault boundary actually executed.
+        pub name: String,
+        /// Actual targeted injections and clean completions.
+        pub fires: u64,
+        pub controls: u64,
+        /// Explicit refused outcome, never a successful callback.
+        pub refusal: String,
+        /// Unauthorized deletes and changed protected files.
+        pub unauthorized_unlinks: u64,
+        pub changed_live_files: u64,
+        /// Pending authority survived, and all remaining targets resumed once.
+        pub intent_preserved: bool,
+        pub resumed: bool,
+        /// Reported bytes and independently summed physical unlink lengths.
+        pub removed_bytes: u64,
+        pub unlinked_bytes: u64,
+        /// Callback exposure on a refused mapping.
+        pub exposed_blocks: u64,
+        /// Slot fills at the scoped transition.
+        pub filled: usize,
+        /// Open attempts from the source and the independent VFS log.
+        pub opens: usize,
+        pub logged_opens: usize,
+        pub scoped_opens: usize,
+        /// Actual mark run/merge counts or folded manifest count.
+        pub runs: usize,
+        pub merges: usize,
+        pub folded: usize,
+    }
+
+    /// Pack census measured before oldest-first selection, without random IDs.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct QualificationPack {
+        pub serial: u64,
+        pub bytes: u32,
+        pub live: u64,
+        pub pages: u32,
+        pub records: u32,
+        pub graph_live: bool,
+    }
+    /// Actual selection inputs and outputs, and same-seed clean identities.
+    #[derive(Clone, Debug, Default, Eq, PartialEq)]
+    pub struct QualificationSelection {
+        pub packs: Vec<QualificationPack>,
+        pub selected_serials: Vec<u64>,
+        pub clean_serials: Vec<u64>,
+        pub byte_limit: u64,
+        /// Direction and fixture group ordinal identify a range semantically.
+        pub ranges: Vec<(u8, usize, usize)>,
+        pub selected_ranges: Vec<(u8, usize)>,
+        pub clean_ranges: Vec<(u8, usize)>,
+        pub fixture_pending: Vec<usize>,
+    }
+
+    /// Per-commit source open counts compared with actual VFS open calls.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct QualificationCommit {
+        pub generation: u64,
+        pub opens: usize,
+        pub logged_opens: usize,
+        pub filled: usize,
+        pub scoped_opens: usize,
+    }
+
+    /// ZE-172 executions, separate from classes 1-4 for scoped binding runs.
+    #[derive(Clone, Debug, Default, Eq, PartialEq)]
+    pub struct QualificationReport {
+        pub cells: Vec<QualificationCell>,
+        pub selection: Option<QualificationSelection>,
+        pub commits: Vec<QualificationCommit>,
+    }
+
+    /// Execute real class-5 reclamation or class-6 scoped mapping cells.
+    pub fn run_qualification_probe(seed: u64, mapping: bool) -> QualificationReport {
+        crate::lifecycle::native_graph::tests::storage_faults::run_qualification_probe(
+            seed, mapping,
+        )
+    }
+
+    /// Actual state observed by one complete ZE-47 / ZE-172 execution.
     #[derive(Clone, Debug, Eq, PartialEq)]
     pub struct StorageFaultState {
         /// Typed classification of every class-1 damaged-artifact refusal.
@@ -391,6 +475,8 @@ pub mod graph_storage_fault_test_support {
         pub reopened_generation: u64,
         /// Generation acknowledged before the class-4 fault.
         pub previous_generation: u64,
+        /// Measured class-5/6 executions.
+        pub qualification: QualificationReport,
     }
 
     /// Receipts emitted only after each directed storage-fault body completes.
@@ -398,11 +484,11 @@ pub mod graph_storage_fault_test_support {
     pub struct StorageFaultProbeReport {
         /// Completed path receipts with actual fired and clean counts.
         pub receipts: Vec<PathReceipt>,
-        /// Actual state observed by the four fault classes.
+        /// Actual state observed by the six fault classes.
         pub state: StorageFaultState,
     }
 
-    /// Runs the four directed ZE-47 native storage fault classes against a
+    /// Runs the six directed ZE-47 / ZE-172 storage fault classes against a
     /// real native store under a faulty VFS, following the supplied schedule.
     pub fn run_actual_probe(seed: u64, schedule: StorageFaultSchedule) -> StorageFaultProbeReport {
         crate::lifecycle::native_graph::tests::run_storage_fault_probe(seed, schedule)

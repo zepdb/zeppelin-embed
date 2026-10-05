@@ -198,7 +198,7 @@ pub(super) fn pending_reclaim_candidates(
     pending_reclaim_proof_for_lease(store, lease).1
 }
 
-fn pending_reclaim_proof_for_lease(
+pub(super) fn pending_reclaim_proof_for_lease(
     store: &Store,
     lease: &super::super::NativeReadLease,
 ) -> (
@@ -246,7 +246,7 @@ fn create_reclaim_test_store(path: &Path, vfs: &Arc<RecordingVfs>) -> Store {
     .expect("fresh reclaim proof store")
 }
 
-fn seed_reclaimable_manifest(store: &Store, name: &str) {
+pub(super) fn seed_reclaimable_manifest(store: &Store, name: &str) {
     let image = CanonicalContents::node(&mut [], &mut [], Some("reclaim proof"), None)
         .expect("reclaim proof node image");
     store
