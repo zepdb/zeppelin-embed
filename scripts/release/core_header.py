@@ -90,12 +90,34 @@ def write_core_header(source: Path, destination: Path) -> None:
     destination.write_text(contents)
 
 
+def write_artifact_headers(source: Path, destination: Path, artifact: str) -> None:
+    if artifact not in ("legacy", "graph-cypher"):
+        raise ValueError(f"unknown artifact: {artifact}")
+    destination.mkdir(parents=True, exist_ok=True)
+    write_core_header(source, destination / "zeppelin_embed.h")
+    graph = destination / "zeppelin_graph_contracts.h"
+    if artifact == "graph-cypher":
+        graph.write_bytes(source.with_name("zeppelin_graph_contracts.h").read_bytes())
+        (destination / "zeppelin_embed_graph.h").write_text(
+            '#include "zeppelin_embed.h"\n#include "zeppelin_graph_contracts.h"\n')
+        module = 'module CZeppelinEmbedGraph {\n    umbrella header "zeppelin_embed_graph.h"\n    export *\n}\n'
+    else:
+        if graph.exists():
+            raise RuntimeError("legacy staging contains graph declarations")
+        module = 'module CZeppelinEmbed {\n    header "zeppelin_embed.h"\n    export *\n}\n'
+    (destination / "module.modulemap").write_text(module)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("source", type=Path)
     parser.add_argument("destination", type=Path)
+    parser.add_argument("--artifact", choices=["legacy", "graph-cypher"])
     arguments = parser.parse_args()
-    write_core_header(arguments.source, arguments.destination)
+    if arguments.artifact:
+        write_artifact_headers(arguments.source, arguments.destination, arguments.artifact)
+    else:
+        write_core_header(arguments.source, arguments.destination)
 
 
 if __name__ == "__main__":

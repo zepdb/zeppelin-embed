@@ -4,17 +4,37 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-BUILD_DIR="$ROOT_DIR/target/xcframework"
+SELECTOR=legacy
+PREBUILT_ARCHIVE=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --artifact) SELECTOR="$2"; shift 2 ;;
+        --prebuilt-archive) PREBUILT_ARCHIVE="$2"; shift 2 ;;
+        *) echo "unknown option: $1" >&2; exit 2 ;;
+    esac
+done
+if [ -n "$PREBUILT_ARCHIVE" ] && [ "$SELECTOR" != graph-cypher ]; then
+    echo "prebuilt archive is supported only for the single arm64 graph artifact" >&2; exit 2
+fi
+features=()
+MANIFEST="$ROOT_DIR/Package.swift"
+case "$SELECTOR" in
+    legacy) SUFFIX=""; NAME=ZeppelinEmbed; SIZE_BUDGET_KB=5120; MACOS_DEPLOYMENT_TARGET=11.0 ;;
+    graph-cypher)
+        SUFFIX=-graph-cypher; NAME=ZeppelinEmbedGraph; SIZE_BUDGET_KB=12288
+        MACOS_DEPLOYMENT_TARGET=14.0; features=(--features graph-cypher)
+        MANIFEST="$ROOT_DIR/bindings/swift/graph/Package.swift" ;;
+    *) echo "unknown artifact: $SELECTOR" >&2; exit 2 ;;
+esac
+BUILD_DIR="$ROOT_DIR/target/xcframework$SUFFIX"
 WORK_DIR="$BUILD_DIR/work"
 HEADERS_DIR="$WORK_DIR/headers"
-ARTIFACT="$BUILD_DIR/ZeppelinEmbed.xcframework"
-ARCHIVE_ZIP="$BUILD_DIR/ZeppelinEmbed.xcframework.zip"
-SLICE_EVIDENCE="$ROOT_DIR/tasks/evidence/23-slices.md"
-SIZE_EVIDENCE="$ROOT_DIR/tasks/evidence/23-size.md"
+ARTIFACT="$BUILD_DIR/$NAME.xcframework"
+ARCHIVE_ZIP="$BUILD_DIR/$NAME.xcframework.zip"
+SLICE_EVIDENCE="$ROOT_DIR/tasks/evidence/ze-107-$SELECTOR-slices.md"
+SIZE_EVIDENCE="$ROOT_DIR/tasks/evidence/ze-107-$SELECTOR-size.md"
 ALLOWLIST="$ROOT_DIR/crates/zeppelin-embed-ffi/symbols.allowlist"
 PRIVACY_MANIFEST="$SCRIPT_DIR/PrivacyInfo.xcprivacy"
-SIZE_BUDGET_KB=5120
-MACOS_DEPLOYMENT_TARGET=11.0
 
 # The release static library is built with a pinned nightly toolchain so it
 # can pass -Z build-std: this recompiles std/core/alloc from source with the
@@ -32,12 +52,12 @@ MACOS_DEPLOYMENT_TARGET=11.0
 RUST_NIGHTLY_TOOLCHAIN="nightly-2026-07-01"
 RUST_LLVM_NM="$(rustup run "$RUST_NIGHTLY_TOOLCHAIN" rustc --print sysroot)/lib/rustlib/aarch64-apple-darwin/bin/llvm-nm"
 
-if ! rustup toolchain list | grep -q "^${RUST_NIGHTLY_TOOLCHAIN}-"; then
+if [ -z "$PREBUILT_ARCHIVE" ] && ! rustup toolchain list | grep -q "^${RUST_NIGHTLY_TOOLCHAIN}-"; then
     echo "error: pinned toolchain $RUST_NIGHTLY_TOOLCHAIN is not installed;" >&2
     echo "       run: rustup toolchain install $RUST_NIGHTLY_TOOLCHAIN && rustup component add rust-src --toolchain $RUST_NIGHTLY_TOOLCHAIN" >&2
     exit 2
 fi
-if ! rustup component list --toolchain "$RUST_NIGHTLY_TOOLCHAIN" 2>/dev/null | grep -q "^rust-src (installed)"; then
+if [ -z "$PREBUILT_ARCHIVE" ] && ! rustup component list --toolchain "$RUST_NIGHTLY_TOOLCHAIN" 2>/dev/null | grep -q "^rust-src (installed)"; then
     echo "error: rust-src is not installed for $RUST_NIGHTLY_TOOLCHAIN (required by -Z build-std);" >&2
     echo "       run: rustup component add rust-src --toolchain $RUST_NIGHTLY_TOOLCHAIN" >&2
     exit 2
@@ -49,11 +69,10 @@ rm -f "$ARCHIVE_ZIP"
 mkdir -p "$HEADERS_DIR"
 python3 "$ROOT_DIR/scripts/release/core_header.py" \
     "$ROOT_DIR/crates/zeppelin-embed-ffi/include/zeppelin_embed.h" \
-    "$HEADERS_DIR/zeppelin_embed.h"
-cp "$SCRIPT_DIR/module.modulemap" "$HEADERS_DIR/"
+    "$HEADERS_DIR" --artifact "$SELECTOR"
 
 {
-    echo "# Task 23 XCFramework slice evidence"
+    echo "# ZE-107 $SELECTOR XCFramework slice evidence"
     echo
     echo "Hardware: $(uname -a)"
     echo "Rust: $(rustc --version)"
@@ -62,7 +81,7 @@ cp "$SCRIPT_DIR/module.modulemap" "$HEADERS_DIR/"
 } > "$SLICE_EVIDENCE"
 
 {
-    echo "# Task 23 XCFramework size evidence"
+    echo "# ZE-107 $SELECTOR XCFramework size evidence"
     echo
     echo "Hardware: $(uname -a)"
     echo "Budget: $SIZE_BUDGET_KB KB linked sections per architecture slice"
@@ -97,7 +116,11 @@ check_export_allowlist() {
     compatible_nm "$archive" "$symbols" || return 1
     awk '{ symbol=$NF; sub(/^_/, "", symbol); if (symbol ~ /^ze_/) print symbol }' \
         "$symbols" | LC_ALL=C sort -u > "$observed"
-    grep -Ev '^ze_(text|graph)_' "$ALLOWLIST" > "$expected"
+    if [ "$SELECTOR" = graph-cypher ]; then
+        grep -E '^ze_' "$ALLOWLIST" | grep -Ev '^ze_text_' | LC_ALL=C sort -u > "$expected"
+    else
+        grep -E '^ze_' "$ALLOWLIST" | grep -Ev '^ze_(text|graph)_' | LC_ALL=C sort -u > "$expected"
+    fi
     if ! diff -u "$expected" "$observed"; then
         echo "ERROR: $label exported C namespace differs from symbols.allowlist" >&2
         return 1
@@ -109,6 +132,18 @@ check_privacy_symbols() {
     local label="$1"
     local archive="$2"
     local undefined="$WORK_DIR/$label.undefined-symbols"
+    if [ ! -x "$RUST_LLVM_NM" ]; then
+        RUST_LLVM_NM="$(python3 - "$ROOT_DIR" <<'TOOL'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts/release"))
+import importlib.util
+spec = importlib.util.spec_from_file_location("p", Path(sys.argv[1]) / "scripts/release/package-native.py")
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print(m.llvm_tool("llvm-nm"))
+TOOL
+)" || return 1
+    fi
     "$RUST_LLVM_NM" --undefined-only "$archive" > "$undefined" 2> "$undefined.stderr"
     local mapping=(
         "stat:NSPrivacyAccessedAPICategoryFileTimestamp:C617.1"
@@ -139,11 +174,11 @@ measure_slice() {
     strip -S -x "$stripped"
     size -m "$stripped" > "$size_output"
     linked_bytes="$(awk '
-        /^[[:space:]]*Section \(/ && $0 !~ /\(__LLVM,/ { total += $NF }
+        /^[[:space:]]*Section \(/ && $0 !~ /\(__LLVM,/ { total += ($NF == "(zerofill)") ? $(NF - 1) : $NF }
         END { print total + 0 }
     ' "$size_output")"
     text_bytes="$(awk '
-        /^[[:space:]]*Section \(__TEXT,/ { total += $NF }
+        /^[[:space:]]*Section \(__TEXT,/ { total += ($NF == "(zerofill)") ? $(NF - 1) : $NF }
         END { print total + 0 }
     ' "$size_output")"
     linked_kb="$(( (linked_bytes + 1023) / 1024 ))"
@@ -178,13 +213,13 @@ attempt_slice() {
     local sdk="$3"
     local sdk_path log archive status
     log="$WORK_DIR/$label.build.log"
-    archive="$ROOT_DIR/target/$target/release/libzeppelin_embed_ffi.a"
+    archive="$BUILD_DIR/cargo/$target/release/libzeppelin_embed_ffi.a"
     sdk_path="$(xcrun --sdk "$sdk" --show-sdk-path 2>&1)"
     {
         echo "## $label"
         echo
         echo '```text'
-        echo "SDKROOT=$sdk_path MACOSX_DEPLOYMENT_TARGET=$MACOS_DEPLOYMENT_TARGET RUSTFLAGS=-Cembed-bitcode=no cargo +$RUST_NIGHTLY_TOOLCHAIN build -Z build-std=std,panic_unwind --locked -p zeppelin-embed-ffi --release --target $target"
+        echo "artifact=$SELECTOR target=$target deployment=$MACOS_DEPLOYMENT_TARGET features=${features[*]} target-dir=$BUILD_DIR/cargo"
     } >> "$SLICE_EVIDENCE"
     # macOS has never required Apple Bitcode, and Xcode dropped bitcode
     # support entirely in Xcode 14 -- rustc's fat-LTO release profile embeds
@@ -196,10 +231,16 @@ attempt_slice() {
     # embedded bitcode that -Cembed-bitcode=no on our own crates cannot
     # reach. See the RUST_NIGHTLY_TOOLCHAIN comment above for why this one
     # step alone runs on a pinned nightly.
-    if SDKROOT="$sdk_path" MACOSX_DEPLOYMENT_TARGET="$MACOS_DEPLOYMENT_TARGET" \
+    if [ -n "$PREBUILT_ARCHIVE" ]; then
+        archive="$PREBUILT_ARCHIVE"
+        lipo "$archive" -verify_arch arm64 || return 1
+        echo "explicit prebuilt graph archive: $archive" > "$log"
+        status=0
+    elif SDKROOT="$sdk_path" MACOSX_DEPLOYMENT_TARGET="$MACOS_DEPLOYMENT_TARGET" \
         RUSTFLAGS="-Cembed-bitcode=no" \
-        cargo "+$RUST_NIGHTLY_TOOLCHAIN" build -Z build-std=std,panic_unwind \
-        --locked -p zeppelin-embed-ffi --release --target "$target" \
+        CARGO_BUILD_JOBS=3 cargo "+$RUST_NIGHTLY_TOOLCHAIN" build -Z build-std=std,panic_unwind \
+        --locked -p zeppelin-embed-ffi --release --no-default-features --target "$target" \
+        --target-dir "$BUILD_DIR/cargo" "${features[@]}" \
         > "$log" 2>&1; then
         status=0
     else
@@ -215,6 +256,7 @@ attempt_slice() {
         echo "ERROR: required slice $label was not built (exit $status)" >&2
         return 1
     fi
+    check_export_allowlist "$label-before-trimming" "$archive" || return 1
     # Strip any remaining embedded IR from a staging copy, never Cargo inputs.
     python3 "$ROOT_DIR/scripts/release/package-native.py" archive \
         "$archive" "$WORK_DIR/$label-distribution.a" || return 1
@@ -229,10 +271,16 @@ attempt_slice() {
 
 cd "$ROOT_DIR"
 attempt_slice "macos-arm64" "aarch64-apple-darwin" "macosx" || exit 1
-attempt_slice "macos-x86_64" "x86_64-apple-darwin" "macosx" || exit 1
+if [ "$SELECTOR" = legacy ]; then
+    attempt_slice "macos-x86_64" "x86_64-apple-darwin" "macosx" || exit 1
+fi
 
 macos_archive="$WORK_DIR/libzeppelin_embed_ffi-macos.a"
-lipo -create "${built_archives[@]}" -output "$macos_archive" || exit 1
+if [ "$SELECTOR" = graph-cypher ]; then
+    cp "${built_archives[0]}" "$macos_archive" || exit 1
+else
+    lipo -create "${built_archives[@]}" -output "$macos_archive" || exit 1
+fi
 xcodebuild -create-xcframework \
     -library "$macos_archive" \
     -headers "$HEADERS_DIR" \
@@ -258,7 +306,7 @@ with open(path, "wb") as handle:
     plistlib.dump(plist, handle, sort_keys=True)
 NORMALISE_PLIST
 
-packaged_library_relative="$(python3 - "$ARTIFACT/Info.plist" <<'VERIFY_PLIST'
+packaged_library_relative="$(python3 - "$ARTIFACT/Info.plist" "$SELECTOR" <<'VERIFY_PLIST'
 import plistlib
 import sys
 
@@ -267,23 +315,26 @@ with open(sys.argv[1], "rb") as handle:
 if len(libraries) != 1:
     raise SystemExit(f"expected exactly one packaged library, found {len(libraries)}")
 library = libraries[0]
-if library.get("LibraryIdentifier") != "macos-arm64_x86_64":
+identifier = "macos-arm64" if sys.argv[2] == "graph-cypher" else "macos-arm64_x86_64"
+architectures = ["arm64"] if sys.argv[2] == "graph-cypher" else ["arm64", "x86_64"]
+if library.get("LibraryIdentifier") != identifier:
     raise SystemExit(
-        f"expected LibraryIdentifier macos-arm64_x86_64, found {library.get('LibraryIdentifier')!r}"
+        f"expected LibraryIdentifier {identifier}, found {library.get('LibraryIdentifier')!r}"
     )
-if sorted(library.get("SupportedArchitectures", [])) != ["arm64", "x86_64"]:
+if sorted(library.get("SupportedArchitectures", [])) != architectures:
     raise SystemExit(
-        f"expected architectures arm64 and x86_64, found {library.get('SupportedArchitectures')!r}"
+        f"expected architectures {architectures}, found {library.get('SupportedArchitectures')!r}"
     )
 print(f"{library['LibraryIdentifier']}/{library['LibraryPath']}")
 VERIFY_PLIST
 )" || exit 1
 packaged_library="$ARTIFACT/$packaged_library_relative"
 packaged_archs="$(lipo -archs "$packaged_library")" || exit 1
-if [ "$(wc -w <<< "$packaged_archs" | tr -d '[:space:]')" -ne 2 ] || \
-    [[ " $packaged_archs " != *" arm64 "* ]] || \
-    [[ " $packaged_archs " != *" x86_64 "* ]]; then
-    echo "ERROR: packaged library must contain exactly arm64 and x86_64; found: $packaged_archs" >&2
+expected_archs="arm64"
+if [ "$SELECTOR" = legacy ]; then expected_archs="arm64 x86_64"; fi
+sorted_archs="$(tr ' ' '\n' <<< "$packaged_archs" | LC_ALL=C sort | paste -sd ' ' -)"
+if [ "$sorted_archs" != "$expected_archs" ]; then
+    echo "ERROR: $SELECTOR packaged architectures: $packaged_archs; expected $expected_archs" >&2
     exit 1
 fi
 
@@ -315,7 +366,7 @@ zip_kb="$(du -k "$ARCHIVE_ZIP" | awk '{print $1}')"
 
 # Package.swift carries the checksum as a literal because a sandboxed remote
 # manifest cannot read it from a file.
-pin="$(grep -o '"[0-9a-f]\{64\}" // ze:xcframework-checksum' "$ROOT_DIR/Package.swift" | cut -d'"' -f2)"
+pin="$(grep -o '"[0-9a-f]\{64\}" // ze:xcframework-checksum' "$MANIFEST" | cut -d'"' -f2)"
 if [ -z "$pin" ]; then
     echo "ERROR: Package.swift has no ze:xcframework-checksum literal" >&2
     exit 1

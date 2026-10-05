@@ -19,9 +19,15 @@ ze_epoch_switch_alias
 ze_error_code_name
 ze_get
 ze_get_result_free
+ze_graph_apply
+ze_graph_close
+ze_graph_cypher
+ze_graph_cypher_with_row_limit
 ze_graph_maintain
-ze_graph_set_maintenance_policy
+ze_graph_open
 ze_graph_open_with_relationship_types
+ze_graph_response_free
+ze_graph_set_maintenance_policy
 ze_ingest
 ze_last_error_message
 ze_maintain

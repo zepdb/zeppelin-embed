@@ -47,7 +47,7 @@ measure_artifact() {
     local gate="${3:-gate}"
     local budget_kb="${4:-$BUDGET_KB}"
     local stripped="$MEASURE_DIR/$(basename "${artifact%.a}")-stripped.a"
-    local size_bytes size_kb archive_kb
+    local size_bytes size_kb archive_kb physical_bytes
 
     if [[ ! -f "$artifact" ]]; then
         echo "error: expected static library not found at $artifact" >&2
@@ -59,7 +59,7 @@ measure_artifact() {
         Darwin)
             strip -S -x "$stripped"
             size_bytes="$(size -m "$stripped" | awk '
-                /^[[:space:]]*Section \(/ && $0 !~ /\(__LLVM,/ { total += $NF }
+                /^[[:space:]]*Section \(/ && $0 !~ /\(__LLVM,/ { total += ($NF == "(zerofill)") ? $(NF - 1) : $NF }
                 END { print total + 0 }
             ')"
             ;;
@@ -83,6 +83,16 @@ measure_artifact() {
             ;;
     esac
 
+    if (( size_bytes <= 0 )); then
+        echo "error: no linkable sections found in $artifact" >&2
+        exit 2
+    fi
+    if [[ "$(uname -s)" == Darwin ]]; then
+        physical_bytes="$(stat -f %z "$artifact")"
+    else
+        physical_bytes="$(stat -c %s "$artifact")"
+    fi
+    echo "$label linked_section_bytes=$size_bytes physical_archive_bytes=$physical_bytes"
     size_kb="$(( (size_bytes + 1023) / 1024 ))"
     archive_kb="$(du -k "$stripped" | awk '{print $1}')"
     if [[ "$gate" == "gate" ]]; then
@@ -99,15 +109,15 @@ measure_artifact() {
 
 # CI can gate the exact prebuilt archive without rebuilding or changing features.
 case "${1:-}" in
-    --graph-archive|--ffi-archive)
+    --graph-archive|--ffi-archive|--core-archive)
         if [[ $# -ne 2 ]]; then
-            echo "usage: $0 [--graph-archive|--ffi-archive ARCHIVE]" >&2
+            echo "usage: $0 [--graph-archive|--ffi-archive|--core-archive ARCHIVE]" >&2
             exit 2
         fi
         if [[ "$1" == "--graph-archive" ]]; then
             measure_artifact "graph ffi" "$2" gate "$GRAPH_BUDGET_KB"
         else
-            measure_artifact "graph-free ffi" "$2"
+            measure_artifact "${1#--}" "$2"
         fi
         exit 0
         ;;

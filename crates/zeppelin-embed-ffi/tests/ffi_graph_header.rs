@@ -132,9 +132,15 @@ fn legacy_header_and_exports_do_not_advertise_graph_contracts() {
             .filter(|s| s.starts_with("ze_graph_"))
             .collect::<Vec<_>>(),
         [
+            "ze_graph_apply",
+            "ze_graph_close",
+            "ze_graph_cypher",
+            "ze_graph_cypher_with_row_limit",
             "ze_graph_maintain",
-            "ze_graph_set_maintenance_policy",
-            "ze_graph_open_with_relationship_types"
+            "ze_graph_open",
+            "ze_graph_open_with_relationship_types",
+            "ze_graph_response_free",
+            "ze_graph_set_maintenance_policy"
         ]
     );
 }
@@ -235,4 +241,26 @@ fn graph_entry_prototypes_are_callable_from_c() {
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );
+}
+
+#[test]
+fn graph_runtime_header_matches_the_graph_export_allowlist() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let header = std::fs::read_to_string(root.join("include/zeppelin_graph_contracts.h")).unwrap();
+    let declared: std::collections::BTreeSet<_> = header
+        .lines()
+        .filter(|line| line.starts_with("ze_error_code ze_graph_"))
+        .filter_map(|line| {
+            line.split_once("ze_graph_")
+                .map(|(_, rest)| format!("ze_graph_{}", rest.split('(').next().unwrap()))
+        })
+        .collect();
+    let symbols = std::fs::read_to_string(root.join("symbols.allowlist")).unwrap();
+    let allowed: std::collections::BTreeSet<_> = symbols
+        .lines()
+        .filter(|line| line.starts_with("ze_graph_"))
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(declared.len(), 9);
+    assert_eq!(declared, allowed);
 }

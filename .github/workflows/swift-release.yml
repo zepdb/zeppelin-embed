@@ -15,6 +15,17 @@ jobs:
   build-xcframework:
     name: Build universal macOS XCFramework
     runs-on: macos-14
+    env:
+      CARGO_BUILD_JOBS: "3"
+    strategy:
+      matrix:
+        include:
+          - artifact: legacy
+            suffix: ""
+            name: ZeppelinEmbed
+          - artifact: graph-cypher
+            suffix: -graph-cypher
+            name: ZeppelinEmbedGraph
     steps:
       - uses: actions/checkout@v4
         with:
@@ -54,24 +65,46 @@ jobs:
           actual = os.environ["RELEASE_TAG"]
           if actual != expected:
               raise SystemExit(f"release tag {actual!r} must be {expected!r}")
-          manifest = pathlib.Path("Package.swift").read_text()
-          expected_url = f"/releases/download/{expected}/ZeppelinEmbed.xcframework.zip"
+          graph = "${{ matrix.artifact }}" == "graph-cypher"
+          manifest = pathlib.Path("bindings/swift/graph/Package.swift" if graph else "Package.swift").read_text()
+          name = "ZeppelinEmbedGraph" if graph else "ZeppelinEmbed"
+          expected_url = f"/releases/download/{expected}/{name}.xcframework.zip"
           if expected_url not in manifest:
               raise SystemExit(f"Package.swift must contain {expected_url!r}")
           PY
       - name: Build XCFramework
-        run: scripts/xcframework/build.sh
+        run: scripts/xcframework/build.sh --artifact ${{ matrix.artifact }}
       - name: Build language-neutral macOS SDK
-        run: scripts/macos-sdk/build.sh
+        run: scripts/macos-sdk/build.sh --artifact ${{ matrix.artifact }}
       - name: Verify Swift package against built XCFramework
+        if: matrix.artifact == 'legacy'
         env:
           ZE_USE_LOCAL_XCFRAMEWORK: "1"
-        run: swift test --scratch-path target/swift-xcframework-smoke
+        run: swift test --scratch-path target/swift-xcframework-smoke --filter ZeppelinStoreTests.testOpenIngestQueryCloseRoundTripSucceeds --jobs 3
+      - name: Verify graph SDK C consumer
+        if: matrix.artifact == 'graph-cypher'
+        run: |
+          sdk=target/macos-sdk-graph-cypher/zeppelin-embed-graph-cypher-macos-arm64
+          clang -std=c11 -Wall -Wextra -Werror -mmacosx-version-min=14.0 -I "$sdk/include" crates/zeppelin-embed-ffi/tests/c/graph_artifact_consumer.c "$sdk/lib/libzeppelin_embed_graph_cypher_ffi.a" -framework Security -liconv -o target/graph-sdk-consumer
+          fixtures="$(mktemp -d)"
+          trap 'rm -rf "$fixtures"' EXIT
+          target/graph-sdk-consumer "$fixtures"
+      - name: Verify graph Swift C import and consumer
+        if: matrix.artifact == 'graph-cypher'
+        env:
+          ZE_USE_LOCAL_GRAPH_XCFRAMEWORK: "1"
+        run: swift test --package-path bindings/swift/graph --filter GraphArtifactSmokeTests --jobs 3
       - name: Verify archive checksum
         run: |
-          expected="$(grep -o '"[0-9a-f]\{64\}" // ze:xcframework-checksum' Package.swift | cut -d'"' -f2)"
+          manifest=Package.swift
+          archive=target/xcframework/ZeppelinEmbed.xcframework.zip
+          if [ "${{ matrix.artifact }}" = graph-cypher ]; then
+            manifest=bindings/swift/graph/Package.swift
+            archive=target/xcframework-graph-cypher/ZeppelinEmbedGraph.xcframework.zip
+          fi
+          expected="$(grep -o '"[0-9a-f]\{64\}" // ze:xcframework-checksum' "$manifest" | cut -d'"' -f2)"
           test -n "$expected"
-          actual="$(swift package compute-checksum target/xcframework/ZeppelinEmbed.xcframework.zip)"
+          actual="$(swift package compute-checksum "$archive")"
           if [ "$actual" != "$expected" ]; then
               # CI is the source of truth for this value (BL-167). Print it so
               # the pin can be applied in one round trip instead of guessed.
@@ -81,10 +114,10 @@ jobs:
           fi
       - uses: actions/upload-artifact@v4
         with:
-          name: zeppelin-embed-macos-artifacts
+          name: zeppelin-embed-macos-${{ matrix.artifact }}
           path: |
-            target/xcframework/ZeppelinEmbed.xcframework.zip
-            target/macos-sdk/zeppelin-embed-macos-arm64.tar.gz
+            target/xcframework${{ matrix.suffix }}/${{ matrix.name }}.xcframework.zip
+            target/macos-sdk${{ matrix.suffix }}/zeppelin-embed${{ matrix.suffix }}-macos-arm64.tar.gz
           if-no-files-found: error
 
   attach-release:
@@ -96,7 +129,8 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: zeppelin-embed-macos-artifacts
+          pattern: zeppelin-embed-macos-*
+          merge-multiple: true
           path: dist
       - name: Upload release asset
         env:
@@ -106,5 +140,7 @@ jobs:
           gh release upload "$RELEASE_TAG"
           dist/xcframework/ZeppelinEmbed.xcframework.zip
           dist/macos-sdk/zeppelin-embed-macos-arm64.tar.gz
+          dist/xcframework-graph-cypher/ZeppelinEmbedGraph.xcframework.zip
+          dist/macos-sdk-graph-cypher/zeppelin-embed-graph-cypher-macos-arm64.tar.gz
           --clobber
           --repo "$GITHUB_REPOSITORY"

@@ -117,8 +117,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.93.0
+          components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
-      - run: scripts/size-budget.sh
+      - name: Build explicit legacy and graph-cypher size artifacts
+        env:
+          CARGO_BUILD_JOBS: "3"
+        run: |
+          cargo build --locked --release -p zeppelin-embed -p zeppelin-embed-ffi --no-default-features --target-dir target/ze107/legacy
+          MACOSX_DEPLOYMENT_TARGET=14.0 cargo build --locked --release -p zeppelin-embed-ffi --no-default-features --features graph-cypher --target-dir target/ze107/graph-cypher
+          scripts/size-budget.sh --core-archive target/ze107/legacy/release/libzeppelin_embed.a
+          scripts/size-budget.sh --ffi-archive target/ze107/legacy/release/libzeppelin_embed_ffi.a
+          scripts/size-budget.sh --graph-archive target/ze107/graph-cypher/release/libzeppelin_embed_ffi.a
+          python3 scripts/release/check-graph-artifact.py --legacy target/ze107/legacy/release/libzeppelin_embed_ffi.a --graph target/ze107/graph-cypher/release/libzeppelin_embed_ffi.a --output target/ze107/evidence
 
   platform-truth-smoke:
     name: platform-truth-smoke (macos-14)
