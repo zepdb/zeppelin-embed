@@ -112,6 +112,10 @@ const ABI_REGISTRY: &[AbiEntry] = &[
         coverage: AbiCoverage::InvalidProbe(probe_namespace_batch),
     },
     AbiEntry {
+        name: "ze_namespace_batch_live",
+        coverage: AbiCoverage::InvalidProbe(probe_namespace_batch_live),
+    },
+    AbiEntry {
         name: "ze_abi_version",
         coverage: AbiCoverage::ValueProbe(probe_abi_version),
     },
@@ -1481,6 +1485,10 @@ fn probe_open_migrations(context: &MatrixContext) -> ProbeResult {
 }
 fn probe_reindex_text(context: &MatrixContext) -> ProbeResult {
     ProbeResult::Status(ze_reindex_text(context.store.handle, std::ptr::null_mut()))
+}
+
+fn probe_namespace_batch_live(_: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_namespace_batch_live(std::ptr::null()))
 }
 
 fn probe_namespace_batch(_: &MatrixContext) -> ProbeResult {

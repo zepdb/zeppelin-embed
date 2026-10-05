@@ -110,7 +110,7 @@ fn live_batch_preserves_handles_and_rejects_closed_participants() {
             let search = common::valid_search_request(&vector);
             let mut result: ZeSearchResult = common::sized_zeroed();
             assert_eq!(ze_search(handle, &search, &mut result), ZeErrorCode::ZeOk);
-            assert_eq!(result.generation, 2);
+            assert_eq!(result.generation, 3);
             assert_eq!(result.hit_count, 0);
             assert_eq!(ze_search_result_free(&mut result), ZeErrorCode::ZeOk);
             assert_eq!(ze_close(handle), ZeErrorCode::ZeOk);

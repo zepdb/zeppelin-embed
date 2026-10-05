@@ -138,6 +138,57 @@ fn build_release_staticlib(workspace: &Path, target_dir: &Path) -> PathBuf {
     archive
 }
 
+fn function_body<'a>(source: &'a str, function: &str) -> &'a str {
+    let marker = format!("fn {function}(");
+    let start = source.find(&marker).expect("exported function definition");
+    let remainder = &source[start..];
+    let body = remainder.find('{').expect("function body");
+    let end = remainder.find("\n}").expect("function end");
+    remainder[body + 1..end].trim()
+}
+
+fn has_entry_wrapper(source: &str, function: &str) -> bool {
+    let body = function_body(source, function);
+    if body.contains("ffi_entry!(") {
+        return true;
+    }
+    // Only a sole tail-call may delegate the boundary. An unrelated later
+    // helper or export must never make an unwrapped function pass.
+    let Some((helper, arguments)) = body.split_once('(') else {
+        return false;
+    };
+    if !helper
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        || !arguments.ends_with(')')
+        || arguments.contains(';')
+        || !source.contains(&format!("fn {helper}("))
+    {
+        return false;
+    }
+    function_body(source, helper).contains("ffi_entry!(")
+}
+
+#[test]
+fn header_wrapper_gate_follows_delegates_and_rejects_unwrapped_exports() {
+    let source = "fn ze_open() {\n    open_impl()\n}\nfn open_impl() {\n    ffi_entry!(None, error, {})\n}\nfn ze_unwrapped() {\n    error\n}\n";
+    assert!(has_entry_wrapper(source, "ze_open"));
+    assert!(!has_entry_wrapper(source, "ze_unwrapped"));
+    let source = [
+        include_str!("../src/lib.rs"),
+        include_str!("../src/verify.rs"),
+    ]
+    .join("\n");
+    for function in [
+        "ze_namespace_open",
+        "ze_query_with_snippets",
+        "ze_verify",
+        "ze_verify_result_free",
+    ] {
+        assert!(has_entry_wrapper(&source, function), "{function}");
+    }
+}
+
 fn assert_header_gate() {
     let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let workspace = workspace_root();
@@ -214,16 +265,12 @@ fn assert_header_gate() {
     assert_eq!(declared, allowlist, "header and allowlist differ");
     assert_eq!(exported, allowlist, "staticlib and allowlist differ");
 
-    let source = std::fs::read_to_string(crate_dir.join("src/lib.rs")).expect("FFI source");
+    let source = ["src/lib.rs", "src/verify.rs"]
+        .map(|path| std::fs::read_to_string(crate_dir.join(path)).expect("FFI source"))
+        .join("\n");
     for function in &allowlist {
-        let marker = format!("fn {function}");
-        let start = source.find(&marker).expect("exported function definition");
-        let remainder = &source[start..];
-        let end = remainder
-            .find("#[unsafe(no_mangle)]")
-            .unwrap_or(remainder.len());
         assert!(
-            remainder[..end].contains("ffi_entry!("),
+            has_entry_wrapper(&source, function),
             "{function} omitted the sole catch_unwind wrapper macro"
         );
     }
