@@ -29,3 +29,6 @@ pub mod user_bench;
 
 /// Reproducible native graph fixture files and topology inventory.
 pub mod graph_fixture;
+
+/// Reproducible public graph workload evidence contracts.
+pub mod graph_workload;

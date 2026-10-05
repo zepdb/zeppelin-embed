@@ -39,6 +39,8 @@ let package = Package(
       path: "Sources/ZeppelinEmbedGraph",
       linkerSettings: useLocalFFI
         ? [.unsafeFlags(["-Xlinker", "-force_load", "-Xlinker", archive])] : nil),
+    .executableTarget(name: "GraphWorkload", dependencies: ["ZeppelinEmbedGraph"],
+      path: "Examples", exclude: ["InstalledConsumer"], sources: ["GraphWorkload.swift"]),
     .testTarget(name: "GraphStoreTests", dependencies: ["ZeppelinEmbedGraph"], path: "Tests"),
   ]
 )

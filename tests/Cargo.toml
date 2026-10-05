@@ -80,3 +80,13 @@ required-features = ["graph-cypher"]
 name = "graph-profile"
 path = "graph_profile_runner.rs"
 required-features = ["graph-cypher"]
+
+[[test]]
+name = "graph_workload"
+path = "graph_workload.rs"
+required-features = ["graph-cypher"]
+
+[[bin]]
+name = "graph-workload"
+path = "graph_workload_cli.rs"
+required-features = ["graph-cypher"]
