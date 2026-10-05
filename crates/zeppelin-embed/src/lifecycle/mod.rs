@@ -2794,6 +2794,35 @@ fn resolve_open_schema(
     }
 }
 
+fn validate_persisted_epoch_before_open(
+    vfs: &dyn crate::vfs::Vfs,
+    path: &Path,
+    options: &OpenOptions,
+) -> Result<(), StoreError> {
+    let manifest_path = path.join(crate::manifest::io::MANIFEST_FILE);
+    let bytes = match vfs.read(&manifest_path) {
+        Ok(bytes) => bytes,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(source) => {
+            return Err(StoreError::Io {
+                path: manifest_path,
+                source,
+            });
+        }
+    };
+    let manifest = crate::manifest::decode_manifest(&manifest_path.display().to_string(), &bytes)
+        .map_err(StoreError::Manifest)?;
+    let declared = if options.inspection {
+        manifest.epoch_alias
+    } else {
+        options
+            .epoch
+            .as_ref()
+            .map(crate::epoch::StoreEpoch::identity)
+    };
+    validate_epoch_identity(manifest.epoch_alias, declared, true, options.access_mode)
+}
+
 fn validate_epoch_identity(
     persisted: Option<crate::epoch::EpochIdentity>,
     declared: Option<crate::epoch::EpochIdentity>,
@@ -3110,24 +3139,30 @@ impl Store {
                 path: path.to_path_buf(),
             });
         }
+        validate_persisted_epoch_before_open(vfs.as_ref(), path, &options)?;
         let _reclamation_admission =
             namespace_batch::reader_admission(path, options.access_mode == AccessMode::ReadWrite)?;
         #[cfg(any(test, feature = "test-support"))]
-        let reclamation_pin = match crate::vfs::Vfs::ensure_directory(&crate::vfs::StdVfs, path, false) {
-            Ok(_) => {
-                namespace_batch::reader_lease(path, options.access_mode == AccessMode::ReadWrite)?
-                    .map(Arc::new)
-            }
-            // Virtual-only VFS fixtures have no OS directory to pin.
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => return Err(namespace_batch::io(path, error)),
-        };
+        let reclamation_pin =
+            match crate::vfs::Vfs::ensure_directory(&crate::vfs::StdVfs, path, false) {
+                Ok(_) => namespace_batch::reader_lease(
+                    path,
+                    options.access_mode == AccessMode::ReadWrite,
+                )?
+                .map(Arc::new),
+                // Virtual-only VFS fixtures have no OS directory to pin.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(namespace_batch::io(path, error)),
+            };
         #[cfg(not(any(test, feature = "test-support")))]
         let reclamation_pin =
             namespace_batch::reader_lease(path, options.access_mode == AccessMode::ReadWrite)?
                 .map(Arc::new);
         namespace_batch::refuse_retired(vfs.as_ref(), path)?;
         let writer_lock = acquire_writer_lock(path, options.access_mode)?;
+        // Recheck after reclamation admission and the writer lock: the first
+        // read is only a refusal probe and cannot authorize any mutation.
+        validate_persisted_epoch_before_open(vfs.as_ref(), path, &options)?;
         let mut wal_tail_cut = false;
         if options.access_mode == AccessMode::ReadWrite {
             // The single writer owns the WAL tail: a crash mid-append is cut
