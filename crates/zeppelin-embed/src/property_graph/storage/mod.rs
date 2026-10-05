@@ -197,6 +197,56 @@ pub(crate) mod mapping_slot_capture {
         static CAPTURE: RefCell<Option<Vec<Report>>> = const { RefCell::new(None) };
         static DEFAULT_CAPACITY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
+    #[cfg(test)]
+    #[derive(Debug)]
+    pub(crate) struct VerifyReport {
+        pub path: &'static str,
+        pub kind: super::tree::TreeKind,
+        pub entries: usize,
+        pub calls: usize,
+        pub work: u64,
+        pub nanos: u128,
+    }
+    #[cfg(test)]
+    thread_local! {
+        static VERIFY: RefCell<Vec<VerifyReport>> = const { RefCell::new(Vec::new()) };
+        static SPLITS: RefCell<Vec<(super::tree::TreeKind, usize)>> = const { RefCell::new(Vec::new()) };
+    }
+    #[cfg(test)]
+    pub(crate) fn begin_verify(work: u64) -> Option<(std::time::Instant, u64)> {
+        CAPTURE
+            .with(|capture| capture.borrow().is_some())
+            .then(|| (std::time::Instant::now(), work))
+    }
+    #[cfg(test)]
+    pub(crate) fn end_verify(
+        start: Option<(std::time::Instant, u64)>,
+        path: &'static str,
+        kind: super::tree::TreeKind,
+        entries: usize,
+        calls: usize,
+        work: u64,
+    ) {
+        if let Some((started, before)) = start {
+            let nanos = started.elapsed().as_nanos();
+            VERIFY.with(|reports| {
+                reports.borrow_mut().push(VerifyReport {
+                    path,
+                    kind,
+                    entries,
+                    calls,
+                    work: work - before,
+                    nanos,
+                })
+            });
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn leaf_split(kind: super::tree::TreeKind, pages: usize) {
+        if pages > 1 && CAPTURE.with(|capture| capture.borrow().is_some()) {
+            SPLITS.with(|reports| reports.borrow_mut().push((kind, pages)));
+        }
+    }
     pub(crate) struct Capture;
     impl Capture {
         pub(crate) fn start() -> Self {
@@ -210,12 +260,24 @@ pub(crate) mod mapping_slot_capture {
                 std::mem::take(capture.borrow_mut().as_mut().expect("active capture"))
             })
         }
+        #[cfg(test)]
+        pub(crate) fn take_verify(&self) -> Vec<VerifyReport> {
+            VERIFY.with(|reports| std::mem::take(&mut *reports.borrow_mut()))
+        }
+        #[cfg(test)]
+        pub(crate) fn take_splits(&self) -> Vec<(super::tree::TreeKind, usize)> {
+            SPLITS.with(|reports| std::mem::take(&mut *reports.borrow_mut()))
+        }
         pub(crate) fn restore_default_capacity(&self) {
             DEFAULT_CAPACITY.with(|default| default.set(true));
         }
     }
     impl Drop for Capture {
         fn drop(&mut self) {
+            #[cfg(test)]
+            VERIFY.with(|reports| reports.borrow_mut().clear());
+            #[cfg(test)]
+            SPLITS.with(|reports| reports.borrow_mut().clear());
             DEFAULT_CAPACITY.with(|default| default.set(false));
             CAPTURE.with(|capture| {
                 *capture.borrow_mut() = None;

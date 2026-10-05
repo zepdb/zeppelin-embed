@@ -309,3 +309,330 @@ fn ze168_post_exhaustion_hit_and_fill_are_distinct() {
     assert!(source.resolve(catalog, &mut resources).is_err());
     assert_eq!(source.mapping_slot_report().post_exhaustion_resolves, 3);
 }
+
+#[cfg(test)]
+fn ze277_entity_state(store: &Store, entities: &[EntityId]) -> Vec<Option<(u64, u64, Vec<u8>)>> {
+    // Each read source retains its mappings. Bound oracle reads independently
+    // of the timed write source's capacity, as in the ZE-168 sampled oracle.
+    entities
+        .chunks(8)
+        .flat_map(|chunk| ze277_entity_chunk(store, chunk))
+        .collect()
+}
+
+#[cfg(test)]
+fn ze277_entity_chunk(store: &Store, entities: &[EntityId]) -> Vec<Option<(u64, u64, Vec<u8>)>> {
+    use crate::property_graph::storage::records::RecordView;
+    use crate::property_graph::storage::tree::directory::BlockSource;
+    fn record_state<S: BlockSource>(
+        record: &RecordView<'_, S>,
+        resources: &mut TreeResources<'_>,
+    ) -> (u64, u64, Vec<u8>) {
+        let mut bytes = vec![0; record.canonical_bytes().len() as usize];
+        let length = bytes.len();
+        assert_eq!(
+            record
+                .canonical_bytes()
+                .read_at(0, &mut bytes, resources)
+                .unwrap(),
+            length
+        );
+        (
+            record.revision().get(),
+            record.provenance().original_generation().get(),
+            bytes,
+        )
+    }
+    let lease = store.admit_native_read().unwrap();
+    let shared = crate::property_graph::resources::GraphResources::from_store(store).unwrap();
+    let memory = QueryMemory::new(&shared, 8 * 1024 * 1024).unwrap();
+    let control = QueryControl::Cancel(CancelToken::new());
+    let mut runtime =
+        RuntimeContext::new(&lease, &control, &memory, RuntimeLimits::default()).unwrap();
+    let capability = NativeReadCapability::admit(&lease, &runtime).unwrap();
+    let mut resources = TreeResources::for_query(&mut runtime).unwrap();
+    let source = NativeQuerySource::new(capability, &resources, 16).unwrap();
+    let catalog = NativeCatalog::open(&source, &mut resources).unwrap();
+    drop(resources);
+    let view = GraphReadView::new(&source, &catalog).unwrap();
+    entities
+        .iter()
+        .map(|entity| {
+            let mut resources = TreeResources::for_query(&mut runtime).unwrap();
+            match entity {
+                EntityId::Node(node) => view
+                    .lookup_node(*node, &mut resources)
+                    .unwrap()
+                    .map(|v| record_state(v.record(), &mut resources)),
+                EntityId::Relationship(rel) => view
+                    .lookup_relationship(*rel, &mut resources)
+                    .unwrap()
+                    .map(|v| record_state(v.record(), &mut resources)),
+            }
+        })
+        .collect()
+}
+
+/// ZE-277 research only: five fresh stores per cell, no timing assertion.
+#[test]
+#[ignore = "ZE-277 release profiling; shared-host timings are diagnostic"]
+fn ze277_profile_leaf_verification() {
+    use crate::epoch::{ComputeUnits, EmbeddingRuntime, EmbeddingTower, Normalization};
+    use crate::property_graph::storage::mapping_slot_capture::Capture;
+    use crate::property_graph::{CanonicalEmbedding, GraphDeleteMode, GraphName, NodeRef};
+    use std::time::Instant;
+
+    let document = EmbeddingTower {
+        model_id: "ze277-document".into(),
+        model_version: "1".into(),
+        weights_digest: vec![0x27, 0x07],
+        dims: 2,
+        normalization: Normalization::None,
+        prompt_prefix: "doc: ".into(),
+        max_tokens: 32,
+        runtime: EmbeddingRuntime::CpuReference,
+        compute_units: ComputeUnits::Cpu,
+        os_build: None,
+    };
+    for capacity in [64, 8192] {
+        for cell in ["empty", "relationship", "update-delete", "text-vector"] {
+            for repetition in 1..=5 {
+                let capture = Capture::start();
+                if capacity == 8192 {
+                    capture.restore_default_capacity();
+                }
+                let parent = super::tempfile::tempdir().expect("temporary parent");
+                let path = parent.path().join("profile");
+                let store = Store::create_native_graph(
+                    &path,
+                    durable_options(),
+                    (cell == "text-vector").then(|| document.clone()),
+                )
+                .expect("create profile store");
+                let mut nodes = Vec::new();
+                let mut entities = Vec::new();
+                if cell == "relationship" {
+                    nodes.push(commit_probe_node(&store, 0));
+                    nodes.push(commit_probe_node(&store, 1));
+                } else if cell == "update-delete" {
+                    for index in 0..32 {
+                        nodes.push(commit_probe_node(&store, index));
+                    }
+                }
+                capture.take();
+                capture.take_verify();
+                capture.take_splits();
+                let requests = if cell == "empty" {
+                    320
+                } else if cell == "update-delete" {
+                    64
+                } else {
+                    32
+                };
+                for index in 0..requests {
+                    // Read the actual envelope counter, so checkpoint classification
+                    // includes setup commits and does not guess from request number.
+                    let envelopes_before = store
+                        .native_graph
+                        .writer
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .unwrap()
+                        .complete_envelopes;
+                    let revision = if cell == "update-delete" {
+                        if index < 32 { 2 } else { 3 }
+                    } else {
+                        1
+                    };
+                    let key_index = if cell == "update-delete" {
+                        index % 32
+                    } else {
+                        index
+                    };
+                    let image = CanonicalContents::node(
+                        &mut [],
+                        &mut [],
+                        (cell == "text-vector").then_some("fixed ze277 text payload"),
+                        (cell == "text-vector")
+                            .then(|| CanonicalEmbedding::new(&document, &[1.0, 0.5]).unwrap()),
+                    )
+                    .expect("profile image");
+                    let operation = if cell == "update-delete" {
+                        if index < 32 {
+                            StructuredOperation::Put(EntityId::Node(nodes[key_index]))
+                        } else {
+                            StructuredOperation::Delete(
+                                EntityId::Node(nodes[key_index]),
+                                GraphDeleteMode::Restrict,
+                            )
+                        }
+                    } else {
+                        StructuredOperation::Create
+                    };
+                    let is_delete = cell == "update-delete" && index >= 32;
+                    let key_text = key_index.to_string();
+                    let write = StructuredWrite {
+                        key: ApplicationKey::new(
+                            if cell == "relationship" {
+                                EntityKind::Relationship
+                            } else {
+                                EntityKind::Node
+                            },
+                            "probe",
+                            &key_text,
+                        )
+                        .unwrap(),
+                        revision: GraphRevision::new(revision).unwrap(),
+                        operation,
+                        image: if is_delete {
+                            None
+                        } else if cell == "relationship" {
+                            Some(WriteImage::Relationship {
+                                source: NodeRef::Existing(nodes[0]),
+                                target: NodeRef::Existing(nodes[1]),
+                                relationship_type: GraphName::new("LINKS").unwrap(),
+                                properties: &[],
+                            })
+                        } else {
+                            Some(WriteImage::Node(&image))
+                        },
+                    };
+                    let generation_before = store
+                        .admit_native_read()
+                        .unwrap()
+                        .bundle()
+                        .base()
+                        .generation
+                        .get();
+                    let started = Instant::now();
+                    let receipts = store
+                        .apply_native_graph(&[write], &QueryControl::Cancel(CancelToken::new()))
+                        .expect("profile commit");
+                    let total_ns = started.elapsed().as_nanos();
+                    let generation = receipts[0].generation.get();
+                    assert_eq!(generation, generation_before + 1);
+                    let envelopes_after = store
+                        .native_graph
+                        .writer
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .unwrap()
+                        .complete_envelopes;
+                    let checkpoint = envelopes_after <= envelopes_before;
+                    if cell == "empty" || cell == "text-vector" {
+                        match receipts[0].entity {
+                            EntityId::Node(node) => nodes.push(node),
+                            _ => panic!("node receipt"),
+                        }
+                    }
+                    if cell != "update-delete" {
+                        entities.push(receipts[0].entity);
+                    }
+                    if cell == "update-delete" && index == 31 {
+                        let ids: Vec<_> = nodes.iter().copied().map(EntityId::Node).collect();
+                        let updated = ze277_entity_state(&store, &ids);
+                        assert!(updated.iter().all(|state| {
+                            state
+                                .as_ref()
+                                .is_some_and(|(revision, _, _)| *revision == 2)
+                        }));
+                    }
+                    let verify = capture.take_verify();
+                    let mappings = capture.take();
+                    let verify_ns: u128 = verify.iter().map(|r| r.nanos).sum();
+                    println!(
+                        "ZE277 commit capacity={capacity} cell={cell} rep={repetition} request={} generation={generation} checkpoint={checkpoint} total_ns={total_ns} verify_ns={verify_ns} fraction={:.6} envelopes_before={envelopes_before} envelopes_after={envelopes_after}",
+                        index + 1,
+                        verify_ns as f64 / total_ns as f64
+                    );
+                    for report in verify {
+                        println!(
+                            "ZE277 leaf capacity={capacity} cell={cell} rep={repetition} request={} path={} tree={:?} entries={} calls={} work={} nanos={}",
+                            index + 1,
+                            report.path,
+                            report.kind,
+                            report.entries,
+                            report.calls,
+                            report.work,
+                            report.nanos
+                        );
+                    }
+                    for (tree, pages) in capture.take_splits() {
+                        println!(
+                            "ZE277 split capacity={capacity} cell={cell} rep={repetition} request={} tree={tree:?} pages={pages}",
+                            index + 1
+                        );
+                    }
+                    for report in mappings {
+                        println!(
+                            "ZE277 mapping capacity={capacity} cell={cell} rep={repetition} request={} report={report:?}",
+                            index + 1
+                        );
+                    }
+                }
+                let live = if cell == "update-delete" {
+                    &[][..]
+                } else {
+                    &nodes[..]
+                };
+                if cell == "update-delete" {
+                    entities.extend(nodes.iter().copied().map(EntityId::Node));
+                }
+                let entities_before = ze277_entity_state(&store, &entities);
+                println!(
+                    "ZE277 payload capacity={capacity} cell={cell} rep={repetition} canonical_min={:?} canonical_max={:?}",
+                    entities_before
+                        .iter()
+                        .flatten()
+                        .map(|(_, _, bytes)| bytes.len())
+                        .min(),
+                    entities_before
+                        .iter()
+                        .flatten()
+                        .map(|(_, _, bytes)| bytes.len())
+                        .max()
+                );
+                if cell == "update-delete" {
+                    assert!(entities_before.iter().all(Option::is_none));
+                } else {
+                    assert!(entities_before.iter().all(Option::is_some));
+                }
+                let sampled: Vec<_> = live.iter().step_by(37).copied().collect();
+                let before = logical_state(&store, &sampled);
+                let generation = store
+                    .admit_native_read()
+                    .unwrap()
+                    .bundle()
+                    .base()
+                    .generation;
+                store.close().expect("profile close");
+                capture.restore_default_capacity();
+                let reopened = Store::open_native_graph(
+                    &path,
+                    durable_options(),
+                    (cell == "text-vector").then(|| document.clone()),
+                )
+                .expect("profile reopen");
+                assert_eq!(before, logical_state(&reopened, &sampled));
+                assert_eq!(entities_before, ze277_entity_state(&reopened, &entities));
+                assert_eq!(
+                    generation,
+                    reopened
+                        .admit_native_read()
+                        .unwrap()
+                        .bundle()
+                        .base()
+                        .generation
+                );
+                reopened.close().expect("close reopened profile");
+                println!(
+                    "ZE277 checked capacity={capacity} cell={cell} rep={repetition} generation={} live_nodes={}",
+                    generation.get(),
+                    live.len()
+                );
+            }
+        }
+    }
+}

@@ -1534,12 +1534,23 @@ fn find_path_inner<S: BlockSource>(
         }
         if page.header().level == 0 {
             if let Some(validator) = validator.as_mut() {
+                #[cfg(all(test, feature = "graph-cypher"))]
+                let verify_start =
+                    crate::property_graph::storage::mapping_slot_capture::begin_verify(
+                        resources.work(),
+                    );
+                #[cfg(all(test, feature = "graph-cypher"))]
+                let mut verify_calls = 0;
                 for index in 0..count(bytes)? {
                     resources.step(1)?;
                     let Cell::Leaf { key, value } = owned_page_cell(bytes, page.header(), index)?
                     else {
                         return Err(TreeError::Invalid("leaf required"));
                     };
+                    #[cfg(all(test, feature = "graph-cypher"))]
+                    {
+                        verify_calls += 1;
+                    }
                     validator.verify(
                         source,
                         root,
@@ -1552,6 +1563,15 @@ fn find_path_inner<S: BlockSource>(
                         resources,
                     )?;
                 }
+                #[cfg(all(test, feature = "graph-cypher"))]
+                crate::property_graph::storage::mapping_slot_capture::end_verify(
+                    verify_start,
+                    "single",
+                    root.kind(),
+                    count(bytes)?,
+                    verify_calls,
+                    resources.work(),
+                );
             }
             path.push(PathEntry {
                 reference,
@@ -2172,6 +2192,13 @@ fn emit_many<'a>(
     if !cells.is_empty() {
         cuts.push(cells.len())?;
     }
+    #[cfg(all(test, feature = "graph-cypher"))]
+    if header.level == 0 {
+        crate::property_graph::storage::mapping_slot_capture::leaf_split(
+            root.kind(),
+            cuts.values.len(),
+        );
+    }
     let mut pages = BulkBuffer::new(cuts.values.len(), resources)?;
     let mut start = 0;
     for end in cuts.values {
@@ -2268,12 +2295,23 @@ impl<V> BulkEdit<'_, '_, V> {
             // Validate each old value exactly once, including replaced/removed
             // entries, matching the checked single-key mutation contract.
             store.with_scoped_reads(|| -> Result<(), TreeError> {
+                #[cfg(all(test, feature = "graph-cypher"))]
+                let verify_start =
+                    crate::property_graph::storage::mapping_slot_capture::begin_verify(
+                        resources.work(),
+                    );
+                #[cfg(all(test, feature = "graph-cypher"))]
+                let mut verify_calls = 0;
                 for index in 0..old_count {
                     resources.step(1)?;
                     let Cell::Leaf { key, value } = owned_page_cell(old.as_slice(), header, index)?
                     else {
                         return Err(TreeError::Invalid("leaf required"));
                     };
+                    #[cfg(all(test, feature = "graph-cypher"))]
+                    {
+                        verify_calls += 1;
+                    }
                     self.mutation.validator.verify(
                         store,
                         root,
@@ -2286,6 +2324,15 @@ impl<V> BulkEdit<'_, '_, V> {
                         resources,
                     )?;
                 }
+                #[cfg(all(test, feature = "graph-cypher"))]
+                crate::property_graph::storage::mapping_slot_capture::end_verify(
+                    verify_start,
+                    "bulk",
+                    root.kind(),
+                    old_count,
+                    verify_calls,
+                    resources.work(),
+                );
                 let mut next = 0;
                 for index in 0..old_count {
                     resources.step(1)?;
@@ -4338,6 +4385,64 @@ pub(crate) mod tests {
             );
         }
     }
+    #[cfg(feature = "graph-cypher")]
+    #[test]
+    fn ze277_verify_capture_reports_actual_leaf_visits() {
+        use crate::property_graph::storage::mapping_slot_capture::Capture;
+        let capture = Capture::start();
+        let (_dir, _store, shared, mut objects) = fixture();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let mut resources = TreeResources::new(&control, &shared, u64::MAX).unwrap();
+        let mut scratch = TreeScratch::new(&shared, PAGE_BYTES).unwrap();
+        let mut root =
+            DirectoryRoot::empty(objects.store, TreeKind::Nodes, GraphGeneration::new(0));
+        for n in 1u128..=3 {
+            root = insert_checked(
+                &mut objects,
+                DirectoryMutation::new(root, GraphGeneration::new(n as u64), OpaqueValues),
+                &n.to_le_bytes(),
+                &[],
+                &mut scratch,
+                &mut resources,
+            )
+            .unwrap();
+        }
+        capture.take_verify();
+        root = insert_checked(
+            &mut objects,
+            DirectoryMutation::new(root, GraphGeneration::new(4), OpaqueValues),
+            &1u128.to_le_bytes(),
+            &[7],
+            &mut scratch,
+            &mut resources,
+        )
+        .unwrap();
+        let single = capture.take_verify();
+        assert_eq!(single.len(), 1, "missing checked leaf observation");
+        assert_eq!(
+            (single[0].path, single[0].entries, single[0].calls),
+            ("single", 3, 3)
+        );
+        root = apply_sorted_checked(
+            &mut objects,
+            DirectoryMutation::new(root, GraphGeneration::new(5), OpaqueValues),
+            &[DirectoryOp::Insert {
+                key: &1u128.to_le_bytes(),
+                value: &[8],
+            }],
+            &mut scratch,
+            &mut resources,
+        )
+        .unwrap();
+        let bulk = capture.take_verify();
+        assert_eq!(bulk.len(), 1, "missing bulk leaf observation");
+        assert_eq!(
+            (bulk[0].path, bulk[0].entries, bulk[0].calls),
+            ("bulk", 3, 3)
+        );
+        assert_eq!(entries(&objects, root, &mut resources).len(), 3);
+    }
+
     #[test]
     fn bulk_update_scopes_leaf_validation() {
         limited_slots_bulk(1);
