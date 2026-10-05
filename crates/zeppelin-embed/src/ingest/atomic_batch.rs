@@ -221,16 +221,15 @@ pub(crate) fn committed_mutations_with_decisions(
             }
             continue;
         }
-        if let Some((_, member)) = prepared_run.first() {
-            if transaction_decision(member.binding, decision(member.binding))
+        if let Some((_, member)) = prepared_run.first()
+            && transaction_decision(member.binding, decision(member.binding))
                 == TransactionDecision::Committed
-            {
-                return Err(StoreError::WalMutation {
-                    seq: record.seq,
-                    op: record.op,
-                    source: PayloadError::TransactionBinding,
-                });
-            }
+        {
+            return Err(StoreError::WalMutation {
+                seq: record.seq,
+                op: record.op,
+                source: PayloadError::TransactionBinding,
+            });
         }
         prepared_run.clear();
         let mutation = wal_payload::decode_mutation(record.op, payload).map_err(|source| {
@@ -265,16 +264,15 @@ pub(crate) fn committed_mutations_with_decisions(
             committed.append(&mut run);
         }
     }
-    if let Some((seq, member)) = prepared_run.first() {
-        if transaction_decision(member.binding, decision(member.binding))
+    if let Some((seq, member)) = prepared_run.first()
+        && transaction_decision(member.binding, decision(member.binding))
             == TransactionDecision::Committed
-        {
-            return Err(StoreError::WalMutation {
-                seq: *seq,
-                op: wal_payload::PREPARED_MUTATION_V1,
-                source: PayloadError::TransactionBinding,
-            });
-        }
+    {
+        return Err(StoreError::WalMutation {
+            seq: *seq,
+            op: wal_payload::PREPARED_MUTATION_V1,
+            source: PayloadError::TransactionBinding,
+        });
     }
     Ok(committed)
 }

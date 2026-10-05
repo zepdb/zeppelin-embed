@@ -1009,6 +1009,7 @@ mod transaction_format_tests {
         }
     }
     #[test]
+    #[allow(clippy::indexing_slicing)]
     fn prepared_encoding_golden_and_rejections() {
         let body = encode_delete(&[DocId::new(6)]).unwrap();
         let bytes = encode_prepared(binding(), 0, 1, DELETE_V1, &body).unwrap();

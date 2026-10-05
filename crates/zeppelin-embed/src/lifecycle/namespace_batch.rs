@@ -640,15 +640,15 @@ fn root_descriptor_vfs(vfs: &dyn Vfs, root: &Path) -> Result<RootDescriptor, Sto
 }
 fn decode_routes(path: &Path, bytes: &[u8]) -> Result<Routes, StoreError> {
     let text = std::str::from_utf8(body(path, bytes)?)
-        .map_err(|_| invalid(&path, "namespace record UTF-8"))?;
+        .map_err(|_| invalid(path, "namespace record UTF-8"))?;
     let mut result = Routes::new();
     for line in text.split_terminator('\n') {
         let (name, destination) = line
             .split_once('\t')
-            .ok_or_else(|| invalid(&path, "namespace route"))?;
+            .ok_or_else(|| invalid(path, "namespace route"))?;
         let (transaction, child) = destination
             .split_once('/')
-            .ok_or_else(|| invalid(&path, "namespace destination"))?;
+            .ok_or_else(|| invalid(path, "namespace destination"))?;
         if !name_valid(name)
             || child != name
             || !transaction.starts_with(".ze-batch-")
@@ -660,11 +660,11 @@ fn decode_routes(path: &Path, bytes: &[u8]) -> Result<Routes, StoreError> {
                 .insert(name.to_owned(), destination.to_owned())
                 .is_some()
         {
-            return Err(invalid(&path, "invalid or duplicate namespace route"));
+            return Err(invalid(path, "invalid or duplicate namespace route"));
         }
     }
     if encode(&result) != bytes {
-        return Err(invalid(&path, "noncanonical namespace record"));
+        return Err(invalid(path, "noncanonical namespace record"));
     }
     Ok(result)
 }
@@ -1172,6 +1172,7 @@ mod descriptor_tests {
     }
 
     #[test]
+    #[allow(clippy::indexing_slicing)]
     fn staged_descriptor_round_trips_and_old_reader_rejects() {
         let binding = crate::ingest::wal_payload::TransactionBinding {
             transaction: 1,
