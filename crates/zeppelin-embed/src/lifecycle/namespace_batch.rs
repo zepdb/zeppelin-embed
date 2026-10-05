@@ -94,6 +94,7 @@ fn execute_live(
         Some(lock) => lock,
         None => StoreLock::acquire(&root).map_err(StoreError::Lock)?,
     };
+    reclamation::run(vfs, &root, step)?;
     normalize_accepted(vfs, &root, step)?;
     let existing_routes = match root_descriptor_vfs(vfs, &root)? {
         RootDescriptor::Legacy(routes) => routes,
@@ -885,6 +886,7 @@ fn execute(
         ));
     }
     let _coordinator = StoreLock::acquire(&root).map_err(StoreError::Lock)?;
+    reclamation::run(&StdVfs, &root, step)?;
     let mut next = routes(&root)?;
     let mut ordered = BTreeMap::new();
     for (index, mutation) in mutations.iter().enumerate() {
@@ -1040,6 +1042,8 @@ fn execute(
         }
     }
     publish(&StdVfs, &root, &decision, step)?;
+    drop(sources);
+    reclamation::run(&StdVfs, &root, step)?;
     Ok(generations)
 }
 
@@ -1362,7 +1366,7 @@ fn selection(vfs: &dyn Vfs, directory: &Path) -> Result<Option<StagedSelection>,
     }
     Ok(Some(selected))
 }
-fn staged_manifest(
+fn selected_manifest(
     vfs: &dyn Vfs,
     directory: &Path,
     selected: &StagedSelection,
@@ -1377,6 +1381,16 @@ fn staged_manifest(
     if manifest.generation != selected.binding.final_generation {
         return Err(invalid(&path, "staged generation mismatch"));
     }
+    Ok(manifest)
+}
+
+fn staged_manifest(
+    vfs: &dyn Vfs,
+    directory: &Path,
+    selected: &StagedSelection,
+) -> Result<crate::manifest::Manifest, StoreError> {
+    let manifest = selected_manifest(vfs, directory, selected)?;
+    let path = directory.join(&selected.manifest);
     let wal = crate::wal::WalReader::open(vfs, &directory.join("wal.ze"))
         .map_err(StoreError::Wal)?
         .into_clean()
@@ -1589,4 +1603,29 @@ fn rollback_stages(
         }
     }
     result
+}
+
+/// Reclaims unreachable namespace transaction artifacts.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn namespace_reclaim(root: &Path) -> Result<(), StoreError> {
+    let root = std::fs::canonicalize(root).map_err(|e| io(root, e))?;
+    let _owner = StoreLock::acquire(&root).map_err(StoreError::Lock)?;
+    reclamation::run(&StdVfs, &root, &mut |_| Ok(()))
+}
+
+mod reclamation;
+pub(super) use reclamation::{
+    admission as reader_admission, for_open as reclaim_for_open, refuse as refuse_retired,
+};
+
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn namespace_reclaim_on_vfs(
+    root: &Path,
+    vfs: &dyn Vfs,
+    step: &mut dyn FnMut(&str) -> std::io::Result<()>,
+) -> Result<(), StoreError> {
+    let _owner = StoreLock::acquire(root).map_err(StoreError::Lock)?;
+    reclamation::run(vfs, root, step)
 }

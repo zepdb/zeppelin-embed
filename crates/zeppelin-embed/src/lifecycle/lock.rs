@@ -36,7 +36,7 @@ use std::sync::{Mutex, MutexGuard};
 pub const STORE_LOCK_FILE: &str = "writer.lock";
 
 /// Stable filesystem identity of a store directory.
-type StoreKey = (u64, u64);
+type StoreKey = (u64, u64, bool);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LockMode {
@@ -75,11 +75,28 @@ impl StoreLock {
     }
 
     fn acquire_exclusive(directory: &Path, create: bool) -> Result<Self, StoreLockError> {
-        let path = directory.join(STORE_LOCK_FILE);
-        let registry_key = store_identity(directory).map_err(|source| StoreLockError::Io {
+        Self::exclusive_named(directory, create, false)
+    }
+
+    pub(crate) fn reclaim_exclusive(directory: &Path) -> Result<Self, StoreLockError> {
+        Self::exclusive_named(directory, true, true)
+    }
+
+    fn exclusive_named(
+        directory: &Path,
+        create: bool,
+        lease: bool,
+    ) -> Result<Self, StoreLockError> {
+        let path = directory.join(if lease {
+            ".ze-readers.lock"
+        } else {
+            STORE_LOCK_FILE
+        });
+        let identity = store_identity(directory).map_err(|source| StoreLockError::Io {
             path: directory.to_path_buf(),
             source,
         })?;
+        let registry_key = (identity.0, identity.1, lease);
         let mut held = held_stores();
         if held.contains_key(&registry_key) {
             return Err(StoreLockError::Io {
@@ -118,11 +135,24 @@ impl StoreLock {
     #[cfg(feature = "graph-cypher")]
     #[allow(dead_code)] // Consumed by the ZE-40 native read-only constructor.
     pub(crate) fn acquire_shared(directory: &Path) -> Result<Self, StoreLockError> {
-        let path = directory.join(STORE_LOCK_FILE);
-        let registry_key = store_identity(directory).map_err(|source| StoreLockError::Io {
+        Self::shared_named(directory, false)
+    }
+
+    pub(crate) fn reader_lease(directory: &Path) -> Result<Self, StoreLockError> {
+        Self::shared_named(directory, true)
+    }
+
+    fn shared_named(directory: &Path, lease: bool) -> Result<Self, StoreLockError> {
+        let path = directory.join(if lease {
+            ".ze-readers.lock"
+        } else {
+            STORE_LOCK_FILE
+        });
+        let identity = store_identity(directory).map_err(|source| StoreLockError::Io {
             path: directory.to_path_buf(),
             source,
         })?;
+        let registry_key = (identity.0, identity.1, lease);
         let mut held = held_stores();
         if let Some(entry) = held.get_mut(&registry_key) {
             if entry.mode == LockMode::Exclusive {
@@ -144,7 +174,12 @@ impl StoreLock {
             });
         }
 
-        let file = open_shared_lock_file(&path).map_err(|source| StoreLockError::Io {
+        let file = (if lease {
+            open_lock_file(&path, true)
+        } else {
+            open_shared_lock_file(&path)
+        })
+        .map_err(|source| StoreLockError::Io {
             path: path.clone(),
             source,
         })?;
@@ -175,8 +210,6 @@ fn held_stores() -> MutexGuard<'static, BTreeMap<StoreKey, RegistryEntry>> {
 }
 
 /// Opens an already-existing lock file without write or creation authority.
-#[cfg(feature = "graph-cypher")]
-#[allow(dead_code)] // Called by the ZE-40 producer seam above.
 fn open_shared_lock_file(path: &Path) -> std::io::Result<File> {
     let file = open_shared_lock_handle(path)?;
     if file.metadata()?.is_file() {
@@ -190,7 +223,7 @@ fn open_shared_lock_file(path: &Path) -> std::io::Result<File> {
 }
 
 /// Read-only handle on the existing lock file; never creates and never writes.
-#[cfg(all(feature = "graph-cypher", not(windows)))]
+#[cfg(not(windows))]
 fn open_shared_lock_handle(path: &Path) -> std::io::Result<File> {
     OpenOptions::new().read(true).open(path)
 }
@@ -206,7 +239,7 @@ fn open_shared_lock_handle(path: &Path) -> std::io::Result<File> {
 /// it, while still admitting the further readers and the eventual writer that
 /// the lock range itself arbitrates. No write access is requested, because
 /// `LockFileEx` needs only `GENERIC_READ`.
-#[cfg(all(feature = "graph-cypher", windows))]
+#[cfg(windows)]
 fn open_shared_lock_handle(path: &Path) -> std::io::Result<File> {
     use std::os::windows::fs::OpenOptionsExt as _;
 
@@ -218,18 +251,18 @@ fn open_shared_lock_handle(path: &Path) -> std::io::Result<File> {
 
 /// The store directory's stable filesystem identity.
 #[cfg(unix)]
-fn store_identity(directory: &Path) -> std::io::Result<StoreKey> {
+pub(super) fn store_identity(directory: &Path) -> std::io::Result<(u64, u64)> {
     let metadata = std::fs::metadata(directory)?;
     Ok((metadata.dev(), metadata.ino()))
 }
 
 #[cfg(windows)]
-fn store_identity(directory: &Path) -> std::io::Result<StoreKey> {
+pub(super) fn store_identity(directory: &Path) -> std::io::Result<(u64, u64)> {
     crate::sys::windows::directory_identity(directory)
 }
 
 #[cfg(not(any(unix, windows)))]
-fn store_identity(_directory: &Path) -> std::io::Result<StoreKey> {
+pub(super) fn store_identity(_directory: &Path) -> std::io::Result<(u64, u64)> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "store identity requires a supported platform",
@@ -299,7 +332,7 @@ fn lock_exclusive(file: &File) -> std::io::Result<()> {
     }
 }
 
-#[cfg(all(feature = "graph-cypher", unix))]
+#[cfg(unix)]
 #[allow(dead_code)] // Called by the ZE-40 producer seam above.
 fn lock_shared(file: &File) -> std::io::Result<()> {
     let mut lock = unsafe {
@@ -336,13 +369,13 @@ fn lock_shared(file: &File) -> std::io::Result<()> {
 /// Contention with a live writer arrives as [`std::io::ErrorKind::WouldBlock`];
 /// a permission failure stays a permission failure and is never reported as
 /// contention.
-#[cfg(all(feature = "graph-cypher", windows))]
+#[cfg(windows)]
 #[allow(dead_code)] // Called by the ZE-40 producer seam above.
 fn lock_shared(file: &File) -> std::io::Result<()> {
     crate::sys::windows::lock_file_shared(file)
 }
 
-#[cfg(all(feature = "graph-cypher", not(any(unix, windows))))]
+#[cfg(not(any(unix, windows)))]
 #[allow(dead_code)] // Called by the ZE-40 producer seam above.
 fn lock_shared(_: &File) -> std::io::Result<()> {
     Err(std::io::Error::new(

@@ -36,6 +36,7 @@ pub use namespace_batch::{
 #[doc(hidden)]
 pub use namespace_batch::{
     namespace_batch_live_on_vfs, namespace_batch_live_with_steps, namespace_batch_with_steps,
+    namespace_reclaim, namespace_reclaim_on_vfs,
 };
 pub(crate) mod stats;
 
@@ -2616,6 +2617,7 @@ pub struct Store {
     snapshot_pins: Arc<AtomicU64>,
     snapshot_pin: Mutex<Option<snapshot_view::SnapshotPin>>,
     logical_writer_lock: Mutex<Option<StoreLock>>,
+    reclamation_pin: Mutex<Option<Arc<StoreLock>>>,
     pub(crate) maintenance: Mutex<()>,
     pub(crate) health_state: Mutex<crate::diag::HealthState>,
     pub(crate) durability_policy: DurabilityPolicy,
@@ -2923,6 +2925,7 @@ impl Store {
             snapshot_pins: Arc::new(AtomicU64::new(0)),
             snapshot_pin: Mutex::new(None),
             logical_writer_lock: Mutex::new(None),
+            reclamation_pin: Mutex::new(None),
             maintenance: Mutex::new(()),
             health_state: Mutex::new(crate::diag::HealthState::default()),
             durability_policy,
@@ -2968,6 +2971,10 @@ impl Store {
     /// Opens a store directory with the requested access and durability policy.
     pub fn open(path: impl AsRef<Path>, options: OpenOptions) -> Result<Self, StoreError> {
         let path = path.as_ref();
+        if options.access_mode == AccessMode::ReadWrite {
+            namespace_batch::reclaim_for_open(path)?;
+        }
+        let _admission = namespace_batch::reader_admission(path)?;
         let selected = namespace_batch::resolve(path)?;
         let logical_lock = if selected != path {
             acquire_writer_lock(path, options.access_mode)?
@@ -3102,6 +3109,21 @@ impl Store {
                 path: path.to_path_buf(),
             });
         }
+        let _reclamation_admission = namespace_batch::reader_admission(path)?;
+        #[cfg(any(test, feature = "test-support"))]
+        let reclamation_pin = match std::fs::metadata(path) {
+            Ok(_) => Some(Arc::new(
+                StoreLock::reader_lease(path).map_err(StoreError::Lock)?,
+            )),
+            // Virtual-only VFS fixtures have no OS directory to pin.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(namespace_batch::io(path, error)),
+        };
+        #[cfg(not(any(test, feature = "test-support")))]
+        let reclamation_pin = Some(Arc::new(
+            StoreLock::reader_lease(path).map_err(StoreError::Lock)?,
+        ));
+        namespace_batch::refuse_retired(vfs.as_ref(), path)?;
         let writer_lock = acquire_writer_lock(path, options.access_mode)?;
         let mut wal_tail_cut = false;
         if options.access_mode == AccessMode::ReadWrite {
@@ -3301,6 +3323,7 @@ impl Store {
             snapshot_pins: Arc::new(AtomicU64::new(0)),
             snapshot_pin: Mutex::new(None),
             logical_writer_lock: Mutex::new(None),
+            reclamation_pin: Mutex::new(reclamation_pin),
             maintenance: Mutex::new(()),
             health_state: Mutex::new(crate::diag::HealthState::default()),
             durability_policy,

@@ -1037,3 +1037,480 @@ fn deleting_batch_refuses_snapshot_before_publication() {
         drop(b);
     }
 }
+
+#[cfg(feature = "test-support")]
+#[test]
+fn reclamation_preserves_current_routes_and_reader_pins() {
+    use zeppelin_embed::lifecycle::namespace_reclaim;
+    let root = tempfile::tempdir().expect("root");
+    seed(root.path());
+    namespace_batch(
+        root.path(),
+        vec![
+            mutation("a", vec![doc(2, 1)]),
+            mutation("b", vec![doc(2, 1)]),
+        ],
+    )
+    .expect("batch");
+    let stale = root.path().join("a/.ze-manifest-123");
+    std::fs::copy(root.path().join("a/manifest.ze"), &stale).expect("stale preparation");
+    let reader =
+        Store::open(root.path().join("a"), OpenOptions::read_only()).expect("second handle reader");
+    namespace_reclaim(root.path()).expect("reclaim pinned");
+    assert!(
+        stale.exists(),
+        "reader lease must retain preparation artifacts"
+    );
+    reader.close().expect("reader close");
+    namespace_reclaim(root.path()).expect("reclaim released");
+    assert!(
+        !stale.exists(),
+        "normalized-away staged manifest must be reclaimed"
+    );
+    assert_eq!(state(root.path(), "a"), vec![true, true, true]);
+    let writer = Store::open(root.path().join("a"), OpenOptions::new()).expect("snapshot source");
+    let snapshot = writer.open_snapshot().expect("snapshot pin");
+    std::fs::copy(root.path().join("a/manifest.ze"), &stale).expect("another stale preparation");
+    writer.close().expect("source closed before its snapshot");
+    namespace_reclaim(root.path()).expect("snapshot retains OS lease");
+    assert!(stale.exists());
+    snapshot.close().expect("release snapshot lease");
+    let reopened =
+        Store::open(root.path().join("a"), OpenOptions::new()).expect("recovery cleanup");
+    assert!(
+        !stale.exists(),
+        "writable recovery must trigger root cleanup"
+    );
+    reopened.close().expect("close recovered writer");
+}
+
+#[cfg(feature = "test-support")]
+fn namespace_envelope(body: &[u8]) -> Vec<u8> {
+    let mut bytes = b"ZENS0001".to_vec();
+    bytes.extend_from_slice(body);
+    bytes.extend_from_slice(&xxhash_rust::xxh3::xxh3_64(&bytes).to_le_bytes());
+    bytes
+}
+
+#[cfg(feature = "test-support")]
+fn legacy_reclamation_fixture(root: &std::path::Path) {
+    seed(root);
+    for (transaction, names) in [
+        (".ze-batch-old", vec!["a", "b"]),
+        (".ze-batch-new", vec!["a"]),
+        (".ze-batch-aborted", vec!["a"]),
+    ] {
+        let directory = root.join(transaction);
+        std::fs::create_dir(&directory).expect("transaction");
+        let mut routes = String::new();
+        for name in names {
+            let child = directory.join(name);
+            std::fs::create_dir(&child).expect("child");
+            for entry in std::fs::read_dir(root.join(name)).expect("source files") {
+                let entry = entry.expect("entry");
+                let filename = entry.file_name();
+                if filename == "writer.lock" || filename == ".ze-readers.lock" {
+                    continue;
+                }
+                std::fs::copy(entry.path(), child.join(filename)).expect("legacy payload");
+            }
+            let destination = format!("{transaction}/{name}");
+            std::fs::write(
+                child.join(".ze-prepared"),
+                namespace_envelope(destination.as_bytes()),
+            )
+            .expect("prepared identity");
+            routes.push_str(&format!("{name}\t{destination}\n"));
+        }
+        std::fs::write(
+            directory.join("intent.ze"),
+            namespace_envelope(routes.as_bytes()),
+        )
+        .expect("intent");
+    }
+    std::fs::write(
+        root.join(".ze-namespaces"),
+        namespace_envelope(b"a\t.ze-batch-new/a\nb\t.ze-batch-old/b\n"),
+    )
+    .expect("routes");
+    std::fs::write(root.join(".ze-namespaces.tmp"), b"unpublished root")
+        .expect("abandoned root generation");
+    std::fs::write(root.join(".ze-cleanup.tmp"), b"unfinished intent")
+        .expect("abandoned cleanup intent");
+    let canonical = std::fs::canonicalize(root).expect("root");
+    for name in ["a", "b"] {
+        std::fs::write(
+            root.join(name).join(".ze-namespace-root"),
+            namespace_envelope(canonical.to_str().expect("UTF-8").as_bytes()),
+        )
+        .expect("reference");
+    }
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn reclamation_preserves_legacy_siblings_and_reclaims_abandoned_copies() {
+    use zeppelin_embed::lifecycle::namespace_reclaim;
+    let root = tempfile::tempdir().expect("root");
+    legacy_reclamation_fixture(root.path());
+    let retired_reader = Store::open(
+        root.path().join(".ze-batch-old/a"),
+        OpenOptions::read_only(),
+    )
+    .expect("retired route reader");
+    namespace_reclaim(root.path()).expect("cleanup with pinned retired route");
+    assert!(root.path().join(".ze-batch-old/a/manifest.ze").exists());
+    assert!(root.path().join(".ze-batch-old/b/manifest.ze").exists());
+    assert!(root.path().join(".ze-batch-old/intent.ze").exists());
+    assert!(!root.path().join(".ze-batch-aborted/a/wal.ze").exists());
+    assert!(
+        !root.path().join(".ze-batch-aborted/intent.ze").exists(),
+        "abandoned transaction metadata must be reclaimed"
+    );
+    retired_reader.close().expect("release retired reader");
+    namespace_reclaim(root.path()).expect("finish cleanup");
+    assert!(!root.path().join(".ze-batch-old/a/wal.ze").exists());
+    assert!(
+        Store::open(root.path().join(".ze-batch-old/a"), OpenOptions::new()).is_err(),
+        "retired stubs must never become fallback stores"
+    );
+    assert_eq!(state(root.path(), "a"), vec![true, false, true]);
+    assert_eq!(state(root.path(), "b"), vec![true, false, true]);
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn crash_at_every_namespace_cleanup_step() {
+    use std::sync::Arc;
+    use zeppelin_embed::lifecycle::namespace_reclaim_on_vfs;
+    use zeppelin_embed::vfs::{
+        Vfs,
+        crash::{CrashStateKind, CrashVfs, MemoryVfs},
+    };
+    let root = tempfile::tempdir().expect("root");
+    legacy_reclamation_fixture(root.path());
+    let root_path = std::fs::canonicalize(root.path()).expect("canonical");
+    let initial = MemoryVfs::new();
+    fn load(vfs: &MemoryVfs, directory: &std::path::Path) {
+        for entry in std::fs::read_dir(directory).expect("inventory") {
+            let entry = entry.expect("entry");
+            if entry.file_type().expect("type").is_dir() {
+                load(vfs, &entry.path());
+            } else {
+                vfs.insert(entry.path(), std::fs::read(entry.path()).expect("bytes"))
+                    .expect("insert");
+            }
+        }
+    }
+    load(&initial, &root_path);
+    let baseline = initial.files().expect("baseline");
+    let crash = Arc::new(CrashVfs::new(initial).expect("recorder"));
+    let mut steps = std::collections::BTreeSet::new();
+    namespace_reclaim_on_vfs(&root_path, crash.as_ref(), &mut |step| {
+        steps.insert(step.to_owned());
+        Ok(())
+    })
+    .expect("cleanup");
+    assert!(steps.contains("cleanup unlink"));
+    assert!(steps.contains("cleanup intent rename"));
+    assert!(steps.contains("cleanup completion"));
+    let states = crash.crash_states().expect("enumerate");
+    assert!(!states.was_capped());
+    let mut recovered = 0;
+    for state in states.iter() {
+        let image = state.vfs().snapshot().expect("image");
+        let result = namespace_reclaim_on_vfs(&root_path, &image, &mut |_| Ok(()));
+        for (path, bytes) in &baseline {
+            if path.starts_with(root_path.join(".ze-batch-new/a"))
+                || path.starts_with(root_path.join(".ze-batch-old/b"))
+                || path == &root_path.join(".ze-namespaces")
+                || path == &root_path.join(".ze-batch-old/intent.ze")
+            {
+                assert_eq!(
+                    image.read(path).expect("reachable artifact"),
+                    *bytes,
+                    "{:?}: {}",
+                    state.kind(),
+                    path.display()
+                );
+            }
+        }
+        if result.is_ok() {
+            assert!(image.open(&root_path.join(".ze-cleanup")).is_err());
+            assert!(image.open(&root_path.join(".ze-cleanup.tmp")).is_err());
+            assert!(image.open(&root_path.join(".ze-namespaces.tmp")).is_err());
+            assert!(
+                image
+                    .open(&root_path.join(".ze-batch-aborted/a/wal.ze"))
+                    .is_err()
+            );
+            assert!(
+                image
+                    .open(&root_path.join(".ze-batch-aborted/intent.ze"))
+                    .is_err()
+            );
+            namespace_reclaim_on_vfs(&root_path, &image, &mut |_| Ok(())).expect("repeat recovery");
+            recovered += 1;
+        } else if matches!(state.kind(), CrashStateKind::Prefix { .. }) {
+            panic!(
+                "valid cleanup prefix must resume: {:?}: {result:?}",
+                state.kind()
+            );
+        }
+    }
+    eprintln!(
+        "ZE-256 uncapped cleanup crash states: {}, recovered: {recovered}",
+        states.len()
+    );
+    assert!(recovered > 0);
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+#[ignore = "subprocess lease fixture"]
+fn namespace_reader_lease_child() {
+    use std::io::{Read, Write};
+    let path = std::env::var_os("ZE_NAMESPACE_READER_PATH").expect("child path");
+    let reader = Store::open(std::path::PathBuf::from(path), OpenOptions::read_only())
+        .expect("child reader");
+    println!("READER_ADMITTED");
+    std::io::stdout().flush().expect("flush readiness");
+    let mut release = [0];
+    std::io::stdin()
+        .read_exact(&mut release)
+        .expect("parent release");
+    assert!(
+        reader
+            .get_documents(&[DocId::new(1)], DocumentFields::NONE)
+            .expect("retained read")
+            .iter()
+            .all(Option::is_some)
+    );
+    reader.close().expect("release lease");
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn reclamation_reader_lease_excludes_another_process_and_unlink_race() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Command, Stdio};
+    use zeppelin_embed::lifecycle::{namespace_reclaim, namespace_reclaim_on_vfs};
+    use zeppelin_embed::vfs::StdVfs;
+    let root = tempfile::tempdir().expect("root");
+    seed(root.path());
+    namespace_batch(
+        root.path(),
+        vec![
+            mutation("a", vec![doc(2, 1)]),
+            mutation("b", vec![doc(2, 1)]),
+        ],
+    )
+    .expect("batch");
+    let stale = root.path().join("a/.ze-manifest-123");
+    std::fs::copy(root.path().join("a/manifest.ze"), &stale).expect("staged manifest");
+    let mut child = Command::new(std::env::current_exe().expect("test binary"))
+        .args([
+            "--exact",
+            "namespace_reader_lease_child",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("ZE_NAMESPACE_READER_PATH", root.path().join("a"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("child");
+    let mut output = BufReader::new(child.stdout.take().expect("stdout"));
+    let mut line = String::new();
+    loop {
+        line.clear();
+        assert!(
+            output.read_line(&mut line).expect("child ready") > 0,
+            "child exited before reader admission"
+        );
+        if line.contains("READER_ADMITTED") {
+            break;
+        }
+    }
+    namespace_reclaim(root.path()).expect("reclaim while another process reads");
+    assert!(
+        stale.exists(),
+        "OS lease must preserve independently admitted reader artifacts"
+    );
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(&[1])
+        .expect("release");
+    assert!(child.wait().expect("child exit").success());
+    let mut attempted = false;
+    namespace_reclaim_on_vfs(root.path(), &StdVfs, &mut |step| {
+        if step == "cleanup intent rename" {
+            attempted = true;
+            let second = Store::open(root.path().join("a"), OpenOptions::read_only());
+            assert!(
+                second.is_err(),
+                "admission racing unlink must be excluded by the root lease"
+            );
+            assert!(stale.exists(), "admission was attempted before unlink");
+        }
+        Ok(())
+    })
+    .expect("reclaim released reader");
+    assert!(attempted);
+    assert!(!stale.exists());
+    assert_eq!(state(root.path(), "a"), vec![true, true, true]);
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn namespace_cleanup_revalidates_root_reachability_before_unlink() {
+    use zeppelin_embed::lifecycle::namespace_reclaim_on_vfs;
+    use zeppelin_embed::vfs::StdVfs;
+    let root = tempfile::tempdir().expect("root");
+    legacy_reclamation_fixture(root.path());
+    let selected = root.path().join(".ze-batch-old/a/manifest.ze");
+    let before = std::fs::read(&selected).expect("old payload");
+    let mut changed = false;
+    let result = namespace_reclaim_on_vfs(root.path(), &StdVfs, &mut |step| {
+        if step == "cleanup intent rename" {
+            changed = true;
+            // A stale mark must never grant unlink authority over a now-current
+            // route, even when the cleanup intent itself remains well formed.
+            std::fs::write(
+                root.path().join(".ze-namespaces"),
+                namespace_envelope(b"a\t.ze-batch-old/a\nb\t.ze-batch-old/b\n"),
+            )?;
+        }
+        Ok(())
+    });
+    assert!(changed);
+    assert!(
+        result.is_err(),
+        "changed root reachability must fail loudly"
+    );
+    assert_eq!(std::fs::read(selected).expect("selected retained"), before);
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn reclamation_preserves_pending_decisions_after_local_checkpoint() {
+    use zeppelin_embed::lifecycle::{
+        LiveNamespaceMutation, namespace_batch_live_with_steps, namespace_reclaim,
+    };
+    let root = tempfile::tempdir().expect("root");
+    let a = Store::open(root.path().join("a"), OpenOptions::new()).expect("a");
+    let b = Store::open(root.path().join("b"), OpenOptions::new()).expect("b");
+    let mut acceptances = 0;
+    assert!(
+        namespace_batch_live_with_steps(
+            root.path(),
+            vec![
+                LiveNamespaceMutation {
+                    store: &a,
+                    mutation: mutation("a", vec![doc(1, 1)])
+                },
+                LiveNamespaceMutation {
+                    store: &b,
+                    mutation: mutation("b", vec![doc(1, 1)])
+                },
+            ],
+            &mut |step| {
+                if step == "accept binding rename" {
+                    acceptances += 1;
+                    if acceptances == 2 {
+                        return Err(std::io::Error::other("leave root pending"));
+                    }
+                }
+                Ok(())
+            }
+        )
+        .is_err()
+    );
+    a.close().expect("close a");
+    b.close().expect("close b");
+    let pending_root = std::fs::read(root.path().join(".ze-namespaces")).expect("pending root");
+    let b = Store::open(root.path().join("b"), OpenOptions::new()).expect("accepted b");
+    b.seal().expect("absorb prepared range locally");
+    b.close().expect("release b");
+    namespace_reclaim(root.path()).expect("accepted decision no longer needs retired WAL frames");
+    assert_eq!(
+        std::fs::read(root.path().join(".ze-namespaces")).expect("root preserved"),
+        pending_root
+    );
+    for name in ["a", "b"] {
+        assert!(
+            std::fs::read_dir(root.path().join(name))
+                .expect("files")
+                .any(|entry| entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".ze-manifest-")),
+            "pending manifest retained"
+        );
+        let reader =
+            Store::open(root.path().join(name), OpenOptions::read_only()).expect("accepted reader");
+        assert!(
+            reader
+                .get_documents(&[DocId::new(1)], DocumentFields::NONE)
+                .expect("committed row")
+                .iter()
+                .all(Option::is_some)
+        );
+    }
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn namespace_cleanup_resume_syncs_authorities_before_unlink() {
+    use zeppelin_embed::lifecycle::namespace_reclaim_on_vfs;
+    use zeppelin_embed::vfs::{
+        StdVfs, SyncKind,
+        crash::{CrashOperation, CrashVfs, MemoryVfs},
+    };
+    for interrupted_step in ["cleanup intent rename", "file sync"] {
+        let root = tempfile::tempdir().expect("root");
+        legacy_reclamation_fixture(root.path());
+        let root_path = std::fs::canonicalize(root.path()).expect("canonical root");
+        let mut file_syncs = 0;
+        let first = namespace_reclaim_on_vfs(&root_path, &StdVfs, &mut |step| {
+            if step == "file sync" {
+                file_syncs += 1;
+            }
+            if step == interrupted_step && (step != "file sync" || file_syncs == 2) {
+                return Err(std::io::Error::other(
+                    "interrupt before directory durability",
+                ));
+            }
+            Ok(())
+        });
+        assert!(first.is_err());
+        fn load(image: &MemoryVfs, directory: &std::path::Path) {
+            for entry in std::fs::read_dir(directory).expect("inventory") {
+                let entry = entry.expect("entry");
+                if entry.file_type().expect("type").is_dir() {
+                    load(image, &entry.path());
+                } else {
+                    image
+                        .insert(entry.path(), std::fs::read(entry.path()).expect("bytes"))
+                        .expect("insert");
+                }
+            }
+        }
+        let image = MemoryVfs::new();
+        load(&image, &root_path);
+        let resumed = CrashVfs::new(image).expect("resume recorder");
+        namespace_reclaim_on_vfs(&root_path, &resumed, &mut |_| Ok(())).expect("resume");
+        let operations = resumed.operations().expect("operations");
+        let first_unlink = operations
+            .iter()
+            .position(|op| matches!(op, CrashOperation::Delete { .. }))
+            .expect("unlinks");
+        assert!(operations.iter().take(first_unlink).any(|op| matches!(op, CrashOperation::Sync { path, kind: SyncKind::Full } if path == &root_path)), "surviving intent rename must be durable before unlink");
+        let directory = root_path.join(".ze-batch-aborted");
+        let retired_unlink = operations.iter().position(|op| matches!(op, CrashOperation::Delete { path } if path == &directory.join("intent.ze"))).expect("retired transaction unlink");
+        assert!(operations.iter().take(retired_unlink).any(|op| matches!(op, CrashOperation::Sync { path, kind: SyncKind::Full } if path == &directory)), "surviving retirement marker must be durable before unlink");
+    }
+}

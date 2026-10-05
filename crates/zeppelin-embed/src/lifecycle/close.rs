@@ -314,6 +314,12 @@ impl Store {
             .state
             .lock()
             .map_err(|_| StoreError::Synchronization { component: "state" })?;
+        self.reclamation_pin
+            .lock()
+            .map_err(|_| StoreError::Synchronization {
+                component: "reclamation pin",
+            })?
+            .take();
         *state = StoreState::Closed;
         self.state_changed.notify_all();
         background_result
@@ -400,6 +406,11 @@ impl Store {
             Err(poisoned) => poisoned.into_inner(),
         };
         drop(logical.take());
+        let pin = match self.reclamation_pin.get_mut() {
+            Ok(slot) => slot,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        drop(pin.take());
         *state = StoreState::Closed;
         self.state_changed.notify_all();
     }

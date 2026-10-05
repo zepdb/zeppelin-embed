@@ -92,6 +92,14 @@ impl Store {
             wal_writer: Mutex::new(None),
             writer_lock: Mutex::new(None),
             logical_writer_lock: Mutex::new(None),
+            reclamation_pin: Mutex::new(
+                self.reclamation_pin
+                    .lock()
+                    .map_err(|_| StoreError::Synchronization {
+                        component: "reclamation pin",
+                    })?
+                    .clone(),
+            ),
             snapshot_pins: Arc::clone(&self.snapshot_pins),
             snapshot_pin: Mutex::new(Some(pin)),
             maintenance: Mutex::new(()),
