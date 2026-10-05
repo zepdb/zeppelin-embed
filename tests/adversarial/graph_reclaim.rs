@@ -100,9 +100,11 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
             relationship_type: row.relationship_type,
         })
         .collect();
-    compare_read_view_expansion(seed, &expected, 1, &actual)
+    // The expected history installs the edge in generation 1; the seed is
+    // only a probe input, not an oracle generation.
+    compare_read_view_expansion(1, &expected, 1, &actual)
         .map_err(|difference| format!("post-reclaim adjacency mismatch: {difference:?}"))?;
-    if compare_read_view_expansion(seed, &expected, 1, &[]).is_ok() {
+    if compare_read_view_expansion(1, &expected, 1, &[]).is_ok() {
         return Err("reclaim comparator accepted a missing committed relationship".into());
     }
     if (report.state.first_node, report.state.second_node) != (1, 2) {
@@ -150,6 +152,11 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reclaim_probe_seed_zero_validates_committed_adjacency() {
+        super::probe(0, &mut super::CoverageRegistry::default()).unwrap();
+    }
+
     /// Binds the real probe to the comparator without running the campaign.
     #[test]
     fn reclaim_probe_binds_actual_receipts_to_the_independent_comparator() {

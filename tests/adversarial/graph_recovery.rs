@@ -35,9 +35,11 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
         target: report.state.relationship.target,
         relationship_type: report.state.relationship.relationship_type,
     }];
-    compare_read_view_expansion(seed, &expected, 1, &actual)
+    // The expected history installs the edge in generation 1; the seed is
+    // only a probe input, not an oracle generation.
+    compare_read_view_expansion(1, &expected, 1, &actual)
         .map_err(|difference| format!("recovery adjacency mismatch: {difference:?}"))?;
-    if compare_read_view_expansion(seed, &expected, 1, &[]).is_ok() {
+    if compare_read_view_expansion(1, &expected, 1, &[]).is_ok() {
         return Err("recovery comparator accepted a missing committed edge".into());
     }
     let state = (
@@ -77,4 +79,12 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
         return Err("missing recovery boundary receipts".into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn recovery_probe_seed_zero_validates_committed_adjacency() {
+        super::probe(0, &mut super::CoverageRegistry::default()).unwrap();
+    }
 }
