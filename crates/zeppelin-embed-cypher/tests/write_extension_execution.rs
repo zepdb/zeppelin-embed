@@ -438,8 +438,8 @@ fn ze57_local_late_row_capacity_refuses_the_whole_write() {
         let expected = if let Some(kind) = refusal {
             match result {
                 Err(StatementError::Query(error)) => {
-                    // ZE-208 owns fixed-row InvalidPlan -> Limit;
-                    // ZE-210 item 1: driven rows count even without RETURN.
+                    // Returning rows remain capped; no-RETURN writes still
+                    // enforce mutation and query-memory capacities.
                     assert_eq!(error.kind(), kind, "{count}x{count}: {error}");
                     assert!(error.nothing_committed());
                 }
@@ -550,4 +550,78 @@ fn ze57_local_indeterminate_commit_reopens_to_one_permissible_state() {
     let control = graph.snapshot().unwrap();
     graph.reopen();
     assert_eq!(graph.snapshot().unwrap(), control);
+}
+
+#[test]
+fn ze210_no_return_ignores_returned_row_capacity() {
+    let mut graph = Graph::new("ze210-no-return");
+    graph.setup("CREATE (:N), (:N)");
+    let before = graph.snapshot().unwrap();
+    let generation = graph.generation().unwrap();
+    let options = zeppelin_embed::property_graph::query::completed::GraphQueryOptions::default()
+        .with_result_row_limit(1)
+        .unwrap();
+    let run = |text| {
+        zeppelin_embed_cypher::execute(
+            graph.store(),
+            &zeppelin_embed::lifecycle::QueryControl::Cancel(
+                zeppelin_embed::lifecycle::CancelToken::new(),
+            ),
+            &options,
+            text,
+            &[],
+            zeppelin_embed_cypher::CompileLimits::default(),
+        )
+    };
+    match run("MATCH (a:N),(b:N) CREATE (:C) RETURN 1") {
+        Err(StatementError::Query(error)) => {
+            assert_eq!(error.kind(), GraphQueryErrorKind::Limit);
+            assert!(error.nothing_committed());
+        }
+        _ => panic!("expected atomic row refusal"),
+    }
+    assert_eq!(graph.snapshot().unwrap(), before);
+    assert_eq!(graph.generation().unwrap(), generation);
+    let result = run("MATCH (a:N),(b:N) CREATE (:C)").unwrap();
+    assert!(
+        matches!(result.metadata().outcome, Outcome::Committed { changed } if changed.get() == generation.get() + 1)
+    );
+    assert_eq!(result.metadata().rows, 0);
+    assert!(result.pools().columns.is_empty());
+    drop(result);
+    graph.reopen();
+    assert_eq!(
+        tck::actual_table(&graph.run("MATCH (n:C) RETURN count(n)", &[]).unwrap()).1,
+        vec![vec![V::Int(4)]]
+    );
+}
+
+#[test]
+fn ze210_default_write_32x32_boundary() {
+    let mut graph = Graph::new("ze210-default-write");
+    graph.setup(&format!("CREATE {}", vec!["(:N)"; 32].join(",")));
+    assert_eq!(
+        tck::actual_table(&graph.run("MATCH (a:N),(b:N) RETURN count(*)", &[]).unwrap()).1,
+        vec![vec![V::Int(1024)]]
+    );
+    let generation = graph.generation().unwrap();
+    let result = graph.run("MATCH (a:N),(b:N) CREATE (:C)", &[]);
+    if let Err(error) = &result {
+        eprintln!("ZE-210 default 32x32 refusal: {error}");
+        assert_eq!(graph.generation().unwrap(), generation);
+        graph.reopen();
+        assert_eq!(graph.generation().unwrap(), generation);
+        assert_eq!(
+            tck::actual_table(&graph.run("MATCH (n:C) RETURN count(n)", &[]).unwrap()).1,
+            vec![vec![V::Int(0)]]
+        );
+    }
+    assert!(
+        matches!(result.unwrap().metadata().outcome, Outcome::Committed { changed } if changed.get() == generation.get() + 1)
+    );
+    graph.reopen();
+    assert_eq!(
+        tck::actual_table(&graph.run("MATCH (n:C) RETURN count(n)", &[]).unwrap()).1,
+        vec![vec![V::Int(1024)]]
+    );
 }

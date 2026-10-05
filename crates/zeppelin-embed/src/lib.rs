@@ -43,6 +43,54 @@ mod allocation_audit;
 #[doc(hidden)]
 pub mod adversarial_test_support;
 
+/// Fixed keyed fixture for integration tests of the Cypher writer seam.
+#[cfg(all(feature = "graph-cypher", feature = "test-support"))]
+#[doc(hidden)]
+pub mod graph_structured_write_test_support {
+    use crate::lifecycle::{CancelToken, QueryControl, Store};
+    use crate::property_graph::staging::{StructuredOperation, StructuredWrite, WriteImage};
+    use crate::property_graph::{
+        ApplicationKey, CanonicalContents, EntityId, EntityKind, GraphGeneration, GraphName,
+        GraphProperty, GraphRevision, NodeId, PropertyData, PropertyValue,
+    };
+
+    /// Creates one application-keyed `:A {v: 1}` through the real writer.
+    pub fn create_keyed_node(store: &Store) -> Result<(NodeId, GraphGeneration), String> {
+        let mut labels = [GraphName::new("A").map_err(|e| format!("label: {e:?}"))?];
+        let mut properties = [GraphProperty::new(
+            GraphName::new("v").map_err(|e| format!("property name: {e:?}"))?,
+            PropertyValue::new(PropertyData::I64(1))
+                .map_err(|e| format!("property value: {e:?}"))?,
+        )];
+        let image = CanonicalContents::node(&mut labels, &mut properties, None, None)
+            .map_err(|e| format!("node image: {e:?}"))?;
+        let receipts = store
+            .apply_native_graph(
+                &[StructuredWrite {
+                    key: ApplicationKey::new(EntityKind::Node, "app", "ze214")
+                        .map_err(|e| format!("application key: {e:?}"))?,
+                    revision: GraphRevision::new(1).map_err(|e| format!("revision: {e:?}"))?,
+                    operation: StructuredOperation::Create,
+                    image: Some(WriteImage::Node(&image)),
+                }],
+                &QueryControl::Cancel(CancelToken::new()),
+            )
+            .map_err(|e| format!("structured create: {e:?}"))?;
+        if receipts.len() != 1 {
+            return Err("structured create did not return exactly one receipt".to_owned());
+        }
+        let receipt = receipts
+            .first()
+            .ok_or_else(|| "structured create returned no receipt".to_owned())?;
+        match receipt.entity {
+            EntityId::Node(node) => Ok((node, receipt.generation)),
+            EntityId::Relationship(_) => {
+                Err("structured create returned a relationship".to_owned())
+            }
+        }
+    }
+}
+
 #[cfg(all(feature = "graph-cypher", feature = "test-support"))]
 #[doc(hidden)]
 pub mod graph_native_vector_index_test_support {

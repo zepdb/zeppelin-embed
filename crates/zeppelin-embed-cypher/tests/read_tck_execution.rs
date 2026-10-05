@@ -98,56 +98,63 @@ fn canonical(rows: &[Vec<V>], unordered_lists: bool) -> Vec<String> {
 }
 
 /// One positive scenario; `Err` describes the first mismatch.
-fn check_positive(scenario: &tck::Scenario) -> Result<(), String> {
+fn check_positive(scenario: &tck::Scenario) -> Result<usize, String> {
     let Expect::Table { mode, header, rows } = &scenario.expect else {
         unreachable!()
     };
-    let graph = Graph::new("ze56-tck");
+    let mut graph = Graph::new("ze56-tck");
     for statement in &scenario.setup {
         graph.setup(statement);
     }
     let before = generation(&graph);
-    let result = run_with(&graph, &scenario.query, &scenario.parameters)
-        .map_err(|error| format!("query failed: {error}"))?;
-    if result.metadata().outcome != Outcome::Read || result.metadata().generation != before {
-        return Err(format!(
-            "side effect: outcome {:?} at {:?}, before {before:?}",
-            result.metadata().outcome,
-            result.metadata().generation
-        ));
+    for pass in 0..2 {
+        if pass == 1 {
+            graph.reopen();
+        }
+        let result = run_with(&graph, &scenario.query, &scenario.parameters)
+            .map_err(|error| format!("query failed: {error}"))?;
+        if result.metadata().outcome != Outcome::Read || result.metadata().generation != before {
+            return Err(format!(
+                "side effect: outcome {:?} at {:?}, before {before:?}",
+                result.metadata().outcome,
+                result.metadata().generation
+            ));
+        }
+        let (columns, actual) = tck::actual_table(&result);
+        if &columns != header {
+            return Err(format!("columns {columns:?}, expected {header:?}"));
+        }
+        let (expected, actual) = match mode.as_str() {
+            "ordered" => (
+                rows.iter().map(|r| format!("{r:?}")).collect::<Vec<_>>(),
+                actual.iter().map(|r| format!("{r:?}")).collect(),
+            ),
+            "bag" => (canonical(rows, false), canonical(&actual, false)),
+            "bag-lists-unordered" => (canonical(rows, true), canonical(&actual, true)),
+            other => panic!("mode {other}"),
+        };
+        if expected != actual {
+            return Err(format!("rows {actual:#?}\nexpected {expected:#?}"));
+        }
+        if generation(&graph) != before {
+            return Err("generation moved after the read".to_owned());
+        }
     }
-    let (columns, actual) = tck::actual_table(&result);
-    if &columns != header {
-        return Err(format!("columns {columns:?}, expected {header:?}"));
-    }
-    let (expected, actual) = match mode.as_str() {
-        "ordered" => (
-            rows.iter().map(|r| format!("{r:?}")).collect::<Vec<_>>(),
-            actual.iter().map(|r| format!("{r:?}")).collect(),
-        ),
-        "bag" => (canonical(rows, false), canonical(&actual, false)),
-        "bag-lists-unordered" => (canonical(rows, true), canonical(&actual, true)),
-        other => panic!("mode {other}"),
-    };
-    if expected != actual {
-        return Err(format!("rows {actual:#?}\nexpected {expected:#?}"));
-    }
-    if generation(&graph) != before {
-        return Err("generation moved after the read".to_owned());
-    }
-    Ok(())
+    Ok(2)
 }
 
 #[test]
 fn ze56_original_read_tck_positive_scenarios_execute() {
     let mut passed = 0;
+    let mut selected = 0;
     let mut failures = Vec::new();
     for scenario in scenarios() {
         if !matches!(scenario.expect, Expect::Table { .. }) {
             continue;
         }
+        selected += 1;
         match check_positive(&scenario) {
-            Ok(()) => passed += 1,
+            Ok(validations) => passed += validations,
             Err(reason) => failures.push(format!("{}: {reason}", scenario.coordinate)),
         }
     }
@@ -156,7 +163,8 @@ fn ze56_original_read_tck_positive_scenarios_execute() {
         failures.len()
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
-    assert_eq!(passed, 54);
+    assert_eq!(selected, 54);
+    assert_eq!(passed, 108);
 }
 
 /// The three original compile-time errors are refused by the compiler with

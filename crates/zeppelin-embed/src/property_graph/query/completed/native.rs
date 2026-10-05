@@ -640,6 +640,7 @@ struct WriteSource<'c, 's, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> {
     root: PlanNodeId,
     pattern: Option<NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q>>,
     handoff: &'c OverlayHandoff<'s>,
+    no_return: bool,
 }
 
 impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> PullOperator<'v, 'm, 'g, NativeResultError>
@@ -668,12 +669,23 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> PullOperator<'v, 'm, 'g, NativeResultErr
         context: &mut RuntimeContext<'v, 'm, 'g>,
         output: &mut RowBatch<'v, 'm, 'g>,
     ) -> Result<PullState, NativeResultError> {
-        let state = self
-            .pattern
-            .as_mut()
-            .ok_or(NativeResultError::Native(RuntimeError::Batch.into()))?
-            .pull(context, output)
-            .map_err(NativeResultError::Native)?;
+        let state = loop {
+            context.checkpoint().map_err(NativeResultError::from)?;
+            let state = self
+                .pattern
+                .as_mut()
+                .ok_or(NativeResultError::Native(RuntimeError::Batch.into()))?
+                .pull(context, output)
+                .map_err(NativeResultError::Native)?;
+            if !self.no_return {
+                break state;
+            }
+            // These rows drive writes but are not part of the result.
+            output.clear();
+            if state == PullState::Done {
+                break state;
+            }
+        };
         if state == PullState::Done {
             let pattern = self
                 .pattern
@@ -752,6 +764,7 @@ fn execute_native_mutation_diagnosed<'w, 'r, 'plan, 'lease, 'm, 'g, 'i>(
         root,
         pattern: Some(pattern),
         handoff: &handoff,
+        no_return,
     };
     let mut completion = NativeCompletion::new(
         view,

@@ -1021,8 +1021,9 @@ errors. `Store::create_graph_store`/`open_graph_store` exist only under
 
 A write statement without RETURN lowers to a plan whose root is `Mutate`.
 Its result has zero columns and zero rows and its outcome is Committed or
-NoOp; the driver still pulls and charges every driven row, so row/payload
-capacities apply to it exactly as to a returning statement.
+NoOp; the write source drains intermediate rows without retaining result rows.
+Pattern work and mutation capacities still apply; result row/payload limits
+apply only to returning statements.
 
 ### ZE-57 write conformance
 

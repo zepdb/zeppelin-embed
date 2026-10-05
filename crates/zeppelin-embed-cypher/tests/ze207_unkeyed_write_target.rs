@@ -119,3 +119,39 @@ fn ze207_create_without_reading_matched_node_still_commits() {
     let read = graph.run("MATCH (b:B) RETURN count(b) AS n", &[]).unwrap();
     assert_eq!(tck::actual_table(&read).1, vec![vec![V::Int(1)]]);
 }
+
+#[test]
+fn ze214_keyed_structured_create_then_cypher_set_delete() {
+    use zeppelin_embed::graph_structured_write_test_support::create_keyed_node;
+    let mut graph = Graph::new("ze214-keyed");
+    let (node, created) = create_keyed_node(graph.store()).unwrap();
+    assert_eq!(graph.generation().unwrap(), created);
+    assert_eq!(graph.snapshot().unwrap().nodes.len(), 1);
+    let identity = graph.run("MATCH (a:A) RETURN a", &[]).unwrap();
+    assert_eq!(identity.pools().nodes.len(), 1);
+    assert_eq!(identity.pools().nodes.first().unwrap().id, node);
+    let set = graph
+        .run("MATCH (a:A) SET a.v = 2 RETURN a.v", &[])
+        .unwrap();
+    assert!(
+        matches!(set.metadata().outcome, Outcome::Committed { changed } if changed.get() == created.get() + 1)
+    );
+    assert_eq!(tck::actual_table(&set).1, vec![vec![V::Int(2)]]);
+    drop(set);
+    drop(identity);
+    let updated = graph.snapshot().unwrap();
+    graph.reopen();
+    assert_eq!(graph.snapshot().unwrap(), updated);
+    assert_eq!(
+        tck::actual_table(&graph.run("MATCH (a:A) RETURN a.v", &[]).unwrap()).1,
+        vec![vec![V::Int(2)]]
+    );
+    let generation = graph.generation().unwrap();
+    let deleted = graph.run("MATCH (a:A) DELETE a", &[]).unwrap();
+    assert!(
+        matches!(deleted.metadata().outcome, Outcome::Committed { changed } if changed.get() == generation.get() + 1)
+    );
+    drop(deleted);
+    graph.reopen();
+    assert!(graph.snapshot().unwrap().nodes.is_empty());
+}

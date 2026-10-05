@@ -2100,6 +2100,7 @@ impl NativeReadConsumer<()> for PostHandoffConsumer {
             root: PlanNodeId(0),
             pattern: None,
             handoff: &handoff,
+            no_return: true,
         };
         let mut output = RowBatch::new(runtime, 1, 1, 64).unwrap();
         assert!(matches!(
