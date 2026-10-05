@@ -29,8 +29,18 @@ struct InstalledConsumer {
     guard durable.rows == result.rows, durable.metadata.admittedGeneration == 1 else {
       throw Failure.invalidResult
     }
+    let values = try await reopened.cypher("RETURN null, '', [], [1,null,['nested']]")
+    guard values.rows == [[.null, .string(""), .list(.query, []),
+      .list(.query, [.integer(1), .null, .list(.query, [.string("nested")])])]] else {
+      throw Failure.invalidResult
+    }
+    let bag = try await reopened.cypher("MATCH (n) RETURN null ORDER BY n")
+    guard bag.rows == [[.null], [.null]] else { throw Failure.invalidResult }
+    let empty = try await reopened.cypher("MATCH (n:Missing) RETURN n")
+    guard empty.rows.isEmpty else { throw Failure.invalidResult }
     try await reopened.close()
-    print("installed typed Swift batch/Cypher/reopen PASS")
+    guard values.rows[0][3] == .list(.query, [.integer(1), .null, .list(.query, [.string("nested")])]) else { throw Failure.invalidResult }
+    print("installed typed Swift batch/Cypher/reopen/null/list/bag/retained PASS")
   }
   enum Failure: Error { case invalidResult }
 }

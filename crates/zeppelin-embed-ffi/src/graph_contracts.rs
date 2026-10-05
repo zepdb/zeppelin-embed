@@ -357,9 +357,9 @@ pub struct ZeGraphBatchRequest {
     pub abi_size: u32,
     /// Must be zero.
     pub abi_reserved: u32,
-    /// Nonempty readable fixed-stride items.
+    /// Readable fixed-stride items; null is permitted when item_count is zero.
     pub items: *const ZeGraphBatchItem,
-    /// Between 1 and 16384.
+    /// Between 0 and 16384. An empty batch returns NoOp without WAL or generation changes.
     pub item_count: usize,
     /// Required readable input pool; borrowed only for the call.
     pub pool: *const ZeGraphValuePool,

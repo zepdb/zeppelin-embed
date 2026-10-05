@@ -36,7 +36,7 @@ if [[ "${1:-}" == "run" && -n "${2:-}" ]]; then
                 FUZZER_ARGS+=("$argument")
             fi
         done
-        COMMAND=(run "${RUN_OPTIONS[@]}" "${GRAPH_FEATURE_ARGS[@]}" "$TARGET_NAME" "$CORPUS_DIR" "$SEED_DIR")
+        COMMAND=(run ${RUN_OPTIONS[@]+"${RUN_OPTIONS[@]}"} ${GRAPH_FEATURE_ARGS[@]+"${GRAPH_FEATURE_ARGS[@]}"} "$TARGET_NAME" "$CORPUS_DIR" "$SEED_DIR")
         if (( AFTER_SEPARATOR == 1 )); then
             COMMAND+=(-- "${FUZZER_ARGS[@]}")
         fi

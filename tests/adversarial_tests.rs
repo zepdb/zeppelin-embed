@@ -19347,12 +19347,12 @@ fn native_graph_runner_keys_are_active_with_graph_feature() {
     #[cfg(not(feature = "graph-result-test-support"))]
     assert_eq!(
         adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        402 + if cfg!(unix) { 7 } else { 0 }
+        405 + if cfg!(unix) { 7 } else { 0 }
     );
     #[cfg(feature = "graph-result-test-support")]
     assert_eq!(
         adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        422 + if cfg!(unix) { 7 } else { 0 }
+        432 + if cfg!(unix) { 7 } else { 0 }
     );
 }
 
@@ -20263,5 +20263,27 @@ fn ze241_c_entry_probe_fires_and_matches_control() {
         for key in adversarial::graph_c_entry::REQUIRED_COVERAGE {
             assert_eq!(coverage.count(key), 1, "{key}");
         }
+    }
+}
+
+#[cfg(feature = "graph-result-test-support")]
+#[test]
+fn ze72_c_entry_fault_smoke() {
+    let mut coverage = adversarial::coverage::CoverageRegistry::default();
+    // Reuse the landed actual lifecycle paths for stale preparation and
+    // interrupted fresh create; do not reproduce their coordinator here.
+    adversarial::graph_publication::probe(72, &mut coverage).expect("ZE-72 landed lifecycle paths");
+    for key in [
+        "property-graph.publication.capture",
+        "property-graph.publication.creation",
+    ] {
+        assert_eq!(coverage.count(key), 1, "{key}");
+    }
+    adversarial::graph_c_entry::probe(72, &mut coverage).expect("ZE-72 bounded C binding smoke");
+    for key in adversarial::graph_c_entry::REQUIRED_COVERAGE
+        .into_iter()
+        .chain(adversarial::graph_c_entry::BINDING_FAULT_COVERAGE)
+    {
+        assert_eq!(coverage.count(key), 1, "{key}");
     }
 }

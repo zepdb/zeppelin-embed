@@ -101,3 +101,27 @@ fn ten_thousand_open_ingest_query_close_rounds_keep_the_footprint_flat() {
         _ => eprintln!("FFI_SOAK iterations={iterations} NOT MEASURED: phys_footprint unavailable"),
     }
 }
+
+/// Lifetime soak declaration only; physical-footprint acceptance remains the
+/// separately measured platform gate. ZE-72 does not execute this ignored loop.
+#[cfg(feature = "graph-cypher")]
+#[test]
+#[ignore = "ZE-72 graph lifetime soak; explicitly excluded from bounded job"]
+fn ze72_graph_nested_search_response_after_close_soak() {
+    use common::graph::*;
+    for _ in 0..iterations() {
+        let mut store = GraphTestStore::create();
+        let mut created = cypher_ok(store.handle, "CREATE (:Soak)");
+        ze_graph_response_free(&mut created);
+        let mut owned = cypher_ok(store.handle, "MATCH (n) RETURN n,[n,null,[]]");
+        let mut report = cypher_ok(
+            store.handle,
+            "CALL ze.text_search('amber',2) YIELD node RETURN count(*)",
+        );
+        assert_eq!(report.report_count, 1);
+        assert_eq!(store.close(), ZeErrorCode::ZeOk);
+        assert_eq!(rows(&owned)[0][0].tag, 5);
+        assert_eq!(ze_graph_response_free(&mut owned), ZeErrorCode::ZeOk);
+        assert_eq!(ze_graph_response_free(&mut report), ZeErrorCode::ZeOk);
+    }
+}

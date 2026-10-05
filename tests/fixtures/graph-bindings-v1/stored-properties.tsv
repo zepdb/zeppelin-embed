@@ -1,0 +1,6 @@
+# name<TAB>stored list kind<TAB>independent owned observation
+bools	1	L1[]
+ints	2	L2[]
+floats	3	L3[]
+strings	4	L4[]
+empty	5	L5[]

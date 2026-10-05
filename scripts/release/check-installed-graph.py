@@ -250,10 +250,13 @@ def qualify(args):
     output.mkdir(parents=True, exist_ok=True)
     archive = args.artifact_root / 'xcframework-graph-cypher/ZeppelinEmbedGraph.xcframework.zip'
     sdk_archive = args.artifact_root / 'macos-sdk-graph-cypher/zeppelin-embed-graph-cypher-macos-arm64.tar.gz'
+    for packaged in (archive, sdk_archive):
+        if not packaged.is_file():
+            raise FileNotFoundError('ZE-71 missing matching installed graph artifact: ' + str(packaged))
     report = dict(contract=check_release_contract(archive=archive, enforce_checksum=args.enforce_checksum),
                   os=subprocess.check_output(['sw_vers'], text=True),
                   hardware=subprocess.check_output(['uname', '-a'], text=True),
-                  structured_query='BLOCKED: ZE-241/ZE-278; ze_graph_query is absent')
+                  structured_query='UNQUALIFIED: ZE-278 Swift structured query/search/options/get wrappers missing; C structured exports are present')
     with tempfile.TemporaryDirectory(prefix='ze71-installed-') as directory:
         work = Path(directory).resolve()
         with tarfile.open(sdk_archive) as tar:

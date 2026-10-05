@@ -145,7 +145,7 @@ final class GraphEncoder {
     return e
   }
   func batch(_ batch: GraphBatch) throws -> [ZeGraphBatchItem] {
-    guard !batch.items.isEmpty, batch.items.count <= 16384 else {
+    guard batch.items.count <= 16384 else {
       throw GraphError(.invalidRequest("batch size"))
     }
     return try batch.items.map { item in

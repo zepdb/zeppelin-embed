@@ -531,6 +531,29 @@ mod loom_model {
     }
 
     #[test]
+    fn ze72_retained_result_survives_close_and_slot_reuse() {
+        loom::model(|| {
+            let (table, handle) = table_with_one_handle();
+            let reader = {
+                let table = Arc::clone(&table);
+                thread::spawn(move || {
+                    let access = table.lock().unwrap().lookup(handle, |_| false);
+                    access.ok().map(|value| Arc::clone(&value.store))
+                })
+            };
+            assert_eq!(close(&table, handle), ZeErrorCode::ZeOk);
+            let new_handle = table.lock().unwrap().insert(11, None).unwrap();
+            assert_ne!(new_handle, handle);
+            if let Some(retained) = reader.join().unwrap() {
+                assert_eq!(*retained, 7);
+            }
+            assert_eq!(read(&table, handle), ZeErrorCode::ZeErrClosed);
+            let admitted = table.lock().unwrap().lookup(new_handle, |_| false).unwrap();
+            assert_eq!(*admitted.store, 11);
+        });
+    }
+
+    #[test]
     fn two_closes_race_and_exactly_one_wins() {
         loom::model(|| {
             let (table, handle) = table_with_one_handle();

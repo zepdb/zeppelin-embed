@@ -224,6 +224,43 @@ mod tests {
         value
     }
     #[test]
+    #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+    fn ze72_nested_null_and_empty_query_parameters_preserve_shape() {
+        let mut values: [ZeGraphValue; 4] = [sized(); 4];
+        values[1].tag = 7;
+        values[2].tag = 7;
+        values[2].range = ZeGraphRange { start: 0, count: 2 };
+        values[3].tag = 7;
+        values[3].range = ZeGraphRange { start: 2, count: 1 };
+        let children = [0, 1, 2];
+        let mut raw: ZeGraphValuePool = sized();
+        raw.bytes = b"p".as_ptr();
+        raw.byte_count = 1;
+        raw.values = values.as_ptr();
+        raw.value_count = values.len();
+        raw.children = children.as_ptr();
+        raw.child_count = children.len();
+        let mut binding: ZeGraphParameterValue = sized();
+        binding.name.count = 1;
+        binding.value = 3;
+        let control = QueryControl::Cancel(zeppelin_embed::lifecycle::CancelToken::new());
+        let pool = Pool::read(&raw, "ZE-72 nested parameters").unwrap();
+        with_parameters(&[binding], Some(&pool), &control, |bindings| {
+            let QueryValue::List(outer) = bindings[0].value else {
+                return Err(invalid("outer list lost"));
+            };
+            let Some(QueryValue::List(inner)) = outer.get(0) else {
+                return Err(invalid("inner list lost"));
+            };
+            assert_eq!(inner.len(), 2);
+            assert!(matches!(inner.get(0), Some(QueryValue::Null)));
+            assert!(matches!(inner.get(1), Some(QueryValue::List(empty)) if empty.is_empty()));
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
     #[allow(clippy::unwrap_used)]
     fn ze241_raw_lists_reject_cycles_indices_and_entities() {
         let mut value: ZeGraphValue = sized();

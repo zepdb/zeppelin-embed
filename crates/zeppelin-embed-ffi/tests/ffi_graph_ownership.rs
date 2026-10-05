@@ -162,3 +162,51 @@ fn ze241_query_and_get_responses_free_in_a_flat_heap_loop() {
         assert_eq!(ze_graph_response_free(&mut response), ZeErrorCode::ZeOk);
     });
 }
+
+#[test]
+fn ze72_nested_search_error_and_retained_responses_keep_heap_flat() {
+    let _guard = HEAP_TEST_GUARD.lock().unwrap();
+    assert_heap_flat("ZE-72 nested/entity/search/error/retained", || {
+        let mut store = GraphTestStore::create();
+        let mut b = PoolBuilder::new();
+        let ns = b.text("ze72");
+        let key = b.text("owned");
+        let image = b.node_image(&["Owned"], 0..0, Some("amber"));
+        let pool = b.pool();
+        let mut created = empty_response();
+        assert_eq!(
+            ze_graph_apply(
+                store.handle,
+                &batch_request(&[create_node_item(ns, key, 1, image)], &pool),
+                &mut created
+            ),
+            ZeErrorCode::ZeOk
+        );
+        ze_graph_response_free(&mut created);
+        let mut nested = cypher_ok(store.handle, "MATCH (n:Owned) RETURN n,[n,null,[n]],[]");
+        let mut search = cypher_ok(
+            store.handle,
+            "CALL ze.text_search('amber',2) YIELD node,score RETURN node,score",
+        );
+        assert_eq!(search.report_count, 1);
+        assert_eq!(search.row_count, 1);
+        let mut error = empty_response();
+        assert_eq!(
+            ze_graph_cypher(
+                store.handle,
+                &cypher_request(b"RETURN sin(1)", &[], None),
+                &mut error
+            ),
+            ZeErrorCode::ZeErrQueryUnsupported
+        );
+        assert_eq!(ze_graph_response_free(&mut error), ZeErrorCode::ZeOk);
+        assert_eq!(store.close(), ZeErrorCode::ZeOk);
+        let (code, reopened) = graph_open(&store.path, MODE_READ_WRITE);
+        assert_eq!(code, ZeErrorCode::ZeOk);
+        assert_eq!(rows(&nested)[0][0].tag, 5);
+        assert_eq!(rows(&search)[0][0].tag, 5);
+        assert_eq!(ze_graph_response_free(&mut nested), ZeErrorCode::ZeOk);
+        assert_eq!(ze_graph_response_free(&mut search), ZeErrorCode::ZeOk);
+        assert_eq!(ze_graph_close(reopened), ZeErrorCode::ZeOk);
+    });
+}

@@ -31,7 +31,7 @@ graph-cypher = [
 # Scoped allocation scheduling for PG16 qualification only.
 graph-result-test-support = [
     "graph-cypher",
-    "zeppelin-embed-ffi/graph-result-test-support",
+    "zeppelin-embed-ffi/graph-bindings-test-support",
 ]
 
 [dependencies]
@@ -60,3 +60,8 @@ required-features = ["graph-cypher"]
 name = "graph_search_qualification"
 path = "graph_search_qualification.rs"
 required-features = ["graph-cypher"]
+
+[[test]]
+name = "graph_bindings"
+path = "graph_bindings.rs"
+required-features = ["graph-result-test-support"]

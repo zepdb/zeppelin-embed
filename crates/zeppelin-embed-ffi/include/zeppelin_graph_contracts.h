@@ -1405,11 +1405,11 @@ typedef struct ZeGraphBatchRequest {
      */
     uint32_t abi_reserved;
     /*
-     Nonempty readable fixed-stride items.
+     Readable fixed-stride items; null is permitted when item_count is zero.
      */
     const struct ZeGraphBatchItem *items;
     /*
-     Between 1 and 16384.
+     Between 0 and 16384. An empty batch returns NoOp without WAL or generation changes.
      */
     size_t item_count;
     /*

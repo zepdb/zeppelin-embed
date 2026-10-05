@@ -36,10 +36,8 @@ fn fixture() -> &'static Fixture {
         let mut handle = ZeGraphHandle { token: 0 };
         let code = ze_graph_open(&request, &mut handle);
         checked(code);
-        assert!(matches!(
-            code,
-            ZeErrorCode::ZeOk | ZeErrorCode::ZeErrUnsupported
-        ));
+        assert_eq!(code, ZeErrorCode::ZeOk,
+            "ZE-72 graph fuzz requires a supported native graph host; unavailable target waits for ZE-108");
         Fixture { handle, path }
     })
 }
@@ -67,12 +65,36 @@ fuzz_target!(|data: &[u8]| {
             value.range.count = u32::from(byte(index + 16));
         }
     }
+    let coordinates = [f32::from_bits(u32::from(byte(19))), 0.0];
+    let mut node: ZeGraphNode = sized();
+    node.has_text = u32::from(byte(20) % 3);
+    node.text.count = u32::from(byte(21));
+    node.has_vector = u32::from(byte(22) % 3);
+    node.vector.count = u32::from(byte(23) % 4);
+    pool.nodes = &node;
+    pool.node_count = 1;
+    pool.vectors = coordinates.as_ptr();
+    pool.vector_count = coordinates.len();
     pool.values = values.as_ptr();
     pool.value_count = values.len();
     pool.children = children.as_ptr();
     pool.child_count = children.len();
     let mut response: ZeGraphResponse = sized();
     let handle = fixture.handle;
+    if byte(24) & 1 != 0 {
+        let text = b"RETURN null, [], [1,null,['nested']]";
+        let mut completed: ZeGraphCypherRequest = sized();
+        completed.query = ZeGraphBytes {
+            data: text.as_ptr(),
+            count: text.len(),
+        };
+        assert_eq!(
+            ze_graph_cypher(handle, &completed, &mut response),
+            ZeErrorCode::ZeOk
+        );
+        assert_eq!(response.row_count, 1);
+        checked(ze_graph_response_free(&mut response));
+    }
     let mut cypher: ZeGraphCypherRequest = sized();
     cypher.query = ZeGraphBytes {
         data: bytes.as_ptr(),
@@ -181,7 +203,21 @@ fuzz_target!(|data: &[u8]| {
     open.max_resident_bytes = 256 << 20;
     let mut opened = ZeGraphHandle { token: 0 };
     checked(ze_graph_open(&open, &mut opened));
-    checked(ze_graph_close(opened));
+    if opened.token != 0 {
+        let text = b"RETURN null, [], [1,null,['nested']]";
+        let mut completed: ZeGraphCypherRequest = sized();
+        completed.query = ZeGraphBytes {
+            data: text.as_ptr(),
+            count: text.len(),
+        };
+        checked(ze_graph_cypher(opened, &completed, &mut response));
+        // Callee ownership is independent of the producing handle's lifetime.
+        checked(ze_graph_close(opened));
+        checked(ze_graph_response_free(&mut response));
+        checked(ze_graph_response_free(&mut response));
+        checked(ze_graph_cypher(opened, &completed, &mut response));
+        checked(ze_graph_response_free(&mut response));
+    }
     opened.token = 0;
     checked(ze_graph_open_with_relationship_types(
         &open,

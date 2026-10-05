@@ -166,6 +166,17 @@ jobs:
           cargo +nightly test -Zbuild-std --target aarch64-apple-darwin
           -p zeppelin-embed-ffi --lib --test ffi_query --test ffi_contract
           --test ffi_adversarial --test ffi_ownership
+      - name: bounded graph binding suites under ${{ matrix.sanitizer }} sanitizer
+        env:
+          CARGO_BUILD_JOBS: 3
+          ZE_TEST_SEED: 72
+          ASAN_OPTIONS: detect_leaks=0
+          RUSTFLAGS: -Zsanitizer=${{ matrix.sanitizer }}
+        run: >-
+          cargo +nightly test -Zbuild-std --target aarch64-apple-darwin
+          -p zeppelin-embed-ffi --features graph-bindings-test-support
+          --test ffi_graph_full --test ffi_graph_ownership --test ffi_graph_poison
+          -- --test-threads=1
       - name: ffi soak under ${{ matrix.sanitizer }} sanitizer
         if: matrix.sanitizer == 'address'
         env:

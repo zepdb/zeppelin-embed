@@ -2,7 +2,12 @@
 use super::coverage::CoverageRegistry;
 use zeppelin_embed_adversarial_oracle::graph_c_entry::{self as oracle, Observed};
 use zeppelin_embed_ffi::*;
-pub const REQUIRED_COVERAGE: [&str; 4] = [
+#[path = "../support/graph_bindings.rs"]
+mod bindings;
+pub const REQUIRED_COVERAGE: [&str; 7] = [
+    "property-graph.c-entry.shared-semantics",
+    "property-graph.c-entry.response-after-close",
+    "property-graph.c-entry.null-bag-comparator",
     "property-graph.c-entry.query",
     "property-graph.c-entry.get",
     "property-graph.c-entry.oracle.can-fire",
@@ -196,6 +201,16 @@ fn run(seed: u64) -> Result<Observed, String> {
     })
 }
 pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
+    bindings::semantics();
+    for (_, _, expected) in bindings::cases() {
+        if !expected.is_empty()
+            && bindings::compare("planted", &expected, &format!("{expected}N")).is_ok()
+        {
+            return Err("ZE-72 shared comparator missed planted discrepancy".into());
+        }
+    }
+    #[cfg(feature = "graph-result-test-support")]
+    binding_faults(coverage)?;
     let observed = run(seed)?;
     oracle::compare(seed, &observed)?;
     let mut planted = observed.clone();
@@ -209,6 +224,38 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
         return Err("C entry same-seed control changed".into());
     }
     for key in REQUIRED_COVERAGE {
+        coverage.hit(key);
+    }
+    Ok(())
+}
+
+#[cfg(feature = "graph-result-test-support")]
+pub const BINDING_FAULT_COVERAGE: [&str; 7] = [
+    "property-graph.c-entry.allocation.fire",
+    "property-graph.c-entry.append.fire",
+    "property-graph.c-entry.sync.fire",
+    "property-graph.c-entry.cancel-after-sync.fire",
+    "property-graph.c-entry.panic-after-sync.fire",
+    "property-graph.c-entry.panic-known-commit.fire",
+    "property-graph.c-entry.fault.same-seed-control",
+];
+#[cfg(feature = "graph-result-test-support")]
+fn binding_faults(coverage: &mut CoverageRegistry) -> Result<(), String> {
+    for mode in 1..=6 {
+        let actual = bindings::fault(mode);
+        oracle::compare_binding(mode, &actual)?;
+        let mut planted = actual.clone();
+        planted.disposition ^= 1;
+        if oracle::compare_binding(mode, &planted).is_ok() {
+            return Err(format!("ZE-72 comparator missed mode {mode}"));
+        }
+        oracle::compare_binding(0, &bindings::fault(0))?;
+        println!(
+            "ZE72 C mode={mode} fires={} recovered={} comparator=RED control=GREEN terminal=GREEN",
+            actual.fires, actual.recovered_nodes
+        );
+    }
+    for key in BINDING_FAULT_COVERAGE {
         coverage.hit(key);
     }
     Ok(())

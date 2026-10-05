@@ -2,6 +2,23 @@ use std::collections::BTreeMap;
 
 /// Native property-graph paths required when the graph feature is selected.
 pub const REQUIRED_GRAPH_SMOKE_COVERAGE: &[&str] = &[
+    "property-graph.c-entry.shared-semantics",
+    "property-graph.c-entry.response-after-close",
+    "property-graph.c-entry.null-bag-comparator",
+    #[cfg(feature = "graph-result-test-support")]
+    "property-graph.c-entry.allocation.fire",
+    #[cfg(feature = "graph-result-test-support")]
+    "property-graph.c-entry.append.fire",
+    #[cfg(feature = "graph-result-test-support")]
+    "property-graph.c-entry.sync.fire",
+    #[cfg(feature = "graph-result-test-support")]
+    "property-graph.c-entry.cancel-after-sync.fire",
+    #[cfg(feature = "graph-result-test-support")]
+    "property-graph.c-entry.panic-after-sync.fire",
+    #[cfg(feature = "graph-result-test-support")]
+    "property-graph.c-entry.panic-known-commit.fire",
+    #[cfg(feature = "graph-result-test-support")]
+    "property-graph.c-entry.fault.same-seed-control",
     "property-graph.c-entry.query",
     "property-graph.c-entry.get",
     "property-graph.c-entry.oracle.can-fire",

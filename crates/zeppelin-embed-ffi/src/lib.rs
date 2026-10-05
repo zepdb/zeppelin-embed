@@ -18,6 +18,9 @@
 #[cfg(all(feature = "graph-cypher", feature = "abi-panic-probe"))]
 pub mod graph_deadline_test_support;
 
+#[cfg(all(feature = "graph-result-test-support", feature = "abi-panic-probe"))]
+pub mod graph_bindings_test_support;
+
 mod abi;
 mod error;
 mod marshal;
@@ -303,6 +306,16 @@ pub fn arm_abi_panic_probe(entry_point: &'static str) {
 }
 
 #[cfg(feature = "abi-panic-probe")]
+std::thread_local! {
+    static ABI_PANIC_PROBE_FIRES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(all(feature = "graph-result-test-support", feature = "abi-panic-probe"))]
+fn abi_panic_probe_fire_count() -> u64 {
+    ABI_PANIC_PROBE_FIRES.with(std::cell::Cell::get)
+}
+
+#[cfg(feature = "abi-panic-probe")]
 fn run_named_panic_probe(entry_point: &str) {
     let armed = named_panic_probe().lock().ok().and_then(|mut probe| {
         if *probe == Some(entry_point) {
@@ -312,6 +325,7 @@ fn run_named_panic_probe(entry_point: &str) {
         }
     });
     if armed == Some(entry_point) {
+        ABI_PANIC_PROBE_FIRES.with(|count| count.set(count.get().saturating_add(1)));
         std::panic::resume_unwind(Box::new(format!("abi panic probe in {entry_point}")));
     }
 }

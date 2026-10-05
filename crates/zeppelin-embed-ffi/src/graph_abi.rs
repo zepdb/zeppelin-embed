@@ -467,8 +467,8 @@ pub(crate) fn apply(
     let request = read_exact(request, |request| request.abi_size, "graph batch request")?;
     let items = marshal::read_slice(request.items, request.item_count)
         .map_err(|error| invalid(format!("graph batch items: {}", error.0)))?;
-    if items.is_empty() || items.len() > MAX_BATCH_ITEMS {
-        return Err(invalid("graph batch must hold between 1 and 16384 items"));
+    if items.len() > MAX_BATCH_ITEMS {
+        return Err(invalid("graph batch must hold at most 16384 items"));
     }
     let pool = Pool::read(request.pool, "graph batch pool")?;
     let control = read_control(request.control)?;

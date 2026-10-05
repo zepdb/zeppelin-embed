@@ -1,0 +1,4 @@
+# ZE-72 v1: name<TAB>query<TAB>independently authored ordered observations
+nested	RETURN null, '', [], [1,null,['nested']]	N|S0:|L0[]|L0[I1,N,L0[S6:nested]]
+bag	MATCH (n) RETURN null ORDER BY n	N\nN
+empty	MATCH (n:Missing) RETURN n	

@@ -324,6 +324,23 @@ impl GraphStore {
         Ok(Self { store })
     }
 
+    /// Nonshipping allocator setup for full-width binding fixtures. Subsequent
+    /// mutations and reads use the ordinary public lifecycle.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn jump_allocators_for_test(
+        &self,
+        next_node: crate::property_graph::NodeId,
+        next_relationship: crate::property_graph::RelId,
+        control: &QueryControl,
+    ) -> Result<crate::property_graph::GraphGeneration, GraphStoreError> {
+        Ok(self.store.jump_native_graph_allocators_for_test(
+            next_node,
+            next_relationship,
+            control,
+        )?)
+    }
+
     #[cfg(test)]
     pub(crate) const fn store_for_test(&self) -> &Store {
         &self.store
