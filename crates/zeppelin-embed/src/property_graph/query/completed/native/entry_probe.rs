@@ -939,6 +939,10 @@ pub fn run_actual_probe(seed: u64) -> Result<ProbeReport, String> {
         fault_receipts.push((key, 1));
     }
 
+    super::search_probe::preparation_refusal();
+    super::search_probe::same_view(base);
+    super::search_probe::approximation(base);
+
     let mut perturbed = observations.clone();
     if let Some(first) = perturbed.first_mut() {
         first.1 ^= 1;
@@ -962,6 +966,9 @@ pub fn run_actual_probe(seed: u64) -> Result<ProbeReport, String> {
                 ("indeterminate.fire", 1),
                 ("post-commit-cancel.commit", post_commit),
                 ("oracle.can-fire", oracle),
+                ("search-preparation.fire", 1),
+                ("search-report.retain", 1),
+                ("search-publication.same-view", 1),
             ]);
             receipts
         },

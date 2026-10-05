@@ -41,7 +41,7 @@ impl std::error::Error for StatementError {}
 ///
 /// The statement is compiled inside each admission the store opens for it:
 /// once under the read admission, and once more under the writer when its
-/// plan writes. Search calls are refused here (ZE-58 owns their adapter).
+/// plan writes. Search calls use the statement seam's real view-bound adapter.
 #[allow(
     clippy::result_large_err,
     reason = "the store's typed cause stays unboxed and allocation-free, as in core"

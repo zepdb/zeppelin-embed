@@ -21,10 +21,6 @@
 //! argument evaluation, eligibility, invocation count, retention and replay.
 
 #![allow(
-    dead_code,
-    reason = "invocation fields are read by adapters; ZE-64 binds the real one"
-)]
-#![allow(
     clippy::result_large_err,
     reason = "native typed causes remain unboxed and allocation-free"
 )]

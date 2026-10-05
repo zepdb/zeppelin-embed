@@ -435,8 +435,7 @@ impl Store {
         Ok(result)
     }
 
-    /// [`Store::execute_graph_query`] for a statement that does not search.
-    /// A searching plan is refused as an invalid plan.
+    /// Executes a statement with real view-bound vector, text and hybrid sources.
     ///
     /// This is the internal seam `zeppelin-embed-cypher` compiles into; it is
     /// not the release graph API, which ZE-66's `GraphStore` owns.
@@ -453,7 +452,8 @@ impl Store {
             GraphQueryExecutor<'x, 'w, 'i, 'lease, 'm, 'g>,
         ) -> Result<Executed, GraphQueryError>,
     {
-        self.execute_graph_query(control, options, None::<&mut NoSearch>, build)
+        let mut adapter = super::search_adapter::NativeSearchAdapter::new(&self.tokenizer);
+        self.execute_graph_query(control, options, Some(&mut adapter), build)
     }
 
     /// Creates a new native graph store with no document embedding tower,

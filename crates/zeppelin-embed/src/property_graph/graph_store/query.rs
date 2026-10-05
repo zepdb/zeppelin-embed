@@ -24,9 +24,8 @@
 //! operator, its parameter bindings and its output column names. No
 //! `RuntimeContext`, `QueryArena` or builder callback is exposed.
 //!
-//! Search is out of scope for S2 (deferred to ZE-64 by the owner's
-//! decision), so this runs on `execute_graph_statement`, the same
-//! search-free wrapper `zeppelin-embed-cypher` compiles into.
+//! Typed search sources run through the same statement admission as graph
+//! expansion and copied results, using the store's real ranking adapter.
 
 #![allow(
     clippy::result_large_err,

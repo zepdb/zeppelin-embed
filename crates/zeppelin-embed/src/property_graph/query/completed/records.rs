@@ -179,7 +179,8 @@ pub struct SearchReport {
     pub normalization_version: u32,
     /// Actual weighting/rules policy version.
     pub rules_version: u32,
-    /// Actual retained candidate union size.
+    /// Actual candidate population: retained vector hits, all eligible text
+    /// matches, or the retained hybrid union (before final top-k).
     pub candidate_count: u64,
     /// Actual candidates with all present components evaluated.
     pub cross_scored_count: u64,

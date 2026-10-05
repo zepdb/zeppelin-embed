@@ -1006,7 +1006,7 @@ gate proved these tests on any other host.
 ## ZE-56 Cypher statement seam
 
 `zeppelin_embed_cypher::execute` compiles Cypher text inside each admission
-of `Store::execute_graph_statement` (a doc-hidden, search-free wrapper over
+of `Store::execute_graph_statement` (a doc-hidden wrapper with view-bound search over
 the ZE-53 seam) with the admitted `RuntimeContext`, so plan, facts and owners
 are charged to that statement. A write statement is compiled at least twice
 (read classification, then writer, and once more per writer checkpoint
@@ -1144,3 +1144,12 @@ reports zero relocated and zero removed bytes. Successful retirement resets
 the byte counter. `GraphStore::maintain` exposes one step; `maintain_cycle`
 exposes one cycle. S6a populates relocation counters; S6c supplies steady-state
 bookkeeping reclamation.
+
+## ZE-64 composed search statements
+
+The statement seam binds real vector/text/hybrid ranking using a borrowed Store
+analyzer. Ranking, eligibility, expansion and copied results share one admitted
+view. Reports retain per-call work including preparation. Text candidate_count
+counts all eligible matches; vector counts retained hits and hybrid its retained
+union. A store without a vector space refuses vector/hybrid with NoVectorSpace
+(Constraint); search/write mixing and row correlation remain invalid plans.

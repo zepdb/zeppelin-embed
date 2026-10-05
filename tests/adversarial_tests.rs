@@ -19325,6 +19325,9 @@ fn query_entry_probe_fires_every_write_fault_site() {
             "property-graph.query-entry.indeterminate.fire",
             "property-graph.query-entry.post-commit-cancel.commit",
             "property-graph.query-entry.same-seed-control",
+            "property-graph.query-entry.search-preparation.fire",
+            "property-graph.query-entry.search-report.retain",
+            "property-graph.query-entry.search-publication.same-view",
         ] {
             assert_eq!(coverage.count(key), 1, "{key}");
         }

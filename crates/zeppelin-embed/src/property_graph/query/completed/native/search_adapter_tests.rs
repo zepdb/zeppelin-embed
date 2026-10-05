@@ -247,15 +247,15 @@ fn f64_cell(result: &CompletedGraphResult, row: usize, column: usize) -> Option<
     }
 }
 
-struct VectorSearch {
+struct VectorSearch<'a> {
     coords: [f32; 2],
     k: i64,
     mode: SearchMode,
     empty_eligible: bool,
-    adapter: NativeSearchAdapter,
+    adapter: NativeSearchAdapter<'a>,
 }
 
-impl NativeReadConsumer<Outcome> for VectorSearch {
+impl NativeReadConsumer<Outcome> for VectorSearch<'_> {
     fn consume<'s, 'lease, 'm, 'g>(
         &mut self,
         view: &GraphReadView<'s, 'lease, 'm, 'g>,
@@ -351,13 +351,13 @@ impl NativeReadConsumer<Outcome> for VectorSearch {
     }
 }
 
-struct TextSearch {
+struct TextSearch<S> {
     query: String,
     k: i64,
-    adapter: NativeSearchAdapter,
+    adapter: S,
 }
 
-impl NativeReadConsumer<Outcome> for TextSearch {
+impl<S: for<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g>> NativeReadConsumer<Outcome> for TextSearch<S> {
     fn consume<'s, 'lease, 'm, 'g>(
         &mut self,
         view: &GraphReadView<'s, 'lease, 'm, 'g>,
@@ -434,15 +434,15 @@ impl NativeReadConsumer<Outcome> for TextSearch {
     }
 }
 
-struct HybridSearch {
+struct HybridSearch<'a> {
     coords: [f32; 2],
     query: String,
     k: i64,
     mode: SearchMode,
-    adapter: NativeSearchAdapter,
+    adapter: NativeSearchAdapter<'a>,
 }
 
-impl NativeReadConsumer<Outcome> for HybridSearch {
+impl NativeReadConsumer<Outcome> for HybridSearch<'_> {
     fn consume<'s, 'lease, 'm, 'g>(
         &mut self,
         view: &GraphReadView<'s, 'lease, 'm, 'g>,
@@ -541,11 +541,11 @@ impl NativeReadConsumer<Outcome> for HybridSearch {
 
 /// Two independent, distinctly typed calls joined with no predicate: the
 /// real-adapter analogue of `search_tests::ze53_s1_independent_calls_keep_cartesian_bag_and_reports`.
-struct Cartesian {
-    adapter: NativeSearchAdapter,
+struct Cartesian<'a> {
+    adapter: NativeSearchAdapter<'a>,
 }
 
-impl NativeReadConsumer<Outcome> for Cartesian {
+impl NativeReadConsumer<Outcome> for Cartesian<'_> {
     fn consume<'s, 'lease, 'm, 'g>(
         &mut self,
         view: &GraphReadView<'s, 'lease, 'm, 'g>,
@@ -678,7 +678,7 @@ fn run_vector(
                 k,
                 mode,
                 empty_eligible,
-                adapter: NativeSearchAdapter::new(store.tokenizer.clone()),
+                adapter: NativeSearchAdapter::new(&store.tokenizer),
             },
         )
         .expect("admit ze64 vector read")
@@ -694,7 +694,7 @@ fn run_text(store: &Store, query: &str, k: i64) -> Outcome {
             TextSearch {
                 query: query.to_owned(),
                 k,
-                adapter: NativeSearchAdapter::new(store.tokenizer.clone()),
+                adapter: NativeSearchAdapter::new(&store.tokenizer),
             },
         )
         .expect("admit ze64 text read")
@@ -712,7 +712,7 @@ fn run_hybrid(store: &Store, coords: [f32; 2], query: &str, k: i64, mode: Search
                 query: query.to_owned(),
                 k,
                 mode,
-                adapter: NativeSearchAdapter::new(store.tokenizer.clone()),
+                adapter: NativeSearchAdapter::new(&store.tokenizer),
             },
         )
         .expect("admit ze64 hybrid read")
@@ -817,7 +817,7 @@ fn ze64_two_distinct_search_calls_in_one_statement_keep_separate_reports() {
             16 * 1024 * 1024,
             64,
             Cartesian {
-                adapter: NativeSearchAdapter::new(store.tokenizer.clone()),
+                adapter: NativeSearchAdapter::new(&store.tokenizer),
             },
         )
         .expect("admit ze64 cartesian read")
@@ -876,7 +876,7 @@ fn ze202_same_low64_search_and_eligibility_keep_selected_id() {
     let (store, _dir) = super::test_support::ze202::fixture(Some(tower()));
     for kind in [SearchKind::Vector, SearchKind::Lexical, SearchKind::Hybrid] {
         for restriction in [None, Some(vec![0]), Some(vec![1]), Some(vec![1, 0, 1])] {
-            let mut adapter = NativeSearchAdapter::new(store.tokenizer.clone());
+            let mut adapter = NativeSearchAdapter::new(&store.tokenizer);
             let result = store
                 .execute_graph_query(
                     &control(),
@@ -1058,4 +1058,51 @@ fn ze202_same_low64_search_and_eligibility_keep_selected_id() {
         }
     }
     store.close().unwrap();
+}
+
+struct MeasuredSearch<'a>(NativeSearchAdapter<'a>);
+impl<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g> for MeasuredSearch<'_> {
+    fn search<'s>(
+        &mut self,
+        view: &'s GraphReadView<'s, 'v, 'm, 'g>,
+        invocation: &crate::property_graph::query::pattern::SearchInvocation<'_, '_, 'v, 'm, 'g>,
+        hits: &mut QueryArena<'m, 'g, crate::property_graph::query::pattern::SearchHit>,
+        runtime: &mut RuntimeContext<'v, 'm, 'g>,
+    ) -> Result<super::super::SearchReport, NativeExecutionError> {
+        let before = runtime.counters();
+        let report = self.0.search(view, invocation, hits, runtime)?;
+        assert_eq!(
+            report.work,
+            runtime.counters().since(before),
+            "complete invocation work includes preparation"
+        );
+        Ok(report)
+    }
+}
+#[test]
+fn ze64_call_work_includes_preparation() {
+    let (store, _directory, _) = fixture();
+    store
+        .with_native_read(
+            &QueryControl::Cancel(CancelToken::new()),
+            RuntimeLimits::default(),
+            16 * 1024 * 1024,
+            64,
+            TextSearch {
+                query: "amber".into(),
+                k: 1,
+                adapter: MeasuredSearch(NativeSearchAdapter::new(&store.tokenizer)),
+            },
+        )
+        .unwrap()
+        .unwrap();
+}
+
+#[test]
+fn ze64_seed_expand_and_copy_share_admitted_generation() {
+    super::search_probe::same_view(64);
+}
+#[test]
+fn ze64_approximation_report_survives_projection_and_aggregation() {
+    super::search_probe::approximation(64);
 }

@@ -22,29 +22,11 @@ use crate::property_graph::query::{QueryError, QueryList, QueryValue};
 use crate::property_graph::retrieval::{NativeRetrievalContext, RetrievalError};
 use crate::property_graph::storage::GraphReadView;
 
-/// Producer-window sizing shared by every modality: the same reviewed
-/// per-k policy `hybrid::rank_hybrid` already uses for its own producer
-/// windows, clamped to `SearchBounds`'s hard 65,536 cap. Choosing the
-/// retained candidate window is the adapter's decision (see the `search`
-/// module's own doc comment); reusing an already-accepted policy constant
-/// is the minimal defensible choice rather than a new invented one.
-fn candidate_window(k: usize) -> Result<u64, NativeExecutionError> {
-    use crate::fusion::{HYBRID_WINDOW_FLOOR, HYBRID_WINDOW_PER_K};
-    const CAP: usize = 65_536;
-    let window = HYBRID_WINDOW_PER_K
-        .checked_mul(k)
-        .ok_or(RuntimeError::Batch)?
-        .max(HYBRID_WINDOW_FLOOR)
-        .max(k)
-        .min(CAP);
-    Ok(window as u64)
-}
-
+/// This is the shared retained-capacity allowance, not a producer width.
+/// Producers select and charge their actual windows/scratch; hybrid needs
+/// room for both windows and ANN needs room for its traversal scratch.
 fn bounds(k: u32) -> Result<SearchBounds, NativeExecutionError> {
-    Ok(SearchBounds::new(
-        i64::from(k),
-        candidate_window(k as usize)?,
-    )?)
+    Ok(SearchBounds::new(i64::from(k), 65_536)?)
 }
 
 fn retrieval(error: RetrievalError) -> NativeExecutionError {
@@ -97,21 +79,21 @@ fn eligibility<'e, 'v, 'm, 'g>(
 }
 
 /// The real `SearchAdapter`. It holds only the store's own lexical
-/// analyzer (owned, lifetime-free), never a view: the adapter value is
-/// chosen by the caller before any view exists and must satisfy the
+/// analyzer, borrowed independently of the view. The caller constructs it
+/// before admission and it must satisfy the
 /// `for<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g>` bound across every retry
 /// attempt, so it cannot capture a view-typed reference in its own type.
-pub(crate) struct NativeSearchAdapter {
-    analyzer: Analyzer,
+pub(crate) struct NativeSearchAdapter<'a> {
+    analyzer: &'a Analyzer,
 }
 
-impl NativeSearchAdapter {
-    pub(crate) const fn new(analyzer: Analyzer) -> Self {
+impl<'a> NativeSearchAdapter<'a> {
+    pub(crate) const fn new(analyzer: &'a Analyzer) -> Self {
         Self { analyzer }
     }
 }
 
-impl<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g> for NativeSearchAdapter {
+impl<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g> for NativeSearchAdapter<'_> {
     fn search<'s>(
         &mut self,
         view: &'s GraphReadView<'s, 'v, 'm, 'g>,
@@ -119,6 +101,7 @@ impl<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g> for NativeSearchAdapter {
         hits: &mut QueryArena<'m, 'g, SearchHit>,
         context: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<SearchReport, NativeExecutionError> {
+        let before = context.counters();
         let ctx = NativeRetrievalContext::new(view, context).map_err(retrieval)?;
         let bounds = bounds(invocation.k)?;
         match invocation.arguments {
@@ -132,7 +115,6 @@ impl<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g> for NativeSearchAdapter {
                         context,
                     )
                     .map_err(retrieval)?;
-                let before = context.counters();
                 let ranked = ctx
                     .rank_vector(&prepared, bounds, context)
                     .map_err(retrieval)?;
@@ -171,9 +153,8 @@ impl<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g> for NativeSearchAdapter {
             }
             SearchArguments::Text { query } => {
                 let prepared = ctx
-                    .prepare_text(&self.analyzer, query, eligibility(invocation), context)
+                    .prepare_text(self.analyzer, query, eligibility(invocation), context)
                     .map_err(retrieval)?;
-                let before = context.counters();
                 let ranked = ctx
                     .rank_text(&prepared, bounds, context)
                     .map_err(retrieval)?;
@@ -203,7 +184,7 @@ impl<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g> for NativeSearchAdapter {
                     effective_alpha_bits: 0,
                     normalization_version: 0,
                     rules_version: 0,
-                    candidate_count: ranked.hits().len() as u64,
+                    candidate_count: report.domain.eligible_matches,
                     cross_scored_count: 0,
                     fallback_count: 0,
                     cross_score_complete: false,
@@ -221,9 +202,8 @@ impl<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g> for NativeSearchAdapter {
                     )
                     .map_err(retrieval)?;
                 let prepared_text = ctx
-                    .prepare_text(&self.analyzer, text, eligibility(invocation), context)
+                    .prepare_text(self.analyzer, text, eligibility(invocation), context)
                     .map_err(retrieval)?;
-                let before = context.counters();
                 let ranked = ctx
                     .rank_hybrid(&prepared_vector, &prepared_text, bounds, context)
                     .map_err(retrieval)?;

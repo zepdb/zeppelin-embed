@@ -516,3 +516,5 @@ fn graph_query_refuses_a_foreign_view_parameter_binding() {
         "expected a ForeignView rejection, observed: {message}"
     );
 }
+
+mod search;

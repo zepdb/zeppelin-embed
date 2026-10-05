@@ -32,14 +32,14 @@ pub(crate) mod entry_probe;
 mod error;
 mod search_adapter;
 #[cfg(any(test, feature = "test-support"))]
+mod search_probe;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) mod test_support;
 mod values;
 
 pub use entry::{Executed, GraphQuery, GraphQueryExecutor, GraphQueryOptions};
 pub(crate) use error::{GraphQueryCause, native_graph_error_kind};
 pub use error::{GraphQueryError, GraphQueryErrorKind};
-// Not yet wired into a production call site (ZE-58/65/76); real today only
-// through the tests that exercise it via the ZE-53 seam directly.
 #[cfg(test)]
 pub(crate) use search_adapter::NativeSearchAdapter;
 

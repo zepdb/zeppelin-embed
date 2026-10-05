@@ -5,7 +5,7 @@ use super::coverage::CoverageRegistry;
 use std::collections::BTreeSet;
 use zeppelin_embed::property_graph::query::query_entry_test_support::run_actual_probe;
 
-const RECEIPTS: [&str; 11] = [
+const RECEIPTS: [&str; 14] = [
     "incident.fire",
     "partial-append.fire",
     "wal-sync.fire",
@@ -17,9 +17,12 @@ const RECEIPTS: [&str; 11] = [
     "indeterminate.fire",
     "post-commit-cancel.commit",
     "oracle.can-fire",
+    "search-preparation.fire",
+    "search-report.retain",
+    "search-publication.same-view",
 ];
 
-const KEYS: [&str; 12] = [
+const KEYS: [&str; 15] = [
     "property-graph.query-entry.incident.fire",
     "property-graph.query-entry.partial-append.fire",
     "property-graph.query-entry.wal-sync.fire",
@@ -32,6 +35,9 @@ const KEYS: [&str; 12] = [
     "property-graph.query-entry.post-commit-cancel.commit",
     "property-graph.query-entry.oracle.can-fire",
     "property-graph.query-entry.same-seed-control",
+    "property-graph.query-entry.search-preparation.fire",
+    "property-graph.query-entry.search-report.retain",
+    "property-graph.query-entry.search-publication.same-view",
 ];
 
 pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
