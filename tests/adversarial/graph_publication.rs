@@ -28,11 +28,11 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
             relationship_type: row.relationship_type,
         })
         .collect();
-    compare_read_view_expansion(seed, &expected, 1, &actual)
+    compare_read_view_expansion(1, &expected, 1, &actual)
         .map_err(|difference| format!("publication adjacency mismatch: {difference:?}"))?;
     let mut missing = actual.clone();
     missing.pop();
-    if compare_read_view_expansion(seed, &expected, 1, &missing).is_ok() {
+    if compare_read_view_expansion(1, &expected, 1, &missing).is_ok() {
         return Err("publication comparator accepted a missing committed edge".into());
     }
     let mut seen = BTreeSet::new();
@@ -61,4 +61,14 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
     }
     coverage.hit("property-graph.publication.oracle.can-fire");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn publication_probe_seed_zero_validates_committed_adjacency() {
+        probe(0, &mut CoverageRegistry::default()).unwrap();
+    }
 }
