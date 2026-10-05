@@ -323,6 +323,10 @@ pub struct FreeReport {
 /// Unique right to abort or publish an already allocated and registered owner.
 /// Its real query guard cannot outlive the query; the exposed C owner has no
 /// query, store, snapshot, or caller-input lifetime.
+/// ```compile_fail,E0624
+/// use zeppelin_embed_ffi::graph_result::PreparedResponse;
+/// fn external(prepared: PreparedResponse<'_, '_>) { prepared.detach(); }
+/// ```
 pub struct PreparedResponse<'m, 'g> {
     registry: &'static GraphResultRegistry,
     node: NonNull<Node>,
@@ -389,7 +393,8 @@ impl PreparedResponse<'_, '_> {
     /// durable commit, exactly as core's `UnsettledWriteResult` does: the
     /// query charge is released here and the registered node stays private,
     /// so free keeps refusing it. No allocation or registry gate occurs.
-    pub fn detach(self) -> PendingResponse {
+    /// Native write callers must supply sorted, unique entity pools.
+    pub(crate) fn detach(self) -> PendingResponse {
         let prepared = ManuallyDrop::new(self); // abort ownership moves below
         // SAFETY: unique prepared ownership; the charge is moved out once and
         // the node pointer moves into the one pending owner (Drop = abort).
@@ -413,6 +418,13 @@ impl Drop for PreparedResponse<'_, '_> {
 /// charge was released at detach. Free rejects it (`InvalidOwner`) until the
 /// coordinator's infallible settle publishes it. Drop aborts: the node is
 /// unlinked and both allocations are released, as for a prepared owner.
+/// Settlement stays on the creating thread; cross-thread use requires an
+/// explicit ownership review rather than an accidental Send implementation.
+/// ```compile_fail,E0277
+/// use zeppelin_embed_ffi::graph_result::PendingResponse;
+/// fn requires_send<T: Send>() {}
+/// requires_send::<PendingResponse>();
+/// ```
 pub struct PendingResponse {
     registry: &'static GraphResultRegistry,
     node: NonNull<Node>,
@@ -442,6 +454,7 @@ impl PendingResponse {
     /// outcome in its cell.
     pub(super) fn settle(
         self,
+        _route: super::coordinator::SettleRoute,
         receipts: &[ItemReceipt],
         settlement: WriteSettlement,
     ) -> ZeGraphResponse {
@@ -459,6 +472,10 @@ impl PendingResponse {
             let relationships = pool_mut(root.pool.relationships, root.pool.relationship_count);
             let admitted = root.admitted_generation;
             let changed = settlement.changed();
+            // Abort ownership is disarmed: this loop must remain panic-free.
+            // Scalar comparisons/casts/assignments, binary search with a scalar
+            // comparator, and checked get_mut cannot panic. Do not add
+            // allocations, callbacks, or panic-capable operations here.
             for receipt in receipts {
                 let generation = match changed {
                     Some(changed) if receipt.generation.get() > admitted => changed,

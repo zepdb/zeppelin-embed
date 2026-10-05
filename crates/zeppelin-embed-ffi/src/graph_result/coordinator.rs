@@ -8,6 +8,10 @@ use super::*;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use zeppelin_embed::property_graph::staging::ItemReceipt;
 
+pub(super) struct SettleRoute {
+    _private: (),
+}
+
 /// Why a guarded potential write returned no value.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WriteInterrupted {
@@ -35,8 +39,10 @@ impl WriteAttempt<'_> {
     /// response failed. Records the known outcome so it is never reported
     /// as Indeterminate. Nothing is published.
     pub fn delivery_failed(self, settlement: WriteSettlement) {
-        self.cell
-            .resolve_attempt(OperationOutcome::Success(settlement.outcome()));
+        self.cell.resolve_attempt(
+            SettleRoute { _private: () },
+            OperationOutcome::Success(settlement.outcome()),
+        );
     }
 
     /// Post-commit settle: records the decided outcome in the guard's cell
@@ -48,14 +54,17 @@ impl WriteAttempt<'_> {
         receipts: &[ItemReceipt],
         settlement: WriteSettlement,
     ) -> ZeGraphResponse {
-        self.cell
-            .resolve_attempt(OperationOutcome::Success(settlement.outcome()));
-        pending.settle(receipts, settlement)
+        self.cell.resolve_attempt(
+            SettleRoute { _private: () },
+            OperationOutcome::Success(settlement.outcome()),
+        );
+        pending.settle(SettleRoute { _private: () }, receipts, settlement)
     }
     /// The coordinator proved the attempt had no durable effect. Never call
     /// this merely because cancellation, panic, or delivery failed.
     pub fn no_effect(self) {
-        self.cell.resolve_attempt(OperationOutcome::NotCommitted);
+        self.cell
+            .resolve_attempt(SettleRoute { _private: () }, OperationOutcome::NotCommitted);
     }
 }
 

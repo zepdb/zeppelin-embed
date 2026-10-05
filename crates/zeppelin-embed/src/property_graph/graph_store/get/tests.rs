@@ -127,18 +127,27 @@ fn graph_store_get_nodes_distinguishes_absent_from_present_empty_text() {
 }
 
 #[test]
-fn graph_store_get_nodes_distinguishes_typed_empty_list_sentinel_and_absent_property() {
+fn ze211_nodes_bulk_pools_match_accessors() {
     let parent = tempfile::tempdir().expect("temporary parent");
-    let store =
-        GraphStore::create(parent.path().join("lists"), options(), None).expect("graph store");
+    let store = GraphStore::create(parent.path().join("lists"), options(), Some(tower()))
+        .expect("graph store");
     let sentinel =
         PropertyValue::new(PropertyData::EmptyList { count: 0 }).expect("untyped empty list value");
     let typed = PropertyValue::new(PropertyData::Strings(&[])).expect("typed empty list value");
     let mut properties = [
+        GraphProperty::new(
+            GraphName::new("children").unwrap(),
+            PropertyValue::new(PropertyData::Strings(&["a\0λ"])).unwrap(),
+        ),
         GraphProperty::new(GraphName::new("sentinel").expect("name"), sentinel),
         GraphProperty::new(GraphName::new("typed").expect("name"), typed),
     ];
-    let image = CanonicalContents::node(&mut [], &mut properties, None, None).expect("list image");
+    let document = tower();
+    let embedding = CanonicalEmbedding::new(&document, &[1.5, -2.5]).unwrap();
+    let mut labels = [GraphName::new("Label").unwrap()];
+    let image =
+        CanonicalContents::node(&mut labels, &mut properties, Some("text"), Some(embedding))
+            .expect("list image");
     let created = store
         .apply_batch(
             &[StructuredWrite {
@@ -153,15 +162,22 @@ fn graph_store_get_nodes_distinguishes_typed_empty_list_sentinel_and_absent_prop
     let id = node_id(&created, 0);
 
     let result = store
-        .get_nodes(&[id], GraphGetOptions::default(), &control())
+        .get_nodes(
+            &[id],
+            GraphGetOptions {
+                text: true,
+                vector: true,
+            },
+            &control(),
+        )
         .expect("get node with list properties");
     let node = result.nodes()[0].as_ref().expect("node present");
     let properties = result.properties(node.properties);
-    // Exactly two properties: "absent" was never written, so it is not a
-    // third row with some null-like marker -- it simply does not appear.
+    // Exactly three properties: "absent" was never written, so it is not a
+    // fourth row with some null-like marker -- it simply does not appear.
     assert_eq!(
         properties.len(),
-        2,
+        3,
         "absent property must not appear at all"
     );
 
@@ -203,6 +219,37 @@ fn graph_store_get_nodes_distinguishes_typed_empty_list_sentinel_and_absent_prop
         "the untyped sentinel and a typed empty list must remain distinct"
     );
     store.close().expect("close store");
+    let pools = result.pools();
+    for (index, value) in pools.values.iter().enumerate() {
+        assert_eq!(result.value(super::ValueIndex(index as u32)), Some(value));
+    }
+    for property in pools.properties {
+        assert_eq!(
+            result.string(property.name).unwrap().as_bytes(),
+            &pools.bytes[super::range(property.name)]
+        );
+    }
+    assert_eq!(pools.properties, result.properties(node.properties));
+    assert_eq!(result.labels(node), &pools.names[super::range(node.labels)]);
+    assert_eq!(
+        result.vector(node.vector.unwrap()),
+        &pools.vectors[super::range(node.vector.unwrap())]
+    );
+    assert_eq!(pools.vectors, &[1.5_f32.to_bits(), (-2.5_f32).to_bits()]);
+    assert_eq!(
+        result.string(node.text.unwrap()).unwrap().as_bytes(),
+        &pools.bytes[super::range(node.text.unwrap())]
+    );
+    assert!(!pools.children.is_empty());
+    for value in pools.values {
+        if let Value::List { children, .. } = value {
+            assert_eq!(
+                result.children(*children),
+                &pools.children[super::range(*children)]
+            );
+        }
+    }
+    assert!(pools.nodes.is_empty() && pools.relationships.is_empty());
 }
 
 #[test]
@@ -424,7 +471,7 @@ fn graph_store_get_nodes_selects_the_stored_vector_only_when_requested() {
 }
 
 #[test]
-fn graph_store_get_relationships_copies_type_endpoints_and_properties() {
+fn ze211_relationships_bulk_pools_match_accessors() {
     let parent = tempfile::tempdir().expect("temporary parent");
     let store =
         GraphStore::create(parent.path().join("edges"), options(), None).expect("graph store");
@@ -491,6 +538,18 @@ fn graph_store_get_relationships_copies_type_endpoints_and_properties() {
     let value = result.value(properties[0].value).expect("weight value");
     assert_eq!(*value, Value::I64(42));
     store.close().expect("close store");
+    let pools = result.pools();
+    for (index, value) in pools.values.iter().enumerate() {
+        assert_eq!(result.value(super::ValueIndex(index as u32)), Some(value));
+    }
+    for property in pools.properties {
+        assert_eq!(
+            result.string(property.name).unwrap().as_bytes(),
+            &pools.bytes[super::range(property.name)]
+        );
+    }
+    assert_eq!(pools.properties, result.properties(relationship.properties));
+    assert!(pools.nodes.is_empty() && pools.relationships.is_empty());
 }
 
 #[test]

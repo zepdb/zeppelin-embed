@@ -11,9 +11,9 @@ use std::ptr::NonNull;
 use zeppelin_embed::lifecycle::{QueryControl, SearchTier};
 use zeppelin_embed::property_graph::EntityId;
 use zeppelin_embed::property_graph::query::completed::{
-    ActualTier, CandidateCoverage, CompletedError, CompletedGraphResult, GraphQueryOptions,
+    ActualTier, CandidateCoverage, Column, CompletedError, CompletedGraphResult, GraphQueryOptions,
     LegState, ListKind, Outcome, Pools, PreparedGraphResult, ResultSource, ScorePrecision,
-    SearchKind, SearchReport, Span, Value, ValueKinds,
+    SearchKind, SearchReport, Span, Value, ValueIndex, ValueKinds,
 };
 use zeppelin_embed::property_graph::query::resources::QueryMemory;
 use zeppelin_embed::property_graph::query::runtime::{
@@ -22,8 +22,8 @@ use zeppelin_embed::property_graph::query::runtime::{
 use zeppelin_embed::property_graph::query::{QueryError, QueryView};
 use zeppelin_embed::property_graph::staging::{ItemReceipt, StructuredOperation, StructuredWrite};
 use zeppelin_embed::property_graph::{
-    GraphGeneration, GraphQueryPlan, GraphStore, GraphStoreError, GraphWriteOutcome,
-    GraphWriteResult, StoreInstanceId,
+    GraphGeneration, GraphGetOptions, GraphQueryPlan, GraphStore, GraphStoreError,
+    GraphWriteOutcome, GraphWriteResult, NodeId, RelId, StoreInstanceId,
 };
 
 const GLOBAL_WORK_COUNT: usize = 23;
@@ -744,17 +744,8 @@ fn fill_native(
 // `Pools<'_>` is `Pools<'_>` whether it comes from a still-live
 // `PreparedGraphResult` or an already-detached `CompletedGraphResult`.
 //
-// `GraphNodesResult`/`GraphRelationshipsResult` (`GraphStore::get_nodes`/
-// `get_relationships`) are deliberately NOT wired here: unlike
-// `CompletedGraphResult`, they expose only per-span accessor methods
-// (`labels`, `properties`, `value`, `string`, ...), not a `Pools`-shaped
-// bulk view of their backing `bytes`/`names`/`properties`/`values`/
-// `children`/`vectors` pools, so there is no way to `arena.copy`/`arena.map`
-// them directly the way `fill_native` does for a query result. Wiring them
-// needs a small ZE-66 follow-up (a `pools()`-style accessor) before an FFI
-// conversion can reuse the existing per-field mapping functions here; filed
-// as a backlog ticket rather than inventing a one-off encoding under time
-// pressure (see the ZE-68 evidence file).
+// Typed gets borrow their payload Pools and add sorted entity descriptors
+// plus request-ordered entity/Null rows, using the same native mapper.
 
 /// A rejected ZE-68 real-producer conversion: either the real `GraphStore`
 /// call itself was rejected (no response was built), or the call resolved
@@ -1071,3 +1062,208 @@ pub(crate) fn completed_response(
 mod producer_tests;
 #[cfg(test)]
 mod tests;
+
+// The adapter owns only entity descriptors and row/value indices. Payload
+// pools retain their original spans; appended row values cannot shift a
+// property's value index. All capacity is charged before allocation.
+fn prepare_get(
+    registry: &'static GraphResultRegistry,
+    context: &mut RuntimeContext<'_, '_, '_>,
+    pools: Pools<'_>,
+    generation: GraphGeneration,
+    rows: usize,
+) -> Result<ZeGraphResponse, ConversionError> {
+    let geometry = NativeGeometry::new(pools)?;
+    let metadata = ResponseMetadata {
+        row_count: rows,
+        admitted_generation: Some(generation.get()),
+        global_work: ZeGraphRange {
+            start: 0,
+            count: GLOBAL_WORK_COUNT as u32,
+        },
+    };
+    let initializer = NativeInitializer { pools, geometry };
+    let response = registry.prepare_with(
+        context,
+        geometry.counts,
+        metadata,
+        size_of::<NativeInitializer<'_>>(),
+        move |arena, plan, context| fill_native(arena, plan, initializer, metadata, context),
+    )?;
+    GlobalWorkSlots::new(&response)?
+        .finalize(context.counters(), context.memory().peak_reserved_bytes());
+    Ok(response.expose(SuccessfulOutcome::Read))
+}
+
+#[allow(clippy::result_large_err, reason = "retains the core producer error")]
+fn run_get_nodes(
+    registry: &'static GraphResultRegistry,
+    store: &GraphStore,
+    ids: &[NodeId],
+    options: GraphGetOptions,
+    control: &QueryControl,
+) -> Result<ZeGraphResponse, ProducerError> {
+    let result = store
+        .get_nodes(ids, options, control)
+        .map_err(ProducerError::Store)?;
+    with_producer_context(
+        store,
+        control,
+        |context| -> Result<ZeGraphResponse, ConversionError> {
+            let source = result.nodes();
+            let backing = result.pools();
+            let value_count = backing
+                .values
+                .len()
+                .checked_add(source.len())
+                .ok_or(OwnerError::Limit)?;
+            let bytes = source
+                .len()
+                .checked_mul(
+                    size_of::<zeppelin_embed::property_graph::query::completed::Node>()
+                        + size_of::<ValueIndex>(),
+                )
+                .and_then(|bytes| {
+                    value_count
+                        .checked_mul(size_of::<Value>())
+                        .and_then(|values| bytes.checked_add(values))
+                })
+                .ok_or(OwnerError::Limit)?;
+            let mut charge = context
+                .memory()
+                .reserve_external_capacity()
+                .map_err(OwnerError::from)?;
+            charge.reserve_additional(bytes).map_err(OwnerError::from)?;
+            let mut entities = Vec::new();
+            entities
+                .try_reserve_exact(source.len())
+                .map_err(|_| OwnerError::Allocation)?;
+            entities.extend(source.iter().flatten().copied());
+            entities.sort_unstable_by_key(|entity| entity.id);
+            entities.dedup_by_key(|entity| entity.id);
+            let mut values = Vec::new();
+            values
+                .try_reserve_exact(value_count)
+                .map_err(|_| OwnerError::Allocation)?;
+            values.extend_from_slice(backing.values);
+            let mut cells = Vec::new();
+            cells
+                .try_reserve_exact(source.len())
+                .map_err(|_| OwnerError::Allocation)?;
+            for entity in source {
+                cells.push(ValueIndex(
+                    u32::try_from(values.len()).map_err(|_| OwnerError::Limit)?,
+                ));
+                values.push(match entity {
+                    None => Value::Null,
+                    Some(entity) => {
+                        let index = entities
+                            .binary_search_by_key(&entity.id, |entity| entity.id)
+                            .map_err(|_| OwnerError::InvalidShape)?;
+                        Value::Node(u32::try_from(index).map_err(|_| OwnerError::Limit)?)
+                    }
+                });
+            }
+            // Empty name avoids copying or shifting the backing byte pool.
+            let columns = [Column {
+                name: Span::new(0, 0),
+                kinds: ValueKinds::NODE.union(ValueKinds::NULL),
+            }];
+            let pools = Pools {
+                values: &values,
+                cells: &cells,
+                columns: &columns,
+                nodes: &entities,
+                ..backing
+            };
+            prepare_get(registry, context, pools, result.generation(), source.len())
+        },
+    )?
+    .map_err(ProducerError::from)
+}
+
+#[allow(clippy::result_large_err, reason = "retains the core producer error")]
+fn run_get_relationships(
+    registry: &'static GraphResultRegistry,
+    store: &GraphStore,
+    ids: &[RelId],
+    control: &QueryControl,
+) -> Result<ZeGraphResponse, ProducerError> {
+    let result = store
+        .get_relationships(ids, control)
+        .map_err(ProducerError::Store)?;
+    with_producer_context(
+        store,
+        control,
+        |context| -> Result<ZeGraphResponse, ConversionError> {
+            let source = result.relationships();
+            let backing = result.pools();
+            let value_count = backing
+                .values
+                .len()
+                .checked_add(source.len())
+                .ok_or(OwnerError::Limit)?;
+            let bytes = source
+                .len()
+                .checked_mul(
+                    size_of::<zeppelin_embed::property_graph::query::completed::Relationship>()
+                        + size_of::<ValueIndex>(),
+                )
+                .and_then(|bytes| {
+                    value_count
+                        .checked_mul(size_of::<Value>())
+                        .and_then(|values| bytes.checked_add(values))
+                })
+                .ok_or(OwnerError::Limit)?;
+            let mut charge = context
+                .memory()
+                .reserve_external_capacity()
+                .map_err(OwnerError::from)?;
+            charge.reserve_additional(bytes).map_err(OwnerError::from)?;
+            let mut entities = Vec::new();
+            entities
+                .try_reserve_exact(source.len())
+                .map_err(|_| OwnerError::Allocation)?;
+            entities.extend(source.iter().flatten().copied());
+            entities.sort_unstable_by_key(|entity| entity.id);
+            entities.dedup_by_key(|entity| entity.id);
+            let mut values = Vec::new();
+            values
+                .try_reserve_exact(value_count)
+                .map_err(|_| OwnerError::Allocation)?;
+            values.extend_from_slice(backing.values);
+            let mut cells = Vec::new();
+            cells
+                .try_reserve_exact(source.len())
+                .map_err(|_| OwnerError::Allocation)?;
+            for entity in source {
+                cells.push(ValueIndex(
+                    u32::try_from(values.len()).map_err(|_| OwnerError::Limit)?,
+                ));
+                values.push(match entity {
+                    None => Value::Null,
+                    Some(entity) => {
+                        let index = entities
+                            .binary_search_by_key(&entity.id, |entity| entity.id)
+                            .map_err(|_| OwnerError::InvalidShape)?;
+                        Value::Relationship(u32::try_from(index).map_err(|_| OwnerError::Limit)?)
+                    }
+                });
+            }
+            // Empty name avoids copying or shifting the backing byte pool.
+            let columns = [Column {
+                name: Span::new(0, 0),
+                kinds: ValueKinds::REL.union(ValueKinds::NULL),
+            }];
+            let pools = Pools {
+                values: &values,
+                cells: &cells,
+                columns: &columns,
+                relationships: &entities,
+                ..backing
+            };
+            prepare_get(registry, context, pools, result.generation(), source.len())
+        },
+    )?
+    .map_err(ProducerError::from)
+}

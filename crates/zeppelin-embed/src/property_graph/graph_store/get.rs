@@ -21,7 +21,7 @@ use crate::lifecycle::QueryControl;
 use crate::lifecycle::native_graph::NativeReadConsumer;
 use crate::property_graph::catalog::Symbol;
 use crate::property_graph::query::completed::{
-    Key, ListKind, Node, Property, Relationship, Span, Value, ValueIndex,
+    Key, ListKind, Node, Pools, Property, Relationship, Span, Value, ValueIndex,
 };
 use crate::property_graph::query::runtime::{RuntimeContext, RuntimeLimits};
 use crate::property_graph::storage::GraphReadView;
@@ -56,6 +56,20 @@ struct EntityPool {
     vectors: Vec<u32>,
 }
 
+impl EntityPool {
+    fn pools(&self) -> Pools<'_> {
+        Pools {
+            bytes: &self.bytes,
+            names: &self.names,
+            properties: &self.properties,
+            values: &self.values,
+            children: &self.children,
+            vectors: &self.vectors,
+            ..Pools::default()
+        }
+    }
+}
+
 fn range(span: Span) -> std::ops::Range<usize> {
     let start = span.start as usize;
     start..start.saturating_add(span.len as usize)
@@ -74,6 +88,14 @@ pub struct GraphNodesResult {
 }
 
 impl GraphNodesResult {
+    /// Bulk backing payloads with the same spans and value indices as the
+    /// individual accessors. Entities remain in the request-ordered Option
+    /// slice; entity and row pools in this view are empty.
+    #[must_use]
+    pub fn pools(&self) -> Pools<'_> {
+        self.pool.pools()
+    }
+
     /// The single generation this call's one read admission observed. Every
     /// returned node was read against this same generation.
     #[must_use]
@@ -128,6 +150,14 @@ pub struct GraphRelationshipsResult {
 }
 
 impl GraphRelationshipsResult {
+    /// Bulk backing payloads with the same spans and value indices as the
+    /// individual accessors. Entities remain in the request-ordered Option
+    /// slice; entity and row pools in this view are empty.
+    #[must_use]
+    pub fn pools(&self) -> Pools<'_> {
+        self.pool.pools()
+    }
+
     /// The single generation this call's one read admission observed.
     #[must_use]
     pub const fn generation(&self) -> GraphGeneration {

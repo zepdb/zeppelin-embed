@@ -369,3 +369,321 @@ fn apply_and_settle_keeps_the_known_commit_when_response_preparation_fails() {
     AVAILABLE.free(&mut response).unwrap();
     store.close().unwrap();
 }
+
+fn ze211_fixture() -> (
+    tempfile::TempDir,
+    GraphStore,
+    [NodeId; 2],
+    zeppelin_embed::property_graph::RelId,
+) {
+    use zeppelin_embed::property_graph::{
+        GraphName, GraphProperty, NodeRef, PropertyData, PropertyValue,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let store = GraphStore::create(dir.path().join("get"), store_options(), None).unwrap();
+    let absent = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    let mut properties = [
+        GraphProperty::new(
+            GraphName::new("sentinel").unwrap(),
+            PropertyValue::new(PropertyData::EmptyList { count: 0 }).unwrap(),
+        ),
+        GraphProperty::new(
+            GraphName::new("typed").unwrap(),
+            PropertyValue::new(PropertyData::Strings(&[])).unwrap(),
+        ),
+        GraphProperty::new(
+            GraphName::new("text").unwrap(),
+            PropertyValue::new(PropertyData::String("a\0λ")).unwrap(),
+        ),
+    ];
+    let mut labels = [GraphName::new("Label").unwrap()];
+    let empty = CanonicalContents::node(&mut labels, &mut properties, Some(""), None).unwrap();
+    let result = store
+        .apply_batch(
+            &[create_request("a", &absent), create_request("b", &empty)],
+            &control(),
+        )
+        .unwrap();
+    let ids = std::array::from_fn(|i| match result.receipts()[i].entity {
+        EntityId::Node(id) => id,
+        _ => panic!("node receipt"),
+    });
+    let result = store
+        .apply_batch(
+            &[StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Relationship, "ze211", "edge").unwrap(),
+                revision: revision(1),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Relationship {
+                    source: NodeRef::Existing(ids[0]),
+                    target: NodeRef::Existing(ids[1]),
+                    relationship_type: GraphName::new("LINKS").unwrap(),
+                    properties: &[],
+                }),
+            }],
+            &control(),
+        )
+        .unwrap();
+    let edge = match result.receipts()[0].entity {
+        EntityId::Relationship(id) => id,
+        _ => panic!("edge receipt"),
+    };
+    (dir, store, ids, edge)
+}
+
+fn ze211_check_rows(response: &ZeGraphResponse, tags: &[u32], generation: u64) {
+    assert_eq!(response.row_count, tags.len());
+    assert_eq!(response.column_count, 1);
+    assert_eq!(response.cell_count, tags.len());
+    let cells = if tags.is_empty() {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(response.cells, response.cell_count) }
+    };
+    let values = if response.pool.value_count == 0 {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(response.pool.values, response.pool.value_count) }
+    };
+    for (cell, tag) in cells.iter().zip(tags) {
+        assert_eq!(values[*cell as usize].tag, *tag);
+    }
+    assert_eq!(response.has_admitted_generation, 1);
+    assert_eq!(response.admitted_generation, generation);
+}
+
+#[test]
+fn ze211_nodes_preserve_sparse_order_and_payloads() {
+    use zeppelin_embed::property_graph::GraphGetOptions;
+    static REGISTRY: GraphResultRegistry = GraphResultRegistry::new(16);
+    let (_dir, store, ids, _) = ze211_fixture();
+    let missing = NodeId::new(999999).unwrap();
+    let mut response = run_get_nodes(
+        &REGISTRY,
+        &store,
+        &[ids[1], missing, ids[0], ids[1]],
+        GraphGetOptions {
+            text: true,
+            vector: false,
+        },
+        &control(),
+    )
+    .unwrap();
+    let mut empty = run_get_nodes(
+        &REGISTRY,
+        &store,
+        &[],
+        GraphGetOptions::default(),
+        &control(),
+    )
+    .unwrap();
+    let mut absent = run_get_nodes(
+        &REGISTRY,
+        &store,
+        &[missing],
+        GraphGetOptions::default(),
+        &control(),
+    )
+    .unwrap();
+    store
+        .apply_batch(
+            &[StructuredWrite {
+                key: node_key("a"),
+                revision: revision(2),
+                operation: StructuredOperation::Delete(
+                    EntityId::Node(ids[0]),
+                    GraphDeleteMode::Detach,
+                ),
+                image: None,
+            }],
+            &control(),
+        )
+        .unwrap();
+    let mut deleted = run_get_nodes(
+        &REGISTRY,
+        &store,
+        &[ids[0]],
+        GraphGetOptions::default(),
+        &control(),
+    )
+    .unwrap();
+    store.close().unwrap();
+    ze211_check_rows(&deleted, &[0], 3);
+    REGISTRY.free(&mut deleted).unwrap();
+    ze211_check_rows(&response, &[5, 0, 5, 5], 2);
+    ze211_check_rows(&empty, &[], 2);
+    ze211_check_rows(&absent, &[0], 2);
+    let nodes =
+        unsafe { std::slice::from_raw_parts(response.pool.nodes, response.pool.node_count) };
+    assert_eq!(nodes.len(), 2);
+    assert_eq!(nodes[0].id, node_id(ids[0].get()));
+    assert_eq!(nodes[1].id, node_id(ids[1].get()));
+    assert_eq!(nodes[0].has_text, 0);
+    assert_eq!(nodes[1].has_text, 1);
+    assert_eq!(nodes[1].text.count, 0);
+    let cells = unsafe { std::slice::from_raw_parts(response.cells, response.cell_count) };
+    let values =
+        unsafe { std::slice::from_raw_parts(response.pool.values, response.pool.value_count) };
+    assert_eq!(values[cells[0] as usize].entity_index, 1);
+    assert_eq!(values[cells[2] as usize].entity_index, 0);
+    assert_eq!(values[cells[3] as usize].entity_index, 1);
+    let properties = unsafe {
+        std::slice::from_raw_parts(response.pool.properties, response.pool.property_count)
+    };
+    let bytes =
+        unsafe { std::slice::from_raw_parts(response.pool.bytes, response.pool.byte_count) };
+    let slice =
+        |span: ZeGraphRange| &bytes[span.start as usize..(span.start + span.count) as usize];
+    let mut list_kinds = Vec::new();
+    for property in &properties[nodes[1].properties.start as usize
+        ..(nodes[1].properties.start + nodes[1].properties.count) as usize]
+    {
+        let value = &values[property.value as usize];
+        match slice(property.name) {
+            b"text" => assert_eq!(slice(value.range), "a\0λ".as_bytes()),
+            b"sentinel" | b"typed" => {
+                assert_eq!(value.tag, 7);
+                assert_eq!(value.range.count, 0);
+                list_kinds.push(value.list_kind);
+            }
+            _ => panic!("unexpected property"),
+        }
+    }
+    assert_eq!(list_kinds.len(), 2);
+    assert_ne!(list_kinds[0], list_kinds[1]);
+    for owner in [&mut response, &mut empty, &mut absent] {
+        REGISTRY.free(owner).unwrap();
+    }
+}
+
+#[test]
+fn ze211_relationships_preserve_sparse_order_and_payloads() {
+    use zeppelin_embed::property_graph::RelId;
+    static REGISTRY: GraphResultRegistry = GraphResultRegistry::new(16);
+    let (_dir, store, ids, edge) = ze211_fixture();
+    use zeppelin_embed::property_graph::{
+        GraphName, GraphProperty, NodeRef, PropertyData, PropertyValue,
+    };
+    let created = store
+        .apply_batch(
+            &[StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Relationship, "ze211", "reverse").unwrap(),
+                revision: revision(1),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Relationship {
+                    source: NodeRef::Existing(ids[1]),
+                    target: NodeRef::Existing(ids[0]),
+                    relationship_type: GraphName::new("BACK").unwrap(),
+                    properties: &[GraphProperty::new(
+                        GraphName::new("weight").unwrap(),
+                        PropertyValue::new(PropertyData::I64(42)).unwrap(),
+                    )],
+                }),
+            }],
+            &control(),
+        )
+        .unwrap();
+    let reverse = match created.receipts()[0].entity {
+        EntityId::Relationship(id) => id,
+        _ => panic!("edge receipt"),
+    };
+    let missing = RelId::new(999999).unwrap();
+    let mut response = run_get_relationships(
+        &REGISTRY,
+        &store,
+        &[reverse, missing, edge, reverse],
+        &control(),
+    )
+    .unwrap();
+    let mut empty = run_get_relationships(&REGISTRY, &store, &[], &control()).unwrap();
+    let mut absent = run_get_relationships(&REGISTRY, &store, &[missing], &control()).unwrap();
+    store
+        .apply_batch(
+            &[StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Relationship, "ze211", "edge").unwrap(),
+                revision: revision(2),
+                operation: StructuredOperation::Delete(
+                    EntityId::Relationship(edge),
+                    GraphDeleteMode::Restrict,
+                ),
+                image: None,
+            }],
+            &control(),
+        )
+        .unwrap();
+    let mut deleted = run_get_relationships(&REGISTRY, &store, &[edge], &control()).unwrap();
+    store.close().unwrap();
+    ze211_check_rows(&deleted, &[0], 4);
+    REGISTRY.free(&mut deleted).unwrap();
+    ze211_check_rows(&response, &[6, 0, 6, 6], 3);
+    ze211_check_rows(&empty, &[], 3);
+    ze211_check_rows(&absent, &[0], 3);
+    assert_eq!(response.pool.relationship_count, 2);
+    let relationships = unsafe { std::slice::from_raw_parts(response.pool.relationships, 2) };
+    assert_eq!(relationships[1].source, node_id(ids[1].get()));
+    assert_eq!(relationships[1].target, node_id(ids[0].get()));
+    let cells = unsafe { std::slice::from_raw_parts(response.cells, response.cell_count) };
+    let values =
+        unsafe { std::slice::from_raw_parts(response.pool.values, response.pool.value_count) };
+    assert_eq!(values[cells[0] as usize].entity_index, 1);
+    assert_eq!(values[cells[2] as usize].entity_index, 0);
+    assert_eq!(values[cells[3] as usize].entity_index, 1);
+    let properties = unsafe {
+        std::slice::from_raw_parts(response.pool.properties, response.pool.property_count)
+    };
+    let property = &properties[relationships[1].properties.start as usize];
+    assert_eq!(values[property.value as usize].tag, 2);
+    assert_eq!(values[property.value as usize].integer, 42);
+    let relationship = unsafe { &*response.pool.relationships };
+    assert_eq!(relationship.source, node_id(ids[0].get()));
+    assert_eq!(relationship.target, node_id(ids[1].get()));
+    let bytes =
+        unsafe { std::slice::from_raw_parts(response.pool.bytes, response.pool.byte_count) };
+    let span = relationship.relationship_type;
+    assert_eq!(
+        &bytes[span.start as usize..(span.start + span.count) as usize],
+        b"LINKS"
+    );
+    for owner in [&mut response, &mut empty, &mut absent] {
+        REGISTRY.free(owner).unwrap();
+    }
+}
+
+#[test]
+fn ze211_get_conversion_refusal_cleans_owner() {
+    use super::super::test_support::AllocationFaultScope;
+    use zeppelin_embed::property_graph::GraphGetOptions;
+    static REGISTRY: GraphResultRegistry = GraphResultRegistry::new(1);
+    let (_dir, store, ids, edge) = ze211_fixture();
+    for ordinal in [1, 2] {
+        let fault = AllocationFaultScope::arm(ordinal);
+        assert!(
+            run_get_nodes(
+                &REGISTRY,
+                &store,
+                &ids,
+                GraphGetOptions::default(),
+                &control()
+            )
+            .is_err()
+        );
+        assert_eq!(fault.receipt().fires, 1);
+        drop(fault);
+        let mut response = run_get_nodes(
+            &REGISTRY,
+            &store,
+            &ids,
+            GraphGetOptions::default(),
+            &control(),
+        )
+        .unwrap();
+        REGISTRY.free(&mut response).unwrap();
+        let fault = AllocationFaultScope::arm(ordinal);
+        assert!(run_get_relationships(&REGISTRY, &store, &[edge], &control()).is_err());
+        assert_eq!(fault.receipt().fires, 1);
+        drop(fault);
+        let mut response = run_get_relationships(&REGISTRY, &store, &[edge], &control()).unwrap();
+        REGISTRY.free(&mut response).unwrap();
+    }
+    store.close().unwrap();
+}

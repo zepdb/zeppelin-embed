@@ -80,7 +80,11 @@ impl OutcomeCell {
     /// consuming `WriteAttempt` calls it, at most once, so the state it
     /// replaces is always Indeterminate and every target is a valid
     /// transition from it.
-    pub(super) fn resolve_attempt(&self, outcome: OperationOutcome) {
+    pub(super) fn resolve_attempt(
+        &self,
+        _route: super::coordinator::SettleRoute,
+        outcome: OperationOutcome,
+    ) {
         self.state.set(outcome);
     }
     /// Only a coordinator's definite no-effect result permits this transition.
