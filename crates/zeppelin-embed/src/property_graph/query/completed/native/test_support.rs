@@ -570,3 +570,107 @@ pub fn run_actual_probe(seed: u64) -> Result<ProbeReport, String> {
         receipts,
     })
 }
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic
+)]
+pub(super) mod ze202 {
+    use super::*;
+    use crate::property_graph::{
+        CanonicalEmbedding, GraphProperty, NodeId, NodeRef, PropertyData, PropertyValue, RelId,
+    };
+
+    pub const A: u128 = 7;
+    pub const B: u128 = 7 + (1_u128 << 64);
+    pub const R: u128 = 11;
+    pub const S: u128 = 11 + (1_u128 << 64);
+
+    pub fn options() -> OpenOptions {
+        OpenOptions::new()
+            .with_durability(DurabilityMode::Durable, CommitTier::Durable)
+            .with_max_resident_bytes(256 * 1024 * 1024)
+    }
+
+    pub fn fixture(document: Option<crate::epoch::EmbeddingTower>) -> (Store, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::create_native_graph_with_allocator_seed_for_test(
+            dir.path().join("native"),
+            options(),
+            document.clone(),
+            NodeId::new(A).unwrap(),
+            RelId::new(R).unwrap(),
+        )
+        .unwrap();
+        for (index, (id, rel, name, value)) in
+            [(A, R, "a", 101), (B, S, "b", 202)].into_iter().enumerate()
+        {
+            if index == 1 {
+                store
+                    .jump_native_graph_allocators_for_test(
+                        NodeId::new(B).unwrap(),
+                        RelId::new(S).unwrap(),
+                        &QueryControl::Cancel(CancelToken::new()),
+                    )
+                    .unwrap();
+            }
+            let mut props = [GraphProperty::new(
+                GraphName::new("p").unwrap(),
+                PropertyValue::new(PropertyData::I64(value)).unwrap(),
+            )];
+            let coords = [index as f32, 0.0];
+            let embedding = document
+                .as_ref()
+                .map(|tower| CanonicalEmbedding::new(tower, &coords).unwrap());
+            let contents =
+                CanonicalContents::node(&mut [], &mut props, Some("amber"), embedding).unwrap();
+            let receipts = store
+                .apply_native_graph(
+                    &[StructuredWrite {
+                        key: ApplicationKey::new(EntityKind::Node, "ze202", name).unwrap(),
+                        revision: GraphRevision::new(1).unwrap(),
+                        operation: StructuredOperation::Create,
+                        image: Some(WriteImage::Node(&contents)),
+                    }],
+                    &QueryControl::Cancel(CancelToken::new()),
+                )
+                .unwrap();
+            assert_eq!(receipts.len(), 1);
+            assert_eq!(receipts[0].entity, EntityId::Node(NodeId::new(id).unwrap()));
+            assert_eq!(receipts[0].revision.get(), 1);
+            assert_eq!(receipts[0].generation.get(), if index == 0 { 1 } else { 4 });
+            drop(receipts);
+            let rel_props = [GraphProperty::new(
+                GraphName::new("p").unwrap(),
+                PropertyValue::new(PropertyData::I64(value + 10)).unwrap(),
+            )];
+            let receipts = store
+                .apply_native_graph(
+                    &[StructuredWrite {
+                        key: ApplicationKey::new(EntityKind::Relationship, "ze202", name).unwrap(),
+                        revision: GraphRevision::new(1).unwrap(),
+                        operation: StructuredOperation::Create,
+                        image: Some(WriteImage::Relationship {
+                            source: NodeRef::Existing(NodeId::new(id).unwrap()),
+                            target: NodeRef::Existing(NodeId::new(A).unwrap()),
+                            relationship_type: GraphName::new("LINKS").unwrap(),
+                            properties: &rel_props,
+                        }),
+                    }],
+                    &QueryControl::Cancel(CancelToken::new()),
+                )
+                .unwrap();
+            assert_eq!(receipts.len(), 1);
+            assert_eq!(
+                receipts[0].entity,
+                EntityId::Relationship(RelId::new(rel).unwrap())
+            );
+            assert_eq!(receipts[0].revision.get(), 1);
+            assert_eq!(receipts[0].generation.get(), if index == 0 { 2 } else { 5 });
+        }
+        (store, dir)
+    }
+}

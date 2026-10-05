@@ -86,9 +86,23 @@ pub fn prepare_directories<'a, S: BlockSink>(
     let charge = memory.reserve(std::mem::size_of::<NativeDirectoryCandidate<'_>>())?;
     if batch.deltas().is_empty() {
         r.step(0)?;
+        #[cfg(any(test, feature = "test-support"))]
+        let roots = if batch.disposition() == crate::property_graph::BatchDisposition::Changed {
+            base.roots.for_generation(GraphGeneration::new(
+                base.identity
+                    .generation
+                    .get()
+                    .checked_add(1)
+                    .ok_or(TreeError::Invalid("generation overflow"))?,
+            ))?
+        } else {
+            base.roots
+        };
+        #[cfg(not(any(test, feature = "test-support")))]
+        let roots = base.roots;
         return Ok(NativeDirectoryCandidate {
             expected: base.identity,
-            roots: base.roots,
+            roots,
             _charge: charge,
         });
     }

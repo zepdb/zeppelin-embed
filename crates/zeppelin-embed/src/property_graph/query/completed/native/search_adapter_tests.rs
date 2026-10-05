@@ -867,3 +867,195 @@ fn ze64_empty_eligible_vector_call_differs_from_absent_restriction_with_the_real
     assert_eq!(report.vector_leg, LegState::NoEligibleMembers);
     assert_eq!(report.coverage, CandidateCoverage::Exact);
 }
+
+#[test]
+fn ze202_same_low64_search_and_eligibility_keep_selected_id() {
+    use super::entry_probe::{Backing, control, options, run_plan};
+    use super::test_support::ze202::{A, B};
+    use crate::property_graph::query::plan::{AggregateExpression, BinaryExpression};
+    let (store, _dir) = super::test_support::ze202::fixture(Some(tower()));
+    for kind in [SearchKind::Vector, SearchKind::Lexical, SearchKind::Hybrid] {
+        for restriction in [None, Some(vec![0]), Some(vec![1]), Some(vec![1, 0, 1])] {
+            let mut adapter = NativeSearchAdapter::new(store.tokenizer.clone());
+            let result = store
+                .execute_graph_query(
+                    &control(),
+                    &options(16),
+                    Some(&mut adapter),
+                    |runtime, executor| {
+                        let inputs: Vec<Vec<_>> = (0..5).map(|i| vec![PlanNodeId(i)]).collect();
+                        let vector = vec![ExprId(4), ExprId(5)];
+                        let eligible_list: Vec<_> = restriction
+                            .as_ref()
+                            .map(|slots| slots.iter().map(|slot| ExprId(*slot)).collect())
+                            .unwrap_or_default();
+                        let text = String::from("amber");
+                        let mut expressions = vec![
+                            Expression::Binary {
+                                operation: BinaryExpression::Index,
+                                left: ExprId(9),
+                                right: ExprId(11),
+                            },
+                            Expression::Binary {
+                                operation: BinaryExpression::Index,
+                                left: ExprId(10),
+                                right: ExprId(11),
+                            },
+                            Expression::Literal(Literal::I64(2)),
+                        ];
+                        let eligible = restriction.as_ref().map(|_| ExprId(3));
+                        if eligible.is_some() {
+                            expressions.push(Expression::List(&eligible_list));
+                        } else {
+                            expressions.push(Expression::Literal(Literal::F64(0.0)));
+                        }
+                        expressions.push(Expression::Literal(Literal::F64(0.0)));
+                        expressions.push(Expression::Literal(Literal::F64(0.0)));
+                        expressions.push(Expression::List(&vector));
+                        expressions.push(Expression::Literal(Literal::String(&text)));
+                        expressions.push(Expression::Slot(SlotId(2)));
+                        expressions.extend([
+                            Expression::Slot(SlotId(3)),
+                            Expression::Slot(SlotId(4)),
+                            Expression::Literal(Literal::I64(0)),
+                            Expression::Slot(SlotId(0)),
+                            Expression::Slot(SlotId(1)),
+                            Expression::Aggregate {
+                                operation: AggregateExpression::Collect { distinct: false },
+                                operand: Some(ExprId(12)),
+                            },
+                            Expression::Aggregate {
+                                operation: AggregateExpression::Collect { distinct: false },
+                                operand: Some(ExprId(13)),
+                            },
+                        ]);
+                        let aggregates = vec![
+                            Projection {
+                                slot: SlotId(3),
+                                expression: ExprId(14),
+                            },
+                            Projection {
+                                slot: SlotId(4),
+                                expression: ExprId(15),
+                            },
+                        ];
+                        let request = match kind {
+                            SearchKind::Vector => SearchRequest::Vector {
+                                vector: ExprId(6),
+                                k: ExprId(2),
+                                mode: SearchMode::Exact,
+                                eligible,
+                            },
+                            SearchKind::Lexical => SearchRequest::Text {
+                                query: ExprId(7),
+                                k: ExprId(2),
+                                eligible,
+                            },
+                            SearchKind::Hybrid => SearchRequest::Hybrid {
+                                vector: ExprId(6),
+                                text: ExprId(7),
+                                k: ExprId(2),
+                                mode: SearchMode::Exact,
+                                eligible,
+                            },
+                        };
+                        // Project the common inputs too: every declared expression
+                        // must be reachable, regardless of the requested search mode.
+                        let projections: Vec<_> = (0..9)
+                            .map(|i| Projection {
+                                slot: SlotId(10 + i),
+                                expression: ExprId(i),
+                            })
+                            .collect();
+                        let operators = vec![
+                            Operator {
+                                inputs: &[],
+                                kind: OperatorKind::Unit,
+                            },
+                            Operator {
+                                inputs: &inputs[0],
+                                kind: OperatorKind::LookupNode {
+                                    output: SlotId(0),
+                                    id: NodeId::new(A).unwrap(),
+                                },
+                            },
+                            Operator {
+                                inputs: &inputs[1],
+                                kind: OperatorKind::LookupNode {
+                                    output: SlotId(1),
+                                    id: NodeId::new(B).unwrap(),
+                                },
+                            },
+                            Operator {
+                                inputs: &inputs[2],
+                                kind: OperatorKind::Aggregate {
+                                    keys: &[],
+                                    aggregates: &aggregates,
+                                },
+                            },
+                            Operator {
+                                inputs: &inputs[3],
+                                kind: OperatorKind::Search {
+                                    call: SearchCallId(0),
+                                    request,
+                                    outputs: SearchOutputs {
+                                        node: Some(SlotId(2)),
+                                        ..SearchOutputs::default()
+                                    },
+                                },
+                            },
+                            Operator {
+                                inputs: &inputs[4],
+                                kind: OperatorKind::Project(&projections),
+                            },
+                        ];
+                        let eager = vec![PlanNodeId(4)];
+                        let mut backing = Backing::default();
+                        for input in &inputs {
+                            backing.vec(input)?;
+                        }
+                        backing.vec(&vector)?;
+                        backing.vec(&eligible_list)?;
+                        backing.vec(&projections)?;
+                        backing.vec(&aggregates)?;
+                        backing.string(&text)?;
+                        run_plan(
+                            runtime,
+                            executor,
+                            &operators,
+                            &expressions,
+                            &eager,
+                            &backing,
+                            &["a", "b", "k", "eligible", "x", "y", "vector", "text", "hit"],
+                        )
+                    },
+                )
+                .unwrap();
+            let expected = match restriction.as_deref() {
+                Some([0]) => vec![A],
+                Some([1]) => vec![B],
+                _ => vec![A, B],
+            };
+            let mut hits: Vec<_> = (0..result.metadata().rows as usize)
+                .map(|row| node_cell(&result, row, 8).get())
+                .collect();
+            hits.sort();
+            assert_eq!(hits, expected);
+            assert_eq!(result.pools().reports.len(), 1);
+            let report = result.pools().reports[0];
+            assert_eq!(report.call, SearchCallId(0));
+            assert_eq!(report.generation.get(), 5);
+            assert_eq!(report.kind, kind);
+            assert_eq!(report.candidate_count, expected.len() as u64);
+            assert_eq!(
+                report.cross_scored_count,
+                if kind == SearchKind::Hybrid {
+                    expected.len() as u64
+                } else {
+                    0
+                }
+            );
+        }
+    }
+    store.close().unwrap();
+}

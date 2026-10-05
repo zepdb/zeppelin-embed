@@ -2438,6 +2438,93 @@ impl crate::lifecycle::Store {
         self.apply_native_graph_with_materializer_inner(requests, control, materializer, true)
     }
 
+    /// Test-only durable monotone jump; ordinary writes still allocate IDs.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn jump_native_graph_allocators_for_test(
+        &self,
+        next_node: crate::property_graph::NodeId,
+        next_relationship: crate::property_graph::RelId,
+        control: &crate::lifecycle::QueryControl,
+    ) -> Result<GraphGeneration, NativeGraphError> {
+        self.native_graph.require_writable()?;
+        let requests = &[];
+        let mut allow_pending_checkpoint = true;
+        loop {
+            let mut writer_slot = self.native_graph.writer.lock().map_err(|_| {
+                NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
+                    component: "native graph writer",
+                })
+            })?;
+            let writer = writer_slot
+                .as_mut()
+                .ok_or_else(|| self.absent_native_graph_writer())?;
+            if writer.stopped {
+                return Err(NativeGraphError::WritesStopped);
+            }
+
+            let lease = self.admit_native_read()?;
+            let admitted = Arc::clone(lease.bundle());
+            let shared = GraphResources::from_store(self)?;
+            let write_memory = WriteMemory::new(&shared, WriteLimits::default())?;
+            let storage = StorageMemory::new(&write_memory, control, 32 * 1024 * 1024)?;
+            let preparation_checkpoint = || match self.state() {
+                Ok(crate::lifecycle::StoreState::Open) => Ok(()),
+                Ok(
+                    crate::lifecycle::StoreState::Closing | crate::lifecycle::StoreState::Closed,
+                ) => Err(TreeError::Control(
+                    crate::lifecycle::QueryError::ReadCancelled { partial: false },
+                )),
+                Err(error) => Err(TreeError::Control(crate::lifecycle::QueryError::Store(
+                    error,
+                ))),
+            };
+            let source = NativePreparationSource::new(
+                &lease,
+                &storage,
+                crate::property_graph::storage::MAX_NATIVE_ARTIFACTS,
+            )?;
+            let mut base_resources = source
+                .resources(64 * 1024 * 1024)?
+                .with_preparation_checkpoint(&preparation_checkpoint)?;
+            let resources_cell = RefCell::new(&mut base_resources);
+            let first_storage_error = Cell::new(None);
+            let base = NativeAdmittedBase::new(
+                &lease,
+                &source,
+                &storage,
+                requests,
+                &resources_cell,
+                &first_storage_error,
+            )?;
+            let mut write_control = |phase| checkpoint(control, phase);
+            let mut staged = crate::property_graph::staging::stage_structured(
+                &base,
+                requests,
+                &write_memory,
+                &mut write_control,
+            )?;
+            staged.jump_allocators_for_test(next_node, next_relationship)?;
+            match commit_staged_batch(
+                self,
+                writer,
+                &lease,
+                &admitted,
+                &shared,
+                &storage,
+                control,
+                &base,
+                &staged,
+                &mut allow_pending_checkpoint,
+            )? {
+                CommitStep::Checkpointed => continue,
+                CommitStep::Committed { generation, .. } => return Ok(generation),
+                CommitStep::NoOp => {
+                    return Err(NativeGraphError::Invalid("allocator jump was not changed"));
+                }
+            }
+        }
+    }
+
     fn apply_native_graph_with_materializer_inner<M: ResultMaterializer>(
         &self,
         requests: &[crate::property_graph::staging::StructuredWrite<'_, '_>],

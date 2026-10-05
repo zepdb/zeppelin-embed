@@ -392,6 +392,36 @@ pub struct StagedBatch<'a> {
     symbols: memory::Arena<'a, catalog::SymbolEntry<'a>>,
 }
 impl StagedBatch<'_> {
+    /// Advances inclusive logical fences on an otherwise empty test batch.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn jump_allocators_for_test(
+        &mut self,
+        next_node: crate::property_graph::NodeId,
+        next_relationship: crate::property_graph::RelId,
+    ) -> Result<(), StageError> {
+        let node = next_node
+            .get()
+            .checked_sub(1)
+            .ok_or(StageError::InvalidInput)?;
+        let relationship = next_relationship
+            .get()
+            .checked_sub(1)
+            .ok_or(StageError::InvalidInput)?;
+        if !self.deltas.is_empty()
+            || !self.receipts.is_empty()
+            || !self.symbols.is_empty()
+            || node < self.high_waters.node
+            || relationship < self.high_waters.relationship
+            || (node == self.high_waters.node && relationship == self.high_waters.relationship)
+        {
+            return Err(StageError::InvalidInput);
+        }
+        self.high_waters.node = node;
+        self.high_waters.relationship = relationship;
+        self.disposition = BatchDisposition::Changed;
+        Ok(())
+    }
+
     pub(crate) fn uses_memory(&self, memory: &WriteMemory<'_>) -> bool {
         self.deltas.uses_memory(memory)
             && self.receipts.uses_memory(memory)

@@ -1130,3 +1130,137 @@ fn ze36_identity_script_observes_every_watch() {
     assert_eq!(state.watched.len(), 14);
     assert!(state.fresh_generation > state.retained_generation);
 }
+
+#[test]
+fn ze202_live_allocator_jump_is_monotone_and_durable() {
+    let parent = tempfile::tempdir().unwrap();
+    let path = parent.path().join("ze202");
+    let store = Store::create_native_graph_with_allocator_seed_for_test(
+        &path,
+        native_options(),
+        None,
+        NodeId::new(7).unwrap(),
+        RelId::new(11).unwrap(),
+    )
+    .unwrap();
+    let mut properties = value(0xA1);
+    let image = CanonicalContents::node(&mut [], &mut properties, None, None).unwrap();
+    let created = store
+        .apply_native_graph(
+            &[StructuredWrite {
+                key: key(EntityKind::Node, "ze202-a"),
+                revision: revision(1),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            }],
+            &control(),
+        )
+        .unwrap();
+    assert_eq!(created[0].entity, EntityId::Node(NodeId::new(7).unwrap()));
+    drop(created);
+    let created = store
+        .apply_native_graph(
+            &[StructuredWrite {
+                key: key(EntityKind::Relationship, "ze202-r"),
+                revision: revision(1),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Relationship {
+                    source: NodeRef::Existing(NodeId::new(7).unwrap()),
+                    target: NodeRef::Existing(NodeId::new(7).unwrap()),
+                    relationship_type: GraphName::new("LINKS").unwrap(),
+                    properties: &[],
+                }),
+            }],
+            &control(),
+        )
+        .unwrap();
+    assert_eq!(
+        created[0].entity,
+        EntityId::Relationship(RelId::new(11).unwrap())
+    );
+    drop(created);
+    let next_node = NodeId::new(7 + (1_u128 << 64)).unwrap();
+    let next_rel = RelId::new(11 + (1_u128 << 64)).unwrap();
+    let changed = store
+        .jump_native_graph_allocators_for_test(next_node, next_rel, &control())
+        .expect("live allocator jump must publish");
+    assert_eq!(changed.get(), 3);
+    let before = store.admit_native_read().unwrap().bundle().high_waters();
+    assert!(
+        store
+            .jump_native_graph_allocators_for_test(NodeId::new(7).unwrap(), next_rel, &control())
+            .is_err()
+    );
+    assert!(
+        store
+            .jump_native_graph_allocators_for_test(next_node, RelId::new(11).unwrap(), &control())
+            .is_err()
+    );
+    assert_eq!(
+        store.admit_native_read().unwrap().bundle().high_waters(),
+        before
+    );
+    assert_eq!(
+        store
+            .admit_native_read()
+            .unwrap()
+            .bundle()
+            .base()
+            .generation,
+        changed
+    );
+    // Drop without close: recover the allocator-only transition from WAL.
+    drop(store);
+    let store = Store::open_native_graph(&path, native_options(), None).unwrap();
+    let lease = store.admit_native_read().unwrap();
+    assert_eq!(lease.bundle().high_waters().node, next_node.get() - 1);
+    assert_eq!(
+        lease.bundle().high_waters().relationship,
+        next_rel.get() - 1
+    );
+    assert_eq!(lease.bundle().base().generation, changed);
+    drop(lease);
+    assert!(observe_node(&store, NodeId::new(7).unwrap()).is_some());
+    assert!(relationship_is_visible(&store, RelId::new(11).unwrap()));
+    store.close().unwrap();
+    drop(store);
+    let store = Store::open_native_graph(&path, native_options(), None).unwrap();
+    assert!(observe_node(&store, NodeId::new(7).unwrap()).is_some());
+    assert!(relationship_is_visible(&store, RelId::new(11).unwrap()));
+    assert_eq!(
+        store.admit_native_read().unwrap().bundle().high_waters(),
+        before
+    );
+    let receipt = store
+        .apply_native_graph(
+            &[StructuredWrite {
+                key: key(EntityKind::Node, "ze202-b"),
+                revision: revision(1),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            }],
+            &control(),
+        )
+        .unwrap();
+    assert_eq!(receipt[0].entity, EntityId::Node(next_node));
+    drop(receipt);
+    let receipt = store
+        .apply_native_graph(
+            &[StructuredWrite {
+                key: key(EntityKind::Relationship, "ze202-s"),
+                revision: revision(1),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Relationship {
+                    source: NodeRef::Existing(next_node),
+                    target: NodeRef::Existing(NodeId::new(7).unwrap()),
+                    relationship_type: GraphName::new("LINKS").unwrap(),
+                    properties: &[],
+                }),
+            }],
+            &control(),
+        )
+        .unwrap();
+    assert_eq!(receipt[0].entity, EntityId::Relationship(next_rel));
+    drop(receipt);
+    store.close().unwrap();
+}

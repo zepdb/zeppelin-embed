@@ -580,3 +580,218 @@ fn ze53_s3_control_errors_keep_their_groups() {
     assert_eq!(stopped.kind(), GraphQueryErrorKind::Unavailable);
     assert!(stopped.nothing_committed());
 }
+
+/// One row references each same-low64 entity twice. SET targets one literal
+/// full identity while RETURN still observes both sides of its collision.
+fn ze202_entities<'lease, 'm, 'g>(
+    runtime: &mut RuntimeContext<'lease, 'm, 'g>,
+    executor: GraphQueryExecutor<'_, '_, '_, 'lease, 'm, 'g>,
+    selected: Option<usize>,
+) -> Result<Executed, GraphQueryError> {
+    use super::test_support::ze202::{A, B, R, S};
+    use crate::property_graph::query::plan::Mutation;
+    use crate::property_graph::{GraphName, RelId};
+    let p = String::from("p");
+    let name = GraphName::new(&p).unwrap();
+    let inputs: Vec<Vec<PlanNodeId>> = (0..7).map(|i| vec![PlanNodeId(i)]).collect();
+    let mut operators = vec![Operator {
+        inputs: &[],
+        kind: OperatorKind::Unit,
+    }];
+    for (slot, kind) in [
+        OperatorKind::LookupNode {
+            output: SlotId(0),
+            id: NodeId::new(A).unwrap(),
+        },
+        OperatorKind::LookupNode {
+            output: SlotId(1),
+            id: NodeId::new(B).unwrap(),
+        },
+        OperatorKind::LookupRelationship {
+            output: SlotId(2),
+            id: RelId::new(R).unwrap(),
+        },
+        OperatorKind::LookupRelationship {
+            output: SlotId(3),
+            id: RelId::new(S).unwrap(),
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        operators.push(Operator {
+            inputs: &inputs[slot],
+            kind,
+        });
+    }
+    let mut expressions: Vec<_> = (0..4).map(|i| Expression::Slot(SlotId(i))).collect();
+    expressions.extend((0..4).map(|i| Expression::Property {
+        entity: ExprId(i),
+        name,
+    }));
+    let mutations = selected
+        .map(|slot| {
+            vec![Mutation::SetProperty {
+                entity: ExprId(slot as u32),
+                name,
+                value: ExprId(8),
+            }]
+        })
+        .unwrap_or_default();
+    if selected.is_some() {
+        expressions.push(Expression::Literal(Literal::I64(999)));
+        operators.push(Operator {
+            inputs: &inputs[4],
+            kind: OperatorKind::Eager,
+        });
+        operators.push(Operator {
+            inputs: &inputs[5],
+            kind: OperatorKind::Mutate(&mutations),
+        });
+    }
+    let projections: Vec<_> = (0..12)
+        .map(|i| Projection {
+            slot: SlotId(10 + i),
+            expression: ExprId(if i < 8 { i } else { i - 8 }),
+        })
+        .collect();
+    operators.push(Operator {
+        inputs: &inputs[operators.len() - 1],
+        kind: OperatorKind::Project(&projections),
+    });
+    let mut backing = Backing::default();
+    backing.string(&p)?;
+    for input in &inputs {
+        backing.vec(input)?;
+    }
+    backing.vec(&projections)?;
+    backing.vec(&mutations)?;
+    run_plan(
+        runtime,
+        executor,
+        &operators,
+        &expressions,
+        &Vec::new(),
+        &backing,
+        &[
+            "a", "b", "r", "s", "ap", "bp", "rp", "sp", "aa", "bb", "rr", "ss",
+        ],
+    )
+}
+
+fn ze202_query(store: &Store, selected: Option<usize>) -> CompletedGraphResult {
+    store
+        .execute_graph_query(
+            &control(),
+            &options(16),
+            None::<&mut NoSearch>,
+            |runtime, executor| ze202_entities(runtime, executor, selected),
+        )
+        .unwrap()
+}
+
+fn ze202_assert_entities(result: &CompletedGraphResult, selected: Option<usize>) {
+    use super::test_support::ze202::{A, B, R, S};
+    assert_eq!(result.metadata().rows, 1);
+    assert_eq!(
+        result
+            .pools()
+            .nodes
+            .iter()
+            .map(|n| n.id.get())
+            .collect::<Vec<_>>(),
+        vec![A, B]
+    );
+    assert_eq!(
+        result
+            .pools()
+            .relationships
+            .iter()
+            .map(|r| r.id.get())
+            .collect::<Vec<_>>(),
+        vec![R, S]
+    );
+    for (i, value) in [101, 202, 111, 212].into_iter().enumerate() {
+        assert_eq!(
+            result.cell(0, i + 4),
+            Some(&Value::I64(if selected == Some(i) { 999 } else { value }))
+        );
+        assert_eq!(result.cell(0, i), result.cell(0, i + 8));
+    }
+    assert_eq!(result.cell(0, 0), Some(&Value::Node(0)));
+    assert_eq!(result.cell(0, 1), Some(&Value::Node(1)));
+    assert_eq!(result.cell(0, 2), Some(&Value::Relationship(0)));
+    assert_eq!(result.cell(0, 3), Some(&Value::Relationship(1)));
+    let pools = result.pools();
+    let spans = pools
+        .nodes
+        .iter()
+        .map(|n| n.properties)
+        .chain(pools.relationships.iter().map(|r| r.properties));
+    for (i, span) in spans.enumerate() {
+        assert_eq!(span.len, 1);
+        let property = pools.properties[span.start as usize];
+        assert_eq!(
+            &pools.bytes
+                [property.name.start as usize..(property.name.start + property.name.len) as usize],
+            b"p"
+        );
+        assert_eq!(
+            Some(&pools.values[property.value.0 as usize]),
+            result.cell(0, i + 4)
+        );
+    }
+    let rels = pools.relationships;
+    assert_eq!(rels[0].source.get(), A);
+    assert_eq!(rels[0].target.get(), A);
+    assert_eq!(rels[1].source.get(), B);
+    assert_eq!(rels[1].target.get(), A);
+}
+
+#[test]
+fn ze202_same_low64_read_results_keep_both_entities() {
+    let (store, _dir) = super::test_support::ze202::fixture(None);
+    ze202_assert_entities(&ze202_query(&store, None), None);
+    store.close().unwrap();
+}
+
+#[test]
+fn ze202_same_low64_set_changes_only_selected_entity() {
+    for selected in [1, 3] {
+        let (store, dir) = super::test_support::ze202::fixture(None);
+        let before = ze202_query(&store, None);
+        let after = ze202_query(&store, Some(selected));
+        ze202_assert_entities(&after, Some(selected));
+        let metadata = |result: &CompletedGraphResult| {
+            result
+                .pools()
+                .nodes
+                .iter()
+                .map(|n| (n.revision.get(), n.generation.get()))
+                .chain(
+                    result
+                        .pools()
+                        .relationships
+                        .iter()
+                        .map(|r| (r.revision.get(), r.generation.get())),
+                )
+                .collect::<Vec<_>>()
+        };
+        let mut expected = metadata(&before);
+        expected[selected] = (2, 6);
+        assert_eq!(metadata(&after), expected);
+        assert_eq!(after.metadata().outcome, committed_at(6));
+        store.close().unwrap();
+        drop(store);
+        let reopened = Store::open_native_graph(
+            dir.path().join("native"),
+            super::test_support::ze202::options(),
+            None,
+        )
+        .unwrap();
+        let fresh = ze202_query(&reopened, None);
+        ze202_assert_entities(&fresh, Some(selected));
+        assert_eq!(metadata(&fresh), expected);
+        reopened.close().unwrap();
+    }
+}
