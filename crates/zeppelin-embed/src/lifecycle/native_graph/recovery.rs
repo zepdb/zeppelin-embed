@@ -79,6 +79,66 @@ pub(crate) fn open_metrics_for_test() -> (u64, usize, u64, u64) {
 }
 
 #[cfg(test)]
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ReopenProfile {
+    pub phases: Vec<(&'static str, std::time::Duration)>,
+    pub nested: Vec<(&'static str, std::time::Duration, usize)>,
+}
+#[cfg(test)]
+thread_local! {
+    static REOPEN_PROFILE: RefCell<ReopenProfile> = RefCell::new(ReopenProfile::default());
+}
+#[cfg(test)]
+pub(crate) fn reopen_profile_for_test() -> ReopenProfile {
+    REOPEN_PROFILE.with(|report| report.borrow().clone())
+}
+
+#[cfg(test)]
+struct ReopenTimer(&'static str, std::time::Instant, usize);
+#[cfg(test)]
+impl ReopenTimer {
+    fn new(name: &'static str, bytes: usize) -> Self {
+        Self(name, std::time::Instant::now(), bytes)
+    }
+}
+#[cfg(test)]
+impl Drop for ReopenTimer {
+    fn drop(&mut self) {
+        REOPEN_PROFILE.with(|report| {
+            report
+                .borrow_mut()
+                .nested
+                .push((self.0, self.1.elapsed(), self.2))
+        });
+    }
+}
+macro_rules! reopen_validation {
+    ($kind:expr, $identity:expr, $bytes:expr $(, $control:expr)? $(,)?) => {{
+        #[cfg(test)]
+        let _timer = ReopenTimer::new("artifact_validation", $bytes.len());
+        artifact::decode($kind, $identity, $bytes)
+    }};
+}
+macro_rules! reopen_controlled_validation {
+    ($kind:expr, $identity:expr, $bytes:expr, $control:expr $(,)?) => {{
+        #[cfg(test)]
+        let _timer = ReopenTimer::new("artifact_validation", $bytes.len());
+        artifact::decode_with_control($kind, $identity, $bytes, $control)
+    }};
+}
+#[cfg(test)]
+fn reopen_phase(name: &'static str, start: &mut std::time::Instant) {
+    let now = std::time::Instant::now();
+    REOPEN_PROFILE.with(|report| {
+        report
+            .borrow_mut()
+            .phases
+            .push((name, now.duration_since(*start)))
+    });
+    *start = now;
+}
+
+#[cfg(test)]
 pub(crate) fn serial_probes_for_test() -> u64 {
     SERIAL_PROBES.with(Cell::get)
 }
@@ -516,6 +576,8 @@ fn map_file(
     path: &Path,
     maximum: usize,
 ) -> Result<NativeReadonlyMapping, NativeGraphError> {
+    #[cfg(test)]
+    let timer = ReopenTimer::new("mapping", 0);
     let file = store
         .vfs
         .open_for_map(path)
@@ -523,7 +585,15 @@ fn map_file(
             path: path.to_path_buf(),
             source,
         })?;
-    NativeReadonlyMapping::open_recovery(file, path, &store.native_graph, maximum)
+    let result = NativeReadonlyMapping::open_recovery(file, path, &store.native_graph, maximum);
+    #[cfg(test)]
+    {
+        let mut timer = timer;
+        timer.2 = result
+            .as_ref()
+            .map_or(0, |mapping| mapping.as_bytes().len());
+    }
+    result
 }
 
 #[derive(Clone, Copy)]
@@ -594,7 +664,7 @@ pub(super) fn visit_captured_state(
             "captured checkpoint descriptor mismatch",
         ));
     }
-    let root_frame = artifact::decode(
+    let root_frame = reopen_validation!(
         ContainerKind::RootEnvelope,
         Some((checkpoint_ref.object.store, checkpoint_ref.object.artifact)),
         root_mapping.as_bytes(),
@@ -879,7 +949,7 @@ impl<'a, 'm> RecoverySource<'a, 'm> {
         reference: PhysicalRef,
         resources: &mut TreeResources<'_>,
     ) -> Result<ValidatedArtifact, TreeError> {
-        let frame = artifact::decode_with_control(
+        let frame = reopen_controlled_validation!(
             ContainerKind::Object,
             Some((self.expected_store, reference.artifact)),
             mapping.as_bytes(),
@@ -970,7 +1040,7 @@ impl<'a, 'm> RecoverySource<'a, 'm> {
         };
         drop(path);
         drop(path_charge);
-        let frame = artifact::decode_with_control(
+        let frame = reopen_controlled_validation!(
             ContainerKind::Object,
             Some((descriptor.store, descriptor.artifact)),
             mapping.as_bytes(),
@@ -1019,7 +1089,7 @@ impl<'a, 'm> RecoverySource<'a, 'm> {
             .map_err(|error| self.latch_source(error))?;
         drop(path);
         drop(path_charge);
-        let frame = artifact::decode_with_control(
+        let frame = reopen_controlled_validation!(
             ContainerKind::Object,
             Some((reference.object.store, reference.object.artifact)),
             mapping.as_bytes(),
@@ -1110,7 +1180,7 @@ impl<'a, 'm> RecoverySource<'a, 'm> {
             .map_err(|error| self.latch_source(error))?;
         drop(path);
         drop(path_charge);
-        let frame = artifact::decode_with_control(
+        let frame = reopen_controlled_validation!(
             container,
             Some((reference.object.store, reference.object.artifact)),
             mapping.as_bytes(),
@@ -1434,6 +1504,8 @@ fn validate_captured_state_reachability<'m>(
     io: &impl crate::property_graph::storage::reclaim::SpillIo,
     candidates: &[ArtifactDescriptor],
 ) -> Result<(), NativeGraphError> {
+    #[cfg(test)]
+    let _timer = ReopenTimer::new("validate_captured_state_reachability", 0);
     let mut resources = TreeResources::for_prepare(
         memory,
         crate::property_graph::storage::reclaim::MARK_WORK_LIMIT,
@@ -1613,6 +1685,8 @@ fn validate_complete_reclaim_authority(
     resources: &mut TreeResources<'_>,
     candidates: &[ArtifactDescriptor],
 ) -> Result<(), TreeError> {
+    #[cfg(test)]
+    let _timer = ReopenTimer::new("validate_complete_reclaim_authority", 0);
     let io = RecoverySpillIo { source };
     let mut wal_authority = None;
     let mut current_count = 0_usize;
@@ -4112,7 +4186,7 @@ fn scan_creation_serials(
                 } else {
                     ContainerKind::RootEnvelope
                 };
-                let frame = artifact::decode_with_control(
+                let frame = reopen_controlled_validation!(
                     container,
                     Some((expected_store, artifact)),
                     mapping.as_bytes(),
@@ -4311,7 +4385,7 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
         resources: &mut WalResources<'_>,
     ) -> Result<(), WalError> {
         let mapping = self.frame(reference)?;
-        let frame = artifact::decode_with_control(
+        let frame = reopen_controlled_validation!(
             ContainerKind::Object,
             Some((reference.object.store, reference.object.artifact)),
             mapping.as_bytes(),
@@ -5794,6 +5868,11 @@ pub(super) fn open(
     clock: Arc<dyn MonotonicClock>,
 ) -> Result<Store, NativeGraphError> {
     #[cfg(test)]
+    REOPEN_PROFILE.with(|report| *report.borrow_mut() = ReopenProfile::default());
+    #[cfg(test)]
+    let mut phase_start = std::time::Instant::now();
+
+    #[cfg(test)]
     FENCE_CANDIDATES.with(|count| count.set(0));
     let writable = options.access_mode == AccessMode::ReadWrite;
     let store = Store::new_native_graph_recovery_owner(path, options, vfs, clock)?;
@@ -5819,7 +5898,7 @@ pub(super) fn open(
             "root checkpoint descriptor mismatch",
         ));
     }
-    let root_frame = artifact::decode(
+    let root_frame = reopen_validation!(
         ContainerKind::RootEnvelope,
         Some((root_envelope.object.store, root_envelope.object.artifact)),
         root_mapping.as_bytes(),
@@ -5895,12 +5974,16 @@ pub(super) fn open(
         &shared,
         &storage,
     )?;
+    #[cfg(test)]
+    reopen_phase("owner_root_checkpoint_setup", &mut phase_start);
     if let Err(error) = validator.validate_checkpoint_state(checkpoint.state, &mut resources) {
         if let Some(source) = validator.first_error.take() {
             return Err(source);
         }
         return Err(NativeGraphError::Wal(error));
     }
+    #[cfg(test)]
+    reopen_phase("checkpoint_validation", &mut phase_start);
     let watermark = Replay::checked_checkpoint_watermark(
         wal_mapping.as_bytes(),
         checkpoint.state,
@@ -5931,6 +6014,8 @@ pub(super) fn open(
             }
         }
     };
+    #[cfg(test)]
+    reopen_phase("wal_watermark_replay", &mut phase_start);
     validator.validate_deferred_checkpoint_allocations(final_state, &mut resources)?;
     let resume_pending_reclaim =
         writable && final_state.reclaim.is_some() && !validator.reclaim_completed;
@@ -5971,6 +6056,8 @@ pub(super) fn open(
             .slots
             .map(|root| root.map(|value| value.block)),
     )?;
+    #[cfg(test)]
+    reopen_phase("deferred_allocations_and_roots", &mut phase_start);
     let serial_fence = if writable {
         scan_creation_serials(
             &store,
@@ -5984,6 +6071,8 @@ pub(super) fn open(
     } else {
         final_state.high_waters.creation_serial
     };
+    #[cfg(test)]
+    reopen_phase("creation_serial_scan", &mut phase_start);
     let bundle = super::NativeGraphBundle::install_recovered(
         &store,
         &shared,
@@ -6053,6 +6142,8 @@ pub(super) fn open(
             resident_peak,
         ))
     });
+    #[cfg(test)]
+    reopen_phase("bundle_writer_installation", &mut phase_start);
     Ok(store)
 }
 

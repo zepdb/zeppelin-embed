@@ -1988,3 +1988,135 @@ fn mapping_logical_state(store: &Store, nodes: &[NodeId]) -> Vec<super::mapping_
         .flat_map(|chunk| super::mapping_slots::logical_state(store, chunk))
         .collect()
 }
+
+#[cfg(test)]
+#[test]
+fn ze177_reopen_phase_report_is_complete() {
+    ze177_measure_reopen(false);
+}
+
+#[cfg(test)]
+#[test]
+#[ignore = "ZE-177 release measurement"]
+fn ze177_profile_forty_artifact_reopen() {
+    ze177_measure_reopen(true);
+}
+
+#[cfg(test)]
+fn ze177_measure_reopen(large: bool) {
+    let parent = tempfile::tempdir().expect("fixture parent");
+    let path = parent.path().join("native");
+    let infrastructure: Arc<dyn Vfs> = Arc::new(StdVfs);
+    let write_start = std::time::Instant::now();
+    let store = create_store(&path, &infrastructure);
+    let names = split_key_names(if large { 4096 } else { 16 });
+    let mut nodes = Vec::new();
+    let inventory = || {
+        let files: Vec<_> = std::fs::read_dir(&path)
+            .expect("inventory")
+            .map(|entry| entry.expect("entry").path())
+            .filter(|path| {
+                path.file_name()
+                    .expect("name")
+                    .to_string_lossy()
+                    .starts_with("graph-")
+                    && path.extension().is_some_and(|ext| ext == "zgraph")
+            })
+            .collect();
+        let bytes: u64 = files
+            .iter()
+            .map(|path| std::fs::metadata(path).expect("metadata").len())
+            .sum();
+        (files.len(), bytes)
+    };
+    for batch in names.chunks(16) {
+        nodes.extend(commit_keyed_nodes(&store, batch, None));
+        if !large || inventory().0 >= 42 {
+            break;
+        }
+    }
+    let (artifacts, bytes) = inventory();
+    if large {
+        assert!(
+            (40..=50).contains(&artifacts),
+            "forty-artifact scale: {artifacts}"
+        );
+    }
+    let lease = store.admit_native_read().expect("lease");
+    let generation = lease.bundle().roots().generation().get();
+    drop(lease);
+    let write_time = write_start.elapsed();
+    store.close().expect("close");
+    drop(store);
+    let wal_bytes: u64 = std::fs::read_dir(&path)
+        .expect("files")
+        .map(|entry| entry.expect("entry").path())
+        .filter(|path| {
+            path.file_name()
+                .expect("name")
+                .to_string_lossy()
+                .starts_with("graph-wal-")
+        })
+        .map(|path| std::fs::metadata(path).expect("wal metadata").len())
+        .sum();
+    let start = std::time::Instant::now();
+    let reopened = reopen_store(&path, &infrastructure);
+    let total = start.elapsed();
+    let report = super::super::recovery::reopen_profile_for_test();
+    assert_eq!(
+        report.phases.len(),
+        6,
+        "missing phase observations: {report:?}"
+    );
+    assert!(report.nested.iter().any(|(name, _, _)| *name == "mapping"));
+    assert!(
+        report
+            .nested
+            .iter()
+            .any(|(name, _, _)| *name == "artifact_validation")
+    );
+    let lease = reopened.admit_native_read().expect("reopened lease");
+    assert_eq!(lease.bundle().roots().generation().get(), generation);
+    drop(lease);
+    for node in &nodes {
+        assert_eq!(lookup(&reopened, *node).expect("lookup"), Some(1));
+    }
+    println!(
+        "ZE177 artifacts={artifacts} artifact_bytes={bytes} nodes={} wal_bytes={wal_bytes} generation={generation} write_ms={:.6} reopen_ms={:.6}",
+        nodes.len(),
+        write_time.as_secs_f64() * 1000.0,
+        total.as_secs_f64() * 1000.0
+    );
+    for (name, elapsed) in &report.phases {
+        println!(
+            "ZE177 phase={name} ms={:.6} share={:.9}",
+            elapsed.as_secs_f64() * 1000.0,
+            elapsed.as_secs_f64() / total.as_secs_f64()
+        );
+    }
+    for name in [
+        "mapping",
+        "artifact_validation",
+        "validate_complete_reclaim_authority",
+        "validate_captured_state_reachability",
+    ] {
+        let events: Vec<_> = report
+            .nested
+            .iter()
+            .filter(|(kind, _, _)| *kind == name)
+            .collect();
+        let seconds: f64 = events
+            .iter()
+            .map(|(_, elapsed, _)| elapsed.as_secs_f64())
+            .sum();
+        let bytes: usize = events.iter().map(|(_, _, bytes)| bytes).sum();
+        println!(
+            "ZE177 nested={name} calls={} bytes={bytes} ms={:.6} share={:.9}",
+            events.len(),
+            seconds * 1000.0,
+            seconds / total.as_secs_f64()
+        );
+    }
+    println!("ZE177 correctness=passed");
+    reopened.close().expect("close reopened");
+}
