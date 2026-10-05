@@ -649,6 +649,7 @@ fn ze211_relationships_preserve_sparse_order_and_payloads() {
     }
 }
 
+#[cfg(feature = "graph-result-test-support")]
 #[test]
 fn ze211_get_conversion_refusal_cleans_owner() {
     use super::super::test_support::AllocationFaultScope;
