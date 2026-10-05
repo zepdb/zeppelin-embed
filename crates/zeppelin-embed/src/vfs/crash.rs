@@ -443,6 +443,23 @@ impl VfsFile for MemoryVfsFile {
 }
 
 impl Vfs for MemoryVfs {
+    fn truncate(&self, path: &Path, length: u64) -> std::io::Result<()> {
+        let mut files = self.lock_files()?;
+        let bytes = files.get_mut(path).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "truncate missing file")
+        })?;
+        let length = usize::try_from(length).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "truncate length")
+        })?;
+        if length > bytes.len() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "truncate extends file",
+            ));
+        }
+        bytes.truncate(length);
+        Ok(())
+    }
     fn create_new(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         let mut files = self.lock_files()?;
         if files.contains_key(path) {
@@ -901,6 +918,14 @@ impl CrashVfs {
 }
 
 impl Vfs for CrashVfs {
+    fn truncate(&self, path: &Path, length: u64) -> std::io::Result<()> {
+        self.inner.truncate(path, length)?;
+        self.lock_operations()?.push(CrashOperation::Write {
+            path: path.to_path_buf(),
+            bytes: self.inner.read(path)?,
+        });
+        Ok(())
+    }
     fn create_new(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         let mut operations = self.lock_operations()?;
         self.inner.create_new(path, bytes)?;

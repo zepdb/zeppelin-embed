@@ -111,14 +111,33 @@ impl ActiveState {
             Ok(_) => {
                 let reader = WalReader::open(vfs, path).map_err(StoreError::Wal)?;
                 let clean = reader.into_clean().map_err(StoreError::WalRecovery)?;
-                let (active, sealed_tombstones) = Self::replay(
+                let decisions = crate::lifecycle::namespace_batch::transaction_decisions(
+                    vfs,
+                    path.parent().ok_or(StoreError::ActiveRowOverflow)?,
+                    clean.records(),
+                    absorbed_through,
+                )?;
+                let (mut active, sealed_tombstones) = Self::replay(
                     generation,
                     absorbed_through,
                     &clean,
                     accounting,
                     schema,
                     analyzer,
+                    &decisions,
                 )?;
+                if let Some(binding) = decisions.values().max_by_key(|binding| binding.last_seq) {
+                    let later = super::atomic_batch::committed_mutations_with_decisions(
+                        clean.records(),
+                        binding.last_seq,
+                        |b| decisions.get(&b.transaction).copied(),
+                    )?
+                    .len() as u64;
+                    active.generation = binding
+                        .final_generation
+                        .checked_add(later)
+                        .ok_or(StoreError::GenerationOverflow)?;
+                }
                 Ok((active, Some(clean), sealed_tombstones))
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -141,13 +160,16 @@ impl ActiveState {
         accounting: &Arc<Accounting>,
         schema: &crate::meta::Schema,
         analyzer: &Analyzer,
+        decisions: &std::collections::BTreeMap<u128, wal_payload::TransactionBinding>,
     ) -> Result<(Self, Vec<SealedTombstoneDemand>), StoreError> {
         let mut documents = Vec::new();
         let mut steps = Vec::new();
         let mut deleted_ids = 0_usize;
-        for (seq, op, mutation) in
-            super::atomic_batch::committed_mutations(recovered.records(), absorbed_through)?
-        {
+        for (seq, op, mutation) in super::atomic_batch::committed_mutations_with_decisions(
+            recovered.records(),
+            absorbed_through,
+            |binding| decisions.get(&binding.transaction).copied(),
+        )? {
             match mutation {
                 MutationPayload::Upsert(document) => {
                     super::validate_document_columns(schema, &document)
@@ -375,7 +397,7 @@ struct RetainedBuffers {
 }
 
 impl ActiveSegment {
-    fn empty() -> Self {
+    pub(super) fn empty() -> Self {
         Self {
             dims: None,
             doc_ids: Accounted::unaccounted_empty(),
@@ -1883,6 +1905,33 @@ impl StoreWal {
         let mut retained = AccountedCounter::new(accounting, AllocationComponent::Wal)?;
         retained.set(writer.stats().map_err(StoreError::WalWrite)?.retained_bytes)?;
         Ok(Self { writer, retained })
+    }
+
+    pub(crate) fn abort_namespace_suffix(
+        &mut self,
+        vfs: &dyn Vfs,
+        path: &Path,
+        length: u64,
+        policy: DurabilityPolicy,
+        absorbed: u64,
+        accounting: &Arc<Accounting>,
+    ) -> Result<(), StoreError> {
+        vfs.truncate(path, length)
+            .map_err(|source| StoreError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        vfs.sync(path, crate::vfs::SyncKind::Full)
+            .map_err(|source| StoreError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        let recovered = WalReader::open(vfs, path)
+            .map_err(StoreError::Wal)?
+            .into_clean()
+            .map_err(StoreError::WalRecovery)?;
+        *self = Self::resume(vfs, path, recovered, policy, absorbed, accounting)?;
+        Ok(())
     }
 
     pub(crate) fn durable_end(&self) -> u64 {

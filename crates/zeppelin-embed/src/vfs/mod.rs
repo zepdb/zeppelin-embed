@@ -84,6 +84,13 @@ pub trait Vfs: Send + Sync {
     fn read_range(&self, path: &Path, offset: u64, length: usize) -> std::io::Result<Vec<u8>>;
     /// Creates or truncates a file and writes all bytes.
     fn write(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()>;
+    /// Removes a suffix without copying the retained file bytes.
+    fn truncate(&self, _path: &Path, _length: u64) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "VFS does not support suffix truncation",
+        ))
+    }
     /// Exclusively creates a file and writes every byte without replacing any
     /// existing path. A failed write may leave a new partial file; callers must
     /// retain it as an uncommitted artifact until safe cleanup is established.
@@ -144,6 +151,10 @@ impl VfsFile for StdVfsFile {
 }
 
 impl Vfs for StdVfs {
+    fn truncate(&self, path: &Path, length: u64) -> std::io::Result<()> {
+        OpenOptions::new().write(true).open(path)?.set_len(length)
+    }
+
     fn create_new(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         let mut file = OpenOptions::new().create_new(true).write(true).open(path)?;
         file.write_all(bytes)
@@ -478,6 +489,9 @@ impl<V> CountingVfs<V> {
 }
 
 impl<V: Vfs> Vfs for CountingVfs<V> {
+    fn truncate(&self, path: &Path, length: u64) -> std::io::Result<()> {
+        self.inner.truncate(path, length)
+    }
     fn create_new(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         self.inner.create_new(path, bytes)?;
         self.counters.write_calls.fetch_add(1, Ordering::Relaxed);

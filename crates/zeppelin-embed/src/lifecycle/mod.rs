@@ -12,7 +12,7 @@ mod group_count;
 mod hybrid;
 pub mod lock;
 pub(crate) mod materialize;
-mod namespace_batch;
+pub(crate) mod namespace_batch;
 pub use cascade::CascadeRule;
 #[cfg(any(test, feature = "test-support"))]
 pub use namespace_batch::namespace_delete_cascade_with_steps;
@@ -29,10 +29,14 @@ mod shared_bound_tests;
 mod snapshot;
 mod snapshot_copy;
 mod snapshot_view;
+pub use namespace_batch::{
+    LiveNamespaceMutation, NamespaceMutation, namespace_batch, namespace_batch_live,
+};
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
-pub use namespace_batch::namespace_batch_with_steps;
-pub use namespace_batch::{NamespaceMutation, namespace_batch};
+pub use namespace_batch::{
+    namespace_batch_live_on_vfs, namespace_batch_live_with_steps, namespace_batch_with_steps,
+};
 pub(crate) mod stats;
 
 use crate::diag::{timing_elapsed, timing_start};
@@ -3105,6 +3109,9 @@ impl Store {
             // off here so recovery sees whole batches only (ZE-216).
             wal_tail_cut =
                 crate::ingest::cut_interrupted_append(vfs.as_ref(), path, durability_policy)?;
+        }
+        if options.access_mode == AccessMode::ReadWrite {
+            namespace_batch::adopt_for_open(vfs.as_ref(), path)?;
         }
         let manifest_path = path.join(crate::manifest::io::MANIFEST_FILE);
         let manifest_exists = match vfs.open(&manifest_path) {

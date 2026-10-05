@@ -355,7 +355,11 @@ impl PublishedSnapshot {
         vfs: &dyn Vfs,
         probe_segment_headers: bool,
     ) -> Result<Self, StoreError> {
-        let manifest_path = directory.join(MANIFEST_FILE);
+        let manifest_path = if probe_segment_headers {
+            super::namespace_batch::manifest_for_open(vfs, directory)?
+        } else {
+            directory.join(MANIFEST_FILE)
+        };
         match vfs.open(&manifest_path) {
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {

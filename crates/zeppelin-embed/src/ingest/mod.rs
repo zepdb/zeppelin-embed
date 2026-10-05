@@ -4,6 +4,8 @@ mod active;
 mod atomic_batch;
 mod delete_matching;
 mod lookup;
+mod namespace_stage;
+pub(crate) use namespace_stage::NamespaceStage;
 mod merge;
 mod purge;
 

@@ -1,7 +1,8 @@
-//! ZE-239: private prepared stores, selected by one durable root record.
+//! Namespace publication through one durable root decision.
 //!
-//! The root record is the only publication point. Old stores and abandoned
-//! preparations are retained, so readers never depend on sibling recovery.
+//! ZE-256 batches stage changes in stable participant directories. Local
+//! acceptance keeps prepared WAL frames committed after root retirement.
+//! ZE-239 copy routes remain readable; cascade semantics are unchanged.
 use super::durability::{CommitTier, DurabilityMode};
 use super::lock::StoreLock;
 use super::{AccessMode, OpenOptions, Store, StoreError};
@@ -35,13 +36,477 @@ pub struct NamespaceMutation {
     pub delete_where: Option<Predicate>,
 }
 
+/// A same-process writable participant and its ordered mutations.
+pub struct LiveNamespaceMutation<'a> {
+    /// Live writable handle for the named namespace.
+    pub store: &'a Store,
+    /// Namespace declaration and ordered changes.
+    pub mutation: NamespaceMutation,
+}
+
+/// Commits changes through caller-owned writable namespace handles.
+pub fn namespace_batch_live(
+    root: &Path,
+    participants: Vec<LiveNamespaceMutation<'_>>,
+) -> Result<Vec<u64>, StoreError> {
+    execute_live(root, participants, &StdVfs, &mut |_| Ok(()), None)
+}
+
+/// Explicit protocol interruption seam for deterministic tests.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn namespace_batch_live_with_steps(
+    root: &Path,
+    participants: Vec<LiveNamespaceMutation<'_>>,
+    step: &mut dyn FnMut(&str) -> std::io::Result<()>,
+) -> Result<Vec<u64>, StoreError> {
+    execute_live(root, participants, &StdVfs, step, None)
+}
+
+/// Protocol VFS seam. Participant handles must use the supplied VFS too.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn namespace_batch_live_on_vfs(
+    root: &Path,
+    participants: Vec<LiveNamespaceMutation<'_>>,
+    vfs: &dyn Vfs,
+) -> Result<Vec<u64>, StoreError> {
+    execute_live(root, participants, vfs, &mut |_| Ok(()), None)
+}
+
+fn execute_live(
+    root: &Path,
+    mut participants: Vec<LiveNamespaceMutation<'_>>,
+    vfs: &dyn Vfs,
+    step: &mut dyn FnMut(&str) -> std::io::Result<()>,
+    coordinator: Option<StoreLock>,
+) -> Result<Vec<u64>, StoreError> {
+    use crate::ingest::wal_payload::{self, TransactionBinding};
+    use std::sync::Arc;
+    let root = std::fs::canonicalize(root).map_err(|e| io(root, e))?;
+    if !(2..=128).contains(&participants.len()) {
+        return Err(invalid(
+            &root,
+            "namespace batch requires 2..128 participants",
+        ));
+    }
+    let _coordinator = match coordinator {
+        Some(lock) => lock,
+        None => StoreLock::acquire(&root).map_err(StoreError::Lock)?,
+    };
+    normalize_accepted(vfs, &root, step)?;
+    let existing_routes = match root_descriptor_vfs(vfs, &root)? {
+        RootDescriptor::Legacy(routes) => routes,
+        RootDescriptor::Staged(_) => return Err(invalid(&root, "pending adoption")),
+    };
+    let order = participants
+        .iter()
+        .enumerate()
+        .map(|(index, p)| (p.mutation.name.clone(), index))
+        .collect::<BTreeMap<_, _>>();
+    if order.len() != participants.len() {
+        return Err(invalid(&root, "duplicate participant"));
+    }
+    let mut identities = std::collections::BTreeSet::new();
+    for (name, index) in &order {
+        let p = participants
+            .get(*index)
+            .ok_or_else(|| invalid(&root, "participant index"))?;
+        if !name_valid(name) || p.mutation.options.access_mode != AccessMode::ReadWrite {
+            return Err(invalid(&root, "invalid or read-only participant"));
+        }
+        let logical = root.join(name);
+        if std::fs::symlink_metadata(&logical)
+            .map_err(|e| io(&logical, e))?
+            .file_type()
+            .is_symlink()
+        {
+            return Err(invalid(
+                &logical,
+                "namespace links are not transaction participants",
+            ));
+        }
+        let selected = std::fs::canonicalize(resolve(&logical)?).map_err(|e| io(&logical, e))?;
+        let directory = std::fs::canonicalize(&p.store.directory).map_err(|e| io(&logical, e))?;
+        if selected != directory || !identities.insert(directory) {
+            return Err(invalid(&logical, "foreign or aliased namespace handle"));
+        }
+    }
+    // Match the existing maintenance -> state -> writer -> WAL -> active order.
+    // Each level is acquired in canonical namespace order, including reversed inputs.
+    let ordered = order
+        .values()
+        .map(|index| {
+            participants
+                .get(*index)
+                .ok_or_else(|| invalid(&root, "participant index"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut maintenance = Vec::new();
+    let mut states = Vec::new();
+    let mut owners = Vec::new();
+    let mut wals = Vec::new();
+    let mut actives = Vec::new();
+    for p in &ordered {
+        maintenance.push(
+            p.store
+                .maintenance
+                .lock()
+                .map_err(|_| invalid(&root, "maintenance lock"))?,
+        );
+    }
+    for p in &ordered {
+        let state = p
+            .store
+            .state
+            .lock()
+            .map_err(|_| invalid(&root, "state lock"))?;
+        match *state {
+            super::StoreState::Open => {}
+            super::StoreState::Closing => return Err(StoreError::Closing),
+            super::StoreState::Closed => return Err(StoreError::Closed),
+        }
+        states.push(state);
+    }
+    for p in &ordered {
+        let owner = p
+            .store
+            .writer_lock
+            .lock()
+            .map_err(|_| invalid(&root, "writer lock"))?;
+        if owner.is_none() {
+            return Err(StoreError::ReadOnly);
+        }
+        owners.push(owner);
+    }
+    for p in &ordered {
+        wals.push(
+            p.store
+                .wal_writer
+                .lock()
+                .map_err(|_| invalid(&root, "WAL lock"))?,
+        );
+    }
+    for p in &ordered {
+        actives.push(
+            p.store
+                .active
+                .lock()
+                .map_err(|_| invalid(&root, "active lock"))?,
+        );
+    }
+    let mut source_snapshots = Vec::new();
+    // All declarations and mutations validate before any WAL append/publication.
+    for ((p, wal), active) in ordered.iter().zip(&wals).zip(&actives) {
+        wal.as_ref().ok_or(StoreError::ReadOnly)?;
+        active.as_ref().ok_or(StoreError::Closed)?;
+        let snapshot = p
+            .store
+            .snapshot
+            .read()
+            .map_err(|_| invalid(&root, "snapshot lock"))?
+            .as_ref()
+            .cloned()
+            .ok_or(StoreError::Closed)?;
+        super::resolve_open_schema(
+            true,
+            &snapshot,
+            p.mutation.options.schema.as_ref(),
+            AccessMode::ReadOnly,
+        )?;
+        super::validate_epoch_identity(
+            p.store.epoch_identity(),
+            p.mutation
+                .options
+                .epoch
+                .as_ref()
+                .map(crate::epoch::StoreEpoch::identity),
+            true,
+            AccessMode::ReadOnly,
+        )?;
+        let tokenizer = crate::fts::tokenizer::Analyzer::new(
+            p.mutation
+                .options
+                .tokenizer
+                .clone()
+                .unwrap_or_else(crate::fts::tokenizer::TokenizerConfig::text_default),
+        )
+        .map_err(StoreError::Tokenizer)?;
+        if tokenizer.config() != p.store.tokenizer.config() {
+            return Err(invalid(&root, "participant tokenizer mismatch"));
+        }
+        source_snapshots.push(snapshot);
+    }
+    let mut staged = Vec::new();
+    for (((p, wal), active), snapshot) in ordered
+        .iter()
+        .zip(&wals)
+        .zip(&actives)
+        .zip(&source_snapshots)
+    {
+        let writer = wal.as_ref().ok_or(StoreError::ReadOnly)?;
+        let current = active.as_ref().ok_or(StoreError::Closed)?;
+        match p
+            .store
+            .stage_namespace(&p.mutation, current, snapshot, writer.durable_end())
+        {
+            Ok(stage) => staged.push(stage),
+            Err(error) => {
+                for (prior, stage) in ordered.iter().zip(staged) {
+                    cleanup_stage(prior.store, stage, None)?;
+                }
+                return Err(invalid(&p.store.directory, &error.to_string()));
+            }
+        }
+    }
+    let transaction = (u128::from(std::process::id()) << 96)
+        | (u128::from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| invalid(&root, "transaction clock"))?
+                .as_nanos() as u64,
+        ) << 32)
+        | u128::from(NEXT.fetch_add(1, Ordering::Relaxed));
+    let mut descriptor = StagedDescriptor(BTreeMap::new(), existing_routes);
+    let mut lengths = Vec::new();
+    let mut selections = Vec::new();
+    for (p, stage) in ordered.iter().zip(&staged) {
+        let wal_path = p.store.directory.join("wal.ze");
+        lengths.push(p.store.vfs.open(&wal_path).map_err(|e| io(&wal_path, e))?);
+        if stage.records.is_empty() {
+            selections.push(None);
+            continue;
+        }
+        let bytes =
+            crate::manifest::encode_manifest(&stage.manifest).map_err(StoreError::Manifest)?;
+        let first_seq = wals
+            .get(selections.len())
+            .and_then(|wal| wal.as_ref())
+            .ok_or(StoreError::ReadOnly)?
+            .durable_end()
+            .checked_add(1)
+            .ok_or(StoreError::GenerationOverflow)?;
+        let binding = TransactionBinding {
+            transaction,
+            participant: participant_identity(&root, &p.mutation.name)?,
+            first_seq,
+            last_seq: first_seq
+                .checked_add(stage.records.len() as u64 - 1)
+                .ok_or(StoreError::GenerationOverflow)?,
+            manifest_digest: xxh3_64(&bytes),
+            final_generation: stage.active.generation,
+        };
+        let selection = StagedSelection {
+            manifest: format!(".ze-manifest-{transaction}"),
+            binding,
+        };
+        descriptor
+            .0
+            .insert(p.mutation.name.clone(), selection.clone());
+        selections.push(Some(selection));
+    }
+    if descriptor.0.is_empty() {
+        let generations = ordered
+            .iter()
+            .zip(&staged)
+            .map(|(p, s)| (p.mutation.name.clone(), s.active.generation))
+            .collect::<BTreeMap<_, _>>();
+        return participants
+            .iter()
+            .map(|p| {
+                generations
+                    .get(&p.mutation.name)
+                    .copied()
+                    .ok_or_else(|| invalid(&root, "missing generation"))
+            })
+            .collect();
+    }
+    let decision = encode_staged(&descriptor)?;
+    let prepared = (|| {
+        for (((p, stage), selection), wal) in ordered
+            .iter()
+            .zip(&mut staged)
+            .zip(&selections)
+            .zip(&mut wals)
+        {
+            let Some(selection) = selection else {
+                continue;
+            };
+            let bytes =
+                crate::manifest::encode_manifest(&stage.manifest).map_err(StoreError::Manifest)?;
+            durable_write(
+                p.store.vfs.as_ref(),
+                &p.store.directory.join(&selection.manifest),
+                &bytes,
+                step,
+            )?;
+            sync_dir(p.store.vfs.as_ref(), &p.store.directory, step)?;
+            let count = u32::try_from(stage.records.len())
+                .map_err(|_| invalid(&root, "prepared member count"))?;
+            let frames = stage
+                .records
+                .iter()
+                .zip(0_u32..)
+                .map(|((op, payload), index)| {
+                    wal_payload::encode_prepared(selection.binding, index, count, *op, payload)
+                        .map_err(|e| invalid(&root, &e.to_string()))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let refs = frames
+                .iter()
+                .map(|frame| (wal_payload::PREPARED_MUTATION_V1, frame.as_slice()))
+                .collect::<Vec<_>>();
+            wal.as_mut()
+                .ok_or(StoreError::ReadOnly)?
+                .commit_many(&refs)?;
+            step("prepared append").map_err(|e| io(&p.store.directory, e))?;
+            p.store
+                .vfs
+                .sync(&p.store.directory.join("wal.ze"), SyncKind::Full)
+                .map_err(|e| io(&p.store.directory, e))?;
+            step("prepared WAL sync").map_err(|e| io(&p.store.directory, e))?;
+            let active = Arc::get_mut(&mut stage.active.segment)
+                .ok_or_else(|| invalid(&root, "private active ownership"))?;
+            for (row, seq) in stage.rows.iter().zip(selection.binding.first_seq..) {
+                for row in row {
+                    active.set_sequence(*row, crate::wal::LogSeq::new(seq))?;
+                }
+            }
+        }
+        if read_optional_vfs(vfs, &root.join(RECORD))?.is_none() {
+            publish(vfs, &root, &encode(&Routes::new()), step)?;
+        }
+        for p in &ordered {
+            let logical = root.join(&p.mutation.name);
+            let reference = logical.join(REFERENCE);
+            if read_optional_vfs(vfs, &reference)?.is_none() {
+                let root_text = root.to_str().ok_or_else(|| invalid(&root, "root UTF-8"))?;
+                durable_write(vfs, &reference, &envelope(root_text.as_bytes()), step)?;
+                sync_dir(vfs, &logical, step)?;
+            }
+        }
+        Ok::<_, StoreError>(())
+    })();
+    if let Err(error) = prepared {
+        rollback_stages(&ordered, staged, &selections, &lengths, &mut wals)?;
+        return Err(error);
+    }
+    let mut snapshots = Vec::new();
+    for p in &ordered {
+        match p.store.snapshot.write() {
+            Ok(snapshot) => snapshots.push(snapshot),
+            Err(_) => {
+                rollback_stages(&ordered, staged, &selections, &lengths, &mut wals)?;
+                return Err(invalid(&root, "snapshot lock"));
+            }
+        }
+    }
+    let mut publication_attempted = false;
+    let published = (|| {
+        let temporary = root.join(".ze-namespaces.tmp");
+        durable_write(vfs, &temporary, &decision, step)?;
+        publication_attempted = true;
+        vfs.rename(&temporary, &root.join(RECORD))
+            .map_err(|e| io(&root, e))?;
+        step("commit rename").map_err(|e| io(&root, e))?;
+        sync_dir(vfs, &root, step)
+    })();
+    if let Err(error) = published {
+        if publication_attempted {
+            for wal in &mut wals {
+                **wal = None;
+            }
+        } else {
+            rollback_stages(&ordered, staged, &selections, &lengths, &mut wals)?;
+        }
+        return Err(error);
+    }
+    // Once publication is attempted its outcome may be indeterminate. Never
+    // truncate prepared evidence in this branch; fence queued writes instead.
+    let adopted = (|| {
+        for ((active, stage), snapshot) in actives.iter_mut().zip(&staged).zip(&mut snapshots) {
+            **active = Some(crate::ingest::ActiveState {
+                generation: stage.active.generation,
+                segment: Arc::clone(&stage.active.segment),
+            });
+            **snapshot = Some(Arc::clone(&stage.snapshot));
+        }
+        step("live states installed").map_err(|e| io(&root, e))?;
+        for ((p, stage), selection) in ordered.iter().zip(&staged).zip(&selections) {
+            if let Some(selection) = selection {
+                accept(
+                    p.store.vfs.as_ref(),
+                    &p.store.directory,
+                    selection,
+                    &stage.manifest,
+                    step,
+                )?;
+            }
+        }
+        publish(vfs, &root, &encode(&descriptor.1), step)
+    })();
+    if let Err(error) = adopted {
+        for wal in &mut wals {
+            **wal = None;
+        }
+        return Err(error);
+    }
+    let by_name = ordered
+        .iter()
+        .zip(&staged)
+        .map(|(p, stage)| (p.mutation.name.clone(), stage.active.generation))
+        .collect::<BTreeMap<_, _>>();
+    drop(snapshots);
+    drop(actives);
+    drop(wals);
+    drop(owners);
+    drop(states);
+    drop(maintenance);
+    drop(ordered);
+    participants
+        .iter_mut()
+        .map(|p| {
+            by_name
+                .get(&p.mutation.name)
+                .copied()
+                .ok_or_else(|| invalid(&root, "missing generation"))
+        })
+        .collect()
+}
+
+fn cleanup_stage(
+    store: &Store,
+    stage: crate::ingest::NamespaceStage,
+    selection: Option<&StagedSelection>,
+) -> Result<(), StoreError> {
+    let mut paths = stage
+        .replacements
+        .iter()
+        .map(|id| store.directory.join(id.file_name()))
+        .collect::<Vec<_>>();
+    if let Some(selection) = selection {
+        paths.push(store.directory.join(&selection.manifest));
+    }
+    for path in paths {
+        match store.vfs.delete(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(io(&path, e)),
+        }
+    }
+    store
+        .vfs
+        .sync(&store.directory, SyncKind::Full)
+        .map_err(|e| io(&store.directory, e))
+}
+
 pub(super) fn io(path: &Path, source: std::io::Error) -> StoreError {
     StoreError::Io {
         path: path.to_path_buf(),
         source,
     }
 }
-pub(super) fn invalid(path: &Path, message: &str) -> StoreError {
+pub(crate) fn invalid(path: &Path, message: &str) -> StoreError {
     io(
         path,
         std::io::Error::new(std::io::ErrorKind::InvalidData, message),
@@ -114,8 +579,11 @@ fn routes(root: &Path) -> Result<Routes, StoreError> {
     }
 }
 fn root_descriptor(root: &Path) -> Result<RootDescriptor, StoreError> {
+    root_descriptor_vfs(&StdVfs, root)
+}
+fn root_descriptor_vfs(vfs: &dyn Vfs, root: &Path) -> Result<RootDescriptor, StoreError> {
     let path = root.join(RECORD);
-    let Some(bytes) = read_optional(&path)? else {
+    let Some(bytes) = read_optional_vfs(vfs, &path)? else {
         return Ok(RootDescriptor::Legacy(Routes::new()));
     };
     if bytes.starts_with(STAGED_MAGIC) {
@@ -187,15 +655,7 @@ pub(super) fn resolve(path: &Path) -> Result<PathBuf, StoreError> {
     }
     let selected = match root_descriptor(parent)? {
         RootDescriptor::Legacy(mut routes) => routes.remove(name),
-        RootDescriptor::Staged(mut descriptor) => {
-            if descriptor.0.contains_key(name) {
-                return Err(invalid(
-                    path,
-                    "selected staged manifest requires transaction adoption",
-                ));
-            }
-            descriptor.1.remove(name)
-        }
+        RootDescriptor::Staged(mut descriptor) => descriptor.1.remove(name),
     };
     match selected {
         None => Ok(path.to_path_buf()),
@@ -322,17 +782,14 @@ fn prepare_copy(
     sync_dir(&StdVfs, destination, step)
 }
 
-/// Atomically selects privately prepared namespace stores with one root commit.
+/// Atomically commits ordered namespace mutations through one root rename.
 ///
-/// All participants must exist and have no open writable handle or in-place
-/// snapshot view (even after its source writer closes). Existing
-/// read-only handles retain their old snapshots. New direct/namespace opens
-/// select the complete root decision without recovering other namespaces.
-/// This call always fully syncs its data. An I/O error near commit is an
-/// indeterminate outcome: reopen to discover the decision before retrying.
-/// Preparations and previous stores are retained (including deleted bytes).
-/// Only logical deletion is promised here; physical reclamation is deferred.
-/// Returned generations follow input order. Ordinary writes do no root I/O.
+/// This path API opens closed writers and shares the incremental live protocol.
+/// Use [`namespace_batch_live`] when writable handles are already open. Data,
+/// decision and local acceptance are fully synced before success is returned.
+/// An error once publication is attempted is indeterminate; reopen before
+/// retrying. Deleted bytes and superseded artifacts are retained in this scope.
+/// Generations follow input order. Ordinary writes perform no root I/O.
 pub fn namespace_batch(
     root: &Path,
     mutations: Vec<NamespaceMutation>,
@@ -468,7 +925,18 @@ fn execute(
             return Ok(Vec::new());
         }
         Operation::Cascade => super::cascade::expand(&root, &sources, &mut mutations)?,
-        Operation::Batch => {}
+        Operation::Batch => {
+            let live = mutations
+                .into_iter()
+                .map(|mutation| {
+                    sources
+                        .get(&mutation.name)
+                        .map(|store| LiveNamespaceMutation { store, mutation })
+                        .ok_or_else(|| invalid(&root, "missing source"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            return execute_live(&root, live, &StdVfs, step, Some(_coordinator));
+        }
     }
     let transaction = loop {
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -823,4 +1291,293 @@ fn decode_staged(path: &Path, bytes: &[u8]) -> Result<StagedDescriptor, StoreErr
         return Err(invalid(path, "noncanonical staged decision"));
     }
     Ok(descriptor)
+}
+
+fn read_optional_vfs(vfs: &dyn Vfs, path: &Path) -> Result<Option<Vec<u8>>, StoreError> {
+    match vfs.open(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(io(path, e)),
+        Ok(n) if n > MAX_RECORD as u64 => Err(invalid(path, "namespace record too large")),
+        Ok(_) => vfs.read(path).map(Some).map_err(|e| io(path, e)),
+    }
+}
+
+fn location(directory: &Path) -> Result<(&Path, &str), StoreError> {
+    let name = directory
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| invalid(directory, "participant name"))?;
+    let parent = directory
+        .parent()
+        .ok_or_else(|| invalid(directory, "participant root"))?;
+    let root = if parent
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with(".ze-batch-"))
+    {
+        parent
+            .parent()
+            .ok_or_else(|| invalid(directory, "route root"))?
+    } else {
+        parent
+    };
+    Ok((root, name))
+}
+fn acceptance_path(
+    directory: &Path,
+    binding: crate::ingest::wal_payload::TransactionBinding,
+) -> PathBuf {
+    directory.join(format!(".ze-accepted-{}", binding.transaction))
+}
+fn accepted(
+    vfs: &dyn Vfs,
+    directory: &Path,
+    binding: crate::ingest::wal_payload::TransactionBinding,
+) -> Result<bool, StoreError> {
+    let path = acceptance_path(directory, binding);
+    let Some(bytes) = read_optional_vfs(vfs, &path)? else {
+        return Ok(false);
+    };
+    let recorded = crate::ingest::wal_payload::TransactionBinding::decode(body(&path, &bytes)?)
+        .map_err(|e| invalid(&path, &e.to_string()))?;
+    if recorded != binding {
+        return Err(invalid(&path, "local acceptance binding mismatch"));
+    }
+    Ok(true)
+}
+fn selection(vfs: &dyn Vfs, directory: &Path) -> Result<Option<StagedSelection>, StoreError> {
+    let (root, name) = location(directory)?;
+    let RootDescriptor::Staged(mut descriptor) = root_descriptor_vfs(vfs, root)? else {
+        return Ok(None);
+    };
+    let Some(selected) = descriptor.0.remove(name) else {
+        return Ok(None);
+    };
+    let identity = participant_identity(root, name)?;
+    if selected.binding.participant != identity {
+        return Err(invalid(directory, "participant identity mismatch"));
+    }
+    Ok(Some(selected))
+}
+fn staged_manifest(
+    vfs: &dyn Vfs,
+    directory: &Path,
+    selected: &StagedSelection,
+) -> Result<crate::manifest::Manifest, StoreError> {
+    let path = directory.join(&selected.manifest);
+    let bytes = vfs.read(&path).map_err(|e| io(&path, e))?;
+    if xxh3_64(&bytes) != selected.binding.manifest_digest {
+        return Err(invalid(&path, "staged manifest digest mismatch"));
+    }
+    let manifest = crate::manifest::decode_manifest(&path.display().to_string(), &bytes)
+        .map_err(StoreError::Manifest)?;
+    if manifest.generation != selected.binding.final_generation {
+        return Err(invalid(&path, "staged generation mismatch"));
+    }
+    let wal = crate::wal::WalReader::open(vfs, &directory.join("wal.ze"))
+        .map_err(StoreError::Wal)?
+        .into_clean()
+        .map_err(StoreError::WalRecovery)?;
+    // Exact complete gated range is necessary before any canonical adoption.
+    let selected_records = wal
+        .records()
+        .iter()
+        .filter(|r| (selected.binding.first_seq..=selected.binding.last_seq).contains(&r.seq.get()))
+        .collect::<Vec<_>>();
+    if selected_records.len() as u64 != selected.binding.last_seq - selected.binding.first_seq + 1 {
+        return Err(invalid(&path, "committed prepared range incomplete"));
+    }
+    for (record, index) in selected_records.iter().zip(0_u32..) {
+        let payload = record
+            .payload()
+            .map_err(|e| invalid(&path, &e.to_string()))?;
+        let member = crate::ingest::wal_payload::decode_prepared(payload)
+            .map_err(|e| invalid(&path, &e.to_string()))?;
+        if record.op != crate::ingest::wal_payload::PREPARED_MUTATION_V1
+            || member.binding != selected.binding
+            || member.index != index
+        {
+            return Err(invalid(&path, "committed prepared binding mismatch"));
+        }
+    }
+    Ok(manifest)
+}
+
+pub(super) fn manifest_for_open(vfs: &dyn Vfs, directory: &Path) -> Result<PathBuf, StoreError> {
+    let canonical = directory.join("manifest.ze");
+    if vfs
+        .open(&canonical)
+        .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+        && vfs
+            .list(directory)
+            .map_err(|e| io(directory, e))?
+            .iter()
+            .any(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(".ze-accepted-"))
+            })
+    {
+        return Err(invalid(&canonical, "missing locally accepted manifest"));
+    }
+    match selection(vfs, directory)? {
+        Some(selected) if !accepted(vfs, directory, selected.binding)? => {
+            staged_manifest(vfs, directory, &selected)?;
+            Ok(directory.join(selected.manifest))
+        }
+        _ => Ok(directory.join("manifest.ze")),
+    }
+}
+fn accept(
+    vfs: &dyn Vfs,
+    directory: &Path,
+    selected: &StagedSelection,
+    manifest: &crate::manifest::Manifest,
+    step: &mut dyn FnMut(&str) -> std::io::Result<()>,
+) -> Result<(), StoreError> {
+    let bytes = crate::manifest::encode_manifest(manifest).map_err(StoreError::Manifest)?;
+    let temporary = directory.join(".manifest.ze.tmp");
+    durable_write(vfs, &temporary, &bytes, step)?;
+    vfs.rename(&temporary, &directory.join("manifest.ze"))
+        .map_err(|e| io(directory, e))?;
+    step("accept manifest rename").map_err(|e| io(directory, e))?;
+    sync_dir(vfs, directory, step)?;
+    let binding = selected
+        .binding
+        .encode()
+        .map_err(|e| invalid(directory, &e.to_string()))?;
+    let committed = acceptance_path(directory, selected.binding);
+    let temporary = committed.with_extension("tmp");
+    durable_write(vfs, &temporary, &envelope(&binding), step)?;
+    vfs.rename(&temporary, &committed)
+        .map_err(|e| io(&committed, e))?;
+    step("accept binding rename").map_err(|e| io(&committed, e))?;
+    sync_dir(vfs, directory, step)
+}
+
+pub(super) fn adopt_for_open(vfs: &dyn Vfs, directory: &Path) -> Result<(), StoreError> {
+    if let Some(selected) = selection(vfs, directory)? {
+        let (root, _) = location(directory)?;
+        // A surviving rename is not proof that its directory entry was synced.
+        // Persist both authorities before admitting even a derived-mode writer.
+        vfs.sync(root, SyncKind::Full).map_err(|e| io(root, e))?;
+        if accepted(vfs, directory, selected.binding)? {
+            vfs.sync(directory, SyncKind::Full)
+                .map_err(|e| io(directory, e))?;
+        } else {
+            let manifest = staged_manifest(vfs, directory, &selected)?;
+            accept(vfs, directory, &selected, &manifest, &mut |_| Ok(()))?;
+        }
+    }
+    Ok(())
+}
+fn normalize_accepted(
+    vfs: &dyn Vfs,
+    root: &Path,
+    step: &mut dyn FnMut(&str) -> std::io::Result<()>,
+) -> Result<(), StoreError> {
+    let RootDescriptor::Staged(descriptor) = root_descriptor_vfs(vfs, root)? else {
+        return Ok(());
+    };
+    for (name, selected) in &descriptor.0 {
+        let directory = root.join(descriptor.1.get(name).map_or(name.as_str(), String::as_str));
+        if !accepted(vfs, &directory, selected.binding)? {
+            return Err(StoreError::StoreBusy { path: directory });
+        }
+        sync_dir(vfs, &directory, step)?;
+    }
+    publish(vfs, root, &encode(&descriptor.1), step)
+}
+
+pub(crate) fn transaction_decisions(
+    vfs: &dyn Vfs,
+    directory: &Path,
+    records: &[crate::wal::VisibleRecord],
+    absorbed: u64,
+) -> Result<BTreeMap<u128, crate::ingest::wal_payload::TransactionBinding>, StoreError> {
+    let mut decisions = BTreeMap::new();
+    let mut checked = std::collections::BTreeSet::new();
+    for record in records.iter().filter(|r| {
+        r.seq.get() > absorbed && r.op == crate::ingest::wal_payload::PREPARED_MUTATION_V1
+    }) {
+        let payload = record.payload().map_err(|source| StoreError::WalRecord {
+            seq: record.seq,
+            source,
+        })?;
+        let member = crate::ingest::wal_payload::decode_prepared(payload).map_err(|source| {
+            StoreError::WalMutation {
+                seq: record.seq,
+                op: record.op,
+                source,
+            }
+        })?;
+        if !checked.insert(member.binding.transaction) {
+            continue;
+        }
+        let (root, name) = location(directory)?;
+        let identity = participant_identity(root, name)?;
+        if member.binding.participant != identity {
+            return Err(StoreError::WalMutation {
+                seq: record.seq,
+                op: record.op,
+                source: crate::ingest::wal_payload::PayloadError::TransactionBinding,
+            });
+        }
+        if accepted(vfs, directory, member.binding)? {
+            decisions.insert(member.binding.transaction, member.binding);
+        } else if let Some(selected) = selection(vfs, directory)?
+            && selected.binding.transaction == member.binding.transaction
+        {
+            if selected.binding != member.binding {
+                return Err(invalid(directory, "root prepared binding mismatch"));
+            }
+            staged_manifest(vfs, directory, &selected)?;
+            decisions.insert(member.binding.transaction, selected.binding);
+        }
+    }
+    Ok(decisions)
+}
+
+fn participant_identity(root: &Path, name: &str) -> Result<u128, StoreError> {
+    let canonical = std::fs::canonicalize(root).map_err(|e| io(root, e))?;
+    Ok(xxhash_rust::xxh3::xxh3_128(
+        format!("{}\t{name}", canonical.display()).as_bytes(),
+    ))
+}
+
+fn rollback_stages(
+    ordered: &[&LiveNamespaceMutation<'_>],
+    staged: Vec<crate::ingest::NamespaceStage>,
+    selections: &[Option<StagedSelection>],
+    lengths: &[u64],
+    wals: &mut [std::sync::MutexGuard<'_, Option<crate::ingest::StoreWal>>],
+) -> Result<(), StoreError> {
+    let result = (|| {
+        for ((((p, stage), selection), length), wal) in ordered
+            .iter()
+            .zip(staged)
+            .zip(selections)
+            .zip(lengths)
+            .zip(wals.iter_mut())
+        {
+            wal.as_mut()
+                .ok_or(StoreError::ReadOnly)?
+                .abort_namespace_suffix(
+                    p.store.vfs.as_ref(),
+                    &p.store.directory.join("wal.ze"),
+                    *length,
+                    p.store.durability_policy,
+                    stage.manifest.log_seq,
+                    &p.store.accounting,
+                )?;
+            cleanup_stage(p.store, stage, selection.as_ref())?;
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        for wal in wals {
+            **wal = None;
+        }
+    }
+    result
 }

@@ -50,6 +50,10 @@ pub(crate) struct PreparedSealedTombstones {
 }
 
 impl PreparedSealedTombstones {
+    pub(crate) fn into_namespace_manifest(self) -> (Manifest, Vec<SegmentId>) {
+        (self.manifest, self.replacement_ids)
+    }
+
     pub(crate) fn abort(
         self,
         vfs: &dyn Vfs,

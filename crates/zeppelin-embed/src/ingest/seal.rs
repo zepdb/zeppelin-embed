@@ -346,7 +346,7 @@ fn build_seal_payloads(
     })
 }
 
-fn load_current_manifest(
+pub(super) fn load_current_manifest(
     vfs: &dyn Vfs,
     directory: &Path,
     durable_end: u64,

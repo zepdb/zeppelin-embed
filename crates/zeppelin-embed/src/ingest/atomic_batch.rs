@@ -144,7 +144,7 @@ pub(crate) fn committed_mutations(
     committed_mutations_with_decisions(records, absorbed_through, |_| None)
 }
 
-fn committed_mutations_with_decisions(
+pub(crate) fn committed_mutations_with_decisions(
     records: &[VisibleRecord],
     absorbed_through: u64,
     decision: impl Fn(wal_payload::TransactionBinding) -> Option<wal_payload::TransactionBinding>,
