@@ -268,6 +268,7 @@ fn store_error_code(kind: GraphStoreErrorKind, statement: bool) -> ZeErrorCode {
         GraphStoreErrorKind::Internal => ZeErrorCode::ZeErrInternal,
         GraphStoreErrorKind::Storage => ZeErrorCode::ZeErrIo,
         GraphStoreErrorKind::WriteIndeterminate => ZeErrorCode::ZeErrIndeterminateCommit,
+        _ => ZeErrorCode::ZeErrInternal,
     }
 }
 

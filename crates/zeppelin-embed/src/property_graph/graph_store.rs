@@ -458,7 +458,73 @@ impl GraphWriteResult {
 }
 
 /// The error groups a graph store caller acts on.
+///
+/// Downstream callers must allow future error groups.
+///
+/// ```compile_fail
+/// use zeppelin_embed::property_graph::query::completed::GraphQueryErrorKind;
+///
+/// fn ze301_query_kind_requires_wildcard(kind: GraphQueryErrorKind) {
+///     match kind {
+///         GraphQueryErrorKind::InvalidPlan => {},
+///         GraphQueryErrorKind::Parameter => {},
+///         GraphQueryErrorKind::Expression => {},
+///         GraphQueryErrorKind::Constraint => {},
+///         GraphQueryErrorKind::Limit => {},
+///         GraphQueryErrorKind::Cancelled => {},
+///         GraphQueryErrorKind::Timeout => {},
+///         GraphQueryErrorKind::Closed => {},
+///         GraphQueryErrorKind::Corruption => {},
+///         GraphQueryErrorKind::Storage => {},
+///         GraphQueryErrorKind::Unavailable => {},
+///         GraphQueryErrorKind::WriteIndeterminate => {},
+///         GraphQueryErrorKind::Internal => {},
+///     }
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use zeppelin_embed::property_graph::GraphStoreErrorKind;
+///
+/// fn ze301_store_kind_requires_wildcard(kind: GraphStoreErrorKind) {
+///     match kind {
+///         GraphStoreErrorKind::LegacyStore => {},
+///         GraphStoreErrorKind::Busy => {},
+///         GraphStoreErrorKind::ReadOnly => {},
+///         GraphStoreErrorKind::InvalidRequest => {},
+///         GraphStoreErrorKind::Constraint => {},
+///         GraphStoreErrorKind::Limit => {},
+///         GraphStoreErrorKind::Cancelled => {},
+///         GraphStoreErrorKind::Timeout => {},
+///         GraphStoreErrorKind::Closed => {},
+///         GraphStoreErrorKind::Corruption => {},
+///         GraphStoreErrorKind::Storage => {},
+///         GraphStoreErrorKind::Unavailable => {},
+///         GraphStoreErrorKind::WriteIndeterminate => {},
+///         GraphStoreErrorKind::Unsupported => {},
+///         GraphStoreErrorKind::Internal => {},
+///     }
+/// }
+/// ```
+///
+/// ```
+/// use zeppelin_embed::property_graph::GraphStoreErrorKind;
+/// use zeppelin_embed::property_graph::query::completed::GraphQueryErrorKind;
+///
+/// fn ze301_kinds_accept_wildcards(query: GraphQueryErrorKind, store: GraphStoreErrorKind) {
+///     match query {
+///         GraphQueryErrorKind::Internal => {},
+///         _ => {},
+///     }
+///     match store {
+///         GraphStoreErrorKind::Internal => {},
+///         _ => {},
+///     }
+/// }
+/// ze301_kinds_accept_wildcards(GraphQueryErrorKind::Internal, GraphStoreErrorKind::Internal);
+/// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum GraphStoreErrorKind {
     /// The directory holds a legacy vector/lexical store, not a graph store.
     LegacyStore,

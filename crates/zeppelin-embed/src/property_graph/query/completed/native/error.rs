@@ -32,6 +32,7 @@ use crate::property_graph::storage::tree::directory::TreeError;
 /// The plan's error groups. A caller branches on this; the exact cause stays
 /// retained internally for diagnostics.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum GraphQueryErrorKind {
     /// The plan is invalid or unsupported, or the statement driver broke its
     /// own contract with the seam.
