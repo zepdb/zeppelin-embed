@@ -55,6 +55,7 @@ pub fn execute(
     limits: CompileLimits,
 ) -> Result<CompletedGraphResult, StatementError> {
     let refused = Cell::new(None);
+    let execution_refused = Cell::new(None);
     let outcome = store.execute_graph_statement(control, options, |runtime, executor| {
         let memory = runtime.memory();
         let compiled = compile_route_in(
@@ -96,7 +97,7 @@ pub fn execute(
                     Ok(inventory) => inventory,
                     Err(error) => return Ok(Err(GraphQueryError::from(error))),
                 };
-                Ok(executor.run(
+                let ran = executor.run(
                     runtime,
                     GraphQuery {
                         plan: lowered.plan(),
@@ -104,7 +105,16 @@ pub fn execute(
                         bindings: lowered.parameters(),
                         columns: &names,
                     },
-                ))
+                );
+                match ran {
+                    Ok(executed) => Ok(Ok(executed)),
+                    Err(error) => {
+                        // A trailing compiler checkpoint must not replace the
+                        // executor's typed failure and measured work counters.
+                        execution_refused.set(Some(error));
+                        Ok(Err(GraphQueryError::builder_rejected()))
+                    }
+                }
             },
         );
         match compiled {
@@ -115,6 +125,9 @@ pub fn execute(
             }
         }
     });
+    if let Some(error) = execution_refused.take() {
+        return Err(StatementError::Query(error));
+    }
     match (outcome, refused.take()) {
         (_, Some(error)) => Err(StatementError::Compile(error)),
         (Ok(result), None) => Ok(result),

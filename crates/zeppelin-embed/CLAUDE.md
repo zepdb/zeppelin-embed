@@ -1153,3 +1153,20 @@ view. Reports retain per-call work including preparation. Text candidate_count
 counts all eligible matches; vector counts retained hits and hybrid its retained
 union. A store without a vector space refuses vector/hybrid with NoVectorSpace
 (Constraint); search/write mixing and row correlation remain invalid plans.
+
+
+## ZE-58 Cypher search execution proofs
+
+Cypher search runs through the existing borrowed ranking adapter and one
+admitted view. Independent calls remain eager query-level sources, including
+empty input and LIMIT 0; eligibility is omitted, literal empty, or a singleton
+global DISTINCT node aggregate. Projection and aggregation retain reports.
+Finite numeric vectors round into the declared f32 domain; the adapter rejects
+nonfinite values and f32 overflow. No exact f64 round-trip restriction applies.
+
+Once the statement executor returns a failure, execute preserves that typed
+cause and its work counters even if a trailing compiler checkpoint also fails.
+Compiler failures before execution retain their original stage and spans.
+The seeded GraphStore constructor is doc-hidden and available only in tests
+or test-support builds. It adds no release API or prepared-plan interface.
+See tasks/evidence/ze-58/README.md for focused proofs and excluded gates.

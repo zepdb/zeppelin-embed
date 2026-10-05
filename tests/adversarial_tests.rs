@@ -19279,12 +19279,12 @@ fn native_graph_runner_keys_are_active_with_graph_feature() {
     #[cfg(not(feature = "graph-result-test-support"))]
     assert_eq!(
         adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        359 + if cfg!(unix) { 7 } else { 0 }
+        369 + if cfg!(unix) { 7 } else { 0 }
     );
     #[cfg(feature = "graph-result-test-support")]
     assert_eq!(
         adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        379 + if cfg!(unix) { 7 } else { 0 }
+        389 + if cfg!(unix) { 7 } else { 0 }
     );
 }
 
@@ -19901,6 +19901,19 @@ fn graph_commit_recovery_scoped_adversarial_smoke() {
                 outcome.coverage.count(key) > 0,
                 "seed={seed}: missing {key}"
             );
+        }
+    }
+}
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn cypher_search_probe_fires_and_matches_same_seed_control() {
+    for seed in [0, 7] {
+        let mut coverage = adversarial::coverage::CoverageRegistry::default();
+        adversarial::graph_cypher_search::probe(seed, &mut coverage)
+            .expect("real Cypher retrieval faults");
+        for key in adversarial::graph_cypher_search::REQUIRED_COVERAGE {
+            assert_eq!(coverage.count(key), 1, "{key}");
         }
     }
 }

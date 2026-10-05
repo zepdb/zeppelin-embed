@@ -278,8 +278,9 @@ impl GraphStore {
         &self.store
     }
 
-    #[cfg(test)]
-    pub(crate) fn create_with_allocator_seed_for_test(
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn create_with_allocator_seed_for_test(
         path: impl AsRef<Path>,
         options: OpenOptions,
         first_node: crate::property_graph::NodeId,
