@@ -1661,7 +1661,7 @@ fn native_vector_index_prepare_limits_controls_release() {
 fn native_vector_index_publication_reopen_required_refs() {
     use super::test_support::{NativePrepareStage, install};
     use crate::lifecycle::native_graph::tests::publication::{FaultPoint, RecordingVfs};
-    use crate::vfs::Vfs;
+    use crate::vfs::{StdVfs, SyncKind, Vfs};
     use std::io::{Read, Seek, SeekFrom, Write};
     use std::path::Path;
     use std::sync::Arc;
@@ -1720,7 +1720,9 @@ fn native_vector_index_publication_reopen_required_refs() {
         file.seek(SeekFrom::Start(payload_offset))
             .expect("reseak index payload");
         file.write_all(&byte).expect("corrupt index byte");
-        file.sync_all().expect("sync corrupt index artifact");
+        StdVfs
+            .sync(&artifact, SyncKind::Full)
+            .expect("sync corrupt index artifact");
     }
 
     let fixture = super::test_support::prepare_reopen_fixture(0x158);
