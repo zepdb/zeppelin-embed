@@ -738,8 +738,8 @@ impl<'view, 's, 'lease, 'm, 'g> NativeRetrievalContext<'view, 's, 'lease, 'm, 'g
 
     /// Ranks the eligible hybrid population under Store policy v1 with
     /// full-live anchors. Exact scores the entire eligible union; the other
-    /// modes cross-score the union of bounded producer windows and never
-    /// claim complete coverage while an eligible vector leg exists.
+    /// modes cross-score bounded producer windows and certify coverage only
+    /// from an exact producer and a strict omitted-candidate score bound.
     pub(crate) fn rank_hybrid(
         &self,
         vector: &PreparedNativeVector<'_, '_>,
@@ -941,7 +941,7 @@ impl<'view, 's, 'lease, 'm, 'g> NativeRetrievalContext<'view, 's, 'lease, 'm, 'g
     }
 
     /// Cross-scores the union of the eligible vector producer window and the
-    /// exact lexical window. Candidate coverage stays approximate.
+    /// exact lexical window. An exact vector producer can certify the result.
     #[allow(
         clippy::too_many_arguments,
         reason = "one windowed round names both producers, the policy and the report"
@@ -1075,12 +1075,66 @@ impl<'view, 's, 'lease, 'm, 'g> NativeRetrievalContext<'view, 's, 'lease, 'm, 'g
                 &mut resources,
             )?;
         }
+        // A candidate omitted by the union is outside both windows. For
+        // exact producers its vector distance is at least the last retained
+        // distance and its BM25 is at most the last retained score. An
+        // exhausted leg contributes zero: omitted nodes lack that component.
+        // Equality cannot certify the final node-ID tie break.
+        let certified = if vector_report.coverage == CandidateCoverage::Exact
+            && vector_report.precision == ScorePrecision::Original
+        {
+            let vector_exhausted = ranked.hits().len() as u64 == report.eligible_vector_members;
+            let lexical_exhausted =
+                lexical_window.hits.len() as u64 == domain.report.eligible_matches;
+            if vector_exhausted && lexical_exhausted {
+                true
+            } else {
+                let distance = if vector_exhausted {
+                    None
+                } else {
+                    Some(
+                        ranked
+                            .hits()
+                            .last()
+                            .ok_or(RetrievalError::Invariant(
+                                "unexhausted vector window is empty",
+                            ))?
+                            .distance,
+                    )
+                };
+                let lexical = if lexical_exhausted {
+                    None
+                } else {
+                    Some(
+                        lexical_window
+                            .hits
+                            .as_slice()
+                            .last()
+                            .ok_or(RetrievalError::Invariant(
+                                "unexhausted lexical window is empty",
+                            ))?
+                            .bm25,
+                    )
+                };
+                let omitted = policy.score(distance, lexical).map_err(fusion)?;
+                best.hits.len() == k
+                    && best
+                        .hits
+                        .as_slice()
+                        .last()
+                        .is_some_and(|hit| hit.fused > omitted)
+            }
+        } else {
+            false
+        };
         resources.step(0)?;
         drop(resources);
         drop(ranked);
         report.candidate_count = candidates;
         report.cross_scored_count = candidates;
-        report.coverage = if report.lexical_leg == LegState::Nonempty {
+        report.coverage = if certified {
+            CandidateCoverage::Exact
+        } else if report.lexical_leg == LegState::Nonempty {
             CandidateCoverage::Approximate
         } else {
             // With no eligible lexical match the fused order is the vector

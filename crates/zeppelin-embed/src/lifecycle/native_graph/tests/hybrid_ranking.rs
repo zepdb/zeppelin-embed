@@ -416,6 +416,7 @@ fn hit_bits(hits: &[OracleHit]) -> Vec<HitBits> {
 enum Operation {
     Text,
     Hybrid,
+    MismatchedHybrid,
 }
 
 enum Outcome {
@@ -432,6 +433,7 @@ struct Request<'a> {
     k: i64,
     window: u64,
     analyzer: Analyzer,
+    observation: Option<&'a mut Observation>,
 }
 
 impl NativeReadConsumer<Result<Outcome, RetrievalError>> for Request<'_> {
@@ -450,6 +452,19 @@ impl NativeReadConsumer<Result<Outcome, RetrievalError>> for Request<'_> {
             ),
             None => None,
         };
+        let alternate = if matches!(self.operation, Operation::MismatchedHybrid) {
+            let ids = self.eligible.unwrap();
+            Some(
+                EligibleNodeSet::build(
+                    runtime,
+                    ids.len() - 1,
+                    ids.iter().skip(1).map(|id| token.node(*id)),
+                )
+                .map_err(|_| TreeError::Invalid("alternate eligible set"))?,
+            )
+        } else {
+            None
+        };
         let eligibility = || {
             set.as_ref()
                 .map_or(Eligibility::AllIndexed, Eligibility::Set)
@@ -459,7 +474,9 @@ impl NativeReadConsumer<Result<Outcome, RetrievalError>> for Request<'_> {
             Ok(text) => text,
             Err(error) => return Ok(Err(error)),
         };
-        Ok(match self.operation {
+        let mut before = runtime.counters();
+        let mut start = std::time::Instant::now();
+        let result = match self.operation {
             Operation::Text => context.rank_text(&text, bounds, runtime).map(|ranked| {
                 Outcome::Text(
                     ranked
@@ -470,10 +487,21 @@ impl NativeReadConsumer<Result<Outcome, RetrievalError>> for Request<'_> {
                     ranked.report(),
                 )
             }),
-            Operation::Hybrid => {
+            Operation::Hybrid | Operation::MismatchedHybrid => {
                 let vector = context
-                    .prepare_vector(&self.query, self.mode, eligibility(), runtime)
+                    .prepare_vector(
+                        &self.query,
+                        self.mode,
+                        if let Some(set) = &alternate {
+                            Eligibility::Set(set)
+                        } else {
+                            eligibility()
+                        },
+                        runtime,
+                    )
                     .map_err(|_| TreeError::Invalid("prepared vector"))?;
+                before = runtime.counters();
+                start = std::time::Instant::now();
                 context
                     .rank_hybrid(&vector, &text, bounds, runtime)
                     .map(|ranked| {
@@ -493,7 +521,16 @@ impl NativeReadConsumer<Result<Outcome, RetrievalError>> for Request<'_> {
                         )
                     })
             }
-        })
+        };
+        if let Some(observation) = self.observation.as_deref_mut() {
+            if let Ok(Outcome::Hybrid(_, report)) = &result {
+                observation.postings = report.text.postings;
+            }
+            observation.work = Some(runtime.counters().since(before));
+            observation.peak = runtime.memory().peak_reserved_bytes();
+            observation.nanos = start.elapsed().as_nanos();
+        }
+        Ok(result)
     }
 }
 
@@ -529,6 +566,7 @@ fn hybrid(
             k,
             window: 65_536,
             analyzer: corpus.analyzer(),
+            observation: None,
         },
     )
     .unwrap()
@@ -555,6 +593,7 @@ fn text(
             k,
             window: 65_536,
             analyzer: corpus.analyzer(),
+            observation: None,
         },
     )
     .unwrap()
@@ -895,8 +934,8 @@ fn ze63_empty_and_absent_legs_report_why() {
 }
 
 #[test]
-fn ze63_windowed_hybrid_cross_scores_and_never_claims_complete_coverage() {
-    let name = "lifecycle::native_graph::tests::hybrid_ranking::ze63_windowed_hybrid_cross_scores_and_never_claims_complete_coverage";
+fn ze63_windowed_hybrid_cross_scores_and_certifies_only_exact_producers() {
+    let name = "lifecycle::native_graph::tests::hybrid_ranking::ze63_windowed_hybrid_cross_scores_and_certifies_only_exact_producers";
     let corpus = corpus(name);
     let oracle = Oracle::new(&corpus);
     let mut random = crate::test_support::seeded_rng(&format!("{name}::queries"));
@@ -947,7 +986,9 @@ fn ze63_windowed_hybrid_cross_scores_and_never_claims_complete_coverage() {
                 ScorePrecision::Original,
                 "rescored components"
             );
-            if report.lexical_leg == LegState::Nonempty {
+            if report.lexical_leg == LegState::Nonempty
+                && report.actual_tier != Some(ActualTier::Exact)
+            {
                 assert_eq!(
                     report.coverage,
                     CandidateCoverage::Approximate,
@@ -1034,4 +1075,259 @@ fn ze63_pure_compaction_preserves_every_score_and_report() {
     }
     assert!(moved > 0, "maintenance relocated physical references");
     assert_eq!(observe(&corpus), before);
+}
+
+fn ze209_request<'a>(corpus: &Corpus, text: &'a str) -> Request<'a> {
+    Request {
+        operation: Operation::Hybrid,
+        query: [0.0, 0.0],
+        text,
+        mode: SearchMode::Exact,
+        eligible: None,
+        k: 1,
+        window: 65_536,
+        analyzer: corpus.analyzer(),
+        observation: None,
+    }
+}
+
+#[test]
+fn ze209_dead_vector_drops_ceiling() {
+    let mut corpus = Corpus::new();
+    let nodes = corpus.create(&[
+        (Some([1.0, 0.0]), Some("amber")),
+        (Some([100.0, 0.0]), Some("amber")),
+    ]);
+    let (_, before) = hybrid(&corpus, [0.0, 0.0], "amber", SearchMode::Exact, None, 2);
+    corpus.delete(&nodes[1..]);
+    let (hits, after) = hybrid(&corpus, [0.0, 0.0], "amber", SearchMode::Exact, None, 2);
+    assert_eq!(before.live_vector_members, 2);
+    assert_eq!(after.live_vector_members, 1);
+    assert!(after.vector_ceiling.unwrap() < before.vector_ceiling.unwrap());
+    let oracle = Oracle::new(&corpus);
+    assert_eq!(after.vector_ceiling, oracle.ceiling([0.0, 0.0]));
+    assert_eq!(
+        hit_bits(&hits),
+        hit_bits(&oracle.hybrid([0.0, 0.0], "amber", None, 2).0)
+    );
+}
+
+#[test]
+fn ze209_refuses_eligibility_mismatch() {
+    let mut corpus = Corpus::new();
+    let nodes = corpus.create(&[(Some([1.0, 0.0]), Some("amber")); 2]);
+    let mut request = ze209_request(&corpus, "amber");
+    request.operation = Operation::MismatchedHybrid;
+    request.eligible = Some(&nodes);
+    assert!(matches!(
+        run(&corpus, request),
+        Err(RetrievalError::EligibilityMismatch)
+    ));
+    assert_eq!(
+        hybrid(
+            &corpus,
+            [0.0, 0.0],
+            "amber",
+            SearchMode::Exact,
+            Some(&nodes[..1]),
+            1
+        )
+        .0
+        .len(),
+        1
+    );
+}
+
+#[test]
+fn ze209_refuses_analyzer_mismatch() {
+    let mut corpus = Corpus::new();
+    corpus.create(&[(Some([1.0, 0.0]), Some("amber"))]);
+    let mut request = ze209_request(&corpus, "amber");
+    request.analyzer = Analyzer::new(crate::fts::tokenizer::TokenizerConfig::code()).unwrap();
+    assert_ne!(request.analyzer.epoch(), corpus.analyzer().epoch());
+    assert!(matches!(
+        run(&corpus, request),
+        Err(RetrievalError::AnalyzerMismatch)
+    ));
+    assert!(run(&corpus, ze209_request(&corpus, "amber")).is_ok());
+}
+
+#[test]
+fn ze209_refuses_65_terms() {
+    let mut corpus = Corpus::new();
+    corpus.create(&[(Some([1.0, 0.0]), Some("amber"))]);
+    let terms = (0..65)
+        .map(|i| {
+            format!(
+                "word{}{}",
+                char::from(b'a' + (i / 26) as u8),
+                char::from(b'a' + (i % 26) as u8)
+            )
+        })
+        .collect::<Vec<_>>();
+    let query = terms.join(" ");
+    assert_eq!(corpus.analyzer().analyze(&query).len(), 65);
+    assert!(matches!(
+        run(&corpus, ze209_request(&corpus, &query)),
+        Err(RetrievalError::LexicalTerms {
+            count: 65,
+            limit: 64
+        })
+    ));
+    assert!(run(&corpus, ze209_request(&corpus, &terms[..64].join(" "))).is_ok());
+}
+
+#[test]
+fn ze209_refuses_windowed_union_capacity() {
+    let mut corpus = Corpus::new();
+    corpus.create(&[(Some([1.0, 0.0]), None); 50]);
+    corpus.create(&[(None, Some("amber")); 50]);
+    let mut request = ze209_request(&corpus, "amber");
+    request.mode = SearchMode::Default;
+    request.window = 50;
+    assert!(matches!(
+        run(&corpus, request),
+        Err(RetrievalError::CandidateWindow {
+            required: 100,
+            window: 50
+        })
+    ));
+    let mut request = ze209_request(&corpus, "amber");
+    request.mode = SearchMode::Default;
+    request.window = 100;
+    assert!(run(&corpus, request).is_ok());
+}
+
+#[derive(Default)]
+struct Observation {
+    work: Option<crate::property_graph::query::runtime::WorkCounters>,
+    peak: usize,
+    postings: u64,
+    nanos: u128,
+}
+
+fn observe(corpus: &Corpus, mode: SearchMode, eligible: Option<&[NodeId]>) -> Observation {
+    let mut observation = Observation::default();
+    let mut request = ze209_request(corpus, "amber");
+    request.mode = mode;
+    request.eligible = eligible;
+    request.observation = Some(&mut observation);
+    assert!(run(corpus, request).is_ok());
+    observation
+}
+
+#[test]
+fn ze209_exact_hybrid_cost_bound() {
+    use crate::property_graph::query::runtime::WorkKind;
+    let mut corpus = Corpus::new();
+    let nodes = corpus.create(&[(Some([1.0, 0.0]), Some("amber")); 64]);
+    corpus.delete(&nodes[48..]);
+    for eligible in [None, Some(&nodes[..16])] {
+        let observation = observe(&corpus, SearchMode::Exact, eligible);
+        let work = observation.work.unwrap();
+        let eligible_count = eligible.map_or(48, <[NodeId]>::len);
+        assert_eq!(
+            work.get(WorkKind::VectorCoordinates),
+            2 * (48 + eligible_count) as u64
+        );
+        assert_eq!(observation.postings, 2 * 64);
+        // Two scoring streams plus two lexical-region load/validation passes.
+        assert_eq!(work.get(WorkKind::LexicalPostings), 4 * 64);
+        // One source: row-score scratch is 8 * physical rows; retained
+        // text membership + coverage is at most 32 bytes per eligible row.
+        // TreeResources reserves a 256 KiB traversal stack. Another 64 KiB
+        // bounds fixed source/term/control scratch for this one-source fixture.
+        assert!(
+            observation.peak <= 256 * 1024 + 65_536 + 8 * 64 + 32 * eligible_count,
+            "query peak {}",
+            observation.peak
+        );
+    }
+}
+
+#[test]
+#[ignore = "scoped release measurement; no latency gate"]
+fn ze209_hybrid_cost_measurement() {
+    use crate::property_graph::query::runtime::WorkKind;
+    for rows in [64, 256, 1024] {
+        let mut corpus = Corpus::new();
+        let nodes = corpus.create(&vec![(Some([1.0, 0.0]), Some("amber")); rows]);
+        for deleted in [false, true] {
+            if deleted {
+                for batch in nodes[rows / 4..].chunks(64) {
+                    corpus.delete(batch);
+                }
+            }
+            for selective in [false, true] {
+                let eligible = selective.then_some(&nodes[..rows / 8]);
+                for mode in [SearchMode::Exact, SearchMode::Default] {
+                    for sample in 0..5 {
+                        let observation = observe(&corpus, mode, eligible);
+                        let work = observation.work.unwrap();
+                        println!(
+                            "rows={rows} deleted={deleted} selective={selective} mode={mode:?} sample={sample} vector={} postings={} peak={} ns={}",
+                            work.get(WorkKind::VectorCoordinates),
+                            work.get(WorkKind::LexicalPostings),
+                            observation.peak,
+                            observation.nanos
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn ze209_windowed_stability_certificate() {
+    let mut corpus = Corpus::new();
+    corpus.create(&[(Some([0.0, 0.0]), Some("amber amber amber amber"))]);
+    corpus.create(
+        &[(
+            Some([100.0, 0.0]),
+            Some("amber birch cedar dune ember fjord"),
+        ); 60],
+    );
+    let expected = Oracle::new(&corpus).hybrid([0.0, 0.0], "amber", None, 1).0;
+    let (hits, report) =
+        crate::property_graph::retrieval::rank::with_visited_budget_override(0, || {
+            hybrid(&corpus, [0.0, 0.0], "amber", SearchMode::Default, None, 1)
+        });
+    assert_eq!(report.actual_tier, Some(ActualTier::Exact));
+    assert_eq!(hit_bits(&hits), hit_bits(&expected));
+    assert_eq!(report.coverage, CandidateCoverage::Exact);
+    let (_, report) = hybrid(&corpus, [0.0, 0.0], "amber", SearchMode::Default, None, 1);
+    assert_eq!(report.actual_tier, Some(ActualTier::Graph));
+    assert_eq!(report.coverage, CandidateCoverage::Approximate);
+    let (_, report) = hybrid(&corpus, [0.0, 0.0], "amber", SearchMode::Scan, None, 1);
+    assert_eq!(report.coverage, CandidateCoverage::Approximate);
+    let mut tied = Corpus::new();
+    tied.create(&[(Some([1.0, 0.0]), Some("amber")); 61]);
+    let (_, report) =
+        crate::property_graph::retrieval::rank::with_visited_budget_override(0, || {
+            hybrid(&tied, [0.0, 0.0], "amber", SearchMode::Default, None, 1)
+        });
+    assert_eq!(
+        report.coverage,
+        CandidateCoverage::Approximate,
+        "equality is uncertified"
+    );
+    let mut exhausted = Corpus::new();
+    exhausted.create(&[(Some([1.0, 0.0]), Some("amber")); 2]);
+    let (_, report) =
+        crate::property_graph::retrieval::rank::with_visited_budget_override(0, || {
+            hybrid(
+                &exhausted,
+                [0.0, 0.0],
+                "amber",
+                SearchMode::Default,
+                None,
+                4,
+            )
+        });
+    assert_eq!(
+        report.coverage,
+        CandidateCoverage::Exact,
+        "both legs exhausted"
+    );
 }
