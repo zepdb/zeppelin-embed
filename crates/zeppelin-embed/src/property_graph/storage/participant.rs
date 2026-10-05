@@ -35,6 +35,13 @@ pub trait PreparationCatalog<S: BlockSource>: RecordCatalog<S> {
         Ok(None)
     }
 
+    /// Resolve an existing exact namespace for a structured key probe.
+    fn namespace_id(
+        &self,
+        name: crate::property_graph::GraphName<'_>,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<crate::property_graph::catalog::NamespaceId, TreeError>;
+
     /// Complete store/generation/root-envelope identity of the retained catalog.
     fn base_identity(&self) -> BaseIdentity;
 }
@@ -175,6 +182,34 @@ pub(crate) struct BatchCatalog<'a, C> {
     pub(crate) base: &'a C,
     pub(crate) additions: &'a [SymbolEntry<'a>],
 }
+impl<S: BlockSource, C: PreparationCatalog<S>> PreparationCatalog<S> for BatchCatalog<'_, C> {
+    fn namespace_id(
+        &self,
+        name: crate::property_graph::GraphName<'_>,
+        r: &mut TreeResources<'_>,
+    ) -> Result<crate::property_graph::catalog::NamespaceId, TreeError> {
+        for entry in self.additions {
+            r.step(1)?;
+            if entry.name == name
+                && let Symbol::Namespace(id) = entry.symbol
+            {
+                return Ok(id);
+            }
+        }
+        self.base.namespace_id(name, r)
+    }
+    fn base_identity(&self) -> BaseIdentity {
+        self.base.base_identity()
+    }
+    fn relationship_on_delete(
+        &self,
+        id: crate::property_graph::catalog::RelTypeId,
+        r: &mut TreeResources<'_>,
+    ) -> Result<Option<crate::property_graph::catalog::OnDelete>, TreeError> {
+        self.base.relationship_on_delete(id, r)
+    }
+}
+
 impl<S: BlockSource, C: RecordCatalog<S>> RecordCatalog<S> for BatchCatalog<'_, C> {
     fn resolve(
         &self,
@@ -307,7 +342,7 @@ impl<'m, C> PrepareState<'_, 'm, C> {
         r: &mut TreeResources<'_>,
     ) -> Result<(), TreeError>
     where
-        C: RecordCatalog<S>,
+        C: PreparationCatalog<S>,
     {
         r.step(1)?;
         let fields = delta.provenance().fields();
@@ -332,7 +367,21 @@ impl<'m, C> PrepareState<'_, 'm, C> {
                 if expected == old.shape.incarnation()
                     && old.revision < fields.installed_revision => {}
             (ExpectedGraphState::Entity(_), None) if delta.canonical().is_none() => {
-                swept_delete(sink, self.roots, fields, self.catalog, self.document, r)?;
+                swept_delete(
+                    sink,
+                    self.roots,
+                    fields,
+                    self.catalog.namespace_id(
+                        fields
+                            .key
+                            .ok_or(TreeError::Invalid("swept Delete key absent"))?
+                            .namespace(),
+                        r,
+                    )?,
+                    self.catalog,
+                    self.document,
+                    r,
+                )?;
             }
             (ExpectedGraphState::Absent | ExpectedGraphState::Deletion(_), None) => {}
             _ => return Err(TreeError::Invalid("normalized change/base record mismatch")),

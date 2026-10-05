@@ -852,6 +852,21 @@ impl<S: BlockSource> RecordCatalog<S> for Catalog<'_> {
     }
 }
 impl<S: BlockSource> PreparationCatalog<S> for Catalog<'_> {
+    fn namespace_id(
+        &self,
+        name: zeppelin_embed::property_graph::GraphName<'_>,
+        r: &mut TreeResources<'_>,
+    ) -> Result<zeppelin_embed::property_graph::catalog::NamespaceId, TreeError> {
+        for entry in self.symbols {
+            r.step(1)?;
+            if entry.name == name
+                && let Symbol::Namespace(id) = entry.symbol
+            {
+                return Ok(id);
+            }
+        }
+        Err(TreeError::Invalid("unknown fixture namespace"))
+    }
     fn base_identity(&self) -> BaseIdentity {
         self.base
     }

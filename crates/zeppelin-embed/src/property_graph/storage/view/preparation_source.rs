@@ -966,6 +966,16 @@ impl<S: BlockSource> RecordCatalog<S> for NativePreparationCatalog<'_, '_, '_> {
 }
 
 impl<S: BlockSource> PreparationCatalog<S> for NativePreparationCatalog<'_, '_, '_> {
+    fn namespace_id(
+        &self,
+        name: crate::property_graph::GraphName<'_>,
+        r: &mut TreeResources<'_>,
+    ) -> Result<crate::property_graph::catalog::NamespaceId, TreeError> {
+        match self.lookup_symbol(SymbolKind::Namespace, name, r)? {
+            Some(Symbol::Namespace(id)) => Ok(id),
+            _ => Err(TreeError::Invalid("structured namespace absent")),
+        }
+    }
     fn relationship_on_delete(
         &self,
         id: crate::property_graph::catalog::RelTypeId,

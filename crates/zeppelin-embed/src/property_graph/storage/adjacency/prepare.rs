@@ -276,7 +276,7 @@ fn collect_changes<'a, S: BlockSource>(
     next: GraphRoots,
     base_sequence: u64,
     sequence: u64,
-    catalog: &impl crate::property_graph::storage::records::RecordCatalog<S>,
+    catalog: &impl PreparationCatalog<S>,
     document: Option<&EmbeddingTower>,
     memory: &'a StorageMemory<'a>,
     r: &mut TreeResources<'_>,
@@ -311,6 +311,15 @@ fn collect_changes<'a, S: BlockSource>(
                     source,
                     old_roots,
                     delta.provenance().fields(),
+                    catalog.namespace_id(
+                        delta
+                            .provenance()
+                            .fields()
+                            .key
+                            .ok_or(invalid("swept Delete key absent"))?
+                            .namespace(),
+                        r,
+                    )?,
                     catalog,
                     document,
                     r,

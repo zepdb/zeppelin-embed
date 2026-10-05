@@ -673,6 +673,7 @@ pub(crate) struct NativeGraphPublication {
     accounting: Arc<super::stats::Accounting>,
     writer: Mutex<Option<write::NativeWriter>>,
     pub(crate) pack_bytes_since_reclaim: std::sync::atomic::AtomicU64,
+    sweep_resume: Mutex<crate::property_graph::storage::consolidation::SweepResume>,
     maintenance_policy: Mutex<crate::property_graph::GraphMaintenancePolicy>,
     read_only: AtomicBool,
     #[cfg(any(test, feature = "test-support"))]
@@ -807,6 +808,7 @@ impl NativeGraphPublication {
             accounting: Arc::clone(accounting),
             writer: Mutex::new(None),
             pack_bytes_since_reclaim: std::sync::atomic::AtomicU64::new(0),
+            sweep_resume: Mutex::new(Default::default()),
             maintenance_policy: Mutex::new(crate::property_graph::GraphMaintenancePolicy::default()),
             read_only: AtomicBool::new(false),
             #[cfg(any(test, feature = "test-support"))]
@@ -2774,6 +2776,13 @@ pub(crate) mod tests {
         }
     }
     impl<S: BlockSource> PreparationCatalog<S> for EmptyPreparationCatalog {
+        fn namespace_id(
+            &self,
+            _name: crate::property_graph::GraphName<'_>,
+            _r: &mut TreeResources<'_>,
+        ) -> Result<crate::property_graph::catalog::NamespaceId, TreeError> {
+            Err(TreeError::Invalid("empty catalog namespace"))
+        }
         fn base_identity(&self) -> BaseIdentity {
             self.0
         }

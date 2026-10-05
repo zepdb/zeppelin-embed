@@ -8738,3 +8738,205 @@ fn ze166_both_live_missing_relationship_is_corruption() {
             .is_err()
     );
 }
+
+#[test]
+fn ze166_sweep_work_is_independent_of_unrelated_relationships() {
+    use crate::property_graph::storage::consolidation::{
+        SWEEP_WORK, select_finished_tombstones, select_hidden_relationships,
+    };
+    let measure = |relationships: usize| {
+        let parent = super::tempfile::tempdir().unwrap();
+        let path = parent.path().join("native");
+        let store = Store::create_native_graph(&path, options(), None).unwrap();
+        let (a, b, _) = ze166_fixture(&store);
+        let control = QueryControl::Cancel(CancelToken::new());
+        for chunk in (0..relationships).collect::<Vec<_>>().chunks(32) {
+            let names: Vec<_> = chunk.iter().map(|id| format!("live-{id}")).collect();
+            let requests: Vec<_> = names
+                .iter()
+                .map(|name| {
+                    let mut request = ze166_relationship(b, b);
+                    request.key =
+                        ApplicationKey::new(EntityKind::Relationship, "ze166", name).unwrap();
+                    request
+                })
+                .collect();
+            store.apply_native_graph(&requests, &control).unwrap();
+        }
+        ze166_detach(&store, a);
+        SWEEP_WORK.with(|counter| counter.set([0; 4]));
+        {
+            let lease = store.admit_native_read().unwrap();
+            let shared =
+                crate::property_graph::resources::GraphResources::from_store(&store).unwrap();
+            let writer = WriteMemory::new(&shared, WriteLimits::default()).unwrap();
+            let memory = StorageMemory::new(&writer, &control, 32 * 1024 * 1024).unwrap();
+            let source = NativePreparationSource::new(&lease, &memory, 64).unwrap();
+            let mut r = source.resources(256 * 1024 * 1024).unwrap();
+            let catalog =
+                crate::property_graph::storage::NativePreparationCatalog::open(&source, &mut r)
+                    .unwrap();
+            let roots = lease.bundle().roots();
+            let mut resume = None;
+            let swept = select_hidden_relationships(
+                &source,
+                roots,
+                &catalog,
+                None,
+                128,
+                &mut resume,
+                &memory,
+                &mut r,
+            )
+            .unwrap();
+            select_finished_tombstones(
+                &source,
+                roots,
+                &catalog,
+                None,
+                swept.as_slice(),
+                128,
+                lease.bundle().sequence(),
+                &mut None,
+                &memory,
+                &mut r,
+            )
+            .unwrap();
+            if relationships > 128 {
+                let before = SWEEP_WORK.with(|counter| counter.get()[0]);
+                assert!(resume.is_some());
+                let rest = select_hidden_relationships(
+                    &source,
+                    roots,
+                    &catalog,
+                    None,
+                    128,
+                    &mut resume,
+                    &memory,
+                    &mut r,
+                )
+                .unwrap();
+                assert!(rest.as_slice().is_empty());
+                assert!(resume.is_none());
+                let after = SWEEP_WORK.with(|counter| counter.get()[0]);
+                assert_eq!(after - before, (relationships + 1 - 128) as u64);
+                SWEEP_WORK.with(|counter| {
+                    let mut counts = counter.get();
+                    counts[0] = before;
+                    counter.set(counts);
+                });
+            }
+        }
+        let selection = SWEEP_WORK.with(|counter| counter.get());
+        for _ in 0..12 {
+            store
+                .commit_native_graph_maintenance(
+                    &store.admit_native_graph_maintenance().unwrap(),
+                    &control,
+                )
+                .unwrap();
+            let lease = store.admit_native_read().unwrap();
+            if !ze166_physical(&store, &lease, a).1 {
+                break;
+            }
+        }
+        assert!(!ze166_physical(&store, &store.admit_native_read().unwrap(), a).1);
+        store.checkpoint_native_graph(&control).unwrap();
+        store.close().unwrap();
+        drop(store);
+        SWEEP_WORK.with(|counter| counter.set([0; 4]));
+        let store = Store::open_native_graph(&path, options(), None).unwrap();
+        let open = SWEEP_WORK.with(|counter| counter.get()[2]);
+        store.close().unwrap();
+        (selection[0], selection[1], open)
+    };
+    let small = measure(16);
+    let large = measure(160);
+    eprintln!("ZE-166 work R=16 {small:?}; R=160 {large:?}");
+    assert_eq!(
+        small.1, large.1,
+        "per-tombstone incident work scales with R"
+    );
+    assert_eq!(small.2, large.2, "swept-node open validation scales with R");
+    assert!(large.0 <= 128, "hidden selection exceeds its visit budget");
+    ze166_assert_blocked_tombstone_budget();
+}
+
+// Every visited tombstone here is blocked. Selection must still stop and
+// resume, rather than chasing 128 successful removals through the whole tree.
+#[cfg(test)]
+fn ze166_assert_blocked_tombstone_budget() {
+    use crate::property_graph::storage::consolidation::{SWEEP_WORK, select_finished_tombstones};
+    let parent = super::tempfile::tempdir().unwrap();
+    let store = Store::create_native_graph(parent.path().join("native"), options(), None).unwrap();
+    let control = QueryControl::Cancel(CancelToken::new());
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    let names: Vec<_> = (0..130).map(|id| format!("blocked-{id}")).collect();
+    for chunk in names.chunks(32) {
+        let nodes: Vec<_> = chunk
+            .iter()
+            .map(|name| StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "ze166", name).unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            })
+            .collect();
+        let receipts = store.apply_native_graph(&nodes, &control).unwrap();
+        let edges: Vec<_> = chunk
+            .iter()
+            .zip(receipts.iter())
+            .map(|(name, receipt)| {
+                let EntityId::Node(node) = receipt.entity else {
+                    panic!("node");
+                };
+                let mut edge = ze166_relationship(node, node);
+                edge.key = ApplicationKey::new(EntityKind::Relationship, "ze166", name).unwrap();
+                edge
+            })
+            .collect();
+        store.apply_native_graph(&edges, &control).unwrap();
+        let deletes: Vec<_> = chunk
+            .iter()
+            .zip(receipts.iter())
+            .map(|(name, receipt)| StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "ze166", name).unwrap(),
+                revision: GraphRevision::new(2).unwrap(),
+                operation: StructuredOperation::Delete(
+                    receipt.entity,
+                    crate::property_graph::GraphDeleteMode::Detach,
+                ),
+                image: None,
+            })
+            .collect();
+        store.apply_native_graph(&deletes, &control).unwrap();
+    }
+    let lease = store.admit_native_read().unwrap();
+    let shared = crate::property_graph::resources::GraphResources::from_store(&store).unwrap();
+    let writer = WriteMemory::new(&shared, WriteLimits::default()).unwrap();
+    let memory = StorageMemory::new(&writer, &control, 32 * 1024 * 1024).unwrap();
+    let source = NativePreparationSource::new(&lease, &memory, 64).unwrap();
+    let mut r = source.resources(256 * 1024 * 1024).unwrap();
+    let catalog =
+        crate::property_graph::storage::NativePreparationCatalog::open(&source, &mut r).unwrap();
+    let mut resume = None;
+    for expected in [128, 2] {
+        SWEEP_WORK.with(|counter| counter.set([0; 4]));
+        let selected = select_finished_tombstones(
+            &source,
+            lease.bundle().roots(),
+            &catalog,
+            None,
+            &[],
+            128,
+            lease.bundle().sequence(),
+            &mut resume,
+            &memory,
+            &mut r,
+        )
+        .unwrap();
+        assert!(selected.as_slice().is_empty());
+        assert_eq!(SWEEP_WORK.with(|counter| counter.get()[3]), expected);
+    }
+    assert!(resume.is_none());
+}

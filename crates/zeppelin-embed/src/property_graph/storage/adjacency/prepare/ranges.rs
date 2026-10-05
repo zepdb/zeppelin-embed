@@ -170,6 +170,7 @@ pub(crate) fn relocate_ranges<'m>(
     context: RangeEditContext,
     drain: &[crate::property_graph::storage::artifact::ArtifactId],
     swept: &[RelationshipRow],
+    resume: &mut Option<[u8; 40]>,
     byte_limit: u64,
     copied_bytes: &mut u64,
     memory: &'m StorageMemory<'m>,
@@ -179,27 +180,63 @@ pub(crate) fn relocate_ranges<'m>(
         memory,
         crate::property_graph::storage::consolidation::RELOCATION_LIMIT + 1 + swept.len() * 2,
     )?;
+    // Locate every required swept copy directly; ordinary relocation/pending
+    // selection below visits only a resumable window of unrelated ranges.
+    for row in swept {
+        let node = if root.kind() == TreeKind::OutRanges {
+            row.source
+        } else {
+            row.target
+        };
+        let mut probe = [0; 40];
+        probe
+            .get_mut(..16)
+            .ok_or(TreeError::Memory)?
+            .copy_from_slice(&node.get().to_le_bytes());
+        probe
+            .get_mut(16..24)
+            .ok_or(TreeError::Memory)?
+            .copy_from_slice(&row.relationship_type.get().to_le_bytes());
+        probe
+            .get_mut(24..)
+            .ok_or(TreeError::Memory)?
+            .copy_from_slice(&row.rel.get().to_le_bytes());
+        let entry = lookup_predecessor(&*sink, root, &probe, r)?
+            .ok_or(invalid("swept adjacency absent"))?;
+        let descriptor = descriptor(root, entry, r)?;
+        let k = descriptor.key();
+        if k.node != node
+            || k.rel_type != row.relationship_type
+            || row.rel < k.lower
+            || matches!(k.upper, UpperBound::Exclusive(upper) if row.rel >= upper)
+        {
+            return Err(invalid("swept adjacency routing"));
+        }
+        let key = descriptor.directory_key()?;
+        if !keys.as_slice().contains(&key) {
+            keys.push(key)?;
+        }
+    }
     let mut pending: Option<(usize, [u8; 40])> = None;
     {
-        let mut scan = DirectoryCursor::seek(&*sink, root, None, r)?;
-        while let Some(entry) = scan.next_entry(r)? {
+        let lower = *resume;
+        let mut scan =
+            DirectoryCursor::seek(&*sink, root, lower.as_ref().map(|key| key.as_slice()), r)?;
+        let mut visits = 0;
+        while visits < crate::property_graph::storage::consolidation::SWEEP_VISIT_LIMIT {
+            let Some(entry) = scan.next_entry(r)? else {
+                *resume = None;
+                break;
+            };
             let descriptor = descriptor(root, entry, r)?;
             let key = descriptor.directory_key()?;
-            let affected = swept.iter().any(|row| {
-                let k = descriptor.key();
-                let node = match k.direction {
-                    Direction::Out => row.source,
-                    Direction::In => row.target,
-                };
-                k.node == node
-                    && k.rel_type == row.relationship_type
-                    && row.rel >= k.lower
-                    && !matches!(k.upper, UpperBound::Exclusive(upper) if row.rel >= upper)
-            });
-            let mut relocated = affected;
-            if affected {
-                keys.push(key)?;
+            if lower == Some(key) {
+                continue;
             }
+            visits += 1;
+            *resume = Some(key);
+            let affected = keys.as_slice().contains(&key);
+            let mut relocated = affected;
             if !affected
                 && std::iter::once(descriptor.base())
                     .chain(descriptor.deltas())
@@ -234,21 +271,21 @@ pub(crate) fn relocate_ranges<'m>(
     }
     // Preserve the ordinary one-range pending merge, excluding drained ranges.
     if let Some((_, key)) = pending {
-        let mut position = 0;
-        for other in keys.as_slice() {
-            r.step(1)?;
-            if crate::property_graph::storage::tree::compare_inline_keys(root.kind(), &key, other)?
-                .is_lt()
-            {
-                break;
-            }
-            position += 1;
-        }
         keys.push(key)?;
-        keys.as_mut_slice()
-            .get_mut(position..)
-            .ok_or(TreeError::Memory)?
-            .rotate_right(1);
+    }
+    for index in 1..keys.as_slice().len() {
+        let mut pos = index;
+        while pos > 0
+            && crate::property_graph::storage::tree::compare_inline_keys(
+                root.kind(),
+                keys.as_slice().get(pos - 1).ok_or(TreeError::Memory)?,
+                keys.as_slice().get(pos).ok_or(TreeError::Memory)?,
+            )?
+            .is_gt()
+        {
+            keys.as_mut_slice().swap(pos - 1, pos);
+            pos -= 1;
+        }
     }
     let mut replacements = StorageBuffer::new(memory, keys.as_slice().len())?;
     for key in keys.as_slice() {

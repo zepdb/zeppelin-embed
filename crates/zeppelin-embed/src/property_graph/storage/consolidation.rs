@@ -30,6 +30,22 @@ thread_local! {
     };
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static SWEEP_WORK: std::cell::Cell<[u64; 4]> = const { std::cell::Cell::new([0; 4]) };
+}
+
+#[cfg(test)]
+pub(crate) fn count_sweep_work(index: usize) {
+    SWEEP_WORK.with(|counter| {
+        let mut counts = counter.get();
+        if let Some(count) = counts.get_mut(index) {
+            *count += 1;
+        }
+        counter.set(counts);
+    });
+}
+
 /// Pin relocation to one node on this thread until the guard drops. A
 /// fixture that needs a fixed partly live pack uses it; production selection
 /// uses the current census.
@@ -57,6 +73,18 @@ pub(crate) struct RecordRelocation {
     pub(crate) old_record: PayloadRef,
     pub(crate) new_record: PayloadRef,
 }
+
+/// Volatile progress hints. Losing them only repeats a bounded window; no
+/// correctness fact or physical reference is stored outside published roots.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SweepResume {
+    pub(crate) relationships: Option<u128>,
+    pub(crate) nodes: Option<u128>,
+    pub(crate) out_ranges: Option<[u8; 40]>,
+    pub(crate) in_ranges: Option<[u8; 40]>,
+}
+
+pub(crate) const SWEEP_VISIT_LIMIT: usize = 128;
 
 pub(crate) struct ConsolidationOutcome<'m> {
     expected_base: GraphRoots,
@@ -124,6 +152,7 @@ pub(crate) fn prepare_one_replacement<'lease, 'm, T, C>(
     drain: &[ArtifactId],
     relocation_bytes: u64,
     sweep_limit: usize,
+    resume: &mut SweepResume,
     inventory_fold: PreparedInventoryFold<'m>,
     pages: &[PageRelocation],
     reclaim_pending: &[crate::property_graph::wal::InventoryChange],
@@ -155,6 +184,7 @@ where
         catalog,
         document,
         sweep_limit,
+        &mut resume.relationships,
         memory,
         resources,
     )?;
@@ -165,6 +195,8 @@ where
         document,
         swept.as_slice(),
         sweep_limit,
+        base_sequence,
+        &mut resume.nodes,
         memory,
         resources,
     )?;
@@ -355,6 +387,7 @@ where
         fences.as_slice(),
         swept.as_slice(),
         tombstones.as_slice(),
+        resume,
         relocation_bytes,
         &mut copied_bytes,
         catalog,
@@ -784,6 +817,7 @@ fn apply_replacements<'m, T: BlockSink, C: RecordCatalog<T>>(
     fences: &[FenceRelocation<'_>],
     swept: &[super::adjacency::RelationshipRow],
     tombstones: &[NodeId],
+    resume: &mut SweepResume,
     relocation_bytes: u64,
     copied_bytes: &mut u64,
     catalog: &C,
@@ -907,6 +941,11 @@ fn apply_replacements<'m, T: BlockSink, C: RecordCatalog<T>>(
                 context,
                 drain,
                 swept,
+                if kind == TreeKind::OutRanges {
+                    &mut resume.out_ranges
+                } else {
+                    &mut resume.in_ranges
+                },
                 relocation_bytes,
                 copied_bytes,
                 memory,
@@ -1158,22 +1197,31 @@ fn compare_relocation_keys(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn select_hidden_relationships<'m, S: super::tree::directory::BlockSource>(
+pub(crate) fn select_hidden_relationships<'m, S: super::tree::directory::BlockSource>(
     source: &S,
     roots: GraphRoots,
     catalog: &impl RecordCatalog<S>,
     document: Option<&EmbeddingTower>,
     limit: usize,
+    resume: &mut Option<u128>,
     memory: &'m StorageMemory<'m>,
     r: &mut TreeResources<'_>,
 ) -> Result<StorageBuffer<'m, super::adjacency::RelationshipRow>, TreeError> {
     let mut selected = StorageBuffer::new(memory, limit)?;
     let root = roots.directory(TreeKind::Relationships)?;
-    let mut cursor = DirectoryCursor::seek(source, root, None, r)?;
-    while selected.as_slice().len() < limit {
+    let lower = resume
+        .and_then(|id| id.checked_add(1))
+        .map(u128::to_le_bytes);
+    let mut cursor =
+        DirectoryCursor::seek(source, root, lower.as_ref().map(|key| key.as_slice()), r)?;
+    let mut visits = 0;
+    while visits < SWEEP_VISIT_LIMIT && selected.as_slice().len() < limit {
         let Some(entry) = cursor.next_entry(r)? else {
+            *resume = None;
             break;
         };
+        #[cfg(test)]
+        count_sweep_work(0);
         let Key::Inline(key) = entry.key() else {
             return Err(TreeError::Invalid("sweep relationship key"));
         };
@@ -1182,6 +1230,8 @@ fn select_hidden_relationships<'m, S: super::tree::directory::BlockSource>(
                 .map_err(|_| TreeError::Invalid("sweep relationship key width"))?,
         ))
         .map_err(|_| TreeError::Invalid("sweep relationship identity"))?;
+        visits += 1;
+        *resume = Some(id.get());
         let record = verify_record(
             PayloadSlice::new(
                 source,
@@ -1220,21 +1270,30 @@ fn select_hidden_relationships<'m, S: super::tree::directory::BlockSource>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn select_finished_tombstones<'m, S: super::tree::directory::BlockSource>(
+pub(crate) fn select_finished_tombstones<'m, S: super::tree::directory::BlockSource>(
     source: &S,
     roots: GraphRoots,
     catalog: &impl RecordCatalog<S>,
     document: Option<&EmbeddingTower>,
     swept: &[super::adjacency::RelationshipRow],
     limit: usize,
+    sequence: u64,
+    resume: &mut Option<u128>,
     memory: &'m StorageMemory<'m>,
     r: &mut TreeResources<'_>,
 ) -> Result<StorageBuffer<'m, NodeId>, TreeError> {
     let mut selected = StorageBuffer::new(memory, limit)?;
     let root = roots.directory(TreeKind::Nodes)?;
-    let mut cursor = DirectoryCursor::seek(source, root, None, r)?;
-    while selected.as_slice().len() < limit {
+    let lower = resume
+        .and_then(|id| id.checked_add(1))
+        .map(u128::to_le_bytes);
+    let mut cursor =
+        DirectoryCursor::seek(source, root, lower.as_ref().map(|key| key.as_slice()), r)?;
+    let mut visits = 0;
+    let mut scratch = super::adjacency::RangeScratch::for_prepare(memory, r)?;
+    while visits < SWEEP_VISIT_LIMIT && selected.as_slice().len() < limit {
         let Some(entry) = cursor.next_entry(r)? else {
+            *resume = None;
             break;
         };
         let Key::Inline(key) = entry.key() else {
@@ -1245,6 +1304,10 @@ fn select_finished_tombstones<'m, S: super::tree::directory::BlockSource>(
                 .map_err(|_| TreeError::Invalid("sweep node width"))?,
         ))
         .map_err(|_| TreeError::Invalid("sweep node identity"))?;
+        #[cfg(test)]
+        count_sweep_work(3);
+        visits += 1;
+        *resume = Some(id.get());
         if !matches!(
             verify_node_state(
                 PayloadSlice::new(
@@ -1263,35 +1326,55 @@ fn select_finished_tombstones<'m, S: super::tree::directory::BlockSource>(
             continue;
         }
         let mut remaining = false;
-        let mut relationships =
-            DirectoryCursor::seek(source, roots.directory(TreeKind::Relationships)?, None, r)?;
-        while let Some(entry) = relationships.next_entry(r)? {
-            let Key::Inline(key) = entry.key() else {
-                return Err(TreeError::Invalid("incident sweep key"));
-            };
-            let rel = crate::property_graph::RelId::new(u128::from_le_bytes(
-                key.try_into()
-                    .map_err(|_| TreeError::Invalid("incident sweep width"))?,
-            ))
-            .map_err(|_| TreeError::Invalid("incident sweep identity"))?;
-            if swept.iter().any(|row| row.rel == rel) {
-                continue;
-            }
-            let record = verify_record(
-                PayloadSlice::new(
+        let mut probe = [0_u8; 40];
+        probe
+            .get_mut(16..24)
+            .ok_or(TreeError::Memory)?
+            .copy_from_slice(&1_u64.to_le_bytes());
+        probe
+            .get_mut(24..40)
+            .ok_or(TreeError::Memory)?
+            .copy_from_slice(&1_u128.to_le_bytes());
+        probe
+            .get_mut(..16)
+            .ok_or(TreeError::Memory)?
+            .copy_from_slice(&id.get().to_le_bytes());
+        for kind in [TreeKind::OutRanges, TreeKind::InRanges] {
+            let range_root = roots.directory(kind)?;
+            let mut ranges = DirectoryCursor::seek(source, range_root, Some(&probe), r)?;
+            let mut ranges_visited = 0;
+            while let Some(entry) = ranges.next_entry(r)? {
+                let Key::Inline(key) = entry.key() else {
+                    return Err(TreeError::Invalid("incident range key"));
+                };
+                if key.get(..16) != Some(id.get().to_le_bytes().as_slice()) {
+                    break;
+                }
+                if ranges_visited == SWEEP_VISIT_LIMIT {
+                    remaining = true;
+                    break;
+                }
+                ranges_visited += 1;
+                #[cfg(test)]
+                count_sweep_work(1);
+                let range = super::adjacency::validate_range(
                     source,
-                    roots.store(),
-                    entry.creation_generation(),
-                    PayloadRef::decode(entry.value())?,
-                ),
-                EntityId::Relationship(rel),
-                catalog,
-                document,
-                r,
-            )?;
-            if matches!(record.shape(), super::records::RecordShape::Relationship { source, target, .. } if source == id || target == id)
-            {
-                remaining = true;
+                    range_root,
+                    entry,
+                    sequence,
+                    &mut scratch,
+                    r,
+                )?;
+                if range
+                    .edges()
+                    .iter()
+                    .any(|edge| !swept.iter().any(|row| row.rel == edge.rel))
+                {
+                    remaining = true;
+                    break;
+                }
+            }
+            if remaining {
                 break;
             }
         }

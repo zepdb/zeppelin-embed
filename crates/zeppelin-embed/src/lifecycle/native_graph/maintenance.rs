@@ -1979,7 +1979,7 @@ impl Default for MaintenanceLimits {
             relocation_bytes: crate::property_graph::storage::consolidation::RELOCATION_BYTES,
             inventory_additions: INVENTORY_FOLD_ADDITION_LIMIT,
             storage_bytes: 32 * 1024 * 1024,
-            work: crate::property_graph::storage::reclaim::MARK_WORK_LIMIT,
+            work: 1024 * 1024 * 1024,
         }
     }
 }
@@ -2127,6 +2127,12 @@ pub(super) fn commit_with_limits(
     )?;
     let drained_packs = u32::try_from(proof.drain.as_slice().len())
         .map_err(|_| NativeGraphError::IdentityExhausted)?;
+    let mut sweep_progress = store.native_graph.sweep_resume.lock().map_err(|_| {
+        NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
+            component: "native graph sweep progress",
+        })
+    })?;
+    let mut next_sweep = *sweep_progress;
     let consolidated = prepare_one_replacement(
         &source,
         &mut objects,
@@ -2137,6 +2143,7 @@ pub(super) fn commit_with_limits(
         proof.drain.as_slice(),
         limits.relocation_bytes,
         limits.sweep_limit,
+        &mut next_sweep,
         folded_inventory,
         proof.pending_page_relocations.as_slice(),
         reclaim_pending.as_slice(),
@@ -2302,6 +2309,7 @@ pub(super) fn commit_with_limits(
         return Err(NativeGraphError::StalePreparation);
     }
     let _ = protect_and_commit(store, writer, transition, control, false)?;
+    *sweep_progress = next_sweep;
     Ok(NativeMaintenanceReport {
         relocated_bytes: consolidated.relocated_bytes(),
         drained_packs,

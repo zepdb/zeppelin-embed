@@ -2248,6 +2248,51 @@ fn exact_relationship_membership(
     ] {
         let root = roots.directory(kind)?;
         let mut scratch = RangeScratch::for_prepare(memory, resources)?;
+        if !present {
+            let mut probe = [0; 40];
+            probe
+                .get_mut(..16)
+                .ok_or(TreeError::Memory)?
+                .copy_from_slice(&node.get().to_le_bytes());
+            probe
+                .get_mut(16..24)
+                .ok_or(TreeError::Memory)?
+                .copy_from_slice(&row.relationship_type.get().to_le_bytes());
+            probe
+                .get_mut(24..)
+                .ok_or(TreeError::Memory)?
+                .copy_from_slice(&row.rel.get().to_le_bytes());
+            if let Some(entry) =
+                crate::property_graph::storage::tree::directory::lookup_predecessor(
+                    source, root, &probe, resources,
+                )?
+            {
+                let crate::property_graph::storage::tree::Key::Inline(key) = entry.key() else {
+                    return Err(TreeError::Invalid("incident range key"));
+                };
+                let descriptor =
+                    crate::property_graph::storage::adjacency::RangeDescriptor::decode(
+                        kind,
+                        key,
+                        entry.value(),
+                    )?;
+                let key = descriptor.key();
+                if key.node == node
+                    && key.rel_type == row.relationship_type
+                    && row.rel >= key.lower
+                    && !matches!(key.upper, crate::property_graph::storage::adjacency::UpperBound::Exclusive(upper) if row.rel >= upper)
+                {
+                    let range =
+                        validate_range(source, root, entry, sequence, &mut scratch, resources)?;
+                    if range.edges().iter().any(|edge| edge.rel == row.rel) {
+                        return Err(TreeError::Invalid(
+                            "recovery relationship adjacency mismatch",
+                        ));
+                    }
+                }
+            }
+            continue;
+        }
         let mut count = 0_u64;
         verify_directory(source, root, resources, &mut |entry, resources| {
             let range = validate_range(source, root, entry, sequence, &mut scratch, resources)?;
@@ -2340,8 +2385,6 @@ fn validate_fence_record_agreement(
     document: Option<&EmbeddingTower>,
     roots: GraphRoots,
     fence: &FenceView<'_, RecoverySource<'_, '_>>,
-    memory: &StorageMemory<'_>,
-    sequence: u64,
     resources: &mut TreeResources<'_>,
 ) -> Result<(), TreeError> {
     match fence.incarnation() {
@@ -2352,9 +2395,7 @@ fn validate_fence_record_agreement(
                 if !fence.is_deleted() {
                     return Err(TreeError::Invalid("recovery live node fence is absent"));
                 }
-                require_no_physical_incident(
-                    source, catalog, document, roots, sequence, node, memory, resources,
-                )?;
+                require_no_physical_incident(source, roots, node, resources)?;
                 return Ok(());
             };
             let payload = PayloadRef::decode(entry.value())?;
@@ -2395,12 +2436,10 @@ fn validate_fence_record_agreement(
                     ));
                 }
                 (false, None) => {
-                    let row =
-                        fence.hidden_relationship(source, roots, catalog, document, resources)?;
-                    exact_relationship_membership(
-                        source, roots, sequence, row, false, memory, resources,
-                    )?;
-                    require_type_absent(source, roots, row, resources)?;
+                    // Checkpoint validation below correlates every extant
+                    // adjacency/type entry with Relationships once. That proves
+                    // absence for all swept fences without per-fence tree walks.
+                    fence.hidden_relationship(source, roots, catalog, document, resources)?;
                 }
                 (false, Some(entry)) => {
                     let payload = PayloadRef::decode(entry.value())?;
@@ -2496,9 +2535,7 @@ fn validate_native_checkpoint(
     let fence_root = roots.directory(TreeKind::KeyFences)?;
     verify_directory(source, fence_root, resources, &mut |entry, resources| {
         let fence = verify_fence_entry(source, fence_root, entry, catalog, document, resources)?;
-        validate_fence_record_agreement(
-            source, catalog, document, roots, &fence, memory, sequence, resources,
-        )
+        validate_fence_record_agreement(source, catalog, document, roots, &fence, resources)
     })?;
 
     let node_root = roots.directory(TreeKind::Nodes)?;
@@ -3418,7 +3455,7 @@ fn validate_lifecycle_transition<'source, 'store, 'source_memory, 'catalog_memor
                             return Err(TreeError::Invalid("recovery live fence record is absent"));
                         }
                         crate::property_graph::storage::records::swept_delete(
-                            source, base_roots, fields, catalog, document, resources,
+                            source, base_roots, fields, namespace, catalog, document, resources,
                         )?;
                         // The classifier below consumes this original canonical stream.
                         return validate_swept_lifecycle(
@@ -3805,8 +3842,16 @@ fn validate_mutation_state(
                         relationship_type,
                     }
                 } else {
+                    let key = fields
+                        .key
+                        .ok_or(TreeError::Invalid("swept Delete key absent"))?;
+                    let Some(Symbol::Namespace(namespace)) =
+                        catalog.lookup_symbol(SymbolKind::Namespace, key.namespace(), resources)?
+                    else {
+                        return Err(TreeError::Invalid("swept Delete namespace absent"));
+                    };
                     crate::property_graph::storage::records::swept_delete(
-                        source, base_roots, fields, catalog, document, resources,
+                        source, base_roots, fields, namespace, catalog, document, resources,
                     )?
                 };
                 exact_relationship_membership(
@@ -6022,45 +6067,38 @@ fn require_type_absent(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn require_no_physical_incident(
     source: &RecoverySource<'_, '_>,
-    catalog: &RecoveryCatalog<'_, '_>,
-    document: Option<&EmbeddingTower>,
     roots: GraphRoots,
-    sequence: u64,
     node: crate::property_graph::NodeId,
-    memory: &StorageMemory<'_>,
     r: &mut TreeResources<'_>,
 ) -> Result<(), TreeError> {
-    let mut cursor =
-        DirectoryCursor::seek(source, roots.directory(TreeKind::Relationships)?, None, r)?;
-    while let Some(entry) = cursor.next_entry(r)? {
-        let crate::property_graph::storage::tree::Key::Inline(key) = entry.key() else {
-            return Err(TreeError::Invalid("incident relationship key"));
-        };
-        let rel = crate::property_graph::RelId::new(u128::from_le_bytes(
-            key.try_into()
-                .map_err(|_| TreeError::Invalid("incident relationship width"))?,
-        ))
-        .map_err(|_| TreeError::Invalid("incident relationship identity"))?;
-        let row = authoritative_relationship(source, catalog, document, roots, rel, r)?
-            .ok_or(TreeError::Missing)?;
-        if row.source == node || row.target == node {
-            return Err(TreeError::Invalid(
-                "swept node retains incident relationship",
-            ));
-        }
-    }
+    // The checkpoint's ordinary relationship/adjacency correlation checks
+    // establish both copies once. A swept node must have no own range: seek
+    // its prefix, rather than rechecking the entire graph for every old fence.
+    let mut probe = [0_u8; 40];
+    probe
+        .get_mut(16..24)
+        .ok_or(TreeError::Memory)?
+        .copy_from_slice(&1_u64.to_le_bytes());
+    probe
+        .get_mut(24..40)
+        .ok_or(TreeError::Memory)?
+        .copy_from_slice(&1_u128.to_le_bytes());
+    probe
+        .get_mut(..16)
+        .ok_or(TreeError::Memory)?
+        .copy_from_slice(&node.get().to_le_bytes());
     for kind in [TreeKind::OutRanges, TreeKind::InRanges] {
+        #[cfg(test)]
+        crate::property_graph::storage::consolidation::count_sweep_work(2);
         let root = roots.directory(kind)?;
-        let mut cursor = DirectoryCursor::seek(source, root, None, r)?;
-        let mut scratch = RangeScratch::for_prepare(memory, r)?;
-        while let Some(entry) = cursor.next_entry(r)? {
-            let range = validate_range(source, root, entry, sequence, &mut scratch, r)?;
-            if range.descriptor().key().node == node
-                || range.edges().iter().any(|edge| edge.neighbor == node)
-            {
+        let mut cursor = DirectoryCursor::seek(source, root, Some(&probe), r)?;
+        if let Some(entry) = cursor.next_entry(r)? {
+            let crate::property_graph::storage::tree::Key::Inline(key) = entry.key() else {
+                return Err(TreeError::Invalid("incident adjacency key"));
+            };
+            if key.get(..16) == Some(node.get().to_le_bytes().as_slice()) {
                 return Err(TreeError::Invalid("swept node retains incident adjacency"));
             }
         }
@@ -6099,9 +6137,7 @@ fn validate_maintenance_removal(
             else {
                 return Err(TreeError::Invalid("maintenance removed live node"));
             };
-            require_no_physical_incident(
-                source, catalog, document, target, sequence, node, memory, r,
-            )?;
+            require_no_physical_incident(source, target, node, r)?;
             (
                 crate::property_graph::storage::records::verify_provenance(
                     PayloadSlice::new(

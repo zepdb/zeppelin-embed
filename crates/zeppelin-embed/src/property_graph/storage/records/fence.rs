@@ -399,6 +399,7 @@ pub(crate) fn swept_delete<S: BlockSource>(
     source: &S,
     roots: super::super::tree::directory::GraphRoots,
     fields: crate::property_graph::OperationFields<'_>,
+    namespace: NamespaceId,
     catalog: &impl RecordCatalog<S>,
     document: Option<&EmbeddingTower>,
     r: &mut TreeResources<'_>,
@@ -416,19 +417,11 @@ pub(crate) fn swept_delete<S: BlockSource>(
     let key = fields
         .key
         .ok_or(TreeError::Invalid("swept Delete lacks key"))?;
-    // The participant catalog resolves stored names only. Find the unique
-    // authentic prior incarnation, then compare its complete logical key.
     let root = roots.directory(TreeKind::KeyFences)?;
-    let mut cursor = super::super::tree::directory::DirectoryCursor::seek(source, root, None, r)?;
-    let fence = loop {
-        let entry = cursor
-            .next_entry(r)?
-            .ok_or(TreeError::Invalid("swept Delete prior fence absent"))?;
-        let fence = verify_fence_entry(source, root, entry, catalog, document, r)?;
-        if fence.incarnation() == fields.incarnation {
-            break fence;
-        }
-    };
+    let probe = FenceKey::new(key.kind(), namespace, key.key().as_str())?;
+    let entry = super::super::tree::directory::lookup_fence_entry(source, root, probe, r)?
+        .ok_or(TreeError::Invalid("swept Delete prior fence absent"))?;
+    let fence = verify_fence_entry(source, root, entry, catalog, document, r)?;
     let prior = fence.provenance().fields_with_key(Some(key), r)?;
     if prior.incarnation != fields.incarnation
         || prior.installed_revision >= fields.installed_revision
