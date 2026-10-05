@@ -408,6 +408,7 @@ pub fn structured_plan(store: &GraphStore, k: i64) -> CompletedGraphResult {
                     k: ExprId(3),
                     mode: SearchMode::Exact,
                     eligible: Some(ExprId(6)),
+                    options: Default::default(),
                 },
                 outputs: SearchOutputs {
                     node: Some(SlotId(2)),

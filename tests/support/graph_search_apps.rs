@@ -89,6 +89,7 @@ pub fn structured_application(store: &GraphStore, shape: usize) -> CompletedGrap
                 k: ExprId(3),
                 mode: SearchMode::Exact,
                 eligible,
+                options: Default::default(),
             },
             outputs: SearchOutputs {
                 node: Some(SlotId(2)),
