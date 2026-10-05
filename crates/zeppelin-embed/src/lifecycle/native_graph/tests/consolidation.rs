@@ -6901,11 +6901,9 @@ fn observe_reclaim_cycle() -> crate::graph_reclaim_test_support::ReclaimState {
 /// The directed production paths behind ZE-46 acceptance. A receipt is pushed
 /// only after its body returned, so a receipt proves its assertions passed.
 #[cfg(feature = "test-support")]
-pub(super) fn run_actual_probe(
-    _seed: u64,
-) -> crate::graph_reclaim_test_support::ReclaimProbeReport {
+pub(super) fn run_actual_probe(seed: u64) -> crate::graph_reclaim_test_support::ReclaimProbeReport {
     use super::publication::{reset_verified_faults, take_verified_faults};
-    let bodies: [(&'static str, u64, fn()); 14] = [
+    let bodies: [(&'static str, u64, fn()); 13] = [
         (
             "property-graph.reclaim.maintenance-output",
             1,
@@ -6938,11 +6936,6 @@ pub(super) fn run_actual_probe(
             "property-graph.reclaim.wal-only",
             1,
             run_older_wal_manifest_retention_without_explicit_registration,
-        ),
-        (
-            "property-graph.reclaim.capture-race",
-            1,
-            run_ze46_atomic_capture_excludes_new_and_inflight_allocations,
         ),
         (
             "property-graph.reclaim.spill-refusal",
@@ -6983,6 +6976,7 @@ pub(super) fn run_actual_probe(
             clean_controls,
         });
     }
+    receipts.extend(run_ze176_race_probe(seed).receipts);
     crate::graph_reclaim_test_support::ReclaimProbeReport {
         receipts,
         state: observe_reclaim_cycle(),
@@ -7910,4 +7904,289 @@ fn ze186_reader_graph_only_artifact_survives_reclaim() {
     assert_eq!(node_directory_value(&store, &reader, node), lazy_value);
     assert_eq!(graph_references_for_lease(&store, &reader), old);
     eprintln!("ZE186 removed bytes: {removed}");
+}
+
+#[cfg(feature = "test-support")]
+fn ze176_schedule(seed: u64, raced: bool) -> ((u64, Vec<u8>, bool, bool), [u64; 4]) {
+    use crate::property_graph::query::resources::QueryMemory;
+    use crate::property_graph::query::runtime::{RuntimeContext, RuntimeLimits};
+    use crate::property_graph::storage::tree::directory::TreeResources;
+    use crate::property_graph::storage::{
+        GraphReadView, NativeCatalog, NativeQuerySource, NativeReadCapability,
+    };
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    let parent = super::tempfile::tempdir().unwrap();
+    let path = parent.path().join("native");
+    let vfs = Arc::new(RecordingVfs::default());
+    let store = Arc::new(create_reclaim_test_store(&path, &vfs));
+    let index = (seed % 1000) as usize;
+    ze163_base_write(&store, "ze176-old", index);
+    let mut fires = [0; 4];
+    let old = if raced {
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        store.native_graph.state.lock().unwrap().admission_hook =
+            Some((entered.clone(), release.clone()));
+        std::thread::scope(|scope| {
+            let reader = scope.spawn(|| store.admit_native_read().unwrap());
+            entered.wait();
+            let capture = scope.spawn(|| store.capture_native_read_roots().unwrap());
+            release.wait();
+            let old = reader.join().unwrap();
+            let captured = capture.join().unwrap();
+            assert!(captured.contains_lease(&old));
+            fires[0] += 1;
+            old
+        })
+    } else {
+        let old = store.admit_native_read().unwrap();
+        assert!(
+            store
+                .capture_native_read_roots()
+                .unwrap()
+                .contains_lease(&old)
+        );
+        fires[0] += 1;
+        old
+    };
+    let root = old.bundle().root_envelope();
+    let root_path =
+        crate::property_graph::storage::allocation::artifact_path(&path, root.object.artifact);
+    let wal_path = std::fs::read_dir(&path)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| {
+            p.file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("graph-wal-")
+        })
+        .unwrap();
+
+    // Publish after the first private preparation artifact; force the real
+    // writer recheck, and prove that this stale attempt cannot unlink.
+    let creates = Arc::new(AtomicU64::new(0));
+    let counter = creates.clone();
+    if raced {
+        let admission = store.admit_native_graph_maintenance().unwrap();
+        let foreground = store.clone();
+        vfs.after_next_create(move || {
+            counter.fetch_add(1, Ordering::Relaxed);
+            ze163_base_write(&foreground, "ze176-new", index);
+        });
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        store
+            .native_graph
+            .state
+            .lock()
+            .unwrap()
+            .maintenance_writer_hook = Some((entered.clone(), release.clone()));
+        vfs.take();
+        let error = std::thread::scope(|scope| {
+            let attempt = scope.spawn(|| {
+                store.commit_native_graph_maintenance(
+                    &admission,
+                    &QueryControl::Cancel(CancelToken::new()),
+                )
+            });
+            entered.wait();
+            release.wait();
+            attempt
+                .join()
+                .unwrap()
+                .expect_err("publication must invalidate preparation")
+        });
+        assert!(
+            matches!(error, super::super::NativeGraphError::StalePreparation),
+            "{error:?}"
+        );
+        assert_eq!(creates.load(Ordering::Relaxed), 1);
+        assert!(
+            delete_events(&vfs.take()).is_empty(),
+            "stale attempt deleted an artifact"
+        );
+        fires[1] += 1;
+    } else {
+        ze163_base_write(&store, "ze176-new", index);
+        vfs.after_next_create(move || {
+            counter.fetch_add(1, Ordering::Relaxed);
+        });
+        commit_maintenance(&store).unwrap();
+        assert_eq!(creates.load(Ordering::Relaxed), 1);
+        fires[1] += 1;
+    }
+    store
+        .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+        .unwrap();
+    for _ in 0..3 {
+        // Completed reclaim retirement requires a checkpoint at its generation.
+        store
+            .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+            .unwrap();
+        commit_maintenance(&store).unwrap();
+        let lease = store.admit_native_read().unwrap();
+        assert!(
+            !pending_reclaim_candidates_or_empty_root(&store, &lease)
+                .iter()
+                .any(|c| c.artifact == root.object.artifact)
+        );
+        assert!(root_path.exists() && wal_path.exists());
+    }
+
+    // No source has ever been constructed for `old`. Resolve its exact
+    // node-tree block for the first time after maintenance, then read content.
+    let generation = old.bundle().base().generation.get();
+    let canonical = {
+        let shared = crate::property_graph::resources::GraphResources::from_store(&store).unwrap();
+        let memory = QueryMemory::new(&shared, 8 * 1024 * 1024).unwrap();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let mut runtime =
+            RuntimeContext::new(&old, &control, &memory, RuntimeLimits::default()).unwrap();
+        let capability = NativeReadCapability::admit(&old, &runtime).unwrap();
+        let mut resources = TreeResources::for_query(&mut runtime).unwrap();
+        let source = NativeQuerySource::new(capability, &resources, 16).unwrap();
+        let before = store.stats().unwrap().mapped_bytes;
+        source
+            .resolve(
+                old.bundle().roots().references()[0].unwrap(),
+                &mut resources,
+            )
+            .unwrap();
+        assert!(
+            store.stats().unwrap().mapped_bytes > before,
+            "old root did not lazily map"
+        );
+        let catalog = NativeCatalog::open(&source, &mut resources).unwrap();
+        drop(resources);
+        let view = GraphReadView::new(&source, &catalog).unwrap();
+        let mut resources = TreeResources::for_query(&mut runtime).unwrap();
+        let node = crate::property_graph::NodeId::new(1).unwrap();
+        let record = view.lookup_node(node, &mut resources).unwrap().unwrap();
+        let mut canonical = vec![0; record.record().canonical_bytes().len() as usize];
+        assert_eq!(
+            record
+                .record()
+                .canonical_bytes()
+                .read_at(0, &mut canonical, &mut resources)
+                .unwrap(),
+            canonical.len()
+        );
+        let text = view.stored_text(node, &mut resources).unwrap().unwrap();
+        let mut bytes = vec![0; text.len() as usize];
+        assert_eq!(
+            text.read_at(0, &mut bytes, &mut resources).unwrap(),
+            bytes.len()
+        );
+        assert_eq!(bytes, format!("ze163 ze176-old row {index}").as_bytes());
+        assert_eq!(generation, 1);
+        fires[2] += 1;
+        canonical
+    };
+    drop(old);
+
+    // Reuse ZE-260's bounded retirement fixture, without its unrelated
+    // digest corruption and Delete-fault qualification.
+    let mut selected = false;
+    for _ in 0..6 {
+        store
+            .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+            .unwrap();
+        vfs.take();
+        commit_maintenance(&store).unwrap();
+        let lease = store.admit_native_read().unwrap();
+        let candidates = pending_reclaim_candidates_or_empty_root(&store, &lease);
+        if candidates
+            .iter()
+            .any(|c| reclaim_candidate_path(&path, c) == wal_path)
+        {
+            assert!(
+                candidates
+                    .iter()
+                    .any(|c| c.artifact == root.object.artifact)
+            );
+            assert!(
+                delete_events(&vfs.take()).is_empty(),
+                "unlink before intent"
+            );
+            selected = true;
+            break;
+        }
+    }
+    assert!(selected, "old root/WAL never became reclaim candidates");
+    vfs.take();
+    commit_maintenance(&store).unwrap();
+    let deleted = delete_events(&vfs.take());
+    assert!(deleted.contains(&root_path) && deleted.contains(&wal_path));
+    assert!(!root_path.exists() && !wal_path.exists());
+    fires[3] += 1;
+    Arc::try_unwrap(store)
+        .unwrap_or_else(|_| panic!("race store leaked"))
+        .close()
+        .unwrap();
+    (
+        (
+            generation,
+            canonical,
+            !root_path.exists(),
+            !wal_path.exists(),
+        ),
+        fires,
+    )
+}
+
+#[cfg(feature = "test-support")]
+pub(super) fn run_ze176_race_probe(
+    seed: u64,
+) -> crate::graph_reclaim_test_support::RaceProbeReport {
+    let (observation, fires) = ze176_schedule(seed, true);
+    let (control, controls) = ze176_schedule(seed, false);
+    assert_eq!(observation, control, "same-seed serialized race control");
+    let keys = [
+        "property-graph.reclaim.capture-race",
+        "property-graph.reclaim.publication-race",
+        "property-graph.reclaim.lazy-after-sweep",
+        "property-graph.reclaim.release-unlink",
+    ];
+    crate::graph_reclaim_test_support::RaceProbeReport {
+        receipts: keys
+            .into_iter()
+            .zip(fires)
+            .zip(controls)
+            .map(|((key, fires), clean_controls)| {
+                crate::graph_read_view_test_support::PathReceipt {
+                    key,
+                    fires,
+                    clean_controls,
+                }
+            })
+            .collect(),
+        observation,
+        control,
+    }
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn ze176_race_probe_requires_measured_controls() {
+    let report = run_ze176_race_probe(7);
+    for key in [
+        "capture-race",
+        "publication-race",
+        "lazy-after-sweep",
+        "release-unlink",
+    ] {
+        let receipt = report
+            .receipts
+            .iter()
+            .find(|r| r.key.strip_prefix("property-graph.reclaim.") == Some(key))
+            .expect("missing measured race receipt");
+        assert_eq!(receipt.fires, 1, "{key}");
+        assert_eq!(receipt.clean_controls, 1, "{key}");
+    }
+    assert_eq!(report.observation, report.control);
+    assert_eq!(report.observation.0, 1);
+    assert!(report.observation.2 && report.observation.3);
 }

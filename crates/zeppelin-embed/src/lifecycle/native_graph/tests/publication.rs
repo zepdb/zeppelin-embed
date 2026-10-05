@@ -2463,3 +2463,18 @@ pub(crate) fn run_actual_probe(
             .collect(),
     }
 }
+
+/// Query-path probe access to the existing publication fault.
+pub(crate) fn arm_query_publication_fault(store: &Store) {
+    store
+        .native_graph
+        .fail_next_publication
+        .store(true, Ordering::Release);
+}
+
+pub(crate) fn query_publication_fault_fired(store: &Store) -> bool {
+    !store
+        .native_graph
+        .fail_next_publication
+        .load(Ordering::Acquire)
+}

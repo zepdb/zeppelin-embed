@@ -5,7 +5,11 @@ use super::coverage::CoverageRegistry;
 use std::collections::BTreeSet;
 use zeppelin_embed::property_graph::query::query_entry_test_support::run_actual_probe;
 
-const RECEIPTS: [&str; 7] = [
+const RECEIPTS: [&str; 11] = [
+    "incident.fire",
+    "partial-append.fire",
+    "wal-sync.fire",
+    "publish.fire",
     "mid-drain.fire",
     "image-limit.fire",
     "fence-only.fire",
@@ -15,7 +19,11 @@ const RECEIPTS: [&str; 7] = [
     "oracle.can-fire",
 ];
 
-const KEYS: [&str; 8] = [
+const KEYS: [&str; 12] = [
+    "property-graph.query-entry.incident.fire",
+    "property-graph.query-entry.partial-append.fire",
+    "property-graph.query-entry.wal-sync.fire",
+    "property-graph.query-entry.publish.fire",
     "property-graph.query-entry.mid-drain.fire",
     "property-graph.query-entry.image-limit.fire",
     "property-graph.query-entry.fence-only.fire",

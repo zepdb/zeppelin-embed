@@ -2084,6 +2084,13 @@ pub(crate) mod tests {
     }
 
     #[cfg(feature = "test-support")]
+    pub(crate) fn run_ze176_race_probe(
+        seed: u64,
+    ) -> crate::graph_reclaim_test_support::RaceProbeReport {
+        consolidation::run_ze176_race_probe(seed)
+    }
+
+    #[cfg(feature = "test-support")]
     pub(crate) fn run_recovery_probe(
         seed: u64,
     ) -> crate::graph_recovery_test_support::RecoveryProbeReport {

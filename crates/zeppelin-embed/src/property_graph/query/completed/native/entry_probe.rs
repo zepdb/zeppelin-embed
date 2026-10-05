@@ -396,6 +396,69 @@ pub(crate) fn create_then_delete<'lease, 'm, 'g>(
     )
 }
 
+pub(crate) fn restrict_delete<'lease, 'm, 'g>(
+    runtime: &mut RuntimeContext<'lease, 'm, 'g>,
+    executor: GraphQueryExecutor<'_, '_, '_, 'lease, 'm, 'g>,
+) -> Result<Executed, GraphQueryError> {
+    let unit = vec![PlanNodeId(0)];
+    let scan = vec![PlanNodeId(1)];
+    let eager = vec![PlanNodeId(2)];
+    let mutate = vec![PlanNodeId(3)];
+    let mutations = vec![Mutation::Delete {
+        entity: ExprId(0),
+        detach: false,
+    }];
+    let projections = vec![Projection {
+        slot: SlotId(10),
+        expression: ExprId(1),
+    }];
+    let operators = vec![
+        Operator {
+            inputs: &[],
+            kind: OperatorKind::Unit,
+        },
+        Operator {
+            inputs: &unit,
+            kind: OperatorKind::ScanNodes {
+                output: SlotId(0),
+                label: None,
+            },
+        },
+        Operator {
+            inputs: &scan,
+            kind: OperatorKind::Eager,
+        },
+        Operator {
+            inputs: &eager,
+            kind: OperatorKind::Mutate(&mutations),
+        },
+        Operator {
+            inputs: &mutate,
+            kind: OperatorKind::Project(&projections),
+        },
+    ];
+    let expressions = vec![
+        Expression::Slot(SlotId(0)),
+        Expression::Literal(Literal::I64(0)),
+    ];
+    let mut backing = Backing::default();
+    backing.vec(&unit)?;
+    backing.vec(&scan)?;
+    backing.vec(&eager)?;
+    backing.vec(&mutate)?;
+    backing.vec(&mutations)?;
+    backing.vec(&projections)?;
+    run_plan(
+        runtime,
+        executor,
+        &operators,
+        &expressions,
+        &Vec::new(),
+        &backing,
+        &["zero"],
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Options, fixture and result observations
 // ---------------------------------------------------------------------------
@@ -609,6 +672,86 @@ fn probe_directory(seed: u64, arm: &str) -> PathBuf {
     ))
 }
 
+struct ObserveRelationship(crate::property_graph::RelId);
+
+impl crate::lifecycle::native_graph::NativeReadConsumer<Vec<u8>> for ObserveRelationship {
+    fn consume<'s, 'lease, 'm, 'g>(
+        &mut self,
+        view: &crate::property_graph::storage::GraphReadView<'s, 'lease, 'm, 'g>,
+        runtime: &mut RuntimeContext<'lease, 'm, 'g>,
+    ) -> Result<Vec<u8>, crate::property_graph::storage::tree::directory::TreeError> {
+        use crate::property_graph::storage::tree::directory::{TreeError, TreeResources};
+        let mut resources = TreeResources::for_query(runtime)?;
+        let relationship = view
+            .lookup_relationship(self.0, &mut resources)?
+            .ok_or(TreeError::Missing)?;
+        let canonical = relationship.record().canonical_bytes();
+        let mut bytes = vec![0; canonical.len() as usize];
+        canonical.read_at(0, &mut bytes, &mut resources)?;
+        Ok(bytes)
+    }
+}
+
+fn incident_probe(seed: u64, base: i64) -> Result<u64, String> {
+    use super::error::GraphQueryCause;
+    use crate::lifecycle::native_graph::NativeGraphError;
+    use crate::property_graph::NodeRef;
+    use crate::property_graph::staging::StageError;
+    let fixture = Fixture::create(probe_directory(seed, "incident"), base)?;
+    let request = [StructuredWrite {
+        key: ApplicationKey::new(EntityKind::Relationship, "ze192", "edge")
+            .map_err(|e| e.to_string())?,
+        revision: GraphRevision::new(1).map_err(|e| e.to_string())?,
+        operation: StructuredOperation::Create,
+        image: Some(WriteImage::Relationship {
+            source: NodeRef::Existing(fixture.nodes[0]),
+            target: NodeRef::Existing(fixture.nodes[1]),
+            relationship_type: GraphName::new("LINK").map_err(|e| e.to_string())?,
+            properties: &[],
+        }),
+    }];
+    let receipts = fixture
+        .store
+        .apply_native_graph(&request, &control())
+        .map_err(|e| e.to_string())?;
+    let Some(EntityId::Relationship(id)) = receipts.iter().next().map(|r| r.entity) else {
+        return Err(String::from("missing relationship receipt"));
+    };
+    let read = || {
+        fixture
+            .store
+            .with_native_read(
+                &control(),
+                RuntimeLimits::default(),
+                8 * 1024 * 1024,
+                16,
+                ObserveRelationship(id),
+            )
+            .map_err(|e| e.to_string())
+    };
+    let relationship = read()?;
+    let before = fixture.generation()?;
+    let outcome = fixture.store.execute_graph_query(
+        &control(),
+        &options(16),
+        None::<&mut NoSearch>,
+        restrict_delete,
+    );
+    if !matches!(&outcome, Err(error) if matches!(error.cause(), GraphQueryCause::Graph(NativeGraphError::Stage(StageError::IncidentRelationship))))
+    {
+        return Err(format!(
+            "restrict delete missed finalize incident check: {:?}",
+            outcome.err()
+        ));
+    }
+    let receipt = refused(&fixture, outcome, GraphQueryErrorKind::Constraint, before)?;
+    if read()? != relationship {
+        return Err(String::from("refused delete changed relationship"));
+    }
+    fixture.remove()?;
+    Ok(receipt)
+}
+
 /// One refused statement: its group, and whether the store kept its
 /// generation and every `p` value.
 fn refused(
@@ -734,42 +877,93 @@ pub fn run_actual_probe(seed: u64) -> Result<ProbeReport, String> {
     expected.push((0, 1));
     fixture.remove()?;
 
-    // A failed WAL append leaves the commit's outcome unknown. It stops the
-    // writer, so it runs on its own store.
-    let fixture = Fixture::create(probe_directory(seed, "indeterminate"), base)?;
-    fixture.vfs.arm_fault(FaultPoint::Append);
-    let indeterminate = match fixture.write(&control(), 16, Assign::Increment) {
-        Err(error)
-            if error.kind() == GraphQueryErrorKind::WriteIndeterminate
-                && !error.nothing_committed() =>
+    let incident = incident_probe(seed, base)?;
+    let mut fault_receipts = Vec::new();
+    for (point, key) in [
+        (FaultPoint::Append, "indeterminate.fire"),
+        (FaultPoint::PartialAppend, "partial-append.fire"),
+        (FaultPoint::WalSync, "wal-sync.fire"),
+        (FaultPoint::Publish, "publish.fire"),
+    ] {
+        use crate::lifecycle::native_graph::NativeGraphError;
+        use crate::lifecycle::native_graph::tests::publication::{
+            arm_query_publication_fault, query_publication_fault_fired,
+        };
+        let fixture = Fixture::create(probe_directory(seed, key), base)?;
+        if point == FaultPoint::Publish {
+            arm_query_publication_fault(&fixture.store);
+        } else {
+            fixture.vfs.arm_fault(point);
+        }
+        match fixture.write(&control(), 16, Assign::Increment) {
+            Err(error)
+                if error.kind() == GraphQueryErrorKind::WriteIndeterminate
+                    && !error.nothing_committed() => {}
+            outcome => {
+                return Err(format!(
+                    "{point:?} did not report indeterminate: {:?}",
+                    outcome.err()
+                ));
+            }
+        }
+        if point == FaultPoint::Publish {
+            if !query_publication_fault_fired(&fixture.store) {
+                return Err(String::from("publication fault did not fire"));
+            }
+        } else {
+            fixture.vfs.assert_fired_once();
+        }
+        if !matches!(
+            fixture.store.admit_native_read(),
+            Err(NativeGraphError::ReadAdmissionsStopped)
+        ) || !matches!(fixture.write(&control(), 16, Assign::Increment), Err(e) if e.kind() == GraphQueryErrorKind::Unavailable)
         {
-            1
+            return Err(String::from("indeterminate store still admits work"));
         }
-        Err(error) => {
-            return Err(format!(
-                "a failed WAL append was not indeterminate: {error}"
-            ));
+        fixture.remove()?;
+        let clean = Fixture::create(probe_directory(seed, "disabled"), base)?;
+        let before = clean.generation()?;
+        let result = clean
+            .write(&control(), 16, Assign::Increment)
+            .map_err(|e| e.to_string())?;
+        let expected: Vec<_> = clean
+            .nodes
+            .iter()
+            .zip(clean.values)
+            .map(|(n, p)| (n.get(), p + 1))
+            .collect();
+        if node_values(&result)? != expected || clean.generation()? != before + 1 {
+            return Err(String::from("injection-disabled control mismatch"));
         }
-        Ok(_) => return Err(String::from("a failed WAL append reported a commit")),
-    };
-    fixture.remove()?;
+        clean.remove()?;
+        fault_receipts.push((key, 1));
+    }
 
     let mut perturbed = observations.clone();
     if let Some(first) = perturbed.first_mut() {
         first.1 ^= 1;
     }
     let oracle = u64::from(perturbed != expected && observations == expected);
+    let mut receipts = vec![("incident.fire", incident)];
+    receipts.extend(
+        fault_receipts
+            .into_iter()
+            .filter(|(key, _)| *key != "indeterminate.fire"),
+    );
     Ok(ProbeReport {
         observations,
         expected,
-        receipts: vec![
-            ("mid-drain.fire", mid_drain),
-            ("image-limit.fire", images),
-            ("fence-only.fire", fence_only),
-            ("precommit-cancel.fire", precommit),
-            ("indeterminate.fire", indeterminate),
-            ("post-commit-cancel.commit", post_commit),
-            ("oracle.can-fire", oracle),
-        ],
+        receipts: {
+            receipts.extend([
+                ("mid-drain.fire", mid_drain),
+                ("image-limit.fire", images),
+                ("fence-only.fire", fence_only),
+                ("precommit-cancel.fire", precommit),
+                ("indeterminate.fire", 1),
+                ("post-commit-cancel.commit", post_commit),
+                ("oracle.can-fire", oracle),
+            ]);
+            receipts
+        },
     })
 }

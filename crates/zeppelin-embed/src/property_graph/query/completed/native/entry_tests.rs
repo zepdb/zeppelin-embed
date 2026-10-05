@@ -795,3 +795,24 @@ fn ze202_same_low64_set_changes_only_selected_entity() {
         reopened.close().unwrap();
     }
 }
+
+#[test]
+fn ze192_query_probe_requires_remaining_fault_receipts() {
+    let report = super::entry_probe::run_actual_probe(7).unwrap();
+    for key in [
+        "incident.fire",
+        "partial-append.fire",
+        "wal-sync.fire",
+        "publish.fire",
+    ] {
+        assert_eq!(
+            report
+                .receipts
+                .iter()
+                .find(|(name, _)| *name == key)
+                .map(|(_, count)| *count),
+            Some(1),
+            "missing measured receipt: {key}"
+        );
+    }
+}

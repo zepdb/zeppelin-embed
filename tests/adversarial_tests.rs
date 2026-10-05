@@ -19276,12 +19276,12 @@ fn native_graph_runner_keys_are_active_with_graph_feature() {
     #[cfg(not(feature = "graph-result-test-support"))]
     assert_eq!(
         adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        327
+        334
     );
     #[cfg(feature = "graph-result-test-support")]
     assert_eq!(
         adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        347
+        354
     );
 }
 
@@ -19314,6 +19314,10 @@ fn query_entry_probe_fires_every_write_fault_site() {
         adversarial::graph_query_entry::probe(seed, &mut coverage)
             .expect("directed query entry probe");
         for key in [
+            "property-graph.query-entry.incident.fire",
+            "property-graph.query-entry.partial-append.fire",
+            "property-graph.query-entry.wal-sync.fire",
+            "property-graph.query-entry.publish.fire",
             "property-graph.query-entry.mid-drain.fire",
             "property-graph.query-entry.precommit-cancel.fire",
             "property-graph.query-entry.indeterminate.fire",
@@ -19744,5 +19748,27 @@ fn ingest_delete_where_every_filesystem_boundary_can_fire() {
         "ingest.delete-where.none-deleted",
     ] {
         assert!(coverage.count(key) > 0, "missing {key}");
+    }
+}
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn graph_sweep_race_probe_fires_and_matches_same_seed_control() {
+    for seed in [0, 7] {
+        let mut coverage = adversarial::coverage::CoverageRegistry::default();
+        adversarial::graph_reclaim::race_probe(seed, &mut coverage)
+            .expect("narrow reader race probe");
+        for key in [
+            "capture-race",
+            "publication-race",
+            "lazy-after-sweep",
+            "release-unlink",
+        ] {
+            assert_eq!(
+                coverage.count(&format!("property-graph.reclaim.{key}")),
+                1,
+                "{key}"
+            );
+        }
     }
 }

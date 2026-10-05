@@ -279,6 +279,22 @@ pub mod graph_reclaim_test_support {
         pub state: ReclaimState,
     }
 
+    /// Narrow measured reader-race observations and serialized controls.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct RaceProbeReport {
+        /// Measured barriers, lazy reads and unlinks.
+        pub receipts: Vec<PathReceipt>,
+        /// Old generation, canonical bytes, and root/WAL unlink results.
+        pub observation: (u64, Vec<u8>, bool, bool),
+        /// Identical seed with serialized scheduling.
+        pub control: (u64, Vec<u8>, bool, bool),
+    }
+
+    /// Runs only ZE-176's same-coordinator reader races.
+    pub fn run_ze176_race_probe(seed: u64) -> RaceProbeReport {
+        crate::lifecycle::native_graph::tests::run_ze176_race_probe(seed)
+    }
+
     /// Runs the directed production consolidation and reclamation paths used
     /// by ZE-46 acceptance.
     pub fn run_actual_probe(seed: u64) -> ReclaimProbeReport {

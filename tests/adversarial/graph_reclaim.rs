@@ -9,6 +9,10 @@ use zeppelin_embed_adversarial_oracle::graph_adjacency_store::{
 
 /// Keys whose body must have fired at least one scheduled fault or refusal.
 const FIRED: &[&str] = &[
+    "property-graph.reclaim.capture-race",
+    "property-graph.reclaim.publication-race",
+    "property-graph.reclaim.lazy-after-sweep",
+    "property-graph.reclaim.release-unlink",
     "property-graph.reclaim.stale-recheck",
     "property-graph.reclaim.inventory-fold",
     "property-graph.reclaim.spill-refusal",
@@ -33,6 +37,44 @@ fn compare_bytes(removed: u64, unlinked: u64) -> Result<(), &'static str> {
     } else {
         Err("reclaimed byte accounting differs from the unlinked files")
     }
+}
+
+fn compare_race(
+    report: &zeppelin_embed::graph_reclaim_test_support::RaceProbeReport,
+) -> Result<(), String> {
+    if report.observation != report.control {
+        return Err(String::from(
+            "reader race differs from same-seed serialized control",
+        ));
+    }
+    Ok(())
+}
+
+pub fn race_probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
+    let report = zeppelin_embed::graph_reclaim_test_support::run_ze176_race_probe(seed);
+    compare_race(&report)?;
+    let mut perturbed = report.clone();
+    perturbed.observation.0 += 1;
+    if compare_race(&perturbed).is_ok() {
+        return Err(String::from(
+            "reader race comparator accepted altered generation",
+        ));
+    }
+    for (receipt, key) in report.receipts.iter().zip([
+        "property-graph.reclaim.capture-race",
+        "property-graph.reclaim.publication-race",
+        "property-graph.reclaim.lazy-after-sweep",
+        "property-graph.reclaim.release-unlink",
+    ]) {
+        if receipt.key != key || receipt.fires != 1 || receipt.clean_controls != 1 {
+            return Err(format!("unmeasured reader race receipt: {receipt:?}"));
+        }
+        coverage.hit(key);
+    }
+    if report.receipts.len() != 4 {
+        return Err(String::from("reader race receipt count"));
+    }
+    Ok(())
 }
 
 pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
@@ -114,7 +156,10 @@ mod tests {
         let mut coverage = super::CoverageRegistry::default();
         super::probe(0x5a45_0046, &mut coverage).expect("reclaim probe");
         assert_eq!(coverage.count("property-graph.reclaim.wal-only"), 1);
-        assert_eq!(coverage.count("property-graph.reclaim.superseded-history"), 1);
+        assert_eq!(
+            coverage.count("property-graph.reclaim.superseded-history"),
+            1
+        );
         assert_eq!(
             coverage.count("property-graph.reclaim.maintenance-output"),
             1
