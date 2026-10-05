@@ -5,7 +5,9 @@ This workspace crate parses and binds the accepted first-release profile in
 internal core crate; it adds no third-party package. A successful parse is syntax
 admission, and a successful binding is a typed, source-preserving description.
 Neither grants execution, writer admission, or a reusable prepared-query API.
-General read, write and search operator lowering/execution remain ZE-56/57/58.
+Read, write and search operator lowering/execution are provided by ZE-56/57/58.
+Focused Rust profile evidence and its pending upstream-source gate are documented
+in [`cypher-profile-v1.md`](../../docs/graph/cypher-profile-v1.md).
 
 `parse` applies the default limits and a 24 MiB conservative allocation budget.
 `parse_with` accepts tighter `CompileLimits` and a caller-supplied `Resources`
@@ -76,7 +78,8 @@ objects and exact excerpt bytes; `--write` regenerates this fixture. The parser
 checks 153 accepted inputs and two original InvalidParameterUse inputs. It does
 not run their result/error semantics or state effects, and establishes no TCK
 conformance. The binding manifest described below separately records supported
-coordinates and binding results; original scenario execution remains pending.
+coordinates and binding results; the separate ZE-59 profile records focused local execution; pinned-source
+verification and full qualification remain pending.
 
 `fuzz/fuzz_targets/cypher_parser.rs` exercises malformed bytes and text in the
 excluded tooling workspace. `scripts/cypher-parser-footprint.sh` measures a
@@ -126,3 +129,23 @@ The PG11 primitive oracle independently checks ordered output/type/parameter-bit
 and mode observations, compile refusal, reached cancellation/budget fault counts
 and same-seed clean controls. Broad original-TCK, full adversarial/workspace,
 coverage and release-size campaigns remain deferred to ZE-118/E12.
+
+
+## Focused execution receipts (ZE-59)
+
+`tests/profile_conformance.rs` executes the unchanged selected fixture queries
+through `execute`, shares typed comparators with the read/write runners, checks
+populated-state refusal/reopen behavior, and compares progressive mutations with
+a small independent model. Its maintenance case requires physical work before
+claiming logical-state preservation. Original profile rejections and local
+outline observations never become original semantic passes.
+
+`scripts/cypher-profile-conformance.py` merges exact coordinate receipts into
+`tests/fixtures/cypher-profile-v1.json`, preserves component RED history, pins
+fixture/setup/parameter/query/expectation/side-effect hashes, and rejects missing,
+duplicate, stale or incomplete evidence. The binding manifest remains unchanged.
+The 130 local coordinates are GREEN; upstream source/Result.scala verification
+is pending because this environment could not obtain the pinned checkout.
+Running the acceptance driver without that checkout exits nonzero even after
+focused tests pass. C/Swift and coverage/size/performance qualification remain
+separate pending gates.

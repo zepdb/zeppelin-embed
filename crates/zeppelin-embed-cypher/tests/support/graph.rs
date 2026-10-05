@@ -247,10 +247,15 @@ pub(crate) fn check_write(scenario: &tck::Scenario) -> Result<(), String> {
             .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
             .unwrap_or_else(|| "test helper panicked".to_owned())),
     };
-    result.map_err(|error| format!("{}: {error}", scenario.coordinate))
+    if let Ok(observation) = &result {
+        tck::emit_receipt(scenario, observation);
+    }
+    result
+        .map(|_| ())
+        .map_err(|error| format!("{}: {error}", scenario.coordinate))
 }
 
-fn check_write_inner(scenario: &tck::Scenario) -> Result<(), String> {
+fn check_write_inner(scenario: &tck::Scenario) -> Result<String, String> {
     use tck::Expect;
     use zeppelin_embed::property_graph::query::completed::GraphQueryErrorKind;
     let mut graph = Graph::new("ze57-write-tck");
@@ -263,6 +268,7 @@ fn check_write_inner(scenario: &tck::Scenario) -> Result<(), String> {
     let before = graph.snapshot()?;
     let generation = graph.generation()?;
     let result = graph.run(&scenario.query, &[]);
+    let observation;
     match (&scenario.expect, result) {
         (Expect::RuntimeError { category, detail }, Err(StatementError::Query(error))) => {
             if category != "ConstraintVerificationFailed"
@@ -272,6 +278,11 @@ fn check_write_inner(scenario: &tck::Scenario) -> Result<(), String> {
             {
                 return Err(format!("unexpected runtime error: {error}"));
             }
+            observation = format!(
+                "runtime;{:?};nothing_committed={}",
+                error.kind(),
+                error.nothing_committed()
+            );
             if graph.generation()? != generation {
                 return Err("failed statement moved generation".to_owned());
             }
@@ -279,6 +290,10 @@ fn check_write_inner(scenario: &tck::Scenario) -> Result<(), String> {
         (_, Err(error)) => return Err(format!("query failed: {error}")),
         (expect, Ok(result)) => {
             let metadata = result.metadata();
+            observation = format!(
+                "metadata={metadata:?};table={:?}",
+                tck::actual_table(&result)
+            );
             let valid = if scenario.side_effects.is_empty() {
                 metadata.outcome == Outcome::NoOp && metadata.generation == generation
             } else {
@@ -307,30 +322,7 @@ fn check_write_inner(scenario: &tck::Scenario) -> Result<(), String> {
                         return Err(format!("no RETURN, but columns {columns:?}"));
                     }
                 }
-                Expect::Table { mode, header, rows } => {
-                    if &columns != header {
-                        return Err(format!("columns {columns:?}, expected {header:?}"));
-                    }
-                    let canonical = |rows: &[Vec<V>]| {
-                        let mut rows = rows.to_vec();
-                        if mode == "bag-lists-unordered" {
-                            for row in &mut rows {
-                                row.iter_mut().for_each(V::sort_lists);
-                            }
-                        }
-                        let mut rows: Vec<_> = rows.iter().map(|row| format!("{row:?}")).collect();
-                        if mode != "ordered" {
-                            rows.sort();
-                        }
-                        rows
-                    };
-                    if !matches!(mode.as_str(), "ordered" | "bag" | "bag-lists-unordered") {
-                        return Err(format!("unknown mode {mode}"));
-                    }
-                    if canonical(rows) != canonical(&actual) {
-                        return Err(format!("rows {actual:?}, expected {rows:?}"));
-                    }
-                }
+                Expect::Table { .. } => tck::compare_result(expect, &result)?,
                 other => return Err(format!("unexpected success for {other:?}")),
             }
             let expected_generation = match metadata.outcome {
@@ -357,5 +349,8 @@ fn check_write_inner(scenario: &tck::Scenario) -> Result<(), String> {
     if graph.snapshot()? != after {
         return Err("reopened snapshot differs".to_owned());
     }
-    Ok(())
+    Ok(format!(
+        "{observation};generation_before={generation:?};generation_after={:?};effects={diff:?};reopened_snapshot={after:?}",
+        graph.generation()?
+    ))
 }

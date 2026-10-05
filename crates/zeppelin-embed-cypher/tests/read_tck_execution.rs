@@ -15,14 +15,15 @@ mod support;
 #[path = "support/tck.rs"]
 mod tck;
 
+#[path = "support/conformance.rs"]
+mod conformance;
+use conformance::{check_positive, run_with};
 use graph::Graph;
-use tck::{Expect, V};
-use zeppelin_embed::lifecycle::{CancelToken, QueryControl};
-use zeppelin_embed::property_graph::query::completed::{CompletedGraphResult, Outcome};
-use zeppelin_embed::property_graph::query::plan::ParameterBinding;
-use zeppelin_embed::property_graph::query::{QueryList, QueryValue, QueryView, ValueContext};
-use zeppelin_embed::property_graph::{GraphGeneration, StoreInstanceId};
+use tck::Expect;
 use zeppelin_embed_cypher::{ErrorKind, StatementError};
+fn generation(graph: &Graph) -> zeppelin_embed::property_graph::GraphGeneration {
+    graph.generation().unwrap()
+}
 
 const FIXTURE: &str = include_str!("fixtures/read-tck-execution.txt");
 
@@ -32,115 +33,6 @@ fn scenarios() -> Vec<tck::Scenario> {
     // example rows of the rejected Null1 [5] outline.
     assert_eq!(all.len(), 85);
     all
-}
-
-/// Runs `query` with scalar or scalar-list parameters built from `V`.
-fn run_with(
-    graph: &Graph,
-    query: &str,
-    parameters: &[(String, V)],
-) -> Result<CompletedGraphResult, StatementError> {
-    let view = QueryView::new(StoreInstanceId::new(1).unwrap(), GraphGeneration::new(0));
-    let control = QueryControl::Cancel(CancelToken::new());
-    let mut context = ValueContext::new(&view, &control, 1_000_000).unwrap();
-    let scalars: Vec<Vec<QueryValue<'_>>> = parameters
-        .iter()
-        .map(|(_, value)| match value {
-            V::List(items) => items.iter().map(scalar).collect(),
-            _ => Vec::new(),
-        })
-        .collect();
-    let bindings: Vec<ParameterBinding<'_>> = parameters
-        .iter()
-        .zip(&scalars)
-        .map(|((name, value), items)| ParameterBinding {
-            name,
-            value: match value {
-                V::List(_) => QueryValue::List(QueryList::new(items, &mut context).unwrap()),
-                other => scalar(other),
-            },
-        })
-        .collect();
-    graph.run(query, &bindings)
-}
-
-fn scalar(value: &V) -> QueryValue<'_> {
-    match value {
-        V::Null => QueryValue::Null,
-        V::Bool(value) => QueryValue::Bool(*value),
-        V::Int(value) => QueryValue::I64(*value),
-        V::Float(value) => QueryValue::F64(*value),
-        V::Str(value) => QueryValue::String(value),
-        other => panic!("unsupported fixture parameter {other:?}"),
-    }
-}
-
-/// The current generation, observed by a read that cannot change it.
-fn generation(graph: &Graph) -> GraphGeneration {
-    let probe = graph.run("RETURN 1 AS probe", &[]).unwrap();
-    assert_eq!(probe.metadata().outcome, Outcome::Read);
-    probe.metadata().generation
-}
-
-fn canonical(rows: &[Vec<V>], unordered_lists: bool) -> Vec<String> {
-    let mut rendered: Vec<String> = rows
-        .iter()
-        .map(|row| {
-            let mut row = row.clone();
-            if unordered_lists {
-                row.iter_mut().for_each(V::sort_lists);
-            }
-            format!("{row:?}")
-        })
-        .collect();
-    rendered.sort();
-    rendered
-}
-
-/// One positive scenario; `Err` describes the first mismatch.
-fn check_positive(scenario: &tck::Scenario) -> Result<usize, String> {
-    let Expect::Table { mode, header, rows } = &scenario.expect else {
-        unreachable!()
-    };
-    let mut graph = Graph::new("ze56-tck");
-    for statement in &scenario.setup {
-        graph.setup(statement);
-    }
-    let before = generation(&graph);
-    for pass in 0..2 {
-        if pass == 1 {
-            graph.reopen();
-        }
-        let result = run_with(&graph, &scenario.query, &scenario.parameters)
-            .map_err(|error| format!("query failed: {error}"))?;
-        if result.metadata().outcome != Outcome::Read || result.metadata().generation != before {
-            return Err(format!(
-                "side effect: outcome {:?} at {:?}, before {before:?}",
-                result.metadata().outcome,
-                result.metadata().generation
-            ));
-        }
-        let (columns, actual) = tck::actual_table(&result);
-        if &columns != header {
-            return Err(format!("columns {columns:?}, expected {header:?}"));
-        }
-        let (expected, actual) = match mode.as_str() {
-            "ordered" => (
-                rows.iter().map(|r| format!("{r:?}")).collect::<Vec<_>>(),
-                actual.iter().map(|r| format!("{r:?}")).collect(),
-            ),
-            "bag" => (canonical(rows, false), canonical(&actual, false)),
-            "bag-lists-unordered" => (canonical(rows, true), canonical(&actual, true)),
-            other => panic!("mode {other}"),
-        };
-        if expected != actual {
-            return Err(format!("rows {actual:#?}\nexpected {expected:#?}"));
-        }
-        if generation(&graph) != before {
-            return Err("generation moved after the read".to_owned());
-        }
-    }
-    Ok(2)
 }
 
 #[test]
@@ -154,7 +46,9 @@ fn ze56_original_read_tck_positive_scenarios_execute() {
         }
         selected += 1;
         match check_positive(&scenario) {
-            Ok(validations) => passed += validations,
+            Ok(validations) => {
+                passed += validations;
+            }
             Err(reason) => failures.push(format!("{}: {reason}", scenario.coordinate)),
         }
     }
@@ -209,6 +103,7 @@ fn ze56_original_read_tck_compile_errors_are_refused_before_execution() {
             scenario.coordinate
         );
         assert_eq!(generation(&graph), before, "{}", scenario.coordinate);
+        tck::emit_receipt(&scenario, &format!("compile;{:?};no-effects", error.kind));
         seen += 1;
     }
     assert_eq!(seen, 3);

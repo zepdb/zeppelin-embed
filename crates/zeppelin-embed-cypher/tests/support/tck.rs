@@ -412,3 +412,60 @@ pub(crate) fn scenarios(fixture: &str) -> Vec<Scenario> {
     }
     out
 }
+
+/// Portable tab-separated receipt. Hex carries the exact UTF-8 fixture block;
+/// tooling hashes it and rejects stale/missing/duplicate coordinates.
+pub(crate) fn emit_receipt(scenario: &Scenario, observation: &str) {
+    let fixtures = [
+        include_str!("../fixtures/read-tck-execution.txt"),
+        include_str!("../fixtures/write-tck-execution.txt"),
+    ];
+    let body = fixtures
+        .iter()
+        .flat_map(|fixture| fixture.split("\n=== ").skip(1))
+        .find_map(|block| {
+            let (coordinate, body) = block.split_once('\n')?;
+            (coordinate == scenario.coordinate).then_some(body)
+        })
+        .expect("receipt coordinate in frozen corpus");
+    let hex: String = body
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    eprintln!(
+        "\nZE59\t{}\tGREEN\t{hex}\t{observation}",
+        scenario.coordinate
+    );
+}
+
+/// Typed table comparison with duplicate-preserving bags and explicit list mode.
+pub(crate) fn compare_result(expect: &Expect, result: &CompletedGraphResult) -> Result<(), String> {
+    let Expect::Table { mode, header, rows } = expect else {
+        return Err("table expectation required".to_owned());
+    };
+    let (columns, actual) = actual_table(result);
+    if &columns != header {
+        return Err(format!("columns {columns:?}, expected {header:?}"));
+    }
+    let canonical = |rows: &[Vec<V>]| {
+        let mut rows = rows.to_vec();
+        if mode == "bag-lists-unordered" {
+            for row in &mut rows {
+                row.iter_mut().for_each(V::sort_lists);
+            }
+        }
+        let mut rows: Vec<_> = rows.iter().map(|row| format!("{row:?}")).collect();
+        if mode != "ordered" {
+            rows.sort();
+        }
+        rows
+    };
+    if !matches!(mode.as_str(), "ordered" | "bag" | "bag-lists-unordered") {
+        return Err(format!("unknown mode {mode}"));
+    }
+    if canonical(rows) != canonical(&actual) {
+        return Err(format!("rows {actual:?}, expected {rows:?}"));
+    }
+    Ok(())
+}
