@@ -162,3 +162,5 @@ pub mod graph_c_entry;
 pub mod graph_mutation_lowering;
 
 pub mod graph_lifecycle;
+
+pub mod graph_profile;

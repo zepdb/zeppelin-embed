@@ -65,3 +65,18 @@ required-features = ["graph-cypher"]
 name = "graph_bindings"
 path = "graph_bindings.rs"
 required-features = ["graph-result-test-support"]
+
+[[test]]
+name = "graph_profile_parity"
+path = "graph_profile_parity.rs"
+required-features = ["graph-cypher"]
+
+[[test]]
+name = "graph_profile_cli"
+path = "graph_profile_cli.rs"
+required-features = ["graph-cypher"]
+
+[[bin]]
+name = "graph-profile"
+path = "graph_profile_runner.rs"
+required-features = ["graph-cypher"]

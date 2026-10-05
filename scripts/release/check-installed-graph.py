@@ -245,18 +245,75 @@ class ContractTests(unittest.TestCase):
                 check_release_contract(archive=archive, enforce_checksum=True)
 
 
+def run_c_profile_consumer(sdk, work, output):
+    import importlib.util
+    script = ROOT / 'scripts/graph-profile-parity.py'
+    spec = importlib.util.spec_from_file_location('graph_profile', script)
+    profile = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(profile)
+    manifest = profile.build_manifest()
+    runner = ROOT / 'target/debug/graph-profile'
+    if not runner.is_file():
+        raise ValueError('ZE-74 profile runner missing; build graph-profile before installed qualification')
+    cases = [c for c in json.loads(subprocess.check_output([runner, 'describe'], text=True))['cases'] if c['id'].startswith('local/')]
+    # Retain the independently authored column mapping after primitive expansion.
+    authored = {c['id']: c for c in manifest['local']}
+    for case in cases:
+        case['column_mapping'] = authored[case['id']].get('column_mapping', {})
+    (work / 'graph_profile_cases.h').write_text(profile.generate_c(manifest))
+    report = []
+    for flavor, suffix in [('static', 'a'), ('dylib', 'dylib')]:
+        library = sdk / ('lib/libzeppelin_embed_graph_cypher_ffi.' + suffix)
+        if not library.is_file():
+            raise ValueError('BLOCKED ZE-71: installed graph ' + flavor + ' input missing')
+        consumer = work / ('profile-' + flavor)
+        run(['clang', '-std=c11', '-Wall', '-Wextra', '-Werror', '-arch', 'arm64', '-mmacosx-version-min=14.0',
+             '-I', sdk / 'include', '-I', work, ROOT / 'crates/zeppelin-embed-ffi/tests/c/graph_profile_parity.c',
+             library, '-framework', 'Security', '-liconv', '-Wl,-rpath,' + str(sdk / 'lib'), '-o', consumer])
+        fixture = work / ('profile-fixture-' + flavor)
+        fixture.mkdir()
+        result = run([consumer, fixture], capture_output=True, text=True)
+        (output / ('profile-' + flavor + '.jsonl')).write_text(result.stdout)
+        observations = [json.loads(line) for line in result.stdout.splitlines()]
+        profile.compare_c_consumer(cases, observations)
+        report.append(dict(consumer='installed-c-' + flavor, state='focused GREEN',
+                           manifest_sha256=manifest['manifest_sha256'], artifact_sha256=profile.digest(library),
+                           observations=observations))
+    return report
+
+
+def profile_receipt_state(path):
+    header = (ROOT / 'crates/zeppelin-embed-ffi/include/zeppelin_graph_contracts.h').read_text()
+    if 'ze_graph_query(' not in header:
+        raise ValueError('required public C structured query export is absent')
+    if path is None:
+        return 'BLOCKED: C structured source present; ZE-71 installed profile receipts and ZE-278 Swift structured receipts missing'
+    receipts = json.loads(path.read_text())
+    if not receipts:
+        raise ValueError('ZE-74 installed profile receipts are empty')
+    required = {'installed-c-static', 'installed-c-dylib', 'installed-swift'}
+    seen = {r.get('consumer') for r in receipts}
+    if not required.issubset(seen):
+        raise ValueError('ZE-71 installed profile consumers missing: ' + str(required - seen))
+    for r in receipts:
+        if r.get('state') != 'focused GREEN' or not r.get('artifact_sha256') or not r.get('manifest_sha256'):
+            raise ValueError('stale or incomplete installed profile receipt')
+    return {'state': 'focused GREEN', 'receipts': str(path), 'release': 'BLOCKED: ZE-72 closure and macOS 14 runtime receipt required'}
+
+
 def qualify(args):
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     archive = args.artifact_root / 'xcframework-graph-cypher/ZeppelinEmbedGraph.xcframework.zip'
     sdk_archive = args.artifact_root / 'macos-sdk-graph-cypher/zeppelin-embed-graph-cypher-macos-arm64.tar.gz'
-    for packaged in (archive, sdk_archive):
-        if not packaged.is_file():
-            raise FileNotFoundError('ZE-71 missing matching installed graph artifact: ' + str(packaged))
+    if not archive.is_file() or not sdk_archive.is_file():
+        missing = [str(p) for p in (archive, sdk_archive) if not p.is_file()]
+        (output / 'report.json').write_text(json.dumps(dict(state='blocked', missing_input='ZE-71', missing_artifacts=missing), indent=2)+'\n')
+        raise ValueError('BLOCKED ZE-71: rebuilt installed graph SDK/XCFramework inputs missing')
     report = dict(contract=check_release_contract(archive=archive, enforce_checksum=args.enforce_checksum),
                   os=subprocess.check_output(['sw_vers'], text=True),
                   hardware=subprocess.check_output(['uname', '-a'], text=True),
-                  structured_query='UNQUALIFIED: ZE-278 Swift structured query/search/options/get wrappers missing; C structured exports are present')
+                  structured_query=profile_receipt_state(args.profile_receipts))
     with tempfile.TemporaryDirectory(prefix='ze71-installed-') as directory:
         work = Path(directory).resolve()
         with tarfile.open(sdk_archive) as tar:
@@ -278,6 +335,7 @@ def qualify(args):
             raise ValueError('graph SDK deployment target must remain macOS 14.0')
         report['deployment'] = deployment
         report['c'] = run_c_consumer(sdk, work, output)
+        report['c_profile'] = run_c_profile_consumer(sdk, work, output)
         report['swift'] = run_swift_consumer(work / 'ZeppelinEmbedGraph.xcframework', work, output, args.disable_swift_sandbox)
         # Substituting a valid legacy archive must fail exact graph exports.
         legacy_library = next((work / 'ZeppelinEmbed.xcframework').rglob('*.a'))
@@ -363,6 +421,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--remote-tag', help='read-only post-publication proof against actual remote assets')
     parser.add_argument('--self-test', action='store_true')
+    parser.add_argument('--profile-receipts', type=Path, help='ZE-74 installed C/Swift consumer receipts; source receipts do not qualify')
     parser.add_argument('--artifact-root', type=Path, default=ROOT / 'target')
     parser.add_argument('--output', type=Path, default=ROOT / 'tasks/evidence/ze-71-installed')
     parser.add_argument('--disable-swift-sandbox', action='store_true', help='explicit local workaround when nested sandbox-exec is unavailable')
