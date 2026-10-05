@@ -136,6 +136,8 @@ pub mod graph_cypher_search;
 pub mod graph_native_result;
 #[cfg(feature = "graph-cypher")]
 pub mod graph_query_entry;
+#[cfg(feature = "graph-cypher")]
+pub mod graph_search_qualification;
 
 #[cfg(feature = "graph-result-test-support")]
 pub mod graph_response;

@@ -291,6 +291,10 @@ pub struct ProbeStore {
     resources: GraphResources,
 }
 impl ProbeStore {
+    /// Public facade for integrated qualification queries and writes.
+    pub fn graph(&self) -> &GraphStore {
+        &self.graph
+    }
     pub fn create(path: &Path, fixture: &Fixture, vfs: Arc<dyn Vfs>) -> Self {
         let store = Store::create_native_graph_with_infrastructure(
             path,

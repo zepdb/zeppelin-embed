@@ -55,3 +55,8 @@ required-features = ["graph-cypher"]
 name = "graph-fixture"
 path = "graph_fixture_cli.rs"
 required-features = ["graph-cypher"]
+
+[[test]]
+name = "graph_search_qualification"
+path = "graph_search_qualification.rs"
+required-features = ["graph-cypher"]

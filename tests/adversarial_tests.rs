@@ -19266,6 +19266,7 @@ fn native_graph_runner_keys_are_active_with_graph_feature() {
     for key in adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE {
         assert!(active.contains(key), "enabled graph runner omitted {key}");
     }
+    // ZE-65 observes 387/407 on Unix after ten integrated receipts.
     // ZE-170 measured the pre-change lengths as 304 and 324; the committed 278
     // and 298 had drifted, so this pin was already red on main. Both are the
     // observed baseline plus the two ZE-170 read-view text receipts. ZE-53 S3
@@ -19279,12 +19280,12 @@ fn native_graph_runner_keys_are_active_with_graph_feature() {
     #[cfg(not(feature = "graph-result-test-support"))]
     assert_eq!(
         adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        370 + if cfg!(unix) { 7 } else { 0 }
+        380 + if cfg!(unix) { 7 } else { 0 }
     );
     #[cfg(feature = "graph-result-test-support")]
     assert_eq!(
         adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        390 + if cfg!(unix) { 7 } else { 0 }
+        400 + if cfg!(unix) { 7 } else { 0 }
     );
 }
 
@@ -19914,6 +19915,19 @@ fn cypher_search_probe_fires_and_matches_same_seed_control() {
             .expect("real Cypher retrieval faults");
         for key in adversarial::graph_cypher_search::REQUIRED_COVERAGE {
             assert_eq!(coverage.count(key), 1, "{key}");
+        }
+    }
+}
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn ze65_faults_fire_and_match_same_seed_control() {
+    for seed in [0, 7] {
+        let mut coverage = adversarial::coverage::CoverageRegistry::default();
+        adversarial::graph_search_qualification::probe(seed, &mut coverage)
+            .expect("ZE65 integrated fault/control");
+        for key in adversarial::graph_search_qualification::REQUIRED_COVERAGE {
+            assert!(coverage.count(key) > 0, "missing ZE65 receipt {key}");
         }
     }
 }
