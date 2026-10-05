@@ -14,7 +14,7 @@ default = []
 graph-cypher = ["zeppelin-embed/graph-cypher", "dep:zeppelin-embed-cypher"]
 # Scoped allocation-site scheduling for the opt-in canonical test runner only.
 graph-result-test-support = ["graph-cypher"]
-abi-panic-probe = []
+abi-panic-probe = ["zeppelin-embed/test-support"]
 text = ["dep:zeppelin-embed-text"]
 
 [lints.rust]

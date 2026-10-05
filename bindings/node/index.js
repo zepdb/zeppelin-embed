@@ -556,6 +556,15 @@ function deleteCascade(root, participants) {
   return callNative(() => binding.deleteCascade(root, participants));
 }
 
+function namespaceBatchLive(root, participants) {
+  if (!Array.isArray(participants)) throw new TypeError('participants must be an array');
+  const nativeParticipants = participants.map(participant => {
+    if (!(participant.store instanceof Store)) throw new TypeError('participant store must be a Store');
+    return { ...participant, store: participant.store._native };
+  });
+  return callNative(() => binding.namespaceBatchLive(root, nativeParticipants));
+}
+
 function namespaceBatch(root, participants) {
   return callNative(() => binding.namespaceBatch(root, participants));
 }
@@ -745,6 +754,7 @@ module.exports = {
   idToUuid,
   listNamespaces,
   namespaceBatch,
+  namespaceBatchLive,
   declareCascade,
   deleteCascade,
   openNamespace,

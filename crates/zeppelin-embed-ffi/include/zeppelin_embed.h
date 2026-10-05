@@ -1037,6 +1037,29 @@ typedef struct ZeCascadeDeclaration {
 } ZeCascadeDeclaration;
 
 /*
+ Live writable handles paired with the batch participants in input order.
+ Handles must belong to this process. Outputs are written only on success.
+ */
+typedef struct ZeNamespaceBatchLiveRequest {
+    /*
+     sizeof(ZeNamespaceBatchLiveRequest).
+     */
+    uint32_t abi_size;
+    /*
+     Zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Root, mutations and caller-owned generation outputs.
+     */
+    struct ZeNamespaceBatchRequest batch;
+    /*
+     Caller-owned array of batch.participant_count live store handles.
+     */
+    const ze_handle *handles;
+} ZeNamespaceBatchLiveRequest;
+
+/*
  Requests namespace discovery immediately below one database root.
  */
 typedef struct ZeNamespaceListRequest {
@@ -3246,6 +3269,14 @@ ze_error_code ze_namespace_declare_cascade(const struct ZeNamespaceBatchRequest 
  indeterminate-outcome and logical-delete limits. No handle poison state.
  */
 ze_error_code ze_namespace_delete_cascade(const struct ZeNamespaceBatchRequest *request);
+
+/*
+ Commits a batch using same-process live writable handles.
+ A caught panic poisons all acquired participants. An indeterminate commit
+ fences the core writers; reopen before retrying. Generations change only on
+ success. All pointers and output storage remain caller-owned.
+ */
+ze_error_code ze_namespace_batch_live(const struct ZeNamespaceBatchLiveRequest *request);
 
 /*
  Lists direct child directories of `root` that contain a `manifest.ze`, in

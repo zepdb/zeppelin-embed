@@ -1768,3 +1768,18 @@ pub struct ZeCascadeDeclaration {
     /// Child schema's id128 attribute ID.
     pub attribute_id: u32,
 }
+
+/// Live writable handles paired with the batch participants in input order.
+/// Handles must belong to this process. Outputs are written only on success.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeNamespaceBatchLiveRequest {
+    /// sizeof(ZeNamespaceBatchLiveRequest).
+    pub abi_size: u32,
+    /// Zero.
+    pub abi_reserved: u32,
+    /// Root, mutations and caller-owned generation outputs.
+    pub batch: ZeNamespaceBatchRequest,
+    /// Caller-owned array of batch.participant_count live store handles.
+    pub handles: *const ZeHandle,
+}

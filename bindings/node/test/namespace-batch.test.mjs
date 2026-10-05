@@ -67,3 +67,22 @@ for (const redirected of [false, true]) {
     }
   });
 }
+
+test('namespaceBatchLive keeps writable handles usable', () => {
+  const { namespaceBatchLive } = createRequire(import.meta.url)('..');
+  const root = mkdtempSync(join(tmpdir(), 'ze-live-batch-'));
+  const liveSpec = {};
+  const liveDoc = id => ({ id, text: `document ${id}` });
+  const stores = ['a', 'b'].map(name => openNamespace(root, name, liveSpec));
+  try {
+    stores.forEach(store => store.upsert([liveDoc(1n)]));
+    const changes = stores.map((store, i) => ({ store, name: ['a', 'b'][i], spec: liveSpec, upserts: [liveDoc(2n)] }));
+    assert.equal(namespaceBatchLive(root, changes).length, 2);
+    for (const store of stores) {
+      store.upsert([liveDoc(3n)]);
+      assert.deepEqual(store.get([1n, 2n, 3n]).documents.map(d => d.id), [1n, 2n, 3n]);
+    }
+    stores.pop().close();
+    assert.throws(() => namespaceBatchLive(root, changes), { code: 'ZE_ERR_CLOSED' });
+  } finally { stores.forEach(store => store.close()); rmSync(root, { recursive: true, force: true }); }
+});

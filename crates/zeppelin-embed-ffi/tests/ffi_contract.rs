@@ -1561,6 +1561,9 @@ fn graph_declaration_export_is_registered_without_a_poison_handle() {
 
 #[test]
 fn namespace_batch_structs_have_frozen_layouts() {
+    assert_layout!(ZeNamespaceBatchLiveRequest, 64, 8, {
+        abi_size: 0, abi_reserved: 4, batch: 8, handles: 56
+    });
     assert_layout!(ZeNamespaceMutation, 120, 8, {
         abi_size: 0, abi_reserved: 4, name: 8, name_len: 16, spec: 24,
         tokenizer_profile: 32, reserved: 36, upserts: 40, deletes: 96,

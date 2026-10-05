@@ -1786,6 +1786,48 @@ fn namespace_operation(
             "generations must be an aligned output array",
         ));
     }
+    let mutations = decode_namespace_mutations(participants)?;
+    let generations = match operation {
+        NamespaceOperation::Batch => {
+            zeppelin_embed::lifecycle::namespace_batch(Path::new(root), mutations)
+        }
+        NamespaceOperation::Cascade => {
+            zeppelin_embed::lifecycle::namespace_delete_cascade(Path::new(root), mutations)
+        }
+        NamespaceOperation::Declare(declaration) => {
+            let parent = mutations
+                .get(declaration.parent_index as usize)
+                .ok_or_else(|| FfiError::invalid("parent index out of bounds"))?
+                .name
+                .clone();
+            let child = mutations
+                .get(declaration.child_index as usize)
+                .ok_or_else(|| FfiError::invalid("child index out of bounds"))?
+                .name
+                .clone();
+            let rule = zeppelin_embed::lifecycle::CascadeRule {
+                parent,
+                child,
+                attribute: ColumnId::new(declaration.attribute_id),
+            };
+            zeppelin_embed::lifecycle::namespace_declare_cascade(Path::new(root), mutations, rule)
+                .map_err(FfiError::store)?;
+            return Ok(());
+        }
+    }
+    .map_err(FfiError::store)?;
+    for (index, generation) in generations.into_iter().enumerate() {
+        // The ABI requires participant_count writable u64 elements.
+        unsafe {
+            request.generations.add(index).write(generation);
+        }
+    }
+    Ok(())
+}
+
+fn decode_namespace_mutations(
+    participants: &[ZeNamespaceMutation],
+) -> Result<Vec<zeppelin_embed::lifecycle::NamespaceMutation>, FfiError> {
     let mut mutations = Vec::new();
     for participant in participants {
         let participant = marshal::read_struct(participant as *const ZeNamespaceMutation)?;
@@ -1839,42 +1881,147 @@ fn namespace_operation(
             delete_where,
         });
     }
-    let generations = match operation {
-        NamespaceOperation::Batch => {
-            zeppelin_embed::lifecycle::namespace_batch(Path::new(root), mutations)
-        }
-        NamespaceOperation::Cascade => {
-            zeppelin_embed::lifecycle::namespace_delete_cascade(Path::new(root), mutations)
-        }
-        NamespaceOperation::Declare(declaration) => {
-            let parent = mutations
-                .get(declaration.parent_index as usize)
-                .ok_or_else(|| FfiError::invalid("parent index out of bounds"))?
-                .name
-                .clone();
-            let child = mutations
-                .get(declaration.child_index as usize)
-                .ok_or_else(|| FfiError::invalid("child index out of bounds"))?
-                .name
-                .clone();
-            let rule = zeppelin_embed::lifecycle::CascadeRule {
-                parent,
-                child,
-                attribute: ColumnId::new(declaration.attribute_id),
-            };
-            zeppelin_embed::lifecycle::namespace_declare_cascade(Path::new(root), mutations, rule)
-                .map_err(FfiError::store)?;
-            return Ok(());
-        }
+    Ok(mutations)
+}
+
+/// Arms a protocol interruption for scoped ABI tests only.
+#[cfg(feature = "abi-panic-probe")]
+pub fn arm_namespace_batch_step_probe(step: &'static str) {
+    if let Ok(mut probe) = namespace_batch_step_probe().lock() {
+        *probe = Some(step);
     }
-    .map_err(FfiError::store)?;
-    for (index, generation) in generations.into_iter().enumerate() {
-        // The ABI requires participant_count writable u64 elements.
-        unsafe {
-            request.generations.add(index).write(generation);
-        }
-    }
-    Ok(())
+}
+
+#[cfg(feature = "abi-panic-probe")]
+fn namespace_batch_step_probe() -> &'static std::sync::Mutex<Option<&'static str>> {
+    static PROBE: std::sync::OnceLock<std::sync::Mutex<Option<&'static str>>> =
+        std::sync::OnceLock::new();
+    PROBE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// Commits a batch using same-process live writable handles.
+/// A caught panic poisons all acquired participants. An indeterminate commit
+/// fences the core writers; reopen before retrying. Generations change only on
+/// success. All pointers and output storage remain caller-owned.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_namespace_batch_live(
+    request: *const ZeNamespaceBatchLiveRequest,
+) -> ZeErrorCode {
+    ffi_entry!(None, ZeErrorCode::ZeErrPanic, {
+        finish(
+            None,
+            (|| {
+                let request = marshal::read_struct(request)?;
+                let batch = marshal::read_struct(&request.batch)?;
+                if !(2..=128).contains(&batch.participant_count) {
+                    return Err(FfiError::invalid("live batch requires 2..128 participants"));
+                }
+                let handles = marshal::read_slice(request.handles, batch.participant_count)?;
+                let access = handles
+                    .iter()
+                    .map(|handle| registry::lookup(*handle))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let mut order: Vec<_> = (0..handles.len()).collect();
+                order.sort_by_key(|index| handles.get(*index).copied());
+                if handles
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    != handles.len()
+                {
+                    return Err(FfiError::invalid("duplicate live handle"));
+                }
+                let mut guards = Vec::new();
+                for index in order {
+                    let participant = access
+                        .get(index)
+                        .ok_or_else(|| FfiError::invalid("participant index"))?;
+                    guards.push(participant.writer.try_lock().map_err(|error| match error {
+                        crate::sync::TryLockError::WouldBlock => FfiError::new(
+                            ZeErrorCode::ZeErrBusy,
+                            "another FFI writer call is active",
+                        ),
+                        crate::sync::TryLockError::Poisoned(_) => FfiError::new(
+                            ZeErrorCode::ZeErrSynchronization,
+                            "writer mutex poisoned",
+                        ),
+                    })?);
+                }
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_named_panic_probe("ze_namespace_batch_live");
+                    let root = marshal::utf8_without_nul(batch.root, batch.root_len)?;
+                    if root.is_empty()
+                        || batch.generations.is_null()
+                        || batch.generations.align_offset(align_of::<u64>()) != 0
+                    {
+                        return Err(FfiError::invalid("root and aligned generations required"));
+                    }
+                    let participants =
+                        marshal::read_slice(batch.participants, batch.participant_count)?;
+                    let mutations = decode_namespace_mutations(participants)?;
+                    let live = access
+                        .iter()
+                        .zip(mutations)
+                        .map(|(access, mutation)| {
+                            zeppelin_embed::lifecycle::LiveNamespaceMutation {
+                                store: &access.store,
+                                mutation,
+                            }
+                        })
+                        .collect();
+                    #[cfg(feature = "abi-panic-probe")]
+                    let outcome = {
+                        let interruption = namespace_batch_step_probe()
+                            .lock()
+                            .ok()
+                            .and_then(|mut p| p.take());
+                        zeppelin_embed::lifecycle::namespace_batch_live_with_steps(
+                            Path::new(root),
+                            live,
+                            &mut |step| {
+                                if interruption == Some(step) {
+                                    Err(std::io::Error::other("ABI batch interruption probe"))
+                                } else {
+                                    Ok(())
+                                }
+                            },
+                        )
+                    };
+                    #[cfg(not(feature = "abi-panic-probe"))]
+                    let outcome =
+                        zeppelin_embed::lifecycle::namespace_batch_live(Path::new(root), live);
+                    let generations = outcome.map_err(|error| {
+                        // Coordinator admission uses the same OS lock as namespace open.
+                        if matches!(&error, zeppelin_embed::lifecycle::StoreError::Lock(
+                        zeppelin_embed::lifecycle::lock::StoreLockError::Io { source, .. }
+                    ) if source.kind() == std::io::ErrorKind::WouldBlock)
+                        {
+                            FfiError::new(ZeErrorCode::ZeErrStoreBusy, error.to_string())
+                        } else {
+                            FfiError::store(error)
+                        }
+                    })?;
+                    for (index, generation) in generations.into_iter().enumerate() {
+                        // Caller supplies participant_count writable u64 elements.
+                        unsafe {
+                            batch.generations.add(index).write(generation);
+                        }
+                    }
+                    Ok(())
+                }));
+                match result {
+                    Ok(result) => result,
+                    Err(payload) => {
+                        let message = panic_message(payload);
+                        for handle in handles {
+                            poison_handle(Some(*handle), message.clone());
+                        }
+                        Err(FfiError::new(ZeErrorCode::ZeErrPanic, message))
+                    }
+                }
+            })(),
+        )
+    })
 }
 
 /// Lists direct child directories of `root` that contain a `manifest.ze`, in

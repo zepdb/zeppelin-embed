@@ -1165,6 +1165,18 @@ export interface NamespaceMutation {
  */
 export declare function namespaceBatch(root: string, participants: readonly NamespaceMutation[]): bigint[];
 
+/** A mutation using a same-process writable namespace handle. */
+export interface LiveNamespaceMutation extends NamespaceMutation {
+  readonly store: Store;
+}
+/**
+ * Commits through live writable handles; returns generations in input order.
+ * Handles remain usable on success. A commit I/O error may have committed:
+ * close and reopen every participant before retrying. Deletion and snapshot
+ * retention follow the core live-batch protocol.
+ */
+export declare function namespaceBatchLive(root: string, participants: readonly LiveNamespaceMutation[]): bigint[];
+
 /** An existing namespace with its exact schema/epoch/tokenizer declaration. */
 export interface CascadeParticipant {
   readonly name: string;
