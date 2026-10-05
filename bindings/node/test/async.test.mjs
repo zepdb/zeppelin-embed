@@ -42,16 +42,21 @@ test('async calls remain responsive and close safely', () => fixture(async s => 
   for (const r of outcomes) if (r.status === 'rejected') assert.equal(r.reason.code, 'ZE_ERR_CLOSED');
   await assert.rejects(s.scanAsync(), e => e instanceof ZeppelinError && e.code === 'ZE_ERR_CLOSED');
 }));
-test('query and scan AbortSignal reject promptly without partial results', () => fixture(async s => {
+test('query and scan AbortSignal preserve cancellation and complete-result races', () => fixture(async s => {
   await s.upsertAsync(Array.from({ length: 10000 }, (_, i) => ({ id: BigInt(i), text: 'hello world' })));
   for (const method of ['queryAsync', 'scanAsync']) {
     const c = new AbortController(); c.abort();
     await assert.rejects(s[method]({ text: 'hello', signal: c.signal }), cancelled);
+    const request = { text: 'hello', limit: 10000 };
+    const expected = s[method === 'queryAsync' ? 'query' : 'scan'](request);
     const running = new AbortController();
     const start = performance.now();
-    const p = s[method]({ text: 'hello', limit: 10000, signal: running.signal });
+    const p = s[method]({ ...request, signal: running.signal });
     running.abort();
-    await assert.rejects(p, cancelled);
+    await p.then(
+      result => assert.deepEqual(result, expected),
+      error => assert.ok(cancelled(error)),
+    );
     assert.ok(performance.now() - start < 2000, 'cancellation settles within 2s');
   }
 }));

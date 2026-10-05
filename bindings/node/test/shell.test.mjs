@@ -4,10 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 const require = createRequire(import.meta.url);
 const { Store, openInspection, openNamespace } = require('..');
-const bin = new URL('../bin/zeppelin-shell.js', import.meta.url);
+const bin = fileURLToPath(new URL('../bin/zeppelin-shell.js', import.meta.url));
 const attributes = ['u64', 'i64', 'f64', 'bool', 'dictionaryString', 'rawString'].map((type, i) => ({ id: i + 1, name: i === 0 ? 'rank' : `属性-${type}`, type, nullable: true }));
 function fixture(body) {
   const root = mkdtempSync(join(tmpdir(), 'ze-shell-'));
@@ -20,7 +21,7 @@ function fixture(body) {
     body(root);
   } finally { rmSync(root, { recursive: true, force: true }); }
 }
-function run(...args) { return spawnSync(process.execPath, [bin.pathname, ...args], { encoding: 'utf8' }); }
+function run(...args) { return spawnSync(process.execPath, [bin, ...args], { encoding: 'utf8' }); }
 function json(...args) { const r = run(...args); assert.equal(r.status, 0, r.stderr); return JSON.parse(r.stdout); }
 function snapshot(path) {
   return readdirSync(path).sort().flatMap(name => {
