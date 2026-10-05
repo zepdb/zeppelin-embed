@@ -69,6 +69,36 @@ cargo llvm-cov \
     --ignore-filename-regex '(^|/)(registry/|crates/zeppelin-embed-bench|fuzz/|target/)' \
     "$@"
 
+# Reuse the just-produced profiles; this adds no test/coverage campaign.
+# External manifests keep their original behavior. Routine platform exclusions
+# remain explicit; the release gate separately requires all seven crates.
+if $REPOSITORY_MANIFEST; then
+    COVERAGE_DIR="${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}/ze78-coverage"
+    mkdir -p "$COVERAGE_DIR"
+    COVERAGE_CRATES=(zeppelin-embed zeppelin-embed-ffi
+        zeppelin-embed-adversarial-oracle zeppelin-embed-workspace-tests)
+    if graph_target_supports_native_graph "$GRAPH_TARGET"; then
+        COVERAGE_CRATES+=(zeppelin-embed-cypher zeppelin-embed-text)
+    elif graph_host_is_darwin; then
+        COVERAGE_CRATES+=(zeppelin-embed-text)
+    fi
+    REPORT_ARGS=(--manifest-path "$PROJECT_ROOT/Cargo.toml")
+    for ((i = 0; i < ${#ARGS[@]}; i++)); do
+        case "${ARGS[i]}" in
+            --target|--profile) REPORT_ARGS+=("${ARGS[i]}" "${ARGS[i+1]}"); i=$((i+1)) ;;
+            --target=*|--profile=*|--release|--no-default-features|--all-features|--remap-path-prefix)
+                REPORT_ARGS+=("${ARGS[i]}") ;;
+        esac
+    done
+    PACKAGE_ARGS=()
+    for crate in "${COVERAGE_CRATES[@]}"; do PACKAGE_ARGS+=(-p "$crate"); done
+    cargo llvm-cov report "${PACKAGE_ARGS[@]}" "${REPORT_ARGS[@]}" --json --summary-only \
+        --ignore-filename-regex '(^|/)(registry/|crates/zeppelin-embed-bench|fuzz/|target/)' \
+        --output-path "$COVERAGE_DIR/workspace.json"
+    python3 scripts/release/qualify-graph.py --coverage-json "$COVERAGE_DIR/workspace.json" \
+        --coverage-output "$COVERAGE_DIR/workspace-crates.json" --coverage-crates "${COVERAGE_CRATES[@]}"
+fi
+
 if $REPOSITORY_MANIFEST && [[ "$(uname -s)" == "Darwin" ]]; then
     cargo llvm-cov \
         -p zeppelin-embed-bench \
@@ -77,4 +107,9 @@ if $REPOSITORY_MANIFEST && [[ "$(uname -s)" == "Darwin" ]]; then
         --fail-under-lines 90 \
         --ignore-filename-regex '(^|/)(registry/|crates/zeppelin-embed/|crates/zeppelin-embed-bench/src/(bin|platform|recall)/|fuzz/|target/)' \
         "$@"
+    cargo llvm-cov report -p zeppelin-embed-bench "${REPORT_ARGS[@]}" --json --summary-only \
+        --ignore-filename-regex '(^|/)(registry/|crates/zeppelin-embed/|crates/zeppelin-embed-bench/src/(bin|platform|recall)/|fuzz/|target/)' \
+        --output-path "$COVERAGE_DIR/benchmark.json"
+    python3 scripts/release/qualify-graph.py --coverage-json "$COVERAGE_DIR/benchmark.json" \
+        --coverage-output "$COVERAGE_DIR/benchmark-crates.json" --coverage-crates zeppelin-embed-bench
 fi

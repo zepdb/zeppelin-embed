@@ -20,7 +20,8 @@ features=()
 MANIFEST="$ROOT_DIR/Package.swift"
 PIN_MARKER=xcframework-checksum
 case "$SELECTOR" in
-    legacy) SUFFIX=""; NAME=ZeppelinEmbed; SIZE_BUDGET_KB=5120; MACOS_DEPLOYMENT_TARGET=11.0 ;;
+    # Owner decision 2026-10-05: legacy arm64 and Intel share 5,632 KB.
+    legacy) SUFFIX=""; NAME=ZeppelinEmbed; SIZE_BUDGET_KB=5632; MACOS_DEPLOYMENT_TARGET=11.0 ;;
     graph-cypher)
         SUFFIX=-graph-cypher; NAME=ZeppelinEmbedGraph; SIZE_BUDGET_KB=12288
         MACOS_DEPLOYMENT_TARGET=14.0; features=(--features graph-cypher)

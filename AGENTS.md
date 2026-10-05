@@ -79,6 +79,11 @@ have a separate 12,288 KB gate, using the same post-strip linked-section
 measurement. This does not raise the graph-free budget or the dependency
 allowlist. `scripts/size-budget.sh` and the Node archive checks enforce it.
 
+Owner decision 2026-10-05 supersedes the legacy budget above: graph-free
+core and FFI archives on every platform, including arm64 and Intel, have a
+5,632 KB gate. The complete graph FFI archive remains gated at 12,288 KB;
+its graph-contained core archive is reported separately, without a second gate.
+
 The gate was 2 MB from Task 01 through Track L. The repository owner raised it
 to 5 MB on 2026-08-23 by explicit instruction, so that lexical-engine
 structures are sized for retrieval quality and decode speed rather than for

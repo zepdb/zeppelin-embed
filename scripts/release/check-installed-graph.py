@@ -98,10 +98,24 @@ def check_xcframework(path, artifact, work, output):
             run(['lipo', library, '-thin', arch, '-output', thin])
         tools.check_exports(thin, artifact)
         measured = tools.measure(thin, output)
-        measured['budget_kib'] = 12288 if artifact == 'graph-cypher' else 5120
+        # Owner decisions: graph 2026-09-27; legacy 2026-10-05, all slices.
+        measured['budget_kib'] = 12288 if artifact == 'graph-cypher' else 5632
         measured['budget_pass'] = measured['section_kib'] <= measured['budget_kib']
         slices[arch] = measured
     return slices
+
+
+def consumer_receipt(stdout):
+    """ZE-71 producer handoff: a receipt from this installed execution's log.
+
+    The producer, not this checker, owns structured-query/get implementation.
+    Existing batch/Cypher consumers cannot synthesize structured reachability.
+    """
+    prefix = 'ZE_GRAPH_INSTALLED_RECEIPT\t'
+    receipts = [json.loads(line[len(prefix):]) for line in stdout.splitlines() if line.startswith(prefix)]
+    if len(receipts) != 1:
+        return dict(state='blocked', missing_input='ZE-71/ZE-278 installed execution receipt')
+    return receipts[0]
 
 
 def run_c_consumer(sdk, work, output):
@@ -131,7 +145,8 @@ def run_c_consumer(sdk, work, output):
         (output / ('c-' + kind + '.log')).write_text(result.stdout + result.stderr)
         if kind == 'dylib' and str(library) not in result.stderr:
             raise ValueError('installed dylib loaded path was not observed')
-        report[kind] = dict(library=tools.measure(library, output), consumer=tools.measure(binary, output))
+        report[kind] = dict(library=tools.measure(library, output), consumer=tools.measure(binary, output),
+                            reachability=consumer_receipt(result.stdout))
         if report[kind]['library']['section_kib'] > 12288:
             raise ValueError('graph FFI section budget exceeded')
     return report
@@ -190,7 +205,7 @@ let package = Package(name: "InstalledConsumer", platforms: [.macOS(.v14)],
     binary = work / 'swift-build/debug/Consumer'
     result = run([binary, work / 'swift-fixture'], env=env, cwd=work, capture_output=True, text=True)
     (output / 'swift.log').write_text(result.stdout + result.stderr)
-    return artifact_tools().measure(binary, output)
+    return dict(artifact_tools().measure(binary, output), reachability=consumer_receipt(result.stdout))
 
 
 def run_legacy_consumers(args, output):
@@ -301,6 +316,15 @@ def profile_receipt_state(path):
     return {'state': 'focused GREEN', 'receipts': str(path), 'release': 'BLOCKED: ZE-72 closure and macOS 14 runtime receipt required'}
 
 
+def require_structured_execution(report):
+    for kind in ('c-static', 'c-dylib', 'swift'):
+        receipt = report.get('reachability', {}).get(kind, {})
+        if (receipt.get('executed') != ['batch', 'structured', 'get', 'cypher']
+                or receipt.get('artifact_kind') != 'graph-cypher' or receipt.get('exit_status') != 0):
+            raise ValueError('missing ZE-71/ZE-278 installed structured query/get receipt for '
+                             + kind + '; ze_graph_query is present; see report.json')
+
+
 def qualify(args):
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -365,8 +389,13 @@ def qualify(args):
                     raise ValueError('missing installed input accepted: ' + missing)
             finally:
                 path.write_bytes(saved)
+    report['reachability'] = {**{'c-' + kind: report['c'][key]['reachability']
+                              for kind, key in [('static', 'a'), ('dylib', 'dylib')]},
+                              'swift': report['swift']['reachability']}
+    report['structured_query'] = report['reachability']
     report['legacy_languages'] = run_legacy_consumers(args, output)
     (output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
+    require_structured_execution(report)
     if any(not measured['budget_pass'] for slices in report['xcframeworks'].values() for measured in slices.values()):
         raise ValueError('installed execution completed; section budget failed (see report.json)')
 
@@ -413,8 +442,9 @@ def remote_qualify(args):
              '--cache-path', work / 'cache', '--jobs', '3'], env=env, cwd=work)
         run([work / 'build/debug/Consumer', work / 'fixture'], env=env, cwd=work)
         report['swift'] = artifact_tools().measure(work / 'build/debug/Consumer', output)
-        report['scope'] = 'remote batch/Cypher only; structured query requires ZE-241/ZE-278'
+        report['scope'] = 'remote batch/Cypher only; installed structured query/get requires ZE-71/ZE-278'
         (output / 'remote-report.json').write_text(json.dumps(report, indent=2) + '\n')
+        require_structured_execution(report)
 
 
 if __name__ == '__main__':

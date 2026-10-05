@@ -74,12 +74,12 @@ jobs:
           PY
       - name: Build XCFramework
         run: scripts/xcframework/build.sh --artifact ${{ matrix.artifact }}
-      - name: Preserve separate graph core section gate
+      - name: Report separate graph core sections
         if: matrix.artifact == 'graph-cypher'
         run: |
           cores=(target/xcframework-graph-cypher/cargo/aarch64-apple-darwin/release/deps/libzeppelin_embed-*.a)
           test "${#cores[@]}" -eq 1
-          scripts/size-budget.sh --core-archive "${cores[0]}"
+          scripts/size-budget.sh --graph-core-archive "${cores[0]}"
       - name: Build language-neutral macOS SDK
         run: scripts/macos-sdk/build.sh --artifact ${{ matrix.artifact }}
       - name: Verify archive checksum

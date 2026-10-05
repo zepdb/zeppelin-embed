@@ -44,11 +44,13 @@ def measure(path, output):
     subprocess.run(['cp', str(path), str(stripped)], check=True)
     subprocess.run(['strip', '-S', '-x', str(stripped)], check=True)
     raw = subprocess.check_output(['size', '-m', str(stripped)], text=True)
-    (output / (path.name + '-size.txt')).write_text(raw)
+    raw_path = output / (path.name + '-size.txt')
+    raw_path.write_text(raw)
     section_bytes = sum(int(m.group(1)) for m in re.finditer(r'^\s*Section (?!\(__LLVM,).*?\s(\d+)(?: \(zerofill\))?$', raw, re.M))
     if section_bytes == 0:
         raise RuntimeError(f'no linkable sections in {path}')
-    return dict(section_bytes=section_bytes, section_kib=(section_bytes+1023)//1024,
+    return dict(raw_size=str(raw_path.resolve()), raw_sha256=hashlib.sha256(raw_path.read_bytes()).hexdigest(),
+                exit_status=0, state='measured', section_bytes=section_bytes, section_kib=(section_bytes+1023)//1024,
                 physical_bytes=path.stat().st_size,
                 allocated_kib=int(subprocess.check_output(['du', '-k', str(path)], text=True).split()[0]),
                 sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
