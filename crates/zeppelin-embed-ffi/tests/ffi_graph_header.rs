@@ -245,12 +245,12 @@ fn graph_runtime_header_matches_the_graph_export_allowlist() {
                 .map(|(_, rest)| format!("ze_graph_{}", rest.split('(').next().unwrap()))
         })
         .collect();
-    let symbols = std::fs::read_to_string(root.join("symbols.allowlist")).unwrap();
+    let symbols = std::fs::read_to_string(root.join("symbols.graph.allowlist")).unwrap();
     let allowed: std::collections::BTreeSet<_> = symbols
         .lines()
         .filter(|line| line.starts_with("ze_graph_"))
         .map(str::to_owned)
         .collect();
-    assert_eq!(declared.len(), 9);
+    assert_eq!(declared.len(), 12);
     assert_eq!(declared, allowed);
 }

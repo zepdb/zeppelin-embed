@@ -22,7 +22,10 @@ def load_packager():
 def expected_symbols(artifact):
     if artifact not in ('legacy', 'graph-cypher'):
         raise ValueError(f'unknown artifact: {artifact}')
-    return {s for s in (ROOT / 'crates/zeppelin-embed-ffi/symbols.allowlist').read_text().splitlines()
+    # The legacy list never carries ze_graph_*; the graph-enabled archive's
+    # complete export set lives in symbols.graph.allowlist.
+    name = 'symbols.graph.allowlist' if artifact == 'graph-cypher' else 'symbols.allowlist'
+    return {s for s in (ROOT / 'crates/zeppelin-embed-ffi' / name).read_text().splitlines()
             if s.startswith('ze_') and not s.startswith('ze_text_')
             and (artifact == 'graph-cypher' or not s.startswith('ze_graph_'))}
 
