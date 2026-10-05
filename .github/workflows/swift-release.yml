@@ -66,7 +66,7 @@ jobs:
           if actual != expected:
               raise SystemExit(f"release tag {actual!r} must be {expected!r}")
           graph = "${{ matrix.artifact }}" == "graph-cypher"
-          manifest = pathlib.Path("bindings/swift/graph/Package.swift" if graph else "Package.swift").read_text()
+          manifest = pathlib.Path("Package.swift").read_text()
           name = "ZeppelinEmbedGraph" if graph else "ZeppelinEmbed"
           expected_url = f"/releases/download/{expected}/{name}.xcframework.zip"
           if expected_url not in manifest:
@@ -74,44 +74,34 @@ jobs:
           PY
       - name: Build XCFramework
         run: scripts/xcframework/build.sh --artifact ${{ matrix.artifact }}
+      - name: Preserve separate graph core section gate
+        if: matrix.artifact == 'graph-cypher'
+        run: |
+          cores=(target/xcframework-graph-cypher/cargo/aarch64-apple-darwin/release/deps/libzeppelin_embed-*.a)
+          test "${#cores[@]}" -eq 1
+          scripts/size-budget.sh --core-archive "${cores[0]}"
       - name: Build language-neutral macOS SDK
         run: scripts/macos-sdk/build.sh --artifact ${{ matrix.artifact }}
-      - name: Verify Swift package against built XCFramework
-        if: matrix.artifact == 'legacy'
-        env:
-          ZE_USE_LOCAL_XCFRAMEWORK: "1"
-        run: swift test --scratch-path target/swift-xcframework-smoke --filter ZeppelinStoreTests.testOpenIngestQueryCloseRoundTripSucceeds --jobs 3
-      - name: Verify graph SDK C consumer
-        if: matrix.artifact == 'graph-cypher'
-        run: |
-          sdk=target/macos-sdk-graph-cypher/zeppelin-embed-graph-cypher-macos-arm64
-          clang -std=c11 -Wall -Wextra -Werror -mmacosx-version-min=14.0 -I "$sdk/include" crates/zeppelin-embed-ffi/tests/c/graph_artifact_consumer.c "$sdk/lib/libzeppelin_embed_graph_cypher_ffi.a" -framework Security -liconv -o target/graph-sdk-consumer
-          fixtures="$(mktemp -d)"
-          trap 'rm -rf "$fixtures"' EXIT
-          target/graph-sdk-consumer "$fixtures"
-      - name: Verify graph Swift C import and consumer
-        if: matrix.artifact == 'graph-cypher'
-        env:
-          ZE_USE_LOCAL_GRAPH_XCFRAMEWORK: "1"
-        run: swift test --package-path bindings/swift/graph --filter GraphArtifactSmokeTests --jobs 3
       - name: Verify archive checksum
         run: |
-          manifest=Package.swift
-          archive=target/xcframework/ZeppelinEmbed.xcframework.zip
-          if [ "${{ matrix.artifact }}" = graph-cypher ]; then
-            manifest=bindings/swift/graph/Package.swift
-            archive=target/xcframework-graph-cypher/ZeppelinEmbedGraph.xcframework.zip
-          fi
-          expected="$(grep -o '"[0-9a-f]\{64\}" // ze:xcframework-checksum' "$manifest" | cut -d'"' -f2)"
-          test -n "$expected"
-          actual="$(swift package compute-checksum "$archive")"
-          if [ "$actual" != "$expected" ]; then
-              # CI is the source of truth for this value (BL-167). Print it so
-              # the pin can be applied in one round trip instead of guessed.
-              echo "Package.swift pins $expected but CI built $actual" >&2
-              echo "Pin this in Package.swift: $actual" >&2
-              exit 1
-          fi
+          python3 - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location("installed", "scripts/release/check-installed-graph.py")
+          checker = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(checker)
+          graph = "${{ matrix.artifact }}" == "graph-cypher"
+          if graph:
+              checker.check_release_contract(
+                  archive=Path("target/xcframework-graph-cypher/ZeppelinEmbedGraph.xcframework.zip"),
+                  enforce_checksum=True)
+          else:
+              import hashlib
+              expected = checker.pin(Path("Package.swift").read_text())
+              actual = hashlib.sha256(Path("target/xcframework/ZeppelinEmbed.xcframework.zip").read_bytes()).hexdigest()
+              if actual != expected:
+                  raise SystemExit(f"legacy checksum mismatch: pinned={expected} actual={actual}")
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: zeppelin-embed-macos-${{ matrix.artifact }}
@@ -120,9 +110,42 @@ jobs:
             target/macos-sdk${{ matrix.suffix }}/zeppelin-embed${{ matrix.suffix }}-macos-arm64.tar.gz
           if-no-files-found: error
 
+  qualify-installed:
+    name: Qualify exact uploaded distributions
+    needs: build-xcframework
+    runs-on: macos-14
+    env:
+      CARGO_BUILD_JOBS: "3"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.0
+          components: llvm-tools-preview
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: zeppelin-embed-macos-*
+          merge-multiple: true
+          path: dist
+      - name: Installed C and typed Swift execution
+        run: |
+          sw_vers
+          uname -a
+          python3 scripts/release/check-installed-graph.py --artifact-root dist --enforce-checksum --output tasks/evidence/ze-71-installed
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ze-71-installed-evidence
+          path: tasks/evidence/ze-71-installed
+          if-no-files-found: error
+
   attach-release:
     name: Attach macOS artifacts to GitHub release
-    needs: build-xcframework
+    needs: qualify-installed
     runs-on: ubuntu-latest
     permissions:
       contents: write

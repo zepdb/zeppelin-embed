@@ -3,7 +3,8 @@ import Foundation
 import PackageDescription
 
 let local = ProcessInfo.processInfo.environment["ZE_USE_LOCAL_GRAPH_XCFRAMEWORK"] == "1"
-// Early artifact pin; release CI must match the actual archive before upload.
+// Root Package.swift is the shipping contract; the installed checker requires
+// this developer manifest to retain the same release URL and CI checksum.
 let binaryChecksum = "3e0b9c2810c1097ee54047593c9a5a33b701b67c9c4f4562957c74ca5f50c0b4"  // ze:xcframework-checksum
 let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent(
   "../../.."

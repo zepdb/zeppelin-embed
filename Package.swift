@@ -21,6 +21,15 @@ let useLocalXCFramework = environment["ZE_USE_LOCAL_XCFRAMEWORK"] == "1"
 // local mismatch.
 let binaryChecksum = "2a21fc62d3c9c2458bba1fd2b3133d94bc773b3c50111279734f5d244ab7d7be" // ze:xcframework-checksum
 
+// Graph release bytes are independently pinned by CI (BL-167).
+let graphBinaryChecksum = "3e0b9c2810c1097ee54047593c9a5a33b701b67c9c4f4562957c74ca5f50c0b4" // ze:graph-xcframework-checksum
+let graphCTarget: Target = environment["ZE_USE_LOCAL_GRAPH_XCFRAMEWORK"] == "1"
+    ? .binaryTarget(name: "CZeppelinEmbedGraph",
+                    path: "target/xcframework-graph-cypher/ZeppelinEmbedGraph.xcframework")
+    : .binaryTarget(name: "CZeppelinEmbedGraph",
+                    url: "https://github.com/zepdb/zeppelin-embed/releases/download/v0.5.0/ZeppelinEmbedGraph.xcframework.zip",
+                    checksum: graphBinaryChecksum)
+
 let cTarget: Target
 if useLocalFFI {
     cTarget = .systemLibrary(
@@ -54,9 +63,13 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [
         .library(name: "ZeppelinEmbed", targets: ["ZeppelinEmbed"]),
+        .library(name: "ZeppelinEmbedGraph", targets: ["ZeppelinEmbedGraph"]),
     ],
     targets: [
         cTarget,
+        graphCTarget,
+        .target(name: "ZeppelinEmbedGraph", dependencies: ["CZeppelinEmbedGraph"],
+                path: "bindings/swift/graph/Sources/ZeppelinEmbedGraph"),
         .target(
             name: "ZeppelinEmbed",
             dependencies: ["CZeppelinEmbed"],

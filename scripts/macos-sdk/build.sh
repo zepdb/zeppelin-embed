@@ -37,7 +37,7 @@ if [ -n "$PREBUILT_DIR" ]; then
 else
     CARGO_BUILD_JOBS=3 MACOSX_DEPLOYMENT_TARGET="$MACOS_DEPLOYMENT_TARGET" \
         cargo build --locked --release --no-default-features -p zeppelin-embed-ffi \
-        --target "$TARGET_TRIPLE" --target-dir "$BUILD_DIR/cargo" "${features[@]}"
+        --target "$TARGET_TRIPLE" --target-dir "$BUILD_DIR/cargo" ${features[@]+"${features[@]}"}
 fi
 
 static_library="$RUST_OUTPUT/libzeppelin_embed_ffi.a"

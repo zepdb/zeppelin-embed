@@ -18,12 +18,13 @@ if [ -n "$PREBUILT_ARCHIVE" ] && [ "$SELECTOR" != graph-cypher ]; then
 fi
 features=()
 MANIFEST="$ROOT_DIR/Package.swift"
+PIN_MARKER=xcframework-checksum
 case "$SELECTOR" in
     legacy) SUFFIX=""; NAME=ZeppelinEmbed; SIZE_BUDGET_KB=5120; MACOS_DEPLOYMENT_TARGET=11.0 ;;
     graph-cypher)
         SUFFIX=-graph-cypher; NAME=ZeppelinEmbedGraph; SIZE_BUDGET_KB=12288
         MACOS_DEPLOYMENT_TARGET=14.0; features=(--features graph-cypher)
-        MANIFEST="$ROOT_DIR/bindings/swift/graph/Package.swift" ;;
+        PIN_MARKER=graph-xcframework-checksum ;;
     *) echo "unknown artifact: $SELECTOR" >&2; exit 2 ;;
 esac
 BUILD_DIR="$ROOT_DIR/target/xcframework$SUFFIX"
@@ -219,7 +220,7 @@ attempt_slice() {
         echo "## $label"
         echo
         echo '```text'
-        echo "artifact=$SELECTOR target=$target deployment=$MACOS_DEPLOYMENT_TARGET features=${features[*]} target-dir=$BUILD_DIR/cargo"
+        echo "artifact=$SELECTOR target=$target deployment=$MACOS_DEPLOYMENT_TARGET features=${features[*]-} target-dir=$BUILD_DIR/cargo"
     } >> "$SLICE_EVIDENCE"
     # macOS has never required Apple Bitcode, and Xcode dropped bitcode
     # support entirely in Xcode 14 -- rustc's fat-LTO release profile embeds
@@ -240,7 +241,7 @@ attempt_slice() {
         RUSTFLAGS="-Cembed-bitcode=no" \
         CARGO_BUILD_JOBS=3 cargo "+$RUST_NIGHTLY_TOOLCHAIN" build -Z build-std=std,panic_unwind \
         --locked -p zeppelin-embed-ffi --release --no-default-features --target "$target" \
-        --target-dir "$BUILD_DIR/cargo" "${features[@]}" \
+        --target-dir "$BUILD_DIR/cargo" ${features[@]+"${features[@]}"} \
         > "$log" 2>&1; then
         status=0
     else
@@ -284,7 +285,7 @@ fi
 xcodebuild -create-xcframework \
     -library "$macos_archive" \
     -headers "$HEADERS_DIR" \
-    -output "$ARTIFACT"
+    -output "$ARTIFACT" || exit 1
 
 # xcodebuild emits AvailableLibraries in an arbitrary order, so two builds of
 # identical inputs differ only by a permutation of that array. The entries have
@@ -366,7 +367,7 @@ zip_kb="$(du -k "$ARCHIVE_ZIP" | awk '{print $1}')"
 
 # Package.swift carries the checksum as a literal because a sandboxed remote
 # manifest cannot read it from a file.
-pin="$(grep -o '"[0-9a-f]\{64\}" // ze:xcframework-checksum' "$MANIFEST" | cut -d'"' -f2)"
+pin="$(grep -o "\"[0-9a-f]\{64\}\"[[:space:]]*// ze:$PIN_MARKER" "$MANIFEST" | cut -d'"' -f2)"
 if [ -z "$pin" ]; then
     echo "ERROR: Package.swift has no ze:xcframework-checksum literal" >&2
     exit 1
