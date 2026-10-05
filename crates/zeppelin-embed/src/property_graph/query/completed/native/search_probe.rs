@@ -252,6 +252,7 @@ fn query<S: for<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g>>(
                             k: ExprId(3),
                             mode,
                             eligible: None,
+                            options: Default::default(),
                         },
                         outputs: SearchOutputs {
                             node: Some(SlotId(0)),

@@ -42,6 +42,7 @@ pub extern "C" fn ze_graph_apply(
     out_response: *mut ZeGraphResponse,
 ) -> ZeErrorCode {
     ffi_entry!(Some(handle.token), ZeErrorCode::ZeErrPanic, {
+        crate::run_named_panic_probe("ze_graph_apply");
         crate::finish(
             Some(handle.token),
             crate::graph_abi::apply(handle, request, out_response),
@@ -59,8 +60,9 @@ pub extern "C" fn ze_graph_response_free(response: *mut ZeGraphResponse) -> ZeEr
     })
 }
 
-/// Compiles and executes one Cypher statement with scalar parameters and a
-/// default maximum of 1,024 returned rows. Options must be null.
+/// Compiles and executes one Cypher statement with bounded nonentity
+/// parameters and a default maximum of 1,024 returned rows. Query options
+/// declare interpretation and may tighten memory/work limits.
 #[unsafe(no_mangle)]
 pub extern "C" fn ze_graph_cypher(
     handle: ZeGraphHandle,
@@ -152,6 +154,56 @@ pub extern "C" fn ze_graph_maintain(
         crate::finish(
             Some(handle.token),
             crate::graph_abi::maintain(handle, control, out_report),
+        )
+    })
+}
+
+/// Reads nodes in input order, preserving duplicates and Null for missing IDs.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_graph_get_nodes(
+    handle: ZeGraphHandle,
+    request: *const super::ZeGraphGetNodesRequest,
+    out_response: *mut ZeGraphResponse,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle.token), ZeErrorCode::ZeErrPanic, {
+        crate::run_named_panic_probe("ze_graph_get_nodes");
+        crate::finish(
+            Some(handle.token),
+            crate::graph_abi::get_nodes(handle, request, out_response),
+        )
+    })
+}
+
+/// Reads relationships in input order, preserving duplicates and Null for missing IDs.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_graph_get_relationships(
+    handle: ZeGraphHandle,
+    request: *const super::ZeGraphGetRelsRequest,
+    out_response: *mut ZeGraphResponse,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle.token), ZeErrorCode::ZeErrPanic, {
+        crate::run_named_panic_probe("ze_graph_get_relationships");
+        crate::finish(
+            Some(handle.token),
+            crate::graph_abi::get_relationships(handle, request, out_response),
+        )
+    })
+}
+
+/// Executes one structured native graph plan; no textual query enters core.
+/// Output columns are named slot_<logical ID>, in validated root-schema order.
+/// Names are derived from the core schema; the frozen plan layout is unchanged.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_graph_query(
+    handle: ZeGraphHandle,
+    request: *const super::ZeGraphQueryRequest,
+    out_response: *mut ZeGraphResponse,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle.token), ZeErrorCode::ZeErrPanic, {
+        crate::run_named_panic_probe("ze_graph_query");
+        crate::finish(
+            Some(handle.token),
+            crate::graph_abi::query(handle, request, out_response),
         )
     })
 }

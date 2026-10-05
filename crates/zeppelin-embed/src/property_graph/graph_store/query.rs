@@ -36,7 +36,7 @@ use super::{GraphStore, GraphStoreError};
 use crate::lifecycle::QueryControl;
 use crate::property_graph::GraphName;
 use crate::property_graph::query::completed::{
-    CompletedGraphResult, Executed, GraphQuery, GraphQueryError, GraphQueryExecutor,
+    CompletedGraphResult, Executed, GraphBoundary, GraphQuery, GraphQueryError, GraphQueryExecutor,
     GraphQueryOptions,
 };
 use crate::property_graph::query::plan::{
@@ -149,8 +149,24 @@ impl GraphStore {
         Ok(self
             .store
             .execute_graph_statement(control, options, |runtime, executor| {
-                run_query_plan(runtime, executor, plan)
+                run_query_plan(runtime, executor, plan, options.slot_column_names)
             })?)
+    }
+    /// Runs the same validated plan with binding preparation before commit.
+    #[doc(hidden)]
+    pub fn query_with_boundary(
+        &self,
+        control: &QueryControl,
+        options: &GraphQueryOptions,
+        plan: &GraphQueryPlan<'_>,
+        boundary: &dyn GraphBoundary,
+    ) -> Result<CompletedGraphResult, GraphStoreError> {
+        Ok(self.store.execute_graph_statement_with_boundary(
+            control,
+            options,
+            |runtime, executor| run_query_plan(runtime, executor, plan, options.slot_column_names),
+            Some(boundary),
+        )?)
     }
 }
 
@@ -162,6 +178,7 @@ fn run_query_plan<'lease, 'm, 'g>(
     runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     executor: GraphQueryExecutor<'_, '_, '_, 'lease, 'm, 'g>,
     plan: &GraphQueryPlan<'_>,
+    slot_column_names: bool,
 ) -> Result<Executed, GraphQueryError> {
     let memory = runtime.memory();
     let operators = plan.operators;
@@ -175,7 +192,9 @@ fn run_query_plan<'lease, 'm, 'g>(
 
     let mut regions = Vec::new();
     regions.push(RetainedRegion::vector(operators)?);
-    regions.push(RetainedRegion::vector(expressions)?);
+    if expressions.capacity() != 0 {
+        regions.push(RetainedRegion::vector(expressions)?);
+    }
     if eager.capacity() != 0 {
         regions.push(RetainedRegion::vector(eager)?);
     }
@@ -214,23 +233,60 @@ fn run_query_plan<'lease, 'm, 'g>(
         runtime.values(),
     )?;
 
-    let mut owners = vec![
-        RetainedAllocation::vector(operators)?,
-        RetainedAllocation::vector(expressions)?,
-        facts_owner,
-    ];
+    let mut owners = vec![RetainedAllocation::vector(operators)?, facts_owner];
+    if expressions.capacity() != 0 {
+        owners.push(RetainedAllocation::vector(expressions)?);
+    }
     if eager.capacity() != 0 {
         owners.push(RetainedAllocation::vector(eager)?);
     }
     owners.extend(plan.backing.owners.iter().copied());
 
-    let names = plan
-        .columns
+    let no_return = matches!(
+        plan.operators.get(plan.root.0 as usize).map(|o| o.kind),
+        Some(crate::property_graph::query::plan::OperatorKind::Mutate(_))
+    );
+    let slot_names = if slot_column_names && !no_return {
+        let root = validated
+            .facts(plan.root)
+            .ok_or(GraphQueryError::contract("missing root facts"))?;
+        let mut result = Vec::new();
+        result
+            .try_reserve_exact(root.width())
+            .map_err(|_| GraphQueryError::contract("column name capacity"))?;
+        for ordinal in 0..root.width() {
+            let (slot, _) = root
+                .slot_at(ordinal)
+                .ok_or(GraphQueryError::contract("missing root slot"))?;
+            result.push(format!("slot_{}", slot.0));
+        }
+        result
+    } else {
+        Vec::new()
+    };
+    let slot_refs = slot_names.iter().map(String::as_str).collect::<Vec<_>>();
+    let columns = if slot_column_names {
+        slot_refs.as_slice()
+    } else {
+        plan.columns
+    };
+    let names = columns
         .iter()
         .map(|column| GraphName::new(column))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| GraphQueryError::contract("invalid column name"))?;
 
+    let generated_bytes = slot_names
+        .iter()
+        .try_fold(0usize, |total, name| total.checked_add(name.capacity()))
+        .and_then(|bytes| bytes.checked_add(slot_names.capacity() * size_of::<String>()))
+        .and_then(|bytes| bytes.checked_add(slot_refs.capacity() * size_of::<&str>()))
+        .and_then(|bytes| bytes.checked_add(names.capacity() * size_of::<GraphName<'_>>()))
+        .and_then(|bytes| {
+            bytes.checked_add(owners.capacity() * size_of::<RetainedAllocation<'_>>())
+        })
+        .ok_or(GraphQueryError::contract("column capacity overflow"))?;
+    external.reserve_additional(generated_bytes)?;
     executor.run(
         runtime,
         GraphQuery {

@@ -311,6 +311,7 @@ impl NativeReadConsumer<Outcome> for VectorSearch<'_> {
                         k: ExprId(0),
                         mode: self.mode,
                         eligible,
+                        options: Default::default(),
                     },
                     outputs: SearchOutputs {
                         node: Some(SlotId(0)),
@@ -388,6 +389,7 @@ impl<S: for<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g>> NativeReadConsumer<Outcome> f
                         query: ExprId(1),
                         k: ExprId(0),
                         eligible: None,
+                        options: Default::default(),
                     },
                     outputs: SearchOutputs {
                         node: Some(SlotId(0)),
@@ -484,6 +486,7 @@ impl NativeReadConsumer<Outcome> for HybridSearch<'_> {
                         k: ExprId(0),
                         mode: self.mode,
                         eligible: None,
+                        options: Default::default(),
                     },
                     outputs: SearchOutputs {
                         node: Some(SlotId(0)),
@@ -580,6 +583,7 @@ impl NativeReadConsumer<Outcome> for Cartesian<'_> {
                         query: ExprId(0),
                         k: ExprId(1),
                         eligible: None,
+                        options: Default::default(),
                     },
                     outputs: SearchOutputs {
                         node: Some(SlotId(0)),
@@ -601,6 +605,7 @@ impl NativeReadConsumer<Outcome> for Cartesian<'_> {
                         k: ExprId(1),
                         mode: SearchMode::Exact,
                         eligible: None,
+                        options: Default::default(),
                     },
                     outputs: SearchOutputs {
                         node: Some(SlotId(2)),
@@ -945,11 +950,13 @@ fn ze202_same_low64_search_and_eligibility_keep_selected_id() {
                                 k: ExprId(2),
                                 mode: SearchMode::Exact,
                                 eligible,
+                                options: Default::default(),
                             },
                             SearchKind::Lexical => SearchRequest::Text {
                                 query: ExprId(7),
                                 k: ExprId(2),
                                 eligible,
+                                options: Default::default(),
                             },
                             SearchKind::Hybrid => SearchRequest::Hybrid {
                                 vector: ExprId(6),
@@ -957,6 +964,7 @@ fn ze202_same_low64_search_and_eligibility_keep_selected_id() {
                                 k: ExprId(2),
                                 mode: SearchMode::Exact,
                                 eligible,
+                                options: Default::default(),
                             },
                         };
                         // Project the common inputs too: every declared expression

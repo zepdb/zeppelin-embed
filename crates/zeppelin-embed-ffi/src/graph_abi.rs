@@ -1,10 +1,12 @@
 //! Graph handles, structured batches and Cypher C boundary.
-use crate::graph_result::conversion::completed_response;
-use crate::{ZeGraphCompileLimits, ZeGraphCypherRequest, ZeGraphParameterValue};
+use crate::{ZeGraphCompileLimits, ZeGraphCypherRequest};
 use zeppelin_embed::property_graph::query::completed::{GraphQueryOptions, Outcome};
-use zeppelin_embed::property_graph::query::{QueryValue, plan::ParameterBinding};
 use zeppelin_embed_cypher::{CompileLimits, ErrorKind, StatementError};
 mod batch;
+mod completion;
+mod options;
+mod plan;
+mod values;
 use crate::error::FfiError;
 use crate::slots::{Access, CloseAccess, SlotTable};
 use crate::sync::{Arc, TryLockError};
@@ -575,63 +577,6 @@ fn compile_limits(pointer: *const ZeGraphCompileLimits) -> Result<CompileLimits,
     })
 }
 
-fn parameters<'p>(
-    bindings: &'p [ZeGraphParameterValue],
-    pool: Option<&Pool<'p>>,
-) -> Result<Vec<ParameterBinding<'p>>, FfiError> {
-    use crate::ZeGraphValueTag as V;
-    let mut out: Vec<ParameterBinding<'p>> = Vec::new();
-    if bindings.is_empty() {
-        return Ok(out);
-    }
-    let pool = pool.ok_or_else(|| invalid("graph parameters require a parameter pool"))?;
-    out.try_reserve_exact(bindings.len()).map_err(|_| {
-        FfiError::new(
-            ZeErrorCode::ZeErrOutOfMemory,
-            "graph parameter allocation failed",
-        )
-    })?;
-    for (position, binding) in bindings.iter().enumerate() {
-        let what = format!("parameter {position}");
-        if binding.validate_header().is_err() || binding.reserved != 0 {
-            return Err(invalid(format!("{what} has an invalid descriptor")));
-        }
-        let name = pool.text(binding.name, &format!("{what} name"))?;
-        if out.iter().any(|existing| existing.name == name) {
-            return Err(FfiError::new(
-                ZeErrorCode::ZeErrParameter,
-                format!("parameter ${name} is bound more than once"),
-            ));
-        }
-        let value = pool.value(binding.value, &what)?;
-        let value = match value.tag {
-            tag if tag == V::ZeGraphValueNull as u32 => QueryValue::Null,
-            tag if tag == V::ZeGraphValueBool as u32 => QueryValue::Bool(value.boolean == 1),
-            tag if tag == V::ZeGraphValueI64 as u32 => QueryValue::I64(value.integer),
-            tag if tag == V::ZeGraphValueF64 as u32 => QueryValue::F64(value.floating),
-            tag if tag == V::ZeGraphValueString as u32 => {
-                QueryValue::String(pool.text(value.range, &what)?)
-            }
-            tag if tag == V::ZeGraphValueList as u32 => {
-                return Err(FfiError::new(
-                    ZeErrorCode::ZeErrUnsupported,
-                    format!("parameter ${name} is a list; list parameters are not supported yet"),
-                ));
-            }
-            _ => {
-                return Err(FfiError::new(
-                    ZeErrorCode::ZeErrParameter,
-                    format!(
-                        "parameter ${name} binds an entity; parameters cannot bind nodes or relationships"
-                    ),
-                ));
-            }
-        };
-        out.push(ParameterBinding { name, value });
-    }
-    Ok(out)
-}
-
 /// Compiles and runs one statement of the documented Cypher profile.
 pub(crate) fn cypher(
     handle: ZeGraphHandle,
@@ -665,12 +610,6 @@ pub(crate) fn cypher_with_row_limit(
     let text = marshal::read_slice(request.query.data, request.query.count)
         .map_err(|error| invalid(format!("graph query text: {}", error.0)))?;
     let text = utf8(text, "graph query text")?;
-    if !request.options.is_null() {
-        return Err(FfiError::new(
-            ZeErrorCode::ZeErrUnsupported,
-            "graph query options are not supported by ze_graph_cypher yet; pass null",
-        ));
-    }
     let bindings = marshal::read_slice(request.parameters, request.parameter_count)
         .map_err(|error| invalid(format!("graph parameters: {}", error.0)))?;
     let pool = if request.parameter_pool.is_null() {
@@ -678,47 +617,58 @@ pub(crate) fn cypher_with_row_limit(
     } else {
         Some(Pool::read(request.parameter_pool, "graph parameter pool")?)
     };
-    let bindings = parameters(bindings, pool.as_ref())?;
     let limits = compile_limits(request.compile_limits)?;
     let control = read_control(request.control)?;
     let access = lookup(handle)?;
     let store = &access.store.store;
-    let _gate = response_gate();
-    set_disposition(out, ZeGraphDisposition::ZeGraphDispositionIndeterminate);
-    let result = zeppelin_embed_cypher::execute(
-        store.statement_store(),
+    let options = options::query(request.options, access.store.document.as_ref(), options)?;
+    values::with_parameters_accounted(
+        bindings,
+        pool.as_ref(),
         &control,
-        &options,
-        text,
-        &bindings,
-        limits,
-    );
-    let result = match result {
-        Ok(result) => result,
-        Err(StatementError::Compile(error)) => {
-            set_outcome(out, OperationOutcome::NotCommitted);
-            return Err(FfiError::new(
-                compile_code(error.kind),
-                format!("cypher: {error}"),
-            ));
-        }
-        Err(StatementError::Query(error)) => {
-            let error = GraphStoreError::from(error);
-            if error.nothing_committed() {
+        |bindings, parameter_bytes| {
+            let (_parameter_charge, options) = charge_parameters(store, options, parameter_bytes)?;
+            let boundary = completion::Boundary::new(&access, out);
+            let result = zeppelin_embed_cypher::execute_with_boundary(
+                store.statement_store(),
+                &control,
+                &options,
+                text,
+                bindings,
+                limits,
+                Some(&boundary),
+            );
+            if let Some(error) = boundary.take_error() {
                 set_outcome(out, OperationOutcome::NotCommitted);
+                return Err(error);
             }
-            return Err(store_error(&error, true));
-        }
-    };
-    set_outcome(
-        out,
-        OperationOutcome::Success(outcome_of(result.metadata().outcome)),
-    );
-    crate::run_named_panic_probe("ze_graph_cypher:after-execute");
-    let response = completed_response(&RESPONSES, store, &control, &result)
-        .map_err(|error| producer_error(&error, true))?;
-    marshal::write_output(out, response);
-    Ok(())
+            let result = match result {
+                Ok(result) => result,
+                Err(StatementError::Compile(error)) => {
+                    set_outcome(out, OperationOutcome::NotCommitted);
+                    return Err(FfiError::new(
+                        compile_code(error.kind),
+                        format!("cypher: {error}"),
+                    ));
+                }
+                Err(StatementError::Query(error)) => {
+                    let error = GraphStoreError::from(error);
+                    if error.nothing_committed() {
+                        set_outcome(out, OperationOutcome::NotCommitted);
+                    }
+                    return Err(store_error(&error, true));
+                }
+            };
+            set_outcome(
+                out,
+                OperationOutcome::Success(outcome_of(result.metadata().outcome)),
+            );
+            crate::run_named_panic_probe("ze_graph_cypher:after-execute");
+            let response = boundary.publish(&result)?;
+            marshal::write_output(out, response);
+            Ok(())
+        },
+    )
 }
 
 fn outcome_of(outcome: Outcome) -> SuccessfulOutcome {
@@ -882,4 +832,169 @@ mod tests {
         drop(access);
         close(handle).unwrap();
     }
+}
+
+/// Converts bounded honest-pointer identity arrays before store admission.
+fn get_ids<A: Copy, B: TryFrom<A>>(pointer: *const A, count: usize) -> Result<Vec<B>, FfiError> {
+    if count > 65_536 {
+        return Err(invalid("graph get ID count exceeds 65536"));
+    }
+    let source = marshal::read_slice(pointer, count).map_err(|e| invalid(e.0))?;
+    let mut ids = Vec::new();
+    ids.try_reserve_exact(count)
+        .map_err(|_| FfiError::new(ZeErrorCode::ZeErrOutOfMemory, "graph get IDs"))?;
+    for id in source {
+        ids.push(B::try_from(*id).map_err(|_| invalid("graph get ID must be nonzero"))?);
+    }
+    Ok(ids)
+}
+
+pub(crate) fn get_nodes(
+    handle: ZeGraphHandle,
+    request: *const crate::ZeGraphGetNodesRequest,
+    out: *mut ZeGraphResponse,
+) -> Result<(), FfiError> {
+    begin_response(out)?;
+    let request = read_exact(request, |r| r.abi_size, "graph get nodes")?;
+    request
+        .validate_header()
+        .map_err(|_| invalid("graph get nodes header"))?;
+    if request.include_text > 1 || request.include_vector > 1 {
+        return Err(invalid("graph get selection flags must be 0 or 1"));
+    }
+    let limits = options::limits(request.limits, GraphQueryOptions::default())?;
+    let ids = get_ids(request.ids, request.id_count)?;
+    let control = read_control(request.control)?;
+    let access = lookup(handle)?;
+    let _gate = response_gate();
+    let response = crate::graph_result::conversion::run_get_nodes_with_limits(
+        &RESPONSES,
+        &access.store.store,
+        &ids,
+        zeppelin_embed::property_graph::GraphGetOptions {
+            text: request.include_text == 1,
+            vector: request.include_vector == 1,
+        },
+        &control,
+        &limits,
+    )
+    .map_err(|e| producer_error(&e, false))?;
+    marshal::write_output(out, response);
+    Ok(())
+}
+
+pub(crate) fn get_relationships(
+    handle: ZeGraphHandle,
+    request: *const crate::ZeGraphGetRelsRequest,
+    out: *mut ZeGraphResponse,
+) -> Result<(), FfiError> {
+    begin_response(out)?;
+    let request = read_exact(request, |r| r.abi_size, "graph get relationships")?;
+    request
+        .validate_header()
+        .map_err(|_| invalid("graph get relationships header"))?;
+    let limits = options::limits(request.limits, GraphQueryOptions::default())?;
+    let ids = get_ids(request.ids, request.id_count)?;
+    let control = read_control(request.control)?;
+    let access = lookup(handle)?;
+    let _gate = response_gate();
+    let response = crate::graph_result::conversion::run_get_relationships_with_limits(
+        &RESPONSES,
+        &access.store.store,
+        &ids,
+        &control,
+        &limits,
+    )
+    .map_err(|e| producer_error(&e, false))?;
+    marshal::write_output(out, response);
+    Ok(())
+}
+
+pub(crate) fn query(
+    handle: ZeGraphHandle,
+    request: *const crate::ZeGraphQueryRequest,
+    out: *mut ZeGraphResponse,
+) -> Result<(), FfiError> {
+    begin_response(out)?;
+    let request = read_exact(request, |r| r.abi_size, "graph query")?;
+    request
+        .validate_header()
+        .map_err(|_| invalid("graph query header"))?;
+    let bindings = marshal::read_slice(request.parameters, request.parameter_count)
+        .map_err(|e| invalid(e.0))?;
+    let pool = if request.parameter_pool.is_null() {
+        None
+    } else {
+        Some(Pool::read(request.parameter_pool, "query parameter pool")?)
+    };
+    let control = read_control(request.control)?;
+    values::with_parameters_accounted(
+        bindings,
+        pool.as_ref(),
+        &control,
+        |bindings, parameter_bytes| {
+            plan::with_plan(request.plan, bindings, |plan, _writes| {
+                let access = lookup(handle)?;
+                let options = options::query(
+                    request.options,
+                    access.store.document.as_ref(),
+                    GraphQueryOptions::default().with_slot_column_names(),
+                )?;
+                let (_parameter_charge, options) =
+                    charge_parameters(&access.store.store, options, parameter_bytes)?;
+                let boundary = completion::Boundary::new(&access, out);
+                let result = access
+                    .store
+                    .store
+                    .query_with_boundary(&control, &options, plan, &boundary);
+                if let Some(error) = boundary.take_error() {
+                    set_outcome(out, OperationOutcome::NotCommitted);
+                    return Err(error);
+                }
+                let result = match result {
+                    Ok(result) => result,
+                    Err(error) => {
+                        if error.nothing_committed() {
+                            set_outcome(out, OperationOutcome::NotCommitted);
+                        }
+                        return Err(store_error(&error, true));
+                    }
+                };
+                set_outcome(
+                    out,
+                    OperationOutcome::Success(outcome_of(result.metadata().outcome)),
+                );
+                crate::run_named_panic_probe("ze_graph_query:after-execute");
+                marshal::write_output(out, boundary.publish(&result)?);
+                Ok(())
+            })
+        },
+    )
+}
+
+fn charge_parameters(
+    store: &GraphStore,
+    options: GraphQueryOptions,
+    bytes: usize,
+) -> Result<
+    (
+        zeppelin_embed::property_graph::resources::GraphReservation,
+        GraphQueryOptions,
+    ),
+    FfiError,
+> {
+    let remaining = options.memory_limit().checked_sub(bytes).ok_or_else(|| {
+        FfiError::new(
+            ZeErrorCode::ZeErrBudgetExceeded,
+            "parameter backing exceeds query memory",
+        )
+    })?;
+    let resources = store.resources().map_err(|e| store_error(&e, false))?;
+    let charge = resources
+        .reserve(bytes)
+        .map_err(|e| FfiError::new(ZeErrorCode::ZeErrOutOfMemory, e.to_string()))?;
+    let options = options
+        .with_limits(remaining, options.runtime_limits())
+        .map_err(|_| invalid("parameter query memory"))?;
+    Ok((charge, options))
 }

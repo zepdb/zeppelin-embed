@@ -26,8 +26,6 @@ use crate::property_graph::{GraphRevision, NodeId};
 
 /// Same selectivity work multiplier as the legacy filtered graph planner.
 const FILTERED_VISITED_BUDGET_MULTIPLIER: usize = 2;
-/// Deterministic Bit4 query preparation seed, matching `GraphSearchOptions`.
-const QUERY_SEED: u64 = 0;
 /// Upper bound on one roaring container's heap: array-to-bitset conversion can
 /// briefly hold a full 4096-entry u16 array and an 8 KiB bitset.
 const ROARING_CONTAINER_BYTES: usize = 2 * 8192;
@@ -112,6 +110,12 @@ pub(super) enum Route {
 pub(super) const fn route(mode: SearchMode) -> (Route, Option<SearchTier>) {
     match mode {
         SearchMode::Default => (Route::Graph, None),
+        SearchMode::Graph => (
+            Route::Graph,
+            Some(SearchTier::Graph(
+                crate::lifecycle::GraphSearchOptions::new(GraphSearchProfile::SiftClass),
+            )),
+        ),
         SearchMode::Auto => (Route::Graph, Some(SearchTier::Auto)),
         SearchMode::Exact => (Route::Exact, Some(SearchTier::Exact)),
         SearchMode::Scan => (Route::Scan, Some(SearchTier::Scan)),
@@ -238,6 +242,7 @@ impl Eligible<'_> {
 struct Ranking<'q, 'm, 'g> {
     memory: &'m QueryMemory<'g>,
     query: &'q [f32],
+    options: crate::property_graph::query::plan::SearchOptions,
     k: usize,
     window: usize,
     top: Option<TopK<'m, 'g>>,
@@ -390,7 +395,7 @@ impl<'q, 'm, 'g> Ranking<'q, 'm, 'g> {
                     .ok_or(RetrievalError::Memory)?,
             )
             .map_err(memory_error)?;
-        let prepared = crate::quant::prepare_bit4_query(self.query, QUERY_SEED)
+        let prepared = crate::quant::prepare_bit4_query(self.query, self.options.graph_seed)
             .map_err(RetrievalError::Vector)?;
         charge
             .resize(prepared.resident_bytes())
@@ -401,6 +406,11 @@ impl<'q, 'm, 'g> Ranking<'q, 'm, 'g> {
             .map(|value| f64::from(*value) * f64::from(*value))
             .sum();
         let coordinates = u64::try_from(self.query.len()).map_err(|_| RetrievalError::Memory)?;
+        let mut retained = if self.options.rescore {
+            Some(TopK::new(self.memory, self.k)?)
+        } else {
+            None
+        };
         for row in mask.iter() {
             resources.charge_query_work(WorkKind::VectorCoordinates, coordinates)?;
             let factors = index.factors(row)?;
@@ -410,7 +420,46 @@ impl<'q, 'm, 'g> Ranking<'q, 'm, 'g> {
             );
             let norm = factors.norm();
             let distance = (query_norm + norm * norm - 2.0 * dot).max(0.0);
-            self.offer_row(index, row, distance, resources)?;
+            if let Some(retained) = &mut retained {
+                let (node, revision) = index.identity(row)?;
+                let revision = GraphRevision::new(revision)
+                    .map_err(|_| RetrievalError::Invariant("zero revision"))?;
+                retained.offer(
+                    RankedNode {
+                        node,
+                        revision,
+                        distance,
+                    },
+                    resources,
+                )?;
+            } else {
+                self.offer_row(index, row, distance, resources)?;
+            }
+        }
+        if let Some(retained) = retained {
+            for hit in retained.hits.as_slice() {
+                let mut selected = None;
+                for row in mask.iter() {
+                    resources.step(1)?;
+                    if index.identity(row)?.0 == hit.node {
+                        selected = Some(row);
+                        break;
+                    }
+                }
+                let row = selected.ok_or(RetrievalError::Invariant("retained rescore identity"))?;
+                self.charge_original(1, resources)?;
+                let start = row as usize * self.query.len();
+                let values = index
+                    .rescore()
+                    .get(start..start + self.query.len())
+                    .ok_or(RetrievalError::Invariant("retained rescore extent"))?;
+                self.offer_row(
+                    index,
+                    row,
+                    crate::quant::squared_l2_f64(self.query, values),
+                    resources,
+                )?;
+            }
         }
         drop(prepared);
         drop(charge);
@@ -436,13 +485,21 @@ impl<'q, 'm, 'g> Ranking<'q, 'm, 'g> {
                 "graph route with empty eligible mask",
             ));
         }
-        let profile = match index.profile_tag() {
-            1 => GraphSearchProfile::SiftClass,
-            2 => GraphSearchProfile::Angular,
-            _ => return Err(RetrievalError::Invariant("native vector profile")),
+        let profile = match self.options.graph_profile {
+            Some(profile) => profile,
+            None => match index.profile_tag() {
+                1 => GraphSearchProfile::SiftClass,
+                2 => GraphSearchProfile::Angular,
+                _ => return Err(RetrievalError::Invariant("native vector profile")),
+            },
         };
-        let base_ef = GraphSearchRequest::new(self.query, target_k, QUERY_SEED)
-            .with_profile(profile)
+        let mut base_request =
+            GraphSearchRequest::new(self.query, target_k, self.options.graph_seed)
+                .with_profile(profile);
+        if self.options.graph_ef != 0 {
+            base_request = base_request.with_ef(self.options.graph_ef as usize);
+        }
+        let base_ef = base_request
             .effective_ef(node_count)
             .map_err(GraphSearchError::AdaptiveEf)
             .map_err(RetrievalError::Graph)?;
@@ -494,7 +551,7 @@ impl<'q, 'm, 'g> Ranking<'q, 'm, 'g> {
         let mut current_ef = ef_effective;
         let traversed = loop {
             resources.step(1)?;
-            let request = GraphSearchRequest::new(self.query, target_k, QUERY_SEED)
+            let request = GraphSearchRequest::new(self.query, target_k, self.options.graph_seed)
                 .with_profile(profile)
                 .with_ef(current_ef);
             let outcome = match searcher.search_filtered(request, mask, visited_budget, None) {
@@ -587,6 +644,7 @@ impl<'view, 's, 'lease, 'm, 'g> NativeRetrievalContext<'view, 's, 'lease, 'm, 'g
         let mut ranking = Ranking {
             memory: self.memory,
             query: prepared.coordinates(),
+            options: prepared.options,
             k: bounds.k() as usize,
             window: bounds.candidate_window() as usize,
             top: None,
@@ -674,7 +732,11 @@ impl<'view, 's, 'lease, 'm, 'g> NativeRetrievalContext<'view, 's, 'lease, 'm, 'g
                 ),
                 Route::Scan => (
                     Some(ActualTier::Scan),
-                    ScorePrecision::Quantized,
+                    if prepared.options.rescore {
+                        ScorePrecision::Original
+                    } else {
+                        ScorePrecision::Quantized
+                    },
                     CandidateCoverage::Approximate,
                 ),
                 Route::Graph if ranking.traversed == 0 => (
@@ -743,6 +805,7 @@ mod tests {
                 .unwrap();
             let mut ranking = Ranking {
                 memory,
+                options: Default::default(),
                 query: &[0.0, 0.0],
                 k: 1,
                 window: 16,

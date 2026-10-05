@@ -12,3 +12,7 @@ ze_error_code (*maintain_graph)(ZeGraphHandle, const ZeGraphControl *, ZeGraphMa
 ze_error_code (*graph_maintenance_policy)(ZeGraphHandle, const ZeGraphMaintenancePolicy *) = ze_graph_set_maintenance_policy;
 _Static_assert(sizeof(ZeGraphMaintenancePolicy) == 16, "maintenance policy size");
 _Static_assert(sizeof(ZeGraphMaintainReport) == 64, "maintenance report size");
+
+ze_error_code (*query_graph)(ZeGraphHandle, const ZeGraphQueryRequest *, ZeGraphResponse *) = ze_graph_query;
+ze_error_code (*get_graph_nodes)(ZeGraphHandle, const ZeGraphGetNodesRequest *, ZeGraphResponse *) = ze_graph_get_nodes;
+ze_error_code (*get_graph_relationships)(ZeGraphHandle, const ZeGraphGetRelsRequest *, ZeGraphResponse *) = ze_graph_get_relationships;

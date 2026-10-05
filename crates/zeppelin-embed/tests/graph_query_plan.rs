@@ -438,6 +438,7 @@ fn eager_search_obligations_survive_limit_zero_and_require_singleton_sources() {
                     query: ExprId(0),
                     k: ExprId(1),
                     eligible: None,
+                    options: Default::default(),
                 },
                 outputs: SearchOutputs {
                     node: Some(SlotId(3)),
@@ -953,6 +954,7 @@ fn search_plans_preserve_request_intent_and_nullable_hybrid_outputs() {
                         k: ExprId(3),
                         mode,
                         eligible: None,
+                        options: Default::default(),
                     },
                     outputs: SearchOutputs {
                         node: Some(SlotId(1)),
@@ -1005,6 +1007,7 @@ fn search_plan_outputs_reject_empty_wrong_duplicate_and_input_colliding_slots() 
                     query: ExprId(0),
                     k: ExprId(1),
                     eligible: None,
+                    options: Default::default(),
                 },
                 outputs: SearchOutputs::default(),
             },
@@ -1028,6 +1031,7 @@ fn search_plan_outputs_reject_empty_wrong_duplicate_and_input_colliding_slots() 
             query: ExprId(0),
             k: ExprId(1),
             eligible: None,
+            options: Default::default(),
         },
         outputs: SearchOutputs {
             distance: Some(SlotId(10)),
@@ -1041,6 +1045,7 @@ fn search_plan_outputs_reject_empty_wrong_duplicate_and_input_colliding_slots() 
             query: ExprId(0),
             k: ExprId(1),
             eligible: None,
+            options: Default::default(),
         },
         outputs: SearchOutputs {
             node: Some(SlotId(10)),
@@ -1055,6 +1060,7 @@ fn search_plan_outputs_reject_empty_wrong_duplicate_and_input_colliding_slots() 
             query: ExprId(0),
             k: ExprId(1),
             eligible: None,
+            options: Default::default(),
         },
         outputs: SearchOutputs {
             node: Some(SlotId(9)),
@@ -1104,6 +1110,7 @@ fn search_sources_and_evaluated_bounds_never_clamp_invalid_requests() {
                     k: ExprId(3),
                     mode: SearchMode::Exact,
                     eligible: None,
+                    options: Default::default(),
                 },
                 outputs: SearchOutputs {
                     node: Some(SlotId(1)),
@@ -1132,6 +1139,7 @@ fn search_sources_and_evaluated_bounds_never_clamp_invalid_requests() {
             k: ExprId(3),
             mode: SearchMode::Auto,
             eligible: None,
+            options: Default::default(),
         },
         outputs: SearchOutputs {
             node: Some(SlotId(1)),
@@ -1148,6 +1156,7 @@ fn search_sources_and_evaluated_bounds_never_clamp_invalid_requests() {
             k: ExprId(2),
             mode: SearchMode::Auto,
             eligible: None,
+            options: Default::default(),
         },
         outputs: SearchOutputs {
             node: Some(SlotId(1)),

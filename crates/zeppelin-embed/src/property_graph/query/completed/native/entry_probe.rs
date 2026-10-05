@@ -495,6 +495,7 @@ pub(crate) fn options(image_capacity: usize) -> GraphQueryOptions {
         relationship_ids: 64,
     };
     GraphQueryOptions {
+        slot_column_names: false,
         limits: RuntimeLimits::default(),
         memory_limit: 16 * 1024 * 1024,
         source_slots: 64,

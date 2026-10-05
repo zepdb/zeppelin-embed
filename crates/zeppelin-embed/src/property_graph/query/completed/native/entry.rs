@@ -25,8 +25,8 @@
 
 use super::super::{CompletedGraphResult, UnsettledWriteResult};
 use super::{
-    GraphQueryError, execute_native_mutation_diagnosed, execute_native_result,
-    execute_native_search_result,
+    GraphBoundary, GraphQueryError, execute_native_boundary_result,
+    execute_native_mutation_diagnosed,
 };
 use crate::lifecycle::native_graph::{NativeMutationConsumer, NativeReadConsumer};
 use crate::lifecycle::{QueryControl, Store};
@@ -49,6 +49,7 @@ use std::cell::Cell;
 /// Every explicit limit and capacity one statement is admitted with.
 #[derive(Clone, Copy)]
 pub struct GraphQueryOptions {
+    pub(crate) slot_column_names: bool,
     /// Cumulative runtime work limits.
     pub(crate) limits: RuntimeLimits,
     /// The statement's query-memory sublimit.
@@ -68,6 +69,35 @@ pub struct GraphQueryOptions {
 }
 
 impl GraphQueryOptions {
+    /// Tightens query memory and cumulative work without widening hard limits.
+    pub fn with_limits(
+        mut self,
+        memory_bytes: usize,
+        limits: RuntimeLimits,
+    ) -> Result<Self, crate::property_graph::query::runtime::RuntimeError> {
+        if memory_bytes > 24 * 1024 * 1024 {
+            return Err(crate::property_graph::query::runtime::RuntimeError::BatchCapacity);
+        }
+        self.memory_limit = memory_bytes;
+        self.limits = limits;
+        Ok(self)
+    }
+    /// The admitted memory ceiling.
+    pub const fn memory_limit(&self) -> usize {
+        self.memory_limit
+    }
+    /// The admitted cumulative work limits.
+    pub const fn runtime_limits(&self) -> RuntimeLimits {
+        self.limits
+    }
+
+    /// Uses logical slot identities as structured-result column names.
+    #[must_use]
+    pub fn with_slot_column_names(mut self) -> Self {
+        self.slot_column_names = true;
+        self
+    }
+
     /// Sets the returned-row capacity (1..=65,536). Other operator, payload
     /// and work budgets remain independent; exceeding any budget fails.
     pub fn with_result_row_limit(
@@ -93,6 +123,7 @@ impl Default for GraphQueryOptions {
             relationship_ids: 1024,
         };
         Self {
+            slot_column_names: false,
             limits: RuntimeLimits::default(),
             memory_limit: 24 * 1024 * 1024,
             source_slots: crate::property_graph::storage::MAX_NATIVE_ARTIFACTS,
@@ -194,6 +225,7 @@ pub struct GraphQueryExecutor<'x, 'w, 'i, 'lease, 'm, 'g> {
     admission: Admission<'w, 'i, 'lease, 'm, 'g>,
     options: &'x GraphQueryOptions,
     ran: &'x Cell<Ran<'w>>,
+    boundary: Option<&'x dyn GraphBoundary>,
 }
 
 impl<'w, 'lease, 'm, 'g> GraphQueryExecutor<'_, 'w, '_, 'lease, 'm, 'g> {
@@ -210,6 +242,9 @@ impl<'w, 'lease, 'm, 'g> GraphQueryExecutor<'_, 'w, '_, 'lease, 'm, 'g> {
             columns,
         } = query;
         let classification = plan.classification();
+        if let Some(boundary) = self.boundary {
+            boundary.classified(classification.writes())?;
+        }
         let options = *self.options;
         match self.admission {
             Admission::Read { view, search } => {
@@ -221,31 +256,22 @@ impl<'w, 'lease, 'm, 'g> GraphQueryExecutor<'_, 'w, '_, 'lease, 'm, 'g> {
                 }
                 let admitted = QueryInputs::reserve(runtime.memory(), inventory, runtime.values())?
                     .admit_plan(plan, runtime.values())?;
-                let result = if classification.searches() {
-                    let adapter = search.ok_or(GraphQueryError::from(
-                        NativeExecutionError::Plan(PlanError::Search),
-                    ))?;
-                    execute_native_search_result(
-                        view,
-                        runtime,
-                        &admitted,
-                        bindings,
-                        columns,
-                        options.pattern,
-                        options.execution,
-                        adapter,
-                    )?
-                } else {
-                    execute_native_result(
-                        view,
-                        runtime,
-                        &admitted,
-                        bindings,
-                        columns,
-                        options.pattern,
-                        options.execution,
-                    )?
-                };
+                if classification.searches() && search.is_none() {
+                    return Err(GraphQueryError::from(NativeExecutionError::Plan(
+                        PlanError::Search,
+                    )));
+                }
+                let result = execute_native_boundary_result(
+                    view,
+                    runtime,
+                    &admitted,
+                    bindings,
+                    columns,
+                    options.pattern,
+                    options.execution,
+                    search,
+                    self.boundary,
+                )?;
                 self.ran.set(Ran::Read(result));
             }
             Admission::Write {
@@ -270,6 +296,7 @@ impl<'w, 'lease, 'm, 'g> GraphQueryExecutor<'_, 'w, '_, 'lease, 'm, 'g> {
                     options.execution,
                     overlay,
                     images,
+                    self.boundary,
                 )?;
                 self.ran.set(Ran::Write(unsettled, overlay));
             }
@@ -286,6 +313,7 @@ struct ReadStatement<'b, S: ?Sized, B> {
     options: &'b GraphQueryOptions,
     search: Option<&'b mut S>,
     build: &'b mut B,
+    boundary: Option<&'b dyn GraphBoundary>,
 }
 
 #[allow(
@@ -319,6 +347,7 @@ where
             admission: Admission::Read { view, search },
             options: self.options,
             ran: &ran,
+            boundary: self.boundary,
         };
         let built = (self.build)(runtime, executor);
         Ok(match (built, ran.take()) {
@@ -335,6 +364,7 @@ where
 struct WriteStatement<'b, B> {
     options: &'b GraphQueryOptions,
     build: &'b mut B,
+    boundary: Option<&'b dyn GraphBoundary>,
 }
 
 impl<B> NativeMutationConsumer<UnsettledWriteResult, GraphQueryError> for WriteStatement<'_, B>
@@ -361,6 +391,7 @@ where
             },
             options: self.options,
             ran: &ran,
+            boundary: self.boundary,
         };
         // A rejected builder drops the overlay with the executor or with
         // `ran`, so nothing it staged can reach the commit tail.
@@ -392,7 +423,25 @@ impl Store {
         control: &QueryControl,
         options: &GraphQueryOptions,
         search: Option<&mut S>,
+        build: B,
+    ) -> Result<CompletedGraphResult, GraphQueryError>
+    where
+        S: for<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g>,
+        B: for<'x, 'w, 'i, 'lease, 'm, 'g> FnMut(
+            &mut RuntimeContext<'lease, 'm, 'g>,
+            GraphQueryExecutor<'x, 'w, 'i, 'lease, 'm, 'g>,
+        ) -> Result<Executed, GraphQueryError>,
+    {
+        self.execute_graph_query_with_boundary(control, options, search, build, None)
+    }
+
+    pub(crate) fn execute_graph_query_with_boundary<S, B>(
+        &self,
+        control: &QueryControl,
+        options: &GraphQueryOptions,
+        search: Option<&mut S>,
         mut build: B,
+        boundary: Option<&dyn GraphBoundary>,
     ) -> Result<CompletedGraphResult, GraphQueryError>
     where
         S: for<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g>,
@@ -410,6 +459,7 @@ impl Store {
                 options,
                 search,
                 build: &mut build,
+                boundary,
             },
         )?;
         match read? {
@@ -427,6 +477,7 @@ impl Store {
             WriteStatement {
                 options,
                 build: &mut build,
+                boundary,
             },
             |unsettled: UnsettledWriteResult, receipts, changed| {
                 unsettled.settle(receipts, changed)
@@ -453,7 +504,32 @@ impl Store {
         ) -> Result<Executed, GraphQueryError>,
     {
         let mut adapter = super::search_adapter::NativeSearchAdapter::new(&self.tokenizer);
-        self.execute_graph_query(control, options, Some(&mut adapter), build)
+        self.execute_graph_query_with_boundary(control, options, Some(&mut adapter), build, None)
+    }
+
+    /// Executes with synchronous binding admission and precommit completion.
+    #[doc(hidden)]
+    pub fn execute_graph_statement_with_boundary<B>(
+        &self,
+        control: &QueryControl,
+        options: &GraphQueryOptions,
+        build: B,
+        boundary: Option<&dyn GraphBoundary>,
+    ) -> Result<CompletedGraphResult, GraphQueryError>
+    where
+        B: for<'x, 'w, 'i, 'lease, 'm, 'g> FnMut(
+            &mut RuntimeContext<'lease, 'm, 'g>,
+            GraphQueryExecutor<'x, 'w, 'i, 'lease, 'm, 'g>,
+        ) -> Result<Executed, GraphQueryError>,
+    {
+        let mut adapter = super::search_adapter::NativeSearchAdapter::new(&self.tokenizer);
+        self.execute_graph_query_with_boundary(
+            control,
+            options,
+            Some(&mut adapter),
+            build,
+            boundary,
+        )
     }
 
     /// Creates a new native graph store with no document embedding tower,

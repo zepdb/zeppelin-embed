@@ -320,6 +320,7 @@ fn with_eager_plan<R>(
                 query: ExprId(0),
                 k: ExprId(1),
                 eligible: None,
+                options: Default::default(),
             },
             outputs: SearchOutputs {
                 node: Some(SlotId(call * 2)),

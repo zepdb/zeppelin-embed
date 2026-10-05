@@ -119,10 +119,18 @@ pub(crate) struct PreparedNativeVector<'q, 'e> {
     view: *const crate::property_graph::query::QueryView,
     coordinates: &'q [f32],
     mode: SearchMode,
+    options: crate::property_graph::query::plan::SearchOptions,
     eligibility: PreparedEligibility<'e>,
 }
 
 impl<'q, 'e> PreparedNativeVector<'q, 'e> {
+    pub(crate) fn with_options(
+        mut self,
+        options: crate::property_graph::query::plan::SearchOptions,
+    ) -> Self {
+        self.options = options;
+        self
+    }
     pub(crate) const fn coordinates(&self) -> &'q [f32] {
         self.coordinates
     }
@@ -248,6 +256,7 @@ impl<'view, 's, 'lease, 'm, 'g> NativeRetrievalContext<'view, 's, 'lease, 'm, 'g
             view: self.query_view,
             coordinates,
             mode,
+            options: Default::default(),
             eligibility,
         })
     }

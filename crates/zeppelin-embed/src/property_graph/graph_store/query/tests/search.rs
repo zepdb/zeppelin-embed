@@ -136,11 +136,13 @@ fn search_with_eligibility(
             k: count,
             mode,
             eligible,
+            options: Default::default(),
         },
         SearchKind::Lexical => SearchRequest::Text {
             query,
             k: count,
             eligible,
+            options: Default::default(),
         },
         SearchKind::Hybrid => SearchRequest::Hybrid {
             vector: ExprId(2),
@@ -148,6 +150,7 @@ fn search_with_eligibility(
             k: count,
             mode,
             eligible,
+            options: Default::default(),
         },
     };
     let mut projections = Vec::new();
@@ -386,6 +389,7 @@ fn expand_search(
                 k: ExprId(3),
                 mode,
                 eligible,
+                options: Default::default(),
             },
             outputs: SearchOutputs {
                 node: Some(SlotId(0)),
@@ -595,6 +599,7 @@ fn two_calls(
                     k: ExprId(3),
                     mode: SearchMode::Exact,
                     eligible: None,
+                    options: Default::default(),
                 },
                 outputs: SearchOutputs {
                     node: Some(SlotId(0)),
@@ -615,6 +620,7 @@ fn two_calls(
                     query: ExprId(4),
                     k: ExprId(3),
                     eligible: None,
+                    options: Default::default(),
                 },
                 outputs: SearchOutputs {
                     node: Some(SlotId(2)),
@@ -763,6 +769,7 @@ fn ze64_invalid_search_plans_publish_nothing() {
                     query: ExprId(0),
                     k: ExprId(1),
                     eligible: None,
+                    options: Default::default(),
                 },
                 outputs: SearchOutputs {
                     node: Some(SlotId(0)),

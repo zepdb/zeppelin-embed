@@ -14,7 +14,7 @@ pub(super) mod native;
 #[cfg(feature = "graph-cypher")]
 #[doc(hidden)]
 pub use native::{
-    Executed, GraphQuery, GraphQueryError, GraphQueryErrorKind, GraphQueryExecutor,
+    Executed, GraphBoundary, GraphQuery, GraphQueryError, GraphQueryErrorKind, GraphQueryExecutor,
     GraphQueryOptions,
 };
 #[cfg(feature = "graph-cypher")]
@@ -263,7 +263,7 @@ fn copy<'m, 'g, T: OwnedElement>(
 impl<'m, 'g> PreparedGraphResult<'m, 'g> {
     /// Validates and copies under one real context; no storage read is fabricated.
     pub fn copy_from(
-        source: &impl ResultSource,
+        source: &(impl ResultSource + ?Sized),
         context: &mut RuntimeContext<'_, 'm, 'g>,
     ) -> Result<Self, CompletedError> {
         context.checkpoint()?;

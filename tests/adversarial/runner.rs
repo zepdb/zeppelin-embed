@@ -2943,6 +2943,7 @@ fn run_program_for_with_clock(
         super::graph_publication::probe(seed, &mut coverage)?;
         super::graph_native_result::probe(seed, &mut coverage)?;
         super::graph_query_entry::probe(seed, &mut coverage)?;
+        super::graph_c_entry::probe(seed, &mut coverage)?;
         super::graph_cypher_entry::probe(seed, &mut coverage)?;
         super::graph_search_qualification::probe(seed, &mut coverage)?;
         super::graph_pattern::probe(seed, &mut coverage)?;

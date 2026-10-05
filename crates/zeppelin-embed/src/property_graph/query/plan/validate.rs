@@ -330,6 +330,9 @@ fn derive(
             outputs,
         } => {
             super::search::validate(description, call, request, &input, seen, context)?;
+            if request.options().hide_input {
+                output.width = 0;
+            }
             let valid = match request {
                 SearchRequest::Vector { .. } => {
                     outputs.score.is_none()

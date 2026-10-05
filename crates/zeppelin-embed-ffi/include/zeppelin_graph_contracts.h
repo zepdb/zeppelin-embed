@@ -2079,6 +2079,204 @@ typedef struct ZeGraphMaintainReport {
 } ZeGraphMaintainReport;
 
 /*
+ Single-admission typed entity read. Returns one column, one row per requested ID, explicit Null for missing IDs; no second snapshot or automatic query follow-up.
+ */
+typedef struct ZeGraphGetNodesRequest {
+    /*
+     Exact sizeof this version-one descriptor; fixed array stride.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Nonzero store-local IDs; null only at zero count.
+     */
+    const struct ZeNodeId *ids;
+    /*
+     Input count; completed result bounds apply, order and duplicates preserved.
+     */
+    size_t id_count;
+    /*
+     0/1 explicit source text selection; absent differs from selected empty.
+     */
+    uint32_t include_text;
+    /*
+     0/1 explicit original vector selection; dimension validated.
+     */
+    uint32_t include_vector;
+    /*
+     Optional cancellation/deadline controls.
+     */
+    const struct ZeGraphControl *control;
+    /*
+     Optional typed memory/work tightening; null uses existing hard defaults.
+     */
+    const struct ZeGraphQueryLimits *limits;
+} ZeGraphGetNodesRequest;
+
+/*
+ Single-admission typed entity read. Returns one column, one row per requested ID, explicit Null for missing IDs; no second snapshot or automatic query follow-up.
+ */
+typedef struct ZeGraphGetRelsRequest {
+    /*
+     Exact sizeof this version-one descriptor; fixed array stride.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Nonzero store-local IDs; null only at zero count.
+     */
+    const struct ZeRelId *ids;
+    /*
+     Input count; completed result bounds apply, order and duplicates preserved.
+     */
+    size_t id_count;
+    /*
+     Optional cancellation/deadline controls.
+     */
+    const struct ZeGraphControl *control;
+    /*
+     Optional typed memory/work tightening; null uses existing hard defaults.
+     */
+    const struct ZeGraphQueryLimits *limits;
+} ZeGraphGetRelsRequest;
+
+/*
+ Fixed typed operator descriptor. Only kind-documented fields are active; all others zero. Inputs and range fields refer to named plan arrays. Search may have one eligibility dependency in inputs when eligible_set is present; no row correlation.
+ */
+typedef struct ZeGraphOperator {
+    /*
+     Exact sizeof this version-one descriptor; fixed array stride.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     One ZeGraphOperatorKind.
+     */
+    uint32_t kind;
+    /*
+     LookupKey only: one ZeGraphEntityKind.
+     */
+    uint32_t entity_kind;
+    /*
+     Ordered operator indices in plan.inputs; exact arity depends on kind.
+     */
+    struct ZeGraphRange inputs;
+    /*
+     Filter required, Join/OptionalApply optional; expression index.
+     */
+    struct ZeGraphOptionalIndex predicate;
+    /*
+     Expand/BoundedExpand/EligibleSet input node slot.
+     */
+    uint32_t source_slot;
+    /*
+     Scan/lookup/expand node or LookupKey entity output.
+     */
+    uint32_t node_slot;
+    /*
+     LookupRelationship/Expand entity or BoundedExpand list output.
+     */
+    uint32_t relationship_slot;
+    /*
+     EligibleSet output logical set ID; not a row value or external handle.
+     */
+    uint32_t set_slot;
+    /*
+     Expand/BoundedExpand: 0 outgoing, 1 incoming, 2 either.
+     */
+    uint32_t direction;
+    /*
+     Expand/BoundedExpand MATCH uniqueness scope; origins preserved across joins.
+     */
+    uint32_t pattern;
+    /*
+     Scan optional label or LookupKey namespace bytes in pool.
+     */
+    struct ZeGraphRange name;
+    /*
+     Scan only: 0/1; LookupKey name is required and has_name=1.
+     */
+    uint32_t has_name;
+    /*
+     LookupKey only: string key expression index.
+     */
+    uint32_t key_expression;
+    /*
+     LookupNode only; zero otherwise.
+     */
+    struct ZeNodeId node_id;
+    /*
+     LookupRelationship only; zero otherwise.
+     */
+    struct ZeRelId relationship_id;
+    /*
+     OR-ed type-name ranges in pool.names; zero count means unconstrained.
+     */
+    struct ZeGraphRange relationship_types;
+    /*
+     BoundedExpand inclusive lower bound, 0..16.
+     */
+    uint32_t path_min;
+    /*
+     BoundedExpand inclusive upper bound, >=min and <=16.
+     */
+    uint32_t path_max;
+    /*
+     BoundedExpand per-edge expression, evaluated using edge_slot plus input scope.
+     */
+    struct ZeGraphOptionalIndex edge_predicate;
+    /*
+     Temporary relationship slot visible only in edge_predicate; zero if absent.
+     */
+    uint32_t edge_slot;
+    /*
+     Search only: plan.searches index.
+     */
+    uint32_t search;
+    /*
+     Project/With output or Aggregate group keys in plan.projections.
+     */
+    struct ZeGraphRange projections;
+    /*
+     Aggregate output projections in plan.projections.
+     */
+    struct ZeGraphRange aggregates;
+    /*
+     Sort only: plan.sort_keys range.
+     */
+    struct ZeGraphRange sort_keys;
+    /*
+     Mutate only: plan.mutations range.
+     */
+    struct ZeGraphRange mutations;
+    /*
+     OffsetLimit skipped rows.
+     */
+    uint64_t offset;
+    /*
+     OffsetLimit maximum rows if has_limit=1; zero otherwise.
+     */
+    uint64_t limit;
+    /*
+     OffsetLimit only: exactly 0 or 1.
+     */
+    uint32_t has_limit;
+    /*
+     Must be zero.
+     */
+    uint32_t reserved;
+} ZeGraphOperator;
+
+/*
  Fixed expression descriptor. Fields not named by kind are zero. Aggregate uses operation, has_operand, left and distinct; unary uses operation/left; binary uses operation/left/right.
  */
 typedef struct ZeGraphExpression {
@@ -2175,6 +2373,60 @@ typedef struct ZeGraphSortKey {
      */
     uint32_t descending;
 } ZeGraphSortKey;
+
+/*
+ One query mutation. Inactive fields zero. No retry/upsert implication; images and identity allocation belong to staging.
+ */
+typedef struct ZeGraphMutation {
+    /*
+     Exact sizeof this version-one descriptor; fixed array stride.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     One ZeGraphMutationKind.
+     */
+    uint32_t kind;
+    /*
+     CreateNode/CreateRelationship destination slot.
+     */
+    uint32_t output;
+    /*
+     Entity expression for noncreate items.
+     */
+    uint32_t entity;
+    /*
+     SetProperty value expression.
+     */
+    uint32_t value;
+    /*
+     CreateRelationship source node expression.
+     */
+    uint32_t source;
+    /*
+     CreateRelationship target node expression.
+     */
+    uint32_t target;
+    /*
+     SetLabel only: exactly 0 or 1.
+     */
+    uint32_t present;
+    /*
+     Delete only: exactly 0 or 1.
+     */
+    uint32_t detach;
+    /*
+     Property/label/type name in plan pool.bytes.
+     */
+    struct ZeGraphRange name;
+    /*
+     CreateNode only: label ranges in plan pool.names.
+     */
+    struct ZeGraphRange labels;
+} ZeGraphMutation;
 
 /*
  Parameter declaration; nested entity values are forbidden too.
@@ -2335,190 +2587,6 @@ typedef struct ZeGraphSearch {
 } ZeGraphSearch;
 
 /*
- Fixed typed operator descriptor. Only kind-documented fields are active; all others zero. Inputs and range fields refer to named plan arrays. Search may have one eligibility dependency in inputs when eligible_set is present; no row correlation.
- */
-typedef struct ZeGraphOperator {
-    /*
-     Exact sizeof this version-one descriptor; fixed array stride.
-     */
-    uint32_t abi_size;
-    /*
-     Must be zero.
-     */
-    uint32_t abi_reserved;
-    /*
-     One ZeGraphOperatorKind.
-     */
-    uint32_t kind;
-    /*
-     LookupKey only: one ZeGraphEntityKind.
-     */
-    uint32_t entity_kind;
-    /*
-     Ordered operator indices in plan.inputs; exact arity depends on kind.
-     */
-    struct ZeGraphRange inputs;
-    /*
-     Filter required, Join/OptionalApply optional; expression index.
-     */
-    struct ZeGraphOptionalIndex predicate;
-    /*
-     Expand/BoundedExpand/EligibleSet input node slot.
-     */
-    uint32_t source_slot;
-    /*
-     Scan/lookup/expand node or LookupKey entity output.
-     */
-    uint32_t node_slot;
-    /*
-     LookupRelationship/Expand entity or BoundedExpand list output.
-     */
-    uint32_t relationship_slot;
-    /*
-     EligibleSet output logical set ID; not a row value or external handle.
-     */
-    uint32_t set_slot;
-    /*
-     Expand/BoundedExpand: 0 outgoing, 1 incoming, 2 either.
-     */
-    uint32_t direction;
-    /*
-     Expand/BoundedExpand MATCH uniqueness scope; origins preserved across joins.
-     */
-    uint32_t pattern;
-    /*
-     Scan optional label or LookupKey namespace bytes in pool.
-     */
-    struct ZeGraphRange name;
-    /*
-     Scan only: 0/1; LookupKey name is required and has_name=1.
-     */
-    uint32_t has_name;
-    /*
-     LookupKey only: string key expression index.
-     */
-    uint32_t key_expression;
-    /*
-     LookupNode only; zero otherwise.
-     */
-    struct ZeNodeId node_id;
-    /*
-     LookupRelationship only; zero otherwise.
-     */
-    struct ZeRelId relationship_id;
-    /*
-     OR-ed type-name ranges in pool.names; zero count means unconstrained.
-     */
-    struct ZeGraphRange relationship_types;
-    /*
-     BoundedExpand inclusive lower bound, 0..16.
-     */
-    uint32_t path_min;
-    /*
-     BoundedExpand inclusive upper bound, >=min and <=16.
-     */
-    uint32_t path_max;
-    /*
-     BoundedExpand per-edge expression, evaluated using edge_slot plus input scope.
-     */
-    struct ZeGraphOptionalIndex edge_predicate;
-    /*
-     Temporary relationship slot visible only in edge_predicate; zero if absent.
-     */
-    uint32_t edge_slot;
-    /*
-     Search only: plan.searches index.
-     */
-    uint32_t search;
-    /*
-     Project/With output or Aggregate group keys in plan.projections.
-     */
-    struct ZeGraphRange projections;
-    /*
-     Aggregate output projections in plan.projections.
-     */
-    struct ZeGraphRange aggregates;
-    /*
-     Sort only: plan.sort_keys range.
-     */
-    struct ZeGraphRange sort_keys;
-    /*
-     Mutate only: plan.mutations range.
-     */
-    struct ZeGraphRange mutations;
-    /*
-     OffsetLimit skipped rows.
-     */
-    uint64_t offset;
-    /*
-     OffsetLimit maximum rows if has_limit=1; zero otherwise.
-     */
-    uint64_t limit;
-    /*
-     OffsetLimit only: exactly 0 or 1.
-     */
-    uint32_t has_limit;
-    /*
-     Must be zero.
-     */
-    uint32_t reserved;
-} ZeGraphOperator;
-
-/*
- One query mutation. Inactive fields zero. No retry/upsert implication; images and identity allocation belong to staging.
- */
-typedef struct ZeGraphMutation {
-    /*
-     Exact sizeof this version-one descriptor; fixed array stride.
-     */
-    uint32_t abi_size;
-    /*
-     Must be zero.
-     */
-    uint32_t abi_reserved;
-    /*
-     One ZeGraphMutationKind.
-     */
-    uint32_t kind;
-    /*
-     CreateNode/CreateRelationship destination slot.
-     */
-    uint32_t output;
-    /*
-     Entity expression for noncreate items.
-     */
-    uint32_t entity;
-    /*
-     SetProperty value expression.
-     */
-    uint32_t value;
-    /*
-     CreateRelationship source node expression.
-     */
-    uint32_t source;
-    /*
-     CreateRelationship target node expression.
-     */
-    uint32_t target;
-    /*
-     SetLabel only: exactly 0 or 1.
-     */
-    uint32_t present;
-    /*
-     Delete only: exactly 0 or 1.
-     */
-    uint32_t detach;
-    /*
-     Property/label/type name in plan pool.bytes.
-     */
-    struct ZeGraphRange name;
-    /*
-     CreateNode only: label ranges in plan pool.names.
-     */
-    struct ZeGraphRange labels;
-} ZeGraphMutation;
-
-/*
  Fixed-stride typed plan arenas. ABI shape validation is not DAG/type/scope/liveness admission. Runtime must converge on core validation and reject unsupported descriptors, never silently drop fields.
  */
 typedef struct ZeGraphPlan {
@@ -2626,6 +2694,7 @@ typedef struct ZeGraphPlan {
 
 /*
  Synchronous structured query; caller buffers borrowed only until return. No result can retain a view or caller pointer.
+ Output column names are slot_<logical ID>, in the core validated root-schema order.
  */
 typedef struct ZeGraphQueryRequest {
     /*
@@ -2661,74 +2730,6 @@ typedef struct ZeGraphQueryRequest {
      */
     const struct ZeGraphControl *control;
 } ZeGraphQueryRequest;
-
-/*
- Single-admission typed entity read. Returns one column, one row per requested ID, explicit Null for missing IDs; no second snapshot or automatic query follow-up.
- */
-typedef struct ZeGraphGetNodesRequest {
-    /*
-     Exact sizeof this version-one descriptor; fixed array stride.
-     */
-    uint32_t abi_size;
-    /*
-     Must be zero.
-     */
-    uint32_t abi_reserved;
-    /*
-     Nonzero store-local IDs; null only at zero count.
-     */
-    const struct ZeNodeId *ids;
-    /*
-     Input count; completed result bounds apply, order and duplicates preserved.
-     */
-    size_t id_count;
-    /*
-     0/1 explicit source text selection; absent differs from selected empty.
-     */
-    uint32_t include_text;
-    /*
-     0/1 explicit original vector selection; dimension validated.
-     */
-    uint32_t include_vector;
-    /*
-     Optional cancellation/deadline controls.
-     */
-    const struct ZeGraphControl *control;
-    /*
-     Optional typed memory/work tightening; null uses existing hard defaults.
-     */
-    const struct ZeGraphQueryLimits *limits;
-} ZeGraphGetNodesRequest;
-
-/*
- Single-admission typed entity read. Returns one column, one row per requested ID, explicit Null for missing IDs; no second snapshot or automatic query follow-up.
- */
-typedef struct ZeGraphGetRelsRequest {
-    /*
-     Exact sizeof this version-one descriptor; fixed array stride.
-     */
-    uint32_t abi_size;
-    /*
-     Must be zero.
-     */
-    uint32_t abi_reserved;
-    /*
-     Nonzero store-local IDs; null only at zero count.
-     */
-    const struct ZeRelId *ids;
-    /*
-     Input count; completed result bounds apply, order and duplicates preserved.
-     */
-    size_t id_count;
-    /*
-     Optional cancellation/deadline controls.
-     */
-    const struct ZeGraphControl *control;
-    /*
-     Optional typed memory/work tightening; null uses existing hard defaults.
-     */
-    const struct ZeGraphQueryLimits *limits;
-} ZeGraphGetRelsRequest;
 
 #ifdef __cplusplus
 extern "C" {
@@ -2771,8 +2772,9 @@ ze_error_code ze_graph_apply(struct ZeGraphHandle handle,
 ze_error_code ze_graph_response_free(struct ZeGraphResponse *response);
 
 /*
- Compiles and executes one Cypher statement with scalar parameters and a
- default maximum of 1,024 returned rows. Options must be null.
+ Compiles and executes one Cypher statement with bounded nonentity
+ parameters and a default maximum of 1,024 returned rows. Query options
+ declare interpretation and may tighten memory/work limits.
  */
 ze_error_code ze_graph_cypher(struct ZeGraphHandle handle,
                               const struct ZeGraphCypherRequest *request,
@@ -2816,6 +2818,29 @@ ze_error_code ze_graph_set_maintenance_policy(struct ZeGraphHandle handle,
 ze_error_code ze_graph_maintain(struct ZeGraphHandle handle,
                                 const struct ZeGraphControl *control,
                                 struct ZeGraphMaintainReport *out_report);
+
+/*
+ Reads nodes in input order, preserving duplicates and Null for missing IDs.
+ */
+ze_error_code ze_graph_get_nodes(struct ZeGraphHandle handle,
+                                 const struct ZeGraphGetNodesRequest *request,
+                                 struct ZeGraphResponse *out_response);
+
+/*
+ Reads relationships in input order, preserving duplicates and Null for missing IDs.
+ */
+ze_error_code ze_graph_get_relationships(struct ZeGraphHandle handle,
+                                         const struct ZeGraphGetRelsRequest *request,
+                                         struct ZeGraphResponse *out_response);
+
+/*
+ Executes one structured native graph plan; no textual query enters core.
+ Output columns are named slot_<logical ID>, in validated root-schema order.
+ Names are derived from the core schema; the frozen plan layout is unchanged.
+ */
+ze_error_code ze_graph_query(struct ZeGraphHandle handle,
+                             const struct ZeGraphQueryRequest *request,
+                             struct ZeGraphResponse *out_response);
 
 #ifdef __cplusplus
 }  // extern "C"

@@ -99,3 +99,100 @@ fn graph_maintenance_entries_poison_their_graph_handle() {
         assert_eq!(store.close(), ZeErrorCode::ZeErrPoisoned);
     }
 }
+
+#[test]
+fn ze241_every_graph_handle_export_poisons_its_owner() {
+    let _guard = probe_guard();
+    for name in [
+        "ze_graph_close",
+        "ze_graph_apply",
+        "ze_graph_cypher",
+        "ze_graph_cypher_with_row_limit",
+        "ze_graph_query",
+        "ze_graph_get_nodes",
+        "ze_graph_get_relationships",
+        "ze_graph_maintain",
+        "ze_graph_set_maintenance_policy",
+    ] {
+        let mut store = GraphTestStore::create();
+        let call = || match name {
+            "ze_graph_close" => ze_graph_close(store.handle),
+            "ze_graph_apply" => {
+                ze_graph_apply(store.handle, std::ptr::null(), std::ptr::null_mut())
+            }
+            "ze_graph_cypher" => {
+                ze_graph_cypher(store.handle, std::ptr::null(), std::ptr::null_mut())
+            }
+            "ze_graph_cypher_with_row_limit" => ze_graph_cypher_with_row_limit(
+                store.handle,
+                std::ptr::null(),
+                1,
+                std::ptr::null_mut(),
+            ),
+            "ze_graph_query" => {
+                ze_graph_query(store.handle, std::ptr::null(), std::ptr::null_mut())
+            }
+            "ze_graph_get_nodes" => {
+                ze_graph_get_nodes(store.handle, std::ptr::null(), std::ptr::null_mut())
+            }
+            "ze_graph_get_relationships" => {
+                ze_graph_get_relationships(store.handle, std::ptr::null(), std::ptr::null_mut())
+            }
+            "ze_graph_maintain" => {
+                ze_graph_maintain(store.handle, std::ptr::null(), std::ptr::null_mut())
+            }
+            _ => ze_graph_set_maintenance_policy(store.handle, std::ptr::null()),
+        };
+        arm_abi_panic_probe(name);
+        assert_eq!(call(), ZeErrorCode::ZeErrPanic, "{name}");
+        assert_eq!(store.close(), ZeErrorCode::ZeErrPoisoned, "{name}");
+    }
+}
+
+#[test]
+fn ze241_query_postcommit_panic_preserves_known_generation() {
+    let _guard = probe_guard();
+    let mut store = GraphTestStore::create();
+    let mut operators: [ZeGraphOperator; 3] = [common::sized_zeroed(); 3];
+    operators[1].kind = 5;
+    operators[1].inputs.count = 1;
+    operators[2].kind = 6;
+    operators[2].inputs = ZeGraphRange { start: 1, count: 1 };
+    operators[2].mutations.count = 1;
+    let mut mutation: ZeGraphMutation = common::sized_zeroed();
+    mutation.output = 7;
+    let input = [0, 1];
+    let pool: ZeGraphValuePool = common::sized_zeroed();
+    let mut plan: ZeGraphPlan = common::sized_zeroed();
+    plan.root = 2;
+    plan.operators = operators.as_ptr();
+    plan.operator_count = 3;
+    plan.inputs = input.as_ptr();
+    plan.input_count = 2;
+    plan.mutations = &mutation;
+    plan.mutation_count = 1;
+    plan.pool = &pool;
+    let mut request: ZeGraphQueryRequest = common::sized_zeroed();
+    request.plan = &plan;
+    let mut response = empty_response();
+    arm_abi_panic_probe("ze_graph_query:after-execute");
+    assert_eq!(
+        ze_graph_query(store.handle, &request, &mut response),
+        ZeErrorCode::ZeErrPanic
+    );
+    assert_eq!(
+        (
+            response.disposition,
+            response.changed_generation,
+            response.owner_token
+        ),
+        (2, 1, 0)
+    );
+    assert_eq!(store.close(), ZeErrorCode::ZeErrPoisoned);
+    let (code, handle) = graph_open(&store.path, MODE_READ_WRITE);
+    assert_eq!(code, ZeErrorCode::ZeOk);
+    let mut read = cypher_ok(handle, "MATCH (n) RETURN count(n)");
+    assert_eq!(rows(&read)[0][0].integer, 1);
+    ze_graph_response_free(&mut read);
+    ze_graph_close(handle);
+}

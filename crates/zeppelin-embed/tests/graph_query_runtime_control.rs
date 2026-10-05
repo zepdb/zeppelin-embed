@@ -766,6 +766,7 @@ fn eager_sources_run_once_in_source_order_even_when_limit_zero_produces_no_rows(
                 query: ExprId(0),
                 k: ExprId(1),
                 eligible: None,
+                options: Default::default(),
             },
             outputs: SearchOutputs {
                 node: Some(SlotId(call * 2)),

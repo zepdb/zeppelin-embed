@@ -21,9 +21,9 @@ use crate::lifecycle::QueryControl;
 use crate::lifecycle::native_graph::NativeReadConsumer;
 use crate::property_graph::catalog::Symbol;
 use crate::property_graph::query::completed::{
-    Key, ListKind, Node, Pools, Property, Relationship, Span, Value, ValueIndex,
+    GraphQueryOptions, Key, ListKind, Node, Pools, Property, Relationship, Span, Value, ValueIndex,
 };
-use crate::property_graph::query::runtime::{RuntimeContext, RuntimeLimits};
+use crate::property_graph::query::runtime::RuntimeContext;
 use crate::property_graph::storage::GraphReadView;
 use crate::property_graph::storage::records::{RecordShape, RecordView, StoredKey, StoredVector};
 use crate::property_graph::storage::stream::{PayloadCursor, PayloadSlice};
@@ -543,6 +543,17 @@ impl GraphStore {
         options: GraphGetOptions,
         control: &QueryControl,
     ) -> Result<GraphNodesResult, GraphStoreError> {
+        self.get_nodes_with_limits(ids, options, control, &GraphQueryOptions::default())
+    }
+
+    /// Reads nodes with request-local memory and work tightening.
+    pub fn get_nodes_with_limits(
+        &self,
+        ids: &[NodeId],
+        options: GraphGetOptions,
+        control: &QueryControl,
+        limits: &GraphQueryOptions,
+    ) -> Result<GraphNodesResult, GraphStoreError> {
         if ids.len() > MAX_GRAPH_CHANGES {
             return Err(GraphStoreError::limit(
                 "requested id count exceeds MAX_GRAPH_CHANGES",
@@ -550,8 +561,8 @@ impl GraphStore {
         }
         Ok(self.store.with_native_read(
             control,
-            RuntimeLimits::default(),
-            24 * 1024 * 1024,
+            limits.runtime_limits(),
+            limits.memory_limit(),
             64,
             GetNodes { ids, options },
         )?)
@@ -569,6 +580,16 @@ impl GraphStore {
         ids: &[RelId],
         control: &QueryControl,
     ) -> Result<GraphRelationshipsResult, GraphStoreError> {
+        self.get_relationships_with_limits(ids, control, &GraphQueryOptions::default())
+    }
+
+    /// Reads relationships with request-local memory and work tightening.
+    pub fn get_relationships_with_limits(
+        &self,
+        ids: &[RelId],
+        control: &QueryControl,
+        limits: &GraphQueryOptions,
+    ) -> Result<GraphRelationshipsResult, GraphStoreError> {
         if ids.len() > MAX_GRAPH_CHANGES {
             return Err(GraphStoreError::limit(
                 "requested id count exceeds MAX_GRAPH_CHANGES",
@@ -576,8 +597,8 @@ impl GraphStore {
         }
         Ok(self.store.with_native_read(
             control,
-            RuntimeLimits::default(),
-            24 * 1024 * 1024,
+            limits.runtime_limits(),
+            limits.memory_limit(),
             64,
             GetRelationships { ids },
         )?)

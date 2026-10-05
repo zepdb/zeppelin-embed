@@ -345,6 +345,14 @@ impl GraphQueryTerms<'_> {
         self.tokens.len()
     }
 
+    pub(crate) fn has_identifier(&self) -> bool {
+        self.tokens.as_slice().iter().any(|token| {
+            token
+                .flags()
+                .contains(super::tokenizer::TokenFlags::NO_FUZZY)
+        })
+    }
+
     pub(crate) fn term(&self, index: usize) -> Option<&str> {
         self.tokens.get(index).map(|token| token.term())
     }

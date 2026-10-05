@@ -68,6 +68,7 @@ fn mode(value: SearchMode) -> u8 {
         SearchMode::Auto => 1,
         SearchMode::Exact => 2,
         SearchMode::Scan => 3,
+        SearchMode::Graph => 4,
     }
 }
 
@@ -167,14 +168,18 @@ fn observe(read: &LoweredRead<'_, '_>) -> Result<Observation, String> {
                 k,
                 mode: search_mode,
                 eligible,
+                ..
             } => (mode(search_mode), eligible, vec![vector, k]),
-            SearchRequest::Text { query, k, eligible } => (255, eligible, vec![query, k]),
+            SearchRequest::Text {
+                query, k, eligible, ..
+            } => (255, eligible, vec![query, k]),
             SearchRequest::Hybrid {
                 vector,
                 text,
                 k,
                 mode: search_mode,
                 eligible,
+                ..
             } => (mode(search_mode), eligible, vec![vector, text, k]),
         };
         let eligibility = match eligible {

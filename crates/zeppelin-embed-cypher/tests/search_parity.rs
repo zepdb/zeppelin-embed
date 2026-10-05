@@ -94,6 +94,7 @@ fn structured(f: &SearchFixture, shape: u8) -> CompletedGraphResult {
                 k: ExprId(3),
                 mode: SearchMode::Exact,
                 eligible,
+                options: Default::default(),
             },
             outputs: SearchOutputs {
                 node: Some(SlotId(0)),
@@ -288,11 +289,13 @@ fn search_with_eligibility(
             k: count,
             mode,
             eligible,
+            options: Default::default(),
         },
         SearchKind::Lexical => SearchRequest::Text {
             query,
             k: count,
             eligible,
+            options: Default::default(),
         },
         SearchKind::Hybrid => SearchRequest::Hybrid {
             vector: ExprId(2),
@@ -300,6 +303,7 @@ fn search_with_eligibility(
             k: count,
             mode,
             eligible,
+            options: Default::default(),
         },
     };
     let mut projections = Vec::new();

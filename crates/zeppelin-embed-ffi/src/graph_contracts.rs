@@ -910,6 +910,7 @@ pub struct ZeGraphQueryOptions {
 use crate::ZeEmbeddingTower;
 
 /// Synchronous structured query; caller buffers borrowed only until return. No result can retain a view or caller pointer.
+/// Output column names are slot_<logical ID>, in the core validated root-schema order.
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct ZeGraphQueryRequest {

@@ -114,6 +114,13 @@ impl GraphResultRegistry {
             max_outstanding,
         }
     }
+    pub(super) fn allocation_bytes(counts: PoolCounts) -> Result<usize, OwnerError> {
+        ArenaLayout::new(counts)?
+            .layout
+            .size()
+            .checked_add(size_of::<Node>())
+            .ok_or(OwnerError::Limit)
+    }
     /// Copies aligned typed pools while source owners remain live, reserves the
     /// actual arena/node/control capacities, then admits a private registry node.
     /// The caller must prove/charge whole source owners at real ZE-68 conversion.
@@ -430,6 +437,15 @@ pub struct PendingResponse {
     node: NonNull<Node>,
 }
 impl PendingResponse {
+    pub(crate) fn set_admitted_generation(&mut self, generation: u64) {
+        // Unique unpublished owner; this changes only coordinator metadata.
+        unsafe {
+            let root = &mut *(*self.node.as_ptr()).root.get();
+            root.has_admitted_generation = 1;
+            root.admitted_generation = generation;
+        }
+    }
+
     /// Read-only descriptor snapshot. Free rejects it; after settle it is a
     /// stale copy whose outcome fields differ, so free still rejects it.
     pub fn descriptor(&self) -> ZeGraphResponse {
@@ -458,6 +474,20 @@ impl PendingResponse {
         receipts: &[ItemReceipt],
         settlement: WriteSettlement,
     ) -> ZeGraphResponse {
+        self.publish(receipts.iter().copied(), settlement.outcome())
+    }
+    pub(crate) fn publish_completed(
+        self,
+        result: &zeppelin_embed::property_graph::query::completed::CompletedGraphResult,
+        outcome: SuccessfulOutcome,
+    ) -> ZeGraphResponse {
+        self.publish(result.pools().receipts.iter().map(|r| r.receipt), outcome)
+    }
+    fn publish(
+        self,
+        receipts: impl Iterator<Item = ItemReceipt>,
+        outcome: SuccessfulOutcome,
+    ) -> ZeGraphResponse {
         let pending = ManuallyDrop::new(self); // disarm abort before publication
         let node = pending.node.as_ptr();
         // SAFETY: unique pending ownership excludes another settle/abort, and
@@ -471,7 +501,10 @@ impl PendingResponse {
             let nodes = pool_mut(root.pool.nodes, root.pool.node_count);
             let relationships = pool_mut(root.pool.relationships, root.pool.relationship_count);
             let admitted = root.admitted_generation;
-            let changed = settlement.changed();
+            let changed = match outcome {
+                SuccessfulOutcome::Committed(changed) => Some(changed.get()),
+                _ => None,
+            };
             // Abort ownership is disarmed: this loop must remain panic-free.
             // Scalar comparisons/casts/assignments, binary search with a scalar
             // comparator, and checked get_mut cannot panic. Do not add
@@ -505,7 +538,7 @@ impl PendingResponse {
                     }
                 }
             }
-            settlement.outcome().apply(root);
+            outcome.apply(root);
             let published = *root;
             (*node).published.store(true, Ordering::Release);
             published

@@ -412,7 +412,10 @@ fn retrieval(error: &crate::property_graph::retrieval::RetrievalError) -> Kind {
         | RetrievalError::AnalyzerMismatch
         | RetrievalError::MissingVersion(_)
         | RetrievalError::Version(_) => Kind::Constraint,
-        RetrievalError::Dimension { .. } => Kind::Expression,
+        RetrievalError::Dimension { .. }
+        | RetrievalError::Graph(crate::graph::search::GraphSearchError::AdaptiveEf(_)) => {
+            Kind::Expression
+        }
         RetrievalError::Identity(_)
         | RetrievalError::Vector(_)
         | RetrievalError::Graph(_)

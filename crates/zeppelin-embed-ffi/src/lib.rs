@@ -15,6 +15,9 @@
 )]
 #![warn(missing_docs)]
 
+#[cfg(all(feature = "graph-cypher", feature = "abi-panic-probe"))]
+pub mod graph_deadline_test_support;
+
 mod abi;
 mod error;
 mod marshal;
@@ -1422,6 +1425,12 @@ fn query_control_for(
         return registry::lookup_cancel(cancel_token).map(QueryControl::Cancel);
     }
     if deadline_ns != 0 {
+        #[cfg(all(feature = "graph-cypher", feature = "abi-panic-probe"))]
+        if let Some(clock) = graph_deadline_test_support::clock() {
+            return Deadline::after_with_test_clock(Duration::from_nanos(deadline_ns), clock)
+                .map(QueryControl::Deadline)
+                .map_err(|error| FfiError::invalid(error.to_string()));
+        }
         return Deadline::after(Duration::from_nanos(deadline_ns))
             .map(QueryControl::Deadline)
             .map_err(|error| FfiError::invalid(error.to_string()));

@@ -367,6 +367,7 @@ pub(super) fn search_nodes<'lease, 'm, 'g>(
                     query: ExprId(0),
                     k: ExprId(1),
                     eligible: None,
+                    options: Default::default(),
                 },
                 outputs: SearchOutputs {
                     node: Some(SlotId(0)),

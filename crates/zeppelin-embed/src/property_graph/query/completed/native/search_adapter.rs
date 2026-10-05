@@ -22,13 +22,6 @@ use crate::property_graph::query::{QueryError, QueryList, QueryValue};
 use crate::property_graph::retrieval::{NativeRetrievalContext, RetrievalError};
 use crate::property_graph::storage::GraphReadView;
 
-/// This is the shared retained-capacity allowance, not a producer width.
-/// Producers select and charge their actual windows/scratch; hybrid needs
-/// room for both windows and ANN needs room for its traversal scratch.
-fn bounds(k: u32) -> Result<SearchBounds, NativeExecutionError> {
-    Ok(SearchBounds::new(i64::from(k), 65_536)?)
-}
-
 fn retrieval(error: RetrievalError) -> NativeExecutionError {
     error.into()
 }
@@ -103,7 +96,7 @@ impl<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g> for NativeSearchAdapter<'_> {
     ) -> Result<SearchReport, NativeExecutionError> {
         let before = context.counters();
         let ctx = NativeRetrievalContext::new(view, context).map_err(retrieval)?;
-        let bounds = bounds(invocation.k)?;
+        let bounds = SearchBounds::new(i64::from(invocation.k), u64::from(invocation.window))?;
         match invocation.arguments {
             SearchArguments::Vector { vector, mode } => {
                 let coordinates = copy_vector(context.memory(), vector)?;
@@ -114,7 +107,8 @@ impl<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g> for NativeSearchAdapter<'_> {
                         eligibility(invocation),
                         context,
                     )
-                    .map_err(retrieval)?;
+                    .map_err(retrieval)?
+                    .with_options(invocation.options);
                 let ranked = ctx
                     .rank_vector(&prepared, bounds, context)
                     .map_err(retrieval)?;
@@ -153,7 +147,13 @@ impl<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g> for NativeSearchAdapter<'_> {
             }
             SearchArguments::Text { query } => {
                 let prepared = ctx
-                    .prepare_text(self.analyzer, query, eligibility(invocation), context)
+                    .prepare_text_with_options(
+                        self.analyzer,
+                        query,
+                        eligibility(invocation),
+                        invocation.options,
+                        context,
+                    )
                     .map_err(retrieval)?;
                 let ranked = ctx
                     .rank_text(&prepared, bounds, context)
@@ -200,9 +200,16 @@ impl<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g> for NativeSearchAdapter<'_> {
                         eligibility(invocation),
                         context,
                     )
-                    .map_err(retrieval)?;
+                    .map_err(retrieval)?
+                    .with_options(invocation.options);
                 let prepared_text = ctx
-                    .prepare_text(self.analyzer, text, eligibility(invocation), context)
+                    .prepare_text_with_options(
+                        self.analyzer,
+                        text,
+                        eligibility(invocation),
+                        invocation.options,
+                        context,
+                    )
                     .map_err(retrieval)?;
                 let ranked = ctx
                     .rank_hybrid(&prepared_vector, &prepared_text, bounds, context)

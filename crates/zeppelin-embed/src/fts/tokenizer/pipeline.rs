@@ -79,6 +79,10 @@ type Emissions<'m, C> = GuardedVec<'m, Emission<'m, C>, C>;
 pub(crate) type ControlledTokens<'m, C> = GuardedVec<'m, ControlledToken<'m, C>, C>;
 
 impl<C> ControlledToken<'_, C> {
+    pub(crate) fn flags(&self) -> TokenFlags {
+        self.flags
+    }
+
     pub(crate) fn term(&self) -> &str {
         self.term.as_str()
     }

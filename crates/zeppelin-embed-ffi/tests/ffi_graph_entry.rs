@@ -450,19 +450,20 @@ fn graph_cypher_on_a_read_only_store_reads_but_refuses_writes() {
     ze_graph_close(h);
 }
 #[test]
-fn graph_cypher_rejects_invalid_utf8_text_and_non_null_options() {
+fn graph_cypher_rejects_invalid_utf8_text_and_malformed_options() {
     let s = GraphTestStore::create();
     let mut r = empty_response();
     assert_eq!(
         ze_graph_cypher(s.handle, &cypher_request(&[255], &[], None), &mut r),
         ZeErrorCode::ZeErrInvalidArgument
     );
-    let options = common::sized_zeroed();
+    let mut options: ZeGraphQueryOptions = common::sized_zeroed();
+    options.abi_reserved = 1;
     let mut q = cypher_request(b"CREATE (:Doc)", &[], None);
     q.options = &options;
     assert_eq!(
         ze_graph_cypher(s.handle, &q, &mut r),
-        ZeErrorCode::ZeErrUnsupported
+        ZeErrorCode::ZeErrInvalidArgument
     );
     assert_eq!(r.disposition, 1);
 }
@@ -500,7 +501,7 @@ fn graph_cypher_compile_limits_are_exact_and_tightening_only() {
 }
 
 #[test]
-fn graph_cypher_refuses_list_and_entity_parameters_before_any_effect() {
+fn graph_cypher_refuses_unused_entity_and_malformed_parameters_before_effects() {
     let s = GraphTestStore::create();
     for case in 0..4 {
         let mut b = PoolBuilder::new();
@@ -521,7 +522,7 @@ fn graph_cypher_refuses_list_and_entity_parameters_before_any_effect() {
         );
         let mut r = empty_response();
         let expected = match case {
-            0 => ZeErrorCode::ZeErrUnsupported,
+            0 => ZeErrorCode::ZeErrParameter,
             1 | 2 => ZeErrorCode::ZeErrParameter,
             _ => ZeErrorCode::ZeErrInvalidArgument,
         };

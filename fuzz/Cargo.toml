@@ -11,6 +11,7 @@ cargo-fuzz = true
 graph-cypher = [
     "dep:zeppelin-embed-cypher",
     "zeppelin-embed/graph-cypher",
+    "zeppelin-embed-ffi/graph-cypher",
 ]
 
 [dependencies]
@@ -166,6 +167,14 @@ required-features = ["graph-cypher"]
 [[bin]]
 name = "native_graph_records"
 path = "fuzz_targets/native_graph_records.rs"
+test = false
+doc = false
+bench = false
+required-features = ["graph-cypher"]
+
+[[bin]]
+name = "ffi_graph_requests"
+path = "fuzz_targets/ffi_graph_requests.rs"
 test = false
 doc = false
 bench = false

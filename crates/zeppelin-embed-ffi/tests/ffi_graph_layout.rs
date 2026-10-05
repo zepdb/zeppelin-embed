@@ -240,3 +240,25 @@ fn every_graph_discriminant_has_the_frozen_value_and_width() {
     assert_eq!(ZeGraphWorkKind::ZeGraphWorkCopiedBytes as u32, 21);
     assert_eq!(ZeGraphWorkKind::ZeGraphWorkPeakOwnedBytes as u32, 22);
 }
+
+#[test]
+fn ze241_new_entry_requests_keep_frozen_layouts_and_signatures() {
+    layout!(ZeGraphQueryRequest,56,8; abi_size=>0,abi_reserved=>4,plan=>8,parameters=>16,parameter_count=>24,parameter_pool=>32,options=>40,control=>48);
+    layout!(ZeGraphGetNodesRequest,48,8; abi_size=>0,abi_reserved=>4,ids=>8,id_count=>16,include_text=>24,include_vector=>28,control=>32,limits=>40);
+    layout!(ZeGraphGetRelsRequest,40,8; abi_size=>0,abi_reserved=>4,ids=>8,id_count=>16,control=>24,limits=>32);
+    let _: extern "C" fn(
+        ZeGraphHandle,
+        *const ZeGraphQueryRequest,
+        *mut ZeGraphResponse,
+    ) -> ZeErrorCode = ze_graph_query;
+    let _: extern "C" fn(
+        ZeGraphHandle,
+        *const ZeGraphGetNodesRequest,
+        *mut ZeGraphResponse,
+    ) -> ZeErrorCode = ze_graph_get_nodes;
+    let _: extern "C" fn(
+        ZeGraphHandle,
+        *const ZeGraphGetRelsRequest,
+        *mut ZeGraphResponse,
+    ) -> ZeErrorCode = ze_graph_get_relationships;
+}

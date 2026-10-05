@@ -106,3 +106,59 @@ fn graph_cypher_responses_free_in_a_flat_heap_loop() {
         assert_eq!(ze_graph_response_free(&mut r), ZeErrorCode::ZeOk);
     });
 }
+
+#[test]
+fn ze241_query_and_get_responses_free_in_a_flat_heap_loop() {
+    let _guard = HEAP_TEST_GUARD.lock().unwrap();
+    let store = GraphTestStore::create();
+    let mut created = cypher_ok(store.handle, "CREATE (n:Owned) RETURN n");
+    assert_eq!(created.pool.node_count, 1);
+    let node = unsafe { (*created.pool.nodes).id };
+    ze_graph_response_free(&mut created);
+    let ids = [
+        node,
+        ZeNodeId {
+            high: u64::MAX,
+            low: node.low,
+        },
+        node,
+    ];
+    let mut get: ZeGraphGetNodesRequest = common::sized_zeroed();
+    get.ids = ids.as_ptr();
+    get.id_count = ids.len();
+    let rels = [ZeRelId {
+        high: u64::MAX,
+        low: 1,
+    }];
+    let mut relationships: ZeGraphGetRelsRequest = common::sized_zeroed();
+    relationships.ids = rels.as_ptr();
+    relationships.id_count = 1;
+    let mut operator: ZeGraphOperator = common::sized_zeroed();
+    operator.kind = 4;
+    operator.node_slot = 7;
+    let pool: ZeGraphValuePool = common::sized_zeroed();
+    let mut plan: ZeGraphPlan = common::sized_zeroed();
+    plan.operators = &operator;
+    plan.operator_count = 1;
+    plan.pool = &pool;
+    let mut query: ZeGraphQueryRequest = common::sized_zeroed();
+    query.plan = &plan;
+    assert_heap_flat("structured query/gets/free", || {
+        let mut response = empty_response();
+        assert_eq!(
+            ze_graph_query(store.handle, &query, &mut response),
+            ZeErrorCode::ZeOk
+        );
+        assert_eq!(ze_graph_response_free(&mut response), ZeErrorCode::ZeOk);
+        assert_eq!(
+            ze_graph_get_nodes(store.handle, &get, &mut response),
+            ZeErrorCode::ZeOk
+        );
+        assert_eq!(ze_graph_response_free(&mut response), ZeErrorCode::ZeOk);
+        assert_eq!(
+            ze_graph_get_relationships(store.handle, &relationships, &mut response),
+            ZeErrorCode::ZeOk
+        );
+        assert_eq!(ze_graph_response_free(&mut response), ZeErrorCode::ZeOk);
+    });
+}

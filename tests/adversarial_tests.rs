@@ -19342,16 +19342,17 @@ fn native_graph_runner_keys_are_active_with_graph_feature() {
     // ZE-176 add seven receipt keys; the pin had drifted by three, so it
     // is reset to the observed lengths. ZE-190 adds fence-only recovery;
     // ZE-275 adds three close schedules. ZE-172 adds eighteen byte-fault,
-    // clean-control, selection, open-counter and can-fire keys.
+    // clean-control, selection, open-counter and can-fire keys. ZE-241 adds
+    // four C entry receipts.
     #[cfg(not(feature = "graph-result-test-support"))]
     assert_eq!(
         adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        398 + if cfg!(unix) { 7 } else { 0 }
+        402 + if cfg!(unix) { 7 } else { 0 }
     );
     #[cfg(feature = "graph-result-test-support")]
     assert_eq!(
         adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        418 + if cfg!(unix) { 7 } else { 0 }
+        422 + if cfg!(unix) { 7 } else { 0 }
     );
 }
 
@@ -20251,4 +20252,16 @@ fn property_graph_campaign_refuses_without_graph_feature() {
         .unwrap()
         .contains("requires graph-cypher")
     );
+}
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn ze241_c_entry_probe_fires_and_matches_control() {
+    for seed in [0, 7] {
+        let mut coverage = adversarial::coverage::CoverageRegistry::default();
+        adversarial::graph_c_entry::probe(seed, &mut coverage).expect("ZE-241 C entry probe");
+        for key in adversarial::graph_c_entry::REQUIRED_COVERAGE {
+            assert_eq!(coverage.count(key), 1, "{key}");
+        }
+    }
 }

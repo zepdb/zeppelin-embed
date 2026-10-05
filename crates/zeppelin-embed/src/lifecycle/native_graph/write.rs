@@ -2443,7 +2443,7 @@ impl crate::lifecycle::Store {
         self.apply_native_graph_with_materializer(requests, control, &mut materializer)
     }
 
-    pub(super) fn apply_native_graph_with_materializer<M: ResultMaterializer>(
+    pub(crate) fn apply_native_graph_with_materializer<M: ResultMaterializer>(
         &self,
         requests: &[crate::property_graph::staging::StructuredWrite<'_, '_>],
         control: &crate::lifecycle::QueryControl,

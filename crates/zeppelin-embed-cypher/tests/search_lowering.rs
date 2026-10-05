@@ -48,7 +48,13 @@ fn text_call_lowers_to_one_typed_eager_source() {
                 assert!(matches!(plan.operators[0].kind, OperatorKind::Unit));
                 let OperatorKind::Search {
                     call,
-                    request: SearchRequest::Text { query, k, eligible },
+                    request:
+                        SearchRequest::Text {
+                            query,
+                            k,
+                            eligible,
+                            options: Default::default(),
+                        },
                     outputs,
                 } = plan.operators[1].kind
                 else {

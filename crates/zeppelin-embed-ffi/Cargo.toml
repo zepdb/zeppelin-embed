@@ -56,3 +56,7 @@ required-features = ["graph-cypher", "abi-panic-probe"]
 [[test]]
 name = "ffi_graph_ownership"
 required-features = ["graph-cypher"]
+
+[[test]]
+name = "ffi_graph_full"
+required-features = ["graph-cypher"]

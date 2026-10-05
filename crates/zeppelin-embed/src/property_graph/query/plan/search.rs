@@ -40,7 +40,9 @@ pub(super) fn validate(
     }
 
     let (k, eligible) = match request {
-        SearchRequest::Text { query, k, eligible } => {
+        SearchRequest::Text {
+            query, k, eligible, ..
+        } => {
             argument(description, query, ValueKinds::STRING, input, seen, context)?;
             (k, eligible)
         }
@@ -74,6 +76,9 @@ pub(super) fn validate(
     if let Some(id) = eligible {
         argument(description, id, ValueKinds::LIST, input, seen, context)?;
     }
+    if let Some(window) = request.options().window {
+        argument(description, window, ValueKinds::I64, input, seen, context)?;
+    }
     Ok(())
 }
 fn argument(
@@ -96,6 +101,8 @@ pub enum SearchMode {
     Default,
     /// The caller explicitly requested automatic tier selection.
     Auto,
+    /// Explicit ANN graph routing.
+    Graph,
     /// Exhaustive streaming ranking.
     Exact,
     /// The caller explicitly requested scan ranking.
@@ -127,5 +134,40 @@ impl SearchBounds {
     /// Explicit maximum retained candidate capacity; not a scan/visit cap.
     pub const fn candidate_window(self) -> u32 {
         self.candidate_window
+    }
+}
+
+/// Request-local vector, lexical and fusion choices; no persisted policy changes.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SearchOptions {
+    /// Uncorrelated structured source emits only its declared yields.
+    pub hide_input: bool,
+    /// Evaluated retained-capacity allowance; absent uses the shared default.
+    pub window: Option<ExprId>,
+    /// Explicit ANN profile: zero SIFT class, one angular; absent uses the index.
+    pub graph_profile: Option<crate::graph::search::GraphSearchProfile>,
+    /// Explicit traversal width, zero adaptive.
+    pub graph_ef: u32,
+    /// Deterministic preparation seed.
+    pub graph_seed: u64,
+    /// Last analyzed term is a prefix.
+    pub last_as_prefix: bool,
+    /// Rescore retained scan candidates against original vectors.
+    pub rescore: bool,
+    /// Explicit convex vector weight.
+    pub alpha: Option<f64>,
+    /// Enable deterministic query-shape alpha rules.
+    pub rules_enabled: bool,
+    /// Explicit widening rounds; zero selects full-list strategy.
+    pub max_rounds: Option<u64>,
+}
+impl SearchRequest {
+    /// Producer options independently of the requested modality.
+    pub const fn options(self) -> SearchOptions {
+        match self {
+            Self::Vector { options, .. }
+            | Self::Text { options, .. }
+            | Self::Hybrid { options, .. } => options,
+        }
     }
 }

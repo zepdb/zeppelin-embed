@@ -67,6 +67,20 @@ impl<'p> Pool<'p> {
         let pool = read_exact(pointer, |pool| pool.abi_size, what)?;
         pool.validate_header()
             .map_err(|_| invalid(format!("{what} has an invalid descriptor")))?;
+        let counts = [
+            pool.value_count,
+            pool.child_count,
+            pool.node_count,
+            pool.relationship_count,
+            pool.property_count,
+            pool.name_count,
+            pool.vector_count,
+        ];
+        if counts.iter().any(|count| *count > 524_288)
+            || pool.byte_count > zeppelin_embed::property_graph::MAX_GRAPH_INPUT_BYTES
+        {
+            return Err(invalid("graph pool exceeds bounded input arenas"));
+        }
         let slice = |error: marshal::MarshalError, field: &str| {
             invalid(format!("{what}.{field}: {}", error.0))
         };
@@ -92,6 +106,14 @@ impl<'p> Pool<'p> {
 
     pub(crate) fn text(&self, span: ZeGraphRange, what: &str) -> Result<&'p str, FfiError> {
         utf8(range(self.bytes, span, what)?, what)
+    }
+
+    pub(crate) fn children(&self, span: ZeGraphRange) -> Result<&'p [u32], FfiError> {
+        range(self.children, span, "list children")
+    }
+
+    pub(crate) fn names(&self, span: ZeGraphRange) -> Result<&'p [ZeGraphRange], FfiError> {
+        range(self.names, span, "plan names")
     }
 
     pub(crate) fn value(&self, index: u32, what: &str) -> Result<&'p ZeGraphValue, FfiError> {
@@ -939,5 +961,40 @@ mod tests {
             }
         })
         .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod ze241_tests {
+    use super::*;
+    #[test]
+    fn ze241_raw_pool_refuses_overflow_utf8_and_misalignment() {
+        let mut raw: ZeGraphValuePool = unsafe { std::mem::zeroed() };
+        raw.abi_size = std::mem::size_of::<ZeGraphValuePool>() as u32;
+        raw.value_count = usize::MAX;
+        assert!(Pool::read(&raw, "overflow").is_err());
+        raw.value_count = 0;
+        raw.bytes = [255u8].as_ptr();
+        raw.byte_count = 1;
+        let bytes = [255u8];
+        raw.bytes = bytes.as_ptr();
+        let pool = match Pool::read(&raw, "UTF-8") {
+            Ok(pool) => pool,
+            Err(error) => {
+                assert!(false, "{error:?}");
+                return;
+            }
+        };
+        assert!(
+            pool.text(ZeGraphRange { start: 0, count: 1 }, "text")
+                .is_err()
+        );
+        let allocated = [0u64; 64];
+        let pointer = allocated
+            .as_ptr()
+            .cast::<u8>()
+            .wrapping_add(1)
+            .cast::<ZeGraphValuePool>();
+        assert!(Pool::read(pointer, "misaligned").is_err());
     }
 }

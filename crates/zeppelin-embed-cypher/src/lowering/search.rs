@@ -20,6 +20,7 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
                 k,
                 mode,
                 eligible,
+                ..
             } => {
                 let (eligible, independent) =
                     self.search_eligibility(bound, eligible, clause.span)?;
@@ -29,11 +30,14 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
                         k: self.lower_invariant_expression(bound, k, clause.span)?,
                         mode: search_mode(mode),
                         eligible,
+                        options: Default::default(),
                     },
                     independent,
                 )
             }
-            BoundSearchRequest::Text { query, k, eligible } => {
+            BoundSearchRequest::Text {
+                query, k, eligible, ..
+            } => {
                 let (eligible, independent) =
                     self.search_eligibility(bound, eligible, clause.span)?;
                 (
@@ -41,6 +45,7 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
                         query: self.lower_invariant_expression(bound, query, clause.span)?,
                         k: self.lower_invariant_expression(bound, k, clause.span)?,
                         eligible,
+                        options: Default::default(),
                     },
                     independent,
                 )
@@ -51,6 +56,7 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
                 k,
                 mode,
                 eligible,
+                ..
             } => {
                 let (eligible, independent) =
                     self.search_eligibility(bound, eligible, clause.span)?;
@@ -61,6 +67,7 @@ impl<'m, 'g, 'c> Builder<'m, 'g, 'c> {
                         k: self.lower_invariant_expression(bound, k, clause.span)?,
                         mode: search_mode(mode),
                         eligible,
+                        options: Default::default(),
                     },
                     independent,
                 )

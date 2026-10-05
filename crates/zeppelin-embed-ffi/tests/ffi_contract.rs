@@ -1542,7 +1542,7 @@ const GRAPH_HANDLE_FREE_EXPORTS: &[&str] = &["ze_graph_open_with_relationship_ty
 #[test]
 fn graph_declaration_export_is_registered_without_a_poison_handle() {
     let header = include_str!("../include/zeppelin_graph_contracts.h");
-    let allowlist = include_str!("../symbols.allowlist");
+    let allowlist = include_str!("../symbols.graph.allowlist");
     for name in GRAPH_HANDLE_FREE_EXPORTS {
         assert!(header.contains(&format!("ze_error_code {name}(")));
         assert!(allowlist.lines().any(|symbol| symbol == *name));
@@ -1598,10 +1598,63 @@ fn graph_maintenance_exports_and_frozen_layouts() {
                 .contains(&format!("ze_error_code {name}("))
         );
         assert!(
-            include_str!("../symbols.allowlist")
+            include_str!("../symbols.graph.allowlist")
                 .lines()
                 .any(|symbol| symbol == *name)
         );
         assert!(include_str!("ffi_graph_poison.rs").contains(&format!("\"{name}\"")));
+    }
+}
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn ze241_every_graph_export_has_an_explicit_handle_policy() {
+    let handle = [
+        "ze_graph_close",
+        "ze_graph_apply",
+        "ze_graph_cypher",
+        "ze_graph_cypher_with_row_limit",
+        "ze_graph_query",
+        "ze_graph_get_nodes",
+        "ze_graph_get_relationships",
+        "ze_graph_maintain",
+        "ze_graph_set_maintenance_policy",
+    ];
+    let exceptions = [
+        "ze_graph_open",
+        "ze_graph_open_with_relationship_types",
+        "ze_graph_response_free",
+    ];
+    let exported: Vec<_> = include_str!("../symbols.graph.allowlist")
+        .lines()
+        .filter(|name| name.starts_with("ze_graph_"))
+        .collect();
+    assert_eq!(exported.len(), handle.len() + exceptions.len());
+    let mut declared = 0;
+    for declaration in include_str!("../include/zeppelin_graph_contracts.h")
+        .split(';')
+        .filter(|declaration| declaration.contains("struct ZeGraphHandle handle"))
+    {
+        let name = declaration
+            .rsplit("ze_error_code ")
+            .next()
+            .and_then(|signature| signature.split('(').next())
+            .unwrap()
+            .trim();
+        assert!(
+            handle.contains(&name),
+            "header handle declaration has no poison policy: {name}"
+        );
+        declared += 1;
+    }
+    assert_eq!(declared, handle.len());
+    for name in exported {
+        assert!(
+            handle.contains(&name) || exceptions.contains(&name),
+            "missing handle policy for {name}"
+        );
+        if handle.contains(&name) {
+            assert!(include_str!("ffi_graph_poison.rs").contains(&format!("\"{name}\"")));
+        }
     }
 }

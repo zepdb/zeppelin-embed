@@ -233,6 +233,7 @@ impl NativeReadConsumer<Outcome> for SearchConsumer {
                 query: ExprId(0),
                 k: ExprId(1),
                 eligible,
+                options: Default::default(),
             },
             outputs: SearchOutputs {
                 node: Some(SlotId(0)),
@@ -265,6 +266,7 @@ impl NativeReadConsumer<Outcome> for SearchConsumer {
                                     k: ExprId(1),
                                     mode: SearchMode::Default,
                                     eligible: None,
+                                    options: Default::default(),
                                 },
                                 outputs: SearchOutputs {
                                     node: Some(SlotId(2)),
@@ -361,6 +363,7 @@ impl NativeReadConsumer<Outcome> for SearchConsumer {
                                     k: ExprId(0),
                                     mode: SearchMode::Default,
                                     eligible: Some(ExprId(1)),
+                                    options: Default::default(),
                                 },
                                 outputs: SearchOutputs {
                                     node: Some(SlotId(0)),

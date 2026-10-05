@@ -54,6 +54,27 @@ mod search_tests;
 #[cfg(test)]
 mod tests;
 
+/// Synchronous binding completion at the validated native statement boundary.
+/// Preparation is fallible and occurs before any commit; finalization is
+/// allocation-free and cannot reject a completed driver.
+#[doc(hidden)]
+pub trait GraphBoundary {
+    /// Called only after core validation proves the statement classification.
+    fn classified(&self, writes: bool) -> Result<(), GraphQueryError>;
+    /// Copies and registers binding output under the admitted query context.
+    fn prepare(
+        &self,
+        source: &dyn ResultSource,
+        context: &mut RuntimeContext<'_, '_, '_>,
+    ) -> Result<usize, CompletedError>;
+    /// Records the final driver counters in the already prepared output.
+    fn completed(
+        &self,
+        counters: crate::property_graph::query::runtime::WorkCounters,
+        peak_query_bytes: usize,
+    );
+}
+
 #[derive(Debug)]
 pub(crate) enum NativeResultError {
     Native(NativeExecutionError),
@@ -271,6 +292,7 @@ struct NativeCompletion<'a, 's, 'lease, 'm, 'g, C> {
     /// A write statement without RETURN: its rows are driven for their
     /// writes only, and the result has no columns and no rows.
     no_return: bool,
+    boundary: Option<&'a dyn GraphBoundary>,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -301,6 +323,7 @@ impl<'a, 's, 'lease, 'm, 'g, C> NativeCompletion<'a, 's, 'lease, 'm, 'g, C> {
             before_copy,
             handoff: None,
             no_return: false,
+            boundary: None,
         })
     }
 }
@@ -465,13 +488,20 @@ where
             )?;
         }
         (self.before_copy)(NativeCompletionStage::BeforeDestination, context.counters())?;
+        let abi_bytes = match self.boundary {
+            Some(boundary) => boundary
+                .prepare(&staging, context)
+                .map_err(NativeResultError::Completed)?,
+            None => 0,
+        };
         let prepared = PreparedGraphResult::copy_from(&staging, context)
             .map_err(NativeResultError::Completed)?;
         let represented = prepared.represented_bytes();
         drop(staging);
         // The driver accounts every prepared row, including the rows a
         // statement without RETURN drove only for their writes.
-        FrozenOutput::new(prepared, rows.rows(), represented, 0).map_err(NativeResultError::from)
+        FrozenOutput::new(prepared, rows.rows(), represented, abi_bytes)
+            .map_err(NativeResultError::from)
     }
 }
 
@@ -496,6 +526,7 @@ pub(crate) fn execute_native_result<'s, 'r, 'plan, 'lease, 'm, 'g>(
         None,
         |_| Ok(()),
         |_, _| Ok(()),
+        None,
     )
 }
 
@@ -523,6 +554,7 @@ pub(super) fn execute_native_search_result<'s, 'r, 'plan, 'lease, 'm, 'g>(
         Some(adapter),
         |_| Ok(()),
         |_, _| Ok(()),
+        None,
     )
 }
 
@@ -578,6 +610,7 @@ fn execute_native_result_with<'s, 'r, 'plan, 'lease, 'm, 'g, H, C>(
     search: Option<&mut dyn SearchAdapter<'lease, 'm, 'g>>,
     after_pull: H,
     before_copy: C,
+    boundary: Option<&dyn GraphBoundary>,
 ) -> Result<super::CompletedGraphResult, RuntimeFailure<NativeResultError>>
 where
     H: FnMut(usize) -> Result<(), NativeResultError>,
@@ -622,6 +655,7 @@ where
         error: NativeResultError::Native(error),
         counters: runtime.counters(),
     })?;
+    completion.boundary = boundary;
     let execution = execute_in(
         runtime,
         plan,
@@ -629,9 +663,39 @@ where
         &mut completion,
         execution_capacity,
     )?;
+    if let Some(boundary) = boundary {
+        boundary.completed(execution.counters, execution.peak_query_bytes);
+    }
     Ok(execution
         .output
         .detach(execution.counters, execution.peak_query_bytes))
+}
+
+#[allow(clippy::too_many_arguments, clippy::result_large_err)]
+pub(super) fn execute_native_boundary_result<'s, 'r, 'plan, 'lease, 'm, 'g>(
+    view: &'s GraphReadView<'s, 'lease, 'm, 'g>,
+    runtime: &mut RuntimeContext<'lease, 'm, 'g>,
+    plan: &'r RuntimePlan<'r, 'plan, 'r, 'm, 'g, 'r>,
+    bindings: &[ParameterBinding<'_>],
+    columns: &[GraphName<'_>],
+    pattern: PatternCapacity,
+    execution: ExecutionCapacity,
+    search: Option<&mut dyn SearchAdapter<'lease, 'm, 'g>>,
+    boundary: Option<&dyn GraphBoundary>,
+) -> Result<super::CompletedGraphResult, RuntimeFailure<NativeResultError>> {
+    execute_native_result_with(
+        view,
+        runtime,
+        plan,
+        bindings,
+        columns,
+        pattern,
+        execution,
+        search,
+        |_| Ok(()),
+        |_, _| Ok(()),
+        boundary,
+    )
 }
 
 /// The write statement's source: its `NativePattern`, which stages into the
@@ -728,6 +792,7 @@ fn execute_native_mutation_diagnosed<'w, 'r, 'plan, 'lease, 'm, 'g, 'i>(
     execution_capacity: ExecutionCapacity,
     overlay: GraphBatchReadView<'w, 'static>,
     images: &'w StatementImages<'i>,
+    boundary: Option<&dyn GraphBoundary>,
 ) -> Result<(super::UnsettledWriteResult, GraphBatchReadView<'w, 'static>), GraphQueryError> {
     let root = plan.plan().description().root;
     // A statement whose last clause writes has no RETURN: its root is the
@@ -781,6 +846,7 @@ fn execute_native_mutation_diagnosed<'w, 'r, 'plan, 'lease, 'm, 'g, 'i>(
     })?;
     completion.handoff = Some(&handoff);
     completion.no_return = no_return;
+    completion.boundary = boundary;
     let execution = execute_in(
         runtime,
         plan,
@@ -788,6 +854,9 @@ fn execute_native_mutation_diagnosed<'w, 'r, 'plan, 'lease, 'm, 'g, 'i>(
         &mut completion,
         execution_capacity,
     )?;
+    if let Some(boundary) = boundary {
+        boundary.completed(execution.counters, execution.peak_query_bytes);
+    }
     let overlay = handoff
         .take()
         .ok_or(NativeResultError::Native(RuntimeError::Batch.into()))?;
@@ -832,6 +901,7 @@ pub(crate) fn execute_native_mutation_result<'w, 'r, 'plan, 'lease, 'm, 'g, 'i>(
         execution_capacity,
         overlay,
         images,
+        None,
     )
     .map_err(GraphQueryError::into_mutation)
 }
@@ -865,6 +935,7 @@ where
         None,
         |_| Ok(()),
         before_copy,
+        None,
     )
 }
 
@@ -899,5 +970,6 @@ where
         None,
         after_pull,
         before_copy,
+        None,
     )
 }

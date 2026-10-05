@@ -24,7 +24,7 @@ mod shared_resources;
 
 pub use ast::*;
 pub use binding::*;
-pub use execute::{StatementError, execute};
+pub use execute::{StatementError, execute, execute_with_boundary};
 pub use lowering::{
     LoweredMutation, LoweredRead, PreparationControl, ReadColumn, ReadContext, compile_mutation_in,
     compile_read_in,

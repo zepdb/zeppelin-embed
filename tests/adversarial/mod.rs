@@ -181,3 +181,4 @@ pub mod delete_where;
 
 #[cfg(feature = "graph-cypher")]
 pub mod graph_lifecycle;
+pub mod graph_c_entry;

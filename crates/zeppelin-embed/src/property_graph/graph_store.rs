@@ -251,6 +251,32 @@ impl GraphStore {
         })
     }
 
+    /// Applies the same atomic batch with binding materialization before commit.
+    /// The returned registration is already owned; publication performs no copy.
+    #[doc(hidden)]
+    pub fn apply_batch_with_materializer<M: crate::property_graph::staging::ResultMaterializer>(
+        &self,
+        requests: &[StructuredWrite<'_, '_>],
+        control: &QueryControl,
+        materializer: &mut M,
+    ) -> Result<(GraphWriteOutcome, GraphGeneration, M::Registration), GraphStoreError> {
+        let prepared =
+            self.store
+                .apply_native_graph_with_materializer(requests, control, materializer)?;
+        let outcome = match (prepared.changed_generation(), prepared.disposition()) {
+            (Some(generation), _) => GraphWriteOutcome::Committed { generation },
+            (None, BatchDisposition::Replayed) => GraphWriteOutcome::Replayed,
+            (None, BatchDisposition::NoOp) => GraphWriteOutcome::NoOp,
+            (None, BatchDisposition::Changed) => {
+                return Err(GraphStoreError::contract(
+                    "changed batch returned without a published generation",
+                ));
+            }
+        };
+        let admitted = prepared.admitted_generation();
+        Ok((outcome, admitted, prepared.into_registration()))
+    }
+
     /// Exposes this store's shared, read-only resource-accounting handle.
     ///
     /// A caller can use it to build its own `RuntimeContext` for work that

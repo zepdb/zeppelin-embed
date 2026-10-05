@@ -22,7 +22,7 @@ use crate::fts::search::FieldWeights;
 use crate::fts::tokenizer::Analyzer;
 use crate::fusion::{
     ALPHA_POLICY_VERSION, HYBRID_NORMALIZATION_POLICY_VERSION, HYBRID_WINDOW_FLOOR,
-    HYBRID_WINDOW_PER_K, HybridQuery, StorePolicyScorer,
+    HYBRID_WINDOW_PER_K, HybridQuery, RuleSignals, StorePolicyScorer,
 };
 use crate::graph::search::GraphSegmentNormRange;
 use crate::lifecycle::SearchTier;
@@ -46,12 +46,24 @@ const MAX_PRODUCER_WINDOW: usize = 4096;
 pub(crate) struct PreparedNativeText<'e, 'm> {
     view: *const crate::property_graph::query::QueryView,
     terms: GraphQueryTerms<'m>,
+    exact_terms: usize,
+    quoted_phrase: bool,
+    identifier_token: bool,
+    expanded: Option<(Vec<String>, QueryReservation<'m, 'm>)>,
     eligibility: PreparedEligibility<'e>,
 }
 
 impl PreparedNativeText<'_, '_> {
     pub(crate) fn term_count(&self) -> usize {
-        self.terms.len()
+        self.expanded
+            .as_ref()
+            .map_or(self.terms.len(), |(terms, _)| terms.len())
+    }
+    fn term(&self, index: usize) -> Option<&str> {
+        match &self.expanded {
+            Some((terms, _)) => terms.get(index).map(String::as_str),
+            None => self.terms.term(index),
+        }
     }
 }
 
@@ -227,6 +239,7 @@ struct TextMember {
 struct TextDomain<'m, 'g> {
     report: TextDomainReport,
     members: QueryArena<'m, 'g, TextMember>,
+    rarest_document_frequency: Option<u64>,
 }
 
 impl TextDomain<'_, '_> {
@@ -317,11 +330,130 @@ impl<'view, 's, 'lease, 'm, 'g> NativeRetrievalContext<'view, 's, 'lease, 'm, 'g
                 limit: MAX_QUERY_TERMS,
             });
         }
+        let exact_terms = terms.len();
+        let identifier_token = terms.has_identifier();
         Ok(PreparedNativeText {
             view: self.query_view,
             terms,
+            expanded: None,
+            quoted_phrase: text.contains('"'),
+            identifier_token,
+            exact_terms,
             eligibility,
         })
+    }
+
+    pub(crate) fn prepare_text_with_options<'e, 'v, 'em, 'eg>(
+        &self,
+        analyzer: &Analyzer,
+        text: &str,
+        eligibility: Eligibility<'e, 'v, 'em, 'eg>,
+        options: crate::property_graph::query::plan::SearchOptions,
+        runtime: &mut RuntimeContext<'lease, 'm, 'g>,
+    ) -> Result<PreparedNativeText<'e, 'm>, RetrievalError>
+    where
+        'g: 'm,
+    {
+        let mut prepared = self.prepare_text(analyzer, text, eligibility, runtime)?;
+        if !options.last_as_prefix || prepared.terms.len() == 0 {
+            return Ok(prepared);
+        }
+        let prefix = prepared
+            .terms
+            .term(prepared.terms.len() - 1)
+            .ok_or(RetrievalError::Invariant("prefix term"))?;
+        let memory: &'m QueryMemory<'m> = self.memory;
+        let mut charge = memory.reserve(0).map_err(memory_error)?;
+        let mut terms: Vec<String> = Vec::new();
+        let mut copy = |term: &str| -> Result<(), RetrievalError> {
+            if terms.len() >= MAX_QUERY_TERMS {
+                return Err(RetrievalError::LexicalTerms {
+                    count: terms.len() + 1,
+                    limit: MAX_QUERY_TERMS,
+                });
+            }
+            let mut text = String::new();
+            charge
+                .resize(
+                    charge
+                        .bytes()
+                        .checked_add(term.len() + std::mem::size_of::<String>())
+                        .ok_or(RetrievalError::Memory)?,
+                )
+                .map_err(memory_error)?;
+            text.try_reserve_exact(term.len())
+                .map_err(|_| RetrievalError::Memory)?;
+            text.push_str(term);
+            terms
+                .try_reserve_exact(1)
+                .map_err(|_| RetrievalError::Memory)?;
+            terms.push(text);
+            Ok(())
+        };
+        for index in 0..prepared.terms.len() - 1 {
+            copy(
+                prepared
+                    .terms
+                    .term(index)
+                    .ok_or(RetrievalError::Invariant("prefix leading term"))?,
+            )?;
+        }
+
+        let leading = terms.len();
+        prepared.exact_terms = leading;
+        let sparse = self.view.sparse_view(runtime)?;
+        let mut resources = TreeResources::for_query(runtime)?;
+        let mut sources = sparse.sources(Modality::Text, &mut resources)?;
+        while let Some(source) = sources.next(&mut resources)? {
+            let segment = source
+                .lexical(&mut resources)?
+                .ok_or(RetrievalError::Invariant("prefix text source"))?;
+            for candidate in segment.terms() {
+                resources.step(1)?;
+                if !candidate.starts_with(prefix.as_bytes()) {
+                    continue;
+                }
+                let candidate = std::str::from_utf8(candidate)
+                    .map_err(|_| RetrievalError::Invariant("indexed term UTF-8"))?;
+                if terms
+                    .get(leading..)
+                    .ok_or(RetrievalError::Invariant("prefix terms"))?
+                    .iter()
+                    .any(|term| term == candidate)
+                {
+                    continue;
+                }
+                if terms.len() >= MAX_QUERY_TERMS {
+                    return Err(RetrievalError::LexicalTerms {
+                        count: terms.len() + 1,
+                        limit: MAX_QUERY_TERMS,
+                    });
+                }
+                let mut text = String::new();
+                charge
+                    .resize(
+                        charge
+                            .bytes()
+                            .checked_add(candidate.len() + std::mem::size_of::<String>())
+                            .ok_or(RetrievalError::Memory)?,
+                    )
+                    .map_err(memory_error)?;
+                text.try_reserve_exact(candidate.len())
+                    .map_err(|_| RetrievalError::Memory)?;
+                text.push_str(candidate);
+                terms
+                    .try_reserve_exact(1)
+                    .map_err(|_| RetrievalError::Memory)?;
+                terms.push(text);
+            }
+        }
+        // Input token order remains fixed; expansion order is bytewise deterministic.
+        terms
+            .get_mut(leading..)
+            .ok_or(RetrievalError::Invariant("prefix sorting"))?
+            .sort();
+        prepared.expanded = Some((terms, charge));
+        Ok(prepared)
     }
 
     fn validate_text(&self, prepared: &PreparedNativeText<'_, '_>) -> Result<(), RetrievalError> {
@@ -344,15 +476,15 @@ impl<'view, 's, 'lease, 'm, 'g> NativeRetrievalContext<'view, 's, 'lease, 'm, 'g
             PreparedEligibility::AllIndexed => Eligible::All,
             PreparedEligibility::Set(ids) => Eligible::Set(ids),
         };
-        let terms = &prepared.terms;
+        let terms = prepared;
         let weights = FieldWeights::flat(&[DEFAULT_FIELD]);
         let _weights = self
             .memory
             .reserve(weights.allocation_bytes().ok_or(RetrievalError::Memory)?)
             .map_err(memory_error)?;
         let mut frequencies =
-            QueryArena::<u32>::new(self.memory, terms.len()).map_err(memory_error)?;
-        for _ in 0..terms.len() {
+            QueryArena::<u32>::new(self.memory, terms.term_count()).map_err(memory_error)?;
+        for _ in 0..terms.term_count() {
             frequencies.push(0).map_err(memory_error)?;
         }
         let mut report = TextDomainReport {
@@ -362,7 +494,7 @@ impl<'view, 's, 'lease, 'm, 'g> NativeRetrievalContext<'view, 's, 'lease, 'm, 'g
             eligible_members: 0,
             eligible_matches: 0,
             maximum: None,
-            terms: terms.len() as u64,
+            terms: terms.term_count() as u64,
             postings: 0,
         };
         let sparse = self.view.sparse_view(runtime)?;
@@ -390,7 +522,7 @@ impl<'view, 's, 'lease, 'm, 'g> NativeRetrievalContext<'view, 's, 'lease, 'm, 'g
                 .ok_or(RetrievalError::Invariant(
                     "text source lacks its lexical region",
                 ))?;
-            for slot in 0..terms.len() {
+            for slot in 0..terms.term_count() {
                 let term = terms
                     .term(slot)
                     .ok_or(RetrievalError::Invariant("query term"))?;
@@ -425,11 +557,15 @@ impl<'view, 's, 'lease, 'm, 'g> NativeRetrievalContext<'view, 's, 'lease, 'm, 'g
             resources.step(0)?;
             drop(resources);
             runtime.checkpoint().map_err(RetrievalError::Control)?;
-            return Ok(TextDomain { report, members });
+            return Ok(TextDomain {
+                report,
+                members,
+                rarest_document_frequency: (terms.exact_terms > 0).then_some(0),
+            });
         }
         let statistics = CorpusStats::new(report.live_members, report.total_tokens)
             .map_err(|_| RetrievalError::Invariant("live text without analyzed tokens"))?;
-        let mut scorers = QueryArena::<Option<TermScorer>>::new(self.memory, terms.len())
+        let mut scorers = QueryArena::<Option<TermScorer>>::new(self.memory, terms.term_count())
             .map_err(memory_error)?;
         for frequency in frequencies.as_slice() {
             scorers
@@ -549,7 +685,17 @@ impl<'view, 's, 'lease, 'm, 'g> NativeRetrievalContext<'view, 's, 'lease, 'm, 'g
             LegState::Nonempty
         };
         runtime.checkpoint().map_err(RetrievalError::Control)?;
-        Ok(TextDomain { report, members })
+        Ok(TextDomain {
+            report,
+            members,
+            rarest_document_frequency: frequencies
+                .as_slice()
+                .iter()
+                .take(terms.exact_terms)
+                .copied()
+                .min()
+                .map(u64::from),
+        })
     }
 
     /// Ranks the complete eligible lexical population of this admitted view
@@ -785,8 +931,20 @@ impl<'view, 's, 'lease, 'm, 'g> NativeRetrievalContext<'view, 's, 'lease, 'm, 'g
         } else {
             None
         };
-        let policy = StorePolicyScorer::new(&HybridQuery::new(k), vector_anchor, lexical_anchor)
-            .map_err(fusion)?;
+        let mut fusion_query = HybridQuery::new(k);
+        fusion_query.alpha = vector.options.alpha;
+        fusion_query.rules_enabled = vector.options.rules_enabled;
+        fusion_query.rule_signals = RuleSignals {
+            quoted_phrase: text.quoted_phrase,
+            identifier_token: text.identifier_token,
+            rarest_exact_document_frequency: domain.rarest_document_frequency,
+        };
+        if let Some(rounds) = vector.options.max_rounds {
+            fusion_query.max_rounds =
+                usize::try_from(rounds).map_err(|_| RetrievalError::Memory)?;
+        }
+        let policy =
+            StorePolicyScorer::new(&fusion_query, vector_anchor, lexical_anchor).map_err(fusion)?;
         let mut report = HybridRankReport {
             requested_tier,
             actual_tier: None,
@@ -813,9 +971,38 @@ impl<'view, 's, 'lease, 'm, 'g> NativeRetrievalContext<'view, 's, 'lease, 'm, 'g
             runtime.checkpoint().map_err(RetrievalError::Control)?;
             return Ok(Ranked { hits: None, report });
         }
-        let windowed = route != Route::Exact && vector_leg == LegState::Nonempty;
+        let windowed = route != Route::Exact
+            && vector_leg == LegState::Nonempty
+            && vector.options.max_rounds != Some(0);
         let hits = if windowed {
-            self.hybrid_windows(vector, &domain, &policy, bounds, &mut report, runtime)?
+            let rounds = vector.options.max_rounds.unwrap_or(1);
+            let mut width = HYBRID_WINDOW_PER_K
+                .checked_mul(k)
+                .ok_or(RetrievalError::Memory)?
+                .max(HYBRID_WINDOW_FLOOR)
+                .max(k)
+                .min(MAX_PRODUCER_WINDOW);
+            let mut result = None;
+            for _ in 0..rounds {
+                drop(result.take());
+                result = Some(self.hybrid_windows(
+                    vector,
+                    &domain,
+                    &policy,
+                    bounds,
+                    width,
+                    &mut report,
+                    runtime,
+                )?);
+                if report.coverage == CandidateCoverage::Exact || width == MAX_PRODUCER_WINDOW {
+                    break;
+                }
+                width = width
+                    .checked_mul(2)
+                    .ok_or(RetrievalError::Memory)?
+                    .min(MAX_PRODUCER_WINDOW);
+            }
+            result.ok_or(RetrievalError::Invariant("zero windowed hybrid rounds"))?
         } else {
             if k > window {
                 return Err(RetrievalError::CandidateWindow {
@@ -952,16 +1139,11 @@ impl<'view, 's, 'lease, 'm, 'g> NativeRetrievalContext<'view, 's, 'lease, 'm, 'g
         domain: &TextDomain<'m, 'g>,
         policy: &StorePolicyScorer,
         bounds: SearchBounds,
+        width: usize,
         report: &mut HybridRankReport,
         runtime: &mut RuntimeContext<'lease, 'm, 'g>,
     ) -> Result<QueryArena<'m, 'g, HybridHit>, RetrievalError> {
         let k = bounds.k() as usize;
-        let width = HYBRID_WINDOW_PER_K
-            .checked_mul(k)
-            .ok_or(RetrievalError::Memory)?
-            .max(HYBRID_WINDOW_FLOOR)
-            .max(k)
-            .min(MAX_PRODUCER_WINDOW);
         let producer = SearchBounds::new(
             i64::try_from(width).map_err(|_| RetrievalError::Memory)?,
             u64::from(bounds.candidate_window()),

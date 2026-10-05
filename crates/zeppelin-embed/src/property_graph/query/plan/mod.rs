@@ -6,7 +6,7 @@ mod lineage;
 mod mutation;
 mod parameters;
 mod search;
-pub use search::{SearchBounds, SearchMode};
+pub use search::{SearchBounds, SearchMode, SearchOptions};
 mod accounting;
 mod validate;
 use super::{Arithmetic, Comparison, QueryError, StringPredicate, ValueContext};
@@ -219,6 +219,8 @@ pub enum SearchRequest {
         mode: SearchMode,
         /// Optional same-view node-list domain.
         eligible: Option<ExprId>,
+        /// Frozen request-local producer options.
+        options: SearchOptions,
     },
     /// Hybrid source, retaining independent vector/text interpretation.
     Hybrid {
@@ -232,6 +234,8 @@ pub enum SearchRequest {
         mode: SearchMode,
         /// Optional same-view node-list domain.
         eligible: Option<ExprId>,
+        /// Frozen request-local producer options.
+        options: SearchOptions,
     },
     /// Exact lexical query data and optional same-view node-list eligibility.
     Text {
@@ -241,6 +245,8 @@ pub enum SearchRequest {
         k: ExprId,
         /// Optional list from the singleton input.
         eligible: Option<ExprId>,
+        /// Frozen request-local producer options.
+        options: SearchOptions,
     },
 }
 /// Optional typed slots produced by one search source.

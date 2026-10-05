@@ -76,6 +76,8 @@ pub(crate) struct SearchInvocation<'a, 'e, 'v, 'm, 'g> {
     pub(crate) generation: GraphGeneration,
     pub(crate) arguments: SearchArguments<'a>,
     pub(crate) k: u32,
+    pub(crate) window: u32,
+    pub(crate) options: super::super::plan::SearchOptions,
     /// Absent restriction is `AllIndexed`; an explicit empty list is `Set`.
     pub(crate) eligibility: Eligibility<'e, 'v, 'm, 'g>,
 }
@@ -234,7 +236,9 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
                 eligible,
                 ..
             } => (vector, None, k, eligible),
-            SearchRequest::Text { query, k, eligible } => (query, None, k, eligible),
+            SearchRequest::Text {
+                query, k, eligible, ..
+            } => (query, None, k, eligible),
             SearchRequest::Hybrid {
                 vector,
                 text,
@@ -246,6 +250,18 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
         let k = match self.evaluate_search_argument(k, &schema, &row, context)? {
             QueryValue::I64(value) => SearchBounds::new(value, 0)?.k(),
             _ => return Err(expression_type(k)),
+        };
+        let options = request.options();
+        let window = match options.window {
+            Some(expression) => {
+                match self.evaluate_search_argument(expression, &schema, &row, context)? {
+                    QueryValue::I64(value) if value >= 0 => {
+                        SearchBounds::new(i64::from(k), value as u64)?.candidate_window()
+                    }
+                    _ => return Err(expression_type(expression)),
+                }
+            }
+            None => 65_536,
         };
         let set = match eligible {
             Some(expression) => {
@@ -279,6 +295,8 @@ impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g,
             generation,
             arguments,
             k,
+            window,
+            options,
             eligibility: set
                 .as_ref()
                 .map_or(Eligibility::AllIndexed, Eligibility::Set),

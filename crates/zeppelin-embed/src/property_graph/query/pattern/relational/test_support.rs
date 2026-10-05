@@ -459,6 +459,7 @@ impl NativeReadConsumer<Result<EligibilityObservation, NativeExecutionError>>
                         query: ExprId(2),
                         k: ExprId(3),
                         eligible,
+                        options: Default::default(),
                     },
                     outputs: SearchOutputs {
                         node: Some(SlotId(20)),

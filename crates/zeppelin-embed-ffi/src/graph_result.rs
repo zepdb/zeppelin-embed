@@ -275,12 +275,6 @@ impl WriteSettlement {
             Self::NoOp => SuccessfulOutcome::NoOp,
         }
     }
-    const fn changed(self) -> Option<u64> {
-        match self {
-            Self::Committed(changed) => Some(changed.get()),
-            Self::Replayed | Self::NoOp => None,
-        }
-    }
 }
 /// Canonical empty descriptor; no backing and no registry ownership.
 pub fn empty_response() -> ZeGraphResponse {

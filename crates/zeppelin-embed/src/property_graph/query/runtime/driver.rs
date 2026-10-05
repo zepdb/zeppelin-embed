@@ -146,6 +146,12 @@ pub struct FrozenOutput<T> {
     abi_bytes: usize,
 }
 impl<T> FrozenOutput<T> {
+    /// Consumes the prepared owner and its validated represented geometry.
+    #[doc(hidden)]
+    pub fn into_parts(self) -> (T, usize, usize, usize) {
+        (self.output, self.rows, self.core_bytes, self.abi_bytes)
+    }
+
     /// Checks represented limits before the output can reach final admission.
     pub fn new(
         output: T,

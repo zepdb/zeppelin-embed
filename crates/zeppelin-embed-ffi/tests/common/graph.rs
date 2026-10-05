@@ -144,6 +144,23 @@ impl PoolBuilder {
         self.nodes.push(n);
         index
     }
+    pub fn node_vector(&mut self, node: u32, vector: &[f32]) {
+        let image = self.nodes.get_mut(node as usize).expect("node image");
+        image.has_vector = 1;
+        image.vector = ZeGraphRange {
+            start: self.vectors.len() as u32,
+            count: vector.len() as u32,
+        };
+        self.vectors.extend_from_slice(vector);
+    }
+    pub fn empty_list(&mut self, kind: u32) -> u32 {
+        let mut value: ZeGraphValue = sized_zeroed();
+        value.tag = 7;
+        value.list_kind = kind;
+        let index = self.values.len() as u32;
+        self.values.push(value);
+        index
+    }
     pub fn relationship_image(&mut self, rel_type: &str, properties: std::ops::Range<u32>) -> u32 {
         let mut r: ZeGraphRelationship = sized_zeroed();
         r.relationship_type = self.text(rel_type);

@@ -16,7 +16,7 @@ if [[ "${1:-}" == "run" && -n "${2:-}" ]]; then
     TARGET_NAME="$2"
     GRAPH_FEATURE_ARGS=()
     case "$TARGET_NAME" in
-      cypher_parser|native_graph_artifact|graph_catalog|native_graph_wal|native_graph_adjacency|native_graph_records)
+      cypher_parser|native_graph_artifact|graph_catalog|native_graph_wal|native_graph_adjacency|native_graph_records|ffi_graph_requests)
         GRAPH_FEATURE_ARGS=(--features graph-cypher)
         ;;
     esac

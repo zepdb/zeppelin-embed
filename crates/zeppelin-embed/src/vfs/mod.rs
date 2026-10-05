@@ -127,6 +127,8 @@ struct StdVfsFile(File);
 
 impl VfsFile for StdVfsFile {
     fn append(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        #[cfg(feature = "test-support")]
+        file_test_support::event(file_test_support::FileEvent::BeforeAppend)?;
         self.0.write_all(bytes)
     }
 
@@ -146,7 +148,12 @@ impl VfsFile for StdVfsFile {
     }
 
     fn sync(&self, kind: SyncKind) -> std::io::Result<()> {
-        sync_file(&self.0, kind)
+        #[cfg(feature = "test-support")]
+        file_test_support::event(file_test_support::FileEvent::BeforeSync)?;
+        sync_file(&self.0, kind)?;
+        #[cfg(feature = "test-support")]
+        file_test_support::event(file_test_support::FileEvent::AfterSync)?;
+        Ok(())
     }
 }
 
@@ -777,3 +784,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(feature = "test-support")]
+pub mod file_test_support;
