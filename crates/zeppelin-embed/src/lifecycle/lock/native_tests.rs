@@ -246,7 +246,8 @@ fn native_shared_lock_retains_kernel_ownership_until_last_local_drop() {
     let alias = directory.join(".");
 
     let first = StoreLock::acquire_shared(&directory).expect("first local reader");
-    let key = store_identity(&directory).expect("native fixture identity");
+    let identity = store_identity(&directory).expect("native fixture identity");
+    let key = (identity.0, identity.1, false);
     {
         let held = held_stores();
         let entry = held.get(&key).expect("first registry claim");
@@ -307,7 +308,8 @@ fn native_shared_lock_rejects_conflicting_modes_and_preserves_errors() {
         ),
         std::io::ErrorKind::WouldBlock
     );
-    let key = store_identity(&directory).expect("native fixture identity");
+    let identity = store_identity(&directory).expect("native fixture identity");
+    let key = (identity.0, identity.1, false);
     {
         let mut held = held_stores();
         held.get_mut(&key)
@@ -441,7 +443,8 @@ fn native_shared_lock_never_creates_or_writes_lock_file() {
     let before_entries = directory_entries(&directory);
 
     let reader = StoreLock::acquire_shared(&directory).expect("read-only lock-file acquisition");
-    let key = store_identity(&directory).expect("native fixture identity");
+    let identity = store_identity(&directory).expect("native fixture identity");
+    let key = (identity.0, identity.1, false);
     let flags = {
         let held = held_stores();
         let entry = held.get(&key).expect("shared registry entry");

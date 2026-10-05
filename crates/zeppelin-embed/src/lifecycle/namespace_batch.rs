@@ -1718,7 +1718,8 @@ pub fn namespace_reclaim(root: &Path) -> Result<(), StoreError> {
 
 mod reclamation;
 pub(super) use reclamation::{
-    admission as reader_admission, for_open as reclaim_for_open, refuse as refuse_retired,
+    admission as reader_admission, for_open as reclaim_for_open, lease as reader_lease,
+    refuse as refuse_retired,
 };
 
 #[cfg(any(test, feature = "test-support"))]

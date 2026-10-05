@@ -1120,6 +1120,8 @@ fn legacy_routes_from_current(root: &std::path::Path) {
                 }
                 std::fs::copy(entry.path(), child.join(filename)).expect("legacy payload");
             }
+            // Reader pins use an existing lease; ReadOnly must never create it.
+            std::fs::write(child.join(".ze-readers.lock"), b"").expect("lease stub");
             let destination = format!("{transaction}/{name}");
             std::fs::write(
                 child.join(".ze-prepared"),
@@ -1277,6 +1279,16 @@ fn crash_at_every_namespace_cleanup_step() {
 fn namespace_reader_lease_child() {
     use std::io::{Read, Write};
     let path = std::env::var_os("ZE_NAMESPACE_READER_PATH").expect("child path");
+    if std::env::var_os("ZE270_EXPECT_BUSY").is_some() {
+        assert!(
+            matches!(
+                Store::open(std::path::PathBuf::from(path), OpenOptions::read_only()),
+                Err(zeppelin_embed::lifecycle::StoreError::StoreBusy { .. })
+            ),
+            "cleanup contention must be StoreBusy"
+        );
+        return;
+    }
     let reader = Store::open(std::path::PathBuf::from(path), OpenOptions::read_only())
         .expect("child reader");
     println!("READER_ADMITTED");
@@ -1878,4 +1890,113 @@ fn crash_at_every_namespace_purge_step() {
         states.len()
     );
     assert!(recovered > 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn ze270_read_only_never_creates_or_writes_reader_lock() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().expect("root");
+    let path = root.path().join("store");
+    Store::open(&path, OpenOptions::new())
+        .expect("create")
+        .close()
+        .expect("close");
+    let lock = path.join(".ze-readers.lock");
+    for existing in [false, true] {
+        if existing {
+            std::fs::write(&lock, b"lease sentinel").expect("lock");
+            std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o444))
+                .expect("permissions");
+        } else {
+            std::fs::remove_file(&lock).expect("remove lease");
+        }
+        let before: std::collections::BTreeSet<_> = std::fs::read_dir(&path)
+            .expect("list")
+            .map(|e| e.expect("entry").file_name())
+            .collect();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o555)).expect("read only");
+        let result = Store::open(&path, OpenOptions::read_only());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("restore");
+        result
+            .expect("read-only admission")
+            .close()
+            .expect("close reader");
+        let after: std::collections::BTreeSet<_> = std::fs::read_dir(&path)
+            .expect("list")
+            .map(|e| e.expect("entry").file_name())
+            .collect();
+        assert_eq!(before, after, "read-only must not create a lease");
+        if existing {
+            assert_eq!(std::fs::read(&lock).expect("contents"), b"lease sentinel");
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn ze270_lock_symlinks_fail_loudly() {
+    use std::os::unix::fs::symlink;
+    let root = tempfile::tempdir().expect("root");
+    let outside = root.path().join("outside");
+    std::fs::write(&outside, b"untouched").expect("outside");
+    for name in ["writer.lock", ".ze-readers.lock"] {
+        let path = root.path().join(name.replace('.', "_"));
+        Store::open(&path, OpenOptions::new())
+            .expect("create")
+            .close()
+            .expect("close");
+        std::fs::remove_file(path.join(name)).expect("remove lock");
+        symlink(&outside, path.join(name)).expect("plant link");
+        assert!(
+            Store::open(&path, OpenOptions::new()).is_err(),
+            "{name} must refuse symlink"
+        );
+        if name == ".ze-readers.lock" {
+            assert!(Store::open(&path, OpenOptions::read_only()).is_err());
+        }
+    }
+    assert_eq!(std::fs::read(outside).expect("contents"), b"untouched");
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn ze270_cleanup_reader_in_another_process_gets_store_busy() {
+    use zeppelin_embed::lifecycle::namespace_reclaim_on_vfs;
+    let root = tempfile::tempdir().expect("root");
+    seed(root.path());
+    namespace_batch(
+        root.path(),
+        vec![
+            mutation("a", vec![doc(2, 1)]),
+            mutation("b", vec![doc(2, 1)]),
+        ],
+    )
+    .expect("batch");
+    std::fs::copy(
+        root.path().join("a/manifest.ze"),
+        root.path().join("a/.ze-manifest-123"),
+    )
+    .expect("stale");
+    let mut attempted = false;
+    namespace_reclaim_on_vfs(root.path(), &zeppelin_embed::vfs::StdVfs, &mut |step| {
+        if step == "cleanup intent rename" {
+            attempted = true;
+            let status = std::process::Command::new(std::env::current_exe().expect("binary"))
+                .args([
+                    "--exact",
+                    "namespace_reader_lease_child",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("ZE_NAMESPACE_READER_PATH", root.path().join("a"))
+                .env("ZE270_EXPECT_BUSY", "1")
+                .status()
+                .expect("child");
+            assert!(status.success(), "reader child");
+        }
+        Ok(())
+    })
+    .expect("cleanup");
+    assert!(attempted);
 }

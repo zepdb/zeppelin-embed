@@ -2974,7 +2974,8 @@ impl Store {
         if options.access_mode == AccessMode::ReadWrite {
             namespace_batch::reclaim_for_open(path)?;
         }
-        let _admission = namespace_batch::reader_admission(path)?;
+        let _admission =
+            namespace_batch::reader_admission(path, options.access_mode == AccessMode::ReadWrite)?;
         let selected = namespace_batch::resolve(path)?;
         let logical_lock = if selected != path {
             acquire_writer_lock(path, options.access_mode)?
@@ -3109,20 +3110,22 @@ impl Store {
                 path: path.to_path_buf(),
             });
         }
-        let _reclamation_admission = namespace_batch::reader_admission(path)?;
+        let _reclamation_admission =
+            namespace_batch::reader_admission(path, options.access_mode == AccessMode::ReadWrite)?;
         #[cfg(any(test, feature = "test-support"))]
         let reclamation_pin = match std::fs::metadata(path) {
-            Ok(_) => Some(Arc::new(
-                StoreLock::reader_lease(path).map_err(StoreError::Lock)?,
-            )),
+            Ok(_) => {
+                namespace_batch::reader_lease(path, options.access_mode == AccessMode::ReadWrite)?
+                    .map(Arc::new)
+            }
             // Virtual-only VFS fixtures have no OS directory to pin.
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => return Err(namespace_batch::io(path, error)),
         };
         #[cfg(not(any(test, feature = "test-support")))]
-        let reclamation_pin = Some(Arc::new(
-            StoreLock::reader_lease(path).map_err(StoreError::Lock)?,
-        ));
+        let reclamation_pin =
+            namespace_batch::reader_lease(path, options.access_mode == AccessMode::ReadWrite)?
+                .map(Arc::new);
         namespace_batch::refuse_retired(vfs.as_ref(), path)?;
         let writer_lock = acquire_writer_lock(path, options.access_mode)?;
         let mut wal_tail_cut = false;

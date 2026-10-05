@@ -135,14 +135,26 @@ impl StoreLock {
     #[cfg(feature = "graph-cypher")]
     #[allow(dead_code)] // Consumed by the ZE-40 native read-only constructor.
     pub(crate) fn acquire_shared(directory: &Path) -> Result<Self, StoreLockError> {
-        Self::shared_named(directory, false)
+        Self::shared_named(directory, false, false)
     }
 
     pub(crate) fn reader_lease(directory: &Path) -> Result<Self, StoreLockError> {
-        Self::shared_named(directory, true)
+        Self::shared_named(directory, true, true)
     }
 
-    fn shared_named(directory: &Path, lease: bool) -> Result<Self, StoreLockError> {
+    pub(crate) fn reader_lease_read_only(directory: &Path) -> Result<Option<Self>, StoreLockError> {
+        match Self::shared_named(directory, true, false) {
+            Ok(lock) => Ok(Some(lock)),
+            Err(StoreLockError::Io { source, .. })
+                if source.kind() == std::io::ErrorKind::NotFound =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn shared_named(directory: &Path, lease: bool, create: bool) -> Result<Self, StoreLockError> {
         let path = directory.join(if lease {
             ".ze-readers.lock"
         } else {
@@ -174,7 +186,7 @@ impl StoreLock {
             });
         }
 
-        let file = (if lease {
+        let file = (if create {
             open_lock_file(&path, true)
         } else {
             open_shared_lock_file(&path)
@@ -225,7 +237,14 @@ fn open_shared_lock_file(path: &Path) -> std::io::Result<File> {
 /// Read-only handle on the existing lock file; never creates and never writes.
 #[cfg(not(windows))]
 fn open_shared_lock_handle(path: &Path) -> std::io::Result<File> {
-    OpenOptions::new().read(true).open(path)
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    options.open(path)
 }
 
 /// Read-only handle that additionally refuses to share deletion.
@@ -241,6 +260,7 @@ fn open_shared_lock_handle(path: &Path) -> std::io::Result<File> {
 /// `LockFileEx` needs only `GENERIC_READ`.
 #[cfg(windows)]
 fn open_shared_lock_handle(path: &Path) -> std::io::Result<File> {
+    // The existing share mode prevents deletion while the handle is held.
     use std::os::windows::fs::OpenOptionsExt as _;
 
     OpenOptions::new()
@@ -272,12 +292,18 @@ pub(super) fn store_identity(_directory: &Path) -> std::io::Result<(u64, u64)> {
 /// Opens the persistent lock file with the access the platform lock needs.
 #[cfg(not(windows))]
 fn open_lock_file(path: &Path, create: bool) -> std::io::Result<File> {
-    OpenOptions::new()
+    let mut options = OpenOptions::new();
+    options
         .create(create)
         .truncate(false)
         .read(true)
-        .write(true)
-        .open(path)
+        .write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    options.open(path)
 }
 
 /// Opens the persistent lock file, additionally refusing to share deletion.
@@ -291,6 +317,7 @@ fn open_lock_file(path: &Path, create: bool) -> std::io::Result<File> {
 /// process cannot inherit writer ownership either.
 #[cfg(windows)]
 fn open_lock_file(path: &Path, create: bool) -> std::io::Result<File> {
+    // The existing share mode prevents deletion while the handle is held.
     use std::os::windows::fs::OpenOptionsExt as _;
 
     OpenOptions::new()

@@ -19,7 +19,31 @@ fn try_lock(
     }
 }
 
-pub(in crate::lifecycle) fn admission(path: &Path) -> Result<Option<StoreLock>, StoreError> {
+pub(in crate::lifecycle) fn lease(
+    path: &Path,
+    writable: bool,
+) -> Result<Option<StoreLock>, StoreError> {
+    let result = if writable {
+        StoreLock::reader_lease(path).map(Some)
+    } else {
+        StoreLock::reader_lease_read_only(path)
+    };
+    result.map_err(|error| match error {
+        super::super::lock::StoreLockError::Io { ref source, .. }
+            if source.kind() == std::io::ErrorKind::WouldBlock =>
+        {
+            StoreError::StoreBusy {
+                path: path.to_path_buf(),
+            }
+        }
+        error => StoreError::Lock(error),
+    })
+}
+
+pub(in crate::lifecycle) fn admission(
+    path: &Path,
+    writable: bool,
+) -> Result<Option<StoreLock>, StoreError> {
     let Some(parent) = path.parent() else {
         return Ok(None);
     };
@@ -35,9 +59,7 @@ pub(in crate::lifecycle) fn admission(path: &Path) -> Result<Option<StoreLock>, 
         parent
     };
     if read_optional(&root.join(RECORD))?.is_some() {
-        Ok(Some(
-            StoreLock::reader_lease(root).map_err(StoreError::Lock)?,
-        ))
+        lease(root, writable)
     } else {
         Ok(None)
     }
@@ -218,6 +240,15 @@ fn routes_and_marks(
 }
 
 fn read_payload_optional(vfs: &dyn Vfs, path: &Path) -> Result<Option<Vec<u8>>, StoreError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if !metadata.is_file() => {
+            return Err(invalid(path, "cleanup candidate is not a regular file"));
+        }
+        Ok(_) => {}
+        // Virtual VFS crash images may have no corresponding OS file.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(io(path, error)),
+    }
     match vfs.read(path) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -279,7 +310,7 @@ fn garbage(
             .any(|route| route.starts_with(&format!("{relative}/")));
         let mut files = BTreeMap::new();
         let path = directory.join("intent.ze");
-        if let Some(bytes) = read_optional_vfs(vfs, &path)? {
+        if let Some(bytes) = read_payload_optional(vfs, &path)? {
             decode_routes(&path, &bytes)?;
             if retired {
                 files.insert("intent.ze".into(), xxh3_64(&bytes));
@@ -329,6 +360,14 @@ fn garbage(
         }
         if !safe_component(name) {
             return Err(invalid(&path, "cleanup filename grammar"));
+        }
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if !metadata.is_file() => {
+                return Err(invalid(&path, "cleanup candidate is not a regular file"));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(io(&path, error)),
         }
         let staged = name.starts_with(".ze-manifest-");
         if name == PREPARED {
@@ -567,6 +606,19 @@ pub(super) fn run(
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn ze270_garbage_refuses_symlink_candidate() {
+        let root = tempfile::tempdir().expect("root");
+        let directory = root.path().join("a");
+        std::fs::create_dir(&directory).expect("directory");
+        let outside = root.path().join("outside");
+        std::fs::write(&outside, b"outside payload").expect("outside");
+        std::os::unix::fs::symlink(&outside, directory.join("segment-planted.zseg"))
+            .expect("symlink");
+        assert!(garbage(&StdVfs, root.path(), "a", &Routes::new(), &BTreeMap::new()).is_err());
+    }
 
     #[test]
     fn namespace_cleanup_intent_format_and_rejection() {
