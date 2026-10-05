@@ -200,6 +200,9 @@ fn execute_live(
     for ((p, wal), active) in ordered.iter().zip(&wals).zip(&actives) {
         wal.as_ref().ok_or(StoreError::ReadOnly)?;
         active.as_ref().ok_or(StoreError::Closed)?;
+        if !p.mutation.deletes.is_empty() || p.mutation.delete_where.is_some() {
+            p.store.require_no_snapshot_views()?;
+        }
         let snapshot = p
             .store
             .snapshot

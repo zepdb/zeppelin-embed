@@ -981,3 +981,59 @@ fn namespace_batch_after_torn_single_store_batch_reopens() {
         [Some(1), Some(1), None, None, None]
     );
 }
+
+#[test]
+fn deleting_batch_refuses_snapshot_before_publication() {
+    use zeppelin_embed::lifecycle::{LiveNamespaceMutation, StoreError, namespace_batch_live};
+    let root = tempfile::tempdir().expect("root");
+    for predicate in [false, true] {
+        let a = Store::open(root.path().join("a"), OpenOptions::new()).expect("a");
+        let b = Store::open(root.path().join("b"), OpenOptions::new()).expect("b");
+        a.ingest(IngestBatch::new(vec![doc(1, 1)])).expect("seed");
+        let view = a.open_snapshot().expect("retained view");
+        let mut deletion = mutation("a", vec![]);
+        if predicate {
+            deletion.delete_where = Some(zeppelin_embed::meta::Predicate::Eq {
+                column: zeppelin_embed::meta::TIMESTAMP_COLUMN,
+                value: zeppelin_embed::meta::PredicateValue::I64(1),
+            });
+        } else {
+            deletion.deletes = vec![DocId::new(1)];
+        }
+        let result = namespace_batch_live(
+            root.path(),
+            vec![
+                LiveNamespaceMutation {
+                    store: &b,
+                    mutation: mutation("b", vec![doc(2, 1)]),
+                },
+                LiveNamespaceMutation {
+                    store: &a,
+                    mutation: deletion,
+                },
+            ],
+        );
+        assert!(
+            matches!(result, Err(StoreError::SnapshotViewsOpen)),
+            "{result:?}"
+        );
+        assert!(!root.path().join(".ze-namespaces").exists());
+        assert!(
+            a.get_documents(&[DocId::new(1)], DocumentFields::NONE)
+                .expect("a unchanged")
+                .first()
+                .expect("row")
+                .is_some()
+        );
+        assert!(
+            b.get_documents(&[DocId::new(2)], DocumentFields::NONE)
+                .expect("b unchanged")
+                .first()
+                .expect("row")
+                .is_none()
+        );
+        drop(view);
+        drop(a);
+        drop(b);
+    }
+}
