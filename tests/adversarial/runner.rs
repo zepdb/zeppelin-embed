@@ -2742,7 +2742,11 @@ pub fn run_program_for_seed(
     seed: u64,
     artifact_root: &Path,
 ) -> Result<RunOutcome, String> {
-    let profile = profile_for_seed(seed);
+    let profile = if campaign == CampaignKind::PropertyGraph {
+        FaultProfile::None
+    } else {
+        profile_for_seed(seed)
+    };
     run_program_for_with_clock(
         campaign,
         seed,
@@ -2839,6 +2843,17 @@ fn run_program_for_with_clock(
     clock: Arc<ManualMonotonicClock>,
     schedule_override: Option<FaultSchedule>,
 ) -> Result<RunOutcome, String> {
+    if campaign == CampaignKind::PropertyGraph {
+        #[cfg(feature = "graph-cypher")]
+        return super::graph_lifecycle::run(
+            seed,
+            profile,
+            profile_override.is_some(),
+            artifact_root,
+        );
+        #[cfg(not(feature = "graph-cypher"))]
+        return Err("property-graph requires graph-cypher support".into());
+    }
     let _process_guard = if campaign == CampaignKind::VectorExecution {
         None
     } else {

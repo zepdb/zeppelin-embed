@@ -10,6 +10,9 @@
 use super::graph_search::*;
 use zeppelin_embed_adversarial_oracle::graph_fixture as oracle;
 pub fn retained(seed: u64) {
+    let _ = retained_observation(seed);
+}
+pub fn retained_observation(seed: u64) -> zeppelin_embed_bench::harness_json::Value {
     use std::sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -220,6 +223,14 @@ pub fn retained(seed: u64) {
             .any(|r| r[2] == oracle::Cell::String("changed".into())
                 && r[3] == oracle::Cell::String("quartz".into()))
     );
+    // Poll ordinals vary across processes; retain them in the measured log.
+    // Replay compares admitted generations and primitive rows at the pause.
+    let observation = zeppelin_embed_bench::harness_json::json!({
+        "site": "retained-reader", "fires": 1, "controls": 1,
+        "old_generation": result.metadata().generation.get(), "new_generation": later.metadata().generation.get(),
+        "old_rows": format!("{:?}", observe(&result)), "new_rows": format!("{:?}", observe(&later)),
+        "pause": "measured-mid-query", "reservation_baseline": baseline,
+    });
     drop(later);
     drop(result);
     drop(old);
@@ -227,4 +238,5 @@ pub fn retained(seed: u64) {
     println!(
         "ZE65 seed={seed} retained boundary={nth}/{polls} writer-control-reservations={baseline}"
     );
+    observation
 }

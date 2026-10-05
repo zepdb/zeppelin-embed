@@ -62,6 +62,8 @@ pub const REQUIRED_COVERAGE: &[&str] = &[
 
 #[derive(Debug, Default)]
 pub struct Report {
+    pub histories: Vec<String>,
+    pub observations: Vec<oracle::Observation>,
     pub comparisons: usize,
     pub root_selection_fires: usize,
     pub emitted_files: usize,
@@ -1563,6 +1565,9 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<Report, Strin
         .check(&plan, &observed)
         .map_err(|difference| format!("PG18 generation1 {difference:?}"))?;
     report.comparisons += 1;
+    report.observations.push(observed.clone());
+    report.histories.push(format!("{:?}", initial));
+
     for key in &REQUIRED_COVERAGE[..4] {
         coverage.hit(*key);
     }
@@ -1631,6 +1636,9 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<Report, Strin
         .check(&plan, &observed)
         .map_err(|difference| format!("PG18 property-only {difference:?}"))?;
     report.comparisons += 1;
+    report.observations.push(observed.clone());
+    report.histories.push(format!("{:?}", property_only));
+
     coverage.hit(REQUIRED_COVERAGE[4]);
 
     let plain_delete = [oracle::Operation::DeleteNode {
@@ -1701,6 +1709,9 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<Report, Strin
         .check(&plan, &observed)
         .map_err(|difference| format!("PG18 detach {difference:?}"))?;
     report.comparisons += 1;
+    report.observations.push(observed.clone());
+    report.histories.push(format!("{:?}", detach));
+
     coverage.hit(REQUIRED_COVERAGE[5]);
 
     let before_delete = roots;
@@ -1742,6 +1753,9 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<Report, Strin
         .check(&plan, &observed)
         .map_err(|difference| format!("PG18 raw delete {difference:?}"))?;
     report.comparisons += 1;
+    report.observations.push(observed.clone());
+    report.histories.push(format!("{:?}", delete));
+
     coverage.hit(REQUIRED_COVERAGE[6]);
     let ignored_delete = changed_roots(roots, before_delete, &[1, 5, 6])?;
     let malformed = observe(
@@ -1771,6 +1785,8 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<Report, Strin
         .check(&plan, &retained)
         .map_err(|difference| format!("PG18 retained old roots {difference:?}"))?;
     report.comparisons += 1;
+    report.observations.push(retained.clone());
+
     coverage.hit(REQUIRED_COVERAGE[8]);
     if report.emitted_files == 0 || report.emitted_root_keys < 8 {
         return Err(format!("PG18 missing emitted receipts {report:?}"));

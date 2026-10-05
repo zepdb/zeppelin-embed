@@ -574,9 +574,32 @@ pub struct BoundaryReport {
     pub reservation_after: u64,
     pub remaining_ownership: u64,
     pub post_sync_ordinal: usize,
+    pub error_kind: Option<String>,
+    pub raw_error: Option<String>,
+    pub fresh_identity: (u128, u64, u64, bool),
+    pub nothing_committed: bool,
+    pub stopped_error: Option<String>,
+    pub durable_image: std::collections::BTreeMap<String, Vec<u8>>,
+    pub protected_before: std::collections::BTreeMap<String, Vec<u8>>,
+    pub protected_after: std::collections::BTreeMap<String, Vec<u8>>,
 }
 
 pub fn run_boundary(
+    path: &Path,
+    fixture: &Fixture,
+    boundary: Boundary,
+    fault: bool,
+) -> BoundaryReport {
+    #[cfg(feature = "test-support")]
+    {
+        with_qualification_nonces(fixture.store as u64, || {
+            run_boundary_inner(path, fixture, boundary, fault)
+        })
+    }
+    #[cfg(not(feature = "test-support"))]
+    run_boundary_inner(path, fixture, boundary, fault)
+}
+fn run_boundary_inner(
     path: &Path,
     fixture: &Fixture,
     boundary: Boundary,
@@ -591,6 +614,7 @@ pub fn run_boundary(
     if checkpoint {
         store.apply(fixture).unwrap();
     }
+    let protected_before = image(path);
     vfs.clear_events();
     let before = store.reserved();
     if fault {
@@ -610,6 +634,12 @@ pub fn run_boundary(
     } else {
         store.apply(fixture).map(|_| ())
     };
+    let error_kind = result.as_ref().err().map(|e| format!("{:?}", e.kind()));
+    let raw_error = result
+        .as_ref()
+        .err()
+        .map(|e| format!("{e:?}").replace(path.to_string_lossy().as_ref(), "<store>"));
+    let nothing_committed = result.as_ref().err().is_some_and(|e| e.nothing_committed());
     if fault {
         let error = result.expect_err("ZE41 fault must fail");
         if !checkpoint {
@@ -639,6 +669,19 @@ pub fn run_boundary(
             0
         };
     let after = store.reserved();
+    let stopped_error = if fault && !checkpoint && !nothing_committed {
+        Some(format!(
+            "{:?}",
+            store
+                .apply(fixture)
+                .expect_err("stopped writer must refuse")
+                .kind()
+        ))
+    } else {
+        None
+    };
+    let protected_after = image(path);
+    let durable_image = protected_after.clone();
     // A create collision deliberately belongs to someone else. It is not a
     // valid graph artifact; remove only this test's foreign-owner sentinel.
     if fault && boundary == Boundary::ArtifactCreate {
@@ -655,6 +698,30 @@ pub fn run_boundary(
     let retry = reopened
         .apply(fixture)
         .expect("ZE41 exact retry after recovery");
+    let fresh_image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    let fresh = reopened
+        .graph
+        .apply_batch(
+            &[StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "ze41", "fresh").unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&fresh_image)),
+            }],
+            &control(),
+        )
+        .expect("fresh allocation after retry");
+    let receipt = fresh.receipts().first().unwrap();
+    let fresh_identity = match receipt.entity {
+        crate::property_graph::EntityId::Node(id) => (
+            id.get(),
+            receipt.revision.get(),
+            receipt.generation.get(),
+            receipt.replayed,
+        ),
+        _ => panic!("fresh node returned relationship"),
+    };
+    drop(fresh);
     remaining += reopened.close();
     BoundaryReport {
         key: boundary.key(),
@@ -666,10 +733,60 @@ pub fn run_boundary(
         reservation_after: after,
         remaining_ownership: remaining,
         post_sync_ordinal,
+        error_kind,
+        raw_error,
+        fresh_identity,
+        nothing_committed,
+        stopped_error,
+        durable_image,
+        protected_before,
+        protected_after,
     }
 }
 
 #[cfg(feature = "test-support")]
 pub fn run_reclaim_boundaries() -> Vec<crate::graph_read_view_test_support::PathReceipt> {
     crate::lifecycle::native_graph::tests::consolidation::run_ze41_reclaim_boundaries()
+}
+
+fn image(path: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    std::fs::read_dir(path)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            (
+                entry.file_name().to_str().unwrap().to_owned(),
+                std::fs::read(entry.path()).unwrap(),
+            )
+        })
+        .collect()
+}
+
+#[cfg(feature = "test-support")]
+pub fn with_qualification_nonces<T>(seed: u64, run: impl FnOnce() -> T) -> T {
+    crate::property_graph::storage::allocation::with_qualification_nonces(seed, run)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub type ProvenanceEvidence = std::collections::BTreeMap<Vec<u8>, (Vec<u8>, Option<Vec<u8>>)>;
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReclaimEvidence {
+    pub cell: String,
+    pub provenance_phases: Vec<ProvenanceEvidence>,
+    pub inventory_pending: String,
+    pub inventory_replayed: String,
+    pub pending_proof: String,
+    pub replayed_proof: String,
+    pub completion: String,
+    pub retry_receipts: String,
+    pub error: Option<String>,
+    pub input_image: std::collections::BTreeMap<String, Vec<u8>>,
+    pub durable_image: std::collections::BTreeMap<String, Vec<u8>>,
+    pub fires: u64,
+    pub controls: u64,
+}
+#[cfg(feature = "test-support")]
+pub fn run_ze75_reclaim_evidence(seed: u64) -> Vec<ReclaimEvidence> {
+    crate::lifecycle::native_graph::tests::consolidation::run_ze75_reclaim_evidence(seed)
 }

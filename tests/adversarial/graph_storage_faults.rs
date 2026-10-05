@@ -363,6 +363,12 @@ fn check_receipts(
 }
 
 pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
+    observe(seed, coverage).map(|_| ())
+}
+pub fn observe(
+    seed: u64,
+    coverage: &mut CoverageRegistry,
+) -> Result<zeppelin_embed_bench::harness_json::Value, String> {
     let schedule = schedule_for(seed);
     let report = run_actual_probe(seed, schedule);
     comparators_can_fire(schedule, &report.state)?;
@@ -372,7 +378,11 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
     check_out_in(&report.state)?;
     check_root(&report.state)?;
     check_qualification_report(&report.state.qualification, None, coverage)?;
-    check_receipts(&report, coverage)
+    check_receipts(&report, coverage)?;
+    Ok(zeppelin_embed_bench::harness_json::json!({
+        "schedule": format!("{schedule:?}"), "state": format!("{:?}", report.state),
+        "receipts": report.receipts.iter().map(|r| zeppelin_embed_bench::harness_json::json!({"key": r.key, "fires": r.fires, "controls": r.clean_controls})).collect::<Vec<_>>()
+    }))
 }
 
 #[cfg(test)]

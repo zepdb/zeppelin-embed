@@ -355,11 +355,17 @@ pub fn comparator_mutations(fixture: &Fixture, good: &BatchObservation) -> Resul
     Ok(mutations.len())
 }
 
-fn run_boundary_pair(
+pub fn run_boundary_pair(
     fixture: &Fixture,
     boundary: Boundary,
     coverage: &mut CoverageRegistry,
-) -> Result<(), String> {
+) -> Result<
+    (
+        zeppelin_embed::graph_commit_recovery_test_support::BoundaryReport,
+        zeppelin_embed::graph_commit_recovery_test_support::BoundaryReport,
+    ),
+    String,
+> {
     let root = tempfile::tempdir().map_err(|e| e.to_string())?;
     let actual = zeppelin_embed::graph_commit_recovery_test_support::run_boundary(
         &root.path().join("fault"),
@@ -380,6 +386,9 @@ fn run_boundary_pair(
         || clean.clean_controls != 1
     {
         return Err("invalid measured fire/control receipt".into());
+    }
+    if actual.protected_before != clean.protected_before {
+        return Err("same-seed commit control input bytes differ".into());
     }
     let good = clean
         .observation
@@ -433,7 +442,7 @@ fn run_boundary_pair(
     comparator_mutations(fixture, good)?;
     run_after_boundary_pair(fixture, boundary, clean.post_sync_ordinal)?;
     coverage.hit(boundary.key());
-    Ok(())
+    Ok((actual, clean))
 }
 
 pub fn probe_commit_boundaries(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
@@ -464,6 +473,17 @@ pub const LOSS_KEYS: &[&str] = &[
 
 #[cfg(unix)]
 pub fn process_child() {
+    if let Ok(value) = std::env::var("ZE75_NONCE_SEED") {
+        let seed = value.parse().unwrap();
+        zeppelin_embed::graph_commit_recovery_test_support::with_qualification_nonces(
+            seed,
+            process_child_inner,
+        );
+    } else {
+        process_child_inner();
+    }
+}
+fn process_child_inner() {
     use super::fault_vfs::{FaultSchedule, ProcessCrashVfs, ScheduledVfs};
     use super::program::CrashBoundary;
     use std::sync::Arc;
@@ -529,6 +549,15 @@ fn image(
 /// only synced bytes/dirents. Committed media damage refuses all admission.
 #[cfg(unix)]
 pub fn probe_loss_modes(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
+    lifecycle_loss_observations(seed, coverage).map(|_| ())
+}
+#[cfg(unix)]
+pub fn lifecycle_loss_observations(
+    seed: u64,
+    coverage: &mut CoverageRegistry,
+) -> Result<Vec<zeppelin_embed_bench::harness_json::Value>, String> {
+    use zeppelin_embed_bench::harness_json::json;
+    let mut observations = Vec::new();
     use super::fault_vfs::{
         FaultEvent, FaultMode, FaultSchedule, FaultSite, Layer, ScheduledVfs, SimulatedCrashVfs,
     };
@@ -552,6 +581,10 @@ pub fn probe_loss_modes(seed: u64, coverage: &mut CoverageRegistry) -> Result<()
                 .env("ZE41_CHILD_PATH", &path)
                 .env("ZE41_CHILD_SEED", seed.to_string())
                 .env("ZE41_CHILD_SYNC", mode.to_string())
+                .env(
+                    "ZE75_NONCE_SEED",
+                    seed.wrapping_add(mode as u64).to_string(),
+                )
                 .stdout(std::process::Stdio::null())
                 .stderr(child_log)
                 .spawn()
@@ -600,6 +633,9 @@ pub fn probe_loss_modes(seed: u64, coverage: &mut CoverageRegistry) -> Result<()
         if clean.close() != 0 {
             return Err("process clean owner leaked".into());
         }
+        observations.push(json!({"model": "real-SIGKILL", "site": operation,
+            "fires": 1, "controls": 1, "signal": status.signal(), "batch": format!("{actual:?}"),
+            "files": image(&path)?.iter().map(|(n,b)| json!({"name": n.to_string_lossy(), "bytes": b, "digest": super::artifacts::evidence_digest(&[b])})).collect::<Vec<_>>() }));
         coverage.hit(LOSS_KEYS[[0, 1, 6][mode]]);
     }
     for durable in [false, true] {
@@ -658,8 +694,8 @@ pub fn probe_loss_modes(seed: u64, coverage: &mut CoverageRegistry) -> Result<()
         if actual.is_some() != durable {
             return Err("modeled power cut violated synced complete cutoff".into());
         }
-        if let Some(actual) = actual {
-            compare_batch(&fixture, &actual)?;
+        if let Some(actual) = &actual {
+            compare_batch(&fixture, actual)?;
         }
         if reopened.close() != 0 {
             return Err("power recovered owner leaked".into());
@@ -678,6 +714,9 @@ pub fn probe_loss_modes(seed: u64, coverage: &mut CoverageRegistry) -> Result<()
         if clean.close() != 0 {
             return Err("power clean owner leaked".into());
         }
+        observations.push(json!({"model": "SimulatedCrashVfs-directory", "site": if durable { "full-sync" } else { "sync-error" },
+            "fires": 1, "controls": 1, "batch": format!("{actual:?}"),
+            "files": image(&path)?.iter().map(|(n,b)| json!({"name": n.to_string_lossy(), "bytes": b, "digest": super::artifacts::evidence_digest(&[b])})).collect::<Vec<_>>() }));
         coverage.hit(if durable { LOSS_KEYS[3] } else { LOSS_KEYS[2] });
     }
     // Each damaged image starts from a separately executed, verified clean
@@ -733,9 +772,12 @@ pub fn probe_loss_modes(seed: u64, coverage: &mut CoverageRegistry) -> Result<()
         if image(&path)? != damaged {
             return Err("refused corruption mutated store files".into());
         }
+        observations.push(json!({"model": "corrupt-media-refusal", "site": if missing { "missing-object" } else { "framed-corruption" },
+            "fires": 1, "controls": 1, "error": format!("{:?}", error.kind()), "bytes_unchanged": true,
+            "files": damaged.iter().map(|(n,b)| json!({"name": n.to_string_lossy(), "bytes": b, "digest": super::artifacts::evidence_digest(&[b])})).collect::<Vec<_>>() }));
         coverage.hit(if missing { LOSS_KEYS[5] } else { LOSS_KEYS[4] });
     }
-    Ok(())
+    Ok(observations)
 }
 
 // writes.md requires failures on both sides of observable I/O boundaries.

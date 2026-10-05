@@ -55,6 +55,12 @@ fn compare_race(
 }
 
 pub fn race_probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
+    race_observation(seed, coverage).map(|_| ())
+}
+pub fn race_observation(
+    seed: u64,
+    coverage: &mut CoverageRegistry,
+) -> Result<zeppelin_embed_bench::harness_json::Value, String> {
     let report = zeppelin_embed::graph_reclaim_test_support::run_ze176_race_probe(seed);
     compare_race(&report)?;
     let mut perturbed = report.clone();
@@ -78,10 +84,19 @@ pub fn race_probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), Stri
     if report.receipts.len() != 4 {
         return Err(String::from("reader race receipt count"));
     }
-    Ok(())
+    Ok(zeppelin_embed_bench::harness_json::json!({
+        "observation": report.observation, "control": report.control,
+        "receipts": report.receipts.iter().map(|r| zeppelin_embed_bench::harness_json::json!({"key": r.key, "fires": r.fires, "controls": r.clean_controls})).collect::<Vec<_>>()
+    }))
 }
 
 pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
+    observe(seed, coverage).map(|_| ())
+}
+pub fn observe(
+    seed: u64,
+    coverage: &mut CoverageRegistry,
+) -> Result<zeppelin_embed_bench::harness_json::Value, String> {
     let report = zeppelin_embed::graph_reclaim_test_support::run_actual_probe(seed);
     if !compare_detach_sweep(report.detach_sweep) {
         return Err("DETACH sweep changed visibility or original installing generation".into());
@@ -137,7 +152,7 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
     }
 
     let mut seen = BTreeSet::new();
-    for receipt in report.receipts {
+    for receipt in &report.receipts {
         if !receipt.key.starts_with("property-graph.reclaim.")
             || !seen.insert(receipt.key)
             || receipt.clean_controls == 0
@@ -157,7 +172,10 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
     if seen != required {
         return Err("missing reclaim boundary receipts".into());
     }
-    Ok(())
+    Ok(zeppelin_embed_bench::harness_json::json!({
+        "state": format!("{:?}", report.state), "detach_sweep": report.detach_sweep,
+        "receipts": report.receipts.iter().map(|r| zeppelin_embed_bench::harness_json::json!({"key": r.key, "fires": r.fires, "controls": r.clean_controls})).collect::<Vec<_>>()
+    }))
 }
 
 #[cfg(test)]

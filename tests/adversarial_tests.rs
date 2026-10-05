@@ -3325,6 +3325,7 @@ fn campaign_registry_is_complete_unique_and_smoke_bounded() {
             "lifecycle-accounting",
             "metadata-filter-planner",
             "overall",
+            "property-graph",
             "storage-durability",
             "tiering-maintenance",
             "vamana-graph",
@@ -3340,7 +3341,7 @@ fn campaign_registry_is_complete_unique_and_smoke_bounded() {
             spec.kind.key()
         );
         assert!(
-            spec.feature_faults.len() < 13,
+            spec.kind == CampaignKind::PropertyGraph || spec.feature_faults.len() < 13,
             "{} exceeds the 13-seed feature-fault rotation",
             spec.kind.key()
         );
@@ -3362,7 +3363,11 @@ fn campaign_registry_is_complete_unique_and_smoke_bounded() {
                 .collect::<std::collections::BTreeSet<_>>();
             assert_eq!(
                 bound_ids,
-                spec.owned_invariants.iter().copied().collect(),
+                if spec.kind == CampaignKind::PropertyGraph {
+                    spec.required_invariants().into_iter().collect()
+                } else {
+                    spec.owned_invariants.iter().copied().collect()
+                },
                 "{} invariant bindings drifted",
                 spec.kind.key()
             );
@@ -4103,6 +4108,17 @@ fn feature_programs_preserve_declared_dependency_order() {
 fn feature_programs_distribute_operations_across_lifecycle_phases() {
     for campaign in CampaignKind::FEATURES {
         let program = Program::generate_for(campaign, 7);
+        if campaign == CampaignKind::PropertyGraph {
+            assert!(program.ops.iter().all(|op| matches!(
+                op,
+                Op::Feature(adversarial::campaign::FeatureOperation::PropertyGraph(_))
+            )));
+            assert_eq!(
+                program.ops.len(),
+                CampaignSpec::for_kind(campaign).required_operations.len()
+            );
+            continue;
+        }
         let feature_positions = program
             .ops
             .iter()
@@ -4182,7 +4198,11 @@ fn feature_fault_plan_has_a_clean_slot_and_full_has_two_distinct_faults() {
         );
         let mut selected = std::collections::BTreeSet::new();
         let mut clean = 0;
-        let seed_count = 12_usize.max(spec.feature_faults.len() + 1);
+        let seed_count = if campaign == CampaignKind::PropertyGraph {
+            1
+        } else {
+            12_usize.max(spec.feature_faults.len() + 1)
+        };
         for seed in 0..seed_count as u64 {
             let program = Program::generate_for(campaign, seed);
             let plan = FaultPlan::for_program(
@@ -8652,7 +8672,8 @@ fn smoke() {
         }
     }
     assert!(
-        generic_multi_event_episodes.saturating_mul(10) >= smoke_episodes.saturating_mul(3),
+        config.campaign == CampaignKind::PropertyGraph
+            || generic_multi_event_episodes.saturating_mul(10) >= smoke_episodes.saturating_mul(3),
         "generic CAN-FIRE failed: {generic_multi_event_episodes}/{smoke_episodes} smoke episodes fired at least two scheduled faults; require >=30%"
     );
     assert!(
@@ -8767,9 +8788,21 @@ fn replay() {
         )
     };
     let actual_root = tempfile::tempdir().expect("replay output root");
-    let outcome =
-        adversarial::runner::run_program_for(stored_campaign, seed, profile, actual_root.path())
-            .expect("replayed adversarial run");
+    let replay_root = if stored_campaign == CampaignKind::PropertyGraph {
+        let output = config
+            .artifacts
+            .join(format!("property-graph/seed-{seed}-{}", profile.key()));
+        assert_ne!(
+            std::fs::canonicalize(&output).ok(),
+            std::fs::canonicalize(expected).ok(),
+            "replay output must not overwrite retained inputs"
+        );
+        config.artifacts.as_path()
+    } else {
+        actual_root.path()
+    };
+    let outcome = adversarial::runner::run_program_for(stored_campaign, seed, profile, replay_root)
+        .expect("replayed adversarial run");
     compare_replay_artifacts(expected, stored_campaign, &outcome)
         .unwrap_or_else(|error| panic!("{error}"));
 }
@@ -10994,6 +11027,13 @@ fn busy_child() {
 }
 
 fn missing_campaign_coverage(campaign: CampaignKind, coverage: &CoverageRegistry) -> Vec<String> {
+    if campaign == CampaignKind::PropertyGraph {
+        return CampaignSpec::for_kind(campaign)
+            .all_required_coverage()
+            .into_iter()
+            .filter(|key| coverage.count(key) == 0)
+            .collect();
+    }
     if campaign == CampaignKind::Overall {
         coverage
             .missing_required_smoke()
@@ -11336,6 +11376,25 @@ fn expected_campaign_comparison_counts_with_profile(
     episodes: u64,
     profile_override: Option<FaultProfile>,
 ) -> BTreeMap<String, u64> {
+    if campaign == CampaignKind::PropertyGraph {
+        return [
+            ("I16", 21_u64),
+            ("I17", 20),
+            ("I18", 21),
+            ("I19", 21),
+            ("I49", 1),
+        ]
+        .into_iter()
+        .map(|(id, count)| {
+            (
+                id.to_owned(),
+                count
+                    .checked_mul(episodes)
+                    .expect("graph comparison count fits u64"),
+            )
+        })
+        .collect();
+    }
     if campaign == CampaignKind::StorageDurability {
         let mut counts = CampaignSpec::for_kind(campaign)
             .owned_invariants
@@ -19271,6 +19330,7 @@ fn native_graph_runner_keys_are_active_with_graph_feature() {
     for key in adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE {
         assert!(active.contains(key), "enabled graph runner omitted {key}");
     }
+    // ZE-75 measured 405/425 on Unix; its 23 family keys are separate.
     // ZE-65 observes 387/407 on Unix after ten integrated receipts.
     // ZE-170 measured the pre-change lengths as 304 and 324; the committed 278
     // and 298 had drifted, so this pin was already red on main. Both are the
@@ -19936,4 +19996,259 @@ fn ze65_faults_fire_and_match_same_seed_control() {
             assert!(coverage.count(key) > 0, "missing ZE65 receipt {key}");
         }
     }
+}
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn ze75_episode_retains_replayable_graph_lifecycle_evidence() {
+    let root = tempfile::tempdir().unwrap();
+    let campaign = CampaignKind::from_key("property-graph").unwrap();
+    let outcome =
+        adversarial::runner::run_program_for(campaign, 75, FaultProfile::None, root.path())
+            .unwrap();
+    assert!(outcome.violations.is_empty(), "{:?}", outcome.violations);
+    assert!(
+        outcome
+            .family_artifact_bytes
+            .contains_key("graph-observations.jsonl"),
+        "graph coverage hits omitted replayable lifecycle observations"
+    );
+}
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn ze75_planted_faults_trip_named_comparators() {
+    use zeppelin_embed_adversarial_oracle::graph_lifecycle as o;
+    let (fixture, _) = adversarial::graph_recovery::schedule_for(75);
+    let (actual, clean) = adversarial::graph_recovery::run_boundary_pair(
+        &fixture,
+        zeppelin_embed::graph_commit_recovery_test_support::Boundary::WalSync,
+        &mut CoverageRegistry::default(),
+    )
+    .unwrap();
+    let batches = [adversarial::graph_lifecycle::input(&fixture)];
+    let good = adversarial::graph_lifecycle::snapshot(clean.observation.as_ref()).unwrap();
+    o::compare_complete_prefix(&batches, &[1], &good).unwrap();
+    let mut partial = good;
+    partial.relationships.clear();
+    let red = o::compare_complete_prefix(&batches, &[0, 1], &partial).unwrap_err();
+    assert!(red.starts_with(o::COMPLETE_PREFIX));
+    println!("RED partial batch: {red}");
+    let mut model = zeppelin_embed_adversarial_oracle::graph_fixture::Graph::default();
+    model.apply(&batches[0]).unwrap();
+    let retry = model.apply(&batches[0]).unwrap();
+    let expected_ids: Vec<_> = retry
+        .receipts
+        .iter()
+        .zip(["a", "b", "ab"])
+        .enumerate()
+        .map(|(index, (receipt, key))| o::Identity {
+            relationship: index == 2,
+            key: key.into(),
+            id: receipt.id,
+            revision: receipt.revision,
+            generation: receipt.generation,
+            replayed: receipt.replayed,
+        })
+        .collect();
+    let ids = adversarial::graph_lifecycle::identities(&clean);
+    o::compare_identity_history(&expected_ids, &ids[..3]).unwrap();
+    let mut reused = ids[..3].to_vec();
+    reused[1].id = reused[0].id;
+    let red = o::compare_identity_history(&expected_ids, &reused).unwrap_err();
+    assert!(red.starts_with(o::IDENTITY_HISTORY));
+    println!("RED reused returned ID: {red}");
+    let protected = clean
+        .protected_before
+        .iter()
+        .filter(|(n, _)| n.ends_with(".zgraph"))
+        .map(|(n, b)| (n.clone(), b.clone()))
+        .collect::<BTreeMap<_, _>>();
+    o::compare_protected_artifacts(&protected, &clean.protected_after).unwrap();
+    let mut early = clean.protected_after.clone();
+    early.remove(protected.keys().next().unwrap());
+    let red = o::compare_protected_artifacts(&protected, &early).unwrap_err();
+    assert!(red.starts_with(o::PROTECTED_ARTIFACTS));
+    println!("RED early unlink: {red}");
+    let expected = o::Outcome {
+        error: Some("WriteIndeterminate".into()),
+        nothing_committed: false,
+        stopped_error: Some("Unavailable".into()),
+    };
+    let good = adversarial::graph_lifecycle::outcome(&actual);
+    o::compare_outcome(&expected, &good).unwrap();
+    let mut lying = good;
+    lying.error = None;
+    lying.nothing_committed = true;
+    let red = o::compare_outcome(&expected, &lying).unwrap_err();
+    assert!(red.starts_with(o::OUTCOME));
+    println!("RED lying disposition/error: {red}");
+}
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn ze75_every_selected_fault_fires_with_same_seed_control() {
+    let campaign = CampaignKind::PropertyGraph;
+    let root = tempfile::tempdir().unwrap();
+    let outcome =
+        adversarial::runner::run_program_for(campaign, 75, FaultProfile::None, root.path())
+            .unwrap();
+    assert_eq!(
+        outcome.feature_faults_fired,
+        CampaignSpec::for_kind(campaign).feature_faults.len()
+    );
+    assert_eq!(
+        outcome.feature_faults_scheduled,
+        outcome.feature_faults_fired
+    );
+    assert!(outcome.missing_feature_faults.is_empty());
+    assert_eq!(
+        outcome.same_seed_clean_controls,
+        outcome.feature_faults_fired as u64
+    );
+    for row in jsonl_values(&outcome.controls_bytes) {
+        assert_eq!(row["input_digest"], row["clean_input_digest"]);
+        assert!(row["controls"].as_u64().unwrap() > 0);
+        assert_eq!(row["same_seed_control_passed"], true);
+    }
+    for row in jsonl_values(&outcome.family_artifact_bytes["graph-observations.jsonl"]) {
+        assert!(row["fires"].as_u64().unwrap() > 0);
+        assert!(row["controls"].as_u64().unwrap() > 0);
+    }
+    assert_eq!(outcome.comparison_counts.values().sum::<u64>(), 84);
+    adversarial::campaign::campaign_from_replay_metadata(
+        &root.path().join("property-graph/seed-75-none"),
+    )
+    .unwrap();
+}
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn ze75_replay_rejects_tampered_lifecycle_evidence() {
+    let root = tempfile::tempdir().unwrap();
+    let campaign = CampaignKind::PropertyGraph;
+    let outcome =
+        adversarial::runner::run_program_for(campaign, 7, FaultProfile::None, root.path()).unwrap();
+    let directory = root.path().join("property-graph/seed-7-none");
+    let replay_root = tempfile::tempdir().unwrap();
+    let replay =
+        adversarial::runner::run_program_for(campaign, 7, FaultProfile::None, replay_root.path())
+            .unwrap();
+    compare_replay_artifacts(&directory, campaign, &replay).unwrap();
+    for name in [
+        "faults.jsonl",
+        "graph-observations.jsonl",
+        "graph-durable-images.jsonl",
+    ] {
+        let path = directory.join(name);
+        let original = std::fs::read(&path).unwrap();
+        let mut rows = jsonl_values(&original);
+        match name {
+            "faults.jsonl" => rows[0]["op"] = zeppelin_embed_bench::harness_json::json!(999),
+            "graph-observations.jsonl" => {
+                rows[0]["observation"]["clean"]["batch"] =
+                    zeppelin_embed_bench::harness_json::json!("planted partial batch");
+            }
+            "graph-durable-images.jsonl" => {
+                let byte = rows[0]["files"][0]["bytes"][0].as_u64().unwrap();
+                rows[0]["files"][0]["bytes"][0] =
+                    zeppelin_embed_bench::harness_json::json!((byte + 1) % 256);
+            }
+            _ => unreachable!(),
+        }
+        let tampered = rows
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        std::fs::write(&path, tampered).unwrap();
+        let error = adversarial::campaign::campaign_from_replay_metadata(&directory).unwrap_err();
+        assert!(error.contains(name), "{name}: {error}");
+        println!("RED tampered {name}: {error}");
+        std::fs::write(path, original).unwrap();
+    }
+    let path = directory.join("graph-observations.jsonl");
+    let original = std::fs::read(&path).unwrap();
+    let text = String::from_utf8(original.clone()).unwrap();
+    assert!(text.contains("Storage"));
+    std::fs::write(&path, text.replacen("Storage", "Internal", 1)).unwrap();
+    let error = adversarial::campaign::campaign_from_replay_metadata(&directory).unwrap_err();
+    assert!(error.contains("graph-observations.jsonl"));
+    println!("RED tampered error: {error}");
+    std::fs::write(path, original).unwrap();
+    assert!(outcome.violations.is_empty());
+}
+
+#[cfg(feature = "graph-cypher")]
+fn jsonl_values(bytes: &[u8]) -> Vec<zeppelin_embed_bench::harness_json::Value> {
+    bytes
+        .split(|b| *b == b'\n')
+        .filter(|l| !l.is_empty())
+        .map(|line| zeppelin_embed_bench::harness_json::from_slice(line).unwrap())
+        .collect()
+}
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn ze75_ze98_checkpoint_retry_and_reclaim_preserve_evidence() {
+    use zeppelin_embed::graph_commit_recovery_test_support as support;
+    let reports = support::run_ze75_reclaim_evidence(75);
+    adversarial::graph_lifecycle::check_reclaim(&reports).unwrap();
+    assert_eq!(reports.len(), 7);
+    for r in reports {
+        assert_eq!(
+            r.pending_proof, r.replayed_proof,
+            "{} pending proof",
+            r.cell
+        );
+        assert!(!r.inventory_pending.is_empty());
+        assert_eq!(
+            r.inventory_pending, r.inventory_replayed,
+            "{} candidate inventory states",
+            r.cell
+        );
+        assert!(r.provenance_phases.len() >= 4);
+        for phase in &r.provenance_phases[1..] {
+            assert_eq!(
+                &r.provenance_phases[0], phase,
+                "{} all provenance/canonical fields",
+                r.cell
+            );
+        }
+        assert!(r.retry_receipts.contains("replayed: true"));
+        assert_eq!(r.fires, u64::from(r.cell != "Control"));
+        assert_eq!(r.controls, u64::from(r.cell == "Control"));
+        assert!(!r.durable_image.is_empty());
+        println!(
+            "ZE98 {} fires={} controls={} pending={} bytes={}",
+            r.cell,
+            r.fires,
+            r.controls,
+            r.pending_proof,
+            r.durable_image.values().map(Vec::len).sum::<usize>()
+        );
+    }
+}
+
+#[cfg(not(feature = "graph-cypher"))]
+#[test]
+fn property_graph_campaign_refuses_without_graph_feature() {
+    assert!(
+        CampaignKind::from_key("property-graph")
+            .unwrap_err()
+            .contains("requires graph-cypher")
+    );
+    let root = tempfile::tempdir().unwrap();
+    assert!(
+        adversarial::runner::run_program_for(
+            CampaignKind::PropertyGraph,
+            75,
+            FaultProfile::None,
+            root.path()
+        )
+        .err()
+        .unwrap()
+        .contains("requires graph-cypher")
+    );
 }

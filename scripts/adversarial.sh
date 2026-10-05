@@ -6,6 +6,7 @@ source "$repo_root/scripts/graph-feature-target.sh"
 
 campaign_catalog=(
   overall
+  property-graph
   storage-durability
   ingest-retention
   vector-execution
@@ -278,6 +279,13 @@ if [[ "$subcommand" == "replay" ]] \
   infer_replay_campaign=1
 fi
 
+if [[ "$campaign" == "property-graph" ]]; then
+  [[ "$profile" == "none" ]] || fail "property-graph uses an explicit schedule; --profile none is required"
+  if [[ -n "${CARGO_BUILD_TARGET:-}" ]] && ! graph_target_supports_native_graph "$CARGO_BUILD_TARGET"; then
+    fail "property-graph requires native graph support for $CARGO_BUILD_TARGET"
+  fi
+fi
+
 if [[ "${ZE_ADV_CLI_TEST:-0}" == "1" ]]; then
   campaign_label="campaign=$campaign"
   if (( ${#campaigns[@]} > 1 )); then
@@ -293,6 +301,7 @@ if graph_target_supports_native_graph "$graph_target"; then
   graph_feature_args=(--features graph-result-test-support)
   echo "native graph campaigns: selected for $graph_target"
 else
+  [[ "$campaign" != "property-graph" ]] || fail "property-graph requires native graph support for $graph_target"
   echo "native graph campaigns: not selected for $graph_target; running legacy campaigns"
 fi
 

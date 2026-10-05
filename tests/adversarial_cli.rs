@@ -43,6 +43,7 @@ fn list_prints_the_stable_campaign_catalog() {
         stdout(&output).lines().collect::<Vec<_>>(),
         vec![
             "overall",
+            "property-graph",
             "storage-durability",
             "ingest-retention",
             "vector-execution",
@@ -218,4 +219,37 @@ fn macos_supervisor_runs_overall_concurrently_and_reports_it_separately() {
         source.contains("--artifacts \"$overall_artifacts\""),
         "overall evidence is not isolated in its own artifact root"
     );
+}
+
+#[test]
+fn property_graph_selection_requires_native_graph_and_explicit_schedule() {
+    let selected = run(
+        &[
+            "episode",
+            "--campaign",
+            "property-graph",
+            "--profile",
+            "none",
+        ],
+        &[],
+    );
+    assert!(selected.status.success(), "{}", stderr(&selected));
+    let unsupported = run(
+        &["episode", "--campaign", "property-graph"],
+        &[("CARGO_BUILD_TARGET", "aarch64-unknown-linux-gnu")],
+    );
+    assert!(!unsupported.status.success());
+    assert!(stderr(&unsupported).contains("requires native graph support"));
+    let generic = run(
+        &[
+            "episode",
+            "--campaign",
+            "property-graph",
+            "--profile",
+            "full",
+        ],
+        &[],
+    );
+    assert!(!generic.status.success());
+    assert!(stderr(&generic).contains("explicit schedule"));
 }

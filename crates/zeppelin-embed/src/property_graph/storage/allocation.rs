@@ -16,6 +16,11 @@ pub trait EntropyProvider {
 pub struct OsEntropy;
 impl EntropyProvider for OsEntropy {
     fn fill_nonce(&mut self, output: &mut [u8; 16]) -> std::io::Result<()> {
+        #[cfg(feature = "test-support")]
+        if let Some(value) = qualification_nonce() {
+            *output = value.to_le_bytes();
+            return Ok(());
+        }
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         {
             // SAFETY: output owns sixteen writable bytes for this call; this is
@@ -185,4 +190,31 @@ impl ArtifactAllocator<'_> {
 /// Canonical private object filename. IDs cannot choose another path component.
 pub fn artifact_path(directory: &Path, artifact: ArtifactId) -> PathBuf {
     directory.join(format!("graph-{:032x}.zgraph", artifact.get()))
+}
+
+// Nonshipping, thread-scoped deterministic physical inputs for retained-byte replay.
+#[cfg(feature = "test-support")]
+thread_local! {
+    static QUALIFICATION_NONCES: std::cell::Cell<Option<(u64, u64)>> = const { std::cell::Cell::new(None) };
+}
+#[cfg(feature = "test-support")]
+fn qualification_nonce() -> Option<u128> {
+    QUALIFICATION_NONCES.with(|cell| {
+        let (seed, ordinal) = cell.get()?;
+        cell.set(Some((seed, ordinal.wrapping_add(1))));
+        Some(xxhash_rust::xxh3::xxh3_128_with_seed(&ordinal.to_le_bytes(), seed) | 1)
+    })
+}
+#[cfg(feature = "test-support")]
+pub(crate) fn with_qualification_nonces<T>(seed: u64, run: impl FnOnce() -> T) -> T {
+    struct Restore(Option<(u64, u64)>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            QUALIFICATION_NONCES.with(|cell| cell.set(self.0));
+        }
+    }
+    let restore = Restore(QUALIFICATION_NONCES.with(|cell| cell.replace(Some((seed, 0)))));
+    let result = run();
+    drop(restore);
+    result
 }

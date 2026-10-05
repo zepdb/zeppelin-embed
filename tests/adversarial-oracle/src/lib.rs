@@ -159,3 +159,5 @@ pub mod graph_lowering;
 pub mod graph_search_lowering;
 
 pub mod graph_mutation_lowering;
+
+pub mod graph_lifecycle;

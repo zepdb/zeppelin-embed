@@ -54,6 +54,13 @@ pub const INGEST_REPLAY_ARTIFACTS: [&str; 3] =
 #[must_use]
 pub fn replay_artifacts_for(campaign: CampaignKind) -> Vec<&'static str> {
     let mut artifacts = REPLAY_ARTIFACTS.to_vec();
+    if campaign == CampaignKind::PropertyGraph {
+        artifacts.extend([
+            "graph-fixture.json",
+            "graph-observations.jsonl",
+            "graph-durable-images.jsonl",
+        ]);
+    }
     if campaign == CampaignKind::StorageDurability {
         artifacts.extend(STORAGE_REPLAY_ARTIFACTS);
     }
@@ -209,6 +216,7 @@ pub const fn oracle_contract(campaign: CampaignKind) -> &'static str {
         }
         CampaignKind::MetadataFilterPlanner => "metadata-filter-planner-oracle-v2",
         CampaignKind::Overall => "overall-oracle-v1",
+        CampaignKind::PropertyGraph => "graph-lifecycle-v1",
         CampaignKind::IngestRetention => {
             zeppelin_embed_adversarial_oracle::ingest_retention::ORACLE_CONTRACT_VERSION
         }

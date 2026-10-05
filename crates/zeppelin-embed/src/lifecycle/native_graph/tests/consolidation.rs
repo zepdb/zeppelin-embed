@@ -3479,6 +3479,7 @@ enum CrashCell {
 }
 
 struct CrashHistory {
+    provenance_phases: Vec<Ze166FenceEvidence>,
     _parent: super::tempfile::TempDir,
     path: std::path::PathBuf,
     vfs: Arc<RecordingVfs>,
@@ -3624,6 +3625,7 @@ fn seed_crash_history() -> (CrashHistory, Store) {
     )
     .expect("fresh crash-table store");
     let receipts = apply_crash_history_writes(&store, &document);
+    let mut provenance_phases = vec![ze166_fence_evidence(&store)];
     let node = |index: usize| match receipts[index].entity {
         EntityId::Node(node) => node,
         EntityId::Relationship(_) => panic!("node receipt identity"),
@@ -3640,11 +3642,14 @@ fn seed_crash_history() -> (CrashHistory, Store) {
             .commit_native_graph_maintenance(&admission, &QueryControl::Cancel(CancelToken::new()))
             .expect("crash-table physical replacement");
     }
+    provenance_phases.push(ze166_fence_evidence(&store));
     store
         .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
         .expect("checkpoint releases crash-table WAL protection");
+    provenance_phases.push(ze166_fence_evidence(&store));
     (
         CrashHistory {
+            provenance_phases,
             _parent: parent,
             path,
             vfs,
@@ -3677,16 +3682,27 @@ fn delete_events(events: &[DurabilityEvent]) -> Vec<std::path::PathBuf> {
 }
 
 fn run_reclaim_crash_cell(cell: CrashCell) {
+    let _ = run_reclaim_crash_cell_observed(cell, false);
+}
+fn run_reclaim_crash_cell_observed(
+    cell: CrashCell,
+    retain: bool,
+) -> crate::graph_commit_recovery_test_support::ReclaimEvidence {
     use super::publication::FaultPoint;
     let (history, mut store) = seed_crash_history();
     let vfs = Arc::clone(&history.vfs);
     let oracle = history.oracle(&store);
+    let mut error_observation = None;
+    let input_image = directory_image(&history.path);
 
     if cell == CrashCell::BeforeIntent {
         let before = directory_image(&history.path);
         vfs.take();
         vfs.arm_fault(FaultPoint::Append);
         let error = commit_maintenance(&store).expect_err("intent WAL append fault");
+        error_observation = Some(
+            format!("{error:?}").replace(&history.path.to_string_lossy().to_string(), "<store>"),
+        );
         assert!(
             matches!(
                 error,
@@ -3714,7 +3730,30 @@ fn run_reclaim_crash_cell(cell: CrashCell) {
     assert!(delete_events(&vfs.take()).is_empty());
     let pending = store.admit_native_read().expect("pending reader");
     let candidates = pending_reclaim_candidates(&store, &pending);
+    let inventory_pending = format!(
+        "{:?}",
+        complete_inventory_union_for_lease(&store, &pending)
+            .into_iter()
+            .filter(|r| candidates.iter().any(|c| c.artifact == r.object.artifact))
+            .collect::<Vec<_>>()
+    );
+    let pending_proof = format!("{:?}", pending_reclaim_proof_for_lease(&store, &pending));
     drop(pending);
+    if retain {
+        store
+            .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+            .expect("checkpoint pending proof");
+    }
+    let checkpoint = store.admit_native_read().unwrap();
+    let replayed_proof = format!("{:?}", pending_reclaim_proof_for_lease(&store, &checkpoint));
+    let inventory_replayed = format!(
+        "{:?}",
+        complete_inventory_union_for_lease(&store, &checkpoint)
+            .into_iter()
+            .filter(|r| candidates.iter().any(|c| c.artifact == r.object.artifact))
+            .collect::<Vec<_>>()
+    );
+    drop(checkpoint);
     assert!(
         candidates.len() >= 2,
         "one unlink must leave work: {candidates:?}"
@@ -3750,6 +3789,9 @@ fn run_reclaim_crash_cell(cell: CrashCell) {
     let first_deletes = delete_events(&first_events);
     if faulted {
         let error = resumed.expect_err("armed resume fault");
+        error_observation = Some(
+            format!("{error:?}").replace(&history.path.to_string_lossy().to_string(), "<store>"),
+        );
         vfs.assert_fired_once();
         let expected_deletes = match cell {
             CrashCell::BeforeFirstUnlink => 0,
@@ -3810,6 +3852,12 @@ fn run_reclaim_crash_cell(cell: CrashCell) {
     assert_eq!(completed_candidates, candidates);
     drop(completed);
     assert_same_logical_state(&oracle, &history.oracle(&writable));
+    let mut provenance_phases = history.provenance_phases.clone();
+    provenance_phases.push(ze166_fence_evidence(&writable));
+    let retry = apply_crash_history_writes(&writable, &history.document);
+    assert!(retry.iter().all(|r| r.replayed));
+    let retry_receipts = format!("{:?}", retry.iter().collect::<Vec<_>>());
+    let completion_observation = format!("{completion:?} {completed_candidates:?}");
     writable.close().expect("close resumed reclaim store");
     let final_image = directory_image(&history.path);
     let reopened = history.open(options()).expect("idempotent reopen");
@@ -3819,6 +3867,27 @@ fn run_reclaim_crash_cell(cell: CrashCell) {
         if !name.to_string_lossy().starts_with("graph-wal-") {
             assert_eq!(directory_image(&history.path).get(name), Some(bytes));
         }
+    }
+    crate::graph_commit_recovery_test_support::ReclaimEvidence {
+        cell: format!("{cell:?}"),
+        provenance_phases,
+        inventory_pending,
+        inventory_replayed,
+        pending_proof,
+        replayed_proof,
+        completion: completion_observation,
+        retry_receipts,
+        error: error_observation,
+        input_image: input_image
+            .into_iter()
+            .map(|(n, b)| (n.to_string_lossy().into_owned(), b))
+            .collect(),
+        durable_image: final_image
+            .into_iter()
+            .map(|(n, b)| (n.to_string_lossy().into_owned(), b))
+            .collect(),
+        fires: u64::from(cell != CrashCell::Control),
+        controls: u64::from(cell == CrashCell::Control),
     }
 }
 
@@ -8371,7 +8440,15 @@ fn ze166_fence_evidence(store: &Store) -> Ze166FenceEvidence {
         let Key::Inline(key) = entry.key() else {
             panic!("key")
         };
-        let fence = verify_fence_entry(&source, root, entry, &catalog, None, &mut r).unwrap();
+        let fence = verify_fence_entry(
+            &source,
+            root,
+            entry,
+            &catalog,
+            lease.bundle().document(),
+            &mut r,
+        )
+        .unwrap();
         let (provenance, canonical) = fence.required_payloads();
         let mut read = |payload: crate::property_graph::storage::payload::PayloadRef| {
             let slice =
@@ -8939,4 +9016,31 @@ fn ze166_assert_blocked_tombstone_budget() {
         assert_eq!(SWEEP_WORK.with(|counter| counter.get()[3]), expected);
     }
     assert!(resume.is_none());
+}
+
+#[cfg(feature = "test-support")]
+pub(crate) fn run_ze75_reclaim_evidence(
+    seed: u64,
+) -> Vec<crate::graph_commit_recovery_test_support::ReclaimEvidence> {
+    use super::publication::{reset_verified_faults, take_verified_faults};
+    [
+        CrashCell::BeforeIntent,
+        CrashCell::BeforeFirstUnlink,
+        CrashCell::AfterOneUnlink,
+        CrashCell::DirectorySync,
+        CrashCell::BeforeCompletion,
+        CrashCell::LostCompletionAck,
+        CrashCell::Control,
+    ]
+    .into_iter()
+    .map(|cell| {
+        reset_verified_faults();
+        let mut report =
+            crate::graph_commit_recovery_test_support::with_qualification_nonces(seed, || {
+                run_reclaim_crash_cell_observed(cell, true)
+            });
+        report.fires = take_verified_faults();
+        report
+    })
+    .collect()
 }

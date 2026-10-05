@@ -336,6 +336,13 @@ impl Op {
             Self::FtsExtrasProbe { slot } => {
                 format!("{{\"op\":{index},\"kind\":\"fts_extras_probe\",\"slot\":{slot}}}")
             }
+            Self::Feature(operation) if operation.campaign() == CampaignKind::PropertyGraph => {
+                format!(
+                    "{{\"op\":{index},\"kind\":\"feature\",\"campaign\":\"property-graph\",\"operation\":\"{}\",\"fixture_version\":\"graph-fixture-v1\",\"fault_selection\":\"{}\"}}",
+                    operation.key(),
+                    operation.key()
+                )
+            }
             Self::Feature(operation) => format!(
                 "{{\"op\":{index},\"kind\":\"feature\",\"campaign\":\"{}\",\"operation\":\"{}\"}}",
                 operation.campaign().key(),
@@ -356,6 +363,14 @@ impl Program {
     pub fn generate_for(campaign: CampaignKind, seed: u64) -> Self {
         match campaign {
             CampaignKind::Overall => Self::generate(seed),
+            CampaignKind::PropertyGraph => Self {
+                seed,
+                ops: super::campaign::feature_operations(campaign)
+                    .iter()
+                    .copied()
+                    .map(Op::Feature)
+                    .collect(),
+            },
             _ => {
                 let mut program = Self::generate(seed);
                 program.ops.retain(|operation| {

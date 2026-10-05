@@ -73,6 +73,13 @@ fn check(c: &Corpus) -> Result<(), String> {
     check_search_snapshot(c)
 }
 pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
+    lifecycle_observations(seed, coverage).map(|_| ())
+}
+pub fn lifecycle_observations(
+    seed: u64,
+    coverage: &mut CoverageRegistry,
+) -> Result<Vec<zeppelin_embed_bench::harness_json::Value>, String> {
+    let mut observations = Vec::new();
     for (name, site, needle) in schedule(seed) {
         for fault in [true, false] {
             let crash = SimulatedCrashVfs::new(StdVfs);
@@ -208,6 +215,10 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
                     )
                     .map(|_| ())
             };
+            let error = result.as_ref().err().map(|e| {
+                e.to_string()
+                    .replace(c.dir.path().to_string_lossy().as_ref(), "<fixture>")
+            });
             if fault {
                 result.map_or_else(
                     |_| Ok(()),
@@ -254,6 +265,11 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
             if oracle::compare_rows(&after, &dropped, true).is_ok() {
                 return Err("comparator accepted dropped membership".into());
             }
+            observations.push(zeppelin_embed_bench::harness_json::json!({
+                "site": name, "fault": fault, "fires": u64::from(fault),
+                "controls": u64::from(!fault), "error": error,
+                "before": format!("{before:?}"), "after": format!("{after:?}"),
+            }));
             coverage.hit("property-graph.search-qualification.membership");
             coverage.hit("property-graph.search-qualification.replay");
             coverage.hit("property-graph.search-qualification.materialization");
@@ -275,8 +291,8 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
     }
     // Existing instance-scoped scheduled clocks qualify deadline/cancel/close
     // and execution row-budget release; retain their own distinct receipt keys.
-    retained::retained(seed);
+    observations.push(retained::retained_observation(seed));
     coverage.hit("property-graph.search-qualification.retained");
     super::graph_cypher_search::probe(seed, coverage)?;
-    Ok(())
+    Ok(observations)
 }

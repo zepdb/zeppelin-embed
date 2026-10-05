@@ -10,6 +10,7 @@ use super::program::{Op, Program};
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum CampaignKind {
     Overall,
+    PropertyGraph,
     StorageDurability,
     IngestRetention,
     VectorExecution,
@@ -24,8 +25,9 @@ pub enum CampaignKind {
 }
 
 impl CampaignKind {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Overall,
+        Self::PropertyGraph,
         Self::StorageDurability,
         Self::IngestRetention,
         Self::VectorExecution,
@@ -39,7 +41,9 @@ impl CampaignKind {
         Self::FfiBindings,
     ];
 
-    pub const FEATURES: [Self; 11] = [
+    pub const FEATURES: [Self; 11 + cfg!(feature = "graph-cypher") as usize] = [
+        #[cfg(feature = "graph-cypher")]
+        Self::PropertyGraph,
         Self::StorageDurability,
         Self::IngestRetention,
         Self::VectorExecution,
@@ -57,6 +61,7 @@ impl CampaignKind {
     pub const fn key(self) -> &'static str {
         match self {
             Self::Overall => "overall",
+            Self::PropertyGraph => "property-graph",
             Self::StorageDurability => "storage-durability",
             Self::IngestRetention => "ingest-retention",
             Self::VectorExecution => "vector-execution",
@@ -72,6 +77,9 @@ impl CampaignKind {
     }
 
     pub fn from_key(value: &str) -> Result<Self, String> {
+        if value == "property-graph" && !cfg!(feature = "graph-cypher") {
+            return Err("property-graph requires graph-cypher support".into());
+        }
         Self::ALL
             .into_iter()
             .find(|campaign| campaign.key() == value)
@@ -117,6 +125,22 @@ macro_rules! operation_enum {
     };
 }
 
+operation_enum!(PropertyGraphOperation {
+    ArtifactCreate => "artifact-create",
+    ArtifactWrite => "artifact-write",
+    ArtifactSync => "artifact-sync",
+    DirectorySync => "directory-sync",
+    WalAppend => "wal-append",
+    WalPartialAppend => "wal-partial-append",
+    WalSync => "wal-sync",
+    Publication => "publication",
+    CheckpointReplace => "checkpoint-replace",
+    CheckpointSync => "checkpoint-sync",
+    Storage => "storage",
+    Search => "search",
+    Reclaim => "reclaim",
+    Loss => "loss",
+});
 operation_enum!(StorageOperation {
     WalPrefix => "wal-prefix",
     Publication => "publication",
@@ -194,6 +218,7 @@ operation_enum!(FfiOperation {
 /// One typed feature operation. The excluded epoch ranges have no variant.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum FeatureOperation {
+    PropertyGraph(PropertyGraphOperation),
     Storage(StorageOperation),
     Ingest(IngestOperation),
     Vector(VectorOperation),
@@ -211,6 +236,7 @@ impl FeatureOperation {
     #[must_use]
     pub const fn campaign(self) -> CampaignKind {
         match self {
+            Self::PropertyGraph(_) => CampaignKind::PropertyGraph,
             Self::Storage(_) => CampaignKind::StorageDurability,
             Self::Ingest(_) => CampaignKind::IngestRetention,
             Self::Vector(_) => CampaignKind::VectorExecution,
@@ -228,6 +254,7 @@ impl FeatureOperation {
     #[must_use]
     pub const fn key(self) -> &'static str {
         match self {
+            Self::PropertyGraph(operation) => operation.key(),
             Self::Storage(operation) => operation.key(),
             Self::Ingest(operation) => operation.key(),
             Self::Vector(operation) => operation.key(),
@@ -243,6 +270,22 @@ impl FeatureOperation {
     }
 }
 
+const PROPERTY_GRAPH_OPERATIONS: [FeatureOperation; 14] = [
+    FeatureOperation::PropertyGraph(PropertyGraphOperation::ArtifactCreate),
+    FeatureOperation::PropertyGraph(PropertyGraphOperation::ArtifactWrite),
+    FeatureOperation::PropertyGraph(PropertyGraphOperation::ArtifactSync),
+    FeatureOperation::PropertyGraph(PropertyGraphOperation::DirectorySync),
+    FeatureOperation::PropertyGraph(PropertyGraphOperation::WalAppend),
+    FeatureOperation::PropertyGraph(PropertyGraphOperation::WalPartialAppend),
+    FeatureOperation::PropertyGraph(PropertyGraphOperation::WalSync),
+    FeatureOperation::PropertyGraph(PropertyGraphOperation::Publication),
+    FeatureOperation::PropertyGraph(PropertyGraphOperation::CheckpointReplace),
+    FeatureOperation::PropertyGraph(PropertyGraphOperation::CheckpointSync),
+    FeatureOperation::PropertyGraph(PropertyGraphOperation::Storage),
+    FeatureOperation::PropertyGraph(PropertyGraphOperation::Search),
+    FeatureOperation::PropertyGraph(PropertyGraphOperation::Reclaim),
+    FeatureOperation::PropertyGraph(PropertyGraphOperation::Loss),
+];
 const STORAGE_OPERATIONS: [FeatureOperation; 5] = [
     FeatureOperation::Storage(StorageOperation::WalPrefix),
     FeatureOperation::Storage(StorageOperation::Publication),
@@ -321,6 +364,7 @@ const FFI_OPERATIONS: [FeatureOperation; 5] = [
 pub fn feature_operations(campaign: CampaignKind) -> &'static [FeatureOperation] {
     match campaign {
         CampaignKind::Overall => &[],
+        CampaignKind::PropertyGraph => &PROPERTY_GRAPH_OPERATIONS,
         CampaignKind::StorageDurability => &STORAGE_OPERATIONS,
         CampaignKind::IngestRetention => &INGEST_OPERATIONS,
         CampaignKind::VectorExecution => &VECTOR_OPERATIONS,
@@ -427,6 +471,12 @@ fn validate_feature_replay_attestation(
         return Err(malformed());
     }
     match campaign {
+        CampaignKind::PropertyGraph => {
+            #[cfg(feature = "graph-cypher")]
+            super::graph_lifecycle::validate_retained(directory, attestation)?;
+            #[cfg(not(feature = "graph-cypher"))]
+            return Err("property-graph requires graph-cypher support".into());
+        }
         CampaignKind::StorageDurability => {
             validate_storage_episode_attestation(attestation, directory)
                 .map_err(|_| malformed())?;
@@ -1262,6 +1312,104 @@ macro_rules! feature_fault_catalog {
 
 feature_fault_catalog![
     (
+        PropertyGraphArtifactCreate,
+        PropertyGraph,
+        "artifact-create",
+        "graph lifecycle artifact-create",
+        FeatureOperation::PropertyGraph(PropertyGraphOperation::ArtifactCreate)
+    ),
+    (
+        PropertyGraphArtifactWrite,
+        PropertyGraph,
+        "artifact-write",
+        "graph lifecycle artifact-write",
+        FeatureOperation::PropertyGraph(PropertyGraphOperation::ArtifactWrite)
+    ),
+    (
+        PropertyGraphArtifactSync,
+        PropertyGraph,
+        "artifact-sync",
+        "graph lifecycle artifact-sync",
+        FeatureOperation::PropertyGraph(PropertyGraphOperation::ArtifactSync)
+    ),
+    (
+        PropertyGraphDirectorySync,
+        PropertyGraph,
+        "directory-sync",
+        "graph lifecycle directory-sync",
+        FeatureOperation::PropertyGraph(PropertyGraphOperation::DirectorySync)
+    ),
+    (
+        PropertyGraphWalAppend,
+        PropertyGraph,
+        "wal-append",
+        "graph lifecycle wal-append",
+        FeatureOperation::PropertyGraph(PropertyGraphOperation::WalAppend)
+    ),
+    (
+        PropertyGraphWalPartialAppend,
+        PropertyGraph,
+        "wal-partial-append",
+        "graph lifecycle wal-partial-append",
+        FeatureOperation::PropertyGraph(PropertyGraphOperation::WalPartialAppend)
+    ),
+    (
+        PropertyGraphWalSync,
+        PropertyGraph,
+        "wal-sync",
+        "graph lifecycle wal-sync",
+        FeatureOperation::PropertyGraph(PropertyGraphOperation::WalSync)
+    ),
+    (
+        PropertyGraphPublication,
+        PropertyGraph,
+        "publication",
+        "graph lifecycle publication",
+        FeatureOperation::PropertyGraph(PropertyGraphOperation::Publication)
+    ),
+    (
+        PropertyGraphCheckpointReplace,
+        PropertyGraph,
+        "checkpoint-replace",
+        "graph lifecycle checkpoint-replace",
+        FeatureOperation::PropertyGraph(PropertyGraphOperation::CheckpointReplace)
+    ),
+    (
+        PropertyGraphCheckpointSync,
+        PropertyGraph,
+        "checkpoint-sync",
+        "graph lifecycle checkpoint-sync",
+        FeatureOperation::PropertyGraph(PropertyGraphOperation::CheckpointSync)
+    ),
+    (
+        PropertyGraphStorage,
+        PropertyGraph,
+        "storage",
+        "graph lifecycle storage",
+        FeatureOperation::PropertyGraph(PropertyGraphOperation::Storage)
+    ),
+    (
+        PropertyGraphSearch,
+        PropertyGraph,
+        "search",
+        "graph lifecycle search",
+        FeatureOperation::PropertyGraph(PropertyGraphOperation::Search)
+    ),
+    (
+        PropertyGraphReclaim,
+        PropertyGraph,
+        "reclaim",
+        "graph lifecycle reclaim",
+        FeatureOperation::PropertyGraph(PropertyGraphOperation::Reclaim)
+    ),
+    (
+        PropertyGraphLoss,
+        PropertyGraph,
+        "loss",
+        "graph lifecycle loss",
+        FeatureOperation::PropertyGraph(PropertyGraphOperation::Loss)
+    ),
+    (
         StorageTornWalHeader,
         StorageDurability,
         "torn-wal-header",
@@ -1823,7 +1971,9 @@ impl FaultPlan {
         let salt = campaign.key().bytes().fold(0_usize, |value, byte| {
             value.wrapping_mul(131) ^ usize::from(byte)
         });
-        let selected = if profile == FaultProfile::Full {
+        let selected = if campaign == CampaignKind::PropertyGraph {
+            spec.feature_faults.to_vec()
+        } else if profile == FaultProfile::Full {
             let first = (seed as usize).wrapping_add(salt) % spec.feature_faults.len();
             let offset = 1
                 + ((seed as usize).wrapping_add(salt.rotate_left(7))
@@ -1858,7 +2008,14 @@ impl FaultPlan {
                 fire_count: 0,
             })
             .collect();
-        Self { schedule, feature }
+        Self {
+            schedule: if campaign == CampaignKind::PropertyGraph {
+                FaultSchedule::default()
+            } else {
+                schedule
+            },
+            feature,
+        }
     }
 
     #[must_use]
@@ -1942,7 +2099,7 @@ impl CampaignSpec {
                 .map(InvariantId::checked_coverage_key),
         );
         keys.extend(self.feature_faults.iter().map(|fault| fault.coverage_key()));
-        if !self.feature_faults.is_empty() {
+        if !self.feature_faults.is_empty() && self.kind != CampaignKind::PropertyGraph {
             keys.extend(
                 super::coverage::REQUIRED_LAYERED_COVERAGE
                     .iter()
@@ -2060,6 +2217,9 @@ impl CampaignSpec {
     }
 
     pub fn derived_smoke_seeds(self, start_seed: u64) -> Result<Vec<u64>, String> {
+        if self.kind == CampaignKind::PropertyGraph {
+            return Ok(vec![start_seed]);
+        }
         let mut required = FaultProfile::ALL
             .into_iter()
             .map(|profile| format!("fault.profile.{}", profile.key()))
@@ -2079,7 +2239,7 @@ impl CampaignSpec {
                     .map(|key| (*key).to_owned()),
             );
         }
-        if !self.feature_faults.is_empty() {
+        if !self.feature_faults.is_empty() && self.kind != CampaignKind::PropertyGraph {
             required.extend(
                 super::coverage::REQUIRED_LAYERED_COVERAGE
                     .iter()
@@ -2165,6 +2325,260 @@ macro_rules! feature_faults {
     };
 }
 
+const PROPERTY_GRAPH_INVARIANT_SPECS: [InvariantSpec; 44] = [
+    InvariantSpec {
+        invariant: InvariantId::new(16),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::ArtifactCreate),
+        checker_id: "complete-prefix",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(17),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::ArtifactCreate),
+        checker_id: "identity-history",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(18),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::ArtifactCreate),
+        checker_id: "outcome",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(19),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::ArtifactCreate),
+        checker_id: "protected-artifacts",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(16),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::ArtifactWrite),
+        checker_id: "complete-prefix",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(17),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::ArtifactWrite),
+        checker_id: "identity-history",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(18),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::ArtifactWrite),
+        checker_id: "outcome",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(19),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::ArtifactWrite),
+        checker_id: "protected-artifacts",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(16),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::ArtifactSync),
+        checker_id: "complete-prefix",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(17),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::ArtifactSync),
+        checker_id: "identity-history",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(18),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::ArtifactSync),
+        checker_id: "outcome",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(19),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::ArtifactSync),
+        checker_id: "protected-artifacts",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(16),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::DirectorySync),
+        checker_id: "complete-prefix",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(17),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::DirectorySync),
+        checker_id: "identity-history",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(18),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::DirectorySync),
+        checker_id: "outcome",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(19),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::DirectorySync),
+        checker_id: "protected-artifacts",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(16),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::WalAppend),
+        checker_id: "complete-prefix",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(17),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::WalAppend),
+        checker_id: "identity-history",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(18),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::WalAppend),
+        checker_id: "outcome",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(19),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::WalAppend),
+        checker_id: "protected-artifacts",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(16),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::WalPartialAppend),
+        checker_id: "complete-prefix",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(17),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::WalPartialAppend),
+        checker_id: "identity-history",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(18),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::WalPartialAppend),
+        checker_id: "outcome",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(19),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::WalPartialAppend),
+        checker_id: "protected-artifacts",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(16),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::WalSync),
+        checker_id: "complete-prefix",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(17),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::WalSync),
+        checker_id: "identity-history",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(18),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::WalSync),
+        checker_id: "outcome",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(19),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::WalSync),
+        checker_id: "protected-artifacts",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(16),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::Publication),
+        checker_id: "complete-prefix",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(17),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::Publication),
+        checker_id: "identity-history",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(18),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::Publication),
+        checker_id: "outcome",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(19),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::Publication),
+        checker_id: "protected-artifacts",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(16),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::CheckpointReplace),
+        checker_id: "complete-prefix",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(17),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::CheckpointReplace),
+        checker_id: "identity-history",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(18),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::CheckpointReplace),
+        checker_id: "outcome",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(19),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::CheckpointReplace),
+        checker_id: "protected-artifacts",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(16),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::CheckpointSync),
+        checker_id: "complete-prefix",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(17),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::CheckpointSync),
+        checker_id: "identity-history",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(18),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::CheckpointSync),
+        checker_id: "outcome",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(19),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::CheckpointSync),
+        checker_id: "protected-artifacts",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(18),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::Storage),
+        checker_id: "native-storage",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(49),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::Search),
+        checker_id: "search-materialization",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(19),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::Reclaim),
+        checker_id: "checkpoint-retry-reclaim",
+    },
+    InvariantSpec {
+        invariant: InvariantId::new(16),
+        operation: FeatureOperation::PropertyGraph(PropertyGraphOperation::Loss),
+        checker_id: "graph-loss-modes",
+    },
+];
+const PROPERTY_GRAPH_FAULTS: [FeatureFault; 14] = [
+    FeatureFault::PropertyGraphArtifactCreate,
+    FeatureFault::PropertyGraphArtifactWrite,
+    FeatureFault::PropertyGraphArtifactSync,
+    FeatureFault::PropertyGraphDirectorySync,
+    FeatureFault::PropertyGraphWalAppend,
+    FeatureFault::PropertyGraphWalPartialAppend,
+    FeatureFault::PropertyGraphWalSync,
+    FeatureFault::PropertyGraphPublication,
+    FeatureFault::PropertyGraphCheckpointReplace,
+    FeatureFault::PropertyGraphCheckpointSync,
+    FeatureFault::PropertyGraphStorage,
+    FeatureFault::PropertyGraphSearch,
+    FeatureFault::PropertyGraphReclaim,
+    FeatureFault::PropertyGraphLoss,
+];
+const PROPERTY_GRAPH_OPS: [&str; 14] = [
+    "artifact-create",
+    "artifact-write",
+    "artifact-sync",
+    "directory-sync",
+    "wal-append",
+    "wal-partial-append",
+    "wal-sync",
+    "publication",
+    "checkpoint-replace",
+    "checkpoint-sync",
+    "storage",
+    "search",
+    "reclaim",
+    "loss",
+];
 const STORAGE_FAULTS: [FeatureFault; 10] = feature_faults![
     StorageTornWalHeader,
     StorageTornWalBody,
@@ -2933,7 +3347,25 @@ const FFI_INVARIANT_SPECS: [InvariantSpec; 5] = invariant_specs![
     ),
 ];
 
-const CAMPAIGN_SPECS: [CampaignSpec; 12] = [
+const CAMPAIGN_SPECS: [CampaignSpec; 13] = [
+    CampaignSpec {
+        kind: CampaignKind::PropertyGraph,
+        label: "property graph crash and lifecycle",
+        generator: CampaignGenerator::FeatureNamespaced,
+        owned_invariants: &NO_INVARIANTS,
+        reused_invariants: &[
+            InvariantId::new(16),
+            InvariantId::new(17),
+            InvariantId::new(18),
+            InvariantId::new(19),
+            InvariantId::new(49),
+        ],
+        invariant_specs: &PROPERTY_GRAPH_INVARIANT_SPECS,
+        required_operations: &PROPERTY_GRAPH_OPS,
+        fault_profiles: &[FaultProfile::None],
+        feature_faults: &PROPERTY_GRAPH_FAULTS,
+        required_coverage: super::coverage::PROPERTY_GRAPH_LIFECYCLE_COVERAGE,
+    },
     CampaignSpec {
         kind: CampaignKind::Overall,
         label: "overall outcome",

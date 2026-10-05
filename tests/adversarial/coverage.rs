@@ -666,3 +666,30 @@ pub const REQUIRED_NAMESPACE_COVERAGE: &[&str] = &[
     "storage.namespace.live-batch",
     "storage.namespace.deleting-batch",
 ];
+
+/// Property-graph family requirements reuse measured native site keys, not the unrelated prelude.
+pub const PROPERTY_GRAPH_LIFECYCLE_COVERAGE: &[&str] = &[
+    "property-graph.recovery.commit.artifact-create",
+    "property-graph.recovery.commit.artifact-write",
+    "property-graph.recovery.commit.artifact-sync",
+    "property-graph.recovery.commit.directory-sync",
+    "property-graph.recovery.commit.wal-append",
+    "property-graph.recovery.commit.wal-partial-append",
+    "property-graph.recovery.commit.wal-sync",
+    "property-graph.recovery.commit.publication",
+    "property-graph.recovery.commit.checkpoint-replace",
+    "property-graph.recovery.commit.checkpoint-sync",
+    "property-graph.storage-faults.split.fire",
+    "property-graph.storage-faults.split.clean",
+    "property-graph.search-qualification.membership",
+    "property-graph.search-qualification.replay",
+    "property-graph.search-qualification.materialization",
+    "property-graph.search-qualification.retained",
+    "property-graph.reclaim.protected-union",
+    "property-graph.reclaim.wal-only",
+    "property-graph.reclaim.intent-unlink-completion",
+    "property-graph.adjacency-store.native-history",
+    "property-graph.adjacency-store.self-parallel-sparse",
+    "property-graph.adjacency-store.participant-selection.missing-reverse",
+    "property-graph.adjacency.merge",
+];
