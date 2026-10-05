@@ -2333,19 +2333,30 @@ fn fence_matches_record(
             .is_eq())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate_fence_record_agreement(
     source: &RecoverySource<'_, '_>,
     catalog: &RecoveryCatalog<'_, '_>,
     document: Option<&EmbeddingTower>,
     roots: GraphRoots,
     fence: &FenceView<'_, RecoverySource<'_, '_>>,
+    memory: &StorageMemory<'_>,
+    sequence: u64,
     resources: &mut TreeResources<'_>,
 ) -> Result<(), TreeError> {
     match fence.incarnation() {
         EntityId::Node(node) => {
             let root = roots.directory(TreeKind::Nodes)?;
-            let entry = lookup_entry(source, root, &node.get().to_le_bytes(), resources)?
-                .ok_or(TreeError::Invalid("recovery fence node is absent"))?;
+            let Some(entry) = lookup_entry(source, root, &node.get().to_le_bytes(), resources)?
+            else {
+                if !fence.is_deleted() {
+                    return Err(TreeError::Invalid("recovery live node fence is absent"));
+                }
+                require_no_physical_incident(
+                    source, catalog, document, roots, sequence, node, memory, resources,
+                )?;
+                return Ok(());
+            };
             let payload = PayloadRef::decode(entry.value())?;
             match verify_node_state(
                 PayloadSlice::new(source, roots.store(), entry.creation_generation(), payload),
@@ -2384,9 +2395,12 @@ fn validate_fence_record_agreement(
                     ));
                 }
                 (false, None) => {
-                    return Err(TreeError::Invalid(
-                        "recovery live relationship fence lacks a record",
-                    ));
+                    let row =
+                        fence.hidden_relationship(source, roots, catalog, document, resources)?;
+                    exact_relationship_membership(
+                        source, roots, sequence, row, false, memory, resources,
+                    )?;
+                    require_type_absent(source, roots, row, resources)?;
                 }
                 (false, Some(entry)) => {
                     let payload = PayloadRef::decode(entry.value())?;
@@ -2482,7 +2496,9 @@ fn validate_native_checkpoint(
     let fence_root = roots.directory(TreeKind::KeyFences)?;
     verify_directory(source, fence_root, resources, &mut |entry, resources| {
         let fence = verify_fence_entry(source, fence_root, entry, catalog, document, resources)?;
-        validate_fence_record_agreement(source, catalog, document, roots, &fence, resources)
+        validate_fence_record_agreement(
+            source, catalog, document, roots, &fence, memory, sequence, resources,
+        )
     })?;
 
     let node_root = roots.directory(TreeKind::Nodes)?;
@@ -2925,6 +2941,9 @@ fn reconcile_entity_directory(
     kind: TreeKind,
     mutations: &[Mutation<'_>],
     base_high: u128,
+    maintenance: bool,
+    target_sequence: u64,
+    memory: &StorageMemory<'_>,
     resources: &mut TreeResources<'_>,
 ) -> Result<(), TreeError> {
     let base_root = base.directory(kind)?;
@@ -2991,7 +3010,21 @@ fn reconcile_entity_directory(
             _ => return Err(TreeError::Invalid("recovery entity directory kind")),
         };
         let count = mutation_count_for_entity(mutations, entity);
-        if (changed && count != 1) || (!changed && count != 0) {
+        let swept = maintenance && changed && advance_left && !advance_right;
+        if swept {
+            validate_maintenance_removal(
+                source,
+                catalog,
+                document,
+                base,
+                target,
+                target_sequence,
+                entity,
+                memory,
+                resources,
+            )?;
+        }
+        if (changed && !swept && count != 1) || ((!changed || swept) && count != 0) {
             return Err(TreeError::Invalid(
                 "recovery entity transition differs from mutation set",
             ));
@@ -3379,8 +3412,26 @@ fn validate_lifecycle_transition<'source, 'store, 'source_memory, 'catalog_memor
                         base_roots,
                         fence.incarnation(),
                         resources,
-                    )?
-                    .ok_or(TreeError::Invalid("recovery live fence record is absent"))?;
+                    )?;
+                    let Some(record) = record else {
+                        if mutation.live || fields.operation != GraphOperation::StructuredDelete {
+                            return Err(TreeError::Invalid("recovery live fence record is absent"));
+                        }
+                        crate::property_graph::storage::records::swept_delete(
+                            source, base_roots, fields, catalog, document, resources,
+                        )?;
+                        // The classifier below consumes this original canonical stream.
+                        return validate_swept_lifecycle(
+                            source,
+                            catalog,
+                            document,
+                            base_roots,
+                            target_roots,
+                            mutation,
+                            &fence,
+                            resources,
+                        );
+                    };
                     if !record
                         .canonical_bytes()
                         .compare(
@@ -3722,37 +3773,41 @@ fn validate_mutation_state(
                     return Err(TreeError::Invalid("recovery deleted relationship is live"));
                 }
                 let base_root = base_roots.directory(TreeKind::Relationships)?;
-                let base_entry =
-                    lookup_entry(source, base_root, &rel.get().to_le_bytes(), resources)?.ok_or(
-                        TreeError::Invalid("recovery deleted relationship base is absent"),
+                let row = if let Some(base_entry) =
+                    lookup_entry(source, base_root, &rel.get().to_le_bytes(), resources)?
+                {
+                    let base_payload = PayloadRef::decode(base_entry.value())?;
+                    let base_record = verify_record(
+                        PayloadSlice::new(
+                            source,
+                            base_roots.store(),
+                            base_entry.creation_generation(),
+                            base_payload,
+                        ),
+                        crate::property_graph::EntityId::Relationship(rel),
+                        catalog,
+                        document,
+                        resources,
                     )?;
-                let base_payload = PayloadRef::decode(base_entry.value())?;
-                let base_record = verify_record(
-                    PayloadSlice::new(
-                        source,
-                        base_roots.store(),
-                        base_entry.creation_generation(),
-                        base_payload,
-                    ),
-                    crate::property_graph::EntityId::Relationship(rel),
-                    catalog,
-                    document,
-                    resources,
-                )?;
-                let crate::property_graph::storage::records::RecordShape::Relationship {
-                    id,
-                    source: relationship_source,
-                    target: relationship_target,
-                    relationship_type,
-                } = base_record.shape()
-                else {
-                    return Err(TreeError::Invalid("recovery relationship base role"));
-                };
-                let row = crate::property_graph::storage::adjacency::RelationshipRow {
-                    rel: id,
-                    source: relationship_source,
-                    target: relationship_target,
-                    relationship_type,
+                    let crate::property_graph::storage::records::RecordShape::Relationship {
+                        id,
+                        source: relationship_source,
+                        target: relationship_target,
+                        relationship_type,
+                    } = base_record.shape()
+                    else {
+                        return Err(TreeError::Invalid("recovery relationship base role"));
+                    };
+                    crate::property_graph::storage::adjacency::RelationshipRow {
+                        rel: id,
+                        source: relationship_source,
+                        target: relationship_target,
+                        relationship_type,
+                    }
+                } else {
+                    crate::property_graph::storage::records::swept_delete(
+                        source, base_roots, fields, catalog, document, resources,
+                    )?
                 };
                 exact_relationship_membership(
                     source,
@@ -5388,6 +5443,9 @@ impl ReplayValidator for SemanticReplay<'_, '_> {
                 TreeKind::Nodes,
                 retained_mutations.as_slice(),
                 base.high_waters.node,
+                kind == crate::property_graph::wal::EnvelopeKind::Maintenance,
+                target.sequence,
+                self.memory,
                 &mut tree,
             )?;
             reconcile_entity_directory(
@@ -5399,6 +5457,9 @@ impl ReplayValidator for SemanticReplay<'_, '_> {
                 TreeKind::Relationships,
                 retained_mutations.as_slice(),
                 base.high_waters.relationship,
+                kind == crate::property_graph::wal::EnvelopeKind::Maintenance,
+                target.sequence,
+                self.memory,
                 &mut tree,
             )?;
             reconcile_fence_directory(
@@ -5931,4 +5992,258 @@ pub(super) fn open(
         ))
     });
     Ok(store)
+}
+
+fn require_type_absent(
+    source: &RecoverySource<'_, '_>,
+    roots: GraphRoots,
+    row: RelationshipRow,
+    r: &mut TreeResources<'_>,
+) -> Result<(), TreeError> {
+    let mut key = [0_u8; 24];
+    key.get_mut(..8)
+        .ok_or(TreeError::Memory)?
+        .copy_from_slice(&row.relationship_type.get().to_le_bytes());
+    key.get_mut(8..)
+        .ok_or(TreeError::Memory)?
+        .copy_from_slice(&row.rel.get().to_le_bytes());
+    if lookup_entry(
+        source,
+        roots.directory(TreeKind::RelationshipTypes)?,
+        &key,
+        r,
+    )?
+    .is_some()
+    {
+        return Err(TreeError::Invalid(
+            "swept relationship retains type membership",
+        ));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn require_no_physical_incident(
+    source: &RecoverySource<'_, '_>,
+    catalog: &RecoveryCatalog<'_, '_>,
+    document: Option<&EmbeddingTower>,
+    roots: GraphRoots,
+    sequence: u64,
+    node: crate::property_graph::NodeId,
+    memory: &StorageMemory<'_>,
+    r: &mut TreeResources<'_>,
+) -> Result<(), TreeError> {
+    let mut cursor =
+        DirectoryCursor::seek(source, roots.directory(TreeKind::Relationships)?, None, r)?;
+    while let Some(entry) = cursor.next_entry(r)? {
+        let crate::property_graph::storage::tree::Key::Inline(key) = entry.key() else {
+            return Err(TreeError::Invalid("incident relationship key"));
+        };
+        let rel = crate::property_graph::RelId::new(u128::from_le_bytes(
+            key.try_into()
+                .map_err(|_| TreeError::Invalid("incident relationship width"))?,
+        ))
+        .map_err(|_| TreeError::Invalid("incident relationship identity"))?;
+        let row = authoritative_relationship(source, catalog, document, roots, rel, r)?
+            .ok_or(TreeError::Missing)?;
+        if row.source == node || row.target == node {
+            return Err(TreeError::Invalid(
+                "swept node retains incident relationship",
+            ));
+        }
+    }
+    for kind in [TreeKind::OutRanges, TreeKind::InRanges] {
+        let root = roots.directory(kind)?;
+        let mut cursor = DirectoryCursor::seek(source, root, None, r)?;
+        let mut scratch = RangeScratch::for_prepare(memory, r)?;
+        while let Some(entry) = cursor.next_entry(r)? {
+            let range = validate_range(source, root, entry, sequence, &mut scratch, r)?;
+            if range.descriptor().key().node == node
+                || range.edges().iter().any(|edge| edge.neighbor == node)
+            {
+                return Err(TreeError::Invalid("swept node retains incident adjacency"));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_maintenance_removal(
+    source: &RecoverySource<'_, '_>,
+    catalog: &RecoveryCatalog<'_, '_>,
+    document: Option<&EmbeddingTower>,
+    base: GraphRoots,
+    target: GraphRoots,
+    sequence: u64,
+    entity: EntityId,
+    memory: &StorageMemory<'_>,
+    r: &mut TreeResources<'_>,
+) -> Result<(), TreeError> {
+    let (kind, id) = match entity {
+        EntityId::Node(id) => (TreeKind::Nodes, id.get()),
+        EntityId::Relationship(id) => (TreeKind::Relationships, id.get()),
+    };
+    let entry = lookup_entry(source, base.directory(kind)?, &id.to_le_bytes(), r)?
+        .ok_or(TreeError::Missing)?;
+    let slice = PayloadSlice::new(
+        source,
+        base.store(),
+        entry.creation_generation(),
+        PayloadRef::decode(entry.value())?,
+    );
+    let (provenance, canonical) = match entity {
+        EntityId::Node(node) => {
+            let NodeRecordState::Tombstone(tombstone) =
+                verify_node_state(slice, node, catalog, document, r)?
+            else {
+                return Err(TreeError::Invalid("maintenance removed live node"));
+            };
+            require_no_physical_incident(
+                source, catalog, document, target, sequence, node, memory, r,
+            )?;
+            (
+                crate::property_graph::storage::records::verify_provenance(
+                    PayloadSlice::new(
+                        source,
+                        base.store(),
+                        entry.creation_generation(),
+                        tombstone.provenance_ref(),
+                    ),
+                    r,
+                )?,
+                None,
+            )
+        }
+        EntityId::Relationship(rel) => {
+            let record = verify_record(slice, entity, catalog, document, r)?;
+            let row = authoritative_relationship(source, catalog, document, base, rel, r)?
+                .ok_or(TreeError::Missing)?;
+            let a = crate::property_graph::storage::records::endpoint_present(
+                source, base, row.source, catalog, document, r,
+            )?;
+            let b = crate::property_graph::storage::records::endpoint_present(
+                source, base, row.target, catalog, document, r,
+            )?;
+            if a && b {
+                return Err(TreeError::Invalid(
+                    "maintenance removed visible relationship",
+                ));
+            }
+            exact_relationship_membership(source, target, sequence, row, false, memory, r)?;
+            require_type_absent(source, target, row, r)?;
+            (
+                crate::property_graph::storage::records::verify_provenance(
+                    PayloadSlice::new(
+                        source,
+                        base.store(),
+                        entry.creation_generation(),
+                        *record
+                            .required_payloads()
+                            .get(1)
+                            .ok_or(TreeError::Missing)?,
+                    ),
+                    r,
+                )?,
+                Some(record.canonical_bytes()),
+            )
+        }
+    };
+    if let Some(key) = provenance.key() {
+        let old = find_fence_by_key(source, catalog, document, base, key, r)?
+            .ok_or(TreeError::Missing)?;
+        let new = find_fence_by_key(source, catalog, document, target, key, r)?
+            .ok_or(TreeError::Missing)?;
+        if old.incarnation() != entity
+            || new.incarnation() != entity
+            || old.revision() != new.revision()
+            || old.is_deleted() != new.is_deleted()
+            || !stored_provenance_equal(&provenance, old.provenance(), r)?
+            || !stored_provenance_equal(old.provenance(), new.provenance(), r)?
+        {
+            return Err(TreeError::Invalid(
+                "maintenance sweep changed fence evidence",
+            ));
+        }
+        match (canonical, old.canonical_bytes(), new.canonical_bytes()) {
+            (None, None, None) => {}
+            (Some(record), Some(old), Some(new))
+                if record.compare(old, r)?.is_eq() && old.compare(new, r)?.is_eq() => {}
+            _ => {
+                return Err(TreeError::Invalid(
+                    "maintenance sweep changed canonical evidence",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_swept_lifecycle(
+    source: &RecoverySource<'_, '_>,
+    catalog: &RecoveryCatalog<'_, '_>,
+    document: Option<&EmbeddingTower>,
+    base: GraphRoots,
+    target: GraphRoots,
+    mutation: Mutation<'_>,
+    fence: &FenceView<'_, RecoverySource<'_, '_>>,
+    resources: &mut TreeResources<'_>,
+) -> Result<(), TreeError> {
+    let fields = mutation.provenance;
+    let key = fields.key.ok_or(TreeError::Missing)?;
+    let row = fence.hidden_relationship(source, base, catalog, document, resources)?;
+    let shape = recovery_entity_shape(
+        RecordShape::Relationship {
+            id: row.rel,
+            source: row.source,
+            target: row.target,
+            relationship_type: row.relationship_type,
+        },
+        catalog,
+        resources,
+    )?;
+    let bytes = fence.canonical_bytes().ok_or(TreeError::Missing)?;
+    let fingerprint = streamed_fingerprint(bytes, resources)?;
+    let prior = OperationProvenance::from_fields(
+        Some(1),
+        fence.provenance().fields_with_key(Some(key), resources)?,
+    )
+    .map_err(|_| TreeError::Invalid("swept lifecycle provenance"))?;
+    let first_error = Cell::new(None);
+    let resources_cell = RefCell::new(resources);
+    let mut reader = RecoveryPayloadReader {
+        slice: bytes,
+        offset: 0,
+        resources: &resources_cell,
+        first_error: &first_error,
+    };
+    let mut scratch = [0; 4096];
+    let decision = classify_key(
+        key,
+        KeyState::Live(CurrentEntity {
+            provenance: prior,
+            contents: CanonicalRecord::from_validated(shape, fingerprint, &mut reader),
+        }),
+        KeyRequest::Delete {
+            revision: fields.requested_revision,
+            expected: fields.incarnation,
+            mode: fields.delete_mode.ok_or(TreeError::Missing)?,
+        },
+        &mut scratch,
+        &mut || recovery_checkpoint(&resources_cell, &first_error),
+    )
+    .map_err(|e| lifecycle_tree_error(&first_error, e))?;
+    let KeyDecision::Change(change) = decision else {
+        return Err(TreeError::Invalid("swept lifecycle is not a change"));
+    };
+    let installed = change
+        .install(fields.incarnation, target.generation(), &mut || {
+            recovery_checkpoint(&resources_cell, &first_error)
+        })
+        .map_err(|e| lifecycle_tree_error(&first_error, e))?;
+    if installed.fields() != fields || mutation.live {
+        return Err(TreeError::Invalid("swept lifecycle transition differs"));
+    }
+    Ok(())
 }

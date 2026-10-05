@@ -123,6 +123,7 @@ pub(crate) fn prepare_one_replacement<'lease, 'm, T, C>(
     document: Option<&EmbeddingTower>,
     drain: &[ArtifactId],
     relocation_bytes: u64,
+    sweep_limit: usize,
     inventory_fold: PreparedInventoryFold<'m>,
     pages: &[PageRelocation],
     reclaim_pending: &[crate::property_graph::wal::InventoryChange],
@@ -148,7 +149,26 @@ where
     let mut tree = TreeScratch::for_prepare(memory)?;
     let mut replaced_physical_refs = 0_u64;
     let mut copied_bytes = 0_u64;
-    let selected = select_live_records_in_packs(
+    let swept = select_hidden_relationships(
+        source,
+        base,
+        catalog,
+        document,
+        sweep_limit,
+        memory,
+        resources,
+    )?;
+    let tombstones = select_finished_tombstones(
+        source,
+        base,
+        catalog,
+        document,
+        swept.as_slice(),
+        sweep_limit,
+        memory,
+        resources,
+    )?;
+    let selected_candidates = select_live_records_in_packs(
         source,
         base,
         catalog,
@@ -157,6 +177,16 @@ where
         relocation_bytes,
         resources,
     )?;
+    let mut selected = StorageBuffer::new(memory, RELOCATION_LIMIT)?;
+    for row in selected_candidates.as_slice() {
+        if !swept
+            .as_slice()
+            .iter()
+            .any(|s| row.entity == EntityId::Relationship(s.rel))
+        {
+            selected.push(*row)?;
+        }
+    }
     let mut values = StorageBuffer::new(memory, RELOCATION_LIMIT)?;
     let mut fences: StorageBuffer<'_, FenceRelocation<'_>> =
         StorageBuffer::new(memory, RELOCATION_LIMIT)?;
@@ -323,6 +353,8 @@ where
         selected.as_slice(),
         values.as_slice(),
         fences.as_slice(),
+        swept.as_slice(),
+        tombstones.as_slice(),
         relocation_bytes,
         &mut copied_bytes,
         catalog,
@@ -429,6 +461,7 @@ pub(crate) fn select_drain<'m>(
     Ok(drain)
 }
 
+#[derive(Clone, Copy)]
 struct SelectedRecord {
     key: [u8; 16],
     entity: EntityId,
@@ -749,6 +782,8 @@ fn apply_replacements<'m, T: BlockSink, C: RecordCatalog<T>>(
     selected: &[SelectedRecord],
     values: &[[u8; 48]],
     fences: &[FenceRelocation<'_>],
+    swept: &[super::adjacency::RelationshipRow],
+    tombstones: &[NodeId],
     relocation_bytes: u64,
     copied_bytes: &mut u64,
     catalog: &C,
@@ -871,6 +906,7 @@ fn apply_replacements<'m, T: BlockSink, C: RecordCatalog<T>>(
                 root,
                 context,
                 drain,
+                swept,
                 relocation_bytes,
                 copied_bytes,
                 memory,
@@ -880,14 +916,43 @@ fn apply_replacements<'m, T: BlockSink, C: RecordCatalog<T>>(
             StorageBuffer::new(memory, 0)?
         };
         let mut range_rows = StorageBuffer::new(memory, ranges.as_slice().len())?;
-        for descriptor in ranges.as_slice() {
+        for (key, descriptor) in ranges.as_slice() {
             let mut value = [0; super::adjacency::RANGE_DESCRIPTOR_BYTES];
-            descriptor.encode(&mut value)?;
-            range_rows.push((descriptor.directory_key()?, value))?;
+            if let Some(descriptor) = descriptor {
+                descriptor.encode(&mut value)?;
+            }
+            range_rows.push((*key, descriptor.map(|_| value)))?;
+        }
+        let mut removals = StorageBuffer::new(memory, swept.len() + tombstones.len())?;
+        for row in swept {
+            match kind {
+                TreeKind::Relationships => {
+                    let mut key = StorageBuffer::new(memory, 16)?;
+                    key.extend_from_slice(&row.rel.get().to_le_bytes())?;
+                    removals.push(key)?;
+                }
+                TreeKind::RelationshipTypes => {
+                    let mut key = StorageBuffer::new(memory, 24)?;
+                    key.extend_from_slice(&row.relationship_type.get().to_le_bytes())?;
+                    key.extend_from_slice(&row.rel.get().to_le_bytes())?;
+                    removals.push(key)?;
+                }
+                _ => {}
+            }
+        }
+        if kind == TreeKind::Nodes {
+            for node in tombstones {
+                let mut key = StorageBuffer::new(memory, 16)?;
+                key.extend_from_slice(&node.get().to_le_bytes())?;
+                removals.push(key)?;
+            }
         }
         let mut ops = StorageBuffer::new(
             memory,
-            RELOCATION_LIMIT + PAGE_RELOCATION_LIMIT + range_rows.as_slice().len(),
+            RELOCATION_LIMIT
+                + PAGE_RELOCATION_LIMIT
+                + range_rows.as_slice().len()
+                + removals.as_slice().len(),
         )?;
         if matches!(kind, TreeKind::Nodes | TreeKind::Relationships) {
             for (selected, value) in selected.iter().zip(values) {
@@ -909,8 +974,39 @@ fn apply_replacements<'m, T: BlockSink, C: RecordCatalog<T>>(
             }
         }
         for (key, value) in range_rows.as_slice() {
-            ops.push(DirectoryOp::Insert { key, value })?;
+            ops.push(match value {
+                Some(value) => DirectoryOp::Insert { key, value },
+                None => DirectoryOp::Remove { key },
+            })?;
             replaced += 2;
+        }
+        for key in removals.as_slice() {
+            ops.push(DirectoryOp::Remove {
+                key: key.as_slice(),
+            })?;
+        }
+        // Real edits are sorted once; page hints below cannot override them.
+        for index in 1..ops.as_slice().len() {
+            let mut pos = index;
+            while pos > 0 {
+                fn key<'a>(op: &DirectoryOp<'a>) -> &'a [u8] {
+                    match op {
+                        DirectoryOp::Insert { key, .. } | DirectoryOp::Remove { key } => key,
+                    }
+                }
+                if !compare_relocation_keys(
+                    kind,
+                    key(ops.as_slice().get(pos - 1).ok_or(TreeError::Memory)?),
+                    key(ops.as_slice().get(pos).ok_or(TreeError::Memory)?),
+                    resources,
+                )?
+                .is_gt()
+                {
+                    break;
+                }
+                ops.as_mut_slice().swap(pos - 1, pos);
+                pos -= 1;
+            }
         }
         if !ops.as_slice().is_empty() {
             replaced += 1;
@@ -1059,4 +1155,149 @@ fn compare_relocation_keys(
         }
     }
     Ok(left.len().cmp(&right.len()))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn select_hidden_relationships<'m, S: super::tree::directory::BlockSource>(
+    source: &S,
+    roots: GraphRoots,
+    catalog: &impl RecordCatalog<S>,
+    document: Option<&EmbeddingTower>,
+    limit: usize,
+    memory: &'m StorageMemory<'m>,
+    r: &mut TreeResources<'_>,
+) -> Result<StorageBuffer<'m, super::adjacency::RelationshipRow>, TreeError> {
+    let mut selected = StorageBuffer::new(memory, limit)?;
+    let root = roots.directory(TreeKind::Relationships)?;
+    let mut cursor = DirectoryCursor::seek(source, root, None, r)?;
+    while selected.as_slice().len() < limit {
+        let Some(entry) = cursor.next_entry(r)? else {
+            break;
+        };
+        let Key::Inline(key) = entry.key() else {
+            return Err(TreeError::Invalid("sweep relationship key"));
+        };
+        let id = crate::property_graph::RelId::new(u128::from_le_bytes(
+            key.try_into()
+                .map_err(|_| TreeError::Invalid("sweep relationship key width"))?,
+        ))
+        .map_err(|_| TreeError::Invalid("sweep relationship identity"))?;
+        let record = verify_record(
+            PayloadSlice::new(
+                source,
+                roots.store(),
+                entry.creation_generation(),
+                PayloadRef::decode(entry.value())?,
+            ),
+            EntityId::Relationship(id),
+            catalog,
+            document,
+            r,
+        )?;
+        let super::records::RecordShape::Relationship {
+            source: from,
+            target,
+            relationship_type,
+            ..
+        } = record.shape()
+        else {
+            return Err(TreeError::Invalid("sweep relationship role"));
+        };
+        let from_live =
+            super::records::endpoint_present(source, roots, from, catalog, document, r)?;
+        let target_live =
+            super::records::endpoint_present(source, roots, target, catalog, document, r)?;
+        if !from_live || !target_live {
+            selected.push(super::adjacency::RelationshipRow {
+                rel: id,
+                source: from,
+                target,
+                relationship_type,
+            })?;
+        }
+    }
+    Ok(selected)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn select_finished_tombstones<'m, S: super::tree::directory::BlockSource>(
+    source: &S,
+    roots: GraphRoots,
+    catalog: &impl RecordCatalog<S>,
+    document: Option<&EmbeddingTower>,
+    swept: &[super::adjacency::RelationshipRow],
+    limit: usize,
+    memory: &'m StorageMemory<'m>,
+    r: &mut TreeResources<'_>,
+) -> Result<StorageBuffer<'m, NodeId>, TreeError> {
+    let mut selected = StorageBuffer::new(memory, limit)?;
+    let root = roots.directory(TreeKind::Nodes)?;
+    let mut cursor = DirectoryCursor::seek(source, root, None, r)?;
+    while selected.as_slice().len() < limit {
+        let Some(entry) = cursor.next_entry(r)? else {
+            break;
+        };
+        let Key::Inline(key) = entry.key() else {
+            return Err(TreeError::Invalid("sweep node key"));
+        };
+        let id = NodeId::new(u128::from_le_bytes(
+            key.try_into()
+                .map_err(|_| TreeError::Invalid("sweep node width"))?,
+        ))
+        .map_err(|_| TreeError::Invalid("sweep node identity"))?;
+        if !matches!(
+            verify_node_state(
+                PayloadSlice::new(
+                    source,
+                    roots.store(),
+                    entry.creation_generation(),
+                    PayloadRef::decode(entry.value())?
+                ),
+                id,
+                catalog,
+                document,
+                r
+            )?,
+            NodeRecordState::Tombstone(_)
+        ) {
+            continue;
+        }
+        let mut remaining = false;
+        let mut relationships =
+            DirectoryCursor::seek(source, roots.directory(TreeKind::Relationships)?, None, r)?;
+        while let Some(entry) = relationships.next_entry(r)? {
+            let Key::Inline(key) = entry.key() else {
+                return Err(TreeError::Invalid("incident sweep key"));
+            };
+            let rel = crate::property_graph::RelId::new(u128::from_le_bytes(
+                key.try_into()
+                    .map_err(|_| TreeError::Invalid("incident sweep width"))?,
+            ))
+            .map_err(|_| TreeError::Invalid("incident sweep identity"))?;
+            if swept.iter().any(|row| row.rel == rel) {
+                continue;
+            }
+            let record = verify_record(
+                PayloadSlice::new(
+                    source,
+                    roots.store(),
+                    entry.creation_generation(),
+                    PayloadRef::decode(entry.value())?,
+                ),
+                EntityId::Relationship(rel),
+                catalog,
+                document,
+                r,
+            )?;
+            if matches!(record.shape(), super::records::RecordShape::Relationship { source, target, .. } if source == id || target == id)
+            {
+                remaining = true;
+                break;
+            }
+        }
+        if !remaining {
+            selected.push(id)?;
+        }
+    }
+    Ok(selected)
 }

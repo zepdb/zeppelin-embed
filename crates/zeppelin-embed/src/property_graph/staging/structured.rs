@@ -266,43 +266,6 @@ pub(super) fn stage_structured_with_preflight<'a>(
             image: None,
             input_bytes: 0,
         })?;
-        if let Some(WriteImage::Relationship { source, target, .. }) = request.image {
-            for endpoint in [source, target] {
-                control(WritePhase::Validate)?;
-                match endpoint {
-                    NodeRef::Existing(id) => {
-                        let entity = base
-                            .entity(EntityId::Node(id), control)?
-                            .ok_or(StageError::Endpoint)?;
-                        checked_base(&entity, identity, high_waters)?;
-                        if entity.provenance.fields().incarnation != EntityId::Node(id) {
-                            return Err(StageError::ViewMismatch);
-                        }
-                        for other in requests {
-                            control(WritePhase::Validate)?;
-                            if matches!(other.operation,StructuredOperation::Delete(EntityId::Node(deleted),_) if deleted==id)
-                            {
-                                return Err(StageError::Endpoint);
-                            }
-                        }
-                    }
-                    NodeRef::Local(local) => {
-                        let input = requests
-                            .get(local.index() as usize)
-                            .ok_or(StageError::Endpoint)?;
-                        if input.key.kind() != EntityKind::Node
-                            || !matches!(input.image, Some(WriteImage::Node(_)))
-                            || !matches!(
-                                input.operation,
-                                StructuredOperation::Create | StructuredOperation::Recreate(_)
-                            )
-                        {
-                            return Err(StageError::Endpoint);
-                        }
-                    }
-                }
-            }
-        }
     }
     validate_distinct_targets(targets.as_mut_slice(), &mut || canonical_poll(control))?;
     drop(targets);
@@ -424,6 +387,50 @@ pub(super) fn stage_structured_with_preflight<'a>(
                 .ok_or(StageError::InvalidInput)?;
             admission.encoded = encoded;
             admission.decision = Some(decision);
+        }
+    }
+    // Only authenticated exact replay may bypass endpoint admission. Every
+    // real change is admitted before any allocation or publication.
+    for (request, admission) in requests.iter().zip(&*admissions) {
+        if matches!(admission.decision, Some(KeyDecision::Replay(_))) {
+            continue;
+        }
+        if let Some(WriteImage::Relationship { source, target, .. }) = request.image {
+            for endpoint in [source, target] {
+                control(WritePhase::Validate)?;
+                match endpoint {
+                    NodeRef::Existing(id) => {
+                        let entity = base
+                            .entity(EntityId::Node(id), control)?
+                            .ok_or(StageError::Endpoint)?;
+                        checked_base(&entity, identity, high_waters)?;
+                        if entity.provenance.fields().incarnation != EntityId::Node(id) {
+                            return Err(StageError::ViewMismatch);
+                        }
+                        for other in requests {
+                            control(WritePhase::Validate)?;
+                            if matches!(other.operation,StructuredOperation::Delete(EntityId::Node(deleted),_) if deleted==id)
+                            {
+                                return Err(StageError::Endpoint);
+                            }
+                        }
+                    }
+                    NodeRef::Local(local) => {
+                        let input = requests
+                            .get(local.index() as usize)
+                            .ok_or(StageError::Endpoint)?;
+                        if input.key.kind() != EntityKind::Node
+                            || !matches!(input.image, Some(WriteImage::Node(_)))
+                            || !matches!(
+                                input.operation,
+                                StructuredOperation::Create | StructuredOperation::Recreate(_)
+                            )
+                        {
+                            return Err(StageError::Endpoint);
+                        }
+                    }
+                }
+            }
         }
     }
     let mut decisions = Arena::new(memory, requests.len(), control)?;

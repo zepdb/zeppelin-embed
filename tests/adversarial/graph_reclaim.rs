@@ -31,6 +31,10 @@ fn compare_replay(expected: (u64, bool), actual: (u64, bool)) -> Result<(), &'st
     }
 }
 
+fn compare_detach_sweep(actual: (bool, u64)) -> bool {
+    actual == (false, 2)
+}
+
 fn compare_bytes(removed: u64, unlinked: u64) -> Result<(), &'static str> {
     if removed != 0 && removed == unlinked {
         Ok(())
@@ -79,6 +83,12 @@ pub fn race_probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), Stri
 
 pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
     let report = zeppelin_embed::graph_reclaim_test_support::run_actual_probe(seed);
+    if !compare_detach_sweep(report.detach_sweep) {
+        return Err("DETACH sweep changed visibility or original installing generation".into());
+    }
+    if compare_detach_sweep((true, 2)) || compare_detach_sweep((false, 3)) {
+        return Err("DETACH sweep comparator accepted wrong visibility/generation".into());
+    }
     let expected = [
         Operation::CreateNode { id: 1 },
         Operation::CreateNode { id: 2 },

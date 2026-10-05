@@ -331,6 +331,9 @@ impl<'m, C> PrepareState<'_, 'm, C> {
             (ExpectedGraphState::Entity(expected), Some(old))
                 if expected == old.shape.incarnation()
                     && old.revision < fields.installed_revision => {}
+            (ExpectedGraphState::Entity(_), None) if delta.canonical().is_none() => {
+                swept_delete(sink, self.roots, fields, self.catalog, self.document, r)?;
+            }
             (ExpectedGraphState::Absent | ExpectedGraphState::Deletion(_), None) => {}
             _ => return Err(TreeError::Invalid("normalized change/base record mismatch")),
         }

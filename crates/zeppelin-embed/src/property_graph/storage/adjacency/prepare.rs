@@ -299,12 +299,24 @@ fn collect_changes<'a, S: BlockSource>(
         let EntityId::Relationship(id) = delta.provenance().fields().incarnation else {
             continue;
         };
+        let old_roots = old;
         let old = previous.raw_relationship(id, r)?;
         let new = current.raw_relationship(id, r)?;
         let (row, action) = match (old, new) {
             (Some(old), Some(new)) if old == new => continue,
             (None, Some(new)) if current.visible(new, r)? => (new, Action::Insert),
             (Some(old), None) => (old, Action::Delete),
+            (None, None) if delta.canonical().is_none() => {
+                super::super::records::swept_delete(
+                    source,
+                    old_roots,
+                    delta.provenance().fields(),
+                    catalog,
+                    document,
+                    r,
+                )?;
+                continue;
+            }
             _ => return Err(invalid("normalized relationship topology/endpoints")),
         };
         for (direction, node, neighbor) in [

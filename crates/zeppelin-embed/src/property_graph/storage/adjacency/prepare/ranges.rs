@@ -159,6 +159,8 @@ pub(super) fn apply(
     r.step(0)
 }
 
+type RangeReplacement = ([u8; 40], Option<RangeDescriptor>);
+
 /// Rewrite payloads in selected packs and merge one remaining pending range.
 /// Return descriptors for the caller's single checked directory apply.
 #[allow(clippy::too_many_arguments)]
@@ -167,14 +169,15 @@ pub(crate) fn relocate_ranges<'m>(
     root: DirectoryRoot,
     context: RangeEditContext,
     drain: &[crate::property_graph::storage::artifact::ArtifactId],
+    swept: &[RelationshipRow],
     byte_limit: u64,
     copied_bytes: &mut u64,
     memory: &'m StorageMemory<'m>,
     r: &mut TreeResources<'_>,
-) -> Result<StorageBuffer<'m, RangeDescriptor>, TreeError> {
+) -> Result<StorageBuffer<'m, RangeReplacement>, TreeError> {
     let mut keys = StorageBuffer::new(
         memory,
-        crate::property_graph::storage::consolidation::RELOCATION_LIMIT + 1,
+        crate::property_graph::storage::consolidation::RELOCATION_LIMIT + 1 + swept.len() * 2,
     )?;
     let mut pending: Option<(usize, [u8; 40])> = None;
     {
@@ -182,10 +185,25 @@ pub(crate) fn relocate_ranges<'m>(
         while let Some(entry) = scan.next_entry(r)? {
             let descriptor = descriptor(root, entry, r)?;
             let key = descriptor.directory_key()?;
-            let mut relocated = false;
-            if std::iter::once(descriptor.base())
-                .chain(descriptor.deltas())
-                .any(|reference| drain.binary_search(&reference.artifact).is_ok())
+            let affected = swept.iter().any(|row| {
+                let k = descriptor.key();
+                let node = match k.direction {
+                    Direction::Out => row.source,
+                    Direction::In => row.target,
+                };
+                k.node == node
+                    && k.rel_type == row.relationship_type
+                    && row.rel >= k.lower
+                    && !matches!(k.upper, UpperBound::Exclusive(upper) if row.rel >= upper)
+            });
+            let mut relocated = affected;
+            if affected {
+                keys.push(key)?;
+            }
+            if !affected
+                && std::iter::once(descriptor.base())
+                    .chain(descriptor.deltas())
+                    .any(|reference| drain.binary_search(&reference.artifact).is_ok())
             {
                 let bytes = std::iter::once(descriptor.base())
                     .chain(descriptor.deltas())
@@ -234,7 +252,10 @@ pub(crate) fn relocate_ranges<'m>(
     }
     let mut replacements = StorageBuffer::new(memory, keys.as_slice().len())?;
     for key in keys.as_slice() {
-        replacements.push(rewrite_range(sink, root, context, key, memory, r)?)?;
+        replacements.push((
+            *key,
+            rewrite_range(sink, root, context, key, swept, memory, r)?,
+        ))?;
     }
     Ok(replacements)
 }
@@ -244,9 +265,10 @@ fn rewrite_range(
     root: DirectoryRoot,
     context: RangeEditContext,
     selected_key: &[u8; 40],
+    swept: &[RelationshipRow],
     memory: &StorageMemory<'_>,
     r: &mut TreeResources<'_>,
-) -> Result<RangeDescriptor, TreeError> {
+) -> Result<Option<RangeDescriptor>, TreeError> {
     let mut workspace = Workspace::new(memory, r)?;
     let mut cursor = DirectoryCursor::seek(&*sink, root, Some(selected_key), r)?;
     let Some(entry) = cursor.next_entry(r)? else {
@@ -264,22 +286,29 @@ fn rewrite_range(
         &mut workspace.merged,
         r,
     )?;
-    let count = range.edges().len();
-    let copied = workspace
-        .old
-        .as_mut_slice()
-        .get_mut(..count)
-        .ok_or(TreeError::Memory)?;
-    for (target, source) in copied
-        .chunks_mut((64 * 1024 / std::mem::size_of::<Edge>()).max(1))
-        .zip(
-            range
-                .edges()
-                .chunks((64 * 1024 / std::mem::size_of::<Edge>()).max(1)),
-        )
-    {
-        r.step(std::mem::size_of_val(source) as u64)?;
-        target.copy_from_slice(source);
+    let mut count = 0;
+    for edge in range.edges() {
+        r.step(1)?;
+        if let Some(row) = swept.iter().find(|row| row.rel == edge.rel) {
+            let k = descriptor.key();
+            let (node, neighbor) = match k.direction {
+                Direction::Out => (row.source, row.target),
+                Direction::In => (row.target, row.source),
+            };
+            if k.node != node || k.rel_type != row.relationship_type || edge.neighbor != neighbor {
+                return Err(invalid("swept adjacency topology mismatch"));
+            }
+            continue;
+        }
+        *workspace
+            .old
+            .as_mut_slice()
+            .get_mut(count)
+            .ok_or(TreeError::Memory)? = *edge;
+        count += 1;
+    }
+    if count == 0 {
+        return Ok(None);
     }
     drop(cursor);
     // The range topology is unchanged. Prepare its new payload and descriptor;
@@ -311,7 +340,7 @@ fn rewrite_range(
         0,
     )?;
     range::check_prepared_range(sink, root, replacement, context, &mut workspace.merged, r)?;
-    Ok(replacement)
+    Ok(Some(replacement))
 }
 
 fn descriptor(

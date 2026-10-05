@@ -6977,9 +6977,16 @@ pub(super) fn run_actual_probe(seed: u64) -> crate::graph_reclaim_test_support::
         });
     }
     receipts.extend(run_ze176_race_probe(seed).receipts);
+    let detach_sweep = run_ze46_detach_sweeps_bounded_edges_and_preserves_fences();
+    receipts.push(crate::graph_read_view_test_support::PathReceipt {
+        key: "property-graph.reclaim.detach-sweep",
+        fires: 0,
+        clean_controls: 1,
+    });
     crate::graph_reclaim_test_support::ReclaimProbeReport {
         receipts,
         state: observe_reclaim_cycle(),
+        detach_sweep,
     }
 }
 
@@ -8226,4 +8233,508 @@ pub(crate) fn run_ze41_reclaim_boundaries() -> Vec<crate::graph_read_view_test_s
         }
     })
     .collect()
+}
+
+fn ze166_fixture(
+    store: &Store,
+) -> (
+    crate::property_graph::NodeId,
+    crate::property_graph::NodeId,
+    Vec<crate::property_graph::staging::ItemReceipt>,
+) {
+    let control = QueryControl::Cancel(CancelToken::new());
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).expect("node");
+    let nodes = store
+        .apply_native_graph(
+            &["a", "b"].map(|name| StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "ze166", name).unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            }),
+            &control,
+        )
+        .unwrap();
+    let EntityId::Node(a) = nodes[0].entity else {
+        panic!("node")
+    };
+    let EntityId::Node(b) = nodes[1].entity else {
+        panic!("node")
+    };
+    let receipts = store
+        .apply_native_graph(&[ze166_relationship(a, b)], &control)
+        .unwrap();
+    (a, b, receipts.to_vec())
+}
+
+fn ze166_relationship(
+    a: crate::property_graph::NodeId,
+    b: crate::property_graph::NodeId,
+) -> StructuredWrite<'static, 'static> {
+    StructuredWrite {
+        key: ApplicationKey::new(EntityKind::Relationship, "ze166", "ab").unwrap(),
+        revision: GraphRevision::new(1).unwrap(),
+        operation: StructuredOperation::Create,
+        image: Some(WriteImage::Relationship {
+            source: NodeRef::Existing(a),
+            target: NodeRef::Existing(b),
+            relationship_type: GraphName::new("LINKS").unwrap(),
+            properties: &[],
+        }),
+    }
+}
+
+fn ze166_detach(store: &Store, a: crate::property_graph::NodeId) {
+    store
+        .apply_native_graph(
+            &[StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "ze166", "a").unwrap(),
+                revision: GraphRevision::new(2).unwrap(),
+                operation: StructuredOperation::Delete(
+                    EntityId::Node(a),
+                    crate::property_graph::GraphDeleteMode::Detach,
+                ),
+                image: None,
+            }],
+            &QueryControl::Cancel(CancelToken::new()),
+        )
+        .unwrap();
+}
+
+#[test]
+fn ze166_detached_relationship_install_retry_preserves_receipt() {
+    let parent = super::tempfile::tempdir().unwrap();
+    let store = Store::create_native_graph(parent.path().join("native"), options(), None).unwrap();
+    let (a, b, original) = ze166_fixture(&store);
+    let control = QueryControl::Cancel(CancelToken::new());
+    ze166_detach(&store, a);
+    let replay = store
+        .apply_native_graph(&[ze166_relationship(a, b)], &control)
+        .expect("authenticated original install replay after DETACH");
+    assert!(replay[0].replayed);
+    assert_eq!(replay[0].entity, original[0].entity);
+    assert_eq!(replay[0].generation, original[0].generation);
+    assert_eq!(replay[0].revision, original[0].revision);
+}
+
+fn ze166_key_lookup(
+    store: &Store,
+    lease: &super::super::NativeReadLease,
+    name: &str,
+) -> Result<Option<EntityId>, crate::property_graph::storage::tree::directory::TreeError> {
+    use crate::property_graph::query::{
+        resources::QueryMemory,
+        runtime::{RuntimeContext, RuntimeLimits},
+    };
+    use crate::property_graph::storage::tree::directory::TreeResources;
+    use crate::property_graph::storage::{
+        GraphReadView, NativeCatalog, NativeQuerySource, NativeReadCapability,
+    };
+    let shared = crate::property_graph::resources::GraphResources::from_store(store).unwrap();
+    let memory = QueryMemory::new(&shared, 8 * 1024 * 1024).unwrap();
+    let control = QueryControl::Cancel(CancelToken::new());
+    let mut runtime =
+        RuntimeContext::new(lease, &control, &memory, RuntimeLimits::default()).unwrap();
+    let capability = NativeReadCapability::admit(lease, &runtime).unwrap();
+    let mut resources = TreeResources::for_query(&mut runtime).unwrap();
+    let source = NativeQuerySource::new(capability, &resources, 64).unwrap();
+    let catalog = NativeCatalog::open(&source, &mut resources).unwrap();
+    drop(resources);
+    let view = GraphReadView::new(&source, &catalog).unwrap();
+    let mut resources = TreeResources::for_query(&mut runtime).unwrap();
+    view.lookup_application_key(
+        ApplicationKey::new(EntityKind::Relationship, "ze166", name).unwrap(),
+        &mut resources,
+    )
+}
+
+type Ze166FenceEvidence = BTreeMap<Vec<u8>, (Vec<u8>, Option<Vec<u8>>)>;
+
+fn ze166_fence_evidence(store: &Store) -> Ze166FenceEvidence {
+    use crate::property_graph::storage::{
+        records::verify_fence_entry, stream::PayloadSlice, tree::Key,
+    };
+    let lease = store.admit_native_read().unwrap();
+    let shared = crate::property_graph::resources::GraphResources::from_store(store).unwrap();
+    let control = QueryControl::Cancel(CancelToken::new());
+    let writer = WriteMemory::new(&shared, WriteLimits::default()).unwrap();
+    let memory = StorageMemory::new(&writer, &control, 16 * 1024 * 1024).unwrap();
+    let source = NativePreparationSource::new(&lease, &memory, 64).unwrap();
+    let mut r = source.resources(64 * 1024 * 1024).unwrap();
+    let catalog =
+        crate::property_graph::storage::NativePreparationCatalog::open(&source, &mut r).unwrap();
+    let roots = lease.bundle().roots();
+    let root = roots.directory(TreeKind::KeyFences).unwrap();
+    let mut cursor = DirectoryCursor::seek(&source, root, None, &mut r).unwrap();
+    let mut result = BTreeMap::new();
+    while let Some(entry) = cursor.next_entry(&mut r).unwrap() {
+        let Key::Inline(key) = entry.key() else {
+            panic!("key")
+        };
+        let fence = verify_fence_entry(&source, root, entry, &catalog, None, &mut r).unwrap();
+        let (provenance, canonical) = fence.required_payloads();
+        let mut read = |payload: crate::property_graph::storage::payload::PayloadRef| {
+            let slice =
+                PayloadSlice::new(&source, roots.store(), entry.creation_generation(), payload);
+            let mut bytes = vec![0; slice.len() as usize];
+            assert_eq!(slice.read_at(0, &mut bytes, &mut r).unwrap(), bytes.len());
+            bytes
+        };
+        result.insert(key.to_vec(), (read(provenance), canonical.map(read)));
+    }
+    result
+}
+
+fn ze166_physical(
+    store: &Store,
+    lease: &super::super::NativeReadLease,
+    a: crate::property_graph::NodeId,
+) -> (Vec<u128>, bool, usize, u64, u64) {
+    use crate::property_graph::storage::{
+        records::verify_fence_entry,
+        tree::{Key, directory::lookup_entry},
+    };
+    let shared = crate::property_graph::resources::GraphResources::from_store(store).unwrap();
+    let control = QueryControl::Cancel(CancelToken::new());
+    let writer = WriteMemory::new(&shared, WriteLimits::default()).unwrap();
+    let memory = StorageMemory::new(&writer, &control, 16 * 1024 * 1024).unwrap();
+    let source = NativePreparationSource::new(lease, &memory, 64).unwrap();
+    let mut r = source.resources(64 * 1024 * 1024).unwrap();
+    let roots = lease.bundle().roots();
+    let mut rels = Vec::new();
+    let mut cursor = DirectoryCursor::seek(
+        &source,
+        roots.directory(TreeKind::Relationships).unwrap(),
+        None,
+        &mut r,
+    )
+    .unwrap();
+    while let Some(entry) = cursor.next_entry(&mut r).unwrap() {
+        let Key::Inline(key) = entry.key() else {
+            panic!("key")
+        };
+        rels.push(u128::from_le_bytes(key.try_into().unwrap()));
+    }
+    for kind in [TreeKind::OutRanges, TreeKind::InRanges] {
+        let root = roots.directory(kind).unwrap();
+        let mut cursor = DirectoryCursor::seek(&source, root, None, &mut r).unwrap();
+        let mut scratch =
+            crate::property_graph::storage::adjacency::RangeScratch::for_prepare(&memory, &mut r)
+                .unwrap();
+        let mut edges = Vec::new();
+        while let Some(entry) = cursor.next_entry(&mut r).unwrap() {
+            let range = crate::property_graph::storage::adjacency::validate_range(
+                &source,
+                root,
+                entry,
+                lease.bundle().sequence(),
+                &mut scratch,
+                &mut r,
+            )
+            .unwrap();
+            edges.extend(range.edges().iter().map(|edge| edge.rel.get()));
+        }
+        edges.sort_unstable();
+        assert_eq!(
+            edges, rels,
+            "physical OUT/IN match exact surviving relationships"
+        );
+    }
+    let tombstone = lookup_entry(
+        &source,
+        roots.directory(TreeKind::Nodes).unwrap(),
+        &a.get().to_le_bytes(),
+        &mut r,
+    )
+    .unwrap()
+    .is_some();
+    let mut types = 0;
+    let mut cursor = DirectoryCursor::seek(
+        &source,
+        roots.directory(TreeKind::RelationshipTypes).unwrap(),
+        None,
+        &mut r,
+    )
+    .unwrap();
+    while cursor.next_entry(&mut r).unwrap().is_some() {
+        types += 1;
+    }
+    let catalog =
+        crate::property_graph::storage::NativePreparationCatalog::open(&source, &mut r).unwrap();
+    let root = roots.directory(TreeKind::KeyFences).unwrap();
+    let mut cursor = DirectoryCursor::seek(&source, root, None, &mut r).unwrap();
+    let mut payloads = std::collections::BTreeSet::new();
+    let mut packs = std::collections::BTreeSet::new();
+    let mut payload_bytes = 0;
+    while let Some(entry) = cursor.next_entry(&mut r).unwrap() {
+        let fence = verify_fence_entry(&source, root, entry, &catalog, None, &mut r).unwrap();
+        let (kind, id) = match fence.incarnation() {
+            EntityId::Node(id) => (TreeKind::Nodes, id.get()),
+            EntityId::Relationship(id) => (TreeKind::Relationships, id.get()),
+        };
+        if lookup_entry(
+            &source,
+            roots.directory(kind).unwrap(),
+            &id.to_le_bytes(),
+            &mut r,
+        )
+        .unwrap()
+        .is_some()
+        {
+            continue;
+        }
+        let (provenance, canonical) = fence.required_payloads();
+        for payload in std::iter::once(provenance).chain(canonical) {
+            if payloads.insert((payload.reference().artifact, payload.reference().offset)) {
+                payload_bytes += payload.len();
+            }
+            packs.insert(payload.reference().artifact);
+        }
+    }
+    let pack_bytes = packs
+        .iter()
+        .map(|id| {
+            std::fs::metadata(
+                store
+                    .directory
+                    .join(format!("graph-{:032x}.zgraph", id.get())),
+            )
+            .unwrap()
+            .len()
+        })
+        .sum();
+    (rels, tombstone, types, payload_bytes, pack_bytes)
+}
+
+#[test]
+fn ze46_detach_sweeps_bounded_edges_and_preserves_fences() {
+    run_ze46_detach_sweeps_bounded_edges_and_preserves_fences();
+}
+
+fn run_ze46_detach_sweeps_bounded_edges_and_preserves_fences() -> (bool, u64) {
+    let parent = super::tempfile::tempdir().unwrap();
+    let path = parent.path().join("native");
+    let store = Store::create_native_graph(&path, options(), None).unwrap();
+    let (a, b, original) = ze166_fixture(&store);
+    let control = QueryControl::Cancel(CancelToken::new());
+    let extras = [("parallel", a, b), ("loop", a, a), ("survivor", b, b)].map(|(key, from, to)| {
+        let mut request = ze166_relationship(from, to);
+        request.key = ApplicationKey::new(EntityKind::Relationship, "ze166", key).unwrap();
+        request
+    });
+    let extra = store
+        .apply_native_graph(&extras, &control)
+        .unwrap()
+        .to_vec();
+    let old = store.admit_native_read().unwrap();
+    assert_eq!(
+        ze166_key_lookup(&store, &old, "ab").unwrap(),
+        Some(original[0].entity)
+    );
+    ze166_detach(&store, a);
+    let evidence = ze166_fence_evidence(&store);
+    let mut changed = ze166_relationship(a, b);
+    changed.operation = StructuredOperation::Put(original[0].entity);
+    changed.revision = GraphRevision::new(2).unwrap();
+    assert!(matches!(
+        store.apply_native_graph(&[changed], &control),
+        Err(super::super::NativeGraphError::Stage(
+            crate::property_graph::staging::StageError::Endpoint
+        ))
+    ));
+    for pass in 0..3 {
+        let admission = store.admit_native_graph_maintenance().unwrap();
+        store
+            .commit_native_graph_maintenance_with_limits(
+                &admission,
+                &control,
+                super::super::maintenance::MaintenanceLimits {
+                    sweep_limit: 1,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let lease = store.admit_native_read().unwrap();
+        let (rels, tombstone, types, _, _) = ze166_physical(&store, &lease, a);
+        assert_eq!(rels.len(), 3 - pass, "one hidden edge per slice");
+        assert_eq!(types, rels.len());
+        assert_eq!(
+            ze166_fence_evidence(&store),
+            evidence,
+            "exact original canonical/provenance streams survive every slice"
+        );
+        assert_eq!(
+            tombstone,
+            pass < 2,
+            "tombstone remains until last physical incident"
+        );
+        assert_eq!(ze166_key_lookup(&store, &lease, "ab").unwrap(), None);
+        assert_eq!(
+            ze166_key_lookup(&store, &lease, "survivor").unwrap(),
+            Some(extra[2].entity)
+        );
+    }
+    assert_eq!(
+        ze166_key_lookup(&store, &old, "ab").unwrap(),
+        Some(original[0].entity)
+    );
+    assert_eq!(
+        ze166_key_lookup(&store, &old, "loop").unwrap(),
+        Some(extra[1].entity)
+    );
+    drop(old);
+    // Reopen once with maintenance in the WAL, then once from a checkpoint.
+    store.close().unwrap();
+    drop(store);
+    let store = Store::open_native_graph(&path, options(), None).expect("replay bounded sweeps");
+    store.checkpoint_native_graph(&control).unwrap();
+    store.close().unwrap();
+    drop(store);
+    let store = Store::open_native_graph(&path, options(), None).expect("checkpoint swept graph");
+    assert_eq!(ze166_fence_evidence(&store), evidence);
+    let lease = store.admit_native_read().unwrap();
+    let (_, _, _, payload, packs) = ze166_physical(&store, &lease, a);
+    eprintln!(
+        "ZE-166 after sweep evidence-only replay payload bytes={payload}; whole containing pack bytes={packs}"
+    );
+    drop(lease);
+    let replay = store
+        .apply_native_graph(&[ze166_relationship(a, b)], &control)
+        .unwrap();
+    assert_eq!(
+        ze166_key_lookup(&store, &store.admit_native_read().unwrap(), "ab").unwrap(),
+        None
+    );
+    assert!(replay[0].replayed);
+    assert_eq!(replay[0].generation, original[0].generation);
+    assert_eq!(replay[0].entity, original[0].entity);
+    let sweep_observation = (
+        ze166_key_lookup(&store, &store.admit_native_read().unwrap(), "ab")
+            .unwrap()
+            .is_some(),
+        replay[0].generation.get(),
+    );
+    drop(replay);
+    let deletion = StructuredWrite {
+        key: ApplicationKey::new(EntityKind::Relationship, "ze166", "ab").unwrap(),
+        revision: GraphRevision::new(2).unwrap(),
+        operation: StructuredOperation::Delete(
+            original[0].entity,
+            crate::property_graph::GraphDeleteMode::Restrict,
+        ),
+        image: None,
+    };
+    let deleted = store
+        .apply_native_graph(&[deletion], &control)
+        .unwrap()
+        .to_vec();
+    let replay = store.apply_native_graph(&[deletion], &control).unwrap();
+    assert!(replay[0].replayed);
+    assert_eq!(replay[0].generation, deleted[0].generation);
+    drop(replay);
+    let node_delete = StructuredWrite {
+        key: ApplicationKey::new(EntityKind::Node, "ze166", "a").unwrap(),
+        revision: GraphRevision::new(2).unwrap(),
+        operation: StructuredOperation::Delete(
+            EntityId::Node(a),
+            crate::property_graph::GraphDeleteMode::Detach,
+        ),
+        image: None,
+    };
+    let retry = store.apply_native_graph(&[node_delete], &control).unwrap();
+    assert!(retry[0].replayed);
+    assert_eq!(retry[0].generation.get(), 4);
+    drop(retry);
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    let recreated = store
+        .apply_native_graph(
+            &[StructuredWrite {
+                key: node_delete.key,
+                revision: GraphRevision::new(3).unwrap(),
+                operation: StructuredOperation::Recreate(GraphRevision::new(2).unwrap()),
+                image: Some(WriteImage::Node(&image)),
+            }],
+            &control,
+        )
+        .unwrap();
+    let EntityId::Node(fresh) = recreated[0].entity else {
+        panic!("node")
+    };
+    assert_ne!(a, fresh);
+    drop(recreated);
+    let mut recreate = ze166_relationship(fresh, b);
+    recreate.revision = GraphRevision::new(3).unwrap();
+    recreate.operation = StructuredOperation::Recreate(GraphRevision::new(2).unwrap());
+    let recreated = store.apply_native_graph(&[recreate], &control).unwrap();
+    assert_ne!(recreated[0].entity, original[0].entity);
+    drop(recreated);
+    let lease = store.admit_native_read().unwrap();
+    let (_, _, _, payload, packs) = ze166_physical(&store, &lease, a);
+    eprintln!(
+        "ZE-166 evidence-only replay payload bytes={payload}; whole containing pack bytes={packs}"
+    );
+    drop(lease);
+    store.close().unwrap();
+    drop(store);
+    let reopened = Store::open_native_graph(&path, options(), None)
+        .expect("replay explicit swept Delete and Recreate");
+    reopened.close().unwrap();
+    ze166_both_live_missing_relationship_is_corruption();
+    sweep_observation
+}
+
+fn ze166_both_live_missing_relationship_is_corruption() {
+    use crate::property_graph::storage::tree::directory::DirectoryRoot;
+    let parent = super::tempfile::tempdir().unwrap();
+    let store = Store::create_native_graph(parent.path().join("corrupt"), options(), None).unwrap();
+    let (a, b, _) = ze166_fixture(&store);
+    store
+        .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+        .unwrap();
+    let old = store.admit_native_read().unwrap();
+    let bundle = old.bundle();
+    let mut roots = bundle.roots();
+    roots
+        .replace(DirectoryRoot::empty(
+            roots.store(),
+            TreeKind::Relationships,
+            roots.generation(),
+        ))
+        .unwrap();
+    let mut wal_roots = bundle.wal_roots();
+    wal_roots.slots[1] = None;
+    let input = super::super::NativeGraphBundleInput {
+        base: bundle.base(),
+        root_envelope: bundle.root_envelope(),
+        roots,
+        wal_roots,
+        sequence: bundle.sequence(),
+        catalog: bundle.catalog(),
+        vector: bundle.vector(),
+        text: bundle.text(),
+        reclaim: bundle.reclaim(),
+        high_waters: bundle.high_waters(),
+        prepared_inventories: bundle.prepared_inventories().to_vec(),
+        lexical: bundle.lexical(),
+        document: None,
+    };
+    drop(old);
+    store.install_native_graph_for_test(input).unwrap();
+    let lease = store.admit_native_read().unwrap();
+    assert!(matches!(
+        ze166_key_lookup(&store, &lease, "ab"),
+        Err(
+            crate::property_graph::storage::tree::directory::TreeError::Invalid(
+                "missing relationship has two live endpoints"
+            )
+        )
+    ));
+    assert!(
+        store
+            .apply_native_graph(
+                &[ze166_relationship(a, b)],
+                &QueryControl::Cancel(CancelToken::new())
+            )
+            .is_err()
+    );
 }

@@ -277,6 +277,8 @@ pub mod graph_reclaim_test_support {
         pub receipts: Vec<PathReceipt>,
         /// Actual state after a real cycle.
         pub state: ReclaimState,
+        /// Actual post-sweep key visibility and original install replay generation.
+        pub detach_sweep: (bool, u64),
     }
 
     /// Narrow measured reader-race observations and serialized controls.

@@ -50,6 +50,7 @@ pub const REQUIRED_GRAPH_SMOKE_COVERAGE: &[&str] = &[
     "property-graph.recovery.read-only",
     "property-graph.reclaim.maintenance-output",
     "property-graph.reclaim.physical-replacement",
+    "property-graph.reclaim.detach-sweep",
     "property-graph.reclaim.stale-recheck",
     "property-graph.reclaim.inventory-fold",
     "property-graph.reclaim.protected-union",

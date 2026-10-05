@@ -129,6 +129,7 @@ struct CachedEntity<'source, 'resources, 'm> {
     canonical: Option<CachedCanonical<'source, 'resources, 'm>>,
     fingerprint: Option<CanonicalFingerprint>,
     membership: Membership,
+    evidence_only: bool,
     text: Option<ChargedText<'m>>,
     properties: StorageBuffer<'m, CachedProperty<'m>>,
 }
@@ -602,6 +603,7 @@ fn cached_from_parts<'source, 'resources, 'm>(
         canonical,
         fingerprint,
         membership,
+        evidence_only: false,
         text,
         properties: match properties {
             Some(properties) => properties,
@@ -830,7 +832,7 @@ where
                         EntityId::Relationship(_) => Membership::default(),
                     };
                     let cached = if fence.canonical().is_some() {
-                        load_record(
+                        let record = load_record(
                             source,
                             roots,
                             fence.incarnation(),
@@ -841,10 +843,34 @@ where
                             resources_cell,
                             first_error,
                             resources,
-                        )?
-                        .ok_or(NativeGraphError::Invalid(
-                            "live native fence record is absent",
-                        ))?
+                        )?;
+                        match record {
+                            Some(record) => record,
+                            None => {
+                                fence.hidden_relationship(
+                                    source,
+                                    roots,
+                                    &catalog,
+                                    lease.bundle().document(),
+                                    resources,
+                                )?;
+                                let mut cached = cached_from_parts(
+                                    source,
+                                    fence.provenance(),
+                                    fence.canonical(),
+                                    fence.canonical_bytes(),
+                                    fence.required_payloads().1,
+                                    membership,
+                                    memory,
+                                    resources_cell,
+                                    first_error,
+                                    resources,
+                                    None,
+                                )?;
+                                cached.evidence_only = true;
+                                cached
+                            }
+                        }
                     } else {
                         cached_from_parts(
                             source,
@@ -1155,6 +1181,7 @@ impl AdmittedBase for NativeAdmittedBase<'_, '_, '_, '_> {
     ) -> Result<Option<BaseEntity<'_>>, StageError> {
         control(crate::property_graph::staging::WritePhase::Validate)?;
         self.cached_entity(id)?
+            .filter(|entry| !entry.evidence_only)
             .map(|entry| entry.live(self.identity()))
             .transpose()
             .map(Option::flatten)

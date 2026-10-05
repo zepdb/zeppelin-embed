@@ -58,6 +58,50 @@ impl<'a, S: BlockSource> FenceView<'a, S> {
     pub const fn canonical_bytes(&self) -> Option<PayloadSlice<'a, S>> {
         self.canonical_bytes
     }
+    /// Authentic topology of a physically swept, still nondeleted fence.
+    /// Both endpoints are checked through the same immutable roots.
+    pub(crate) fn hidden_relationship(
+        &self,
+        source: &S,
+        roots: super::super::tree::directory::GraphRoots,
+        catalog: &impl RecordCatalog<S>,
+        document: Option<&EmbeddingTower>,
+        r: &mut TreeResources<'_>,
+    ) -> Result<super::super::adjacency::RelationshipRow, TreeError> {
+        let EntityId::Relationship(rel) = self.incarnation else {
+            return Err(TreeError::Invalid("swept fence is not a relationship"));
+        };
+        let Some(canonical) = self.canonical() else {
+            return Err(TreeError::Invalid("swept fence is deleted"));
+        };
+        let CanonicalShape::Relationship {
+            source: from,
+            target,
+            relationship_type,
+        } = canonical.shape()
+        else {
+            return Err(TreeError::Invalid("swept fence canonical role"));
+        };
+        let from_live = endpoint_present(source, roots, *from, catalog, document, r)?;
+        let target_live = endpoint_present(source, roots, *target, catalog, document, r)?;
+        if from_live && target_live {
+            return Err(TreeError::Invalid(
+                "missing relationship has two live endpoints",
+            ));
+        }
+        let Symbol::RelationshipType(relationship_type) =
+            catalog.resolve(SymbolKind::RelationshipType, *relationship_type, r)?
+        else {
+            return Err(TreeError::Invalid("swept fence relationship type"));
+        };
+        Ok(super::super::adjacency::RelationshipRow {
+            rel,
+            source: *from,
+            target: *target,
+            relationship_type,
+        })
+    }
+
     pub(crate) const fn required_payloads(&self) -> (PayloadRef, Option<PayloadRef>) {
         (self.provenance_ref, self.canonical_ref)
     }
@@ -331,4 +375,68 @@ fn read<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], TreeErro
         .get(offset..end)
         .and_then(|part| part.try_into().ok())
         .ok_or(TreeError::Invalid("truncated fence field"))
+}
+
+/// Physical endpoint liveness for replay evidence only; absent is nonlive.
+pub(crate) fn endpoint_present<S: BlockSource>(
+    source: &S,
+    roots: super::super::tree::directory::GraphRoots,
+    node: NodeId,
+    catalog: &impl RecordCatalog<S>,
+    document: Option<&EmbeddingTower>,
+    r: &mut TreeResources<'_>,
+) -> Result<bool, TreeError> {
+    Ok(matches!(
+        super::super::view::lookup_node_state(source, roots, node, catalog, document, r)?,
+        Some(NodeRecordState::Live(_))
+    ))
+}
+
+/// Verify the only missing ExpectedEntity transition: a structured keyed Delete
+/// of an independently authenticated swept relationship.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn swept_delete<S: BlockSource>(
+    source: &S,
+    roots: super::super::tree::directory::GraphRoots,
+    fields: crate::property_graph::OperationFields<'_>,
+    catalog: &impl RecordCatalog<S>,
+    document: Option<&EmbeddingTower>,
+    r: &mut TreeResources<'_>,
+) -> Result<super::super::adjacency::RelationshipRow, TreeError> {
+    use super::super::tree::TreeKind;
+    use crate::property_graph::{ExpectedGraphState, GraphOperation};
+    if fields.operation != GraphOperation::StructuredDelete
+        || fields.expected != ExpectedGraphState::Entity(fields.incarnation)
+        || fields.delete_mode.is_none()
+    {
+        return Err(TreeError::Invalid(
+            "missing entity is not a swept structured Delete",
+        ));
+    }
+    let key = fields
+        .key
+        .ok_or(TreeError::Invalid("swept Delete lacks key"))?;
+    // The participant catalog resolves stored names only. Find the unique
+    // authentic prior incarnation, then compare its complete logical key.
+    let root = roots.directory(TreeKind::KeyFences)?;
+    let mut cursor = super::super::tree::directory::DirectoryCursor::seek(source, root, None, r)?;
+    let fence = loop {
+        let entry = cursor
+            .next_entry(r)?
+            .ok_or(TreeError::Invalid("swept Delete prior fence absent"))?;
+        let fence = verify_fence_entry(source, root, entry, catalog, document, r)?;
+        if fence.incarnation() == fields.incarnation {
+            break fence;
+        }
+    };
+    let prior = fence.provenance().fields_with_key(Some(key), r)?;
+    if prior.incarnation != fields.incarnation
+        || prior.installed_revision >= fields.installed_revision
+        || fields.requested_revision != fields.installed_revision
+    {
+        return Err(TreeError::Invalid(
+            "swept Delete prior incarnation/revision",
+        ));
+    }
+    fence.hidden_relationship(source, roots, catalog, document, r)
 }

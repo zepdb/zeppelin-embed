@@ -112,9 +112,14 @@ impl<'s, 'lease, 'm, 'g> GraphReadView<'s, 'lease, 'm, 'g> {
                     resources,
                 )?
                 else {
-                    return Err(TreeError::Invalid(
-                        "live relationship fence lacks authoritative record",
-                    ));
+                    fence.hidden_relationship(
+                        self.source,
+                        roots,
+                        self.catalog,
+                        self.lease.bundle().document(),
+                        resources,
+                    )?;
+                    return Ok(None);
                 };
                 let payload = PayloadRef::decode(entry.value())?;
                 let record = verify_record(

@@ -19,8 +19,8 @@ mod prepare;
 pub(crate) use prepare::sort_by_symbol;
 pub use prepare::{RecordInput, prepare_record};
 mod fence;
-pub(crate) use fence::fence_window_reference;
 pub use fence::{FenceInput, FenceView, prepare_fence, verify_fence_entry};
+pub(crate) use fence::{endpoint_present, fence_window_reference, swept_delete};
 mod tombstone;
 pub use tombstone::{
     NodeRecordState, NodeTombstone, prepare_node_tombstone, verify_node_state,

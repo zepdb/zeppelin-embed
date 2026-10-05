@@ -1966,6 +1966,7 @@ pub(crate) struct NativeMaintenanceReport {
 #[derive(Clone, Copy)]
 pub(crate) struct MaintenanceLimits {
     pub(crate) relocation_bytes: u64,
+    pub(crate) sweep_limit: usize,
     pub(crate) inventory_additions: usize,
     pub(crate) storage_bytes: usize,
     pub(crate) work: u64,
@@ -1974,6 +1975,7 @@ pub(crate) struct MaintenanceLimits {
 impl Default for MaintenanceLimits {
     fn default() -> Self {
         Self {
+            sweep_limit: 128,
             relocation_bytes: crate::property_graph::storage::consolidation::RELOCATION_BYTES,
             inventory_additions: INVENTORY_FOLD_ADDITION_LIMIT,
             storage_bytes: 32 * 1024 * 1024,
@@ -2134,6 +2136,7 @@ pub(super) fn commit_with_limits(
         admitted.document(),
         proof.drain.as_slice(),
         limits.relocation_bytes,
+        limits.sweep_limit,
         folded_inventory,
         proof.pending_page_relocations.as_slice(),
         reclaim_pending.as_slice(),
