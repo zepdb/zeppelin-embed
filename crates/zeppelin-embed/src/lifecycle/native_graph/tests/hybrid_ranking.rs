@@ -1278,6 +1278,188 @@ fn ze209_hybrid_cost_measurement() {
     }
 }
 
+// Changing the accepted normalization policy requires an explicit proof update.
+const ZE293_PROVED_NORMALIZATION_VERSION: u16 = 1;
+
+#[test]
+fn ze293_exact_policy_score_is_monotone() {
+    use crate::fts::bm25::{Bm25Params, CorpusStats, Df, DocLen, TermScorer, Tf};
+    use crate::fusion::{HybridQuery, RuleSignals, StorePolicyScorer};
+    use proptest::prelude::*;
+    use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
+    use rand::RngCore;
+
+    assert_eq!(
+        crate::fusion::HYBRID_NORMALIZATION_POLICY_VERSION,
+        ZE293_PROVED_NORMALIZATION_VERSION
+    );
+    let queries = [
+        HybridQuery::new(1).with_alpha(0.0),
+        HybridQuery::new(1).with_alpha(1.0),
+        HybridQuery::new(1),
+        HybridQuery::new(1)
+            .with_rules()
+            .with_rule_signals(RuleSignals {
+                quoted_phrase: true,
+                rarest_exact_document_frequency: Some(1),
+                identifier_token: true,
+            }),
+    ];
+    // Each comparison keeps anchors, query weights and modality membership fixed.
+    let check = |query: &HybridQuery,
+                 va: Option<f64>,
+                 la: Option<f64>,
+                 far: Option<f64>,
+                 close: Option<f64>,
+                 low: Option<f64>,
+                 high: Option<f64>| {
+        let scorer = StorePolicyScorer::new(query, va, la).unwrap();
+        let before = scorer.score(far, low).unwrap();
+        let vector = scorer.score(close, low).unwrap();
+        let lexical = scorer.score(far, high).unwrap();
+        let both = scorer.score(close, high).unwrap();
+        prop_assert!(vector >= before, "closer vector: {vector} < {before}");
+        prop_assert!(lexical >= before, "higher BM25: {lexical} < {before}");
+        prop_assert!(both >= before, "both improved: {both} < {before}");
+        Ok(())
+    };
+    for query in &queries {
+        for anchor in [0.0, f64::from_bits(1), f64::MIN_POSITIVE, 1.0, f64::MAX] {
+            for (far, close, low, high) in [
+                (anchor, 0.0, 0.0, anchor),
+                (anchor, anchor, anchor, anchor),
+                (0.0, 0.0, 0.0, 0.0),
+            ] {
+                check(
+                    query,
+                    Some(anchor),
+                    Some(anchor),
+                    Some(far),
+                    Some(close),
+                    Some(low),
+                    Some(high),
+                )
+                .unwrap();
+                check(
+                    query,
+                    Some(anchor),
+                    None,
+                    Some(far),
+                    Some(close),
+                    None,
+                    None,
+                )
+                .unwrap();
+                check(query, None, Some(anchor), None, None, Some(low), Some(high)).unwrap();
+                check(
+                    query,
+                    Some(anchor),
+                    Some(anchor),
+                    None,
+                    None,
+                    Some(low),
+                    Some(high),
+                )
+                .unwrap();
+                check(
+                    query,
+                    Some(anchor),
+                    Some(anchor),
+                    Some(far),
+                    Some(close),
+                    None,
+                    None,
+                )
+                .unwrap();
+            }
+            check(
+                query,
+                Some(anchor),
+                Some(0.0),
+                Some(anchor),
+                Some(0.0),
+                Some(0.0),
+                Some(0.0),
+            )
+            .unwrap();
+            check(
+                query,
+                Some(anchor),
+                None,
+                Some(anchor),
+                Some(0.0),
+                Some(0.0),
+                Some(0.0),
+            )
+            .unwrap();
+        }
+        check(query, None, None, None, None, None, None).unwrap();
+    }
+    let mut seed = [0_u8; 32];
+    crate::test_support::seeded_rng(
+        "lifecycle::native_graph::tests::hybrid_ranking::ze293_exact_policy_score_is_monotone",
+    )
+    .fill_bytes(&mut seed);
+    let mut runner = TestRunner::new_with_rng(
+        Config {
+            cases: 256,
+            failure_persistence: None,
+            ..Config::default()
+        },
+        TestRng::from_seed(RngAlgorithm::ChaCha, &seed),
+    );
+    runner
+        .run(
+            &(
+                0.0_f64..=1.0,
+                -1022_i32..=1023,
+                -1022_i32..=1023,
+                0.0_f64..=1.0,
+                0.0_f64..=1.0,
+                0.0_f64..=1.0,
+                0.0_f64..=1.0,
+                1_u32..=10000,
+                1_u32..=1000,
+                1_u32..=100,
+                1_u32..=100,
+            ),
+            |(alpha, ve, le, v1, v2, l1, l2, docs, length, tf1, tf2)| {
+                let va = 2.0_f64.powi(ve);
+                let la = 2.0_f64.powi(le);
+                let query = HybridQuery::new(1).with_alpha(alpha);
+                check(
+                    &query,
+                    Some(va),
+                    Some(la),
+                    Some(va * v1.max(v2)),
+                    Some(va * v1.min(v2)),
+                    Some(la * l1.min(l2)),
+                    Some(la * l1.max(l2)),
+                )?;
+                // Additional matches retain the existing term contribution; document
+                // length and full-corpus statistics remain identical for both candidates.
+                let stats =
+                    CorpusStats::new(u64::from(docs), u64::from(docs) * u64::from(length)).unwrap();
+                let first = TermScorer::new(Df(docs), &stats, Bm25Params::beir());
+                let extra = TermScorer::new(Df(1), &stats, Bm25Params::beir());
+                let low = first.score(Tf(tf1), DocLen(length + tf1 + tf2));
+                let high = low + extra.score(Tf(tf2), DocLen(length + tf1 + tf2));
+                prop_assert!(high >= low);
+                let anchor = first.ceiling() + extra.ceiling();
+                check(
+                    &query,
+                    Some(va),
+                    Some(anchor),
+                    Some(va),
+                    Some(0.0),
+                    Some(low),
+                    Some(high),
+                )
+            },
+        )
+        .unwrap();
+}
+
 #[test]
 fn ze209_windowed_stability_certificate() {
     let mut corpus = Corpus::new();
@@ -1296,6 +1478,10 @@ fn ze209_windowed_stability_certificate() {
     assert_eq!(report.actual_tier, Some(ActualTier::Exact));
     assert_eq!(hit_bits(&hits), hit_bits(&expected));
     assert_eq!(report.coverage, CandidateCoverage::Exact);
+    assert_eq!(
+        report.normalization_version,
+        ZE293_PROVED_NORMALIZATION_VERSION
+    );
     let (_, report) = hybrid(&corpus, [0.0, 0.0], "amber", SearchMode::Default, None, 1);
     assert_eq!(report.actual_tier, Some(ActualTier::Graph));
     assert_eq!(report.coverage, CandidateCoverage::Approximate);
@@ -1329,5 +1515,9 @@ fn ze209_windowed_stability_certificate() {
         report.coverage,
         CandidateCoverage::Exact,
         "both legs exhausted"
+    );
+    assert_eq!(
+        report.normalization_version,
+        ZE293_PROVED_NORMALIZATION_VERSION
     );
 }
