@@ -1922,6 +1922,8 @@ fn ensure_wal_rewrite_covers_retained(
     };
     for (seq, _, mutation) in mutations {
         let covered = match mutation {
+            #[cfg(feature = "graph-cypher")]
+            super::wal_payload::MutationPayload::GraphCommit(_) => false,
             super::wal_payload::MutationPayload::Upsert(document) => {
                 let version = document.version();
                 super::lookup::contains(&purged_ids, &version.doc_id())
@@ -1945,6 +1947,7 @@ fn ensure_wal_rewrite_covers_retained(
                 covered
             }
             super::wal_payload::MutationPayload::MetadataEdit(_)
+            | super::wal_payload::MutationPayload::MixedBatchMember { .. }
             | super::wal_payload::MutationPayload::BatchMember { .. } => false,
         };
         if !covered {

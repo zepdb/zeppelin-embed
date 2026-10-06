@@ -95,3 +95,16 @@
   and tests/fixtures/graph-wal/complete-v1.bin; its matching hex is readable byte
   authority. Object BlockKind10 requires ZGCP role:u16 and version:u16 at4 and6.
   Unsupported roles/versions are never opaque optional participants.
+- Unified WAL op 10 `GRAPH_COMMIT_V1` embeds exactly one complete ZE-38
+  Begin/Change/Commit envelope without its family-19 file header. Op 11
+  `MIXED_BATCH_MEMBER_V1` is `index:u32, count:u32, inner_op:u16, inner payload`,
+  with inner op 2, 7 or 10 only; count is at least 2 and index is below count.
+  Complete member runs commit together; incomplete runs are withheld and orphan
+  continuations fail loudly. Ops 8 and 11 never continue each other's runs.
+  `wal_graph_commit_v1.hex` and `wal_mixed_member_v1.hex` freeze complete
+  family-11 records; all prior goldens are unchanged. Framing validation does
+  not admit graph state or artifacts. Graph replay is owned by ZE-346.
+  The mixed-run group helper checks `H + sum(inner_payload_bytes + 32) <= B`
+  using the existing typed `WalWriteError::GroupTooLarge`; arithmetic overflow
+  is also rejected. H is 40 for a fresh WAL and 0 otherwise, B is the actual
+  policy-dependent WAL group cap. Graph-apply enforcement is a later ticket.

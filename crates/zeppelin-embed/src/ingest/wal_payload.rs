@@ -15,6 +15,9 @@ use super::{DocId, DocumentVersion, IngestDocument, Revision};
 //   7 = document upsert v2 with a u32 field-presence bitmap
 //   8 = one member of a multi-record upsert batch: `index:u32`,
 //       `count:u32`, then the unchanged upsert-v2 payload (ZE-216)
+//   9 = transaction-bound prepared document mutation (ZE-280)
+//  10 = headerless ZE-38 graph commit envelope (ZE-345)
+//  11 = mixed member: `index:u32`, `count:u32`, `inner_op:u16`, inner payload
 //
 // Upsert-v2 bitmap bits are append-only persisted meanings:
 //   bit 0 = vector (`dims:u32`, then `f32[dims]`)
@@ -42,6 +45,38 @@ pub const UPSERT_V2: u16 = 7;
 /// an upsert-v2 payload. Replay applies a batch only when members
 /// `0..count` are all present.
 pub const UPSERT_V2_BATCH_MEMBER: u16 = 8;
+
+/// One complete ZE-38 Begin/Change/Commit envelope, without its file header.
+pub const GRAPH_COMMIT_V1: u16 = 10;
+/// Mixed batch member: `index:u32, count:u32, inner_op:u16, inner payload`.
+/// The inner operation is delete v1, upsert v2 or graph commit v1.
+pub const MIXED_BATCH_MEMBER_V1: u16 = 11;
+
+/// Mixed member prefix plus family-11 record header and checksum: 10 + 22.
+pub const MIXED_BATCH_MEMBER_FRAMED_OVERHEAD: usize = 10 + crate::wal::record::MIN_RECORD_LEN;
+
+/// Computes `header_bytes + sum(inner_payload_bytes + 32)` and checks the
+/// actual WAL group cap. Use 40 header bytes for a fresh WAL, otherwise zero.
+/// This helper performs no append or graph-write admission.
+pub fn mixed_batch_group_bytes(
+    header_bytes: usize,
+    inner_payload_bytes: &[usize],
+    max_group_bytes: usize,
+) -> Result<usize, crate::wal::WalWriteError> {
+    let encoded_bytes = inner_payload_bytes
+        .iter()
+        .try_fold(header_bytes, |sum, length| {
+            sum.checked_add(*length)?
+                .checked_add(MIXED_BATCH_MEMBER_FRAMED_OVERHEAD)
+        });
+    match encoded_bytes {
+        Some(encoded_bytes) if encoded_bytes <= max_group_bytes => Ok(encoded_bytes),
+        encoded_bytes => Err(crate::wal::WalWriteError::GroupTooLarge {
+            encoded_bytes: encoded_bytes.unwrap_or(usize::MAX),
+            max_group_bytes,
+        }),
+    }
+}
 
 /// Upsert-v2 vector field bit.
 pub const UPSERT_V2_VECTOR: u32 = 1 << 0;
@@ -84,6 +119,9 @@ const VALUE_STRING: u8 = 5;
 /// Typed operation-payload encoding or decoding failure.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PayloadError {
+    /// The embedded ZE-38 envelope failed framing validation.
+    #[cfg(feature = "graph-cypher")]
+    GraphEnvelope(crate::property_graph::wal::WalError),
     /// A WAL operation id has no assigned payload contract.
     UnknownOperation(u16),
     /// Invalid transaction identity, generation or sequence range.
@@ -149,6 +187,8 @@ pub enum PayloadError {
 impl std::fmt::Display for PayloadError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            #[cfg(feature = "graph-cypher")]
+            Self::GraphEnvelope(error) => write!(formatter, "WAL graph commit: {error}"),
             Self::TransactionBinding => write!(formatter, "invalid transaction binding"),
             Self::UnknownOperation(op) => {
                 write!(formatter, "WAL mutation operation {op} is unknown")
@@ -272,6 +312,20 @@ impl MetadataEdit {
 /// One decoded record from the append-only mutation operation space.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MutationPayload {
+    /// Encoded graph envelope; this is framing evidence, not replay admission.
+    #[cfg(feature = "graph-cypher")]
+    GraphCommit(Vec<u8>),
+    /// One document or graph mutation inside a mixed atomic run.
+    MixedBatchMember {
+        /// Zero-based position in the batch.
+        index: u32,
+        /// Number of members in the batch.
+        count: u32,
+        /// Inner operation id (2, 7 or 10).
+        op: u16,
+        /// Decoded inner mutation; nested members are forbidden.
+        mutation: Box<MutationPayload>,
+    },
     /// Vector/document upsert.
     Upsert(IngestDocument),
     /// Document tombstones.
@@ -506,6 +560,9 @@ pub fn encode_metadata_edit(edit: &MetadataEdit) -> Result<Vec<u8>, PayloadError
 /// Decodes a payload according to its append-only operation id.
 pub fn decode_mutation(op: u16, payload: &[u8]) -> Result<MutationPayload, PayloadError> {
     match op {
+        MIXED_BATCH_MEMBER_V1 => decode_mixed_batch_member(payload),
+        #[cfg(feature = "graph-cypher")]
+        GRAPH_COMMIT_V1 => decode_graph_commit(payload).map(MutationPayload::GraphCommit),
         UPSERT_V1 => decode_upsert(payload).map(MutationPayload::Upsert),
         DELETE_V1 => decode_delete(payload).map(MutationPayload::Delete),
         METADATA_EDIT_V1 => decode_metadata_edit(payload).map(MutationPayload::MetadataEdit),
@@ -530,6 +587,87 @@ pub fn decode_mutation(op: u16, payload: &[u8]) -> Result<MutationPayload, Paylo
         }
         unknown => Err(PayloadError::UnknownOperation(unknown)),
     }
+}
+
+/// Encodes one mixed member around an already encoded inner payload.
+pub fn encode_mixed_batch_member(
+    index: u32,
+    count: u32,
+    op: u16,
+    inner: &[u8],
+) -> Result<Vec<u8>, PayloadError> {
+    validate_batch_position(index, count)?;
+    validate_mixed_operation(op)?;
+    let length = inner
+        .len()
+        .checked_add(10)
+        .ok_or(PayloadError::LengthOverflow)?;
+    let mut payload = Vec::new();
+    payload
+        .try_reserve_exact(length)
+        .map_err(|_| PayloadError::LengthOverflow)?;
+    payload.extend_from_slice(&index.to_le_bytes());
+    payload.extend_from_slice(&count.to_le_bytes());
+    payload.extend_from_slice(&op.to_le_bytes());
+    payload.extend_from_slice(inner);
+    Ok(payload)
+}
+
+/// Decodes a mixed member, validating its position and allowed inner operation.
+pub fn decode_mixed_batch_member(payload: &[u8]) -> Result<MutationPayload, PayloadError> {
+    let mut cursor = Cursor::new(payload);
+    let index = cursor.read_u32()?;
+    let count = cursor.read_u32()?;
+    validate_batch_position(index, count)?;
+    let op = cursor.read_u16()?;
+    validate_mixed_operation(op)?;
+    let inner = payload.get(10..).ok_or(PayloadError::Truncated)?;
+    let mutation = Box::new(decode_mutation(op, inner)?);
+    Ok(MutationPayload::MixedBatchMember {
+        index,
+        count,
+        op,
+        mutation,
+    })
+}
+
+fn validate_mixed_operation(op: u16) -> Result<(), PayloadError> {
+    if !matches!(op, DELETE_V1 | UPSERT_V2 | GRAPH_COMMIT_V1) {
+        return Err(PayloadError::UnknownOperation(op));
+    }
+    Ok(())
+}
+
+/// Wraps an already encoded ZE-38 envelope without adding any payload fields.
+/// Checks framing only; artifact validation and graph replay belong to recovery.
+#[cfg(feature = "graph-cypher")]
+pub fn encode_graph_commit(envelope: &[u8]) -> Result<Vec<u8>, PayloadError> {
+    decode_graph_commit(envelope)
+}
+
+/// Checks and copies exactly one headerless ZE-38 envelope. No graph state is
+/// admitted or published by this payload decoder.
+#[cfg(feature = "graph-cypher")]
+pub fn decode_graph_commit(payload: &[u8]) -> Result<Vec<u8>, PayloadError> {
+    use crate::property_graph::wal::{
+        STACK_RESERVATION_BYTES, WalResources, validate_envelope_framing,
+    };
+    // Framing work is bounded by the 16 MiB envelope limit. This seam has no
+    // caller cancellation context and never resolves participant artifacts.
+    let mut cancelled = || false;
+    let mut resources = WalResources::new(
+        64 * crate::property_graph::wal::MAX_ENVELOPE_BYTES as u64,
+        STACK_RESERVATION_BYTES,
+        &mut cancelled,
+    )
+    .map_err(PayloadError::GraphEnvelope)?;
+    validate_envelope_framing(payload, &mut resources).map_err(PayloadError::GraphEnvelope)?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(payload.len())
+        .map_err(|_| PayloadError::LengthOverflow)?;
+    bytes.extend_from_slice(payload);
+    Ok(bytes)
 }
 
 /// Frames an upsert-v2 payload as member `index` of a `count`-record batch.

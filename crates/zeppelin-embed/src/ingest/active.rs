@@ -171,6 +171,10 @@ impl ActiveState {
             |binding| decisions.get(&binding.transaction).copied(),
         )? {
             match mutation {
+                #[cfg(feature = "graph-cypher")]
+                MutationPayload::GraphCommit(_) => {
+                    return Err(StoreError::UnsupportedWalMutation { seq, op });
+                }
                 MutationPayload::Upsert(document) => {
                     super::validate_document_columns(schema, &document)
                         .map_err(|error| recovery_apply_error(seq, op, error))?;
@@ -183,7 +187,9 @@ impl ActiveState {
                         .ok_or(StoreError::ActiveRowOverflow)?;
                     steps.push((seq, op, ReplayStep::Delete(doc_ids)));
                 }
-                MutationPayload::MetadataEdit(_) | MutationPayload::BatchMember { .. } => {
+                MutationPayload::MetadataEdit(_)
+                | MutationPayload::BatchMember { .. }
+                | MutationPayload::MixedBatchMember { .. } => {
                     return Err(StoreError::UnsupportedWalMutation { seq, op });
                 }
             }

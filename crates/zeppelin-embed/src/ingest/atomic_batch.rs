@@ -8,7 +8,7 @@
 //!   committed. The writer cuts it off at open ([`cut_interrupted_append`]).
 //! - A batch of several records can also stop at a record boundary, when the
 //!   crash falls between two WAL groups. Its records carry their position
-//!   (`UPSERT_V2_BATCH_MEMBER`), and replay applies a batch only when every
+//!   (`UPSERT_V2_BATCH_MEMBER` or `MIXED_BATCH_MEMBER_V1`), and replay applies a batch only when every
 //!   member is present ([`committed_mutations`]).
 
 use std::path::Path;
@@ -154,6 +154,7 @@ pub(crate) fn committed_mutations_with_decisions(
     let mut committed = Vec::new();
     let mut run: Vec<(LogSeq, u16, MutationPayload)> = Vec::new();
     let mut run_count = 0_u32;
+    let mut run_op = 0_u16;
     for record in records {
         if record.seq.get() <= absorbed_through {
             continue;
@@ -239,27 +240,39 @@ pub(crate) fn committed_mutations_with_decisions(
                 source,
             }
         })?;
-        let MutationPayload::BatchMember {
-            index,
-            count,
-            document,
-        } = mutation
-        else {
-            run.clear();
-            committed.push((record.seq, record.op, mutation));
-            continue;
+        let (index, count, op, mutation) = match mutation {
+            MutationPayload::BatchMember {
+                index,
+                count,
+                document,
+            } => (index, count, record.op, MutationPayload::Upsert(document)),
+            MutationPayload::MixedBatchMember {
+                index,
+                count,
+                op,
+                mutation,
+            } => (index, count, op, *mutation),
+            mutation => {
+                run.clear();
+                committed.push((record.seq, record.op, mutation));
+                continue;
+            }
         };
         if index == 0 {
             run.clear();
             run_count = count;
-        } else if count != run_count || usize::try_from(index).ok() != Some(run.len()) {
+            run_op = record.op;
+        } else if record.op != run_op
+            || count != run_count
+            || usize::try_from(index).ok() != Some(run.len())
+        {
             return Err(StoreError::WalMutation {
                 seq: record.seq,
                 op: record.op,
                 source: PayloadError::OrphanBatchMember { index, count },
             });
         }
-        run.push((record.seq, record.op, MutationPayload::Upsert(document)));
+        run.push((record.seq, op, mutation));
         if index.checked_add(1) == Some(count) {
             committed.append(&mut run);
         }
@@ -386,6 +399,137 @@ mod tests {
         let (cut, after, torn, _) = cut_with_short_read(2);
         assert!(!cut);
         assert_eq!(after, torn);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod mixed_tests {
+    use super::*;
+    use crate::ingest::DocId;
+    use crate::vfs::crash::MemoryVfs;
+    use crate::wal::{WalReader, encode_wal_image};
+
+    fn member(index: u32, count: u32) -> (u16, Vec<u8>) {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&index.to_le_bytes());
+        bytes.extend_from_slice(&count.to_le_bytes());
+        bytes.extend_from_slice(&wal_payload::DELETE_V1.to_le_bytes());
+        bytes.extend_from_slice(&wal_payload::encode_delete(&[DocId::new(7)]).expect("delete"));
+        (11, bytes)
+    }
+
+    fn reader(records: &[(u16, Vec<u8>)]) -> WalReader {
+        let vfs = MemoryVfs::new();
+        vfs.insert(
+            Path::new("wal"),
+            encode_wal_image(LogSeq::new(1), records).expect("WAL"),
+        )
+        .expect("seed");
+        WalReader::open(&vfs, Path::new("wal")).expect("reader")
+    }
+
+    #[test]
+    fn committed_mutations_drops_an_incomplete_mixed_run() {
+        let mut frames = vec![member(0, 3), member(1, 3)];
+        #[cfg(feature = "graph-cypher")]
+        {
+            let graph = include_bytes!("../../tests/fixtures/graph-wal/complete-v1.bin")
+                .get(64..2105)
+                .expect("headerless envelope");
+            frames.push((
+                wal_payload::MIXED_BATCH_MEMBER_V1,
+                wal_payload::encode_mixed_batch_member(2, 3, wal_payload::GRAPH_COMMIT_V1, graph)
+                    .expect("graph member"),
+            ));
+        }
+        #[cfg(not(feature = "graph-cypher"))]
+        frames.push(member(2, 3));
+        for length in 0..frames.len() {
+            let records = reader(frames.get(..length).expect("prefix"));
+            assert!(
+                committed_mutations(records.records(), 0)
+                    .expect("incomplete run")
+                    .is_empty()
+            );
+        }
+        let records = reader(&frames);
+        let complete = committed_mutations(records.records(), 0).expect("complete run");
+        assert_eq!(complete.len(), 3);
+        assert_eq!(
+            complete
+                .first()
+                .map(|(seq, op, mutation)| (seq.get(), *op, mutation)),
+            Some((
+                1,
+                wal_payload::DELETE_V1,
+                &MutationPayload::Delete(vec![DocId::new(7)])
+            ))
+        );
+        #[cfg(feature = "graph-cypher")]
+        assert!(matches!(
+            complete.last(),
+            Some((
+                _,
+                wal_payload::GRAPH_COMMIT_V1,
+                MutationPayload::GraphCommit(_)
+            ))
+        ));
+
+        // A resumed writer may replace an incomplete run with a new run or a
+        // standalone record; the abandoned members never escape.
+        for suffix in [
+            vec![member(0, 2), member(1, 2)],
+            vec![(
+                wal_payload::DELETE_V1,
+                wal_payload::encode_delete(&[DocId::new(8)]).expect("delete"),
+            )],
+        ] {
+            let mut frames = vec![member(0, 3)];
+            let count = suffix.len();
+            frames.extend(suffix);
+            let records = reader(&frames);
+            assert_eq!(
+                committed_mutations(records.records(), 0)
+                    .expect("resumed run")
+                    .len(),
+                count
+            );
+        }
+    }
+
+    #[test]
+    fn an_op_11_member_that_continues_nothing_fails_loudly() {
+        let doc = crate::ingest::IngestDocument::new(
+            crate::ingest::DocumentVersion::new(DocId::new(1), crate::ingest::Revision::new(1)),
+            vec![1.0],
+        );
+        let legacy = (
+            wal_payload::UPSERT_V2_BATCH_MEMBER,
+            wal_payload::encode_upsert_v2_batch_member(
+                0,
+                2,
+                &wal_payload::encode_upsert_v2(&doc).expect("upsert"),
+            )
+            .expect("legacy member"),
+        );
+        for frames in [
+            vec![member(1, 2)],
+            vec![member(0, 3), member(1, 2)],
+            vec![member(0, 3), member(2, 3)],
+            vec![member(0, 2), member(1, 2), member(1, 2)],
+            vec![legacy, member(1, 2)],
+        ] {
+            let records = reader(&frames);
+            assert!(matches!(
+                committed_mutations(records.records(), 0),
+                Err(StoreError::WalMutation {
+                    op: 11,
+                    source: PayloadError::OrphanBatchMember { .. },
+                    ..
+                })
+            ));
+        }
     }
 }
 

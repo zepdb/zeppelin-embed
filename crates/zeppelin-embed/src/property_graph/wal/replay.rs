@@ -140,6 +140,89 @@ pub struct Replay<'a> {
     failed: bool,
     end: Option<ReplayEnd>,
 }
+
+/// Checks exactly one headerless envelope without admitting artifacts or graph
+/// state. Unified WAL payloads carry these bytes inside the family-11 record.
+pub(crate) fn validate_envelope_framing(
+    bytes: &[u8],
+    r: &mut WalResources<'_>,
+) -> Result<(), WalError> {
+    use super::codec::Reader;
+    use super::framing::{read_record, state_read};
+    if bytes.len() > MAX_ENVELOPE_BYTES {
+        return Err(WalError::Capacity);
+    }
+    let sequence = u64::from_le_bytes(
+        bytes
+            .get(16..24)
+            .ok_or(WalError::Malformed)?
+            .try_into()
+            .map_err(|_| WalError::Malformed)?,
+    );
+    let begin = read_record(bytes, 0, None, sequence, Some(1), r)?.ok_or(WalError::Malformed)?;
+    let mut rd = Reader {
+        bytes: begin.payload,
+        pos: 0,
+    };
+    let store = StoreInstanceId::new(rd.u128(r)?).map_err(|_| WalError::Store)?;
+    rd.take(8, r)?;
+    let generation = GraphGeneration::new(rd.u64(r)?);
+    rd.u64(r)?;
+    let count = rd.u32(r)?;
+    rd.zero(4, r)?;
+    if rd.u64(r)? != bytes.len() as u64 || u64::from(count) * 72 > bytes.len() as u64 {
+        return Err(WalError::Malformed);
+    }
+    rd.end()?;
+    let mut offset = begin.bytes;
+    for index in 1..=count {
+        let change = read_record(
+            bytes.get(offset..).ok_or(WalError::Malformed)?,
+            index,
+            Some(begin.batch),
+            sequence,
+            None,
+            r,
+        )?
+        .ok_or(WalError::Malformed)?;
+        offset = offset
+            .checked_add(change.bytes)
+            .ok_or(WalError::Malformed)?;
+    }
+    let commit = read_record(
+        bytes.get(offset..).ok_or(WalError::Malformed)?,
+        count.checked_add(1).ok_or(WalError::Malformed)?,
+        Some(begin.batch),
+        sequence,
+        Some(6),
+        r,
+    )?
+    .ok_or(WalError::Malformed)?;
+    let mut rd = Reader {
+        bytes: commit.payload,
+        pos: 16,
+    };
+    let state = state_read(&mut rd, r)?;
+    rd.end()?;
+    let mut replay = Replay {
+        bytes,
+        state: CommitState {
+            store,
+            generation,
+            sequence: sequence.checked_sub(1).ok_or(WalError::Sequence)?,
+            high_waters: HighWaters::default(),
+            ..state
+        },
+        offset: 0,
+        failed: false,
+        end: None,
+    };
+    match replay.next_inner(None, r)? {
+        ReplayStep::Envelope(_) if replay.offset == bytes.len() => Ok(()),
+        _ => Err(WalError::Malformed),
+    }
+}
+
 impl<'a> Replay<'a> {
     /// Authenticates the selected WAL header and returns its declared first sequence.
     pub(crate) fn checked_first_sequence(
