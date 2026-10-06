@@ -947,6 +947,10 @@ export declare function verify(path: string): VerifyReport;
 export declare function openInspection(path: string): Store;
 /** Graph scalar inputs: bigint is signed I64; finite number is F64. */
 export type GraphScalar = null | boolean | bigint | number | string;
+/** Numeric typed arrays follow scalar rules: numbers are F64, bigints are I64. */
+export type GraphParameter = GraphScalar | readonly GraphParameter[] |
+  Int8Array | Uint8Array | Uint8ClampedArray | Int16Array | Uint16Array |
+  Int32Array | Uint32Array | Float32Array | Float64Array | BigInt64Array | BigUint64Array;
 /** Stored lists contain one non-null scalar type (empty lists are allowed). */
 export type GraphProperty = GraphScalar | readonly boolean[] | readonly bigint[] | readonly number[] | readonly string[];
 export type GraphProperties = Readonly<Record<string, GraphProperty>>;
@@ -1117,9 +1121,10 @@ export class GraphStore {
    * Global non-distinct count streams its input. ORDER BY immediately followed
    * by LIMIT retains a bounded ordered prefix. Both evaluate the full input
    * and enforce the query budgets.
-   * Parameters are scalar only; bigint values must fit signed I64. Unknown
+   * Parameters accept scalars and nested lists (16 levels, 524288 total elements).
+   * bigint values must fit signed I64; numbers are F64. Unknown
    * options, nonfinite numbers and malformed Unicode are rejected. No graph
-   * search, vector input, or list parameters in this release.
+   * search or vector input in this release.
    * count, sum, min and max accumulate per group; null operands are skipped.
    * Empty sum/count is 0; empty min/max is null. Sum uses checked numeric
    * arithmetic; min/max use the same value ordering as ORDER BY.
@@ -1128,7 +1133,7 @@ export class GraphStore {
    * collect and DISTINCT aggregate operands consume memory for retained values;
    * the query memory/work budgets and result-row limit still apply.
    */
-  cypher(text: string, params?: Readonly<Record<string, GraphScalar>>, options?: GraphQueryOptions): GraphResult;
+  cypher(text: string, params?: Readonly<Record<string, GraphParameter>>, options?: GraphQueryOptions): GraphResult;
   /** Off-thread atomic apply. Await dependent writes; concurrent writers may
    * reject with ZE_ERR_BUSY. close() waits for admitted work or rejects pending
    * calls with ZE_ERR_CLOSED. Inputs are copied before returning. */
@@ -1137,7 +1142,7 @@ export class GraphStore {
    * stops the engine and rejects with ZE_ERR_CANCELLED, never partial results.
    * Completion can win an abort race. Errors retain graph disposition metadata.
    * close() has the same lifetime contract as applyAsync. */
-  cypherAsync(text: string, params?: Readonly<Record<string, GraphScalar>>, options?: GraphQueryOptions & { readonly signal?: AbortSignal }): Promise<GraphResult>;
+  cypherAsync(text: string, params?: Readonly<Record<string, GraphParameter>>, options?: GraphQueryOptions & { readonly signal?: AbortSignal }): Promise<GraphResult>;
 }
 /** One participant; operations run in the listed phase order. */
 export interface NamespaceMutation {

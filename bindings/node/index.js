@@ -628,6 +628,20 @@ function graphScalar(value) {
   if (typeof value === 'number' && Number.isFinite(value)) return;
   graphInvalid('values must be null, boolean, signed 64-bit bigint, finite number or string');
 }
+// Match graph_abi/values.rs: 16 list levels and 524288 children per request.
+function graphParameter(value, state, depth = 0) {
+  if (Array.isArray(value) || (ArrayBuffer.isView(value) && !(value instanceof DataView))) {
+    if (depth >= 16) graphInvalid('parameter list depth exceeds 16 (or contains a cycle)');
+    state.elements += value.length;
+    if (state.elements > 524288) graphInvalid('parameter lists exceed 524288 elements');
+    for (const element of value) graphParameter(element, state, depth + 1);
+    return;
+  }
+  try { graphScalar(value); } catch (error) {
+    if (error instanceof ZeppelinError) graphInvalid(`unsupported parameter list/scalar value: ${error.message}`);
+    throw error;
+  }
+}
 function graphProperties(properties) {
   if (properties === undefined) return;
   graphObject(properties, null, 'properties');
@@ -746,7 +760,8 @@ class GraphStore {
   }
   #cypher(text, params, options, async, token) {
     graphString(text, 'query'); graphObject(params, null, 'parameters');
-    for (const [name, value] of Object.entries(params)) { graphString(name, 'parameter name'); graphScalar(value); }
+    const state = { elements: 0 };
+    for (const [name, value] of Object.entries(params)) { graphString(name, 'parameter name'); graphParameter(value, state); }
     graphObject(options, async ? ['maxRows', 'signal'] : ['maxRows'], 'query options');
     const maxRows = options.maxRows ?? 0;
     if (!Number.isInteger(maxRows) || maxRows < 0 || maxRows > 65536) graphInvalid('maxRows must be in 0..65536');

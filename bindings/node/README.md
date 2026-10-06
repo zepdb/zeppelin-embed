@@ -588,7 +588,13 @@ Query results contain `columns`, `rows`, `receipts`, `disposition`,
 `admittedGeneration`, `changedGeneration`, and `generation` (changed when known,
 otherwise admitted). Values are null, boolean, I64 bigint, F64 number, string,
 node/relationship objects with a `kind` discriminator, or lists. Properties use
-scalar values or homogeneous scalar lists. Parameters are scalar only. Pass a
+scalar values or homogeneous scalar lists. Parameters accept scalars, arrays
+and numeric typed arrays, including mixed scalar types, nulls and nested lists. Lists are limited to 16 levels and
+524,288 total elements across parameters. Execution budgets also apply: the
+current engine expression arena has 1,024 cells shared by parameter list
+elements and expression temporaries; larger inputs can fail during execution.
+For example, use
+`store.cypher('MATCH (n) WHERE n.id IN $ids RETURN n.id', { ids: ['a', 'b'] })`. Pass a
 bigint for an integer; ordinary JavaScript numbers are F64. IDs are unsigned
 128-bit bigints. Source text is distinct from properties; read it with
 `ze.stored_text(n)`.
@@ -602,7 +608,7 @@ are rejected before calling the engine.
 
 The [documented Cypher profile](https://github.com/zepdb/zeppelin-embed/blob/main/crates/zeppelin-embed-cypher/README.md)
 defines supported statements and functions. This binding does not add syntax,
-graph search, vector inputs, or list parameters. The example uses synchronous
+graph search or vector inputs. The example uses synchronous
 calls; use the async API with `AbortSignal` for potentially long operations.
 
 The normal Node suite includes `test/bounded-soak.test.mjs`: eight compressed

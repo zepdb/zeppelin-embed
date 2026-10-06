@@ -51,7 +51,7 @@ test('malformed input is rejected before effect', { skip: !supported }, () => fi
   for (const bad of [{ properties: { n: 1n << 63n } }, { properties: { n: NaN } }, { labels: 'bad' }, { revision: -1n }, { vector: [1] }, { operation: 'typo' }]) {
     assert.throws(() => s.apply([node('good'), node('bad', bad)]), e => e instanceof ZeppelinError && e.code === 'ZE_ERR_INVALID_ARGUMENT' && e.disposition === 'NotCommitted');
   }
-  assert.throws(() => s.cypher('CREATE (n:Doc) RETURN n', { unsupported: [] }), e => e.code === 'ZE_ERR_INVALID_ARGUMENT');
+  assert.throws(() => s.cypher('CREATE (n:Doc) RETURN n', { unsupported: [{}] }), e => e.code === 'ZE_ERR_INVALID_ARGUMENT');
   assert.deepEqual(s.cypher('MATCH (n) RETURN count(n)').rows, [[0n]]);
 }));
 test('typed scalar parameters and list results', { skip: !supported }, () => fixture(s => {

@@ -112,6 +112,44 @@ struct GPool {
     }
     const auto index = static_cast<uint32_t>(values.size()); values.push_back(v); return index;
   }
+  // General query lists permit mixed scalars, nulls and nested lists.
+  uint32_t parameter(napi_env env, napi_value js, unsigned depth = 0) {
+    bool array, typed;
+    GCheck(env, napi_is_array(env, js, &array));
+    GCheck(env, napi_is_typedarray(env, js, &typed));
+    if (!array && !typed)
+      return scalar(env, js, false);
+    GRequire(env, depth < 16,
+             "parameter list depth exceeds 16 (or contains a cycle)");
+    size_t count;
+    if (typed) {
+      napi_typedarray_type type;
+      void *data;
+      napi_value buffer;
+      size_t offset;
+      GCheck(env, napi_get_typedarray_info(env, js, &type, &count, &data,
+                                           &buffer, &offset));
+    } else
+      count = GLength(env, js);
+    GRequire(env, count <= 524288 - parameter_elements,
+             "parameter lists exceed 524288 elements");
+    parameter_elements += count;
+    std::vector<uint32_t> entries;
+    entries.reserve(count);
+    for (size_t i = 0; i < count; ++i)
+      entries.push_back(
+          parameter(env, GAt(env, js, static_cast<uint32_t>(i)), depth + 1));
+    auto v = GStruct<ZeGraphValue>();
+    v.tag = ZE_GRAPH_VALUE_LIST;
+    v.list_kind = ZE_GRAPH_LIST_QUERY;
+    v.range = {static_cast<uint32_t>(children.size()),
+               static_cast<uint32_t>(count)};
+    children.insert(children.end(), entries.begin(), entries.end());
+    const auto index = static_cast<uint32_t>(values.size());
+    values.push_back(v);
+    return index;
+  }
+  size_t parameter_elements = 0;
   ZeGraphRange props(napi_env env, napi_value obj) {
     ZeGraphRange range{static_cast<uint32_t>(properties.size()), 0};
     if (GType(env, obj) == napi_undefined) return range;
@@ -363,7 +401,7 @@ napi_value GraphCypher(napi_env env, napi_callback_info info) {
     napi_value names; GCheck(env, napi_get_property_names(env, args[2], &names));
     for (uint32_t i = 0; i < GLength(env, names); ++i) {
       auto name = GAt(env, names, i); napi_value value; GCheck(env, napi_get_property(env, args[2], name, &value));
-      auto param = GStruct<ZeGraphParameterValue>(); param.name = pool.text(GText(env, name)); param.value = pool.scalar(env, value, false); parameters.push_back(param);
+      auto param = GStruct<ZeGraphParameterValue>(); param.name = pool.text(GText(env, name)); param.value = pool.parameter(env, value); parameters.push_back(param);
     }
     const auto max_rows = GDouble(env, args[3]); GRequire(env, std::isfinite(max_rows) && max_rows >= 0 && max_rows <= 65536 && std::floor(max_rows) == max_rows, "invalid maxRows");
     return RunNative<Async>(env, args[0], handle.token, [data, handle, max_rows]() {
