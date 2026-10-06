@@ -3214,6 +3214,7 @@ impl Store {
             &wal_path,
             snapshot.generation(),
             absorbed_through,
+            snapshot.graph_absorbed_through,
             &accounting,
             &schema,
             &tokenizer,

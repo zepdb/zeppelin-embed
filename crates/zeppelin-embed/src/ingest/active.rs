@@ -97,11 +97,16 @@ impl ActiveState {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "recovery routes two manifest watermarks"
+    )]
     pub(crate) fn recover(
         vfs: &dyn Vfs,
         path: &Path,
         generation: u64,
         absorbed_through: u64,
+        graph_absorbed_through: u64,
         accounting: &Arc<Accounting>,
         schema: &crate::meta::Schema,
         analyzer: &Analyzer,
@@ -115,19 +120,23 @@ impl ActiveState {
                     vfs,
                     path.parent().ok_or(StoreError::ActiveRowOverflow)?,
                     clean.records(),
-                    absorbed_through,
+                    absorbed_through.min(graph_absorbed_through),
                 )?;
                 let (mut active, sealed_tombstones) = Self::replay(
                     generation,
                     absorbed_through,
+                    graph_absorbed_through,
                     &clean,
                     accounting,
                     schema,
                     analyzer,
                     &decisions,
                 )?;
-                if let Some(binding) = decisions.values().max_by_key(|binding| binding.last_seq) {
-                    let later = super::atomic_batch::committed_mutations_with_decisions(
+                let generation_watermark = absorbed_through.max(graph_absorbed_through);
+                if let Some(binding) = decisions.values().max_by_key(|binding| binding.last_seq)
+                    && binding.last_seq > generation_watermark
+                {
+                    let later = super::atomic_batch::committed_batches(
                         clean.records(),
                         binding.last_seq,
                         |b| decisions.get(&b.transaction).copied(),
@@ -153,9 +162,14 @@ impl ActiveState {
     /// it, then every record is applied in place and the lexical index is
     /// built once at the end. Copying the segment per record, as live
     /// copy-on-write ingest does, made reopen quadratic in unsealed rows.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "recovery routes two manifest watermarks"
+    )]
     fn replay(
         mut generation: u64,
         absorbed_through: u64,
+        graph_absorbed_through: u64,
         recovered: &CleanWalReader,
         accounting: &Arc<Accounting>,
         schema: &crate::meta::Schema,
@@ -165,32 +179,47 @@ impl ActiveState {
         let mut documents = Vec::new();
         let mut steps = Vec::new();
         let mut deleted_ids = 0_usize;
-        for (seq, op, mutation) in super::atomic_batch::committed_mutations_with_decisions(
+        for batch in super::atomic_batch::committed_batches(
             recovered.records(),
-            absorbed_through,
+            absorbed_through.min(graph_absorbed_through),
             |binding| decisions.get(&binding.transaction).copied(),
         )? {
-            match mutation {
-                #[cfg(feature = "graph-cypher")]
-                MutationPayload::GraphCommit(_) => {
-                    return Err(StoreError::UnsupportedWalMutation { seq, op });
+            if batch.last_seq.get() > absorbed_through.max(graph_absorbed_through) {
+                generation = generation
+                    .checked_add(1)
+                    .ok_or(StoreError::GenerationOverflow)?;
+            }
+            for (seq, op, mutation) in batch.members {
+                let watermark = match &mutation {
+                    #[cfg(feature = "graph-cypher")]
+                    MutationPayload::GraphCommit(_) => graph_absorbed_through,
+                    _ => absorbed_through,
+                };
+                if seq.get() <= watermark {
+                    continue;
                 }
-                MutationPayload::Upsert(document) => {
-                    super::validate_document_columns(schema, &document)
-                        .map_err(|error| recovery_apply_error(seq, op, error))?;
-                    steps.push((seq, op, ReplayStep::Upsert(documents.len())));
-                    documents.push(document);
-                }
-                MutationPayload::Delete(doc_ids) => {
-                    deleted_ids = deleted_ids
-                        .checked_add(doc_ids.len())
-                        .ok_or(StoreError::ActiveRowOverflow)?;
-                    steps.push((seq, op, ReplayStep::Delete(doc_ids)));
-                }
-                MutationPayload::MetadataEdit(_)
-                | MutationPayload::BatchMember { .. }
-                | MutationPayload::MixedBatchMember { .. } => {
-                    return Err(StoreError::UnsupportedWalMutation { seq, op });
+                match mutation {
+                    #[cfg(feature = "graph-cypher")]
+                    MutationPayload::GraphCommit(_) => {
+                        return Err(StoreError::UnsupportedWalMutation { seq, op });
+                    }
+                    MutationPayload::Upsert(document) => {
+                        super::validate_document_columns(schema, &document)
+                            .map_err(|error| recovery_apply_error(seq, op, error))?;
+                        steps.push((seq, op, ReplayStep::Upsert(documents.len())));
+                        documents.push(document);
+                    }
+                    MutationPayload::Delete(doc_ids) => {
+                        deleted_ids = deleted_ids
+                            .checked_add(doc_ids.len())
+                            .ok_or(StoreError::ActiveRowOverflow)?;
+                        steps.push((seq, op, ReplayStep::Delete(doc_ids)));
+                    }
+                    MutationPayload::MetadataEdit(_)
+                    | MutationPayload::BatchMember { .. }
+                    | MutationPayload::MixedBatchMember { .. } => {
+                        return Err(StoreError::UnsupportedWalMutation { seq, op });
+                    }
                 }
             }
         }
@@ -253,9 +282,6 @@ impl ActiveState {
                         .extend(doc_ids.iter().copied().map(SealedTombstoneDemand::delete));
                 }
             }
-            generation = generation
-                .checked_add(1)
-                .ok_or(StoreError::GenerationOverflow)?;
         }
         if let Some((seq, op)) = last_record
             && segment.tracks_text()

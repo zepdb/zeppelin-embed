@@ -144,11 +144,28 @@ pub(crate) fn committed_mutations(
     committed_mutations_with_decisions(records, absorbed_through, |_| None)
 }
 
+/// One complete crash-atomic run, counted once by recovery.
+pub(crate) struct CommittedBatch {
+    pub(crate) last_seq: LogSeq,
+    pub(crate) members: Vec<(LogSeq, u16, MutationPayload)>,
+}
+
 pub(crate) fn committed_mutations_with_decisions(
     records: &[VisibleRecord],
     absorbed_through: u64,
     decision: impl Fn(wal_payload::TransactionBinding) -> Option<wal_payload::TransactionBinding>,
 ) -> Result<Vec<(LogSeq, u16, MutationPayload)>, StoreError> {
+    Ok(committed_batches(records, absorbed_through, decision)?
+        .into_iter()
+        .flat_map(|batch| batch.members)
+        .collect())
+}
+
+pub(crate) fn committed_batches(
+    records: &[VisibleRecord],
+    absorbed_through: u64,
+    decision: impl Fn(wal_payload::TransactionBinding) -> Option<wal_payload::TransactionBinding>,
+) -> Result<Vec<CommittedBatch>, StoreError> {
     use wal_payload::{PreparedMutation, TransactionDecision, transaction_decision};
     let mut prepared_run: Vec<(LogSeq, PreparedMutation)> = Vec::new();
     let mut committed = Vec::new();
@@ -211,11 +228,13 @@ pub(crate) fn committed_mutations_with_decisions(
             prepared_run.push((record.seq, member));
             if complete {
                 if status == TransactionDecision::Committed {
-                    committed.extend(
-                        prepared_run
+                    committed.push(CommittedBatch {
+                        last_seq: record.seq,
+                        members: prepared_run
                             .drain(..)
-                            .map(|(seq, member)| (seq, member.op, member.mutation)),
-                    );
+                            .map(|(seq, member)| (seq, member.op, member.mutation))
+                            .collect(),
+                    });
                 } else {
                     prepared_run.clear();
                 }
@@ -254,7 +273,10 @@ pub(crate) fn committed_mutations_with_decisions(
             } => (index, count, op, *mutation),
             mutation => {
                 run.clear();
-                committed.push((record.seq, record.op, mutation));
+                committed.push(CommittedBatch {
+                    last_seq: record.seq,
+                    members: vec![(record.seq, record.op, mutation)],
+                });
                 continue;
             }
         };
@@ -274,7 +296,10 @@ pub(crate) fn committed_mutations_with_decisions(
         }
         run.push((record.seq, op, mutation));
         if index.checked_add(1) == Some(count) {
-            committed.append(&mut run);
+            committed.push(CommittedBatch {
+                last_seq: record.seq,
+                members: std::mem::take(&mut run),
+            });
         }
     }
     if let Some((seq, member)) = prepared_run.first()

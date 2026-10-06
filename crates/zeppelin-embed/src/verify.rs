@@ -520,6 +520,18 @@ impl Walk<'_> {
             &wal_path,
             generation,
             absorbed_through,
+            {
+                #[cfg(feature = "graph-cypher")]
+                {
+                    decoded
+                        .and_then(|manifest| manifest.graph.as_ref())
+                        .map_or(0, |graph| graph.graph_absorbed_through)
+                }
+                #[cfg(not(feature = "graph-cypher"))]
+                {
+                    0
+                }
+            },
             &accounting,
             &schema,
             &analyzer,

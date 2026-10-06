@@ -342,6 +342,44 @@ fn live_writers_preserve_before_batch_and_after_batch_writes() {
     }
 }
 
+#[test]
+fn recovery_counts_a_later_op_8_batch_once_after_a_namespace_decision() {
+    use zeppelin_embed::lifecycle::{LiveNamespaceMutation, namespace_batch_live};
+
+    let root = tempfile::tempdir().expect("namespace root");
+    let path = root.path().join("a");
+    let store = Store::open(&path, OpenOptions::new()).expect("open namespace");
+    let sibling = Store::open(root.path().join("b"), OpenOptions::new()).expect("open sibling");
+    namespace_batch_live(
+        root.path(),
+        vec![
+            LiveNamespaceMutation {
+                store: &store,
+                mutation: mutation("a", vec![doc(1, 1)]),
+            },
+            LiveNamespaceMutation {
+                store: &sibling,
+                mutation: mutation("b", vec![doc(1, 1)]),
+            },
+        ],
+    )
+    .expect("namespace decision");
+    let ack = store
+        .ingest(IngestBatch::new(vec![doc(2, 1), doc(3, 1)]))
+        .expect("later op-8 batch");
+    store.close().expect("close namespace");
+    sibling.close().expect("close sibling");
+
+    for options in [OpenOptions::read_only(), OpenOptions::new()] {
+        let reopened = Store::open(&path, options).expect("recover namespace");
+        assert_eq!(
+            reopened.snapshot().expect("snapshot").generation(),
+            ack.generation()
+        );
+        reopened.close().expect("close recovered namespace");
+    }
+}
+
 #[cfg(feature = "test-seams")]
 #[test]
 fn committed_frames_survive_root_retirement() {

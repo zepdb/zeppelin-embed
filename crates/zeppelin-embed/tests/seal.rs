@@ -19,6 +19,74 @@ use zeppelin_embed::segment::SegmentId;
 use zeppelin_embed::segment::writer::{SegmentBuild, SegmentFactors, write_segment};
 use zeppelin_embed::vfs::{StdVfs, SyncKind, Vfs, VfsFile};
 
+#[cfg(feature = "graph-cypher")]
+mod seal {
+    use super::*;
+
+    #[test]
+    fn refuses_rotation_behind_the_graph_watermark() {
+        let directory = tempdir().expect("store directory");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+        store
+            .ingest(IngestBatch::new(vec![IngestDocument::new(
+                DocumentVersion::new(DocId::new(1), Revision::new(1)),
+                vec![1.0, 0.0],
+            )]))
+            .expect("ingest document");
+        store.close().expect("close writer");
+
+        let bytes = zeppelin_embed::format::golden::decode_hex(include_str!(
+            "fixtures/format/manifest_v3.hex"
+        ))
+        .expect("v3 fixture");
+        let mut manifest =
+            zeppelin_embed::manifest::decode_manifest("v3", &bytes).expect("v3 manifest");
+        manifest.log_seq = 0;
+        manifest.schema = Schema::timestamp_only();
+        manifest
+            .graph
+            .as_mut()
+            .expect("graph section")
+            .graph_absorbed_through = 0;
+        commit_manifest(
+            &StdVfs,
+            directory.path(),
+            &manifest,
+            DurabilityPolicy::new(DurabilityMode::Durable, CommitTier::Ordered).expect("policy"),
+        )
+        .expect("commit graph fold");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("reopen store");
+        let generation = store.snapshot().expect("snapshot").generation();
+        let files_before = files(directory.path());
+        let manifest_before =
+            std::fs::read(directory.path().join(MANIFEST_FILE)).expect("manifest");
+        let wal_before = std::fs::read(directory.path().join("wal.ze")).expect("WAL");
+
+        assert!(matches!(
+            store.seal(),
+            Err(StoreError::Manifest(ManifestError::Decode(detail)))
+                if detail == "cannot rotate WAL through 1: graph absorbed only through 0"
+        ));
+        assert_eq!(store.snapshot().expect("snapshot").generation(), generation);
+        assert_eq!(files(directory.path()), files_before);
+        assert_eq!(
+            std::fs::read(directory.path().join(MANIFEST_FILE)).expect("manifest"),
+            manifest_before
+        );
+        assert_eq!(
+            std::fs::read(directory.path().join("wal.ze")).expect("WAL"),
+            wal_before
+        );
+        store.close().expect("close writer");
+    }
+
+    fn files(directory: &Path) -> Vec<PathBuf> {
+        let mut files = StdVfs.list(directory).expect("store files");
+        files.sort();
+        files
+    }
+}
+
 #[test]
 fn seal_of_an_empty_active_segment_is_an_idempotent_no_op_returning_the_current_generation() {
     let directory = tempdir().expect("store directory");

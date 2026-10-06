@@ -299,6 +299,7 @@ impl Store {
 pub struct PublishedSnapshot {
     generation: u64,
     absorbed_through: u64,
+    pub(crate) graph_absorbed_through: u64,
     epoch_alias: Option<crate::epoch::EpochIdentity>,
     graph_profile:
         Result<crate::graph::search::EpochGraphProfile, crate::graph::search::GraphProfileError>,
@@ -322,6 +323,7 @@ impl PublishedSnapshot {
         Self {
             generation,
             absorbed_through: 0,
+            graph_absorbed_through: 0,
             epoch_alias: None,
             graph_profile: Err(crate::graph::search::GraphProfileError::EpochUnstamped),
             schema: crate::meta::Schema::timestamp_only(),
@@ -487,6 +489,19 @@ impl PublishedSnapshot {
         Ok(Self {
             generation: manifest.generation,
             absorbed_through: manifest.log_seq,
+            graph_absorbed_through: {
+                #[cfg(feature = "graph-cypher")]
+                {
+                    manifest
+                        .graph
+                        .as_ref()
+                        .map_or(0, |graph| graph.graph_absorbed_through)
+                }
+                #[cfg(not(feature = "graph-cypher"))]
+                {
+                    0
+                }
+            },
             epoch_alias: manifest.epoch_alias,
             graph_profile,
             schema: manifest.schema.clone(),
@@ -505,6 +520,7 @@ impl PublishedSnapshot {
         Ok(Self {
             generation: self.generation,
             absorbed_through: self.absorbed_through,
+            graph_absorbed_through: self.graph_absorbed_through,
             epoch_alias: self.epoch_alias,
             graph_profile: self.graph_profile,
             schema: self.schema.clone(),

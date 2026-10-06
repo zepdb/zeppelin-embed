@@ -75,6 +75,15 @@ pub fn load_manifest(
             durable: durable_log_end,
         });
     }
+    #[cfg(feature = "graph-cypher")]
+    if let Some(graph) = &manifest.graph
+        && graph.graph_absorbed_through > durable_log_end
+    {
+        return Err(ManifestError::AheadOfLog {
+            snapshot: graph.graph_absorbed_through,
+            durable: durable_log_end,
+        });
+    }
     Ok(manifest)
 }
 

@@ -25,6 +25,41 @@ use zeppelin_embed::segment::layout::{REGION_ENTRY_LEN, SEGMENT_PREFIX_LEN};
 use zeppelin_embed::segment::writer::{SegmentBuild, SegmentFactors, write_segment};
 use zeppelin_embed::vfs::{CountingVfs, StdVfs, SyncKind, Vfs, VfsFile};
 
+#[cfg(feature = "graph-cypher")]
+mod manifest {
+    use super::*;
+
+    #[test]
+    fn graph_absorbed_through_ahead_of_the_log_is_refused() {
+        let directory = tempdir().expect("store directory");
+        let bytes = zeppelin_embed::format::golden::decode_hex(include_str!(
+            "fixtures/format/manifest_v3.hex"
+        ))
+        .expect("v3 fixture");
+        let mut manifest =
+            zeppelin_embed::manifest::decode_manifest("v3", &bytes).expect("v3 manifest");
+        manifest
+            .graph
+            .as_mut()
+            .expect("graph section")
+            .graph_absorbed_through = 42;
+        commit_manifest(&StdVfs, directory.path(), &manifest, ordered_policy())
+            .expect("commit manifest");
+        let path = directory.path().join(MANIFEST_FILE);
+        assert!(matches!(
+            load_manifest(&StdVfs, &path, 41),
+            Err(ManifestError::AheadOfLog {
+                snapshot: 42,
+                durable: 41
+            })
+        ));
+        assert_eq!(
+            load_manifest(&StdVfs, &path, 42).expect("at durable end"),
+            manifest
+        );
+    }
+}
+
 fn ordered_policy() -> DurabilityPolicy {
     DurabilityPolicy::new(DurabilityMode::Durable, CommitTier::Ordered)
         .expect("ordered durability policy")

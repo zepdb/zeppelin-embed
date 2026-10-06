@@ -25,6 +25,78 @@ use zeppelin_embed::wal::{LogSeq, WalRecoveryError, WalWriter};
 
 const IDS: [u128; 6] = [1, 2, 3, 4, 5, 9];
 
+mod recovery {
+    use super::*;
+
+    #[test]
+    fn an_op_8_batch_recovers_to_the_generation_the_writer_returned() {
+        let directory = tempdir().expect("store directory");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+        let ack = store
+            .ingest(IngestBatch::new(vec![document(1, 1), document(2, 1)]))
+            .expect("commit op-8 batch");
+        assert_eq!(ack.generation(), 1);
+        store.close().expect("close writer");
+
+        for options in [OpenOptions::read_only(), OpenOptions::default()] {
+            let reopened = Store::open(directory.path(), options).expect("reopen store");
+            assert_eq!(
+                reopened
+                    .snapshot()
+                    .expect("recovered snapshot")
+                    .generation(),
+                ack.generation()
+            );
+            assert_eq!(
+                state(&reopened),
+                vec![Some(1), Some(1), None, None, None, None]
+            );
+            reopened.close().expect("close recovered store");
+        }
+    }
+
+    #[cfg(feature = "graph-cypher")]
+    #[test]
+    fn document_replay_counts_only_batches_beyond_both_watermarks() {
+        use zeppelin_embed::format::golden::decode_hex;
+        use zeppelin_embed::manifest::{decode_manifest, encode_manifest};
+
+        let directory = tempdir().expect("store directory");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+        upsert(&store, &[(1, 1), (2, 1)]);
+        upsert(&store, &[(3, 1), (4, 1)]);
+        store.close().expect("close writer");
+
+        // The manifest generation already includes the first batch, folded by
+        // the graph side. Documents still need both batches replayed.
+        let bytes =
+            decode_hex(include_str!("fixtures/format/manifest_v3.hex")).expect("v3 fixture");
+        let mut manifest = decode_manifest("v3 fixture", &bytes).expect("v3 manifest");
+        manifest.log_seq = 0;
+        manifest.schema = zeppelin_embed::meta::Schema::timestamp_only();
+        manifest
+            .graph
+            .as_mut()
+            .expect("graph section")
+            .graph_absorbed_through = 2;
+        std::fs::write(
+            directory.path().join("manifest.ze"),
+            encode_manifest(&manifest).expect("encode manifest"),
+        )
+        .expect("write fold manifest");
+
+        for options in [OpenOptions::read_only(), OpenOptions::default()] {
+            let reopened = Store::open(directory.path(), options).expect("reopen store");
+            assert_eq!(reopened.snapshot().expect("snapshot").generation(), 10);
+            assert_eq!(
+                state(&reopened),
+                vec![Some(1), Some(1), Some(1), Some(1), None, None]
+            );
+            reopened.close().expect("close recovered store");
+        }
+    }
+}
+
 type State = Vec<Option<u64>>;
 
 fn document(id: u128, revision: u64) -> IngestDocument {

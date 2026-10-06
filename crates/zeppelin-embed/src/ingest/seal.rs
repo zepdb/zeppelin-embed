@@ -179,6 +179,17 @@ impl Store {
             current.generation,
             &self.schema,
         )?;
+        #[cfg(feature = "graph-cypher")]
+        if let Some(graph) = &manifest.graph
+            && graph.graph_absorbed_through < absorbed_through
+        {
+            return Err(StoreError::Manifest(
+                crate::manifest::ManifestError::Decode(format!(
+                    "cannot rotate WAL through {absorbed_through}: graph absorbed only through {}",
+                    graph.graph_absorbed_through
+                )),
+            ));
+        }
         let columns = active_columns(&manifest.schema, &current.segment, cancel)?;
         let alive = current.segment.alive()?;
         let clustering_key_range = clustering_key_range(current.segment.timestamps(), &alive)?;
