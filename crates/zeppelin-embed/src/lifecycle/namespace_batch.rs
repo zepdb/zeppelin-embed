@@ -13,6 +13,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use xxhash_rust::xxh3::xxh3_64;
+mod portable;
+pub use portable::NamespaceRootId;
 
 const RECORD: &str = ".ze-namespaces";
 const REFERENCE: &str = ".ze-namespace-root";
@@ -102,7 +104,7 @@ fn execute_live(
         reclamation::require_retired_erased(vfs, &root)?;
     }
     normalize_accepted(vfs, &root, step)?;
-    let existing_routes = match root_descriptor_vfs(vfs, &root)? {
+    let existing_routes = match legacy_root_descriptor_vfs(vfs, &root)? {
         RootDescriptor::Legacy(routes) => routes,
         RootDescriptor::Staged(_) => return Err(invalid(&root, "pending adoption")),
     };
@@ -612,12 +614,13 @@ fn encode(routes: &Routes) -> Vec<u8> {
     }
     envelope(text.as_bytes())
 }
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum RootDescriptor {
     Legacy(Routes),
     Staged(StagedDescriptor),
 }
 fn routes(root: &Path) -> Result<Routes, StoreError> {
-    match root_descriptor(root)? {
+    match legacy_root_descriptor_vfs(&StdVfs, root)? {
         RootDescriptor::Legacy(routes) => Ok(routes),
         RootDescriptor::Staged(_) => Err(invalid(
             &root.join(RECORD),
@@ -629,14 +632,37 @@ fn root_descriptor(root: &Path) -> Result<RootDescriptor, StoreError> {
     root_descriptor_vfs(&StdVfs, root)
 }
 fn root_descriptor_vfs(vfs: &dyn Vfs, root: &Path) -> Result<RootDescriptor, StoreError> {
+    root_record_vfs(vfs, root).map(|(_, descriptor)| descriptor)
+}
+// Until slice 2, existing namespace publications must refuse portable roots.
+fn legacy_root_descriptor_vfs(vfs: &dyn Vfs, root: &Path) -> Result<RootDescriptor, StoreError> {
+    let (id, descriptor) = root_record_vfs(vfs, root)?;
+    if id.is_some() {
+        return Err(invalid(
+            root,
+            "portable namespace publication is not supported yet",
+        ));
+    }
+    Ok(descriptor)
+}
+fn root_record_vfs(
+    vfs: &dyn Vfs,
+    root: &Path,
+) -> Result<(Option<NamespaceRootId>, RootDescriptor), StoreError> {
     let path = root.join(RECORD);
     let Some(bytes) = read_optional_vfs(vfs, &path)? else {
-        return Ok(RootDescriptor::Legacy(Routes::new()));
+        return Ok((None, RootDescriptor::Legacy(Routes::new())));
     };
-    if bytes.starts_with(STAGED_MAGIC) {
-        return decode_staged(&path, &bytes).map(RootDescriptor::Staged);
+    if bytes.starts_with(portable::ROOT_MAGIC) {
+        return portable::decode_root(&path, &bytes).map(|(id, descriptor)| (Some(id), descriptor));
     }
-    decode_routes(&path, &bytes).map(RootDescriptor::Legacy)
+    decode_descriptor(&path, &bytes).map(|descriptor| (None, descriptor))
+}
+fn decode_descriptor(path: &Path, bytes: &[u8]) -> Result<RootDescriptor, StoreError> {
+    if bytes.starts_with(STAGED_MAGIC) {
+        return decode_staged(path, bytes).map(RootDescriptor::Staged);
+    }
+    decode_routes(path, bytes).map(RootDescriptor::Legacy)
 }
 fn decode_routes(path: &Path, bytes: &[u8]) -> Result<Routes, StoreError> {
     let text = std::str::from_utf8(body(path, bytes)?)
@@ -687,7 +713,13 @@ pub(super) fn resolve(path: &Path) -> Result<PathBuf, StoreError> {
     let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
         return Ok(path.to_path_buf());
     };
-    let reference = read_optional(&path.join(REFERENCE))?;
+    let portable = portable::authority(&StdVfs, path)?;
+    let parent = portable.map_or(parent, |(root, _, _)| root);
+    let reference = if portable.is_none() {
+        read_optional(&path.join(REFERENCE))?
+    } else {
+        None
+    };
     if let Some(reference) = reference {
         let expected = body(&path.join(REFERENCE), &reference)?;
         let canonical = std::fs::canonicalize(parent).map_err(|e| io(parent, e))?;
@@ -708,6 +740,12 @@ pub(super) fn resolve(path: &Path) -> Result<PathBuf, StoreError> {
         None => Ok(path.to_path_buf()),
         Some(destination) => {
             let selected = parent.join(&destination);
+            if let Some((_, _, id)) = portable
+                && portable::authority(&StdVfs, &selected)?.map(|(_, _, selected_id)| selected_id)
+                    != Some(id)
+            {
+                return Err(invalid(&selected, "foreign portable route participant"));
+            }
             let transaction = selected
                 .parent()
                 .ok_or_else(|| invalid(path, "missing transaction directory"))?;
@@ -1374,6 +1412,22 @@ fn location(directory: &Path) -> Result<(&Path, &str), StoreError> {
     };
     Ok((root, name))
 }
+fn reader_location<'a>(
+    vfs: &dyn Vfs,
+    directory: &'a Path,
+) -> Result<(&'a Path, &'a str, Option<NamespaceRootId>), StoreError> {
+    if let Some((root, name, id)) = portable::authority(vfs, directory)? {
+        return Ok((root, name, Some(id)));
+    }
+    location(directory).map(|(root, name)| (root, name, None))
+}
+fn reader_participant_identity(vfs: &dyn Vfs, directory: &Path) -> Result<u128, StoreError> {
+    let (root, name, id) = reader_location(vfs, directory)?;
+    match id {
+        Some(id) => portable::participant_id(id, name),
+        None => participant_identity(root, name),
+    }
+}
 fn acceptance_path(
     directory: &Path,
     binding: crate::ingest::wal_payload::TransactionBinding,
@@ -1433,14 +1487,14 @@ pub(crate) fn owns_purge_obligation(
 }
 
 fn selection(vfs: &dyn Vfs, directory: &Path) -> Result<Option<StagedSelection>, StoreError> {
-    let (root, name) = location(directory)?;
+    let (root, name, _) = reader_location(vfs, directory)?;
     let RootDescriptor::Staged(mut descriptor) = root_descriptor_vfs(vfs, root)? else {
         return Ok(None);
     };
     let Some(selected) = descriptor.0.remove(name) else {
         return Ok(None);
     };
-    let identity = participant_identity(root, name)?;
+    let identity = reader_participant_identity(vfs, directory)?;
     if selected.binding.participant != identity {
         return Err(invalid(directory, "participant identity mismatch"));
     }
@@ -1589,7 +1643,7 @@ fn accept(
 
 pub(super) fn adopt_for_open(vfs: &dyn Vfs, directory: &Path) -> Result<(), StoreError> {
     if let Some(selected) = selection(vfs, directory)? {
-        let (root, _) = location(directory)?;
+        let (root, _, _) = reader_location(vfs, directory)?;
         // A surviving rename is not proof that its directory entry was synced.
         // Persist both authorities before admitting even a derived-mode writer.
         vfs.sync(root, SyncKind::Full).map_err(|e| io(root, e))?;
@@ -1608,7 +1662,7 @@ fn normalize_accepted(
     root: &Path,
     step: &mut dyn FnMut(&str) -> std::io::Result<()>,
 ) -> Result<(), StoreError> {
-    let RootDescriptor::Staged(descriptor) = root_descriptor_vfs(vfs, root)? else {
+    let RootDescriptor::Staged(descriptor) = legacy_root_descriptor_vfs(vfs, root)? else {
         return Ok(());
     };
     for (name, selected) in &descriptor.0 {
@@ -1646,8 +1700,7 @@ pub(crate) fn transaction_decisions(
         if !checked.insert(member.binding.transaction) {
             continue;
         }
-        let (root, name) = location(directory)?;
-        let identity = participant_identity(root, name)?;
+        let identity = reader_participant_identity(vfs, directory)?;
         if member.binding.participant != identity {
             return Err(StoreError::WalMutation {
                 seq: record.seq,
@@ -1723,6 +1776,8 @@ pub fn namespace_reclaim(root: &Path) -> Result<(), StoreError> {
     reclamation::run(&StdVfs, &root, &mut |_| Ok(()))
 }
 
+#[cfg(test)]
+mod portable_tests;
 mod reclamation;
 pub(super) use reclamation::{
     admission as reader_admission, for_open as reclaim_for_open, lease as reader_lease,

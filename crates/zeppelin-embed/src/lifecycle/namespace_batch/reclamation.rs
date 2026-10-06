@@ -47,7 +47,9 @@ pub(in crate::lifecycle) fn admission(
     let Some(parent) = path.parent() else {
         return Ok(None);
     };
-    let root = if parent
+    let root = if let Some((root, _, _)) = portable::authority(&StdVfs, path)? {
+        root
+    } else if parent
         .file_name()
         .and_then(|s| s.to_str())
         .is_some_and(|s| s.starts_with(".ze-batch-"))
@@ -69,7 +71,9 @@ pub(in crate::lifecycle) fn for_open(path: &Path) -> Result<(), StoreError> {
     let Some(parent) = path.parent() else {
         return Ok(());
     };
-    let root = if parent
+    let root = if let Some((root, _, _)) = portable::authority(&StdVfs, path)? {
+        root
+    } else if parent
         .file_name()
         .and_then(|s| s.to_str())
         .is_some_and(|s| s.starts_with(".ze-batch-"))
@@ -195,15 +199,25 @@ fn routes_and_marks(
     vfs: &dyn Vfs,
     root: &Path,
 ) -> Result<(Routes, BTreeMap<String, String>), StoreError> {
-    let (routes, pending) = match root_descriptor_vfs(vfs, root)? {
+    let (root_id, descriptor) = root_record_vfs(vfs, root)?;
+    let (routes, pending) = match descriptor {
         RootDescriptor::Legacy(routes) => (routes, BTreeMap::new()),
         RootDescriptor::Staged(descriptor) => {
             let mut pending = BTreeMap::new();
             for (name, selected) in descriptor.0 {
-                if selected.binding.participant != participant_identity(root, &name)? {
+                let directory = descriptor
+                    .1
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or_else(|| name.clone());
+                let identity = if root_id.is_some() {
+                    reader_participant_identity(vfs, &root.join(&directory))?
+                } else {
+                    participant_identity(root, &name)?
+                };
+                if selected.binding.participant != identity {
                     return Err(invalid(root, "pending cleanup participant identity"));
                 }
-                let directory = descriptor.1.get(&name).cloned().unwrap_or(name);
                 if accepted(vfs, &root.join(&directory), selected.binding)? {
                     selected_manifest(vfs, &root.join(&directory), &selected)?;
                 } else {

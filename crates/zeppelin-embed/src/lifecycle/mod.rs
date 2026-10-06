@@ -30,7 +30,8 @@ mod snapshot;
 mod snapshot_copy;
 mod snapshot_view;
 pub use namespace_batch::{
-    LiveNamespaceMutation, NamespaceMutation, namespace_batch, namespace_batch_live,
+    LiveNamespaceMutation, NamespaceMutation, NamespaceRootId, namespace_batch,
+    namespace_batch_live,
 };
 #[cfg(any(test, feature = "test-seams"))]
 #[doc(hidden)]
