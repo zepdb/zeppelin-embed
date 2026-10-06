@@ -53,7 +53,7 @@ fn text_call_lowers_to_one_typed_eager_source() {
                             query,
                             k,
                             eligible,
-                            options: Default::default(),
+                            options: _,
                         },
                     outputs,
                 } = plan.operators[1].kind
