@@ -121,6 +121,8 @@ pub enum ZeErrorCode {
     ZeErrCascadeCycle = 57,
     /// A graph-only directory cannot be opened as a legacy document store.
     ZeErrLegacyGraphDirectory = 58,
+    /// This build cannot open a store containing graph state.
+    ZeErrGraphUnsupportedBuild = 59,
 }
 
 /// Opaque generation-tagged store handle.

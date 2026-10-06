@@ -360,6 +360,10 @@ enum ze_error_code
      A graph-only directory cannot be opened as a legacy document store.
      */
     ZE_ERR_LEGACY_GRAPH_DIRECTORY = 58,
+    /*
+     This build cannot open a store containing graph state.
+     */
+    ZE_ERR_GRAPH_UNSUPPORTED_BUILD = 59,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L

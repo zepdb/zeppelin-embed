@@ -25,6 +25,8 @@ const GRAPH_ERRORS: &[(i32, &str)] = &[
     (55, "ZE_ERR_REVISION_CONFLICT"),
     (56, "ZE_ERR_FORMAT_TOO_NEW"),
     (57, "ZE_ERR_CASCADE_CYCLE"),
+    (58, "ZE_ERR_LEGACY_GRAPH_DIRECTORY"),
+    (59, "ZE_ERR_GRAPH_UNSUPPORTED_BUILD"),
 ];
 
 #[test]
@@ -33,7 +35,7 @@ fn appended_graph_error_names_are_distinct_and_stable() {
         let actual = unsafe { std::ffi::CStr::from_ptr(ze_error_code_name(code)) };
         assert_eq!(actual.to_str().unwrap(), expected);
     }
-    for unknown in [-1, 58, i32::MAX] {
+    for unknown in [-1, 60, i32::MAX] {
         let actual = unsafe { std::ffi::CStr::from_ptr(ze_error_code_name(unknown)) };
         assert_eq!(actual.to_str().unwrap(), "ZE_ERR_UNKNOWN");
     }

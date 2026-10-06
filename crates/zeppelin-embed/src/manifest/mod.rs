@@ -68,6 +68,8 @@ pub enum ManifestError {
     Format(FormatError),
     /// Hand-written payload decoding rejected malformed bytes.
     Decode(String),
+    /// This build cannot open a v3 manifest containing graph state.
+    GraphUnsupportedBuild,
     /// Snapshot log sequence exceeds the durable WAL end.
     AheadOfLog {
         /// Sequence covered by the snapshot.
@@ -107,6 +109,9 @@ impl std::fmt::Display for ManifestError {
                 write!(formatter, "manifest I/O {}: {source}", path.display())
             }
             Self::Format(error) => error.fmt(formatter),
+            Self::GraphUnsupportedBuild => {
+                write!(formatter, "graph manifest requires graph-cypher")
+            }
             Self::Decode(detail) => write!(formatter, "manifest decode failed: {detail}"),
             Self::AheadOfLog { snapshot, durable } => write!(
                 formatter,
@@ -134,7 +139,8 @@ impl std::error::Error for ManifestError {
             Self::Io { source, .. } => Some(source),
             Self::Format(error) => Some(error),
             Self::Segment(error) => Some(error),
-            Self::Decode(_)
+            Self::GraphUnsupportedBuild
+            | Self::Decode(_)
             | Self::AheadOfLog { .. }
             | Self::UnknownEpochAlias { .. }
             | Self::UnknownSegmentEpoch { .. } => None,
@@ -260,9 +266,7 @@ pub fn decode_manifest(artifact: &str, bytes: &[u8]) -> Result<Manifest, Manifes
     }
     #[cfg(not(feature = "graph-cypher"))]
     if framed.header.version == 3 {
-        return Err(ManifestError::Decode(
-            "graph manifest requires graph-cypher".to_owned(),
-        ));
+        return Err(ManifestError::GraphUnsupportedBuild);
     }
     let mut cursor = ManifestCursor::new(framed.payload);
     let generation = cursor.u64()?;

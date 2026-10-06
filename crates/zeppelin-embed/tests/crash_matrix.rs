@@ -281,6 +281,7 @@ fn typed_manifest_error(error: &ManifestError) -> String {
     match error {
         ManifestError::Io { source, .. } => format!("Io({:?})", source.kind()),
         ManifestError::Format(format) => format!("Format({:?})", format.check()),
+        ManifestError::GraphUnsupportedBuild => "GraphUnsupportedBuild".to_owned(),
         ManifestError::Decode(detail) => format!("Decode({detail})"),
         ManifestError::AheadOfLog { snapshot, durable } => {
             format!("AheadOfLog({snapshot}, {durable})")

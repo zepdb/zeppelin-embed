@@ -2476,7 +2476,8 @@ impl StoreError {
             | Self::NativeGraphDirectory { .. }
             | Self::SnapshotTarget { .. } => StoreErrorKind::InvalidArgument,
             Self::StoreBusy { .. } | Self::SnapshotViewsOpen => StoreErrorKind::StoreBusy,
-            Self::Durability(_)
+            Self::Manifest(crate::manifest::ManifestError::GraphUnsupportedBuild)
+            | Self::Durability(_)
             | Self::Kernel(_)
             | Self::GraphUnavailable { .. }
             | Self::UnsupportedWalMutation { .. }

@@ -68,6 +68,9 @@ impl FfiError {
             return Self::new(code, message);
         }
         let code = match &error {
+            zeppelin_embed::lifecycle::StoreError::Manifest(
+                zeppelin_embed::manifest::ManifestError::GraphUnsupportedBuild,
+            ) => ZeErrorCode::ZeErrGraphUnsupportedBuild,
             zeppelin_embed::lifecycle::StoreError::NativeGraphDirectory { .. } => {
                 ZeErrorCode::ZeErrLegacyGraphDirectory
             }
@@ -534,7 +537,7 @@ mod format_version_tests {
     use super::*;
     #[test]
     fn old_and_new_manifest_versions_have_specific_codes() {
-        for (version, expected) in [(1_u16, "ZeErrFormatVersion"), (3, "ZeErrFormatTooNew")] {
+        for (version, expected) in [(1_u16, "ZeErrFormatVersion"), (4, "ZeErrFormatTooNew")] {
             let mut bytes = vec![0_u8; 32];
             bytes.get_mut(..8).unwrap().copy_from_slice(b"ZEPEMBED");
             bytes

@@ -170,6 +170,11 @@ const ERROR_CODE_GOLDEN: &[(ZeErrorCode, i32, &str)] = &[
         58,
         "ZE_ERR_LEGACY_GRAPH_DIRECTORY",
     ),
+    (
+        ZeErrorCode::ZeErrGraphUnsupportedBuild,
+        59,
+        "ZE_ERR_GRAPH_UNSUPPORTED_BUILD",
+    ),
 ];
 
 fn header_error_codes() -> Vec<(String, i32)> {
