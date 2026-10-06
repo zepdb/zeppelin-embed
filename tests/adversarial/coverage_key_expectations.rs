@@ -136,10 +136,27 @@ const GRAPH_KEYS: &[&str] = &[
     "property-graph.binding.profile",
     "property-graph.binding.same-seed-control",
     "property-graph.binding.scope",
+    #[cfg(feature = "graph-result-test-support")]
+    "property-graph.c-entry.allocation.fire",
+    #[cfg(feature = "graph-result-test-support")]
+    "property-graph.c-entry.append.fire",
+    #[cfg(feature = "graph-result-test-support")]
+    "property-graph.c-entry.cancel-after-sync.fire",
+    #[cfg(feature = "graph-result-test-support")]
+    "property-graph.c-entry.fault.same-seed-control",
     "property-graph.c-entry.get",
+    "property-graph.c-entry.null-bag-comparator",
     "property-graph.c-entry.oracle.can-fire",
+    #[cfg(feature = "graph-result-test-support")]
+    "property-graph.c-entry.panic-after-sync.fire",
+    #[cfg(feature = "graph-result-test-support")]
+    "property-graph.c-entry.panic-known-commit.fire",
     "property-graph.c-entry.query",
+    "property-graph.c-entry.response-after-close",
     "property-graph.c-entry.same-seed-control",
+    "property-graph.c-entry.shared-semantics",
+    #[cfg(feature = "graph-result-test-support")]
+    "property-graph.c-entry.sync.fire",
     "property-graph.catalog.budget.clean",
     "property-graph.catalog.budget.fire",
     "property-graph.catalog.cancel",
