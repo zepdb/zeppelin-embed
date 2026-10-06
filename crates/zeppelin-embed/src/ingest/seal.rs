@@ -172,7 +172,8 @@ impl Store {
             .generation
             .checked_add(1)
             .ok_or(StoreError::GenerationOverflow)?;
-        let manifest = load_current_manifest(
+        #[allow(unused_mut)]
+        let mut manifest = load_current_manifest(
             vfs,
             &self.directory,
             absorbed_through,
@@ -180,15 +181,53 @@ impl Store {
             &self.schema,
         )?;
         #[cfg(feature = "graph-cypher")]
-        if let Some(graph) = &manifest.graph
+        if let Some(graph) = &mut manifest.graph
             && graph.graph_absorbed_through < absorbed_through
         {
-            return Err(StoreError::Manifest(
-                crate::manifest::ManifestError::Decode(format!(
-                    "cannot rotate WAL through {absorbed_through}: graph absorbed only through {}",
-                    graph.graph_absorbed_through
-                )),
-            ));
+            // Seal is the fold for both watermarks. Until graph folding is
+            // implemented, only a range containing no graph writes can advance.
+            // Read the persisted WAL: the writer may have retired records that
+            // documents already absorbed but the graph still needs.
+            let clean = crate::wal::WalReader::open(vfs, &self.directory.join("wal.ze"))
+                .map_err(StoreError::Wal)?
+                .into_clean()
+                .map_err(StoreError::WalRecovery)?;
+            for record in clean.records().iter().filter(|record| {
+                record.seq.get() > graph.graph_absorbed_through
+                    && record.seq.get() <= absorbed_through
+            }) {
+                use super::wal_payload::{self, MutationPayload};
+                let has_graph = if record.op == wal_payload::MIXED_BATCH_MEMBER_V1 {
+                    let payload = record.payload().map_err(|source| StoreError::WalRecord {
+                        seq: record.seq,
+                        source,
+                    })?;
+                    matches!(
+                        wal_payload::decode_mixed_batch_member(payload).map_err(|source| {
+                            StoreError::WalMutation {
+                                seq: record.seq,
+                                op: record.op,
+                                source,
+                            }
+                        })?,
+                        MutationPayload::MixedBatchMember {
+                            op: wal_payload::GRAPH_COMMIT_V1,
+                            ..
+                        }
+                    )
+                } else {
+                    record.op == wal_payload::GRAPH_COMMIT_V1
+                };
+                if has_graph {
+                    return Err(StoreError::Manifest(
+                        crate::manifest::ManifestError::Decode(format!(
+                            "cannot rotate WAL through {absorbed_through}: graph absorbed only through {}",
+                            graph.graph_absorbed_through
+                        )),
+                    ));
+                }
+            }
+            graph.graph_absorbed_through = absorbed_through;
         }
         let columns = active_columns(&manifest.schema, &current.segment, cancel)?;
         let alive = current.segment.alive()?;

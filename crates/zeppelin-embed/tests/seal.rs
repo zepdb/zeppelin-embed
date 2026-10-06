@@ -27,22 +27,64 @@ mod seal {
     fn refuses_rotation_behind_the_graph_watermark() {
         let directory = tempdir().expect("store directory");
         let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+        store.enable_graph().expect("enable real graph catalog");
+        store.close().expect("close writer");
+
+        let mut manifest = load_manifest(&StdVfs, &directory.path().join(MANIFEST_FILE), 1)
+            .expect("real v3 manifest");
+        assert_eq!(manifest.log_seq, 0);
+        assert_eq!(
+            manifest
+                .graph
+                .as_ref()
+                .expect("real graph section")
+                .graph_absorbed_through,
+            0
+        );
+        // A real op 10 is required for a graph shortfall. Document-only tails
+        // are folded by seal. Admit this framing fixture as already absorbed
+        // for open (graph replay is not implemented yet), then place the lagging
+        // fold before seal. Keep the real catalog and inventory throughout.
+        use zeppelin_embed::ingest::wal_payload::{GRAPH_COMMIT_V1, encode_graph_commit};
+        use zeppelin_embed::wal::LogSeq;
+        use zeppelin_embed::wal::record::{WalRecord, encode_record};
+        let payload = encode_graph_commit(
+            include_bytes!("fixtures/graph-wal/complete-v1.bin")
+                .get(64..2105)
+                .expect("complete graph envelope"),
+        )
+        .expect("op 10 payload");
+        let mut wal =
+            zeppelin_embed::wal::header::encode_header(LogSeq::new(1)).expect("WAL header");
+        wal.extend(
+            encode_record(WalRecord {
+                seq: LogSeq::new(1),
+                op: GRAPH_COMMIT_V1,
+                payload: &payload,
+            })
+            .expect("op 10 record"),
+        );
+        std::fs::write(directory.path().join("wal.ze"), wal).expect("write graph WAL record");
+        manifest.log_seq = 1;
+        manifest
+            .graph
+            .as_mut()
+            .expect("graph section")
+            .graph_absorbed_through = 1;
+        commit_manifest(
+            &StdVfs,
+            directory.path(),
+            &manifest,
+            DurabilityPolicy::new(DurabilityMode::Durable, CommitTier::Ordered).expect("policy"),
+        )
+        .expect("commit graph fold");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("reopen store");
         store
             .ingest(IngestBatch::new(vec![IngestDocument::new(
                 DocumentVersion::new(DocId::new(1), Revision::new(1)),
                 vec![1.0, 0.0],
             )]))
-            .expect("ingest document");
-        store.close().expect("close writer");
-
-        let bytes = zeppelin_embed::format::golden::decode_hex(include_str!(
-            "fixtures/format/manifest_v3.hex"
-        ))
-        .expect("v3 fixture");
-        let mut manifest =
-            zeppelin_embed::manifest::decode_manifest("v3", &bytes).expect("v3 manifest");
-        manifest.log_seq = 0;
-        manifest.schema = Schema::timestamp_only();
+            .expect("ingest document after graph record");
         manifest
             .graph
             .as_mut()
@@ -54,8 +96,7 @@ mod seal {
             &manifest,
             DurabilityPolicy::new(DurabilityMode::Durable, CommitTier::Ordered).expect("policy"),
         )
-        .expect("commit graph fold");
-        let store = Store::open(directory.path(), OpenOptions::default()).expect("reopen store");
+        .expect("place graph shortfall on real manifest");
         let generation = store.snapshot().expect("snapshot").generation();
         let files_before = files(directory.path());
         let manifest_before =
@@ -65,7 +106,7 @@ mod seal {
         assert!(matches!(
             store.seal(),
             Err(StoreError::Manifest(ManifestError::Decode(detail)))
-                if detail == "cannot rotate WAL through 1: graph absorbed only through 0"
+                if detail == "cannot rotate WAL through 2: graph absorbed only through 0"
         ));
         assert_eq!(store.snapshot().expect("snapshot").generation(), generation);
         assert_eq!(files(directory.path()), files_before);

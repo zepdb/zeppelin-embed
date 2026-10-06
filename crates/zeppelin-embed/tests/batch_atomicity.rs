@@ -29,6 +29,80 @@ mod recovery {
     use super::*;
 
     #[test]
+    fn a_graph_free_store_skips_absorbed_namespace_participant_checks() {
+        use zeppelin_embed::ingest::wal_payload::{
+            PREPARED_MUTATION_V1, TransactionBinding, UPSERT_V2, encode_prepared,
+        };
+        use zeppelin_embed::manifest::io::{MANIFEST_FILE, commit_manifest, load_manifest};
+        use zeppelin_embed::wal::header::encode_header;
+        use zeppelin_embed::wal::record::{WalRecord, encode_record};
+
+        let directory = tempdir().expect("store directory");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
+        upsert(&store, &[(1, 1)]);
+        let generation = store.seal().expect("seal document");
+        store.close().expect("close writer");
+        let manifest_path = directory.path().join(MANIFEST_FILE);
+        let mut manifest = load_manifest(&StdVfs, &manifest_path, 2).expect("v2 manifest");
+        assert_eq!(manifest.log_seq, 1);
+        let binding = TransactionBinding {
+            transaction: 1,
+            participant: 2,
+            first_seq: 2,
+            last_seq: 2,
+            manifest_digest: 1,
+            final_generation: generation,
+        };
+        let payload = encode_prepared(
+            binding,
+            0,
+            1,
+            UPSERT_V2,
+            &encode_upsert_v2(&document(1, 1)).expect("upsert"),
+        )
+        .expect("prepared record with a mismatched participant");
+        let mut wal = encode_header(LogSeq::new(2)).expect("WAL header");
+        wal.extend(
+            encode_record(WalRecord {
+                seq: LogSeq::new(2),
+                op: PREPARED_MUTATION_V1,
+                payload: &payload,
+            })
+            .expect("WAL record"),
+        );
+        std::fs::write(directory.path().join("wal.ze"), wal).expect("write prepared WAL");
+        // Control: the exact record is invalid when it is not absorbed.
+        assert!(matches!(
+            Store::open(directory.path(), OpenOptions::read_only()),
+            Err(StoreError::WalMutation {
+                source: PayloadError::TransactionBinding,
+                ..
+            })
+        ));
+        manifest.log_seq = 2;
+        commit_manifest(
+            &StdVfs,
+            directory.path(),
+            &manifest,
+            DurabilityPolicy::new(DurabilityMode::Durable, CommitTier::Durable).expect("policy"),
+        )
+        .expect("commit absorbed boundary");
+        // A v2 reader starts at log_seq; the obsolete participant is irrelevant.
+        for options in [OpenOptions::read_only(), OpenOptions::default()] {
+            let reopened = Store::open(directory.path(), options).expect("open absorbed v2 store");
+            assert_eq!(
+                reopened.snapshot().expect("snapshot").generation(),
+                generation
+            );
+            assert_eq!(
+                state(&reopened),
+                vec![Some(1), None, None, None, None, None]
+            );
+            reopened.close().expect("close recovered store");
+        }
+    }
+
+    #[test]
     fn an_op_8_batch_recovers_to_the_generation_the_writer_returned() {
         let directory = tempdir().expect("store directory");
         let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
@@ -58,36 +132,50 @@ mod recovery {
     #[cfg(feature = "graph-cypher")]
     #[test]
     fn document_replay_counts_only_batches_beyond_both_watermarks() {
-        use zeppelin_embed::format::golden::decode_hex;
-        use zeppelin_embed::manifest::{decode_manifest, encode_manifest};
+        use zeppelin_embed::manifest::io::{MANIFEST_FILE, commit_manifest, load_manifest};
 
         let directory = tempdir().expect("store directory");
         let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
-        upsert(&store, &[(1, 1), (2, 1)]);
-        upsert(&store, &[(3, 1), (4, 1)]);
+        assert_eq!(store.enable_graph().expect("enable real graph catalog"), 1);
+        let first = store
+            .ingest(IngestBatch::new(vec![document(1, 1), document(2, 1)]))
+            .expect("first document batch");
+        let second = store
+            .ingest(IngestBatch::new(vec![document(3, 1), document(4, 1)]))
+            .expect("second document batch");
+        assert_eq!((first.seq().get(), first.generation()), (2, 2));
+        assert_eq!((second.seq().get(), second.generation()), (4, 3));
         store.close().expect("close writer");
 
-        // The manifest generation already includes the first batch, folded by
-        // the graph side. Documents still need both batches replayed.
-        let bytes =
-            decode_hex(include_str!("fixtures/format/manifest_v3.hex")).expect("v3 fixture");
-        let mut manifest = decode_manifest("v3 fixture", &bytes).expect("v3 manifest");
-        manifest.log_seq = 0;
-        manifest.schema = zeppelin_embed::meta::Schema::timestamp_only();
+        // The graph fold includes the first complete batch in generation 2.
+        // Documents still replay both batches from log_seq=0, but only the
+        // second batch's last sequence exceeds max(0, 2), adding generation 3.
+        // Keep the writer's real catalog and inventory while placing that fold.
+        let mut manifest = load_manifest(
+            &StdVfs,
+            &directory.path().join(MANIFEST_FILE),
+            second.seq().get(),
+        )
+        .expect("real v3 manifest");
+        assert_eq!(manifest.log_seq, 0);
+        manifest.generation = first.generation();
         manifest
             .graph
             .as_mut()
-            .expect("graph section")
-            .graph_absorbed_through = 2;
-        std::fs::write(
-            directory.path().join("manifest.ze"),
-            encode_manifest(&manifest).expect("encode manifest"),
+            .expect("real graph section")
+            .graph_absorbed_through = first.seq().get();
+        commit_manifest(
+            &StdVfs,
+            directory.path(),
+            &manifest,
+            DurabilityPolicy::new(DurabilityMode::Durable, CommitTier::Durable)
+                .expect("durable fold policy"),
         )
-        .expect("write fold manifest");
+        .expect("commit fold manifest");
 
         for options in [OpenOptions::read_only(), OpenOptions::default()] {
             let reopened = Store::open(directory.path(), options).expect("reopen store");
-            assert_eq!(reopened.snapshot().expect("snapshot").generation(), 10);
+            assert_eq!(reopened.snapshot().expect("snapshot").generation(), 3);
             assert_eq!(
                 state(&reopened),
                 vec![Some(1), Some(1), Some(1), Some(1), None, None]

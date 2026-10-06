@@ -74,6 +74,49 @@ mod enable_graph {
     }
 
     #[test]
+    fn an_enabled_store_seals_after_document_writes() {
+        let scratch = tempfile::tempdir().unwrap();
+        let store = Store::open(
+            scratch.path(),
+            common::options(false).with_schema(common::schema()),
+        )
+        .unwrap();
+        store.enable_graph().unwrap();
+        let enabled = decode_manifest(
+            "enabled",
+            &std::fs::read(scratch.path().join("manifest.ze")).unwrap(),
+        )
+        .unwrap();
+        for (id, text) in [(1, "orchard"), (2, "harbor")] {
+            let ack = store
+                .ingest(common::batch(vec![common::document(id, text)]))
+                .unwrap();
+            let generation = store
+                .seal()
+                .expect("seal document-only WAL on enabled store");
+            let manifest = decode_manifest(
+                "sealed",
+                &std::fs::read(scratch.path().join("manifest.ze")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(manifest.generation, generation);
+            assert_eq!(generation, ack.generation() + 1);
+            assert_eq!(manifest.log_seq, ack.seq().get());
+            assert_eq!(manifest.segments.len(), id as usize);
+            let mut expected = enabled.graph.clone().unwrap();
+            expected.graph_absorbed_through = ack.seq().get();
+            assert_eq!(manifest.graph, Some(expected));
+        }
+        store.close().unwrap();
+        for read_only in [true, false] {
+            let reopened = Store::open(scratch.path(), common::options(read_only)).unwrap();
+            assert_eq!(common::text_hits(&reopened, "orchard"), vec![1]);
+            assert_eq!(common::text_hits(&reopened, "harbor"), vec![2]);
+            reopened.close().unwrap();
+        }
+    }
+
+    #[test]
     fn seal_and_purge_keep_the_graph_section() {
         let scratch = tempfile::tempdir().unwrap();
         let store = Store::open(
@@ -82,18 +125,37 @@ mod enable_graph {
         )
         .unwrap();
         store.enable_graph().unwrap();
-        let graph = decode_manifest(
-            "enabled",
-            &std::fs::read(scratch.path().join("manifest.ze")).unwrap(),
-        )
-        .unwrap()
-        .graph;
-        store
+        let ack = store
             .ingest(common::batch(vec![
                 common::document(1, "orchard"),
                 common::document(2, "harbor"),
             ]))
             .unwrap();
+        store.close().unwrap();
+        // ZE-378 permits rotation only after both sides cover the WAL tail.
+        // Place that completed graph fold on the real enabled manifest; its
+        // catalog and inventory stay exactly as written by enable_graph.
+        let mut manifest = zeppelin_embed::manifest::io::load_manifest(
+            &zeppelin_embed::vfs::StdVfs,
+            &scratch.path().join("manifest.ze"),
+            ack.seq().get(),
+        )
+        .unwrap();
+        manifest.generation = ack.generation();
+        manifest.graph.as_mut().unwrap().graph_absorbed_through = ack.seq().get();
+        zeppelin_embed::manifest::io::commit_manifest(
+            &zeppelin_embed::vfs::StdVfs,
+            scratch.path(),
+            &manifest,
+            zeppelin_embed::lifecycle::durability::DurabilityPolicy::new(
+                zeppelin_embed::lifecycle::durability::DurabilityMode::Durable,
+                zeppelin_embed::lifecycle::durability::CommitTier::Durable,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let graph = manifest.graph;
+        let store = Store::open(scratch.path(), common::options(false)).unwrap();
         store.seal().unwrap();
         assert_eq!(
             decode_manifest(

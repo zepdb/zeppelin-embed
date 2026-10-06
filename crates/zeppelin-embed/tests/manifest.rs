@@ -32,12 +32,15 @@ mod manifest {
     #[test]
     fn graph_absorbed_through_ahead_of_the_log_is_refused() {
         let directory = tempdir().expect("store directory");
-        let bytes = zeppelin_embed::format::golden::decode_hex(include_str!(
-            "fixtures/format/manifest_v3.hex"
-        ))
-        .expect("v3 fixture");
-        let mut manifest =
-            zeppelin_embed::manifest::decode_manifest("v3", &bytes).expect("v3 manifest");
+        let store = zeppelin_embed::lifecycle::Store::open(
+            directory.path(),
+            zeppelin_embed::lifecycle::OpenOptions::default(),
+        )
+        .expect("open store");
+        store.enable_graph().expect("enable real graph catalog");
+        store.close().expect("close writer");
+        let mut manifest = load_manifest(&StdVfs, &directory.path().join(MANIFEST_FILE), 0)
+            .expect("real v3 manifest");
         manifest
             .graph
             .as_mut()

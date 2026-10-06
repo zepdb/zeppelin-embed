@@ -503,11 +503,13 @@ impl PublishedSnapshot {
                     manifest
                         .graph
                         .as_ref()
-                        .map_or(0, |graph| graph.graph_absorbed_through)
+                        // With no graph, replay and transaction decisions start
+                        // at log_seq exactly as in a v2-only reader.
+                        .map_or(manifest.log_seq, |graph| graph.graph_absorbed_through)
                 }
                 #[cfg(not(feature = "graph-cypher"))]
                 {
-                    0
+                    manifest.log_seq
                 }
             },
             epoch_alias: manifest.epoch_alias,
