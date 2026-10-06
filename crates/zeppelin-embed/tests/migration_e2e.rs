@@ -132,6 +132,8 @@ fn publish_incomplete_target_fixture() -> EpochFixture {
         &StdVfs,
         directory.path(),
         &Manifest {
+            #[cfg(feature = "graph-cypher")]
+            graph: None,
             generation: 1,
             log_seq: 0,
             segments: vec![meta_a, meta_b],
@@ -174,6 +176,8 @@ fn publish_two_epoch_fixture() -> EpochFixture {
         &StdVfs,
         directory.path(),
         &Manifest {
+            #[cfg(feature = "graph-cypher")]
+            graph: None,
             generation: 1,
             log_seq: 0,
             segments: vec![meta_a, meta_b],

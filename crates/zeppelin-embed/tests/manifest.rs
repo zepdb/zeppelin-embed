@@ -128,6 +128,8 @@ fn schema() -> Schema {
 
 fn manifest(generation: u64, log_seq: u64) -> Manifest {
     Manifest {
+        #[cfg(feature = "graph-cypher")]
+        graph: None,
         generation,
         log_seq,
         segments: Vec::new(),

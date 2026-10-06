@@ -80,6 +80,8 @@ fn publish_manifest(directory: &TempDir, segments: Vec<SegmentMeta>) {
         &StdVfs,
         directory.path(),
         &Manifest {
+            #[cfg(feature = "graph-cypher")]
+            graph: None,
             generation: 1,
             log_seq: 0,
             segments,

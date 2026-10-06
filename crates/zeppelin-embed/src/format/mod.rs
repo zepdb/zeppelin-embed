@@ -204,7 +204,7 @@ const FAMILIES: [FamilySpec; 19] = [
         family: FormatFamily::Manifest,
         current_version: 2,
         minimum_accepted_version: 2,
-        maximum_accepted_version: 2,
+        maximum_accepted_version: 3,
     },
     FamilySpec {
         family: FormatFamily::Wal,

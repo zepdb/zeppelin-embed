@@ -1154,6 +1154,8 @@ fn publish_graph_segment(directory: &Path, removed: DocId) {
         &StdVfs,
         directory,
         &Manifest {
+            #[cfg(feature = "graph-cypher")]
+            graph: None,
             generation: 1,
             log_seq: 0,
             segments: vec![meta],
@@ -1217,6 +1219,8 @@ fn publish_int8_document_segment(
         &StdVfs,
         directory,
         &Manifest {
+            #[cfg(feature = "graph-cypher")]
+            graph: None,
             generation: 1,
             log_seq: 0,
             segments: vec![meta],
@@ -1342,6 +1346,8 @@ fn publish_all_column_document_segment(
         &StdVfs,
         directory,
         &Manifest {
+            #[cfg(feature = "graph-cypher")]
+            graph: None,
             generation: 1,
             log_seq: 0,
             segments: vec![meta],

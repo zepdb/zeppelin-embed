@@ -258,6 +258,8 @@ impl Store {
             vfs,
             &self.directory,
             &Manifest {
+                #[cfg(feature = "graph-cypher")]
+                graph: None,
                 generation,
                 log_seq: 0,
                 segments: vec![meta],
@@ -864,6 +866,8 @@ mod tests {
             &StdVfs,
             directory.path(),
             &Manifest {
+                #[cfg(feature = "graph-cypher")]
+                graph: None,
                 generation: 1,
                 log_seq: 0,
                 segments: vec![segment],
@@ -956,6 +960,8 @@ mod tests {
             &StdVfs,
             directory.path(),
             &Manifest {
+                #[cfg(feature = "graph-cypher")]
+                graph: None,
                 generation: 1,
                 log_seq: 0,
                 segments: vec![initial],

@@ -744,6 +744,8 @@ fn commit_with_epoch(
         &StdVfs,
         directory.path(),
         &Manifest {
+            #[cfg(feature = "graph-cypher")]
+            graph: None,
             generation,
             log_seq: 0,
             segments: vec![meta],
@@ -1407,6 +1409,8 @@ fn astra_09_mixed_graph_padding_keeps_preparation_and_physical_scores_distinct()
         &StdVfs,
         directory.path(),
         &Manifest {
+            #[cfg(feature = "graph-cypher")]
+            graph: None,
             generation: 1,
             log_seq: 0,
             segments: metas,

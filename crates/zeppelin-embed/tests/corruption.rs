@@ -1059,6 +1059,8 @@ fn manifest_corruption_matrix_returns_the_specific_typed_error() {
     let meta: SegmentMeta = validate_segment_bytes(&segment).expect("valid segment");
     fs::write(directory.path().join(id.file_name()), &segment).expect("valid segment write");
     let manifest = Manifest {
+        #[cfg(feature = "graph-cypher")]
+        graph: None,
         generation: 1,
         log_seq: 1,
         segments: vec![meta],

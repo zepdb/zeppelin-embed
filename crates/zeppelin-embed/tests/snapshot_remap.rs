@@ -119,6 +119,8 @@ fn publish_fixtures(directory: &std::path::Path, fixtures: &[&Fixture], generati
         &StdVfs,
         directory,
         &Manifest {
+            #[cfg(feature = "graph-cypher")]
+            graph: None,
             generation,
             log_seq: 0,
             segments,
@@ -378,6 +380,8 @@ fn int8_store_search_rejects_checksum_valid_wrong_stride() {
         &StdVfs,
         directory.path(),
         &Manifest {
+            #[cfg(feature = "graph-cypher")]
+            graph: None,
             generation: 1,
             log_seq: 0,
             segments: vec![meta],
@@ -814,6 +818,8 @@ fn mapped_resident_bytes_tracks_full_touch_across_chunked_mapping() {
         &StdVfs,
         directory.path(),
         &Manifest {
+            #[cfg(feature = "graph-cypher")]
+            graph: None,
             generation: 1,
             log_seq: 0,
             segments: vec![segment],

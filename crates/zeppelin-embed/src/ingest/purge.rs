@@ -1029,6 +1029,8 @@ impl Store {
             Ok(_) => load_manifest(vfs, &manifest_path, writer.durable_end())
                 .map_err(StoreError::Manifest)?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Manifest {
+                #[cfg(feature = "graph-cypher")]
+                graph: None,
                 generation: active_state.generation,
                 log_seq: 0,
                 segments: Vec::new(),

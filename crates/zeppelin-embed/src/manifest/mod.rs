@@ -2,6 +2,11 @@
 
 pub mod io;
 
+#[cfg(feature = "graph-cypher")]
+mod graph;
+#[cfg(feature = "graph-cypher")]
+pub use graph::{GraphManifest, GraphObject};
+
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
@@ -10,7 +15,7 @@ use crate::epoch::{
     Normalization,
 };
 use crate::format::FormatFamily;
-use crate::format::frame::{FormatError, decode_artifact, encode_artifact};
+use crate::format::frame::{FormatError, decode_artifact, encode_artifact_version};
 use crate::fts::tokenizer::TokenizerEpoch;
 use crate::meta::{ColumnDefinition, ColumnId, ColumnType, Schema};
 use crate::segment::{ClusteringKeyRange, SegmentId, SegmentMeta};
@@ -32,6 +37,9 @@ pub struct EpochMeta {
 /// The single atomic snapshot commit point.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Manifest {
+    /// Optional graph checkpoint and live immutable object inventory.
+    #[cfg(feature = "graph-cypher")]
+    pub graph: Option<GraphManifest>,
     /// Monotonic committed generation.
     pub generation: u64,
     /// Durable WAL sequence covered by this snapshot.
@@ -182,7 +190,21 @@ pub fn encode_manifest(manifest: &Manifest) -> Result<Vec<u8>, ManifestError> {
         append_string(definition.name(), &mut payload)?;
     }
     append_clustering_ranges(&manifest.segments, &mut payload)?;
-    Ok(encode_artifact(FormatFamily::Manifest, 0, &payload))
+    #[cfg(feature = "graph-cypher")]
+    let version = if let Some(graph) = &manifest.graph {
+        graph::append(graph, &mut payload)?;
+        3
+    } else {
+        2
+    };
+    #[cfg(not(feature = "graph-cypher"))]
+    let version = 2;
+    Ok(encode_artifact_version(
+        FormatFamily::Manifest,
+        version,
+        0,
+        &payload,
+    ))
 }
 
 fn append_clustering_ranges(
@@ -231,6 +253,17 @@ pub fn decode_manifest(artifact: &str, bytes: &[u8]) -> Result<Manifest, Manifes
         crate::lifecycle::record_storage_manifest_format_fault(&error, actual_family);
         ManifestError::Format(error)
     })?;
+    if framed.header.flags != 0 {
+        return Err(ManifestError::Decode(
+            "manifest flags are non-zero".to_owned(),
+        ));
+    }
+    #[cfg(not(feature = "graph-cypher"))]
+    if framed.header.version == 3 {
+        return Err(ManifestError::Decode(
+            "graph manifest requires graph-cypher".to_owned(),
+        ));
+    }
     let mut cursor = ManifestCursor::new(framed.payload);
     let generation = cursor.u64()?;
     let log_seq = cursor.u64()?;
@@ -296,13 +329,25 @@ pub fn decode_manifest(artifact: &str, bytes: &[u8]) -> Result<Manifest, Manifes
             nullable,
         ));
     }
-    if cursor.remaining() != 0 {
+    if cursor
+        .bytes
+        .get(cursor.position..)
+        .is_some_and(|tail| tail.starts_with(&CLUSTERING_RANGE_EXTENSION_MAGIC))
+    {
         decode_clustering_ranges(&mut cursor, &mut segments)?;
     }
+    #[cfg(feature = "graph-cypher")]
+    let graph = if framed.header.version == 3 {
+        Some(graph::decode(&mut cursor)?)
+    } else {
+        None
+    };
     cursor.finish()?;
     let schema =
         Schema::new(definitions).map_err(|error| ManifestError::Decode(error.to_string()))?;
     let manifest = Manifest {
+        #[cfg(feature = "graph-cypher")]
+        graph,
         generation,
         log_seq,
         segments,
@@ -436,7 +481,7 @@ fn decode_clustering_ranges(
     let expected_bytes = count
         .checked_mul(CLUSTERING_RANGE_RECORD_LEN)
         .ok_or_else(|| ManifestError::Decode("clustering range bytes overflow".to_owned()))?;
-    if cursor.remaining() != expected_bytes {
+    if cursor.remaining() < expected_bytes {
         return Err(ManifestError::Decode(format!(
             "clustering range extension has {} bytes, expected {expected_bytes}",
             cursor.remaining()

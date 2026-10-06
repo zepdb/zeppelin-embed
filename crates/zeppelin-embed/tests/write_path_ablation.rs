@@ -51,6 +51,8 @@ fn schema() -> Schema {
 
 fn manifest() -> Manifest {
     Manifest {
+        #[cfg(feature = "graph-cypher")]
+        graph: None,
         generation: 2,
         log_seq: 2,
         segments: Vec::new(),
@@ -62,6 +64,8 @@ fn manifest() -> Manifest {
 
 fn old_manifest() -> Manifest {
     Manifest {
+        #[cfg(feature = "graph-cypher")]
+        graph: None,
         generation: 1,
         log_seq: 1,
         segments: Vec::new(),

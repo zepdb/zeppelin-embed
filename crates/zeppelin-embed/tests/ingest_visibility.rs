@@ -1033,6 +1033,8 @@ fn publish_row_zero_segments(directory: &Path, ids: [SegmentId; 2]) {
         &StdVfs,
         directory,
         &Manifest {
+            #[cfg(feature = "graph-cypher")]
+            graph: None,
             generation: 4,
             log_seq: 0,
             segments,

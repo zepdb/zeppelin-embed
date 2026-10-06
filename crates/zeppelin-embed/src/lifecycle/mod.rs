@@ -3265,6 +3265,8 @@ impl Store {
                 vfs.as_ref(),
                 path,
                 &crate::manifest::Manifest {
+                    #[cfg(feature = "graph-cypher")]
+                    graph: None,
                     generation: active.generation,
                     log_seq: 0,
                     segments: Vec::new(),
@@ -9877,6 +9879,8 @@ mod tests {
             &StdVfs,
             directory,
             &Manifest {
+                #[cfg(feature = "graph-cypher")]
+                graph: None,
                 generation: 1,
                 log_seq: 0,
                 segments: vec![meta],
@@ -10401,6 +10405,8 @@ mod tests {
             &StdVfs,
             directory.path(),
             &Manifest {
+                #[cfg(feature = "graph-cypher")]
+                graph: None,
                 generation: 1,
                 log_seq: 1,
                 segments: Vec::new(),

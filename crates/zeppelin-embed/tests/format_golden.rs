@@ -74,6 +74,8 @@ fn epoch_manifest() -> Manifest {
     };
     let identity = declared.identity();
     Manifest {
+        #[cfg(feature = "graph-cypher")]
+        graph: None,
         generation: 21,
         log_seq: 13,
         segments: vec![SegmentMeta {
@@ -638,6 +640,8 @@ fn purge_intent_v1_is_byte_exact() {
 #[test]
 fn manifest_clustering_range_extension_is_byte_exact() {
     let manifest = Manifest {
+        #[cfg(feature = "graph-cypher")]
+        graph: None,
         generation: 8,
         log_seq: 7,
         segments: vec![

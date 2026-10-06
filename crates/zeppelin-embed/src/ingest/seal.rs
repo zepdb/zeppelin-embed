@@ -271,6 +271,8 @@ impl Store {
             vfs,
             &self.directory,
             &Manifest {
+                #[cfg(feature = "graph-cypher")]
+                graph: None,
                 generation,
                 log_seq: absorbed_through,
                 segments,
@@ -357,6 +359,8 @@ pub(super) fn load_current_manifest(
     match vfs.open(&path) {
         Ok(_) => load_manifest(vfs, &path, durable_end).map_err(StoreError::Manifest),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Manifest {
+            #[cfg(feature = "graph-cypher")]
+            graph: None,
             generation,
             log_seq: 0,
             segments: Vec::new(),

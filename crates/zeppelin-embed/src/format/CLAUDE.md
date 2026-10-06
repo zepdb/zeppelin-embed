@@ -36,7 +36,8 @@
   12. Each dense row is exactly `doc_id:u128` little-endian followed by
   `revision:u64` little-endian (24 bytes); task-07 segments without the region
   remain readable and report no document identity.
-- Manifest family 10 emits and accepts v2 only; the preserved v1 fixtures are
+- Manifest family 10 emits v2 for graph-free manifests and v3 only when the
+  graph section is present; readers accept v2 and v3. The preserved v1 fixtures are
   explicit rejected inputs. After the existing generation/log-sequence/counts
   prefix and reserved-zero u32, the alias is a presence byte, seven zero bytes,
   and embedding/tokenizer u64 ids. Each existing segment record is followed by
@@ -52,6 +53,17 @@
   `tag:u8`, seven reserved-zero bytes, `min_ts:i64`, `max_ts:i64`. Tag 0 is
   `Unstamped` and tag 1 is `Empty`; both require zero bounds. Tag 2 is inclusive
   bounded and requires `min_ts <= max_ts`.
+- Manifest v3 retains the exact v2 payload as its prefix, including reserved-zero
+  fields and optional `TSR1`. It appends `ZGR3`, `section_len:u32` (body only),
+  then `graph_present:u8 = 1`, seven reserved-zero bytes,
+  `graph_absorbed_through:u64`, `graph_state_len:u32`, existing ZE-38 CommitState
+  bytes, `graph_object_count:u32`, and that many `(artifact_id:u128, length:u64,
+  checksum:u64)` rows. A trailing xxh3-64 covers `ZGR3`, length and body; the
+  existing enclosing block/file checksums remain. Unknown fields, non-zero
+  reserved bytes, absent/unknown presence tags, bad lengths/checksums and
+  trailing bytes are refused. Vector/text roots are absent; required state
+  participants must match the live inventory. Artifact ids are non-zero nonces,
+  never paths. Graph-free builds refuse v3 at the codec boundary.
 - WAL mutation operation id 4 is timestamped-upsert v1. It retains operation
   id 1's header/document/vector encoding and inserts `ts:i64` little-endian
   between `revision:u64` and `dims:u32`. Operation id 1 and all existing WAL,

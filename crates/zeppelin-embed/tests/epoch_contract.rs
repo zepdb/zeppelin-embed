@@ -380,6 +380,8 @@ fn a_manifest_registry_id_must_match_the_complete_embedding_identity() {
     meta.embedding.query.model_version = "different-query-tower".to_owned();
 
     let error = zeppelin_embed::manifest::encode_manifest(&Manifest {
+        #[cfg(feature = "graph-cypher")]
+        graph: None,
         generation: 0,
         log_seq: 0,
         segments: Vec::new(),
@@ -459,6 +461,8 @@ fn write_epoch_manifest(directory: &Path, epoch: &StoreEpoch) {
         &StdVfs,
         directory,
         &Manifest {
+            #[cfg(feature = "graph-cypher")]
+            graph: None,
             generation: 0,
             log_seq: 0,
             segments: Vec::new(),

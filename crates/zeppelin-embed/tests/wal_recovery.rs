@@ -1493,6 +1493,8 @@ fn real_durable_log_refuses_a_snapshot_ahead_of_replay() {
     assert_eq!(reader.durable_end(), 1);
 
     let manifest = Manifest {
+        #[cfg(feature = "graph-cypher")]
+        graph: None,
         generation: 1,
         log_seq: 2,
         segments: Vec::new(),

@@ -184,16 +184,6 @@ pub struct DecodedArtifact<'a> {
 /// Encodes one complete single-block artifact with xxh3-64 block and file checksums.
 #[must_use]
 pub fn encode_artifact(family: FormatFamily, flags: u32, payload: &[u8]) -> Vec<u8> {
-    encode_artifact_version(family, family.current_version(), flags, payload)
-}
-
-/// Manifest writers select v2 or v3 without changing the graph-free default.
-pub(crate) fn encode_artifact_version(
-    family: FormatFamily,
-    version: u16,
-    flags: u32,
-    payload: &[u8],
-) -> Vec<u8> {
     let block_overhead = 16_usize;
     let file_length = FILE_HEADER_LEN
         .saturating_add(block_overhead)
@@ -203,7 +193,7 @@ pub(crate) fn encode_artifact_version(
     encoded.extend_from_slice(&encode_header(FileHeader {
         magic: FILE_MAGIC,
         family: family.id(),
-        version,
+        version: family.current_version(),
         flags,
         header_length: FILE_HEADER_LEN as u64,
         file_length: file_length as u64,

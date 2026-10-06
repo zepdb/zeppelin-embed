@@ -173,6 +173,8 @@ fn manifest(generation: u64, mut segments: Vec<SegmentMeta>) -> Manifest {
         segment.epoch_id = epoch_alias.map(|identity| identity.embedding);
     }
     Manifest {
+        #[cfg(feature = "graph-cypher")]
+        graph: None,
         generation,
         log_seq: generation,
         segments,
@@ -738,6 +740,8 @@ fn a_crash_mid_purge_reopens_and_completes_or_restarts_cleanly() {
     let (old_bytes, old_meta) = one_row_segment_bytes(old_id, f32::from_bits(0x3f12_34ab));
     let (new_bytes, new_meta) = segment_bytes(new_id);
     let old_manifest = Manifest {
+        #[cfg(feature = "graph-cypher")]
+        graph: None,
         generation: 1,
         log_seq: 1,
         segments: vec![old_meta.clone()],
@@ -746,6 +750,8 @@ fn a_crash_mid_purge_reopens_and_completes_or_restarts_cleanly() {
         schema: schema(),
     };
     let new_manifest = Manifest {
+        #[cfg(feature = "graph-cypher")]
+        graph: None,
         generation: 2,
         log_seq: 1,
         segments: vec![new_meta.clone()],

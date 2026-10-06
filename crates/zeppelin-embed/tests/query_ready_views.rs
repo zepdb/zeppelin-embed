@@ -185,6 +185,8 @@ fn graph_store() -> (tempfile::TempDir, Vec<f32>, u64) {
         &StdVfs,
         directory.path(),
         &Manifest {
+            #[cfg(feature = "graph-cypher")]
+            graph: None,
             generation: 1,
             log_seq: 0,
             segments: vec![meta],
@@ -264,6 +266,8 @@ fn lexical_store() -> tempfile::TempDir {
         &StdVfs,
         directory.path(),
         &Manifest {
+            #[cfg(feature = "graph-cypher")]
+            graph: None,
             generation: 1,
             log_seq: 0,
             segments: vec![meta],

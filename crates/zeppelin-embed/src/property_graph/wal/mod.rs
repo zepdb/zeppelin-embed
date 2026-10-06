@@ -325,7 +325,9 @@ pub struct Envelope<'a> {
 }
 mod codec;
 mod framing;
-pub(crate) use framing::envelope_size;
+pub(crate) use framing::{
+    commit_state_size, decode_commit_state, encode_commit_state, envelope_size,
+};
 pub use framing::{encode_envelope, encode_header};
 mod checkpoint;
 pub(crate) use checkpoint::{NativeCheckpoint, decode_checkpoint, encode_checkpoint};

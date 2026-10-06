@@ -187,6 +187,8 @@ fn manifest_codec_roundtrips_all_fields_and_rejects_payload_shapes() {
     let epoch = store_epoch(65);
     let identity = epoch.identity();
     let manifest = Manifest {
+        #[cfg(feature = "graph-cypher")]
+        graph: None,
         generation: 8,
         log_seq: 7,
         segments: vec![SegmentMeta {
@@ -268,6 +270,8 @@ fn manifest_codec_roundtrips_all_fields_and_rejects_payload_shapes() {
 #[test]
 fn manifest_clustering_extension_rejects_each_semantic_corruption() {
     let manifest = Manifest {
+        #[cfg(feature = "graph-cypher")]
+        graph: None,
         generation: 1,
         log_seq: 0,
         segments: vec![SegmentMeta {

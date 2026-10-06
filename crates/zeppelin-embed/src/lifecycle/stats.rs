@@ -1532,6 +1532,8 @@ mod tests {
             &StdVfs,
             directory.path(),
             &Manifest {
+                #[cfg(feature = "graph-cypher")]
+                graph: None,
                 generation: 1,
                 log_seq: 0,
                 segments: vec![segment],

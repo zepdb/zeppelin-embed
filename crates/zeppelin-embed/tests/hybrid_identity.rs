@@ -70,6 +70,8 @@ fn identity_free_store(directory: &std::path::Path) -> (Store, SegmentId) {
         &StdVfs,
         directory,
         &Manifest {
+            #[cfg(feature = "graph-cypher")]
+            graph: None,
             generation: 1,
             log_seq: 0,
             segments: vec![meta],
@@ -184,6 +186,8 @@ fn postings_segment_without_document_identity_is_a_typed_error() {
         &StdVfs,
         directory.path(),
         &Manifest {
+            #[cfg(feature = "graph-cypher")]
+            graph: None,
             generation: 1,
             log_seq: 0,
             segments: vec![meta],
@@ -278,6 +282,8 @@ fn matching_legacy_postings_row_without_stored_text_is_a_typed_snippet_error() {
         &StdVfs,
         directory.path(),
         &Manifest {
+            #[cfg(feature = "graph-cypher")]
+            graph: None,
             generation: 1,
             log_seq: 0,
             segments: vec![meta],

@@ -139,6 +139,18 @@ pub(super) fn state_read<'a>(
     Ok(state)
 }
 
+pub(crate) fn commit_state_size(
+    state: CommitState<'_>,
+    resources: &mut WalResources<'_>,
+) -> Result<usize, WalError> {
+    let mut writer = Writer {
+        bytes: None,
+        pos: 0,
+    };
+    state_write(state, &mut writer, resources)?;
+    Ok(writer.pos)
+}
+
 pub(crate) fn encode_commit_state(
     state: CommitState<'_>,
     output: &mut [u8],

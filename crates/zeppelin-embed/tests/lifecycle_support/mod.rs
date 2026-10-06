@@ -53,6 +53,8 @@ pub fn published_store(generation: u64) -> TempDir {
         &StdVfs,
         directory.path(),
         &Manifest {
+            #[cfg(feature = "graph-cypher")]
+            graph: None,
             generation,
             log_seq: 0,
             segments: vec![segment],

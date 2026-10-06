@@ -782,6 +782,8 @@ fn publish_existing_segment(directory: &std::path::Path, id: SegmentId) {
         &StdVfs,
         directory,
         &Manifest {
+            #[cfg(feature = "graph-cypher")]
+            graph: None,
             generation: 1,
             log_seq: 0,
             segments: vec![meta],
