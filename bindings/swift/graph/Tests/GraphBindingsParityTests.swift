@@ -136,8 +136,44 @@ final class GraphBindingsParityTests: XCTestCase {
     try await store.close()
     XCTAssertEqual(result.rows[0][1], .string(""))
   }
-  func testStructuredQueryHandoff() {
-    XCTFail("ZE-278 missing: Swift structured query/search/options and entity-get wrappers are not on main; three-language qualification is incomplete")
+  func testStructuredQueryHandoff() async throws {
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: path) }
+    let store = try await ZeppelinGraphStore.open(at: path, mode: .create)
+    let key = GraphKey(namespace: "handoff", key: "first")
+    var batch = GraphBatch()
+    batch.node(
+      key: key, revision: 1,
+      .create(GraphNodeImage(labels: ["Handoff"], properties: ["title": .string("hello")], text: "")))
+    let written = try await store.apply(batch)
+    XCTAssertEqual(written.metadata.disposition, .committed)
+    guard let receipt = written.metadata.receipts.first, case .node(let id) = receipt.identity else {
+      return XCTFail("node receipt missing")
+    }
+    let plan = GraphPlan(
+      root: GraphOperatorID(1),
+      operators: [
+        .scanNodes(output: GraphSlotID(0), label: "Handoff"),
+        .project(
+          input: GraphOperatorID(0),
+          bindings: [GraphProjection(GraphSlotID(7), GraphExpressionID(1))]),
+      ],
+      expressions: [.slot(GraphSlotID(0)), .property(GraphExpressionID(0), "title")])
+    let result = try await store.query(plan)
+    let fetched = try await store.getNodes([id], fields: GraphNodeFields(text: true))
+    try await store.close()
+    XCTAssertEqual(result.columns.map(\.name), ["slot_7"])
+    XCTAssertEqual(result.rows, [[.string("hello")]])
+    XCTAssertEqual(result.metadata.admittedGeneration, written.metadata.changedGeneration)
+    XCTAssertEqual(fetched.metadata.admittedGeneration, written.metadata.changedGeneration)
+    XCTAssertEqual(fetched.nodes.count, 1)
+    let node = try XCTUnwrap(fetched.nodes.first ?? nil)
+    XCTAssertEqual(node.id, id)
+    XCTAssertEqual(node.key, key)
+    XCTAssertEqual(node.labels, ["Handoff"])
+    XCTAssertEqual(node.properties["title"], .string("hello"))
+    XCTAssertEqual(node.text, "")
+    XCTAssertEqual(node.revision, 1)
   }
 }
 
