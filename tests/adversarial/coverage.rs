@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 /// Native property-graph paths required when the graph feature is selected.
+#[cfg(feature = "graph-cypher")]
 pub const REQUIRED_GRAPH_SMOKE_COVERAGE: &[&str] = &[
     "property-graph.c-entry.shared-semantics",
     "property-graph.c-entry.response-after-close",

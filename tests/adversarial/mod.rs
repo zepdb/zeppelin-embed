@@ -179,6 +179,7 @@ pub mod graph_storage_faults;
 #[cfg(unix)]
 pub mod delete_where;
 
+#[cfg(feature = "graph-cypher")]
 pub mod graph_c_entry;
 #[cfg(feature = "graph-cypher")]
 pub mod graph_lifecycle;
