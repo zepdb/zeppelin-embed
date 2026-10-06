@@ -23,7 +23,7 @@ use zeppelin_embed::property_graph::query::{QueryError, QueryView};
 use zeppelin_embed::property_graph::staging::{ItemReceipt, StructuredOperation, StructuredWrite};
 use zeppelin_embed::property_graph::{
     GraphGeneration, GraphGetOptions, GraphQueryPlan, GraphStore, GraphStoreError,
-    GraphWriteOutcome, GraphWriteResult, NodeId, RelId, StoreInstanceId,
+    GraphWriteOutcome, NodeId, RelId, StoreInstanceId,
 };
 
 const GLOBAL_WORK_COUNT: usize = 23;
@@ -901,19 +901,11 @@ fn write_receipt(index: usize, receipt: &ItemReceipt, deleted: bool) -> ZeGraphR
 }
 
 /// Runs one real [`GraphStore::apply_batch`] under the potential-write
-/// guard and, on success, builds and publishes its C receipt response.
+/// guard and publishes its precommit-prepared C receipt response.
 ///
-/// The guard covers the whole call, not just a post-commit tail: unlike the
-/// Cypher statement seam, `apply_batch` exposes no pre-commit reflection to
-/// detach before its own commit (it returns fully settled `ItemReceipt`s,
-/// already stamped by core's own internal settle), so there is nothing to
-/// restamp here -- `PendingResponse::settle`'s per-entity loop runs, but
-/// against empty node/relationship pools (`apply_batch` returns no entity
-/// data), making it a genuine no-op that still correctly stamps disposition
-/// and publishes. The only real uncertainty window left is `apply_batch`
-/// itself: if it panics after committing but before returning, or if
-/// anything below panics after a real `Ok`, the guard reports Indeterminate
-/// rather than a stale NotCommitted or a false success.
+/// The materializer registers the complete C receipt response before commit.
+/// After commit, settlement only stamps the admitted/changed generations and
+/// publishes the existing owner. The guard preserves uncertainty on unwind.
 pub(crate) fn apply_and_settle(
     registry: &'static GraphResultRegistry,
     store: &GraphStore,
@@ -921,75 +913,123 @@ pub(crate) fn apply_and_settle(
     control: &QueryControl,
 ) -> GuardedWrite<Result<ZeGraphResponse, ProducerError>> {
     run_potential_write(|attempt| {
-        let result = match store.apply_batch(requests, control) {
-            Ok(result) => result,
-            Err(error) => {
-                // `nothing_committed()` is core's own proof, not a guess:
-                // only record NotCommitted when it is actually true.
-                // Otherwise the outcome is genuinely unknown; leave
-                // Indeterminate by not resolving the attempt at all.
-                if error.nothing_committed() {
-                    attempt.no_effect();
-                }
-                return Err(ProducerError::Store(error));
-            }
+        let mut deleted = Vec::new();
+        if deleted.try_reserve_exact(requests.len()).is_err() {
+            attempt.no_effect();
+            return Err(ProducerError::Conversion(ConversionError::Owner(
+                OwnerError::Allocation,
+            )));
+        }
+        for request in requests {
+            deleted.push(matches!(request.operation, StructuredOperation::Delete(..)));
+        }
+        let mut materializer = BatchMaterializer {
+            registry,
+            store,
+            deleted: &deleted,
+            control,
+            error: None,
         };
-        // The write already resolved (committed, replayed or no-op); any
-        // failure from here on must retain that known outcome, even when
-        // its response cannot be delivered.
-        build_write_response(registry, store, control, requests, attempt, result)
+        let (outcome, admitted, registration) =
+            match store.apply_batch_with_materializer(requests, control, &mut materializer) {
+                Ok(result) => result,
+                Err(error) => {
+                    if error.nothing_committed() {
+                        attempt.no_effect();
+                    }
+                    return Err(materializer.error.unwrap_or(ProducerError::Store(error)));
+                }
+            };
+        let mut pending = registration.0;
+        pending.set_admitted_generation(admitted.get());
+        let settlement = write_settlement(outcome).map_err(ProducerError::from)?;
+        Ok(attempt.settle(pending, &[], settlement))
     })
 }
 
-#[allow(
-    clippy::result_large_err,
-    reason = "ProducerError retains the allocation-free core GraphStoreError"
-)]
-fn build_write_response(
+struct BatchRegistration(PendingResponse);
+impl zeppelin_embed::property_graph::staging::ResultRegistration for BatchRegistration {
+    fn capacity_bytes(&self) -> usize {
+        self.0.allocation_bytes()
+    }
+}
+struct BatchMaterializer<'a> {
     registry: &'static GraphResultRegistry,
-    store: &GraphStore,
-    control: &QueryControl,
-    requests: &[StructuredWrite<'_, '_>],
-    attempt: WriteAttempt<'_>,
-    result: GraphWriteResult,
-) -> Result<ZeGraphResponse, ProducerError> {
-    let settlement = write_settlement(result.outcome())?;
-    let receipts = result.receipts();
-    let pool: Vec<ZeGraphReceipt> = receipts
-        .iter()
-        .enumerate()
-        .map(|(index, receipt)| {
-            let deleted = requests.get(index).is_some_and(|request| {
-                matches!(request.operation, StructuredOperation::Delete(..))
-            });
-            write_receipt(index, receipt, deleted)
+    store: &'a GraphStore,
+    deleted: &'a [bool],
+    control: &'a QueryControl,
+    error: Option<ProducerError>,
+}
+impl zeppelin_embed::property_graph::staging::ResultMaterializer for BatchMaterializer<'_> {
+    type Registration = BatchRegistration;
+    fn layout(
+        &mut self,
+        count: usize,
+        control: &mut zeppelin_embed::property_graph::staging::WriteControl<'_>,
+    ) -> Result<
+        zeppelin_embed::property_graph::staging::ResultLayout,
+        zeppelin_embed::property_graph::staging::StageError,
+    > {
+        use zeppelin_embed::property_graph::staging::{ResultLayout, StageError, WritePhase};
+        control(WritePhase::AbiResult)?;
+        let bytes = GraphResultRegistry::allocation_bytes(PoolCounts {
+            receipts: count,
+            ..PoolCounts::default()
         })
-        .collect();
-    let parts = ResponseParts {
-        receipts: &pool,
-        ..ResponseParts::default()
-    };
-    let metadata = ResponseMetadata::new(0, Some(result.admitted_generation().get()));
-    // `detach()` runs inside the same closure as `prepare()`: it strips the
-    // `'m, 'g` lifetime tied to `with_producer_context`'s own (function-
-    // scoped) `QueryMemory`, so only the lifetime-free `PendingResponse` --
-    // never a `PreparedResponse<'m, 'g>` -- escapes to here.
-    let pending = match with_producer_context(store, control, |context| {
-        registry
-            .prepare(context, parts, metadata)
-            .map(PreparedResponse::detach)
-    }) {
-        Ok(Ok(pending)) => pending,
-        Ok(Err(error)) => {
-            attempt.delivery_failed(settlement);
-            return Err(ProducerError::from(ConversionError::from(error)));
+        .map_err(|_| StageError::Limit)?;
+        Ok(ResultLayout {
+            rows: count,
+            core_bytes: 0,
+            abi_bytes: 0,
+            registry_bytes: bytes,
+        })
+    }
+    fn materialize(
+        &mut self,
+        receipts: &[ItemReceipt],
+        _: &mut [u8],
+        _: &mut [u8],
+        control: &mut zeppelin_embed::property_graph::staging::WriteControl<'_>,
+    ) -> Result<BatchRegistration, zeppelin_embed::property_graph::staging::StageError> {
+        use zeppelin_embed::property_graph::staging::{StageError, WritePhase};
+        control(WritePhase::AbiResult)?;
+        let prepared = (|| {
+            let mut pool = Vec::new();
+            pool.try_reserve_exact(receipts.len()).map_err(|_| {
+                ProducerError::Conversion(ConversionError::Owner(OwnerError::Allocation))
+            })?;
+            for (index, receipt) in receipts.iter().enumerate() {
+                let deleted = self
+                    .deleted
+                    .get(index)
+                    .copied()
+                    .ok_or(ProducerError::Conversion(ConversionError::Owner(
+                        OwnerError::Limit,
+                    )))?;
+                pool.push(write_receipt(index, receipt, deleted));
+            }
+            with_producer_context(self.store, self.control, |context| {
+                self.registry
+                    .prepare(
+                        context,
+                        ResponseParts {
+                            receipts: &pool,
+                            ..ResponseParts::default()
+                        },
+                        ResponseMetadata::new(0, Some(0)),
+                    )
+                    .map(|prepared| BatchRegistration(prepared.detach()))
+            })?
+            .map_err(|e| ProducerError::Conversion(ConversionError::Owner(e)))
+        })();
+        match prepared {
+            Ok(owner) => Ok(owner),
+            Err(error) => {
+                self.error = Some(error);
+                Err(StageError::Limit)
+            }
         }
-        Err(error) => {
-            attempt.delivery_failed(settlement);
-            return Err(error);
-        }
-    };
-    Ok(attempt.settle(pending, receipts, settlement))
+    }
 }
 
 /// Builds a C response directly from an already-detached

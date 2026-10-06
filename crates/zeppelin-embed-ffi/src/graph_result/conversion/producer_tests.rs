@@ -342,14 +342,7 @@ fn write_receipt_deleted_flag_comes_from_the_request_not_the_receipt() {
 }
 
 #[test]
-fn ze76_response_preparation_failure_preserves_committed_batch() {
-    // A public batch has at most 16,384 fixed 72-byte receipts. A >4 MiB
-    // receipt fixture cannot be admitted without changing the existing cap.
-    assert_eq!(
-        zeppelin_embed::property_graph::MAX_GRAPH_CHANGES * size_of::<ZeGraphReceipt>(),
-        1_179_648
-    );
-    assert!(1_179_648 < 4 * 1024 * 1024);
+fn ze241_receipt_response_failure_leaves_batch_not_committed() {
     static FULL: GraphResultRegistry = GraphResultRegistry::new(0);
     static AVAILABLE: GraphResultRegistry = GraphResultRegistry::new(16);
     let dir = tempfile::tempdir().unwrap();
@@ -361,20 +354,55 @@ fn ze76_response_preparation_failure_preserves_committed_batch() {
         guarded.value,
         Ok(Err(ProducerError::Conversion(_)))
     ));
+    assert_eq!(guarded.outcome, OperationOutcome::NotCommitted);
+    store.close().unwrap();
+    let store = GraphStore::open(dir.path().join("native"), store_options(), None).unwrap();
+    let retry = apply_and_settle(&AVAILABLE, &store, &requests, &control());
     assert_eq!(
-        guarded.outcome,
+        retry.outcome,
         OperationOutcome::Success(SuccessfulOutcome::Committed(
             std::num::NonZeroU64::new(1).unwrap()
         ))
     );
-    let retry = apply_and_settle(&AVAILABLE, &store, &requests, &control());
-    assert_eq!(
-        retry.outcome,
-        OperationOutcome::Success(SuccessfulOutcome::Replayed)
-    );
     let mut response = retry.value.unwrap().unwrap();
     AVAILABLE.free(&mut response).unwrap();
     store.close().unwrap();
+}
+
+#[cfg(feature = "graph-result-test-support")]
+#[test]
+fn ze241_receipt_allocation_failures_leave_batch_not_committed() {
+    use super::super::test_support::AllocationFaultScope;
+    static REGISTRY: GraphResultRegistry = GraphResultRegistry::new(16);
+    for ordinal in [1, 2] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = GraphStore::create(dir.path().join("native"), store_options(), None).unwrap();
+        let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+        let requests = [create_request("alpha", &image)];
+        let fault = AllocationFaultScope::arm(ordinal);
+        let guarded = apply_and_settle(&REGISTRY, &store, &requests, &control());
+        assert_eq!(fault.receipt().fires, 1);
+        drop(fault);
+        assert!(matches!(
+            guarded.value,
+            Ok(Err(ProducerError::Conversion(ConversionError::Owner(
+                OwnerError::Allocation
+            ))))
+        ));
+        assert_eq!(guarded.outcome, OperationOutcome::NotCommitted);
+        store.close().unwrap();
+        let store = GraphStore::open(dir.path().join("native"), store_options(), None).unwrap();
+        let retry = apply_and_settle(&REGISTRY, &store, &requests, &control());
+        assert_eq!(
+            retry.outcome,
+            OperationOutcome::Success(SuccessfulOutcome::Committed(
+                std::num::NonZeroU64::new(1).unwrap()
+            ))
+        );
+        let mut response = retry.value.unwrap().unwrap();
+        REGISTRY.free(&mut response).unwrap();
+        store.close().unwrap();
+    }
 }
 
 fn ze211_fixture() -> (
