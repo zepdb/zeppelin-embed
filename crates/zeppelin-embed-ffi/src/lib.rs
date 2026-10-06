@@ -4143,6 +4143,7 @@ pub extern "C" fn ze_warm_lexical(
     request: *const ZeWarmLexicalRequest,
 ) -> ZeErrorCode {
     ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_warm_lexical");
         finish(
             Some(handle),
             (|| {

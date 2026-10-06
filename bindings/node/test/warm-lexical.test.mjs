@@ -51,3 +51,18 @@ test('ZE265 async warm cancellation, close race and closed errors', async () => 
     await assert.rejects(store.warmLexicalAsync(), { code: 'ZE_ERR_CLOSED' });
   } finally { if (!closed) store.close(); rmSync(root, { recursive: true, force: true }); }
 });
+
+
+test('ZE265 warming accepts deadlines and rejects conflicting controls', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ze265-deadline-'));
+  const store = openNamespace(root, 'records', {});
+  try {
+    assert.throws(() => store.warmLexical({ deadlineNs: 1n }), { code: 'ZE_ERR_TIMEOUT' });
+    await assert.rejects(store.warmLexicalAsync({ deadlineNs: 1n }), { code: 'ZE_ERR_TIMEOUT' });
+    const controller = new AbortController();
+    await assert.rejects(store.warmLexicalAsync({ signal: controller.signal, deadlineNs: 1000000000n }),
+      { code: 'ZE_ERR_INVALID_ARGUMENT' });
+    assert.equal(store.warmLexical({ deadlineNs: 1000000000n }), undefined);
+    assert.equal(await store.warmLexicalAsync({ deadlineNs: 1000000000n }), undefined);
+  } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});

@@ -313,14 +313,14 @@ class Store {
     } catch (error) { throw translateError(error); }
   }
 
-  warmLexical() {
-    try { return this._native.warmLexical(); }
+  warmLexical(options = {}) {
+    try { return this._native.warmLexical({ deadlineNs: options.deadlineNs ?? 0n }); }
     catch (error) { throw translateError(error); }
   }
 
   async warmLexicalAsync(options = {}) {
     try {
-      return await withSignal(options.signal, token => this._native.warmLexicalAsync({ cancelToken: token ?? 0n }));
+      return await withSignal(options.signal, token => this._native.warmLexicalAsync({ cancelToken: token ?? 0n, deadlineNs: options.deadlineNs ?? 0n }));
     } catch (error) { throw translateError(error); }
   }
 

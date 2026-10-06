@@ -3634,8 +3634,11 @@ napi_value WarmLexical(napi_env env, napi_callback_info info) {
       return nullptr;
     auto request = std::make_shared<ZeWarmLexicalRequest>();
     request->abi_size = sizeof(ZeWarmLexicalRequest);
-    if (argc > 0 && !GetOptionalUint64(env, args[0], "cancelToken", 0,
-                                      &request->cancel_token))
+    if (argc > 0 &&
+        (!GetOptionalUint64(env, args[0], "cancelToken", 0,
+                            &request->cancel_token) ||
+         !GetOptionalUint64(env, args[0], "deadlineNs", 0,
+                            &request->deadline_ns)))
       return nullptr;
     const auto handle = store->handle;
     return RunNative<Async>(env, receiver, handle,

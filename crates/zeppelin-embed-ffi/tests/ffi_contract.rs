@@ -608,6 +608,7 @@ const POISON_TABLE_NAMES: &[&str] = &[
     "ze_scan_ordered",
     "ze_scan_result_free",
     "ze_schema_column",
+    "ze_warm_lexical",
     "ze_seal",
     "ze_merge_sealed",
     "ze_open_migrations",
@@ -1099,6 +1100,10 @@ fn poison_function_table() -> Vec<(&'static str, PoisonCall)> {
         ("ze_reindex_text", |context| {
             let mut report: ZeGenerationReport = common::sized_zeroed();
             ze_reindex_text(context.store.handle, &mut report)
+        }),
+        ("ze_warm_lexical", |context| {
+            let request: ZeWarmLexicalRequest = common::sized_zeroed();
+            ze_warm_lexical(context.store.handle, &request)
         }),
         ("ze_seal", |context| {
             let request = ZeSealRequest {

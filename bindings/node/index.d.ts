@@ -629,9 +629,9 @@ export declare class Store {
   scanAsync(request?: ScanRequest & { readonly signal?: AbortSignal }): Promise<ScanPage>;
   /** Off-thread seal, including configured auto-merge. */
   /** Prepare lexical assembly and prefix vocabulary; mutations invalidate them. */
-  warmLexical(): void;
-  /** Prepare off the event loop, with optional cooperative cancellation. */
-  warmLexicalAsync(options?: { readonly signal?: AbortSignal }): Promise<void>;
+  warmLexical(options?: { readonly deadlineNs?: bigint }): void;
+  /** Prepare off the event loop; signal and nonzero deadlineNs are exclusive. */
+  warmLexicalAsync(options?: { readonly signal?: AbortSignal; readonly deadlineNs?: bigint }): Promise<void>;
   sealAsync(): Promise<SealReport>;
   /** Off-thread merge of sealed segments. */
   mergeAsync(): Promise<SealReport>;
