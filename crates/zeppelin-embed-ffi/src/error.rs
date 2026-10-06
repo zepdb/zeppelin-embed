@@ -68,6 +68,9 @@ impl FfiError {
             return Self::new(code, message);
         }
         let code = match &error {
+            zeppelin_embed::lifecycle::StoreError::NativeGraphDirectory { .. } => {
+                ZeErrorCode::ZeErrLegacyGraphDirectory
+            }
             zeppelin_embed::lifecycle::StoreError::CascadeCycle { .. } => {
                 ZeErrorCode::ZeErrCascadeCycle
             }
@@ -573,4 +576,17 @@ fn format_version_code(error: &(dyn std::error::Error + 'static)) -> Option<ZeEr
         });
     }
     error.source().and_then(format_version_code)
+}
+
+#[cfg(test)]
+mod legacy_graph_dir {
+    #[test]
+    fn legacy_graph_directory_has_a_stable_error_code() {
+        let error = super::FfiError::store(
+            zeppelin_embed::lifecycle::StoreError::NativeGraphDirectory {
+                path: std::path::PathBuf::from("graph"),
+            },
+        );
+        assert_eq!(error.code as i32, 58);
+    }
 }

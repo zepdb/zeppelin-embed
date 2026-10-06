@@ -2692,7 +2692,7 @@ fn refuse_native_graph_directory(vfs: &dyn crate::vfs::Vfs, path: &Path) -> Resu
         if name == "graph-root.ze"
             || (name.starts_with("graph-wal-") && name.ends_with(".ze"))
             || (name.starts_with("graph-") && name.ends_with(".zgraph"))
-            || name.starts_with("graph-root.ze.tmp-")
+            || (name.starts_with("graph-root-") && name.ends_with(".tmp"))
         {
             native = true;
         }

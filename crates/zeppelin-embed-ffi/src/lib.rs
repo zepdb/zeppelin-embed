@@ -5500,6 +5500,7 @@ pub extern "C" fn ze_error_code_name(code: i32) -> *const c_char {
             55 => b"ZE_ERR_REVISION_CONFLICT\0",
             56 => b"ZE_ERR_FORMAT_TOO_NEW\0",
             57 => b"ZE_ERR_CASCADE_CYCLE\0",
+            58 => b"ZE_ERR_LEGACY_GRAPH_DIRECTORY\0",
             _ => b"ZE_ERR_UNKNOWN\0",
         };
         bytes.as_ptr().cast::<c_char>()

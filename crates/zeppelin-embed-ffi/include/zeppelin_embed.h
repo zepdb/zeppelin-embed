@@ -356,6 +356,10 @@ enum ze_error_code
      A namespace cascade declaration closes a cycle.
      */
     ZE_ERR_CASCADE_CYCLE = 57,
+    /*
+     A graph-only directory cannot be opened as a legacy document store.
+     */
+    ZE_ERR_LEGACY_GRAPH_DIRECTORY = 58,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L

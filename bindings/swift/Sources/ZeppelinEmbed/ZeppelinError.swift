@@ -59,4 +59,5 @@ public enum ZeppelinError: Int32, Error, Sendable, CaseIterable {
     case revisionConflict = 55
     case formatTooNew = 56
     case cascadeCycle = 57
+    case legacyGraphDirectory = 58
 }

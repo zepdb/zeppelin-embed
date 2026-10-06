@@ -173,6 +173,54 @@ fn legacy_open_refuses_a_graph_store_directory_with_a_typed_error() {
     }
 }
 
+mod legacy_graph_dir {
+    use super::*;
+
+    fn hashes(path: &Path) -> BTreeMap<PathBuf, u64> {
+        snapshot(path)
+            .into_iter()
+            .map(|(path, bytes)| (path, xxhash_rust::xxh3::xxh3_64(&bytes)))
+            .collect()
+    }
+
+    #[test]
+    fn a_0_6_0_graph_directory_is_refused_before_any_write() {
+        let parent = tempfile::tempdir().expect("temporary parent");
+        let path = parent.path().join("graph");
+        let store = GraphStore::create(&path, options(), None).expect("graph store");
+        create_node(&store, "only", 1);
+        store.close().expect("close graph store");
+        drop(store);
+
+        // Also cover a crash leaving only the selector's real temporary name:
+        // other graph artifacts would mask a broken temporary-file guard.
+        let temporary = parent.path().join("temporary");
+        std::fs::create_dir(&temporary).expect("temporary directory");
+        std::fs::write(
+            temporary.join("graph-root-00000000000000000000000000000001.tmp"),
+            b"unpublished selector",
+        )
+        .expect("temporary selector");
+        for directory in [&path, &temporary] {
+            let before = hashes(directory);
+            for options in [OpenOptions::new(), OpenOptions::read_only()] {
+                let Err(error) = Store::open(directory, options) else {
+                    panic!("legacy open must refuse graph artifacts");
+                };
+                assert!(
+                    matches!(error, StoreError::NativeGraphDirectory { .. }),
+                    "{error}"
+                );
+                assert_eq!(
+                    hashes(directory),
+                    before,
+                    "refusal must not change any file"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn graph_open_refuses_a_legacy_store_directory_with_a_typed_error() {
     let parent = tempfile::tempdir().expect("temporary parent");

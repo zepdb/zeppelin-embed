@@ -165,6 +165,11 @@ const ERROR_CODE_GOLDEN: &[(ZeErrorCode, i32, &str)] = &[
     ),
     (ZeErrorCode::ZeErrFormatTooNew, 56, "ZE_ERR_FORMAT_TOO_NEW"),
     (ZeErrorCode::ZeErrCascadeCycle, 57, "ZE_ERR_CASCADE_CYCLE"),
+    (
+        ZeErrorCode::ZeErrLegacyGraphDirectory,
+        58,
+        "ZE_ERR_LEGACY_GRAPH_DIRECTORY",
+    ),
 ];
 
 fn header_error_codes() -> Vec<(String, i32)> {

@@ -119,6 +119,8 @@ pub enum ZeErrorCode {
     ZeErrFormatTooNew = 56,
     /// A namespace cascade declaration closes a cycle.
     ZeErrCascadeCycle = 57,
+    /// A graph-only directory cannot be opened as a legacy document store.
+    ZeErrLegacyGraphDirectory = 58,
 }
 
 /// Opaque generation-tagged store handle.
