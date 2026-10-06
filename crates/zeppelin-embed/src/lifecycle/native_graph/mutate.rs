@@ -281,9 +281,14 @@ impl crate::lifecycle::Store {
         F: FnOnce(S, &[ItemReceipt], Option<GraphGeneration>) -> T,
     {
         self.native_graph.require_writable()?;
-        self.auto_maintain_native_graph(control)?;
+        let mut maintenance_checked = false;
+        let mut run_maintenance = false;
         let mut allow_pending_checkpoint = true;
         loop {
+            if run_maintenance {
+                self.auto_maintain_native_graph(control)?;
+                run_maintenance = false;
+            }
             let mut writer_slot = self.native_graph.writer.lock().map_err(|_| {
                 NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
                     component: "native graph writer",
@@ -401,6 +406,16 @@ impl crate::lifecycle::Store {
             let staged = staged?;
             let disposition = staged.disposition();
             let admitted_generation = admitted.base().generation;
+
+            // Only a successfully staged change can authorize maintenance.
+            // Rebuild the consumer and its view after dropping this attempt.
+            if !maintenance_checked && disposition == BatchDisposition::Changed {
+                maintenance_checked = true;
+                if self.native_graph_maintenance_due()? {
+                    run_maintenance = true;
+                    continue;
+                }
+            }
 
             let step = commit_staged_batch(
                 self,

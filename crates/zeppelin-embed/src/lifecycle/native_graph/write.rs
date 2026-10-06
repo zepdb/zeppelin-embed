@@ -2581,8 +2581,13 @@ impl crate::lifecycle::Store {
         let request_resources = GraphResources::from_store(self)?;
         let _request_work = request_resources.begin_work();
         self.native_graph.require_writable()?;
-        self.auto_maintain_native_graph(control)?;
+        let mut maintenance_checked = false;
+        let mut run_maintenance = false;
         loop {
+            if run_maintenance {
+                self.auto_maintain_native_graph(control)?;
+                run_maintenance = false;
+            }
             let mut writer_slot = self.native_graph.writer.lock().map_err(|_| {
                 NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
                     component: "native graph writer",
@@ -2668,6 +2673,16 @@ impl crate::lifecycle::Store {
             );
             let materialized = staged?;
             let staged_batch = materialized.batch();
+            // Refusals, replays and no-ops cannot authorize maintenance.
+            // Drop this attempt before maintenance takes the writer lock,
+            // then rebuild against the generation it publishes.
+            if !maintenance_checked && staged_batch.disposition() == BatchDisposition::Changed {
+                maintenance_checked = true;
+                if self.native_graph_maintenance_due()? {
+                    run_maintenance = true;
+                    continue;
+                }
+            }
             let step = commit_staged_batch(
                 self,
                 writer,

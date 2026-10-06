@@ -23,6 +23,8 @@ fn ze57_local_set_runtime_mixed_list_rejects_atomically() {
         graph.setup("CREATE ({a: 1, b: 'x'})");
         let before = graph.snapshot().unwrap();
         let generation = graph.generation().unwrap();
+        graph.reopen();
+        assert_eq!(graph.generation().unwrap(), generation);
         let query = format!("MATCH (n) SET n.staged = 1, n.l = {list}");
         let result = graph.run(&query, &[]);
         assert_eq!(graph.generation().unwrap(), generation, "{query}");
@@ -45,6 +47,22 @@ fn ze57_local_set_runtime_mixed_list_rejects_atomically() {
             Err(error) => panic!("{query}: expected runtime Expression refusal, got {error:?}"),
             Ok(_) => panic!("{query}: expected runtime Expression refusal, executed"),
         }
+    }
+}
+
+#[test]
+fn ze326_reopened_noop_mutations_preserve_generation() {
+    let mut graph = graph::Graph::new("ze326-reopened-noop");
+    graph.setup("CREATE ({p: 1})");
+    let generation = graph.generation().unwrap();
+    let before = graph.snapshot().unwrap();
+    graph.reopen();
+    for query in ["MATCH (n) SET n.p = 1", "MATCH (n) REMOVE n.missing"] {
+        let result = graph.run(query, &[]).unwrap();
+        assert_eq!(result.metadata().outcome, Outcome::NoOp);
+        assert_eq!(result.metadata().generation, generation);
+        assert_eq!(graph.generation().unwrap(), generation);
+        assert_eq!(graph.snapshot().unwrap(), before);
     }
 }
 

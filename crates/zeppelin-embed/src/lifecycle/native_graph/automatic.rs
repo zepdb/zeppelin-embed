@@ -103,16 +103,13 @@ impl Store {
         }
     }
 
-    pub(super) fn auto_maintain_native_graph(
-        &self,
-        control: &QueryControl,
-    ) -> Result<(), NativeGraphError> {
+    pub(super) fn native_graph_maintenance_due(&self) -> Result<bool, NativeGraphError> {
         let policy = *self.native_graph.maintenance_policy.lock().map_err(|_| {
             StoreError::Synchronization {
                 component: "graph maintenance policy",
             }
         })?;
-        if policy.automatic
+        Ok(policy.automatic
             && (self
                 .native_graph
                 .pack_bytes_since_reclaim
@@ -122,8 +119,14 @@ impl Store {
                     .native_graph
                     .commits_since_reclaim
                     .load(Ordering::Relaxed)
-                    >= RECLAIM_AFTER_COMMITS)
-        {
+                    >= RECLAIM_AFTER_COMMITS))
+    }
+
+    pub(super) fn auto_maintain_native_graph(
+        &self,
+        control: &QueryControl,
+    ) -> Result<(), NativeGraphError> {
+        if self.native_graph_maintenance_due()? {
             // One cycle per trigger. A cycle that needs more steps, or a
             // concurrent commit, never refuses the caller's write: the
             // counter stays above the trigger and the next write resumes.

@@ -154,6 +154,8 @@ fn ze57_local_mixed_structured_and_cypher_revisions_keep_deleted_key_fence() {
     ));
     let generation = run(&graph, "RETURN 1").metadata().generation;
     let assert_fence = |graph: &GraphStore| {
+        // Reopen and reads must preserve the generation before any refusal.
+        assert_eq!(run(graph, "RETURN 1").metadata().generation, generation);
         let error = graph.apply_batch(&[create], &control).unwrap_err();
         assert_eq!(error.kind(), GraphStoreErrorKind::Constraint);
         assert!(error.nothing_committed());
@@ -189,6 +191,11 @@ fn ze57_local_mixed_structured_and_cypher_revisions_keep_deleted_key_fence() {
     graph.close().unwrap();
     let reopened = GraphStore::open(&path, options(), None).unwrap();
     assert_fence(&reopened);
+    assert_eq!(
+        reopened.apply_batch(&[], &control).unwrap().outcome(),
+        GraphWriteOutcome::NoOp
+    );
+    assert_eq!(run(&reopened, "RETURN 1").metadata().generation, generation);
     reopened.close().unwrap();
     std::fs::remove_dir_all(root).unwrap();
 }

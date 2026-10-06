@@ -148,8 +148,11 @@ fn ze214_keyed_structured_create_then_cypher_set_delete() {
     );
     let generation = graph.generation().unwrap();
     let deleted = graph.run("MATCH (a:A) DELETE a", &[]).unwrap();
+    // This changing write may run maintenance before its final admission.
+    let admitted = deleted.metadata().generation;
+    assert!(admitted >= generation);
     assert!(
-        matches!(deleted.metadata().outcome, Outcome::Committed { changed } if changed.get() == generation.get() + 1)
+        matches!(deleted.metadata().outcome, Outcome::Committed { changed } if changed.get() == admitted.get() + 1)
     );
     drop(deleted);
     graph.reopen();

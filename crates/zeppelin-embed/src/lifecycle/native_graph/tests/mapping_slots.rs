@@ -1087,10 +1087,28 @@ fn ze316_count_trigger_lifecycle() {
     store
         .set_native_graph_maintenance_policy(policy(true))
         .unwrap();
+    let generation = store
+        .admit_native_read()
+        .unwrap()
+        .bundle()
+        .base()
+        .generation;
+    assert_eq!(commit_probe_node(&store, 0), first);
+    store.apply_native_graph(&[], &control).unwrap();
+    assert_eq!(
+        store
+            .admit_native_read()
+            .unwrap()
+            .bundle()
+            .base()
+            .generation,
+        generation,
+        "due maintenance cannot run on a replay or no-op"
+    );
     // An incomplete retirement must retain count-only trigger debt.
     super::super::automatic::PARTIAL_FOLD.with(|limit| limit.set(true));
     crate::property_graph::storage::inventory::force_next_incomplete_inventory_retirement();
-    let refused = store.apply_native_graph(&[], &control);
+    let refused = try_commit_probe_node(&store, 33);
     super::super::automatic::PARTIAL_FOLD.with(|limit| limit.set(false));
     assert!(
         refused.is_err(),
