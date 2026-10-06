@@ -923,6 +923,7 @@ impl Store {
                 &intent.ids,
                 next_active,
                 snapshot.all_segments(),
+                self.private_preparation.as_ref(),
             )?;
         }
         let rewrite_first_seq = LogSeq::new(durable_end.checked_add(1).ok_or(
@@ -1005,6 +1006,7 @@ impl Store {
             vfs,
             &self.directory,
             intent.token_id,
+            self.private_preparation.as_ref(),
         )? {
             DurabilityPolicy::new(
                 crate::lifecycle::durability::DurabilityMode::Durable,
@@ -1137,6 +1139,7 @@ impl Store {
                         self.vfs.as_ref(),
                         &self.directory,
                         intent.token_id,
+                        self.private_preparation.as_ref(),
                     )? {
                         Ok(())
                     } else {
@@ -1887,6 +1890,7 @@ fn ensure_wal_rewrite_covers_retained(
     purged_ids: &[DocId],
     next_active: &super::ActiveSegment,
     sealed: &[SegmentReader],
+    preparation: Option<&crate::lifecycle::namespace_batch::PrivatePreparation>,
 ) -> Result<(), PurgeError> {
     let purged_ids = super::lookup::set(purged_ids);
     let alive = next_active.alive()?;
@@ -1910,6 +1914,7 @@ fn ensure_wal_rewrite_covers_retained(
         directory,
         clean.records(),
         absorbed_through,
+        preparation,
     )?;
     let mutations = if decisions.is_empty() {
         super::atomic_batch::committed_mutations(clean.records(), absorbed_through)?

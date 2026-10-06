@@ -689,6 +689,16 @@ pub const REQUIRED_NAMESPACE_COVERAGE: &[&str] = &[
     "storage.namespace.purge-unlink.can-fire",
     "storage.namespace.live-batch",
     "storage.namespace.deleting-batch",
+    "storage.namespace.whole-root-rename",
+    "storage.namespace.whole-root-copy",
+    "storage.namespace.detached-root-refusal",
+    "storage.namespace.bootstrap-root.clean",
+    "storage.namespace.bootstrap-root.fired",
+    "storage.namespace.bootstrap-reference.clean",
+    "storage.namespace.bootstrap-reference.fired",
+    "storage.namespace.enlist-reference.clean",
+    "storage.namespace.enlist-reference.fired",
+    "storage.namespace.plain-under-portable-root",
 ];
 
 /// Property-graph family requirements reuse measured native site keys, not the unrelated prelude.

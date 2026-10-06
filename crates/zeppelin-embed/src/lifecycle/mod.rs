@@ -2602,6 +2602,7 @@ pub struct OpenMigrations {
 /// One explicitly closeable embedded-store handle.
 pub struct Store {
     open_migrations: OpenMigrations,
+    pub(crate) private_preparation: Option<namespace_batch::PrivatePreparation>,
     pub(crate) directory: PathBuf,
     pub(crate) vfs: Arc<dyn crate::vfs::Vfs>,
     pub(crate) clock: Arc<dyn MonotonicClock>,
@@ -2945,6 +2946,7 @@ impl Store {
         let teardown_probe = Arc::new(close::TeardownProbe::new());
         Ok(Self {
             open_migrations: OpenMigrations::default(),
+            private_preparation: None,
             directory: path.to_path_buf(),
             vfs,
             clock,
@@ -3040,6 +3042,7 @@ impl Store {
             options,
             Arc::new(crate::vfs::StdVfs),
             Arc::new(SystemMonotonicClock),
+            None,
             #[cfg(any(test, feature = "test-seams"))]
             None,
             #[cfg(any(test, feature = "test-seams"))]
@@ -3077,6 +3080,34 @@ impl Store {
         Ok(store)
     }
 
+    pub(crate) fn open_private_preparation(
+        path: &Path,
+        options: OpenOptions,
+        authority: namespace_batch::PrivatePreparation,
+    ) -> Result<Self, StoreError> {
+        Self::open_with_infrastructure(
+            path,
+            options,
+            Arc::new(crate::vfs::StdVfs),
+            Arc::new(SystemMonotonicClock),
+            Some(authority),
+            #[cfg(any(test, feature = "test-seams"))]
+            None,
+            #[cfg(any(test, feature = "test-seams"))]
+            None,
+            #[cfg(any(test, feature = "test-seams"))]
+            None,
+            #[cfg(any(test, feature = "test-seams"))]
+            None,
+            #[cfg(any(test, feature = "test-seams"))]
+            None,
+            #[cfg(any(test, feature = "test-seams"))]
+            None,
+            #[cfg(any(test, feature = "test-seams"))]
+            None,
+        )
+    }
+
     #[allow(
         clippy::too_many_arguments,
         reason = "test-support controllers are explicit optional infrastructure dependencies"
@@ -3086,6 +3117,7 @@ impl Store {
         options: OpenOptions,
         vfs: Arc<dyn crate::vfs::Vfs>,
         clock: Arc<dyn MonotonicClock>,
+        private_preparation: Option<namespace_batch::PrivatePreparation>,
         #[cfg(any(test, feature = "test-seams"))] hybrid_leg_fault: Option<HybridLegTestFault>,
         #[cfg(any(test, feature = "test-seams"))] storage_fault_controller: Option<
             StorageFaultController,
@@ -3147,8 +3179,16 @@ impl Store {
             });
         }
         validate_persisted_epoch_before_open(vfs.as_ref(), path, &options)?;
-        let _reclamation_admission =
-            namespace_batch::reader_admission(path, options.access_mode == AccessMode::ReadWrite)?;
+        let _reclamation_admission = if private_preparation.is_some() {
+            namespace_batch::validate_private_preparation(
+                vfs.as_ref(),
+                path,
+                private_preparation.as_ref(),
+            )?;
+            None
+        } else {
+            namespace_batch::reader_admission(path, options.access_mode == AccessMode::ReadWrite)?
+        };
         let reclamation_pin =
             namespace_batch::reader_lease(path, options.access_mode == AccessMode::ReadWrite)?
                 .map(Arc::new);
@@ -3164,7 +3204,7 @@ impl Store {
             wal_tail_cut =
                 crate::ingest::cut_interrupted_append(vfs.as_ref(), path, durability_policy)?;
         }
-        if options.access_mode == AccessMode::ReadWrite {
+        if options.access_mode == AccessMode::ReadWrite && private_preparation.is_none() {
             namespace_batch::adopt_for_open(vfs.as_ref(), path)?;
         }
         let manifest_path = path.join(crate::manifest::io::MANIFEST_FILE);
@@ -3182,8 +3222,12 @@ impl Store {
         // Store-owned VFS before mmap becomes the query data plane. Internal
         // manifest-only remaps deliberately skip this probe so their exact
         // zero-segment-read accounting contracts remain intact.
-        let mut snapshot =
-            PublishedSnapshot::load_for_open_on_vfs(path, &accounting, vfs.as_ref())?;
+        let mut snapshot = PublishedSnapshot::load_for_open_on_vfs(
+            path,
+            &accounting,
+            vfs.as_ref(),
+            private_preparation.as_ref(),
+        )?;
         let (schema, schema_evolved) = resolve_open_schema(
             manifest_exists,
             &snapshot,
@@ -3224,6 +3268,7 @@ impl Store {
             &accounting,
             &schema,
             &tokenizer,
+            private_preparation.as_ref(),
         )?;
         if options.access_mode == AccessMode::ReadWrite && manifest_exists {
             // An adopted manifest may be the survivor of a commit interrupted
@@ -3336,6 +3381,7 @@ impl Store {
             (snapshot, background, teardown_probe)
         };
         let mut store = Self {
+            private_preparation,
             open_migrations: OpenMigrations {
                 schema_added: schema_evolved,
                 wal_tail_cut,
@@ -3449,6 +3495,7 @@ impl Store {
                 options,
                 dependencies.vfs,
                 dependencies.clock,
+                None,
                 dependencies.hybrid_leg_fault,
                 dependencies.storage_fault_controller,
                 dependencies.ingest_retention_fault_controller,

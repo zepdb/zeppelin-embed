@@ -8,6 +8,18 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let path = args.get(1).expect("store path");
     let read_only = args.get(2).expect("access mode") == "ro";
+    if args.get(3).is_some_and(|mode| mode == "namespace-refusal") {
+        match Store::open(path, common::options(read_only)) {
+            Err(StoreError::Io { source, .. }) => {
+                assert_eq!(source.kind(), std::io::ErrorKind::InvalidData);
+                assert_eq!(source.to_string(), "namespace record checksum/version");
+            }
+            Err(error) => panic!("unexpected namespace refusal: {error:?}"),
+            Ok(_) => panic!("old reader accepted portable namespace metadata"),
+        }
+        println!("{{\"namespace_refused\": true}}");
+        return;
+    }
     let expected_code = match Store::open(path, common::options(read_only)) {
         Ok(store) => {
             assert_eq!(common::text_hits(&store, "orchard").first(), Some(&1));

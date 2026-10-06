@@ -346,15 +346,16 @@ impl PublishedSnapshot {
         accounting: &Arc<Accounting>,
         vfs: &dyn Vfs,
     ) -> Result<Self, StoreError> {
-        Self::load_impl(directory, accounting, vfs, false)
+        Self::load_impl(directory, accounting, vfs, false, None)
     }
 
     pub(crate) fn load_for_open_on_vfs(
         directory: &Path,
         accounting: &Arc<Accounting>,
         vfs: &dyn Vfs,
+        preparation: Option<&super::namespace_batch::PrivatePreparation>,
     ) -> Result<Self, StoreError> {
-        Self::load_impl(directory, accounting, vfs, true)
+        Self::load_impl(directory, accounting, vfs, true, preparation)
     }
 
     fn load_impl(
@@ -362,9 +363,10 @@ impl PublishedSnapshot {
         accounting: &Arc<Accounting>,
         vfs: &dyn Vfs,
         probe_segment_headers: bool,
+        preparation: Option<&super::namespace_batch::PrivatePreparation>,
     ) -> Result<Self, StoreError> {
         let manifest_path = if probe_segment_headers {
-            super::namespace_batch::manifest_for_open(vfs, directory)?
+            super::namespace_batch::manifest_for_open(vfs, directory, preparation)?
         } else {
             directory.join(MANIFEST_FILE)
         };

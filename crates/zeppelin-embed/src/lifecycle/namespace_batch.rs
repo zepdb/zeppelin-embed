@@ -16,6 +16,42 @@ use xxhash_rust::xxh3::xxh3_64;
 mod portable;
 pub use portable::NamespaceRootId;
 
+// Constructed only by the coordinator for its own unpublished participant.
+pub(crate) struct PrivatePreparation {
+    root_id: NamespaceRootId,
+    name: String,
+    directory: PathBuf,
+}
+
+impl PrivatePreparation {
+    fn new(
+        root_id: NamespaceRootId,
+        name: &str,
+        directory: &Path,
+        _coordinator: &StoreLock,
+    ) -> Self {
+        Self {
+            root_id,
+            name: name.to_owned(),
+            directory: directory.to_path_buf(),
+        }
+    }
+}
+
+pub(super) fn validate_private_preparation(
+    vfs: &dyn Vfs,
+    directory: &Path,
+    authority: Option<&PrivatePreparation>,
+) -> Result<(), StoreError> {
+    if portable::authority_with_preparation(vfs, directory, authority)?.is_none() {
+        return Err(invalid(
+            directory,
+            "private preparation requires portable authority",
+        ));
+    }
+    Ok(())
+}
+
 const RECORD: &str = ".ze-namespaces";
 const REFERENCE: &str = ".ze-namespace-root";
 const PREPARED: &str = ".ze-prepared";
@@ -104,7 +140,11 @@ fn execute_live(
         reclamation::require_retired_erased(vfs, &root)?;
     }
     normalize_accepted(vfs, &root, step)?;
-    let existing_routes = match legacy_root_descriptor_vfs(vfs, &root)? {
+    let (mut root_id, existing_descriptor) = root_record_vfs(vfs, &root)?;
+    if read_optional_vfs(vfs, &root.join(RECORD))?.is_none() {
+        root_id = Some(NamespaceRootId::generate().map_err(|e| io(&root, e))?);
+    }
+    let existing_routes = match existing_descriptor {
         RootDescriptor::Legacy(routes) => routes,
         RootDescriptor::Staged(_) => return Err(invalid(&root, "pending adoption")),
     };
@@ -310,7 +350,10 @@ fn execute_live(
             .ok_or(StoreError::GenerationOverflow)?;
         let binding = TransactionBinding {
             transaction,
-            participant: participant_identity(&root, &p.mutation.name)?,
+            participant: match root_id {
+                Some(id) => portable::participant_id(id, &p.mutation.name)?,
+                None => participant_identity(&root, &p.mutation.name)?,
+            },
             first_seq,
             last_seq: first_seq
                 .checked_add(stage.records.len() as u64 - 1)
@@ -343,8 +386,32 @@ fn execute_live(
             })
             .collect();
     }
-    let decision = encode_staged(&descriptor)?;
+    let decision = encode_root_record(root_id, &RootDescriptor::Staged(descriptor.clone()))?;
     let prepared = (|| {
+        if root_id.is_some() {
+            if read_optional_vfs(vfs, &root.join(RECORD))?.is_none() {
+                publish(
+                    vfs,
+                    &root,
+                    &encode_root_record(root_id, &RootDescriptor::Legacy(Routes::new()))?,
+                    step,
+                )?;
+                step("bootstrap root published").map_err(|e| io(&root, e))?;
+            }
+            for p in &ordered {
+                let logical = root.join(&p.mutation.name);
+                let reference = logical.join(REFERENCE);
+                if read_optional_vfs(vfs, &reference)?.is_none() {
+                    publish_reference(
+                        vfs,
+                        &logical,
+                        &encode_participant_reference(root_id, &root, &p.mutation.name, 1)?,
+                        step,
+                    )?;
+                    step("participant reference installed").map_err(|e| io(&logical, e))?;
+                }
+            }
+        }
         for (((p, stage), selection), wal) in ordered
             .iter()
             .zip(&mut staged)
@@ -395,16 +462,27 @@ fn execute_live(
                 }
             }
         }
-        if read_optional_vfs(vfs, &root.join(RECORD))?.is_none() {
-            publish(vfs, &root, &encode(&Routes::new()), step)?;
-        }
-        for p in &ordered {
-            let logical = root.join(&p.mutation.name);
-            let reference = logical.join(REFERENCE);
-            if read_optional_vfs(vfs, &reference)?.is_none() {
-                let root_text = root.to_str().ok_or_else(|| invalid(&root, "root UTF-8"))?;
-                durable_write(vfs, &reference, &envelope(root_text.as_bytes()), step)?;
-                sync_dir(vfs, &logical, step)?;
+        if root_id.is_none() {
+            if read_optional_vfs(vfs, &root.join(RECORD))?.is_none() {
+                publish(
+                    vfs,
+                    &root,
+                    &encode_root_record(root_id, &RootDescriptor::Legacy(Routes::new()))?,
+                    step,
+                )?;
+            }
+            for p in &ordered {
+                let logical = root.join(&p.mutation.name);
+                let reference = logical.join(REFERENCE);
+                if read_optional_vfs(vfs, &reference)?.is_none() {
+                    durable_write(
+                        vfs,
+                        &reference,
+                        &encode_participant_reference(root_id, &root, &p.mutation.name, 1)?,
+                        step,
+                    )?;
+                    sync_dir(vfs, &logical, step)?;
+                }
             }
         }
         Ok::<_, StoreError>(())
@@ -465,7 +543,12 @@ fn execute_live(
                 )?;
             }
         }
-        publish(vfs, &root, &encode(&descriptor.1), step)
+        publish(
+            vfs,
+            &root,
+            &encode_root_record(root_id, &RootDescriptor::Legacy(descriptor.1.clone()))?,
+            step,
+        )
     })();
     if let Err(error) = adopted {
         for wal in &mut wals {
@@ -620,7 +703,7 @@ enum RootDescriptor {
     Staged(StagedDescriptor),
 }
 fn routes(root: &Path) -> Result<Routes, StoreError> {
-    match legacy_root_descriptor_vfs(&StdVfs, root)? {
+    match root_descriptor_vfs(&StdVfs, root)? {
         RootDescriptor::Legacy(routes) => Ok(routes),
         RootDescriptor::Staged(_) => Err(invalid(
             &root.join(RECORD),
@@ -634,17 +717,39 @@ fn root_descriptor(root: &Path) -> Result<RootDescriptor, StoreError> {
 fn root_descriptor_vfs(vfs: &dyn Vfs, root: &Path) -> Result<RootDescriptor, StoreError> {
     root_record_vfs(vfs, root).map(|(_, descriptor)| descriptor)
 }
-// Until slice 2, existing namespace publications must refuse portable roots.
-fn legacy_root_descriptor_vfs(vfs: &dyn Vfs, root: &Path) -> Result<RootDescriptor, StoreError> {
-    let (id, descriptor) = root_record_vfs(vfs, root)?;
-    if id.is_some() {
-        return Err(invalid(
-            root,
-            "portable namespace publication is not supported yet",
-        ));
+fn encode_root_record(
+    id: Option<NamespaceRootId>,
+    descriptor: &RootDescriptor,
+) -> Result<Vec<u8>, StoreError> {
+    match id {
+        Some(id) => portable::encode_root(id, descriptor),
+        None => match descriptor {
+            RootDescriptor::Legacy(routes) => Ok(encode(routes)),
+            RootDescriptor::Staged(staged) => encode_staged(staged),
+        },
     }
-    Ok(descriptor)
 }
+
+fn encode_participant_reference(
+    id: Option<NamespaceRootId>,
+    root: &Path,
+    name: &str,
+    parent_depth: u8,
+) -> Result<Vec<u8>, StoreError> {
+    match id {
+        Some(root_id) => portable::encode_reference(&portable::Reference {
+            root_id,
+            parent_depth,
+            name: name.to_owned(),
+        }),
+        None => Ok(envelope(
+            root.to_str()
+                .ok_or_else(|| invalid(root, "root UTF-8"))?
+                .as_bytes(),
+        )),
+    }
+}
+
 fn root_record_vfs(
     vfs: &dyn Vfs,
     root: &Path,
@@ -798,6 +903,22 @@ pub(super) fn durable_write(
     vfs.sync(path, SyncKind::Full).map_err(|e| io(path, e))?;
     step("file sync").map_err(|e| io(path, e))
 }
+// The final reference is always absent or complete, including during process death.
+fn publish_reference(
+    vfs: &dyn Vfs,
+    directory: &Path,
+    bytes: &[u8],
+    step: &mut dyn FnMut(&str) -> std::io::Result<()>,
+) -> Result<(), StoreError> {
+    let temporary = directory.join(".ze-namespace-root.tmp");
+    let reference = directory.join(REFERENCE);
+    durable_write(vfs, &temporary, bytes, step)?;
+    vfs.rename(&temporary, &reference)
+        .map_err(|e| io(&reference, e))?;
+    step("reference rename").map_err(|e| io(&reference, e))?;
+    sync_dir(vfs, directory, step)
+}
+
 pub(super) fn sync_dir(
     vfs: &dyn Vfs,
     path: &Path,
@@ -840,7 +961,10 @@ fn prepare_copy(
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
             return Err(invalid(&path, "store filename is not UTF-8"));
         };
-        if name != "manifest.ze" && name != "wal.ze" && !name.ends_with(".zseg") {
+        let acceptance = name
+            .strip_prefix(".ze-accepted-")
+            .is_some_and(|transaction| transaction.parse::<u128>().is_ok());
+        if name != "manifest.ze" && name != "wal.ze" && !name.ends_with(".zseg") && !acceptance {
             continue;
         }
         let length = source.vfs.open(&path).map_err(|e| io(&path, e))?;
@@ -968,6 +1092,9 @@ fn execute(
     }
     let _coordinator = StoreLock::acquire(&root).map_err(StoreError::Lock)?;
     reclamation::run(&StdVfs, &root, step)?;
+    if root_record_vfs(&StdVfs, &root)?.0.is_some() {
+        normalize_accepted(&StdVfs, &root, step)?;
+    }
     let mut next = routes(&root)?;
     let mut ordered = BTreeMap::new();
     for (index, mutation) in mutations.iter().enumerate() {
@@ -1024,6 +1151,10 @@ fn execute(
             return execute_live(&root, live, &StdVfs, step, Some(_coordinator));
         }
     }
+    let mut root_id = root_record_vfs(&StdVfs, &root)?.0;
+    if read_optional(&root.join(RECORD))?.is_none() {
+        root_id = Some(NamespaceRootId::generate().map_err(|e| io(&root, e))?);
+    }
     let transaction = loop {
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
         let path = root.join(format!(".ze-batch-{}-{id}", std::process::id()));
@@ -1041,13 +1172,37 @@ fn execute(
     for name in ordered.keys() {
         next.insert(name.clone(), format!("{transaction_name}/{name}"));
     }
-    let decision = encode(&next);
+    let intent = encode(&next);
+    let decision = encode_root_record(root_id, &RootDescriptor::Legacy(next.clone()))?;
     if decision.len() > MAX_RECORD {
         return Err(invalid(&root, "namespace decision too large"));
     }
-    durable_write(&StdVfs, &transaction.join("intent.ze"), &decision, step)?;
+    durable_write(&StdVfs, &transaction.join("intent.ze"), &intent, step)?;
     sync_dir(&StdVfs, &transaction, step)?;
     sync_dir(&StdVfs, &root, step)?;
+    if root_id.is_some() {
+        if read_optional(&root.join(RECORD))?.is_none() {
+            publish(
+                &StdVfs,
+                &root,
+                &encode_root_record(root_id, &RootDescriptor::Legacy(Routes::new()))?,
+                step,
+            )?;
+            step("bootstrap root published").map_err(|e| io(&root, e))?;
+        }
+        for name in ordered.keys() {
+            let logical = root.join(name);
+            if read_optional(&logical.join(REFERENCE))?.is_none() {
+                publish_reference(
+                    &StdVfs,
+                    &logical,
+                    &encode_participant_reference(root_id, &root, name, 1)?,
+                    step,
+                )?;
+                step("participant reference installed").map_err(|e| io(&logical, e))?;
+            }
+        }
+    }
     let mut generations = Vec::new();
     for mutation in mutations {
         let source = sources
@@ -1062,7 +1217,20 @@ fn execute(
         options.schema = Some(source.schema().clone());
         options.durability_mode = DurabilityMode::Durable;
         options.commit_tier = CommitTier::Durable;
-        let store = Store::open(&destination, options)?;
+        let store = match root_id {
+            Some(id) => {
+                publish_reference(
+                    &StdVfs,
+                    &destination,
+                    &encode_participant_reference(root_id, &root, &mutation.name, 2)?,
+                    step,
+                )?;
+                let authority =
+                    PrivatePreparation::new(id, &mutation.name, &destination, &_coordinator);
+                Store::open_private_preparation(&destination, options, authority)?
+            }
+            None => Store::open(&destination, options)?,
+        };
         if !mutation.upserts.is_empty() {
             let mut batch = IngestBatch::new(mutation.upserts);
             if let Some(epoch) = store.epoch_identity() {
@@ -1101,25 +1269,26 @@ fn execute(
         sync_dir(&StdVfs, &destination, step)?;
     }
     sync_dir(&StdVfs, &transaction, step)?;
-    // Create the empty baseline before references, so a crash while enlisting
-    // namespaces still resolves to all original stores.
-    if read_optional(&root.join(RECORD))?.is_none() {
-        publish(&StdVfs, &root, &encode(&Routes::new()), step)?;
-    }
-    for name in ordered.keys() {
-        let directory = root.join(name);
-        let reference = directory.join(REFERENCE);
-        if read_optional(&reference)?.is_none() {
-            let root_text = root
-                .to_str()
-                .ok_or_else(|| invalid(&root, "root must be UTF-8"))?;
-            let temporary = directory.join(".ze-namespace-root.tmp");
-            durable_write(&StdVfs, &temporary, &envelope(root_text.as_bytes()), step)?;
-            StdVfs
-                .rename(&temporary, &reference)
-                .map_err(|e| io(&reference, e))?;
-            step("reference rename").map_err(|e| io(&reference, e))?;
-            sync_dir(&StdVfs, &directory, step)?;
+    if root_id.is_none() {
+        // Create the empty baseline before references, so a crash while enlisting
+        // namespaces still resolves to all original stores.
+        if read_optional(&root.join(RECORD))?.is_none() {
+            publish(
+                &StdVfs,
+                &root,
+                &encode_root_record(root_id, &RootDescriptor::Legacy(Routes::new()))?,
+                step,
+            )?;
+        }
+        for name in ordered.keys() {
+            let directory = root.join(name);
+            let reference = directory.join(REFERENCE);
+            if read_optional(&reference)?.is_none() {
+                let root_text = root
+                    .to_str()
+                    .ok_or_else(|| invalid(&root, "root must be UTF-8"))?;
+                publish_reference(&StdVfs, &directory, &envelope(root_text.as_bytes()), step)?;
+            }
         }
     }
     publish(&StdVfs, &root, &decision, step)?;
@@ -1415,14 +1584,21 @@ fn location(directory: &Path) -> Result<(&Path, &str), StoreError> {
 fn reader_location<'a>(
     vfs: &dyn Vfs,
     directory: &'a Path,
+    preparation: Option<&PrivatePreparation>,
 ) -> Result<(&'a Path, &'a str, Option<NamespaceRootId>), StoreError> {
-    if let Some((root, name, id)) = portable::authority(vfs, directory)? {
+    if let Some((root, name, id)) =
+        portable::authority_with_preparation(vfs, directory, preparation)?
+    {
         return Ok((root, name, Some(id)));
     }
     location(directory).map(|(root, name)| (root, name, None))
 }
-fn reader_participant_identity(vfs: &dyn Vfs, directory: &Path) -> Result<u128, StoreError> {
-    let (root, name, id) = reader_location(vfs, directory)?;
+fn reader_participant_identity(
+    vfs: &dyn Vfs,
+    directory: &Path,
+    preparation: Option<&PrivatePreparation>,
+) -> Result<u128, StoreError> {
+    let (root, name, id) = reader_location(vfs, directory, preparation)?;
     match id {
         Some(id) => portable::participant_id(id, name),
         None => participant_identity(root, name),
@@ -1456,6 +1632,7 @@ pub(crate) fn owns_purge_obligation(
     vfs: &dyn Vfs,
     directory: &Path,
     token: u64,
+    preparation: Option<&PrivatePreparation>,
 ) -> Result<bool, StoreError> {
     for path in vfs.list(directory).map_err(|e| io(directory, e))? {
         let Some(transaction) = path
@@ -1477,7 +1654,8 @@ pub(crate) fn owns_purge_obligation(
         }
         return Ok(true);
     }
-    if let Some(selected) = selection(vfs, directory)?
+    if preparation.is_none()
+        && let Some(selected) = selection(vfs, directory)?
         && xxh3_64(&selected.binding.transaction.to_le_bytes()) == token
     {
         staged_manifest(vfs, directory, &selected)?;
@@ -1487,14 +1665,14 @@ pub(crate) fn owns_purge_obligation(
 }
 
 fn selection(vfs: &dyn Vfs, directory: &Path) -> Result<Option<StagedSelection>, StoreError> {
-    let (root, name, _) = reader_location(vfs, directory)?;
+    let (root, name, _) = reader_location(vfs, directory, None)?;
     let RootDescriptor::Staged(mut descriptor) = root_descriptor_vfs(vfs, root)? else {
         return Ok(None);
     };
     let Some(selected) = descriptor.0.remove(name) else {
         return Ok(None);
     };
-    let identity = reader_participant_identity(vfs, directory)?;
+    let identity = reader_participant_identity(vfs, directory, None)?;
     if selected.binding.participant != identity {
         return Err(invalid(directory, "participant identity mismatch"));
     }
@@ -1560,7 +1738,11 @@ fn staged_manifest(
     Ok(manifest)
 }
 
-pub(super) fn manifest_for_open(vfs: &dyn Vfs, directory: &Path) -> Result<PathBuf, StoreError> {
+pub(super) fn manifest_for_open(
+    vfs: &dyn Vfs,
+    directory: &Path,
+    preparation: Option<&PrivatePreparation>,
+) -> Result<PathBuf, StoreError> {
     let canonical = directory.join("manifest.ze");
     if vfs
         .open(&canonical)
@@ -1576,6 +1758,10 @@ pub(super) fn manifest_for_open(vfs: &dyn Vfs, directory: &Path) -> Result<PathB
             })
     {
         return Err(invalid(&canonical, "missing locally accepted manifest"));
+    }
+    if preparation.is_some() {
+        portable::authority_with_preparation(vfs, directory, preparation)?;
+        return Ok(canonical);
     }
     match selection(vfs, directory)? {
         Some(selected) if !accepted(vfs, directory, selected.binding)? => {
@@ -1643,7 +1829,7 @@ fn accept(
 
 pub(super) fn adopt_for_open(vfs: &dyn Vfs, directory: &Path) -> Result<(), StoreError> {
     if let Some(selected) = selection(vfs, directory)? {
-        let (root, _, _) = reader_location(vfs, directory)?;
+        let (root, _, _) = reader_location(vfs, directory, None)?;
         // A surviving rename is not proof that its directory entry was synced.
         // Persist both authorities before admitting even a derived-mode writer.
         vfs.sync(root, SyncKind::Full).map_err(|e| io(root, e))?;
@@ -1662,7 +1848,8 @@ fn normalize_accepted(
     root: &Path,
     step: &mut dyn FnMut(&str) -> std::io::Result<()>,
 ) -> Result<(), StoreError> {
-    let RootDescriptor::Staged(descriptor) = legacy_root_descriptor_vfs(vfs, root)? else {
+    let (root_id, descriptor) = root_record_vfs(vfs, root)?;
+    let RootDescriptor::Staged(descriptor) = descriptor else {
         return Ok(());
     };
     for (name, selected) in &descriptor.0 {
@@ -1672,7 +1859,12 @@ fn normalize_accepted(
         }
         sync_dir(vfs, &directory, step)?;
     }
-    publish(vfs, root, &encode(&descriptor.1), step)
+    publish(
+        vfs,
+        root,
+        &encode_root_record(root_id, &RootDescriptor::Legacy(descriptor.1))?,
+        step,
+    )
 }
 
 pub(crate) fn transaction_decisions(
@@ -1680,6 +1872,7 @@ pub(crate) fn transaction_decisions(
     directory: &Path,
     records: &[crate::wal::VisibleRecord],
     absorbed: u64,
+    preparation: Option<&PrivatePreparation>,
 ) -> Result<BTreeMap<u128, crate::ingest::wal_payload::TransactionBinding>, StoreError> {
     let mut decisions = BTreeMap::new();
     let mut checked = std::collections::BTreeSet::new();
@@ -1700,7 +1893,7 @@ pub(crate) fn transaction_decisions(
         if !checked.insert(member.binding.transaction) {
             continue;
         }
-        let identity = reader_participant_identity(vfs, directory)?;
+        let identity = reader_participant_identity(vfs, directory, preparation)?;
         if member.binding.participant != identity {
             return Err(StoreError::WalMutation {
                 seq: record.seq,
@@ -1710,7 +1903,8 @@ pub(crate) fn transaction_decisions(
         }
         if accepted(vfs, directory, member.binding)? {
             decisions.insert(member.binding.transaction, member.binding);
-        } else if let Some(selected) = selection(vfs, directory)?
+        } else if preparation.is_none()
+            && let Some(selected) = selection(vfs, directory)?
             && selected.binding.transaction == member.binding.transaction
         {
             if selected.binding != member.binding {

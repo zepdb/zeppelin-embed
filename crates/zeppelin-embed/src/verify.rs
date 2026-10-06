@@ -535,6 +535,7 @@ impl Walk<'_> {
             &accounting,
             &schema,
             &analyzer,
+            None,
         ) {
             if absent && has_segment_files {
                 self.record(

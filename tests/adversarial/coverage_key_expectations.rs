@@ -579,3 +579,32 @@ pub fn expected_smoke_keys() -> Vec<&'static str> {
     keys.sort_unstable();
     keys
 }
+
+#[test]
+fn namespace_relocation_coverage_keys_are_required() {
+    let required = crate::adversarial::campaign::CampaignSpec::for_kind(
+        crate::adversarial::campaign::CampaignKind::StorageDurability,
+    )
+    .all_required_coverage();
+    for key in [
+        "storage.namespace.whole-root-rename",
+        "storage.namespace.whole-root-copy",
+        "storage.namespace.detached-root-refusal",
+        "storage.namespace.bootstrap-root.clean",
+        "storage.namespace.bootstrap-root.fired",
+        "storage.namespace.bootstrap-reference.clean",
+        "storage.namespace.bootstrap-reference.fired",
+        "storage.namespace.enlist-reference.clean",
+        "storage.namespace.enlist-reference.fired",
+        "storage.namespace.plain-under-portable-root",
+    ] {
+        assert!(
+            required.iter().any(|candidate| candidate == key),
+            "missing namespace relocation key {key}"
+        );
+    }
+    assert_eq!(
+        crate::adversarial::storage_durability::NamespaceFault::ALL.len(),
+        12
+    );
+}

@@ -1138,6 +1138,28 @@ reclamation files and failure contract.
   clearing their WAL writer slots and preserves prepared evidence. Participants
   must close/reopen before further writes.
 
+## ZE-383 portable namespace roots
+
+- New namespace roots use an OS-random, nonzero identity in `ZENS0003`;
+  publications and retirement preserve that identity around the existing
+  `ZENS0001`/`ZENS0002` descriptor. Legacy roots retain their path-bound layout.
+- Bootstrap durably publishes the empty root and every `ZENR0002` participant
+  reference before writing any portable-bound op 9 frame. The staged decision
+  remains the commit point; acceptance and normalization keep their order.
+- Every portable reference is published via `.ze-namespace-root.tmp`: write,
+  full file sync, rename to `.ze-namespace-root`, full directory sync. Readers
+  ignore the temp; namespace reclaim sweeps it under its existing locks.
+- A reference claims portable membership: its root ID, name and relative
+  location must match, including the selected route for depth 2. Absent
+  references denote plain stores. Legacy references under portable roots fail.
+  Removing a reference cannot authorize remaining portable-bound evidence.
+- Unpublished depth-2 copies open only with the coordinator's internal
+  preparation capability. Ordinary opens still require the published route.
+  Copies preserve local acceptance evidence for unabsorbed op 9 records.
+- Whole completed roots can be copied or renamed; isolated participants still
+  require their root. Pending inode-bound cleanup must finish before copying.
+  No implicit conversion of legacy roots or standalone snapshots is provided.
+
 ## ZE-260 S6c bookkeeping (S7 maintenance foundation)
 
 - Reclaim intent/completion candidate rows may carry family 18 (immutable root

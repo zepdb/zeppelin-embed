@@ -110,6 +110,7 @@ impl ActiveState {
         accounting: &Arc<Accounting>,
         schema: &crate::meta::Schema,
         analyzer: &Analyzer,
+        preparation: Option<&crate::lifecycle::namespace_batch::PrivatePreparation>,
     ) -> Result<(Self, Option<CleanWalReader>, Vec<SealedTombstoneDemand>), StoreError> {
         match vfs.open(path) {
             Ok(0) => Ok((Self::empty(generation), None, Vec::new())),
@@ -121,6 +122,7 @@ impl ActiveState {
                     path.parent().ok_or(StoreError::ActiveRowOverflow)?,
                     clean.records(),
                     absorbed_through.min(graph_absorbed_through),
+                    preparation,
                 )?;
                 let (mut active, sealed_tombstones) = Self::replay(
                     generation,

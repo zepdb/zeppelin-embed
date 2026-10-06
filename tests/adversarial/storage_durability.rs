@@ -5510,7 +5510,7 @@ mod namespace_probe_tests {
         }
         assert_eq!(
             super::super::coverage::REQUIRED_NAMESPACE_COVERAGE.len(),
-            29
+            39
         );
         let required = super::super::campaign::CampaignSpec::for_kind(
             super::super::campaign::CampaignKind::StorageDurability,
@@ -5542,6 +5542,9 @@ mod namespace_probe_tests {
 /// purge unlink uses the existing scheduled VFS after durable adoption.
 #[derive(Clone, Copy, Debug)]
 pub enum NamespaceFault {
+    BootstrapRoot,
+    BootstrapReference,
+    EnlistReference,
     PrepareAppend,
     PrepareSync,
     Publish,
@@ -5553,7 +5556,10 @@ pub enum NamespaceFault {
     PurgeUnlink,
 }
 impl NamespaceFault {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 12] = [
+        Self::BootstrapRoot,
+        Self::BootstrapReference,
+        Self::EnlistReference,
         Self::PrepareAppend,
         Self::PrepareSync,
         Self::Publish,
@@ -5566,6 +5572,9 @@ impl NamespaceFault {
     ];
     pub const fn key(self) -> &'static str {
         match self {
+            Self::BootstrapRoot => "bootstrap-root",
+            Self::BootstrapReference => "bootstrap-reference",
+            Self::EnlistReference => "enlist-reference",
             Self::PrepareAppend => "prepare-append",
             Self::PrepareSync => "prepare-sync",
             Self::Publish => "publish",
@@ -5579,6 +5588,8 @@ impl NamespaceFault {
     }
     const fn step(self) -> &'static str {
         match self {
+            Self::BootstrapRoot => "bootstrap root published",
+            Self::BootstrapReference | Self::EnlistReference => "participant reference installed",
             Self::PrepareAppend => "prepared append",
             Self::PrepareSync => "prepared WAL sync",
             Self::Publish => "commit rename",
@@ -5591,7 +5602,14 @@ impl NamespaceFault {
         }
     }
     const fn committed(self) -> bool {
-        !matches!(self, Self::PrepareAppend | Self::PrepareSync)
+        !matches!(
+            self,
+            Self::BootstrapRoot
+                | Self::BootstrapReference
+                | Self::EnlistReference
+                | Self::PrepareAppend
+                | Self::PrepareSync
+        )
     }
     const fn requires_delete(self) -> bool {
         matches!(
@@ -5599,6 +5617,40 @@ impl NamespaceFault {
             Self::CleanupIntent | Self::CleanupUnlink | Self::CleanupCompletion | Self::PurgeUnlink
         )
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NamespacePhase {
+    Established,
+    Bootstrap,
+    Enlist,
+}
+
+fn namespace_fixture(
+    seed: u64,
+    deleting: bool,
+    phase: NamespacePhase,
+) -> independent::NamespaceFixture {
+    let mut fixture = independent::NamespaceFixture::derive(seed, deleting);
+    if phase == NamespacePhase::Enlist {
+        // c receives b's seeded requests; b is an untouched third participant.
+        fixture
+            .before
+            .insert("c".into(), fixture.before["b"].clone());
+        fixture.after.insert("c".into(), fixture.after["b"].clone());
+        fixture
+            .upserts
+            .insert("c".into(), fixture.upserts["b"].clone());
+        fixture
+            .deletes
+            .insert("c".into(), fixture.deletes["b"].clone());
+        fixture
+            .after
+            .insert("b".into(), fixture.before["b"].clone());
+        fixture.upserts.insert("b".into(), Default::default());
+        fixture.deletes.insert("b".into(), vec![]);
+    }
+    fixture
 }
 
 fn namespace_document(id: u128, revision: u64, sentinel: &[u8]) -> IngestDocument {
@@ -5609,11 +5661,11 @@ fn namespace_document(id: u128, revision: u64, sentinel: &[u8]) -> IngestDocumen
     .with_metadata(sentinel.to_vec())
 }
 
-fn namespace_observe(root: &Path) -> Result<independent::NamespaceImage, String> {
+fn namespace_observe(root: &Path, names: &[&str]) -> Result<independent::NamespaceImage, String> {
     use zeppelin_embed::lifecycle::DocumentFields;
     let mut image = independent::NamespaceImage::new();
     // Reopen in the reverse order: siblings must not supply recovery state.
-    for name in ["b", "a"] {
+    for &name in names.iter().rev() {
         let store = Store::open(root.join(name), OpenOptions::new())
             .map_err(|e| format!("namespace recovery {name}: {e}"))?;
         let mut rows = std::collections::BTreeMap::new();
@@ -5666,19 +5718,42 @@ fn namespace_assert_erased(directory: &Path, sentinel: &[u8]) -> Result<(), Stri
     Ok(())
 }
 
+fn copy_namespace_tree(source: &Path, destination: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(destination).map_err(|e| e.to_string())?;
+    for entry in std::fs::read_dir(source).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let kind = entry.file_type().map_err(|e| e.to_string())?;
+        let target = destination.join(entry.file_name());
+        if kind.is_dir() {
+            copy_namespace_tree(&entry.path(), &target)?;
+        } else if kind.is_file() {
+            std::fs::copy(entry.path(), target).map_err(|e| e.to_string())?;
+        } else {
+            return Err("namespace relocation encountered a non-file artifact".into());
+        }
+    }
+    Ok(())
+}
+
 /// Same seed, same requests and baseline for clean and interrupted executions.
 fn namespace_run(
     seed: u64,
     deleting: bool,
     fault: NamespaceFault,
     inject: bool,
+    phase: NamespacePhase,
 ) -> Result<independent::NamespaceImage, String> {
     use super::fault_vfs::{FaultEvent, FaultMode, FaultSchedule, FaultSite, Layer, ScheduledVfs};
     use zeppelin_embed::lifecycle::{
         LiveNamespaceMutation, NamespaceMutation, SystemMonotonicClock,
         namespace_batch_live_with_steps, namespace_reclaim,
     };
-    let fixture = independent::NamespaceFixture::derive(seed, deleting);
+    let fixture = namespace_fixture(seed, deleting, phase);
+    let names: &[&str] = if phase == NamespacePhase::Enlist {
+        &["a", "b", "c"]
+    } else {
+        &["a", "b"]
+    };
     let sentinel = format!("ZE256-deleted-{seed:016x}").into_bytes();
     let root = tempdir().map_err(|e| e.to_string())?;
     let vfs = Arc::new(ScheduledVfs::new(
@@ -5698,8 +5773,9 @@ fn namespace_run(
             path: None,
         }),
     ));
-    let stores = ["a", "b"]
-        .into_iter()
+    let stores = names
+        .iter()
+        .copied()
         .map(|name| {
             Store::open_with_test_dependencies(
                 root.path().join(name),
@@ -5711,7 +5787,8 @@ fn namespace_run(
         .collect::<Result<Vec<_>, _>>()?;
     let participants = stores
         .iter()
-        .zip(["a", "b"])
+        .zip(names.iter().copied())
+        .filter(|(_, name)| phase != NamespacePhase::Enlist || *name != "c")
         .map(|(store, name)| LiveNamespaceMutation {
             store,
             mutation: NamespaceMutation {
@@ -5724,7 +5801,11 @@ fn namespace_run(
                         namespace_document(
                             id,
                             rev,
-                            if index == 0 { &sentinel } else { b"survivor" },
+                            if index == 0 && !(phase == NamespacePhase::Enlist && name == "b") {
+                                &sentinel
+                            } else {
+                                b"survivor"
+                            },
                         )
                     })
                     .collect(),
@@ -5733,9 +5814,38 @@ fn namespace_run(
             },
         })
         .collect();
-    // Establish the root first so the publish fault cannot hit bootstrap rename.
-    namespace_batch_live_with_steps(root.path(), participants, &mut |_| Ok(()))
-        .map_err(|e| e.to_string())?;
+    if phase != NamespacePhase::Bootstrap {
+        namespace_batch_live_with_steps(root.path(), participants, &mut |_| Ok(()))
+            .map_err(|e| e.to_string())?;
+    }
+    // Bootstrap seeds plain stores; enlist leaves c outside the existing root's membership.
+    for (store, name) in stores.iter().zip(names.iter().copied()) {
+        if phase == NamespacePhase::Bootstrap || name == "c" {
+            store
+                .ingest(IngestBatch::new(
+                    fixture.before[name]
+                        .iter()
+                        .enumerate()
+                        .map(|(index, (&id, &rev))| {
+                            namespace_document(
+                                id,
+                                rev,
+                                if index == 0 { &sentinel } else { b"survivor" },
+                            )
+                        })
+                        .collect(),
+                ))
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    if phase == NamespacePhase::Enlist {
+        let plain = Store::open(root.path().join("c"), OpenOptions::read_only())
+            .map_err(|e| e.to_string())?;
+        plain.close().map_err(|e| e.to_string())?;
+        if root.path().join("c/.ze-namespace-root").exists() {
+            return Err("plain c was implicitly enlisted".into());
+        }
+    }
     for store in &stores {
         store.seal().map_err(|e| e.to_string())?;
     }
@@ -5755,7 +5865,8 @@ fn namespace_run(
     }
     let mut participants = stores
         .iter()
-        .zip(["a", "b"])
+        .zip(names.iter().copied())
+        .filter(|(_, name)| phase != NamespacePhase::Enlist || *name != "b")
         .map(|(store, name)| LiveNamespaceMutation {
             store,
             mutation: NamespaceMutation {
@@ -5779,9 +5890,13 @@ fn namespace_run(
     }
     let mut matches = 0;
     let mut published = false;
+    let mut bootstrapped = phase != NamespacePhase::Bootstrap;
     let mut fired = false;
     let result = namespace_batch_live_with_steps(root.path(), participants, &mut |step| {
-        if step == "commit rename" {
+        if step == "bootstrap root published" {
+            bootstrapped = true;
+        }
+        if step == "commit rename" && bootstrapped {
             published = true;
         }
         if deleting && step == "live states installed" {
@@ -5797,7 +5912,8 @@ fn namespace_run(
             matches += 1;
             let nth = if matches!(
                 fault,
-                NamespaceFault::PrepareAppend
+                NamespaceFault::BootstrapReference
+                    | NamespaceFault::PrepareAppend
                     | NamespaceFault::PrepareSync
                     | NamespaceFault::AdoptManifest
                     | NamespaceFault::AdoptBinding
@@ -5827,7 +5943,31 @@ fn namespace_run(
         result.map_err(|e| e.to_string())?;
     }
     drop(stores);
-    let observed = namespace_observe(root.path())?;
+    if inject
+        && matches!(
+            fault,
+            NamespaceFault::BootstrapRoot
+                | NamespaceFault::BootstrapReference
+                | NamespaceFault::EnlistReference
+        )
+    {
+        match std::fs::read(root.path().join(".ze-namespaces")) {
+            Ok(bytes)
+                if bytes.len() == 52
+                    && bytes.starts_with(b"ZENS0003")
+                    && bytes.get(24..28) == Some([16, 0, 0, 0].as_slice())
+                    && bytes.get(28..36) == Some(b"ZENS0001".as_slice()) => {}
+            Ok(_) => return Err("bootstrap/enlist fault changed the empty root descriptor".into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    // Rename the interrupted root before adoption/reclaim. Same-filesystem
+    // rename preserves the inode-bound pending cleanup proof.
+    let relocated_parent = tempdir().map_err(|e| e.to_string())?;
+    let relocated = relocated_parent.path().join(".ze-batch-relocated");
+    std::fs::rename(root.path(), &relocated).map_err(|e| e.to_string())?;
+    let observed = namespace_observe(&relocated, names)?;
     let committed = !inject || fault.committed();
     independent::check_namespace_publication(
         &fixture.before,
@@ -5835,14 +5975,43 @@ fn namespace_run(
         &observed,
         committed,
     )?;
-    // Repeat recovery and cleanup; no retired or abandoned data may resurface.
-    namespace_reclaim(root.path()).map_err(|e| e.to_string())?;
-    let repeated = namespace_observe(root.path())?;
+    // Complete inode-bound cleanup before copying to new filesystem identities.
+    namespace_reclaim(&relocated).map_err(|e| e.to_string())?;
+    let repeated = namespace_observe(&relocated, names)?;
     if repeated != observed {
         return Err("namespace repeated recovery changed state".into());
     }
     if deleting && committed {
-        namespace_assert_erased(root.path(), &sentinel)?;
+        namespace_assert_erased(&relocated, &sentinel)?;
+    }
+    let copied = tempdir().map_err(|e| e.to_string())?;
+    copy_namespace_tree(&relocated, copied.path())?;
+    let copied_image = namespace_observe(copied.path(), names)?;
+    independent::check_namespace_publication(
+        &fixture.before,
+        &fixture.after,
+        &copied_image,
+        committed,
+    )?;
+    if copied_image != observed {
+        return Err("whole-root copy changed namespace state".into());
+    }
+    let detached = tempdir().map_err(|e| e.to_string())?;
+    let participant = detached.path().join("a");
+    copy_namespace_tree(&relocated.join("a"), &participant)?;
+    if participant.join(".ze-namespace-root").exists() {
+        match Store::open(&participant, OpenOptions::read_only()) {
+            Err(StoreError::Io { source, .. })
+                if source.kind() == std::io::ErrorKind::InvalidData
+                    && source.to_string() == "portable namespace requires its matching root" => {}
+            Err(error) => return Err(format!("unexpected detached-root refusal: {error}")),
+            Ok(_) => return Err("detached portable participant opened".into()),
+        }
+    } else {
+        let plain = namespace_observe(detached.path(), &["a"])?;
+        if plain["a"] != fixture.before["a"] {
+            return Err("detached plain store changed before image".into());
+        }
     }
     Ok(observed)
 }
@@ -5853,53 +6022,97 @@ pub fn namespace_probe(
     seed: u64,
     coverage: &mut super::coverage::CoverageRegistry,
 ) -> Result<(), String> {
-    for deleting in [false, true] {
-        let fixture = independent::NamespaceFixture::derive(seed, deleting);
-        let clean = namespace_run(seed, deleting, NamespaceFault::Publish, false)
-            .map_err(|e| format!("deleting={deleting} clean: {e}"))?;
-        for fault in NamespaceFault::ALL {
-            if !deleting && fault.requires_delete() {
-                continue;
+    for phase in [
+        NamespacePhase::Established,
+        NamespacePhase::Bootstrap,
+        NamespacePhase::Enlist,
+    ] {
+        for deleting in [false, true] {
+            let fixture = namespace_fixture(seed, deleting, phase);
+            let clean = namespace_run(seed, deleting, NamespaceFault::Publish, false, phase)
+                .map_err(|e| format!("phase={phase:?} deleting={deleting} clean: {e}"))?;
+            for fault in NamespaceFault::ALL {
+                if matches!(
+                    fault,
+                    NamespaceFault::BootstrapRoot | NamespaceFault::BootstrapReference
+                ) && phase != NamespacePhase::Bootstrap
+                    || matches!(fault, NamespaceFault::EnlistReference)
+                        && phase != NamespacePhase::Enlist
+                {
+                    continue;
+                }
+                if !deleting && fault.requires_delete() {
+                    continue;
+                }
+                let observed = namespace_run(seed, deleting, fault, true, phase).map_err(|e| {
+                    format!(
+                        "phase={phase:?} {} deleting={deleting} fault: {e}",
+                        fault.key()
+                    )
+                })?;
+                independent::check_namespace_publication(
+                    &fixture.before,
+                    &fixture.after,
+                    &clean,
+                    true,
+                )?;
+                // Test-only planted partial publication: one participant is selected
+                // from the opposite decision. The same comparator must reject it.
+                let mut partial = observed.clone();
+                let opposite = if fault.committed() {
+                    &fixture.before
+                } else {
+                    &fixture.after
+                };
+                let changed = if phase == NamespacePhase::Enlist {
+                    "c"
+                } else {
+                    "b"
+                };
+                partial.insert(changed.into(), opposite[changed].clone());
+                if independent::check_namespace_publication(
+                    &fixture.before,
+                    &fixture.after,
+                    &partial,
+                    fault.committed(),
+                )
+                .is_ok()
+                {
+                    return Err(format!(
+                        "namespace {} comparator accepted partial publication",
+                        fault.key()
+                    ));
+                }
+                let suffixes: &[&str] = if matches!(
+                    fault,
+                    NamespaceFault::BootstrapRoot
+                        | NamespaceFault::BootstrapReference
+                        | NamespaceFault::EnlistReference
+                ) {
+                    &["clean", "fired"]
+                } else {
+                    &["clean", "fire", "can-fire"]
+                };
+                for suffix in suffixes {
+                    coverage.hit(format!("storage.namespace.{}.{suffix}", fault.key()));
+                }
             }
-            let observed = namespace_run(seed, deleting, fault, true)
-                .map_err(|e| format!("{} deleting={deleting} fault: {e}", fault.key()))?;
-            independent::check_namespace_publication(
-                &fixture.before,
-                &fixture.after,
-                &clean,
-                true,
-            )?;
-            // Test-only planted partial publication: one participant is selected
-            // from the opposite decision. The same comparator must reject it.
-            let mut partial = observed.clone();
-            let opposite = if fault.committed() {
-                &fixture.before
+            if phase == NamespacePhase::Enlist {
+                coverage.hit("storage.namespace.plain-under-portable-root");
+            }
+            for key in [
+                "whole-root-rename",
+                "whole-root-copy",
+                "detached-root-refusal",
+            ] {
+                coverage.hit(format!("storage.namespace.{key}"));
+            }
+            coverage.hit(if deleting {
+                "storage.namespace.deleting-batch"
             } else {
-                &fixture.after
-            };
-            partial.insert("b".into(), opposite["b"].clone());
-            if independent::check_namespace_publication(
-                &fixture.before,
-                &fixture.after,
-                &partial,
-                fault.committed(),
-            )
-            .is_ok()
-            {
-                return Err(format!(
-                    "namespace {} comparator accepted partial publication",
-                    fault.key()
-                ));
-            }
-            for suffix in ["clean", "fire", "can-fire"] {
-                coverage.hit(format!("storage.namespace.{}.{suffix}", fault.key()));
-            }
+                "storage.namespace.live-batch"
+            });
         }
-        coverage.hit(if deleting {
-            "storage.namespace.deleting-batch"
-        } else {
-            "storage.namespace.live-batch"
-        });
     }
     Ok(())
 }

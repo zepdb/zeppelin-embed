@@ -1,4 +1,4 @@
-//! Path-independent namespace metadata. Publication is added in ZE-370 slice 2.
+//! Path-independent namespace metadata and coordinator-only preparation authority.
 use super::*;
 
 pub(super) const ROOT_MAGIC: &[u8] = b"ZENS0003";
@@ -217,13 +217,24 @@ pub(super) fn authority<'a>(
     vfs: &dyn Vfs,
     directory: &'a Path,
 ) -> Result<Option<(&'a Path, &'a str, NamespaceRootId)>, StoreError> {
+    authority_with_preparation(vfs, directory, None)
+}
+
+pub(super) fn authority_with_preparation<'a>(
+    vfs: &dyn Vfs,
+    directory: &'a Path,
+    preparation: Option<&PrivatePreparation>,
+) -> Result<Option<(&'a Path, &'a str, NamespaceRootId)>, StoreError> {
     let reference_path = directory.join(REFERENCE);
-    let reference = read_optional_vfs(vfs, &reference_path)?;
+    let Some(reference) = read_optional_vfs(vfs, &reference_path)? else {
+        // Only a reference claims portable membership. Absence is a plain store.
+        return Ok(None);
+    };
     let Some(parent) = directory.parent() else {
         return Ok(None);
     };
-    let Some(bytes) = reference.filter(|bytes| bytes.starts_with(REFERENCE_MAGIC)) else {
-        // Neither absent nor legacy references can authorize a portable participant.
+    if !reference.starts_with(REFERENCE_MAGIC) {
+        // A legacy reference cannot authorize membership in a portable root.
         let portable_parent = root_record_vfs(vfs, parent)?.0.is_some();
         let portable_ancestor = if parent
             .file_name()
@@ -244,8 +255,8 @@ pub(super) fn authority<'a>(
             ));
         }
         return Ok(None);
-    };
-    let reference = decode_reference(&reference_path, &bytes)?;
+    }
+    let reference = decode_reference(&reference_path, &reference)?;
     let name = directory
         .file_name()
         .and_then(|name| name.to_str())
@@ -267,7 +278,22 @@ pub(super) fn authority<'a>(
             "portable namespace requires its matching root",
         ));
     }
-    if reference.parent_depth == 2 {
+    if let Some(preparation) = preparation
+        && (reference.parent_depth != 2
+            || preparation.root_id != reference.root_id
+            || preparation.name != name
+            || preparation.directory != directory
+            || parent.file_name().and_then(|s| s.to_str()).is_none_or(|s| {
+                !s.starts_with(".ze-batch-")
+                    || s.contains("..")
+                    || !s
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.')
+            }))
+    {
+        return Err(invalid(directory, "private preparation authority mismatch"));
+    }
+    if reference.parent_depth == 2 && preparation.is_none() {
         let routes = match &descriptor {
             RootDescriptor::Legacy(routes) => routes,
             RootDescriptor::Staged(staged) => &staged.1,

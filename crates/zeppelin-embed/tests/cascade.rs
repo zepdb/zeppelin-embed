@@ -129,7 +129,7 @@ fn durable_cascade_deletes_transitive_dependants_and_rejects_cycles() {
 mod kills {
     use super::test_support;
     use super::*;
-    use rand::RngCore;
+    use rand::seq::SliceRandom;
     use std::os::unix::process::ExitStatusExt;
     use zeppelin_embed::lifecycle::namespace_delete_cascade_with_steps;
 
@@ -161,23 +161,14 @@ mod kills {
         let baseline = tempfile::tempdir().expect("baseline");
         seed(baseline.path());
         let mut count = 0;
-        let mut cuts = std::collections::BTreeSet::from([0]);
-        namespace_delete_cascade_with_steps(baseline.path(), deletion(), &mut |label| {
-            if label == "commit rename" {
-                cuts.insert(count);
-                if count > 0 {
-                    cuts.insert(count - 1);
-                }
-            }
+        namespace_delete_cascade_with_steps(baseline.path(), deletion(), &mut |_| {
             count += 1;
             Ok(())
         })
         .expect("count steps");
-        cuts.insert(count - 1);
-        let mut rng = test_support::seeded_rng("ZE225 cascade SIGKILL");
-        for _ in 0..24 {
-            cuts.insert(rng.next_u64() as usize % count);
-        }
+        assert!(count >= 105, "must cover the original 105-step protocol");
+        let mut cuts: Vec<_> = (0..count).collect();
+        cuts.shuffle(&mut test_support::seeded_rng("ZE225 cascade SIGKILL"));
         let mut observed = std::collections::BTreeSet::new();
         for cut in cuts {
             let root = tempfile::tempdir().expect("root");
@@ -202,5 +193,6 @@ mod kills {
             observed.insert(recovered[0][0]);
         }
         assert_eq!(observed.len(), 2, "must observe both publication outcomes");
+        eprintln!("ZE-383 cascade SIGKILL cuts: {count}");
     }
 }

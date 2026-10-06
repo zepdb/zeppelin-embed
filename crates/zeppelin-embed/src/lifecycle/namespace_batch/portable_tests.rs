@@ -40,9 +40,11 @@ fn portable_namespace_records_round_trip_and_reject_corruption() {
         panic!("routes descriptor expected");
     };
     assert_eq!(encode(&decoded), legacy);
-    assert!(
-        legacy_root_descriptor_vfs(&StdVfs, root.path()).is_err(),
-        "slice 1 cannot publish a legacy descriptor over a portable root"
+    assert_eq!(
+        root_record_vfs(&StdVfs, root.path())
+            .expect("portable identity")
+            .0,
+        Some(NamespaceRootId::new(17).expect("id"))
     );
     assert!(
         body(&path, &bytes).is_err(),
@@ -425,4 +427,54 @@ fn a_portable_namespace_requires_its_matching_root() {
             }
         }
     }
+}
+
+fn private_fixture(root: &Path) -> PathBuf {
+    portable_fixture(root, true, true);
+    std::fs::write(root.join(RECORD), root_record(17, &encode(&Routes::new())))
+        .expect("leave preparation unpublished");
+    root.join(".ze-batch-1/a")
+}
+
+#[test]
+fn an_ordinary_open_of_a_private_preparation_is_refused() {
+    let root = tempfile::tempdir().expect("root");
+    let directory = private_fixture(root.path());
+    for options in [OpenOptions::read_only(), OpenOptions::new()] {
+        let error = match Store::open(&directory, options) {
+            Ok(_) => panic!("unpublished preparation opened"),
+            Err(error) => error,
+        };
+        match error {
+            StoreError::Io { source, .. } => assert_eq!(
+                source.to_string(),
+                "portable participant is outside its selected route"
+            ),
+            error => panic!("unexpected refusal: {error:?}"),
+        }
+    }
+}
+
+#[test]
+fn the_coordinator_opens_its_private_preparation() {
+    let root = tempfile::tempdir().expect("root");
+    let directory = private_fixture(root.path());
+    let coordinator = StoreLock::acquire(root.path()).expect("coordinator");
+    let authority = PrivatePreparation::new(
+        NamespaceRootId::new(17).expect("id"),
+        "a",
+        &directory,
+        &coordinator,
+    );
+    let store = Store::open_private_preparation(&directory, OpenOptions::new(), authority)
+        .expect("coordinator opens unpublished copy with acceptance");
+    let rows = store
+        .get_documents(&[DocId::new(7)], super::super::DocumentFields::ALL)
+        .expect("prepared document");
+    assert_eq!(
+        rows[0].as_ref().expect("committed row").text.as_deref(),
+        Some("portable")
+    );
+    store.seal().expect("checkpoint private participant");
+    store.close().expect("close private participant");
 }

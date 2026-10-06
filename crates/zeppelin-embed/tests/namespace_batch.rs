@@ -461,10 +461,9 @@ fn committed_frames_survive_root_retirement() {
         ],
     )
     .expect("normalize previous root and commit next");
-    assert_eq!(
-        &std::fs::read(root.path().join(".ze-namespaces")).expect("root")[..8],
-        b"ZENS0001"
-    );
+    let retired_root = std::fs::read(root.path().join(".ze-namespaces")).expect("root");
+    assert_eq!(retired_root.get(..8), Some(b"ZENS0003".as_slice()));
+    assert_eq!(retired_root.get(28..36), Some(b"ZENS0001".as_slice()));
     for store in [&b, &a] {
         store.close().expect("close");
     }
@@ -2071,4 +2070,464 @@ fn ze270_cleanup_reader_in_another_process_gets_store_busy() {
     })
     .expect("cleanup");
     assert!(attempted);
+}
+
+#[cfg(feature = "test-seams")]
+fn portable_root_identity(root: &std::path::Path) -> Vec<u8> {
+    let bytes = std::fs::read(root.join(".ze-namespaces")).expect("root record");
+    assert_eq!(bytes.get(..8), Some(b"ZENS0003".as_slice()));
+    let id = bytes.get(8..24).expect("root identity").to_vec();
+    assert!(id.iter().any(|byte| *byte != 0));
+    id
+}
+
+#[cfg(feature = "test-seams")]
+#[test]
+fn portable_root_identity_survives_publish_adopt_and_retirement() {
+    use zeppelin_embed::lifecycle::{
+        LiveNamespaceMutation, namespace_batch_live_with_steps, namespace_reclaim,
+    };
+    let scratch = tempfile::tempdir().expect("scratch");
+    let root = scratch.path().join("original");
+    std::fs::create_dir(&root).expect("root");
+    let a = Store::open(root.join("a"), OpenOptions::new()).expect("a");
+    let b = Store::open(root.join("b"), OpenOptions::new()).expect("b");
+    let mut published_id = None;
+    let result = namespace_batch_live_with_steps(
+        &root,
+        vec![
+            LiveNamespaceMutation {
+                store: &a,
+                mutation: mutation("a", vec![doc(2, 1)]),
+            },
+            LiveNamespaceMutation {
+                store: &b,
+                mutation: mutation("b", vec![doc(2, 1)]),
+            },
+        ],
+        &mut |step| {
+            if step == "live states installed" {
+                published_id = Some(portable_root_identity(&root));
+                return Err(std::io::Error::other("interrupt before adoption"));
+            }
+            Ok(())
+        },
+    );
+    assert!(result.is_err());
+    let identity = published_id.expect("decision was published");
+    a.close().expect("close fenced a");
+    b.close().expect("close fenced b");
+    let moved = scratch.path().join(".ze-batch-relocated");
+    std::fs::rename(&root, &moved).expect("relocate pending decision");
+    namespace_reclaim(&moved).expect("validate relocated pending marks");
+    for name in ["b", "a"] {
+        let store =
+            Store::open(moved.join(name), OpenOptions::new()).expect("adopt after relocation");
+        assert!(
+            store
+                .get_documents(&[DocId::new(2)], DocumentFields::ALL)
+                .expect("committed row")
+                .iter()
+                .all(Option::is_some)
+        );
+        store.close().expect("close adopted participant");
+        assert_eq!(portable_root_identity(&moved), identity);
+    }
+    namespace_batch(
+        &moved,
+        vec![
+            mutation("a", vec![doc(3, 1)]),
+            mutation("b", vec![doc(3, 1)]),
+        ],
+    )
+    .expect("normalize accepted decision and publish again");
+    namespace_reclaim(&moved).expect("reclaim retired preparations");
+    assert_eq!(portable_root_identity(&moved), identity);
+    for name in ["a", "b"] {
+        let reference =
+            std::fs::read(moved.join(name).join(".ze-namespace-root")).expect("reference");
+        assert_eq!(reference.get(..8), Some(b"ZENR0002".as_slice()));
+        assert_eq!(reference.get(8..24), Some(identity.as_slice()));
+        let store = Store::open(moved.join(name), OpenOptions::read_only())
+            .expect("reopen retired decision");
+        assert!(
+            store
+                .get_documents(&[DocId::new(2), DocId::new(3)], DocumentFields::ALL)
+                .expect("rows")
+                .iter()
+                .all(Option::is_some)
+        );
+    }
+}
+
+#[cfg(feature = "test-seams")]
+fn copy_namespace_root(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).expect("copy directory");
+    for entry in std::fs::read_dir(from).expect("source directory") {
+        let entry = entry.expect("entry");
+        let destination = to.join(entry.file_name());
+        if entry.file_type().expect("type").is_dir() {
+            copy_namespace_root(&entry.path(), &destination);
+        } else {
+            std::fs::copy(entry.path(), destination).expect("copy file");
+        }
+    }
+}
+
+#[cfg(feature = "test-seams")]
+#[test]
+fn a_namespace_root_with_committed_op9_survives_copy_and_rename() {
+    use zeppelin_embed::lifecycle::namespace_delete_cascade;
+    let scratch = tempfile::tempdir().expect("scratch");
+    let original = scratch.path().join("original");
+    std::fs::create_dir(&original).expect("original root");
+    seed(&original);
+    namespace_batch(
+        &original,
+        vec![
+            mutation("a", vec![doc(2, 1)]),
+            mutation("b", vec![doc(2, 1)]),
+        ],
+    )
+    .expect("committed unabsorbed op 9");
+    let identity = portable_root_identity(&original);
+    let copied = scratch.path().join("copied");
+    copy_namespace_root(&original, &copied);
+    let renamed = scratch.path().join("renamed");
+    std::fs::rename(&copied, &renamed).expect("rename copied root");
+    for root in [&original, &renamed] {
+        for name in ["b", "a"] {
+            let store = Store::open(root.join(name), OpenOptions::read_only())
+                .expect("relocated op 9 reader");
+            let rows = store
+                .get_documents(
+                    &[DocId::new(1), DocId::new(2), DocId::new(3)],
+                    DocumentFields::ALL,
+                )
+                .expect("documents");
+            assert!(rows.iter().all(Option::is_some));
+            assert_eq!(store.snapshot().expect("snapshot").generation(), 3);
+            assert_eq!(
+                rows.get(1)
+                    .and_then(Option::as_ref)
+                    .and_then(|row| row.vector.as_ref()),
+                Some(&vec![1.0, 2.0])
+            );
+        }
+    }
+    // Exercise ZE-239 with an unabsorbed op 9 source. No delete is needed to
+    // prove the private copy retains its committed rows during replay and seal.
+    namespace_delete_cascade(&renamed, vec![mutation("a", vec![]), mutation("b", vec![])])
+        .expect("copy protocol preserves acceptance evidence");
+    assert_eq!(portable_root_identity(&renamed), identity);
+    let final_root = scratch.path().join("routed-copy");
+    copy_namespace_root(&renamed, &final_root);
+    for name in ["b", "a"] {
+        let store = Store::open(final_root.join(name), OpenOptions::new())
+            .expect("routed participant after copy");
+        let rows = store
+            .get_documents(&[DocId::new(2)], DocumentFields::ALL)
+            .expect("copied op 9 document");
+        assert!(rows.iter().all(Option::is_some));
+        store
+            .ingest(IngestBatch::new(vec![doc(4, 1)]))
+            .expect("ordinary writable recovery");
+        store.close().expect("close routed writer");
+    }
+    namespace_batch(
+        &final_root,
+        vec![
+            mutation("a", vec![doc(5, 1)]),
+            mutation("b", vec![doc(5, 1)]),
+        ],
+    )
+    .expect("live publication on routed participants");
+    assert_eq!(portable_root_identity(&final_root), identity);
+    for name in ["a", "b"] {
+        let store =
+            Store::open(final_root.join(name), OpenOptions::read_only()).expect("routed reopen");
+        assert!(
+            store
+                .get_documents(
+                    &[DocId::new(2), DocId::new(4), DocId::new(5)],
+                    DocumentFields::ALL
+                )
+                .expect("retained and new rows")
+                .iter()
+                .all(Option::is_some)
+        );
+    }
+}
+
+#[cfg(feature = "test-seams")]
+#[test]
+fn a_plain_store_under_a_portable_root_opens_and_can_be_enlisted() {
+    let root = tempfile::tempdir().expect("root");
+    seed(root.path());
+    namespace_batch(
+        root.path(),
+        vec![
+            mutation("a", vec![doc(2, 1)]),
+            mutation("b", vec![doc(2, 1)]),
+        ],
+    )
+    .expect("establish portable root");
+    let identity = portable_root_identity(root.path());
+    let c = Store::open(root.path().join("c"), OpenOptions::new())
+        .expect("new plain store under portable root");
+    c.ingest(IngestBatch::new(vec![doc(1, 1)]))
+        .expect("plain write");
+    c.close().expect("close plain writer");
+    let temporary = root.path().join("c/.ze-namespace-root.tmp");
+    std::fs::write(&temporary, b"ZENR").expect("interrupted reference publication");
+    let c = Store::open(root.path().join("c"), OpenOptions::read_only()).expect("plain reader");
+    assert!(
+        c.get_documents(&[DocId::new(1)], DocumentFields::ALL)
+            .expect("plain document")
+            .iter()
+            .all(Option::is_some)
+    );
+    c.close().expect("close reader");
+    assert_eq!(
+        std::fs::read(&temporary).expect("reader retains temp"),
+        b"ZENR"
+    );
+    zeppelin_embed::lifecycle::namespace_reclaim(root.path()).expect("sweep reference temp");
+    assert!(!temporary.exists());
+    assert!(!root.path().join("c/.ze-namespace-root").exists());
+    namespace_batch(
+        root.path(),
+        vec![
+            mutation("a", vec![doc(4, 1)]),
+            mutation("c", vec![doc(4, 1)]),
+        ],
+    )
+    .expect("enlist plain store");
+    let reference =
+        std::fs::read(root.path().join("c/.ze-namespace-root")).expect("enlisted reference");
+    assert_eq!(reference.get(..8), Some(b"ZENR0002".as_slice()));
+    assert_eq!(reference.get(8..24), Some(identity.as_slice()));
+    for name in ["c", "a"] {
+        let store =
+            Store::open(root.path().join(name), OpenOptions::read_only()).expect("enlisted reader");
+        assert!(
+            store
+                .get_documents(&[DocId::new(4)], DocumentFields::ALL)
+                .expect("committed document")
+                .iter()
+                .all(Option::is_some)
+        );
+    }
+}
+
+#[cfg(feature = "test-seams")]
+#[test]
+fn a_fresh_portable_root_and_every_reference_are_durable_before_any_prepared_frame() {
+    use std::sync::Arc;
+    use zeppelin_embed::lifecycle::{
+        LiveNamespaceMutation, StoreTestDependencies, SystemMonotonicClock,
+        namespace_batch_live_on_vfs,
+    };
+    use zeppelin_embed::vfs::{
+        SyncKind,
+        crash::{CrashOperation, CrashVfs, MemoryVfs},
+    };
+    let scratch = tempfile::tempdir().expect("root");
+    let root = std::fs::canonicalize(scratch.path()).expect("canonical root");
+    let initial = Arc::new(MemoryVfs::new());
+    for name in ["a", "b"] {
+        std::fs::create_dir(root.join(name)).expect("participant directory");
+        let store = Store::open_with_test_dependencies(
+            root.join(name),
+            OpenOptions::new(),
+            StoreTestDependencies::new(initial.clone(), Arc::new(SystemMonotonicClock)),
+        )
+        .expect("seed");
+        store
+            .ingest(IngestBatch::new(vec![doc(1, 1)]))
+            .expect("initial row");
+        store.close().expect("close seed");
+    }
+    let crash = Arc::new(CrashVfs::new(initial.snapshot().expect("baseline")).expect("recorder"));
+    let stores = ["a", "b"].map(|name| {
+        Store::open_with_test_dependencies(
+            root.join(name),
+            OpenOptions::new(),
+            StoreTestDependencies::new(crash.clone(), Arc::new(SystemMonotonicClock)),
+        )
+        .expect("participant")
+    });
+    namespace_batch_live_on_vfs(
+        &root,
+        stores
+            .iter()
+            .zip(["a", "b"])
+            .map(|(store, name)| LiveNamespaceMutation {
+                store,
+                mutation: mutation(name, vec![doc(2, 1)]),
+            })
+            .collect(),
+        crash.as_ref(),
+    )
+    .expect("fresh-root batch");
+    let operations = crash.operations().expect("operations");
+    let first_frame = operations
+        .iter()
+        .position(|op| {
+            matches!(op, CrashOperation::Append { path, .. }
+        if path.file_name().is_some_and(|name| name == "wal.ze"))
+        })
+        .expect("prepared WAL append");
+    let prefix = operations.get(..first_frame).expect("preparation prefix");
+    let root_bytes = prefix
+        .iter()
+        .find_map(|op| match op {
+            CrashOperation::Write { path, bytes } if path == &root.join(".ze-namespaces.tmp") => {
+                Some(bytes)
+            }
+            _ => None,
+        })
+        .expect("portable bootstrap root bytes");
+    assert_eq!(root_bytes.get(..8), Some(b"ZENS0003".as_slice()));
+    let identity = root_bytes.get(8..24).expect("root ID");
+    assert!(identity.iter().any(|byte| *byte != 0));
+    let root_rename = prefix
+        .iter()
+        .position(|op| {
+            matches!(op, CrashOperation::Rename { to, .. }
+        if to == &root.join(".ze-namespaces"))
+        })
+        .expect("root precedes frames");
+    assert!(
+        prefix.iter().skip(root_rename + 1).any(
+            |op| matches!(op, CrashOperation::Sync { path, kind: SyncKind::Full }
+        if path == &root)
+        ),
+        "root directory is durable before frames"
+    );
+    for name in ["a", "b"] {
+        let reference = root.join(name).join(".ze-namespace-root");
+        let temporary = root.join(name).join(".ze-namespace-root.tmp");
+        let write = prefix
+            .iter()
+            .position(|op| {
+                matches!(op, CrashOperation::Write { path, bytes }
+            if path == &temporary && bytes.starts_with(b"ZENR0002")
+                && bytes.get(8..24) == Some(identity)
+                && bytes.get(24..28) == Some([1, 0, 1, 0].as_slice())
+                && bytes.get(28..29) == Some(name.as_bytes()))
+            })
+            .expect("matching reference precedes frames");
+        let file_sync = prefix
+            .iter()
+            .enumerate()
+            .skip(write + 1)
+            .find_map(|(index, op)| {
+                matches!(op,
+            CrashOperation::Sync { path, kind: SyncKind::Full } if path == &temporary)
+                .then_some(index)
+            })
+            .expect("reference full sync");
+        let rename = prefix
+            .iter()
+            .enumerate()
+            .skip(file_sync + 1)
+            .find_map(|(index, op)| {
+                matches!(op, CrashOperation::Rename { from, to }
+                    if from == &temporary && to == &reference)
+                .then_some(index)
+            })
+            .expect("complete reference is atomically published");
+        assert!(
+            prefix.iter().skip(rename + 1).any(
+                |op| matches!(op, CrashOperation::Sync { path, kind: SyncKind::Full }
+            if path == &root.join(name))
+            ),
+            "reference directory durable before frames"
+        );
+    }
+}
+
+#[cfg(feature = "test-seams")]
+#[test]
+fn enlisting_into_a_portable_root_recovers_one_decision_at_every_cut() {
+    use zeppelin_embed::lifecycle::namespace_batch_with_steps;
+    fn setup(root: &std::path::Path) {
+        seed(root);
+        namespace_batch(
+            root,
+            vec![
+                mutation("a", vec![doc(1, 2)]),
+                mutation("b", vec![doc(1, 2)]),
+            ],
+        )
+        .expect("portable baseline");
+        let c = Store::open(root.join("c"), OpenOptions::new()).expect("plain c");
+        c.ingest(IngestBatch::new(vec![doc(1, 2), doc(3, 1)]))
+            .expect("seed c");
+        c.seal().expect("seal c");
+        c.close().expect("close c");
+    }
+    fn enlist() -> Vec<NamespaceMutation> {
+        let mut changes = mixed();
+        changes.get_mut(1).expect("second participant").name = "c".into();
+        changes
+    }
+    let counted = tempfile::tempdir().expect("counted");
+    setup(counted.path());
+    let mut steps = Vec::new();
+    namespace_batch_with_steps(counted.path(), enlist(), &mut |name| {
+        steps.push(name.to_owned());
+        Ok(())
+    })
+    .expect("count enlistment steps");
+    assert!(steps.len() > 20);
+    for cut in 0..steps.len() {
+        let root = tempfile::tempdir().expect("root");
+        setup(root.path());
+        let identity = portable_root_identity(root.path());
+        let mut index = 0;
+        assert!(
+            namespace_batch_with_steps(root.path(), enlist(), &mut |_| {
+                let visible_a = state(root.path(), "a");
+                let visible_c = state(root.path(), "c");
+                assert_eq!(
+                    visible_a, visible_c,
+                    "readers at enlistment cut {cut}, step {index}"
+                );
+                assert_eq!(state(root.path(), "b"), [true, false, true]);
+                let fail = index == cut;
+                index += 1;
+                if fail {
+                    Err(std::io::Error::other("enlistment cut"))
+                } else {
+                    Ok(())
+                }
+            })
+            .is_err()
+        );
+        let c = state(root.path(), "c");
+        let a = state(root.path(), "a");
+        assert_eq!(
+            a,
+            c,
+            "enlistment cut {cut}: {}",
+            steps.get(cut).expect("step")
+        );
+        assert!(a == [true, false, true] || a == [false, true, false]);
+        assert_eq!(
+            state(root.path(), "b"),
+            [true, false, true],
+            "uninvolved sibling"
+        );
+        assert_eq!(state(root.path(), "a"), a);
+        assert_eq!(state(root.path(), "c"), c);
+        for name in ["c", "a"] {
+            let writer =
+                Store::open(root.path().join(name), OpenOptions::new()).expect("writable recovery");
+            writer.close().expect("close recovered writer");
+        }
+        assert_eq!(portable_root_identity(root.path()), identity);
+    }
+    eprintln!("ZE-383 enlistment protocol cuts: {}", steps.len());
 }

@@ -329,3 +329,110 @@ fn a_graph_free_store_written_by_this_build_opens_in_the_v0_6_0_reader() {
         assert!(run_old_reader(scratch.path(), mode).contains("\"version_refused\": false"));
     }
 }
+
+#[test]
+#[ignore = "builds v0.6.0; run with ZE_FORMAT_COMPAT=1 in the format-compat job"]
+fn the_v0_6_0_reader_refuses_portable_namespaces_without_changing_data() {
+    use zeppelin_embed::lifecycle::{NamespaceMutation, namespace_batch, namespace_delete_cascade};
+    let root = tempfile::tempdir().expect("root");
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/releases/v0.6.0");
+    for name in ["a", "b"] {
+        copy_tree(&fixture, &root.path().join(name));
+    }
+    let mutations = |writing| {
+        ["a", "b"]
+            .into_iter()
+            .map(|name| NamespaceMutation {
+                name: name.into(),
+                options: common::options(false),
+                upserts: if writing {
+                    vec![common::document(100, "orchard")]
+                } else {
+                    vec![]
+                },
+                deletes: vec![],
+                delete_where: None,
+            })
+            .collect()
+    };
+    namespace_batch(root.path(), mutations(true)).expect("portable live root");
+    let assert_refused = |root: &Path, path: &Path| {
+        for mode in ["ro", "rw"] {
+            let payloads = |root: &Path| {
+                file_hashes(root)
+                    .into_iter()
+                    .filter(|(path, _)| {
+                        !matches!(
+                            path.file_name().and_then(|n| n.to_str()),
+                            Some("writer.lock" | ".ze-readers.lock")
+                        )
+                    })
+                    .collect::<std::collections::BTreeMap<_, _>>()
+            };
+            let before = payloads(root);
+            let all_before = file_hashes(root);
+            let output = std::process::Command::new(old_reader())
+                .arg(path)
+                .arg(mode)
+                .arg("namespace-refusal")
+                .output()
+                .expect("old reader");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                String::from_utf8(output.stdout).expect("JSON").trim(),
+                "{\"namespace_refused\": true}"
+            );
+            assert_eq!(payloads(root), before, "old reader changed namespace data");
+            let lock_changes = file_hashes(root)
+                .into_iter()
+                .filter(|(path, hash)| {
+                    matches!(
+                        path.file_name().and_then(|n| n.to_str()),
+                        Some("writer.lock" | ".ze-readers.lock")
+                    ) && all_before.get(path) != Some(hash)
+                })
+                .map(|(path, _)| path)
+                .collect::<Vec<_>>();
+            eprintln!("ZE-383 old reader {mode} lock-file changes: {lock_changes:?}");
+        }
+    };
+    let bootstrap = tempfile::tempdir().expect("bootstrap root");
+    for name in ["a", "b"] {
+        copy_tree(&fixture, &bootstrap.path().join(name));
+    }
+    std::fs::copy(
+        root.path().join(".ze-namespaces"),
+        bootstrap.path().join(".ze-namespaces"),
+    )
+    .expect("empty portable bootstrap descriptor");
+    assert!(!bootstrap.path().join("a/.ze-namespace-root").exists());
+    assert_refused(bootstrap.path(), &bootstrap.path().join("a"));
+    for routed in [false, true] {
+        if routed {
+            namespace_delete_cascade(root.path(), mutations(false))
+                .expect("portable copy publication");
+        }
+        let paths = if routed {
+            std::fs::read_dir(root.path())
+                .expect("root entries")
+                .map(|entry| entry.expect("entry").path())
+                .find(|path| {
+                    path.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with(".ze-batch-"))
+                })
+                .map(|path| vec![root.path().join("a"), path.join("a")])
+                .expect("routed participant")
+        } else {
+            vec![root.path().join("a")]
+        };
+        for path in paths {
+            assert_refused(root.path(), &path);
+        }
+    }
+}

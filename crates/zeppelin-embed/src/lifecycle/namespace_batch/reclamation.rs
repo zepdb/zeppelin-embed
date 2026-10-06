@@ -211,7 +211,7 @@ fn routes_and_marks(
                     .cloned()
                     .unwrap_or_else(|| name.clone());
                 let identity = if root_id.is_some() {
-                    reader_participant_identity(vfs, &root.join(&directory))?
+                    reader_participant_identity(vfs, &root.join(&directory), None)?
                 } else {
                     participant_identity(root, &name)?
                 };

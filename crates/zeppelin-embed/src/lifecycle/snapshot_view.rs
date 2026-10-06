@@ -70,6 +70,7 @@ impl Store {
             _writer: writer,
         };
         Ok(Self {
+            private_preparation: None,
             directory: self.directory.clone(),
             open_migrations: super::OpenMigrations {
                 generation: active.generation,
