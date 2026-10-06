@@ -96,3 +96,21 @@ fn ze74_invalid_typed_with_scope_is_atomic() {
         graph_profile::run_local(&case, path).unwrap_or_else(|e| panic!("{path}: {e}"));
     }
 }
+
+#[test]
+fn ze74_supported_originals_have_executable_structured_requests() {
+    for case in graph_profile::original_cases() {
+        if case["error"]["stage"] == "compile" {
+            continue;
+        }
+        assert!(
+            !case["structured"].is_null(),
+            "missing structured request: {}",
+            case["id"]
+        );
+        for path in ["rust-structured", "c-structured"] {
+            graph_profile::run_local(&case, path)
+                .unwrap_or_else(|e| panic!("{} {path}: {e}", case["id"]));
+        }
+    }
+}

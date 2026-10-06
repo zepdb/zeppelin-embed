@@ -169,11 +169,31 @@ def repetition_state(samples, monitor, expected_requests, pins_before, pins_afte
     return 'valid'
 
 
+def swift_cell(case, path, result, rows, manifest_sha256):
+    """A crashed/failed/skipped runner cannot certify even a written GREEN receipt."""
+    reason = None
+    if result.returncode:
+        reason = f'Swift runner exit {result.returncode}; ' + ('ZE-313 SIGBUS' if 'Signal 10' in result.stdout + result.stderr or 'signal code 10' in result.stdout + result.stderr or result.returncode == -10 else 'see cell log')
+    else:
+        try:
+            validate_swift_tests(result.stdout + result.stderr, 'GraphProfileParityTests')
+            if len(rows) != 1 or rows[0]['case'] != case['id'] or rows[0]['path'] != path:
+                raise ValueError('missing or extra Swift cell receipt')
+            if rows[0]['state'] != 'focused GREEN':
+                raise ValueError('Swift cell failed its independent expectations')
+        except ValueError as error:
+            reason = str(error)
+    if reason:
+        return dict(case=case['id'], path=path, state='failed', reason=reason,
+                    manifest_sha256=manifest_sha256)
+    return dict(rows[0], manifest_sha256=manifest_sha256)
+
+
 def run_matrix(args):
     m = build_manifest(args.manifest)
     args.output.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ, CARGO_BUILD_JOBS='3')
-    command = ['cargo', 'build', '-p', 'zeppelin-embed-workspace-tests', '--features', 'graph-cypher', '--bin', 'graph-profile']
+    command = ['cargo', 'build', '-p', 'zeppelin-embed-workspace-tests', '--features', 'graph-cypher,zeppelin-embed/test-seams', '--bin', 'graph-profile']
     subprocess.run(command, cwd=ROOT, env=env, check=True)
     described = subprocess.check_output([ROOT / 'target/debug/graph-profile', 'describe'], cwd=ROOT, text=True)
     m['cases'] = json.loads(described)['cases']
@@ -199,48 +219,58 @@ def run_matrix(args):
                 receipt['manifest_sha256'] = m['manifest_sha256']
                 receipts.append(receipt)
     swift_receipts = args.output / 'swift-receipts.jsonl'
-    swift_receipts.unlink(missing_ok=True)
     swift_env = dict(env, ZE_USE_LOCAL_FFI='1', ZE74_SWIFT_MANIFEST=str((args.output/'consumer-manifest.json').resolve()),
                      ZE74_SWIFT_RECEIPTS=str(swift_receipts.resolve()), CLANG_MODULE_CACHE_PATH=str(ROOT/'target/swift-ze74-clang'),
                      SWIFTPM_MODULECACHE_OVERRIDE=str(ROOT/'target/swift-ze74-module'))
     archive = subprocess.run(['cargo', 'build', '--locked', '--release', '-p', 'zeppelin-embed-ffi', '--features', 'graph-cypher'],
                              cwd=ROOT, env=env, capture_output=True, text=True)
     (args.output/'swift-archive.log').write_text(archive.stdout+archive.stderr)
+    build = archive
     if archive.returncode == 0:
-        swift = subprocess.run(['swift', 'test', '--disable-sandbox', '--package-path', 'bindings/swift/graph',
-                                '--scratch-path', 'target/swift-ze74', '--cache-path', 'target/swift-ze74-cache',
-                                '--jobs', '3', '--filter', 'GraphProfileParityTests'], cwd=ROOT, env=swift_env,
-                               capture_output=True, text=True)
-        (args.output/'swift.log').write_text(swift.stdout+swift.stderr)
-        if swift.returncode:
-            diagnostics = [line for line in (swift.stdout + swift.stderr).splitlines() if 'error:' in line]
-            failures.extend(diagnostics or ['Swift runner exit ' + str(swift.returncode) + '; see swift.log'])
-        try:
-            validate_swift_tests(swift.stdout + swift.stderr, 'GraphProfileParityTests')
-        except ValueError as error:
-            failures.append(str(error))
-        if swift_receipts.exists():
-            for line in swift_receipts.read_text().splitlines():
-                r = json.loads(line)
-                r['manifest_sha256'] = m['manifest_sha256']
-                receipts.append(r)
-    else:
-        failures.append('Swift archive build failed; see swift-archive.log')
+        build = subprocess.run(['swift', 'build', '--build-tests', '--disable-sandbox', '--package-path', 'bindings/swift/graph',
+                                '--scratch-path', str(ROOT/'target/swift-ze74'), '--cache-path', str(ROOT/'target/swift-ze74-cache'),
+                                '--jobs', '3'], cwd=ROOT, env=swift_env, capture_output=True, text=True)
+        (args.output/'swift-build.log').write_text(build.stdout+build.stderr)
+    for path in ['swift-structured', 'swift-cypher']:
+        for case in m['cases']:
+            if path.endswith('structured') and case['structured'] is None and case['error'] and case['error']['stage'] == 'compile':
+                receipts.append(dict(case=case['id'], path=path, state='N/A with reason',
+                                     reason='compiler-only source refusal has no equivalent valid typed query', manifest_sha256=m['manifest_sha256']))
+                continue
+            if build.returncode:
+                receipt = dict(case=case['id'], path=path, state='blocked', reason='Swift build failed; see swift build logs', manifest_sha256=m['manifest_sha256'])
+            else:
+                swift_receipts.unlink(missing_ok=True)
+                method = 'testSharedPublic' if case['error'] else 'testSharedPositive'
+                method += 'Structured' if path.endswith('structured') else 'Cypher'
+                method += 'Rejections' if case['error'] else 'Profile'
+                result = subprocess.run(['swift', 'test', '--skip-build', '--disable-sandbox', '--package-path', 'bindings/swift/graph',
+                                         '--scratch-path', str(ROOT/'target/swift-ze74'), '--cache-path', str(ROOT/'target/swift-ze74-cache'),
+                                         '--jobs', '3', '--filter', 'GraphProfileParityTests.' + method], cwd=ROOT,
+                                        env=dict(swift_env, ZE74_SWIFT_CASE=case['id']), capture_output=True, text=True)
+                (args.output/(case['id'].replace('/', '-')+'-'+path+'.log')).write_text(result.stdout+result.stderr)
+                rows = [json.loads(line) for line in swift_receipts.read_text().splitlines()] if swift_receipts.exists() else []
+                receipt = swift_cell(case, path, result, rows, m['manifest_sha256'])
+            receipts.append(receipt)
+            if receipt['state'] != 'focused GREEN':
+                failures.append(case['id'] + ' ' + path + ': ' + receipt['reason'])
     (args.output / 'receipts.json').write_text(json.dumps(receipts, indent=2) + '\n')
-    if failures:
-        raise ValueError("; ".join(failures))
-    compare_paths(receipts)
+    try:
+        compare_paths(receipts)
+    except ValueError as error:
+        failures.append(str(error))
     report = dict(scope='source focused evidence only', receipts=receipts, failures=failures,
-                  missing_inputs=m['missing_inputs'], original_corpus='Rust/C Cypher original corpus executed; original structured translations unfinished',
-                  swift='source Cypher tests executed; ZE-278 public list parameter and structured paths unavailable',
-                  integrated='BLOCKED: ZE-72 receipts and ZE-29 revision required')
+                  missing_inputs=m['missing_inputs'], measurement_blocker=dict(owner='ZE-77', name='integrated graph measurement driver'),
+                  integrated='BLOCKED: installed artifacts and native-platform qualification remain separate')
     (args.output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
+    if failures:
+        raise ValueError('; '.join(failures))
     required = {(c['id'], path) for c in m['cases'] for path in m['paths']
                 if not (path.endswith('structured') and c['structured'] is None and c['error'] and c['error']['stage'] == 'compile')}
     try:
         validate_receipts(m, receipts, required)
     except ValueError as error:
-        raise ValueError('incomplete matrix: ZE-72, ZE-278, ZE-71 and unfinished ZE-74 cells; ' + str(error)) from error
+        raise ValueError('incomplete source parity matrix; ' + str(error)) from error
 
 
 class Controls(unittest.TestCase):
@@ -288,6 +318,15 @@ class Controls(unittest.TestCase):
                     good.replace('with 0 failures', 'with 2 tests skipped and 0 failures')):
             with self.assertRaises(ValueError):
                 validate_swift_tests(bad, 'GraphProfileParityTests')
+
+    def test_swift_crash_invalidates_written_green_receipt(self):
+        case = dict(id='bag')
+        row = dict(case='bag', path='swift-cypher', state='focused GREEN')
+        crash = subprocess.CompletedProcess([], -10, 'Signal 10', '')
+        self.assertEqual(swift_cell(case, 'swift-cypher', crash, [row], 'pin')['state'], 'failed')
+        clean = subprocess.CompletedProcess([], 0, "Test Suite 'GraphProfileParityTests' passed at now.\nExecuted 1 test, with 0 failures", '')
+        self.assertEqual(swift_cell(case, 'swift-cypher', clean, [row], 'pin')['state'], 'focused GREEN')
+        self.assertEqual(swift_cell(case, 'swift-cypher', clean, [], 'pin')['state'], 'failed')
 
     def test_profile_pins(self):
         build_manifest()
@@ -394,9 +433,8 @@ def main():
     elif args.command == 'measure':
         m = build_manifest(args.manifest)
         args.output.mkdir(parents=True, exist_ok=True)
-        report = dict(state='blocked', required_cells=m['timing_cells'], missing_inputs=['ZE-76', 'ZE-278', 'ZE-290'],
-                      reason='ZE-76 qualified counters, ZE-278 Swift structured API and ZE-290 sustained ingestion are not on main; no timing qualification',
-                      implementation_remaining='ZE-74 complete fixture request/import/mixed-load driver and retention/provenance reporting remain unfinished')
+        report = dict(state='blocked', owner='ZE-77', blocker='integrated graph measurement driver', required_cells=m['timing_cells'],
+                      reason='ZE-77 owns the unimplemented fixture request/import/mixed-load measurement driver; no measurement performed')
         (args.output/'timing-blocked.json').write_text(json.dumps(report, indent=2)+'\n')
         raise ValueError(report['reason'])
     else:

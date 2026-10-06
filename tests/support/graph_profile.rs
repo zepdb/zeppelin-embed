@@ -51,16 +51,56 @@ fn indices(j: &Json, key: &str) -> Vec<usize> {
         .map(|a| a.iter().map(|n| n.as_u64().unwrap() as usize).collect())
         .unwrap_or_default()
 }
+fn push_text(bytes: &mut Vec<u8>, text: &str) -> ZeGraphRange {
+    let r = ZeGraphRange {
+        start: bytes.len() as u32,
+        count: text.len() as u32,
+    };
+    bytes.extend_from_slice(text.as_bytes());
+    r
+}
+fn authored_unary(n: u32) -> UnaryExpression {
+    use UnaryExpression::*;
+    match n {
+        0 => Not,
+        3 => IsNull,
+        4 => IsNotNull,
+        6 => Labels,
+        7 => RelType,
+        _ => panic!("authored unary"),
+    }
+}
+fn authored_binary(n: u32) -> BinaryExpression {
+    use BinaryExpression::*;
+    use zeppelin_embed::property_graph::query::{Arithmetic, Comparison};
+    match n {
+        0 => And,
+        1 => Or,
+        2 => Xor,
+        3 => Comparison(Comparison::Equal),
+        9 => Arithmetic(Arithmetic::Add),
+        13 => Arithmetic(Arithmetic::Remainder),
+        18 => Index,
+        _ => panic!("authored binary"),
+    }
+}
 fn rust_structured(
     store: &GraphStore,
     plan: &Json,
     columns: &[&str],
+    values: &[(String, V)],
 ) -> Result<CompletedGraphResult, String> {
     let strings: Vec<String> = plan["expressions"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|e| e["value"].as_str().unwrap_or("").to_owned())
+        .map(|e| {
+            e["name"]
+                .as_str()
+                .or_else(|| e["value"].as_str())
+                .unwrap_or("")
+                .to_owned()
+        })
         .collect();
     let children: Vec<Vec<ExprId>> = plan["expressions"]
         .as_array()
@@ -89,11 +129,33 @@ fn rust_structured(
             }),
             "list" => Expression::List(&children[i]),
             "slot" => Expression::Slot(SlotId(number(e, "value"))),
+            "parameter" => Expression::Parameter(ParameterId(number(e, "value"))),
+            "property" => Expression::Property {
+                entity: ExprId(number(e, "left")),
+                name: GraphName::new(&strings[i]).unwrap(),
+            },
+            "label" => Expression::HasLabel {
+                entity: ExprId(number(e, "left")),
+                label: GraphName::new(&strings[i]).unwrap(),
+            },
+            "unary" => Expression::Unary {
+                operation: authored_unary(number(e, "operation")),
+                operand: ExprId(number(e, "left")),
+            },
+            "binary" => Expression::Binary {
+                operation: authored_binary(number(e, "operation")),
+                left: ExprId(number(e, "left")),
+                right: ExprId(number(e, "right")),
+            },
             "count" | "collect" => Expression::Aggregate {
                 operation: if e["kind"] == "count" {
-                    AggregateExpression::Count { distinct: false }
+                    AggregateExpression::Count {
+                        distinct: e["distinct"].as_bool().unwrap_or(false),
+                    }
                 } else {
-                    AggregateExpression::Collect { distinct: false }
+                    AggregateExpression::Collect {
+                        distinct: e["distinct"].as_bool().unwrap_or(false),
+                    }
                 },
                 operand: e["operand"].as_u64().map(|i| ExprId(i as u32)),
             },
@@ -141,10 +203,98 @@ fn rust_structured(
         .iter()
         .map(|o| o["label"].as_str().unwrap_or("").to_owned())
         .collect();
-    let mutations = vec![Mutation::CreateNode {
-        output: SlotId(3),
-        labels: &[],
-    }];
+    let mutation_rows = plan["mutations"]
+        .as_array()
+        .cloned()
+        .unwrap_or_else(|| vec![json!({"kind":"create", "output":3, "labels":[]})]);
+    let mutation_names = mutation_rows
+        .iter()
+        .map(|m| m["name"].as_str().unwrap_or("").to_owned())
+        .collect::<Vec<_>>();
+    let mutation_label_strings = mutation_rows
+        .iter()
+        .map(|m| {
+            m["labels"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .map(|n| n.as_str().unwrap().to_owned())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>();
+    let mutation_labels = mutation_label_strings
+        .iter()
+        .map(|ls| {
+            ls.iter()
+                .map(|n| GraphName::new(n).unwrap())
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let mutations = mutation_rows
+        .iter()
+        .enumerate()
+        .map(|(i, m)| match m["kind"].as_str().unwrap() {
+            "create" => Mutation::CreateNode {
+                output: SlotId(number(m, "output")),
+                labels: &mutation_labels[i],
+            },
+            "remove" => Mutation::RemoveProperty {
+                entity: ExprId(number(m, "entity")),
+                name: GraphName::new(&mutation_names[i]).unwrap(),
+            },
+            "label" => Mutation::SetLabel {
+                entity: ExprId(number(m, "entity")),
+                label: GraphName::new(&mutation_names[i]).unwrap(),
+                present: m["present"].as_bool().unwrap(),
+            },
+            "delete" => Mutation::Delete {
+                entity: ExprId(number(m, "entity")),
+                detach: m["detach"].as_bool().unwrap(),
+            },
+            "set" => Mutation::SetProperty {
+                entity: ExprId(number(m, "entity")),
+                name: GraphName::new(&mutation_names[i]).unwrap(),
+                value: ExprId(number(m, "value")),
+            },
+            _ => panic!("unsupported authored mutation"),
+        })
+        .collect::<Vec<_>>();
+    let mutation_lists = ops
+        .iter()
+        .map(|o| {
+            if o["mutations"].is_null() {
+                mutations.clone()
+            } else {
+                indices(o, "mutations")
+                    .iter()
+                    .map(|i| mutations[*i])
+                    .collect()
+            }
+        })
+        .collect::<Vec<Vec<_>>>();
+    let type_strings = ops
+        .iter()
+        .map(|o| {
+            o["types"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .map(|n| n.as_str().unwrap().to_owned())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>();
+    let types = type_strings
+        .iter()
+        .map(|ls| {
+            ls.iter()
+                .map(|n| GraphName::new(n).unwrap())
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
     let operators: Vec<Operator<'_>> = ops
         .iter()
         .enumerate()
@@ -153,7 +303,7 @@ fn rust_structured(
             kind: match o["kind"].as_str().unwrap() {
                 "unit" => OperatorKind::Unit,
                 "scan" => OperatorKind::ScanNodes {
-                    output: SlotId(0),
+                    output: SlotId(o["output"].as_u64().unwrap_or(0) as u32),
                     label: if labels[i].is_empty() {
                         None
                     } else {
@@ -163,7 +313,7 @@ fn rust_structured(
                 "project" => OperatorKind::Project(&lists[i]),
                 "with" => OperatorKind::With(&lists[i]),
                 "eager" => OperatorKind::Eager,
-                "mutate" => OperatorKind::Mutate(&mutations),
+                "mutate" => OperatorKind::Mutate(&mutation_lists[i]),
                 "limit" => OperatorKind::OffsetLimit {
                     offset: 0,
                     limit: Some(o["limit"].as_u64().unwrap()),
@@ -172,24 +322,37 @@ fn rust_structured(
                     keys: &lists[i],
                     aggregates: &aggregates[i],
                 },
+                "distinct" => OperatorKind::Distinct,
+                "join" => OperatorKind::Join {
+                    predicate: o["predicate"].as_u64().map(|n| ExprId(n as u32)),
+                },
+                "filter" => OperatorKind::Filter(ExprId(number(o, "predicate"))),
                 "optional" => OperatorKind::OptionalApply {
-                    predicate: Some(ExprId(number(o, "predicate"))),
+                    predicate: o["predicate"].as_u64().map(|n| ExprId(n as u32)),
                 },
                 "expand" => OperatorKind::Expand {
-                    source: SlotId(0),
-                    node: SlotId(2),
-                    relationship: SlotId(1),
-                    direction: Direction::Outgoing,
-                    relationship_types: &[],
-                    pattern: PatternId(0),
+                    source: SlotId(o["source"].as_u64().unwrap_or(0) as u32),
+                    node: SlotId(o["node"].as_u64().unwrap_or(2) as u32),
+                    relationship: SlotId(o["relationship"].as_u64().unwrap_or(1) as u32),
+                    direction: if o["direction"] == "either" {
+                        Direction::Either
+                    } else {
+                        Direction::Outgoing
+                    },
+                    relationship_types: &types[i],
+                    pattern: PatternId(o["pattern"].as_u64().unwrap_or(0) as u32),
                 },
                 "bounded" => OperatorKind::BoundedExpand {
-                    source: SlotId(0),
-                    node: SlotId(2),
-                    relationships: SlotId(1),
-                    direction: Direction::Outgoing,
-                    relationship_types: &[],
-                    pattern: PatternId(0),
+                    source: SlotId(o["source"].as_u64().unwrap_or(0) as u32),
+                    node: SlotId(o["node"].as_u64().unwrap_or(2) as u32),
+                    relationships: SlotId(o["relationship"].as_u64().unwrap_or(1) as u32),
+                    direction: if o["direction"] == "either" {
+                        Direction::Either
+                    } else {
+                        Direction::Outgoing
+                    },
+                    relationship_types: &types[i],
+                    pattern: PatternId(o["pattern"].as_u64().unwrap_or(0) as u32),
                     min: number(o, "min") as u8,
                     max: number(o, "max") as u8,
                     edge_predicate: None,
@@ -218,8 +381,95 @@ fn rust_structured(
     for p in &aggregates {
         backing.vec(p).unwrap();
     }
-    backing.vec(&mutations).unwrap();
-    let parameters = vec![];
+    for list in &mutation_lists {
+        backing.vec(list).unwrap();
+    }
+    for list in &mutation_labels {
+        backing.vec(list).unwrap();
+    }
+    for list in &types {
+        backing.vec(list).unwrap();
+    }
+    for name in &mutation_names {
+        backing.string(name).unwrap();
+    }
+    for ls in mutation_label_strings.iter().chain(&type_strings) {
+        for name in ls {
+            backing.string(name).unwrap();
+        }
+    }
+    let parameter_names = plan["parameters"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|p| p.as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let parameters = parameter_names
+        .iter()
+        .map(|p| Parameter {
+            name: p,
+            kinds: ValueKinds::NULL
+                .union(ValueKinds::BOOL)
+                .union(ValueKinds::I64)
+                .union(ValueKinds::F64)
+                .union(ValueKinds::STRING)
+                .union(ValueKinds::LIST),
+        })
+        .collect::<Vec<_>>();
+    for p in &parameter_names {
+        backing.string(p).unwrap();
+    }
+    backing.vec(&parameters).unwrap();
+    use zeppelin_embed::property_graph::query::{QueryList, QueryView, ValueContext};
+    use zeppelin_embed::property_graph::{GraphGeneration, StoreInstanceId};
+    let view = QueryView::new(StoreInstanceId::new(1).unwrap(), GraphGeneration::new(0));
+    let c = control();
+    let mut context = ValueContext::new(&view, &c, 1_000_000).unwrap();
+    let items = values
+        .iter()
+        .map(|(_, v)| {
+            if let V::List(items) = v {
+                items.iter().map(scalar).collect::<Vec<_>>()
+            } else {
+                vec![]
+            }
+        })
+        .collect::<Vec<_>>();
+    let bindings = values
+        .iter()
+        .zip(&items)
+        .map(|((name, v), items)| ParameterBinding {
+            name,
+            value: if matches!(v, V::List(_)) {
+                zeppelin_embed::property_graph::query::QueryValue::List(
+                    QueryList::new(items, &mut context).unwrap(),
+                )
+            } else {
+                scalar(v)
+            },
+        })
+        .collect::<Vec<_>>();
+    backing.vec(&bindings).unwrap();
+    for ((name, value), items) in values.iter().zip(&items) {
+        backing.string(name).unwrap();
+        backing.vec(items).unwrap();
+        fn strings<'a>(v: &'a V, b: &mut GraphPlanBacking<'a>) {
+            match v {
+                V::Str(s) => {
+                    b.string(s).unwrap();
+                }
+                V::List(ls) => {
+                    for v in ls {
+                        strings(v, b);
+                    }
+                }
+                _ => {}
+            }
+        }
+        strings(value, &mut backing);
+    }
     let searches = vec![];
     store
         .query(
@@ -232,7 +482,7 @@ fn rust_structured(
                 eager_searches: &searches,
                 root: PlanNodeId(number(plan, "root")),
                 backing: &backing,
-                bindings: &[],
+                bindings: &bindings,
                 columns,
             },
         )
@@ -244,21 +494,46 @@ fn c_cypher(handle: ZeGraphHandle, query: &str) -> (ZeErrorCode, ZeGraphResponse
     let code = ze_graph_cypher(handle, &q, &mut r);
     (code, r)
 }
-fn c_structured(handle: ZeGraphHandle, authored: &Json) -> (ZeErrorCode, ZeGraphResponse) {
+fn c_structured(
+    handle: ZeGraphHandle,
+    authored: &Json,
+    params: &[(String, V)],
+) -> (ZeErrorCode, ZeGraphResponse) {
     let mut adapted = authored.clone();
-    if adapted["operators"][0]["kind"] == "unit" && adapted["operators"][1]["kind"] == "scan" {
-        adapted["operators"].as_array_mut().unwrap().remove(0);
-        adapted["root"] = json!(authored["root"].as_u64().unwrap() - 1);
-        for o in adapted["operators"].as_array_mut().unwrap() {
-            if o["kind"] == "scan" {
-                o["inputs"] = json!([]);
-            } else {
-                for i in o["inputs"].as_array_mut().unwrap() {
-                    *i = json!(i.as_u64().unwrap() - 1);
-                }
+    for o in adapted["operators"].as_array_mut().unwrap() {
+        if o["kind"] == "scan" {
+            o["inputs"] = json!([]);
+        }
+    }
+    let ops = adapted["operators"].as_array().unwrap();
+    let mut reachable = BTreeSet::new();
+    fn visit(ops: &[Json], n: usize, seen: &mut BTreeSet<usize>) {
+        if seen.insert(n) {
+            for i in indices(&ops[n], "inputs") {
+                visit(ops, i, seen);
             }
         }
     }
+    visit(ops, number(&adapted, "root") as usize, &mut reachable);
+    let remap = reachable
+        .iter()
+        .enumerate()
+        .map(|(new, old)| (*old, new))
+        .collect::<BTreeMap<_, _>>();
+    let mut kept = reachable
+        .iter()
+        .map(|i| ops[*i].clone())
+        .collect::<Vec<_>>();
+    for o in &mut kept {
+        o["inputs"] = json!(
+            indices(o, "inputs")
+                .iter()
+                .map(|i| remap[i])
+                .collect::<Vec<_>>()
+        );
+    }
+    adapted["root"] = json!(remap[&(number(&adapted, "root") as usize)]);
+    adapted["operators"] = json!(kept);
     let p = &adapted;
     let mut pool: ZeGraphValuePool = sized_zeroed();
     let mut values = Vec::new();
@@ -311,9 +586,27 @@ fn c_structured(handle: ZeGraphHandle, authored: &Json) -> (ZeErrorCode, ZeGraph
                 expression.kind = 1;
                 expression.value = number(e, "value");
             }
+            "parameter" => {
+                expression.kind = 2;
+                expression.value = number(e, "value");
+            }
+            "unary" | "binary" => {
+                expression.kind = if e["kind"] == "unary" { 3 } else { 4 };
+                expression.operation = number(e, "operation");
+                expression.left = number(e, "left");
+                if expression.kind == 4 {
+                    expression.right = number(e, "right");
+                }
+            }
+            "property" | "label" => {
+                expression.kind = if e["kind"] == "property" { 5 } else { 6 };
+                expression.left = number(e, "left");
+                expression.name = push_text(&mut literal_bytes, e["name"].as_str().unwrap());
+            }
             "count" | "collect" => {
                 expression.kind = 8;
                 expression.operation = if e["kind"] == "count" { 0 } else { 1 };
+                expression.distinct = u32::from(e["distinct"].as_bool().unwrap_or(false));
                 if let Some(n) = e["operand"].as_u64() {
                     expression.has_operand = 1;
                     expression.left = n as u32;
@@ -340,6 +633,49 @@ fn c_structured(handle: ZeGraphHandle, authored: &Json) -> (ZeErrorCode, ZeGraph
     let mut inputs = Vec::new();
     let mut selected = Vec::new();
     let mut bytes = literal_bytes;
+    let mut names = Vec::new();
+    let mut mutations = Vec::new();
+    let mutation_rows = p["mutations"]
+        .as_array()
+        .cloned()
+        .unwrap_or_else(|| vec![json!({"kind":"create","output":3,"labels":[]})]);
+    for m in &mutation_rows {
+        let mut v: ZeGraphMutation = sized_zeroed();
+        v.kind = match m["kind"].as_str().unwrap() {
+            "create" => 0,
+            "remove" => 2,
+            "label" => 3,
+            "delete" => 4,
+            "set" => 5,
+            _ => panic!("mutation"),
+        };
+        if v.kind == 0 {
+            v.output = number(m, "output");
+            let ls = m["labels"].as_array().unwrap();
+            if !ls.is_empty() {
+                v.labels = ZeGraphRange {
+                    start: names.len() as u32,
+                    count: ls.len() as u32,
+                };
+                names.extend(
+                    ls.iter()
+                        .map(|n| push_text(&mut bytes, n.as_str().unwrap())),
+                );
+            }
+        } else {
+            v.entity = number(m, "entity");
+        }
+        if let Some(n) = m["name"].as_str() {
+            v.name = push_text(&mut bytes, n);
+        }
+        v.present = u32::from(m["present"].as_bool().unwrap_or(false));
+        v.detach = u32::from(m["detach"].as_bool().unwrap_or(false));
+        if v.kind == 5 {
+            v.value = number(m, "value");
+        }
+        mutations.push(v);
+    }
+    let mut selected_mutations = Vec::new();
     for o in p["operators"].as_array().unwrap() {
         let mut v: ZeGraphOperator = sized_zeroed();
         v.inputs = ZeGraphRange {
@@ -368,6 +704,9 @@ fn c_structured(handle: ZeGraphHandle, authored: &Json) -> (ZeErrorCode, ZeGraph
         }
         v.kind = match o["kind"].as_str().unwrap() {
             "unit" => 0,
+            "join" => 1,
+            "distinct" => 2,
+            "filter" => 18,
             "scan" => 4,
             "eager" => 5,
             "mutate" => 6,
@@ -381,6 +720,7 @@ fn c_structured(handle: ZeGraphHandle, authored: &Json) -> (ZeErrorCode, ZeGraph
             _ => panic!("operator"),
         };
         if v.kind == 4 {
+            v.node_slot = o["output"].as_u64().unwrap_or(0) as u32;
             v.inputs = ZeGraphRange { start: 0, count: 0 };
             if let Some(label) = o["label"].as_str() {
                 v.has_name = 1;
@@ -392,35 +732,73 @@ fn c_structured(handle: ZeGraphHandle, authored: &Json) -> (ZeErrorCode, ZeGraph
             }
         }
         if v.kind == 6 {
-            v.mutations = ZeGraphRange { start: 0, count: 1 };
+            let list = if o["mutations"].is_null() {
+                (0..mutations.len()).collect::<Vec<_>>()
+            } else {
+                indices(o, "mutations")
+            };
+            v.mutations = ZeGraphRange {
+                start: if list.is_empty() {
+                    0
+                } else {
+                    selected_mutations.len() as u32
+                },
+                count: list.len() as u32,
+            };
+            selected_mutations.extend(list.iter().map(|i| mutations[*i]));
         }
         if v.kind == 9 {
             v.has_limit = 1;
             v.limit = o["limit"].as_u64().unwrap();
         }
         if v.kind == 13 || v.kind == 14 {
-            v.node_slot = 2;
-            v.relationship_slot = 1;
+            v.source_slot = o["source"].as_u64().unwrap_or(0) as u32;
+            v.node_slot = o["node"].as_u64().unwrap_or(2) as u32;
+            v.relationship_slot = o["relationship"].as_u64().unwrap_or(1) as u32;
+            v.direction = if o["direction"] == "either" { 2 } else { 0 };
+            v.pattern = o["pattern"].as_u64().unwrap_or(0) as u32;
+            let ts = o["types"].as_array().cloned().unwrap_or_default();
+            if !ts.is_empty() {
+                v.relationship_types = ZeGraphRange {
+                    start: names.len() as u32,
+                    count: ts.len() as u32,
+                };
+                names.extend(
+                    ts.iter()
+                        .map(|n| push_text(&mut bytes, n.as_str().unwrap())),
+                );
+            }
             if v.kind == 14 {
                 v.path_min = number(o, "min");
                 v.path_max = number(o, "max");
             }
         }
-        if v.kind == 15 {
+        if let Some(n) = o["predicate"].as_u64() {
             v.predicate = ZeGraphOptionalIndex {
                 present: 1,
-                index: number(o, "predicate"),
+                index: n as u32,
             };
         }
         operators.push(v);
     }
-    let mut mutation: ZeGraphMutation = sized_zeroed();
-    mutation.output = 3;
+    let parameters = p["parameters"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|n| {
+                    let mut p: ZeGraphParameter = sized_zeroed();
+                    p.name = push_text(&mut bytes, n.as_str().unwrap());
+                    p.kinds = 159;
+                    p
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     pool.bytes = bytes.as_ptr();
     pool.byte_count = bytes.len();
     let mut plan: ZeGraphPlan = sized_zeroed();
     plan.root = number(p, "root");
-    plan.pool = &pool;
+
     plan.operators = operators.as_ptr();
     plan.operator_count = operators.len();
     plan.inputs = inputs.as_ptr();
@@ -429,12 +807,28 @@ fn c_structured(handle: ZeGraphHandle, authored: &Json) -> (ZeErrorCode, ZeGraph
     plan.expression_count = expressions.len();
     plan.projections = selected.as_ptr();
     plan.projection_count = selected.len();
-    plan.mutations = &mutation;
-    plan.mutation_count = 1;
+    plan.mutations = selected_mutations.as_ptr();
+    plan.mutation_count = selected_mutations.len();
+    plan.parameters = parameters.as_ptr();
+    plan.parameter_count = parameters.len();
+    pool.names = names.as_ptr();
+    pool.name_count = names.len();
+    plan.pool = &pool;
     plan.expression_children = expression_children.as_ptr();
     plan.expression_child_count = expression_children.len();
     let mut q: ZeGraphQueryRequest = sized_zeroed();
     q.plan = &plan;
+    let cp = CParameters::new(params);
+    let mut parameter_pool: ZeGraphValuePool = sized_zeroed();
+    parameter_pool.bytes = cp.bytes.as_ptr();
+    parameter_pool.byte_count = cp.bytes.len();
+    parameter_pool.values = cp.values.as_ptr();
+    parameter_pool.value_count = cp.values.len();
+    parameter_pool.children = cp.children.as_ptr();
+    parameter_pool.child_count = cp.children.len();
+    q.parameter_pool = &parameter_pool;
+    q.parameters = cp.bindings.as_ptr();
+    q.parameter_count = cp.bindings.len();
     let mut r = empty_response();
     let code = ze_graph_query(handle, &q, &mut r);
     (code, r)
@@ -627,13 +1021,19 @@ pub fn run_local(case: &Json, path: &str) -> Result<Json, String> {
         let generation = rust_cypher(&store, "RETURN 1")?.metadata().generation;
         let before = state(|q| rust_cypher(&store, q).map(|r| tck::actual_table(&r)))?;
         let r = if structured {
-            rust_structured(&store, &case["structured"], &header)
+            rust_structured(&store, &case["structured"], &header, &params)
         } else {
             rust_cypher_parameters(&store, case["query"].as_str().unwrap(), &params)
         };
         if !case["error"].is_null() {
             let error = r.err().ok_or("expected compile rejection")?;
-            if !error.contains(case["error"]["rust"].as_str().unwrap()) {
+            if !error.contains(if structured {
+                case["error"]["typed_rust"]
+                    .as_str()
+                    .unwrap_or(case["error"]["rust"].as_str().unwrap())
+            } else {
+                case["error"]["rust"].as_str().unwrap()
+            }) {
                 return Err(error);
             }
             if let Some(message) = case["error"]["message"].as_str()
@@ -742,7 +1142,7 @@ pub fn run_local(case: &Json, path: &str) -> Result<Json, String> {
         let generation = c_generation(h);
         let before = state(query)?;
         let (code, mut r) = if structured {
-            c_structured(h, &case["structured"])
+            c_structured(h, &case["structured"], &params)
         } else {
             CParameters::new(&params).query(h, case["query"].as_str().unwrap())
         };
@@ -956,6 +1356,7 @@ fn tck_text(v: &V) -> String {
     }
 }
 pub fn original_cases() -> Vec<Json> {
+    let m = manifest();
     let mut cases = Vec::new();
     for (write, text) in [
         (
@@ -1020,7 +1421,7 @@ pub fn original_cases() -> Vec<Json> {
                     vec![],
                     vec![],
                     false,
-                    json!({"rust":"Constraint","c":"ZeErrEndpoint","stage":"runtime"}),
+                    json!({"rust":"Constraint","typed_rust":"IncidentRelationship","c":"ZeErrEndpoint","stage":"runtime"}),
                     "bag".into(),
                 ),
                 tck::Expect::LocalExample(v) => {
@@ -1053,7 +1454,7 @@ pub fn original_cases() -> Vec<Json> {
                 .iter()
                 .map(|r| r.iter().map(tck_text).collect::<Vec<_>>())
                 .collect::<Vec<_>>();
-            cases.push(json!({"id":s.coordinate,"write":write,"setup":s.setup,"parameters":s.parameters.iter().map(|(k,v)|json!([k,tck_text(v)])).collect::<Vec<_>>(),"query":s.query,"header":header,"rows":rows,"ordered":ordered,"mode":mode,"error":error,"effects":effects,"structured":null}));
+            cases.push(json!({"id":s.coordinate,"write":write,"setup":s.setup,"parameters":s.parameters.iter().map(|(k,v)|json!([k,tck_text(v)])).collect::<Vec<_>>(),"query":s.query,"header":header,"rows":rows,"ordered":ordered,"mode":mode,"error":error,"effects":effects,"column_mapping":header.iter().enumerate().map(|(i,h)|(format!("slot_{}",42+i),json!(h))).collect::<BTreeMap<_,_>>(),"structured":m["scenarios"].as_array().unwrap().iter().find(|r|r["id"]==s.coordinate).unwrap()["structured"].clone()}));
         }
     }
     cases

@@ -101,7 +101,9 @@ fn run() -> Result<(), String> {
         .find(|c| c["id"].as_str() == Some(args[1].as_str()))
         .ok_or("unknown case")?;
     if !["rust-cypher", "rust-structured", "c-cypher", "c-structured"].contains(&args[2].as_str()) {
-        return Err("unsupported path; Swift structured requires ZE-278".into());
+        return Err(
+            "unsupported Rust/C runner path; Swift paths use GraphProfileParityTests".into(),
+        );
     }
     println!("{}", graph_profile::run_local(case, &args[2])?);
     Ok(())
