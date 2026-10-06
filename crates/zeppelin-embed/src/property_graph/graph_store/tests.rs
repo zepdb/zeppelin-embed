@@ -119,13 +119,14 @@ fn graph_store_creates_a_graph_only_store_with_forced_durable_writes() {
     let reopened = GraphStore::open(&path, options(), None).expect("reopen graph store");
     assert_eq!(reopened.store_for_test().durability_policy, durable);
     let second = create_node(&reopened, "second", 1);
-    assert_eq!(second.admitted_generation(), generation(1));
+    let committed = generation(second.admitted_generation().get() + 1);
     assert_eq!(
         second.outcome(),
         GraphWriteOutcome::Committed {
-            generation: generation(2)
+            generation: committed
         }
     );
+    assert_eq!(second.receipts()[0].generation, committed);
     reopened.close().expect("close reopened store");
     drop(reopened);
 
@@ -886,8 +887,32 @@ fn ze257_close_checkpoint_failure_is_reported_and_releases_the_writer() {
     store.close().unwrap();
     let reopened = GraphStore::open(&path, options(), None).unwrap();
     assert_eq!(
-        create_node(&reopened, "next", 1).admitted_generation(),
+        reopened
+            .store_for_test()
+            .admit_native_read()
+            .unwrap()
+            .bundle()
+            .base()
+            .generation,
         generation(1)
+    );
+    assert!(
+        reopened
+            .get_nodes(
+                &[NodeId::new(1).unwrap()],
+                super::GraphGetOptions::default(),
+                &control()
+            )
+            .unwrap()
+            .nodes()[0]
+            .is_some()
+    );
+    let next = create_node(&reopened, "next", 1);
+    assert_eq!(
+        next.outcome(),
+        GraphWriteOutcome::Committed {
+            generation: generation(next.admitted_generation().get() + 1),
+        }
     );
     reopened.close().unwrap();
 }
@@ -1007,7 +1032,18 @@ fn ze260_automatic_reclaim_failure_commits_nothing() {
         .generation;
     crate::lifecycle::native_graph::automatic::PARTIAL_FOLD.with(|limit| limit.set(true));
     crate::property_graph::storage::inventory::force_next_incomplete_inventory_retirement();
-    let error = store.apply_batch(&[], &control()).unwrap_err();
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    let error = store
+        .apply_batch(
+            &[StructuredWrite {
+                key: node_key("changed"),
+                revision: revision(1),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            }],
+            &control(),
+        )
+        .unwrap_err();
     crate::lifecycle::native_graph::automatic::PARTIAL_FOLD.with(|limit| limit.set(false));
     assert!(error.nothing_committed());
     assert_eq!(

@@ -364,6 +364,13 @@ fn ze168_mapping_slots_per_commit() {
     let parent = super::tempfile::tempdir().expect("temporary parent");
     let path = parent.path().join("counter-slots");
     let store = Store::create_native_graph(&path, durable_options(), None).expect("create store");
+
+    store
+        .set_native_graph_maintenance_policy(crate::property_graph::GraphMaintenancePolicy {
+            automatic: false,
+            ..crate::property_graph::GraphMaintenancePolicy::default()
+        })
+        .unwrap();
     capture.take();
     let mut nodes = Vec::new();
     let mut all = Vec::new();

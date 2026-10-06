@@ -433,6 +433,13 @@ fn ze52_slice_d1_query_admission_rejects_before_commit_on_cancel() {
 #[test]
 fn ze52_slice_d1_query_admission_reruns_consumer_after_checkpoint() {
     let fixture = MutationFixture::commit();
+    fixture
+        .store
+        .set_native_graph_maintenance_policy(crate::property_graph::GraphMaintenancePolicy {
+            automatic: false,
+            ..crate::property_graph::GraphMaintenancePolicy::default()
+        })
+        .unwrap();
     let [first, second, third] = fixture.nodes;
     // Three creates already happened; drive the writer to exactly the 64
     // complete envelopes that make the next commit checkpoint first.

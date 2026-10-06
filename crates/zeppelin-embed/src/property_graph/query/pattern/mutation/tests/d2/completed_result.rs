@@ -735,6 +735,14 @@ fn ze53_slice_s2_read_only_statement_matches_the_read_path() {
 #[test]
 fn ze53_slice_s2_checkpointed_attempt_is_rebuilt_and_settled_once() {
     let store = D2Store::create(None);
+
+    store
+        .store
+        .set_native_graph_maintenance_policy(crate::property_graph::GraphMaintenancePolicy {
+            automatic: false,
+            ..crate::property_graph::GraphMaintenancePolicy::default()
+        })
+        .unwrap();
     let nodes = three_nodes(&store);
     // The fixture is one complete envelope; 63 more make the next commit
     // checkpoint first.

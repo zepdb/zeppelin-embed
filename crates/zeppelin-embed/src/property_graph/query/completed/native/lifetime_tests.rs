@@ -239,6 +239,13 @@ fn ze53_s4_close_between_classification_and_the_writer_is_closed() {
 #[test]
 fn ze53_s4_results_outlive_relocation_close_and_reopen() {
     let fixture = fixture("lifetime", open_options());
+    fixture
+        .store
+        .set_native_graph_maintenance_policy(crate::property_graph::GraphMaintenancePolicy {
+            automatic: false,
+            ..crate::property_graph::GraphMaintenancePolicy::default()
+        })
+        .unwrap();
     let before = fixture.generation().unwrap();
     let read = fixture.read().unwrap();
     let write = fixture
@@ -320,6 +327,13 @@ fn fold(store: &Store) {
 #[test]
 fn ze53_s4_repeated_statements_return_accounting_to_baseline() {
     let fixture = fixture("release", open_options());
+    fixture
+        .store
+        .set_native_graph_maintenance_policy(crate::property_graph::GraphMaintenancePolicy {
+            automatic: false,
+            ..crate::property_graph::GraphMaintenancePolicy::default()
+        })
+        .unwrap();
     // One warm-up round so lazily built store state is not counted as a leak.
     drop(fixture.read().unwrap());
     drop(fixture.write(&control(), 16, Assign::Increment).unwrap());
