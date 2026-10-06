@@ -1,0 +1,14 @@
+{
+  "live_ids": [1, 2, 4],
+  "document_1": "orchard apple",
+  "document_2": "harbor pear",
+  "document_4": "orchard harbor",
+  "tombstoned_ids": [3],
+  "rank_column": 1,
+  "vector_input": [1, 1, 2, 3, 4, 5, 6, 7],
+  "query_orchard": [1, 4],
+  "query_harbor": [2, 4],
+  "query_deleted": [],
+  "query_vector": [4, 2, 1],
+  "generation": 6
+}
