@@ -5,6 +5,7 @@ import copy
 import hashlib
 import json
 import os
+from check_swift_qualification import validate_swift_tests
 from pathlib import Path
 import subprocess
 import sys
@@ -212,6 +213,10 @@ def run_matrix(args):
         if swift.returncode:
             diagnostics = [line for line in (swift.stdout + swift.stderr).splitlines() if 'error:' in line]
             failures.extend(diagnostics or ['Swift runner exit ' + str(swift.returncode) + '; see swift.log'])
+        try:
+            validate_swift_tests(swift.stdout + swift.stderr, 'GraphProfileParityTests')
+        except ValueError as error:
+            failures.append(str(error))
         if swift_receipts.exists():
             for line in swift_receipts.read_text().splitlines():
                 r = json.loads(line)
@@ -220,6 +225,8 @@ def run_matrix(args):
     else:
         failures.append('Swift archive build failed; see swift-archive.log')
     (args.output / 'receipts.json').write_text(json.dumps(receipts, indent=2) + '\n')
+    if failures:
+        raise ValueError("; ".join(failures))
     compare_paths(receipts)
     report = dict(scope='source focused evidence only', receipts=receipts, failures=failures,
                   missing_inputs=m['missing_inputs'], original_corpus='Rust/C Cypher original corpus executed; original structured translations unfinished',
@@ -270,6 +277,15 @@ class Controls(unittest.TestCase):
         self.assertEqual(repetition_state(samples, bad, 1, 'pin', 'pin'), 'tainted')
         self.assertEqual(repetition_state(samples, monitor, 2, 'pin', 'pin'), 'failed')
         self.assertEqual(repetition_state(samples, monitor, 1, 'pin', 'changed'), 'tainted')
+
+    def test_swift_qualification_requires_execution_without_skips(self):
+        good = "Test Suite 'GraphProfileParityTests' passed at now.\nExecuted 2 tests, with 0 failures (0 unexpected) in 1 second"
+        validate_swift_tests(good, 'GraphProfileParityTests')
+        for bad in ('', good.replace('2 tests', '0 tests'),
+                    good.replace('with 0 failures', 'with 1 test skipped and 0 failures'),
+                    good.replace('with 0 failures', 'with 2 tests skipped and 0 failures')):
+            with self.assertRaises(ValueError):
+                validate_swift_tests(bad, 'GraphProfileParityTests')
 
     def test_profile_pins(self):
         build_manifest()
