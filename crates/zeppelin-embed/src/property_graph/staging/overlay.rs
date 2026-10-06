@@ -160,7 +160,21 @@ impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
     /// Finalizes one Cypher statement: equal final images are NoOp, changed
     /// existing entities advance once, and consumed local IDs remain fenced.
     pub fn finish(self, control: &mut WriteControl<'_>) -> Result<StagedBatch<'a>, StageError> {
-        self.finalize(control, &mut |_, _| Ok(()))
+        let target = self
+            .identity
+            .generation
+            .get()
+            .checked_add(1)
+            .map(GraphGeneration::new);
+        self.finalize(target, control, &mut |_, _| Ok(()))
+    }
+    /// Finalizes at the exact generation assigned by the statement committer.
+    pub fn finish_at_generation(
+        self,
+        target: GraphGeneration,
+        control: &mut WriteControl<'_>,
+    ) -> Result<StagedBatch<'a>, StageError> {
+        self.finalize(Some(target), control, &mut |_, _| Ok(()))
     }
     /// Normalizes and materializes complete bounded outputs before handoff,
     /// including NoOp statements. Failure releases all private capacity.
@@ -172,7 +186,13 @@ impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
         let base = self.base;
         let memory = self.memory;
         let mut layout = None;
-        let batch = self.finalize(control, &mut |count, control| {
+        let target = self
+            .identity
+            .generation
+            .get()
+            .checked_add(1)
+            .map(GraphGeneration::new);
+        let batch = self.finalize(target, control, &mut |count, control| {
             layout = Some(result::admit_layout(count, memory, materializer, control)?);
             Ok(())
         })?;
@@ -544,6 +564,7 @@ impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
     }
     fn finalize(
         self,
+        target_generation: Option<GraphGeneration>,
         control: &mut WriteControl<'_>,
         preflight: &mut result::ResultPreflight<'_>,
     ) -> Result<StagedBatch<'a>, StageError> {
@@ -741,13 +762,11 @@ impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
         }
         preflight(receipt_count, control)?;
         let generation = if any_changed {
-            Some(GraphGeneration::new(
-                self.identity
-                    .generation
-                    .get()
-                    .checked_add(1)
-                    .ok_or(KeyLifecycleError::GenerationOverflow)?,
-            ))
+            let target = target_generation.ok_or(KeyLifecycleError::GenerationOverflow)?;
+            if target <= self.identity.generation {
+                return Err(KeyLifecycleError::InvalidGeneration.into());
+            }
+            Some(target)
         } else {
             None
         };
@@ -880,6 +899,7 @@ impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
         self.check_view()?;
         StagedBatch {
             base: self.identity,
+            target_generation: generation.unwrap_or(self.identity.generation),
             high_waters,
             receipts,
             deltas,

@@ -869,12 +869,7 @@ pub(super) fn prepare_sparse_relocated_roots<B: BlockSource, S: BlockSink, C: Re
     resources: &mut TreeResources<'_>,
 ) -> Result<SparsePhysicalRoots, TreeError> {
     if target_native.store() != base_native.store()
-        || target_native.generation().get()
-            != base_native
-                .generation()
-                .get()
-                .checked_add(1)
-                .ok_or(TreeError::Work)?
+        || target_native.generation() <= base_native.generation()
         || target_sequence == 0
     {
         return Err(TreeError::Invalid("sparse maintenance relocation target"));

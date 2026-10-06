@@ -92,13 +92,7 @@ impl<'a> StagedBatch<'a> {
         if additional == 0 {
             return Ok(self);
         }
-        let generation = GraphGeneration::new(
-            self.base
-                .generation
-                .get()
-                .checked_add(1)
-                .ok_or(KeyLifecycleError::GenerationOverflow)?,
-        );
+        let generation = self.target_generation;
         let mut deltas = Arena::new(memory, count, control)?;
         for delta in self.deltas.drain() {
             deltas.push(delta)?;

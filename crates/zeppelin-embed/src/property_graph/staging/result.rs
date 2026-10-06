@@ -105,9 +105,49 @@ pub fn stage_structured_with_results<'a, M: ResultMaterializer>(
     materializer: &mut M,
     control: &mut WriteControl<'_>,
 ) -> Result<MaterializedBatch<'a, M::Registration>, StageError> {
+    stage_structured_with_results_for_target(
+        base,
+        base.identity()
+            .generation
+            .get()
+            .checked_add(1)
+            .map(GraphGeneration::new),
+        requests,
+        memory,
+        materializer,
+        control,
+    )
+}
+/// Materializes a batch at the exact generation assigned by its committer.
+pub fn stage_structured_with_results_at_generation<'a, M: ResultMaterializer>(
+    base: &'a dyn AdmittedBase,
+    target_generation: GraphGeneration,
+    requests: &[StructuredWrite<'a, '_>],
+    memory: &'a WriteMemory<'a>,
+    materializer: &mut M,
+    control: &mut WriteControl<'_>,
+) -> Result<MaterializedBatch<'a, M::Registration>, StageError> {
+    stage_structured_with_results_for_target(
+        base,
+        Some(target_generation),
+        requests,
+        memory,
+        materializer,
+        control,
+    )
+}
+fn stage_structured_with_results_for_target<'a, M: ResultMaterializer>(
+    base: &'a dyn AdmittedBase,
+    target_generation: Option<GraphGeneration>,
+    requests: &[StructuredWrite<'a, '_>],
+    memory: &'a WriteMemory<'a>,
+    materializer: &mut M,
+    control: &mut WriteControl<'_>,
+) -> Result<MaterializedBatch<'a, M::Registration>, StageError> {
     let mut layout = None;
     let batch = structured::stage_structured_with_preflight(
         base,
+        target_generation,
         requests,
         memory,
         control,

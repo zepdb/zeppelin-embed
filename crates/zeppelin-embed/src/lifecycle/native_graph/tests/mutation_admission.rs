@@ -113,6 +113,69 @@ fn published_generation(store: &Store) -> GraphGeneration {
         .generation
 }
 
+/// The document store supplies the clock until the unified coordinator lands.
+/// Graph publication, artifacts, staging and recovery all use their real paths.
+#[test]
+fn burns_three_store_generations_between_two_graph_commits() {
+    use crate::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+
+    let directory = super::tempfile::tempdir().expect("temporary parent");
+    let documents = Store::open(directory.path().join("documents"), OpenOptions::new())
+        .expect("document generation source");
+    let ingest = |id: u128| {
+        documents
+            .ingest(IngestBatch::new(vec![IngestDocument::new(
+                DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                vec![1.0, 0.0],
+            )]))
+            .expect("burn store generation")
+            .generation()
+    };
+    assert_eq!(ingest(1), 1);
+    let path = directory.path().join("graph");
+    let graph = Store::create_native_graph(&path, fixture_options(), None).expect("graph store");
+    let first = commit_node(&graph, "before-gap");
+    assert_eq!(published_generation(&graph).get(), 1);
+    assert_eq!(
+        super::recovery::observe_node(&graph, first),
+        Some((1, 1, 1))
+    );
+
+    assert_eq!([ingest(2), ingest(3), ingest(4)], [2, 3, 4]);
+    let expected = documents
+        .count_documents(None, None)
+        .expect("store clock")
+        .generation
+        + 1;
+    assert_eq!(expected, 5);
+    graph
+        .native_graph
+        .assigned_generation
+        .store(expected, std::sync::atomic::Ordering::Release);
+    let second = commit_node(&graph, "after-gap");
+    assert_eq!(published_generation(&graph).get(), 5);
+    assert_eq!(
+        super::recovery::observe_node(&graph, first),
+        Some((5, 2, 1))
+    );
+    assert_eq!(
+        super::recovery::observe_node(&graph, second),
+        Some((5, 2, 1))
+    );
+    graph.close().expect("close graph");
+    let recovered = Store::open_native_graph(&path, fixture_options(), None).expect("recover gap");
+    assert_eq!(
+        super::recovery::observe_node(&recovered, first),
+        Some((5, 2, 1))
+    );
+    assert_eq!(
+        super::recovery::observe_node(&recovered, second),
+        Some((5, 2, 1))
+    );
+    recovered.close().expect("close recovered graph");
+    documents.close().expect("close document source");
+}
+
 /// Every live node the admitted read view reports, in scan order.
 struct ScanNodes;
 
@@ -724,4 +787,137 @@ fn ze52_slice_d1_canonical_read_failure_surfaces_as_the_typed_storage_error() {
 fn sorted<const N: usize>(mut nodes: [NodeId; N]) -> Vec<NodeId> {
     nodes.sort_by_key(|node| node.get());
     nodes.to_vec()
+}
+
+// A real failed write leaves a complete object at its assigned generation.
+fn failed_generation_five_preparation() -> (super::tempfile::TempDir, PathBuf, NodeId, PathBuf) {
+    use super::publication::{FaultPoint, RecordingVfs};
+    let directory = super::tempfile::tempdir().expect("temporary parent");
+    let path = directory.path().join("gapped-orphan");
+    let vfs = Arc::new(RecordingVfs::default());
+    let infrastructure: Arc<dyn crate::vfs::Vfs> = vfs.clone();
+    let graph = Store::create_native_graph_with_infrastructure(
+        &path,
+        fixture_options(),
+        None,
+        infrastructure,
+        Arc::new(crate::lifecycle::SystemMonotonicClock),
+        &mut crate::property_graph::storage::allocation::OsEntropy,
+    )
+    .expect("graph store");
+    let first = commit_node(&graph, "before-gap");
+    vfs.clear_events();
+    graph
+        .native_graph
+        .assigned_generation
+        .store(5, std::sync::atomic::Ordering::Release);
+    vfs.arm_fault(FaultPoint::ObjectSync);
+    let mut labels = [];
+    let mut properties = [];
+    let image = CanonicalContents::node(&mut labels, &mut properties, Some("after-gap"), None)
+        .expect("node image");
+    let failed = graph.apply_native_graph(
+        &[StructuredWrite {
+            key: ApplicationKey::new(EntityKind::Node, "app", "after-gap").expect("key"),
+            revision: GraphRevision::new(1).expect("revision"),
+            operation: StructuredOperation::Create,
+            image: Some(WriteImage::Node(&image)),
+        }],
+        &control(),
+    );
+    assert!(failed.is_err());
+    vfs.assert_fired_once();
+    let orphan = vfs
+        .take()
+        .into_iter()
+        .find_map(|event| match event {
+            super::publication::DurabilityEvent::Create(path)
+                if path
+                    .extension()
+                    .is_some_and(|extension| extension == "zgraph") =>
+            {
+                Some(path)
+            }
+            _ => None,
+        })
+        .expect("new native object from failed preparation");
+    let bytes = std::fs::read(&orphan).expect("failed preparation object");
+    assert_eq!(
+        u64::from_le_bytes(bytes[64..72].try_into().expect("generation field")),
+        5
+    );
+    assert_eq!(published_generation(&graph).get(), 1);
+    graph.close().expect("close rejected graph write");
+    (directory, path, first, orphan)
+}
+
+#[test]
+fn assigned_generation_precommit_orphan_reopens() {
+    let (_directory, path, first, orphan) = failed_generation_five_preparation();
+    let before = super::recovery::file_snapshot(&path);
+    let reader = Store::open_native_graph(
+        &path,
+        OpenOptions::read_only().with_max_resident_bytes(256 * 1024 * 1024),
+        None,
+    )
+    .expect("read-only recovery ignores unreferenced preparation");
+    assert_eq!(
+        super::recovery::observe_node(&reader, first),
+        Some((1, 1, 1))
+    );
+    reader.close().expect("close read-only graph");
+    assert_eq!(super::recovery::file_snapshot(&path), before);
+    assert!(orphan.exists());
+    let reopened = Store::open_native_graph(&path, fixture_options(), None)
+        .expect("valid gapped preparation orphan must not prevent recovery");
+    assert_eq!(
+        super::recovery::observe_node(&reopened, first),
+        Some((1, 1, 1))
+    );
+    reopened.close().expect("close recovered graph");
+}
+
+#[test]
+fn future_generation_orphan_with_bad_header_or_checksum_is_refused() {
+    let (_directory, path, first, orphan) = failed_generation_five_preparation();
+    let original = std::fs::read(&orphan).expect("complete preparation object");
+    for corruption in ["magic", "family", "store", "checksum"] {
+        let mut bytes = original.clone();
+        match corruption {
+            "magic" => bytes[0] ^= 1,
+            "family" => bytes[8..10].copy_from_slice(&99_u16.to_le_bytes()),
+            "store" => bytes[32..48].fill(0),
+            "checksum" => *bytes.last_mut().expect("checksum trailer") ^= 1,
+            _ => panic!("unknown corruption"),
+        }
+        std::fs::write(&orphan, &bytes).expect("hostile recognized native object");
+        let error = match Store::open_native_graph(&path, fixture_options(), None) {
+            Err(error) => error,
+            Ok(store) => {
+                store.close().expect("close incorrectly accepted graph");
+                panic!("accepted {corruption} corruption");
+            }
+        };
+        let expected = if corruption == "checksum" {
+            "corrupt recognized native artifact"
+        } else {
+            "corrupt recognized native artifact header"
+        };
+        assert!(
+            matches!(error, NativeGraphError::Invalid(message) if message == expected),
+            "wrong refusal for {corruption}: {error:?}"
+        );
+        assert_eq!(
+            std::fs::read(&orphan).expect("rejected object remains"),
+            bytes
+        );
+        std::fs::write(&orphan, &original).expect("restore valid orphan");
+    }
+    let reopened =
+        Store::open_native_graph(&path, fixture_options(), None).expect("valid control reopens");
+    assert_eq!(
+        super::recovery::observe_node(&reopened, first),
+        Some((1, 1, 1))
+    );
+    reopened.close().expect("close valid control");
 }

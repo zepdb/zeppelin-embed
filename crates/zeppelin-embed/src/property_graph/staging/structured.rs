@@ -173,10 +173,39 @@ pub fn stage_structured<'a>(
     memory: &'a WriteMemory<'a>,
     control: &mut WriteControl<'_>,
 ) -> Result<StagedBatch<'a>, StageError> {
-    stage_structured_with_preflight(base, requests, memory, control, &mut |_, _| Ok(()))
+    stage_structured_with_preflight(
+        base,
+        base.identity()
+            .generation
+            .get()
+            .checked_add(1)
+            .map(GraphGeneration::new),
+        requests,
+        memory,
+        control,
+        &mut |_, _| Ok(()),
+    )
+}
+/// Stages a batch at the exact generation assigned by its committer.
+pub fn stage_structured_at_generation<'a>(
+    base: &'a dyn AdmittedBase,
+    target_generation: GraphGeneration,
+    requests: &[StructuredWrite<'a, '_>],
+    memory: &'a WriteMemory<'a>,
+    control: &mut WriteControl<'_>,
+) -> Result<StagedBatch<'a>, StageError> {
+    stage_structured_with_preflight(
+        base,
+        Some(target_generation),
+        requests,
+        memory,
+        control,
+        &mut |_, _| Ok(()),
+    )
 }
 pub(super) fn stage_structured_with_preflight<'a>(
     base: &'a dyn AdmittedBase,
+    target_generation: Option<GraphGeneration>,
     requests: &[StructuredWrite<'a, '_>],
     memory: &'a WriteMemory<'a>,
     control: &mut WriteControl<'_>,
@@ -460,9 +489,13 @@ pub(super) fn stage_structured_with_preflight<'a>(
         return Err(StageError::Limit);
     }
     preflight(requests.len(), control)?;
-    let classification = summarize_key_batch(identity.generation, &decisions, false, &mut || {
-        canonical_poll(control)
-    })?;
+    let classification = super::super::key_lifecycle::summarize_key_batch_for_target(
+        identity.generation,
+        target_generation,
+        &decisions,
+        false,
+        &mut || canonical_poll(control),
+    )?;
     let mut provenance = Arena::new(memory, requests.len(), control)?;
     for (index, decision) in decisions.iter().enumerate() {
         control(WritePhase::Validate)?;
@@ -573,6 +606,7 @@ pub(super) fn stage_structured_with_preflight<'a>(
     }
     StagedBatch {
         base: identity,
+        target_generation: target_generation.unwrap_or(identity.generation),
         high_waters,
         receipts,
         deltas,

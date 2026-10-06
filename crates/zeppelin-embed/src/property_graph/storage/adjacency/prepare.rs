@@ -134,9 +134,10 @@ pub fn prepare_native_graph<'a, S: BlockSink>(
     let context = if unchanged {
         None
     } else {
-        Some(RangeEditContext::new(
+        Some(RangeEditContext::at_generation(
             base.directories.identity.generation,
             base.committed.sequence,
+            batch.target_generation(),
         )?)
     };
     // This uses the admitted pre-batch roots even when both nodes are pending

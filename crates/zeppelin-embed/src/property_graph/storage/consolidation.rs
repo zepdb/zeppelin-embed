@@ -147,6 +147,7 @@ pub(crate) fn prepare_one_replacement<'lease, 'm, T, C>(
     sink: &mut T,
     base: GraphRoots,
     base_sequence: u64,
+    generation: GraphGeneration,
     catalog: &C,
     document: Option<&EmbeddingTower>,
     drain: &[ArtifactId],
@@ -165,13 +166,7 @@ where
     C: for<'s> RecordCatalog<NativePreparationSource<'s, 'm>> + RecordCatalog<T>,
 {
     resources.require_preparation(memory)?;
-    let generation = GraphGeneration::new(
-        base.generation()
-            .get()
-            .checked_add(1)
-            .ok_or(TreeError::Invalid("consolidation generation overflow"))?,
-    );
-    let context = RangeEditContext::new(base.generation(), base_sequence)?;
+    let context = RangeEditContext::at_generation(base.generation(), base_sequence, generation)?;
     let mut roots = base.for_generation(generation)?;
 
     let mut relocations = StorageBuffer::new(memory, RELOCATION_LIMIT)?;

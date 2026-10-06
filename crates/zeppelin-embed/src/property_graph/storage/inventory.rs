@@ -105,16 +105,11 @@ impl PreparedInventoryFold<'_> {
         &self,
         source: &impl BlockSource,
         root: DirectoryRoot,
+        expected_generation: GraphGeneration,
         resources: &mut TreeResources<'_>,
     ) -> Result<(), TreeError> {
-        let expected_generation = GraphGeneration::new(
-            self.expected_base
-                .generation()
-                .get()
-                .checked_add(1)
-                .ok_or(TreeError::Work)?,
-        );
-        if root.kind() != TreeKind::ObjectInventory
+        if expected_generation <= self.expected_base.generation()
+            || root.kind() != TreeKind::ObjectInventory
             || root.store() != self.expected_base.store()
             || root.generation() != expected_generation
         {

@@ -777,6 +777,25 @@ pub fn summarize_key_batch(
     other_durable_changes: bool,
     checkpoint: &mut dyn FnMut() -> Result<(), CanonicalError>,
 ) -> Result<BatchClassification, KeyLifecycleError> {
+    summarize_key_batch_for_target(
+        admitted_generation,
+        admitted_generation
+            .get()
+            .checked_add(1)
+            .map(GraphGeneration::new),
+        decisions,
+        other_durable_changes,
+        checkpoint,
+    )
+}
+
+pub(crate) fn summarize_key_batch_for_target(
+    admitted_generation: GraphGeneration,
+    target_generation: Option<GraphGeneration>,
+    decisions: &[KeyDecision<'_>],
+    other_durable_changes: bool,
+    checkpoint: &mut dyn FnMut() -> Result<(), CanonicalError>,
+) -> Result<BatchClassification, KeyLifecycleError> {
     if decisions.len() > MAX_GRAPH_CHANGES {
         return Err(KeyLifecycleError::TooManyTargets);
     }
@@ -799,12 +818,11 @@ pub fn summarize_key_batch(
         BatchDisposition::NoOp
     };
     let changed_generation = if disposition == BatchDisposition::Changed {
-        Some(GraphGeneration::new(
-            admitted_generation
-                .get()
-                .checked_add(1)
-                .ok_or(KeyLifecycleError::GenerationOverflow)?,
-        ))
+        let target = target_generation.ok_or(KeyLifecycleError::GenerationOverflow)?;
+        if target <= admitted_generation {
+            return Err(KeyLifecycleError::InvalidGeneration);
+        }
+        Some(target)
     } else {
         None
     };

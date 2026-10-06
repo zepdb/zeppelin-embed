@@ -12,7 +12,7 @@ use crate::property_graph::catalog::SymbolEntry;
 use crate::property_graph::resources::{GraphReservation, GraphResources};
 use crate::property_graph::staging::{
     ItemReceipt, ResultLayout, ResultMaterializer, ResultRegistration, StageError, StagedBatch,
-    WriteLimits, WriteMemory, WritePhase, stage_structured_with_results,
+    WriteLimits, WriteMemory, WritePhase, stage_structured_with_results_at_generation,
 };
 use crate::property_graph::storage::artifact::{ArtifactIdentity, Block, BlockKind, ContainerKind};
 use crate::property_graph::storage::consolidation::ConsolidationOutcome;
@@ -47,6 +47,35 @@ use crate::vfs::SyncKind;
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 
+/// Graph-only coordinator allocation. Unified commits supply this value to staging.
+pub(super) fn assigned_generation(
+    store: &crate::lifecycle::Store,
+    base: GraphGeneration,
+) -> Result<GraphGeneration, NativeGraphError> {
+    #[cfg(test)]
+    {
+        let assigned = store
+            .native_graph
+            .assigned_generation
+            .load(std::sync::atomic::Ordering::Acquire);
+        if assigned != 0 {
+            let assigned = GraphGeneration::new(assigned);
+            if assigned <= base {
+                return Err(NativeGraphError::Invalid(
+                    "non-increasing assigned generation",
+                ));
+            }
+            return Ok(assigned);
+        }
+    }
+    #[cfg(not(test))]
+    let _ = store;
+    base.get()
+        .checked_add(1)
+        .map(GraphGeneration::new)
+        .ok_or(NativeGraphError::IdentityExhausted)
+}
+
 pub(super) struct NativeWriter {
     pub(super) wal: NativeWal,
     pub(super) complete_envelopes: u64,
@@ -60,6 +89,7 @@ pub(super) struct NativeWriter {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn prepare_reclaim_completion_transition<'p, 'a, 'b, S, F, C>(
     store: &crate::lifecycle::Store,
+    target_generation: GraphGeneration,
     shared: &GraphResources,
     lease: &'p NativeReadLease,
     objects: &'p PreparedObjects<'a, 'b, S, F>,
@@ -88,14 +118,7 @@ where
     C: RecordCatalog<PreparedObjects<'a, 'b, S, F>>,
 {
     let admitted = lease.bundle();
-    let generation = GraphGeneration::new(
-        admitted
-            .base()
-            .generation
-            .get()
-            .checked_add(1)
-            .ok_or(NativeGraphError::IdentityExhausted)?,
-    );
+    let generation = target_generation;
     let sequence = admitted
         .sequence()
         .checked_add(1)
@@ -285,6 +308,7 @@ where
     )?;
     let next = NativeGraphBundle::assemble_committed(
         store,
+        target_generation,
         shared,
         admitted,
         NativeGraphBundleInput {
@@ -341,6 +365,7 @@ where
 #[allow(clippy::too_many_arguments)]
 pub(super) fn prepare_reclaim_clear_transition<'p, 'a, 'b, S, F, C>(
     store: &crate::lifecycle::Store,
+    target_generation: GraphGeneration,
     shared: &GraphResources,
     lease: &'p NativeReadLease,
     completed: &ValidatedCompletedReclaim<'_>,
@@ -364,14 +389,7 @@ where
     C: RecordCatalog<PreparedObjects<'a, 'b, S, F>>,
 {
     let admitted = lease.bundle();
-    let generation = GraphGeneration::new(
-        admitted
-            .base()
-            .generation
-            .get()
-            .checked_add(1)
-            .ok_or(NativeGraphError::IdentityExhausted)?,
-    );
+    let generation = target_generation;
     let sequence = admitted
         .sequence()
         .checked_add(1)
@@ -531,6 +549,7 @@ where
     )?;
     let next = NativeGraphBundle::assemble_committed(
         store,
+        target_generation,
         shared,
         admitted,
         NativeGraphBundleInput {
@@ -1338,6 +1357,7 @@ fn verify_prepared_inventory(
 #[allow(clippy::too_many_arguments)]
 fn prepare_committed_transition<'p, 'source, 'a, 'b, S, F, C>(
     store: &crate::lifecycle::Store,
+    target_generation: GraphGeneration,
     shared: &GraphResources,
     control: &crate::lifecycle::QueryControl,
     lease: &'p NativeReadLease,
@@ -1361,14 +1381,7 @@ where
 {
     let admitted = lease.bundle();
     let candidate = prepared.candidate();
-    let expected_generation = GraphGeneration::new(
-        admitted
-            .base()
-            .generation
-            .get()
-            .checked_add(1)
-            .ok_or(NativeGraphError::IdentityExhausted)?,
-    );
+    let expected_generation = target_generation;
     let expected_sequence = admitted
         .sequence()
         .checked_add(1)
@@ -1551,6 +1564,7 @@ where
     )?;
     let next = NativeGraphBundle::assemble_committed(
         store,
+        target_generation,
         shared,
         admitted,
         NativeGraphBundleInput {
@@ -1614,6 +1628,7 @@ where
 #[allow(clippy::too_many_arguments)]
 pub(super) fn prepare_maintenance_transition<'p, 'a, 'b, S, F, C>(
     store: &crate::lifecycle::Store,
+    target_generation: GraphGeneration,
     shared: &GraphResources,
     lease: &'p NativeReadLease,
     objects: &'p PreparedObjects<'a, 'b, S, F>,
@@ -1640,14 +1655,7 @@ where
     C: RecordCatalog<PreparedObjects<'a, 'b, S, F>>,
 {
     let admitted = lease.bundle();
-    let generation = GraphGeneration::new(
-        admitted
-            .base()
-            .generation
-            .get()
-            .checked_add(1)
-            .ok_or(NativeGraphError::IdentityExhausted)?,
-    );
+    let generation = target_generation;
     let sequence = admitted
         .sequence()
         .checked_add(1)
@@ -1808,6 +1816,7 @@ where
     consolidated.inventory_fold().validate_candidate(
         objects,
         consolidated.inventory_fold_root(),
+        target_generation,
         tree_resources,
     )?;
     validate_inventory_changes(
@@ -1918,6 +1927,7 @@ where
     )?;
     let next = NativeGraphBundle::assemble_committed(
         store,
+        target_generation,
         shared,
         admitted,
         NativeGraphBundleInput {
@@ -2204,14 +2214,7 @@ pub(super) fn commit_staged_batch<'m>(
         return Ok(CommitStep::Checkpointed);
     }
 
-    let target_generation = GraphGeneration::new(
-        admitted
-            .base()
-            .generation
-            .get()
-            .checked_add(1)
-            .ok_or(NativeGraphError::IdentityExhausted)?,
-    );
+    let target_generation = staged_batch.target_generation();
     let source = base.source();
     let mut resources_guard = base.resources()?;
     let resources = &mut **resources_guard;
@@ -2428,6 +2431,7 @@ pub(super) fn commit_staged_batch<'m>(
     );
     let transition = prepare_committed_transition(
         store,
+        target_generation,
         shared,
         control,
         lease,
@@ -2557,8 +2561,9 @@ impl crate::lifecycle::Store {
                 &first_storage_error,
             )?;
             let mut write_control = |phase| checkpoint(control, phase);
-            let mut staged = crate::property_graph::staging::stage_structured(
+            let mut staged = crate::property_graph::staging::stage_structured_at_generation(
                 &base,
+                assigned_generation(self, admitted.base().generation)?,
                 requests,
                 &write_memory,
                 &mut write_control,
@@ -2670,8 +2675,9 @@ impl crate::lifecycle::Store {
                 &first_storage_error,
             )?;
             let mut write_control = |phase| checkpoint(control, phase);
-            let staged = stage_structured_with_results(
+            let staged = stage_structured_with_results_at_generation(
                 &base,
+                assigned_generation(self, admitted.base().generation)?,
                 requests,
                 &write_memory,
                 materializer,

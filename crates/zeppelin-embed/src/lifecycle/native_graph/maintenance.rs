@@ -711,6 +711,7 @@ pub(super) fn active_reclaim_subtype(
 
 fn prepare_durable_proof<'m>(
     relocation_bytes: u64,
+    target_generation: GraphGeneration,
     store: &crate::lifecycle::Store,
     admission: &NativeMaintenanceAdmission,
     storage: &'m StorageMemory<'m>,
@@ -725,14 +726,11 @@ fn prepare_durable_proof<'m>(
     if !capture.is_current(admitted) {
         return Err(NativeGraphError::StalePreparation);
     }
-    let target_generation = GraphGeneration::new(
-        admitted
-            .base()
-            .generation
-            .get()
-            .checked_add(1)
-            .ok_or(NativeGraphError::IdentityExhausted)?,
-    );
+    if target_generation <= admitted.base().generation {
+        return Err(NativeGraphError::Invalid(
+            "non-increasing maintenance generation",
+        ));
+    }
     let binding = SpillBinding {
         store: admitted.base().store,
         session: next_artifact(&mut crate::property_graph::storage::allocation::OsEntropy)?,
@@ -1265,14 +1263,7 @@ pub(super) fn run_spill_probe(
             64 * 1024 * 1024,
         )?;
     let admitted = admission.lease.bundle();
-    let target_generation = GraphGeneration::new(
-        admitted
-            .base()
-            .generation
-            .get()
-            .checked_add(1)
-            .ok_or(NativeGraphError::IdentityExhausted)?,
-    );
+    let target_generation = super::write::assigned_generation(store, admitted.base().generation)?;
     let binding = SpillBinding {
         store: admitted.base().store,
         session: next_artifact(&mut crate::property_graph::storage::allocation::OsEntropy)?,
@@ -1390,14 +1381,7 @@ fn resume_pending_reclaim(
         resources.work(),
     );
     let pending = load_pending_reclaim(admission, &storage, &mut resources)?;
-    let generation = GraphGeneration::new(
-        admitted
-            .base()
-            .generation
-            .get()
-            .checked_add(1)
-            .ok_or(NativeGraphError::IdentityExhausted)?,
-    );
+    let generation = super::write::assigned_generation(store, admitted.base().generation)?;
     let store_identity = admitted.base().store;
     let source = NativePreparationSource::new(&admission.lease, &storage, 64)?;
     let identity_source = || {
@@ -1569,6 +1553,7 @@ fn resume_pending_reclaim(
     let mut commit_artifacts = StorageBuffer::new(&storage, artifact_count)?;
     let (transition, generation) = prepare_reclaim_completion_transition(
         store,
+        generation,
         &shared,
         &admission.lease,
         &objects,
@@ -1776,14 +1761,7 @@ fn retire_completed_reclaim(
         resources.work(),
     );
     let completed = load_completed_reclaim(admission, &storage, &mut resources)?;
-    let generation = GraphGeneration::new(
-        admitted
-            .base()
-            .generation
-            .get()
-            .checked_add(1)
-            .ok_or(NativeGraphError::IdentityExhausted)?,
-    );
+    let generation = super::write::assigned_generation(store, admitted.base().generation)?;
     let sequence = admitted
         .sequence()
         .checked_add(1)
@@ -1909,6 +1887,7 @@ fn retire_completed_reclaim(
     let mut commit_artifacts = StorageBuffer::new(&storage, artifact_count)?;
     let (transition, generation) = prepare_reclaim_clear_transition(
         store,
+        generation,
         &shared,
         &admission.lease,
         &completed,
@@ -2106,8 +2085,10 @@ pub(super) fn commit_with_limits(
         "maintenance-fold-end",
         resources.work(),
     );
+    let generation = super::write::assigned_generation(store, admitted.base().generation)?;
     let proof = prepare_durable_proof(
         limits.relocation_bytes,
+        generation,
         store,
         admission,
         &storage,
@@ -2147,14 +2128,6 @@ pub(super) fn commit_with_limits(
         crate::property_graph::storage::MAX_NATIVE_ARTIFACTS,
     )?;
     let catalog = NativePreparationCatalog::open(&source, &mut resources)?;
-    let generation = GraphGeneration::new(
-        admitted
-            .base()
-            .generation
-            .get()
-            .checked_add(1)
-            .ok_or(NativeGraphError::IdentityExhausted)?,
-    );
     let sequence = admitted
         .sequence()
         .checked_add(1)
@@ -2206,6 +2179,7 @@ pub(super) fn commit_with_limits(
         &mut objects,
         admitted.roots(),
         admitted.sequence(),
+        generation,
         &catalog,
         admitted.document(),
         proof.drain.as_slice(),
@@ -2327,6 +2301,7 @@ pub(super) fn commit_with_limits(
     );
     let (transition, generation) = prepare_maintenance_transition(
         store,
+        generation,
         &shared,
         &admission.lease,
         &objects,

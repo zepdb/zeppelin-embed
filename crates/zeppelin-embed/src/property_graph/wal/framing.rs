@@ -10,9 +10,7 @@ pub(super) fn validate_transition(
     if base.store != next.store {
         return Err(WalError::Store);
     }
-    if base.generation.get().checked_add(1) != Some(next.generation.get())
-        || base.sequence.checked_add(1) != Some(next.sequence)
-    {
+    if next.generation <= base.generation || base.sequence.checked_add(1) != Some(next.sequence) {
         return Err(WalError::Sequence);
     }
     if base.high_waters.node > next.high_waters.node

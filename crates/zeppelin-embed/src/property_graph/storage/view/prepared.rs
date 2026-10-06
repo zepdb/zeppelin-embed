@@ -64,12 +64,7 @@ impl<
     ) -> Result<Self, TreeError> {
         resources.require_preparation(source.memory())?;
         let base_generation = source.lease().bundle().base().generation;
-        if generation.get()
-            != base_generation
-                .get()
-                .checked_add(1)
-                .ok_or(TreeError::Invalid("native preparation generation overflow"))?
-        {
+        if generation <= base_generation {
             return Err(TreeError::Invalid(
                 "native preparation target generation mismatch",
             ));
@@ -112,6 +107,15 @@ impl<
         PreparedGraphFailure<'m, 'source, NativePreparationSource<'lease, 'm>, F>,
     > {
         let memory = self.source.memory();
+        if batch.disposition() == crate::property_graph::BatchDisposition::Changed
+            && batch.target_generation() != self.objects.generation()
+        {
+            return Err(PreparedGraphFailure::from_preparation(
+                TreeError::Invalid("staged target generation mismatch"),
+                self.objects,
+                self.base,
+            ));
+        }
         if !std::ptr::eq(self.objects.memory(), memory) || !self.catalog.owns(self.source) {
             return Err(PreparedGraphFailure::from_preparation(
                 TreeError::Invalid("prepared native graph memory owner mismatch"),

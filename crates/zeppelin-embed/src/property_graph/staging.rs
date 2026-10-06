@@ -19,6 +19,7 @@ mod result;
 pub use result::{
     MaterializedBatch, ResultLayout, ResultMaterializer, ResultRegistration,
     ScopedMaterializedBatch, stage_structured_with_results,
+    stage_structured_with_results_at_generation,
 };
 
 /// Identity of one retained, coherent graph/search root set.
@@ -404,6 +405,7 @@ impl<'a> NormalizedDelta<'a> {
 /// Private normalized batch. Publication is exclusively the coordinator's job.
 pub struct StagedBatch<'a> {
     base: BaseIdentity,
+    target_generation: GraphGeneration,
     high_waters: HighWaters,
     receipts: memory::Arena<'a, ItemReceipt>,
     deltas: memory::Arena<'a, NormalizedDelta<'a>>,
@@ -450,6 +452,10 @@ impl StagedBatch<'_> {
     pub const fn base(&self) -> BaseIdentity {
         self.base
     }
+    /// Proposed commit generation; unchanged batches do not publish it.
+    pub const fn target_generation(&self) -> GraphGeneration {
+        self.target_generation
+    }
     /// Private inclusive allocation fences; not installed by staging.
     pub const fn high_waters(&self) -> HighWaters {
         self.high_waters
@@ -472,7 +478,7 @@ impl StagedBatch<'_> {
     }
 }
 mod structured;
-pub use structured::stage_structured;
+pub use structured::{stage_structured, stage_structured_at_generation};
 
 #[cfg(all(test, feature = "allocation-audit"))]
 mod tests;

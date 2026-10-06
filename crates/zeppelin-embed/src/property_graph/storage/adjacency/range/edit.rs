@@ -20,15 +20,26 @@ impl RangeEditContext {
     /// Advance generation and WAL sequence independently, without wrapping.
     /// No-op batches retain their original roots and never construct this context.
     pub fn new(base_generation: GraphGeneration, base_sequence: u64) -> Result<Self, TreeError> {
+        let generation = base_generation
+            .get()
+            .checked_add(1)
+            .map(GraphGeneration::new)
+            .ok_or(invalid("adjacency generation overflow"))?;
+        Self::at_generation(base_generation, base_sequence, generation)
+    }
+    /// Bind edits to the exact commit generation; the sequence still advances once.
+    pub fn at_generation(
+        base_generation: GraphGeneration,
+        base_sequence: u64,
+        generation: GraphGeneration,
+    ) -> Result<Self, TreeError> {
+        if generation <= base_generation {
+            return Err(invalid("adjacency target generation"));
+        }
         Ok(Self {
             base_generation,
             base_sequence,
-            generation: GraphGeneration::new(
-                base_generation
-                    .get()
-                    .checked_add(1)
-                    .ok_or(invalid("adjacency generation overflow"))?,
-            ),
+            generation,
             sequence: base_sequence
                 .checked_add(1)
                 .ok_or(invalid("adjacency sequence overflow"))?,

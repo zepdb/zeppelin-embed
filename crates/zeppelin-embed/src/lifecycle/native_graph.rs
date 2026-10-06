@@ -285,22 +285,22 @@ impl NativeGraphBundle {
 
     pub(super) fn assemble_committed(
         store: &Store,
+        expected_generation: crate::property_graph::GraphGeneration,
         resources: &GraphResources,
         admitted: &Arc<Self>,
         input: NativeGraphBundleInput,
     ) -> Result<Arc<Self>, NativeGraphError> {
-        let expected_generation = admitted
-            .base
-            .generation
-            .get()
-            .checked_add(1)
-            .ok_or(NativeGraphError::IdentityExhausted)?;
+        if expected_generation <= admitted.base.generation {
+            return Err(NativeGraphError::Invalid(
+                "non-increasing committed generation",
+            ));
+        }
         let expected_sequence = admitted
             .sequence
             .checked_add(1)
             .ok_or(NativeGraphError::IdentityExhausted)?;
         if input.base.store != admitted.base.store
-            || input.base.generation.get() != expected_generation
+            || input.base.generation != expected_generation
             || input.base.fold != admitted.base.fold
             || input.roots.store() != input.base.store
             || input.roots.generation() != input.base.generation
@@ -655,6 +655,8 @@ impl PublicationState {
 }
 
 pub(crate) struct NativeGraphPublication {
+    #[cfg(test)]
+    assigned_generation: std::sync::atomic::AtomicU64,
     state: Mutex<PublicationState>,
     changed: Condvar,
     accounting: Arc<super::stats::Accounting>,
@@ -771,6 +773,8 @@ impl NativeGraphPublication {
         })?;
         spills.resize_with(MAX_NATIVE_SPILL_PREPARATIONS, || None);
         Ok(Arc::new(Self {
+            #[cfg(test)]
+            assigned_generation: std::sync::atomic::AtomicU64::new(0),
             state: Mutex::new(PublicationState {
                 current: None,
                 charge,

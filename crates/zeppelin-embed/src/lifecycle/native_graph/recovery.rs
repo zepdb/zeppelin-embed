@@ -4170,7 +4170,6 @@ fn scan_creation_serials(
     resources: &GraphResources,
     directory: &Path,
     expected_store: crate::property_graph::StoreInstanceId,
-    committed_generation: crate::property_graph::GraphGeneration,
     initial: u64,
     control: &QueryControl,
 ) -> Result<u64, NativeGraphError> {
@@ -4252,16 +4251,14 @@ fn scan_creation_serials(
                         .try_into()
                         .map_err(|_| NativeGraphError::Invalid("native artifact serial"))?,
                 );
-                let generation = u64::from_le_bytes(
-                    field(64..72)?
-                        .try_into()
-                        .map_err(|_| NativeGraphError::Invalid("native artifact generation"))?,
-                );
                 let header_length = u64::from_le_bytes(
                     field(16..24)?
                         .try_into()
                         .map_err(|_| NativeGraphError::Invalid("native artifact header length"))?,
                 );
+                // An uncommitted preparation may use any store-assigned future
+                // generation. Recovery still validates its header and complete
+                // bytes; the existing reachability rules retain cleanup authority.
                 if field(0..8)? != b"ZEPEMBED"
                     || !matches!(family, 17 | 18)
                     || field(10..12)? != 1_u16.to_le_bytes()
@@ -4269,11 +4266,6 @@ fn scan_creation_serials(
                     || header_length != artifact::HEADER_BYTES as u64
                     || header_store != expected_store.get()
                     || header_artifact != artifact.get()
-                    || generation
-                        > committed_generation
-                            .get()
-                            .checked_add(1)
-                            .ok_or(NativeGraphError::IdentityExhausted)?
                     || serial == 0
                     || declared < (artifact::HEADER_BYTES + 8) as u64
                     || declared > MAX_ARTIFACT_BYTES as u64
@@ -6191,7 +6183,6 @@ pub(super) fn open(
             &shared,
             path,
             final_state.store,
-            final_state.generation,
             final_state.high_waters.creation_serial,
             &control,
         )?

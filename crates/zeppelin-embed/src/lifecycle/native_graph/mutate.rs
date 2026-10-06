@@ -399,7 +399,10 @@ impl crate::lifecycle::Store {
             // Finalization reads the base again, exactly as the structured
             // writer's staging does, so its storage errors are checked here
             // rather than inferred from a successful return.
-            let staged = overlay.finish(&mut write_control);
+            let staged = overlay.finish_at_generation(
+                super::write::assigned_generation(self, admitted.base().generation)?,
+                &mut write_control,
+            );
             if let Some(error) = base.take_error() {
                 return Err(NativeGraphError::Stage(StageError::NativeStorage(error)).into());
             }

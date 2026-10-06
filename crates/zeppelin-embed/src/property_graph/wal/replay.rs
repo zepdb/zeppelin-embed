@@ -497,7 +497,7 @@ impl<'a> Replay<'a> {
             return Err(WalError::Sequence);
         }
         let target = rd.u64(r)?;
-        if self.state.generation.get().checked_add(1) != Some(target) {
+        if target <= self.state.generation.get() {
             return Err(WalError::Sequence);
         }
         let count = rd.u32(r)?;

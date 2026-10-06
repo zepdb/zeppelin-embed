@@ -90,17 +90,16 @@ pub fn prepare_directories<'a, S: BlockSink>(
             "native preparation base identity mismatch",
         ));
     }
+    if batch.disposition() == crate::property_graph::BatchDisposition::Changed
+        && batch.target_generation() <= base.identity.generation
+    {
+        return Err(TreeError::Invalid("native preparation target generation"));
+    }
     let charge = memory.reserve(std::mem::size_of::<NativeDirectoryCandidate<'_>>())?;
     if batch.deltas().is_empty() {
         r.step(0)?;
         let roots = if batch.disposition() == crate::property_graph::BatchDisposition::Changed {
-            base.roots.for_generation(GraphGeneration::new(
-                base.identity
-                    .generation
-                    .get()
-                    .checked_add(1)
-                    .ok_or(TreeError::Invalid("generation overflow"))?,
-            ))?
+            base.roots.for_generation(batch.target_generation())?
         } else {
             base.roots
         };
@@ -110,13 +109,7 @@ pub fn prepare_directories<'a, S: BlockSink>(
             _charge: charge,
         });
     }
-    let generation = GraphGeneration::new(
-        base.identity
-            .generation
-            .get()
-            .checked_add(1)
-            .ok_or(TreeError::Invalid("generation overflow"))?,
-    );
+    let generation = batch.target_generation();
     for delta in batch.deltas() {
         r.step(1)?;
         if delta.provenance().fields().original_generation != generation
