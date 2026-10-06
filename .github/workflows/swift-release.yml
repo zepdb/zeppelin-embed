@@ -66,11 +66,12 @@ jobs:
           if actual != expected:
               raise SystemExit(f"release tag {actual!r} must be {expected!r}")
           graph = "${{ matrix.artifact }}" == "graph-cypher"
-          manifest = pathlib.Path("Package.swift").read_text()
+          manifest_path = "bindings/swift/graph/Package.swift" if graph else "Package.swift"
+          manifest = pathlib.Path(manifest_path).read_text()
           name = "ZeppelinEmbedGraph" if graph else "ZeppelinEmbed"
           expected_url = f"/releases/download/{expected}/{name}.xcframework.zip"
           if expected_url not in manifest:
-              raise SystemExit(f"Package.swift must contain {expected_url!r}")
+              raise SystemExit(f"{manifest_path} must contain {expected_url!r}")
           PY
       - name: Build XCFramework
         run: scripts/xcframework/build.sh --artifact ${{ matrix.artifact }}
