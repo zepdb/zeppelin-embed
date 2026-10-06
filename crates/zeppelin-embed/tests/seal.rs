@@ -25,6 +25,15 @@ mod seal {
 
     #[test]
     fn refuses_rotation_behind_the_graph_watermark() {
+        assert_graph_shortfall_refuses(false);
+    }
+
+    #[test]
+    fn refuses_rotation_with_op_11_wrapping_op_10() {
+        assert_graph_shortfall_refuses(true);
+    }
+
+    fn assert_graph_shortfall_refuses(mixed: bool) {
         let directory = tempdir().expect("store directory");
         let store = Store::open(directory.path(), OpenOptions::default()).expect("open store");
         store.enable_graph().expect("enable real graph catalog");
@@ -45,32 +54,59 @@ mod seal {
         // are folded by seal. Admit this framing fixture as already absorbed
         // for open (graph replay is not implemented yet), then place the lagging
         // fold before seal. Keep the real catalog and inventory throughout.
-        use zeppelin_embed::ingest::wal_payload::{GRAPH_COMMIT_V1, encode_graph_commit};
+        use zeppelin_embed::ingest::wal_payload::{
+            DELETE_V1, GRAPH_COMMIT_V1, MIXED_BATCH_MEMBER_V1, encode_delete, encode_graph_commit,
+            encode_mixed_batch_member,
+        };
         use zeppelin_embed::wal::LogSeq;
         use zeppelin_embed::wal::record::{WalRecord, encode_record};
-        let payload = encode_graph_commit(
+        let mut payload = encode_graph_commit(
             include_bytes!("fixtures/graph-wal/complete-v1.bin")
                 .get(64..2105)
                 .expect("complete graph envelope"),
         )
         .expect("op 10 payload");
+        let op = if mixed {
+            payload = encode_mixed_batch_member(0, 2, GRAPH_COMMIT_V1, &payload)
+                .expect("op 11 graph member");
+            MIXED_BATCH_MEMBER_V1
+        } else {
+            GRAPH_COMMIT_V1
+        };
         let mut wal =
             zeppelin_embed::wal::header::encode_header(LogSeq::new(1)).expect("WAL header");
         wal.extend(
             encode_record(WalRecord {
                 seq: LogSeq::new(1),
-                op: GRAPH_COMMIT_V1,
+                op,
                 payload: &payload,
             })
             .expect("op 10 record"),
         );
+        let folded = if mixed {
+            // Complete the mixed batch with an absorbed no-op document delete.
+            let delete = encode_delete(&[DocId::new(9)]).expect("delete payload");
+            let member =
+                encode_mixed_batch_member(1, 2, DELETE_V1, &delete).expect("op 11 document member");
+            wal.extend(
+                encode_record(WalRecord {
+                    seq: LogSeq::new(2),
+                    op: MIXED_BATCH_MEMBER_V1,
+                    payload: &member,
+                })
+                .expect("second mixed member"),
+            );
+            2
+        } else {
+            1
+        };
         std::fs::write(directory.path().join("wal.ze"), wal).expect("write graph WAL record");
-        manifest.log_seq = 1;
+        manifest.log_seq = folded;
         manifest
             .graph
             .as_mut()
             .expect("graph section")
-            .graph_absorbed_through = 1;
+            .graph_absorbed_through = folded;
         commit_manifest(
             &StdVfs,
             directory.path(),
@@ -106,7 +142,7 @@ mod seal {
         assert!(matches!(
             store.seal(),
             Err(StoreError::Manifest(ManifestError::Decode(detail)))
-                if detail == "cannot rotate WAL through 2: graph absorbed only through 0"
+                if detail == format!("cannot rotate WAL through {}: graph absorbed only through 0", folded + 1)
         ));
         assert_eq!(store.snapshot().expect("snapshot").generation(), generation);
         assert_eq!(files(directory.path()), files_before);

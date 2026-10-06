@@ -525,11 +525,11 @@ impl Walk<'_> {
                 {
                     decoded
                         .and_then(|manifest| manifest.graph.as_ref())
-                        .map_or(0, |graph| graph.graph_absorbed_through)
+                        .map_or(absorbed_through, |graph| graph.graph_absorbed_through)
                 }
                 #[cfg(not(feature = "graph-cypher"))]
                 {
-                    0
+                    absorbed_through
                 }
             },
             &accounting,

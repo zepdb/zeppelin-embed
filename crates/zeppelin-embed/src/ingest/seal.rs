@@ -172,7 +172,7 @@ impl Store {
             .generation
             .checked_add(1)
             .ok_or(StoreError::GenerationOverflow)?;
-        #[allow(unused_mut)]
+        #[cfg_attr(not(feature = "graph-cypher"), allow(unused_mut))]
         let mut manifest = load_current_manifest(
             vfs,
             &self.directory,

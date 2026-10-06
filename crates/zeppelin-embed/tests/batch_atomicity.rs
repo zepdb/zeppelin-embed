@@ -87,6 +87,13 @@ mod recovery {
             DurabilityPolicy::new(DurabilityMode::Durable, CommitTier::Durable).expect("policy"),
         )
         .expect("commit absorbed boundary");
+        let report =
+            zeppelin_embed::verify::verify_store(directory.path()).expect("verify v2 store");
+        assert!(
+            report.findings.is_empty(),
+            "unexpected findings: {:?}",
+            report.findings
+        );
         // A v2 reader starts at log_seq; the obsolete participant is irrelevant.
         for options in [OpenOptions::read_only(), OpenOptions::default()] {
             let reopened = Store::open(directory.path(), options).expect("open absorbed v2 store");
