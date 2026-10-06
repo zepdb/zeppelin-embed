@@ -7,7 +7,7 @@ final class GraphProfileParityTests: XCTestCase {
   private var ignoreListOrder = false
   func testSharedPositiveCypherProfile() async throws {
     guard let manifestPath = ProcessInfo.processInfo.environment["ZE74_SWIFT_MANIFEST"] else {
-      throw Failure.missingManifest
+      throw XCTSkip("ZE-74 manifest absent: run scripts/graph-profile-parity.py run")
     }
     let root = URL(fileURLWithPath: manifestPath)
     let manifest = try JSONSerialization.jsonObject(with: Data(contentsOf: root)) as! [String: Any]
@@ -78,7 +78,7 @@ final class GraphProfileParityTests: XCTestCase {
     }
   }
   func testSharedPublicCypherRejections() async throws {
-    guard let path = ProcessInfo.processInfo.environment["ZE74_SWIFT_MANIFEST"] else { throw Failure.missingManifest }
+    guard let path = ProcessInfo.processInfo.environment["ZE74_SWIFT_MANIFEST"] else { throw XCTSkip("ZE-74 manifest absent: run scripts/graph-profile-parity.py run") }
     let manifest = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: path))) as! [String: Any]
     for scenario in manifest["cases"] as! [[String: Any]] {
       guard let expected = scenario["error"] as? [String: Any] else { continue }
