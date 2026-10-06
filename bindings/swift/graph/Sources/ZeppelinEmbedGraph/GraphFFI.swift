@@ -113,12 +113,14 @@ struct GraphDecoder {
 // the original native descriptor, never a modified decoder view.
 func graphResponse(
   call: (inout ZeGraphResponse) -> Int32,
-  free: (inout ZeGraphResponse) -> Int32 = { ze_graph_response_free(&$0) }
+  free: (inout ZeGraphResponse) -> Int32 = { ze_graph_response_free(&$0) },
+  nativeMessage: () -> String? = { nil }
 ) throws -> GraphResult {
   var response = ZeGraphResponse()
   response.abi_size = graphSize(ZeGraphResponse.self)
   defer { _ = free(&response) }
   let status = call(&response)
+  let message = status == 0 ? nil : nativeMessage()
   var metadata: GraphMetadata?
   do {
     guard let disposition = GraphDisposition(rawValue: response.disposition) else {
@@ -179,7 +181,9 @@ func graphResponse(
       changedGeneration: graphFlag(response.has_changed_generation)
         ? response.changed_generation : nil, receipts: receipts, reports: reports,
       diagnostics: diagnostics, globalWork: graphSlice(work, response.global_work))
-    if status != 0 { throw GraphError(.native(Int32(status)), metadata: metadata) }
+    if status != 0 {
+      throw GraphError(.native(Int32(status)), metadata: metadata, nativeMessage: message)
+    }
     guard response.row_count <= 65536, response.column_count <= 256,
       response.cell_count == response.row_count * response.column_count
     else { throw GraphError(.invalidResponse("row shape")) }
@@ -194,6 +198,24 @@ func graphResponse(
     guard let metadata else { throw GraphError(.invalidResponse("metadata")) }
     return GraphResult(metadata: metadata, columns: columns, rows: rows)
   } catch let error as GraphError {
-    throw GraphError(error.reason, metadata: error.metadata ?? metadata)
+    throw GraphError(
+      error.reason, metadata: error.metadata ?? metadata,
+      nativeMessage: error.nativeMessage ?? message)
   }
+}
+
+// Copy the native diagnostic immediately on the calling thread, before free.
+func graphLastError(_ handle: UInt64) -> String? {
+  var written = 0
+  let probe = ze_last_error_message(handle, nil, 0, &written)
+  guard probe == 0 else { return "native diagnostic unavailable (status \(probe))" }
+  guard written > 0 else { return nil }
+  guard written <= 4 * 1024 * 1024 else { return "native diagnostic exceeds 4 MiB" }
+  var bytes = [CChar](repeating: 0, count: written + 1)
+  let status = ze_last_error_message(handle, &bytes, bytes.count, &written)
+  guard status == 0, written < bytes.count else {
+    return "native diagnostic copy failed (status \(status))"
+  }
+  return String(bytes: bytes.prefix(written).map { UInt8(bitPattern: $0) }, encoding: .utf8)
+    ?? "native diagnostic is not UTF-8"
 }

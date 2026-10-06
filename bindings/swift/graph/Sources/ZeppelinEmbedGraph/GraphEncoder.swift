@@ -18,7 +18,10 @@ final class GraphEncoder {
     bytes.append(contentsOf: encoded)
     return span
   }
-  func scalar(_ parameter: GraphParameter) throws -> UInt32 {
+  func scalar(_ parameter: GraphParameter, depth: Int = 0) throws -> UInt32 {
+    guard depth <= 16, values.count < 524288 else {
+      throw GraphError(.invalidRequest("parameter depth/element bound"))
+    }
     var v = ZeGraphValue()
     v.abi_size = graphSize(ZeGraphValue.self)
     switch parameter {
@@ -35,12 +38,31 @@ final class GraphEncoder {
     case .string(let s):
       v.tag = 4
       v.range = try string(s)
+    case .list(let elements):
+      guard depth < 16, elements.count <= 524288 - values.count else {
+        throw GraphError(.invalidRequest("parameter depth/element bound"))
+      }
+      let indices = try elements.map { try scalar($0, depth: depth + 1) }
+      v.tag = 7
+      v.list_kind = 0
+      v.range = try range(children.count, indices.count)
+      children.append(contentsOf: indices)
     }
     guard let index = UInt32(exactly: values.count) else {
       throw GraphError(.invalidRequest("values too large"))
     }
     values.append(v)
     return index
+  }
+  func parameters(_ bindings: [String: GraphParameter]) throws -> [ZeGraphParameterValue] {
+    try bindings.keys.sorted().map { name in
+      guard let value = bindings[name] else { throw GraphError(.invalidRequest("parameter")) }
+      var p = ZeGraphParameterValue()
+      p.abi_size = graphSize(ZeGraphParameterValue.self)
+      p.name = try string(name)
+      p.value = try scalar(value)
+      return p
+    }
   }
   func property(_ p: GraphProperty) throws -> UInt32 {
     var kind: GraphListKind
@@ -66,7 +88,7 @@ final class GraphEncoder {
       kind = .empty
       elements = []
     }
-    let indices = try elements.map(scalar)
+    let indices = try elements.map { try scalar($0) }
     var v = ZeGraphValue()
     v.abi_size = graphSize(ZeGraphValue.self)
     v.tag = 7

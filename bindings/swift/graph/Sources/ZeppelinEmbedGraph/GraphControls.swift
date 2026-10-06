@@ -102,3 +102,67 @@ func withGraphTower<T>(
     return try withUnsafePointer(to: &native, body)
   }
 }
+
+// Runtime work allowances; peak owned bytes is a measurement, not an allowance.
+public enum GraphWorkCategory: UInt32, Sendable, CaseIterable {
+  case operatorRows, adjacencyEntries, expressions, hashProbes, completedRows, completedBytes,
+    preparedPayloadBytes, completedABIBytes, vectorCoordinates, vectorBytes, lexicalPostings,
+    lexicalBlocks, searchInvocations, lookups, scans, paths, rowsIn, rowsOut, joinProbes,
+    groupKeys, eligibilityEntries, copiedBytes
+}
+public struct GraphQueryLimits: Sendable {
+  public var queryBytes: UInt64?
+  public var work: [GraphWorkCategory: UInt64]
+  public init(queryBytes: UInt64? = nil, work: [GraphWorkCategory: UInt64] = [:]) {
+    self.queryBytes = queryBytes
+    self.work = work
+  }
+}
+public struct GraphQueryOptions: Sendable {
+  public var queryTower: EmbeddingTower?
+  public var alignmentDigest: Data
+  public var limits: GraphQueryLimits?
+  public init(
+    queryTower: EmbeddingTower? = nil, alignmentDigest: Data = Data(),
+    limits: GraphQueryLimits? = nil
+  ) {
+    self.queryTower = queryTower
+    self.alignmentDigest = alignmentDigest
+    self.limits = limits
+  }
+  func withOptions<T>(_ body: (UnsafePointer<ZeGraphQueryOptions>) throws -> T) rethrows -> T {
+    try withGraphTower(queryTower) { tower in
+      try Array(alignmentDigest).withUnsafeBufferPointer { digest in
+        try withLimits(limits) { limits in
+          var options = ZeGraphQueryOptions()
+          options.abi_size = graphSize(ZeGraphQueryOptions.self)
+          options.query_tower = tower
+          options.alignment_digest = ZeGraphBytes(data: digest.baseAddress, count: digest.count)
+          options.limits = limits
+          return try withUnsafePointer(to: &options, body)
+        }
+      }
+    }
+  }
+}
+func withLimits<T>(
+  _ limits: GraphQueryLimits?, _ body: (UnsafePointer<ZeGraphQueryLimits>?) throws -> T
+) rethrows -> T {
+  guard let limits else { return try body(nil) }
+  let work = limits.work.keys.sorted { $0.rawValue < $1.rawValue }.map { kind in
+    var item = ZeGraphWorkLimit()
+    item.abi_size = graphSize(ZeGraphWorkLimit.self)
+    item.kind = kind.rawValue
+    item.limit = limits.work[kind] ?? 0
+    return item
+  }
+  return try work.withUnsafeBufferPointer { work in
+    var native = ZeGraphQueryLimits()
+    native.abi_size = graphSize(ZeGraphQueryLimits.self)
+    native.has_query_bytes = limits.queryBytes == nil ? 0 : 1
+    native.query_bytes = limits.queryBytes ?? 0
+    native.work = work.baseAddress
+    native.work_count = work.count
+    return try withUnsafePointer(to: &native, body)
+  }
+}

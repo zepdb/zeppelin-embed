@@ -35,12 +35,13 @@ public enum GraphProperty: Sendable, Equatable {
   case strings([String])
   case emptyList
 }
-public enum GraphParameter: Sendable {
+public indirect enum GraphParameter: Sendable {
   case null
   case bool(Bool)
   case integer(Int64)
   case double(Double)
   case string(String)
+  case list([GraphParameter])
 }
 public enum GraphListKind: UInt32, Sendable { case query, bool, integer, double, string, empty }
 public indirect enum GraphValue: Sendable, Equatable {
@@ -178,9 +179,9 @@ public struct GraphResult: Sendable {
   public let columns: [GraphColumn]
   public let rows: [[GraphValue]]
 }
-public struct GraphError: Error, Sendable, CustomStringConvertible {
+public struct GraphError: Error, Sendable, CustomStringConvertible, LocalizedError {
   public var description: String {
-    "GraphError(\(reason), disposition: \(String(describing: metadata?.disposition)))"
+    "GraphError(\(reason), disposition: \(String(describing: metadata?.disposition)))\(nativeMessage.map { ": " + $0 } ?? "")"
   }
   public enum Reason: Sendable {
     case native(Int32)
@@ -192,9 +193,12 @@ public struct GraphError: Error, Sendable, CustomStringConvertible {
     if case .native(let code) = reason { return ZeppelinError(rawValue: code) }
     return nil
   }
+  public var errorDescription: String? { description }
+  public let nativeMessage: String?
   public let reason: Reason
   public let metadata: GraphMetadata?
-  init(_ reason: Reason, metadata: GraphMetadata? = nil) {
+  init(_ reason: Reason, metadata: GraphMetadata? = nil, nativeMessage: String? = nil) {
+    self.nativeMessage = nativeMessage
     self.reason = reason
     self.metadata = metadata
   }
