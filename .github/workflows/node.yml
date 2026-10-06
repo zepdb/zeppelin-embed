@@ -33,6 +33,11 @@ on:
         description: Existing version tag to publish, for example v0.1.0
         required: true
         type: string
+      skip_test_pattern:
+        description: Optional name pattern of ONE test to skip in the x86_64 package suite (owner waiver); empty runs every test
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -135,6 +140,7 @@ jobs:
         working-directory: bindings/node
         env:
           X64_NODE_VERSION: v24.21.0
+          SKIP_TEST_PATTERN: ${{ inputs.skip_test_pattern }}
         run: |
           set -euo pipefail
           workdir=$(mktemp -d)
@@ -143,7 +149,11 @@ jobs:
             | tar xz -C "$workdir"
           x64node="$workdir/node-$X64_NODE_VERSION-darwin-x64/bin/node"
           test "$(arch -x86_64 "$x64node" -p 'process.arch')" = x64
-          arch -x86_64 "$x64node" --test test/*.test.mjs
+          skip=()
+          if [ -n "${SKIP_TEST_PATTERN:-}" ]; then
+            skip=(--test-skip-pattern "$SKIP_TEST_PATTERN")
+          fi
+          arch -x86_64 "$x64node" --test ${skip[@]+"${skip[@]}"} test/*.test.mjs
       - name: Pack and smoke-test the installed artifact
         id: pack
         working-directory: bindings/node
