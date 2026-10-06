@@ -26,6 +26,10 @@ use zeppelin_embed::segment::layout::RegionKind;
 use zeppelin_embed::vfs::StdVfs;
 use zeppelin_embed_adversarial_oracle::storage_durability as independent;
 
+#[allow(dead_code)]
+#[path = "../../scripts/fixtures/common.rs"]
+mod release_fixture;
+
 const MANIFEST: &str = "manifest.ze";
 const WAL: &str = "wal.ze";
 const STORAGE_CHILD_DIRECTORY: &str = "ZE_STORAGE_ADAPTER_CHILD_DIRECTORY";
@@ -5503,6 +5507,21 @@ pub(crate) mod tests {
 #[cfg(test)]
 mod namespace_probe_tests {
     #[test]
+    fn conversion_faults_have_clean_controls_and_can_fire() {
+        let mut coverage = super::super::coverage::CoverageRegistry::default();
+        super::namespace_conversion_probe(256, &mut coverage).expect("conversion fault pairs");
+        for key in super::super::coverage::REQUIRED_NAMESPACE_COVERAGE
+            .iter()
+            .filter(|k| k.contains("conversion"))
+        {
+            assert!(
+                coverage.count(key) > 0,
+                "missing executed conversion key {key}"
+            );
+        }
+    }
+
+    #[test]
     fn live_namespace_faults_have_clean_controls_and_can_fire() {
         let mut coverage = super::super::coverage::CoverageRegistry::default();
         for seed in [256, 257] {
@@ -5510,7 +5529,7 @@ mod namespace_probe_tests {
         }
         assert_eq!(
             super::super::coverage::REQUIRED_NAMESPACE_COVERAGE.len(),
-            39
+            58
         );
         let required = super::super::campaign::CampaignSpec::for_kind(
             super::super::campaign::CampaignKind::StorageDurability,
@@ -5662,11 +5681,19 @@ fn namespace_document(id: u128, revision: u64, sentinel: &[u8]) -> IngestDocumen
 }
 
 fn namespace_observe(root: &Path, names: &[&str]) -> Result<independent::NamespaceImage, String> {
+    namespace_observe_with_options(root, names, &OpenOptions::new())
+}
+
+fn namespace_observe_with_options(
+    root: &Path,
+    names: &[&str],
+    options: &OpenOptions,
+) -> Result<independent::NamespaceImage, String> {
     use zeppelin_embed::lifecycle::DocumentFields;
     let mut image = independent::NamespaceImage::new();
     // Reopen in the reverse order: siblings must not supply recovery state.
     for &name in names.iter().rev() {
-        let store = Store::open(root.join(name), OpenOptions::new())
+        let store = Store::open(root.join(name), options.clone())
             .map_err(|e| format!("namespace recovery {name}: {e}"))?;
         let mut rows = std::collections::BTreeMap::new();
         let mut cursor = None;
@@ -6113,6 +6140,167 @@ pub fn namespace_probe(
                 "storage.namespace.live-batch"
             });
         }
+    }
+    namespace_conversion_probe(seed, coverage)?;
+    Ok(())
+}
+
+/// Conversion callbacks name actual completed I/O, including the only root rename.
+pub const NAMESPACE_CONVERSION_SITES: [(&str, &str); 6] = [
+    ("copy", "conversion copy"),
+    ("write", "conversion write"),
+    ("file-sync", "conversion file sync"),
+    ("directory-sync", "conversion directory sync"),
+    ("publish", "conversion publish"),
+    ("parent-sync", "conversion parent sync"),
+];
+
+fn namespace_tree_bytes(
+    root: &Path,
+) -> Result<std::collections::BTreeMap<PathBuf, Vec<u8>>, String> {
+    fn visit(
+        root: &Path,
+        directory: &Path,
+        files: &mut std::collections::BTreeMap<PathBuf, Vec<u8>>,
+    ) -> Result<(), String> {
+        for entry in std::fs::read_dir(directory).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+                visit(root, &entry.path(), files)?;
+            } else {
+                files.insert(
+                    entry
+                        .path()
+                        .strip_prefix(root)
+                        .map_err(|e| e.to_string())?
+                        .to_owned(),
+                    std::fs::read(entry.path()).map_err(|e| e.to_string())?,
+                );
+            }
+        }
+        Ok(())
+    }
+    let mut files = std::collections::BTreeMap::new();
+    visit(root, root, &mut files)?;
+    Ok(files)
+}
+
+fn namespace_conversion_run(
+    seed: u64,
+    site: (&str, &str),
+    inject: bool,
+) -> Result<independent::NamespaceImage, String> {
+    use zeppelin_embed::lifecycle::namespace_relocate_with_steps;
+    let temp = tempdir().map_err(|e| e.to_string())?;
+    let source = temp.path().join("source");
+    copy_namespace_tree(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/releases/v0.6.0-namespaces"),
+        &source,
+    )?;
+    let before = namespace_tree_bytes(&source)?;
+    let destination = temp.path().join("converted");
+    let nth = if matches!(site.0, "publish" | "parent-sync") {
+        1
+    } else {
+        seed % 2 + 1
+    };
+    let mut matches = 0;
+    let mut fired = false;
+    let result = namespace_relocate_with_steps(&source, &destination, &mut |step| {
+        if step == site.1 {
+            matches += 1;
+            if inject && matches == nth {
+                fired = true;
+                return Err(std::io::Error::other("seeded conversion interruption"));
+            }
+        }
+        Ok(())
+    });
+    if inject {
+        if !fired || result.is_ok() {
+            return Err(format!("conversion {} cannot fire: {result:?}", site.0));
+        }
+    } else {
+        result.map_err(|e| e.to_string())?;
+    }
+    if namespace_tree_bytes(&source)? != before {
+        return Err("conversion modified the legacy source".into());
+    }
+    let published = !inject || matches!(site.0, "publish" | "parent-sync");
+    if destination.exists() != published {
+        return Err("conversion published a staging prefix".into());
+    }
+    let observed = if published {
+        // Whole-root rename and copy must retain the portable identity.
+        let renamed = temp.path().join("renamed");
+        std::fs::rename(&destination, &renamed).map_err(|e| e.to_string())?;
+        let observed = namespace_observe_with_options(
+            &renamed,
+            &["a", "b"],
+            &release_fixture::options(false),
+        )?;
+        if namespace_observe_with_options(&renamed, &["a", "b"], &release_fixture::options(false))?
+            != observed
+        {
+            return Err("repeated converted recovery changed the image".into());
+        }
+        let copied = temp.path().join("copied");
+        copy_namespace_tree(&renamed, &copied)?;
+        if namespace_observe_with_options(&copied, &["a", "b"], &release_fixture::options(false))?
+            != observed
+        {
+            return Err("converted whole-root copy changed the image".into());
+        }
+        let detached = temp.path().join("detached/a");
+        copy_namespace_tree(&renamed.join("a"), &detached)?;
+        match Store::open(&detached, OpenOptions::read_only()) {
+            Err(StoreError::Io { source, .. })
+                if source.kind() == std::io::ErrorKind::InvalidData
+                    && source.to_string() == "portable namespace requires its matching root" => {}
+            _ => return Err("converted detached participant did not refuse".into()),
+        }
+        observed
+    } else {
+        independent::NamespaceImage::new()
+    };
+    Ok(observed)
+}
+
+fn namespace_conversion_probe(
+    seed: u64,
+    coverage: &mut super::coverage::CoverageRegistry,
+) -> Result<(), String> {
+    // Literal release oracle: both namespaces have live revisions 1:1, 2:1, 4:2.
+    // This expectation is independent of the converter and observed engine state.
+    let expected = ["a", "b"]
+        .into_iter()
+        .map(|name| {
+            (
+                name.to_owned(),
+                [(1, 1), (2, 1), (4, 2)].into_iter().collect(),
+            )
+        })
+        .collect::<independent::NamespaceImage>();
+    let absent = independent::NamespaceImage::new();
+    for site in NAMESPACE_CONVERSION_SITES {
+        let clean = namespace_conversion_run(seed, site, false)?;
+        independent::check_namespace_publication(&absent, &expected, &clean, true)?;
+        let observed = namespace_conversion_run(seed, site, true)?;
+        let published = matches!(site.0, "publish" | "parent-sync");
+        independent::check_namespace_publication(&absent, &expected, &observed, published)?;
+        // Plant a one-participant image under each same-seed cut. The independent
+        // comparator must reject it for both absent and committed destinations.
+        let partial = [("a".to_owned(), expected["a"].clone())]
+            .into_iter()
+            .collect();
+        if independent::check_namespace_publication(&absent, &expected, &partial, published).is_ok()
+        {
+            return Err("conversion comparator accepted partial publication".into());
+        }
+        for suffix in ["clean", "fired", "can-fire"] {
+            coverage.hit(format!("storage.namespace.conversion-{}.{suffix}", site.0));
+        }
+        coverage.hit("storage.namespace.conversion-comparator-rejects-partial");
     }
     Ok(())
 }

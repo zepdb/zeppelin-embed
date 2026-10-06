@@ -14,7 +14,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use xxhash_rust::xxh3::xxh3_64;
 mod portable;
+mod relocate;
 pub use portable::NamespaceRootId;
+pub use relocate::namespace_relocate;
+#[cfg(any(test, feature = "test-seams"))]
+pub use relocate::namespace_relocate_with_steps;
 
 // Constructed only by the coordinator for its own unpublished participant.
 pub(crate) struct PrivatePreparation {

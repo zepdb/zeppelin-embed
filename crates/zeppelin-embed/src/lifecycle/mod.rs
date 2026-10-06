@@ -33,13 +33,13 @@ mod snapshot_copy;
 mod snapshot_view;
 pub use namespace_batch::{
     LiveNamespaceMutation, NamespaceMutation, NamespaceRootId, namespace_batch,
-    namespace_batch_live,
+    namespace_batch_live, namespace_relocate,
 };
 #[cfg(any(test, feature = "test-seams"))]
 #[doc(hidden)]
 pub use namespace_batch::{
     namespace_batch_live_on_vfs, namespace_batch_live_with_steps, namespace_batch_with_steps,
-    namespace_reclaim, namespace_reclaim_on_vfs,
+    namespace_reclaim, namespace_reclaim_on_vfs, namespace_relocate_with_steps,
 };
 pub(crate) mod stats;
 

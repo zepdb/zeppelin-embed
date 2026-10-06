@@ -158,7 +158,7 @@ fn file_hashes(root: &Path) -> std::collections::BTreeMap<std::path::PathBuf, u6
 }
 
 #[test]
-#[ignore = "documents ZE-370; flip to a passing relocation test when fixed"]
+#[ignore = "legacy roots copied without explicit conversion remain path-bound"]
 fn a_relocated_0_6_0_namespace_store_is_refused_today() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/releases/v0.6.0-namespaces");
@@ -193,6 +193,66 @@ fn a_relocated_0_6_0_namespace_store_is_refused_today() {
             "failed read-only open modified the copy"
         );
     }
+}
+
+#[test]
+fn a_relocated_0_6_0_namespace_store_opens_after_explicit_conversion() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/releases/v0.6.0-namespaces");
+    let fixture_before = file_hashes(&fixture);
+    let scratch = tempfile::tempdir().expect("scratch");
+    let source = scratch.path().join("source");
+    copy_tree(&fixture, &source);
+    let source_before = file_hashes(&source);
+    let json = std::fs::read_to_string(source.join("expected.json")).expect("oracle");
+    let destination = scratch.path().join("destination");
+    zeppelin_embed::lifecycle::namespace_relocate(&source, &destination).expect("convert");
+    for name in ["a", "b"] {
+        let store = Store::open(destination.join(name), common::options(true))
+            .expect("explicitly converted participant opens");
+        check(&store, &json, false);
+        store.close().expect("close");
+    }
+    let relocated = scratch.path().join("relocated-again");
+    std::fs::rename(&destination, &relocated).expect("whole-root rename");
+    for name in ["a", "b"] {
+        let store =
+            Store::open(relocated.join(name), common::options(true)).expect("relocated reader");
+        check(&store, &json, false);
+        store.close().expect("close reader");
+    }
+    let generations = zeppelin_embed::lifecycle::namespace_batch(
+        &relocated,
+        ["a", "b"]
+            .into_iter()
+            .map(|name| zeppelin_embed::lifecycle::NamespaceMutation {
+                name: name.into(),
+                options: common::options(false),
+                upserts: vec![
+                    zeppelin_embed::ingest::IngestDocument::new(
+                        zeppelin_embed::ingest::DocumentVersion::new(
+                            DocId::new(100),
+                            zeppelin_embed::ingest::Revision::new(1),
+                        ),
+                        common::vector(0),
+                    )
+                    .with_text("zebra")
+                    .with_columns(vec![(ColumnId::new(1), PredicateValue::U64(100))]),
+                ],
+                deletes: vec![],
+                delete_where: None,
+            })
+            .collect(),
+    )
+    .expect("writable batch");
+    assert_eq!(generations, vec![7, 7]);
+    for name in ["a", "b"] {
+        let store = Store::open(relocated.join(name), common::options(true)).expect("reopen batch");
+        check(&store, &json, true);
+        store.close().expect("close reopened");
+    }
+    assert_eq!(file_hashes(&source), source_before);
+    assert_eq!(file_hashes(&fixture), fixture_before);
 }
 
 fn old_reader() -> &'static std::path::PathBuf {
@@ -398,9 +458,39 @@ fn the_v0_6_0_reader_refuses_portable_namespaces_without_changing_data() {
                 })
                 .map(|(path, _)| path)
                 .collect::<Vec<_>>();
-            eprintln!("ZE-383 old reader {mode} lock-file changes: {lock_changes:?}");
+            eprintln!("ZE-383/384 old reader {mode} lock-file changes: {lock_changes:?}");
         }
     };
+    let conversion = tempfile::tempdir().expect("conversion");
+    let source = conversion.path().join("source");
+    copy_tree(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/releases/v0.6.0-namespaces"),
+        &source,
+    );
+    let source_before = file_hashes(&source);
+    let converted = conversion.path().join("converted");
+    zeppelin_embed::lifecycle::namespace_relocate(&source, &converted)
+        .expect("explicit conversion");
+    for name in ["a", "b"] {
+        assert_refused(&converted, &converted.join(name));
+    }
+    namespace_delete_cascade(&converted, mutations(false)).expect("converted copy routes");
+    for name in ["a", "b"] {
+        assert_refused(&converted, &converted.join(name));
+        let routed = std::fs::read_dir(&converted)
+            .expect("entries")
+            .map(|e| e.expect("entry").path())
+            .find(|p| {
+                p.file_name()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|s| s.starts_with(".ze-batch-"))
+            })
+            .expect("route")
+            .join(name);
+        assert_refused(&converted, &routed);
+    }
+    assert_eq!(file_hashes(&source), source_before);
     let bootstrap = tempfile::tempdir().expect("bootstrap root");
     for name in ["a", "b"] {
         copy_tree(&fixture, &bootstrap.path().join(name));

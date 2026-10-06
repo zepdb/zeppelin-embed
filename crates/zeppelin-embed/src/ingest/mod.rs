@@ -53,7 +53,7 @@ pub use retention_fault::{
 };
 
 pub(crate) use active::{ActiveSegment, ActiveState, SealedTombstoneDemand, StoreWal};
-pub(crate) use atomic_batch::cut_interrupted_append;
+pub(crate) use atomic_batch::{committed_mutations_with_decisions, cut_interrupted_append};
 
 /// Stable application document identifier.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
