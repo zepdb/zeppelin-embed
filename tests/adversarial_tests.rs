@@ -7,6 +7,8 @@
 #![recursion_limit = "256"]
 
 mod adversarial;
+#[path = "adversarial/coverage_key_expectations.rs"]
+mod coverage_key_expectations;
 
 #[cfg(feature = "graph-cypher")]
 #[test]
@@ -19302,8 +19304,9 @@ fn one_runner_episode_reaches_required_native_response_contracts() {
 #[cfg(not(feature = "graph-cypher"))]
 #[test]
 fn native_graph_runner_keys_are_absent_without_graph_feature() {
-    // ZE-233 adds pre/post WAL rotation rename crash boundaries (88 -> 90).
-    assert_eq!(adversarial::coverage::REQUIRED_SMOKE_COVERAGE.len(), 90);
+    let mut actual = adversarial::coverage::required_smoke_coverage().collect::<Vec<_>>();
+    actual.sort_unstable();
+    assert_eq!(actual, coverage_key_expectations::expected_smoke_keys());
     assert!(
         !adversarial::coverage::required_smoke_coverage()
             .any(|key| key.starts_with("property-graph."))
@@ -19321,39 +19324,9 @@ fn native_graph_runner_keys_are_absent_without_graph_feature() {
 #[cfg(feature = "graph-cypher")]
 #[test]
 fn native_graph_runner_keys_are_active_with_graph_feature() {
-    println!(
-        "ZE-172 graph-result-test-support={} observed native graph keys={}",
-        cfg!(feature = "graph-result-test-support"),
-        adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len()
-    );
-    let active = adversarial::coverage::required_smoke_coverage().collect::<BTreeSet<_>>();
-    for key in adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE {
-        assert!(active.contains(key), "enabled graph runner omitted {key}");
-    }
-    // ZE-75 measured 405/425 on Unix; its 23 family keys are separate.
-    // ZE-65 observes 387/407 on Unix after ten integrated receipts.
-    // ZE-170 measured the pre-change lengths as 304 and 324; the committed 278
-    // and 298 had drifted, so this pin was already red on main. Both are the
-    // observed baseline plus the two ZE-170 read-view text receipts. ZE-53 S3
-    // adds eight query-entry keys; ZE-56 adds six cypher-entry keys, ZE-57
-    // adds four Cypher write refusal/drain keys and ZE-51 adds the
-    // second-chunk reservation and blocking row-cap receipts. ZE-255 adds
-    // streaming retention under a one-row storage capacity. ZE-192 and
-    // ZE-176 add seven receipt keys; the pin had drifted by three, so it
-    // is reset to the observed lengths. ZE-190 adds fence-only recovery;
-    // ZE-275 adds three close schedules. ZE-172 adds eighteen byte-fault,
-    // clean-control, selection, open-counter and can-fire keys. ZE-241 adds
-    // four C entry receipts.
-    #[cfg(not(feature = "graph-result-test-support"))]
-    assert_eq!(
-        adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        405 + if cfg!(unix) { 7 } else { 0 }
-    );
-    #[cfg(feature = "graph-result-test-support")]
-    assert_eq!(
-        adversarial::coverage::REQUIRED_GRAPH_SMOKE_COVERAGE.len(),
-        432 + if cfg!(unix) { 7 } else { 0 }
-    );
+    let mut actual = adversarial::coverage::required_smoke_coverage().collect::<Vec<_>>();
+    actual.sort_unstable();
+    assert_eq!(actual, coverage_key_expectations::expected_smoke_keys());
 }
 
 #[cfg(feature = "graph-cypher")]
@@ -19565,10 +19538,15 @@ fn graph_response_runner_keys_are_absent_without_test_hook() {
 #[cfg(feature = "graph-result-test-support")]
 #[test]
 fn graph_response_runner_keys_are_active_with_test_hook() {
-    let response_keys = adversarial::coverage::required_smoke_coverage()
+    let mut response_keys = adversarial::coverage::required_smoke_coverage()
         .filter(|key| key.starts_with("property-graph.response."))
         .collect::<Vec<_>>();
-    assert_eq!(response_keys.len(), 20);
+    response_keys.sort_unstable();
+    let expected = coverage_key_expectations::expected_smoke_keys()
+        .into_iter()
+        .filter(|key| key.starts_with("property-graph.response."))
+        .collect::<Vec<_>>();
+    assert_eq!(response_keys, expected);
 }
 
 #[cfg(feature = "graph-cypher")]
