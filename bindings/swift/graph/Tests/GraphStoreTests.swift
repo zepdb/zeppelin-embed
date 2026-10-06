@@ -29,6 +29,29 @@ final class GraphStoreTests: XCTestCase {
 }
 
 extension GraphStoreTests {
+  func testInstalledConsumerCypherCompletesAndOwnsResult() async throws {
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: path) }
+    let store = try await ZeppelinGraphStore.open(at: path, mode: .create)
+    var batch = GraphBatch()
+    let a = batch.node(
+      key: GraphKey(namespace: "", key: "a"), revision: 1,
+      .create(GraphNodeImage(labels: ["Doc"], properties: ["title": .string("alpha")])))
+    let b = batch.node(
+      key: GraphKey(namespace: "", key: "b"), revision: 1,
+      .create(GraphNodeImage(labels: ["Doc"])))
+    batch.relationship(
+      key: GraphKey(namespace: "", key: "r"), revision: 1,
+      .create(GraphRelationshipImage(type: "LINK"), .local(a), .local(b)))
+    _ = try await store.apply(batch)
+    let result = try await store.cypher(
+      "MATCH (n:Doc)-[:LINK]->(m) WHERE n.title = $title RETURN n.title, $number",
+      parameters: ["title": .string("alpha"), "number": .integer(42)])
+    try await store.close()
+    XCTAssertEqual(result.rows, [[.string("alpha"), .integer(42)]])
+    XCTAssertEqual(result.metadata.admittedGeneration, 1)
+  }
+
   func testCompletedResultsRemainUsableAfterClose() async throws {
     let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer {

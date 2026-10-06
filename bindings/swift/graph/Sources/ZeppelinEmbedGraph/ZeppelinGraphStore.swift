@@ -31,12 +31,18 @@ public actor ZeppelinGraphStore {
   }
   deinit { if let token { _ = calls.close(token) } }
 
-  // Same detached blocking-call mechanism as ZeppelinStore, in the separate
-  // graph product. No actor write queue, automatic retries or Task bridge.
+  // Native Cypher needs more stack than a Swift cooperative worker provides.
+  // Keep each synchronous call and its borrowed buffers on one independent thread.
   nonisolated static func runBlocking<T: Sendable>(_ body: @escaping @Sendable () throws -> T)
     async throws -> T
   {
-    try await Task.detached(operation: body).value
+    try await withCheckedThrowingContinuation { continuation in
+      let thread = Thread {
+        continuation.resume(with: Result { try body() })
+      }
+      thread.stackSize = 8 * 1024 * 1024
+      thread.start()
+    }
   }
   public static func open(
     at path: URL, mode: OpenMode = .readWrite,
