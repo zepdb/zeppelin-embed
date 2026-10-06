@@ -477,11 +477,15 @@ pub(super) fn checkpoint(r: &mut TreeResources<'_>, work: Work) -> Result<(), Tr
     let units = match work {
         Work::HeaderBytes(n) | Work::EntryBytes(n) | Work::CopyBytes(n) => n as u64,
         Work::Compare => 1,
-        Work::Finish => 0,
+        Work::Finish | Work::MergeRun => 0,
     };
     r.step(units)?;
     match work {
-        Work::EntryBytes(_) => r.read_event(NativeReadEvent::AdjacencyEntry),
+        Work::EntryBytes(_) => {
+            r.read_event(NativeReadEvent::AdjacencyEntry)?;
+            r.read_event(NativeReadEvent::PhysicalAdjacency)
+        }
+        Work::MergeRun => r.read_event(NativeReadEvent::MergeRun),
         Work::CopyBytes(bytes) => r
             .read_event(NativeReadEvent::CopiedBytes(u64::try_from(bytes).map_err(
                 |_| TreeError::Runtime(RuntimeError::Limit(WorkKind::CopiedBytes)),

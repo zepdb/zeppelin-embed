@@ -1262,6 +1262,12 @@ fn property_only_with_detach_preserves_adjacency_then_raw_cleanup_is_paired() {
             16,
             "3 base plus 2 delete entries are visited in decode and both merge walks, then the one merged survivor is examined before liveness"
         );
+        assert_eq!(
+            context.counters().get(WorkKind::AdjacencyPhysicalEntries),
+            15
+        );
+        assert_eq!(context.counters().get(WorkKind::AdjacencyMergedVisits), 1);
+        assert_eq!(context.counters().get(WorkKind::AdjacencyMergeRuns), 3);
         assert_eq!(context.counters().get(WorkKind::Scans), 2);
         assert_eq!(context.counters().get(WorkKind::Lookups), 4);
         assert_eq!(

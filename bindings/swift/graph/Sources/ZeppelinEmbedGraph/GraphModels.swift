@@ -283,3 +283,11 @@ public struct EmbeddingTower: Sendable {
     self.operatingSystemBuild = operatingSystemBuild
   }
 }
+
+/// Native capacities only; Swift decoded copies are caller buffers.
+public struct GraphResources: Sendable {
+  public let engineBytes: UInt64
+  public let enginePeakBytes: UInt64
+  public let applicationBytes: UInt64
+  public let applicationPeakBytes: UInt64
+}

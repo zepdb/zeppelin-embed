@@ -196,6 +196,7 @@ impl<'a> PreparedImage<'a> {
         endpoints: Option<(NodeId, NodeId)>,
         control: &mut WriteControl<'_>,
     ) -> Result<Encoded<'a>, StageError> {
+        let _work = self.memory.resources().begin_work();
         let shape = match self.relationship_type {
             None => EntityShape::Node,
             Some(relationship_type) => {
@@ -210,6 +211,7 @@ impl<'a> PreparedImage<'a> {
         let mut bytes = Arena::new(self.memory, self.length, control)?;
         let mut output = Hashed {
             output: &mut bytes,
+            resources: self.memory.resources(),
             hash: xxhash_rust::xxh3::Xxh3::new(),
         };
         self.write_to(&mut output, endpoints, control)?;
@@ -227,11 +229,16 @@ impl<'a> PreparedImage<'a> {
 }
 struct Hashed<'a> {
     output: &'a mut dyn Write,
+    resources: &'a super::super::resources::GraphResources,
     hash: xxhash_rust::xxh3::Xxh3,
 }
 impl Write for Hashed<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let count = self.output.write(bytes)?;
+        self.resources.record_work(
+            crate::lifecycle::stats::GraphWorkKind::CanonicalEncodingBytes,
+            count as u64,
+        );
         self.hash
             .update(bytes.get(..count).ok_or(io::ErrorKind::InvalidData)?);
         Ok(count)

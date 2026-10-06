@@ -566,6 +566,7 @@ pub struct GraphSearchCounters {
     hops: usize,
     candidates_scored: usize,
     candidates_rescored: usize,
+    candidate_window_peak: usize,
     pushes: usize,
     visited: usize,
     visited_epoch_cleared: bool,
@@ -594,6 +595,11 @@ pub struct DeterministicGraphWork {
 }
 
 impl GraphSearchCounters {
+    /// Maximum actual retained candidate pool/frontier entries.
+    pub const fn candidate_window_peak(self) -> usize {
+        self.candidate_window_peak
+    }
+
     /// Returns the work tuple without caller scheduling attribution.
     #[must_use]
     pub const fn deterministic_work(self) -> DeterministicGraphWork {
@@ -1590,6 +1596,7 @@ impl<'a> GraphSearcher<'a> {
         let mut counters = GraphSearchCounters {
             effective_ef: ef,
             candidates_rescored: 0,
+            candidate_window_peak: 0,
             hops: 0,
             candidates_scored: 0,
             pushes: 0,
@@ -1978,6 +1985,10 @@ impl<'a> GraphSearcher<'a> {
                 })?;
                 pushed = true;
             }
+            counters.candidate_window_peak = counters
+                .candidate_window_peak
+                .max(self.scratch.pool.len())
+                .max(self.scratch.frontier.len());
             if pushed
                 && prefetch.is_enabled()
                 && let Some(head) = self.scratch.frontier.first()
@@ -3238,6 +3249,27 @@ mod tests {
         });
 
         assert!(result.is_ok(), "property result: {result:?}");
+    }
+
+    #[test]
+    fn ze76_candidate_window_peak_counts_entries_not_reserved_slots() {
+        let (encoded, rescore) = complete_graph_fixture(5);
+        let graph = decode_node_blocks(encoded.as_bytes()).unwrap();
+        let mut scratch = GraphSearchScratch::with_ef_capacity(
+            graph.node_count(),
+            graph.layout().max_degree(),
+            64,
+        )
+        .unwrap();
+        let query = vec![0.0; DIMS];
+        let mut searcher = GraphSearcher::new(graph, &rescore, &mut scratch).unwrap();
+        let result = searcher
+            .search(GraphSearchRequest::new(&query, 1, 7).with_ef(5), None)
+            .unwrap();
+        assert_eq!(result.candidates().len(), 1);
+        // Five connected literal rows, ef=5: all five enter the retained pool.
+        // The separately allocated 64-slot scratch is not 64 candidates.
+        assert_eq!(result.counters().candidate_window_peak(), 5);
     }
 
     fn complete_graph_fixture(rows: usize) -> (crate::graph::block::EncodedNodeBlocks, Vec<f32>) {

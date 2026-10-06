@@ -94,160 +94,165 @@ impl<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g> for NativeSearchAdapter<'_> {
         hits: &mut QueryArena<'m, 'g, SearchHit>,
         context: &mut RuntimeContext<'v, 'm, 'g>,
     ) -> Result<SearchReport, NativeExecutionError> {
-        let before = context.counters();
-        let ctx = NativeRetrievalContext::new(view, context).map_err(retrieval)?;
-        let bounds = SearchBounds::new(i64::from(invocation.k), u64::from(invocation.window))?;
-        match invocation.arguments {
-            SearchArguments::Vector { vector, mode } => {
-                let coordinates = copy_vector(context.memory(), vector)?;
-                let prepared = ctx
-                    .prepare_vector(
-                        coordinates.as_slice(),
-                        mode,
-                        eligibility(invocation),
-                        context,
-                    )
-                    .map_err(retrieval)?
-                    .with_options(invocation.options);
-                let ranked = ctx
-                    .rank_vector(&prepared, bounds, context)
-                    .map_err(retrieval)?;
-                let report = ranked.report();
-                for hit in ranked.hits() {
-                    hits.push(SearchHit {
-                        node: hit.node,
-                        score: hit.distance,
-                        vector_distance: None,
-                        lexical_score: None,
+        let outer_peak = context.reset_candidate_window_peak()?;
+        let result = (|| {
+            let before = context.counters();
+            let ctx = NativeRetrievalContext::new(view, context).map_err(retrieval)?;
+            let bounds = SearchBounds::new(i64::from(invocation.k), u64::from(invocation.window))?;
+            match invocation.arguments {
+                SearchArguments::Vector { vector, mode } => {
+                    let coordinates = copy_vector(context.memory(), vector)?;
+                    let prepared = ctx
+                        .prepare_vector(
+                            coordinates.as_slice(),
+                            mode,
+                            eligibility(invocation),
+                            context,
+                        )
+                        .map_err(retrieval)?
+                        .with_options(invocation.options);
+                    let ranked = ctx
+                        .rank_vector(&prepared, bounds, context)
+                        .map_err(retrieval)?;
+                    let report = ranked.report();
+                    for hit in ranked.hits() {
+                        hits.push(SearchHit {
+                            node: hit.node,
+                            score: hit.distance,
+                            vector_distance: None,
+                            lexical_score: None,
+                        })
+                        .map_err(RuntimeError::Memory)?;
+                    }
+                    Ok(SearchReport {
+                        call: invocation.call,
+                        generation: invocation.generation,
+                        kind: SearchKind::Vector,
+                        requested_tier: report.requested_tier,
+                        actual_tier: report.actual_tier,
+                        precision: report.precision,
+                        coverage: report.coverage,
+                        vector_leg: report.leg,
+                        lexical_leg: LegState::NotRequested,
+                        document_epoch: None,
+                        query_epoch: None,
+                        tokenizer_epoch: None,
+                        effective_alpha_bits: 0,
+                        normalization_version: 0,
+                        rules_version: 0,
+                        candidate_count: report.eligible_members,
+                        cross_scored_count: 0,
+                        fallback_count: report.fallback_count,
+                        cross_score_complete: false,
+                        work: context.counters().since(before),
                     })
-                    .map_err(RuntimeError::Memory)?;
                 }
-                Ok(SearchReport {
-                    call: invocation.call,
-                    generation: invocation.generation,
-                    kind: SearchKind::Vector,
-                    requested_tier: report.requested_tier,
-                    actual_tier: report.actual_tier,
-                    precision: report.precision,
-                    coverage: report.coverage,
-                    vector_leg: report.leg,
-                    lexical_leg: LegState::NotRequested,
-                    document_epoch: None,
-                    query_epoch: None,
-                    tokenizer_epoch: None,
-                    effective_alpha_bits: 0,
-                    normalization_version: 0,
-                    rules_version: 0,
-                    candidate_count: report.eligible_members,
-                    cross_scored_count: 0,
-                    fallback_count: report.fallback_count,
-                    cross_score_complete: false,
-                    work: context.counters().since(before),
-                })
-            }
-            SearchArguments::Text { query } => {
-                let prepared = ctx
-                    .prepare_text_with_options(
-                        self.analyzer,
-                        query,
-                        eligibility(invocation),
-                        invocation.options,
-                        context,
-                    )
-                    .map_err(retrieval)?;
-                let ranked = ctx
-                    .rank_text(&prepared, bounds, context)
-                    .map_err(retrieval)?;
-                let report = ranked.report();
-                for hit in ranked.hits() {
-                    hits.push(SearchHit {
-                        node: hit.node,
-                        score: hit.bm25,
-                        vector_distance: None,
-                        lexical_score: None,
+                SearchArguments::Text { query } => {
+                    let prepared = ctx
+                        .prepare_text_with_options(
+                            self.analyzer,
+                            query,
+                            eligibility(invocation),
+                            invocation.options,
+                            context,
+                        )
+                        .map_err(retrieval)?;
+                    let ranked = ctx
+                        .rank_text(&prepared, bounds, context)
+                        .map_err(retrieval)?;
+                    let report = ranked.report();
+                    for hit in ranked.hits() {
+                        hits.push(SearchHit {
+                            node: hit.node,
+                            score: hit.bm25,
+                            vector_distance: None,
+                            lexical_score: None,
+                        })
+                        .map_err(RuntimeError::Memory)?;
+                    }
+                    Ok(SearchReport {
+                        call: invocation.call,
+                        generation: invocation.generation,
+                        kind: SearchKind::Lexical,
+                        requested_tier: None,
+                        actual_tier: None,
+                        precision: ScorePrecision::NotApplicable,
+                        coverage: report.coverage,
+                        vector_leg: LegState::NotRequested,
+                        lexical_leg: report.domain.leg,
+                        document_epoch: None,
+                        query_epoch: None,
+                        tokenizer_epoch: None,
+                        effective_alpha_bits: 0,
+                        normalization_version: 0,
+                        rules_version: 0,
+                        candidate_count: report.domain.eligible_matches,
+                        cross_scored_count: 0,
+                        fallback_count: 0,
+                        cross_score_complete: false,
+                        work: context.counters().since(before),
                     })
-                    .map_err(RuntimeError::Memory)?;
                 }
-                Ok(SearchReport {
-                    call: invocation.call,
-                    generation: invocation.generation,
-                    kind: SearchKind::Lexical,
-                    requested_tier: None,
-                    actual_tier: None,
-                    precision: ScorePrecision::NotApplicable,
-                    coverage: report.coverage,
-                    vector_leg: LegState::NotRequested,
-                    lexical_leg: report.domain.leg,
-                    document_epoch: None,
-                    query_epoch: None,
-                    tokenizer_epoch: None,
-                    effective_alpha_bits: 0,
-                    normalization_version: 0,
-                    rules_version: 0,
-                    candidate_count: report.domain.eligible_matches,
-                    cross_scored_count: 0,
-                    fallback_count: 0,
-                    cross_score_complete: false,
-                    work: context.counters().since(before),
-                })
-            }
-            SearchArguments::Hybrid { vector, text, mode } => {
-                let coordinates = copy_vector(context.memory(), vector)?;
-                let prepared_vector = ctx
-                    .prepare_vector(
-                        coordinates.as_slice(),
-                        mode,
-                        eligibility(invocation),
-                        context,
-                    )
-                    .map_err(retrieval)?
-                    .with_options(invocation.options);
-                let prepared_text = ctx
-                    .prepare_text_with_options(
-                        self.analyzer,
-                        text,
-                        eligibility(invocation),
-                        invocation.options,
-                        context,
-                    )
-                    .map_err(retrieval)?;
-                let ranked = ctx
-                    .rank_hybrid(&prepared_vector, &prepared_text, bounds, context)
-                    .map_err(retrieval)?;
-                let report = ranked.report();
-                for hit in ranked.hits() {
-                    hits.push(SearchHit {
-                        node: hit.node,
-                        score: hit.fused,
-                        vector_distance: hit.vector,
-                        lexical_score: hit.lexical,
+                SearchArguments::Hybrid { vector, text, mode } => {
+                    let coordinates = copy_vector(context.memory(), vector)?;
+                    let prepared_vector = ctx
+                        .prepare_vector(
+                            coordinates.as_slice(),
+                            mode,
+                            eligibility(invocation),
+                            context,
+                        )
+                        .map_err(retrieval)?
+                        .with_options(invocation.options);
+                    let prepared_text = ctx
+                        .prepare_text_with_options(
+                            self.analyzer,
+                            text,
+                            eligibility(invocation),
+                            invocation.options,
+                            context,
+                        )
+                        .map_err(retrieval)?;
+                    let ranked = ctx
+                        .rank_hybrid(&prepared_vector, &prepared_text, bounds, context)
+                        .map_err(retrieval)?;
+                    let report = ranked.report();
+                    for hit in ranked.hits() {
+                        hits.push(SearchHit {
+                            node: hit.node,
+                            score: hit.fused,
+                            vector_distance: hit.vector,
+                            lexical_score: hit.lexical,
+                        })
+                        .map_err(RuntimeError::Memory)?;
+                    }
+                    Ok(SearchReport {
+                        call: invocation.call,
+                        generation: invocation.generation,
+                        kind: SearchKind::Hybrid,
+                        requested_tier: report.requested_tier,
+                        actual_tier: report.actual_tier,
+                        precision: report.precision,
+                        coverage: report.coverage,
+                        vector_leg: report.vector_leg,
+                        lexical_leg: report.lexical_leg,
+                        document_epoch: None,
+                        query_epoch: None,
+                        tokenizer_epoch: None,
+                        effective_alpha_bits: report.effective_alpha.to_bits(),
+                        normalization_version: u32::from(report.normalization_version),
+                        rules_version: u32::from(report.rules_version),
+                        candidate_count: report.candidate_count,
+                        cross_scored_count: report.cross_scored_count,
+                        fallback_count: report.fallback_count,
+                        cross_score_complete: report.cross_score_complete,
+                        work: context.counters().since(before),
                     })
-                    .map_err(RuntimeError::Memory)?;
                 }
-                Ok(SearchReport {
-                    call: invocation.call,
-                    generation: invocation.generation,
-                    kind: SearchKind::Hybrid,
-                    requested_tier: report.requested_tier,
-                    actual_tier: report.actual_tier,
-                    precision: report.precision,
-                    coverage: report.coverage,
-                    vector_leg: report.vector_leg,
-                    lexical_leg: report.lexical_leg,
-                    document_epoch: None,
-                    query_epoch: None,
-                    tokenizer_epoch: None,
-                    effective_alpha_bits: report.effective_alpha.to_bits(),
-                    normalization_version: u32::from(report.normalization_version),
-                    rules_version: u32::from(report.rules_version),
-                    candidate_count: report.candidate_count,
-                    cross_scored_count: report.cross_scored_count,
-                    fallback_count: report.fallback_count,
-                    cross_score_complete: report.cross_score_complete,
-                    work: context.counters().since(before),
-                })
             }
-        }
+        })();
+        context.restore_candidate_window_peak(outer_peak)?;
+        result
     }
 }
 

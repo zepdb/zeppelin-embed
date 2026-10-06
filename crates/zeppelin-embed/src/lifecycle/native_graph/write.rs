@@ -883,12 +883,10 @@ impl NativeGraphPublication {
 pub(crate) struct ReceiptRegistration(Box<[ItemReceipt]>);
 
 impl ReceiptRegistration {
-    /// Moves the receipts out, in request order, without copying them.
     pub(crate) fn into_receipts(self) -> Box<[ItemReceipt]> {
         self.0
     }
 }
-
 impl std::ops::Deref for ReceiptRegistration {
     type Target = [ItemReceipt];
     fn deref(&self) -> &Self::Target {
@@ -939,7 +937,6 @@ impl<R> NativePreparedResult<R> {
     pub(crate) const fn changed_generation(&self) -> Option<GraphGeneration> {
         self.changed
     }
-    /// Releases the backing and charges and keeps only the registration.
     pub(crate) fn into_registration(self) -> R {
         self.registration
     }
@@ -1973,6 +1970,10 @@ pub(super) fn protect_and_commit(
     control: &crate::lifecycle::QueryControl,
     audit_publication: bool,
 ) -> Result<NativeCommitAudit, NativeGraphError> {
+    use crate::lifecycle::stats::GraphWorkKind as W;
+    let work = GraphResources::from_store(store)?;
+    let _work_batch = work.begin_work();
+    let record = |kind, units| work.record_work(kind, units);
     let committed_bytes = transition
         .artifacts
         .iter()
@@ -2022,17 +2023,23 @@ pub(super) fn protect_and_commit(
             .vfs()
             .create_new(&path, artifact.bytes)
             .map_err(|source| io(&path, source))?;
+        record(W::ArtifactWrites, 1);
+        record(W::ArtifactBytesWritten, artifact.bytes.len() as u64);
+        record(W::FullSyncAttempts, 1);
         transition
             .admitted
             .vfs()
             .sync(&path, SyncKind::Full)
             .map_err(|source| io(&path, source))?;
+        record(W::FullSyncSuccesses, 1);
     }
+    record(W::DirectorySyncAttempts, 1);
     transition
         .admitted
         .vfs()
         .sync(directory, SyncKind::Full)
         .map_err(|source| io(directory, source))?;
+    record(W::DirectorySyncSuccesses, 1);
 
     // Both counters are established before append. Once append begins, every
     // failure is indeterminate and stops admission rather than recomputing state.
@@ -2072,7 +2079,10 @@ pub(super) fn protect_and_commit(
             source: Some(source),
         });
     }
+    record(W::WalAppends, 1);
+    record(W::WalBytesAppended, transition.wal_bytes().len() as u64);
     writer.wal.bytes = next_wal_bytes;
+    record(W::FullSyncAttempts, 1);
     if let Err(source) = writer.wal.handle.sync(SyncKind::Full) {
         writer.stopped = true;
         let _ = store.native_graph.stop_admissions();
@@ -2082,6 +2092,7 @@ pub(super) fn protect_and_commit(
             source: Some(source),
         });
     }
+    record(W::FullSyncSuccesses, 1);
     let expose = || {
         if store
             .native_graph
@@ -2352,7 +2363,8 @@ pub(super) fn commit_staged_batch<'m>(
         (MAX_ENVELOPE_BYTES as u64) * 4,
         STACK_RESERVATION_BYTES,
         &mut cancelled,
-    )?;
+    )?
+    .with_accounting(shared);
     let catalog_supplement =
         catalog_artifact
             .as_ref()
@@ -2413,6 +2425,11 @@ pub(super) fn commit_staged_batch<'m>(
         resources,
         &mut wal_resources,
     )?;
+
+    shared.record_work(
+        crate::lifecycle::stats::GraphWorkKind::EncodedWalBytes,
+        transition.wal_bytes().len() as u64,
+    );
 
     #[cfg(all(test, feature = "graph-cypher"))]
     crate::property_graph::storage::preparation_work_capture::phase(
@@ -2556,6 +2573,8 @@ impl crate::lifecycle::Store {
         materializer: &mut M,
         mut allow_pending_checkpoint: bool,
     ) -> Result<NativePreparedResult<M::Registration>, NativeGraphError> {
+        let request_resources = GraphResources::from_store(self)?;
+        let _request_work = request_resources.begin_work();
         self.native_graph.require_writable()?;
         self.auto_maintain_native_graph(control)?;
         loop {

@@ -15,6 +15,7 @@ macro_rules! layout {
 fn every_graph_struct_has_the_frozen_c_size_alignment_and_field_offsets() {
     layout!(ZeNodeId, 16, 8; high => 0, low => 8);
     layout!(ZeRelId, 16, 8; high => 0, low => 8);
+    layout!(ZeGraphResources, 40, 8; abi_size => 0, abi_reserved => 4, engine_bytes => 8, engine_peak_bytes => 16, application_bytes => 24, application_peak_bytes => 32);
     layout!(ZeGraphHandle, 8, 8; token => 0);
     layout!(ZeGraphRange, 8, 4; start => 0, count => 4);
     layout!(ZeGraphValue, 48, 8; abi_size => 0, abi_reserved => 4, tag => 8, list_kind => 12, boolean => 16, entity_index => 20, integer => 24, floating => 32, range => 40);

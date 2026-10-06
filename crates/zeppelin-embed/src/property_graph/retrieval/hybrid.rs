@@ -196,6 +196,7 @@ impl<'m, 'g, T: Copy> Best<'m, 'g, T> {
             return Ok(());
         }
         if self.hits.len() < self.k {
+            resources.observe_candidate_window(self.hits.len() + 1)?;
             self.hits.push(hit).map_err(memory_error)?;
         } else {
             let worst = self

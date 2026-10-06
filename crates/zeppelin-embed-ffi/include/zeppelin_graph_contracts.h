@@ -2731,6 +2731,36 @@ typedef struct ZeGraphQueryRequest {
     const struct ZeGraphControl *control;
 } ZeGraphQueryRequest;
 
+/*
+ Coherent allocation categories. No mapping, process or caller/model bytes.
+ */
+typedef struct ZeGraphResources {
+    /*
+     Must equal sizeof(ZeGraphResources).
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Current engine working allocation capacities and controls.
+     */
+    uint64_t engine_bytes;
+    /*
+     Lifetime engine capacity high-water.
+     */
+    uint64_t engine_peak_bytes;
+    /*
+     Reserved for application-retention accounting (ZE-310); currently zero.
+     */
+    uint64_t application_bytes;
+    /*
+     Reserved for application-retention peak (ZE-310); currently zero.
+     */
+    uint64_t application_peak_bytes;
+} ZeGraphResources;
+
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -2841,6 +2871,13 @@ ze_error_code ze_graph_get_relationships(struct ZeGraphHandle handle,
 ze_error_code ze_graph_query(struct ZeGraphHandle handle,
                              const struct ZeGraphQueryRequest *request,
                              struct ZeGraphResponse *out_response);
+
+/*
+ Returns one coherent allocation snapshot; out must have the exact abi_size
+ and zero abi_reserved. This observes capacities, not process memory or I/O.
+ */
+ze_error_code ze_graph_resources(struct ZeGraphHandle handle,
+                                 struct ZeGraphResources *out);
 
 #ifdef __cplusplus
 }  // extern "C"

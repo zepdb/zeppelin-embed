@@ -2501,3 +2501,337 @@ pub(crate) fn query_publication_fault_fired(store: &Store) -> bool {
         .fail_next_publication
         .load(Ordering::Acquire)
 }
+
+#[test]
+fn ze76_commit_io_matches_independent_vfs_witness() {
+    use crate::property_graph::resources::GraphResources;
+    use crate::vfs::CountingVfs;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("native");
+    let vfs = Arc::new(CountingVfs::new(RecordingVfs::default()));
+    let store = Store::create_native_graph_with_infrastructure(
+        &path,
+        OpenOptions::new()
+            .with_durability(DurabilityMode::Durable, CommitTier::Durable)
+            .with_max_resident_bytes(16 * 1024 * 1024),
+        None,
+        vfs.clone(),
+        Arc::new(crate::lifecycle::SystemMonotonicClock),
+        &mut crate::property_graph::storage::allocation::OsEntropy,
+    )
+    .unwrap();
+    let resources = GraphResources::from_store(&store).unwrap();
+    let before = resources.work_ledger().unwrap();
+    vfs.reset();
+    vfs.inner().take();
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    store
+        .apply_native_graph(
+            &[StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "ze76", "a").unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            }],
+            &QueryControl::Cancel(CancelToken::new()),
+        )
+        .unwrap();
+    let after = resources.work_ledger().unwrap();
+    let events = vfs.inner().take();
+    let append = events
+        .iter()
+        .position(|e| matches!(e, DurabilityEvent::Append(_)))
+        .unwrap();
+    let directory_sync = events[..append]
+        .iter()
+        .rposition(|e| matches!(e,DurabilityEvent::Sync(p,SyncKind::Full) if p == &path))
+        .unwrap();
+    let start = events[..directory_sync]
+        .iter()
+        .rposition(|e| matches!(e,DurabilityEvent::Sync(p,SyncKind::Full) if p == &path))
+        .map_or(0, |i| i + 1);
+    let creates: Vec<_> = events[start..directory_sync]
+        .iter()
+        .filter_map(|e| {
+            if let DurabilityEvent::Create(p) = e {
+                Some(p)
+            } else {
+                None
+            }
+        })
+        .collect();
+    let written: u64 = creates
+        .iter()
+        .map(|p| std::fs::metadata(p).unwrap().len())
+        .sum();
+    assert!(!creates.is_empty());
+    assert_eq!(
+        after.artifact_writes - before.artifact_writes,
+        creates.len() as u64
+    );
+    assert_eq!(
+        after.artifact_bytes_written - before.artifact_bytes_written,
+        written
+    );
+    assert_eq!(after.wal_appends - before.wal_appends, 1);
+    assert_eq!(after.wal_appends - before.wal_appends, vfs.append_calls());
+    assert_eq!(
+        after.wal_bytes_appended - before.wal_bytes_appended,
+        vfs.bytes_appended()
+    );
+    assert_eq!(
+        after.encoded_wal_bytes - before.encoded_wal_bytes,
+        vfs.bytes_appended()
+    );
+    assert_eq!(
+        after.full_sync_attempts - before.full_sync_attempts,
+        creates.len() as u64 + 1
+    );
+    assert_eq!(
+        after.full_sync_successes - before.full_sync_successes,
+        creates.len() as u64 + 1
+    );
+    assert_eq!(
+        after.directory_sync_attempts - before.directory_sync_attempts,
+        1
+    );
+    assert_eq!(
+        after.directory_sync_successes - before.directory_sync_successes,
+        1
+    );
+    // Independent framing walk: two size passes and one encoding pass.
+    // Each payload byte is processed seven times; each record contributes
+    // 640 header/footer/hash units. The final envelope hash covers preceding
+    // records, and each pass measures + writes its one inventory descriptor.
+    let wal_path = events
+        .iter()
+        .find_map(|e| {
+            if let DurabilityEvent::Append(p) = e {
+                Some(p)
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    let wal = std::fs::read(wal_path).unwrap();
+    let envelope = &wal[64..];
+    let mut offset = 0usize;
+    let mut units = 0u64;
+    let mut records = 0u64;
+    let mut commit_start = 0usize;
+    while offset < envelope.len() {
+        assert_eq!(&envelope[offset..offset + 4], b"ZGWF");
+        let payload =
+            u32::from_le_bytes(envelope[offset + 8..offset + 12].try_into().unwrap()) as usize;
+        if u16::from_le_bytes(envelope[offset + 4..offset + 6].try_into().unwrap()) == 6 {
+            commit_start = offset;
+        }
+        if u16::from_le_bytes(envelope[offset + 4..offset + 6].try_into().unwrap()) == 2 {
+            let provenance =
+                u64::from_le_bytes(envelope[offset + 72..offset + 80].try_into().unwrap());
+            units += 6 * provenance;
+        }
+        units += 7 * payload as u64 + 640;
+        records += 1;
+        offset += 72 + payload;
+    }
+    assert_eq!(offset, envelope.len());
+    units += commit_start as u64 + 2 * (records - 2) + 6;
+    assert_eq!(after.wal_codec_units - before.wal_codec_units, units);
+    store.close().unwrap();
+}
+
+#[test]
+fn ze76_failed_sync_keeps_exact_attempt_and_release_prefix() {
+    use crate::lifecycle::native_graph::NativeGraphError;
+    use crate::property_graph::resources::GraphResources;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("native");
+    let vfs = Arc::new(RecordingVfs::default());
+    let store = Store::create_native_graph_with_infrastructure(
+        &path,
+        OpenOptions::new()
+            .with_durability(DurabilityMode::Durable, CommitTier::Durable)
+            .with_max_resident_bytes(16 * 1024 * 1024),
+        None,
+        vfs.clone(),
+        Arc::new(crate::lifecycle::SystemMonotonicClock),
+        &mut crate::property_graph::storage::allocation::OsEntropy,
+    )
+    .unwrap();
+    let resources = GraphResources::from_store(&store).unwrap();
+    let baseline = resources.reserved_bytes().unwrap();
+    let before = resources.work_ledger().unwrap();
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    let write = StructuredWrite {
+        key: ApplicationKey::new(EntityKind::Node, "ze76", "a").unwrap(),
+        revision: GraphRevision::new(1).unwrap(),
+        operation: StructuredOperation::Create,
+        image: Some(WriteImage::Node(&image)),
+    };
+    vfs.take();
+    vfs.arm_fault(FaultPoint::ObjectSync);
+    let error = store
+        .apply_native_graph(&[write], &QueryControl::Cancel(CancelToken::new()))
+        .err()
+        .unwrap();
+    assert!(matches!(error, NativeGraphError::Io { .. }));
+    vfs.assert_fired_once();
+    let after = resources.work_ledger().unwrap();
+    assert_eq!(after.full_sync_attempts - before.full_sync_attempts, 1);
+    assert_eq!(after.full_sync_successes - before.full_sync_successes, 0);
+    assert_eq!(after.artifact_writes - before.artifact_writes, 1);
+    assert_eq!(after.wal_appends - before.wal_appends, 0);
+    assert_eq!(after.wal_bytes_appended - before.wal_bytes_appended, 0);
+    assert_eq!(
+        store
+            .admit_native_read()
+            .unwrap()
+            .bundle()
+            .base()
+            .generation
+            .get(),
+        0
+    );
+    assert_eq!(resources.reserved_bytes().unwrap(), baseline);
+    let result = store
+        .apply_native_graph(&[write], &QueryControl::Cancel(CancelToken::new()))
+        .unwrap();
+    assert_eq!(result.changed_generation().unwrap().get(), 1);
+    drop(result);
+    store.close().unwrap();
+}
+
+#[test]
+fn ze76_counter_failure_cannot_change_commit() {
+    use crate::vfs::CountingVfs;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("native");
+    let vfs = Arc::new(CountingVfs::new(RecordingVfs::default()));
+    let store = Store::create_native_graph_with_infrastructure(
+        &path,
+        OpenOptions::new()
+            .with_durability(DurabilityMode::Durable, CommitTier::Durable)
+            .with_max_resident_bytes(16 * 1024 * 1024),
+        None,
+        vfs.clone(),
+        Arc::new(crate::lifecycle::SystemMonotonicClock),
+        &mut crate::property_graph::storage::allocation::OsEntropy,
+    )
+    .unwrap();
+    store.accounting.ze76_overflow_work();
+    let merges = store.accounting.ze76_work_merges();
+    vfs.reset();
+    vfs.inner().take();
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    store
+        .apply_native_graph(
+            &[StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "ze76", "a").unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            }],
+            &QueryControl::Cancel(CancelToken::new()),
+        )
+        .unwrap();
+    assert_eq!(
+        store
+            .admit_native_read()
+            .unwrap()
+            .bundle()
+            .base()
+            .generation
+            .get(),
+        1
+    );
+    assert_eq!(store.accounting.ze76_work_merges() - merges, 1);
+    store
+        .apply_native_graph(
+            &[StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "ze76", "b").unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            }],
+            &QueryControl::Cancel(CancelToken::new()),
+        )
+        .unwrap();
+    assert_eq!(
+        store
+            .admit_native_read()
+            .unwrap()
+            .bundle()
+            .base()
+            .generation
+            .get(),
+        2
+    );
+}
+
+#[test]
+fn ze76_poisoned_counter_cannot_change_commit() {
+    use crate::vfs::CountingVfs;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("native");
+    let vfs = Arc::new(CountingVfs::new(RecordingVfs::default()));
+    let store = Store::create_native_graph_with_infrastructure(
+        &path,
+        OpenOptions::new()
+            .with_durability(DurabilityMode::Durable, CommitTier::Durable)
+            .with_max_resident_bytes(16 * 1024 * 1024),
+        None,
+        vfs.clone(),
+        Arc::new(crate::lifecycle::SystemMonotonicClock),
+        &mut crate::property_graph::storage::allocation::OsEntropy,
+    )
+    .unwrap();
+    store.accounting.ze76_poison_work();
+    let merges = store.accounting.ze76_work_merges();
+    vfs.reset();
+    vfs.inner().take();
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    store
+        .apply_native_graph(
+            &[StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "ze76", "a").unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            }],
+            &QueryControl::Cancel(CancelToken::new()),
+        )
+        .unwrap();
+    assert_eq!(
+        store
+            .admit_native_read()
+            .unwrap()
+            .bundle()
+            .base()
+            .generation
+            .get(),
+        1
+    );
+    assert_eq!(store.accounting.ze76_work_merges() - merges, 1);
+    store
+        .apply_native_graph(
+            &[StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "ze76", "b").unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            }],
+            &QueryControl::Cancel(CancelToken::new()),
+        )
+        .unwrap();
+    assert_eq!(
+        store
+            .admit_native_read()
+            .unwrap()
+            .bundle()
+            .base()
+            .generation
+            .get(),
+        2
+    );
+}

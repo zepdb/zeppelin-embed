@@ -1455,3 +1455,21 @@ pub struct ZeGraphMaintainReport {
 #[path = "graph_entry.rs"]
 mod graph_entry;
 pub use graph_entry::*;
+
+/// Coherent allocation categories. No mapping, process or caller/model bytes.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(C)]
+pub struct ZeGraphResources {
+    /// Must equal sizeof(ZeGraphResources).
+    pub abi_size: u32,
+    /// Must be zero.
+    pub abi_reserved: u32,
+    /// Current engine working allocation capacities and controls.
+    pub engine_bytes: u64,
+    /// Lifetime engine capacity high-water.
+    pub engine_peak_bytes: u64,
+    /// Reserved for application-retention accounting (ZE-310); currently zero.
+    pub application_bytes: u64,
+    /// Reserved for application-retention peak (ZE-310); currently zero.
+    pub application_peak_bytes: u64,
+}

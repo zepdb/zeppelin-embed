@@ -33,6 +33,30 @@ impl GraphResources {
             accounting: Arc::clone(&store.accounting),
         })
     }
+    /// Current engine capacities; application-retention reporting is reserved for ZE-310.
+    pub fn snapshot(&self) -> Result<GraphResourceSnapshot, StoreError> {
+        let (engine_bytes, engine_peak_bytes) = self.accounting.graph_resource_bytes()?;
+        Ok(GraphResourceSnapshot {
+            engine_bytes,
+            engine_peak_bytes,
+            application_bytes: 0,
+            application_peak_bytes: 0,
+        })
+    }
+    /// Nonshipping snapshot of internal store-cumulative work for exact tests.
+    #[cfg(any(test, feature = "test-seams"))]
+    pub fn work_ledger(&self) -> Result<crate::lifecycle::stats::GraphWorkLedger, StoreError> {
+        Ok(self.accounting.graph_work())
+    }
+    pub(crate) fn record_work(&self, kind: crate::lifecycle::stats::GraphWorkKind, units: u64) {
+        work_batch::record(&self.accounting, kind, units);
+    }
+    pub(crate) fn record_work_delta(&self, delta: crate::lifecycle::stats::GraphWorkLedger) {
+        work_batch::record_delta(&self.accounting, delta);
+    }
+    pub(crate) fn begin_work(&self) -> work_batch::WorkBatch {
+        work_batch::WorkBatch::new(&self.accounting)
+    }
     /// Current exact shared reservations, including all other store participants.
     pub fn reserved_bytes(&self) -> Result<u64, StoreError> {
         Ok(self.accounting.audit()?.resident_owned_bytes)
@@ -76,3 +100,18 @@ impl GraphReservation {
         self.charge.bytes()
     }
 }
+
+/// Allocation observations exclude mappings, process footprint and caller/model buffers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GraphResourceSnapshot {
+    /// Current engine-owned working capacities and controls.
+    pub engine_bytes: u64,
+    /// Lifetime engine capacity high-water, including replacement overlap.
+    pub engine_peak_bytes: u64,
+    /// Reserved for ZE-310; currently zero.
+    pub application_bytes: u64,
+    /// Reserved for ZE-310; currently zero.
+    pub application_peak_bytes: u64,
+}
+
+pub(crate) mod work_batch;

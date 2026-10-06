@@ -29,6 +29,7 @@ include = [
     "ZeNodeId",
     "ZeRelId",
     "ZeGraphHandle",
+    "ZeGraphResources",
     "ZeGraphRange",
     "ZeGraphValueTag",
     "ZeGraphListKind",

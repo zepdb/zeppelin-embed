@@ -75,6 +75,7 @@ pub fn merge<'a, E>(
     if deltas.len() > MAX_DELTA_RUNS {
         return Err(Error::Limit(LimitIssue::DeltaRuns));
     }
+    step(c, Work::MergeRun)?;
     let base = codec::decode(key, false, base, c)?;
     if compare(base.sequence, watermark, c)? != Ordering::Equal {
         return Err(Error::Format(FormatIssue::Sequence));
@@ -84,6 +85,7 @@ pub fn merge<'a, E>(
     let mut previous = watermark;
     let mut pending = 0;
     for (index, bytes) in deltas.iter().enumerate() {
+        step(c, Work::MergeRun)?;
         let run = codec::decode(key, true, bytes, c)?;
         if compare(run.sequence, watermark, c)? != Ordering::Greater
             || compare(run.sequence, cutoff, c)? == Ordering::Greater

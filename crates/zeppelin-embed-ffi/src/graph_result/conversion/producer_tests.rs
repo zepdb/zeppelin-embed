@@ -342,7 +342,14 @@ fn write_receipt_deleted_flag_comes_from_the_request_not_the_receipt() {
 }
 
 #[test]
-fn apply_and_settle_keeps_the_known_commit_when_response_preparation_fails() {
+fn ze76_response_preparation_failure_preserves_committed_batch() {
+    // A public batch has at most 16,384 fixed 72-byte receipts. A >4 MiB
+    // receipt fixture cannot be admitted without changing the existing cap.
+    assert_eq!(
+        zeppelin_embed::property_graph::MAX_GRAPH_CHANGES * size_of::<ZeGraphReceipt>(),
+        1_179_648
+    );
+    assert!(1_179_648 < 4 * 1024 * 1024);
     static FULL: GraphResultRegistry = GraphResultRegistry::new(0);
     static AVAILABLE: GraphResultRegistry = GraphResultRegistry::new(16);
     let dir = tempfile::tempdir().unwrap();

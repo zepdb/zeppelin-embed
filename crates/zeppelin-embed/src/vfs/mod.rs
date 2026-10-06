@@ -512,6 +512,12 @@ impl<V: Vfs> Vfs for CountingVfs<V> {
         Some(Arc::clone(&self.counters.segment_bytes_read))
     }
 
+    fn create_directory(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.create_directory(path)
+    }
+    fn remove_directory(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.remove_directory(path)
+    }
     fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
         self.inner.ensure_directory(path, create)
     }

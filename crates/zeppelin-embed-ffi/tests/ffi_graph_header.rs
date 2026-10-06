@@ -131,7 +131,7 @@ fn legacy_header_and_exports_do_not_advertise_graph_contracts() {
             .lines()
             .filter(|s| s.starts_with("ze_graph_"))
             .collect::<Vec<_>>(),
-        Vec::<&str>::new()
+        vec!["ze_graph_resources"]
     );
 }
 
@@ -251,6 +251,6 @@ fn graph_runtime_header_matches_the_graph_export_allowlist() {
         .filter(|line| line.starts_with("ze_graph_"))
         .map(str::to_owned)
         .collect();
-    assert_eq!(declared.len(), 12);
+    assert_eq!(declared.len(), 13);
     assert_eq!(declared, allowed);
 }

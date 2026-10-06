@@ -202,6 +202,7 @@ impl CapacityReservation<'_> {
 }
 
 trait QueryRuntime {
+    fn observe_candidate_window(&mut self, width: u64) -> Result<(), RuntimeError>;
     fn checkpoint(&self) -> Result<(), RuntimeError>;
     fn charge(&mut self, kind: WorkKind, units: u64) -> Result<(), RuntimeError>;
     #[cfg(feature = "graph-cypher")]
@@ -216,6 +217,9 @@ trait QueryRuntime {
     >;
 }
 impl QueryRuntime for RuntimeContext<'_, '_, '_> {
+    fn observe_candidate_window(&mut self, width: u64) -> Result<(), RuntimeError> {
+        RuntimeContext::observe_candidate_window(self, width)
+    }
     fn checkpoint(&self) -> Result<(), RuntimeError> {
         RuntimeContext::checkpoint(self)
     }
@@ -242,6 +246,12 @@ pub(crate) enum NativeReadEvent {
     Scan,
     AdjacencyEntry,
     CopiedBytes(u64),
+    PageDecoded,
+    PageCopied,
+    PropertyValue(u64),
+    PhysicalAdjacency,
+    MergedAdjacency,
+    MergeRun,
 }
 impl NativeReadEvent {
     const fn work(self) -> (WorkKind, u64) {
@@ -250,6 +260,12 @@ impl NativeReadEvent {
             Self::Scan => (WorkKind::Scans, 1),
             Self::AdjacencyEntry => (WorkKind::AdjacencyEntries, 1),
             Self::CopiedBytes(bytes) => (WorkKind::CopiedBytes, bytes),
+            Self::PageDecoded => (WorkKind::DirectoryPagesDecoded, 1),
+            Self::PageCopied => (WorkKind::DirectoryPagesCopied, 1),
+            Self::PropertyValue(_) => (WorkKind::PropertyValues, 1),
+            Self::PhysicalAdjacency => (WorkKind::AdjacencyPhysicalEntries, 1),
+            Self::MergedAdjacency => (WorkKind::AdjacencyMergedVisits, 1),
+            Self::MergeRun => (WorkKind::AdjacencyMergeRuns, 1),
         }
     }
 }
@@ -287,9 +303,23 @@ enum CursorOwner<'a> {
 pub struct TreeResources<'a> {
     control: TreeControl<'a>,
     work: u64,
+    work_delta: crate::lifecycle::stats::GraphWorkLedger,
     owner: CapacityOwner<'a>,
     workspace: CapacityReservation<'a>,
     preparation_checkpoint: Option<&'a dyn Fn() -> Result<(), TreeError>>,
+}
+impl Drop for TreeResources<'_> {
+    fn drop(&mut self) {
+        if self.work_delta == crate::lifecycle::stats::GraphWorkLedger::default() {
+            return;
+        }
+        let shared = match &self.owner {
+            CapacityOwner::Shared(shared) => shared,
+            CapacityOwner::Preparation(memory) => memory.resources(),
+            CapacityOwner::Query(_) => return,
+        };
+        shared.record_work_delta(self.work_delta);
+    }
 }
 impl<'a> TreeResources<'a> {
     /// A caller retains the same control across every component of its operation.
@@ -306,6 +336,7 @@ impl<'a> TreeResources<'a> {
                 limit: work_limit,
             },
             work: 0,
+            work_delta: crate::lifecycle::stats::GraphWorkLedger::default(),
             owner: CapacityOwner::Shared(shared.clone()),
             workspace: CapacityReservation::Shared(workspace),
             preparation_checkpoint: None,
@@ -321,6 +352,7 @@ impl<'a> TreeResources<'a> {
                 limit: work_limit,
             },
             work: 0,
+            work_delta: crate::lifecycle::stats::GraphWorkLedger::default(),
             owner,
             workspace,
             preparation_checkpoint: None,
@@ -343,6 +375,7 @@ impl<'a> TreeResources<'a> {
         Ok(Self {
             control: TreeControl::Query { context, identity },
             work: 0,
+            work_delta: crate::lifecycle::stats::GraphWorkLedger::default(),
             owner,
             workspace,
             preparation_checkpoint: None,
@@ -524,8 +557,46 @@ impl<'a> TreeResources<'a> {
         if let TreeControl::Query { context, .. } = &mut self.control {
             let (kind, units) = event.work();
             context.charge(kind, units).map_err(TreeError::Runtime)?;
+            if let NativeReadEvent::PropertyValue(bytes) = event {
+                context
+                    .charge(WorkKind::PropertyBytes, bytes)
+                    .map_err(TreeError::Runtime)?;
+            }
+        } else {
+            use crate::lifecycle::stats::GraphWorkKind;
+            let (kind, units) = match event {
+                NativeReadEvent::Lookup => (GraphWorkKind::StorageLookups, 1),
+                NativeReadEvent::Scan => (GraphWorkKind::StorageScans, 1),
+                NativeReadEvent::AdjacencyEntry => (GraphWorkKind::StorageAdjacencyEntries, 1),
+                NativeReadEvent::CopiedBytes(bytes) => (GraphWorkKind::StorageCopiedBytes, bytes),
+                NativeReadEvent::PageDecoded => (GraphWorkKind::StoragePagesDecoded, 1),
+                NativeReadEvent::PageCopied => (GraphWorkKind::StoragePagesCopied, 1),
+                NativeReadEvent::PropertyValue(_) => (GraphWorkKind::StoragePropertyValues, 1),
+                NativeReadEvent::PhysicalAdjacency => {
+                    (GraphWorkKind::StorageAdjacencyPhysicalEntries, 1)
+                }
+                NativeReadEvent::MergedAdjacency => {
+                    (GraphWorkKind::StorageAdjacencyMergedVisits, 1)
+                }
+                NativeReadEvent::MergeRun => (GraphWorkKind::StorageAdjacencyMergeRuns, 1),
+            };
+            self.work_delta.add(kind, units);
+            if let NativeReadEvent::PropertyValue(bytes) = event {
+                self.work_delta
+                    .add(GraphWorkKind::StoragePropertyBytes, bytes);
+            }
         }
         Ok(())
+    }
+    pub(crate) fn observe_candidate_window(&mut self, width: usize) -> Result<(), TreeError> {
+        match &mut self.control {
+            TreeControl::Query { context, .. } => context
+                .observe_candidate_window(width as u64)
+                .map_err(TreeError::Runtime),
+            TreeControl::Direct { .. } => Err(TreeError::Invalid(
+                "candidate observation requires query owner",
+            )),
+        }
     }
     /// Charges query-owned retrieval work to the same cumulative runtime. There
     /// is no silent direct-control path: scoring requires a query runtime.
@@ -750,6 +821,7 @@ fn checked_page<'a>(
 ) -> Result<super::FramedPage<'a>, TreeError> {
     resources.step(1)?;
     let page = decode_page(root.kind, bytes)?;
+    resources.read_event(NativeReadEvent::PageDecoded)?;
     if page.header().generation != identity.generation || page.header().level as usize >= MAX_DEPTH
     {
         return Err(TreeError::Invalid("page creation generation or depth"));
@@ -1381,6 +1453,7 @@ fn with_trace_bound<R>(
     source.with_block(bound.page, resources, |block, resources| {
         let block = check_block(root, bound.page, block)?;
         let page = decode_page(root.kind, block.payload())?;
+        resources.read_event(NativeReadEvent::PageDecoded)?;
         if page.header().generation != bound.generation || page.header().level == 0 {
             return Err(TreeError::Invalid("directory trace bound owner"));
         }
@@ -1417,6 +1490,7 @@ fn copy_inspect_trace_page(
         }
         resources.step(PAGE_BYTES as u64)?;
         resources.read_event(NativeReadEvent::CopiedBytes(PAGE_BYTES as u64))?;
+        resources.read_event(NativeReadEvent::PageCopied)?;
         output.copy_from_slice(block.payload());
         Ok(block.identity())
     })?;
@@ -3180,6 +3254,7 @@ impl<'a, 'm, S: BlockSource> DirectoryCursor<'a, 'm, S> {
             let entry = cursor.path.get(cursor.path.len - 1)?;
             let block = checked_block(source, root, entry.reference, resources)?;
             let page = decode_page(root.kind, block.payload())?;
+            resources.read_event(NativeReadEvent::PageDecoded)?;
             while cursor.index < cursor.leaf_count {
                 let Cell::Leaf { key, .. } = page.cell(cursor.index)? else {
                     return Err(TreeError::Invalid("cursor leaf expected"));
@@ -3270,6 +3345,7 @@ impl<'a, 'm, S: BlockSource> DirectoryCursor<'a, 'm, S> {
         let entry = self.path.get(self.path.len - 1)?;
         let block = checked_block(self.source, self.root, entry.reference, resources)?;
         let header = decode_page(self.root.kind, block.payload())?.header();
+        resources.read_event(NativeReadEvent::PageDecoded)?;
         let Cell::Leaf { key, value } = owned_page_cell(block.payload(), header, self.index)?
         else {
             return Err(TreeError::Invalid("cursor leaf expected"));
@@ -3407,6 +3483,7 @@ impl<'a, 'm, S: BlockSource> DirectoryCursor<'a, 'm, S> {
             };
             let block = checked_block(self.source, self.root, entry.reference, resources)?;
             let page = decode_page(self.root.kind, block.payload())?;
+            resources.read_event(NativeReadEvent::PageDecoded)?;
             let Cell::Branch { child, .. } = page.cell(prior)? else {
                 return Err(TreeError::Invalid("cursor predecessor"));
             };
@@ -3429,6 +3506,7 @@ impl<'a, 'm, S: BlockSource> DirectoryCursor<'a, 'm, S> {
             let mut entry = self.path.get(depth)?;
             let block = checked_block(self.source, self.root, entry.reference, resources)?;
             let page = decode_page(self.root.kind, block.payload())?;
+            resources.read_event(NativeReadEvent::PageDecoded)?;
             let next = entry
                 .child
                 .checked_add(1)
@@ -4522,6 +4600,76 @@ pub(crate) mod tests {
         }
         assert!(cursor.next_entry(&mut resources).unwrap().is_none());
     }
+    #[test]
+    fn ze76_directory_cursor_counts_decodes_across_leaf_boundaries() {
+        use crate::property_graph::query::runtime::{RetainedView, RuntimeLimits, WorkKind};
+        use crate::property_graph::query::{QueryError, QueryView};
+        struct View(QueryView);
+        impl RetainedView for View {
+            fn query_view(&self) -> &QueryView {
+                &self.0
+            }
+            fn check_active(&self) -> Result<(), QueryError> {
+                Ok(())
+            }
+        }
+        let (_dir, _store, shared, mut objects) = fixture();
+        let control = QueryControl::Cancel(CancelToken::new());
+        let root = {
+            let mut resources = TreeResources::new(&control, &shared, u64::MAX).unwrap();
+            let mut scratch = TreeScratch::new(&shared, PAGE_BYTES).unwrap();
+            let root =
+                DirectoryRoot::empty(objects.store, TreeKind::Nodes, GraphGeneration::new(0));
+            let keys = [[1; 16], [2; 16], [3; 16]];
+            let operations = keys.each_ref().map(|key| DirectoryOp::Insert {
+                key,
+                value: &[7; 8000],
+            });
+            apply_sorted_checked(
+                &mut objects,
+                DirectoryMutation::new(root, GraphGeneration::new(1), OpaqueValues),
+                &operations,
+                &mut scratch,
+                &mut resources,
+            )
+            .unwrap()
+        };
+        // Three 8000-byte values require two 16-KiB leaves and one root.
+        assert_eq!(objects.tree_pages, 3);
+        let memory = QueryMemory::new(&shared, 1024 * 1024).unwrap();
+        let view = View(QueryView::new(objects.store, GraphGeneration::new(1)));
+        let mut context =
+            RuntimeContext::new(&view, &control, &memory, RuntimeLimits::default()).unwrap();
+        {
+            let mut resources = TreeResources::for_query(&mut context).unwrap();
+            let mut cursor = DirectoryCursor::seek(&objects, root, None, &mut resources).unwrap();
+            for expected in [[1; 16], [2; 16], [3; 16]] {
+                let entry = cursor.next_entry(&mut resources).unwrap().unwrap();
+                assert!(matches!(entry.key(), Key::Inline(actual) if actual == expected));
+            }
+            assert!(cursor.next_entry(&mut resources).unwrap().is_none());
+        }
+        // Seek: two descents + two validation decodes. Three returned entries.
+        // Crossing a leaf: root successor decode + one descent + two validation
+        // decodes. Exhaustion still decodes the root to reject a successor.
+        assert_eq!(context.counters().get(WorkKind::DirectoryPagesDecoded), 12);
+        assert_eq!(context.counters().get(WorkKind::DirectoryPagesCopied), 0);
+        let before = shared.work_ledger().unwrap();
+        let mut resources = TreeResources::new(&control, &shared, u64::MAX).unwrap();
+        let mut cursor = DirectoryCursor::seek(&objects, root, None, &mut resources).unwrap();
+        for _ in 0..3 {
+            assert!(cursor.next_entry(&mut resources).unwrap().is_some());
+        }
+        assert!(cursor.next_entry(&mut resources).unwrap().is_none());
+        drop(resources);
+        let after = shared.work_ledger().unwrap();
+        assert_eq!(
+            after.storage_pages_decoded - before.storage_pages_decoded,
+            12
+        );
+        assert_eq!(after.storage_scans - before.storage_scans, 1);
+    }
+
     fn entries(
         objects: &Objects,
         root: DirectoryRoot,

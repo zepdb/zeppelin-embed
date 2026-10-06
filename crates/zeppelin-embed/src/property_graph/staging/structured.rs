@@ -182,6 +182,7 @@ pub(super) fn stage_structured_with_preflight<'a>(
     control: &mut WriteControl<'_>,
     preflight: &mut result::ResultPreflight<'_>,
 ) -> Result<StagedBatch<'a>, StageError> {
+    let _work = memory.resources().begin_work();
     use super::super::key_lifecycle::{
         KeyMetadataState, KeyPreparation, complete_key, prepare_key,
     };
@@ -346,6 +347,7 @@ pub(super) fn stage_structured_with_preflight<'a>(
                 let mut after_source = Cursor::new(encoded.as_ref().map_or(&[][..], |e| &*e.bytes));
                 let after = encoded.as_ref().map(|e| {
                     CanonicalRecord::from_validated(e.shape, e.fingerprint, &mut after_source)
+                        .with_resources(memory.resources())
                 });
                 let empty = CanonicalSlice(&[]);
                 let mut old_source = SourceReader {
@@ -359,6 +361,7 @@ pub(super) fn stage_structured_with_preflight<'a>(
                         entity.fingerprint,
                         &mut old_source,
                     )
+                    .with_resources(memory.resources())
                 });
                 let decision = complete_key(
                     admission.prepared.ok_or(StageError::InvalidInput)?,

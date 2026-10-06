@@ -303,6 +303,7 @@ impl<'a, S: BlockSource, C: RecordCatalog<S>> NativeGraphReader<'a, S, C> {
             for (index, edge) in range.edges().iter().enumerate().skip(first) {
                 r.step(std::mem::size_of::<Edge>() as u64)?;
                 r.read_event(NativeReadEvent::AdjacencyEntry)?;
+                r.read_event(NativeReadEvent::MergedAdjacency)?;
                 if beyond(edge.rel, query.relationships.upper) {
                     break;
                 }
@@ -581,6 +582,7 @@ impl<'a, S: BlockSource, C: RecordCatalog<S>> NativeGraphReader<'a, S, C> {
             for edge in range.edges() {
                 r.step(std::mem::size_of::<Edge>() as u64)?;
                 r.read_event(NativeReadEvent::AdjacencyEntry)?;
+                r.read_event(NativeReadEvent::MergedAdjacency)?;
                 if edge.rel < query.relationships.lower {
                     continue;
                 }

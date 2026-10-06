@@ -509,6 +509,30 @@ pub fn compare_canonical_streams(
     scratch: &mut [u8],
     checkpoint: &mut dyn FnMut() -> Result<(), CanonicalError>,
 ) -> Result<CanonicalComparison, CanonicalError> {
+    compare_canonical_streams_observed(
+        left,
+        left_fingerprint,
+        right,
+        right_fingerprint,
+        scratch,
+        checkpoint,
+        &mut |_| Ok(()),
+    )
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "same bounded comparison with an explicit consumed-work observer"
+)]
+pub(super) fn compare_canonical_streams_observed(
+    left: &mut dyn Read,
+    left_fingerprint: CanonicalFingerprint,
+    right: &mut dyn Read,
+    right_fingerprint: CanonicalFingerprint,
+    scratch: &mut [u8],
+    checkpoint: &mut dyn FnMut() -> Result<(), CanonicalError>,
+    observed: &mut dyn FnMut(u64) -> Result<(), CanonicalError>,
+) -> Result<CanonicalComparison, CanonicalError> {
     if !(2..=MAX_CANONICAL_SCRATCH).contains(&scratch.len()) {
         return Err(CanonicalError::InvalidScratch);
     }
@@ -535,6 +559,7 @@ pub fn compare_canonical_streams(
             .ok_or(CanonicalError::InvalidScratch)?;
         left.read_exact(l)?;
         right.read_exact(r)?;
+        observed(count as u64)?;
         compared += count as u64;
         if l != r {
             return Ok(CanonicalComparison {

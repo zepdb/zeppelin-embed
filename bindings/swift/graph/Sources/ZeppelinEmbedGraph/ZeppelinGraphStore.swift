@@ -61,6 +61,19 @@ public actor ZeppelinGraphStore {
     guard let token else { throw GraphError(.closed) }
     return token
   }
+  public func resources() async throws -> GraphResources {
+    let current = try openToken()
+    return try await Self.runBlocking {
+      var observation = ZeGraphResources()
+      observation.abi_size = graphSize(ZeGraphResources.self)
+      let status = ze_graph_resources(ZeGraphHandle(token: current), &observation)
+      guard status == 0 else { throw GraphError(.native(Int32(status))) }
+      return GraphResources(
+        engineBytes: observation.engine_bytes, enginePeakBytes: observation.engine_peak_bytes,
+        applicationBytes: observation.application_bytes,
+        applicationPeakBytes: observation.application_peak_bytes)
+    }
+  }
   public func close() async throws {
     guard let current = token else { return }
     guard !closing else { throw GraphError(.native(ZeppelinError.closing.rawValue)) }

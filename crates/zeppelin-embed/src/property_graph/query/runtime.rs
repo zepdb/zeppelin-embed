@@ -75,8 +75,27 @@ pub enum WorkKind {
     EligibilityEntries,
     /// Bytes actually copied during intermediate/result construction.
     CopiedBytes,
+    /// Directory pages successfully decoded, including repeated validation passes.
+    DirectoryPagesDecoded,
+    /// Full fixed directory pages copied into owned trace scratch.
+    DirectoryPagesCopied,
+    /// Encoded property values selected through the native property index.
+    PropertyValues,
+    /// Encoded byte lengths of indexed property selections; not DRAM bandwidth.
+    PropertyBytes,
+    /// Physical run entries decoded or reexamined during merge.
+    AdjacencyPhysicalEntries,
+    /// Merged adjacency edges examined, including filtered/deleted endpoints.
+    AdjacencyMergedVisits,
+    /// Input runs entered by each bounded adjacency merge.
+    AdjacencyMergeRuns,
+    /// Unique IDs admitted across constructed eligibility sets; repeats across sets count.
+    EligibilityUniqueEntries,
+    /// Maximum actually retained candidate count across retrieval windows.
+    CandidateWindowPeak,
 }
-const KINDS: [WorkKind; 22] = [
+
+const KINDS: [WorkKind; 31] = [
     WorkKind::OperatorRows,
     WorkKind::AdjacencyEntries,
     WorkKind::Expressions,
@@ -99,6 +118,15 @@ const KINDS: [WorkKind; 22] = [
     WorkKind::GroupKeys,
     WorkKind::EligibilityEntries,
     WorkKind::CopiedBytes,
+    WorkKind::DirectoryPagesDecoded,
+    WorkKind::DirectoryPagesCopied,
+    WorkKind::PropertyValues,
+    WorkKind::PropertyBytes,
+    WorkKind::AdjacencyPhysicalEntries,
+    WorkKind::AdjacencyMergedVisits,
+    WorkKind::AdjacencyMergeRuns,
+    WorkKind::EligibilityUniqueEntries,
+    WorkKind::CandidateWindowPeak,
 ];
 impl WorkKind {
     const fn hard_max(self) -> u64 {
@@ -154,6 +182,24 @@ impl WorkCounters {
     /// The selected actual-site count.
     pub fn get(self, kind: WorkKind) -> u64 {
         self.values.get(kind as usize).copied().unwrap_or(0)
+    }
+    /// Combines disjoint stages of one request, rejecting counter overflow.
+    /// This must not be used to add repeated snapshots of the same runtime.
+    pub fn checked_add(self, other: Self) -> Result<Self, RuntimeError> {
+        let mut values = [0; KINDS.len()];
+        for kind in KINDS {
+            let total = if kind == WorkKind::CandidateWindowPeak {
+                self.get(kind).max(other.get(kind))
+            } else {
+                self.get(kind)
+                    .checked_add(other.get(kind))
+                    .ok_or(RuntimeError::Limit(kind))?
+            };
+            *values
+                .get_mut(kind as usize)
+                .ok_or(RuntimeError::Limit(kind))? = total;
+        }
+        Ok(Self { values })
     }
     /// Per-site work performed strictly after `before` was captured. Every
     /// site is saturating: an adopted/shared budget never regresses a
@@ -307,6 +353,43 @@ impl<'v, 'm, 'g> RuntimeContext<'v, 'm, 'g> {
     /// Cumulative known-site counters, including work later discarded on failure.
     pub const fn counters(&self) -> WorkCounters {
         self.counters
+    }
+    /// Observes a real bounded candidate width; repeated smaller windows do not add.
+    pub fn observe_candidate_window(&mut self, width: u64) -> Result<(), RuntimeError> {
+        self.checkpoint()?;
+        let kind = WorkKind::CandidateWindowPeak;
+        let limit = self
+            .limits
+            .values
+            .get(kind as usize)
+            .ok_or(RuntimeError::Limit(kind))?;
+        if width > *limit {
+            return Err(RuntimeError::Limit(kind));
+        }
+        let peak = self
+            .counters
+            .values
+            .get_mut(kind as usize)
+            .ok_or(RuntimeError::Limit(kind))?;
+        *peak = (*peak).max(width);
+        Ok(())
+    }
+    pub(crate) fn reset_candidate_window_peak(&mut self) -> Result<u64, RuntimeError> {
+        let peak = self
+            .counters
+            .values
+            .get_mut(WorkKind::CandidateWindowPeak as usize)
+            .ok_or(RuntimeError::Batch)?;
+        Ok(std::mem::take(peak))
+    }
+    pub(crate) fn restore_candidate_window_peak(&mut self, outer: u64) -> Result<(), RuntimeError> {
+        let peak = self
+            .counters
+            .values
+            .get_mut(WorkKind::CandidateWindowPeak as usize)
+            .ok_or(RuntimeError::Batch)?;
+        *peak = (*peak).max(outer);
+        Ok(())
     }
     /// Same query allocation owner, never a per-operator independent allowance.
     pub const fn memory(&self) -> &'m QueryMemory<'g> {

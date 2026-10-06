@@ -167,3 +167,7 @@ required-features = ["graph-cypher"]
 [[test]]
 name = "graph_write_staging"
 required-features = ["graph-cypher"]
+
+[[test]]
+name = "graph_resource_accounting"
+required-features = ["graph-cypher"]

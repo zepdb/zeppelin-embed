@@ -474,3 +474,17 @@ extension GraphStoreTests {
     try await store.close()
   }
 }
+
+extension GraphStoreTests {
+  func testZE76ResourceParity() async throws {
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: path) }
+    let store = try await ZeppelinGraphStore.open(at: path, mode: .create)
+    let observed = try await store.resources()
+    XCTAssertGreaterThan(observed.engineBytes, 0)
+    XCTAssertGreaterThanOrEqual(observed.enginePeakBytes, observed.engineBytes)
+    XCTAssertEqual(observed.applicationBytes, 0)
+    XCTAssertEqual(observed.applicationPeakBytes, 0)
+    try await store.close()
+  }
+}

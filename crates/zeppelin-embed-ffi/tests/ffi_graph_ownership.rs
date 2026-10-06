@@ -210,3 +210,33 @@ fn ze72_nested_search_error_and_retained_responses_keep_heap_flat() {
         assert_eq!(ze_graph_close(reopened), ZeErrorCode::ZeOk);
     });
 }
+
+#[test]
+fn ze76_public_resources_report_engine_capacities() {
+    let _guard = HEAP_TEST_GUARD.lock().unwrap();
+    let store = GraphTestStore::create();
+    let mut observation = ZeGraphResources {
+        abi_size: std::mem::size_of::<ZeGraphResources>() as u32,
+        ..ZeGraphResources::default()
+    };
+    assert_eq!(
+        ze_graph_resources(store.handle, &mut observation),
+        ZeErrorCode::ZeOk
+    );
+    assert!(observation.engine_bytes > 0);
+    assert!(observation.engine_peak_bytes >= observation.engine_bytes);
+    assert_eq!(
+        (
+            observation.application_bytes,
+            observation.application_peak_bytes
+        ),
+        (0, 0)
+    );
+    let mut invalid = observation;
+    invalid.abi_reserved = 1;
+    assert_eq!(
+        ze_graph_resources(store.handle, &mut invalid),
+        ZeErrorCode::ZeErrInvalidArgument
+    );
+    assert_eq!(invalid.engine_bytes, observation.engine_bytes);
+}

@@ -1,6 +1,7 @@
 use super::*;
 use crate::property_graph::catalog::{LabelId, PropertyKeyId, RelTypeId, Symbol, SymbolKind};
 use crate::property_graph::storage::payload::PayloadRef;
+use crate::property_graph::storage::tree::directory::NativeReadEvent;
 use crate::property_graph::{EntityId, ExpectedGraphState, GraphOperation, GraphRevision, RelId};
 
 /// A retained admitted catalog's exact, bijective name-to-symbol lookup. The
@@ -107,7 +108,9 @@ impl<'a, S: BlockSource> RecordView<'a, S> {
         let Some(row) = find_property(self.properties, key.get(), r)? else {
             return Ok(None);
         };
-        Ok(Some(self.canonical_bytes.subslice(row.offset, row.length)?))
+        let value = self.canonical_bytes.subslice(row.offset, row.length)?;
+        r.read_event(NativeReadEvent::PropertyValue(row.length))?;
+        Ok(Some(value))
     }
     /// Enumerates one verified native property without reconstructing the
     /// canonical record. The checked index and correlated key/payload extent
@@ -123,7 +126,9 @@ impl<'a, S: BlockSource> RecordView<'a, S> {
         let row = property_row(self.properties, index, r)?;
         let key = PropertyKeyId::new(row.key)
             .map_err(|_| TreeError::Invalid("zero native property key"))?;
-        Ok((key, self.canonical_bytes.subslice(row.offset, row.length)?))
+        let value = self.canonical_bytes.subslice(row.offset, row.length)?;
+        r.read_event(NativeReadEvent::PropertyValue(row.length))?;
+        Ok((key, value))
     }
 }
 

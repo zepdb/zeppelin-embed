@@ -51,6 +51,7 @@ fn units(w: Work) -> usize {
     match w {
         Work::HeaderBytes(n) | Work::EntryBytes(n) | Work::CopyBytes(n) => n,
         Work::Compare | Work::Finish => 1,
+        Work::MergeRun => 0, // run cardinality is a separate native read counter
     }
 }
 pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<Report, String> {

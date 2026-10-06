@@ -144,6 +144,8 @@ pub enum Error<E> {
 pub enum Work {
     /// Header bytes examined (at most 96).
     HeaderBytes(usize),
+    /// One input run entered by the merge, before its bounded decoding.
+    MergeRun,
     /// Entry bytes decoded/validated (32 or 40).
     EntryBytes(usize),
     /// One actual ID/sequence/topology comparison.

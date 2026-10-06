@@ -237,3 +237,96 @@ fn shared_compilation_releases_on_timeout_and_late_cancellation() {
     assert_eq!(shared.reserved_bytes().unwrap(), initial);
     store.close().unwrap();
 }
+
+#[path = "support/search.rs"]
+mod search;
+
+#[test]
+fn ze76_public_failure_preserves_real_retrieval_and_publication() {
+    use zeppelin_embed::property_graph::query::completed::{GraphQueryOptions, Value};
+    use zeppelin_embed::property_graph::staging::{
+        StructuredOperation, StructuredWrite, WriteImage,
+    };
+    use zeppelin_embed::property_graph::{
+        ApplicationKey, CanonicalContents, EntityKind, GraphRevision,
+    };
+    use zeppelin_embed_cypher::execute;
+    let fixture = search::SearchFixture::create();
+    let store = fixture.store();
+    let resources = store.resources().unwrap();
+    let query = "CALL ze.vector_search([0,0],3,'exact') YIELD node,distance RETURN distance";
+    let check = || {
+        let ranked = fixture.run(query);
+        assert_eq!(ranked.metadata().rows, 3);
+        for (row, expected) in [0.0_f64, 2.0, 50.0].into_iter().enumerate() {
+            assert_eq!(ranked.cell(row, 0), Some(&Value::F64(expected.to_bits())));
+        }
+        let lexical = fixture.run("CALL ze.text_search('amber',2) YIELD node,score RETURN score");
+        let idf = (1.0_f64 + (3.0 - 2.0 + 0.5) / (2.0 + 0.5)).ln();
+        for (row, length) in [(0, 1.0), (1, 2.0)] {
+            let expected = idf * 2.2 / (1.0 + 1.2 * (0.25 + 0.75 * length / (4.0 / 3.0)));
+            assert_eq!(lexical.cell(row, 0), Some(&Value::F64(expected.to_bits())));
+        }
+    };
+    check();
+    let baseline = resources.reserved_bytes().unwrap();
+    let generation = fixture.run(query).metadata().generation;
+    let disk = || {
+        let mut files: Vec<_> = std::fs::read_dir(&fixture.root)
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                (entry.file_name(), entry.metadata().unwrap().len())
+            })
+            .collect();
+        files.sort();
+        files
+    };
+    let before = disk();
+    let options = GraphQueryOptions::default()
+        .with_result_row_limit(1)
+        .unwrap();
+    assert!(
+        execute(
+            store.statement_store(),
+            &search::control(),
+            &options,
+            query,
+            &[],
+            CompileLimits::default()
+        )
+        .is_err()
+    );
+    let token = CancelToken::new();
+    token.cancel();
+    assert!(
+        execute(
+            store.statement_store(),
+            &QueryControl::Cancel(token),
+            &GraphQueryOptions::default(),
+            query,
+            &[],
+            CompileLimits::default()
+        )
+        .is_err()
+    );
+    let text = "amber ".repeat(900000);
+    let first = CanonicalContents::node(&mut [], &mut [], Some(&text), None).unwrap();
+    let second = CanonicalContents::node(&mut [], &mut [], Some(&text), None).unwrap();
+    let writes = [(&first, "large-a"), (&second, "large-b")].map(|(image, key)| StructuredWrite {
+        key: ApplicationKey::new(EntityKind::Node, "ze76", key).unwrap(),
+        revision: GraphRevision::new(1).unwrap(),
+        operation: StructuredOperation::Create,
+        image: Some(WriteImage::Node(image)),
+    });
+    assert!(
+        store
+            .apply_batch(&writes, &search::control())
+            .unwrap_err()
+            .nothing_committed()
+    );
+    assert_eq!(disk(), before);
+    assert_eq!(fixture.run(query).metadata().generation, generation);
+    check();
+    assert_eq!(resources.reserved_bytes().unwrap(), baseline);
+}

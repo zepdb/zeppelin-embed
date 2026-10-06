@@ -660,15 +660,15 @@ impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
                     current.shape,
                     current.fingerprint,
                     &mut old_source,
-                );
+                )
+                .with_resources(self.memory.resources());
                 let mut after_source = Cursor::new(encoded.as_ref().map_or(&[][..], |e| &*e.bytes));
                 let edit = match (entry.deleted, encoded.as_ref()) {
                     (Some(mode), _) => CypherEdit::Delete(mode),
-                    (None, Some(e)) => CypherEdit::Put(CanonicalRecord::from_validated(
-                        e.shape,
-                        e.fingerprint,
-                        &mut after_source,
-                    )),
+                    (None, Some(e)) => CypherEdit::Put(
+                        CanonicalRecord::from_validated(e.shape, e.fingerprint, &mut after_source)
+                            .with_resources(self.memory.resources()),
+                    ),
                     _ => return Err(StageError::InvalidInput),
                 };
                 Some(super::super::key_lifecycle::classify_cypher_record(

@@ -73,7 +73,9 @@ impl<'v, 'm, 'g> EligibleNodeSet<'v, 'm, 'g> {
                         .as_mut_slice()
                         .get_mut(bucket)
                         .ok_or(RuntimeError::Batch)? = ids.len();
+                    context.check_work(WorkKind::EligibilityUniqueEntries, 1)?;
                     ids.push(id)?;
+                    context.charge(WorkKind::EligibilityUniqueEntries, 1)?;
                     break;
                 }
                 if ids.as_slice().get(entry) == Some(&id) {

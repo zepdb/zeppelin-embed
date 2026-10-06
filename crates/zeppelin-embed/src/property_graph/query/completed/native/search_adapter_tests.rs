@@ -737,6 +737,18 @@ fn ze64_vector_only_call_ranks_by_real_squared_l2() {
     assert_eq!(node_cell(&result, 2, 0), b);
     assert_eq!(f64_cell(&result, 2, 1), Some(50.0));
     let report = result.pools().reports[0];
+    use crate::property_graph::query::runtime::WorkKind;
+    assert_eq!(
+        result
+            .metadata()
+            .counters
+            .get(WorkKind::CandidateWindowPeak),
+        3
+    );
+    assert_eq!(report.work.get(WorkKind::CandidateWindowPeak), 3);
+    // Two query-validation coordinates plus three real two-coordinate scores.
+    assert_eq!(report.work.get(WorkKind::VectorCoordinates), 8);
+    assert_eq!(report.work.get(WorkKind::VectorBytes), 32);
     assert_eq!(report.kind, SearchKind::Vector);
     assert_eq!(report.actual_tier, Some(ActualTier::Exact));
     assert_eq!(report.precision, ScorePrecision::Original);

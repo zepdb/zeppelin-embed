@@ -999,3 +999,35 @@ fn charge_parameters(
         .map_err(|_| invalid("parameter query memory"))?;
     Ok((charge, options))
 }
+
+pub(crate) fn resources(
+    handle: ZeGraphHandle,
+    out: *mut crate::ZeGraphResources,
+) -> Result<(), FfiError> {
+    validate_maintenance_descriptor(out)?;
+    let descriptor = marshal::read_value(out);
+    if descriptor.abi_reserved != 0 {
+        return Err(invalid("graph resources reserved field"));
+    }
+    let access = lookup(handle)?;
+    let resources = access
+        .store
+        .store
+        .resources()
+        .map_err(|error| store_error(&error, false))?;
+    let observed = resources
+        .snapshot()
+        .map_err(|error| FfiError::new(ZeErrorCode::ZeErrSynchronization, error.to_string()))?;
+    marshal::write_scalar(
+        out,
+        crate::ZeGraphResources {
+            abi_size: std::mem::size_of::<crate::ZeGraphResources>() as u32,
+            abi_reserved: 0,
+            engine_bytes: observed.engine_bytes,
+            engine_peak_bytes: observed.engine_peak_bytes,
+            application_bytes: observed.application_bytes,
+            application_peak_bytes: observed.application_peak_bytes,
+        },
+    );
+    Ok(())
+}

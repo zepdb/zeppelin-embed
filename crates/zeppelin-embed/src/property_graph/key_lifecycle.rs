@@ -3,7 +3,6 @@ use super::{
     ApplicationKey, CanonicalError, CanonicalFingerprint, EntityId, EntityKind, EntityShape,
     ExpectedGraphState, GraphDeleteMode, GraphGeneration, GraphOperation, GraphRevision,
     MAX_GRAPH_CHANGES, MAX_GRAPH_INPUT_BYTES, OperationFields, OperationProvenance,
-    compare_canonical_streams,
 };
 use std::io::Read;
 mod bounded;
@@ -14,6 +13,7 @@ pub struct CanonicalRecord<'a> {
     shape: EntityShape<'a>,
     fingerprint: CanonicalFingerprint,
     source: &'a mut dyn Read,
+    resources: Option<&'a super::resources::GraphResources>,
 }
 impl<'a> CanonicalRecord<'a> {
     /// Borrows an already validated canonical source without copying its bytes.
@@ -27,7 +27,15 @@ impl<'a> CanonicalRecord<'a> {
             shape,
             fingerprint,
             source,
+            resources: None,
         }
+    }
+    pub(crate) fn with_resources(
+        mut self,
+        resources: &'a super::resources::GraphResources,
+    ) -> Self {
+        self.resources = Some(resources);
+        self
     }
 }
 
@@ -626,15 +634,27 @@ fn contents_equal(
     if !bounded::shapes(left.shape, right.shape, checkpoint)? {
         return Ok(false);
     }
-    Ok(compare_canonical_streams(
+    let resources = left.resources;
+    let mut compared = 0_u64;
+    let comparison = super::canonical::compare_canonical_streams_observed(
         left.source,
         left.fingerprint,
         right.source,
         right.fingerprint,
         scratch,
         checkpoint,
-    )?
-    .equal)
+        &mut |bytes| {
+            compared = compared.saturating_add(bytes);
+            Ok(())
+        },
+    );
+    if let Some(resources) = resources {
+        resources.record_work(
+            crate::lifecycle::stats::GraphWorkKind::CanonicalComparisonBytes,
+            compared,
+        );
+    }
+    Ok(comparison?.equal)
 }
 
 /// Resolved structured target identities. Staging supplies both the complete key

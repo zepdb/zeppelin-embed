@@ -51,6 +51,7 @@ impl std::error::Error for WalError {}
 pub struct WalResources<'a> {
     remaining: u64,
     consumed: u64,
+    accounting: Option<super::resources::GraphResources>,
     cancelled: &'a mut dyn FnMut() -> bool,
 }
 impl<'a> WalResources<'a> {
@@ -67,10 +68,17 @@ impl<'a> WalResources<'a> {
         let mut value = Self {
             remaining: work,
             consumed: 0,
+            accounting: None,
             cancelled,
         };
         value.charge(0)?;
         Ok(value)
+    }
+    /// Attaches the actual native writer owner; standalone codecs keep their
+    /// explicit local consumed counter without claiming store-bound work.
+    pub(crate) fn with_accounting(mut self, resources: &super::resources::GraphResources) -> Self {
+        self.accounting = Some(resources.clone());
+        self
     }
     /// Checks cancellation and charges before the next byte/descriptor unit.
     pub fn charge(&mut self, units: u64) -> Result<(), WalError> {
@@ -85,6 +93,9 @@ impl<'a> WalResources<'a> {
             .consumed
             .checked_add(units)
             .ok_or(WalError::WorkLimit)?;
+        if let Some(accounting) = &self.accounting {
+            accounting.record_work(crate::lifecycle::stats::GraphWorkKind::WalCodecUnits, units);
+        }
         Ok(())
     }
     pub(crate) const fn remaining(&self) -> u64 {

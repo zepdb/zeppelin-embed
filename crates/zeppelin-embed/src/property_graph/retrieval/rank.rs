@@ -159,6 +159,7 @@ impl<'m, 'g> TopK<'m, 'g> {
             return Err(RetrievalError::Invariant("nonfinite vector distance"));
         }
         if self.hits.len() < self.k {
+            resources.observe_candidate_window(self.hits.len() + 1)?;
             self.hits.push(hit).map_err(memory_error)?;
         } else {
             let worst = self
@@ -606,6 +607,7 @@ impl<'q, 'm, 'g> Ranking<'q, 'm, 'g> {
         counters: crate::graph::search::GraphSearchCounters,
         resources: &mut TreeResources<'_>,
     ) -> Result<(), RetrievalError> {
+        resources.observe_candidate_window(counters.candidate_window_peak())?;
         resources.charge_query_work(WorkKind::VectorCoordinates, counters.dims_touched())?;
         let rescored = counters
             .candidates_rescored()

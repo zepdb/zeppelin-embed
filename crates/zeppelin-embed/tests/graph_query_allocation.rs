@@ -10,7 +10,9 @@ fn actual_allocator_failure_releases_new_capacity_and_preserves_old_arena() {
     let root = tempfile::tempdir().expect("fixture");
     let store = Store::open(
         root.path(),
-        OpenOptions::new().with_max_resident_bytes(65536),
+        // Graph registry backing exceeds the old 64 KiB store fixture.
+        // The 8 KiB query allowance below remains the allocation-fault subject.
+        OpenOptions::new().with_max_resident_bytes(4 * 1024 * 1024),
     )
     .expect("store");
     let shared = GraphResources::from_store(&store).expect("shared");

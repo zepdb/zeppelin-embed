@@ -29,6 +29,7 @@ ze_graph_maintain
 ze_graph_open
 ze_graph_open_with_relationship_types
 ze_graph_query
+ze_graph_resources
 ze_graph_response_free
 ze_graph_set_maintenance_policy
 ze_ingest

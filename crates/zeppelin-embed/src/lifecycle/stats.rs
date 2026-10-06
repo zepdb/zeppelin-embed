@@ -13,6 +13,184 @@ pub use allocation_interval::{
     AllocationInterval, AllocationIntervalError, AllocationIntervalSnapshot,
 };
 
+/// Store-cumulative native write work, including work before rejected writes.
+/// Byte metrics are logical formats, not allocation capacities or DRAM traffic.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct GraphWorkLedger {
+    /// Non-query storage work, including preparation and maintenance.
+    pub storage_lookups: u64,
+    /// Non-query storage work, including preparation and maintenance.
+    pub storage_scans: u64,
+    /// Non-query storage work, including preparation and maintenance.
+    pub storage_adjacency_entries: u64,
+    /// Non-query storage work, including preparation and maintenance.
+    pub storage_copied_bytes: u64,
+    /// Non-query storage work, including preparation and maintenance.
+    pub storage_pages_decoded: u64,
+    /// Non-query storage work, including preparation and maintenance.
+    pub storage_pages_copied: u64,
+    /// Non-query storage work, including preparation and maintenance.
+    pub storage_property_values: u64,
+    /// Non-query storage work, including preparation and maintenance.
+    pub storage_property_bytes: u64,
+    /// Non-query storage work, including preparation and maintenance.
+    pub storage_adjacency_physical_entries: u64,
+    /// Non-query storage work, including preparation and maintenance.
+    pub storage_adjacency_merged_visits: u64,
+    /// Non-query storage work, including preparation and maintenance.
+    pub storage_adjacency_merge_runs: u64,
+
+    /// Canonical byte pairs actually compared.
+    pub canonical_comparison_bytes: u64,
+    /// Canonical bytes emitted into real staging backing, excluding sizing passes.
+    pub canonical_encoding_bytes: u64,
+    /// Admitted WAL codec byte/descriptor units, including repeated passes.
+    pub wal_codec_units: u64,
+    /// Complete native commit envelope bytes encoded before append.
+    pub encoded_wal_bytes: u64,
+    /// Bytes supplied to successful commit-artifact writes.
+    pub artifact_bytes_written: u64,
+    /// Successful commit-artifact writes.
+    pub artifact_writes: u64,
+    /// Bytes supplied to successful native commit WAL appends.
+    pub wal_bytes_appended: u64,
+    /// Successful native commit WAL appends.
+    pub wal_appends: u64,
+    /// Attempted full file syncs at native commit publication.
+    pub full_sync_attempts: u64,
+    /// Successful full file syncs at native commit publication.
+    pub full_sync_successes: u64,
+    /// Attempted commit directory syncs, separate from file syncs.
+    pub directory_sync_attempts: u64,
+    /// Successful commit directory syncs.
+    pub directory_sync_successes: u64,
+}
+#[derive(Clone, Copy)]
+pub(crate) enum GraphWorkKind {
+    StorageLookups,
+    StorageScans,
+    StorageAdjacencyEntries,
+    StorageCopiedBytes,
+    StoragePagesDecoded,
+    StoragePagesCopied,
+    StoragePropertyValues,
+    StoragePropertyBytes,
+    StorageAdjacencyPhysicalEntries,
+    StorageAdjacencyMergedVisits,
+    StorageAdjacencyMergeRuns,
+
+    CanonicalComparisonBytes,
+    CanonicalEncodingBytes,
+    WalCodecUnits,
+    EncodedWalBytes,
+    ArtifactBytesWritten,
+    ArtifactWrites,
+    WalBytesAppended,
+    WalAppends,
+    FullSyncAttempts,
+    FullSyncSuccesses,
+    DirectorySyncAttempts,
+    DirectorySyncSuccesses,
+}
+impl GraphWorkLedger {
+    pub(crate) fn add(&mut self, kind: GraphWorkKind, units: u64) {
+        let slot = match kind {
+            GraphWorkKind::StorageLookups => &mut self.storage_lookups,
+            GraphWorkKind::StorageScans => &mut self.storage_scans,
+            GraphWorkKind::StorageAdjacencyEntries => &mut self.storage_adjacency_entries,
+            GraphWorkKind::StorageCopiedBytes => &mut self.storage_copied_bytes,
+            GraphWorkKind::StoragePagesDecoded => &mut self.storage_pages_decoded,
+            GraphWorkKind::StoragePagesCopied => &mut self.storage_pages_copied,
+            GraphWorkKind::StoragePropertyValues => &mut self.storage_property_values,
+            GraphWorkKind::StoragePropertyBytes => &mut self.storage_property_bytes,
+            GraphWorkKind::StorageAdjacencyPhysicalEntries => {
+                &mut self.storage_adjacency_physical_entries
+            }
+            GraphWorkKind::StorageAdjacencyMergedVisits => {
+                &mut self.storage_adjacency_merged_visits
+            }
+            GraphWorkKind::StorageAdjacencyMergeRuns => &mut self.storage_adjacency_merge_runs,
+
+            GraphWorkKind::CanonicalComparisonBytes => &mut self.canonical_comparison_bytes,
+            GraphWorkKind::CanonicalEncodingBytes => &mut self.canonical_encoding_bytes,
+            GraphWorkKind::WalCodecUnits => &mut self.wal_codec_units,
+            GraphWorkKind::EncodedWalBytes => &mut self.encoded_wal_bytes,
+            GraphWorkKind::ArtifactBytesWritten => &mut self.artifact_bytes_written,
+            GraphWorkKind::ArtifactWrites => &mut self.artifact_writes,
+            GraphWorkKind::WalBytesAppended => &mut self.wal_bytes_appended,
+            GraphWorkKind::WalAppends => &mut self.wal_appends,
+            GraphWorkKind::FullSyncAttempts => &mut self.full_sync_attempts,
+            GraphWorkKind::FullSyncSuccesses => &mut self.full_sync_successes,
+            GraphWorkKind::DirectorySyncAttempts => &mut self.directory_sync_attempts,
+            GraphWorkKind::DirectorySyncSuccesses => &mut self.directory_sync_successes,
+        };
+        *slot = slot.saturating_add(units);
+    }
+}
+
+impl GraphWorkLedger {
+    pub(crate) fn merge(&mut self, other: Self) {
+        self.storage_lookups = self.storage_lookups.saturating_add(other.storage_lookups);
+        self.storage_scans = self.storage_scans.saturating_add(other.storage_scans);
+        self.storage_adjacency_entries = self
+            .storage_adjacency_entries
+            .saturating_add(other.storage_adjacency_entries);
+        self.storage_copied_bytes = self
+            .storage_copied_bytes
+            .saturating_add(other.storage_copied_bytes);
+        self.storage_pages_decoded = self
+            .storage_pages_decoded
+            .saturating_add(other.storage_pages_decoded);
+        self.storage_pages_copied = self
+            .storage_pages_copied
+            .saturating_add(other.storage_pages_copied);
+        self.storage_property_values = self
+            .storage_property_values
+            .saturating_add(other.storage_property_values);
+        self.storage_property_bytes = self
+            .storage_property_bytes
+            .saturating_add(other.storage_property_bytes);
+        self.storage_adjacency_physical_entries = self
+            .storage_adjacency_physical_entries
+            .saturating_add(other.storage_adjacency_physical_entries);
+        self.storage_adjacency_merged_visits = self
+            .storage_adjacency_merged_visits
+            .saturating_add(other.storage_adjacency_merged_visits);
+        self.storage_adjacency_merge_runs = self
+            .storage_adjacency_merge_runs
+            .saturating_add(other.storage_adjacency_merge_runs);
+        self.canonical_comparison_bytes = self
+            .canonical_comparison_bytes
+            .saturating_add(other.canonical_comparison_bytes);
+        self.canonical_encoding_bytes = self
+            .canonical_encoding_bytes
+            .saturating_add(other.canonical_encoding_bytes);
+        self.wal_codec_units = self.wal_codec_units.saturating_add(other.wal_codec_units);
+        self.encoded_wal_bytes = self
+            .encoded_wal_bytes
+            .saturating_add(other.encoded_wal_bytes);
+        self.artifact_bytes_written = self
+            .artifact_bytes_written
+            .saturating_add(other.artifact_bytes_written);
+        self.artifact_writes = self.artifact_writes.saturating_add(other.artifact_writes);
+        self.wal_bytes_appended = self
+            .wal_bytes_appended
+            .saturating_add(other.wal_bytes_appended);
+        self.wal_appends = self.wal_appends.saturating_add(other.wal_appends);
+        self.full_sync_attempts = self
+            .full_sync_attempts
+            .saturating_add(other.full_sync_attempts);
+        self.full_sync_successes = self
+            .full_sync_successes
+            .saturating_add(other.full_sync_successes);
+        self.directory_sync_attempts = self
+            .directory_sync_attempts
+            .saturating_add(other.directory_sync_attempts);
+        self.directory_sync_successes = self
+            .directory_sync_successes
+            .saturating_add(other.directory_sync_successes);
+    }
+}
 #[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub(crate) enum AllocationComponent {
@@ -66,12 +244,42 @@ struct AccountingState {
 pub(crate) struct Accounting {
     budgets: Budgets,
     state: Mutex<AccountingState>,
+    graph_work: Mutex<GraphWorkLedger>,
+    #[cfg(test)]
+    graph_work_merges: std::sync::atomic::AtomicU64,
 }
 
 impl Accounting {
     pub(crate) const fn new(max_resident_bytes: u64, max_temp_bytes: u64) -> Self {
         Self {
             budgets: Budgets::new(max_resident_bytes, max_temp_bytes),
+            #[cfg(test)]
+            graph_work_merges: std::sync::atomic::AtomicU64::new(0),
+            graph_work: Mutex::new(GraphWorkLedger {
+                storage_lookups: 0,
+                storage_scans: 0,
+                storage_adjacency_entries: 0,
+                storage_copied_bytes: 0,
+                storage_pages_decoded: 0,
+                storage_pages_copied: 0,
+                storage_property_values: 0,
+                storage_property_bytes: 0,
+                storage_adjacency_physical_entries: 0,
+                storage_adjacency_merged_visits: 0,
+                storage_adjacency_merge_runs: 0,
+                canonical_comparison_bytes: 0,
+                canonical_encoding_bytes: 0,
+                wal_codec_units: 0,
+                encoded_wal_bytes: 0,
+                artifact_bytes_written: 0,
+                artifact_writes: 0,
+                wal_bytes_appended: 0,
+                wal_appends: 0,
+                full_sync_attempts: 0,
+                full_sync_successes: 0,
+                directory_sync_attempts: 0,
+                directory_sync_successes: 0,
+            }),
             state: Mutex::new(AccountingState {
                 resident_owned_bytes: 0,
                 resident_peak_bytes: 0,
@@ -181,6 +389,45 @@ impl Accounting {
         })
     }
 
+    #[cfg(feature = "graph-cypher")]
+    pub(crate) fn graph_resource_bytes(&self) -> Result<(u64, u64), StoreError> {
+        let state = self.state.lock().map_err(|_| StoreError::Synchronization {
+            component: "graph resources",
+        })?;
+        Ok((state.resident_owned_bytes, state.resident_peak_bytes))
+    }
+    #[cfg(any(test, feature = "test-seams"))]
+    pub(crate) fn graph_work(&self) -> GraphWorkLedger {
+        *self
+            .graph_work
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+    pub(crate) fn merge_graph_work(&self, delta: GraphWorkLedger) {
+        #[cfg(test)]
+        self.graph_work_merges
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.graph_work
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .merge(delta);
+    }
+    #[cfg(test)]
+    pub(crate) fn ze76_work_merges(&self) -> u64 {
+        self.graph_work_merges
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+    #[cfg(test)]
+    pub(crate) fn ze76_overflow_work(&self) {
+        self.graph_work.lock().unwrap().wal_appends = u64::MAX;
+    }
+    #[cfg(test)]
+    pub(crate) fn ze76_poison_work(&self) {
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = self.graph_work.lock().unwrap();
+            panic!("test-only diagnostic lock poison");
+        });
+    }
     pub(crate) fn record_plans(
         &self,
         plans: &[crate::planner::SegmentPlan],

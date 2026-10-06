@@ -1622,6 +1622,7 @@ fn ze241_every_graph_export_has_an_explicit_handle_policy() {
         "ze_graph_query",
         "ze_graph_get_nodes",
         "ze_graph_get_relationships",
+        "ze_graph_resources",
         "ze_graph_maintain",
         "ze_graph_set_maintenance_policy",
     ];

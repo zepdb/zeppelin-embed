@@ -207,3 +207,16 @@ pub extern "C" fn ze_graph_query(
         )
     })
 }
+
+/// Returns one coherent allocation snapshot; out must have the exact abi_size
+/// and zero abi_reserved. This observes capacities, not process memory or I/O.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_graph_resources(
+    handle: ZeGraphHandle,
+    out: *mut crate::ZeGraphResources,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle.token), ZeErrorCode::ZeErrPanic, {
+        crate::run_named_panic_probe("ze_graph_resources");
+        crate::finish(Some(handle.token), crate::graph_abi::resources(handle, out))
+    })
+}
