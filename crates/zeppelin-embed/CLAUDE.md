@@ -1149,10 +1149,18 @@ bookkeeping reclamation.
 
 The statement seam binds real vector/text/hybrid ranking using a borrowed Store
 analyzer. Ranking, eligibility, expansion and copied results share one admitted
-view. Reports retain per-call work including preparation. Text candidate_count
-counts all eligible matches; vector counts retained hits and hybrid its retained
-union. A store without a vector space refuses vector/hybrid with NoVectorSpace
+view. Reports retain per-call work including preparation. Vector and text
+candidate_count count eligible candidates before top-k: live eligible vector
+members and eligible text matches, respectively. These counts are independent
+of k, downstream LIMIT, projection and row multiplication. They do not certify
+exhaustive ANN scoring; coverage remains authoritative. Hybrid counts its
+retained candidate union before final top-k; its ranking policy is unchanged.
+A store without a vector space refuses vector/hybrid with NoVectorSpace
 (Constraint); search/write mixing and row correlation remain invalid plans.
+
+Owner decision ZE-305 (Anup, 2026-10-05): search through Cypher and GraphStore
+stays enabled. The 2026-09-26 MVP cut is lifted; earlier MVP-cut statements
+in the graph plans are superseded.
 
 
 ## ZE-58 Cypher search execution proofs

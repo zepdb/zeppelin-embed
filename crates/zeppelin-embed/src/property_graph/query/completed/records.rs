@@ -179,8 +179,11 @@ pub struct SearchReport {
     pub normalization_version: u32,
     /// Actual weighting/rules policy version.
     pub rules_version: u32,
-    /// Actual candidate population: retained vector hits, all eligible text
-    /// matches, or the retained hybrid union (before final top-k).
+    /// Eligible candidates before top-k: live eligible vector members for
+    /// vector search, or eligible query matches for text search. These counts
+    /// are independent of k, downstream LIMIT, projection and row multiplication.
+    /// They do not certify exhaustive ANN scoring; `coverage` remains authoritative.
+    /// Hybrid counts its retained candidate union before final top-k.
     pub candidate_count: u64,
     /// Actual candidates with all present components evaluated.
     pub cross_scored_count: u64,

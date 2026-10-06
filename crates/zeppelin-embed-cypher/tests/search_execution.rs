@@ -479,3 +479,19 @@ fn ze58_graph_coverage_requires_actual_traversal() {
         assert!(report.cross_score_complete);
     }
 }
+
+#[test]
+fn ze305_candidate_count_survives_cypher_limit() {
+    let f = SearchFixture::create();
+    for (call, count) in [
+        ("ze.vector_search([0,0],1,'exact')", 3),
+        ("ze.text_search('amber',1)", 2),
+    ] {
+        for (suffix, rows) in [("", 1), (" LIMIT 0", 0)] {
+            let result = f.run(&format!("CALL {call} YIELD node RETURN node{suffix}"));
+            assert_eq!(result.metadata().rows, rows);
+            assert_eq!(result.pools().reports.len(), 1);
+            assert_eq!(result.pools().reports[0].candidate_count, count);
+        }
+    }
+}

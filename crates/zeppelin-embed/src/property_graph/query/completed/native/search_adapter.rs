@@ -138,7 +138,7 @@ impl<'v, 'm, 'g> SearchAdapter<'v, 'm, 'g> for NativeSearchAdapter<'_> {
                     effective_alpha_bits: 0,
                     normalization_version: 0,
                     rules_version: 0,
-                    candidate_count: ranked.hits().len() as u64,
+                    candidate_count: report.eligible_members,
                     cross_scored_count: 0,
                     fallback_count: report.fallback_count,
                     cross_score_complete: false,

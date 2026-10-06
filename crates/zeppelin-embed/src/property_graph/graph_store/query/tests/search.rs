@@ -935,3 +935,20 @@ fn ze64_hybrid_window_limited_cross_scoring_is_reported_not_hidden() {
         assert_ne!(report.rules_version, 0);
     }
 }
+
+#[test]
+fn ze305_candidate_count_is_pre_top_k_population() {
+    let fixture = SearchFixture::create();
+    for mode in [SearchMode::Exact, SearchMode::Scan, SearchMode::Graph] {
+        for (kind, count) in [(SearchKind::Vector, 3), (SearchKind::Lexical, 2)] {
+            for k in [1, 20] {
+                let result = search_with_eligibility(&fixture.store, kind, k, false, mode).unwrap();
+                assert_eq!(result.metadata().rows, if k == 1 { 1 } else { count });
+                assert_eq!(result.pools().reports[0].candidate_count, u64::from(count));
+                let empty = search_with_eligibility(&fixture.store, kind, k, true, mode).unwrap();
+                assert_eq!(empty.metadata().rows, 0);
+                assert_eq!(empty.pools().reports[0].candidate_count, 0);
+            }
+        }
+    }
+}
