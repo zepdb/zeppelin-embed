@@ -4,7 +4,7 @@ All notable changes to Zeppelin Embed are recorded here. Versions follow
 semantic versioning, with the 0.x rule that a new public surface is a minor
 release and a compatible correction is a patch release.
 
-## 0.6.0 - 2026-10-05
+## 0.6.0 - 2026-10-06
 
 ### Added
 
