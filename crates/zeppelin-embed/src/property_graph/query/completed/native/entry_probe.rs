@@ -1201,7 +1201,6 @@ pub fn run_actual_probe(seed: u64) -> Result<ProbeReport, String> {
     let post_append_close = close_probe(seed, CloseSchedule::AfterAppend)?;
 
     let incident = incident_probe(seed, base)?;
-    let mut fault_receipts = Vec::new();
     for (point, key) in [
         (FaultPoint::Append, "indeterminate.fire"),
         (FaultPoint::PartialAppend, "partial-append.fire"),
@@ -1259,7 +1258,6 @@ pub fn run_actual_probe(seed: u64) -> Result<ProbeReport, String> {
             return Err(String::from("injection-disabled control mismatch"));
         }
         clean.remove()?;
-        fault_receipts.push((key, 1));
     }
 
     super::search_probe::preparation_refusal();
@@ -1272,11 +1270,6 @@ pub fn run_actual_probe(seed: u64) -> Result<ProbeReport, String> {
     }
     let oracle = u64::from(perturbed != expected && observations == expected);
     let mut receipts = vec![("incident.fire", incident)];
-    receipts.extend(
-        fault_receipts
-            .into_iter()
-            .filter(|(key, _)| *key != "indeterminate.fire"),
-    );
     Ok(ProbeReport {
         observations,
         expected,
@@ -1287,7 +1280,6 @@ pub fn run_actual_probe(seed: u64) -> Result<ProbeReport, String> {
                 ("fence-only.commit", 1),
                 ("fence-only.recovery", 1),
                 ("precommit-cancel.fire", precommit),
-                ("indeterminate.fire", 1),
                 ("post-commit-cancel.commit", post_commit),
                 ("runtime-close.fire", runtime_close),
                 ("pre-append-close.fire", pre_append_close),

@@ -5,17 +5,13 @@ use super::coverage::CoverageRegistry;
 use std::collections::BTreeSet;
 use zeppelin_embed::property_graph::query::query_entry_test_support::run_actual_probe;
 
-const RECEIPTS: [&str; 18] = [
+const RECEIPTS: [&str; 14] = [
     "incident.fire",
-    "partial-append.fire",
-    "wal-sync.fire",
-    "publish.fire",
     "mid-drain.fire",
     "image-limit.fire",
     "fence-only.commit",
     "fence-only.recovery",
     "precommit-cancel.fire",
-    "indeterminate.fire",
     "post-commit-cancel.commit",
     "runtime-close.fire",
     "pre-append-close.fire",

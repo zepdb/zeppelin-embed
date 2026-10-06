@@ -284,8 +284,6 @@ pub mod graph_reclaim_test_support {
     /// Narrow measured reader-race observations and serialized controls.
     #[derive(Clone, Debug, Eq, PartialEq)]
     pub struct RaceProbeReport {
-        /// Measured barriers, lazy reads and unlinks.
-        pub receipts: Vec<PathReceipt>,
         /// Old generation, canonical bytes, and root/WAL unlink results.
         pub observation: (u64, Vec<u8>, bool, bool),
         /// Identical seed with serialized scheduling.

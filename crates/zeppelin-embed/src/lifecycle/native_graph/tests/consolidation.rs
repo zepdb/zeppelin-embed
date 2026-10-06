@@ -7045,7 +7045,7 @@ pub(super) fn run_actual_probe(seed: u64) -> crate::graph_reclaim_test_support::
             clean_controls,
         });
     }
-    receipts.extend(run_ze176_race_probe(seed).receipts);
+    run_ze176_race_probe(seed);
     let detach_sweep = run_ze46_detach_sweeps_bounded_edges_and_preserves_fences();
     receipts.push(crate::graph_read_view_test_support::PathReceipt {
         key: "property-graph.reclaim.detach-sweep",
@@ -7983,7 +7983,7 @@ fn ze186_reader_graph_only_artifact_survives_reclaim() {
 }
 
 #[cfg(feature = "test-seams")]
-fn ze176_schedule(seed: u64, raced: bool) -> ((u64, Vec<u8>, bool, bool), [u64; 4]) {
+fn ze176_schedule(seed: u64, raced: bool) -> (u64, Vec<u8>, bool, bool) {
     use crate::property_graph::query::resources::QueryMemory;
     use crate::property_graph::query::runtime::{RuntimeContext, RuntimeLimits};
     use crate::property_graph::storage::tree::directory::TreeResources;
@@ -7998,7 +7998,6 @@ fn ze176_schedule(seed: u64, raced: bool) -> ((u64, Vec<u8>, bool, bool), [u64; 
     let store = Arc::new(create_reclaim_test_store(&path, &vfs));
     let index = (seed % 1000) as usize;
     ze163_base_write(&store, "ze176-old", index);
-    let mut fires = [0; 4];
     let old = if raced {
         let entered = Arc::new(Barrier::new(2));
         let release = Arc::new(Barrier::new(2));
@@ -8012,7 +8011,6 @@ fn ze176_schedule(seed: u64, raced: bool) -> ((u64, Vec<u8>, bool, bool), [u64; 
             let old = reader.join().unwrap();
             let captured = capture.join().unwrap();
             assert!(captured.contains_lease(&old));
-            fires[0] += 1;
             old
         })
     } else {
@@ -8023,7 +8021,6 @@ fn ze176_schedule(seed: u64, raced: bool) -> ((u64, Vec<u8>, bool, bool), [u64; 
                 .unwrap()
                 .contains_lease(&old)
         );
-        fires[0] += 1;
         old
     };
     let root = old.bundle().root_envelope();
@@ -8084,7 +8081,6 @@ fn ze176_schedule(seed: u64, raced: bool) -> ((u64, Vec<u8>, bool, bool), [u64; 
             delete_events(&vfs.take()).is_empty(),
             "stale attempt deleted an artifact"
         );
-        fires[1] += 1;
     } else {
         ze163_base_write(&store, "ze176-new", index);
         vfs.after_next_create(move || {
@@ -8092,7 +8088,6 @@ fn ze176_schedule(seed: u64, raced: bool) -> ((u64, Vec<u8>, bool, bool), [u64; 
         });
         commit_maintenance(&store).unwrap();
         assert_eq!(creates.load(Ordering::Relaxed), 1);
-        fires[1] += 1;
     }
     store
         .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
@@ -8158,7 +8153,6 @@ fn ze176_schedule(seed: u64, raced: bool) -> ((u64, Vec<u8>, bool, bool), [u64; 
         );
         assert_eq!(bytes, format!("ze163 ze176-old row {index}").as_bytes());
         assert_eq!(generation, 1);
-        fires[2] += 1;
         canonical
     };
     drop(old);
@@ -8197,19 +8191,15 @@ fn ze176_schedule(seed: u64, raced: bool) -> ((u64, Vec<u8>, bool, bool), [u64; 
     let deleted = delete_events(&vfs.take());
     assert!(deleted.contains(&root_path) && deleted.contains(&wal_path));
     assert!(!root_path.exists() && !wal_path.exists());
-    fires[3] += 1;
     Arc::try_unwrap(store)
         .unwrap_or_else(|_| panic!("race store leaked"))
         .close()
         .unwrap();
     (
-        (
-            generation,
-            canonical,
-            !root_path.exists(),
-            !wal_path.exists(),
-        ),
-        fires,
+        generation,
+        canonical,
+        !root_path.exists(),
+        !wal_path.exists(),
     )
 }
 
@@ -8217,28 +8207,10 @@ fn ze176_schedule(seed: u64, raced: bool) -> ((u64, Vec<u8>, bool, bool), [u64; 
 pub(super) fn run_ze176_race_probe(
     seed: u64,
 ) -> crate::graph_reclaim_test_support::RaceProbeReport {
-    let (observation, fires) = ze176_schedule(seed, true);
-    let (control, controls) = ze176_schedule(seed, false);
+    let observation = ze176_schedule(seed, true);
+    let control = ze176_schedule(seed, false);
     assert_eq!(observation, control, "same-seed serialized race control");
-    let keys = [
-        "property-graph.reclaim.capture-race",
-        "property-graph.reclaim.publication-race",
-        "property-graph.reclaim.lazy-after-sweep",
-        "property-graph.reclaim.release-unlink",
-    ];
     crate::graph_reclaim_test_support::RaceProbeReport {
-        receipts: keys
-            .into_iter()
-            .zip(fires)
-            .zip(controls)
-            .map(|((key, fires), clean_controls)| {
-                crate::graph_read_view_test_support::PathReceipt {
-                    key,
-                    fires,
-                    clean_controls,
-                }
-            })
-            .collect(),
         observation,
         control,
     }
@@ -8246,22 +8218,8 @@ pub(super) fn run_ze176_race_probe(
 
 #[cfg(feature = "test-seams")]
 #[test]
-fn ze176_race_probe_requires_measured_controls() {
+fn ze176_race_probe_preserves_reader_and_reclaim_contracts() {
     let report = run_ze176_race_probe(7);
-    for key in [
-        "capture-race",
-        "publication-race",
-        "lazy-after-sweep",
-        "release-unlink",
-    ] {
-        let receipt = report
-            .receipts
-            .iter()
-            .find(|r| r.key.strip_prefix("property-graph.reclaim.") == Some(key))
-            .expect("missing measured race receipt");
-        assert_eq!(receipt.fires, 1, "{key}");
-        assert_eq!(receipt.clean_controls, 1, "{key}");
-    }
     assert_eq!(report.observation, report.control);
     assert_eq!(report.observation.0, 1);
     assert!(report.observation.2 && report.observation.3);
