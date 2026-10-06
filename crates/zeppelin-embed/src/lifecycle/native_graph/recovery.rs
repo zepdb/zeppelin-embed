@@ -123,6 +123,13 @@ macro_rules! reopen_controlled_validation {
     ($kind:expr, $identity:expr, $bytes:expr, $control:expr $(,)?) => {{
         #[cfg(test)]
         let _timer = ReopenTimer::new("artifact_validation", $bytes.len());
+        #[cfg(all(test, feature = "graph-cypher"))]
+        if let Some((_, artifact)) = $identity {
+            crate::property_graph::storage::preparation_work_capture::artifact(
+                artifact,
+                $bytes.len() as u64,
+            );
+        }
         artifact::decode_with_control($kind, $identity, $bytes, $control)
     }};
 }
@@ -780,7 +787,7 @@ struct RecoveryMappedArtifact {
 struct RecoveryArtifactWindow<'source, 'store, 'm> {
     source: &'source RecoverySource<'store, 'm>,
     artifact: ArtifactId,
-    mapping: NativeReadonlyMapping,
+    mapping: &'source NativeReadonlyMapping,
     validation: ValidatedArtifact,
 }
 
@@ -859,7 +866,7 @@ impl<'a, 'm> RecoverySource<'a, 'm> {
             slots,
             scoped: Cell::new(scoped),
             window: RefCell::new(None),
-            retain_window: Cell::new(false),
+            retain_window: Cell::new(scoped),
             filled: Cell::new(0),
             #[cfg(any(test, feature = "test-seams"))]
             slot_observation:
@@ -975,16 +982,51 @@ impl<'a, 'm> RecoverySource<'a, 'm> {
         Ok(frame.validation())
     }
 
-    fn with_artifact_window<'source, R>(
-        &'source self,
+    fn with_artifact_window<R>(
+        &self,
         reference: PhysicalRef,
         resources: &mut TreeResources<'_>,
         callback: impl for<'window, 'r> FnOnce(
-            &'window RecoveryArtifactWindow<'source, 'a, 'm>,
+            &'window RecoveryArtifactWindow<'_, 'a, 'm>,
             &'r mut TreeResources<'_>,
         ) -> Result<R, TreeError>,
     ) -> Result<R, TreeError> {
         self.check_owner(resources)?;
+        let slot = crate::property_graph::storage::mapping_slot(
+            self.slots.as_slice(),
+            reference.artifact,
+            |mapped| mapped.artifact,
+            || resources.step(1),
+        )?;
+        if !self.scoped_blocks()
+            && let Some(cell) = slot
+            && cell.get().is_none()
+        {
+            let _ = self.slot_block(reference, resources)?;
+        }
+        if let Some(mapped) = slot.and_then(OnceCell::get) {
+            let window = RecoveryArtifactWindow {
+                source: self,
+                artifact: reference.artifact,
+                mapping: &mapped.mapping,
+                validation: mapped.validation,
+            };
+            let _ = window.resolve(reference, resources)?;
+            return callback(&window, resources);
+        }
+        if let Ok(retained) = self.window.try_borrow()
+            && let Some(mapped) = retained.as_ref()
+            && mapped.artifact == reference.artifact
+        {
+            let window = RecoveryArtifactWindow {
+                source: self,
+                artifact: reference.artifact,
+                mapping: &mapped.mapping,
+                validation: mapped.validation,
+            };
+            let _ = window.resolve(reference, resources)?;
+            return callback(&window, resources);
+        }
         let (path, path_charge) = self.charged_path(reference.artifact)?;
         let mapping = map_file(self.store, &path, MAX_ARTIFACT_BYTES)
             .map_err(|error| self.latch_source(error))?;
@@ -992,11 +1034,11 @@ impl<'a, 'm> RecoverySource<'a, 'm> {
         let window = RecoveryArtifactWindow {
             source: self,
             artifact: reference.artifact,
-            mapping,
+            mapping: &mapping,
             validation,
         };
         let result = callback(&window, resources);
-        drop(window);
+        drop(mapping);
         drop(path);
         drop(path_charge);
         result
@@ -1303,7 +1345,14 @@ where
         STATE_TRACE_COUNT.with(|count| count.set(count.get().saturating_add(1)));
     }
     resources.require_preparation(memory)?;
-    let trace_source = RecoverySource::new_scoped(store, directory, state, memory, 1)?;
+    let trace_source = RecoverySource::new_with_capacity(
+        store,
+        directory,
+        state,
+        memory,
+        crate::property_graph::storage::MAX_NATIVE_ARTIFACTS,
+        false,
+    )?;
     let catalog_source = (depth == CapturedTraceDepth::Complete)
         .then(|| RecoverySource::new_with_capacity(store, directory, state, memory, 1, false))
         .transpose()?;

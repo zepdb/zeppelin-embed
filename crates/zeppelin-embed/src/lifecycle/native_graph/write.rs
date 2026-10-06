@@ -2390,6 +2390,11 @@ pub(super) fn commit_staged_batch<'m>(
         final_roots.replace(old.directory(TreeKind::OutRanges)?)?;
     }
     let mut commit_artifacts = StorageBuffer::new(storage, protected_start)?;
+    #[cfg(all(test, feature = "graph-cypher"))]
+    crate::property_graph::storage::preparation_work_capture::phase(
+        "transition-start",
+        resources.work(),
+    );
     let transition = prepare_committed_transition(
         store,
         shared,
@@ -2409,6 +2414,11 @@ pub(super) fn commit_staged_batch<'m>(
         &mut wal_resources,
     )?;
 
+    #[cfg(all(test, feature = "graph-cypher"))]
+    crate::property_graph::storage::preparation_work_capture::phase(
+        "transition-end",
+        resources.work(),
+    );
     let tail_bytes = writer
         .wal
         .bytes
@@ -2627,6 +2637,11 @@ impl crate::lifecycle::Store {
             if let Some(error) = base.take_error() {
                 return Err(NativeGraphError::Stage(StageError::NativeStorage(error)));
             }
+            #[cfg(all(test, feature = "graph-cypher"))]
+            crate::property_graph::storage::preparation_work_capture::phase(
+                "staging-end",
+                resources_cell.borrow().work(),
+            );
             let materialized = staged?;
             let staged_batch = materialized.batch();
             let step = commit_staged_batch(

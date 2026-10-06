@@ -66,7 +66,11 @@ impl<'a, 'm> NativeSpillReader<'a, 'm> {
             return Err(NativeGraphError::Invalid("spill reader target generation"));
         }
         Ok(Self {
-            source: NativePreparationSource::new(lease, memory, 1)?,
+            source: NativePreparationSource::new(
+                lease,
+                memory,
+                crate::property_graph::storage::MAX_NATIVE_ARTIFACTS,
+            )?,
             target_generation,
         })
     }
@@ -186,9 +190,20 @@ impl PreparedDurableSpill {
             ));
         }
         let reader = NativeSpillReader {
-            source: NativePreparationSource::new(&self.admitted, memory, 1)?,
+            source: NativePreparationSource::new(
+                &self.admitted,
+                memory,
+                crate::property_graph::storage::MAX_NATIVE_ARTIFACTS,
+            )?,
             target_generation: self.binding.target_generation,
         };
+        #[cfg(all(test, feature = "graph-cypher"))]
+        let mark_reads_before =
+            crate::property_graph::storage::preparation_work_capture::mark_entries();
+        // Validate every page, ordering, count and digest once. The mark is
+        // immutable; each protected record still requires exact membership.
+        let mut mark = DurableRunReader::new(self.mark, memory)?;
+        while mark.next(&reader, resources)?.is_some() {}
         validate_protected_stream(
             self.protected,
             &reader,
@@ -196,12 +211,7 @@ impl PreparedDurableSpill {
             resources,
             |record, resources| {
                 let expected = record.artifact()?;
-                let mut mark = DurableRunReader::new(self.mark, memory)?;
-                let mut found = false;
-                while let Some(artifact) = mark.next(&reader, resources)? {
-                    found |= artifact == expected;
-                }
-                if !found {
+                if !mark.contains(expected, &reader, resources)? {
                     return Err(TreeError::Invalid(
                         "protected root is absent from completed mark",
                     ));
@@ -218,6 +228,14 @@ impl PreparedDurableSpill {
                 Ok(())
             },
         )?;
+        #[cfg(all(test, feature = "graph-cypher"))]
+        crate::property_graph::storage::preparation_work_capture::protected_mark(
+            self.mark.count,
+            self.protected.count,
+            self.mark.height(),
+            crate::property_graph::storage::preparation_work_capture::mark_entries()
+                - mark_reads_before,
+        );
         let Some(intent) = self.intent else {
             return if candidates.is_empty() && partials.is_empty() {
                 Ok(())
@@ -274,7 +292,11 @@ impl<'a, 'm> NativeSpillWriter<'a, 'm> {
         Ok(Self {
             store,
             lease,
-            source: NativePreparationSource::new(lease, memory, 1)?,
+            source: NativePreparationSource::new(
+                lease,
+                memory,
+                crate::property_graph::storage::MAX_NATIVE_ARTIFACTS,
+            )?,
             memory,
             control,
             binding,
@@ -565,6 +587,8 @@ impl SpillIo for NativeSpillWriter<'_, '_> {
             output,
             resources,
         )?;
+        // Per-read path/scratch charges are released; immutable mappings
+        // remain in the bounded source table until the attempt ends.
         let released = self.memory.reserved_bytes() == reserved_before;
         self.released_each_read_window
             .set(self.released_each_read_window.get() && released);

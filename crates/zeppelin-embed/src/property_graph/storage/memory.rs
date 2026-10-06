@@ -184,6 +184,8 @@ impl<'a, T> StorageBuffer<'a, T> {
     /// Add within the already admitted capacity only.
     pub fn push(&mut self, value: T) -> Result<(), TreeError> {
         if self.values.len() == self.limit {
+            #[cfg(all(test, feature = "graph-cypher"))]
+            super::preparation_work_capture::buffer_refusal(std::any::type_name::<T>(), self.limit);
             return Err(TreeError::Memory);
         }
         self.values.push(value);

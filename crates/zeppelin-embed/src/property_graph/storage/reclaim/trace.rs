@@ -409,6 +409,8 @@ where
                     emitted = emitted.checked_add(1).ok_or(TreeError::Work)?;
                 }
                 DirectoryTraceEvent::Leaf(leaf) => {
+                    #[cfg(all(test, feature = "graph-cypher"))]
+                    crate::property_graph::storage::preparation_work_capture::leaf(1);
                     cursor.with_leaf(leaf, resources, |entry, resources| {
                         trace_directory_entry(
                             source, catalog, kind, root, sequence, document, scratch, entry,

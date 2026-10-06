@@ -1166,6 +1166,8 @@ impl<'m> DurableRunReader<'m> {
                     }
                     self.previous = Some(id);
                     self.hash.update(&id.get().to_le_bytes());
+                    #[cfg(all(test, feature = "graph-cypher"))]
+                    super::preparation_work_capture::mark_entry();
                     self.emitted = self.emitted.checked_add(1).ok_or(TreeError::Work)?;
                     self.leaf_index += 1;
                     return Ok(Some(id));

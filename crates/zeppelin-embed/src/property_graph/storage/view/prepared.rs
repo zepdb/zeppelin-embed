@@ -133,6 +133,11 @@ impl<
             high_waters: bundle.high_waters(),
             prepared_inventories: ReferenceList::Values(bundle.prepared_inventories()),
         };
+        #[cfg(all(test, feature = "graph-cypher"))]
+        crate::property_graph::storage::preparation_work_capture::phase(
+            "directories-start",
+            resources.work(),
+        );
         let candidate = match prepare_native_graph(
             &mut self.objects,
             batch,
@@ -157,6 +162,11 @@ impl<
                 ));
             }
         };
+        #[cfg(all(test, feature = "graph-cypher"))]
+        crate::property_graph::storage::preparation_work_capture::phase(
+            "directories-end",
+            resources.work(),
+        );
         let batch_catalog = crate::property_graph::storage::participant::BatchCatalog {
             base: &self.catalog,
             additions: batch.symbols(),
@@ -180,6 +190,11 @@ impl<
                 ));
             }
         };
+        #[cfg(all(test, feature = "graph-cypher"))]
+        crate::property_graph::storage::preparation_work_capture::phase(
+            "sparse-end",
+            resources.work(),
+        );
         if let Err(error) = self.objects.finish(resources) {
             return Err(PreparedGraphFailure::from_preparation(
                 error,
@@ -187,6 +202,11 @@ impl<
                 self.base,
             ));
         }
+        #[cfg(all(test, feature = "graph-cypher"))]
+        crate::property_graph::storage::preparation_work_capture::phase(
+            "sealing-end",
+            resources.work(),
+        );
         PreparedGraphArtifacts::new(
             candidate,
             sparse,

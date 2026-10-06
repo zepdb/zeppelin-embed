@@ -513,6 +513,8 @@ impl<'a> TreeResources<'a> {
             self.control,
             TreeControl::Direct { limit, .. } if next > limit
         ) {
+            #[cfg(all(test, feature = "graph-cypher"))]
+            crate::property_graph::storage::preparation_work_capture::rejected(self.work, units);
             return Err(TreeError::Work);
         }
         self.work = next;
@@ -1269,6 +1271,8 @@ impl<'m> DirectoryTraceState<'m> {
                     upper,
                     payload,
                 } => {
+                    #[cfg(all(test, feature = "graph-cypher"))]
+                    crate::property_graph::storage::preparation_work_capture::child();
                     if self.frames.get(..self.depth).is_some_and(|frames| {
                         frames
                             .iter()
@@ -1594,6 +1598,8 @@ fn find_path_inner<S: BlockSource>(
             if validator.is_some() {
                 // Every retained child must be legal under the old parent before
                 // COW gives that same link a newer containing generation.
+                #[cfg(all(test, feature = "graph-cypher"))]
+                crate::property_graph::storage::preparation_work_capture::child();
                 let child_root = DirectoryRoot {
                     generation: page.header().generation,
                     ..root
@@ -2292,6 +2298,8 @@ impl<V> BulkEdit<'_, '_, V> {
         let mut cells = BulkBuffer::new(old_count + 2 * ops.len(), resources)?;
         let mut changed = false;
         if header.level == 0 {
+            #[cfg(all(test, feature = "graph-cypher"))]
+            crate::property_graph::storage::preparation_work_capture::leaf(old_count);
             // Validate each old value exactly once, including replaced/removed
             // entries, matching the checked single-key mutation contract.
             store.with_scoped_reads(|| -> Result<(), TreeError> {
@@ -2398,6 +2406,8 @@ impl<V> BulkEdit<'_, '_, V> {
                 else {
                     return Err(TreeError::Invalid("branch required"));
                 };
+                #[cfg(all(test, feature = "graph-cypher"))]
+                crate::property_graph::storage::preparation_work_capture::child();
                 let child_root = DirectoryRoot {
                     generation: header.generation,
                     ..root

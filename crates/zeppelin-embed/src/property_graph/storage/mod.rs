@@ -304,3 +304,6 @@ pub(crate) mod mapping_slot_capture {
         });
     }
 }
+
+#[cfg(all(test, feature = "graph-cypher"))]
+pub(crate) mod preparation_work_capture;

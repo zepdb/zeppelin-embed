@@ -38,7 +38,7 @@ struct PreparationMappedArtifact {
 pub(crate) struct NativeArtifactWindow<'source, 'lease, 'm> {
     source: &'source NativePreparationSource<'lease, 'm>,
     artifact: ArtifactId,
-    mapping: NativeReadonlyMapping,
+    mapping: &'source NativeReadonlyMapping,
     validation: ValidatedArtifact,
 }
 
@@ -187,8 +187,8 @@ impl<'lease, 'm> NativePreparationSource<'lease, 'm> {
         })
     }
 
-    /// Construct the authenticated trace variant. Its scoped callbacks release
-    /// each path, file and mapping before returning an owned result.
+    /// Construct the authenticated trace variant with one reusable current
+    /// mapping, plus mappings held by nested callbacks.
     pub(crate) fn new_scoped(
         lease: &'lease NativeReadLease,
         memory: &'m StorageMemory<'m>,
@@ -196,6 +196,7 @@ impl<'lease, 'm> NativePreparationSource<'lease, 'm> {
     ) -> Result<Self, TreeError> {
         let source = Self::new(lease, memory, capacity)?;
         source.scoped.set(true);
+        source.retain_window.set(true);
         Ok(source)
     }
 
@@ -246,6 +247,11 @@ impl<'lease, 'm> NativePreparationSource<'lease, 'm> {
         reference: PhysicalRef,
         resources: &mut TreeResources<'_>,
     ) -> Result<ValidatedArtifact, TreeError> {
+        #[cfg(all(test, feature = "graph-cypher"))]
+        crate::property_graph::storage::preparation_work_capture::artifact(
+            reference.artifact,
+            mapping.as_bytes().len() as u64,
+        );
         let bundle = self.lease.bundle();
         let frame = artifact::decode_with_control(
             ContainerKind::Object,
@@ -273,6 +279,13 @@ impl<'lease, 'm> NativePreparationSource<'lease, 'm> {
 
     fn check_required<'a>(&self, block: FramedBlock<'a>) -> Result<FramedBlock<'a>, TreeError> {
         let bundle = self.lease.bundle();
+        let identity = block.identity();
+        if identity.store != bundle.base().store
+            || identity.generation > bundle.base().generation
+            || identity.creation_serial > bundle.high_waters().creation_serial
+        {
+            return Err(TreeError::Invalid("native preparation artifact cutoff"));
+        }
         if let Some(required) = bundle.required_object(block.reference()) {
             let expected = required.object;
             let identity = block.identity();
@@ -291,8 +304,8 @@ impl<'lease, 'm> NativePreparationSource<'lease, 'm> {
         Ok(block)
     }
 
-    /// Authenticate one immutable artifact once, retain it for one bounded
-    /// callback, then release its mapping before returning an owned result.
+    /// Borrow the current authenticated mapping or authenticate a private
+    /// mapping for one bounded callback. All reference checks still run.
     pub(crate) fn with_artifact_window<R>(
         &self,
         reference: PhysicalRef,
@@ -303,6 +316,44 @@ impl<'lease, 'm> NativePreparationSource<'lease, 'm> {
         ) -> Result<R, TreeError>,
     ) -> Result<R, TreeError> {
         self.check_owner(resources)?;
+        let slot = crate::property_graph::storage::mapping_slot(
+            self.slots.as_slice(),
+            reference.artifact,
+            |mapped| mapped.artifact,
+            || resources.step(1),
+        )?;
+        if !self.scoped_blocks()
+            && let Some(cell) = slot
+            && cell.get().is_none()
+        {
+            let _ = self.slot_block(reference, resources)?;
+        }
+        if let Some(mapped) = slot.and_then(OnceCell::get) {
+            let window = NativeArtifactWindow {
+                source: self,
+                artifact: reference.artifact,
+                mapping: &mapped.mapping,
+                validation: mapped.validation,
+            };
+            let _ = window.resolve(reference, resources)?;
+            return callback(&window, resources);
+        }
+        // The trace often reads a record's payload extent immediately before
+        // entering its semantic window. Reuse that exact immutable mapping and
+        // proof, while retaining every framed-block and semantic check.
+        if let Ok(retained) = self.window.try_borrow()
+            && let Some(mapped) = retained.as_ref()
+            && mapped.artifact == reference.artifact
+        {
+            let window = NativeArtifactWindow {
+                source: self,
+                artifact: reference.artifact,
+                mapping: &mapped.mapping,
+                validation: mapped.validation,
+            };
+            let _ = window.resolve(reference, resources)?;
+            return callback(&window, resources);
+        }
         let (path, path_charge) = charged_artifact_path(
             self.memory,
             self.lease.bundle().directory(),
@@ -319,18 +370,18 @@ impl<'lease, 'm> NativePreparationSource<'lease, 'm> {
         let window = NativeArtifactWindow {
             source: self,
             artifact: reference.artifact,
-            mapping,
+            mapping: &mapping,
             validation,
         };
         let result = callback(&window, resources);
-        drop(window);
+        drop(mapping);
         drop(path);
         drop(path_charge);
         result
     }
 
     /// Copies one exact maintenance spill payload into caller-owned charged
-    /// scratch and releases its path, file and mapping before returning.
+    /// scratch, retaining its authenticated mapping under the bounded table.
     pub(crate) fn copy_spill_page(
         &self,
         required: crate::property_graph::wal::RequiredRef,
@@ -350,10 +401,24 @@ impl<'lease, 'm> NativePreparationSource<'lease, 'm> {
         {
             return Err(TreeError::Invalid("maintenance spill required reference"));
         }
+        let slot = crate::property_graph::storage::mapping_slot(
+            self.slots.as_slice(),
+            required.object.artifact,
+            |mapped| mapped.artifact,
+            || resources.step(1),
+        )?;
+        if let Some(mapped) = slot.and_then(OnceCell::get) {
+            return self.copy_validated_spill(mapped, required, output, resources);
+        }
         let (path, path_charge) =
             charged_artifact_path(self.memory, bundle.directory(), required.object.artifact)?;
         let file = bundle.vfs().open_for_map(&path).map_err(TreeError::Io)?;
         let mapping = NativeReadonlyMapping::open(file, &path, self.lease)?;
+        #[cfg(all(test, feature = "graph-cypher"))]
+        crate::property_graph::storage::preparation_work_capture::artifact(
+            required.object.artifact,
+            mapping.as_bytes().len() as u64,
+        );
         let frame = artifact::decode_with_control(
             ContainerKind::Object,
             Some((required.object.store, required.object.artifact)),
@@ -364,10 +429,38 @@ impl<'lease, 'm> NativePreparationSource<'lease, 'm> {
             ArtifactControlError::Format(error) => TreeError::Format(error),
             ArtifactControlError::Control(error) => error,
         })?;
-        let identity = frame.identity();
-        let block = frame
-            .framed_block(required.block)
+        let mapped = PreparationMappedArtifact {
+            artifact: required.object.artifact,
+            validation: frame.validation(),
+            mapping,
+        };
+        let length = self.copy_validated_spill(&mapped, required, output, resources)?;
+        if !self.slots_exhausted()
+            && let Some(cell) = slot
+        {
+            cell.set(mapped)
+                .map_err(|_| TreeError::Invalid("spill slot initialized twice"))?;
+            self.filled.set(self.filled.get().saturating_add(1));
+            #[cfg(any(test, feature = "test-support"))]
+            self.slot_observation.filled(self.filled.get());
+        }
+        drop(path);
+        drop(path_charge);
+        Ok(length)
+    }
+
+    fn copy_validated_spill(
+        &self,
+        mapped: &PreparationMappedArtifact,
+        required: crate::property_graph::wal::RequiredRef,
+        output: &mut [u8],
+        resources: &mut TreeResources<'_>,
+    ) -> Result<usize, TreeError> {
+        let block = mapped
+            .validation
+            .framed_block(mapped.mapping.as_bytes(), required.block)
             .map_err(TreeError::Format)?;
+        let identity = block.identity();
         if identity.store != required.object.store
             || identity.artifact != required.object.artifact
             || identity.generation != required.object.generation
@@ -384,11 +477,7 @@ impl<'lease, 'm> NativePreparationSource<'lease, 'm> {
             .ok_or(TreeError::Invalid("maintenance spill page exceeds scratch"))?;
         resources.step(payload.len() as u64)?;
         target.copy_from_slice(payload);
-        let length = payload.len();
-        drop(mapping);
-        drop(path);
-        drop(path_charge);
-        Ok(length)
+        Ok(payload.len())
     }
 
     /// Revalidates one complete inventory descriptor through a scoped mapping.
@@ -441,6 +530,11 @@ impl<'lease, 'm> NativePreparationSource<'lease, 'm> {
         }
         let file = bundle.vfs().open_for_map(&path).map_err(TreeError::Io)?;
         let mapping = NativeReadonlyMapping::open(file, &path, self.lease)?;
+        #[cfg(all(test, feature = "graph-cypher"))]
+        crate::property_graph::storage::preparation_work_capture::artifact(
+            descriptor.artifact,
+            mapping.as_bytes().len() as u64,
+        );
         let frame = artifact::decode_with_control(
             if descriptor.family == 18 {
                 ContainerKind::RootEnvelope
@@ -505,6 +599,11 @@ impl<'lease, 'm> NativePreparationSource<'lease, 'm> {
             charged_artifact_path(self.memory, bundle.directory(), required.object.artifact)?;
         let file = bundle.vfs().open_for_map(&path).map_err(TreeError::Io)?;
         let mapping = NativeReadonlyMapping::open(file, &path, self.lease)?;
+        #[cfg(all(test, feature = "graph-cypher"))]
+        crate::property_graph::storage::preparation_work_capture::artifact(
+            required.object.artifact,
+            mapping.as_bytes().len() as u64,
+        );
         let frame = artifact::decode_with_control(
             kind,
             Some((required.object.store, required.object.artifact)),
@@ -641,8 +740,8 @@ impl BlockSource for NativePreparationSource<'_, '_> {
     ) -> Result<FramedBlock<'a>, TreeError> {
         #[cfg(any(test, feature = "test-seams"))]
         self.slot_observation.resolve(self.slots_exhausted());
-        self.slot_block(reference, resources)?
-            .ok_or(TreeError::Memory)
+        let block = self.slot_block(reference, resources)?;
+        block.ok_or(TreeError::Memory)
     }
 
     fn with_block<R>(

@@ -224,11 +224,11 @@ where
         StorageBuffer::new(memory, RELOCATION_LIMIT)?;
     for selected in selected.as_slice() {
         resources.step(1)?;
-        let scoped = NativePreparationSource::new(source.lease(), memory, 64)?;
+        let scoped = source;
         let record_reference = selected.reference;
         let record_generation = selected.generation;
         let record = verify_record(
-            PayloadSlice::new(&scoped, base.store(), record_generation, record_reference),
+            PayloadSlice::new(scoped, base.store(), record_generation, record_reference),
             selected.entity,
             catalog,
             document,
@@ -242,7 +242,7 @@ where
             .and_then(|n| n.checked_add(old_provenance.len()))
             .ok_or(TreeError::Work)?;
         let canonical_source =
-            PayloadSlice::new(&scoped, base.store(), record_generation, old_canonical);
+            PayloadSlice::new(scoped, base.store(), record_generation, old_canonical);
         let canonical = prepare_stream(
             sink,
             base.store(),
@@ -259,7 +259,7 @@ where
             resources,
         )?;
         let provenance_source =
-            PayloadSlice::new(&scoped, base.store(), record_generation, old_provenance);
+            PayloadSlice::new(scoped, base.store(), record_generation, old_provenance);
         let provenance = prepare_stream(
             sink,
             base.store(),
@@ -276,7 +276,7 @@ where
             resources,
         )?;
         if let Some(row) = relocated_fence(
-            &scoped, base, &record, canonical, provenance, catalog, document, memory, resources,
+            scoped, base, &record, canonical, provenance, catalog, document, memory, resources,
         )? {
             let mut position = 0;
             for (key, _) in fences.as_slice() {
@@ -523,13 +523,12 @@ impl SelectedRecord {
     }
 }
 
-/// Entries read through one source before its mappings are released.
+/// Entries visited before a cursor resumes from an owned key.
 const SCAN_WINDOW: usize = 64;
 
 /// Visit every entry of a directory keyed by one unsigned 128-bit id, in key
-/// order. Each window of entries reads through a fresh source, so the pass
-/// holds mappings for a few pages at a time however many packs the directory
-/// spans. Resumes from checked keys, never from a borrowed page.
+/// order. Windows reuse the admitted source's bounded authentication table.
+/// Resumes from checked keys, never from a borrowed page.
 fn scan_id_directory<'lease, 'm>(
     anchor: &NativePreparationSource<'lease, 'm>,
     root: super::tree::directory::DirectoryRoot,
@@ -542,9 +541,9 @@ fn scan_id_directory<'lease, 'm>(
 ) -> Result<(), TreeError> {
     let mut lower: Option<[u8; 16]> = None;
     loop {
-        let source = NativePreparationSource::new(anchor.lease(), anchor.memory(), SCAN_WINDOW)?;
+        let source = anchor;
         let mut cursor = DirectoryCursor::seek(
-            &source,
+            source,
             root,
             lower.as_ref().map(|key| key.as_slice()),
             resources,
@@ -589,6 +588,8 @@ pub(crate) fn pack_census<'lease, 'm>(
     {
         Ok(_) => Ok(()),
         Err(position) => {
+            #[cfg(all(test, feature = "graph-cypher"))]
+            super::preparation_work_capture::census_rows(rows.as_slice().len() + 1);
             rows.push(PackCensus {
                 artifact: descriptor.artifact,
                 serial: descriptor.serial,
@@ -617,9 +618,8 @@ pub(crate) fn pack_census<'lease, 'm>(
         Ok(true)
     })?;
     for required in manifests.iter().copied() {
-        let scoped = NativePreparationSource::new_scoped(anchor.lease(), anchor.memory(), 1)?;
         for_each_prepared_descriptor(
-            &scoped,
+            anchor,
             required,
             base.store(),
             base.generation(),
@@ -685,8 +685,8 @@ where
                     return Ok(true);
                 }
                 let generation = entry.creation_generation();
-                let scoped = NativePreparationSource::new(source.lease(), source.memory(), 64)?;
-                let payload = PayloadSlice::new(&scoped, base.store(), generation, reference);
+                let scoped = source;
+                let payload = PayloadSlice::new(scoped, base.store(), generation, reference);
                 let record = match entity {
                     EntityId::Node(node) => {
                         match verify_node_state(payload, node, catalog, document, resources)? {

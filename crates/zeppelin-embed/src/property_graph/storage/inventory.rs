@@ -297,9 +297,7 @@ pub(crate) fn prepare_inventory_fold<'lease, 'm>(
             if already_selected {
                 continue;
             }
-            let lookup_source = NativePreparationSource::new(source.lease(), memory, 64)?;
-            let existing =
-                lookup_inventory(&lookup_source, inventory_root, expected.object, resources)?;
+            let existing = lookup_inventory(source, inventory_root, expected.object, resources)?;
             match existing {
                 Some(change) if covered_state(change.state) => {}
                 Some(change) if change.state != InventoryState::Prepared => {
@@ -362,9 +360,7 @@ pub(crate) fn prepare_inventory_fold<'lease, 'm>(
     for index in 0..fold.selected.as_slice().len() {
         let mut covered = true;
         for expected in fold.segment(index)? {
-            let lookup_source = NativePreparationSource::new(source.lease(), memory, 64)?;
-            let existing =
-                lookup_inventory(&lookup_source, inventory_root, expected.object, resources)?;
+            let existing = lookup_inventory(source, inventory_root, expected.object, resources)?;
             let selected_change = fold
                 .changes
                 .as_slice()
@@ -400,9 +396,9 @@ fn validate_root_serials_in_windows(
 ) -> Result<(), TreeError> {
     let mut lower: Option<[u8; 16]> = None;
     loop {
-        let source = NativePreparationSource::new(anchor.lease(), anchor.memory(), 64)?;
+        let source = anchor;
         let mut cursor = DirectoryCursor::seek(
-            &source,
+            source,
             root,
             lower.as_ref().map(|key| key.as_slice()),
             resources,
@@ -420,7 +416,7 @@ fn validate_root_serials_in_windows(
             if key_length != key.len() || value_length != value.len() {
                 return Err(TreeError::Invalid("inventory fold rooted row width"));
             }
-            let entry = lookup_entry(&source, root, &key, resources)?
+            let entry = lookup_entry(source, root, &key, resources)?
                 .ok_or(TreeError::Invalid("inventory fold rooted row disappeared"))?;
             let rooted = verify_inventory_entry(root, entry, resources)?;
             if let Ok(index) =
@@ -442,7 +438,6 @@ fn validate_root_serials_in_windows(
             rows += 1;
         }
         drop(cursor);
-        drop(source);
         if rows < window_rows {
             return Ok(());
         }

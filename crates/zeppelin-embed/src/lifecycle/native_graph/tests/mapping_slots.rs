@@ -25,21 +25,26 @@ fn durable_options() -> OpenOptions {
 
 /// One single-node create commit under its own application key.
 fn commit_probe_node(store: &Store, index: usize) -> NodeId {
+    try_commit_probe_node(store, index).unwrap_or_else(|error| panic!("commit {index}: {error:?}"))
+}
+
+fn try_commit_probe_node(
+    store: &Store,
+    index: usize,
+) -> Result<NodeId, super::super::NativeGraphError> {
     let image = CanonicalContents::node(&mut [], &mut [], None, None).expect("probe image");
-    let receipts = store
-        .apply_native_graph(
-            &[StructuredWrite {
-                key: ApplicationKey::new(EntityKind::Node, "probe", &index.to_string())
-                    .expect("probe key"),
-                revision: GraphRevision::new(1).expect("probe revision"),
-                operation: StructuredOperation::Create,
-                image: Some(WriteImage::Node(&image)),
-            }],
-            &QueryControl::Cancel(CancelToken::new()),
-        )
-        .unwrap_or_else(|error| panic!("commit {index}: {error:?}"));
+    let receipts = store.apply_native_graph(
+        &[StructuredWrite {
+            key: ApplicationKey::new(EntityKind::Node, "probe", &index.to_string())
+                .expect("probe key"),
+            revision: GraphRevision::new(1).expect("probe revision"),
+            operation: StructuredOperation::Create,
+            image: Some(WriteImage::Node(&image)),
+        }],
+        &QueryControl::Cancel(CancelToken::new()),
+    )?;
     match receipts[0].entity {
-        EntityId::Node(node) => node,
+        EntityId::Node(node) => Ok(node),
         EntityId::Relationship(_) => panic!("commit {index} returned a relationship"),
     }
 }
@@ -132,8 +137,33 @@ fn ten_thousand_small_commits_checkpoint_and_reopen() {
     let path = parent.path().join("acceptance");
     let store = Store::create_native_graph(&path, durable_options(), None).expect("create store");
     let mut nodes = Vec::new();
+    let started = std::time::Instant::now();
+    use crate::property_graph::storage::preparation_work_capture as capture;
     for index in 0..10_000 {
-        nodes.push(commit_probe_node(&store, index));
+        capture::start();
+        let result = try_commit_probe_node(&store, index);
+        let report = capture::take();
+        let commits = index + 1;
+        if [100, 500, 1000, 2000, 3000, 4000, 5000, 7500, 10000].contains(&commits)
+            || report
+                .phases
+                .iter()
+                .any(|(phase, _)| *phase == "maintenance-start")
+            || result.is_err()
+        {
+            emit_preparation_report(commits, started.elapsed(), &report);
+        }
+        nodes.push(result.unwrap_or_else(|error| panic!("commit {index}: {error:?}")));
+        if [100, 500, 1000, 2000, 5000, 10000].contains(&commits) {
+            use std::io::Write;
+            let seconds = started.elapsed().as_secs_f64();
+            writeln!(
+                std::io::stdout().lock(),
+                "ZE290_ACCEPTANCE commits={commits} seconds={seconds:.6} cpm={:.3}",
+                commits as f64 * 60.0 / seconds
+            )
+            .expect("write acceptance curve");
+        }
     }
     let sampled: Vec<NodeId> = nodes.iter().step_by(311).copied().collect();
     let before = logical_state(&store, &sampled);
@@ -711,4 +741,183 @@ fn ze277_profile_leaf_verification() {
             }
         }
     }
+}
+
+/// Default-budget writes must survive the ZE-276 boundary. Authentication of
+/// a retained immutable mapping needs only one complete 2L-8 framing proof.
+#[test]
+fn ze276_single_node_preparation_work_bound() {
+    let parent = super::tempfile::tempdir().expect("temporary parent");
+    let store = Store::create_native_graph(parent.path().join("work"), durable_options(), None)
+        .expect("store");
+    for index in 0..=2022 {
+        commit_probe_node(&store, index);
+    }
+    assert_retained_authentication_work_bound(&store);
+    store.close().expect("close");
+}
+
+/// Owner-requested deterministic history curve; timing is supporting evidence.
+#[test]
+#[ignore = "ZE-290 release history qualification"]
+fn ze290_release_preparation_growth_curve() {
+    use crate::property_graph::storage::preparation_work_capture as capture;
+    let parent = super::tempfile::tempdir().expect("temporary parent");
+    let store = Store::create_native_graph(parent.path().join("growth"), durable_options(), None)
+        .expect("store");
+    let started = std::time::Instant::now();
+    for index in 0..10_000 {
+        capture::start();
+        let result = try_commit_probe_node(&store, index);
+        let report = capture::take();
+        let commits = index + 1;
+        if [100, 500, 1000, 2000, 3000, 4000, 5000, 7500, 10000].contains(&commits)
+            || report
+                .phases
+                .iter()
+                .any(|(phase, _)| *phase == "maintenance-start")
+            || result.is_err()
+        {
+            emit_preparation_report(commits, started.elapsed(), &report);
+        }
+        result.unwrap_or_else(|error| panic!("commit {index}: {error:?}"));
+    }
+    assert_retained_authentication_work_bound(&store);
+    store.close().expect("close");
+}
+
+#[cfg(test)]
+fn emit_preparation_report(
+    commits: usize,
+    elapsed: std::time::Duration,
+    report: &crate::property_graph::storage::preparation_work_capture::Report,
+) {
+    use std::io::Write;
+    let auth_bytes: u64 = report
+        .artifacts
+        .values()
+        .map(|(bytes, opens)| bytes * *opens as u64)
+        .sum();
+    let opens: usize = report.artifacts.values().map(|(_, opens)| opens).sum();
+    let mut before = 0;
+    let deltas: Vec<_> = report
+        .phases
+        .iter()
+        .map(|(phase, work)| {
+            if *phase == "staging-end" || *phase == "maintenance-start" {
+                before = 0;
+            }
+            let delta = work - before;
+            before = *work;
+            (*phase, delta)
+        })
+        .collect();
+    let mut repeated: Vec<_> = report
+        .artifacts
+        .values()
+        .copied()
+        .filter(|(_, opens)| *opens > 1)
+        .collect();
+    repeated.sort_unstable_by_key(|(bytes, opens)| std::cmp::Reverse(bytes * (*opens as u64 - 1)));
+    let mut output = std::io::stdout().lock();
+    writeln!(output,
+        "ZE290 commits={commits} seconds={:.6} cpm={:.3} phases={:?} deltas={deltas:?} auth_bytes={auth_bytes} auth_opens={opens} unique={} leaf_entries={} child_pages={} rejected={:?} repeated={:?} origins={:?} protected_mark={:?} census_rows={} buffer_refusals={:?}",
+        elapsed.as_secs_f64(), commits as f64 * 60.0 / elapsed.as_secs_f64(),
+        report.phases, report.artifacts.len(), report.leaf_entries, report.child_pages,
+        report.rejected, repeated.get(..repeated.len().min(8)), report.origins, report.protected_mark, report.census_rows, report.buffer_refusals
+    ).expect("write qualification counters");
+}
+
+/// Two block reads and a semantic window need one full 2L-8 proof and four
+/// framed-block read steps, plus four table probes or three scoped probes.
+/// A substituted physical
+/// role must still fail after reuse.
+fn assert_retained_authentication_work_bound(store: &Store) {
+    use crate::property_graph::resources::GraphResources;
+    use crate::property_graph::staging::{WriteLimits, WriteMemory};
+    use crate::property_graph::storage::NativePreparationSource;
+    use crate::property_graph::storage::memory::StorageMemory;
+    use crate::property_graph::storage::tree::TreeKind;
+    use crate::property_graph::storage::tree::directory::BlockSource;
+    let lease = store.admit_native_read().expect("lease");
+    let shared = GraphResources::from_store(store).expect("resources");
+    let writer = WriteMemory::new(&shared, WriteLimits::default()).expect("writer memory");
+    let control = QueryControl::Cancel(CancelToken::new());
+    let storage = StorageMemory::new(&writer, &control, 32 * 1024 * 1024).expect("storage");
+    for scoped in [false, true] {
+        let source = if scoped {
+            NativePreparationSource::new_scoped(&lease, &storage, 1)
+        } else {
+            NativePreparationSource::new(&lease, &storage, 1)
+        }
+        .expect("source");
+        let mut resources = source.resources(64 * 1024 * 1024).expect("work");
+        let reference = lease
+            .bundle()
+            .roots()
+            .directory(TreeKind::Nodes)
+            .expect("nodes")
+            .reference()
+            .expect("root");
+        let length = source
+            .with_block(reference, &mut resources, |block, _| {
+                Ok(block.file_length() as u64)
+            })
+            .expect("first read");
+        source
+            .with_block(reference, &mut resources, |_, _| Ok(()))
+            .expect("second read");
+        source
+            .with_artifact_window(reference, &mut resources, |window, resources| {
+                window.with_block(reference, resources, |_, _| Ok(()))
+            })
+            .expect("semantic window");
+        assert_eq!(
+            resources.work(),
+            2 * length - 8 + if scoped { 7 } else { 8 },
+            "one complete authentication proof plus bounded read/probe steps"
+        );
+        let mut substituted = reference;
+        substituted.kind = crate::property_graph::storage::artifact::BlockKind::CanonicalImage;
+        assert!(
+            source
+                .with_block(substituted, &mut resources, |_, _| Ok(()))
+                .is_err(),
+            "cached proof must still check the requested block role"
+        );
+    }
+}
+
+/// One complete immutable mark proof plus one bounded descent per protected id.
+#[test]
+fn ze290_protected_mark_validation_is_bounded() {
+    use crate::property_graph::storage::preparation_work_capture as capture;
+    let parent = super::tempfile::tempdir().expect("temporary parent");
+    let store = Store::create_native_graph(parent.path().join("mark"), durable_options(), None)
+        .expect("store");
+    for index in 0..64 {
+        commit_probe_node(&store, index);
+    }
+    store
+        .checkpoint_native_graph(&crate::lifecycle::QueryControl::Cancel(
+            crate::lifecycle::CancelToken::new(),
+        ))
+        .expect("checkpoint");
+    let _chunk = super::super::maintenance::spill::qualification::start(|_| {});
+    capture::start();
+    let result = super::consolidation::commit_maintenance(&store);
+    let report = capture::take();
+    assert!(
+        !report.protected_mark.is_empty(),
+        "candidate proof must be exercised: {result:?}"
+    );
+    for (mark_count, protected_count, height, entries) in report.protected_mark {
+        let bound = mark_count;
+        assert!(
+            entries <= bound,
+            "mark_count={mark_count}, protected_count={protected_count}, height={height}, mark_entries={entries}, bound={bound}"
+        );
+    }
+    result.expect("maintenance");
+    store.close().expect("close");
 }

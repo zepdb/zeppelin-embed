@@ -757,7 +757,11 @@ fn prepare_durable_proof<'m>(
     let mut mark = SpillMark::new(storage, binding, chunk)?;
 
     let mut census = {
-        let source = NativePreparationSource::new(&admission.lease, storage, 64)?;
+        let source = NativePreparationSource::new(
+            &admission.lease,
+            storage,
+            crate::property_graph::storage::MAX_NATIVE_ARTIFACTS,
+        )?;
         crate::property_graph::storage::consolidation::pack_census(
             &source,
             admitted.roots(),
@@ -842,7 +846,11 @@ fn prepare_durable_proof<'m>(
             "captured graph bundle has no retained lease",
         ))?;
         {
-            let source = NativePreparationSource::new_scoped(lease, storage, 1)?;
+            let source = NativePreparationSource::new(
+                lease,
+                storage,
+                crate::property_graph::storage::MAX_NATIVE_ARTIFACTS,
+            )?;
             let catalog = NativePreparationCatalog::open(&source, resources)?;
             let mut range_scratch = RangeScratch::for_prepare(storage, resources)?;
             if let Err(error) = crate::property_graph::storage::reclaim::trace_graph_bundle(
@@ -1124,7 +1132,11 @@ fn prepare_durable_proof<'m>(
         relocation_bytes,
         storage,
     )?;
-    let source = NativePreparationSource::new_scoped(&admission.lease, storage, 1)?;
+    let source = NativePreparationSource::new(
+        &admission.lease,
+        storage,
+        crate::property_graph::storage::MAX_NATIVE_ARTIFACTS,
+    )?;
     let pending_page_relocations =
         crate::property_graph::storage::consolidation::collect_drain_pages(
             &source,
@@ -1332,6 +1344,7 @@ pub(super) fn run_spill_probe(
         .copied()
         .ok_or(NativeGraphError::Invalid("spill probe capture is absent"))?;
     let stats = writer.stats();
+    drop(writer);
     let mapped_bytes_released = store.accounting.audit()?.mapped_bytes == mapped_before;
     Ok(SpillProbeReport {
         ordered,
@@ -2035,8 +2048,17 @@ pub(super) fn commit_with_limits(
             &storage,
             limits.work,
         )?;
+    #[cfg(all(test, feature = "graph-cypher"))]
+    crate::property_graph::storage::preparation_work_capture::phase(
+        "maintenance-start",
+        resources.work(),
+    );
     let folded_inventory = {
-        let fold_source = NativePreparationSource::new(&admission.lease, &storage, 64)?;
+        let fold_source = NativePreparationSource::new(
+            &admission.lease,
+            &storage,
+            crate::property_graph::storage::MAX_NATIVE_ARTIFACTS,
+        )?;
         prepare_inventory_fold(
             &fold_source,
             admitted.prepared_inventories(),
@@ -2050,6 +2072,11 @@ pub(super) fn commit_with_limits(
     };
     #[cfg(any(test, feature = "test-seams"))]
     let work_before_proof = resources.work();
+    #[cfg(all(test, feature = "graph-cypher"))]
+    crate::property_graph::storage::preparation_work_capture::phase(
+        "maintenance-fold-end",
+        resources.work(),
+    );
     let proof = prepare_durable_proof(
         limits.relocation_bytes,
         store,
@@ -2058,6 +2085,11 @@ pub(super) fn commit_with_limits(
         control,
         &mut resources,
     )?;
+    #[cfg(all(test, feature = "graph-cypher"))]
+    crate::property_graph::storage::preparation_work_capture::phase(
+        "maintenance-proof-end",
+        resources.work(),
+    );
     #[cfg(any(test, feature = "test-seams"))]
     store.native_graph.proof_work.store(
         resources.work().saturating_sub(work_before_proof),
@@ -2077,7 +2109,14 @@ pub(super) fn commit_with_limits(
             state: InventoryState::ReclaimPending(reclaim_id),
         })?;
     }
-    let source = NativePreparationSource::new(&admission.lease, &storage, 64)?;
+    // Replacement's sweep and directory edits share one attempt-wide source,
+    // just like structured writes. Retain their authentication proofs under
+    // the existing native artifact capacity rather than a 64-object window.
+    let source = NativePreparationSource::new(
+        &admission.lease,
+        &storage,
+        crate::property_graph::storage::MAX_NATIVE_ARTIFACTS,
+    )?;
     let catalog = NativePreparationCatalog::open(&source, &mut resources)?;
     let generation = GraphGeneration::new(
         admitted
@@ -2151,6 +2190,11 @@ pub(super) fn commit_with_limits(
         &storage,
         &mut resources,
     )?;
+    #[cfg(all(test, feature = "graph-cypher"))]
+    crate::property_graph::storage::preparation_work_capture::phase(
+        "maintenance-directories-end",
+        resources.work(),
+    );
     let sparse = prepare_sparse_maintenance(
         &source,
         &mut objects,
@@ -2169,7 +2213,17 @@ pub(super) fn commit_with_limits(
         &storage,
         &mut resources,
     )?;
+    #[cfg(all(test, feature = "graph-cypher"))]
+    crate::property_graph::storage::preparation_work_capture::phase(
+        "maintenance-sparse-end",
+        resources.work(),
+    );
     objects.finish(&mut resources)?;
+    #[cfg(all(test, feature = "graph-cypher"))]
+    crate::property_graph::storage::preparation_work_capture::phase(
+        "maintenance-sealing-end",
+        resources.work(),
+    );
 
     let mut inventory = StorageBuffer::new(&storage, objects.len())?;
     let mut new_pack_bytes = 0_u64;
@@ -2237,6 +2291,11 @@ pub(super) fn commit_with_limits(
         candidates,
         partials,
     } = proof;
+    #[cfg(all(test, feature = "graph-cypher"))]
+    crate::property_graph::storage::preparation_work_capture::phase(
+        "maintenance-transition-start",
+        resources.work(),
+    );
     let (transition, generation) = prepare_maintenance_transition(
         store,
         &shared,
@@ -2260,6 +2319,11 @@ pub(super) fn commit_with_limits(
         &mut wal_resources,
     )?;
 
+    #[cfg(all(test, feature = "graph-cypher"))]
+    crate::property_graph::storage::preparation_work_capture::phase(
+        "maintenance-transition-end",
+        resources.work(),
+    );
     #[cfg(any(test, feature = "test-seams"))]
     {
         let hook = store
