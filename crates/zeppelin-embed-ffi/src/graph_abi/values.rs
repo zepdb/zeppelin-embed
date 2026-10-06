@@ -1,12 +1,12 @@
 //! Bounded nonentity parameter backing. Each list depth owns its own arena.
-use super::{Pool, invalid};
+use super::{Pool, invalid, store_error};
 use crate::{ZeErrorCode, ZeGraphParameterValue, error::FfiError};
 use zeppelin_embed::lifecycle::QueryControl;
 use zeppelin_embed::property_graph::query::plan::ParameterBinding;
 use zeppelin_embed::property_graph::query::{
     MAX_VALUE_WORK, QueryList, QueryValue, QueryView, ValueContext,
 };
-use zeppelin_embed::property_graph::{GraphGeneration, StoreInstanceId};
+use zeppelin_embed::property_graph::{GraphGeneration, GraphPlanBacking, StoreInstanceId};
 
 #[derive(Clone, Copy)]
 enum Value<'a> {
@@ -80,13 +80,25 @@ fn copy<'p>(
         }
     })
 }
-fn freeze<R>(
-    levels: &[Vec<Value<'_>>],
+// Consume and reborrow the inventory at the next synchronous owner's lifetime.
+pub(super) fn retain<'a, T>(
+    mut backing: GraphPlanBacking<'a>,
+    owner: &'a Vec<T>,
+) -> Result<GraphPlanBacking<'a>, FfiError> {
+    backing.vec(owner).map_err(|e| store_error(&e, false))?;
+    Ok(backing)
+}
+type FrozenConsumer<'r, R> =
+    dyn for<'a> FnMut(&[QueryValue<'a>], GraphPlanBacking<'a>, usize) -> Result<R, FfiError> + 'r;
+fn freeze<'a, R>(
+    levels: &[Vec<Value<'a>>],
     depth: usize,
-    children: &[QueryValue<'_>],
+    children: &[QueryValue<'a>],
     context: &mut ValueContext<'_>,
-    run: &mut dyn FnMut(&[QueryValue<'_>]) -> Result<R, FfiError>,
+    retained: (GraphPlanBacking<'a>, usize),
+    run: &mut FrozenConsumer<'_, R>,
 ) -> Result<R, FfiError> {
+    let (backing, retained_bytes) = retained;
     let source = levels
         .get(depth)
         .ok_or_else(|| invalid("parameter depth"))?;
@@ -106,25 +118,60 @@ fn freeze<R>(
             }
         });
     }
+    let retained_bytes = retained_bytes
+        .checked_add(output.capacity() * std::mem::size_of::<QueryValue<'_>>())
+        .ok_or_else(|| invalid("parameter retained capacity overflow"))?;
+    let backing = retain(backing, &output)?;
     if depth == 0 {
-        run(&output)
+        run(&output, backing, retained_bytes)
     } else {
-        freeze(levels, depth - 1, &output, context, run)
+        freeze(
+            levels,
+            depth - 1,
+            &output,
+            context,
+            (backing, retained_bytes),
+            run,
+        )
     }
 }
+// Cypher retains its existing byte-accounted callback; structured execution
+// admits these owners itself and charges only decoder scratch here.
 pub(super) fn with_parameters_accounted<R>(
     bindings: &[ZeGraphParameterValue],
     pool: Option<&Pool<'_>>,
     control: &QueryControl,
     run: impl FnOnce(&[ParameterBinding<'_>], usize) -> Result<R, FfiError>,
 ) -> Result<R, FfiError> {
+    with_parameters_backed(
+        bindings,
+        pool,
+        control,
+        |bindings, _backing, scratch, retained| {
+            let bytes = scratch
+                .checked_add(retained)
+                .ok_or_else(|| invalid("parameter backing capacity overflow"))?;
+            run(bindings, bytes)
+        },
+    )
+}
+pub(super) fn with_parameters_backed<R>(
+    bindings: &[ZeGraphParameterValue],
+    pool: Option<&Pool<'_>>,
+    control: &QueryControl,
+    run: impl FnOnce(&[ParameterBinding<'_>], GraphPlanBacking<'_>, usize, usize) -> Result<R, FfiError>,
+) -> Result<R, FfiError> {
     if bindings.len() > 256 {
         return Err(invalid("more than 256 parameters"));
     }
     if bindings.is_empty() {
-        return run(&[], 0);
+        return run(&[], GraphPlanBacking::default(), 0, 0);
     }
     let pool = pool.ok_or_else(|| invalid("parameters require a pool"))?;
+    let mut bytes_owner = Vec::new();
+    reserve(&mut bytes_owner, pool.bytes().len())?;
+    bytes_owner.extend_from_slice(pool.bytes());
+    let pool = pool.with_bytes(&bytes_owner);
     let mut levels: [Vec<Value<'_>>; 17] = std::array::from_fn(|_| Vec::new());
     let mut names = Vec::new();
     reserve(&mut names, bindings.len())?;
@@ -151,7 +198,7 @@ pub(super) fn with_parameters_accounted<R>(
         }
         names.push(name);
         let value = copy(
-            pool,
+            &pool,
             binding.value,
             0,
             &mut levels,
@@ -170,33 +217,46 @@ pub(super) fn with_parameters_accounted<R>(
     );
     let mut context = ValueContext::new(&view, control, MAX_VALUE_WORK)
         .map_err(|e| FfiError::new(e.into(), e.to_string()))?;
+    // Decoder scratch stays live during execution. Frozen list capacities,
+    // bindings and byte leaves are instead admitted by the structured runtime.
     let bytes = levels
         .iter()
         .try_fold(0usize, |total, level| {
-            total.checked_add(
-                level.capacity()
-                    * (std::mem::size_of::<Value<'_>>() + std::mem::size_of::<QueryValue<'_>>()),
-            )
+            total.checked_add(level.capacity() * std::mem::size_of::<Value<'_>>())
         })
         .and_then(|total| total.checked_add(names.capacity() * std::mem::size_of::<&str>()))
         .and_then(|total| total.checked_add(ancestors.capacity() * std::mem::size_of::<u32>()))
         .ok_or_else(|| invalid("parameter backing capacity overflow"))?;
+    let backing = retain(GraphPlanBacking::default(), &bytes_owner)?;
     let mut run = Some(run);
-    freeze(&levels, 16, &[], &mut context, &mut |values| {
-        let mut decoded = Vec::new();
-        reserve(&mut decoded, bindings.len())?;
-        for (name, value) in names.iter().zip(values) {
-            decoded.push(ParameterBinding {
-                name,
-                value: *value,
-            });
-        }
-        run.take()
-            .ok_or_else(|| invalid("parameter consumer called twice"))?(
-            &decoded,
-            bytes + decoded.capacity() * std::mem::size_of::<ParameterBinding<'_>>(),
-        )
-    })
+    freeze(
+        &levels,
+        16,
+        &[],
+        &mut context,
+        (backing, bytes_owner.capacity()),
+        &mut |values, backing, retained_bytes| {
+            let mut decoded = Vec::new();
+            reserve(&mut decoded, bindings.len())?;
+            for (name, value) in names.iter().zip(values) {
+                decoded.push(ParameterBinding {
+                    name,
+                    value: *value,
+                });
+            }
+            let backing = retain(backing, &decoded)?;
+            let retained_bytes = retained_bytes
+                .checked_add(decoded.capacity() * std::mem::size_of::<ParameterBinding<'_>>())
+                .ok_or_else(|| invalid("parameter retained capacity overflow"))?;
+            run.take()
+                .ok_or_else(|| invalid("parameter consumer called twice"))?(
+                &decoded,
+                backing,
+                bytes,
+                retained_bytes,
+            )
+        },
+    )
 }
 
 #[cfg(test)]

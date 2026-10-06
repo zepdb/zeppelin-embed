@@ -140,6 +140,7 @@ fn list_literal(
 pub(super) fn with_plan<R>(
     pointer: *const ZeGraphPlan,
     bindings: &[ParameterBinding<'_>],
+    backing: GraphPlanBacking<'_>,
     run: impl FnOnce(&GraphQueryPlan<'_>, bool) -> Result<R, FfiError>,
 ) -> Result<R, FfiError> {
     let raw = read_exact(pointer, |p| p.abi_size, "graph plan")?;
@@ -906,13 +907,12 @@ pub(super) fn with_plan<R>(
             kind,
         });
     }
-    let mut backing = GraphPlanBacking::default();
+    let mut backing = super::values::retain(backing, &bytes)?;
     macro_rules! retain {
         ($value:expr) => {
             backing.vec($value).map_err(|e| store_error(&e, false))?
         };
     }
-    retain!(&bytes);
     retain!(&inputs);
     retain!(&children);
     retain!(&projections);
@@ -970,21 +970,21 @@ mod tests {
         plan.pool = &pool;
         plan.operators = &operator;
         plan.operator_count = 1;
-        with_plan(&plan, &[], |_, writes| {
+        with_plan(&plan, &[], GraphPlanBacking::default(), |_, writes| {
             assert!(!writes);
             Ok(())
         })
         .unwrap();
         operator.node_slot = 17;
         plan.operators = &operator;
-        assert!(with_plan(&plan, &[], |_, _| Ok(())).is_err());
+        assert!(with_plan(&plan, &[], GraphPlanBacking::default(), |_, _| Ok(())).is_err());
         operator.node_slot = 0;
         operator.inputs.count = 1;
         plan.operators = &operator;
-        assert!(with_plan(&plan, &[], |_, _| Ok(())).is_err());
+        assert!(with_plan(&plan, &[], GraphPlanBacking::default(), |_, _| Ok(())).is_err());
         operator.inputs.count = 0;
         plan.operators = &operator;
         plan.operator_count = 4097;
-        assert!(with_plan(&plan, &[], |_, _| Ok(())).is_err());
+        assert!(with_plan(&plan, &[], GraphPlanBacking::default(), |_, _| Ok(())).is_err());
     }
 }

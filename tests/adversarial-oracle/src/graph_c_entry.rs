@@ -1,6 +1,9 @@
 //! Primitive, independently worked C-boundary expectations.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Observed {
+    pub parameter_tags: Vec<u32>,
+    pub parameter_string: Vec<u8>,
+    pub parameter_numbers: Vec<i64>,
     pub scalar: i64,
     pub tags: Vec<u32>,
     pub admitted: u64,
@@ -11,7 +14,10 @@ pub fn expected_scalar(seed: u64) -> i64 {
     (seed % 31) as i64 + 17
 }
 pub fn compare(seed: u64, observed: &Observed) -> Result<(), String> {
-    if observed.scalar != expected_scalar(seed)
+    if observed.parameter_tags != [4, 7]
+        || observed.parameter_string != b"hello"
+        || observed.parameter_numbers != [3, 4]
+        || observed.scalar != expected_scalar(seed)
         || observed.tags != [5, 0, 5]
         || observed.admitted != 1
         || observed.changed != 1

@@ -1475,3 +1475,149 @@ fn ze72_stored_list_kinds_match_shared_fixture() {
     }
     assert_eq!(ze_graph_response_free(&mut response), ZeErrorCode::ZeOk);
 }
+
+fn ze311_vector_parameter_query(refuse: bool) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("parameter-search");
+    let epoch = common::EpochFixture::new(2);
+    let declaration = epoch.request().embedding.document;
+    let mut open = open_request(path.to_str().unwrap().as_bytes(), MODE_CREATE);
+    open.document_tower = &declaration;
+    let mut handle = ZeGraphHandle { token: 0 };
+    assert_eq!(ze_graph_open(&open, &mut handle), ZeErrorCode::ZeOk);
+    let mut builder = PoolBuilder::new();
+    let ns = builder.text("docs");
+    let near_key = builder.text("near");
+    let far_key = builder.text("far");
+    let near = builder.node_image(&[], 0..0, None);
+    builder.node_vector(near, &[0.0, 0.0]);
+    let far = builder.node_image(&[], 0..0, None);
+    builder.node_vector(far, &[3.0, 4.0]);
+    let pool = builder.pool();
+    let items = [
+        create_node_item(ns, near_key, 1, near),
+        create_node_item(ns, far_key, 1, far),
+    ];
+    let mut response = empty_response();
+    assert_eq!(
+        ze_graph_apply(handle, &batch_request(&items, &pool), &mut response),
+        ZeErrorCode::ZeOk
+    );
+    let expected = receipts(&response)[1].node;
+    assert_eq!(ze_graph_response_free(&mut response), ZeErrorCode::ZeOk);
+    let mut values: [ZeGraphValue; 3] = [sized_zeroed(); 3];
+    values[0].tag = 2;
+    values[0].integer = 3;
+    values[1].tag = 3;
+    values[1].floating = 4.0;
+    values[2].tag = 7;
+    values[2].range.count = 2;
+    let children = [0, 1];
+    let mut parameter_pool: ZeGraphValuePool = sized_zeroed();
+    parameter_pool.bytes = b"v".as_ptr();
+    parameter_pool.byte_count = 1;
+    parameter_pool.values = values.as_ptr();
+    parameter_pool.value_count = 3;
+    parameter_pool.children = children.as_ptr();
+    parameter_pool.child_count = 2;
+    let mut binding: ZeGraphParameterValue = sized_zeroed();
+    binding.name.count = 1;
+    binding.value = 2;
+    let mut plan_pool: ZeGraphValuePool = sized_zeroed();
+    plan_pool.bytes = b"v".as_ptr();
+    plan_pool.byte_count = 1;
+    let mut k_value: ZeGraphValue = sized_zeroed();
+    k_value.tag = 2;
+    k_value.integer = 1;
+    plan_pool.values = &k_value;
+    plan_pool.value_count = 1;
+    let mut parameter: ZeGraphParameter = sized_zeroed();
+    parameter.name.count = 1;
+    parameter.kinds = 128;
+    let mut expressions: [ZeGraphExpression; 2] = [sized_zeroed(); 2];
+    expressions[0].kind = 2;
+    let mut search: ZeGraphSearch = sized_zeroed();
+    search.vector.present = 1;
+    search.k = 1;
+    search.has_tier = 1;
+    search.tier = 1;
+    search.node_slot = 10;
+    search.score_slot = 20;
+    let mut operator: ZeGraphOperator = sized_zeroed();
+    operator.kind = 8;
+    let eager = [0];
+    let mut plan: ZeGraphPlan = sized_zeroed();
+    plan.pool = &plan_pool;
+    plan.parameters = &parameter;
+    plan.parameter_count = 1;
+    plan.operators = &operator;
+    plan.operator_count = 1;
+    plan.expressions = expressions.as_ptr();
+    plan.expression_count = 2;
+    plan.searches = &search;
+    plan.search_count = 1;
+    plan.eager_searches = eager.as_ptr();
+    plan.eager_search_count = 1;
+    let mut request: ZeGraphQueryRequest = sized_zeroed();
+    request.plan = &plan;
+    request.parameters = &binding;
+    request.parameter_count = 1;
+    request.parameter_pool = &parameter_pool;
+    let mut limits: ZeGraphQueryLimits = sized_zeroed();
+    limits.has_query_bytes = 1;
+    limits.query_bytes = 1024;
+    let mut options: ZeGraphQueryOptions = sized_zeroed();
+    options.limits = &limits;
+    if refuse {
+        request.options = &options;
+    }
+    let code = ze_graph_query(handle, &request, &mut response);
+    if refuse {
+        assert_eq!(
+            code,
+            ZeErrorCode::ZeErrBudgetExceeded,
+            "{}",
+            last_error(handle.token)
+        );
+        assert_eq!(
+            (
+                response.row_count,
+                response.cell_count,
+                response.report_count
+            ),
+            (0, 0, 0)
+        );
+        assert!(response.cells.is_null() && response.pool.values.is_null());
+        // The same handle and backing must remain usable after refusal.
+        request.options = std::ptr::null();
+        assert_eq!(
+            ze_graph_query(handle, &request, &mut response),
+            ZeErrorCode::ZeOk,
+            "{}",
+            last_error(handle.token)
+        );
+    } else {
+        assert_eq!(code, ZeErrorCode::ZeOk, "{}", last_error(handle.token));
+    }
+    values.fill(sized_zeroed());
+    assert_eq!(ze_graph_close(handle), ZeErrorCode::ZeOk);
+    let result = rows(&response);
+    assert_eq!(result.len(), 1);
+    let node = unsafe { &*response.pool.nodes.add(result[0][0].entity_index as usize) };
+    assert_eq!(node.id, expected);
+    assert_eq!(result[0][1].floating, 0.0);
+    assert_eq!(response.report_count, 1);
+    let report = unsafe { &*response.reports };
+    assert_eq!((report.call_id, report.generation), (0, 1));
+    assert_eq!(ze_graph_response_free(&mut response), ZeErrorCode::ZeOk);
+}
+
+#[test]
+fn ze311_structured_vector_search_parameter_is_retained() {
+    ze311_vector_parameter_query(false);
+}
+
+#[test]
+fn ze311_parameter_backing_limits_leave_no_partial_response() {
+    ze311_vector_parameter_query(true);
+}

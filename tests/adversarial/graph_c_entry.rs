@@ -77,6 +77,84 @@ impl Drop for Store {
         let _ = ze_graph_close(self.0);
     }
 }
+fn retained_parameters(handle: ZeGraphHandle) -> Result<Response, String> {
+    let mut bytes = *b"shellov";
+    let mut values: [ZeGraphValue; 4] = [sized(); 4];
+    values[0].tag = 4;
+    values[0].range = ZeGraphRange { start: 1, count: 5 };
+    values[1].tag = 2;
+    values[1].integer = 3;
+    values[2].tag = 2;
+    values[2].integer = 4;
+    values[3].tag = 7;
+    values[3].range.count = 2;
+    let mut children = [1, 2];
+    let mut pool: ZeGraphValuePool = sized();
+    pool.bytes = bytes.as_ptr();
+    pool.byte_count = bytes.len();
+    pool.values = values.as_ptr();
+    pool.value_count = values.len();
+    pool.children = children.as_ptr();
+    pool.child_count = children.len();
+    let mut bindings: [ZeGraphParameterValue; 2] = [sized(); 2];
+    bindings[0].name.count = 1;
+    bindings[1].name = ZeGraphRange { start: 6, count: 1 };
+    bindings[1].value = 3;
+    let mut plan_pool: ZeGraphValuePool = sized();
+    plan_pool.bytes = b"sv".as_ptr();
+    plan_pool.byte_count = 2;
+    let mut declarations: [ZeGraphParameter; 2] = [sized(); 2];
+    declarations[0].name.count = 1;
+    declarations[0].kinds = 16;
+    declarations[1].name = ZeGraphRange { start: 1, count: 1 };
+    declarations[1].kinds = 128;
+    let mut expressions: [ZeGraphExpression; 4] = [sized(); 4];
+    for (index, expression) in expressions.iter_mut().enumerate() {
+        expression.kind = if index < 2 { 2 } else { 1 };
+        expression.value = if index < 2 {
+            index as u32
+        } else {
+            index as u32 + 7
+        };
+    }
+    let mut projections: [ZeGraphProjection; 4] = [sized(); 4];
+    for (index, projection) in projections.iter_mut().enumerate() {
+        projection.slot = (index % 2) as u32 + 9;
+        projection.expression = index as u32;
+    }
+    let mut operators: [ZeGraphOperator; 3] = [sized(); 3];
+    operators[1].kind = 17;
+    operators[1].inputs.count = 1;
+    operators[1].projections.count = 2;
+    operators[2].kind = 16;
+    operators[2].inputs = ZeGraphRange { start: 1, count: 1 };
+    operators[2].projections = ZeGraphRange { start: 2, count: 2 };
+    let inputs = [0, 1];
+    let mut plan: ZeGraphPlan = sized();
+    plan.root = 2;
+    plan.pool = &plan_pool;
+    plan.parameters = declarations.as_ptr();
+    plan.parameter_count = 2;
+    plan.expressions = expressions.as_ptr();
+    plan.expression_count = 4;
+    plan.operators = operators.as_ptr();
+    plan.operator_count = 3;
+    plan.projections = projections.as_ptr();
+    plan.projection_count = 4;
+    plan.inputs = inputs.as_ptr();
+    plan.input_count = 2;
+    let mut query: ZeGraphQueryRequest = sized();
+    query.plan = &plan;
+    query.parameters = bindings.as_ptr();
+    query.parameter_count = 2;
+    query.parameter_pool = &pool;
+    let mut response = Response::new();
+    status(ze_graph_query(handle, &query, &mut response.0))?;
+    bytes.fill(0);
+    values.fill(sized());
+    children.fill(0);
+    Ok(response)
+}
 fn run(seed: u64) -> Result<Observed, String> {
     let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
     let path = dir.path().join("graph");
@@ -188,11 +266,47 @@ fn run(seed: u64) -> Result<Observed, String> {
     if read.values()?.iter().map(|v| v.tag).collect::<Vec<_>>() != [0] {
         return Err("C entry foreign relationship was present".into());
     }
+    let mut retained = retained_parameters(store.0)?;
     // Ownership must survive closing the producing handle.
     status(ze_graph_close(store.0))?;
     store.0.token = 0;
     read.free()?;
+    let parameter_values = retained.values()?;
+    let string = parameter_values.first().ok_or("retained string absent")?;
+    let list = parameter_values.get(1).ok_or("retained list absent")?;
+    let pool = &retained.0.pool;
+    if parameter_values.len() != 2
+        || string.tag != 4
+        || list.tag != 7
+        || pool.bytes.is_null()
+        || pool.children.is_null()
+    {
+        return Err("retained parameter geometry".into());
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(pool.bytes, pool.byte_count) };
+    let parameter_string = bytes
+        .get(string.range.start as usize..(string.range.start + string.range.count) as usize)
+        .ok_or("retained string span")?
+        .to_vec();
+    let children = unsafe { std::slice::from_raw_parts(pool.children, pool.child_count) };
+    let values = unsafe { std::slice::from_raw_parts(pool.values, pool.value_count) };
+    let mut parameter_numbers = Vec::new();
+    for index in children
+        .get(list.range.start as usize..(list.range.start + list.range.count) as usize)
+        .ok_or("retained list span")?
+    {
+        let value = values.get(*index as usize).ok_or("retained list child")?;
+        if value.tag != 2 {
+            return Err("retained integer tag".into());
+        }
+        parameter_numbers.push(value.integer);
+    }
+    let parameter_tags = parameter_values.iter().map(|v| v.tag).collect();
+    retained.free()?;
     Ok(Observed {
+        parameter_string,
+        parameter_numbers,
+        parameter_tags,
         scalar,
         tags,
         admitted,
@@ -217,6 +331,11 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
     planted.scalar ^= 1;
     if oracle::compare(seed, &planted).is_ok() {
         return Err("C oracle did not catch planted scalar discrepancy".into());
+    }
+    let mut planted = observed.clone();
+    planted.parameter_numbers.push(0);
+    if oracle::compare(seed, &planted).is_ok() {
+        return Err("C oracle did not catch planted parameter discrepancy".into());
     }
     let control = run(seed)?;
     oracle::compare(seed, &control)?;

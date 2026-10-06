@@ -51,6 +51,7 @@ fn zero_range(span: ZeGraphRange) -> bool {
 }
 
 /// A validated borrowed request pool.
+#[derive(Clone, Copy)]
 pub(crate) struct Pool<'p> {
     values: &'p [ZeGraphValue],
     children: &'p [u32],
@@ -63,6 +64,14 @@ pub(crate) struct Pool<'p> {
 }
 
 impl<'p> Pool<'p> {
+    pub(super) fn bytes(&self) -> &[u8] {
+        self.bytes
+    }
+
+    pub(super) fn with_bytes<'a>(&'a self, bytes: &'a [u8]) -> Pool<'a> {
+        Pool { bytes, ..*self }
+    }
+
     pub(crate) fn read(pointer: *const ZeGraphValuePool, what: &str) -> Result<Self, FfiError> {
         let pool = read_exact(pointer, |pool| pool.abi_size, what)?;
         pool.validate_header()

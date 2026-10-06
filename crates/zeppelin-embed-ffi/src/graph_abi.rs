@@ -929,12 +929,12 @@ pub(crate) fn query(
         Some(Pool::read(request.parameter_pool, "query parameter pool")?)
     };
     let control = read_control(request.control)?;
-    values::with_parameters_accounted(
+    values::with_parameters_backed(
         bindings,
         pool.as_ref(),
         &control,
-        |bindings, parameter_bytes| {
-            plan::with_plan(request.plan, bindings, |plan, _writes| {
+        |bindings, backing, scratch_bytes, _retained_bytes| {
+            plan::with_plan(request.plan, bindings, backing, |plan, _writes| {
                 let access = lookup(handle)?;
                 let options = options::query(
                     request.options,
@@ -942,7 +942,7 @@ pub(crate) fn query(
                     GraphQueryOptions::default().with_slot_column_names(),
                 )?;
                 let (_parameter_charge, options) =
-                    charge_parameters(&access.store.store, options, parameter_bytes)?;
+                    charge_parameters(&access.store.store, options, scratch_bytes)?;
                 let boundary = completion::Boundary::new(&access, out);
                 let result = access
                     .store
