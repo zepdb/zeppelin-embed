@@ -196,37 +196,13 @@ fn ze59_compaction_preserves_observations() {
 
 /// Public examples fill expression/token gaps left by the selected originals.
 /// This is local profile evidence, not an adapted TCK pass.
-#[test]
-fn ze59_inventory_has_positive_and_boundary_evidence() {
+fn inventory_evidence(
+    cases: &[(&str, &str)],
+    compile_refusals: &[&str],
+    runtime_refusals: &[&str],
+) {
     let graph = Graph::new("ze59-inventory");
-    let cases = [
-        (
-            "RETURN -9223372036854775808 AS i, 1.25e1 AS f, true AS b, null AS n, 'λ' AS s, [1,[null],false] AS l",
-            "|-9223372036854775808|12.5|true|null|'λ'|[1,[null],false]|",
-        ),
-        (
-            "RETURN [4,5][-1] AS a, [4][9] AS b, null[0] AS c, size('λ🙂') AS d",
-            "|5|null|null|2|",
-        ),
-        (
-            "RETURN 1+2*3 AS a, 7/2 AS b, 7%2 AS c, -2+5.0 AS d",
-            "|7|3|1|3.0|",
-        ),
-        (
-            "RETURN NOT false AND true OR false AS a, true XOR false AS b, 2 IN [1,2] AS c, null IS NULL AS d, 1 IS NOT NULL AS e",
-            "|true|true|true|true|true|",
-        ),
-        (
-            "RETURN 1=1.0 AS a, 1<>2 AS b, 1<2 AS c, 2<=2 AS d, 3>2 AS e, 3>=3 AS f",
-            "|true|true|true|true|true|true|",
-        ),
-        (
-            "RETURN 'abc' STARTS WITH 'a' AS a, 'abc' ENDS WITH 'c' AS b, 'abc' CONTAINS 'b' AS c",
-            "|true|true|true|",
-        ),
-        ("/* comment */ ReTuRn 7 AS `a``λ` // comment\n;", "|7|"),
-    ];
-    for (query, expected) in cases {
+    for &(query, expected) in cases {
         let expected: Vec<V> = expected
             .trim_matches('|')
             .split('|')
@@ -236,42 +212,212 @@ fn ze59_inventory_has_positive_and_boundary_evidence() {
         assert_eq!(tck::actual_table(&result).1, vec![expected], "{query}");
     }
     let before = graph.generation().unwrap();
-    for query in [
-        "RETURN λ",
-        "RETURN `unterminated",
-        "MATCH p = ()-->() RETURN p",
-        "MATCH (n {x: 1, x: 2}) RETURN n",
-        "MATCH ()-[r*1..17]->() RETURN r",
-        "WHERE true RETURN 1",
-        "RETURN DISTINCT 1 AS x ORDER BY missing",
-        "CREATE ()-[:R]-()",
-        "MATCH (n) SET n = {x:1}",
-        "MATCH (n) REMOVE n[0]",
-        "MATCH (n) DELETE n.p",
-        "CALL unknown() YIELD node RETURN node",
-        "RETURN 9223372036854775808",
-        "RETURN {x: 1}",
-        "RETURN [1][0..1]",
-        "RETURN 1^2",
-        "RETURN 'abc' =~ 'a'",
-        "RETURN toInteger('1')",
-        "RETURN sum(1)+1",
-        "RETURN $missing",
-        "RETURN 1 AS x, 2 AS x",
-    ] {
+    for &query in compile_refusals {
         let error = graph.run(query, &[]).map(|_| ()).unwrap_err();
         assert!(
             matches!(error, StatementError::Compile(_)),
             "{query}: {error}"
         );
     }
-    for query in ["RETURN 1/0", "RETURN 9223372036854775807+1"] {
+    for &query in runtime_refusals {
         let error = graph.run(query, &[]).map(|_| ()).unwrap_err();
         let StatementError::Query(error) = error else {
             panic!("{query}: {error}")
         };
         assert_eq!(error.kind(), GraphQueryErrorKind::Expression);
         assert!(error.nothing_committed());
+    }
+    assert_eq!(graph.generation().unwrap(), before);
+}
+
+// WHERE: read_tck_execution::ze56_original_read_tck_positive_scenarios_execute;
+// ze56_original_read_tck_compile_errors_are_refused_before_execution.
+// Stored text and IDs: search_parity::ze58_three_application_shapes_match_structured,
+// ze58_modality_values_and_reports_match_independent_plans;
+// search_execution::ze58_full_u128_ties_remain_ordered.
+// ze.vector_search / ze.hybrid_search: search_execution::ze58_modes_and_components_preserve_provenance,
+// ze58_runtime_refusals_return_no_partial_result.
+// ze.text_search: search_execution::ze58_text_search_returns_real_rows,
+// ze58_search_compile_rejections_publish_nothing.
+
+#[test]
+fn ze59_constants_positive_and_boundary_evidence() {
+    inventory_evidence(
+        &[(
+            "RETURN -9223372036854775808 AS i, 1.25e1 AS f, true AS b, null AS n, 'λ' AS s, [1,[null],false] AS l",
+            "|-9223372036854775808|12.5|true|null|'λ'|[1,[null],false]|",
+        )],
+        &["RETURN 9223372036854775808", "RETURN {x: 1}"],
+        &[],
+    );
+}
+
+#[test]
+fn ze59_access_positive_and_boundary_evidence() {
+    inventory_evidence(
+        &[(
+            "RETURN [4,5][-1] AS a, [4][9] AS b, null[0] AS c, size('λ🙂') AS d",
+            "|5|null|null|2|",
+        )],
+        &["RETURN [1][0..1]"],
+        &[],
+    );
+}
+
+#[test]
+fn ze59_arithmetic_positive_and_boundary_evidence() {
+    inventory_evidence(
+        &[(
+            "RETURN 1+2*3 AS a, 7/2 AS b, 7%2 AS c, -2+5.0 AS d",
+            "|7|3|1|3.0|",
+        )],
+        &["RETURN 1^2"],
+        &["RETURN 1/0", "RETURN 9223372036854775807+1"],
+    );
+}
+
+#[test]
+fn ze59_boolean_comparison_positive_and_boundary_evidence() {
+    inventory_evidence(
+        &[
+            (
+                "RETURN NOT false AND true OR false AS a, true XOR false AS b, 2 IN [1,2] AS c, null IS NULL AS d, 1 IS NOT NULL AS e",
+                "|true|true|true|true|true|",
+            ),
+            (
+                "RETURN 1=1.0 AS a, 1<>2 AS b, 1<2 AS c, 2<=2 AS d, 3>2 AS e, 3>=3 AS f",
+                "|true|true|true|true|true|true|",
+            ),
+        ],
+        &[],
+        &[],
+    );
+}
+
+#[test]
+fn ze59_string_predicates_positive_and_boundary_evidence() {
+    inventory_evidence(
+        &[(
+            "RETURN 'abc' STARTS WITH 'a' AS a, 'abc' ENDS WITH 'c' AS b, 'abc' CONTAINS 'b' AS c",
+            "|true|true|true|",
+        )],
+        &["RETURN 'abc' =~ 'a'"],
+        &[],
+    );
+}
+
+// Positive evidence: read_tck_execution::ze56_original_read_tck_positive_scenarios_execute.
+
+#[test]
+fn ze59_statement_positive_and_boundary_evidence() {
+    inventory_evidence(&[], &["WHERE true RETURN 1"], &[]);
+}
+
+// Positive evidence: read_tck_execution::ze56_original_read_tck_positive_scenarios_execute.
+
+#[test]
+fn ze59_match_positive_and_boundary_evidence() {
+    inventory_evidence(&[], &["MATCH p = ()-->() RETURN p"], &[]);
+}
+
+// Positive evidence: read_tck_execution::ze56_original_read_tck_positive_scenarios_execute.
+
+#[test]
+fn ze59_inline_properties_positive_and_boundary_evidence() {
+    inventory_evidence(&[], &["MATCH (n {x: 1, x: 2}) RETURN n"], &[]);
+}
+
+// Positive evidence: read_tck_execution::ze56_original_read_tck_positive_scenarios_execute.
+
+#[test]
+fn ze59_bounded_paths_positive_and_boundary_evidence() {
+    inventory_evidence(&[], &["MATCH ()-[r*1..17]->() RETURN r"], &[]);
+}
+
+// Positive evidence: read_tck_execution::ze56_original_read_tck_positive_scenarios_execute.
+
+#[test]
+fn ze59_return_with_positive_and_boundary_evidence() {
+    inventory_evidence(
+        &[],
+        &[
+            "RETURN DISTINCT 1 AS x ORDER BY missing",
+            "RETURN 1 AS x, 2 AS x",
+        ],
+        &[],
+    );
+}
+
+// Positive evidence: write_tck_execution::ze57_original_create1_scenarios_execute.
+
+#[test]
+fn ze59_create_positive_and_boundary_evidence() {
+    inventory_evidence(&[], &["CREATE ()-[:R]-()"], &[]);
+}
+
+// Positive evidence: write_tck_execution::ze57_original_set_scenarios_execute.
+
+#[test]
+fn ze59_set_positive_and_boundary_evidence() {
+    inventory_evidence(&[], &["MATCH (n) SET n = {x:1}"], &[]);
+}
+
+// Positive evidence: write_tck_execution::ze57_original_remove_scenarios_execute.
+
+#[test]
+fn ze59_remove_positive_and_boundary_evidence() {
+    inventory_evidence(&[], &["MATCH (n) REMOVE n[0]"], &[]);
+}
+
+// Positive evidence: write_tck_execution::ze57_original_plain_delete_scenarios_execute and ze57_original_detach_delete_scenarios_execute.
+
+#[test]
+fn ze59_delete_positive_and_boundary_evidence() {
+    inventory_evidence(&[], &["MATCH (n) DELETE n.p"], &[]);
+}
+
+// Positive evidence: search_execution::ze58_independent_calls_preserve_bags_and_eager_counts; boundaries also ze58_search_compile_rejections_publish_nothing.
+
+#[test]
+fn ze59_call_positive_and_boundary_evidence() {
+    inventory_evidence(&[], &["CALL unknown() YIELD node RETURN node"], &[]);
+}
+
+// Positive evidence: read_tck_execution::ze56_original_read_tck_positive_scenarios_execute.
+
+#[test]
+fn ze59_functions_positive_and_boundary_evidence() {
+    inventory_evidence(&[], &["RETURN toInteger('1')"], &[]);
+}
+
+// Positive evidence: relational_execution::ze255_numeric_aggregates.
+
+#[test]
+fn ze59_aggregation_positive_and_boundary_evidence() {
+    inventory_evidence(&[], &["RETURN sum(1)+1"], &[]);
+}
+
+// Positive evidence: read_tck_execution::ze56_original_read_tck_positive_scenarios_execute.
+
+#[test]
+fn ze59_parameters_positive_and_boundary_evidence() {
+    inventory_evidence(&[], &["RETURN $missing"], &[]);
+}
+
+#[test]
+fn ze59_tokens_names_positive_and_boundary_evidence() {
+    let graph = Graph::new("ze59-tokens-names");
+    let result = graph
+        .run("/* comment */ ReTuRn 7 AS `a``λ` // comment\n;", &[])
+        .unwrap();
+    assert_eq!(tck::actual_table(&result).1, vec![vec![V::Int(7)]]);
+    let before = graph.generation().unwrap();
+    for query in ["RETURN λ", "RETURN `unterminated"] {
+        let error = graph.run(query, &[]).map(|_| ()).unwrap_err();
+        assert!(
+            matches!(error, StatementError::Compile(_)),
+            "{query}: {error}"
+        );
     }
     assert_eq!(graph.generation().unwrap(), before);
 }

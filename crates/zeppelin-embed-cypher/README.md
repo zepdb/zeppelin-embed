@@ -6,8 +6,8 @@ internal core crate; it adds no third-party package. A successful parse is synta
 admission, and a successful binding is a typed, source-preserving description.
 Neither grants execution, writer admission, or a reusable prepared-query API.
 Read, write and search operator lowering/execution are provided by ZE-56/57/58.
-Focused Rust profile evidence and its pending upstream-source gate are documented
-in [`cypher-profile-v1.md`](../../docs/graph/cypher-profile-v1.md).
+Focused Rust profile evidence is documented below in “Focused execution receipts
+(ZE-59)” and in `tests/profile_conformance.rs`.
 
 `parse` applies the default limits and a 24 MiB conservative allocation budget.
 `parse_with` accepts tighter `CompileLimits` and a caller-supplied `Resources`
@@ -140,12 +140,18 @@ a small independent model. Its maintenance case requires physical work before
 claiming logical-state preservation. Original profile rejections and local
 outline observations never become original semantic passes.
 
-`scripts/cypher-profile-conformance.py` merges exact coordinate receipts into
-`tests/fixtures/cypher-profile-v1.json`, preserves component RED history, pins
-fixture/setup/parameter/query/expectation/side-effect hashes, and rejects missing,
-duplicate, stale or incomplete evidence. The binding manifest remains unchanged.
-The 130 local coordinates are GREEN; upstream source/Result.scala verification
-is pending because this environment could not obtain the pinned checkout.
-Running the acceptance driver without that checkout exits nonzero even after
-focused tests pass. C/Swift and coverage/size/performance qualification remain
-separate pending gates.
+Inventory rows are identified by the `ze59_*_positive_and_boundary_evidence`
+test names in `tests/profile_conformance.rs`. Comments beside the cases point to
+existing read/write TCK, search execution/parity, and numeric aggregate tests.
+The binding manifest, TCK fixtures, typed comparators, and Rust receipt helpers
+remain unchanged. The execution JSON manifest and Python verifier/controls were
+removed by the ZE-297 owner decision of 2026-10-05.
+
+Historical verification in commit `00a9c0df` used upstream pin
+`007895aff5f33097d67b2e48a0a2babd6bd18590`: 99 original scenarios verified,
+none reclassified; 30 `rejected_profile` coordinates and one local observation.
+The recorded verifier result was `130 coordinates; 130 local GREEN; sources
+verified`, with the Result.scala bag-comparator review completed. The historical
+resolution is preserved locally in `tasks/evidence/ze-59-resolution.md`; this
+cleanup does not repeat upstream verification. C/Swift and coverage/size/performance
+qualification remain separate pending gates.
