@@ -37,6 +37,8 @@ jobs:
           cargo clippy --workspace --all-targets
           --features zeppelin-embed-workspace-tests/graph-result-test-support
           -- -D warnings
+      - name: Clippy shipped graph library
+        run: cargo clippy -p zeppelin-embed --features graph-cypher -- -D warnings
 
   doc:
     name: doc (macos-14)
