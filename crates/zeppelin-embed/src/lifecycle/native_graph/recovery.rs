@@ -6168,6 +6168,13 @@ pub(super) fn open(
             &protected,
         )?;
         store.native_graph.initialize_writer(writer, serial_fence)?;
+        // Reopening retained history must not grant a fresh count allowance.
+        if final_state.sequence != 0 {
+            store.native_graph.commits_since_reclaim.store(
+                super::automatic::RECLAIM_AFTER_COMMITS,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
         if end.incomplete_tail {
             store.checkpoint_native_graph(&control)?;
         }

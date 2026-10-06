@@ -1317,6 +1317,14 @@ fn run_ze39_checkpoint_thresholds_and_failure_preserve_acknowledged_state() {
         &mut crate::property_graph::storage::allocation::OsEntropy,
     )
     .expect("fresh native store");
+    // This fixture pins the 64-envelope checkpoint boundary independently of
+    // foreground reclaim publications (covered by ZE-316's count fixture).
+    store
+        .set_native_graph_maintenance_policy(crate::property_graph::GraphMaintenancePolicy {
+            automatic: false,
+            ..Default::default()
+        })
+        .expect("isolate checkpoint cadence");
     vfs.take();
     let image = CanonicalContents::node(&mut [], &mut [], None, None).expect("node image");
     let create = [StructuredWrite {

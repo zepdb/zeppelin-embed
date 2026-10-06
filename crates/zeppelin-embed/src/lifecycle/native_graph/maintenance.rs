@@ -572,7 +572,7 @@ fn load_completed_reclaim<'m>(
     let source = NativePreparationSource::new(&admission.lease, storage, 1)?;
     let length = source.copy_spill_page(
         reference,
-        admitted.base().generation,
+        reference.object.generation,
         bytes.as_mut_slice(),
         resources,
     )?;
@@ -1384,6 +1384,11 @@ fn resume_pending_reclaim(
             &storage,
             limits.work,
         )?;
+    #[cfg(all(test, feature = "graph-cypher"))]
+    crate::property_graph::storage::preparation_work_capture::phase(
+        "maintenance-resume-start",
+        resources.work(),
+    );
     let pending = load_pending_reclaim(admission, &storage, &mut resources)?;
     let generation = GraphGeneration::new(
         admitted
@@ -1586,6 +1591,11 @@ fn resume_pending_reclaim(
         &mut resources,
         &mut wal_resources,
     )?;
+    #[cfg(all(test, feature = "graph-cypher"))]
+    crate::property_graph::storage::preparation_work_capture::phase(
+        "maintenance-resume-prepared",
+        resources.work(),
+    );
     let mut writer_slot = store.native_graph.writer.lock().map_err(|_| {
         NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
             component: "native graph writer",
@@ -1760,6 +1770,11 @@ fn retire_completed_reclaim(
             &storage,
             limits.work,
         )?;
+    #[cfg(all(test, feature = "graph-cypher"))]
+    crate::property_graph::storage::preparation_work_capture::phase(
+        "maintenance-retirement-start",
+        resources.work(),
+    );
     let completed = load_completed_reclaim(admission, &storage, &mut resources)?;
     let generation = GraphGeneration::new(
         admitted
@@ -1911,6 +1926,11 @@ fn retire_completed_reclaim(
         &mut resources,
         &mut wal_resources,
     )?;
+    #[cfg(all(test, feature = "graph-cypher"))]
+    crate::property_graph::storage::preparation_work_capture::phase(
+        "maintenance-retirement-prepared",
+        resources.work(),
+    );
     let mut writer_slot = store.native_graph.writer.lock().map_err(|_| {
         NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
             component: "native graph writer",
@@ -1948,6 +1968,15 @@ fn retire_completed_reclaim(
         .native_graph
         .pack_bytes_since_reclaim
         .store(0, std::sync::atomic::Ordering::Relaxed);
+    store
+        .native_graph
+        .commits_since_reclaim
+        .store(0, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(all(test, feature = "graph-cypher"))]
+    crate::property_graph::storage::preparation_work_capture::phase(
+        "maintenance-retired",
+        resources.work(),
+    );
     Ok(NativeMaintenanceReport {
         relocated_bytes: 0,
         drained_packs: 0,

@@ -533,6 +533,8 @@ const GRAPH_KEYS: &[&str] = &[
     "property-graph.staging.replay",
     "property-graph.storage-faults.artifact-ref.clean",
     "property-graph.storage-faults.artifact-ref.fire",
+    "property-graph.storage-faults.count-delete.clean",
+    "property-graph.storage-faults.count-delete.fire",
     "property-graph.storage-faults.delete.clean",
     "property-graph.storage-faults.delete.fire",
     "property-graph.storage-faults.fold.clean",

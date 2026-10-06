@@ -138,12 +138,14 @@ fn ten_thousand_small_commits_checkpoint_and_reopen() {
     let store = Store::create_native_graph(&path, durable_options(), None).expect("create store");
     let mut nodes = Vec::new();
     let started = std::time::Instant::now();
+    let mut bounds = Ze316Bounds::default();
     use crate::property_graph::storage::preparation_work_capture as capture;
     for index in 0..10_000 {
         capture::start();
         let result = try_commit_probe_node(&store, index);
         let report = capture::take();
         let commits = index + 1;
+        bounds.observe(&store, &report);
         if [100, 500, 1000, 2000, 3000, 4000, 5000, 7500, 10000].contains(&commits)
             || report
                 .phases
@@ -154,12 +156,12 @@ fn ten_thousand_small_commits_checkpoint_and_reopen() {
             emit_preparation_report(commits, started.elapsed(), &report);
         }
         nodes.push(result.unwrap_or_else(|error| panic!("commit {index}: {error:?}")));
-        if [100, 500, 1000, 2000, 5000, 10000].contains(&commits) {
+        if [100, 500, 1000, 2000, 5000, 7500, 10000].contains(&commits) {
             use std::io::Write;
             let seconds = started.elapsed().as_secs_f64();
             writeln!(
                 std::io::stdout().lock(),
-                "ZE290_ACCEPTANCE commits={commits} seconds={seconds:.6} cpm={:.3}",
+                "ZE316_ACCEPTANCE commits={commits} seconds={seconds:.6} cpm={:.3}",
                 commits as f64 * 60.0 / seconds
             )
             .expect("write acceptance curve");
@@ -173,6 +175,10 @@ fn ten_thousand_small_commits_checkpoint_and_reopen() {
         Store::open_native_graph(&path, durable_options(), None).expect("reopen native store");
     let after = logical_state(&reopened, &sampled);
     assert_eq!(before, after);
+    println!(
+        "ZE316_REOPEN matching_samples={} bounds={bounds:?}",
+        sampled.len()
+    );
     reopened.close().expect("close reopened store");
 }
 
@@ -804,7 +810,9 @@ fn emit_preparation_report(
         .phases
         .iter()
         .map(|(phase, work)| {
-            if *phase == "staging-end" || *phase == "maintenance-start" {
+            if *phase == "staging-end"
+                || (phase.starts_with("maintenance-") && phase.ends_with("start"))
+            {
                 before = 0;
             }
             let delta = work - before;
@@ -920,4 +928,247 @@ fn ze290_protected_mark_validation_is_bounded() {
     }
     result.expect("maintenance");
     store.close().expect("close");
+}
+
+/// Count scheduling follows successful publication through the whole lifecycle.
+#[test]
+fn ze316_count_trigger_lifecycle() {
+    use crate::property_graph::GraphMaintenancePolicy;
+    use crate::property_graph::storage::preparation_work_capture as capture;
+    use std::sync::atomic::Ordering;
+    let parent = super::tempfile::tempdir().unwrap();
+    let path = parent.path().join("count");
+    let store = Store::create_native_graph(&path, durable_options(), None).unwrap();
+    let policy = |automatic| GraphMaintenancePolicy {
+        automatic,
+        reclaim_after_bytes: u64::MAX,
+    };
+    store
+        .set_native_graph_maintenance_policy(policy(false))
+        .unwrap();
+    let first = commit_probe_node(&store, 0);
+    assert_eq!(
+        store
+            .native_graph
+            .commits_since_reclaim
+            .load(Ordering::Relaxed),
+        1
+    );
+    assert_eq!(
+        commit_probe_node(&store, 0),
+        first,
+        "replay returns original id"
+    );
+    store
+        .apply_native_graph(&[], &QueryControl::Cancel(CancelToken::new()))
+        .unwrap();
+    assert_eq!(
+        store
+            .native_graph
+            .commits_since_reclaim
+            .load(Ordering::Relaxed),
+        1,
+        "replays and no-ops are not publications"
+    );
+    capture::start();
+    for index in 1..32 {
+        commit_probe_node(&store, index);
+    }
+    assert!(
+        !capture::take()
+            .phases
+            .iter()
+            .any(|(phase, _)| *phase == "maintenance-start")
+    );
+    let control = QueryControl::Cancel(CancelToken::new());
+    store.checkpoint_native_graph(&control).unwrap();
+    assert_eq!(
+        store
+            .native_graph
+            .commits_since_reclaim
+            .load(Ordering::Relaxed),
+        32,
+        "checkpoint preserves reclaim debt"
+    );
+    let stale = store.admit_native_graph_maintenance().unwrap();
+    commit_probe_node(&store, 32);
+    assert!(matches!(
+        store.commit_native_graph_maintenance(&stale, &control),
+        Err(super::super::NativeGraphError::StalePreparation)
+    ));
+    assert_eq!(
+        store
+            .native_graph
+            .commits_since_reclaim
+            .load(Ordering::Relaxed),
+        33
+    );
+    drop(stale);
+    store
+        .set_native_graph_maintenance_policy(policy(true))
+        .unwrap();
+    // An incomplete retirement must retain count-only trigger debt.
+    super::super::automatic::PARTIAL_FOLD.with(|limit| limit.set(true));
+    crate::property_graph::storage::inventory::force_next_incomplete_inventory_retirement();
+    let refused = store.apply_native_graph(&[], &control);
+    super::super::automatic::PARTIAL_FOLD.with(|limit| limit.set(false));
+    assert!(
+        refused.is_err(),
+        "incomplete retirement refuses the foreground request"
+    );
+    assert_eq!(
+        store
+            .native_graph
+            .commits_since_reclaim
+            .load(Ordering::Relaxed),
+        33
+    );
+    capture::start();
+    commit_probe_node(&store, 33);
+    let report = capture::take();
+    assert!(
+        report
+            .phases
+            .iter()
+            .any(|(phase, _)| *phase == "maintenance-start"),
+        "count debt must make maintenance due: {report:?}"
+    );
+    // A fresh cycle may only fold protected history. Its debt remains due
+    // until a later cycle can actually retire reclaim authority.
+    let mut retired = report
+        .phases
+        .iter()
+        .any(|(phase, _)| *phase == "maintenance-retired");
+    let mut next_index = 34;
+    for _ in 0..64 {
+        let debt = store
+            .native_graph
+            .commits_since_reclaim
+            .load(Ordering::Relaxed);
+        if retired {
+            assert_eq!(
+                debt, 1,
+                "retirement resets before the foreground publication"
+            );
+            break;
+        }
+        assert!(debt >= 32, "incomplete cycle preserves count debt");
+        capture::start();
+        commit_probe_node(&store, next_index);
+        next_index += 1;
+        retired = capture::take()
+            .phases
+            .iter()
+            .any(|(phase, _)| *phase == "maintenance-retired");
+    }
+    assert!(retired, "count-triggered retirement must make progress");
+    let before = logical_state(&store, &[first]);
+    store.close().unwrap();
+    let reopened = Store::open_native_graph(&path, durable_options(), None).unwrap();
+    reopened
+        .set_native_graph_maintenance_policy(policy(true))
+        .unwrap();
+    assert_eq!(
+        reopened
+            .native_graph
+            .commits_since_reclaim
+            .load(Ordering::Relaxed),
+        32,
+        "writable reopen starts due"
+    );
+    assert_eq!(before, logical_state(&reopened, &[first]));
+    capture::start();
+    commit_probe_node(&reopened, next_index);
+    assert!(
+        capture::take()
+            .phases
+            .iter()
+            .any(|(phase, _)| *phase == "maintenance-start")
+    );
+    reopened.close().unwrap();
+}
+
+// Owner-pinned before either history run; these are headroom targets, not caps.
+#[cfg(test)]
+const ZE316_CENSUS_BOUND: usize = 4096;
+#[cfg(test)]
+const ZE316_WORK_BOUND: u64 = 512 * 1024 * 1024;
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct Ze316Bounds {
+    census: usize,
+    work: u64,
+    backlog: usize,
+    attempts: usize,
+    retirements: usize,
+}
+#[cfg(test)]
+impl Ze316Bounds {
+    fn observe(
+        &mut self,
+        store: &Store,
+        report: &crate::property_graph::storage::preparation_work_capture::Report,
+    ) {
+        assert!(
+            report.census_rows <= ZE316_CENSUS_BOUND,
+            "census: {report:?}"
+        );
+        self.census = self.census.max(report.census_rows);
+        for (phase, work) in &report.phases {
+            if phase.starts_with("maintenance-") {
+                assert!(*work <= ZE316_WORK_BOUND, "maintenance: {report:?}");
+                self.work = self.work.max(*work);
+                if phase.ends_with("start") {
+                    self.attempts += 1;
+                }
+                if *phase == "maintenance-retired" {
+                    self.retirements += 1;
+                }
+            }
+        }
+        let lease = store.admit_native_read().unwrap();
+        self.backlog = self
+            .backlog
+            .max(lease.bundle().prepared_inventories().len());
+    }
+}
+
+#[test]
+fn ze316_count_reclaim_bounds_census_and_work() {
+    use crate::property_graph::storage::preparation_work_capture as capture;
+    let parent = super::tempfile::tempdir().unwrap();
+    let store =
+        Store::create_native_graph(parent.path().join("bounds"), durable_options(), None).unwrap();
+    let started = std::time::Instant::now();
+    let mut bounds = Ze316Bounds::default();
+    for index in 0..4000 {
+        capture::start();
+        let result = try_commit_probe_node(&store, index);
+        let report = capture::take();
+        if [100, 500, 1000, 2000, 4000].contains(&(index + 1))
+            || report
+                .phases
+                .iter()
+                .any(|(phase, _)| *phase == "maintenance-start")
+            || result.is_err()
+        {
+            emit_preparation_report(index + 1, started.elapsed(), &report);
+        }
+        result.unwrap_or_else(|error| panic!("commit {index}: {error:?}"));
+        bounds.observe(&store, &report);
+        if [1000, 2000, 4000].contains(&(index + 1)) {
+            assert!(
+                bounds.attempts > 0 && bounds.retirements > 0,
+                "missing progress: {bounds:?}"
+            );
+            println!(
+                "ZE316_BOUNDS commits={} seconds={:.6} interval={bounds:?}",
+                index + 1,
+                started.elapsed().as_secs_f64()
+            );
+            bounds = Ze316Bounds::default();
+        }
+    }
+    store.close().unwrap();
 }

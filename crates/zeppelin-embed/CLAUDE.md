@@ -1156,15 +1156,16 @@ reclamation files and failure contract.
 ## ZE-260 automatic reclamation
 
 Graph writers default to automatic reclamation after 64 MiB of committed
-artifact bytes. The policy is per open writer, with a minimum threshold of
-1 MiB; read-only handles cannot change it. Structured and query mutations run
-maintenance before staging, outside the writer lock, so a maintenance refusal
-commits none of the requested write. Each cycle takes at most four bounded
-steps; each automatic trigger runs at most eight cycles, stopping when a cycle
-reports zero relocated and zero removed bytes. Successful retirement resets
-the byte counter. `GraphStore::maintain` exposes one step; `maintain_cycle`
-exposes one cycle. S6a populates relocation counters; S6c supplies steady-state
-bookkeeping reclamation.
+artifact bytes or 32 successful publications, including maintenance commits.
+The byte policy is per open writer, with a minimum threshold of 1 MiB;
+read-only handles cannot change it. The count cadence is internal. Structured
+and query mutations run maintenance before staging, outside the writer lock,
+so a maintenance refusal commits none of the requested write. Each automatic
+trigger runs one cycle of at most four bounded steps. Stale or exhausted cycles
+retain debt for the next write. Only successful clear publication and its
+checkpoint reset both counters; ordinary checkpoints preserve debt. Nonempty
+writable reopen starts count-due. `GraphStore::maintain` exposes one step;
+`maintain_cycle` exposes one cycle.
 
 ## ZE-64 composed search statements
 

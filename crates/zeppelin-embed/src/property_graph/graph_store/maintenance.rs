@@ -6,7 +6,8 @@ use crate::property_graph::GraphGeneration;
 /// Automatic reclamation policy for this open writer (not persisted).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GraphMaintenancePolicy {
-    /// Run maintenance before a write once the byte threshold is reached.
+    /// Run maintenance before a write once the byte threshold or the internal
+    /// 32-publication reclaim cadence is reached.
     pub automatic: bool,
     /// Committed artifact bytes between triggers; at least 1 MiB.
     pub reclaim_after_bytes: u64,

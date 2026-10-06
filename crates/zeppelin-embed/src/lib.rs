@@ -375,6 +375,8 @@ pub mod graph_storage_fault_test_support {
         pub runs: usize,
         pub merges: usize,
         pub folded: usize,
+        /// Successful publications making the count-only foreground leg due.
+        pub count_debt: u64,
     }
 
     /// Pack census measured before oldest-first selection, without random IDs.

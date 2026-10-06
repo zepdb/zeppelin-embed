@@ -121,6 +121,8 @@ pub const REQUIRED_GRAPH_SMOKE_COVERAGE: &[&str] = &[
     "property-graph.storage-faults.largest-pending-range",
     "property-graph.storage-faults.mapping-opens-per-commit",
     "property-graph.storage-faults.ze172.can-fire",
+    "property-graph.storage-faults.count-delete.fire",
+    "property-graph.storage-faults.count-delete.clean",
     "property-graph.publication.coherent",
     "property-graph.publication.retained",
     "property-graph.publication.noop",

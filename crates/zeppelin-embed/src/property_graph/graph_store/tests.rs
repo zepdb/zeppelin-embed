@@ -995,6 +995,10 @@ fn ze260_automatic_reclaim_failure_commits_nothing() {
         .native_graph
         .pack_bytes_since_reclaim
         .store(1024 * 1024, Ordering::Relaxed);
+    let count_debt = native
+        .native_graph
+        .commits_since_reclaim
+        .load(Ordering::Relaxed);
     let generation = native
         .admit_native_read()
         .unwrap()
@@ -1006,6 +1010,13 @@ fn ze260_automatic_reclaim_failure_commits_nothing() {
     let error = store.apply_batch(&[], &control()).unwrap_err();
     crate::lifecycle::native_graph::automatic::PARTIAL_FOLD.with(|limit| limit.set(false));
     assert!(error.nothing_committed());
+    assert_eq!(
+        native
+            .native_graph
+            .commits_since_reclaim
+            .load(Ordering::Relaxed),
+        count_debt
+    );
     assert_eq!(
         native
             .admit_native_read()

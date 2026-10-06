@@ -1273,6 +1273,10 @@ pub(super) fn run_actual_probe(
                 "property-graph.storage-faults.fold.fire",
                 "property-graph.storage-faults.fold.clean",
             ),
+            "count-delete" => (
+                "property-graph.storage-faults.count-delete.fire",
+                "property-graph.storage-faults.count-delete.clean",
+            ),
             "mapping-bit-flip" => (
                 "property-graph.storage-faults.mapping-bit-flip.fire",
                 "property-graph.storage-faults.mapping-bit-flip.clean",
@@ -1370,6 +1374,15 @@ fn run_reclaim_cell(
         intent_preserved: true,
         ..Default::default()
     };
+    let count_triggered = name == "count-delete";
+    if count_triggered {
+        store
+            .set_native_graph_maintenance_policy(crate::property_graph::GraphMaintenancePolicy {
+                automatic: false,
+                reclaim_after_bytes: u64::MAX,
+            })
+            .unwrap();
+    }
     if name == "spill" {
         for index in 0..3 {
             commit_node(&store, &format!("spill-{index}"), "mark input");
@@ -1486,6 +1499,14 @@ fn run_reclaim_cell(
     } else {
         seed_reclaimable_manifest(&store, &format!("seed-{seed}"));
     }
+    if count_triggered {
+        for index in 0..32 {
+            commit_node(&store, &format!("count-{index}"), "protected");
+        }
+        store
+            .checkpoint_native_graph(&control())
+            .expect("release count fixture WAL history");
+    }
     let previous_inventory = store
         .admit_native_read()
         .expect("inventory before folding")
@@ -1502,7 +1523,14 @@ fn run_reclaim_cell(
         .iter()
         .map(|candidate| reclaim_candidate_path(&path, candidate))
         .collect();
-    assert!(targets.len() >= 2, "fixture must reach second candidate");
+    if count_triggered {
+        assert!(
+            !targets.is_empty(),
+            "count fixture must reach an authorized candidate"
+        );
+    } else {
+        assert!(targets.len() >= 2, "fixture must reach second candidate");
+    }
     let inventory = pending
         .bundle()
         .roots()
@@ -1521,6 +1549,31 @@ fn run_reclaim_cell(
     }
     drop(pending);
     let before = file_snapshot(&path);
+    let protected_nodes = if count_triggered {
+        current_nodes(&store)
+    } else {
+        Vec::new()
+    };
+    if count_triggered {
+        cell.count_debt = store
+            .native_graph
+            .commits_since_reclaim
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert!(cell.count_debt >= 32);
+        assert!(
+            store
+                .native_graph
+                .pack_bytes_since_reclaim
+                .load(std::sync::atomic::Ordering::Relaxed)
+                < u64::MAX
+        );
+        store
+            .set_native_graph_maintenance_policy(crate::property_graph::GraphMaintenancePolicy {
+                automatic: true,
+                reclaim_after_bytes: u64::MAX,
+            })
+            .unwrap();
+    }
     deletes(&vfs);
     if fault {
         match name {
@@ -1566,9 +1619,14 @@ fn run_reclaim_cell(
                 targeted_damage(&vfs, &target, Some(damaged));
             }
             "delete" => vfs.recording.arm_fault_after(FaultPoint::Delete, 1),
+            "count-delete" => vfs.recording.arm_fault_after(FaultPoint::Delete, 0),
             _ => panic!("unknown reclaim cell"),
         }
-        let result = commit_maintenance(&store);
+        let result = if count_triggered {
+            count_foreground_write(&store).map(|_| ())
+        } else {
+            commit_maintenance(&store).map(|_| ())
+        };
         println!(
             "ZE-172 reclaim {name} seed={seed} fault fires={} target={:?} result={result:?}",
             vfs.fires(),
@@ -1576,10 +1634,10 @@ fn run_reclaim_cell(
         );
         let error = result.expect_err("targeted reclaim fault must refuse");
         let initial = deletes(&vfs);
-        if name == "delete" {
+        if name == "delete" || count_triggered {
             vfs.recording.assert_fired_once();
             cell.fires = 1;
-            assert_eq!(initial.len(), 1);
+            assert_eq!(initial.len(), usize::from(!count_triggered));
         } else {
             cell.fires = vfs.fires();
             assert!(initial.is_empty(), "byte refusal precedes unlink");
@@ -1625,10 +1683,26 @@ fn run_reclaim_cell(
         );
         assert!(cell.resumed);
     }
+    if count_triggered {
+        assert_eq!(
+            protected_nodes,
+            current_nodes(&store),
+            "refused request exposed no node"
+        );
+        count_foreground_write(&store).expect("foreground retry");
+        assert_eq!(current_nodes(&store).len(), protected_nodes.len() + 1);
+    }
+    let expected_nodes = if count_triggered {
+        current_nodes(&store)
+    } else {
+        Vec::new()
+    };
     store.close().expect("close reclaim cell");
-    reopen_store(&path, &infrastructure)
-        .close()
-        .expect("close reopened reclaimed store");
+    let reopened = reopen_store(&path, &infrastructure);
+    if count_triggered {
+        assert_eq!(expected_nodes, current_nodes(&reopened));
+    }
+    reopened.close().expect("close reopened reclaimed store");
     cell
 }
 
@@ -1655,6 +1729,13 @@ fn run_scoped_mapping_fault_class(
     let vfs = Arc::new(MisdirectVfs::new());
     let infrastructure: Arc<dyn Vfs> = vfs.clone();
     let store = create_store(&path, &infrastructure);
+    // Compare this preparation source's opens with its VFS events only.
+    store
+        .set_native_graph_maintenance_policy(crate::property_graph::GraphMaintenancePolicy {
+            automatic: false,
+            ..Default::default()
+        })
+        .expect("isolate scoped mapping counter probe");
     capture.take();
     vfs.opens.lock().expect("log").clear();
     let mut commits = Vec::new();
@@ -1844,7 +1925,7 @@ pub(crate) fn run_qualification_probe(
     selection.clean_serials = clean_selection.selected_serials;
     selection.clean_ranges = clean_selection.selected_ranges;
     report.selection = Some(selection);
-    for name in ["spill", "proof", "delete", "fold"] {
+    for name in ["spill", "proof", "delete", "fold", "count-delete"] {
         let clean = run_reclaim_cell(seed, name, false);
         assert!(clean.resumed, "same-seed clean execution {name}");
         let mut cell = run_reclaim_cell(seed, name, true);
@@ -2119,4 +2200,53 @@ fn ze177_measure_reopen(large: bool) {
     }
     println!("ZE177 correctness=passed");
     reopened.close().expect("close reopened");
+}
+
+fn count_foreground_write(store: &Store) -> Result<(), super::super::NativeGraphError> {
+    let image = CanonicalContents::node(&mut [], &mut [], Some("requested"), None).unwrap();
+    store
+        .apply_native_graph(
+            &[StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "ze316", "requested").unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            }],
+            &control(),
+        )
+        .map(|_| ())
+}
+
+fn current_nodes(store: &Store) -> Vec<super::mapping_slots::NodeState> {
+    use crate::property_graph::storage::{CursorState, LabelSelection};
+    struct Consumer;
+    impl super::super::NativeReadConsumer<Vec<NodeId>> for Consumer {
+        fn consume<'s, 'lease, 'm, 'g>(
+            &mut self,
+            view: &GraphReadView<'s, 'lease, 'm, 'g>,
+            runtime: &mut RuntimeContext<'lease, 'm, 'g>,
+        ) -> Result<Vec<NodeId>, TreeError> {
+            let mut cursor = view.node_cursor(LabelSelection::All, runtime)?;
+            let mut nodes = Vec::new();
+            loop {
+                let mut output = [NodeId::new(1).unwrap(); 8];
+                let (count, state) = view.scan_nodes(&mut cursor, &mut output, runtime)?;
+                nodes.extend_from_slice(&output[..count]);
+                if state == CursorState::Done {
+                    break;
+                }
+            }
+            Ok(nodes)
+        }
+    }
+    let nodes = store
+        .with_native_read(
+            &control(),
+            RuntimeLimits::default(),
+            8 * 1024 * 1024,
+            64,
+            Consumer,
+        )
+        .unwrap();
+    mapping_logical_state(store, &nodes)
 }

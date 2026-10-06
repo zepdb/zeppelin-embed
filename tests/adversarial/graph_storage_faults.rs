@@ -41,6 +41,8 @@ pub const REQUIRED_COVERAGE: &[&str] = &[
     "property-graph.storage-faults.largest-pending-range",
     "property-graph.storage-faults.mapping-opens-per-commit",
     "property-graph.storage-faults.ze172.can-fire",
+    "property-graph.storage-faults.count-delete.fire",
+    "property-graph.storage-faults.count-delete.clean",
 ];
 
 /// Keys whose body must have fired at least one scheduled fault or refusal.
@@ -53,6 +55,7 @@ const FIRED: &[&str] = &[
     "property-graph.storage-faults.proof.fire",
     "property-graph.storage-faults.delete.fire",
     "property-graph.storage-faults.fold.fire",
+    "property-graph.storage-faults.count-delete.fire",
     "property-graph.storage-faults.mapping-bit-flip.fire",
     "property-graph.storage-faults.mapping-WrongObject.fire",
     "property-graph.storage-faults.mapping-PostCommitError.fire",
@@ -351,10 +354,11 @@ fn check_receipts(
         }
         coverage.hit(receipt.key);
     }
-    if seen.len() != 22
+    if seen.len() != 24
         || REQUIRED_COVERAGE[..8]
             .iter()
             .chain(REQUIRED_COVERAGE[9..23].iter())
+            .chain(REQUIRED_COVERAGE[27..29].iter())
             .any(|key| !seen.contains(key))
     {
         return Err("ZE-47 missing storage-fault boundary receipts".into());
@@ -490,6 +494,9 @@ fn check_qualification(
     if cell.name == "spill" && (cell.runs < 2 || cell.merges == 0) {
         return Err("ZE-172 missing real merge".into());
     }
+    if cell.name == "count-delete" && cell.count_debt < 32 {
+        return Err("ZE-316 missing count-trigger observation".into());
+    }
     if cell.name == "fold" && cell.folded != 8 {
         return Err("ZE-172 missing eight-manifest fold".into());
     }
@@ -612,7 +619,7 @@ mod ze172_tests {
             println!("ZE-172 seed={seed} mapping={mapping} schedule={schedule:?}: {report:?}");
             assert_eq!(
                 report.cells.len(),
-                if mapping { 3 } else { 4 },
+                if mapping { 3 } else { 5 },
                 "missing class-5/6 observations"
             );
             let mut coverage = CoverageRegistry::default();
@@ -643,6 +650,7 @@ fn qualification_keys(mapping: bool) -> Vec<&'static str> {
         keys.push(REQUIRED_COVERAGE[25]);
     } else {
         keys.extend_from_slice(&REQUIRED_COVERAGE[23..25]);
+        keys.extend_from_slice(&REQUIRED_COVERAGE[27..29]);
     }
     keys.push(REQUIRED_COVERAGE[26]);
     keys
@@ -742,7 +750,7 @@ fn check_qualification_report(
     coverage: &mut CoverageRegistry,
 ) -> Result<(), String> {
     let names: &[&str] = match only {
-        Some(false) => &["spill", "proof", "delete", "fold"],
+        Some(false) => &["spill", "proof", "delete", "fold", "count-delete"],
         Some(true) => &[
             "mapping-bit-flip",
             "mapping-WrongObject",
@@ -753,6 +761,7 @@ fn check_qualification_report(
             "proof",
             "delete",
             "fold",
+            "count-delete",
             "mapping-bit-flip",
             "mapping-WrongObject",
             "mapping-PostCommitError",
@@ -769,6 +778,13 @@ fn check_qualification_report(
             .ok_or("ZE-172 missing named cell")?;
         let mapping = name.starts_with("mapping-");
         check_qualification(cell, mapping)?;
+        if *name == "count-delete" {
+            let mut bad = cell.clone();
+            bad.count_debt = 31;
+            if check_qualification(&bad, false).is_ok() {
+                return Err("ZE-316 count comparator cannot fire".into());
+            }
+        }
         for reason in 0..10 {
             let mut bad = cell.clone();
             match reason {

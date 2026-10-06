@@ -2410,6 +2410,13 @@ fn run_ze46_inventory_fold_drains_a_manifest_backlog() {
     let parent = super::tempfile::tempdir().expect("temporary parent");
     let path = parent.path().join("native");
     let store = Store::create_native_graph(&path, options(), None).expect("fresh native store");
+    // Build the declared backlog before the explicit fold under test.
+    store
+        .set_native_graph_maintenance_policy(crate::property_graph::GraphMaintenancePolicy {
+            automatic: false,
+            ..Default::default()
+        })
+        .expect("isolate explicit backlog fold");
     const WRITES: usize = 40;
     for index in 0..WRITES {
         let image = CanonicalContents::node(&mut [], &mut [], None, None).expect("node image");
@@ -2492,6 +2499,73 @@ fn run_ze46_inventory_fold_drains_a_manifest_backlog() {
     let reopened = Store::open_native_graph(&path, options(), None).expect("reopen drained store");
     assert!(manifests(&reopened) <= 4);
     reopened.close().expect("close reopened drained store");
+}
+
+#[test]
+fn ze316_completed_reclaim_survives_foreground_commit() {
+    let (history, store) = seed_crash_history();
+    store
+        .set_native_graph_maintenance_policy(crate::property_graph::GraphMaintenancePolicy {
+            automatic: false,
+            ..Default::default()
+        })
+        .expect("disable automatic maintenance");
+    let control = QueryControl::Cancel(CancelToken::new());
+    commit_maintenance(&store).expect("publish pending intent");
+    let completed = commit_maintenance(&store).expect("complete reclaim");
+    assert!(completed.removed_bytes > 0);
+    let completion = store
+        .admit_native_read()
+        .unwrap()
+        .bundle()
+        .reclaim()
+        .unwrap();
+    let embedding = CanonicalEmbedding::new(&history.document, &[0.5_f32, 1.0_f32])
+        .expect("foreground peer embedding");
+    let image = CanonicalContents::node(&mut [], &mut [], Some("foreground peer"), Some(embedding))
+        .unwrap();
+    store
+        .apply_native_graph(
+            &[StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "crash", "peer").unwrap(),
+                revision: GraphRevision::new(2).unwrap(),
+                operation: StructuredOperation::Put(EntityId::Node(history.peer)),
+                image: Some(WriteImage::Node(&image)),
+            }],
+            &control,
+        )
+        .expect("foreground mutation after completion");
+    let lease = store.admit_native_read().unwrap();
+    assert_eq!(lease.bundle().reclaim(), Some(completion));
+    assert!(completion.object.generation < lease.bundle().base().generation);
+    drop(lease);
+    let oracle = history.oracle(&store);
+    store
+        .checkpoint_native_graph(&control)
+        .expect("checkpoint completion");
+    commit_maintenance(&store).expect("retire carried-forward completion");
+    assert!(
+        store
+            .admit_native_read()
+            .unwrap()
+            .bundle()
+            .reclaim()
+            .is_none()
+    );
+    assert_same_logical_state(&oracle, &history.oracle(&store));
+    store.close().unwrap();
+    drop(store);
+    let reopened = history.open(options()).expect("reopen retired completion");
+    assert!(
+        reopened
+            .admit_native_read()
+            .unwrap()
+            .bundle()
+            .reclaim()
+            .is_none()
+    );
+    assert_same_logical_state(&oracle, &history.oracle(&reopened));
+    reopened.close().unwrap();
 }
 
 #[test]
@@ -4268,6 +4342,13 @@ fn run_ze46_readonly_pending_reclaim_and_checkpoint_retirement_are_exact() {
     let path = parent.path().join("native");
     let vfs = Arc::new(RecordingVfs::default());
     let store = create_reclaim_test_store(&path, &vfs);
+    // Pin the maintenance/checkpoint envelope boundary without automatic folds.
+    store
+        .set_native_graph_maintenance_policy(crate::property_graph::GraphMaintenancePolicy {
+            automatic: false,
+            ..Default::default()
+        })
+        .expect("isolate 64-envelope maintenance boundary");
     let envelopes = |store: &Store| {
         store
             .native_graph

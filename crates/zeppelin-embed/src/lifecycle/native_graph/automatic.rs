@@ -4,6 +4,9 @@ use crate::lifecycle::{QueryControl, Store, StoreError};
 use crate::property_graph::{GraphMaintenancePolicy, GraphMaintenanceReport};
 use std::sync::atomic::Ordering;
 
+// Half the 64-manifest fold capacity leaves room for maintenance publications.
+pub(super) const RECLAIM_AFTER_COMMITS: u64 = 32;
+
 const CYCLE_STEP_LIMIT: &str = "graph maintenance cycle exceeded four steps";
 
 impl Store {
@@ -110,20 +113,21 @@ impl Store {
             }
         })?;
         if policy.automatic
-            && self
+            && (self
                 .native_graph
                 .pack_bytes_since_reclaim
                 .load(Ordering::Relaxed)
                 >= policy.reclaim_after_bytes
+                || self
+                    .native_graph
+                    .commits_since_reclaim
+                    .load(Ordering::Relaxed)
+                    >= RECLAIM_AFTER_COMMITS)
         {
             // One cycle per trigger. A cycle that needs more steps, or a
             // concurrent commit, never refuses the caller's write: the
             // counter stays above the trigger and the next write resumes.
             match self.maintain_native_graph_cycle(control) {
-                Ok(report) if report.cycle_complete => self
-                    .native_graph
-                    .pack_bytes_since_reclaim
-                    .store(0, Ordering::Relaxed),
                 Ok(_) | Err(NativeGraphError::StalePreparation) => {}
                 Err(NativeGraphError::Invalid(CYCLE_STEP_LIMIT)) => {}
                 Err(error) => return Err(error),

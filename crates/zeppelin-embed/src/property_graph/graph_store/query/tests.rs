@@ -518,3 +518,59 @@ fn graph_query_refuses_a_foreign_view_parameter_binding() {
 }
 
 mod search;
+
+#[test]
+fn ze316_query_mutations_trigger_count_reclaim() {
+    use crate::property_graph::GraphMaintenancePolicy;
+    use crate::property_graph::storage::preparation_work_capture as capture;
+    use std::sync::atomic::Ordering;
+    let fixture = Fixture::create(0);
+    fixture
+        .store
+        .set_maintenance_policy(GraphMaintenancePolicy {
+            automatic: true,
+            reclaim_after_bytes: u64::MAX,
+        })
+        .unwrap();
+    let native = fixture.store.store_for_test();
+    // Fixture creation is one batch publication.
+    assert_eq!(
+        native
+            .native_graph
+            .commits_since_reclaim
+            .load(Ordering::Relaxed),
+        1
+    );
+    for _ in 0..31 {
+        write_p(&fixture.store, &control(), Assign::Increment).unwrap();
+    }
+    assert_eq!(
+        native
+            .native_graph
+            .commits_since_reclaim
+            .load(Ordering::Relaxed),
+        32
+    );
+    capture::start();
+    write_p(&fixture.store, &control(), Assign::Increment).unwrap();
+    let report = capture::take();
+    assert!(
+        report
+            .phases
+            .iter()
+            .any(|(phase, _)| *phase == "maintenance-start")
+    );
+    let debt = native
+        .native_graph
+        .commits_since_reclaim
+        .load(Ordering::Relaxed);
+    if report
+        .phases
+        .iter()
+        .any(|(phase, _)| *phase == "maintenance-retired")
+    {
+        assert_eq!(debt, 1);
+    } else {
+        assert!(debt >= 32, "fold-only query maintenance preserves debt");
+    }
+}

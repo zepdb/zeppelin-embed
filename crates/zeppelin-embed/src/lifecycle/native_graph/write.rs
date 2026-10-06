@@ -2112,6 +2112,11 @@ pub(super) fn protect_and_commit(
             std::sync::atomic::Ordering::Relaxed,
             |bytes| Some(bytes.saturating_add(committed_bytes)),
         );
+        let _ = store.native_graph.commits_since_reclaim.fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |commits| Some(commits.saturating_add(1)),
+        );
         writer.complete_envelopes = next_complete_envelopes;
         Ok(())
     };

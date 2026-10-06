@@ -793,6 +793,7 @@ fn run_ze40_complete_mixed_commit_close_reopen_is_coherent()
         Arc::new(crate::lifecycle::SystemMonotonicClock),
     )
     .expect("reopen native store");
+    isolate_recovery_from_foreground_reclaim(&reopened);
     let actual = reopened
         .with_native_read(
             &QueryControl::Cancel(CancelToken::new()),
@@ -1220,6 +1221,7 @@ fn run_ze40_lost_ack_and_stopped_writer_resolve_on_reopen() -> RecoveryPathRecei
         Arc::new(crate::lifecycle::SystemMonotonicClock),
     )
     .expect("recover durable lost acknowledgement");
+    isolate_recovery_from_foreground_reclaim(&reopened);
     let replay = reopened
         .apply_native_graph(&request, &QueryControl::Cancel(CancelToken::new()))
         .expect("exact retry");
@@ -1347,6 +1349,7 @@ fn run_ze40_incomplete_terminal_append_is_ignored_and_writable_reopen_rotates_be
         Arc::new(crate::lifecycle::SystemMonotonicClock),
     )
     .expect("recover torn tail");
+    isolate_recovery_from_foreground_reclaim(&reopened);
     assert_eq!(observe_node(&reopened, first_node), Some((1, 1, 1)));
     assert_eq!(
         std::fs::read(&old_wal).expect("preserved old WAL"),
@@ -1470,6 +1473,7 @@ fn run_ze40_empty_graph_preserves_ids_fences_replays_and_allocation_serials() ->
 
     let reopened = Store::open_native_graph(&path, native_options(), None)
         .expect("reopen empty graph history");
+    isolate_recovery_from_foreground_reclaim(&reopened);
     assert_eq!(observe_node(&reopened, left), None);
     assert_eq!(observe_node(&reopened, right), None);
     let before = file_snapshot(&path);
@@ -1692,6 +1696,7 @@ fn run_ze40_checkpoint_cutoff_reopens_exactly_and_retains_required_inventories()
         &mut crate::property_graph::storage::allocation::OsEntropy,
     )
     .expect("fresh count-threshold store");
+    isolate_recovery_from_foreground_reclaim(&threshold);
     let image = CanonicalContents::node(&mut [], &mut [], None, None).expect("threshold image");
     let key = ApplicationKey::new(EntityKind::Node, "app", "threshold").expect("threshold key");
     let first = threshold
@@ -1795,6 +1800,7 @@ fn run_ze40_checkpoint_cutoff_reopens_exactly_and_retains_required_inventories()
         Arc::new(crate::lifecycle::SystemMonotonicClock),
     )
     .expect("reopen count-threshold store");
+    isolate_recovery_from_foreground_reclaim(&threshold);
     assert_eq!(observe_node(&threshold, threshold_node), Some((65, 65, 65)));
     {
         let guard = threshold
@@ -1957,6 +1963,7 @@ fn run_ze40_checkpoint_cutoff_reopens_exactly_and_retains_required_inventories()
 
     let historical = Store::open_native_graph(&historical_path, native_options(), None)
         .expect("reopen retained historical WAL prefix");
+    isolate_recovery_from_foreground_reclaim(&historical);
     assert_eq!(observe_node(&historical, historical_node), Some((1, 1, 1)));
     {
         let guard = historical
@@ -2099,6 +2106,7 @@ fn run_ze40_read_only_replay_preserves_tail_and_all_files() -> RecoveryPathRecei
         Arc::new(crate::lifecycle::SystemMonotonicClock),
     )
     .expect("writable rotation after read-only close");
+    isolate_recovery_from_foreground_reclaim(&writable);
     assert_eq!(observe_node(&writable, node), Some((1, 1, 1)));
     assert_eq!(
         writable
@@ -2285,6 +2293,7 @@ fn run_ze40_serial_scan_preserves_pre_wal_orphans_and_refuses_ambiguous_corrupti
         Arc::new(crate::lifecycle::SystemMonotonicClock),
     )
     .expect("classify partial pre-WAL object");
+    isolate_recovery_from_foreground_reclaim(&reopened);
     assert_eq!(
         reopened.native_graph.serial_fence().expect("serial fence"),
         partial_serial
@@ -2356,4 +2365,15 @@ pub(super) fn run_actual_probe(
             relationship,
         },
     }
+}
+
+// Recovery fixtures pin replay byte identity and exact WAL/checkpoint cuts.
+// Foreground automatic reclamation is independently covered by ZE-316.
+fn isolate_recovery_from_foreground_reclaim(store: &Store) {
+    store
+        .set_native_graph_maintenance_policy(crate::property_graph::GraphMaintenancePolicy {
+            automatic: false,
+            ..Default::default()
+        })
+        .expect("isolate recovery fixture from foreground reclaim");
 }
