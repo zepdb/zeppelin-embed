@@ -1196,6 +1196,22 @@ impl<'a, 'm> RecoverySource<'a, 'm> {
         allow_checkpoint_serial: bool,
         resources: &mut TreeResources<'_>,
     ) -> Result<(), TreeError> {
+        self.validate_protected_reference_cached(
+            reference,
+            allow_checkpoint_serial,
+            resources,
+            None,
+        )
+    }
+
+    fn validate_protected_reference_cached(
+        &self,
+        reference: RequiredRef,
+        allow_checkpoint_serial: bool,
+        resources: &mut TreeResources<'_>,
+        mut cache: Option<&mut StorageBuffer<'_, (ArtifactDescriptor, RecoveryMappedArtifact)>>,
+    ) -> Result<(), TreeError> {
+        self.check_owner(resources)?;
         if reference.object.store != self.expected_store
             || reference.object.generation > self.generation
             || reference.object.serial == 0
@@ -1217,6 +1233,24 @@ impl<'a, 'm> RecoverySource<'a, 'm> {
         } else {
             return Err(TreeError::Invalid("recovery protected reference family"));
         };
+        if let Some(entries) = cache.as_ref() {
+            for (descriptor, mapped) in entries.as_slice() {
+                resources.step(1)?;
+                if descriptor.artifact == reference.object.artifact {
+                    if *descriptor != reference.object {
+                        return Err(TreeError::Invalid("recovery protected reference mismatch"));
+                    }
+                    let block = mapped
+                        .validation
+                        .framed_block(mapped.mapping.as_bytes(), reference.block)
+                        .map_err(TreeError::Format)?;
+                    if block.reference() != reference.block {
+                        return Err(TreeError::Invalid("recovery protected reference mismatch"));
+                    }
+                    return Ok(());
+                }
+            }
+        }
         let (path, path_charge) = self.charged_path(reference.object.artifact)?;
         let mapping = map_file(self.store, &path, MAX_ARTIFACT_BYTES)
             .map_err(|error| self.latch_source(error))?;
@@ -1250,6 +1284,17 @@ impl<'a, 'm> RecoverySource<'a, 'm> {
                 != reference.block
         {
             return Err(TreeError::Invalid("recovery protected reference mismatch"));
+        }
+        let validation = frame.validation();
+        if let Some(entries) = cache.as_mut() {
+            entries.push((
+                reference.object,
+                RecoveryMappedArtifact {
+                    artifact: reference.object.artifact,
+                    mapping,
+                    validation,
+                },
+            ))?;
         }
         Ok(())
     }
@@ -1595,6 +1640,19 @@ where
 {
     resources.require_preparation(memory)?;
     let source = RecoverySource::new_scoped(store, directory, state, memory, 1)?;
+    #[cfg(all(test, feature = "graph-cypher"))]
+    crate::property_graph::storage::preparation_work_capture::phase(
+        "captured-changes-start",
+        resources.work(),
+    );
+    // A mutation list commonly names many blocks in one immutable object.
+    // Authenticate each artifact once, retaining the exact mapping and proof
+    // only for this trace. Every reference still passes domain/descriptor and
+    // framed-block validation, and all cache storage/work remains charged.
+    let capacity = (changes.remaining_count() as usize)
+        .checked_mul(2)
+        .ok_or(TreeError::Memory)?;
+    let mut authenticated = StorageBuffer::new(memory, capacity)?;
     let result = (|| -> Result<(), TreeError> {
         while let Some(change) = changes
             .next_change(wal_resources)
@@ -1605,19 +1663,34 @@ where
                 Change::Inventory(_) => None,
                 Change::ReclaimIntent(intent) => {
                     for required in [intent.protected_roots, intent.completed_mark] {
-                        source.validate_required_reference_scoped(required, resources)?;
+                        source.validate_protected_reference_cached(
+                            required,
+                            false,
+                            resources,
+                            Some(&mut authenticated),
+                        )?;
                         visitor.visit(required.block, resources)?;
                     }
                     None
                 }
                 Change::ReclaimComplete(completion) => {
-                    source.validate_required_reference_scoped(completion.intent, resources)?;
+                    source.validate_protected_reference_cached(
+                        completion.intent,
+                        false,
+                        resources,
+                        Some(&mut authenticated),
+                    )?;
                     visitor.visit(completion.intent.block, resources)?;
                     None
                 }
             };
             if let Some(required) = required {
-                source.validate_required_reference_scoped(required, resources)?;
+                source.validate_protected_reference_cached(
+                    required,
+                    false,
+                    resources,
+                    Some(&mut authenticated),
+                )?;
                 let payload = canonical_payload(&source, required, resources)?;
                 crate::property_graph::storage::reclaim::trace_payload_references(
                     payload,
@@ -1631,6 +1704,11 @@ where
         }
         Ok(())
     })();
+    #[cfg(all(test, feature = "graph-cypher"))]
+    crate::property_graph::storage::preparation_work_capture::phase(
+        "captured-changes-end",
+        resources.work(),
+    );
     if let Err(error) = result {
         if let Some(source) = source.take_source_error() {
             return Err(source);

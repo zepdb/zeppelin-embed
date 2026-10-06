@@ -796,6 +796,10 @@ impl<'a> FramedCaptureEnvelope<'a> {
     }
 }
 impl<'a> ChangeReader<'a> {
+    pub(crate) const fn remaining_count(&self) -> u32 {
+        self.remaining
+    }
+
     /// Returns the next complete typed change; errors latch this cursor. Callers
     /// mutate only private recovery state and discard it if later replay fails.
     pub fn next_change(

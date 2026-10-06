@@ -1196,3 +1196,238 @@ fn ze200_facade_preserves_internal_and_limit_kinds() {
     assert_eq!(error.kind(), GraphStoreErrorKind::Limit);
     assert!(error.nothing_committed());
 }
+#[test]
+fn ze329_node_scale_batches_use_default_budgets() {
+    use crate::property_graph::storage::preparation_work_capture as capture;
+    use crate::property_graph::{PropertyData, PropertyValue};
+    use std::sync::atomic::Ordering;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("graph");
+    let store = GraphStore::create(&path, options(), None).unwrap();
+    for batch in 0..200 {
+        let start = batch * 100;
+        let keys: Vec<_> = (start..start + 100).map(|i| i.to_string()).collect();
+        let edge_key = start.to_string();
+        let mut labels = vec![[GraphName::new("Segment").unwrap()]; 100];
+        let mut properties: Vec<_> = (start..start + 100)
+            .map(|i| {
+                [GraphProperty::new(
+                    GraphName::new("startMs").unwrap(),
+                    PropertyValue::new(PropertyData::I64(i)).unwrap(),
+                )]
+            })
+            .collect();
+        let images: Vec<_> = labels
+            .iter_mut()
+            .zip(properties.iter_mut())
+            .map(|(labels, properties)| {
+                CanonicalContents::node(labels, properties, None, None).unwrap()
+            })
+            .collect();
+        capture::start();
+        let result = with_local_refs(|refs| {
+            let mut writes: Vec<_> = keys
+                .iter()
+                .zip(&images)
+                .map(|(key, image)| StructuredWrite {
+                    key: ApplicationKey::new(EntityKind::Node, "docs", key).unwrap(),
+                    revision: revision(1),
+                    operation: StructuredOperation::Create,
+                    image: Some(WriteImage::Node(image)),
+                })
+                .collect();
+            writes.push(StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Relationship, "edges", &edge_key).unwrap(),
+                revision: revision(1),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Relationship {
+                    source: NodeRef::Local(refs.node(0).unwrap()),
+                    target: NodeRef::Local(refs.node(1).unwrap()),
+                    relationship_type: GraphName::new("NEXT").unwrap(),
+                    properties: &[],
+                }),
+            });
+            store.apply_batch(&writes, &control())
+        });
+        let report = capture::take();
+        if result.is_err() || batch == 32 || batch == 199 {
+            let native = store.store_for_test();
+            let lease = native.admit_native_read().unwrap();
+            eprintln!(
+                "ZE329 batch={batch} start={start} error={:?} phases={:?} rejected={:?} census_rows={} manifest_backlog={} reclaim={:?} count_debt={} byte_debt={} origins={:?}",
+                result.as_ref().err().map(ToString::to_string),
+                report.phases,
+                report.rejected,
+                report.census_rows,
+                lease.bundle().prepared_inventories().len(),
+                lease.bundle().reclaim(),
+                native
+                    .native_graph
+                    .commits_since_reclaim
+                    .load(Ordering::Relaxed),
+                native
+                    .native_graph
+                    .pack_bytes_since_reclaim
+                    .load(Ordering::Relaxed),
+                report.origins
+            );
+        }
+        let result = result.unwrap();
+        assert!(matches!(
+            result.outcome(),
+            GraphWriteOutcome::Committed { .. }
+        ));
+        assert_eq!(result.receipts().len(), 101);
+    }
+    store.close().unwrap();
+    drop(store);
+    let reopened = GraphStore::open(&path, options(), None).unwrap();
+    ze329_check_scale_queries(&reopened);
+    reopened.close().unwrap();
+}
+
+fn ze329_check_scale_queries(store: &GraphStore) {
+    use super::{GraphPlanBacking, GraphQueryPlan};
+    use crate::property_graph::query::completed::{GraphQueryOptions, Value};
+    use crate::property_graph::query::plan::{
+        AggregateExpression, Direction, ExprId, Expression, Operator, OperatorKind, PatternId,
+        PlanNodeId, Projection, SlotId, SortKey,
+    };
+    let label = String::from("Segment");
+    let property = String::from("startMs");
+    let relationship_type = String::from("NEXT");
+    // Each query has one complete reachable plan: count nodes, ordered last
+    // ten values, then count outgoing NEXT relationships, matching Node.
+    for query in 0..3 {
+        let unit = vec![PlanNodeId(0)];
+        let scan = vec![PlanNodeId(1)];
+        let project = vec![PlanNodeId(2)];
+        let sort = vec![PlanNodeId(3)];
+        let keys = Vec::new();
+        let projection = vec![Projection {
+            slot: SlotId(10),
+            expression: ExprId(if query == 1 { 1 } else { 0 }),
+        }];
+        let sort_keys = vec![SortKey {
+            expression: ExprId(2),
+            descending: true,
+        }];
+        let types = vec![GraphName::new(&relationship_type).unwrap()];
+        let expressions = if query == 1 {
+            vec![
+                Expression::Slot(SlotId(0)),
+                Expression::Property {
+                    entity: ExprId(0),
+                    name: GraphName::new(&property).unwrap(),
+                },
+                Expression::Slot(SlotId(10)),
+            ]
+        } else {
+            vec![Expression::Aggregate {
+                operation: AggregateExpression::Count { distinct: false },
+                operand: None,
+            }]
+        };
+        let mut operators = vec![
+            Operator {
+                inputs: &[],
+                kind: OperatorKind::Unit,
+            },
+            Operator {
+                inputs: &unit,
+                kind: OperatorKind::ScanNodes {
+                    output: SlotId(0),
+                    label: Some(GraphName::new(&label).unwrap()),
+                },
+            },
+        ];
+        match query {
+            0 => operators.push(Operator {
+                inputs: &scan,
+                kind: OperatorKind::Aggregate {
+                    keys: &keys,
+                    aggregates: &projection,
+                },
+            }),
+            1 => {
+                operators.push(Operator {
+                    inputs: &scan,
+                    kind: OperatorKind::Project(&projection),
+                });
+                operators.push(Operator {
+                    inputs: &project,
+                    kind: OperatorKind::Sort(&sort_keys),
+                });
+                operators.push(Operator {
+                    inputs: &sort,
+                    kind: OperatorKind::OffsetLimit {
+                        offset: 0,
+                        limit: Some(10),
+                    },
+                });
+            }
+            _ => {
+                operators.push(Operator {
+                    inputs: &scan,
+                    kind: OperatorKind::Expand {
+                        source: SlotId(0),
+                        node: SlotId(1),
+                        relationship: SlotId(2),
+                        direction: Direction::Outgoing,
+                        relationship_types: &types,
+                        pattern: PatternId(0),
+                    },
+                });
+                operators.push(Operator {
+                    inputs: &project,
+                    kind: OperatorKind::Aggregate {
+                        keys: &keys,
+                        aggregates: &projection,
+                    },
+                });
+            }
+        }
+        let mut backing = GraphPlanBacking::default();
+        backing.string(&label).unwrap();
+        backing.string(&property).unwrap();
+        backing.string(&relationship_type).unwrap();
+        backing.vec(&unit).unwrap();
+        backing.vec(&scan).unwrap();
+        backing.vec(&project).unwrap();
+        backing.vec(&sort).unwrap();
+        backing.vec(&keys).unwrap();
+        backing.vec(&projection).unwrap();
+        backing.vec(&sort_keys).unwrap();
+        backing.vec(&types).unwrap();
+        let parameters = Vec::new();
+        let eager_searches = Vec::new();
+        let plan = GraphQueryPlan {
+            operators: &operators,
+            expressions: &expressions,
+            parameters: &parameters,
+            eager_searches: &eager_searches,
+            root: PlanNodeId((operators.len() - 1) as u32),
+            backing: &backing,
+            bindings: &[],
+            columns: &["t"],
+        };
+        let result = store
+            .query(&control(), &GraphQueryOptions::default(), &plan)
+            .unwrap();
+        if query == 1 {
+            assert_eq!(result.metadata().rows, 10);
+            for index in 0..10 {
+                assert_eq!(
+                    result.cell(index, 0),
+                    Some(&Value::I64(19_999 - index as i64))
+                );
+            }
+        } else {
+            assert_eq!(result.metadata().rows, 1);
+            assert_eq!(
+                result.cell(0, 0),
+                Some(&Value::I64(if query == 0 { 20_000 } else { 200 }))
+            );
+        }
+    }
+}
