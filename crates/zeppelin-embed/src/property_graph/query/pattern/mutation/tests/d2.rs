@@ -360,7 +360,7 @@ macro_rules! run_spec {
             pattern_capacity($pattern_rows),
             execution_capacity(PATTERN_ROWS),
             EagerExecutionFailure::Build,
-            EagerExecutionFailure::Run,
+            |error| EagerExecutionFailure::Run(Box::new(error)),
             |source| source,
             vector
         )
@@ -379,7 +379,7 @@ macro_rules! run_spec {
             pattern_capacity($pattern_rows),
             execution_capacity(PATTERN_ROWS),
             EagerExecutionFailure::Build,
-            EagerExecutionFailure::Run,
+            |error| EagerExecutionFailure::Run(Box::new(error)),
             vector
         )
     };

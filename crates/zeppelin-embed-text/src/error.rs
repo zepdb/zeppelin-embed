@@ -35,7 +35,7 @@ pub enum TextError {
     /// Core hybrid query failed.
     Hybrid(zeppelin_embed::fusion::FusionError),
     /// A ranked source could not supply matching owned text and identity.
-    Materialization(zeppelin_embed::lifecycle::MaterializationError),
+    Materialization(Box<zeppelin_embed::lifecycle::MaterializationError>),
     /// Store open or close failed.
     Store(zeppelin_embed::lifecycle::StoreError),
     /// The caller supplied an invalid option or document.
@@ -78,7 +78,7 @@ impl std::error::Error for TextError {
             Self::Query(error) => Some(error),
             Self::Lexical(error) => Some(error),
             Self::Hybrid(error) => Some(error),
-            Self::Materialization(error) => Some(error),
+            Self::Materialization(error) => Some(error.as_ref()),
             Self::DimsMismatch { .. }
             | Self::NonUnitVector
             | Self::Pipeline { .. }
@@ -127,6 +127,16 @@ mod tests {
             assert!(error.source().is_none());
             assert!(!error.to_string().is_empty());
         }
+        let materialization = TextError::Materialization(Box::new(
+            zeppelin_embed::lifecycle::MaterializationError::ArithmeticOverflow,
+        ));
+        assert!(materialization.source().is_some_and(|source| {
+            source.is::<zeppelin_embed::lifecycle::MaterializationError>()
+        }));
+        assert_eq!(
+            materialization.to_string(),
+            zeppelin_embed::lifecycle::MaterializationError::ArithmeticOverflow.to_string()
+        );
         let ingest = TextError::Ingest(zeppelin_embed::ingest::IngestError::EmptyBatch);
         assert!(ingest.source().is_some());
         assert!(!ingest.to_string().is_empty());

@@ -191,7 +191,7 @@ pub extern "C" fn ze_graph_get_relationships(
 }
 
 /// Executes one structured native graph plan; no textual query enters core.
-/// Output columns are named slot_<logical ID>, in validated root-schema order.
+/// Output columns are named `slot_<logical ID>`, in validated root-schema order.
 /// Names are derived from the core schema; the frozen plan layout is unchanged.
 #[unsafe(no_mangle)]
 pub extern "C" fn ze_graph_query(

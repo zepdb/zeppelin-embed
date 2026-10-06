@@ -974,6 +974,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic)]
 mod ze241_tests {
     use super::*;
     #[test]
@@ -989,10 +990,7 @@ mod ze241_tests {
         raw.bytes = bytes.as_ptr();
         let pool = match Pool::read(&raw, "UTF-8") {
             Ok(pool) => pool,
-            Err(error) => {
-                assert!(false, "{error:?}");
-                return;
-            }
+            Err(error) => panic!("{error:?}"),
         };
         assert!(
             pool.text(ZeGraphRange { start: 0, count: 1 }, "text")

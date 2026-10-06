@@ -1989,7 +1989,7 @@ macro_rules! execute_relational_plan {
                 },
             },
             RelationalExecutionFailure::Build,
-            RelationalExecutionFailure::Run,
+            |error| RelationalExecutionFailure::Run(Box::new(error)),
             |source| source,
             array
         )

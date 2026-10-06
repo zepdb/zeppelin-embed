@@ -950,7 +950,7 @@ impl TextStore {
                             control.checkpoint().map_err(TextError::Query)?;
                             let row = materializer
                                 .text(rank)
-                                .map_err(TextError::Materialization)?;
+                                .map_err(|error| TextError::Materialization(Box::new(error)))?;
                             let squared_l2 = -f64::from(candidate.score());
                             self.make_hit(row, -squared_l2, Some(squared_l2), None)
                         })
@@ -984,7 +984,7 @@ impl TextStore {
                         control.checkpoint().map_err(TextError::Query)?;
                         let row = materializer
                             .text(rank)
-                            .map_err(TextError::Materialization)?;
+                            .map_err(|error| TextError::Materialization(Box::new(error)))?;
                         self.make_hit(row, candidate.score, None, Some(candidate.score))
                     })
                     .collect::<Result<Vec<_>, TextError>>();
@@ -1025,7 +1025,7 @@ impl TextStore {
                             control.checkpoint().map_err(TextError::Query)?;
                             let row = materializer
                                 .text(rank)
-                                .map_err(TextError::Materialization)?;
+                                .map_err(|error| TextError::Materialization(Box::new(error)))?;
                             self.make_hit(
                                 row,
                                 hit.fused_score,

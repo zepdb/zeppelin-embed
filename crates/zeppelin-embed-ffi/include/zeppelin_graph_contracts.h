@@ -2694,7 +2694,7 @@ typedef struct ZeGraphPlan {
 
 /*
  Synchronous structured query; caller buffers borrowed only until return. No result can retain a view or caller pointer.
- Output column names are slot_<logical ID>, in the core validated root-schema order.
+ Output column names are `slot_<logical ID>`, in the core validated root-schema order.
  */
 typedef struct ZeGraphQueryRequest {
     /*
@@ -2865,7 +2865,7 @@ ze_error_code ze_graph_get_relationships(struct ZeGraphHandle handle,
 
 /*
  Executes one structured native graph plan; no textual query enters core.
- Output columns are named slot_<logical ID>, in validated root-schema order.
+ Output columns are named `slot_<logical ID>`, in validated root-schema order.
  Names are derived from the core schema; the frozen plan layout is unchanged.
  */
 ze_error_code ze_graph_query(struct ZeGraphHandle handle,

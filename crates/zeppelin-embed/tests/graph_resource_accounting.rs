@@ -95,7 +95,7 @@ fn read_p_with_options(
     store: &GraphStore,
     control: &QueryControl,
     options: &GraphQueryOptions,
-) -> Result<CompletedGraphResult, GraphStoreError> {
+) -> Result<CompletedGraphResult, Box<GraphStoreError>> {
     let p = String::from("p");
     let name = GraphName::new(&p).expect("name");
     let unit = vec![PlanNodeId(0)];
@@ -145,7 +145,7 @@ fn read_p_with_options(
         bindings: &[],
         columns: &["p"],
     };
-    store.query(control, options, &plan)
+    store.query(control, options, &plan).map_err(Box::new)
 }
 
 #[test]

@@ -90,7 +90,7 @@ mod tests {
     fn ze76_request_work_flushes_once_including_failure_prefix() {
         let accounting = Arc::new(Accounting::new(1024, 1024));
         let before = accounting.ze76_work_merges();
-        let failure: Result<(), ()> = (|| {
+        let failure: Result<(), ()> = {
             let _request = WorkBatch::new(&accounting);
             record(&accounting, GraphWorkKind::StoragePagesDecoded, 1);
             {
@@ -101,7 +101,7 @@ mod tests {
             assert_eq!(accounting.ze76_work_merges(), before);
             assert_eq!(accounting.graph_work(), GraphWorkLedger::default());
             Err(())
-        })();
+        };
         assert!(failure.is_err());
         assert_eq!(accounting.ze76_work_merges() - before, 1);
         let work = accounting.graph_work();

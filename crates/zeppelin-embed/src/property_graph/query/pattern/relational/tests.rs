@@ -78,7 +78,7 @@ impl<'m, 'g> Completion<'m, 'g, NativeExecutionError> for FreezeOffsetTuple {
 #[derive(Debug)]
 enum RelationalExecutionFailure {
     Build(NativeExecutionError),
-    Run(RuntimeFailure<NativeExecutionError>),
+    Run(Box<RuntimeFailure<NativeExecutionError>>),
 }
 
 impl std::fmt::Display for RelationalExecutionFailure {
@@ -318,7 +318,7 @@ impl
                 result: ArenaCapacity::default(),
             },
         )
-        .map_err(RelationalExecutionFailure::Run))
+        .map_err(|error| RelationalExecutionFailure::Run(Box::new(error))))
     }
 }
 
@@ -3134,7 +3134,7 @@ impl NativeReadConsumer<()> for OperatorFailureConsumer {
                     Ok(mut source) => {
                         if let Some(cancel) = &self.cancel { source.cancel_after_expression_polls(0, cancel.clone()); }
                         execute_in(runtime, &admitted, &mut source, &mut completion,
-                            execution_capacity).map_err(RelationalExecutionFailure::Run)
+                            execution_capacity).map_err(|error| RelationalExecutionFailure::Run(Box::new(error)))
                     },
                 };
                 assert_eq!(completion.called, result.is_ok(), "no completion after failure");

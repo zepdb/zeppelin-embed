@@ -765,76 +765,6 @@ pub(crate) fn maintain(
     })
 }
 
-#[cfg(test)]
-#[allow(clippy::unwrap_used)]
-mod tests {
-    use super::*;
-    #[test]
-    fn ze200_internal_maps_to_existing_ffi_code() {
-        for statement in [false, true] {
-            assert_eq!(
-                store_error_code(GraphStoreErrorKind::Internal, statement),
-                ZeErrorCode::ZeErrInternal
-            );
-        }
-    }
-
-    #[test]
-    fn an_unsupported_platform_maps_to_ze_err_unsupported() {
-        for statement in [false, true] {
-            assert_eq!(
-                store_error_code(GraphStoreErrorKind::Unsupported, statement),
-                ZeErrorCode::ZeErrUnsupported
-            );
-        }
-    }
-
-    #[test]
-    fn a_second_writer_on_the_same_graph_handle_is_busy() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("graph");
-        let bytes = path.to_str().unwrap().as_bytes();
-        let request = ZeGraphOpenRequest {
-            abi_size: std::mem::size_of::<ZeGraphOpenRequest>() as u32,
-            abi_reserved: 0,
-            path: crate::ZeGraphBytes {
-                data: bytes.as_ptr(),
-                count: bytes.len(),
-            },
-            mode: 0,
-            tokenizer_profile: 0,
-            document_tower: std::ptr::null(),
-            reader_drain_timeout_ms: 250,
-            max_resident_bytes: MAX_RESIDENT_BYTES,
-            control: std::ptr::null(),
-        };
-        let mut handle = ZeGraphHandle { token: 0 };
-        open(&request, &mut handle).unwrap();
-        let access = lookup(handle).unwrap();
-        let held = access.writer.lock().unwrap();
-        assert_eq!(
-            with_graph_writer(handle, |_| Ok(())).unwrap_err().code,
-            ZeErrorCode::ZeErrBusy
-        );
-        assert_eq!(
-            set_maintenance_policy(handle, std::ptr::null())
-                .unwrap_err()
-                .code,
-            ZeErrorCode::ZeErrBusy
-        );
-        assert_eq!(
-            maintain(handle, std::ptr::null(), std::ptr::null_mut())
-                .unwrap_err()
-                .code,
-            ZeErrorCode::ZeErrBusy
-        );
-        drop(held);
-        with_graph_writer(handle, |_| Ok(())).unwrap();
-        drop(access);
-        close(handle).unwrap();
-    }
-}
-
 /// Converts bounded honest-pointer identity arrays before store admission.
 fn get_ids<A: Copy, B: TryFrom<A>>(pointer: *const A, count: usize) -> Result<Vec<B>, FfiError> {
     if count > 65_536 {
@@ -1030,4 +960,74 @@ pub(crate) fn resources(
         },
     );
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    #[test]
+    fn ze200_internal_maps_to_existing_ffi_code() {
+        for statement in [false, true] {
+            assert_eq!(
+                store_error_code(GraphStoreErrorKind::Internal, statement),
+                ZeErrorCode::ZeErrInternal
+            );
+        }
+    }
+
+    #[test]
+    fn an_unsupported_platform_maps_to_ze_err_unsupported() {
+        for statement in [false, true] {
+            assert_eq!(
+                store_error_code(GraphStoreErrorKind::Unsupported, statement),
+                ZeErrorCode::ZeErrUnsupported
+            );
+        }
+    }
+
+    #[test]
+    fn a_second_writer_on_the_same_graph_handle_is_busy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph");
+        let bytes = path.to_str().unwrap().as_bytes();
+        let request = ZeGraphOpenRequest {
+            abi_size: std::mem::size_of::<ZeGraphOpenRequest>() as u32,
+            abi_reserved: 0,
+            path: crate::ZeGraphBytes {
+                data: bytes.as_ptr(),
+                count: bytes.len(),
+            },
+            mode: 0,
+            tokenizer_profile: 0,
+            document_tower: std::ptr::null(),
+            reader_drain_timeout_ms: 250,
+            max_resident_bytes: MAX_RESIDENT_BYTES,
+            control: std::ptr::null(),
+        };
+        let mut handle = ZeGraphHandle { token: 0 };
+        open(&request, &mut handle).unwrap();
+        let access = lookup(handle).unwrap();
+        let held = access.writer.lock().unwrap();
+        assert_eq!(
+            with_graph_writer(handle, |_| Ok(())).unwrap_err().code,
+            ZeErrorCode::ZeErrBusy
+        );
+        assert_eq!(
+            set_maintenance_policy(handle, std::ptr::null())
+                .unwrap_err()
+                .code,
+            ZeErrorCode::ZeErrBusy
+        );
+        assert_eq!(
+            maintain(handle, std::ptr::null(), std::ptr::null_mut())
+                .unwrap_err()
+                .code,
+            ZeErrorCode::ZeErrBusy
+        );
+        drop(held);
+        with_graph_writer(handle, |_| Ok(())).unwrap();
+        drop(access);
+        close(handle).unwrap();
+    }
 }

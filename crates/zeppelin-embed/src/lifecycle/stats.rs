@@ -418,10 +418,12 @@ impl Accounting {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
     #[cfg(test)]
+    #[allow(clippy::unwrap_used)]
     pub(crate) fn ze76_overflow_work(&self) {
         self.graph_work.lock().unwrap().wal_appends = u64::MAX;
     }
     #[cfg(test)]
+    #[allow(clippy::unwrap_used, clippy::panic)]
     pub(crate) fn ze76_poison_work(&self) {
         let _ = std::panic::catch_unwind(|| {
             let _guard = self.graph_work.lock().unwrap();

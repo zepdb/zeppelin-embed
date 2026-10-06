@@ -83,7 +83,7 @@ fn execution_capacity(result_rows: usize) -> ExecutionCapacity {
 #[derive(Debug)]
 enum EagerExecutionFailure {
     Build(NativeExecutionError),
-    Run(RuntimeFailure<NativeExecutionError>),
+    Run(Box<RuntimeFailure<NativeExecutionError>>),
 }
 
 impl std::fmt::Display for EagerExecutionFailure {
@@ -461,7 +461,7 @@ impl NativeReadConsumer<ReleasedExecution<NodeValueRows>> for ScanProjectConsume
             pattern_capacity(self.pattern_rows),
             execution_capacity(PATTERN_ROWS),
             EagerExecutionFailure::Build,
-            EagerExecutionFailure::Run,
+            |error| EagerExecutionFailure::Run(Box::new(error)),
             move |source| {
                 let source = RecordFirstEmission {
                     source,
@@ -611,7 +611,7 @@ impl NativeReadConsumer<ReleasedExecution<NodePairRows>> for JoinEagerConsumer {
             pattern_capacity(PATTERN_ROWS),
             execution_capacity(PATTERN_ROWS),
             EagerExecutionFailure::Build,
-            EagerExecutionFailure::Run,
+            |error| EagerExecutionFailure::Run(Box::new(error)),
             |source| source,
             vector
         );
@@ -691,7 +691,7 @@ impl NativeReadConsumer<ReleasedExecution<NodeValueRows>> for EagerMutateConsume
             pattern_capacity(PATTERN_ROWS),
             execution_capacity(PATTERN_ROWS),
             EagerExecutionFailure::Build,
-            EagerExecutionFailure::Run,
+            |error| EagerExecutionFailure::Run(Box::new(error)),
             |source| source,
             vector
         );
