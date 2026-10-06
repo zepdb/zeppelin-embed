@@ -12,7 +12,7 @@ use crate::fts::tokenizer::TokenizerEpoch;
 use crate::property_graph::query::QueryView;
 use crate::property_graph::query::runtime::RetainedView;
 use crate::property_graph::resources::{GraphReservation, GraphResources};
-use crate::property_graph::staging::BaseIdentity;
+use crate::property_graph::staging::{BaseIdentity, FoldMark};
 use crate::property_graph::storage::artifact::{BlockKind, PhysicalRef};
 use crate::property_graph::storage::tree::directory::GraphRoots;
 use crate::property_graph::wal::{
@@ -174,6 +174,7 @@ pub(crate) trait NativeReadConsumer<T> {
 /// the same value through the controlled installer; it has no publish method.
 pub(crate) struct NativeGraphBundleInput {
     pub(crate) base: BaseIdentity,
+    // removed by ZE-380 (T3) when reclaim proofs become self-contained
     pub(crate) root_envelope: RequiredRef,
     pub(crate) roots: GraphRoots,
     pub(crate) wal_roots: WalGraphRoots,
@@ -193,6 +194,8 @@ pub(crate) struct NativeGraphBundleInput {
 /// replacement bundle.
 pub(crate) struct NativeGraphBundle {
     base: BaseIdentity,
+    // Legacy reclaim/recovery locator, never part of bundle identity.
+    // removed by ZE-380 (T3) when reclaim proofs become self-contained
     root_envelope: RequiredRef,
     roots: GraphRoots,
     wal_roots: WalGraphRoots,
@@ -216,7 +219,7 @@ impl NativeGraphBundle {
         resources: &GraphResources,
         input: NativeGraphBundleInput,
     ) -> Result<Arc<Self>, NativeGraphError> {
-        Self::install_checked(store, resources, input, false)
+        Self::install_checked(store, resources, input)
     }
 
     pub(super) fn install_recovered(
@@ -224,16 +227,15 @@ impl NativeGraphBundle {
         resources: &GraphResources,
         input: NativeGraphBundleInput,
     ) -> Result<Arc<Self>, NativeGraphError> {
-        Self::install_checked(store, resources, input, true)
+        Self::install_checked(store, resources, input)
     }
 
     fn install_checked(
         store: &Store,
         resources: &GraphResources,
         input: NativeGraphBundleInput,
-        historical_checkpoint: bool,
     ) -> Result<Arc<Self>, NativeGraphError> {
-        validate_bundle(&input, historical_checkpoint)?;
+        validate_bundle(&input)?;
         let metadata_bytes = bundle_owned_bytes(&input, &store.directory)?;
         let charge = resources.reserve(metadata_bytes)?;
         let mut directory = PathBuf::new();
@@ -299,12 +301,10 @@ impl NativeGraphBundle {
             .ok_or(NativeGraphError::IdentityExhausted)?;
         if input.base.store != admitted.base.store
             || input.base.generation.get() != expected_generation
-            || input.base.roots != admitted.base.roots
-            || input.root_envelope != admitted.root_envelope
+            || input.base.fold != admitted.base.fold
             || input.roots.store() != input.base.store
             || input.roots.generation() != input.base.generation
             || input.sequence != expected_sequence
-            || input.root_envelope.object.generation > input.base.generation
         {
             return Err(NativeGraphError::Invalid(
                 "unproved native committed transition",
@@ -364,23 +364,17 @@ impl NativeGraphBundle {
         }))
     }
 
-    fn checkpoint_transition(
+    fn fold_transition(
         store: &Store,
         resources: &GraphResources,
         admitted: &Arc<Self>,
+        fold: FoldMark,
         root_envelope: RequiredRef,
     ) -> Result<Arc<Self>, NativeGraphError> {
-        if root_envelope.object.store != admitted.base.store
-            || root_envelope.object.generation != admitted.base.generation
-            || root_envelope.object.family != FormatFamily::NativeGraphRoot.id()
-            || root_envelope.object.version != 1
-            || root_envelope.block.artifact != root_envelope.object.artifact
-            || root_envelope.block.kind != BlockKind::CheckpointPayload
-            || root_envelope.block.version != 1
+        if fold.manifest_generation != admitted.base.generation.get()
+            || fold.envelope_sequence != admitted.sequence
         {
-            return Err(NativeGraphError::Invalid(
-                "unproved native checkpoint transition",
-            ));
+            return Err(NativeGraphError::Invalid("unproved native fold transition"));
         }
         Self::install(
             store,
@@ -389,6 +383,7 @@ impl NativeGraphBundle {
                 base: BaseIdentity {
                     store: admitted.base.store,
                     generation: admitted.base.generation,
+                    fold,
                     roots: Some(root_envelope.object.artifact),
                 },
                 root_envelope,
@@ -409,6 +404,11 @@ impl NativeGraphBundle {
 
     pub(crate) const fn base(&self) -> BaseIdentity {
         self.base
+    }
+
+    fn needs_fold_before_retirement(&self) -> bool {
+        self.base.fold.manifest_generation != self.base.generation.get()
+            || self.base.fold.envelope_sequence != self.sequence
     }
 
     pub(crate) const fn root_envelope(&self) -> RequiredRef {
@@ -528,27 +528,14 @@ fn bundle_owned_bytes(
         .ok_or(NativeGraphError::Invalid("bundle capacity overflow"))
 }
 
-fn validate_bundle(
-    input: &NativeGraphBundleInput,
-    historical_checkpoint: bool,
-) -> Result<(), NativeGraphError> {
+fn validate_bundle(input: &NativeGraphBundleInput) -> Result<(), NativeGraphError> {
     let base = input.base;
     if base.store != input.roots.store()
         || base.generation != input.roots.generation()
-        || base.roots != Some(input.root_envelope.object.artifact)
-        || input.root_envelope.object.store != base.store
-        || if historical_checkpoint {
-            input.root_envelope.object.generation > base.generation
-        } else {
-            input.root_envelope.object.generation != base.generation
-        }
-        || input.root_envelope.object.family != FormatFamily::NativeGraphRoot.id()
-        || input.root_envelope.object.version != 1
-        || input.root_envelope.block.artifact != input.root_envelope.object.artifact
-        || input.root_envelope.block.kind != BlockKind::CheckpointPayload
-        || input.root_envelope.block.version != 1
+        || base.fold.manifest_generation > base.generation.get()
+        || base.fold.envelope_sequence > input.sequence
     {
-        return Err(NativeGraphError::Invalid("root envelope identity"));
+        return Err(NativeGraphError::Invalid("bundle identity"));
     }
     for (root, required) in input
         .roots
@@ -2314,6 +2301,7 @@ pub(crate) mod tests {
             base: BaseIdentity {
                 store,
                 generation,
+                fold: Default::default(),
                 roots: Some(root_envelope.object.artifact),
             },
             root_envelope,
@@ -2328,6 +2316,157 @@ pub(crate) mod tests {
             prepared_inventories: Vec::new(),
             lexical: TokenizerEpoch::of(&TokenizerConfig::text_default()),
             document: None,
+        }
+    }
+
+    #[cfg(test)]
+    mod bundle {
+        use super::*;
+        use crate::property_graph::staging::FoldMark;
+
+        #[test]
+        fn retire_detects_a_fold_without_a_root_reference() {
+            let directory = tempfile::tempdir().unwrap();
+            let store = Store::open(
+                directory.path(),
+                OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+            )
+            .unwrap();
+            let resources = GraphResources::from_store(&store).unwrap();
+            let identity = StoreInstanceId::new(123).unwrap();
+            let mut admitted =
+                NativeGraphBundle::install(&store, &resources, super::bundle(identity, 7, 11))
+                    .unwrap();
+            let bundle = Arc::get_mut(&mut admitted).unwrap();
+            bundle.base.roots = None;
+            // The legacy locator misleadingly names this generation. It cannot
+            // establish that the current envelope has been folded.
+            assert!(bundle.needs_fold_before_retirement());
+            bundle.base.fold = FoldMark {
+                manifest_generation: 7,
+                graph_absorbed_through: 7,
+                envelope_sequence: 7,
+            };
+            // Make the legacy locator misleadingly older after the fold.
+            bundle.root_envelope.object.generation = GraphGeneration::new(0);
+            assert!(!bundle.needs_fold_before_retirement());
+            let mut legacy_copy = bundle.base();
+            legacy_copy.roots = Some(ArtifactId::new(999).unwrap());
+            assert_eq!(legacy_copy, bundle.base());
+            legacy_copy.fold.envelope_sequence = 6;
+            assert_ne!(legacy_copy, bundle.base());
+        }
+
+        #[test]
+        fn a_fold_changes_the_fold_mark_and_nothing_else() {
+            let directory = tempfile::tempdir().unwrap();
+            let store = Store::open(
+                directory.path(),
+                OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+            )
+            .unwrap();
+            let resources = GraphResources::from_store(&store).unwrap();
+            let identity = StoreInstanceId::new(123).unwrap();
+            let mut input = super::bundle(identity, 7, 11);
+            let generation = GraphGeneration::new(7);
+            let tree = required(
+                identity,
+                generation,
+                31,
+                BlockKind::TreePage,
+                ContainerKind::Object,
+            );
+            input.wal_roots.slots[0] = Some(tree);
+            input.roots = GraphRoots::from_references(
+                identity,
+                generation,
+                input
+                    .wal_roots
+                    .slots
+                    .map(|slot| slot.map(|required| required.block)),
+            )
+            .unwrap();
+            input.vector = Some(required(
+                identity,
+                generation,
+                41,
+                BlockKind::CommitParticipant,
+                ContainerKind::Object,
+            ));
+            input.text = Some(required(
+                identity,
+                generation,
+                51,
+                BlockKind::CommitParticipant,
+                ContainerKind::Object,
+            ));
+            input.reclaim = Some(required(
+                identity,
+                generation,
+                61,
+                BlockKind::CommitParticipant,
+                ContainerKind::Object,
+            ));
+            input.prepared_inventories = vec![required(
+                identity,
+                generation,
+                71,
+                BlockKind::CommitParticipant,
+                ContainerKind::Object,
+            )];
+            input.high_waters = HighWaters {
+                node: 123,
+                relationship: 456,
+                symbols: [7; 4],
+                creation_serial: 101,
+            };
+            let admitted = NativeGraphBundle::install(&store, &resources, input).unwrap();
+            let legacy_root = required(
+                identity,
+                GraphGeneration::new(7),
+                21,
+                BlockKind::CheckpointPayload,
+                ContainerKind::RootEnvelope,
+            );
+            let folded = NativeGraphBundle::fold_transition(
+                &store,
+                &resources,
+                &admitted,
+                FoldMark {
+                    manifest_generation: 7,
+                    graph_absorbed_through: 7,
+                    envelope_sequence: 7,
+                },
+                legacy_root,
+            )
+            .unwrap();
+            assert_eq!(
+                folded.base().fold,
+                FoldMark {
+                    manifest_generation: 7,
+                    graph_absorbed_through: 7,
+                    envelope_sequence: 7
+                }
+            );
+            assert_ne!(folded.base().fold, admitted.base().fold);
+            assert_eq!(folded.base().store, admitted.base().store);
+            assert_eq!(folded.base().generation, admitted.base().generation);
+            assert_eq!(folded.roots().references(), admitted.roots().references());
+            assert_eq!(folded.wal_roots(), admitted.wal_roots());
+            assert_eq!(folded.sequence(), admitted.sequence());
+            assert_eq!(folded.catalog(), admitted.catalog());
+            assert_eq!(folded.vector(), admitted.vector());
+            assert_eq!(folded.text(), admitted.text());
+            assert_eq!(folded.reclaim(), admitted.reclaim());
+            assert_eq!(folded.high_waters(), admitted.high_waters());
+            assert_eq!(
+                folded.prepared_inventories(),
+                admitted.prepared_inventories()
+            );
+            assert_eq!(folded.lexical(), admitted.lexical());
+            assert_eq!(folded.document(), admitted.document());
+            assert_eq!(folded.directory(), admitted.directory());
+            assert!(Arc::ptr_eq(&folded.vfs, &admitted.vfs));
         }
     }
 
@@ -3048,6 +3187,7 @@ pub(crate) mod tests {
                 base: BaseIdentity {
                     store: identity,
                     generation: initial_generation,
+                    fold: Default::default(),
                     roots: Some(initial_root_identity.artifact),
                 },
                 root_envelope: initial_root,
@@ -3277,6 +3417,7 @@ pub(crate) mod tests {
                 base: BaseIdentity {
                     store: identity,
                     generation: target_generation,
+                    fold: Default::default(),
                     roots: Some(root_identity.artifact),
                 },
                 root_envelope,
@@ -3535,6 +3676,7 @@ pub(crate) mod tests {
             base: BaseIdentity {
                 store: admitted.base.store,
                 generation,
+                fold: Default::default(),
                 roots: Some(root_identity.artifact),
             },
             root_envelope,
@@ -3713,6 +3855,7 @@ pub(crate) mod tests {
             base: BaseIdentity {
                 store: admitted.base.store,
                 generation: target_generation,
+                fold: Default::default(),
                 roots: Some(root_identity.artifact),
             },
             root_envelope,
@@ -4137,10 +4280,10 @@ pub(crate) mod tests {
             Err(NativeGraphError::Invalid("required object identity"))
         ));
         let mut wrong_role = bundle(identity, 1, 181);
-        wrong_role.root_envelope.block.kind = BlockKind::TreePage;
+        wrong_role.catalog.block.kind = BlockKind::TreePage;
         assert!(matches!(
             store.install_native_graph_for_test(wrong_role),
-            Err(NativeGraphError::Invalid("root envelope identity"))
+            Err(NativeGraphError::Invalid("catalog role"))
         ));
         let mut wrong_root = bundle(identity, 1, 191);
         wrong_root.wal_roots.slots[0] = Some(wrong_root.catalog);
@@ -4366,10 +4509,7 @@ pub(crate) mod tests {
                     vector_after: false,
                 })
             );
-            assert_eq!(
-                artifacts.expected_root_envelope(),
-                lease.bundle().root_envelope()
-            );
+            assert_eq!(artifacts.expected_fold(), lease.bundle().base().fold);
             assert!(artifacts.matches_base(&lease));
             drop(artifacts);
 

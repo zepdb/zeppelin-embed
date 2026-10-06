@@ -50,7 +50,7 @@ impl Store {
         // a stale concurrent mutation remains an error.
         if matches!(result, Err(NativeGraphError::StalePreparation))
             && current.bundle().base().generation == admission.lease.bundle().base().generation
-            && current.bundle().root_envelope() != admission.lease.bundle().root_envelope()
+            && current.bundle().base().fold != admission.lease.bundle().base().fold
         {
             return Ok(GraphMaintenanceReport {
                 generation: current.bundle().base().generation,

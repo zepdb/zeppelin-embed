@@ -407,6 +407,7 @@ where
         base: BaseIdentity {
             store,
             generation,
+            fold: Default::default(),
             roots: Some(root_identity.artifact),
         },
         root_envelope,
@@ -688,6 +689,7 @@ fn ze61_sparse_populations_match_model() {
     let initial_identity = BaseIdentity {
         store: identity,
         generation: GraphGeneration::new(0),
+        fold: Default::default(),
         roots: Some(ArtifactId::new(61_001).unwrap()),
     };
     let initial_high = StageHighWaters::default();
@@ -762,6 +764,7 @@ fn ze61_sparse_populations_match_model() {
     let target_identity0 = BaseIdentity {
         store: identity,
         generation: GraphGeneration::new(1),
+        fold: Default::default(),
         roots: Some(ArtifactId::new(61_099).unwrap()),
     };
     let fixture0 = SparseFixture::empty(initial_identity, initial_high, Some(document.clone()));
@@ -1353,6 +1356,7 @@ fn run_sparse_lifecycle_acceptance(
     let base_identity = BaseIdentity {
         store: identity,
         generation: GraphGeneration::new(0),
+        fold: Default::default(),
         roots: Some(ArtifactId::new(61_201).unwrap()),
     };
     let namespace = SymbolEntry {
@@ -1523,6 +1527,7 @@ fn run_sparse_lifecycle_acceptance(
     let target_identity1 = BaseIdentity {
         store: identity,
         generation: GraphGeneration::new(1),
+        fold: Default::default(),
         roots: Some(ArtifactId::new(61_399).unwrap()),
     };
     let fixture1 = fixture0.after(&staged1, target_identity1);
@@ -2454,6 +2459,7 @@ fn run_sparse_lifecycle_acceptance(
     let target_identity2 = BaseIdentity {
         store: identity,
         generation: GraphGeneration::new(2),
+        fold: Default::default(),
         roots: Some(ArtifactId::new(61_599).unwrap()),
     };
     let fixture2 = fixture1.after(&staged2, target_identity2);
@@ -3428,6 +3434,7 @@ fn run_sparse_lifecycle_acceptance(
         let target_identity3 = BaseIdentity {
             store: identity,
             generation: GraphGeneration::new(3),
+            fold: Default::default(),
             roots: Some(ArtifactId::new(61_699).unwrap()),
         };
         let fixture3 = fixture2.after(&staged3, target_identity3);

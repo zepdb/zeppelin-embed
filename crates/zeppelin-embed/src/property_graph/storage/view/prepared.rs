@@ -21,7 +21,6 @@ fn same_admitted_bundle(left: &NativeReadLease, right: &NativeReadLease) -> bool
     let left = left.bundle();
     let right = right.bundle();
     left.base() == right.base()
-        && left.root_envelope() == right.root_envelope()
         && left.roots().store() == right.roots().store()
         && left.roots().generation() == right.roots().generation()
         && left.roots().references() == right.roots().references()
@@ -398,8 +397,8 @@ impl<
         self.inventory.as_slice()
     }
 
-    pub(crate) fn expected_root_envelope(&self) -> crate::property_graph::wal::RequiredRef {
-        self.base.bundle().root_envelope()
+    pub(crate) fn expected_fold(&self) -> crate::property_graph::staging::FoldMark {
+        self.base.bundle().base().fold
     }
 
     pub(crate) fn matches_base(&self, lease: &NativeReadLease) -> bool {

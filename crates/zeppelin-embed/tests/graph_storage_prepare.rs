@@ -13,6 +13,7 @@ impl AdmittedBase for Empty {
         BaseIdentity {
             store: StoreInstanceId::new(1).unwrap(),
             generation: GraphGeneration::new(0),
+            fold: Default::default(),
             roots: None,
         }
     }
@@ -944,7 +945,10 @@ fn authentic_staged_batch_prepares_native_directories_inside_one_memory_owner() 
         let catalog = Catalog { base, symbols: &[] };
         let wrong = DirectoryBase {
             identity: BaseIdentity {
-                roots: Some(ArtifactId::new(77).unwrap()),
+                fold: zeppelin_embed::property_graph::staging::FoldMark {
+                    envelope_sequence: 1,
+                    ..base.fold
+                },
                 ..base
             },
             roots,

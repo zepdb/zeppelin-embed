@@ -34,6 +34,7 @@ fn expression_producer_bundle_with_extra_nodes(
     let base = BaseIdentity {
         store: identity,
         generation: GraphGeneration::new(0),
+        fold: Default::default(),
         roots: None,
     };
     let document = with_vector.then(|| EmbeddingTower {
@@ -351,6 +352,7 @@ fn expression_producer_bundle_with_extra_nodes(
             base: BaseIdentity {
                 store: identity,
                 generation: target_generation,
+                fold: Default::default(),
                 roots: Some(root_identity.artifact),
             },
             root_envelope,
@@ -2071,6 +2073,7 @@ impl Ze52Base {
             identity: BaseIdentity {
                 store: identity,
                 generation: GraphGeneration::new(0),
+                fold: Default::default(),
                 roots: None,
             },
             high_waters: StageHighWaters {

@@ -1743,7 +1743,7 @@ fn retire_completed_reclaim(
 ) -> Result<NativeMaintenanceReport, NativeGraphError> {
     let admitted = Arc::clone(admission.lease.bundle());
     let shared = GraphResources::from_store(store)?;
-    if admitted.root_envelope().object.generation != admitted.base().generation {
+    if admitted.needs_fold_before_retirement() {
         let mut writer_slot = store.native_graph.writer.lock().map_err(|_| {
             NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
                 component: "native graph writer",

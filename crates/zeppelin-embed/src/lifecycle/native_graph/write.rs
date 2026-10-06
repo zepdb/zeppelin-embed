@@ -291,6 +291,7 @@ where
             base: crate::property_graph::staging::BaseIdentity {
                 store: admitted.base().store,
                 generation,
+                fold: admitted.base().fold,
                 roots: admitted.base().roots,
             },
             root_envelope: admitted.root_envelope(),
@@ -536,6 +537,7 @@ where
             base: crate::property_graph::staging::BaseIdentity {
                 store: admitted.base().store,
                 generation,
+                fold: admitted.base().fold,
                 roots: admitted.base().roots,
             },
             root_envelope: admitted.root_envelope(),
@@ -785,7 +787,17 @@ fn checkpoint_current_inner(
             payload,
         }],
     )?;
-    let next = NativeGraphBundle::checkpoint_transition(store, resources, admitted, root_envelope)?;
+    let next = NativeGraphBundle::fold_transition(
+        store,
+        resources,
+        admitted,
+        crate::property_graph::staging::FoldMark {
+            manifest_generation: checkpoint.state.generation.get(),
+            graph_absorbed_through: checkpoint.applied_sequence,
+            envelope_sequence: checkpoint.state.sequence,
+        },
+        root_envelope,
+    )?;
     let root_path = crate::property_graph::storage::allocation::artifact_path(
         admitted.directory(),
         root_identity.artifact,
@@ -1362,7 +1374,7 @@ where
         .checked_add(1)
         .ok_or(NativeGraphError::IdentityExhausted)?;
     if !prepared.matches_base(lease)
-        || prepared.expected_root_envelope() != admitted.root_envelope()
+        || prepared.expected_fold() != admitted.base().fold
         || prepared.membership_changes().len() != batch.deltas().len()
         || batch.base() != admitted.base()
         || candidate.expected_base() != admitted.base()
@@ -1545,9 +1557,10 @@ where
             base: crate::property_graph::staging::BaseIdentity {
                 store: admitted.base().store,
                 generation: expected_generation,
+                fold: admitted.base().fold,
                 roots: admitted.base().roots,
             },
-            root_envelope: prepared.expected_root_envelope(),
+            root_envelope: admitted.root_envelope(),
             roots,
             wal_roots: graph,
             sequence: expected_sequence,
@@ -1911,6 +1924,7 @@ where
             base: crate::property_graph::staging::BaseIdentity {
                 store: admitted.base().store,
                 generation,
+                fold: admitted.base().fold,
                 roots: admitted.base().roots,
             },
             root_envelope: admitted.root_envelope(),

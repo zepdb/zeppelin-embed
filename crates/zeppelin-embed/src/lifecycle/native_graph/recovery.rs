@@ -6207,6 +6207,11 @@ pub(super) fn open(
             base: BaseIdentity {
                 store: final_state.store,
                 generation: final_state.generation,
+                fold: crate::property_graph::staging::FoldMark {
+                    manifest_generation: checkpoint.state.generation.get(),
+                    graph_absorbed_through: checkpoint.applied_sequence,
+                    envelope_sequence: checkpoint.state.sequence,
+                },
                 roots: Some(root_envelope.object.artifact),
             },
             root_envelope,

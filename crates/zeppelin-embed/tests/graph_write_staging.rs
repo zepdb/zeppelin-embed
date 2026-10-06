@@ -13,6 +13,7 @@ impl AdmittedBase for Empty {
         BaseIdentity {
             store: StoreInstanceId::new(1).unwrap(),
             generation: GraphGeneration::new(0),
+            fold: Default::default(),
             roots: None,
         }
     }
@@ -233,6 +234,7 @@ fn live<'a>(image: &'a CanonicalContents<'a>) -> Live<'a> {
         identity: BaseIdentity {
             store: StoreInstanceId::new(1).unwrap(),
             generation: GraphGeneration::new(7),
+            fold: Default::default(),
             roots: Some(
                 zeppelin_embed::property_graph::storage::artifact::ArtifactId::new(3).unwrap(),
             ),

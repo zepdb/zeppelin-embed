@@ -22,14 +22,33 @@ pub use result::{
 };
 
 /// Identity of one retained, coherent graph/search root set.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub struct BaseIdentity {
     /// Persisted store incarnation.
     pub store: StoreInstanceId,
     /// Admitted published generation.
     pub generation: GraphGeneration,
-    /// Immutable root-envelope identity; None is the initial empty root only.
+    /// Legacy checkpoint artifact used only by the old reclaim/recovery path.
+    /// removed by ZE-380 (T3) when reclaim proofs become self-contained
     pub roots: Option<ArtifactId>,
+    /// In-memory position of the last graph fold.
+    pub fold: FoldMark,
+}
+impl PartialEq for BaseIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        self.store == other.store && self.generation == other.generation && self.fold == other.fold
+    }
+}
+impl Eq for BaseIdentity {}
+/// In-memory fold position; never encoded in a persisted format.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct FoldMark {
+    /// Generation of the manifest that folded the graph state.
+    pub manifest_generation: u64,
+    /// Log sequence absorbed by that fold.
+    pub graph_absorbed_through: u64,
+    /// Graph commit-envelope sequence at the fold.
+    pub envelope_sequence: u64,
 }
 /// Inclusive logical allocation fences from the admitted root.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

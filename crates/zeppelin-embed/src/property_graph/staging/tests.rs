@@ -16,6 +16,7 @@ impl AdmittedBase for Base {
         BaseIdentity {
             store: StoreInstanceId::new(1).unwrap(),
             generation: GraphGeneration::new(0),
+            fold: Default::default(),
             roots: None,
         }
     }

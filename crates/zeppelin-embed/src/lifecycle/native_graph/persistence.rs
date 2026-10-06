@@ -756,6 +756,11 @@ fn create_with_high_waters(
             base: BaseIdentity {
                 store: identity,
                 generation,
+                fold: crate::property_graph::staging::FoldMark {
+                    manifest_generation: decoded.state.generation.get(),
+                    graph_absorbed_through: decoded.applied_sequence,
+                    envelope_sequence: decoded.state.sequence,
+                },
                 roots: Some(root_identity.artifact),
             },
             root_envelope,

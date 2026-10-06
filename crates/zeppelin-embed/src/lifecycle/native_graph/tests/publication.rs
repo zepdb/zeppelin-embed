@@ -1664,6 +1664,7 @@ fn run_ze39_protection_capture_and_maintenance_recheck_are_atomic() {
         base: crate::property_graph::staging::BaseIdentity {
             store: current.bundle().base().store,
             generation: crate::property_graph::GraphGeneration::new(3),
+            fold: current.bundle().base().fold,
             roots: current.bundle().base().roots,
         },
         root_envelope: current.bundle().root_envelope(),

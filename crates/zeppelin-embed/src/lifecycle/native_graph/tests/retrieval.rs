@@ -53,6 +53,7 @@ fn ze60_full_width_identity_and_staged_node_versions() {
         identity: BaseIdentity {
             store: identity,
             generation: GraphGeneration::new(0),
+            fold: Default::default(),
             roots: None,
         },
         high_waters: StageHighWaters {
