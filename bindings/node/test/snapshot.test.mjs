@@ -74,7 +74,7 @@ async function rejectsWith(promise, code, pattern) {
   });
 }
 
-test('a snapshot taken while the app keeps writing restores exactly its generation', async () => {
+async function snapshotWhileWritingAttempt() {
   const root = temporaryRoot('zeppelin-node-snapshot-');
   const backups = temporaryRoot('zeppelin-node-snapshot-backups-');
   let store;
@@ -82,10 +82,10 @@ test('a snapshot taken while the app keeps writing restores exactly its generati
     store = openNamespace(root, 'notes', SPEC, FAST);
     const oracle = new Oracle(store);
     for (let batch = 0; batch < 3; batch += 1) {
-      for (let id = 1; id <= 200; id += 1) oracle.upsert(BigInt(batch * 200 + id), 1n);
+      for (let id = 1; id <= 400; id += 1) oracle.upsert(BigInt(batch * 400 + id), 1n);
       store.seal();
     }
-    for (let id = 601; id <= 650; id += 1) oracle.upsert(BigInt(id), 1n);
+    for (let id = 1201; id <= 1250; id += 1) oracle.upsert(BigInt(id), 1n);
     oracle.delete(7n);
 
     let settled = false;
@@ -99,7 +99,7 @@ test('a snapshot taken while the app keeps writing restores exactly its generati
     // while the worker thread was copying.
     const copying = () => readdirSync(backups).some((name) => name.startsWith('.backup.snapshot-'));
     const overlapped = [];
-    let next = 1000n;
+    let next = 2000n;
     let writes = 0;
     while (!settled) {
       const before = copying();
@@ -113,7 +113,7 @@ test('a snapshot taken while the app keeps writing restores exactly its generati
     const { generation } = await pending;
     assert.equal(typeof generation, 'bigint');
 
-    assert.ok(overlapped.length > 0, `no write overlapped the copy (${writes} writes)`);
+    if (overlapped.length === 0) return { accepted: false, writes };
     assert.ok(
       overlapped.every((acknowledged) => acknowledged > generation),
       'every write made during the copy is newer than the snapshot',
@@ -136,11 +136,25 @@ test('a snapshot taken while the app keeps writing restores exactly its generati
     const reopened = openNamespace(backups, 'backup', SPEC, { readOnly: true });
     assert.equal(reopened.get([5000n], { text: true }).documents[0].text, 'written after restore');
     reopened.close();
+    return { accepted: true, writes };
   } finally {
     store?.close();
     rmSync(root, { force: true, recursive: true });
     rmSync(backups, { force: true, recursive: true });
   }
+}
+
+test('a snapshot taken while the app keeps writing restores exactly its generation', async () => {
+  const writesPerAttempt = [];
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const { accepted, writes } = await snapshotWhileWritingAttempt();
+    writesPerAttempt.push(writes);
+    if (accepted) return;
+  }
+  assert.fail(
+    `no write overlapped the copy after ${writesPerAttempt.length} attempts ` +
+      `(writes per attempt: ${writesPerAttempt.join(', ')})`,
+  );
 });
 
 test('snapshot rejects unusable targets and handles', async () => {
