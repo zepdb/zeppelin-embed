@@ -5,12 +5,14 @@ import copy
 import hashlib
 import json
 import os
-from check_swift_qualification import validate_swift_tests
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from check_swift_qualification import validate_swift_tests
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT = ROOT / 'bindings/fixtures/graph_profile_parity_v1.json'

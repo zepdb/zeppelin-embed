@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -281,6 +282,19 @@ class ContractTests(unittest.TestCase):
             'xcodebuild() { return 42; }; macos_archive=x; HEADERS_DIR=x; ARTIFACT=x;\n'
             + statement + '\nexit 0'], capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0, 'packaging continued after xcodebuild failed')
+
+    def test_profile_import_from_another_cwd(self):
+        script = ROOT / 'scripts/graph-profile-parity.py'
+        code = (
+            'import importlib.util, sys; '
+            'spec = importlib.util.spec_from_file_location("graph_profile", sys.argv[1]); '
+            'profile = importlib.util.module_from_spec(spec); '
+            'spec.loader.exec_module(profile); '
+            'assert callable(profile.validate_swift_tests)'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            subprocess.run([sys.executable, '-I', '-c', code, str(script)],
+                           cwd=directory, check=True)
 
     def test_corrupt_checksum_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
