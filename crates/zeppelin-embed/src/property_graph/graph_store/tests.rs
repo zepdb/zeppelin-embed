@@ -1197,6 +1197,7 @@ fn ze200_facade_preserves_internal_and_limit_kinds() {
     assert!(error.nothing_committed());
 }
 #[test]
+#[ignore = "slow: ~19 min in debug, ~50 s in release; the Node graph-scale test gates it in CI; run with --release --ignored"]
 fn ze329_node_scale_batches_use_default_budgets() {
     use crate::property_graph::storage::preparation_work_capture as capture;
     use crate::property_graph::{PropertyData, PropertyValue};
