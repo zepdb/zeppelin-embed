@@ -5,7 +5,7 @@ import PackageDescription
 let local = ProcessInfo.processInfo.environment["ZE_USE_LOCAL_GRAPH_XCFRAMEWORK"] == "1"
 // This separate package is the graph shipping contract. CI pins release bytes;
 // the legacy root package never resolves this binary.
-let binaryChecksum = "0000000000000000000000000000000000000000000000000000000000000000"  // ze:xcframework-checksum
+let binaryChecksum = "18ac55807bb42d092edbb9a603e2906a164a7fbd2846ccdfb648ab5fd0fa4328"  // ze:xcframework-checksum
 let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent(
   "../../.."
 ).standardizedFileURL.path
