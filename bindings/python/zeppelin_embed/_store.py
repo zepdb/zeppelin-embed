@@ -1303,6 +1303,7 @@ class Store:
         *,
         vector: np.ndarray[Any, Any] | None = None,
         text: str | None = None,
+        eligible_ids: Sequence[int | tuple[int, int]] | None = None,
         k: int = 10,
         thread_budget: int = 0,
         tier: Tier | None = None,
@@ -1367,10 +1368,32 @@ class Store:
             cancel_token=0 if cancel_token is None else cancel_token.value,
             deadline_ns=deadline_ns,
         )
+        # Keep the caller-owned id array alive across the FFI call (which releases the GIL).
+        ids_owner = (
+            None if eligible_ids is None else
+            (s.ZeDocId * len(eligible_ids))(*[_doc_id(value) for value in eligible_ids])
+        )
+        request_v2 = s.ZeQueryRequestV2(
+            abi_size=ct.sizeof(s.ZeQueryRequestV2),
+            query=request,
+            eligible_ids=(
+                ct.POINTER(s.ZeDocId)() if ids_owner is None else
+                ct.cast(ids_owner, ct.POINTER(s.ZeDocId))
+            ),
+            eligible_count=0 if ids_owner is None else len(ids_owner),
+            has_eligible=int(eligible_ids is not None),
+        )
         result = s.sized(s.ZeQueryResult)
         primary: BaseException | None = None
         try:
-            status = self._call(LIBRARY.ze_query, handle, ct.byref(request), ct.byref(result))
+            status = (
+                self._call(LIBRARY.ze_query, handle, ct.byref(request), ct.byref(result))
+                if eligible_ids is None else
+                self._call(
+                    LIBRARY.ze_query_v2, handle, ct.byref(request_v2), None,
+                    0, ct.byref(result), None,
+                )
+            )
             raise_for_status(status, handle)
             hits = tuple(
                 QueryHit(

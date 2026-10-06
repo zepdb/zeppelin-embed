@@ -567,6 +567,18 @@ class ZeQueryRequest(ct.Structure):
     ]
 
 
+class ZeQueryRequestV2(ct.Structure):
+    _fields_ = [
+        ("abi_size", ct.c_uint32),
+        ("abi_reserved", ct.c_uint32),
+        ("query", ZeQueryRequest),
+        ("eligible_ids", ct.POINTER(ZeDocId)),
+        ("eligible_count", ct.c_size_t),
+        ("has_eligible", ct.c_uint32),
+        ("reserved", ct.c_uint32),
+    ]
+
+
 class ZeQueryHit(ct.Structure):
     _fields_ = [
         ("has_document", ct.c_uint32),

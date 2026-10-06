@@ -7,6 +7,21 @@ import Darwin
 @_spi(Testing) @testable import ZeppelinEmbed
 
 final class ZeppelinStoreTests: XCTestCase {
+    func testQueryEligibleIDs() async throws {
+        let root = try storePath(#function)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try await ZeppelinStore.openNamespace(root: root, name: "eligible", spec: NamespaceSpec(attributes: [], vectorSpace: nil))
+        let id = DocumentID(high: 0, low: 1)
+        _ = try await store.upsert([IngestDocument(id: id, revision: 1, timestamp: 1, vector: [], text: "amber cedar")])
+        let unrestricted = try await store.query(text: "amber", options: QueryOptions(k: 1))
+        XCTAssertEqual(unrestricted.hits.map(\.documentID), [id])
+        let empty = try await store.query(text: "amber", eligibleIds: [], options: QueryOptions(k: 1))
+        XCTAssertTrue(empty.hits.isEmpty)
+        let filtered = try await store.query(text: "amber", eligibleIds: [id, id], options: QueryOptions(k: 1))
+        XCTAssertEqual(filtered.hits.map(\.documentID), [id])
+        try await store.close()
+    }
+
     func testLastAsPrefixOptionDefaultsOffAndMapsToLexicalFlag() {
         let defaults = QueryOptions(k: 10)
         XCTAssertFalse(defaults.lastAsPrefix)

@@ -1705,6 +1705,47 @@ impl SegmentReader {
         Ok(rows)
     }
 
+    /// Resolves eligible identities through the existing byte-ordered row permutation.
+    /// Keeps every version; the query caller intersects the live bitmap.
+    pub(crate) fn query_rows_for_eligible_ids(
+        &self,
+        ids: &[DocId],
+        byte_order: &[[u8; 16]],
+    ) -> Result<crate::meta::DocBitmap, crate::lifecycle::StoreError> {
+        let mut rows = crate::meta::DocBitmap::new();
+        if ids.len() < 1_000 {
+            for id in ids {
+                for row in self.query_rows_with_doc_id(*id)? {
+                    rows.insert(row);
+                }
+            }
+            return Ok(rows);
+        }
+        let Some(bytes) = self
+            .document_versions_region()
+            .map_err(crate::lifecycle::StoreError::Segment)?
+        else {
+            return Ok(rows);
+        };
+        let Some(index) = self.query_document_version_index(bytes)? else {
+            return Ok(rows);
+        };
+        let mut needles = byte_order.iter().peekable();
+        for row in index.iter().copied() {
+            let id = document_id_entry(bytes, row);
+            while needles.peek().is_some_and(|needle| needle.as_slice() < id) {
+                needles.next();
+            }
+            let Some(needle) = needles.peek() else {
+                break;
+            };
+            if needle.as_slice() == id {
+                rows.insert(row);
+            }
+        }
+        Ok(rows)
+    }
+
     fn query_document_version_index(
         &self,
         bytes: &[u8],

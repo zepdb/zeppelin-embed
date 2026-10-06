@@ -1523,6 +1523,27 @@ pub struct ZeQueryRequest {
     pub deadline_ns: u64,
 }
 
+/// Size-versioned query request with an optional document eligibility set.
+/// The embedded v1 query layout is unchanged. Caller owns all input buffers.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeQueryRequestV2 {
+    /// Caller-provided structure size.
+    pub abi_size: u32,
+    /// Must be zero.
+    pub abi_reserved: u32,
+    /// Existing structured query parameters, with their own v1 size header.
+    pub query: ZeQueryRequest,
+    /// Caller-owned ids; order and duplicates do not matter.
+    pub eligible_ids: *const ZeDocId,
+    /// Number of ids in eligible_ids.
+    pub eligible_count: usize,
+    /// Zero means unrestricted; one enables the set, including an empty set.
+    pub has_eligible: u32,
+    /// Must be zero.
+    pub reserved: u32,
+}
+
 /// Eligibility constraints for `ze_query_filtered`; existing query layouts are unchanged.
 #[derive(Clone, Copy)]
 #[repr(C)]

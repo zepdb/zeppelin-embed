@@ -4267,6 +4267,8 @@ napi_value Query(napi_env env, napi_callback_info info) {
 
     struct Data {
       ZeQueryRequest request{};
+      ZeQueryRequestV2 request_v2{};
+      std::vector<ZeDocId> eligible_ids;
       ZeQueryFilter constraints{};
       FilterStorage filter_storage;
       bool has_filter = false;
@@ -4283,6 +4285,39 @@ napi_value Query(napi_env env, napi_callback_info info) {
     auto data = std::make_shared<Data>();
     auto &request = data->request;
     request.abi_size = sizeof(request);
+
+    auto &request_v2 = data->request_v2;
+    request_v2.abi_size = sizeof(request_v2);
+    napi_value eligible_value;
+    bool has_eligible = false;
+    if (!GetNamed(env, args[0], "eligibleIds", &eligible_value, &has_eligible))
+      return nullptr;
+    if (has_eligible) {
+      bool is_array = false;
+      uint32_t count = 0;
+      if (!NapiOk(env, napi_is_array(env, eligible_value, &is_array),
+                  "inspect eligibleIds"))
+        return nullptr;
+      if (!is_array) {
+        napi_throw_type_error(env, "ERR_INVALID_ARG_TYPE",
+                              "eligibleIds must be an array of document ids");
+        return nullptr;
+      }
+      if (!NapiOk(env, napi_get_array_length(env, eligible_value, &count),
+                  "read eligibleIds length"))
+        return nullptr;
+      data->eligible_ids.resize(count);
+      for (uint32_t i = 0; i < count; ++i) {
+        napi_value id;
+        if (!NapiOk(env, napi_get_element(env, eligible_value, i, &id),
+                    "read eligible id") ||
+            !GetDocId(env, id, &data->eligible_ids[i]))
+          return nullptr;
+      }
+      request_v2.has_eligible = 1;
+      request_v2.eligible_ids = data->eligible_ids.data();
+      request_v2.eligible_count = data->eligible_ids.size();
+    }
 
     auto &constraints = data->constraints;
     constraints.abi_size = sizeof(constraints);
@@ -4471,6 +4506,14 @@ napi_value Query(napi_env env, napi_callback_info info) {
           auto &snippet_bytes = data->snippet_bytes;
           auto &native = data->native;
           auto &snippets = data->snippets;
+          if (data->request_v2.has_eligible) {
+            data->request_v2.query = request;
+            return ze_query_v2(
+                handle, &data->request_v2,
+                (has_filter || constraints.has_timestamp_range) ? &constraints
+                                                                : nullptr,
+                snippet_bytes, &native, has_snippets ? &snippets : nullptr);
+          }
           return (has_filter || constraints.has_timestamp_range)
                      ? ze_query_filtered(handle, &request, &constraints,
                                          snippet_bytes, &native,

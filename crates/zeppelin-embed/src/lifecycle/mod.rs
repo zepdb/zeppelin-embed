@@ -4773,6 +4773,14 @@ impl Store {
             Option<&materialize::HybridAddresses>,
         ) -> Result<R, crate::fusion::FusionError>,
     ) -> Result<R, crate::fusion::FusionError> {
+        let eligible_filter = vector_query.eligible.map(|ids| {
+            vector_query.filter.cloned().map_or_else(
+                || QueryFilter::eligible(&self.schema, ids),
+                |filter| filter.with_eligible(ids),
+            )
+        });
+        let vector_query =
+            vector_query.with_filter(eligible_filter.as_ref().or(vector_query.filter));
         self.search_hybrid_prepared_then(
             || Ok::<_, std::convert::Infallible>(vector_query),
             vector_query.filter,
@@ -5365,6 +5373,13 @@ impl Store {
             &QueryControl,
         ) -> Result<R, QueryError>,
     ) -> Result<R, QueryError> {
+        let eligible_filter = request.eligible.map(|ids| {
+            request.filter.cloned().map_or_else(
+                || QueryFilter::eligible(&self.schema, ids),
+                |filter| filter.with_eligible(ids),
+            )
+        });
+        let request = request.with_filter(eligible_filter.as_ref().or(request.filter));
         let control = control.with_clock(Arc::clone(&self.clock));
         let started = self.clock.now();
         let admission_started = timing_start(self.clock.as_ref());
@@ -5569,11 +5584,20 @@ pub(crate) enum StructuredLexicalSource {
     Active,
 }
 
+#[derive(Clone, Debug)]
+struct EligibleIds {
+    numeric: Vec<crate::ingest::DocId>,
+    // The sealed reader permutation orders little-endian identity bytes, not u128s.
+    // Sort once per query, shared by every sealed source and both hybrid legs.
+    byte_order: Vec<[u8; 16]>,
+}
+
 /// Validated scan-compatible query constraints. Ranking statistics remain corpus-wide.
 #[derive(Clone, Debug)]
 pub struct QueryFilter {
-    predicate: crate::meta::Predicate,
+    predicate: Option<crate::meta::Predicate>,
     schema: crate::meta::Schema,
+    eligible_ids: Option<EligibleIds>,
 }
 
 impl QueryFilter {
@@ -5592,8 +5616,9 @@ impl QueryFilter {
             })
         })?;
         Ok(Some(Self {
-            predicate,
+            predicate: Some(predicate),
             schema: schema.clone(),
+            eligible_ids: None,
         }))
     }
 
@@ -5601,7 +5626,73 @@ impl QueryFilter {
         &self,
         active: &crate::ingest::ActiveSegment,
     ) -> Result<crate::meta::DocBitmap, QueryError> {
-        active_scan_rows(active, &self.schema, Some(&self.predicate))
+        let mut rows = active_scan_rows(active, &self.schema, self.predicate.as_ref())?;
+        if let Some(ids) = &self.eligible_ids {
+            // Active rows have no identity index. Scan their bounded, u32-addressed
+            // in-memory ids; no additional index or persisted state is needed.
+            let mut eligible = crate::meta::DocBitmap::new();
+            for (row, id) in active.doc_ids().iter().enumerate() {
+                if ids.numeric.binary_search(id).is_ok() {
+                    eligible.insert(
+                        u32::try_from(row)
+                            .map_err(|_| QueryError::Store(StoreError::ActiveRowOverflow))?,
+                    );
+                }
+            }
+            rows.intersect_with(&eligible);
+        }
+        Ok(rows)
+    }
+
+    /// Restricts all query legs to these document ids, before top-k and fusion.
+    /// An empty set selects no documents. Input order and duplicates do not matter.
+    #[must_use]
+    pub fn eligible(schema: &crate::meta::Schema, ids: &[crate::ingest::DocId]) -> Self {
+        Self {
+            predicate: None,
+            schema: schema.clone(),
+            eligible_ids: None,
+        }
+        .with_eligible(ids)
+    }
+
+    /// Intersects these ids with existing eligibility and attribute/time constraints.
+    #[must_use]
+    pub fn with_eligible(mut self, ids: &[crate::ingest::DocId]) -> Self {
+        let mut ids = ids.to_vec();
+        ids.sort_unstable();
+        ids.dedup();
+        if let Some(existing) = &self.eligible_ids {
+            ids.retain(|id| existing.numeric.binary_search(id).is_ok());
+        }
+        let mut byte_order = if ids.len() >= 1_000 {
+            ids.iter()
+                .map(|id| id.get().to_le_bytes())
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        byte_order.sort_unstable();
+        self.eligible_ids = Some(EligibleIds {
+            numeric: ids,
+            byte_order,
+        });
+        self
+    }
+
+    fn sealed_rows(
+        &self,
+        segment: &crate::segment::reader::SegmentReader,
+    ) -> Result<crate::meta::DocBitmap, QueryError> {
+        let mut rows = sealed_scan_rows(segment, self.predicate.as_ref())?;
+        if let Some(ids) = &self.eligible_ids {
+            rows.intersect_with(
+                &segment
+                    .query_rows_for_eligible_ids(&ids.numeric, &ids.byte_order)
+                    .map_err(QueryError::Store)?,
+            );
+        }
+        Ok(rows)
     }
 }
 
@@ -6000,7 +6091,7 @@ fn assemble_lexical_index(
                 .segments()
                 .get(*ordinal)
                 .ok_or(QueryError::Store(StoreError::ActiveRowOverflow))
-                .and_then(|segment| sealed_scan_rows(segment, Some(&filter.predicate))),
+                .and_then(|segment| filter.sealed_rows(segment)),
         }
         .map_err(map_eligibility_error)?;
         let mut eligible = (**alive).clone();
@@ -6979,7 +7070,7 @@ fn search_pinned(
         let mut filtered_alive;
         let alive = if let Some(filter) = request.filter {
             filtered_alive = (*original_alive).clone();
-            filtered_alive.retain(&sealed_scan_rows(segment, Some(&filter.predicate))?);
+            filtered_alive.retain(&filter.sealed_rows(segment)?);
             &filtered_alive
         } else {
             original_alive.as_ref()

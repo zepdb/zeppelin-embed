@@ -4236,6 +4236,7 @@ pub extern "C" fn ze_query_with_snippets(
         out_result,
         out_snippets,
         true,
+        None,
     )
 }
 
@@ -4259,9 +4260,65 @@ pub extern "C" fn ze_query_filtered(
         out_result,
         out_snippets,
         false,
+        None,
     )
 }
 
+/// Runs a v2 query with optional eligibility, attribute/time filters, and snippets.
+/// Eligibility is applied to both legs before fusion. A zero snippet_bytes
+/// permits a null out_snippets. Release outputs with the existing free functions.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_query_v2(
+    handle: ZeHandle,
+    request: *const ZeQueryRequestV2,
+    constraints: *const ZeQueryFilter,
+    snippet_bytes: usize,
+    out_result: *mut ZeQueryResult,
+    out_snippets: *mut ZeQuerySnippets,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        run_named_panic_probe("ze_query_v2");
+        let parsed = (|| -> Result<_, FfiError> {
+            registry::lookup(handle)?;
+            let request: ZeQueryRequestV2 = marshal::read_struct(request)?;
+            let enabled = parse_flag(request.has_eligible, "has_eligible")?;
+            if request.reserved != 0
+                || (!enabled && (!request.eligible_ids.is_null() || request.eligible_count != 0))
+            {
+                return Err(FfiError::invalid(
+                    "inactive eligible ids and reserved fields must be zero",
+                ));
+            }
+            let ids = if enabled {
+                Some(
+                    marshal::read_slice(request.eligible_ids, request.eligible_count)?
+                        .iter()
+                        .copied()
+                        .map(doc_id)
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                None
+            };
+            Ok((request, ids))
+        })();
+        match parsed {
+            Err(error) => finish(Some(handle), Err(error)),
+            Ok((request, ids)) => query_filtered_entry(
+                handle,
+                &request.query,
+                constraints,
+                snippet_bytes,
+                out_result,
+                out_snippets,
+                false,
+                ids.as_deref(),
+            ),
+        }
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 fn query_filtered_entry(
     handle: ZeHandle,
     request: *const ZeQueryRequest,
@@ -4270,6 +4327,7 @@ fn query_filtered_entry(
     out_result: *mut ZeQueryResult,
     out_snippets: *mut ZeQuerySnippets,
     require_snippets: bool,
+    eligible_ids: Option<&[DocId]>,
 ) -> ZeErrorCode {
     ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
         run_named_panic_probe(if require_snippets {
@@ -4282,7 +4340,7 @@ fn query_filtered_entry(
             (|| {
                 let access = registry::lookup(handle)?;
                 let request = marshal::read_struct(request)?;
-                let filter = if constraints.is_null() {
+                let mut filter = if constraints.is_null() {
                     None
                 } else {
                     let constraints: ZeQueryFilter = marshal::read_struct(constraints)?;
@@ -4301,6 +4359,15 @@ fn query_filtered_entry(
                     )
                     .map_err(FfiError::query)?
                 };
+                if let Some(ids) = eligible_ids {
+                    filter = Some(match filter {
+                        Some(filter) => filter.with_eligible(ids),
+                        None => zeppelin_embed::lifecycle::QueryFilter::eligible(
+                            access.store.schema(),
+                            ids,
+                        ),
+                    });
+                }
                 if access.record_only && request.vector_len != 0 {
                     return Err(FfiError::new(
                         ZeErrorCode::ZeErrNoVectorSpace,

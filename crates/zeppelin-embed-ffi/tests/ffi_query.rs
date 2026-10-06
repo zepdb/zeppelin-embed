@@ -840,3 +840,87 @@ fn a_cancelled_hybrid_query_reports_cancelled() {
     assert!(result.hits.is_null());
     assert_eq!(ze_cancel_token_free(token), ZeErrorCode::ZeOk);
 }
+
+#[test]
+fn query_v2_eligibility_is_optional_and_filters_both_legs() {
+    let store = common::TestStore::new();
+    assert_eq!(
+        ingest_text(store.handle, &["amber cedar", "amber cedar", "amber cedar"]),
+        ZeErrorCode::ZeOk
+    );
+    let ids = [ZeDocId { high: 0, low: 3 }];
+    let probe = vector(0);
+    for mode in 0..3 {
+        let mut query = lexical_request(b"amber", false);
+        if mode != 0 {
+            query.vector = probe.as_ptr();
+            query.vector_len = probe.len();
+            query.dimension = probe.len();
+        }
+        if mode == 1 {
+            query.text = std::ptr::null();
+            query.text_len = 0;
+        }
+        let mut request: ZeQueryRequestV2 = common::sized_zeroed();
+        request.query = query;
+        request.has_eligible = 1;
+        request.eligible_ids = ids.as_ptr();
+        request.eligible_count = ids.len();
+        let mut result: ZeQueryResult = common::sized_zeroed();
+        assert_eq!(
+            ze_query_v2(
+                store.handle,
+                &request,
+                std::ptr::null(),
+                0,
+                &mut result,
+                std::ptr::null_mut()
+            ),
+            ZeErrorCode::ZeOk
+        );
+        assert_eq!(hit_ids(&result), vec![3]);
+        assert_eq!(ze_query_result_free(&mut result), ZeErrorCode::ZeOk);
+        request.eligible_ids = std::ptr::null();
+        request.eligible_count = 0;
+        assert_eq!(
+            ze_query_v2(
+                store.handle,
+                &request,
+                std::ptr::null(),
+                0,
+                &mut result,
+                std::ptr::null_mut()
+            ),
+            ZeErrorCode::ZeOk
+        );
+        assert_eq!(result.hit_count, 0);
+        assert_eq!(ze_query_result_free(&mut result), ZeErrorCode::ZeOk);
+        request.has_eligible = 0;
+        assert_eq!(
+            ze_query_v2(
+                store.handle,
+                &request,
+                std::ptr::null(),
+                0,
+                &mut result,
+                std::ptr::null_mut()
+            ),
+            ZeErrorCode::ZeOk
+        );
+        assert_eq!(result.hit_count, 3);
+        assert_eq!(ze_query_result_free(&mut result), ZeErrorCode::ZeOk);
+        request.has_eligible = 1;
+        request.eligible_count = 1;
+        assert_eq!(
+            ze_query_v2(
+                store.handle,
+                &request,
+                std::ptr::null(),
+                0,
+                &mut result,
+                std::ptr::null_mut()
+            ),
+            ZeErrorCode::ZeErrInvalidArgument
+        );
+    }
+}

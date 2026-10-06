@@ -2775,6 +2775,41 @@ typedef struct ZeQueryFilter {
 } ZeQueryFilter;
 
 /*
+ Size-versioned query request with an optional document eligibility set.
+ The embedded v1 query layout is unchanged. Caller owns all input buffers.
+ */
+typedef struct ZeQueryRequestV2 {
+    /*
+     Caller-provided structure size.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Existing structured query parameters, with their own v1 size header.
+     */
+    struct ZeQueryRequest query;
+    /*
+     Caller-owned ids; order and duplicates do not matter.
+     */
+    const struct ZeDocId *eligible_ids;
+    /*
+     Number of ids in eligible_ids.
+     */
+    size_t eligible_count;
+    /*
+     Zero means unrestricted; one enables the set, including an empty set.
+     */
+    uint32_t has_eligible;
+    /*
+     Must be zero.
+     */
+    uint32_t reserved;
+} ZeQueryRequestV2;
+
+/*
  Absolute half-open UTF-8 byte ranges in the document's stored source text.
  Returned by `ze_query_snippet_source_ranges`; borrowed highlights remain
  valid until `ze_query_snippets_free`. No separate free is needed.
@@ -3622,6 +3657,18 @@ ze_error_code ze_query_filtered(ze_handle handle,
                                 size_t snippet_bytes,
                                 struct ZeQueryResult *out_result,
                                 struct ZeQuerySnippets *out_snippets);
+
+/*
+ Runs a v2 query with optional eligibility, attribute/time filters, and snippets.
+ Eligibility is applied to both legs before fusion. A zero snippet_bytes
+ permits a null out_snippets. Release outputs with the existing free functions.
+ */
+ze_error_code ze_query_v2(ze_handle handle,
+                          const struct ZeQueryRequestV2 *request,
+                          const struct ZeQueryFilter *constraints,
+                          size_t snippet_bytes,
+                          struct ZeQueryResult *out_result,
+                          struct ZeQuerySnippets *out_snippets);
 
 /*
  Returns absolute source byte ranges for one hit from either

@@ -271,9 +271,10 @@ public actor ZeppelinStore {
     public func query(
         vector: [Float]? = nil,
         text: String? = nil,
+        eligibleIds: [DocumentID]? = nil,
         options: QueryOptions
     ) async throws -> QueryResult {
-        try await executeQuery(vector: vector, text: text, options: options, onFFIEntry: nil)
+        try await executeQuery(vector: vector, text: text, eligibleIds: eligibleIds, options: options, onFFIEntry: nil)
     }
 
     @_spi(Testing)
@@ -303,6 +304,7 @@ public actor ZeppelinStore {
     private func executeQuery(
         vector: [Float]?,
         text: String?,
+        eligibleIds: [DocumentID]? = nil,
         options: QueryOptions,
         onFFIEntry: (@Sendable () -> Void)?
     ) async throws -> QueryResult {
@@ -346,7 +348,20 @@ public actor ZeppelinStore {
                     result.abi_size = abiSize(ZeQueryResult.self)
                     defer { _ = ze_query_result_free(&result) }
                     onFFIEntry?()
-                    try checkZeppelin(ze_query(current, &request, &result))
+                    if let eligibleIds {
+                        let ids = eligibleIds.map(Self.cDocumentID)
+                        try ids.withUnsafeBufferPointer { buffer in
+                            var v2 = ZeQueryRequestV2()
+                            v2.abi_size = abiSize(ZeQueryRequestV2.self)
+                            v2.query = request
+                            v2.has_eligible = 1
+                            v2.eligible_ids = buffer.baseAddress
+                            v2.eligible_count = buffer.count
+                            try checkZeppelin(ze_query_v2(current, &v2, nil, 0, &result, nil))
+                        }
+                    } else {
+                        try checkZeppelin(ze_query(current, &request, &result))
+                    }
                     guard let mode = QueryMode(rawValue: result.mode) else {
                         throw ZeppelinError.internalError
                     }

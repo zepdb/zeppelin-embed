@@ -492,6 +492,7 @@ impl From<StoreError> for IngestError {
 pub struct SearchRequest<'a> {
     vector: &'a [f32],
     pub(crate) filter: Option<&'a crate::lifecycle::QueryFilter>,
+    pub(crate) eligible: Option<&'a [DocId]>,
 }
 
 impl<'a> SearchRequest<'a> {
@@ -501,6 +502,7 @@ impl<'a> SearchRequest<'a> {
         Self {
             vector,
             filter: None,
+            eligible: None,
         }
     }
 
@@ -508,6 +510,14 @@ impl<'a> SearchRequest<'a> {
     #[must_use]
     pub const fn with_filter(mut self, filter: Option<&'a crate::lifecycle::QueryFilter>) -> Self {
         self.filter = filter;
+        self
+    }
+
+    /// Restricts candidates on both hybrid legs before ranking and fusion.
+    /// An empty slice selects no documents; order and duplicates do not matter.
+    #[must_use]
+    pub const fn with_eligible(mut self, ids: &'a [DocId]) -> Self {
+        self.eligible = Some(ids);
         self
     }
 

@@ -412,6 +412,8 @@ export type SearchResult = SearchHit[];
 export type QueryMode = 'vector' | 'lexical' | 'hybrid';
 
 export interface QueryRequest {
+  /** Document ids allowed on both legs before ranking/fusion; [] selects no hits. */
+  readonly eligibleIds?: readonly bigint[];
   /** Scan-compatible attribute AST, applied before top-k to every query leg.
    * Unsupported operators, attributes and value types throw instead of being ignored.
    */

@@ -51,6 +51,11 @@ _bind(
 )
 _bind("ze_search_result_free", [ct.POINTER(s.ZeSearchResult)])
 _bind("ze_query", [Handle, ct.POINTER(s.ZeQueryRequest), ct.POINTER(s.ZeQueryResult)])
+_bind(
+    "ze_query_v2",
+    [Handle, ct.POINTER(s.ZeQueryRequestV2), ct.c_void_p, ct.c_size_t,
+     ct.POINTER(s.ZeQueryResult), ct.c_void_p],
+)
 _bind("ze_query_result_free", [ct.POINTER(s.ZeQueryResult)])
 _bind("ze_seal", [Handle, ct.POINTER(s.ZeSealRequest), ct.POINTER(s.ZeGenerationReport)])
 _bind(
