@@ -147,6 +147,16 @@ fn ten_thousand_small_commits_checkpoint_and_reopen() {
 }
 
 #[cfg(test)]
+fn is_small_capacity_report(
+    report: &crate::property_graph::storage::mapping_slot_capture::Report,
+) -> bool {
+    // Four slots reserve the worst-case in-flight overflow-key comparison.
+    // Tiny auxiliary sources, including one-slot spill readers, start exhausted;
+    // ordinary fill headroom and post-transition resolve bounds do not apply.
+    report.capacity <= crate::property_graph::storage::tree::directory::RESERVED_PINNED_SLOTS
+}
+
+#[cfg(test)]
 fn check_slot_reports(
     reports: &[crate::property_graph::storage::mapping_slot_capture::Report],
     context: &str,
@@ -155,14 +165,80 @@ fn check_slot_reports(
     if reports.is_empty() {
         return Err(format!("{context}: missing source observations"));
     }
-    for report in reports.iter().filter(|report| report.capacity > 4) {
+    let mut checked_eligible = false;
+    for report in reports
+        .iter()
+        .filter(|report| !is_small_capacity_report(report))
+    {
+        checked_eligible = true;
         if report.filled > report.capacity - RESERVED_PINNED_SLOTS
             || report.post_exhaustion_resolves > RESERVED_PINNED_SLOTS
         {
             return Err(format!("{context}: {report:?}"));
         }
     }
+    if !checked_eligible {
+        return Err(format!(
+            "{context}: all source observations have small capacity"
+        ));
+    }
     Ok(())
+}
+
+#[test]
+fn ze299_small_capacity_rule_is_explicit_and_nonvacuous() {
+    use crate::property_graph::storage::mapping_slot_capture::{Kind, Report};
+    let eligible = Report {
+        kind: Kind::Preparation,
+        generation: 1,
+        capacity: 5,
+        filled: 1,
+        post_exhaustion_resolves: 4,
+        opens: 0,
+        scoped_opens: 0,
+    };
+    // Zero is synthetic: native source constructors reject zero capacity.
+    let small: Vec<_> = (0..=4)
+        .map(|capacity| Report {
+            capacity,
+            filled: 6,
+            post_exhaustion_resolves: 5,
+            ..eligible
+        })
+        .collect();
+    let error = check_slot_reports(&small, "all-small").expect_err("all-small must fail");
+    assert_eq!(
+        error,
+        "all-small: all source observations have small capacity"
+    );
+    for report in &small {
+        assert!(check_slot_reports(&[*report], "one-small").is_err());
+        assert!(check_slot_reports(&[*report, eligible], "mixed boundary").is_ok());
+    }
+    assert!(check_slot_reports(&[eligible], "boundary").is_ok());
+    for exceeded in [
+        Report {
+            filled: 2,
+            ..eligible
+        },
+        Report {
+            post_exhaustion_resolves: 5,
+            ..eligible
+        },
+    ] {
+        let expected = format!("exceeded: {exceeded:?}");
+        assert_eq!(
+            check_slot_reports(&[exceeded], "exceeded"),
+            Err(expected.clone())
+        );
+        let mut mixed = small.clone();
+        mixed.extend([eligible, exceeded]);
+        assert_eq!(check_slot_reports(&mixed, "exceeded"), Err(expected));
+    }
+    assert_eq!(
+        check_slot_reports(&[], "empty"),
+        Err("empty: missing source observations".to_owned())
+    );
 }
 
 #[test]
