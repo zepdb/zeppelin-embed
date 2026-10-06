@@ -245,6 +245,10 @@ impl Store {
             .generation
             .checked_add(1)
             .ok_or(StoreError::GenerationOverflow)?;
+        #[cfg(feature = "graph-cypher")]
+        let graph =
+            crate::ingest::load_current_manifest(vfs, &self.directory, u64::MAX, 0, &self.schema)?
+                .graph;
         let mut meta = write_segment(
             vfs,
             &self.directory,
@@ -259,7 +263,7 @@ impl Store {
             &self.directory,
             &Manifest {
                 #[cfg(feature = "graph-cypher")]
-                graph: None,
+                graph,
                 generation,
                 log_seq: 0,
                 segments: vec![meta],
@@ -406,6 +410,10 @@ impl PublishedSnapshot {
         manifest: &Manifest,
         accounting: &Arc<Accounting>,
     ) -> Result<Self, StoreError> {
+        #[cfg(feature = "graph-cypher")]
+        if let Some(graph) = &manifest.graph {
+            super::enable_graph::validate_objects(vfs, directory, graph)?;
+        }
         let mut segments = Accounted::try_with_capacity(
             accounting,
             manifest.segments.len(),

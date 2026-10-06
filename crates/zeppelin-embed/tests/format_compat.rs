@@ -232,28 +232,35 @@ fn run_old_reader(path: &Path, mode: &str) -> String {
     String::from_utf8(output.stdout).expect("reader JSON")
 }
 
-// U6 will replace this header-only fixture with a real graph-enabled store.
-// Reuse the validated v2 body and frame codec; recompute the whole-file trailer.
+// Exercise the actual version barrier, including its empty catalog object.
+#[cfg(feature = "graph-cypher")]
 fn mint_v3_manifest(path: &Path) {
-    use zeppelin_embed::format::FormatFamily;
-    use zeppelin_embed::format::frame::{
-        FILE_HEADER_LEN, FILE_TRAILER_LEN, decode_artifact, encode_header,
-    };
-    let path = path.join("manifest.ze");
-    let bytes = std::fs::read(&path).expect("manifest");
-    let decoded =
-        decode_artifact("manifest.ze", FormatFamily::Manifest, &bytes).expect("valid v2 frame");
-    assert_eq!(decoded.header.version, 2);
-    let mut header = decoded.header;
-    header.version = 3;
-    let mut minted = encode_header(header);
-    minted.extend_from_slice(
-        bytes
-            .get(FILE_HEADER_LEN..bytes.len() - FILE_TRAILER_LEN)
-            .expect("framed body"),
+    let store = Store::open(path, common::options(false)).expect("open v2 store");
+    store.enable_graph().expect("commit real v3 manifest");
+    store.close().expect("close v3 store");
+}
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn the_v3_old_reader_fixture_is_a_real_writer_manifest() {
+    let scratch = tempfile::tempdir().expect("scratch");
+    copy_tree(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/releases/v0.6.0"),
+        scratch.path(),
     );
-    minted.extend_from_slice(&xxhash_rust::xxh3::xxh3_64(&minted).to_le_bytes());
-    std::fs::write(path, minted).expect("mint v3 manifest");
+    mint_v3_manifest(scratch.path());
+    let bytes = std::fs::read(scratch.path().join("manifest.ze")).expect("v3 manifest");
+    let manifest =
+        zeppelin_embed::manifest::decode_manifest("writer fixture", &bytes).expect("real v3");
+    assert!(manifest.graph.is_some());
+    let reopened =
+        Store::open(scratch.path(), common::options(true)).expect("new reader accepts v3");
+    let oracle = std::fs::read_to_string(scratch.path().join("expected.json")).expect("oracle");
+    assert_eq!(
+        common::text_hits(&reopened, "orchard"),
+        ids(&oracle, "query_orchard")
+    );
+    reopened.close().expect("close");
 }
 
 fn data_bytes(root: &Path) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
@@ -270,6 +277,7 @@ fn data_bytes(root: &Path) -> std::collections::BTreeMap<std::path::PathBuf, Vec
         .collect()
 }
 
+#[cfg(feature = "graph-cypher")]
 #[test]
 #[ignore = "builds v0.6.0; run with ZE_FORMAT_COMPAT=1 in the format-compat job"]
 fn a_v3_store_is_refused_by_the_v0_6_0_reader_and_its_data_files_are_byte_identical() {
@@ -281,10 +289,21 @@ fn a_v3_store_is_refused_by_the_v0_6_0_reader_and_its_data_files_are_byte_identi
     mint_v3_manifest(scratch.path());
     let before = data_bytes(scratch.path());
     for mode in ["ro", "rw"] {
-        assert_eq!(
-            run_old_reader(scratch.path(), mode).trim(),
-            "{\"version_refused\": true, \"abi_code\": 56}"
+        // A real v3 store has a catalog .zgraph object, so frozen v0.6.0
+        // refuses at NativeGraphDirectory before decoding the manifest. Its
+        // ABI code is 1 (as documented by ZE-340; the new binary uses 58).
+        // Version refusal/56 is unreachable here today; manifest_v3.rs and
+        // ZE-343's unmodified v2_reader fixture cover that version check.
+        let response = run_old_reader(scratch.path(), mode);
+        let response = response.trim();
+        assert!(
+            matches!(
+                response,
+                "{\"refused\": true, \"abi_code\": 56}" | "{\"refused\": true, \"abi_code\": 1}"
+            ),
+            "unexpected refusal: {response}"
         );
+        eprintln!("v0.6.0 {mode}: {response}");
         assert_eq!(
             data_bytes(scratch.path()),
             before,

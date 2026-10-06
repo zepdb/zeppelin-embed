@@ -283,7 +283,7 @@ impl Store {
             &self.directory,
             &Manifest {
                 #[cfg(feature = "graph-cypher")]
-                graph: None,
+                graph: manifest.graph,
                 generation,
                 log_seq: absorbed_through,
                 segments,
@@ -359,7 +359,7 @@ fn build_seal_payloads(
     })
 }
 
-pub(super) fn load_current_manifest(
+pub(crate) fn load_current_manifest(
     vfs: &dyn Vfs,
     directory: &Path,
     durable_end: u64,

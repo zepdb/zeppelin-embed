@@ -28,6 +28,8 @@ mod retention;
 mod retention_fault;
 mod revise;
 mod seal;
+#[cfg(feature = "graph-cypher")]
+pub(crate) use seal::load_current_manifest;
 pub mod wal_payload;
 
 use std::path::PathBuf;

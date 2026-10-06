@@ -97,8 +97,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Populate the offline release-reader build cache
         run: cargo fetch --locked
-      - run: cargo test -p zeppelin-embed --test format_compat
-      - run: cargo test -p zeppelin-embed --test format_compat -- --ignored --skip a_relocated_0_6_0_namespace_store_is_refused_today
+      - run: cargo test -p zeppelin-embed --features graph-cypher --test format_compat
+      - run: cargo test -p zeppelin-embed --features graph-cypher --test format_compat -- --ignored --skip a_relocated_0_6_0_namespace_store_is_refused_today
 
   swift-test:
     name: swift-test (macos-14)

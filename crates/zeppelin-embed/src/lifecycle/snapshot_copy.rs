@@ -82,6 +82,11 @@ struct Pinned {
     manifest: Option<Vec<u8>>,
     wal_first_seq: LogSeq,
     wal_records: Vec<VisibleRecord>,
+    #[cfg(feature = "graph-cypher")]
+    graph_objects: Vec<(
+        crate::property_graph::storage::artifact::ArtifactId,
+        Vec<u8>,
+    )>,
 }
 
 impl Store {
@@ -170,6 +175,8 @@ impl Store {
             .cloned()
             .ok_or(StoreError::Closed)?;
         let manifest = self.pinned_manifest(&published)?;
+        #[cfg(feature = "graph-cypher")]
+        let graph_objects = self.pinned_graph_objects(manifest.as_deref())?;
         let absorbed_through = published.absorbed_through();
         let wal_records = writer.unabsorbed_records(absorbed_through)?;
         drop(active);
@@ -180,7 +187,41 @@ impl Store {
             manifest,
             wal_first_seq: LogSeq::new(absorbed_through.saturating_add(1)),
             wal_records,
+            #[cfg(feature = "graph-cypher")]
+            graph_objects,
         })
+    }
+
+    // The enable catalog is small and immutable. Capture its bytes while
+    // the same manifest/WAL lock is held, so the snapshot owns everything
+    // its manifest references before releasing the writer.
+    #[cfg(feature = "graph-cypher")]
+    fn pinned_graph_objects(
+        &self,
+        manifest: Option<&[u8]>,
+    ) -> Result<
+        Vec<(
+            crate::property_graph::storage::artifact::ArtifactId,
+            Vec<u8>,
+        )>,
+        StoreError,
+    > {
+        let mut objects = Vec::new();
+        if let Some(bytes) = manifest {
+            let manifest =
+                decode_manifest("snapshot manifest", bytes).map_err(StoreError::Manifest)?;
+            if let Some(graph) = manifest.graph {
+                for object in graph.objects {
+                    let path = crate::property_graph::storage::allocation::artifact_path(
+                        &self.directory,
+                        object.artifact,
+                    );
+                    let bytes = self.vfs.read(&path).map_err(|source| io(&path, source))?;
+                    objects.push((object.artifact, bytes));
+                }
+            }
+        }
+        Ok(objects)
     }
 
     /// Reads the committed manifest and proves it describes `published`.
@@ -324,6 +365,11 @@ fn stage(vfs: &dyn Vfs, staging: &Path, pinned: &Pinned) -> Result<(), StoreErro
             lease,
             bytes.chunks(COPY_CHUNK_BYTES).map(Ok),
         )?;
+    }
+    #[cfg(feature = "graph-cypher")]
+    for (artifact, bytes) in &pinned.graph_objects {
+        let path = crate::property_graph::storage::allocation::artifact_path(staging, *artifact);
+        write_file(vfs, &path, lease, bytes.chunks(COPY_CHUNK_BYTES).map(Ok))?;
     }
     write_wal(vfs, &staging.join(WAL_FILE), pinned)?;
     if let Some(manifest) = &pinned.manifest {

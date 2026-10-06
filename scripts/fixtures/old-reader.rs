@@ -8,23 +8,26 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let path = args.get(1).expect("store path");
     let read_only = args.get(2).expect("access mode") == "ro";
-    let version_refused = match Store::open(path, common::options(read_only)) {
+    let expected_code = match Store::open(path, common::options(read_only)) {
         Ok(store) => {
             assert_eq!(common::text_hits(&store, "orchard").first(), Some(&1));
             store.close().expect("close");
-            false
+            None
         }
         Err(StoreError::Manifest(ManifestError::Format(error))) => {
             assert_eq!(error.check(), FormatCheck::Version);
             assert_eq!(error.version_range(), Some((3, 2, 2)));
-            true
+            Some(ZeErrorCode::ZeErrFormatTooNew)
         }
+        // Frozen v0.6.0 maps this specific Rust error to generic code 1.
+        // ZE-340 introduces dedicated code 58 only in the newer binary.
+        Err(StoreError::NativeGraphDirectory { .. }) => Some(ZeErrorCode::ZeErrInvalidArgument),
         Err(error) => panic!("unexpected open error: {error:?}"),
     };
-    if !version_refused {
+    let Some(expected_code) = expected_code else {
         println!("{{\"version_refused\": false, \"abi_code\": null}}");
         return;
-    }
+    };
     let request = ZeOpenRequest {
         abi_size: std::mem::size_of::<ZeOpenRequest>() as u32,
         abi_reserved: 0,
@@ -39,11 +42,8 @@ fn main() {
     };
     let mut handle = 0;
     let code = ze_open(&request, &mut handle);
-    assert_eq!(code, ZeErrorCode::ZeErrFormatTooNew);
-    assert_eq!(code as i32, 56);
+    assert_eq!(code, expected_code);
+    assert!(matches!(code as i32, 1 | 56));
     assert_eq!(handle, 0);
-    println!(
-        "{{\"version_refused\": {version_refused}, \"abi_code\": {}}}",
-        code as i32
-    );
+    println!("{{\"refused\": true, \"abi_code\": {}}}", code as i32);
 }

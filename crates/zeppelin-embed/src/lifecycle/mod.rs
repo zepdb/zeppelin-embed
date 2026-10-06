@@ -18,6 +18,8 @@ pub use cascade::CascadeRule;
 pub use namespace_batch::namespace_delete_cascade_with_steps;
 pub use namespace_batch::{namespace_declare_cascade, namespace_delete_cascade};
 #[cfg(feature = "graph-cypher")]
+mod enable_graph;
+#[cfg(feature = "graph-cypher")]
 pub(crate) mod native_graph;
 mod pool;
 pub(crate) mod prepared;
@@ -2686,6 +2688,10 @@ fn refuse_native_graph_directory(vfs: &dyn crate::vfs::Vfs, path: &Path) -> Resu
             });
         }
     }
+    // A catalog protected before a v3 commit can be an orphan beside a v2
+    // document store after a crash. Only selector/WAL files mark the legacy
+    // graph format there; graph-only directories remain refused.
+    let document_store = is_legacy_store_directory(vfs, path)?;
     let mut native = false;
     vfs.for_each_direct_child(path, &mut |child| {
         let Some(name) = child.file_name().and_then(|name| name.to_str()) else {
@@ -2693,7 +2699,7 @@ fn refuse_native_graph_directory(vfs: &dyn crate::vfs::Vfs, path: &Path) -> Resu
         };
         if name == "graph-root.ze"
             || (name.starts_with("graph-wal-") && name.ends_with(".ze"))
-            || (name.starts_with("graph-") && name.ends_with(".zgraph"))
+            || (!document_store && name.starts_with("graph-") && name.ends_with(".zgraph"))
             || (name.starts_with("graph-root-") && name.ends_with(".tmp"))
         {
             native = true;
@@ -2715,7 +2721,6 @@ fn refuse_native_graph_directory(vfs: &dyn crate::vfs::Vfs, path: &Path) -> Resu
 /// True when `path` is a directory holding a legacy store's manifest or WAL.
 /// A missing path or a non-directory is not a legacy store; the graph open
 /// path reports those itself. It only opens candidate files for reading.
-#[cfg(feature = "graph-cypher")]
 pub(crate) fn is_legacy_store_directory(
     vfs: &dyn crate::vfs::Vfs,
     path: &Path,
