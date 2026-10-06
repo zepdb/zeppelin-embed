@@ -441,7 +441,7 @@ impl<'lease, 'm> NativePreparationSource<'lease, 'm> {
             cell.set(mapped)
                 .map_err(|_| TreeError::Invalid("spill slot initialized twice"))?;
             self.filled.set(self.filled.get().saturating_add(1));
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             self.slot_observation.filled(self.filled.get());
         }
         drop(path);
