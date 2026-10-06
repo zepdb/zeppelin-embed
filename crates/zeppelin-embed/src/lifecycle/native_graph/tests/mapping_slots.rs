@@ -67,15 +67,15 @@ pub(super) fn logical_state(store: &Store, nodes: &[NodeId]) -> Vec<NodeState> {
     let control = QueryControl::Cancel(CancelToken::new());
     let mut runtime = RuntimeContext::new(&lease, &control, &memory, RuntimeLimits::default())
         .expect("retained runtime");
-    let capability = NativeReadCapability::admit(&lease, &runtime).expect("retained capability");
-    let mut resources = TreeResources::for_query(&mut runtime).expect("initial resources");
-    let source = NativeQuerySource::new(capability, &resources, 16).expect("retained source");
-    let catalog = NativeCatalog::open(&source, &mut resources).expect("retained catalog");
-    drop(resources);
-    let view = GraphReadView::new(&source, &catalog).expect("retained view");
-
     let mut output = Vec::new();
     for node in nodes {
+        let capability =
+            NativeReadCapability::admit(&lease, &runtime).expect("retained capability");
+        let mut resources = TreeResources::for_query(&mut runtime).expect("initial resources");
+        let source = NativeQuerySource::new(capability, &resources, 16).expect("retained source");
+        let catalog = NativeCatalog::open(&source, &mut resources).expect("retained catalog");
+        drop(resources);
+        let view = GraphReadView::new(&source, &catalog).expect("retained view");
         let mut resources = TreeResources::for_query(&mut runtime).expect("record resources");
         let record = view
             .lookup_node(*node, &mut resources)
@@ -99,6 +99,86 @@ pub(super) fn logical_state(store: &Store, nodes: &[NodeId]) -> Vec<NodeState> {
         });
     }
     output
+}
+
+#[test]
+fn ze321_logical_state_outlives_source_slots() {
+    use crate::property_graph::storage::tree::directory::TreeError;
+
+    let parent = super::tempfile::tempdir().expect("temporary parent");
+    let path = parent.path().join("oracle-slots");
+    let store = Store::create_native_graph(&path, durable_options(), None).expect("create store");
+    let mut nodes = Vec::new();
+    let mut expected = Vec::new();
+    for index in 0..24 {
+        let node = commit_probe_node(&store, index);
+        nodes.push(node);
+        let mut canonical = Vec::new();
+        CanonicalContents::node(&mut [], &mut [], None, None)
+            .expect("probe image")
+            .write_to(&mut canonical, &mut || Ok(()))
+            .expect("canonical image");
+        expected.push(NodeState {
+            node,
+            revision: 1,
+            original_generation: store
+                .admit_native_read()
+                .expect("generation lease")
+                .bundle()
+                .base()
+                .generation
+                .get(),
+            canonical,
+        });
+    }
+    {
+        let lease = store.admit_native_read().expect("oracle reader");
+        let shared = crate::property_graph::resources::GraphResources::from_store(&store)
+            .expect("shared resources");
+        let memory = QueryMemory::new(&shared, 8 * 1024 * 1024).expect("query memory");
+        let control = QueryControl::Cancel(CancelToken::new());
+        let mut runtime = RuntimeContext::new(&lease, &control, &memory, RuntimeLimits::default())
+            .expect("runtime");
+        let baseline = store
+            .native_graph
+            .mapping_stats()
+            .expect("mapping baseline");
+        {
+            let capability = NativeReadCapability::admit(&lease, &runtime).expect("capability");
+            let mut resources = TreeResources::for_query(&mut runtime).expect("resources");
+            let source = NativeQuerySource::new(capability, &resources, 16).expect("source");
+            let catalog = NativeCatalog::open(&source, &mut resources).expect("catalog");
+            drop(resources);
+            let view = GraphReadView::new(&source, &catalog).expect("view");
+            let mut refused = false;
+            for (index, node) in nodes.iter().enumerate() {
+                let mut resources = TreeResources::for_query(&mut runtime).expect("resources");
+                match view.lookup_node(*node, &mut resources) {
+                    Ok(Some(_)) => {}
+                    Err(TreeError::Memory) => {
+                        assert_eq!(
+                            store.native_graph.mapping_stats().unwrap().0,
+                            baseline.0 + 16
+                        );
+                        println!(
+                            "ZE321 retained source refused sample={index} node={node:?}: TreeError::Memory; filled=16"
+                        );
+                        refused = true;
+                        break;
+                    }
+                    Ok(None) => panic!("missing committed node"),
+                    Err(error) => panic!("unexpected retained-source lookup: {error:?}"),
+                }
+            }
+            assert!(refused, "retained source must exhaust its 16 slots");
+        }
+        assert_eq!(store.native_graph.mapping_stats().unwrap(), baseline);
+    }
+    assert_eq!(logical_state(&store, &nodes), expected);
+    store.close().expect("close store");
+    let reopened = Store::open_native_graph(&path, durable_options(), None).expect("reopen store");
+    assert_eq!(logical_state(&reopened, &nodes), expected);
+    reopened.close().expect("close reopened store");
 }
 
 /// Each commit writes its own pack, so validator-mode leaf verification touches
