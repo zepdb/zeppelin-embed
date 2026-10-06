@@ -21,13 +21,73 @@ EXTRA = ('exact', 'stress-10x', 'retention-1x', 'retention-5x', 'retention-10x',
          'paths-1', 'paths-2', 'paths-4', 'paths-8', 'paths-16', 'model-resident',
          'os-cold', 'recovery-64', 'recovery-16mib', 'mixed-4r1w',
          'structured-meeting-import', 'cypher-meeting-metadata')
+PUBLIC_LEDGER_BLOCKER = 'exact work counters for C and Swift workers require a public ledger decision (ZE-76 chose internal)'
 MISSING = {
-    'ZE-76': 'preparation-inclusive deterministic work, shared interval actual capacity peaks, canonical/fence retention and sync/checkpoint observations',
-    'ZE-278': 'typed Swift structured query construction/encoding and ZeppelinGraphStore.query',
-    'ZE-71': 'matching graph archive/header/Swift identities and installed consumer handoff',
-    'ZE-290': 'uninterrupted baseline ingestion, checkpoint/reopen and payload/identity proof',
-    'ZE-287': 'legacy Intel section/archive measurement and owner size decision brief',
+    'ZE-313': 'Swift Cypher SIGBUS: crashing cells are failed cells, never passes',
+    'ZE-310': 'application and canonical/fence retention observations remain reserved',
+    'public-ledger-owner-decision': PUBLIC_LEDGER_BLOCKER,
+    'model-owner-decision': 'owner must select model/runtime/precision and resident-memory observer',
+    'os-cold-owner-decision': 'owner must approve and validate an OS cache-control method',
+    'recovery-inputs': 'twenty digest-pinned observed tail stores per threshold with independent first-admission truth',
+    'host-observer': 'quiet owner M3 Max and complete thermal/power/AC/worker-QoS/background CPU observer',
 }
+WORK_NAMES = ('operator_rows', 'adjacency_entries', 'expressions', 'hash_probes',
+              'completed_rows', 'result_bytes', 'prepared_payload_bytes', 'completed_abi_bytes',
+              'vector_coordinates', 'vector_payload_bytes', 'postings', 'lexical_blocks',
+              'search_calls', 'directory_lookups', 'scans', 'paths', 'rows_in', 'rows_out',
+              'join_probes', 'group_keys', 'eligibility_entries', 'copied_bytes',
+              'directory_pages_decoded', 'directory_pages_copied', 'property_values',
+              'property_bytes', 'adjacency_physical_entries', 'adjacency_merged_visits',
+              'adjacency_merge_runs', 'eligibility_unique_entries', 'candidate_window_peak')
+LEDGER_NAMES = ('storage_lookups', 'storage_scans', 'storage_adjacency_entries', 'storage_copied_bytes',
+                'storage_pages_decoded', 'storage_pages_copied', 'storage_property_values', 'storage_property_bytes',
+                'storage_adjacency_physical_entries', 'storage_adjacency_merged_visits', 'storage_adjacency_merge_runs',
+                'canonical_comparison_bytes', 'canonical_encoding_bytes', 'wal_codec_units', 'encoded_wal_bytes',
+                'artifact_bytes_written', 'artifact_writes', 'wal_bytes_appended', 'wal_appends',
+                'full_sync_attempts', 'full_sync_successes', 'directory_sync_attempts', 'directory_sync_successes')
+
+ABI_WORK_NAMES = dict(enumerate(WORK_NAMES[:22]))
+ABI_WORK_NAMES[22] = 'query_reservation_peak_bytes'
+RESOURCE_NAMES = ('engine_peak_bytes', 'engine_bytes', 'application_bytes', 'application_peak_bytes')
+
+
+def require_counters(row, query=True, public_worker=False):
+    counters = row.get('counters', {})
+    for key in RESOURCE_NAMES + (WORK_NAMES if query or public_worker else ()):
+        value = counters.get(key)
+        if type(value) is not int or value < 0:
+            if public_worker and key not in RESOURCE_NAMES:
+                raise ValueError(f'public-ledger-owner-decision: {PUBLIC_LEDGER_BLOCKER}; missing/invalid {key}')
+            raise ValueError(f'missing/invalid ZE-76 counter {key}')
+    return counters
+
+
+def public_counters(row):
+    """Only public resources and response work kinds 0..22; never fill gaps."""
+    counters = dict(row['resources'])
+    work = row['work_raw']
+    if 'global_work' in row:
+        span = row['global_work']; start, count = span['start'], span['count']
+        if start < 0 or count < 0 or start + count > len(work): raise ValueError('invalid global work range')
+        work = work[start:start+count]
+    for entry in work:
+        kind = entry['kind']
+        if type(kind) is not int or kind not in ABI_WORK_NAMES: raise ValueError('unknown public work kind')
+        name = ABI_WORK_NAMES[kind]
+        if name in counters: raise ValueError('duplicate global work counter')
+        counters[name] = entry['value']
+    require_counters({'counters': counters}, query=False)
+    return counters
+
+
+def smoke_manifest(fixtures):
+    manifest = accepted_manifest(fixtures)
+    manifest.update(smoke=True, repetitions=1, warmups=5, samples=50,
+                    cells=['baseline/A/rust/structured/project-evidence'],
+                    qualification='SMOKE ONLY; rejected by acceptance validator')
+    manifest['cell_protocols'] = {manifest['cells'][0]: {'warmups': 5, 'samples': 50}}
+    return manifest
+
 
 
 def run(argv, **kw):
@@ -104,9 +164,9 @@ def build_workers(output, release=False):
          ROOT / 'crates/zeppelin-embed-ffi/tests/c/graph_workload.c', archive,
          '-framework', 'Security', '-framework', 'CoreFoundation', '-lpthread', '-ldl',
          '-o', output / 'graph-workload-c'])
-    # Current Swift has no structured query API. This builds the actual typed
-    # wrapper, and its structured mode fails with ZE-278 rather than raw C.
+    # Link the public typed Swift wrapper against this build.
     env.update(ZE_USE_LOCAL_FFI='1', ZE_LOCAL_FFI_ARCHIVE=str(archive), SWIFT_MODULECACHE_PATH=str(output / 'swift-cache'), CLANG_MODULE_CACHE_PATH=str(output / 'swift-cache'))
+    run(['swift', 'package', '--package-path', ROOT / 'bindings/swift/graph', 'clean'], env=env)
     run(['swift', 'build', '--package-path', ROOT / 'bindings/swift/graph',
          '--product', 'GraphWorkload', '--disable-sandbox', '-j', '3'] +
         (['-c', 'release'] if release else []), env=env)
@@ -147,20 +207,26 @@ def accepted_manifest(fixtures):
             'qualification': 'blocked; tooling preparation only'}
 
 
-def prepare(fixtures, manifest_path, workers):
+def prepare(fixtures, manifest_path, workers, smoke=False):
+    if not smoke and not fixtures: raise ValueError('acceptance preparation requires explicit baseline and stress fixtures')
     inventory = []
     base = Path(manifest_path).resolve().parent
     base.mkdir(parents=True, exist_ok=True)
     failures = []
+    if smoke and not fixtures:
+        generated = base / 'small-input'
+        run([workers / 'graph-fixture', 'generate', 'small', generated,
+             run(['git', 'rev-parse', 'HEAD'], capture_output=True, text=True).stdout.strip()])
+        fixtures = [generated]
     for index, source in enumerate(fixtures):
         source = Path(source).resolve()
         raw = json.loads((source / 'manifest.json').read_text())
         destination = base / f'fixture-{index}'
         copies = copy_fixture(source, destination)
         run([workers / 'graph-fixture', 'validate', destination])
-        inventory.append({'path': str(destination), 'scale': raw['scale'],
+        inventory.append({'path': str(destination), 'scale': 'baseline' if smoke else raw['scale'], 'fixture_scale': raw['scale'],
                           'manifest_sha256': digest(destination / 'manifest.json'), 'copies': copies})
-        for state in ('A', 'B'):
+        for state in (('A',) if smoke else ('A', 'B')):
             receipts = base / f'receipts-{index}-{state}.jsonl'
             store = base / f'store-{index}-{state}'
             command = [workers / 'graph-workload', 'ingest', destination, store, state, receipts]
@@ -171,16 +237,25 @@ def prepare(fixtures, manifest_path, workers):
                                  'error': completed.stderr, 'command': [str(x) for x in command]})
                 continue
             truth = base / f'truth-{index}-{state}.jsonl'
-            run([workers / 'graph-workload', 'truth', destination, state, receipts, truth])
+            run([workers / 'graph-workload', 'truth-smoke' if smoke else 'truth', destination, state, receipts, truth])
             imports = base / f'imports-{index}-{state}'
-            import_jobs(destination, receipts, imports)
+            if not smoke: import_jobs(destination, receipts, imports)
             inventory[-1][state] = {'imports': str(imports), 'store': str(store), 'receipts': str(receipts),
                                     'truth': str(truth), 'truth_sha256': digest(truth)}
-    manifest = accepted_manifest(inventory)
+    manifest = smoke_manifest(inventory) if smoke else accepted_manifest(inventory)
     manifest['preparation_failures'] = failures
-    manifest['cell_protocols'] = {cell: {'warmups': 0 if cell.startswith(('structured-meeting-import','cypher-meeting-metadata','mixed-4r1w','recovery-')) else 50,
+    if not smoke:
+        manifest['cell_protocols'] = {cell: {'warmups': 0 if cell.startswith(('structured-meeting-import','cypher-meeting-metadata','mixed-4r1w','recovery-','retention-')) else 50,
                                        'samples': 4200 if cell.startswith('mixed-4r1w') else 200 if 'meeting' in cell else 20 if cell.startswith('recovery-') else 1000,
                                        'target_p95_ns': 250_000_000 if cell.startswith(('baseline/','structured-meeting-import/','cypher-meeting-metadata/')) else 2_000_000_000 if cell.startswith('recovery-') else None} for cell in manifest['cells']}
+        baseline = next((f for f in inventory if f['scale'] == 'baseline'), None)
+        if baseline:
+            counts = json.loads((Path(baseline['path']) / 'manifest.json').read_text())['inventory']
+            keys = counts['nodes'] + counts['edges']
+            for multiple in (1, 5, 10):
+                manifest['cell_protocols'][f'retention-{multiple}x']['samples'] = (keys * multiple + 127) // 128
+    if failures:
+        manifest['blocked_inputs']['preparation'] = 'actual ingestion failures; see retained logs'
     with Path(manifest_path).open('x') as f:
         json.dump(manifest, f, indent=2)
         f.write('\n')
@@ -340,6 +415,9 @@ def monitor_repetition(command, output, observer, timeout, provenance_paths=()):
        'digests_before': provenance, 'digests_after': {p: digest(p) for p in provenance},
        'exit': status, 'timeout_is_failure': status == -1, 'command': [str(x) for x in command]}, indent=2))
     if status:
+        (output / 'repetition.json').write_text(json.dumps({'correct': False,
+            'error': f'worker exit {status}', 'command': [str(x) for x in command],
+            'blocker': 'ZE-313' if 'swift' in str(command[0]) and status == -10 else None}, indent=2))
         raise ValueError(f'failed cell retained at {output}; exit={status}')
 
 
@@ -347,37 +425,55 @@ def run_matrix(args):
     manifest = json.loads(Path(args.manifest).read_text())
     # Deliberately no date/time shortcut for either missing inputs or quiet host.
     missing = manifest.get('blocked_inputs', {})
-    if missing:
+    if missing and not args.smoke:
         raise ValueError('authoritative measurement blocked: ' + '; '.join(f'{k}: {v}' for k, v in missing.items()))
     if manifest.get('preparation_failures'):
         raise ValueError('failed fixture preparation; cannot measure partial store')
+    if bool(manifest.get('smoke')) != args.smoke:
+        raise ValueError('--smoke must match the explicitly marked manifest')
     if not args.observer:
-        raise ValueError('quiet M3 Max host requires actual 1-second thermal/power/AC/QoS/background-CPU observer')
+        if not args.smoke:
+            raise ValueError('owner M3 Max requires complete actual host observer')
+        args.observer = [str(Path(args.workers).resolve() / 'graph-workload-swift'), 'observe']
     build = json.loads((Path(args.workers) / 'build.json').read_text())
-    if build['profile'] != 'release':
+    if build['profile'] != 'release' and not args.smoke:
         raise ValueError('authoritative cells require release opt-level=3 workers')
     for cell in manifest['cells']:
-        for repetition in range(5):
+        for repetition in range(manifest['repetitions']):
             directory = Path(args.output) / cell / str(repetition)
             directory.mkdir(parents=True, exist_ok=False)
             accepted = None
             for attempt in range(args.max_attempts):
                 attempt_dir = directory / ('attempt-' + str(attempt))
                 attempt_dir.mkdir(parents=True, exist_ok=False)
-                command = cell_command(manifest, cell, Path(args.workers).resolve(), attempt_dir)
                 provenance = [Path(args.manifest), Path(args.workers) / 'build.json']
                 for f in manifest['fixtures']:
                     provenance.extend(p for p in Path(f['path']).iterdir() if p.is_file())
                     for st in ('A','B'):
                         if st in f:
                             provenance.extend(p for p in Path(f[st]['truth']).with_suffix('.jobs').iterdir() if p.is_file())
-                monitor_repetition(command, attempt_dir / 'worker', args.observer, args.timeout, provenance)
-                record = normalize_repetition(manifest, cell, repetition, attempt_dir / 'worker', command)
+                try:
+                    command = cell_command(manifest, cell, Path(args.workers).resolve(), attempt_dir)
+                    monitor_repetition(command, attempt_dir / 'worker', args.observer, args.timeout, provenance)
+                    record = normalize_repetition(manifest, cell, repetition, attempt_dir / 'worker', command)
+                except (ValueError, OSError, subprocess.SubprocessError) as error:
+                    failure = dict(cell=cell, repetition=repetition, correct=False, error=str(error),
+                                   blocker='ZE-313' if '/swift/cypher/' in cell or cell.startswith('cypher-meeting-metadata/') and cell.endswith('/swift') else None)
+                    (attempt_dir / 'failed-cell.json').write_text(json.dumps(failure, indent=2) + '\n')
+                    with (Path(args.output) / 'repetitions.jsonl').open('a') as output:
+                        output.write(json.dumps(failure) + '\n')
+                    raise
+                finally:
+                    # Keep receipts, samples, hashes and oracle; never accumulate store copies.
+                    if (attempt_dir / 'store').exists(): shutil.rmtree(attempt_dir / 'store')
+                    for tail in attempt_dir.glob('tail-*'):
+                        if tail.is_dir(): shutil.rmtree(tail)
                 with (Path(args.output) / 'repetitions.jsonl').open('a') as output:
                     output.write(json.dumps(record) + '\n')
-                if not record['tainted']:
+                if args.smoke or not record['tainted']:
                     accepted = record; break
             if accepted is None: raise ValueError('whole repetitions remain tainted; all attempts retained, qualification blocked')
+    write_report(args)
 
 
 
@@ -390,9 +486,12 @@ def cell_command(manifest, cell, workers, directory):
     state = parts[1] if len(parts) > 1 and parts[1] in ('A', 'B') else 'A'
     inputs = fixture.get(state)
     if inputs is None: raise ValueError(f'missing complete {scale}/{state} preparation; ZE-290 uninterrupted ingestion handoff required')
+    if parts[0] == 'model-resident': raise ValueError('owner decision required: select model/runtime/precision and resident-memory observer')
+    if parts[0] == 'os-cold': raise ValueError('owner decision required: approve and validate OS cache-control method')
     store = directory / 'store'
-    copies = copy_store(inputs['store'], store)
-    (directory / 'copies.json').write_text(json.dumps(copies, indent=2))
+    if not parts[0].startswith('recovery-'):
+        copies = copy_store(inputs['store'], store)
+        (directory / 'copies.json').write_text(json.dumps(copies, indent=2))
     jobs = Path(inputs['truth']).with_suffix('.jobs')
     if parts[0] in ('baseline', 'exact', 'stress-10x') or parts[0].startswith('paths-'):
         if len(parts) != 5: raise ValueError('read cell must declare state/language/frontend/name')
@@ -423,7 +522,7 @@ def cell_command(manifest, cell, workers, directory):
     if parts[0] == 'mixed-4r1w':
         language = parts[2] if len(parts) > 2 else 'rust'
         if language != 'rust':
-            suffix = 'structured' if language == 'c' else 'cypher'
+            suffix = 'structured'
             schedule = directory / 'reads.list'
             schedule.write_text(''.join(str((jobs / (str(i) + '-alice-project-ranking.' + suffix)).resolve()) + '\n' for i in range(100)))
             imports = Path(inputs['imports']) / (language + '-batch.list')
@@ -444,6 +543,7 @@ def cell_command(manifest, cell, workers, directory):
         for index, tail in enumerate(tails):
             capture = tail.get('capture', {})
             expected = capture.get('envelopes') == 64 if parts[0] == 'recovery-64' else capture.get('wal_bytes') == 16 * 1024 * 1024
+            if 'truth_rows' not in tail or 'truth_generation' not in tail: raise ValueError('missing independent tail admission truth')
             if not expected or not capture.get('checkpoint_boundary_observed') or 'creation_serial_count' not in capture or 'full_syncs' not in capture or 'directory_syncs' not in capture:
                 raise ValueError('missing ZE-76 observed tail-boundary/creation-serial/sync capture; requested envelope count is not proof')
             target = directory / ('tail-' + str(index))
@@ -452,39 +552,122 @@ def cell_command(manifest, cell, workers, directory):
             paths.append(str(target.resolve()))
         listing = directory / 'tails.list'; listing.write_text('\n'.join(paths) + '\n')
         return [workers / 'graph-workload', 'recovery-series', listing, 'read-write']
-    if parts[0] == 'model-resident':
-        if not manifest.get('model'): raise ValueError('missing accepted model/runtime/precision and actual model memory observer')
-        raise ValueError('missing ZE-76 model/process versus managed-memory observation handoff')
-    if parts[0] == 'os-cold':
-        if not manifest.get('cache_control'): raise ValueError('missing validated cache-control method; fresh process does not mean OS-cold')
-        raise ValueError('cache-control validation evidence required before OS-cold execution')
     raise ValueError(f'undeclared execution protocol {cell}')
+
+
+def oracle_check(expected, observed, generation):
+    # Entity payload checks encode the complete typed description in one cell.
+    # JSON preserves f32/f64 bit strings, null vs empty, endpoints and list order.
+    e = [[{'string': json.dumps(v, sort_keys=True, separators=(',', ':'))}] for v in expected]
+    o = [[{'string': json.dumps(v, sort_keys=True, separators=(',', ':'))}] for v in observed]
+    compare_rows(e, o)
+    return dict(expected_rows=e, observed_rows=o, admitted_generation=generation,
+                truth_generation=generation, truth_ids=[], hit_ids=[], correct=True)
+
+
+def inspect_entities(verifier, store, entities, directory):
+    requests = directory / 'entity-requests.jsonl'
+    requests.write_text(''.join(json.dumps({'kind': k, 'id': str(i)}) + '\n' for k, i in entities))
+    result = subprocess.run([str(verifier), 'inspect-entities', str(store), str(requests)],
+                            capture_output=True, text=True, cwd=ROOT)
+    (directory / 'entity-observations.jsonl').write_text(result.stdout)
+    (directory / 'entity-observations.stderr').write_text(result.stderr)
+    if result.returncode: raise ValueError('complete public entity observation failed: ' + result.stderr)
+    observed = [json.loads(line)['observed'] for line in result.stdout.splitlines()]
+    if len(observed) != len(entities): raise ValueError('partial public entity observations')
+    return observed
+
+
+def normalize_imports(measured, fixture, inputs, verifier, store, directory, metadata=False):
+    baseline = {}
+    for line in Path(inputs['receipts']).open():
+        for r in json.loads(line).get('receipts', []):
+            baseline[(r['kind'], r['key']['namespace'], r['key']['key'])] = str(r['id'])
+    checks, seen, last_generation = [], set(), None
+    for index, row in enumerate(measured):
+        if row.get('sample') != index: raise ValueError('missing/reordered import sample')
+        changes = json.loads((Path(inputs['imports']) / f'{index}.batch.json').read_text())
+        receipts = row.get('receipts', row.get('receipt', {}).get('receipts'))
+        if not isinstance(receipts, list) or len(receipts) != 137: raise ValueError('partial complete import receipts')
+        ids = dict(baseline)
+        generations = set()
+        for item, (change, receipt) in enumerate(zip(changes, receipts)):
+            image = change['image']; key = image['key']; ident = str(receipt['id'])
+            if receipt['kind'] != image['kind'] or receipt['revision'] != 1 or ('item' in receipt and receipt['item'] != item):
+                raise ValueError('wrong import receipt kind/revision/order')
+            token = (receipt['kind'], ident)
+            if token in seen: raise ValueError('reused import identity')
+            seen.add(token); generations.add(receipt['generation'])
+            ids[(image['kind'], key['namespace'], key['key'])] = ident
+        if len(generations) != 1: raise ValueError('non-atomic import generations')
+        generation = generations.pop()
+        if last_generation is not None and generation <= last_generation: raise ValueError('non-monotone import generation')
+        last_generation = generation
+        expected, entities = [], []
+        for change, receipt in zip(changes, receipts):
+            image = change['image']; kind = image['kind']; ident = str(receipt['id'])
+            properties = {k: {'list': [{'string': x} for x in v['string_list']]} if 'string_list' in v else v for k, v in image['properties'].items()}
+            value = dict(id=ident, revision=1, properties=properties)
+            if not metadata: value["key"] = image["key"]
+            if kind == 'node':
+                value.update(labels=sorted(image['labels']), text=None if metadata else image['text'],
+                             vector_bits=None if metadata else image.get('vector_bits'))
+            else:
+                value.update(type=image['type'], **{name: ids[('node', image[name]['namespace'], image[name]['key'])] for name in ('source', 'target')})
+            entities.append((kind, ident)); expected.append(value)
+        sample_dir = directory / f'import-{index}'; sample_dir.mkdir()
+        observed = inspect_entities(verifier, store, entities, sample_dir)
+        if metadata:
+            for value in observed:
+                if value is not None: value.pop("key", None)
+        checks.append(oracle_check(expected, observed, generation))
+    return checks
+
+
+def normalize_retention(measured, fixture, inputs, verifier, store, directory):
+    checks, previous = [], 0
+    for index, row in enumerate(measured):
+        end = row['history_keys']
+        created, deleted = row['created']['receipts'], row['deleted']['receipts']
+        if end <= previous or len(created) != end - previous or len(deleted) != len(created): raise ValueError('partial retention history')
+        for c, d in zip(created, deleted):
+            if c['kind'] != 'node' or c['revision'] != 1 or d['revision'] != 2 or c['id'] != d['id'] or c['key'] != d['key']:
+                raise ValueError('wrong retention creation/deletion receipt')
+        sample_dir = directory / f'retention-{index}'; sample_dir.mkdir()
+        observed = inspect_entities(verifier, store, [('node', r['id']) for r in deleted], sample_dir)
+        checks.append(oracle_check([None] * len(deleted), observed, row['generation']))
+        previous = end
+    frozen = directory / 'baseline-entities.jsonl'
+    with frozen.open('w') as output:
+        run([verifier, 'expected-entities', fixture['path'], 'B' if inputs == fixture.get('B') else 'A', inputs['receipts']], stdout=output)
+    with (directory / 'baseline-observations.jsonl').open('w') as output:
+        run([verifier, 'inspect-entities', store, frozen], stdout=output)
+    inventory = json.loads((Path(fixture['path']) / 'manifest.json').read_text())['inventory']
+    # Cardinality is exact, independent of the worker's requested history count.
+    return checks, previous, inventory['nodes'] + inventory['edges']
 
 
 def normalize_repetition(manifest, cell, repetition, directory, command):
     raw = [json.loads(line) for line in (directory / 'samples.jsonl').read_text().splitlines()]
     measured = [r for r in raw if not r.get('warmup', False)]
-    # Current ABI/Swift expose real global work rows, distinct from per-call
-    # ranges. Map only known counters; absent ZE-76 fields stay absent.
-    names = {0:'operator_rows',1:'adjacency_entries',5:'result_bytes',
-             6:'prepared_payload_bytes',7:'completed_abi_bytes',8:'vector_coordinates',
-             9:'vector_payload_bytes',10:'postings',11:'lexical_blocks',12:'search_calls',
-             13:'directory_lookups',14:'scans',15:'paths',16:'rows_in',17:'rows_out',
-             18:'join_probes',19:'group_keys',20:'eligibility_entries',21:'copied_bytes'}
     for row in measured:
-        if 'counters' not in row and 'work_raw' in row:
-            work = row['work_raw']
-            if 'global_work' in row:
-                span = row['global_work']; start, count = span['start'], span['count']
-                if start < 0 or count < 0 or start + count > len(work): raise ValueError('invalid global work range')
-                work = work[start:start+count]
-            counters = {}
-            for entry in work:
-                if entry['kind'] in names:
-                    name = names[entry['kind']]
-                    if name in counters: raise ValueError('duplicate global work counter')
-                    counters[name] = entry['value']
-            row['counters'] = counters
+        if row.get('status') != 0: raise ValueError('failed request is never a pass')
+        if 'work_raw' in row:
+            row['counters'] = public_counters(row)
+        require_counters(row, query=not (cell.startswith(('structured-meeting-import', 'retention-')) or cell.startswith('mixed-4r1w/') and row.get('participant') == 4),
+                         public_worker=cell.split('/')[2:3] in (['c'], ['swift']))
+        if cell.startswith('mixed-4r1w/'): row['counters']['participant'] = row['participant']
+        if 'ledger_before' in row or 'ledger_after' in row:
+            before, after = row.get('ledger_before'), row.get('ledger_after')
+            if not isinstance(before, dict) or not isinstance(after, dict): raise ValueError('missing write-ledger boundary')
+            delta = {}
+            for key in LEDGER_NAMES:
+                if type(before.get(key)) is not int or type(after.get(key)) is not int or before[key] < 0 or after[key] < before[key]:
+                    raise ValueError(f'missing/invalid ZE-76 write ledger {key}')
+                delta[key] = after[key] - before[key]
+            row['counters'].update(delta)
+        elif cell.startswith('structured-meeting-import/') and cell.endswith('/rust') or cell.startswith('retention-'):
+            raise ValueError('missing Rust write-ledger boundaries')
 
     monitor = [json.loads(line) for line in (directory / 'monitor.jsonl').read_text().splitlines()]
     process = json.loads((directory / 'process.json').read_text())
@@ -518,21 +701,49 @@ def normalize_repetition(manifest, cell, repetition, directory, command):
         record['oracle_checks'] = [json.loads(line) for line in verified.stdout.splitlines()]
         for check, row in zip(record['oracle_checks'], measured):
             check['cohort'] = row['cohort']; check['normal_timing'] = row['normal_timing']
-        record['correct'] = verified.returncode == 0 and all(c['correct'] for c in record['oracle_checks'])
+        record['correct'] = verified.returncode == 0 and len(record['oracle_checks']) == len(measured) and all(c['correct'] for c in record['oracle_checks'])
         if verified.returncode: record['error'] = verified.stderr
     elif parts[0] == 'mixed-4r1w':
-        verified = subprocess.run([str(x) for x in (Path(command[0]).parent / 'graph-workload', 'verify-mixed', fixture['path'], state, inputs['receipts'], jobs, directory / 'samples.jsonl')], capture_output=True, text=True, cwd=ROOT)
+        verifier = Path(command[0]).parent / 'graph-workload'
+        writes = sorted((r for r in measured if r['participant'] == 4), key=lambda r: r['sample'])
+        write_checks = normalize_imports(writes, fixture, inputs, verifier, directory.parent / 'store', directory)
+        for row in measured:
+            if row['participant'] == 4:
+                changes = json.loads((Path(inputs['imports']) / f"{row['sample']}.batch.json").read_text())
+                receipts = row.get('receipts', row.get('receipt', {}).get('receipts'))
+                row['input'] = {'changes': changes}
+                row['receipt'] = {'receipts': [dict(r, key=c['image']['key']) for r, c in zip(receipts, changes)]}
+            else:
+                row['case'] = row.get('case', row.get('schedule_index'))
+                row['name'] = 'alice-project-ranking'
+        annotated = directory / 'annotated-samples.jsonl'
+        annotated.write_text(''.join(json.dumps(r) + '\n' for r in measured))
+        verified = subprocess.run([str(x) for x in (verifier, 'verify-mixed', fixture['path'], state, inputs['receipts'], jobs, annotated)], capture_output=True, text=True, cwd=ROOT)
         (directory / 'oracle.jsonl').write_text(verified.stdout)
         (directory / 'oracle.stderr').write_text(verified.stderr)
-        record['oracle_checks'] = [json.loads(line) for line in verified.stdout.splitlines()]
-        record['correct'] = verified.returncode == 0
+        checks = {(c['participant'], c['sample']): c for c in [json.loads(line) for line in verified.stdout.splitlines()]}
+        checks.update({(4, i): c for i, c in enumerate(write_checks)})
+        record['oracle_checks'] = [checks[(r['participant'], r['sample'])] for r in measured if (r['participant'], r['sample']) in checks]
+        record['correct'] = verified.returncode == 0 and len(record['oracle_checks']) == len(measured)
         if verified.returncode: record['error'] = verified.stderr
-    required = ('managed_peak_bytes','directory_lookups','pages_decoded','adjacency_entries',
-                'operator_rows','canonical_bytes','vector_coordinates','vector_payload_bytes',
-                'postings','eligible_cardinality','candidate_window_peak','search_calls',
-                'result_bytes','full_syncs','directory_syncs','checkpoint_ns')
-    if any(any(key not in row for key in required) for row in record['counters']):
-        record['error'] = 'ZE-76 full actual-capacity/resource/work observations missing'
+    elif parts[0] in ('structured-meeting-import', 'cypher-meeting-metadata'):
+        record['oracle_checks'] = normalize_imports(measured, fixture, inputs, Path(command[0]).parent / 'graph-workload',
+            directory.parent / 'store', directory, metadata=parts[0] == 'cypher-meeting-metadata')
+        record['correct'] = len(record['oracle_checks']) == protocol['samples']
+    elif parts[0].startswith('recovery-'):
+        tails = manifest['observed_tail_stores'][parts[0]]
+        if len(measured) != len(tails): raise ValueError('partial recovery observations')
+        for row, tail in zip(measured, tails):
+            if 'truth_rows' not in tail or 'truth_generation' not in tail: raise ValueError('missing independent tail admission truth')
+            compare_rows(tail['truth_rows'], row['rows'])
+            if row['generation'] != tail['truth_generation']: raise ValueError('wrong recovery generation')
+            record['oracle_checks'].append(dict(expected_rows=tail['truth_rows'], observed_rows=row['rows'],
+                admitted_generation=row['generation'], truth_generation=tail['truth_generation'], truth_ids=[], hit_ids=[], correct=True))
+        record['correct'] = True
+    elif parts[0].startswith('retention-'):
+        record['oracle_checks'], history, baseline_keys = normalize_retention(measured, fixture, inputs,
+            Path(command[0]).parent / 'graph-workload', directory.parent / 'store', directory)
+        record['correct'] = history == baseline_keys * int(parts[0].split('-')[1].rstrip('x'))
     if not record['correct'] and record['error'] is None:
         record['error'] = 'wrong or unverified complete results; no acceptance'
     record['tainted'] = environment_taint(record)
@@ -584,6 +795,13 @@ def compare_rows(expected, actual, absolute=1e-6, relative=1e-6):
 
 def copy_store(source, destination):
     source, destination = Path(source), Path(destination)
+    size = sum(p.stat().st_size for p in source.rglob('*') if p.is_file())
+    # One writable attempt, plus bounded WAL/artifact growth and a 1 GiB reserve.
+    required = 2 * size + (1 << 30)
+    parent = destination.parent
+    while not parent.exists(): parent = parent.parent
+    free = shutil.disk_usage(parent).free
+    if free < required: raise ValueError(f'insufficient free disk: need {required}, have {free}')
     destination.mkdir(parents=True, exist_ok=False)
     records = []
     for path in sorted(source.rglob('*')):
@@ -596,15 +814,15 @@ def copy_store(source, destination):
 
 
 def write_report(args):
-    source = Path(args.input)
+    source = Path(getattr(args, 'input', args.output if hasattr(args, 'output') else ''))
     records = source if source.is_file() else source / 'repetitions.jsonl'
-    result = subprocess.run([str(Path(args.workers).resolve() / 'graph-workload'), 'report', args.manifest, str(records)], cwd=ROOT, capture_output=True, text=True)
+    result = subprocess.run([str(Path(args.workers).resolve() / 'graph-workload'), 'report-smoke' if getattr(args, 'smoke', False) else 'report', args.manifest, str(records)], cwd=ROOT, capture_output=True, text=True)
     out = source.parent if source.is_file() else source
     if result.returncode:
         (out / 'RESULTS.md').write_text('ZE-77 evidence FAILED/BLOCKED\n\n' + result.stderr + '\nAll raw samples retained. No final qualification.\n')
         raise ValueError(result.stderr.strip())
     (out / 'summary.json').write_text(result.stdout)
-    (out / 'RESULTS.md').write_text('ZE-77 complete driver evidence\n\n' + result.stdout +
+    (out / 'RESULTS.md').write_text(('ZE-77 SMOKE pipeline evidence (no acceptance)\n\n' if getattr(args, 'smoke', False) else 'ZE-77 complete driver evidence\n\n') + result.stdout +
        '\nThreshold failures remain evidence. This report alone does not certify release/platform acceptance.\n')
 
 
@@ -636,16 +854,16 @@ def self_test_copy():
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     sub = p.add_subparsers(dest='command', required=True)
-    b = sub.add_parser('build'); b.add_argument('--output', required=True); b.add_argument('--release', action='store_true')
+    b = sub.add_parser('build'); b.add_argument('--output', required=True); b.add_argument('--release', action='store_true'); b.add_argument('--smoke', action='store_true')
     sub.add_parser('self-test-copy')
     smoke = sub.add_parser('smoke'); smoke.add_argument('--workers', required=True); smoke.add_argument('--scale', choices=['small'], default='small'); smoke.add_argument('--output', required=True)
-    prep = sub.add_parser('prepare'); prep.add_argument('--fixtures', nargs='+', required=True); prep.add_argument('--manifest', required=True); prep.add_argument('--workers', default='target/ze77')
-    measure = sub.add_parser('measure'); measure.add_argument('--workers', required=True); measure.add_argument('--manifest', required=True); measure.add_argument('--output', required=True); measure.add_argument('--observer', nargs='+'); measure.add_argument('--timeout', type=int, default=7200); measure.add_argument('--max-attempts', type=int, default=5)
-    report = sub.add_parser('report'); report.add_argument('--workers', default='target/ze77'); report.add_argument('--manifest', required=True); report.add_argument('--input', required=True)
+    prep = sub.add_parser('prepare'); prep.add_argument('--fixtures', nargs='+', default=[]); prep.add_argument('--smoke', action='store_true'); prep.add_argument('--manifest', required=True); prep.add_argument('--workers', default='target/ze77')
+    measure = sub.add_parser('measure'); measure.add_argument('--workers', required=True); measure.add_argument('--manifest', required=True); measure.add_argument('--output', required=True); measure.add_argument('--observer', nargs='+'); measure.add_argument('--timeout', type=int, default=7200); measure.add_argument('--max-attempts', type=int, default=5); measure.add_argument('--smoke', action='store_true')
+    report = sub.add_parser('report'); report.add_argument('--workers', default='target/ze77'); report.add_argument('--manifest', required=True); report.add_argument('--input', required=True); report.add_argument('--smoke', action='store_true')
     args = p.parse_args()
     if args.command == 'build': build_workers(args.output, args.release)
     elif args.command == 'self-test-copy': self_test_copy()
-    elif args.command == 'prepare': prepare(args.fixtures, args.manifest, Path(args.workers).resolve())
+    elif args.command == 'prepare': prepare(args.fixtures, args.manifest, Path(args.workers).resolve(), args.smoke)
     elif args.command == 'measure': run_matrix(args)
     elif args.command == 'report': write_report(args)
     elif args.command == 'smoke':
@@ -659,7 +877,7 @@ def main():
         swift_failed = False
         for name in READS:
             expected = json.loads((data / 'jobs' / f'{name}.json').read_text())['rows']
-            for language, frontends in (('c', ('structured', 'cypher')), ('swift', ('cypher',))):
+            for language, frontends in (('c', ('structured', 'cypher')), ('swift', ('structured', 'cypher'))):
                 if language == 'swift' and swift_failed:
                     failures.append(f'swift/{name}: blocked after public worker crash; not run')
                     continue
@@ -677,10 +895,6 @@ def main():
                         compare_rows(expected, row['rows'])
                     except (ValueError, KeyError) as error:
                         failures.append(f'{language}/{frontend}/{name}: {error}')
-        rejected = subprocess.run([str(Path(args.workers).resolve() / 'graph-workload-swift'), str(data / 'store'), 'structured', 'unused', '0', '1'], capture_output=True, text=True)
-        (output / 'swift-structured-blocked.log').write_text(rejected.stderr)
-        if rejected.returncode == 0 or 'ZE-278' not in rejected.stderr:
-            raise ValueError('Swift structured missing-input gate failed')
         imports = output / 'imports'; import_jobs(data / 'fixture', data / 'receipts.jsonl', imports, count=1)
         for language, suffix in (('c', 'batch'), ('swift', 'batch.json')):
             store = output / ('import-store-' + language); copy_store(data / 'store', store)
@@ -692,7 +906,7 @@ def main():
                 continue
             row = json.loads(result.stdout)
             if len(row['receipts']) != 137: failures.append(f'{language}: partial import receipts')
-        (output / 'RESULTS.md').write_text(('FAILED focused smoke: ' + '; '.join(failures) + '\n\n' if failures else 'PASS focused smoke\n\n') + 'Executed small correctness checks: Rust/C structured and Cypher; typed Swift Cypher; C/Swift supplied-payload import.\n\nSwift structured blocked on ZE-278. Qualification consolidation remains a strict prepare gate; ZE-76/ZE-71/ZE-290/ZE-287 and quiet M3 Max inputs remain unqualified. Debug smoke timings are not baseline measurements.\n')
+        (output / 'RESULTS.md').write_text(('FAILED focused smoke: ' + '; '.join(failures) + '\n\n' if failures else 'PASS focused smoke\n\n') + 'Executed small correctness checks: Rust/C structured and Cypher; typed Swift Cypher; C/Swift supplied-payload import.\n\nSwift Cypher SIGBUS remains blocked on ZE-313. Full host, retention, recovery and owner-selected model/cache-control inputs remain unqualified. Debug smoke timings are not baseline measurements.\n')
         if failures: raise ValueError('focused native smoke failed; see RESULTS.md and retained raw evidence')
 
 

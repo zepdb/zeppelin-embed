@@ -186,6 +186,7 @@ pub fn apply_record(
             None
         });
     }
+    let ledger_before = work_ledger(store)?;
     let (outcome, request_ns) = with_local_refs(|scope| -> Result<_, String> {
         let endpoint = |v: &Value| -> Result<NodeRef<'_>, String> {
             let k = key(v, "node")?;
@@ -296,8 +297,12 @@ pub fn apply_record(
         ids.insert(key(k, kind)?, id);
         receipts.push(json!({"kind":kind,"key":k,"id":id.to_string(),"revision":receipt.revision.get(),"generation":receipt.generation.get()}));
     }
+    let outcome_name = format!("{:?}", outcome.outcome());
+    let disposal = std::time::Instant::now();
+    drop(outcome);
+    let disposal_ns = disposal.elapsed().as_nanos();
     Ok(
-        json!({"batch":row["batch"],"receipts":receipts,"request_ns":request_ns,"outcome":format!("{:?}",outcome.outcome())}),
+        json!({"disposal_ns":disposal_ns,"batch":row["batch"],"receipts":receipts,"request_ns":request_ns,"outcome":outcome_name,"counters":resource_counters(store)?,"ledger_before":ledger_before,"ledger_after":work_ledger(store)?}),
     )
 }
 pub fn ingest_fixture(
@@ -1215,10 +1220,33 @@ pub fn decode_request(v: &Value) -> Result<oracle::Query, String> {
         _ => return Err("unknown request".into()),
     })
 }
-pub fn observed_counters(r: &CompletedGraphResult) -> Value {
+pub fn resource_counters(store: &GraphStore) -> Result<Value, String> {
+    let r = store
+        .resources()
+        .map_err(|e| e.to_string())?
+        .snapshot()
+        .map_err(|e| e.to_string())?;
+    Ok(
+        json!({"engine_bytes":r.engine_bytes,"engine_peak_bytes":r.engine_peak_bytes,
+        "application_bytes":r.application_bytes,"application_peak_bytes":r.application_peak_bytes}),
+    )
+}
+pub fn work_ledger(store: &GraphStore) -> Result<Value, String> {
+    let w = store
+        .resources()
+        .map_err(|e| e.to_string())?
+        .work_ledger()
+        .map_err(|e| e.to_string())?;
+    Ok(
+        json!({"storage_lookups":w.storage_lookups,"storage_scans":w.storage_scans,"storage_adjacency_entries":w.storage_adjacency_entries,"storage_copied_bytes":w.storage_copied_bytes,"storage_pages_decoded":w.storage_pages_decoded,"storage_pages_copied":w.storage_pages_copied,"storage_property_values":w.storage_property_values,"storage_property_bytes":w.storage_property_bytes,"storage_adjacency_physical_entries":w.storage_adjacency_physical_entries,"storage_adjacency_merged_visits":w.storage_adjacency_merged_visits,"storage_adjacency_merge_runs":w.storage_adjacency_merge_runs,"canonical_comparison_bytes":w.canonical_comparison_bytes,"canonical_encoding_bytes":w.canonical_encoding_bytes,"wal_codec_units":w.wal_codec_units,"encoded_wal_bytes":w.encoded_wal_bytes,"artifact_bytes_written":w.artifact_bytes_written,"artifact_writes":w.artifact_writes,"wal_bytes_appended":w.wal_bytes_appended,"wal_appends":w.wal_appends,"full_sync_attempts":w.full_sync_attempts,"full_sync_successes":w.full_sync_successes,"directory_sync_attempts":w.directory_sync_attempts,"directory_sync_successes":w.directory_sync_successes}),
+    )
+}
+pub fn observed_counters(store: &GraphStore, r: &CompletedGraphResult) -> Result<Value, String> {
     use zeppelin_embed::property_graph::query::runtime::WorkKind;
-    let mut c = zeppelin_embed_bench::harness_json::json!({"query_reservation_peak_bytes":r.metadata().peak_query_bytes,"missing_input":"ZE-76: actual capacity/shared peak, retention, preparation, page, sync/checkpoint reporting"});
+    let mut c = resource_counters(store)?;
+    c["query_reservation_peak_bytes"] = json!(r.metadata().peak_query_bytes);
     for (name, kind) in [
+        ("completed_rows", WorkKind::CompletedRows),
         ("operator_rows", WorkKind::OperatorRows),
         ("adjacency_entries", WorkKind::AdjacencyEntries),
         ("expressions", WorkKind::Expressions),
@@ -1240,10 +1268,25 @@ pub fn observed_counters(r: &CompletedGraphResult) -> Value {
         ("group_keys", WorkKind::GroupKeys),
         ("eligibility_entries", WorkKind::EligibilityEntries),
         ("copied_bytes", WorkKind::CopiedBytes),
+        ("directory_pages_decoded", WorkKind::DirectoryPagesDecoded),
+        ("directory_pages_copied", WorkKind::DirectoryPagesCopied),
+        ("property_values", WorkKind::PropertyValues),
+        ("property_bytes", WorkKind::PropertyBytes),
+        (
+            "adjacency_physical_entries",
+            WorkKind::AdjacencyPhysicalEntries,
+        ),
+        ("adjacency_merged_visits", WorkKind::AdjacencyMergedVisits),
+        ("adjacency_merge_runs", WorkKind::AdjacencyMergeRuns),
+        (
+            "eligibility_unique_entries",
+            WorkKind::EligibilityUniqueEntries,
+        ),
+        ("candidate_window_peak", WorkKind::CandidateWindowPeak),
     ] {
         c[name] = json!(r.metadata().counters.get(kind));
     }
-    c
+    Ok(c)
 }
 /// No corpus/oracle/model in this timed process: input is a bounded request file.
 pub fn run_cell(
@@ -1274,7 +1317,7 @@ pub fn run_cell(
         match result {
             Ok(result) => {
                 let generation = result.metadata().generation.get();
-                let counters = observed_counters(&result);
+                let counters = observed_counters(&store, &result)?;
                 let rows = observe(&result)?;
                 let reports = result
                     .pools()
@@ -1306,7 +1349,7 @@ pub fn run_cell(
         .finish()
         .map_err(|e| format!("interval finish {e:?}"))?;
     eprintln!(
-        "ZE-77 reservation-domain observation only (not ZE-76 actual managed peak): {observed:?}"
+        "ZE-77 shared reservation interval (engine lifetime capacity peak reported separately): {observed:?}"
     );
     store.close().map_err(|e| e.to_string())?;
     if let Some(error) = failure {

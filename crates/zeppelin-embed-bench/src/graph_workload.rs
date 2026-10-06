@@ -10,24 +10,46 @@ pub const READS: [&str; 6] = [
     "hybrid-project-evidence",
     "bounded-evidence",
 ];
-pub const COUNTERS: [&str; 16] = [
-    "managed_peak_bytes",
-    "directory_lookups",
-    "pages_decoded",
-    "adjacency_entries",
+pub const RESOURCE_COUNTERS: [&str; 4] = [
+    "engine_peak_bytes",
+    "engine_bytes",
+    "application_bytes",
+    "application_peak_bytes",
+];
+pub const COUNTERS: [&str; 31] = [
+    "completed_rows",
     "operator_rows",
-    "canonical_bytes",
+    "adjacency_entries",
+    "expressions",
+    "hash_probes",
+    "result_bytes",
+    "prepared_payload_bytes",
+    "completed_abi_bytes",
     "vector_coordinates",
     "vector_payload_bytes",
     "postings",
-    "eligible_cardinality",
-    "candidate_window_peak",
+    "lexical_blocks",
     "search_calls",
-    "result_bytes",
-    "full_syncs",
-    "directory_syncs",
-    "checkpoint_ns",
+    "directory_lookups",
+    "scans",
+    "paths",
+    "rows_in",
+    "rows_out",
+    "join_probes",
+    "group_keys",
+    "eligibility_entries",
+    "copied_bytes",
+    "directory_pages_decoded",
+    "directory_pages_copied",
+    "property_values",
+    "property_bytes",
+    "adjacency_physical_entries",
+    "adjacency_merged_visits",
+    "adjacency_merge_runs",
+    "eligibility_unique_entries",
+    "candidate_window_peak",
 ];
+
 fn number(v: &Value, key: &str) -> Result<u64, String> {
     v.get(key)
         .and_then(Value::as_u64)
@@ -128,7 +150,15 @@ fn validate_payload(manifest: &Value, record: &Value) -> Result<(), String> {
         return Err("partial ZE-76 counters".into());
     }
     for row in counters {
-        for key in COUNTERS {
+        for key in RESOURCE_COUNTERS {
+            number(row, key).map_err(|e| format!("ZE-76: {e}"))?;
+        }
+        let writes = record["cell"].as_str().is_some_and(|c| {
+            c.starts_with("structured-meeting-import")
+                || c.starts_with("retention-")
+                || c.starts_with("mixed-4r1w/") && row["participant"] == 4
+        });
+        for key in COUNTERS.into_iter().filter(|_| !writes) {
             number(row, key).map_err(|e| format!("ZE-76: {e}"))?;
         }
     }
@@ -191,6 +221,15 @@ pub fn validate_environment(record: &Value) -> Result<(), String> {
 }
 /// Approved normal read matrix; extra experiments are explicit cells too.
 pub fn validate_manifest(manifest: &Value) -> Result<(), String> {
+    if manifest["smoke"] == true {
+        return Err("smoke evidence cannot qualify acceptance".into());
+    }
+    if manifest["blocked_inputs"]
+        .as_object()
+        .is_some_and(|b| !b.is_empty())
+    {
+        return Err("remaining campaign inputs are blocked".into());
+    }
     for (key, expected) in [
         ("repetitions", 5),
         ("warmups", 50),
@@ -271,6 +310,65 @@ pub fn required_cells() -> Vec<String> {
         cells.push(experiment.into());
     }
     cells
+}
+/// Pipeline proof only. Acceptance continues to reject this manifest.
+pub fn validate_smoke(manifest: &Value, records: &[Value]) -> Result<(), String> {
+    if manifest["smoke"] != true
+        || number(manifest, "repetitions")? != 1
+        || number(manifest, "warmups")? != 5
+        || number(manifest, "samples")? != 50
+        || manifest["cells"] != json!(["baseline/A/rust/structured/project-evidence"])
+        || records.len() != 1
+        || records[0]["cell"] != manifest["cells"][0]
+    {
+        return Err("invalid single-cell smoke protocol".into());
+    }
+    validate_payload(manifest, &records[0])?;
+    let monitor = records[0]["monitor"]
+        .as_array()
+        .ok_or("missing real smoke observer")?;
+    if monitor.is_empty() {
+        return Err("empty smoke observer".into());
+    }
+    for row in monitor {
+        number(row, "elapsed_ms")?;
+        if row["thermal"].as_str().is_none()
+            || row["power"].as_str().is_none()
+            || row["ac"].as_bool().is_none()
+            || row["host_cpu_fraction"].as_f64().is_none()
+        {
+            return Err("partial real smoke observer".into());
+        }
+    }
+    if records[0]["digests_before"] != records[0]["digests_after"] {
+        return Err("smoke digest drift".into());
+    }
+    Ok(())
+}
+/// Smoke statistics retain environmental limitations; no acceptance targets.
+pub fn summarize_smoke(records: &[Value]) -> Result<Value, String> {
+    let record = records.first().ok_or("missing smoke record")?;
+    let samples = record["samples_ns"]
+        .as_array()
+        .ok_or("missing smoke samples")?
+        .iter()
+        .map(|v| v.as_u64().ok_or("invalid smoke sample"))
+        .collect::<Result<Vec<_>, _>>()?;
+    let peak = record["counters"]
+        .as_array()
+        .ok_or("missing smoke counters")?
+        .iter()
+        .map(|c| number(c, "engine_peak_bytes"))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .max();
+    Ok(
+        json!({"smoke":true,"qualification":false,"cell":record["cell"],"warmups":record["warmups"],
+        "samples":samples.len(),"repetitions":1,"p50_ns":nearest_rank(&samples,50)?,
+        "p95_ns":nearest_rank(&samples,95)?,"p99_ns":nearest_rank(&samples,99)?,
+        "engine_peak_bytes":peak,"correct":record["correct"],"acceptance_environment_tainted":record["tainted"],
+        "observer_scope":"real smoke observations; no worker QoS or isolated background CPU; acceptance rejected"}),
+    )
 }
 /// Every required cell must have five valid fresh-process repetitions.
 pub fn validate_matrix(manifest: &Value, records: &[Value]) -> Result<(), String> {
@@ -417,7 +515,7 @@ pub fn summarize(records: &[Value]) -> Result<Value, String> {
         .filter(|r| r["tainted"] != true)
         .filter_map(|r| r["counters"].as_array())
         .flatten()
-        .filter_map(|c| c["managed_peak_bytes"].as_u64())
+        .filter_map(|c| c["engine_peak_bytes"].as_u64())
         .max();
     let worst = rows
         .iter()
@@ -425,7 +523,7 @@ pub fn summarize(records: &[Value]) -> Result<Value, String> {
         .max()
         .ok_or("no repetitions")?;
     Ok(
-        json!({"cells":cells,"cohorts":cohorts,"repetitions":rows,"worst_repetition_p95_ns":worst,"managed_peak_bytes":peak,"memory_target_pass":peak.map(|p|p<=256<<20),"latency_target_pass":cells.iter().filter_map(|c|c["latency_target_pass"].as_bool()).all(|p|p),"tainted_attempts":records.iter().filter(|r|r["tainted"]==true).count()}),
+        json!({"cells":cells,"cohorts":cohorts,"repetitions":rows,"worst_repetition_p95_ns":worst,"engine_peak_bytes":peak,"memory_target_pass":peak.map(|p|p<=256<<20),"latency_target_pass":cells.iter().filter_map(|c|c["latency_target_pass"].as_bool()).all(|p|p),"tainted_attempts":records.iter().filter(|r|r["tainted"]==true).count()}),
     )
 }
 /// Compares complete typed tooling rows, preserving bags, optional modalities,

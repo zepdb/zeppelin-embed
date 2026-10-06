@@ -114,6 +114,7 @@ fn write_offline_truth(
     st: FixtureState,
     receipts: &Path,
     out: &Path,
+    smoke: bool,
 ) -> Result<(), String> {
     let (snapshot, ids) = workload::primitive_snapshot(root, st, receipts)?;
     let mut file = std::fs::File::create_new(out).map_err(|e| e.to_string())?;
@@ -121,6 +122,9 @@ fn write_offline_truth(
     std::fs::create_dir(&jobs).map_err(|e| e.to_string())?;
     for case in workload::query_cases(root)? {
         for name in graph_workload::READS {
+            if smoke && name != "project-evidence" {
+                continue;
+            }
             let hops: Vec<_> = if name == "bounded-evidence" {
                 vec![2, 1, 4, 8, 16]
             } else {
@@ -182,6 +186,8 @@ fn run() -> Result<(), String> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     match args.as_slice(){
         [cmd] if cmd=="self-test"=>self_test(),
+        [cmd,root,st,receipts] if cmd=="expected-entities"=>load::expected_entities(Path::new(root),state(st)?,Path::new(receipts)),
+        [cmd,path,requests] if cmd=="inspect-entities"=>load::inspect_entities(Path::new(path),Path::new(requests)),
         [cmd,path,jobs,name,front,mode,warmups,samples] if cmd=="read-schedule"=>load::read_schedule(Path::new(path),Path::new(jobs),name,front,mode=="exact",warmups.parse().map_err(|_|"warmups")?,samples.parse().map_err(|_|"samples")?),
         [cmd,root,st,receipts,jobs,samples] if cmd=="verify-mixed"=>load::verify_mixed(Path::new(root),state(st)?,Path::new(receipts),Path::new(jobs),Path::new(samples)),
         [cmd,root,st,receipts,jobs,samples] if cmd=="verify"=>load::verify(Path::new(root),state(st)?,Path::new(receipts),Path::new(jobs),Path::new(samples)),
@@ -194,8 +200,8 @@ fn run() -> Result<(), String> {
         [cmd,path,root,receipts,jobs] if cmd=="mixed"=>load::mixed_load(Path::new(path),Path::new(root),Path::new(receipts),Path::new(jobs),1000,200),
         [cmd,path,job,front,mode,warmups,samples] if cmd=="run"=>workload::run_cell(Path::new(path),Path::new(job),front,mode=="exact",warmups.parse().map_err(|_|"invalid warmups")?,samples.parse().map_err(|_|"invalid samples")?),
         [cmd,root,path,st,out] if cmd=="ingest"=>{let mut file=std::fs::File::create_new(out).map_err(|e|e.to_string())?;workload::ingest_fixture(Path::new(root),Path::new(path),state(st)?,&mut file)},
-        [cmd,root,st,receipts,out] if cmd=="truth"=>write_offline_truth(Path::new(root),state(st)?,Path::new(receipts),Path::new(out)),
-        [cmd,manifest,input] if cmd=="report"=>{let manifest:Value=zeppelin_embed_bench::harness_json::from_slice(&std::fs::read(manifest).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;let records:Vec<Value>=std::fs::read_to_string(input).map_err(|e|e.to_string())?.lines().map(zeppelin_embed_bench::harness_json::from_str).collect::<Result<_,_>>().map_err(|e|e.to_string())?;graph_workload::validate_matrix(&manifest,&records)?;println!("{}",graph_workload::summarize(&records)?);Ok(())},
+        [cmd,root,st,receipts,out] if cmd=="truth" || cmd=="truth-smoke"=>write_offline_truth(Path::new(root),state(st)?,Path::new(receipts),Path::new(out),cmd=="truth-smoke"),
+        [cmd,manifest,input] if cmd=="report" || cmd=="report-smoke"=>{let manifest:Value=zeppelin_embed_bench::harness_json::from_slice(&std::fs::read(manifest).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;let records:Vec<Value>=std::fs::read_to_string(input).map_err(|e|e.to_string())?.lines().map(zeppelin_embed_bench::harness_json::from_str).collect::<Result<_,_>>().map_err(|e|e.to_string())?;if cmd=="report-smoke" { graph_workload::validate_smoke(&manifest,&records)?; } else { graph_workload::validate_matrix(&manifest,&records)?; }println!("{}",if cmd=="report-smoke" { graph_workload::summarize_smoke(&records)? } else { graph_workload::summarize(&records)? });Ok(())},
         _=>Err("usage: graph-workload self-test | ingest FIXTURE STORE A|B RECEIPTS | truth FIXTURE A|B RECEIPTS OUTPUT | report MANIFEST REPETITIONS".into())
     }
 }

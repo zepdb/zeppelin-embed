@@ -36,7 +36,7 @@ pub fn scheduled_read(
     match result {
         Ok(result) => {
             let generation = result.metadata().generation.get();
-            let counters = observed_counters(&result);
+            let counters = observed_counters(store, &result)?;
             let rows = observe(&result)?;
             let report = result
                 .pools()
@@ -181,7 +181,7 @@ pub fn import_schedule(
         match result {
             Ok(receipt) => println!(
                 "{}",
-                json!({"sample":i,"elapsed_ns":receipt["request_ns"],"harness_elapsed_ns":elapsed,"status":0,"input":input,"receipt":receipt,"missing_input":"ZE-76 sync/checkpoint/staging/managed peaks"})
+                json!({"sample":i,"elapsed_ns":receipt["request_ns"],"harness_elapsed_ns":elapsed,"status":0,"input":input,"receipt":receipt,"counters":receipt["counters"],"ledger_before":receipt["ledger_before"],"ledger_after":receipt["ledger_after"],"disposal_ns":receipt["disposal_ns"]})
             ),
             Err(error) => {
                 println!(
@@ -237,7 +237,7 @@ pub fn mixed_load(
                 Ok(())
             }));
         }
-        let writer=scope.spawn(||->Result<(),String>{barrier.wait();for i in 0..write_count{let input=meeting(&template,i)?;let start=Instant::now();let result=apply_record(&store,root,&input,&mut ids);let elapsed=start.elapsed().as_nanos();let row=match result{Ok(receipt)=>json!({"participant":4,"sample":i,"elapsed_ns":receipt["request_ns"],"harness_elapsed_ns":elapsed,"status":0,"input":input,"receipt":receipt,"missing_input":"ZE-76 exact shared peak, sync/checkpoint counters"}),Err(error)=>json!({"participant":4,"sample":i,"elapsed_ns":elapsed,"status":1,"error":error})};rows.lock().map_err(|_|"sample collector poisoned")?.push(row);}Ok(())});
+        let writer=scope.spawn(||->Result<(),String>{barrier.wait();for i in 0..write_count{let input=meeting(&template,i)?;let start=Instant::now();let result=apply_record(&store,root,&input,&mut ids);let elapsed=start.elapsed().as_nanos();let row=match result{Ok(receipt)=>json!({"participant":4,"sample":i,"elapsed_ns":receipt["request_ns"],"harness_elapsed_ns":elapsed,"status":0,"input":input,"receipt":receipt,"counters":receipt["counters"],"ledger_before":receipt["ledger_before"],"ledger_after":receipt["ledger_after"],"disposal_ns":receipt["disposal_ns"]}),Err(error)=>json!({"participant":4,"sample":i,"elapsed_ns":elapsed,"status":1,"error":error})};rows.lock().map_err(|_|"sample collector poisoned")?.push(row);}Ok(())});
         for handle in handles {
             handle.join().map_err(|_| "reader panicked")??;
         }
@@ -282,7 +282,7 @@ pub fn retention_churn(
         let delete_ns = began.elapsed().as_nanos();
         println!(
             "{}",
-            json!({"history_keys":end,"create_ns":create_ns,"delete_ns":delete_ns,"created":created,"deleted":deleted,"missing_input":"ZE-76 cumulative canonical/fence retention and actual managed peaks"})
+            json!({"history_keys":end,"create_ns":create_ns,"delete_ns":delete_ns,"created":created,"deleted":deleted,"elapsed_ns":create_ns+delete_ns,"disposal_ns":created["disposal_ns"].as_u64().ok_or("create disposal")?+deleted["disposal_ns"].as_u64().ok_or("delete disposal")?,"status":0,"ledger_before":created["ledger_before"],"ledger_after":deleted["ledger_after"],"counters":resource_counters(&store)?,"generation":deleted["receipts"][0]["generation"]})
         );
         ids.clear();
     }
@@ -320,7 +320,7 @@ pub fn recover(path: &Path, read_only: bool) -> Result<(), String> {
     let total_ns = start.elapsed().as_nanos();
     println!(
         "{}",
-        json!({"process_cold":true,"os_cold":false,"read_only":read_only,"open_ns":open_ns,"through_first_admission_ns":total_ns,"generation":result.metadata().generation.get(),"counters":observed_counters(&result),"missing_input":"ZE-76 observed 64-envelope / 16MiB checkpoint-tail and creation-serial inventory counters"})
+        json!({"process_cold":true,"os_cold":false,"read_only":read_only,"open_ns":open_ns,"through_first_admission_ns":total_ns,"generation":result.metadata().generation.get(),"counters":observed_counters(&store, &result)?,"missing_input":"ZE-76 observed 64-envelope / 16MiB checkpoint-tail and creation-serial inventory counters"})
     );
     store.close().map_err(|e| e.to_string())
 }
@@ -461,9 +461,17 @@ pub fn cypher_imports(path: &Path, list: &Path, count: usize) -> Result<(), Stri
                 if r.metadata().rows != 0 {
                     return Err("metadata import must return zero rows".into());
                 }
+                let counters = observed_counters(&store, &r)?;
+                let generation = r.metadata().generation.get();
+                let receipts = r.pools().receipts.iter().enumerate().map(|(item, r)| {
+                    let (kind, id) = match r.receipt.entity { zeppelin_embed::property_graph::EntityId::Node(n)=>("node",n.get()), zeppelin_embed::property_graph::EntityId::Relationship(e)=>("relationship",e.get()) };
+                    json!({"item":item,"kind":kind,"id":id.to_string(),"revision":r.receipt.revision.get(),"generation":r.receipt.generation.get()})
+                }).collect::<Vec<_>>();
+                let disposal = Instant::now();
+                drop(r);
                 println!(
                     "{}",
-                    json!({"sample":index,"elapsed_ns":elapsed,"status":0,"generation":r.metadata().generation.get(),"outcome":format!("{:?}",r.metadata().outcome),"receipts":format!("{:?}",r.pools().receipts),"counters":observed_counters(&r)})
+                    json!({"sample":index,"elapsed_ns":elapsed,"disposal_ns":disposal.elapsed().as_nanos(),"status":0,"generation":generation,"receipts":receipts,"counters":counters})
                 );
             }
             Err(error) => {
@@ -697,15 +705,148 @@ pub fn recovery_series(list: &Path, read_only: bool) -> Result<(), String> {
         let result = cypher(&store, "MATCH (n) RETURN n LIMIT 1")?;
         let elapsed = start.elapsed().as_nanos();
         let generation = result.metadata().generation.get();
-        let counters = observed_counters(&result);
+        let counters = observed_counters(&store, &result)?;
+        let rows = observe(&result)?;
         let disposal = Instant::now();
         drop(result);
         let disposal = disposal.elapsed().as_nanos();
         println!(
             "{}",
-            json!({"sample":index,"elapsed_ns":elapsed,"open_ns":open_ns,"through_first_admission_ns":elapsed,"disposal_ns":disposal,"generation":generation,"counters":counters,"status":0,"first_open_in_process":index==0,"os_cold":false,"read_only":read_only})
+            json!({"sample":index,"elapsed_ns":elapsed,"open_ns":open_ns,"through_first_admission_ns":elapsed,"disposal_ns":disposal,"generation":generation,"counters":counters,"status":0,"rows":rows.iter().map(|r|r.iter().map(encode_cell).collect::<Vec<_>>()).collect::<Vec<_>>(),"first_open_in_process":index==0,"os_cold":false,"read_only":read_only})
         );
         store.close().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+/// Untimed complete public entity reads for import/retention correctness.
+/// Identity comes from receipts; all expected payload comes from frozen inputs.
+pub fn inspect_entities(path: &Path, requests: &Path) -> Result<(), String> {
+    use zeppelin_embed::property_graph::query::completed::{
+        Pools, Span, Value as Cell, ValueIndex,
+    };
+    use zeppelin_embed::property_graph::{GraphGetOptions, NodeId, RelId};
+    fn text(p: Pools<'_>, s: Span) -> Result<String, String> {
+        let bytes = p
+            .bytes
+            .get(s.start as usize..(s.start + s.len) as usize)
+            .ok_or("string range")?;
+        String::from_utf8(bytes.to_vec()).map_err(|e| e.to_string())
+    }
+    fn value(p: Pools<'_>, index: ValueIndex) -> Result<Value, String> {
+        Ok(match p.values.get(index.0 as usize).ok_or("value index")? {
+            Cell::Null => json!({"null":true}),
+            Cell::Bool(b) => json!({"bool":b}),
+            Cell::I64(i) => json!({"i64":i}),
+            Cell::F64(b) => json!({"f64_bits":format!("{b:016x}")}),
+            Cell::String(s) => json!({"string":text(p,*s)?}),
+            Cell::List { children, .. } => {
+                let items = p
+                    .children
+                    .get(children.start as usize..(children.start + children.len) as usize)
+                    .ok_or("children range")?;
+                json!({"list":items.iter().map(|i|value(p,*i)).collect::<Result<Vec<_>,_>>()?})
+            }
+            _ => return Err("entity property type".into()),
+        })
+    }
+    fn properties(p: Pools<'_>, s: Span) -> Result<Value, String> {
+        let mut result = json!({});
+        for prop in p
+            .properties
+            .get(s.start as usize..(s.start + s.len) as usize)
+            .ok_or("properties range")?
+        {
+            result[text(p, prop.name)?] = value(p, prop.value)?;
+        }
+        Ok(result)
+    }
+    let store = open(path)?;
+    for line in BufReader::new(std::fs::File::open(requests).map_err(|e| e.to_string())?).lines() {
+        let request: Value =
+            zeppelin_embed_bench::harness_json::from_str(&line.map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        let kind = request["kind"].as_str().ok_or("kind")?;
+        let id = request["id"]
+            .as_str()
+            .ok_or("ID")?
+            .parse::<u128>()
+            .map_err(|e| e.to_string())?;
+        let observed = if kind == "node" {
+            let result = store
+                .get_nodes(
+                    &[NodeId::new(id).map_err(|e| e.to_string())?],
+                    GraphGetOptions {
+                        text: true,
+                        vector: true,
+                    },
+                    &control(),
+                )
+                .map_err(|e| e.to_string())?;
+            if let Some(n) = result.nodes().first().ok_or("node result")? {
+                let p = result.pools();
+                json!({"id":id.to_string(),"revision":n.revision.get(),"key":n.key.map(|k|Ok::<Value,String>(json!({"namespace":text(p,k.namespace)?,"key":text(p,k.value)?}))).transpose()?,"labels":result.labels(n).iter().map(|s|text(p,*s)).collect::<Result<Vec<_>,_>>()?,"properties":properties(p,n.properties)?,"text":n.text.map(|s|text(p,s)).transpose()?,"vector_bits":n.vector.map(|s|result.vector(s).to_vec())})
+            } else {
+                Value::Null
+            }
+        } else if kind == "relationship" {
+            let result = store
+                .get_relationships(&[RelId::new(id).map_err(|e| e.to_string())?], &control())
+                .map_err(|e| e.to_string())?;
+            if let Some(r) = result
+                .relationships()
+                .first()
+                .ok_or("relationship result")?
+            {
+                json!({"id":id.to_string(),"revision":r.revision.get(),"key":r.key.map(|k|Ok::<Value,String>(json!({"namespace":text(result.pools(),k.namespace)?,"key":text(result.pools(),k.value)?}))).transpose()?,"source":r.source.get().to_string(),"target":r.target.get().to_string(),"type":text(result.pools(),r.relationship_type)?,"properties":properties(result.pools(),r.properties)?})
+            } else {
+                Value::Null
+            }
+        } else {
+            return Err("unknown entity kind".into());
+        };
+        if let Some(expected) = request.get("expected")
+            && expected != &observed
+        {
+            return Err(format!("complete baseline payload differs for {kind} {id}"));
+        }
+        println!("{}", json!({"observed":observed}));
+    }
+    store.close().map_err(|e| e.to_string())
+}
+
+/// Frozen baseline payload, independent of the retained store being checked.
+pub fn expected_entities(root: &Path, state: FixtureState, receipts: &Path) -> Result<(), String> {
+    use zeppelin_embed_adversarial_oracle::graph_fixture::{Property, Scalar};
+    fn scalar(s: &Scalar) -> Value {
+        match s {
+            Scalar::Bool(v) => json!({"bool":v}),
+            Scalar::I64(v) => json!({"i64":v}),
+            Scalar::F64(v) => json!({"f64_bits":format!("{v:016x}")}),
+            Scalar::String(v) => json!({"string":v}),
+        }
+    }
+    fn properties(p: &std::collections::BTreeMap<String, Property>) -> Value {
+        let mut result = json!({});
+        for (k, v) in p {
+            result[k] = match v {
+                Property::Scalar(v) => scalar(v),
+                Property::List(_, v) => json!({"list":v.iter().map(scalar).collect::<Vec<_>>()}),
+            };
+        }
+        result
+    }
+    let (snapshot, _) = primitive_snapshot(root, state, receipts)?;
+    for n in snapshot.nodes {
+        println!(
+            "{}",
+            json!({"kind":"node","id":n.id.to_string(),"expected":{"id":n.id.to_string(),"revision":n.revision,"key":n.key.map(|k|json!({"namespace":k.namespace,"key":k.value})),"labels":n.labels.into_iter().collect::<Vec<_>>(),"properties":properties(&n.properties),"text":n.text,"vector_bits":n.vector}})
+        );
+    }
+    for r in snapshot.relationships {
+        println!(
+            "{}",
+            json!({"kind":"relationship","id":r.id.to_string(),"expected":{"id":r.id.to_string(),"revision":r.revision,"key":r.key.map(|k|json!({"namespace":k.namespace,"key":k.value})),"source":r.source.to_string(),"target":r.target.to_string(),"type":r.relationship_type,"properties":properties(&r.properties)}})
+        );
     }
     Ok(())
 }

@@ -40,7 +40,7 @@ rand.workspace = true
 rand_chacha.workspace = true
 tempfile.workspace = true
 zeppelin-embed-adversarial-oracle = { path = "adversarial-oracle", version = "=0.5.0" }
-zeppelin-embed = { path = "../crates/zeppelin-embed", version = "=0.5.0", features = ["benchmark-kernels"] }
+zeppelin-embed = { path = "../crates/zeppelin-embed", version = "=0.5.0", features = ["benchmark-kernels", "test-seams"] }
 zeppelin-embed-bench = { path = "../crates/zeppelin-embed-bench", version = "=0.5.0" }
 zeppelin-embed-ffi = { path = "../crates/zeppelin-embed-ffi", version = "=0.5.0", features = ["abi-panic-probe"] }
 
