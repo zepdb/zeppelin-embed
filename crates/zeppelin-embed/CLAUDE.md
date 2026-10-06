@@ -1063,8 +1063,9 @@ results, default-budget atomicity, indeterminate recovery and mixed revisions.
   mutations out of the WAL: it drops a member run that the log end, a new
   member 0 or a standalone record cuts short (that append never returned),
   and fails loudly on a member that continues nothing.
-- Atomicity is per store. Namespaces have independent WALs and manifests;
-  cross-namespace atomicity needs a commit protocol that does not exist.
+- Atomicity here is per store. Namespaces have independent WALs and manifests;
+  ZE-239/ZE-256 root-coordinated namespace batches provide cross-namespace
+  atomicity.
 
 ## ZE-240 id128 attributes
 
@@ -1112,10 +1113,30 @@ results, default-budget atomicity, indeterminate recovery and mixed revisions.
 - Read-only opens select a complete prepared store without sibling recovery or
   filesystem writes. Old readers retain old snapshots. Missing/corrupt referenced
   metadata fails; original store contents are never a recovery fallback.
-- This first API requires closed participant writers and retains old/abandoned
-  stores. Its deletes are logical, not physical erasure. Reclamation, incremental
-  preparation and live-writer participation are separate work. Export through
-  snapshot; moving an enlisted namespace away from its root is refused.
+- Historically, this first API required closed participant writers, retained
+  old/abandoned stores and performed logical deletes. ZE-256 supersedes those
+  limits with live participation, reclamation and physical deletion. Export
+  through snapshot; moving an enlisted namespace away from its root is refused.
+
+## ZE-256 live namespace batches
+
+Owner decision 2026-10-05 (Anup): record the implemented ZE-256 formats,
+reclamation files and failure contract.
+
+- `.ze-namespaces` uses `ZENS0002` for staged participant selections and the
+  complete route table. After participant acceptance, normalization publishes
+  `ZENS0001` again.
+- Append-only WAL op 9, `PREPARED_MUTATION_V1`, carries transaction-bound
+  prepared evidence. Preparation alone is not commitment; replay requires the
+  matching root decision and complete prepared mutation run.
+- Root `.ze-cleanup` records a durable, resumable reclamation intent.
+  `.ze-retired` marks retired storage and prevents reopening it as fallback
+  storage.
+- `.ze-readers.lock` protects reader admission and retained storage against
+  reclamation. Lock stubs are never unlinked.
+- An indeterminate publication/adoption failure fences participant writes by
+  clearing their WAL writer slots and preserves prepared evidence. Participants
+  must close/reopen before further writes.
 
 ## ZE-260 S6c bookkeeping (S7 maintenance foundation)
 
