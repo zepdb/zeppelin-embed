@@ -2377,6 +2377,28 @@ typedef struct ZeSearchFilteredRequest {
 } ZeSearchFilteredRequest;
 
 /*
+ Prepares the lexical assembly and prefix vocabulary for the current generation.
+ */
+typedef struct ZeWarmLexicalRequest {
+    /*
+     Caller-provided structure size.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Optional cancellation token; mutually exclusive with deadline_ns.
+     */
+    ze_cancel_token cancel_token;
+    /*
+     Relative deadline in nanoseconds; zero means no deadline.
+     */
+    uint64_t deadline_ns;
+} ZeWarmLexicalRequest;
+
+/*
  Structured query request. Encoding decision (task 22 phase 2): a
  size-versioned `repr(C)` struct, the same shape as every other request in
  this ABI, rather than a compact binary encoding. Reasons: the fields are
@@ -3531,6 +3553,13 @@ ze_error_code ze_search(ze_handle handle,
 ze_error_code ze_search_filtered(ze_handle handle,
                                  const struct ZeSearchFilteredRequest *request,
                                  struct ZeSearchResult *out_result);
+
+/*
+ Prepares lexical assembly and prefix vocabulary without executing a query.
+ Mutations invalidate preparation; callers may warm again afterward.
+ */
+ze_error_code ze_warm_lexical(ze_handle handle,
+                              const struct ZeWarmLexicalRequest *request);
 
 /*
  Runs one structured query: a vector leg, a lexical leg, or exact hybrid

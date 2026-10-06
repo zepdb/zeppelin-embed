@@ -46,6 +46,38 @@ final class ZeppelinStoreTests: XCTestCase {
         try await store.close()
     }
 
+    func testZE265WarmLexical() async throws {
+        let path = try storePath(#function)
+        defer { try? FileManager.default.removeItem(at: path) }
+        let store = try await ZeppelinStore.open(at: path)
+        _ = try await store.ingest([IngestDocument(
+            id: DocumentID(high: 0, low: 1), revision: 1, timestamp: 1,
+            vector: vector(0), text: "common pair"
+        )])
+        _ = try await store.seal()
+        let expected = try await store.query(text: "common pair", options: QueryOptions(k: 10))
+        let expectedPrefix = try await store.query(text: "common pai", options: QueryOptions(k: 10, lastAsPrefix: true))
+        try await store.close()
+        let reopened = try await ZeppelinStore.open(at: path)
+        try await reopened.warmLexical()
+        try await reopened.warmLexical()
+        let exact = try await reopened.query(text: "common pair", options: QueryOptions(k: 10))
+        let prefix = try await reopened.query(text: "common pai", options: QueryOptions(k: 10, lastAsPrefix: true))
+        XCTAssertEqual(exact.hits.map(\.documentID), expected.hits.map(\.documentID))
+        XCTAssertEqual(exact.hits.map(\.score), expected.hits.map(\.score))
+        XCTAssertEqual(prefix.hits.map(\.documentID), expectedPrefix.hits.map(\.documentID))
+        XCTAssertEqual(prefix.hits.map(\.score), expectedPrefix.hits.map(\.score))
+        let token = try await ZeppelinCancellationToken.create()
+        try await token.cancel()
+        do {
+            try await reopened.warmLexical(cancellationToken: token)
+            XCTFail("cancelled warm succeeded")
+        } catch { XCTAssertEqual(error as? ZeppelinError, .cancelled) }
+        try await token.free()
+        try await reopened.warmLexical()
+        try await reopened.close()
+    }
+
     func testOpenIngestQueryCloseRoundTripSucceeds() async throws {
         let path = try storePath(#function)
         defer { try? FileManager.default.removeItem(at: path) }

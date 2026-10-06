@@ -20,3 +20,11 @@ folder: the engine owns its rename, lock, and durability protocol.
 
 The host owns maintenance scheduling. The package does not register or schedule
 background work.
+
+### Prepare lexical queries after open
+
+Use `try await store.warmLexical()` before exact or `lastAsPrefix` queries.
+It prepares the lexical assembly and prefix vocabulary, including record-only
+namespaces. Repeated calls reuse preparation; mutations invalidate it.
+Optional `cancellationToken` and `deadlineNanoseconds` controls are mutually
+exclusive. A cancelled call may retain a complete assembly and can be retried.

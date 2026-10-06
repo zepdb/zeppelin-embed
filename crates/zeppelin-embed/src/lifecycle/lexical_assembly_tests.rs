@@ -405,6 +405,10 @@ fn ze_265_warm_prepares_first_query() {
             .expect("assembly")
             .document_identity_verified
     );
+    println!(
+        "ZE-265 warmed fixture cache bytes={}",
+        store.stats().expect("stats").cache_bytes
+    );
     let first = exact_query(&store);
     assert_eq!(first.candidates.len(), 3);
     assert_eq!(first.candidates, exact_query(&store).candidates);
@@ -415,7 +419,7 @@ fn ze_265_warm_prepares_first_query() {
     );
     assert_eq!(
         crate::fts::preparation_observer::vocabulary_work().builds,
-        0
+        1
     );
     assert_eq!(crate::fts::preparation_observer::filter_work(), (0, 0, 0));
     crate::fts::preparation_observer::take();
@@ -423,6 +427,7 @@ fn ze_265_warm_prepares_first_query() {
 
 #[test]
 fn ze_265_repeated_warm_and_mutation() {
+    crate::fts::preparation_observer::begin();
     let (_dir, store) = reopened_fixture();
     for _ in 0..2 {
         store
@@ -430,11 +435,20 @@ fn ze_265_repeated_warm_and_mutation() {
             .expect("warm");
     }
     assert_eq!(store.lexical_index_cache_counters().1, 1);
+    assert_eq!(
+        crate::fts::preparation_observer::vocabulary_work().builds,
+        1
+    );
     append(&store, 4);
     store
         .warm_lexical(QueryControl::Cancel(CancelToken::new()))
         .expect("warm mutation");
     assert_eq!(store.lexical_index_cache_counters().1, 2);
+    assert_eq!(
+        crate::fts::preparation_observer::vocabulary_work().builds,
+        2
+    );
+    crate::fts::preparation_observer::take();
     assert_eq!(exact_query(&store).candidates.len(), 4);
     assert_eq!(store.lexical_index_cache_counters().1, 2);
 }
@@ -463,4 +477,125 @@ fn ze_265_cancelled_warm_publishes_no_assembly() {
         .warm_lexical(QueryControl::Cancel(CancelToken::new()))
         .expect("retry with fresh control");
     assert_eq!(store.lexical_index_cache_counters().1, 1);
+}
+
+#[test]
+fn ze_265_warm_prepares_first_prefix_query() {
+    use crate::fts::{index::DEFAULT_FIELD, query::LexicalQuery, search::FieldWeights};
+    let query = LexicalQuery::TermsWithPrefix {
+        terms: vec![b"common".to_vec()],
+        prefix: b"pa".to_vec(),
+        fields: FieldWeights::flat(&[DEFAULT_FIELD]),
+    };
+    let run = |store: &Store| {
+        store
+            .search_lexical_structured(&query, 10, 64, QueryControl::Cancel(CancelToken::new()))
+            .expect("prefix query")
+    };
+    let (_cold_dir, cold) = reopened_fixture();
+    let expected = run(&cold);
+    let (_dir, store) = reopened_fixture();
+    crate::fts::preparation_observer::begin();
+    store
+        .warm_lexical(QueryControl::Cancel(CancelToken::new()))
+        .expect("warm");
+    assert_eq!(
+        crate::fts::preparation_observer::vocabulary_work().builds,
+        1
+    );
+    crate::fts::preparation_observer::begin();
+    assert_eq!(run(&store).candidates, expected.candidates);
+    assert_eq!(
+        exact_query(&store).candidates,
+        exact_query(&cold).candidates
+    );
+    assert_eq!(store.lexical_index_cache_counters().1, 1);
+    assert_eq!(
+        crate::fts::preparation_observer::vocabulary_work().builds,
+        0
+    );
+    crate::fts::preparation_observer::take();
+}
+
+#[test]
+fn ze_265_cancelled_vocabulary_is_not_published_and_retry_succeeds() {
+    use std::time::{Duration, Instant};
+    struct BuildClock {
+        base: Instant,
+    }
+    impl MonotonicClock for BuildClock {
+        fn now(&self) -> Instant {
+            if crate::fts::preparation_observer::vocabulary_group_checks() > 0 {
+                return self.base + Duration::from_secs(2);
+            }
+            self.base
+        }
+    }
+    let dir = tempfile::tempdir().expect("directory");
+    let mut store = Store::open(dir.path(), OpenOptions::default()).expect("open");
+    let text = (0..4096)
+        .map(|i| format!("word{i:04}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(1), Revision::new(1)),
+                vec![1.0, 0.0],
+            )
+            .with_text(text),
+        ]))
+        .expect("ingest");
+    exact_query(&store); // Only the assembly is prepared.
+    let before = store.stats().expect("stats").cache_bytes;
+    let clock = Arc::new(BuildClock {
+        base: Instant::now(),
+    });
+    let deadline =
+        Deadline::after_with_test_clock(Duration::from_secs(1), clock.clone()).expect("deadline");
+    store.clock = clock;
+    crate::fts::preparation_observer::begin();
+    assert!(matches!(
+        store.warm_lexical(QueryControl::Deadline(deadline)),
+        Err(crate::ingest::StoreLexicalError::Query(QueryError::Scan(
+            crate::scan::ScanError::Timeout { partial: false }
+        )))
+    ));
+    assert!(crate::fts::preparation_observer::vocabulary_group_checks() > 0);
+    crate::fts::preparation_observer::take();
+    assert!(
+        store
+            .lexical_index_cache
+            .entry
+            .lock()
+            .expect("cache")
+            .as_ref()
+            .expect("assembly")
+            .assembly
+            .vocabulary
+            .lock()
+            .expect("vocabulary")
+            .is_none()
+    );
+    assert_eq!(store.stats().expect("stats").cache_bytes, before);
+    assert_eq!(store.stats().expect("stats").temporary_bytes, 0);
+    store.clock = Arc::new(SystemMonotonicClock);
+    store
+        .warm_lexical(QueryControl::Cancel(CancelToken::new()))
+        .expect("retry");
+    assert_eq!(store.lexical_index_cache_counters().1, 1);
+    assert!(
+        store
+            .lexical_index_cache
+            .entry
+            .lock()
+            .expect("cache")
+            .as_ref()
+            .expect("assembly")
+            .assembly
+            .vocabulary
+            .lock()
+            .expect("vocabulary")
+            .is_some()
+    );
 }

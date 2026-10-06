@@ -61,3 +61,11 @@ Publishing a GitHub release whose tag matches `v<version>` builds and verifies
 the macOS arm64 wheel, then uploads it with PyPI Trusted Publishing. Configure
 the PyPI publisher with owner `zepdb`, repository `zeppelin-embed`, workflow
 `python-release.yml`, and environment `pypi`.
+
+### Prepare lexical queries after open
+
+Call `store.warm_lexical()` before exact or `last_as_prefix=True` queries to
+prepare the lexical assembly and prefix vocabulary, including record-only
+namespaces. Repeated calls reuse preparation; mutations invalidate it.
+Optional `cancel_token` and `deadline_ns` controls are mutually exclusive.
+A cancelled call may retain a complete assembly and can be retried.

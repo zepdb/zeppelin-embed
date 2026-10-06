@@ -1431,6 +1431,20 @@ pub struct ZeEpochDropReport {
     pub bytes_reclaimed: u64,
 }
 
+/// Prepares the lexical assembly and prefix vocabulary for the current generation.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ZeWarmLexicalRequest {
+    /// Caller-provided structure size.
+    pub abi_size: u32,
+    /// Must be zero.
+    pub abi_reserved: u32,
+    /// Optional cancellation token; mutually exclusive with deadline_ns.
+    pub cancel_token: ZeCancelToken,
+    /// Relative deadline in nanoseconds; zero means no deadline.
+    pub deadline_ns: u64,
+}
+
 /// Structured query request. Encoding decision (task 22 phase 2): a
 /// size-versioned `repr(C)` struct, the same shape as every other request in
 /// this ABI, rather than a compact binary encoding. Reasons: the fields are

@@ -71,3 +71,4 @@ ze_upsert
 ze_upsert_conditional
 ze_verify
 ze_verify_result_free
+ze_warm_lexical

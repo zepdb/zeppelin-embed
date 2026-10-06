@@ -84,6 +84,10 @@ const DETAILED_MATRIX: &[(&str, MatrixCall)] = &[
 ];
 
 const ABI_REGISTRY: &[AbiEntry] = &[
+    AbiEntry {
+        name: "ze_warm_lexical",
+        coverage: AbiCoverage::InvalidProbe(probe_warm_lexical),
+    },
     #[cfg(feature = "graph-cypher")]
     AbiEntry {
         name: "ze_graph_open",
@@ -1620,4 +1624,8 @@ fn probe_graph_query(_: &MatrixContext) -> ProbeResult {
         std::ptr::null(),
         std::ptr::null_mut(),
     ))
+}
+
+fn probe_warm_lexical(context: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_warm_lexical(context.store.handle, std::ptr::null()))
 }

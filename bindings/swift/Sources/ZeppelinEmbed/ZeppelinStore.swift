@@ -382,6 +382,20 @@ public actor ZeppelinStore {
         }
     }
 
+    /// Prepares exact and prefix lexical queries. Mutations invalidate preparation.
+    public func warmLexical(cancellationToken: ZeppelinCancellationToken? = nil,
+                            deadlineNanoseconds: UInt64 = 0) async throws {
+        let current = try openHandle()
+        let token = try cancellationToken?.rawValue() ?? 0
+        try await Self.runBlocking {
+            var request = ZeWarmLexicalRequest()
+            request.abi_size = abiSize(ZeWarmLexicalRequest.self)
+            request.cancel_token = token
+            request.deadline_ns = deadlineNanoseconds
+            try checkZeppelin(ze_warm_lexical(current, &request))
+        }
+    }
+
     public func seal(cancellationToken: ZeppelinCancellationToken? = nil) async throws
         -> GenerationReport
     {

@@ -728,3 +728,12 @@ def sized(structure_type: type[SizedStructure]) -> SizedStructure:
     value = structure_type()
     value.abi_size = ct.sizeof(structure_type)
     return value
+
+
+class ZeWarmLexicalRequest(ct.Structure):
+    _fields_ = [
+        ("abi_size", ct.c_uint32),
+        ("abi_reserved", ct.c_uint32),
+        ("cancel_token", ct.c_uint64),
+        ("deadline_ns", ct.c_uint64),
+    ]

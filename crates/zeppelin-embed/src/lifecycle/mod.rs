@@ -3964,11 +3964,11 @@ impl Store {
         })
     }
 
-    /// Prepares the current lexical assembly without ranking or vocabulary work.
+    /// Prepares the current lexical assembly and prefix vocabulary without ranking.
     ///
     /// Call after open to move lazy assembly preparation out of the first query.
-    /// Mutations can invalidate the prepared assembly. Cancellation returns a
-    /// typed error without publishing a partial assembly.
+    /// Mutations can invalidate both caches. Cancellation may retain a complete
+    /// assembly, but never publishes a partial vocabulary.
     pub fn warm_lexical(
         &self,
         control: QueryControl,
@@ -3978,7 +3978,7 @@ impl Store {
         let lease = SnapshotLease::new_at(Arc::clone(&admission.snapshot), admission.generation);
         let cancellation = QueryCancellation::new(&control, &lease);
         cancellation.check_graph().map_err(QueryError::Scan)?;
-        assemble_unfiltered_lexical_index(
+        let receipt = assemble_unfiltered_lexical_index(
             LexicalInputs {
                 filter: None,
                 generation: admission.generation,
@@ -3991,6 +3991,7 @@ impl Store {
             Some(&cancellation),
         )
         .map_err(map_store_lexical_assembly_error)?;
+        receipt.vocabulary(&self.accounting, &cancellation)?;
         Ok(())
     }
 

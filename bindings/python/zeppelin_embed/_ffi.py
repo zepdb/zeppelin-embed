@@ -101,3 +101,5 @@ if TEXT_AVAILABLE:
 ABI_VERSION = int(LIBRARY.ze_abi_version())
 if ABI_VERSION != 1:
     raise ImportError(f"unsupported Zeppelin Embed ABI version {ABI_VERSION}; expected 1")
+
+_bind("ze_warm_lexical", [Handle, ct.POINTER(s.ZeWarmLexicalRequest)])

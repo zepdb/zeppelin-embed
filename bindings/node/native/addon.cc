@@ -3621,6 +3621,36 @@ napi_value CloseStore(napi_env env, napi_callback_info info) {
   });
 }
 
+template <bool Async = false>
+napi_value WarmLexical(napi_env env, napi_callback_info info) {
+  return Guard(env, [&]() -> napi_value {
+    size_t argc = 1;
+    napi_value args[1], receiver;
+    if (!NapiOk(env, napi_get_cb_info(env, info, &argc, args, &receiver, nullptr),
+                "read warm receiver"))
+      return nullptr;
+    NativeStore *store = UnwrapStore(env, receiver);
+    if (store == nullptr)
+      return nullptr;
+    auto request = std::make_shared<ZeWarmLexicalRequest>();
+    request->abi_size = sizeof(ZeWarmLexicalRequest);
+    if (argc > 0 && !GetOptionalUint64(env, args[0], "cancelToken", 0,
+                                      &request->cancel_token))
+      return nullptr;
+    const auto handle = store->handle;
+    return RunNative<Async>(env, receiver, handle,
+        [request, handle]() { return ze_warm_lexical(handle, request.get()); },
+        [env](ze_error_code status, const std::string &message) -> napi_value {
+          if (status != ZE_OK)
+            return ThrowWorkerError(env, status, message);
+          napi_value result;
+          if (!NapiOk(env, napi_get_undefined(env, &result), "create warm result"))
+            return nullptr;
+          return result;
+        });
+  });
+}
+
 // Seals the active segment into an immutable segment and absorbs the WAL
 // prefix it covers, so reopening the store no longer replays those writes.
 // An empty active segment is a no-op that returns the current generation.
@@ -4765,6 +4795,10 @@ napi_value Initialize(napi_env env, napi_value exports) {
       {"openMigrations", nullptr, OpenMigrations, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"reindexText", nullptr, ReindexTextStore, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"warmLexical", nullptr, WarmLexical<false>, nullptr, nullptr, nullptr,
+       napi_default, nullptr},
+      {"warmLexicalAsync", nullptr, WarmLexical<true>, nullptr, nullptr, nullptr,
        napi_default, nullptr},
       {"sealAsync", nullptr, SealStore<true>, nullptr, nullptr, nullptr,
        napi_default, nullptr},

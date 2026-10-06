@@ -1420,6 +1420,16 @@ class Store:
                 assert primary is not None
                 primary.add_note(f"ze_query_result_free: {last_error_message(handle)}")
 
+    def warm_lexical(self, cancel_token: CancelToken | None = None, *, deadline_ns: int = 0) -> None:
+        """Prepare exact and prefix lexical queries; mutations invalidate preparation."""
+        handle = self._live_handle()
+        request = s.ZeWarmLexicalRequest(
+            abi_size=ct.sizeof(s.ZeWarmLexicalRequest),
+            cancel_token=0 if cancel_token is None else cancel_token.value,
+            deadline_ns=deadline_ns,
+        )
+        raise_for_status(self._call(LIBRARY.ze_warm_lexical, handle, ct.byref(request)), handle)
+
     def seal(self, cancel_token: CancelToken | None = None) -> GenerationReport:
         handle = self._live_handle()
         request = s.ZeSealRequest(

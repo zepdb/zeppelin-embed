@@ -144,3 +144,26 @@ def test_epoch_declared_store_and_transitions_are_bound(tmp_path: Path) -> None:
         assert not switched.manifest_committed
         with pytest.raises(ze.EpochPublished):
             store.epoch_drop(epoch)
+
+
+def test_ze265_warm_lexical(tmp_path: Path) -> None:
+    path = tmp_path / "warm"
+    with ze.open(path) as store:
+        store.ingest([1, 2], np.asarray([[1., 0.], [0., 1.]], dtype=np.float32),
+                     texts=["common pair", "common paint"])
+        store.seal()
+        exact = store.query(text="common pair").hits
+        prefix = store.query(text="common pai", last_as_prefix=True).hits
+    with ze.open(path) as store:
+        assert store.warm_lexical() is None
+        assert store.warm_lexical() is None
+        assert store.query(text="common pair").hits == exact
+        assert store.query(text="common pai", last_as_prefix=True).hits == prefix
+        with ze.CancelToken() as token:
+            token.cancel()
+            with pytest.raises(ze.ZeppelinError) as error:
+                store.warm_lexical(cancel_token=token)
+            assert error.value.code == 12
+        store.warm_lexical()
+    with pytest.raises(ze.ZeppelinError):
+        store.warm_lexical()

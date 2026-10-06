@@ -4135,6 +4135,29 @@ pub extern "C" fn ze_search_filtered(
     })
 }
 
+/// Prepares lexical assembly and prefix vocabulary without executing a query.
+/// Mutations invalidate preparation; callers may warm again afterward.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_warm_lexical(
+    handle: ZeHandle,
+    request: *const ZeWarmLexicalRequest,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        finish(
+            Some(handle),
+            (|| {
+                let access = registry::lookup(handle)?;
+                let request = marshal::read_struct(request)?;
+                let control = query_control_for(request.cancel_token, request.deadline_ns)?;
+                access
+                    .store
+                    .warm_lexical(control)
+                    .map_err(FfiError::lexical)
+            })(),
+        )
+    })
+}
+
 /// Runs one structured query: a vector leg, a lexical leg, or exact hybrid
 /// fusion of both. Every request pointer is caller-owned for the call. On
 /// success `hits` is callee-owned and must be released exactly once with

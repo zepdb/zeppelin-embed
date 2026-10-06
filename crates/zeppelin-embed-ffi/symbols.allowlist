@@ -65,3 +65,4 @@ ze_namespace_batch
 ze_namespace_declare_cascade
 ze_namespace_delete_cascade
 ze_namespace_batch_live
+ze_warm_lexical

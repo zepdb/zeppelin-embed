@@ -313,6 +313,17 @@ class Store {
     } catch (error) { throw translateError(error); }
   }
 
+  warmLexical() {
+    try { return this._native.warmLexical(); }
+    catch (error) { throw translateError(error); }
+  }
+
+  async warmLexicalAsync(options = {}) {
+    try {
+      return await withSignal(options.signal, token => this._native.warmLexicalAsync({ cancelToken: token ?? 0n }));
+    } catch (error) { throw translateError(error); }
+  }
+
   async sealAsync() {
     return this._queueWrite(async () => {
       const report = await this._native.sealAsync();

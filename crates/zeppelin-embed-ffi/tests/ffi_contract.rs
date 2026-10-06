@@ -1658,3 +1658,13 @@ fn ze241_every_graph_export_has_an_explicit_handle_policy() {
         }
     }
 }
+
+#[test]
+fn ze_265_warm_request_has_frozen_layout() {
+    assert_eq!(size_of::<ZeWarmLexicalRequest>(), 24);
+    assert_eq!(align_of::<ZeWarmLexicalRequest>(), 8);
+    assert_eq!(offset_of!(ZeWarmLexicalRequest, abi_size), 0);
+    assert_eq!(offset_of!(ZeWarmLexicalRequest, abi_reserved), 4);
+    assert_eq!(offset_of!(ZeWarmLexicalRequest, cancel_token), 8);
+    assert_eq!(offset_of!(ZeWarmLexicalRequest, deadline_ns), 16);
+}

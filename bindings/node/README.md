@@ -612,3 +612,13 @@ Run `ZE_LONG_SOAK=1 node --test test/bounded-soak.test.mjs` for 48 hours per pha
 (up to 30 minutes instead of the normal three-minute deadline). The workload
 uses `commitTier: 'none'` to measure engine behavior without per-write fsync;
 it does not qualify power-loss durability or weeks of real-time use.
+
+### Prepare lexical queries after open
+
+Call `await store.warmLexicalAsync({ signal })` after opening a namespace to
+prepare its lexical assembly and prefix vocabulary before the first search.
+`store.warmLexical()` is the synchronous alternative. Both return no value.
+This also works for record-only namespaces and empty stores. Repeated calls
+reuse the current caches; mutations invalidate preparation, so warm again
+after writes when first-query latency matters. Prefer the async method to
+keep Wallflower's event loop free.
