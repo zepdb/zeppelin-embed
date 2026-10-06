@@ -2941,7 +2941,7 @@ impl Store {
                 .unwrap_or_else(crate::fts::tokenizer::TokenizerConfig::text_default),
         )
         .map_err(StoreError::Tokenizer)?;
-        let native_graph = native_graph::NativeGraphPublication::new(&accounting)?;
+        let native_graph = native_graph::NativeGraphPublication::new(&accounting, true)?;
         #[cfg(test)]
         let teardown_probe = Arc::new(close::TeardownProbe::new());
         Ok(Self {
@@ -3368,7 +3368,8 @@ impl Store {
             AccessMode::ReadOnly => None,
         };
         #[cfg(feature = "graph-cypher")]
-        let native_graph = native_graph::NativeGraphPublication::new(&accounting)?;
+        let native_graph =
+            native_graph::NativeGraphPublication::new(&accounting, snapshot.graph_enabled)?;
         #[cfg(test)]
         let (snapshot, background, teardown_probe) = {
             let mut snapshot = snapshot;

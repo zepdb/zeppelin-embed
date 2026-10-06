@@ -59,7 +59,10 @@ impl Store {
         let published = published.as_ref().ok_or(StoreError::Closed)?;
         let snapshot = published.fork_read_view(&self.accounting)?;
         #[cfg(feature = "graph-cypher")]
-        let native_graph = super::native_graph::NativeGraphPublication::new(&self.accounting)?;
+        let native_graph = super::native_graph::NativeGraphPublication::new(
+            &self.accounting,
+            published.graph_enabled,
+        )?;
         self.snapshot_pins
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 count.checked_add(1)

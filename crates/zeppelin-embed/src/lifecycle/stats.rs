@@ -1198,6 +1198,29 @@ mod tests {
 
     #[cfg(feature = "graph-cypher")]
     #[test]
+    fn native_graph_bytes_is_zero_for_a_graph_free_store() {
+        let directory = tempdir().expect("directory");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+        assert_eq!(store.stats().expect("stats").native_graph_bytes, 0);
+        store.enable_graph().expect("enable graph");
+        let enabled_bytes = store.stats().expect("enabled stats").native_graph_bytes;
+        assert!(enabled_bytes > 0);
+        store.enable_graph().expect("enable again");
+        assert_eq!(
+            store.stats().expect("stats").native_graph_bytes,
+            enabled_bytes
+        );
+        store.close().expect("close");
+        let reopened = Store::open(directory.path(), OpenOptions::default()).expect("reopen");
+        assert_eq!(
+            reopened.stats().expect("stats").native_graph_bytes,
+            enabled_bytes
+        );
+        reopened.close().expect("close");
+    }
+
+    #[cfg(feature = "graph-cypher")]
+    #[test]
     fn ze204_native_only_stats_succeed_until_close() {
         let directory = tempdir().expect("directory");
         let store = Store::create_native_graph(

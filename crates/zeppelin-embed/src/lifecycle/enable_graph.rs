@@ -79,6 +79,7 @@ impl Store {
             &self.schema,
         )?;
         if manifest.graph.is_some() {
+            self.native_graph.enable_registries()?;
             return Ok(current.generation);
         }
         let generation = current
@@ -108,6 +109,7 @@ impl Store {
             barrier,
         )
         .map_err(StoreError::Manifest)?;
+        self.native_graph.enable_registries()?;
         let remapped = PublishedSnapshot::from_manifest(
             self.vfs.as_ref(),
             &self.directory,

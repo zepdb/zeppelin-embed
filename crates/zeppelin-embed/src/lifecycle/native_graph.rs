@@ -681,7 +681,79 @@ pub(crate) struct NativeGraphPublication {
 }
 
 impl NativeGraphPublication {
-    pub(crate) fn new(accounting: &Arc<super::stats::Accounting>) -> Result<Arc<Self>, StoreError> {
+    pub(crate) fn new(
+        accounting: &Arc<super::stats::Accounting>,
+        enabled: bool,
+    ) -> Result<Arc<Self>, StoreError> {
+        let charge = super::stats::AccountedCounter::new(
+            accounting,
+            super::stats::AllocationComponent::NativeGraph,
+        )?;
+        let leases = Vec::new();
+        let mappings = Vec::new();
+        let preparations = Vec::new();
+        let spills = Vec::new();
+        let publication = Arc::new(Self {
+            #[cfg(test)]
+            assigned_generation: std::sync::atomic::AtomicU64::new(0),
+            state: Mutex::new(PublicationState {
+                current: None,
+                charge,
+                leases,
+                mappings,
+                preparations,
+                spills,
+                next_token: 1,
+                next_mapping_token: 1,
+                next_preparation_token: 1,
+                next_spill_token: 1,
+                creation_serial_fence: 0,
+                closing: false,
+                admissions_stopped: false,
+                #[cfg(any(test, feature = "test-seams"))]
+                admission_hook: None,
+                #[cfg(any(test, feature = "test-seams"))]
+                maintenance_writer_hook: None,
+                #[cfg(any(test, feature = "test-seams"))]
+                close_owner_hook: None,
+            }),
+            changed: Condvar::new(),
+            accounting: Arc::clone(accounting),
+            writer: Mutex::new(None),
+            commits_since_reclaim: std::sync::atomic::AtomicU64::new(0),
+            pack_bytes_since_reclaim: std::sync::atomic::AtomicU64::new(0),
+            sweep_resume: Mutex::new(Default::default()),
+            maintenance_policy: Mutex::new(crate::property_graph::GraphMaintenancePolicy::default()),
+            read_only: AtomicBool::new(false),
+            #[cfg(any(test, feature = "test-seams"))]
+            fail_next_publication: AtomicBool::new(false),
+            #[cfg(any(test, feature = "test-seams"))]
+            substitute_old_out: AtomicBool::new(false),
+            #[cfg(all(feature = "allocation-audit", any(test, feature = "test-seams")))]
+            commit_allocations: std::sync::atomic::AtomicU64::new(u64::MAX),
+            #[cfg(all(feature = "allocation-audit", any(test, feature = "test-seams")))]
+            commit_allocation_denials: std::sync::atomic::AtomicU64::new(u64::MAX),
+            #[cfg(any(test, feature = "test-seams"))]
+            proof_work: std::sync::atomic::AtomicU64::new(u64::MAX),
+        });
+        if enabled {
+            publication.enable_registries()?;
+        }
+        Ok(publication)
+    }
+
+    /// Allocate the bounded backing once, before graph state is installed.
+    pub(crate) fn enable_registries(&self) -> Result<(), StoreError> {
+        let mut state = self.state.lock().map_err(|_| StoreError::Synchronization {
+            component: "native graph publication",
+        })?;
+        if state.closing {
+            return Err(StoreError::Closing);
+        }
+        if !state.leases.is_empty() {
+            return Ok(());
+        }
+        let accounting = &self.accounting;
         let mut charge = super::stats::AccountedCounter::new(
             accounting,
             super::stats::AllocationComponent::NativeGraph,
@@ -772,49 +844,12 @@ impl NativeGraphPublication {
             component: "native graph spill registry",
         })?;
         spills.resize_with(MAX_NATIVE_SPILL_PREPARATIONS, || None);
-        Ok(Arc::new(Self {
-            #[cfg(test)]
-            assigned_generation: std::sync::atomic::AtomicU64::new(0),
-            state: Mutex::new(PublicationState {
-                current: None,
-                charge,
-                leases,
-                mappings,
-                preparations,
-                spills,
-                next_token: 1,
-                next_mapping_token: 1,
-                next_preparation_token: 1,
-                next_spill_token: 1,
-                creation_serial_fence: 0,
-                closing: false,
-                admissions_stopped: false,
-                #[cfg(any(test, feature = "test-seams"))]
-                admission_hook: None,
-                #[cfg(any(test, feature = "test-seams"))]
-                maintenance_writer_hook: None,
-                #[cfg(any(test, feature = "test-seams"))]
-                close_owner_hook: None,
-            }),
-            changed: Condvar::new(),
-            accounting: Arc::clone(accounting),
-            writer: Mutex::new(None),
-            commits_since_reclaim: std::sync::atomic::AtomicU64::new(0),
-            pack_bytes_since_reclaim: std::sync::atomic::AtomicU64::new(0),
-            sweep_resume: Mutex::new(Default::default()),
-            maintenance_policy: Mutex::new(crate::property_graph::GraphMaintenancePolicy::default()),
-            read_only: AtomicBool::new(false),
-            #[cfg(any(test, feature = "test-seams"))]
-            fail_next_publication: AtomicBool::new(false),
-            #[cfg(any(test, feature = "test-seams"))]
-            substitute_old_out: AtomicBool::new(false),
-            #[cfg(all(feature = "allocation-audit", any(test, feature = "test-seams")))]
-            commit_allocations: std::sync::atomic::AtomicU64::new(u64::MAX),
-            #[cfg(all(feature = "allocation-audit", any(test, feature = "test-seams")))]
-            commit_allocation_denials: std::sync::atomic::AtomicU64::new(u64::MAX),
-            #[cfg(any(test, feature = "test-seams"))]
-            proof_work: std::sync::atomic::AtomicU64::new(u64::MAX),
-        }))
+        state.charge = charge;
+        state.leases = leases;
+        state.mappings = mappings;
+        state.preparations = preparations;
+        state.spills = spills;
+        Ok(())
     }
 
     pub(super) fn mark_read_only(&self) {
@@ -1007,6 +1042,7 @@ impl NativeGraphPublication {
     }
 
     fn install(&self, bundle: Arc<NativeGraphBundle>) -> Result<(), NativeGraphError> {
+        self.enable_registries()?;
         let mut state = self.state.lock().map_err(|_| {
             NativeGraphError::Store(StoreError::Synchronization {
                 component: "native graph publication",

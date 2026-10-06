@@ -304,6 +304,8 @@ pub struct PublishedSnapshot {
     generation: u64,
     absorbed_through: u64,
     pub(crate) graph_absorbed_through: u64,
+    #[cfg(feature = "graph-cypher")]
+    pub(crate) graph_enabled: bool,
     epoch_alias: Option<crate::epoch::EpochIdentity>,
     graph_profile:
         Result<crate::graph::search::EpochGraphProfile, crate::graph::search::GraphProfileError>,
@@ -328,6 +330,8 @@ impl PublishedSnapshot {
             generation,
             absorbed_through: 0,
             graph_absorbed_through: 0,
+            #[cfg(feature = "graph-cypher")]
+            graph_enabled: false,
             epoch_alias: None,
             graph_profile: Err(crate::graph::search::GraphProfileError::EpochUnstamped),
             schema: crate::meta::Schema::timestamp_only(),
@@ -499,6 +503,8 @@ impl PublishedSnapshot {
         Ok(Self {
             generation: manifest.generation,
             absorbed_through: manifest.log_seq,
+            #[cfg(feature = "graph-cypher")]
+            graph_enabled: manifest.graph.is_some(),
             graph_absorbed_through: {
                 #[cfg(feature = "graph-cypher")]
                 {
@@ -533,6 +539,8 @@ impl PublishedSnapshot {
             generation: self.generation,
             absorbed_through: self.absorbed_through,
             graph_absorbed_through: self.graph_absorbed_through,
+            #[cfg(feature = "graph-cypher")]
+            graph_enabled: self.graph_enabled,
             epoch_alias: self.epoch_alias,
             graph_profile: self.graph_profile,
             schema: self.schema.clone(),
