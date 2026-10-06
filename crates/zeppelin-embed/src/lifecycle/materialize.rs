@@ -390,6 +390,7 @@ impl Store {
         self.search_hybrid_pinned_with_text(
             prepare_vector,
             None,
+            None,
             super::PinnedLexicalQuery::Term(lexical),
             query,
             options.into(),
@@ -403,6 +404,7 @@ impl Store {
         &self,
         prepare_vector: impl FnOnce() -> Result<crate::ingest::SearchRequest<'vector>, E>,
         filter: Option<&super::QueryFilter>,
+        eligible: Option<&[crate::ingest::DocId]>,
         lexical: super::PinnedLexicalQuery<'_>,
         query: &crate::fusion::HybridQuery,
         options: super::SearchOptions,
@@ -412,6 +414,7 @@ impl Store {
         self.search_hybrid_prepared_then(
             prepare_vector,
             filter,
+            eligible,
             lexical,
             query,
             options,
@@ -498,6 +501,7 @@ impl Store {
         self.search_hybrid_pinned_with_text(
             || Ok::<_, std::convert::Infallible>(vector),
             vector.filter,
+            vector.eligible,
             super::PinnedLexicalQuery::Term(lexical),
             query,
             options.into(),
@@ -657,6 +661,7 @@ impl Store {
         self.search_hybrid_pinned_with_text(
             || Ok::<_, std::convert::Infallible>(vector),
             vector.filter,
+            vector.eligible,
             lexical,
             query,
             options,

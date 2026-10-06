@@ -4306,6 +4306,11 @@ napi_value Query(napi_env env, napi_callback_info info) {
       if (!NapiOk(env, napi_get_array_length(env, eligible_value, &count),
                   "read eligibleIds length"))
         return nullptr;
+      if (count > 524288) {
+        napi_throw_range_error(env, "ERR_OUT_OF_RANGE",
+                               "eligibleIds must contain at most 524288 ids");
+        return nullptr;
+      }
       data->eligible_ids.resize(count);
       for (uint32_t i = 0; i < count; ++i) {
         napi_value id;

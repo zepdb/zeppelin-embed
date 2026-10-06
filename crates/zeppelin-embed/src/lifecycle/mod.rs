@@ -4773,17 +4773,10 @@ impl Store {
             Option<&materialize::HybridAddresses>,
         ) -> Result<R, crate::fusion::FusionError>,
     ) -> Result<R, crate::fusion::FusionError> {
-        let eligible_filter = vector_query.eligible.map(|ids| {
-            vector_query.filter.cloned().map_or_else(
-                || QueryFilter::eligible(&self.schema, ids),
-                |filter| filter.with_eligible(ids),
-            )
-        });
-        let vector_query =
-            vector_query.with_filter(eligible_filter.as_ref().or(vector_query.filter));
         self.search_hybrid_prepared_then(
             || Ok::<_, std::convert::Infallible>(vector_query),
             vector_query.filter,
+            vector_query.eligible,
             lexical_query,
             hybrid_query,
             options,
@@ -4802,6 +4795,7 @@ impl Store {
         &self,
         prepare_vector: impl FnOnce() -> Result<crate::ingest::SearchRequest<'vector>, E>,
         filter: Option<&QueryFilter>,
+        known_eligible: Option<&[crate::ingest::DocId]>,
         lexical_query: PinnedLexicalQuery<'_>,
         hybrid_query: &crate::fusion::HybridQuery,
         options: SearchOptions,
@@ -4817,6 +4811,15 @@ impl Store {
     ) -> Result<R, HybridPreparationError<E>> {
         let control = control.with_clock(Arc::clone(&self.clock));
         let started = self.clock.now();
+        // Resolve known restrictions here, before either producer starts. Deferred
+        // producers may supply ids later; their lexical ranking is refreshed below.
+        let eligible_filter = known_eligible.map(|ids| {
+            filter.cloned().map_or_else(
+                || QueryFilter::eligible(&self.schema, ids),
+                |filter| filter.with_eligible(ids),
+            )
+        });
+        let filter = eligible_filter.as_ref().or(filter);
         let admission_started = timing_start(self.clock.as_ref());
         let mut options = options;
         let requested_tier = options.explicit_tier();
@@ -4866,7 +4869,7 @@ impl Store {
             admission: timing_elapsed(self.clock.as_ref(), admission_started),
             ..Default::default()
         };
-        let lexical_inputs = LexicalInputs {
+        let mut lexical_inputs = LexicalInputs {
             filter,
             generation: admitted.generation,
             cache: &self.lexical_index_cache,
@@ -4879,7 +4882,8 @@ impl Store {
         let mut lexical_preparation = prepared_lexical::PreparedLexicalQuery::new(lexical_query);
         #[cfg(any(test, feature = "test-seams"))]
         let fresh_preparation = hybrid::fresh_round_test_control();
-        let run_lexical_leg = |preparation: &mut prepared_lexical::PreparedLexicalQuery<'_>,
+        let run_lexical_leg = |lexical_inputs: LexicalInputs<'_>,
+                               preparation: &mut prepared_lexical::PreparedLexicalQuery<'_>,
                                bound,
                                queued| {
             #[cfg(any(test, feature = "test-seams"))]
@@ -4980,6 +4984,7 @@ impl Store {
         let (prepared_vector_result, lexical_result) = lexical_worker.run_scoped(
             || {
                 run_lexical_leg(
+                    lexical_inputs,
                     &mut lexical_preparation,
                     width.saturating_add(1),
                     lexical_queued,
@@ -4999,6 +5004,18 @@ impl Store {
                             .into(),
                         ));
                     }
+                    let deferred_filter = if known_eligible.is_none() {
+                        vector_query.eligible.map(|ids| {
+                            filter.cloned().map_or_else(
+                                || QueryFilter::eligible(&self.schema, ids),
+                                |filter| filter.with_eligible(ids),
+                            )
+                        })
+                    } else {
+                        None
+                    };
+                    let effective_vector_query = vector_query
+                        .with_filter(deferred_filter.as_ref().or(filter).or(vector_query.filter));
                     let mut vector_preparation = prepared::PreparedVectorQuery::new(
                         vector_query.vector(),
                         self.epoch_identity(),
@@ -5009,11 +5026,11 @@ impl Store {
                         "injected vector hybrid leg panic",
                     );
                     let result = run_vector_leg(
-                        vector_query,
+                        effective_vector_query,
                         &mut vector_preparation,
                         width.saturating_add(1),
                     );
-                    Ok((vector_query, vector_preparation, result))
+                    Ok((vector_query, deferred_filter, vector_preparation, result))
                 }))
                 .unwrap_or(Err(HybridPreparationError::Search(
                     crate::fusion::FusionError::LegPanic {
@@ -5046,27 +5063,30 @@ impl Store {
         // run_scoped has joined lexical work even when vector preparation
         // failed or panicked. A stopped admission takes precedence over a late
         // producer error; otherwise retain the caller's original error type.
-        let (vector_query, mut vector_preparation, vector_result) = match prepared_vector_result {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                let lease =
-                    SnapshotLease::new_at(Arc::clone(&admitted.snapshot), admitted.generation);
-                QueryCancellation::new(&control, &lease)
-                    .check_graph()
-                    .map_err(map_scan_error)?;
-                if let Err(lexical_error) = lexical_result
-                    && matches!(
-                        lexical_error,
-                        crate::fusion::FusionError::ReadCancelled { .. }
-                            | crate::fusion::FusionError::Timeout { .. }
-                            | crate::fusion::FusionError::Cancelled { .. }
-                    )
-                {
-                    return Err(HybridPreparationError::Search(lexical_error));
+        let (vector_query, deferred_filter, mut vector_preparation, vector_result) =
+            match prepared_vector_result {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    let lease =
+                        SnapshotLease::new_at(Arc::clone(&admitted.snapshot), admitted.generation);
+                    QueryCancellation::new(&control, &lease)
+                        .check_graph()
+                        .map_err(map_scan_error)?;
+                    if let Err(lexical_error) = lexical_result
+                        && matches!(
+                            lexical_error,
+                            crate::fusion::FusionError::ReadCancelled { .. }
+                                | crate::fusion::FusionError::Timeout { .. }
+                                | crate::fusion::FusionError::Cancelled { .. }
+                        )
+                    {
+                        return Err(HybridPreparationError::Search(lexical_error));
+                    }
+                    return Err(error);
                 }
-                return Err(error);
-            }
-        };
+            };
+        let vector_query =
+            vector_query.with_filter(deferred_filter.as_ref().or(filter).or(vector_query.filter));
         let (
             mut vector_outcome,
             (mut lexical_hits, mut lexical_assembly, mut lexical_counters, mut lexical_cache_hit),
@@ -5074,6 +5094,36 @@ impl Store {
 
         timings.lexical_queue = queue_time;
         timings.lexical = lexical_time;
+        let mut deferred_initial_cache_hit = None;
+        if let Some(filter) = deferred_filter.as_ref() {
+            // Preserve lexical/vector overlap for deferred embedding. Eligibility
+            // was unavailable to the first lexical pass: discard that ranking,
+            // reset its prepared assembly, and rank the eligible rows before fusion.
+            lexical_inputs.filter = Some(filter);
+            lexical_preparation = prepared_lexical::PreparedLexicalQuery::new(lexical_query);
+            let queued = timing_start(self.clock.as_ref());
+            let (_, reranked) = lexical_worker.run_scoped(
+                || {
+                    run_lexical_leg(
+                        lexical_inputs,
+                        &mut lexical_preparation,
+                        width.saturating_add(1),
+                        queued,
+                    )
+                },
+                || (),
+            )?;
+            let (_, reranked, queue_time, lexical_time) = reranked?;
+            let (hits, assembly, mut counters, cache_hit) = reranked?;
+            accumulate_search_counters(&mut counters, &lexical_counters);
+            deferred_initial_cache_hit = Some(lexical_cache_hit);
+            lexical_hits = hits;
+            lexical_assembly = assembly;
+            lexical_counters = counters;
+            lexical_cache_hit = cache_hit;
+            timings.lexical_queue += queue_time;
+            timings.lexical += lexical_time;
+        }
         let anchors = hybrid::HybridAnchors {
             vector_ceiling: vector_outcome.vector_ceiling,
             lexical_maximum: lexical_hits.first().map_or(0.0, |hit| hit.bm25),
@@ -5082,6 +5132,10 @@ impl Store {
             SnapshotLease::new_at(Arc::clone(&admitted.snapshot), admitted.generation);
         let fusion_cancellation = QueryCancellation::new(&control, &fusion_lease);
         let mut work = hybrid::HybridWork::new();
+        if let Some(cache_hit) = deferred_initial_cache_hit {
+            work.lexical_cache_hits += usize::from(cache_hit);
+            work.lexical_cache_builds += usize::from(!cache_hit);
+        }
         let mut cross_scores = hybrid::CrossScoreCache::new(vector_outcome.epoch);
         let mut round_buffers = hybrid::HybridRoundBuffers::new();
         let mut fusion_scratch =
@@ -5210,6 +5264,7 @@ impl Store {
             let (vector_result, lexical_result) = lexical_worker.run_scoped(
                 || {
                     run_lexical_leg(
+                        lexical_inputs,
                         &mut lexical_preparation,
                         width.saturating_add(1),
                         lexical_queued,

@@ -37,3 +37,12 @@ test('query eligibleIds filters vector, lexical and hybrid before top-k', async 
     }
   } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
 });
+
+test('query rejects oversized sparse eligibleIds before allocating their backing array', () => {
+  const root = mkdtempSync(join(tmpdir(), 'ze351-bound-'));
+  const store = openNamespace(root, 'eligible', { vectorSpace: { dimensions: 2 } });
+  try {
+    assert.throws(() => store.query({ text: 'amber', eligibleIds: new Array(524_289) }),
+      { name: 'RangeError', message: /524288/ });
+  } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
