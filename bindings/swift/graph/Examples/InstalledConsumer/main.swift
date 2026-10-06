@@ -45,8 +45,20 @@ struct InstalledConsumer {
     guard bag.rows == [[.null], [.null]] else { throw Failure.invalidResult }
     let empty = try await reopened.cypher("MATCH (n:Missing) RETURN n")
     guard empty.rows.isEmpty else { throw Failure.invalidResult }
+    let structured = try await reopened.query(GraphPlan(
+      root: GraphOperatorID(0),
+      operators: [.scanNodes(output: GraphSlotID(7), label: nil)]))
+    guard structured.rows.count == 2,
+      structured.metadata.admittedGeneration == 1,
+      case .node(let node) = structured.rows[0][0] else { throw Failure.invalidResult }
+    let fetched = try await reopened.getNodes([node.id, node.id])
+    guard fetched.nodes.count == 2, fetched.nodes[0]?.id == node.id,
+      fetched.nodes[1]?.id == node.id else { throw Failure.invalidResult }
+    let resources = try await reopened.resources()
+    guard resources.enginePeakBytes >= resources.engineBytes else { throw Failure.invalidResult }
     try await reopened.close()
     guard values.rows[0][3] == .list(.query, [.integer(1), .null, .list(.query, [.string("nested")])]) else { throw Failure.invalidResult }
+    print("ZE_GRAPH_INSTALLED_RECEIPT\t{\"executed\":[\"batch\",\"structured\",\"get\",\"cypher\"],\"resources\":true,\"artifact_kind\":\"graph-cypher\",\"exit_status\":0}")
     print("installed typed Swift batch/Cypher/reopen/null/list/bag/retained PASS")
   }
   static func primitive(_ value: GraphValue) -> [String: Any] {

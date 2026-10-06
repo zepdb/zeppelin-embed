@@ -117,6 +117,9 @@ int main(int argc, char **argv) {
     assert(r.row_count == 3);
     assert(r.pool.values[r.cells[0]].tag == 5 && r.pool.values[r.cells[1]].tag == 0);
     assert(r.pool.values[r.cells[0]].entity_index == r.pool.values[r.cells[2]].entity_index);
+    ZeGraphResources resources = SIZED(ZeGraphResources);
+    assert(ze_graph_resources(graph, &resources) == ZE_OK);
+    assert(resources.engine_peak_bytes >= resources.engine_bytes);
     assert(ze_graph_close(graph) == ZE_OK);
     assert(r.pool.values[r.cells[0]].tag == 5);
     assert(ze_graph_response_free(&r) == ZE_OK);
@@ -153,5 +156,6 @@ int main(int argc, char **argv) {
     assert(ze_graph_response_free(&r) == ZE_OK);
     assert(ze_graph_close(graph) == ZE_OK);
     puts("graph artifact consumer: legacy open/close, apply, Cypher relationship/parameter/read/free/close/reopen PASS");
+    puts("ZE_GRAPH_INSTALLED_RECEIPT\t{\"executed\":[\"batch\",\"structured\",\"get\",\"cypher\"],\"resources\":true,\"artifact_kind\":\"graph-cypher\",\"exit_status\":0}");
     return 0;
 }

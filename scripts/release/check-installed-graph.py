@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Qualify explicit distribution archives outside the checkout; never build Rust."""
+"""Qualify explicit distribution archives outside the checkout; never rebuild the engine."""
 import argparse
 import hashlib
 import importlib.util
@@ -30,14 +30,16 @@ def pin(manifest, graph=False):
 def check_release_contract(root=ROOT, archive=None, enforce_checksum=False):
     manifest = (root / 'Package.swift').read_text()
     nested = (root / 'bindings/swift/graph/Package.swift').read_text()
-    if '.library(name: "ZeppelinEmbedGraph", targets: ["ZeppelinEmbedGraph"])' not in manifest:
-        raise ValueError('root_graph_product_is_installable: missing root graph product')
-    checksum = pin(manifest, True)
-    if checksum != pin(nested):
-        raise ValueError('root and developer graph checksum pins differ')
-    url = re.search(r'https://[^"\s]+/ZeppelinEmbedGraph.xcframework.zip', manifest)
-    if not url or url.group() not in nested:
-        raise ValueError('root and developer graph release URLs differ')
+    if 'ZeppelinEmbedGraph' in manifest:
+        raise ValueError('legacy root package must not resolve graph bytes')
+    if '.library(name: "ZeppelinEmbed", targets: ["ZeppelinEmbed"])' not in manifest:
+        raise ValueError('missing legacy root product')
+    pin(manifest)  # Preserve the independently pinned legacy binary.
+    if '.library(name: "ZeppelinEmbedGraph", targets: ["ZeppelinEmbedGraph"])' not in nested:
+        raise ValueError('missing separate graph product')
+    checksum = pin(nested)
+    if not re.search(r'https://[^"\s]+/ZeppelinEmbedGraph.xcframework.zip', nested):
+        raise ValueError('missing separate graph release URL')
     if archive:
         actual = hashlib.sha256(archive.read_bytes()).hexdigest()
         if enforce_checksum and actual != checksum:
@@ -152,28 +154,42 @@ def run_c_consumer(sdk, work, output):
     return report
 
 
+def run_rust_consumer(sdk, work, output):
+    library = sdk / 'lib/libzeppelin_embed_graph_cypher_ffi.a'
+    for required in (sdk / 'include/zeppelin_embed.h',
+                     sdk / 'include/zeppelin_graph_contracts.h', library):
+        if not required.is_file():
+            raise FileNotFoundError(f'missing installed artifact input: {required}')
+    source = work / 'installed.rs'
+    shutil.copy(ROOT / 'scripts/release/consumers/installed.rs', source)
+    obj = work / 'rust-fixture.o'
+    run(['clang', '-std=c11', '-Wall', '-Wextra', '-Werror', '-mmacosx-version-min=14.0',
+         '-Dmain=ze_installed_fixture', '-I', sdk / 'include', '-c', work / 'consumer.c', '-o', obj])
+    binary = work / 'rust-consumer'
+    env = dict(os.environ, MACOSX_DEPLOYMENT_TARGET='14.0')
+    run(['rustc', '--edition=2024', source, '-C', 'link-arg=' + str(obj),
+         '-C', 'link-arg=' + str(library), '-l', 'framework=Security', '-l', 'iconv', '-o', binary], env=env)
+    fixture = work / 'rust-fixture'
+    fixture.mkdir()
+    result = run([binary, fixture], cwd=work, capture_output=True, text=True)
+    (output / 'rust.log').write_text(result.stdout + result.stderr)
+    return dict(artifact_tools().measure(binary, output), reachability=consumer_receipt(result.stdout))
+
+
 def run_swift_consumer(xcframework, work, output, disable_swift_sandbox=False):
     package = work / 'package'
     package.mkdir()
-    shutil.copytree(ROOT / 'bindings/swift/graph/Sources/ZeppelinEmbedGraph',
-                    package / 'bindings/swift/graph/Sources/ZeppelinEmbedGraph')
-    shutil.copytree(ROOT / 'bindings/swift/Sources/ZeppelinEmbed',
-                    package / 'bindings/swift/Sources/ZeppelinEmbed')
-    # Preserve the shipping product/target contract, changing only binary URLs
-    # to explicitly extracted artifacts. No source headers or local-FFI mode.
-    manifest = (ROOT / 'Package.swift').read_text()
-    manifest = re.sub(r'url: "https://[^"\n]+/ZeppelinEmbedGraph.xcframework.zip",\s*checksum: graphBinaryChecksum',
-                      'path: "Artifacts/ZeppelinEmbedGraph.xcframework"', manifest)
-    legacy = work / 'ZeppelinEmbed.xcframework'
-    # SwiftPM resolves both shipping binary targets; use the matching legacy zip.
-    if not legacy.is_dir():
-        raise ValueError('matching legacy XCFramework must be supplied')
-    manifest = re.sub(r'url: "https://[^"\n]+/ZeppelinEmbed.xcframework.zip",\s*checksum: binaryChecksum',
-                      'path: "Artifacts/ZeppelinEmbed.xcframework"', manifest)
+    shutil.copytree(ROOT / 'bindings/swift/graph/Sources', package / 'Sources')
+    shutil.copytree(ROOT / 'bindings/swift/graph/Examples', package / 'Examples')
+    shutil.copytree(ROOT / 'bindings/swift/graph/Tests', package / 'Tests')
+    # Exercise the separate shipping manifest with only its binary URL replaced.
+    manifest = (ROOT / 'bindings/swift/graph/Package.swift').read_text()
+    manifest, replaced = re.subn(
+        r'url:\s*"https://[^"\n]+/ZeppelinEmbedGraph.xcframework.zip",\s*checksum: binaryChecksum',
+        'path: "Artifacts/ZeppelinEmbedGraph.xcframework"', manifest)
+    if replaced != 1:
+        raise ValueError('expected one separate graph binary target')
     shutil.copytree(xcframework, package / 'Artifacts/ZeppelinEmbedGraph.xcframework')
-    shutil.copytree(legacy, package / 'Artifacts/ZeppelinEmbed.xcframework')
-    for path in ('bindings/swift/Tests/ZeppelinEmbedTests',):
-        shutil.copytree(ROOT / path, package / path)
     (package / 'Package.swift').write_text(manifest)
     consumer = work / 'swift-consumer'
     (consumer / 'Sources/Consumer').mkdir(parents=True)
@@ -196,9 +212,9 @@ let package = Package(name: "InstalledConsumer", platforms: [.macOS(.v14)],
         '.library(name: "ZeppelinEmbedGraph", targets: ["ZeppelinEmbedGraph"]),', ''))
     try:
         negative = subprocess.run(list(map(str, command)), env=env, cwd=work, capture_output=True, text=True)
-        (output / 'root-product-red.log').write_text(negative.stdout + negative.stderr)
+        (output / 'graph-product-red.log').write_text(negative.stdout + negative.stderr)
         if negative.returncode == 0 or "product 'ZeppelinEmbedGraph'" not in negative.stderr:
-            raise ValueError('root product negative control did not reject the missing product')
+            raise ValueError('graph package product negative control did not reject the missing product')
     finally:
         manifest_path.write_text(manifest)
     run(command, env=env, cwd=work)
@@ -230,8 +246,22 @@ def run_legacy_consumers(args, output):
 
 
 class ContractTests(unittest.TestCase):
-    def test_root_graph_product_is_installable(self):
+    def test_installed_receipts_require_rust_and_resources(self):
+        receipt = dict(executed=['batch', 'structured', 'get', 'cypher'],
+                       artifact_kind='graph-cypher', exit_status=0, resources=True)
+        report = {'reachability': {k: receipt for k in ('c-static', 'c-dylib', 'swift')}}
+        with self.assertRaisesRegex(ValueError, 'rust'):
+            require_structured_execution(report)
+        report['reachability']['rust'] = dict(receipt, resources=False)
+        with self.assertRaisesRegex(ValueError, 'rust'):
+            require_structured_execution(report)
+        report['reachability']['rust'] = receipt
+        require_structured_execution(report)
+
+    def test_graph_package_is_the_only_graph_product(self):
         check_release_contract()
+        self.assertNotIn('ZeppelinEmbedGraph', (ROOT / 'Package.swift').read_text())
+        self.assertEqual(len(pin((ROOT / 'Package.swift').read_text())), 64)
 
     def test_graph_checksum_pin_is_readable(self):
         text = (ROOT / 'bindings/swift/graph/Package.swift').read_text()
@@ -317,10 +347,11 @@ def profile_receipt_state(path):
 
 
 def require_structured_execution(report):
-    for kind in ('c-static', 'c-dylib', 'swift'):
+    for kind in ('c-static', 'c-dylib', 'swift', 'rust'):
         receipt = report.get('reachability', {}).get(kind, {})
         if (receipt.get('executed') != ['batch', 'structured', 'get', 'cypher']
-                or receipt.get('artifact_kind') != 'graph-cypher' or receipt.get('exit_status') != 0):
+                or receipt.get('artifact_kind') != 'graph-cypher' or receipt.get('exit_status') != 0
+                or receipt.get('resources') is not True):
             raise ValueError('missing ZE-71/ZE-278 installed structured query/get receipt for '
                              + kind + '; ze_graph_query is present; see report.json')
 
@@ -359,6 +390,7 @@ def qualify(args):
             raise ValueError('graph SDK deployment target must remain macOS 14.0')
         report['deployment'] = deployment
         report['c'] = run_c_consumer(sdk, work, output)
+        report['rust'] = run_rust_consumer(sdk, work, output)
         report['c_profile'] = run_c_profile_consumer(sdk, work, output)
         report['swift'] = run_swift_consumer(work / 'ZeppelinEmbedGraph.xcframework', work, output, args.disable_swift_sandbox)
         # Substituting a valid legacy archive must fail exact graph exports.
@@ -391,7 +423,7 @@ def qualify(args):
                 path.write_bytes(saved)
     report['reachability'] = {**{'c-' + kind: report['c'][key]['reachability']
                               for kind, key in [('static', 'a'), ('dylib', 'dylib')]},
-                              'swift': report['swift']['reachability']}
+                              'swift': report['swift']['reachability'], 'rust': report['rust']['reachability']}
     report['structured_query'] = report['reachability']
     report['legacy_languages'] = run_legacy_consumers(args, output)
     (output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
@@ -413,19 +445,20 @@ def remote_qualify(args):
             destination.parent.mkdir(parents=True, exist_ok=True)
             with urllib.request.urlopen(url) as response, destination.open('wb') as handle:
                 shutil.copyfileobj(response, handle)
-        raw = 'https://raw.githubusercontent.com/zepdb/zeppelin-embed/' + args.remote_tag + '/'
-        for manifest in ('Package.swift', 'bindings/swift/graph/Package.swift'):
-            download(raw + manifest, work / manifest)
+        checkout = work / 'release'
+        run(['git', 'clone', '--depth', '1', '--branch', args.remote_tag,
+             'https://github.com/zepdb/zeppelin-embed.git', checkout], cwd=work)
         archive = work / 'ZeppelinEmbedGraph.xcframework.zip'
         download(base + archive.name, archive)
-        contract = check_release_contract(work, archive, True)
+        contract = check_release_contract(checkout, archive, True)
         sdk_archive = work / 'zeppelin-embed-graph-cypher-macos-arm64.tar.gz'
         download(base + sdk_archive.name, sdk_archive)
         with tarfile.open(sdk_archive) as tar:
             tar.extractall(work, filter='data')
         shutil.copy(ROOT / 'crates/zeppelin-embed-ffi/tests/c/graph_artifact_consumer.c', work / 'consumer.c')
-        report = dict(contract=contract, c=run_c_consumer(
-            work / 'zeppelin-embed-graph-cypher-macos-arm64', work, output))
+        sdk = work / 'zeppelin-embed-graph-cypher-macos-arm64'
+        report = dict(contract=contract, c=run_c_consumer(sdk, work, output),
+                      rust=run_rust_consumer(sdk, work, output))
         consumer = work / 'consumer'
         (consumer / 'Sources/Consumer').mkdir(parents=True)
         shutil.copy(ROOT / 'bindings/swift/graph/Examples/InstalledConsumer/main.swift',
@@ -433,16 +466,23 @@ def remote_qualify(args):
         (consumer / 'Package.swift').write_text(
             '// swift-tools-version: 5.10\nimport PackageDescription\n'
             'let package = Package(name: "RemoteConsumer", platforms: [.macOS(.v14)],'
-            'dependencies: [.package(url: "https://github.com/zepdb/zeppelin-embed.git", exact: "'
-            + args.remote_tag[1:] + '")], targets: [.executableTarget(name: "Consumer",'
-            'dependencies: [.product(name: "ZeppelinEmbedGraph", package: "zeppelin-embed")])])\n')
+            'dependencies: [.package(path: "../release/bindings/swift/graph")],'
+            'targets: [.executableTarget(name: "Consumer", dependencies: '
+            '[.product(name: "ZeppelinEmbedGraph", package: "graph")])])\n')
         env = {k: v for k, v in os.environ.items() if not k.startswith('ZE_')}
         env['CLANG_MODULE_CACHE_PATH'] = str(work / 'clang-cache')
         run(['swift', 'build', '--package-path', consumer, '--scratch-path', work / 'build',
              '--cache-path', work / 'cache', '--jobs', '3'], env=env, cwd=work)
-        run([work / 'build/debug/Consumer', work / 'fixture'], env=env, cwd=work)
-        report['swift'] = artifact_tools().measure(work / 'build/debug/Consumer', output)
-        report['scope'] = 'remote batch/Cypher only; installed structured query/get requires ZE-71/ZE-278'
+        result = run([work / 'build/debug/Consumer', work / 'fixture'], env=env, cwd=work,
+                     capture_output=True, text=True)
+        (output / 'swift.log').write_text(result.stdout + result.stderr)
+        report['swift'] = dict(artifact_tools().measure(work / 'build/debug/Consumer', output),
+                               reachability=consumer_receipt(result.stdout))
+        report['reachability'] = {
+            **{'c-' + kind: report['c'][key]['reachability']
+               for kind, key in [('static', 'a'), ('dylib', 'dylib')]},
+            'swift': report['swift']['reachability'], 'rust': report['rust']['reachability']}
+        report['scope'] = 'remote installed batch/structured/get/resources/Cypher'
         (output / 'remote-report.json').write_text(json.dumps(report, indent=2) + '\n')
         require_structured_execution(report)
 
@@ -458,7 +498,7 @@ if __name__ == '__main__':
     parser.add_argument('--legacy-xcframework', type=Path, help='explicit legacy zip for local qualification, still size-gated')
     parser.add_argument('--python-wheel', type=Path)
     parser.add_argument('--node-package', type=Path)
-    parser.add_argument('--enforce-checksum', action='store_true', help='CI release bytes must match both manifest pins')
+    parser.add_argument('--enforce-checksum', action='store_true', help='CI graph release bytes must match the separate graph pin')
     args = parser.parse_args()
     if args.self_test:
         unittest.main(argv=[__file__])
