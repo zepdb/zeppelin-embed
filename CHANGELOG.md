@@ -4,6 +4,16 @@ All notable changes to Zeppelin Embed are recorded here. Versions follow
 semantic versioning, with the 0.x rule that a new public surface is a minor
 release and a compatible correction is a patch release.
 
+## Unreleased
+
+### Changed
+
+Type-ahead queries with more than 32 prefix expansions retain only 32; matches available only through discarded expansions are dropped. Each retained prefix term has boost_thousandths = 31 instead of 1000 divided by the original expansion count.
+This cap and ranking change (ZE-263, ZE-291) retains expansions by descending
+live document frequency, then term bytes. Prefixes with at most 32 expansions
+retain boosts of 1000 divided by the expansion count. Leading exact terms
+remain unchanged, and explicit `Prefix` queries remain exhaustive.
+
 ## 0.5.0 - 2026-09-27
 
 ### Added
