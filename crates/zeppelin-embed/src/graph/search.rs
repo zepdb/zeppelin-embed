@@ -12,7 +12,7 @@ use crate::scan::ScanError;
 
 /// Actual graph traversals and successful query preparations on one explicitly
 /// observed caller thread. Shipping builds retain no observation state.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[derive(Default)]
 #[doc(hidden)]
 pub struct GraphQueryTestObservations {
@@ -26,7 +26,7 @@ pub struct GraphQueryTestObservations {
     pub validated_pools: Vec<Vec<u32>>,
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) fn observe_exact_score(row: usize) {
     GRAPH_QUERY_TEST_OBSERVATIONS.with(|observations| {
         if let Some(observations) = observations.borrow_mut().as_mut() {
@@ -35,14 +35,14 @@ pub(crate) fn observe_exact_score(row: usize) {
     });
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 thread_local! {
     static GRAPH_QUERY_TEST_OBSERVATIONS: std::cell::RefCell<Option<GraphQueryTestObservations>> =
         const { std::cell::RefCell::new(None) };
 }
 
 /// Starts a caller-thread observation window at actual graph call sites.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[doc(hidden)]
 pub fn begin_graph_query_test_observations() {
     GRAPH_QUERY_TEST_OBSERVATIONS.with(|observations| {
@@ -51,7 +51,7 @@ pub fn begin_graph_query_test_observations() {
 }
 
 /// Returns the observed calls and disables further collection.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[doc(hidden)]
 pub fn take_graph_query_test_observations() -> GraphQueryTestObservations {
     GRAPH_QUERY_TEST_OBSERVATIONS.with(|observations| observations.take().unwrap_or_default())
@@ -83,7 +83,7 @@ impl PreparedGraphQuery {
             Some(values)
         };
         let prepared = prepare_bit4_query(padded.as_deref().unwrap_or(query), seed)?;
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         GRAPH_QUERY_TEST_OBSERVATIONS.with(|observations| {
             if let Some(observations) = observations.borrow_mut().as_mut() {
                 observations
@@ -1239,13 +1239,13 @@ pub struct GraphSearcher<'a> {
     rescore_validator: Option<&'a dyn RescoreValidator>,
     entries: [CheckedNodeId; 4],
     scratch: &'a mut GraphSearchScratch,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     vector_fault: Option<(
         &'a crate::scan::vector_fault::VectorFaultController,
         crate::scan::vector_fault::VectorRowSource,
         crate::scan::vector_fault::VectorSearchTier,
     )>,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     hop_cancellation: Option<TestHopCancellation>,
 }
 
@@ -1253,7 +1253,7 @@ pub(crate) trait RescoreValidator {
     fn validate_rows(&self, rows: &[u32]) -> Result<(), String>;
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[derive(Debug)]
 struct TestHopCancellation {
     after_hops: usize,
@@ -1355,9 +1355,9 @@ impl<'a> GraphSearcher<'a> {
             rescore_validator: None,
             entries: [first?, second?, third?, fourth?],
             scratch,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             vector_fault: None,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             hop_cancellation: None,
         })
     }
@@ -1367,7 +1367,7 @@ impl<'a> GraphSearcher<'a> {
         self
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn with_vector_fault_controller(
         mut self,
         controller: &'a crate::scan::vector_fault::VectorFaultController,
@@ -1378,7 +1378,7 @@ impl<'a> GraphSearcher<'a> {
         self
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn cancel_after_hops(
         &mut self,
         after_hops: usize,
@@ -1393,7 +1393,7 @@ impl<'a> GraphSearcher<'a> {
         observed_hops
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     fn observe_hop_for_cancellation(&self, hops: usize) {
         let Some(source) = &self.hop_cancellation else {
             return;
@@ -1559,7 +1559,7 @@ impl<'a> GraphSearcher<'a> {
     ) -> Result<(usize, QueryQosClass, i32), GraphSearchError> {
         let ef = self.validate_request(request)?;
         check_cancellation(cancellation)?;
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         GRAPH_QUERY_TEST_OBSERVATIONS.with(|observations| {
             if let Some(observations) = observations.borrow_mut().as_mut() {
                 observations.traversals += 1;
@@ -1656,7 +1656,7 @@ impl<'a> GraphSearcher<'a> {
                 break;
             }
             counters.hops += 1;
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             self.observe_hop_for_cancellation(counters.hops);
             let (degree, neighbors) = self.graph.adjacency_checked(candidate.row_id)?;
             let degree = usize::from(degree);
@@ -1768,7 +1768,7 @@ impl<'a> GraphSearcher<'a> {
             validator
                 .validate_rows(&self.scratch.rescore_row_ids)
                 .map_err(GraphSearchError::ExactRescoreUnavailable)?;
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             GRAPH_QUERY_TEST_OBSERVATIONS.with(|observations| {
                 if let Some(observations) = observations.borrow_mut().as_mut() {
                     observations
@@ -1944,7 +1944,7 @@ impl<'a> GraphSearcher<'a> {
             .ok_or_else(|| GraphSearchError::Geometry("candidate counter overflow".to_owned()))?;
         for candidate in scored.into_iter().flatten() {
             let allowed = allow_list.is_none_or(|mask| mask.contains(candidate.row_id.raw()));
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             if allowed && let Some((controller, source, tier)) = self.vector_fault {
                 let local_row = usize::try_from(candidate.row_id.raw()).map_err(|_| {
                     GraphSearchError::Geometry("graph row id exceeds usize".to_owned())

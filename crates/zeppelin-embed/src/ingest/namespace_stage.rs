@@ -52,7 +52,7 @@ impl Store {
             working: None,
             records: Vec::new(),
             replay_seq: None,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             replay_count: 0,
             sealed_tombstones: Vec::new(),
         };

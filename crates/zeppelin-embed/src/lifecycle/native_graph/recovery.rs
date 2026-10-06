@@ -58,7 +58,7 @@ use xxhash_rust::xxh3::Xxh3;
 
 const MAX_RECOVERED_DESCRIPTORS: usize = crate::property_graph::storage::MAX_NATIVE_ARTIFACTS;
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 thread_local! {
     /// Full captured-state traversals on this thread, counting both the
     /// producer's proof and the recovery retrace. ZE-163 gates the count.
@@ -68,7 +68,7 @@ thread_local! {
     static OPEN_METRICS: Cell<(u64, usize, u64, u64)> = const { Cell::new((0, 0, 0, 0)) };
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) fn take_state_trace_count_for_test() -> u64 {
     STATE_TRACE_COUNT.with(|count| count.replace(0))
 }
@@ -799,7 +799,7 @@ struct RecoverySource<'a, 'm> {
     window: RefCell<Option<RecoveryMappedArtifact>>,
     retain_window: Cell<bool>,
     filled: Cell<usize>,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     slot_observation: crate::property_graph::storage::mapping_slot_capture::Observation,
     source_error: RefCell<Option<NativeGraphError>>,
 }
@@ -843,7 +843,7 @@ impl<'a, 'm> RecoverySource<'a, 'm> {
         if capacity == 0 {
             return Err(TreeError::Memory);
         }
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         let capacity = crate::property_graph::storage::mapping_slot_capture::capacity(capacity);
         let mut slots = StorageBuffer::new(memory, capacity)?;
         for _ in 0..capacity {
@@ -861,7 +861,7 @@ impl<'a, 'm> RecoverySource<'a, 'm> {
             window: RefCell::new(None),
             retain_window: Cell::new(false),
             filled: Cell::new(0),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             slot_observation:
                 crate::property_graph::storage::mapping_slot_capture::Observation::new(
                     crate::property_graph::storage::mapping_slot_capture::Kind::Recovery,
@@ -1298,7 +1298,7 @@ pub(super) fn trace_captured_state_references<'m, V>(
 where
     V: TraceReferenceVisitor,
 {
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     if depth == CapturedTraceDepth::Complete {
         STATE_TRACE_COUNT.with(|count| count.set(count.get().saturating_add(1)));
     }
@@ -1899,7 +1899,7 @@ impl RecoverySource<'_, '_> {
         resources: &mut TreeResources<'_>,
     ) -> Result<RecoveryMappedArtifact, TreeError> {
         let (path, path_charge) = self.charged_path(reference.artifact)?;
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         self.slot_observation.open(self.scoped_blocks());
         let mapping = map_file(self.store, &path, MAX_ARTIFACT_BYTES)
             .map_err(|error| self.latch_source(error))?;
@@ -1957,7 +1957,7 @@ impl RecoverySource<'_, '_> {
         slot.set(self.open_mapping(reference, resources)?)
             .map_err(|_| TreeError::Invalid("native recovery source slot initialized twice"))?;
         self.filled.set(self.filled.get().saturating_add(1));
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         self.slot_observation.filled(self.filled.get());
         self.decode(
             slot.get().ok_or(TreeError::Invalid(
@@ -1986,7 +1986,7 @@ impl BlockSource for RecoverySource<'_, '_> {
         reference: PhysicalRef,
         resources: &mut TreeResources<'_>,
     ) -> Result<FramedBlock<'a>, TreeError> {
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         self.slot_observation.resolve(self.slots_exhausted());
         self.slot_block(reference, resources)?
             .ok_or(TreeError::Memory)

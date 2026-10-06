@@ -108,7 +108,7 @@ pub(crate) struct NativePreparationSource<'lease, 'm> {
     window: RefCell<Option<PreparationMappedArtifact>>,
     retain_window: Cell<bool>,
     filled: Cell<usize>,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     slot_observation: crate::property_graph::storage::mapping_slot_capture::Observation,
 }
 
@@ -163,7 +163,7 @@ impl<'lease, 'm> NativePreparationSource<'lease, 'm> {
                 "native preparation source accounting owner mismatch",
             ));
         }
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         let capacity = crate::property_graph::storage::mapping_slot_capture::capacity(capacity);
         let mut slots = StorageBuffer::new(memory, capacity)?;
         for _ in 0..capacity {
@@ -177,7 +177,7 @@ impl<'lease, 'm> NativePreparationSource<'lease, 'm> {
             window: RefCell::new(None),
             retain_window: Cell::new(false),
             filled: Cell::new(0),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             slot_observation:
                 crate::property_graph::storage::mapping_slot_capture::Observation::new(
                     crate::property_graph::storage::mapping_slot_capture::Kind::Preparation,
@@ -232,7 +232,7 @@ impl<'lease, 'm> NativePreparationSource<'lease, 'm> {
             .framed_block(mapped.mapping.as_bytes(), reference)
             .map_err(TreeError::Format)?;
         let block = self.check_required(block)?;
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         crate::property_graph::storage::search::observe_native_vector_physical_read(
             crate::property_graph::storage::search::PhysicalReadOrigin::Preparation,
             reference,
@@ -549,7 +549,7 @@ impl NativePreparationSource<'_, '_> {
             self.lease.bundle().directory(),
             reference.artifact,
         )?;
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         self.slot_observation.open(self.scoped_blocks());
         let file = self
             .lease
@@ -614,7 +614,7 @@ impl NativePreparationSource<'_, '_> {
         cell.set(self.open_mapping(reference, resources)?)
             .map_err(|_| TreeError::Invalid("native preparation source slot initialized twice"))?;
         self.filled.set(self.filled.get().saturating_add(1));
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         self.slot_observation.filled(self.filled.get());
         let mapped = cell.get().ok_or(TreeError::Invalid(
             "native preparation source slot remained empty",
@@ -639,7 +639,7 @@ impl BlockSource for NativePreparationSource<'_, '_> {
         reference: PhysicalRef,
         resources: &mut TreeResources<'_>,
     ) -> Result<FramedBlock<'a>, TreeError> {
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         self.slot_observation.resolve(self.slots_exhausted());
         self.slot_block(reference, resources)?
             .ok_or(TreeError::Memory)
@@ -1006,7 +1006,7 @@ impl<S: BlockSource> PreparationCatalog<S> for NativePreparationCatalog<'_, '_, 
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 impl NativePreparationSource<'_, '_> {
     pub(crate) fn mapping_slot_report(
         &self,

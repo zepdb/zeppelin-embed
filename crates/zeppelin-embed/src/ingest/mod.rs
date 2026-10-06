@@ -24,7 +24,7 @@ pub(crate) mod purge_support {
     };
 }
 mod retention;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 mod retention_fault;
 mod revise;
 mod seal;
@@ -42,7 +42,7 @@ use crate::wal::{LogSeq, WalWriteError};
 pub use delete_matching::{DeleteMatchingError, DeleteMatchingReport};
 pub use purge::{PurgeError, PurgeReport, PurgeToken};
 pub use retention::{DropPartitionReport, RetentionPolicy, RetentionPolicyError};
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub use retention_fault::{
     IngestRetentionCheckpoint, IngestRetentionFaultController, IngestRetentionFaultEffect,
     IngestRetentionFaultKind, IngestRetentionFaultReceiptV1, IngestRetentionIoKind,
@@ -842,7 +842,7 @@ struct RevisionProgress {
     working: Option<ActiveSegment>,
     records: Vec<(usize, u16, Vec<u8>)>,
     replay_seq: Option<LogSeq>,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     replay_count: usize,
     sealed_tombstones: Vec<DocId>,
 }
@@ -1062,7 +1062,7 @@ impl Store {
                         .replay_seq
                         .map_or(seq, |current: LogSeq| current.max(seq)),
                 );
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 {
                     progress.replay_count = progress.replay_count.saturating_add(1);
                 }
@@ -1078,7 +1078,7 @@ impl Store {
         Ok(())
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     fn record_post_ack_retry_receipt(
         &self,
         batch: &IngestBatch,
@@ -1117,7 +1117,7 @@ impl Store {
         Ok(())
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     fn recover_partial_batch_append(
         &self,
         writer: &mut StoreWal,
@@ -1306,7 +1306,7 @@ impl Store {
             working: None,
             records: Vec::new(),
             replay_seq: None,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             replay_count: 0,
             sealed_tombstones: Vec::new(),
         };
@@ -1328,7 +1328,7 @@ impl Store {
             working,
             records,
             replay_seq,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             replay_count,
             sealed_tombstones,
         } = progress;
@@ -1336,7 +1336,7 @@ impl Store {
             let seq = replay_seq.ok_or(StoreError::Synchronization {
                 component: "nonempty ingest replay sequence",
             })?;
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             self.record_post_ack_retry_receipt(&batch, replay_count, seq, current_generation)?;
             return Ok(IngestAck {
                 seq,
@@ -1363,7 +1363,7 @@ impl Store {
             .iter()
             .map(|(_, op, payload)| (*op, payload.as_slice()))
             .collect::<Vec<_>>();
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         let partial_append_clean_wal = match self.ingest_retention_fault_controller.as_ref() {
             Some(controller)
                 if controller
@@ -1388,7 +1388,7 @@ impl Store {
                 if let Some(prepared) = prepared {
                     prepared.abort(self.vfs.as_ref(), &self.directory, self.durability_policy)?;
                 }
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 self.recover_partial_batch_append(
                     writer,
                     &error,

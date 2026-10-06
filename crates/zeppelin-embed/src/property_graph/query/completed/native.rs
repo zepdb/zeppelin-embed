@@ -27,13 +27,13 @@ use std::cell::Cell;
 
 mod entities;
 mod entry;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) mod entry_probe;
 mod error;
 mod search_adapter;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 mod search_probe;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) mod test_support;
 mod values;
 
@@ -906,7 +906,7 @@ pub(crate) fn execute_native_mutation_result<'w, 'r, 'plan, 'lease, 'm, 'g, 'i>(
     .map_err(GraphQueryError::into_mutation)
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[allow(clippy::too_many_arguments, clippy::result_large_err)]
 fn execute_native_result_observed<'s, 'r, 'plan, 'lease, 'm, 'g, C>(
     view: &'s GraphReadView<'s, 'lease, 'm, 'g>,
@@ -939,7 +939,7 @@ where
     )
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[allow(clippy::too_many_arguments, clippy::result_large_err)]
 fn execute_native_result_source_observed<'s, 'r, 'plan, 'lease, 'm, 'g, H, C>(
     view: &'s GraphReadView<'s, 'lease, 'm, 'g>,

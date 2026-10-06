@@ -53,7 +53,7 @@ pub fn namespace_batch_live(
 }
 
 /// Explicit protocol interruption seam for deterministic tests.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[doc(hidden)]
 pub fn namespace_batch_live_with_steps(
     root: &Path,
@@ -64,7 +64,7 @@ pub fn namespace_batch_live_with_steps(
 }
 
 /// Protocol VFS seam. Participant handles must use the supplied VFS too.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[doc(hidden)]
 pub fn namespace_batch_live_on_vfs(
     root: &Path,
@@ -845,7 +845,7 @@ pub fn namespace_batch(
 }
 
 /// Protocol interruption seam for kill/fault tests; never enabled by environment.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[doc(hidden)]
 pub fn namespace_batch_with_steps(
     root: &Path,
@@ -882,7 +882,7 @@ pub fn namespace_delete_cascade(
 }
 
 /// Protocol interruption seam for cascade kill tests.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[doc(hidden)]
 pub fn namespace_delete_cascade_with_steps(
     root: &Path,
@@ -1715,7 +1715,7 @@ fn rollback_stages(
 }
 
 /// Reclaims unreachable namespace transaction artifacts.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[doc(hidden)]
 pub fn namespace_reclaim(root: &Path) -> Result<(), StoreError> {
     let root = std::fs::canonicalize(root).map_err(|e| io(root, e))?;
@@ -1729,7 +1729,7 @@ pub(super) use reclamation::{
     refuse as refuse_retired,
 };
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[doc(hidden)]
 pub fn namespace_reclaim_on_vfs(
     root: &Path,

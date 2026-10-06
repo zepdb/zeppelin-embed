@@ -371,7 +371,7 @@ pub(crate) fn expand_with_phonetic_controlled<E: From<LexicalQueryError>>(
     phonetic_lookup: impl FnOnce(&str) -> Result<Vec<LexicalExpansion>, E>,
 ) -> Result<Vec<LexicalExpansion>, E> {
     work.check_now()?;
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     super::preparation_observer::expansion();
     let expansions = match query {
         LexicalQuery::Term(TermQuery { terms, .. }) | LexicalQuery::Phrase { terms, .. } => {
@@ -578,7 +578,7 @@ pub(crate) fn phrase_matches(
     terms: &[Vec<u8>],
     slop: u32,
 ) -> bool {
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     super::preparation_observer::phrase_reanalysis(text.len());
     let analyzed = analyzer.analyze(text);
     let streams = terms
@@ -596,20 +596,20 @@ pub(crate) fn phrase_matches(
 
 #[cfg(test)]
 fn wagner_fischer(left: &[u8], right: &[u8]) -> u32 {
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     let (mut cells, mut allocations) = (0, 1);
     let mut previous = (0..=right.len())
         .map(|value| u32::try_from(value).unwrap_or(u32::MAX))
         .collect::<Vec<_>>();
     for (row, left_byte) in left.iter().enumerate() {
         let mut current = Vec::with_capacity(right.len() + 1);
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         {
             allocations += 1;
         }
         current.push(u32::try_from(row + 1).unwrap_or(u32::MAX));
         for (column, right_byte) in right.iter().enumerate() {
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             {
                 cells += 1;
             }
@@ -627,7 +627,7 @@ fn wagner_fischer(left: &[u8], right: &[u8]) -> u32 {
         }
         previous = current;
     }
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     super::preparation_observer::fuzzy_distance(cells, allocations);
     previous.last().copied().unwrap_or(u32::MAX)
 }

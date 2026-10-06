@@ -134,7 +134,7 @@ fn standalone_reader_resolves_commit_before_sibling_recovery() {
     );
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 #[test]
 fn cross_namespace_crash_prefixes_share_one_decision() {
     use zeppelin_embed::lifecycle::namespace_batch_with_steps;
@@ -196,7 +196,7 @@ fn missing_or_corrupt_root_never_falls_back_to_original_store() {
     );
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 #[test]
 fn namespace_batch_kill_child() {
     let Ok(root) = std::env::var("ZE239_KILL_ROOT") else {
@@ -220,7 +220,7 @@ fn namespace_batch_kill_child() {
     )
     .expect("child protocol");
 }
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 #[test]
 fn process_death_at_every_protocol_step_recovers_one_decision() {
     let baseline = tempfile::tempdir().expect("root");
@@ -255,7 +255,7 @@ fn process_death_at_every_protocol_step_recovers_one_decision() {
     eprintln!("ZE-239 process deaths: {count}");
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 #[test]
 fn readers_during_preparation_and_publication_select_complete_states() {
     let root = tempfile::tempdir().expect("root");
@@ -342,7 +342,7 @@ fn live_writers_preserve_before_batch_and_after_batch_writes() {
     }
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 #[test]
 fn committed_frames_survive_root_retirement() {
     use zeppelin_embed::lifecycle::{LiveNamespaceMutation, namespace_batch_live_with_steps};
@@ -572,7 +572,7 @@ fn late_participant_validation_publishes_nothing() {
         ],
     )
     .expect("valid batch after refusals");
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "test-seams")]
     {
         let before = ["a", "b"].map(|name| {
             std::fs::read(root.path().join(name).join("wal.ze")).expect("accepted WAL")
@@ -714,7 +714,7 @@ fn incremental_prepare_never_copies_untouched_payloads() {
     }
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 #[test]
 fn batch_serializes_with_ingest_seal_merge_and_close() {
     use std::sync::mpsc;
@@ -793,7 +793,7 @@ fn batch_serializes_with_ingest_seal_merge_and_close() {
     }
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 #[test]
 fn crash_at_every_prepare_publish_adopt_step() {
     use std::sync::Arc;
@@ -1039,7 +1039,7 @@ fn deleting_batch_refuses_snapshot_before_publication() {
     }
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 #[test]
 fn reclamation_preserves_current_routes_and_reader_pins() {
     use zeppelin_embed::lifecycle::namespace_reclaim;
@@ -1085,7 +1085,7 @@ fn reclamation_preserves_current_routes_and_reader_pins() {
     reopened.close().expect("close recovered writer");
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 fn namespace_envelope(body: &[u8]) -> Vec<u8> {
     let mut bytes = b"ZENS0001".to_vec();
     bytes.extend_from_slice(body);
@@ -1093,13 +1093,13 @@ fn namespace_envelope(body: &[u8]) -> Vec<u8> {
     bytes
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 fn legacy_reclamation_fixture(root: &std::path::Path) {
     seed(root);
     legacy_routes_from_current(root);
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 fn legacy_routes_from_current(root: &std::path::Path) {
     for (transaction, names) in [
         (".ze-batch-old", vec!["a", "b"]),
@@ -1155,7 +1155,7 @@ fn legacy_routes_from_current(root: &std::path::Path) {
     }
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 #[test]
 fn reclamation_preserves_legacy_siblings_and_reclaims_abandoned_copies() {
     use zeppelin_embed::lifecycle::namespace_reclaim;
@@ -1186,7 +1186,7 @@ fn reclamation_preserves_legacy_siblings_and_reclaims_abandoned_copies() {
     assert_eq!(state(root.path(), "b"), vec![true, false, true]);
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 #[test]
 fn crash_at_every_namespace_cleanup_step() {
     use std::sync::Arc;
@@ -1273,7 +1273,7 @@ fn crash_at_every_namespace_cleanup_step() {
     assert!(recovered > 0);
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 #[test]
 #[ignore = "subprocess lease fixture"]
 fn namespace_reader_lease_child() {
@@ -1307,7 +1307,7 @@ fn namespace_reader_lease_child() {
     reader.close().expect("release lease");
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 #[test]
 fn reclamation_reader_lease_excludes_another_process_and_unlink_race() {
     use std::io::{BufRead, BufReader, Write};
@@ -1381,7 +1381,7 @@ fn reclamation_reader_lease_excludes_another_process_and_unlink_race() {
     assert_eq!(state(root.path(), "a"), vec![true, true, true]);
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 #[test]
 fn namespace_cleanup_revalidates_root_reachability_before_unlink() {
     use zeppelin_embed::lifecycle::namespace_reclaim_on_vfs;
@@ -1411,7 +1411,7 @@ fn namespace_cleanup_revalidates_root_reachability_before_unlink() {
     assert_eq!(std::fs::read(selected).expect("selected retained"), before);
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 #[test]
 fn reclamation_preserves_pending_decisions_after_local_checkpoint() {
     use zeppelin_embed::lifecycle::{
@@ -1480,7 +1480,7 @@ fn reclamation_preserves_pending_decisions_after_local_checkpoint() {
     }
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 #[test]
 fn namespace_cleanup_resume_syncs_authorities_before_unlink() {
     use zeppelin_embed::lifecycle::namespace_reclaim_on_vfs;
@@ -1549,7 +1549,7 @@ fn assert_no_deleted_bytes(root: &std::path::Path, sentinel: &[u8]) {
     }
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 #[test]
 fn physical_delete_erases_current_original_retired_and_abandoned_files() {
     let root = tempfile::tempdir().expect("root");
@@ -1607,7 +1607,7 @@ fn physical_delete_erases_current_original_retired_and_abandoned_files() {
     }
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 #[test]
 fn interrupted_namespace_purge_resumes_after_reopen() {
     use zeppelin_embed::lifecycle::{LiveNamespaceMutation, namespace_batch_live_with_steps};
@@ -1684,7 +1684,7 @@ fn interrupted_namespace_purge_resumes_after_reopen() {
     }
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 #[test]
 fn read_only_open_refuses_undecided_namespace_purge() {
     use zeppelin_embed::lifecycle::namespace_batch_with_steps;
@@ -1708,9 +1708,9 @@ fn read_only_open_refuses_undecided_namespace_purge() {
 // CrashVfs owns the authoritative bytes. Anonymous native files provide only
 // the mmap interface required by sealed-segment readers, without persisting
 // anything outside the image or changing the recorded mutation stream.
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 struct MappedCrashImage<V>(V);
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 impl<V: zeppelin_embed::vfs::Vfs> zeppelin_embed::vfs::Vfs for MappedCrashImage<V> {
     fn ensure_directory(&self, p: &std::path::Path, c: bool) -> std::io::Result<bool> {
         self.0.ensure_directory(p, c)
@@ -1760,7 +1760,7 @@ impl<V: zeppelin_embed::vfs::Vfs> zeppelin_embed::vfs::Vfs for MappedCrashImage<
     }
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 #[test]
 fn crash_at_every_namespace_purge_step() {
     use std::sync::Arc;
@@ -1993,7 +1993,7 @@ fn ze270_lock_symlinks_fail_loudly() {
     assert_eq!(std::fs::read(outside).expect("contents"), b"untouched");
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 #[test]
 fn ze270_cleanup_reader_in_another_process_gets_store_busy() {
     use zeppelin_embed::lifecycle::namespace_reclaim_on_vfs;

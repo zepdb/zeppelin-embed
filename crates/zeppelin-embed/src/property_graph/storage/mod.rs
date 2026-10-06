@@ -129,7 +129,7 @@ mod mapping_index_tests {
 }
 
 // Private fixture controls; descriptor and auxiliary source capacities stay intact.
-#[cfg(all(any(test, feature = "test-support"), feature = "graph-cypher"))]
+#[cfg(all(any(test, feature = "test-seams"), feature = "graph-cypher"))]
 pub(crate) mod mapping_slot_capture {
     #![allow(clippy::expect_used, clippy::panic)]
     use std::cell::RefCell;

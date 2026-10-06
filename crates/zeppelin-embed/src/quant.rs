@@ -5,7 +5,7 @@ mod int8;
 mod rescore;
 
 /// Actual query quantizer calls on an explicitly observed caller thread.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[derive(Default, Debug)]
 #[doc(hidden)]
 pub struct QueryPreparationTestObservations {
@@ -15,14 +15,14 @@ pub struct QueryPreparationTestObservations {
     pub int8: Vec<usize>,
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 thread_local! {
     static QUERY_PREPARATIONS: std::cell::RefCell<Option<QueryPreparationTestObservations>> =
         const { std::cell::RefCell::new(None) };
 }
 
 /// Starts observing actual quantizer calls; ordinary execution retains no trace.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[doc(hidden)]
 pub fn begin_query_preparation_test_observations() {
     QUERY_PREPARATIONS
@@ -30,7 +30,7 @@ pub fn begin_query_preparation_test_observations() {
 }
 
 /// Returns recorded calls and disables collection.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[doc(hidden)]
 pub fn take_query_preparation_test_observations() -> QueryPreparationTestObservations {
     QUERY_PREPARATIONS.with(|calls| calls.take().unwrap_or_default())

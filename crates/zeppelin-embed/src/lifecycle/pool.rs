@@ -19,7 +19,7 @@ use super::{SnapshotLease, StoreError};
 enum WorkerMessage {
     Run(WorkItem),
     Stop,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     PanicForTest,
 }
 
@@ -124,7 +124,7 @@ impl QueryPool {
                                 }
                             }
                             WorkerMessage::Stop => return,
-                            #[cfg(any(test, feature = "test-support"))]
+                            #[cfg(any(test, feature = "test-seams"))]
                             WorkerMessage::PanicForTest => {
                                 std::panic::resume_unwind(Box::new(
                                     "injected query worker panic".to_owned(),
@@ -243,16 +243,15 @@ impl QueryPool {
         lease: &SnapshotLease,
         accounting: &Arc<Accounting>,
         memory: &mut super::ExactScanMemory,
-        #[cfg(any(test, feature = "test-support"))] controller: Option<
+        #[cfg(any(test, feature = "test-seams"))] controller: Option<
             &crate::scan::vector_fault::VectorFaultController,
         >,
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         source: crate::scan::vector_fault::VectorRowSource,
-        #[cfg(any(test, feature = "test-support"))]
-        tier: crate::scan::vector_fault::VectorSearchTier,
+        #[cfg(any(test, feature = "test-seams"))] tier: crate::scan::vector_fault::VectorSearchTier,
     ) -> Result<ScanOutcome, QueryError> {
         let workers = self.exact_workers(row_count, query_vector.len(), requested);
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         if controller.is_some_and(|controller| controller.deny_exact_reservation()) {
             return Err(QueryError::Store(StoreError::AllocationFailed {
                 needed: std::mem::size_of::<ExactExecution<'_>>() as u64,
@@ -273,11 +272,11 @@ impl QueryPool {
                 lease,
                 accounting,
                 workers,
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 controller,
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 source,
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 tier,
             )?)
             .map_err(QueryError::Store)?;
@@ -333,7 +332,7 @@ impl QueryPool {
             }
         }
         drop(guard);
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         if controller.is_some_and(|controller| controller.panic_exact_caller()) {
             std::panic::resume_unwind(Box::new("injected exact caller unwind"));
         }
@@ -369,7 +368,7 @@ impl QueryPool {
         }
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn panic_one_and_join(&self) -> Result<(), StoreError> {
         let workers = self
             .workers
@@ -773,13 +772,13 @@ struct ExactExecution<'a> {
     accounting: &'a Arc<Accounting>,
     completion: Mutex<ExactCompletion>,
     changed: Condvar,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     queued_at: Option<std::time::Instant>,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     controller: Option<&'a crate::scan::vector_fault::VectorFaultController>,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     source: crate::scan::vector_fault::VectorRowSource,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     tier: crate::scan::vector_fault::VectorSearchTier,
 }
 
@@ -795,13 +794,12 @@ impl<'a> ExactExecution<'a> {
         lease: &'a SnapshotLease,
         accounting: &'a Arc<Accounting>,
         workers: usize,
-        #[cfg(any(test, feature = "test-support"))] controller: Option<
+        #[cfg(any(test, feature = "test-seams"))] controller: Option<
             &'a crate::scan::vector_fault::VectorFaultController,
         >,
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         source: crate::scan::vector_fault::VectorRowSource,
-        #[cfg(any(test, feature = "test-support"))]
-        tier: crate::scan::vector_fault::VectorSearchTier,
+        #[cfg(any(test, feature = "test-seams"))] tier: crate::scan::vector_fault::VectorSearchTier,
     ) -> Result<Self, QueryError> {
         let mut results =
             Accounted::try_with_capacity(accounting, workers, AllocationComponent::Temporary)
@@ -823,13 +821,13 @@ impl<'a> ExactExecution<'a> {
                 results,
             }),
             changed: Condvar::new(),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             queued_at: controller.map(|_| std::time::Instant::now()),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             controller,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             source,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             tier,
         })
     }
@@ -845,12 +843,12 @@ impl<'a> ExactExecution<'a> {
     }
 
     fn run_partition(&self, slot: usize, range: Range<usize>) {
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         let started = self.queued_at.map(|_| std::time::Instant::now());
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         let timed_range = range.clone();
         let result = (|| {
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             if let Some(controller) = self.controller {
                 match controller.exact_worker_fault(slot) {
                     crate::scan::vector_fault::ExactWorkerFault::None => {}
@@ -875,11 +873,11 @@ impl<'a> ExactExecution<'a> {
                 self.k,
                 &cancellation,
                 &mut memory,
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 self.controller,
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 self.source,
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 self.tier,
             )?;
             Ok(OwnedExactPartition {
@@ -887,7 +885,7 @@ impl<'a> ExactExecution<'a> {
                 _memory: memory,
             })
         })();
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         if let (Some(controller), Some(started), Some(queued)) =
             (self.controller, started, self.queued_at)
         {
@@ -902,7 +900,7 @@ impl<'a> ExactExecution<'a> {
     }
 
     fn complete(&self, slot: usize, result: Result<OwnedExactPartition, super::ExactScanError>) {
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         let notifier = self
             .controller
             .and_then(|controller| controller.exact_completion_notifier());
@@ -918,7 +916,7 @@ impl<'a> ExactExecution<'a> {
         }
         self.changed.notify_all();
         drop(state);
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         if let Some(notifier) = notifier {
             let _ = notifier.send(slot);
         }

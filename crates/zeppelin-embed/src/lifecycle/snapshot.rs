@@ -532,7 +532,7 @@ impl PublishedSnapshot {
     }
 
     /// Returns the manifest sequence for independent storage durability tests.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     #[doc(hidden)]
     #[must_use]
     pub const fn storage_absorbed_through(&self) -> u64 {

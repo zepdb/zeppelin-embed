@@ -634,7 +634,7 @@ fn score_batch(
     metric: RescoreMetric,
     scores: &mut Vec<f64>,
 ) {
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     for (row, _) in batch {
         crate::graph::search::observe_exact_score(*row);
     }

@@ -87,7 +87,7 @@ pub enum BuildError {
 }
 
 /// Narrow limits used only to prove naturally huge metadata builder guards.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[doc(hidden)]
 pub struct MetadataBuildTestLimits {
@@ -96,7 +96,7 @@ pub struct MetadataBuildTestLimits {
     pub max_string_bytes: u64,
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 impl MetadataBuildTestLimits {
     #[must_use]
     pub const fn new(max_rows: u32, max_dictionary_entries: u64, max_string_bytes: u64) -> Self {
@@ -548,7 +548,7 @@ impl BuilderColumn {
         }
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     fn check_test_limits(
         &self,
         value: Option<ColumnValue<'_>>,
@@ -696,7 +696,7 @@ pub struct ColumnStoreBuilder {
     schema: Schema,
     columns: Vec<BuilderColumn>,
     row_count: u32,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     test_limits: Option<MetadataBuildTestLimits>,
 }
 
@@ -713,13 +713,13 @@ impl ColumnStoreBuilder {
             schema,
             columns,
             row_count: 0,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             test_limits: None,
         }
     }
 
     /// Creates a builder with lower limits at the production guard sites.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     #[doc(hidden)]
     #[must_use]
     pub fn new_with_test_limits(schema: Schema, limits: MetadataBuildTestLimits) -> Self {
@@ -737,7 +737,7 @@ impl ColumnStoreBuilder {
         if self.row_count == u32::MAX {
             return Err(BuildError::TooManyRows);
         }
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         if self
             .test_limits
             .is_some_and(|limits| self.row_count >= limits.max_rows)
@@ -752,7 +752,7 @@ impl ColumnStoreBuilder {
             } else {
                 find_input(inputs, definition.id()).map(|input| input.value)
             };
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             if let Some(limits) = self.test_limits {
                 builder.check_test_limits(value, limits)?;
             }

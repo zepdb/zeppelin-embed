@@ -16,7 +16,7 @@ use crate::lifecycle::{PublishedSnapshot, QueryError, StructuredLexicalSource};
 use std::sync::Arc;
 
 /// Literal scoring calls on this caller thread, independent of work receipts.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[derive(Default)]
 #[doc(hidden)]
 pub struct HybridScoreTestObservations {
@@ -37,7 +37,7 @@ pub struct HybridScoreTestObservations {
     pub union_peak_bytes: u64,
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 thread_local! {
     static SCORE_TEST_OBSERVATIONS: std::cell::RefCell<Option<HybridScoreTestObservations>> =
         const { std::cell::RefCell::new(None) };
@@ -46,7 +46,7 @@ thread_local! {
 
 /// Starts an explicit caller-thread observation window; ordinary tests retain
 /// no score trace and shipping builds contain no observer.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[doc(hidden)]
 pub fn begin_hybrid_score_test_observations() {
     FRESH_ROUND_TEST_CONTROL.with(|fresh| fresh.set(false));
@@ -57,7 +57,7 @@ pub fn begin_hybrid_score_test_observations() {
 
 /// Observes the same public query while discarding cross-score reuse before
 /// every round. Producer frontiers and fusion termination remain unchanged.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[doc(hidden)]
 pub fn begin_hybrid_fresh_round_test_observations() {
     begin_hybrid_score_test_observations();
@@ -65,14 +65,14 @@ pub fn begin_hybrid_fresh_round_test_observations() {
 }
 
 /// Takes the calling thread's observations and disables further collection.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[doc(hidden)]
 pub fn take_hybrid_score_test_observations() -> HybridScoreTestObservations {
     FRESH_ROUND_TEST_CONTROL.with(|fresh| fresh.set(false));
     SCORE_TEST_OBSERVATIONS.with(|observations| observations.take().unwrap_or_default())
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) fn fresh_round_test_control() -> bool {
     FRESH_ROUND_TEST_CONTROL.with(std::cell::Cell::get)
 }
@@ -156,7 +156,7 @@ impl CrossScoreCache {
             replacement
                 .extend_from_slice(&self.entries)
                 .map_err(QueryError::Store)?;
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             SCORE_TEST_OBSERVATIONS.with(|observations| {
                 if let Some(observations) = observations.borrow_mut().as_mut() {
                     observations.cache_peak_bytes = observations.cache_peak_bytes.max(
@@ -374,7 +374,7 @@ impl HybridRoundBuffers {
         lexical: usize,
         accounting: &Arc<Accounting>,
     ) -> Result<(), FusionError> {
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         SCORE_TEST_OBSERVATIONS.with(|observations| {
             if let Some(observations) = observations.borrow_mut().as_mut() {
                 observations
@@ -425,7 +425,7 @@ impl HybridRoundBuffers {
             &mut self.resident_bytes,
             &mut self.peak_bytes,
         )?;
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         SCORE_TEST_OBSERVATIONS.with(|observations| {
             if let Some(observations) = observations.borrow_mut().as_mut() {
                 observations.candidate_peak_bytes =
@@ -507,7 +507,7 @@ pub(crate) fn fuse_round(
     scratch: &mut crate::fusion::StoreFusionScratch<DocId>,
 ) -> Result<crate::fusion::FusionOutcome<DocId>, FusionError> {
     use crate::fusion::{CandidateCoverage, FusionTermination, ScorePrecision};
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     SCORE_TEST_OBSERVATIONS.with(|observations| {
         if let Some(observations) = observations.borrow_mut().as_mut() {
             observations.union_start_capacities.push(scratch.capacity());
@@ -522,7 +522,7 @@ pub(crate) fn fuse_round(
         |document: &Option<DocId>| *document,
         scratch,
     )?;
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     SCORE_TEST_OBSERVATIONS.with(|observations| {
         if let Some(observations) = observations.borrow_mut().as_mut() {
             observations.union_peak_bytes = observations.union_peak_bytes.max(scratch.peak_bytes());
@@ -573,7 +573,7 @@ pub(crate) fn build_round<'scratch>(
     scores: &mut CrossScoreCache,
     buffers: &'scratch mut HybridRoundBuffers,
 ) -> Result<HybridRound<'scratch>, FusionError> {
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     if FRESH_ROUND_TEST_CONTROL.with(std::cell::Cell::get) {
         *scores = CrossScoreCache::new(scores.epoch);
     }
@@ -942,7 +942,7 @@ fn cross_score_lexical(
             .segments()
             .get(ordinal)
             .ok_or_else(|| lexical_invariant("hybrid lexical segment is absent"))?;
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         SCORE_TEST_OBSERVATIONS.with(|observations| {
             if let Some(observations) = observations.borrow_mut().as_mut() {
                 for (_, position) in batch {
@@ -1028,7 +1028,7 @@ fn exact_squared_l2(
         .and_then(|start| start.checked_add(dimension).map(|end| start..end))
         .and_then(|range| rows.get(range))
         .ok_or_else(|| invariant("hybrid cross-fill row is outside its segment"))?;
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     if SCORE_TEST_OBSERVATIONS.with(|observations| observations.borrow().is_some()) {
         let document = super::structured_lexical_document(snapshot, active, sources, doc, false)
             .map_err(super::map_term_leg_document_error)?;

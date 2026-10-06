@@ -1212,7 +1212,7 @@ fn run_root_replacement_class(schedule: StorageFaultSchedule) -> RootOutcome {
     }
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 pub(super) fn run_actual_probe(
     _seed: u64,
     schedule: StorageFaultSchedule,

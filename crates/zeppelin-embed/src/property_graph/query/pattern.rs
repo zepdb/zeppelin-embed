@@ -48,7 +48,7 @@ pub(crate) use search::{
 mod oracle_generation_tests;
 #[cfg(test)]
 mod oracle_tests;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub mod test_support;
 #[cfg(test)]
 mod tests;
@@ -357,7 +357,7 @@ pub(crate) struct NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> {
 }
 
 impl<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> NativePattern<'s, 'r, 'plan, 'v, 'm, 'g, 'i, 'q> {
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn cancel_after_expression_polls(
         &mut self,
         polls: usize,

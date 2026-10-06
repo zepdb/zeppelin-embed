@@ -86,7 +86,7 @@ impl Deadline {
     ///
     /// This is available only to deterministic test-support builds so a test
     /// can construct and evaluate the deadline in one clock domain.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub fn after_with_test_clock(
         duration: Duration,
         clock: Arc<dyn super::MonotonicClock>,
@@ -315,7 +315,7 @@ impl<'a> QueryCancellation<'a> {
         self.check()
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn cancel_token_for_test(&self) -> Option<CancelToken> {
         match self.control {
             QueryControl::Cancel(token) => Some(token.clone()),

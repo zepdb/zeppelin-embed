@@ -14,8 +14,8 @@ default = []
 graph-cypher = ["zeppelin-embed/graph-cypher", "dep:zeppelin-embed-cypher"]
 # Scoped allocation-site scheduling for the opt-in canonical test runner only.
 graph-result-test-support = ["graph-cypher"]
-graph-bindings-test-support = ["graph-result-test-support", "abi-panic-probe"]
-abi-panic-probe = ["zeppelin-embed/test-support"]
+graph-bindings-test-support = ["graph-result-test-support", "abi-panic-probe", "zeppelin-embed/test-seams"]
+abi-panic-probe = []
 text = ["dep:zeppelin-embed-text"]
 
 [lints.rust]
@@ -33,6 +33,7 @@ loom = "=0.7.2"
 
 [dev-dependencies]
 zeppelin-embed-adversarial-oracle = { path = "../../tests/adversarial-oracle", version = "=0.5.0" }
+zeppelin-embed = { path = "../zeppelin-embed", version = "=0.5.0", features = ["test-seams"] }
 tempfile.workspace = true
 
 [[test]]

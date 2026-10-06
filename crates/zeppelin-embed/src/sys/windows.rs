@@ -38,7 +38,7 @@ pub(crate) const FILE_SHARE_WRITE: DWORD = 0x0000_0002;
 pub(crate) const FILE_SHARE_DELETE: DWORD = 0x0000_0004;
 pub(crate) const FILE_ATTRIBUTE_NORMAL: DWORD = 0x0000_0080;
 pub(crate) const FILE_FLAG_BACKUP_SEMANTICS: DWORD = 0x0200_0000;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) const PAGE_READONLY: DWORD = 0x02;
 pub(crate) const PAGE_WRITECOPY: DWORD = 0x08;
 pub(crate) const SECTION_MAP_READ: DWORD = 0x0004;
@@ -222,7 +222,7 @@ unsafe extern "system" {
         ppsmemCounters: *mut PROCESS_MEMORY_COUNTERS_EX,
         cb: DWORD,
     ) -> BOOL;
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     fn VirtualProtect(
         lpAddress: *mut c_void,
         dwSize: usize,
@@ -767,7 +767,7 @@ impl FileMapping {
     /// already-validated reader sees.
     ///
     /// `&mut self` proves no `as_bytes` borrow is live during the write.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn corrupt_byte(&mut self, offset: usize, mask: u8) -> io::Result<()> {
         if offset >= self.length {
             return Err(io::Error::other("corruption offset is outside the mapping"));
@@ -821,11 +821,11 @@ impl Drop for FileMapping {
 /// platform boundary. This is the seam the Windows storage-protocol tests use
 /// to hold one live mapping while the artifact behind it is replaced or
 /// unlinked, which is the lifetime property compaction depends on.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[derive(Debug)]
 pub struct TestMapping(FileMapping);
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 impl TestMapping {
     /// Maps an entire non-empty file read-only, taking ownership of the file.
     pub fn open(file: std::fs::File, length: u64) -> io::Result<Self> {

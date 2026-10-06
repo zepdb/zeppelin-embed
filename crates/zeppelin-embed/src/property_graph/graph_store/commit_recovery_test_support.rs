@@ -590,13 +590,13 @@ pub fn run_boundary(
     boundary: Boundary,
     fault: bool,
 ) -> BoundaryReport {
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "test-seams")]
     {
         with_qualification_nonces(fixture.store as u64, || {
             run_boundary_inner(path, fixture, boundary, fault)
         })
     }
-    #[cfg(not(feature = "test-support"))]
+    #[cfg(not(feature = "test-seams"))]
     run_boundary_inner(path, fixture, boundary, fault)
 }
 fn run_boundary_inner(
@@ -744,7 +744,7 @@ fn run_boundary_inner(
     }
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 pub fn run_reclaim_boundaries() -> Vec<crate::graph_read_view_test_support::PathReceipt> {
     crate::lifecycle::native_graph::tests::consolidation::run_ze41_reclaim_boundaries()
 }
@@ -762,14 +762,14 @@ fn image(path: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
         .collect()
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 pub fn with_qualification_nonces<T>(seed: u64, run: impl FnOnce() -> T) -> T {
     crate::property_graph::storage::allocation::with_qualification_nonces(seed, run)
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub type ProvenanceEvidence = std::collections::BTreeMap<Vec<u8>, (Vec<u8>, Option<Vec<u8>>)>;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReclaimEvidence {
     pub cell: String,
@@ -786,7 +786,7 @@ pub struct ReclaimEvidence {
     pub fires: u64,
     pub controls: u64,
 }
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 pub fn run_ze75_reclaim_evidence(seed: u64) -> Vec<ReclaimEvidence> {
     crate::lifecycle::native_graph::tests::consolidation::run_ze75_reclaim_evidence(seed)
 }

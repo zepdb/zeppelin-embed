@@ -1405,13 +1405,13 @@ impl WalReader {
             }
             Some(ReplayTerminator::InvalidHeader(error)) => {
                 let error = WalRecoveryError::InvalidHeader(error);
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 crate::lifecycle::record_storage_wal_recovery_fault(&error);
                 Err(error)
             }
             Some(ReplayTerminator::CorruptAt { offset, reason }) => {
                 let error = WalRecoveryError::CorruptAt { offset, reason };
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 crate::lifecycle::record_storage_wal_recovery_fault(&error);
                 Err(error)
             }

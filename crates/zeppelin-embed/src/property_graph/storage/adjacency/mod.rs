@@ -9,10 +9,10 @@ mod range;
 mod read;
 use crate::property_graph::{NodeId, RelId, catalog::RelTypeId};
 pub use codec::{encode_base, encode_delta};
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) use merge::exact_split_fixture;
 pub use merge::{MERGE_STATE_BYTES, Merged, Partition, merge};
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) use prepare::QUALIFICATION_RANGES;
 pub(crate) use prepare::relocate_ranges;
 pub use prepare::{NativeGraphBase, NativeGraphCandidate, prepare_native_graph};

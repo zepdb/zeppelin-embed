@@ -13,7 +13,7 @@
 //! and only then construct and run a `GraphQuery`. ZE-53 S3's own test
 //! fixture (`entry_probe::run_plan`) needs about 80 lines of that per plan,
 //! and it cannot be reused here: it is `#[cfg(any(test, feature =
-//! "test-support"))]` only.
+//! "test-seams"))]` only.
 //!
 //! [`GraphStore::query`] does that work once. A caller supplies only its
 //! own plan data: the operator, expression and eager-search arenas ZE-48's

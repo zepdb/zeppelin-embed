@@ -222,7 +222,7 @@ impl TermScorer {
     /// Builds the constants for one term against one corpus.
     #[must_use]
     pub fn new(df: Df, stats: &CorpusStats, params: Bm25Params) -> Self {
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         super::preparation_observer::scorer();
         Self {
             idf: idf(df, stats.doc_count),

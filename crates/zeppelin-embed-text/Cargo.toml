@@ -7,7 +7,7 @@ license.workspace = true
 publish = false
 
 [features]
-test-support = ["zeppelin-embed/test-support"]
+test-support = []
 
 [lib]
 crate-type = ["rlib", "staticlib"]
@@ -24,4 +24,5 @@ unicode_categories = "=0.1.1"
 cc = "1"
 
 [dev-dependencies]
+zeppelin-embed = { path = "../zeppelin-embed", version = "=0.5.0", features = ["test-seams"] }
 tempfile.workspace = true

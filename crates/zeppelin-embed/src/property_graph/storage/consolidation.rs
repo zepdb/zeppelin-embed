@@ -23,7 +23,7 @@ use crate::epoch::EmbeddingTower;
 use crate::property_graph::wal::{InventoryState, RequiredRef};
 use crate::property_graph::{EntityId, GraphGeneration, NodeId};
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 thread_local! {
     static PINNED_SELECTION: std::cell::Cell<Option<NodeId>> = const {
         std::cell::Cell::new(None)
@@ -49,17 +49,17 @@ pub(crate) fn count_sweep_work(index: usize) {
 /// Pin relocation to one node on this thread until the guard drops. A
 /// fixture that needs a fixed partly live pack uses it; production selection
 /// uses the current census.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[must_use]
 pub(crate) fn pin_selection_for_test(node: NodeId) -> SelectionPin {
     PINNED_SELECTION.with(|pinned| pinned.set(Some(node)));
     SelectionPin
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) struct SelectionPin;
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 impl Drop for SelectionPin {
     fn drop(&mut self) {
         PINNED_SELECTION.with(|pinned| pinned.set(None));
@@ -490,7 +490,7 @@ pub(crate) fn select_drain<'m>(
         (live, records, pages) = next;
     }
     drain.as_mut_slice().sort_unstable();
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     if QUALIFICATION_SELECTION.with(std::cell::Cell::get) {
         let selected = census
             .iter()
@@ -646,9 +646,9 @@ where
 {
     let mut selected = StorageBuffer::new(source.memory(), RELOCATION_LIMIT)?;
     let mut bytes = 0_u64;
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     let pinned = PINNED_SELECTION.with(std::cell::Cell::get);
-    #[cfg(not(any(test, feature = "test-support")))]
+    #[cfg(not(any(test, feature = "test-seams")))]
     let pinned: Option<NodeId> = None;
     let mut full = false;
     for kind in [TreeKind::Nodes, TreeKind::Relationships] {
@@ -1398,9 +1398,9 @@ pub(crate) fn select_finished_tombstones<'m, S: super::tree::directory::BlockSou
     Ok(selected)
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 type PackSelection = (Vec<PackCensus>, Vec<u64>, u64);
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 thread_local! {
     pub(crate) static QUALIFICATION_SELECTION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     pub(crate) static QUALIFICATION_PACKS: std::cell::RefCell<Vec<PackSelection>> = const { std::cell::RefCell::new(Vec::new()) };

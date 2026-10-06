@@ -166,3 +166,36 @@ fn size_budget_fails_on_inflated_binary() {
         "size failure did not emit the exact configured-budget rejection line:\n{text}"
     );
 }
+
+#[test]
+fn normal_consumers_exclude_test_seams() {
+    for (package, features) in [
+        ("zeppelin-embed-bench", ""),
+        ("zeppelin-embed-cypher", ""),
+        ("zeppelin-embed-ffi", ""),
+        ("zeppelin-embed-ffi", "graph-cypher"),
+    ] {
+        let mut command = Command::new("cargo");
+        command.current_dir(repo_root()).args([
+            "tree",
+            "-p",
+            package,
+            "-e",
+            "normal,build,features",
+            "--prefix",
+            "none",
+        ]);
+        if !features.is_empty() {
+            command.args(["--features", features]);
+        }
+        let output = command.output().expect("normal dependency graph");
+        let text = combined_output(&output);
+        assert!(output.status.success(), "{text}");
+        for feature in ["test-support", "test-seams"] {
+            assert!(
+                !text.contains(&format!("zeppelin-embed feature \"{feature}\"")),
+                "{package} {features} enables {feature} through normal/build edges:\n{text}"
+            );
+        }
+    }
+}

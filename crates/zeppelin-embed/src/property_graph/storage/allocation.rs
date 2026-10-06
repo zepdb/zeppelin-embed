@@ -16,7 +16,7 @@ pub trait EntropyProvider {
 pub struct OsEntropy;
 impl EntropyProvider for OsEntropy {
     fn fill_nonce(&mut self, output: &mut [u8; 16]) -> std::io::Result<()> {
-        #[cfg(feature = "test-support")]
+        #[cfg(feature = "test-seams")]
         if let Some(value) = qualification_nonce() {
             *output = value.to_le_bytes();
             return Ok(());
@@ -193,11 +193,11 @@ pub fn artifact_path(directory: &Path, artifact: ArtifactId) -> PathBuf {
 }
 
 // Nonshipping, thread-scoped deterministic physical inputs for retained-byte replay.
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 thread_local! {
     static QUALIFICATION_NONCES: std::cell::Cell<Option<(u64, u64)>> = const { std::cell::Cell::new(None) };
 }
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 fn qualification_nonce() -> Option<u128> {
     QUALIFICATION_NONCES.with(|cell| {
         let (seed, ordinal) = cell.get()?;
@@ -205,7 +205,7 @@ fn qualification_nonce() -> Option<u128> {
         Some(xxhash_rust::xxh3::xxh3_128_with_seed(&ordinal.to_le_bytes(), seed) | 1)
     })
 }
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 pub(crate) fn with_qualification_nonces<T>(seed: u64, run: impl FnOnce() -> T) -> T {
     struct Restore(Option<(u64, u64)>);
     impl Drop for Restore {

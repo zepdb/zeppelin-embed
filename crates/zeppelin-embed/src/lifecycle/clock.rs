@@ -22,14 +22,14 @@ impl MonotonicClock for SystemMonotonicClock {
 }
 
 /// A manually advanced monotonic clock for deterministic fault tests.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[derive(Debug)]
 pub struct ManualMonotonicClock {
     base: Instant,
     offset: std::sync::Mutex<std::time::Duration>,
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 impl ManualMonotonicClock {
     /// Creates a frozen clock at the current monotonic instant.
     #[must_use]
@@ -57,14 +57,14 @@ impl ManualMonotonicClock {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 impl Default for ManualMonotonicClock {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 impl MonotonicClock for ManualMonotonicClock {
     fn now(&self) -> Instant {
         let offset = self

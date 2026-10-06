@@ -1577,7 +1577,7 @@ impl SealedSegment {
         let mut cursor = self.cursor_at(index, 1_000)?;
         cursor.reset();
         let row = cursor.current()?;
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         super::preparation_observer::live_df_walk(
             1,
             usize::try_from(cursor.blocks_decoded).unwrap_or(usize::MAX),
@@ -1613,12 +1613,12 @@ impl SealedSegment {
             return Ok(0);
         };
         let mut count = 0_u32;
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         let mut visited = 0_usize;
         let result = (|| {
             while let Some(row) = stream.current_row() {
                 work.step()?;
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 {
                     visited = visited.saturating_add(1);
                 }
@@ -1630,7 +1630,7 @@ impl SealedSegment {
             work.check_now()?;
             Ok(count)
         })();
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         super::preparation_observer::live_df_walk(
             visited,
             usize::try_from(stream.blocks_decoded()).unwrap_or(usize::MAX),

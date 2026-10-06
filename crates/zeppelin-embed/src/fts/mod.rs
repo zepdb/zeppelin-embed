@@ -12,7 +12,7 @@ pub mod tokenizer;
 pub mod graph_build;
 
 /// Explicit test-only observations propagated to this query's lexical worker.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[doc(hidden)]
 pub mod preparation_observer;
 

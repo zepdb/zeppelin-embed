@@ -1726,7 +1726,7 @@ impl RowPositions<'_> {
         })();
         // Record completed decode work even when the next cooperative check
         // aborts. Partial scratch is never returned to the caller.
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         if !positions.is_empty() {
             let first_bit = self.first * usize::from(self.bits);
             let last_bit = (self.first + positions.len()) * usize::from(self.bits);

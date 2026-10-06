@@ -13,7 +13,7 @@ use zeppelin_embed::lifecycle::lock::StoreLockError;
 use zeppelin_embed::lifecycle::{
     CancelToken, Deadline, DeadlineError, OpenOptions, QueryControl, QueryError, Store, StoreError,
 };
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 use zeppelin_embed::lifecycle::{ManualMonotonicClock, StoreTestDependencies};
 use zeppelin_embed::manifest::ManifestError;
 use zeppelin_embed::quant::{Bit4Factors, prepare_bit4_query, prepare_int8_query};
@@ -21,11 +21,11 @@ use zeppelin_embed::scan::{
     F32Rows, Int8Factors, ScanError, ScanOptions, ScanQuery, ScanRequest, ScanRows,
 };
 use zeppelin_embed::segment::SegmentError;
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 use zeppelin_embed::vfs::StdVfs;
 use zeppelin_embed::wal::WalReadError;
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 #[test]
 fn already_expired_deadline_wins_when_a_tiny_scan_finishes_first() {
     let _guard = test_guard();

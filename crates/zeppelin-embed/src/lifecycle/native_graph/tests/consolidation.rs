@@ -5954,7 +5954,7 @@ fn run_older_wal_manifest_retention_without_explicit_registration() {
     store.close().expect("close older WAL witness store");
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 #[test]
 fn ze46_reclaim_oracle_catches_early_unlink_and_missing_wal_protection() {
     run_ze46_reclaim_oracle_catches_early_unlink_and_missing_wal_protection();
@@ -5965,7 +5965,7 @@ fn ze46_reclaim_oracle_catches_early_unlink_and_missing_wal_protection() {
 /// this case fail for the intended reason: an unlink before the durable
 /// intent breaks the before-intent crash cell, and a mark that skips the
 /// uncheckpointed WAL references breaks the WAL-only witness.
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 fn run_ze46_reclaim_oracle_catches_early_unlink_and_missing_wal_protection() {
     run_older_wal_manifest_retention_without_explicit_registration();
     run_reclaim_crash_cell(CrashCell::BeforeIntent);
@@ -5996,7 +5996,7 @@ fn run_ze46_reclaim_oracle_catches_early_unlink_and_missing_wal_protection() {
 /// A manifest that only the uncheckpointed WAL still protects. With its mark
 /// edge omitted the independent guard refuses before any mutation; with the
 /// real mark it is never a candidate and its bytes never change.
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 fn wal_only_witness_is_guarded_and_never_selected() {
     let parent = super::tempfile::tempdir().expect("temporary parent");
     let path = parent.path().join("native");
@@ -6918,7 +6918,7 @@ fn ze163_omitted_reader_history_artifact_refuses_before_any_unlink() {
 
 /// One real reclaim cycle, a reopen and a replay of the original keyed
 /// request, reported as plain observations for an independent comparator.
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 fn observe_reclaim_cycle() -> crate::graph_reclaim_test_support::ReclaimState {
     let (history, store) = seed_crash_history();
     let vfs = Arc::clone(&history.vfs);
@@ -6969,7 +6969,7 @@ fn observe_reclaim_cycle() -> crate::graph_reclaim_test_support::ReclaimState {
 
 /// The directed production paths behind ZE-46 acceptance. A receipt is pushed
 /// only after its body returned, so a receipt proves its assertions passed.
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 pub(super) fn run_actual_probe(seed: u64) -> crate::graph_reclaim_test_support::ReclaimProbeReport {
     use super::publication::{reset_verified_faults, take_verified_faults};
     let bodies: [(&'static str, u64, fn()); 13] = [
@@ -7982,7 +7982,7 @@ fn ze186_reader_graph_only_artifact_survives_reclaim() {
     eprintln!("ZE186 removed bytes: {removed}");
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 fn ze176_schedule(seed: u64, raced: bool) -> ((u64, Vec<u8>, bool, bool), [u64; 4]) {
     use crate::property_graph::query::resources::QueryMemory;
     use crate::property_graph::query::runtime::{RuntimeContext, RuntimeLimits};
@@ -8213,7 +8213,7 @@ fn ze176_schedule(seed: u64, raced: bool) -> ((u64, Vec<u8>, bool, bool), [u64; 
     )
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 pub(super) fn run_ze176_race_probe(
     seed: u64,
 ) -> crate::graph_reclaim_test_support::RaceProbeReport {
@@ -8244,7 +8244,7 @@ pub(super) fn run_ze176_race_probe(
     }
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 #[test]
 fn ze176_race_probe_requires_measured_controls() {
     let report = run_ze176_race_probe(7);
@@ -8268,7 +8268,7 @@ fn ze176_race_probe_requires_measured_controls() {
 }
 
 /// Reuse the existing real reclaim partitions, each beside a fresh clean control.
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 pub(crate) fn run_ze41_reclaim_boundaries() -> Vec<crate::graph_read_view_test_support::PathReceipt>
 {
     use super::publication::{reset_verified_faults, take_verified_faults};
@@ -9018,7 +9018,7 @@ fn ze166_assert_blocked_tombstone_budget() {
     assert!(resume.is_none());
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 pub(crate) fn run_ze75_reclaim_evidence(
     seed: u64,
 ) -> Vec<crate::graph_commit_recovery_test_support::ReclaimEvidence> {

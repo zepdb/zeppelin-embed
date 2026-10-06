@@ -938,7 +938,7 @@ impl LexicalIndex {
     /// Returns [`IndexError::Stats`] when the index holds no documents or
     /// no tokens, because `avgdl` is undefined then.
     pub fn corpus_stats(&self) -> Result<CorpusStats, IndexError> {
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         super::preparation_observer::corpus_statistics();
         Ok(CorpusStats::new(
             self.document_count(),
@@ -956,7 +956,7 @@ impl LexicalIndex {
     /// rows in the same live bitmap used for `N` and `avgdl`.
     #[must_use]
     pub fn document_frequency(&self, term: &[u8], fields: &[FieldId]) -> u32 {
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         super::preparation_observer::frequency();
         self.segments
             .iter()
@@ -997,7 +997,7 @@ impl LexicalIndex {
         mut check: impl FnMut() -> Result<(), E>,
     ) -> Result<u32, super::search::ControlledSearchError<E>> {
         use super::search::ControlledSearchError;
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         super::preparation_observer::frequency();
         check().map_err(ControlledSearchError::Control)?;
         let mut total = 0_u32;
@@ -1025,7 +1025,7 @@ impl LexicalIndex {
         term: &[u8],
         fields: &[FieldId],
     ) -> Result<u32, IndexError> {
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         super::preparation_observer::frequency();
         self.segments.iter().zip(&self.statistics).try_fold(
             0_u32,
@@ -1062,7 +1062,7 @@ fn live_segment_counters_controlled<E: From<IndexError>>(
     let tokens =
         live_rows.iter().try_fold(0_u64, |total, row| {
             work.step()?;
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             super::preparation_observer::live_statistics_row();
             let slot = usize::try_from(row).map_err(|_| IndexError::LiveLengthMissing {
                 segment: ordinal,

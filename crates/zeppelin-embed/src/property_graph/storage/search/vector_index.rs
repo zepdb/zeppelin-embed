@@ -1,7 +1,7 @@
 //! Native sparse-source vector index ownership and persisted image.
 
 mod prepare;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[allow(
     missing_docs,
     reason = "test-only probe fields are exposed to integration tests, not as a documented API"
@@ -69,7 +69,7 @@ impl<'m> IndexFloats<'m> {
 
 /// Complete checked source-local vector index retained under its sparse owner.
 pub(crate) struct NativeVectorIndex<'m> {
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     payload: PayloadRef,
     encoded: SparseBytes<'m>,
     rescore: IndexFloats<'m>,
@@ -122,12 +122,12 @@ impl NativeVectorIndex<'_> {
         self.rescore.as_slice()
     }
 
-    #[cfg(any(test, all(feature = "graph-cypher", feature = "test-support")))]
+    #[cfg(any(test, all(feature = "graph-cypher", feature = "test-seams")))]
     pub(crate) fn encoded_bytes(&self) -> &[u8] {
         self.encoded.as_slice()
     }
 
-    #[cfg(any(test, all(feature = "graph-cypher", feature = "test-support")))]
+    #[cfg(any(test, all(feature = "graph-cypher", feature = "test-seams")))]
     pub(crate) const fn payload_reference(&self) -> PayloadRef {
         self.payload
     }
@@ -448,7 +448,7 @@ pub(super) fn open_vector_index<'m, S: BlockSource>(
         }
     }
     Ok(NativeVectorIndex {
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         payload,
         encoded,
         rescore,

@@ -130,7 +130,7 @@ impl Bit4Query {
 
     /// Returns the prepared code bytes, pre-interleave sum, and half-scale
     /// exactly as consumed by the scoring kernel.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     #[doc(hidden)]
     #[must_use]
     pub fn observation_parts(&self) -> (&[i8], i32, f64) {
@@ -240,7 +240,7 @@ pub fn dequantize_bit4(
 /// [`QuantError::NonFinite`] under the same input policy as
 /// [`quantize_bit4`].
 pub fn prepare_bit4_query(q: &[f32], seed: u64) -> Result<Bit4Query, QuantError> {
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     super::QUERY_PREPARATIONS.with(|calls| {
         if let Some(calls) = calls.borrow_mut().as_mut() {
             calls.bit4.push((q.len(), seed));

@@ -4,7 +4,7 @@ use std::fs::File;
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
 use std::path::Path;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 use std::path::PathBuf;
 #[cfg(unix)]
 use std::ptr::NonNull;
@@ -39,14 +39,14 @@ thread_local! {
     };
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 thread_local! {
     static SEGMENT_COST_AUDIT: std::cell::RefCell<Option<Arc<SegmentCostCounters>>> = const {
         std::cell::RefCell::new(None)
     };
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[derive(Default)]
 struct SegmentCostCounters {
     identity_hash_bytes: AtomicU64,
@@ -61,7 +61,7 @@ struct SegmentCostCounters {
 }
 
 /// Test-only deterministic costs observed while reading immutable segments.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct SegmentCostSnapshot {
     /// Bytes hashed while validating document identities.
@@ -85,18 +85,18 @@ pub struct SegmentCostSnapshot {
 }
 
 /// Test-only scoped collector for deterministic segment read-path costs.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[derive(Clone, Default)]
 pub struct SegmentCostAudit {
     counters: Arc<SegmentCostCounters>,
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 struct SegmentCostAuditGuard {
     previous: Option<Arc<SegmentCostCounters>>,
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 impl Drop for SegmentCostAuditGuard {
     fn drop(&mut self) {
         let previous = self.previous.take();
@@ -106,7 +106,7 @@ impl Drop for SegmentCostAuditGuard {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 impl SegmentCostAudit {
     /// Creates a zeroed cost collector.
     #[must_use]
@@ -142,7 +142,7 @@ impl SegmentCostAudit {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 fn account_region_hash(kind: RegionKind, bytes: usize) {
     let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
     SEGMENT_COST_AUDIT.with(|slot| {
@@ -163,7 +163,7 @@ fn account_region_hash(kind: RegionKind, bytes: usize) {
     });
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 fn account_region_decode(kind: RegionKind, bytes: usize) {
     let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
     SEGMENT_COST_AUDIT.with(|slot| {
@@ -183,7 +183,7 @@ fn account_region_decode(kind: RegionKind, bytes: usize) {
     });
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) fn account_active_postings_decode(bytes: usize) {
     let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
     SEGMENT_COST_AUDIT.with(|slot| {
@@ -198,7 +198,7 @@ pub(crate) fn account_active_postings_decode(bytes: usize) {
 }
 
 fn region_hash(_kind: RegionKind, bytes: &[u8]) -> u64 {
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     account_region_hash(_kind, bytes.len());
     xxh3_64(bytes)
 }
@@ -303,7 +303,7 @@ impl MappedFile {
     /// reader that already validated the page, deterministically on every
     /// platform (a file write is not visible through a private mapping on
     /// macOS). `&mut self` proves no `as_bytes` borrow is live during the write.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     fn corrupt_byte(&mut self, offset: usize, mask: u8) -> std::io::Result<()> {
         if offset >= self.length {
             return Err(std::io::Error::other(
@@ -408,7 +408,7 @@ impl MappedFile {
 
     /// Flips `mask` into one byte of the private view through copy-on-write,
     /// leaving the segment file untouched. Test support only.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     fn corrupt_byte(&mut self, offset: usize, mask: u8) -> std::io::Result<()> {
         self.inner.corrupt_byte(offset, mask)
     }
@@ -435,7 +435,7 @@ struct ParsedHeader {
 pub struct SegmentReader {
     mapping: MappedFile,
     meta: SegmentMeta,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     storage_store_directory: PathBuf,
     header_length: usize,
     entries: Vec<RegionEntry>,
@@ -597,7 +597,7 @@ static QUERY_CHECKSUMS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU
 ///
 /// Verification is opt-in and off by default, so a test that asserts the
 /// verifying behaviour must turn it on rather than assume it.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub fn set_query_checksum_verification(enabled: bool) {
     QUERY_CHECKSUMS.store(
         if enabled { 2 } else { 1 },
@@ -623,7 +623,7 @@ impl SegmentReader {
         Ok(Self {
             mapping,
             meta: parsed.meta,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             storage_store_directory: path.parent().unwrap_or(Path::new("")).to_path_buf(),
             header_length: parsed.header_length,
             entries: parsed.entries,
@@ -699,7 +699,7 @@ impl SegmentReader {
         Ok(Self {
             mapping,
             meta: expected.clone(),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             storage_store_directory: path.parent().unwrap_or(Path::new("")).to_path_buf(),
             header_length: parsed.header_length,
             entries: parsed.entries,
@@ -770,13 +770,13 @@ impl SegmentReader {
     /// Flips `mask` into one mapped byte through copy-on-write, leaving the
     /// segment file untouched, so a test can corrupt what an already-validated
     /// reader sees. `&mut self` guarantees no region view is live meanwhile.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     #[doc(hidden)]
     pub fn corrupt_mapped_byte_for_test(&mut self, offset: usize, mask: u8) -> std::io::Result<()> {
         self.mapping.corrupt_byte(offset, mask)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     #[doc(hidden)]
     pub fn retained_query_view_bytes(&self) -> u64 {
         let int8_factors = self.int8_factors_cache.get().and_then(|cached| {
@@ -848,7 +848,7 @@ impl SegmentReader {
         let bytes = self.region_slice(entry)?;
         let actual = region_hash(kind, bytes);
         if actual != entry.checksum {
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             crate::lifecycle::record_storage_segment_checksum_fault(
                 &self.storage_store_directory,
                 self.meta.id,
@@ -910,7 +910,7 @@ impl SegmentReader {
         let expected = self.chunk_checksum(kind, chunk_index)?;
         let actual = region_hash(kind, chunk);
         if actual != expected {
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             crate::lifecycle::record_storage_segment_checksum_fault(
                 &self.storage_store_directory,
                 self.meta.id,
@@ -1110,7 +1110,7 @@ impl SegmentReader {
                 header.factor_stride_bytes
             )));
         }
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         account_region_decode(RegionKind::VectorFactors, payload.len());
         cast_slice::<Int8Factors>(payload, self.meta.row_count as usize, "Int8 factors")
     }
@@ -1311,7 +1311,7 @@ impl SegmentReader {
     /// schema, so columns added after this segment was sealed read as null.
     pub fn columns(&self) -> Result<ColumnStore, SegmentError> {
         let region = self.region(RegionKind::Columns)?;
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         account_region_decode(RegionKind::Columns, region.len());
         let columns = decode_columns(region, self.collection_schema.as_deref())?;
         if columns.row_count() != self.meta.row_count {
@@ -1331,7 +1331,7 @@ impl SegmentReader {
         let region = self
             .region(RegionKind::Columns)
             .map_err(crate::lifecycle::StoreError::Segment)?;
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         account_region_decode(RegionKind::Columns, region.len());
         let mut columns = decode_columns(region, self.collection_schema.as_deref())
             .map_err(crate::lifecycle::StoreError::Segment)?;
@@ -1378,7 +1378,7 @@ impl SegmentReader {
             return Ok(None);
         }
         let region = self.region(RegionKind::Postings)?;
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         account_region_decode(RegionKind::Postings, region.len());
         let postings = crate::fts::sealed::SealedSegment::decode_region(region)?;
         if postings.row_count() != self.meta.row_count {
@@ -1414,7 +1414,7 @@ impl SegmentReader {
         let region = self
             .region(RegionKind::Postings)
             .map_err(crate::lifecycle::StoreError::Segment)?;
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         account_region_decode(RegionKind::Postings, region.len());
         let postings = crate::fts::sealed::SealedSegment::decode_region(region)
             .map_err(SegmentError::from)
@@ -1470,7 +1470,7 @@ impl SegmentReader {
     /// Decodes the checksummed alive/tombstone region.
     pub fn alive(&self) -> Result<AliveSet, SegmentError> {
         let region = self.region(RegionKind::Alive)?;
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         account_region_decode(RegionKind::Alive, region.len());
         let alive = decode_alive(region)?;
         if alive.row_count() != self.meta.row_count {
@@ -1490,7 +1490,7 @@ impl SegmentReader {
         let region = self
             .region(RegionKind::Alive)
             .map_err(crate::lifecycle::StoreError::Segment)?;
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         account_region_decode(RegionKind::Alive, region.len());
         let mut alive = decode_alive(region).map_err(crate::lifecycle::StoreError::Segment)?;
         if alive.row_count() != self.meta.row_count {
@@ -2340,14 +2340,14 @@ pub fn validate_header_with_vfs(
         .read_range(path, 0, FILE_HEADER_LEN)
         .map_err(|error| SegmentError::io(path, error))?;
     let artifact = path.display().to_string();
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     let actual_family = header_bytes
         .get(8..10)
         .and_then(|family| <[u8; 2]>::try_from(family).ok())
         .map(u16::from_le_bytes);
     let fixed =
         decode_header(&artifact, FormatFamily::Segment, &header_bytes).map_err(|error| {
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             crate::lifecycle::record_storage_segment_format_fault(
                 &error,
                 actual_family,
@@ -2482,13 +2482,13 @@ fn parse_segment_header(
     actual_file_length: u64,
     expected_id: SegmentId,
 ) -> Result<ParsedHeader, SegmentError> {
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     let actual_family = bytes
         .get(8..10)
         .and_then(|family| <[u8; 2]>::try_from(family).ok())
         .map(u16::from_le_bytes);
     let fixed = decode_header(artifact, FormatFamily::Segment, bytes).map_err(|error| {
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         crate::lifecycle::record_storage_segment_format_fault(&error, actual_family, expected_id);
         SegmentError::from(error)
     })?;
@@ -2520,7 +2520,7 @@ fn parse_segment_header(
         .map_err(|_| FormatError::new(artifact, FormatCheck::Length, "invalid segment id"))?;
     let actual_id = SegmentId::from_bytes(id_bytes);
     if actual_id != expected_id {
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         crate::lifecycle::record_storage_segment_identity_fault(artifact, expected_id, actual_id);
         return Err(SegmentError::WrongObject {
             artifact: artifact.to_owned(),

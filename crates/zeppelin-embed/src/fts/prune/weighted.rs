@@ -670,12 +670,12 @@ pub(crate) fn search<Control>(
     }
     reserve(heap_bytes).map_err(ControlledSearchError::Control)?;
     work.check_now()?;
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     {
         crate::fts::preparation_observer::structured_collection(peak_rows);
         crate::fts::preparation_observer::structured_bounds(bound_terms);
     }
-    #[cfg(not(any(test, feature = "test-support")))]
+    #[cfg(not(any(test, feature = "test-seams")))]
     let _ = (peak_rows, bound_terms);
     Ok(WeightedResult {
         hits: heap.entries,

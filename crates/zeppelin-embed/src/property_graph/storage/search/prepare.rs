@@ -25,12 +25,12 @@ use crate::property_graph::{EntityId, GraphGeneration, NodeId};
 
 const VECTOR_SOURCE_MAX_ROWS: usize = 1_024;
 const VECTOR_SOURCE_MAX_RESCORE_BYTES: usize = 4 * 1_024 * 1_024;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 thread_local! {
     static MISS_NEXT_MAINTENANCE_PEER_RETARGET: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) fn miss_next_maintenance_peer_retarget() {
     MISS_NEXT_MAINTENANCE_PEER_RETARGET.with(|scheduled| scheduled.set(true));
 }
@@ -584,9 +584,9 @@ pub(super) fn relocate_sparse_state<B: BlockSource, S: BlockSink>(
     memory: &StorageMemory<'_>,
     resources: &mut TreeResources<'_>,
 ) -> Result<SparseRootState, TreeError> {
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     let miss_peer = MISS_NEXT_MAINTENANCE_PEER_RETARGET.with(|scheduled| scheduled.replace(false));
-    #[cfg(not(any(test, feature = "test-support")))]
+    #[cfg(not(any(test, feature = "test-seams")))]
     let miss_peer = false;
     let crate::property_graph::EntityId::Node(node) = relocation.entity else {
         return Ok(state);

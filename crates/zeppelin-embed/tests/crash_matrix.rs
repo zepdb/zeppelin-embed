@@ -31,21 +31,21 @@ use zeppelin_embed::segment::writer::{
     SegmentBuild, SegmentFactors, encode_segment, write_segment,
 };
 use zeppelin_embed::segment::{SegmentError, SegmentId, SegmentMeta};
-#[cfg(not(feature = "test-support"))]
+#[cfg(not(feature = "test-seams"))]
 use zeppelin_embed::vfs::VfsFile;
 use zeppelin_embed::vfs::{SyncKind, Vfs};
 use zeppelin_embed::wal::header::encode_header as encode_wal_header;
 use zeppelin_embed::wal::record::{WalRecord, encode_record};
 use zeppelin_embed::wal::{LogSeq, WalReader};
-#[cfg(not(feature = "test-support"))]
+#[cfg(not(feature = "test-seams"))]
 #[path = "../src/vfs/crash.rs"]
 mod crash_support;
-#[cfg(not(feature = "test-support"))]
+#[cfg(not(feature = "test-seams"))]
 use crash_support::{
     CrashOperation, CrashState, CrashStateClass, CrashStateKind, CrashStates, CrashVfs,
     MAX_TEAR_POINTS_PER_OPERATION, MemoryVfs, TornWriteEdge,
 };
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 use zeppelin_embed::vfs::crash::{
     CrashOperation, CrashState, CrashStateClass, CrashStateKind, CrashStates, CrashVfs,
     MAX_TEAR_POINTS_PER_OPERATION, MemoryVfs, TornWriteEdge,

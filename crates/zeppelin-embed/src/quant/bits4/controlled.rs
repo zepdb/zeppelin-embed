@@ -157,7 +157,7 @@ pub(crate) fn quantize_bit4_controlled<E>(
     control: &mut impl FnMut(u64) -> Result<(), E>,
 ) -> Result<Bit4Factors, Bit4ControlError<E>> {
     {
-        #[cfg(all(feature = "graph-cypher", any(test, feature = "test-support")))]
+        #[cfg(all(feature = "graph-cypher", any(test, feature = "test-seams")))]
         let _phase = crate::property_graph::storage::search::native_vector_validation_phase(
             crate::property_graph::storage::search::NativeVectorValidationStage::QuantizeValidation,
         );
@@ -312,7 +312,7 @@ pub(crate) fn prepare_bit4_query_controlled<E>(
     control: &mut impl FnMut(u64) -> Result<(), E>,
 ) -> Result<(Bit4Query, usize), Bit4ControlError<E>> {
     {
-        #[cfg(all(feature = "graph-cypher", any(test, feature = "test-support")))]
+        #[cfg(all(feature = "graph-cypher", any(test, feature = "test-seams")))]
         let _phase = crate::property_graph::storage::search::native_vector_validation_phase(
             crate::property_graph::storage::search::NativeVectorValidationStage::QueryValidation,
         );

@@ -158,7 +158,7 @@ pub fn merge<'a, E>(
     })
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[allow(clippy::indexing_slicing, clippy::unwrap_used)]
 pub(crate) fn exact_split_fixture() {
     let lower = RelId::new(u128::MAX - MAX_BASE_ENTRIES as u128).unwrap();

@@ -16,7 +16,7 @@ use crate::property_graph::{
     wal::{self, CommitState, WalGraphRoots},
 };
 mod ranges;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) use ranges::QUALIFICATION_RANGES;
 pub(crate) use ranges::relocate_ranges;
 

@@ -25,7 +25,7 @@ struct SealPayloadBuffers<'a> {
     text: Option<SegmentStoredText<'a>>,
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 type TestSealStorage = (Vec<u8>, Vec<crate::segment::layout::Int8Factors>);
 
 impl Store {
@@ -54,7 +54,7 @@ impl Store {
         self.seal_inner(Some(cancel), vfs)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     fn test_seal_storage(
         &self,
         current: &ActiveState,
@@ -108,7 +108,7 @@ impl Store {
         _absorbed_through: u64,
     ) -> Result<(), StoreError> {
         cleanup_uncommitted_segment(vfs, &self.directory, id, self.durability_policy)?;
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         if let Some(invocation_id) = _invocation {
             let active_rows = u64::try_from(_current.segment.row_count())
                 .map_err(|_| StoreError::ActiveRowOverflow)?;
@@ -188,9 +188,9 @@ impl Store {
             .ok_or(StoreError::ActiveRowOverflow)?;
         let dims = u32::try_from(dims).map_err(|_| StoreError::ActiveRowOverflow)?;
         let id = seal_id(generation, absorbed_through);
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         let int8_storage = self.test_seal_storage(current, dims)?;
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         let (scheme, codes, factors) = match int8_storage.as_ref() {
             Some((codes, factors)) => (
                 u16::from(crate::quant::QuantScheme::Int8.id()),
@@ -203,7 +203,7 @@ impl Store {
                 SegmentFactors::Bit4(current.segment.factors()),
             ),
         };
-        #[cfg(not(any(test, feature = "test-support")))]
+        #[cfg(not(any(test, feature = "test-seams")))]
         let (scheme, codes, factors) = (
             u16::from(crate::quant::QuantScheme::Bit4.id()),
             current.segment.codes(),
@@ -248,7 +248,7 @@ impl Store {
         };
         meta.clustering_key_range = clustering_key_range;
         meta.epoch_id = manifest.epoch_alias.map(|identity| identity.embedding);
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         let forced_late_cancellation =
             match self.ingest_retention_fault_controller.as_ref() {
                 Some(controller) => controller.seal_cancellation_plan().map_err(|_| {
@@ -258,7 +258,7 @@ impl Store {
                 })?,
                 None => None,
             };
-        #[cfg(not(any(test, feature = "test-support")))]
+        #[cfg(not(any(test, feature = "test-seams")))]
         let forced_late_cancellation: Option<u64> = None;
         if forced_late_cancellation.is_some() || check_cancelled(cancel).is_err() {
             self.abort_seal(vfs, id, forced_late_cancellation, current, absorbed_through)?;

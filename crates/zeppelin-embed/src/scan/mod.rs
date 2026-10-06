@@ -2,7 +2,7 @@
 
 pub mod parallel;
 pub(crate) mod topk;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[doc(hidden)]
 pub mod vector_fault;
 
@@ -10,7 +10,7 @@ pub use parallel::{ScanOptions, ScanOutcome, ScanStats, physical_thread_capacity
 
 use crate::kernels;
 use crate::lifecycle::QueryCancellation;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 use crate::quant::est_dot_bit4;
 use crate::quant::{
     Bit4Factors, Bit4Query, Int8Query, Int8Vec, QuantError, QuantScheme, dot_int8_query,
@@ -332,7 +332,7 @@ pub(crate) fn top_k_with_ties(
     scan_top_k(request, k)
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) fn scan_partition_with_vector_faults(
     request: ScanRequest<'_>,
     k: usize,
@@ -366,7 +366,7 @@ pub(crate) fn scan_partition_with_vector_faults(
     })
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 fn scan_faulted_range(
     request: ScanRequest<'_>,
     k: usize,
@@ -397,7 +397,7 @@ fn scan_faulted_range(
     Ok((selected.into_sorted_with_ties(), scored_rows))
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 fn score_faulted_row(
     request: ScanRequest<'_>,
     row: usize,
@@ -453,7 +453,7 @@ fn score_faulted_row(
     Ok(ScanCandidate { row_id: row, score })
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 fn request_dimension(request: ScanRequest<'_>) -> Result<usize, ScanError> {
     let dimension = match request.query {
         ScanQuery::F32(query) => query.len(),
@@ -468,7 +468,7 @@ fn request_dimension(request: ScanRequest<'_>) -> Result<usize, ScanError> {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 fn request_bytes_per_row(request: ScanRequest<'_>) -> Result<usize, ScanError> {
     match request.query {
         ScanQuery::F32(query) => query
@@ -489,7 +489,7 @@ fn request_bytes_per_row(request: ScanRequest<'_>) -> Result<usize, ScanError> {
 /// This seam is available only to repository test and benchmark tooling. It
 /// keeps calibration on the shipping gather implementation without making a
 /// forced execution branch part of the product API.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "benchmark-kernels"))]
 pub fn calibration_gather_top_k(
     query: ScanQuery<'_>,
     rows: ScanRows<'_>,
@@ -511,7 +511,7 @@ pub fn calibration_gather_top_k(
 /// Forces the planner's masked full-sweep executor for threshold calibration.
 ///
 /// This seam is available only to repository test and benchmark tooling.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "benchmark-kernels"))]
 pub fn calibration_masked_top_k(
     query: ScanQuery<'_>,
     rows: ScanRows<'_>,

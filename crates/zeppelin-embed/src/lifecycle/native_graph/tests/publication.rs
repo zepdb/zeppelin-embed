@@ -2405,7 +2405,7 @@ fn ze39_fresh_create_failures_never_adopt_or_replace_identity() {
     run_ze39_fresh_create_failures_never_adopt_or_replace_identity();
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 pub(crate) fn run_actual_probe(
     _seed: u64,
 ) -> crate::graph_read_view_test_support::ActualProbeReport {

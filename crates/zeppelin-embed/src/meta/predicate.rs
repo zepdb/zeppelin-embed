@@ -167,7 +167,7 @@ pub fn evaluate(
     columns: &ColumnStore,
     alive: &AliveSet,
 ) -> Result<DocBitmap, EvalError> {
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     crate::fts::preparation_observer::record_filter_work(1, 0, 0);
     if columns.row_count() != alive.row_count() {
         return Err(EvalError::RowCountMismatch {
@@ -349,7 +349,7 @@ fn eval_dictionary_eq(column: &DictionaryColumn, query: &str, scope: &DocBitmap)
 
 fn eval_raw_string_eq(column: &RawStringColumn, query: &str, scope: &DocBitmap) -> DocBitmap {
     let mut result = DocBitmap::new();
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     crate::fts::preparation_observer::record_filter_work(0, column.len(), 0);
     for position in 0..column.len() {
         let Some(row) = u32::try_from(position).ok() else {
@@ -390,7 +390,7 @@ fn eval_in(
             })
             .collect();
         let mut result = DocBitmap::new();
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         crate::fts::preparation_observer::record_filter_work(0, column.len(), 0);
         for position in 0..column.len() {
             let Some(row) = u32::try_from(position).ok() else {

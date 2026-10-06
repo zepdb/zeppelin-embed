@@ -152,7 +152,7 @@ impl<'s, 'lease, 'm, 'g> GraphReadView<'s, 'lease, 'm, 'g> {
         self.lease.bundle().base().generation
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn wait_until_cancelled_for_test(&self) -> Result<(), TreeError> {
         self.lease
             .wait_until_cancelled_for_test()

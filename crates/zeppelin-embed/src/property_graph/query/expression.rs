@@ -31,26 +31,26 @@ use crate::property_graph::{
 };
 use std::marker::PhantomData;
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[derive(Default)]
 struct TestPollControl {
     remaining: Option<usize>,
     cancel: Option<crate::lifecycle::CancelToken>,
 }
 
-#[cfg(not(any(test, feature = "test-support")))]
+#[cfg(not(any(test, feature = "test-seams")))]
 #[derive(Default)]
 struct TestPollControl {}
 
 impl TestPollControl {
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     fn arm_cancel(&mut self, polls: usize, cancel: crate::lifecycle::CancelToken) {
         self.remaining = Some(polls);
         self.cancel = Some(cancel);
     }
 
     fn poll(&mut self) {
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         if let Some(remaining) = &mut self.remaining {
             if *remaining == 0 {
                 if let Some(cancel) = self.cancel.take() {
@@ -614,7 +614,7 @@ impl<'r, 'plan, 'v, 'm, 'g> NativeExpressionEvaluator<'r, 'plan, 'v, 'm, 'g> {
         Ok(result)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn cancel_after_scratch_polls(
         &mut self,
         polls: usize,

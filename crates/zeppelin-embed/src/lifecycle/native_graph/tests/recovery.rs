@@ -2312,7 +2312,7 @@ fn ze40_serial_scan_preserves_pre_wal_orphans_and_refuses_ambiguous_corruption()
     let _ = run_ze40_serial_scan_preserves_pre_wal_orphans_and_refuses_ambiguous_corruption();
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 pub(super) fn run_actual_probe(
     _seed: u64,
 ) -> crate::graph_recovery_test_support::RecoveryProbeReport {

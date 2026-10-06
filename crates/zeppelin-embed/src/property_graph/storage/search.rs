@@ -14,15 +14,15 @@ pub(crate) use checkpoint::{
 #[cfg(test)]
 pub(crate) use checkpoint::{prepare_sparse_checkpoint, validate_replay_transition};
 pub(crate) use codec::{Modality, SparseRoots};
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) use prepare::miss_next_maintenance_peer_retarget;
 pub(crate) use prepare::{PreparedMembershipChange, PreparedSparseCandidate, prepare_sparse};
 pub(crate) use trace::{SearchTraceCursor, SearchTraceState, verify_sparse_trace_record};
 #[cfg(test)]
 pub(crate) use vector_index::test_support::install as native_vector_index_test_schedule;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) use vector_index::test_support::limits as native_vector_index_test_limits;
-#[cfg(all(feature = "graph-cypher", feature = "test-support"))]
+#[cfg(all(feature = "graph-cypher", feature = "test-seams"))]
 pub use vector_index::test_support::{
     ActualProbeReport, CleanPreparationObservation, CloseFailureObservation, ControlProbeReport,
     IdentityProbeReport, KernelProbeReport, LimitProbeReport, NativeFailureObservation,
@@ -32,21 +32,21 @@ pub use vector_index::test_support::{
     run_identity_probe, run_kernel_probe, run_oracle_probe, run_preparation_schedule_probe,
     run_reopen_probe, run_small_writes_probe, run_trace_probe,
 };
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) use vector_index::test_support::{
     NativePrepareStage as NativeVectorValidationStage,
     validation_phase as native_vector_validation_phase,
 };
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) use vector_index::test_support::{
     PhysicalReadOrigin, observe_physical_read as observe_native_vector_physical_read,
 };
 pub(crate) use vector_index::{
     NativeVectorIndex, validate_vector_index_row, validate_vector_index_rows_with,
 };
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) use view::SparsePhysicalSnapshot;
 pub(crate) use view::SparseView;
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 mod tests;

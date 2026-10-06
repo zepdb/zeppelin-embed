@@ -71,7 +71,7 @@ use crate::property_graph::storage::inventory::INVENTORY_ADOPTION_LIMIT as ADOPT
 
 const MAGIC: &[u8; 8] = b"ZEPEMBED";
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 thread_local! {
     static ADOPTION_SUSPENDED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -79,17 +79,17 @@ thread_local! {
 /// Suspend adoption on this thread until the guard drops. A fixture that
 /// asserts an exact candidate set uses it; production maintenance always
 /// adopts when quiescent.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[must_use]
 pub(in crate::lifecycle::native_graph) fn suspend_adoption_for_test() -> AdoptionSuspension {
     ADOPTION_SUSPENDED.with(|flag| flag.set(true));
     AdoptionSuspension
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(in crate::lifecycle::native_graph) struct AdoptionSuspension;
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 impl Drop for AdoptionSuspension {
     fn drop(&mut self) {
         ADOPTION_SUSPENDED.with(|flag| flag.set(false));
@@ -300,7 +300,7 @@ pub(super) fn select_adoptions<'m>(
             history,
         });
     }
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     if ADOPTION_SUSPENDED.with(std::cell::Cell::get) {
         return Ok(OrphanSelection {
             adoptions,

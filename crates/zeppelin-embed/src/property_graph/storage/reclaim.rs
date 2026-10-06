@@ -18,7 +18,7 @@ use crate::property_graph::wal::{ArtifactDescriptor, RequiredRef};
 use crate::property_graph::{GraphGeneration, StoreInstanceId};
 use xxhash_rust::xxh3::Xxh3;
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 thread_local! {
     static OMIT_MARK_ARTIFACT: std::cell::Cell<Option<ArtifactId>> = const {
         std::cell::Cell::new(None)
@@ -33,20 +33,20 @@ thread_local! {
     };
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) fn take_mark_page_reads_for_test() -> u64 {
     MARK_PAGE_READS.with(|count| count.replace(0))
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 fn charge_mark_page_read() {
     MARK_PAGE_READS.with(|count| count.set(count.get().saturating_add(1)));
 }
 
-#[cfg(not(any(test, feature = "test-support")))]
+#[cfg(not(any(test, feature = "test-seams")))]
 const fn charge_mark_page_read() {}
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) fn omit_mark_artifact_for_test(artifact: ArtifactId) {
     OMIT_MARK_ARTIFACT.with(|target| {
         assert!(target.replace(Some(artifact)).is_none());
@@ -54,7 +54,7 @@ pub(crate) fn omit_mark_artifact_for_test(artifact: ArtifactId) {
     OMITTED_MARK_EMISSIONS.with(|count| count.set(0));
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) fn take_omitted_mark_emissions_for_test() -> u64 {
     OMIT_MARK_ARTIFACT.with(|target| target.set(None));
     OMITTED_MARK_EMISSIONS.with(|count| count.replace(0))
@@ -206,7 +206,7 @@ pub(crate) struct DurableRun {
 impl DurableRun {
     /// Levels above the leaves. A membership descent reads at most one page
     /// per level plus the leaf, which is the bound ZE-163 gates.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) const fn height(&self) -> u16 {
         self.height
     }
@@ -566,7 +566,7 @@ impl<'m> SpillMark<'m> {
                 "completed mark received another reference",
             ));
         }
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         if OMIT_MARK_ARTIFACT.with(|target| target.get() == Some(artifact)) {
             OMITTED_MARK_EMISSIONS.with(|count| count.set(count.get().saturating_add(1)));
             return Ok(());
@@ -611,17 +611,17 @@ impl<'m> SpillMark<'m> {
         Ok(output)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) const fn spill_runs(&self) -> usize {
         self.spill_runs
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) const fn merges(&self) -> usize {
         self.merges
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) const fn max_batch(&self) -> usize {
         self.max_batch
     }
@@ -680,7 +680,7 @@ impl<'m> SpillMark<'m> {
         resources: &mut TreeResources<'_>,
     ) -> Result<DurableRun, TreeError> {
         self.merges = self.merges.checked_add(1).ok_or(TreeError::Work)?;
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         QUALIFICATION_MERGE.with(|counts| counts.set((self.spill_runs, self.merges)));
         let (count, digest, first, last) = {
             let mut reader = MergeReader::new(left, right, self.memory)?;
@@ -1568,7 +1568,7 @@ fn read<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], TreeErro
         .ok_or(TreeError::Invalid("mark stream field extent"))
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 thread_local! {
     pub(crate) static QUALIFICATION_MERGE: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
 }

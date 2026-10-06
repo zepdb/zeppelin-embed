@@ -393,7 +393,7 @@ pub struct StagedBatch<'a> {
 }
 impl StagedBatch<'_> {
     /// Advances inclusive logical fences on an otherwise empty test batch.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn jump_allocators_for_test(
         &mut self,
         next_node: crate::property_graph::NodeId,

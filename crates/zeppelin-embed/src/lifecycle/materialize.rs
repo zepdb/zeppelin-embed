@@ -52,7 +52,7 @@ impl<E: std::error::Error + 'static> std::error::Error for HybridPreparationErro
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[derive(Default)]
 pub(super) struct TestMaterializationWork {
     pub(super) admissions: std::sync::atomic::AtomicU64,
@@ -64,7 +64,7 @@ pub(super) struct TestMaterializationWork {
     pub(super) lexical_admission_lock_nanos: std::sync::atomic::AtomicU64,
 }
 
-#[cfg(all(feature = "query-timing", any(test, feature = "test-support")))]
+#[cfg(all(feature = "query-timing", any(test, feature = "test-seams")))]
 impl TestMaterializationWork {
     pub(super) fn observe_lexical_lock(&self, started: std::time::Instant) {
         use std::sync::atomic::Ordering::Relaxed;
@@ -77,7 +77,7 @@ impl TestMaterializationWork {
 }
 
 /// Literal lifecycle and source-lookup observations for directed query tests.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MaterializationTestCounters {
     /// Invocations of vector or lexical admission, including standalone stored_text.
@@ -234,7 +234,7 @@ impl std::error::Error for MaterializationError {
 
 /// Rank-addressed text access available only inside a Store query callback.
 pub struct QueryMaterializer<'a> {
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(super) store: &'a Store,
     pub(super) snapshot: &'a PublishedSnapshot,
     pub(super) active: &'a ActiveSegment,
@@ -269,7 +269,7 @@ impl QueryMaterializer<'_> {
     }
 
     /// Plants a wrong or missing ranked identity at the actual physical-row validation seam.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub fn text_with_test_document(
         &self,
         rank: usize,
@@ -289,7 +289,7 @@ impl QueryMaterializer<'_> {
         let document = address
             .document
             .ok_or(MaterializationError::MissingIdentity { row_id })?;
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         self.store
             .text_materialization_work
             .direct_row_lookups
@@ -441,7 +441,7 @@ impl Store {
                         .ok_or(MaterializationError::MissingFusedIdentity { document: hit.key })
                 };
                 let materializer = QueryMaterializer {
-                    #[cfg(any(test, feature = "test-support"))]
+                    #[cfg(any(test, feature = "test-seams"))]
                     store: self,
                     snapshot,
                     active,
@@ -459,7 +459,7 @@ impl Store {
     }
 
     /// Reads literal counters without resetting concurrent observations.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     #[must_use]
     pub fn query_materialization_test_counters(&self) -> MaterializationTestCounters {
         use std::sync::atomic::Ordering::Relaxed;
@@ -733,7 +733,7 @@ impl Store {
                     })
                 };
                 let materializer = QueryMaterializer {
-                    #[cfg(any(test, feature = "test-support"))]
+                    #[cfg(any(test, feature = "test-seams"))]
                     store: self,
                     snapshot,
                     active,
@@ -779,7 +779,7 @@ impl Store {
                     )
                 };
                 let materializer = QueryMaterializer {
-                    #[cfg(any(test, feature = "test-support"))]
+                    #[cfg(any(test, feature = "test-seams"))]
                     store: self,
                     counts: Cell::new(Default::default()),
                     snapshot: &admitted.snapshot,

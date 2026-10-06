@@ -218,7 +218,7 @@ pub(crate) fn relocate_ranges<'m>(
         }
     }
     let mut pending: Option<(usize, [u8; 40])> = None;
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     let mut qualification_candidates = Vec::new();
     {
         let lower = *resume;
@@ -263,7 +263,7 @@ pub(crate) fn relocate_ranges<'m>(
                     relocated = true;
                 }
             }
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             if crate::property_graph::storage::consolidation::QUALIFICATION_SELECTION
                 .with(std::cell::Cell::get)
                 && !relocated
@@ -279,7 +279,7 @@ pub(crate) fn relocate_ranges<'m>(
             }
         }
     }
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     if crate::property_graph::storage::consolidation::QUALIFICATION_SELECTION
         .with(std::cell::Cell::get)
     {
@@ -785,9 +785,9 @@ fn queue_range(
     descriptors.push(descriptor)
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 type RangeSelection = (TreeKind, Vec<([u8; 40], usize)>, Option<[u8; 40]>);
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 thread_local! {
     pub(crate) static QUALIFICATION_RANGES: std::cell::RefCell<Vec<RangeSelection>> = const { std::cell::RefCell::new(Vec::new()) };
 }

@@ -304,13 +304,13 @@ impl crate::lifecycle::Store {
             };
             let shared = GraphResources::from_store(self)?;
             let write_memory = WriteMemory::new(&shared, WriteLimits::default())?;
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             let (storage_limit, preparation_work) =
                 crate::property_graph::storage::search::native_vector_index_test_limits(
                     32 * 1024 * 1024,
                     64 * 1024 * 1024,
                 );
-            #[cfg(not(any(test, feature = "test-support")))]
+            #[cfg(not(any(test, feature = "test-seams")))]
             let (storage_limit, preparation_work) = (32 * 1024 * 1024, 64 * 1024 * 1024);
             let storage = StorageMemory::new(&write_memory, control, storage_limit)?;
             let preparation_checkpoint = || match self.state() {

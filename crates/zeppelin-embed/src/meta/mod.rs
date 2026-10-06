@@ -6,7 +6,7 @@
 
 mod alive;
 mod bitmap;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[doc(hidden)]
 pub mod bitmap_observer;
 mod columns;
@@ -15,7 +15,7 @@ mod predicate;
 
 pub use alive::{AliveError, AliveSet};
 pub use bitmap::DocBitmap;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[doc(hidden)]
 pub use columns::MetadataBuildTestLimits;
 pub use columns::{

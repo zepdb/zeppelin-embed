@@ -54,7 +54,7 @@ impl Int8Query {
 
     /// Returns the prepared code bytes, scale, and code sum exactly as
     /// consumed by the affine dot-product scorer.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     #[doc(hidden)]
     #[must_use]
     pub fn observation_parts(&self) -> (&[i8], f64, i32) {
@@ -156,7 +156,7 @@ pub fn dequantize_int8(encoded: Int8Vec<'_>, out: &mut [f32]) -> Result<(), Quan
 /// [`QuantError::NonFinite`] under the same policy as [`quantize_int8`].
 pub fn prepare_int8_query(q: &[f32]) -> Result<Int8Query, QuantError> {
     validate_vector(q)?;
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     super::QUERY_PREPARATIONS.with(|calls| {
         if let Some(calls) = calls.borrow_mut().as_mut() {
             calls.int8.push(q.len());

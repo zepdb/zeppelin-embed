@@ -19,7 +19,8 @@ crate-type = ["rlib", "staticlib"]
 graph-cypher = []
 query-timing = []
 allocation-audit = []
-test-support = []
+benchmark-kernels = []
+test-seams = ["benchmark-kernels"]
 
 [dependencies]
 libc.workspace = true
@@ -27,10 +28,8 @@ roaring.workspace = true
 xxhash-rust.workspace = true
 
 [dev-dependencies]
-# BL-072: the crate's own integration tests need `test-support` so they can
-# enumerate KernelVariant::available(); a plain `cargo test -p zeppelin-embed`
-# does not otherwise enable a feature of the crate under test.
-zeppelin-embed = { path = ".", features = ["test-support"] }
+# Integration tests enable deterministic seams only through dev edges.
+zeppelin-embed = { path = ".", features = ["test-seams"] }
 criterion.workspace = true
 proptest.workspace = true
 rand.workspace = true

@@ -11,7 +11,7 @@ use super::*;
 pub(super) mod eligibility;
 mod top_k;
 use top_k::TopRows;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) mod test_support;
 
 // One charged use list per raw row. Row descriptors grow in the same chunks

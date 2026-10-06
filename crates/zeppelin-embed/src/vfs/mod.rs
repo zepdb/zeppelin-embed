@@ -1,8 +1,8 @@
 //! Synchronous virtual-filesystem seam for crash and fault injection.
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub mod crash;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub mod fault;
 
 use std::fs::{File, OpenOptions};
@@ -127,7 +127,7 @@ struct StdVfsFile(File);
 
 impl VfsFile for StdVfsFile {
     fn append(&mut self, bytes: &[u8]) -> std::io::Result<()> {
-        #[cfg(feature = "test-support")]
+        #[cfg(feature = "test-seams")]
         file_test_support::event(file_test_support::FileEvent::BeforeAppend)?;
         self.0.write_all(bytes)
     }
@@ -148,10 +148,10 @@ impl VfsFile for StdVfsFile {
     }
 
     fn sync(&self, kind: SyncKind) -> std::io::Result<()> {
-        #[cfg(feature = "test-support")]
+        #[cfg(feature = "test-seams")]
         file_test_support::event(file_test_support::FileEvent::BeforeSync)?;
         sync_file(&self.0, kind)?;
-        #[cfg(feature = "test-support")]
+        #[cfg(feature = "test-seams")]
         file_test_support::event(file_test_support::FileEvent::AfterSync)?;
         Ok(())
     }
@@ -704,7 +704,7 @@ mod tests {
             .lines()
             .zip(source.lines().skip(1))
             .find_map(|(line, next)| (next == "pub mod crash;").then_some(line));
-        assert_eq!(gate, Some("#[cfg(any(test, feature = \"test-support\"))]"));
+        assert_eq!(gate, Some("#[cfg(any(test, feature = \"test-seams\"))]"));
     }
 
     #[test]
@@ -785,5 +785,5 @@ mod tests {
     }
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 pub mod file_test_support;

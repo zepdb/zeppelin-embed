@@ -19,16 +19,16 @@ use zeppelin_embed::segment::writer::{
     SegmentBuild, SegmentFactors, encode_segment, write_segment,
 };
 use zeppelin_embed::segment::{SegmentError, SegmentId};
-#[cfg(not(feature = "test-support"))]
+#[cfg(not(feature = "test-seams"))]
 use zeppelin_embed::vfs::VfsFile;
 use zeppelin_embed::vfs::{CountingVfs, SyncKind, Vfs};
 
-#[cfg(not(feature = "test-support"))]
+#[cfg(not(feature = "test-seams"))]
 #[path = "../src/vfs/crash.rs"]
 mod crash_support;
-#[cfg(not(feature = "test-support"))]
+#[cfg(not(feature = "test-seams"))]
 use crash_support::{CrashOperation, CrashStates, CrashVfs, MemoryVfs};
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 use zeppelin_embed::vfs::crash::{CrashOperation, CrashStates, CrashVfs, MemoryVfs};
 
 const DIRECTORY: &str = "/write-path-ablation";

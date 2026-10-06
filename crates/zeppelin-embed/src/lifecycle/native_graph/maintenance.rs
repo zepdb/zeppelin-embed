@@ -750,9 +750,9 @@ fn prepare_durable_proof<'m>(
         64 * 1024 * 1024,
     )?;
     let mut protected = ProtectedStreamBuilder::new(storage, binding)?;
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     let chunk = spill::qualification::chunk();
-    #[cfg(not(any(test, feature = "test-support")))]
+    #[cfg(not(any(test, feature = "test-seams")))]
     let chunk = crate::property_graph::storage::reclaim::SPILL_CHUNK_LIMIT;
     let mut mark = SpillMark::new(storage, binding, chunk)?;
 
@@ -1205,7 +1205,7 @@ fn prepare_durable_proof<'m>(
     })
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[derive(Debug)]
 pub(super) struct SpillProbeReport {
     pub(super) ordered: Vec<u128>,
@@ -1232,7 +1232,7 @@ pub(super) struct SpillProbeReport {
     pub(super) membership_page_reads: u64,
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(super) fn run_spill_probe(
     store: &crate::lifecycle::Store,
     admission: &NativeMaintenanceAdmission,
@@ -2048,7 +2048,7 @@ pub(super) fn commit_with_limits(
             &mut resources,
         )?
     };
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     let work_before_proof = resources.work();
     let proof = prepare_durable_proof(
         limits.relocation_bytes,
@@ -2058,7 +2058,7 @@ pub(super) fn commit_with_limits(
         control,
         &mut resources,
     )?;
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     store.native_graph.proof_work.store(
         resources.work().saturating_sub(work_before_proof),
         std::sync::atomic::Ordering::Release,
@@ -2260,7 +2260,7 @@ pub(super) fn commit_with_limits(
         &mut wal_resources,
     )?;
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     {
         let hook = store
             .native_graph

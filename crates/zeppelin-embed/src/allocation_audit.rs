@@ -18,7 +18,7 @@ struct AuditingAllocator;
 static GLOBAL_ALLOCATOR: AuditingAllocator = AuditingAllocator;
 
 fn refuse_allocation() -> bool {
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     {
         if ATTRIBUTED_DEPTH.with(Cell::get) != 0 {
             return FAIL_AFTER.with(|remaining| {
@@ -126,7 +126,7 @@ impl Drop for DepthGuard {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 /// Actual allocator counts for one scoped calling thread.
 pub struct AuditReport {
     /// Successfully attributed allocated bytes.
@@ -142,7 +142,7 @@ pub struct AuditReport {
     pub full_segment_clones: u64,
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 /// Audits real allocation calls in one bounded synchronous engine operation.
 pub fn audit_engine_path<T>(operation: impl FnOnce() -> T) -> (T, AuditReport) {
     ATTRIBUTED_DEPTH.with(|depth| depth.set(0));
@@ -183,17 +183,17 @@ pub(crate) fn attributed<T>(operation: impl FnOnce() -> T) -> T {
     result
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 thread_local! {
     static FAIL_AFTER: Cell<u64> = const { Cell::new(0) };
     static FAULT_FIRES: Cell<u64> = const { Cell::new(0) };
 }
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 struct FaultGuard {
     remaining: u64,
     fires: u64,
 }
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 impl Drop for FaultGuard {
     fn drop(&mut self) {
         FAIL_AFTER.with(|value| value.set(self.remaining));
@@ -203,7 +203,7 @@ impl Drop for FaultGuard {
 /// Refuses the selected actual attributed allocation call on this thread.
 /// Intended only around fallible allocation paths; zero disables injection.
 /// State restores on return/unwind, and the returned count proves CAN FIRE.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub fn fail_attributed_allocation<T>(ordinal: u64, operation: impl FnOnce() -> T) -> (T, u64) {
     let guard = FaultGuard {
         remaining: FAIL_AFTER.with(|v| v.replace(ordinal)),

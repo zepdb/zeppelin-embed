@@ -723,7 +723,7 @@ impl Store {
         if no_op {
             return Ok(token);
         }
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         let crash_target_ids = known.iter().map(|id| id.get()).collect::<Vec<_>>();
         write_intent(
             vfs,
@@ -734,7 +734,7 @@ impl Store {
             },
             self.durability_policy,
         )?;
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         if let Some(controller) = self.ingest_retention_fault_controller.as_ref() {
             let plan = controller.take_purge_crash_boundary_plan().map_err(|_| {
                 StoreError::Synchronization {
@@ -828,7 +828,7 @@ impl Store {
         drop(published);
         drop(previous);
         if let Err(source) = vfs.delete(&path) {
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             if source.kind() == std::io::ErrorKind::Other
                 && let Some(controller) = self.ingest_retention_fault_controller.as_ref()
             {

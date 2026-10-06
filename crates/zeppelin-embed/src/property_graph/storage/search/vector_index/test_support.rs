@@ -332,7 +332,7 @@ pub(crate) fn observe(mut event: NativePrepareEvent) {
     });
 }
 
-#[cfg(any(test, all(feature = "graph-cypher", feature = "test-support")))]
+#[cfg(any(test, all(feature = "graph-cypher", feature = "test-seams")))]
 mod kernel_probe {
     use super::{
         NativePrepareEvent, NativePrepareStage, PhysicalReadOrigin, PhysicalReadPause,
@@ -1114,15 +1114,15 @@ pub(crate) use kernel_probe::{
     InspectVectorSources, SourceReport, apply_vector_checked, inspect_sources_checked,
     kernel_coordinates, prepare_small_writes_fixture, read_kernel, write_and_read_kernel,
 };
-#[cfg(any(test, all(feature = "graph-cypher", feature = "test-support")))]
+#[cfg(any(test, all(feature = "graph-cypher", feature = "test-seams")))]
 pub use kernel_probe::{
     KernelProbeReport, SmallWriteSourceObservation, SmallWritesProbeReport, run_kernel_probe,
     run_small_writes_probe,
 };
-#[cfg(any(test, all(feature = "graph-cypher", feature = "test-support")))]
+#[cfg(any(test, all(feature = "graph-cypher", feature = "test-seams")))]
 pub(crate) use kernel_probe::{apply_repeated_vectors_checked, document_tower, native_options};
 
-#[cfg(any(test, all(feature = "graph-cypher", feature = "test-support")))]
+#[cfg(any(test, all(feature = "graph-cypher", feature = "test-seams")))]
 #[allow(
     clippy::expect_used,
     clippy::indexing_slicing,
@@ -2900,26 +2900,26 @@ mod actual_cases {
 
 #[cfg(test)]
 pub(crate) use actual_cases::try_apply_repeated_vectors;
-#[cfg(any(test, all(feature = "graph-cypher", feature = "test-support")))]
+#[cfg(any(test, all(feature = "graph-cypher", feature = "test-seams")))]
 pub use actual_cases::{
     ControlProbeReport, IdentityProbeReport, LimitProbeReport, run_identity_probe,
     run_preparation_schedule_probe,
 };
 
-#[cfg(any(test, all(feature = "graph-cypher", feature = "test-support")))]
+#[cfg(any(test, all(feature = "graph-cypher", feature = "test-seams")))]
 pub use actual_cases::{ReopenProbeReport, run_reopen_probe};
 #[cfg(test)]
 pub(crate) use actual_cases::{prepare_reopen_fixture, verify_reopen_fixture};
 
-#[cfg(any(test, all(feature = "graph-cypher", feature = "test-support")))]
+#[cfg(any(test, all(feature = "graph-cypher", feature = "test-seams")))]
 pub use actual_cases::{TraceProbeReport, run_trace_probe};
 #[cfg(test)]
 pub(crate) use actual_cases::{prepare_trace_fixture, verify_trace_fixture};
 
-#[cfg(any(test, all(feature = "graph-cypher", feature = "test-support")))]
+#[cfg(any(test, all(feature = "graph-cypher", feature = "test-seams")))]
 pub use actual_cases::{OracleProbeReport, run_oracle_probe};
 
-#[cfg(any(test, all(feature = "graph-cypher", feature = "test-support")))]
+#[cfg(any(test, all(feature = "graph-cypher", feature = "test-seams")))]
 pub use actual_cases::{
     CleanPreparationObservation, CloseFailureObservation, NativeFailureObservation,
     OracleControlObservation, ReopenIndexObservation, TraceBatchObservation,
@@ -2927,7 +2927,7 @@ pub use actual_cases::{
 };
 
 /// The eight independently observed native vector-index receipt groups.
-#[cfg(any(test, all(feature = "graph-cypher", feature = "test-support")))]
+#[cfg(any(test, all(feature = "graph-cypher", feature = "test-seams")))]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ActualProbeReport {
     pub kernel: KernelProbeReport,
@@ -2941,7 +2941,7 @@ pub struct ActualProbeReport {
 }
 
 /// Runs the shared actual-path leaves; the paired schedules share one clean setup.
-#[cfg(any(test, all(feature = "graph-cypher", feature = "test-support")))]
+#[cfg(any(test, all(feature = "graph-cypher", feature = "test-seams")))]
 pub fn run_actual_probe(seed: u64) -> Result<ActualProbeReport, String> {
     let kernel = run_kernel_probe(seed)?;
     let small_writes = run_small_writes_probe(seed)?;

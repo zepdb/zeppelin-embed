@@ -14,7 +14,7 @@ pub mod lock;
 pub(crate) mod materialize;
 pub(crate) mod namespace_batch;
 pub use cascade::CascadeRule;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub use namespace_batch::namespace_delete_cascade_with_steps;
 pub use namespace_batch::{namespace_declare_cascade, namespace_delete_cascade};
 #[cfg(feature = "graph-cypher")]
@@ -32,7 +32,7 @@ mod snapshot_view;
 pub use namespace_batch::{
     LiveNamespaceMutation, NamespaceMutation, namespace_batch, namespace_batch_live,
 };
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[doc(hidden)]
 pub use namespace_batch::{
     namespace_batch_live_on_vfs, namespace_batch_live_with_steps, namespace_batch_with_steps,
@@ -44,15 +44,15 @@ use crate::diag::{timing_elapsed, timing_start};
 pub use cancel::{
     CancelToken, Deadline, DeadlineError, QueryCancellation, QueryControl, QueryError,
 };
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub use clock::ManualMonotonicClock;
 pub use clock::{MonotonicClock, SystemMonotonicClock};
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub use hybrid::{
     HybridScoreTestObservations, begin_hybrid_fresh_round_test_observations,
     begin_hybrid_score_test_observations, take_hybrid_score_test_observations,
 };
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub use materialize::MaterializationTestCounters;
 pub use materialize::{
     HybridPreparationError, MaterializationError, MaterializedRow, QueryMaterializer,
@@ -71,7 +71,7 @@ pub use snapshot_copy::SnapshotTargetReason;
 pub use stats::Stats;
 
 use std::collections::HashSet;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 use std::io::IoSlice;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -86,7 +86,7 @@ use lock::{StoreLock, StoreLockError};
 use self::close::BackgroundThread;
 
 /// Store-owned infrastructure injected only by deterministic tests.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[derive(Clone)]
 pub struct StoreTestDependencies {
     pub(crate) vfs: Arc<dyn crate::vfs::Vfs>,
@@ -100,7 +100,7 @@ pub struct StoreTestDependencies {
     vector_seal_scheme: Option<crate::quant::QuantScheme>,
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 impl StoreTestDependencies {
     /// Binds one filesystem and monotonic clock to every operation performed
     /// by a test store handle.
@@ -186,7 +186,7 @@ impl StoreTestDependencies {
 }
 
 /// Narrow storage-family faults available only through hidden test dependencies.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[doc(hidden)]
 pub enum StorageTestFault {
@@ -203,7 +203,7 @@ pub enum StorageTestFault {
     DeleteOmission { file_name: String },
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 impl StorageTestFault {
     const fn operation(&self) -> &'static str {
         match self {
@@ -234,7 +234,7 @@ impl StorageTestFault {
 }
 
 /// Exact seed-derived target facts supplied before one storage operation runs.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[doc(hidden)]
 pub struct StorageFaultPlan {
@@ -246,7 +246,7 @@ pub struct StorageFaultPlan {
     chunk: Option<u32>,
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 impl StorageFaultPlan {
     /// Creates an exact artifact plan for one operation index.
     #[must_use]
@@ -327,7 +327,7 @@ impl StorageFaultPlan {
 }
 
 /// Typed production checkpoint that consumed a storage fault.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[doc(hidden)]
 pub enum StorageReceiptSite {
@@ -345,7 +345,7 @@ pub enum StorageReceiptSite {
     OrphanCleanupDelete,
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 impl StorageReceiptSite {
     const fn key(self) -> &'static str {
         match self {
@@ -366,7 +366,7 @@ impl StorageReceiptSite {
 }
 
 /// Exact facts observed at the production checkpoint.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[doc(hidden)]
 pub enum StorageReceiptObserved {
@@ -417,7 +417,7 @@ pub enum StorageReceiptObserved {
 }
 
 /// One fact-only typed storage receipt emitted by product code.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[doc(hidden)]
 pub struct StorageFaultReceipt {
@@ -429,7 +429,7 @@ pub struct StorageFaultReceipt {
     cardinality: u32,
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 impl StorageFaultReceipt {
     #[must_use]
     pub const fn campaign(&self) -> &'static str {
@@ -612,7 +612,7 @@ impl StorageFaultReceipt {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[derive(Debug)]
 struct StorageFaultState {
     fault: StorageTestFault,
@@ -625,7 +625,7 @@ struct StorageFaultState {
 }
 
 /// Truthful internal result of Store-owned orphan cleanup.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[doc(hidden)]
 pub struct StorageCleanupReport {
@@ -635,7 +635,7 @@ pub struct StorageCleanupReport {
     directory_synced: bool,
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 impl StorageCleanupReport {
     /// Exact bytes removed from the filesystem.
     #[must_use]
@@ -663,14 +663,14 @@ impl StorageCleanupReport {
 }
 
 /// Shared handle that arms one storage fault and receives its production receipt.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[derive(Clone, Debug)]
 #[doc(hidden)]
 pub struct StorageFaultController {
     state: Arc<Mutex<StorageFaultState>>,
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 impl StorageFaultController {
     /// Arms one controller. A clone observes the same one-shot receipt.
     #[must_use]
@@ -787,14 +787,14 @@ impl StorageFaultController {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 thread_local! {
     static STORAGE_OPEN_CONTROLLER: std::cell::RefCell<
         Option<std::sync::Weak<Mutex<StorageFaultState>>>
     > = const { std::cell::RefCell::new(None) };
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 fn with_storage_open_controller<R>(
     controller: Option<&StorageFaultController>,
     operation: impl FnOnce() -> R,
@@ -807,7 +807,7 @@ fn with_storage_open_controller<R>(
     })
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 fn storage_open_controller() -> Option<StorageFaultController> {
     STORAGE_OPEN_CONTROLLER.with(|slot| {
         slot.borrow()
@@ -817,7 +817,7 @@ fn storage_open_controller() -> Option<StorageFaultController> {
     })
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) fn record_storage_wal_recovery_fault(error: &crate::wal::WalRecoveryError) {
     let Some(controller) = storage_open_controller() else {
         return;
@@ -874,7 +874,7 @@ pub(crate) fn record_storage_wal_recovery_fault(error: &crate::wal::WalRecoveryE
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 fn record_storage_wal_record_fault(
     controller: &StorageFaultController,
     site: StorageReceiptSite,
@@ -894,7 +894,7 @@ fn record_storage_wal_record_fault(
     );
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) fn record_storage_manifest_format_fault(
     error: &crate::format::frame::FormatError,
     actual_family: Option<u16>,
@@ -921,7 +921,7 @@ pub(crate) fn record_storage_manifest_format_fault(
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) fn record_storage_segment_format_fault(
     error: &crate::format::frame::FormatError,
     actual_family: Option<u16>,
@@ -949,7 +949,7 @@ pub(crate) fn record_storage_segment_format_fault(
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) fn record_storage_segment_identity_fault(
     artifact: &str,
     expected: crate::segment::SegmentId,
@@ -984,7 +984,7 @@ pub(crate) fn record_storage_segment_identity_fault(
 /// on every other platform. W11 adds the Windows child-abort channel; the gate
 /// widens with it.
 #[cfg(unix)]
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 fn storage_manifest_abort_wire_receipt(receipt: &StorageFaultReceipt) -> Option<String> {
     let StorageReceiptObserved::ManifestRename {
         temporary,
@@ -1008,7 +1008,7 @@ fn storage_manifest_abort_wire_receipt(receipt: &StorageFaultReceipt) -> Option<
     ))
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 fn storage_artifact_name(artifact: &str) -> &str {
     Path::new(artifact)
         .file_name()
@@ -1016,7 +1016,7 @@ fn storage_artifact_name(artifact: &str) -> &str {
         .unwrap_or(artifact)
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 type StorageSegmentControllerRegistry = Mutex<
     Vec<(
         PathBuf,
@@ -1025,11 +1025,11 @@ type StorageSegmentControllerRegistry = Mutex<
     )>,
 >;
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 static STORAGE_SEGMENT_CONTROLLERS: std::sync::OnceLock<StorageSegmentControllerRegistry> =
     std::sync::OnceLock::new();
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 fn register_storage_segment_controller(
     store_directory: &Path,
     segment: crate::segment::SegmentId,
@@ -1046,7 +1046,7 @@ fn register_storage_segment_controller(
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) fn record_storage_segment_checksum_fault(
     store_directory: &Path,
     segment: crate::segment::SegmentId,
@@ -1092,20 +1092,20 @@ pub(crate) fn record_storage_segment_checksum_fault(
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 struct StorageFaultVfs {
     inner: Arc<dyn crate::vfs::Vfs>,
     controller: StorageFaultController,
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 struct StorageFaultFile {
     inner: Box<dyn crate::vfs::VfsFile>,
     path: PathBuf,
     controller: StorageFaultController,
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 impl StorageFaultFile {
     fn after_append(&self, encoded_len: u64, first_seq: u64, last_seq: u64) -> std::io::Result<()> {
         if matches!(
@@ -1132,7 +1132,7 @@ impl StorageFaultFile {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 impl crate::vfs::VfsFile for StorageFaultFile {
     fn append(&mut self, bytes: &[u8]) -> std::io::Result<()> {
         let record_facts = storage_wal_append_facts(bytes)?;
@@ -1169,7 +1169,7 @@ impl crate::vfs::VfsFile for StorageFaultFile {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 impl crate::vfs::Vfs for StorageFaultVfs {
     fn segment_data_read_counter(&self) -> Option<Arc<AtomicU64>> {
         self.inner.segment_data_read_counter()
@@ -1315,7 +1315,7 @@ impl crate::vfs::Vfs for StorageFaultVfs {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 fn storage_wal_append_facts(bytes: &[u8]) -> std::io::Result<Option<(u64, u64, u64)>> {
     const RECORD_HEADER_LEN: usize = 14;
     const RECORD_CHECKSUM_LEN: usize = 8;
@@ -1383,7 +1383,7 @@ fn storage_wal_append_facts(bytes: &[u8]) -> std::io::Result<Option<(u64, u64, u
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 fn storage_planned_segment_is_final(
     vfs: &dyn crate::vfs::Vfs,
     artifact: &Path,
@@ -1404,7 +1404,7 @@ fn storage_planned_segment_is_final(
 }
 
 /// Narrow test-only fault at a Store-owned hybrid leg seam.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[doc(hidden)]
 pub enum HybridLegTestFault {
@@ -1414,16 +1414,16 @@ pub enum HybridLegTestFault {
 
 #[allow(clippy::panic)]
 fn maybe_trigger_hybrid_leg_panic(armed: bool, detail: &'static str) {
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     if armed {
         std::panic::panic_any(detail);
     }
-    #[cfg(not(any(test, feature = "test-support")))]
+    #[cfg(not(any(test, feature = "test-seams")))]
     let _ = (armed, detail);
 }
 
 /// Facts emitted by one Store-owned parallel hybrid execution.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[doc(hidden)]
 pub struct HybridExecutionReceipt {
@@ -1595,7 +1595,7 @@ pub struct GraphSearchOptions {
     profile: crate::graph::search::GraphSearchProfile,
     ef: Option<usize>,
     seed: u64,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     cancel_after_hops: Option<usize>,
 }
 
@@ -1607,7 +1607,7 @@ impl GraphSearchOptions {
             profile,
             ef: None,
             seed: 0,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             cancel_after_hops: None,
         }
     }
@@ -1627,7 +1627,7 @@ impl GraphSearchOptions {
     }
 
     /// Arms deterministic in-traversal cancellation for integration tests.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     #[must_use]
     pub const fn with_cancel_after_hops(mut self, hops: usize) -> Self {
         self.cancel_after_hops = Some(hops);
@@ -1646,7 +1646,7 @@ impl GraphSearchOptions {
         self.seed
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) const fn cancel_after_hops(self) -> Option<usize> {
         self.cancel_after_hops
     }
@@ -2624,7 +2624,7 @@ pub struct Store {
     pub(crate) reader_drain_timeout: Duration,
     pub(crate) accounting: Arc<stats::Accounting>,
     pub(crate) active_queries: AtomicU64,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     text_materialization_work: materialize::TestMaterializationWork,
     pub(crate) epoch: Option<crate::epoch::StoreEpoch>,
     pub(crate) epoch_alias: crate::epoch::EpochAliasCell,
@@ -2634,20 +2634,20 @@ pub struct Store {
     // built from, so it never delays their release; see
     // `CachedLexicalAssembly`.
     lexical_index_cache: LexicalIndexCache,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) ingest_retention_fault_controller:
         Option<crate::ingest::IngestRetentionFaultController>,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     hybrid_leg_fault: Mutex<Option<HybridLegTestFault>>,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     hybrid_execution_receipt: Mutex<Option<HybridExecutionReceipt>>,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) metadata_test_controller: Option<Arc<crate::planner::MetadataTestController>>,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) vector_fault_controller: Option<crate::scan::vector_fault::VectorFaultController>,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) kernel_fault_controller: Option<crate::kernels::vector_fault::KernelFaultController>,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) vector_seal_scheme: Option<crate::quant::QuantScheme>,
     #[cfg(test)]
     pub(crate) teardown_probe: Arc<close::TeardownProbe>,
@@ -2961,7 +2961,7 @@ impl Store {
             reader_drain_timeout: options.reader_drain_timeout,
             accounting,
             active_queries: AtomicU64::new(0),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             text_materialization_work: materialize::TestMaterializationWork::default(),
             epoch: options.epoch,
             epoch_alias: crate::epoch::EpochAliasCell::new(None),
@@ -2970,19 +2970,19 @@ impl Store {
                 .schema
                 .unwrap_or_else(crate::meta::Schema::timestamp_only),
             lexical_index_cache: LexicalIndexCache::new(),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             ingest_retention_fault_controller: None,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             hybrid_leg_fault: Mutex::new(None),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             hybrid_execution_receipt: Mutex::new(None),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             metadata_test_controller: None,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             vector_fault_controller: None,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             kernel_fault_controller: None,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             vector_seal_scheme: None,
             #[cfg(test)]
             teardown_probe,
@@ -3033,19 +3033,19 @@ impl Store {
             options,
             Arc::new(crate::vfs::StdVfs),
             Arc::new(SystemMonotonicClock),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             None,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             None,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             None,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             None,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             None,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             None,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             None,
         )?;
         if store
@@ -3079,28 +3079,28 @@ impl Store {
         options: OpenOptions,
         vfs: Arc<dyn crate::vfs::Vfs>,
         clock: Arc<dyn MonotonicClock>,
-        #[cfg(any(test, feature = "test-support"))] hybrid_leg_fault: Option<HybridLegTestFault>,
-        #[cfg(any(test, feature = "test-support"))] storage_fault_controller: Option<
+        #[cfg(any(test, feature = "test-seams"))] hybrid_leg_fault: Option<HybridLegTestFault>,
+        #[cfg(any(test, feature = "test-seams"))] storage_fault_controller: Option<
             StorageFaultController,
         >,
-        #[cfg(any(test, feature = "test-support"))] ingest_retention_fault_controller: Option<
+        #[cfg(any(test, feature = "test-seams"))] ingest_retention_fault_controller: Option<
             crate::ingest::IngestRetentionFaultController,
         >,
-        #[cfg(any(test, feature = "test-support"))] metadata_test_controller: Option<
+        #[cfg(any(test, feature = "test-seams"))] metadata_test_controller: Option<
             Arc<crate::planner::MetadataTestController>,
         >,
-        #[cfg(any(test, feature = "test-support"))] vector_fault_controller: Option<
+        #[cfg(any(test, feature = "test-seams"))] vector_fault_controller: Option<
             crate::scan::vector_fault::VectorFaultController,
         >,
-        #[cfg(any(test, feature = "test-support"))] kernel_fault_controller: Option<
+        #[cfg(any(test, feature = "test-seams"))] kernel_fault_controller: Option<
             crate::kernels::vector_fault::KernelFaultController,
         >,
-        #[cfg(any(test, feature = "test-support"))] vector_seal_scheme: Option<
+        #[cfg(any(test, feature = "test-seams"))] vector_seal_scheme: Option<
             crate::quant::QuantScheme,
         >,
     ) -> Result<Self, StoreError> {
         let path = path.as_ref();
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         match kernel_fault_controller.as_ref() {
             Some(controller) => {
                 controller
@@ -3111,9 +3111,9 @@ impl Store {
                 crate::kernels::initialize().map_err(StoreError::Kernel)?;
             }
         }
-        #[cfg(not(any(test, feature = "test-support")))]
+        #[cfg(not(any(test, feature = "test-seams")))]
         crate::kernels::initialize().map_err(StoreError::Kernel)?;
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         let vfs = match storage_fault_controller.as_ref() {
             Some(controller) => Arc::new(StorageFaultVfs {
                 inner: vfs,
@@ -3142,19 +3142,6 @@ impl Store {
         validate_persisted_epoch_before_open(vfs.as_ref(), path, &options)?;
         let _reclamation_admission =
             namespace_batch::reader_admission(path, options.access_mode == AccessMode::ReadWrite)?;
-        #[cfg(any(test, feature = "test-support"))]
-        let reclamation_pin =
-            match crate::vfs::Vfs::ensure_directory(&crate::vfs::StdVfs, path, false) {
-                Ok(_) => namespace_batch::reader_lease(
-                    path,
-                    options.access_mode == AccessMode::ReadWrite,
-                )?
-                .map(Arc::new),
-                // Virtual-only VFS fixtures have no OS directory to pin.
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                Err(error) => return Err(namespace_batch::io(path, error)),
-            };
-        #[cfg(not(any(test, feature = "test-support")))]
         let reclamation_pin =
             namespace_batch::reader_lease(path, options.access_mode == AccessMode::ReadWrite)?
                 .map(Arc::new);
@@ -3368,26 +3355,26 @@ impl Store {
             reader_drain_timeout: options.reader_drain_timeout,
             accounting,
             active_queries: AtomicU64::new(0),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             text_materialization_work: materialize::TestMaterializationWork::default(),
             epoch_alias: crate::epoch::EpochAliasCell::new(persisted_epoch.or(declared_epoch)),
             epoch: options.epoch,
             tokenizer,
             schema,
             lexical_index_cache: LexicalIndexCache::new(),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             ingest_retention_fault_controller,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             hybrid_leg_fault: Mutex::new(hybrid_leg_fault),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             hybrid_execution_receipt: Mutex::new(None),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             metadata_test_controller,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             vector_fault_controller,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             kernel_fault_controller,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             vector_seal_scheme,
             #[cfg(test)]
             teardown_probe,
@@ -3401,14 +3388,14 @@ impl Store {
         store.recover_sealed_tombstones(&sealed_tombstones)?;
         if options.access_mode == AccessMode::ReadWrite {
             let cleanup_report = cleanup_open_orphans(&store)?;
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             if let Some(controller) = storage_fault_controller.as_ref() {
                 controller.record_cleanup_report(cleanup_report);
             }
-            #[cfg(not(any(test, feature = "test-support")))]
+            #[cfg(not(any(test, feature = "test-seams")))]
             let _ = cleanup_report;
         }
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         if let Some(controller) = storage_fault_controller.as_ref() {
             let published = store
                 .snapshot
@@ -3438,7 +3425,7 @@ impl Store {
     }
 
     /// Opens a store with deterministic infrastructure for adversarial tests.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     #[doc(hidden)]
     pub fn open_with_test_dependencies(
         path: impl AsRef<Path>,
@@ -3464,7 +3451,7 @@ impl Store {
     }
 
     /// Takes the most recent Store-owned hybrid execution receipt.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     #[doc(hidden)]
     pub fn take_hybrid_execution_receipt(&self) -> Option<HybridExecutionReceipt> {
         self.hybrid_execution_receipt
@@ -3558,7 +3545,7 @@ impl Store {
     /// This hidden test-support adapter lets independent persistence tests pair
     /// row identities returned by a public query with the values the reopened
     /// Store actually exposes. It is not compiled into the shipping API.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     #[doc(hidden)]
     pub fn test_metadata_row_values(
         &self,
@@ -3660,7 +3647,7 @@ impl Store {
     }
 
     /// Evaluates one source's actual typed metadata state for independent tests.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     #[doc(hidden)]
     pub fn test_metadata_evaluate_source(
         &self,
@@ -3829,7 +3816,7 @@ impl Store {
     ///
     /// This is test-support-only and exists so the lifecycle campaign reaches
     /// the real worker teardown/error path.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub fn panic_query_worker_for_test(&self) -> Result<(), StoreError> {
         let pool = self
             .query_pool
@@ -3870,17 +3857,17 @@ impl Store {
     }
 
     fn admit_lexical_query(&self) -> Result<AdmittedLexicalQuery<'_>, QueryError> {
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         self.text_materialization_work
             .admissions
             .fetch_add(1, Ordering::Relaxed);
-        #[cfg(all(feature = "query-timing", any(test, feature = "test-support")))]
+        #[cfg(all(feature = "query-timing", any(test, feature = "test-seams")))]
         let lock_started = std::time::Instant::now();
         let state = self
             .state
             .lock()
             .map_err(|_| QueryError::Store(StoreError::Synchronization { component: "state" }))?;
-        #[cfg(all(feature = "query-timing", any(test, feature = "test-support")))]
+        #[cfg(all(feature = "query-timing", any(test, feature = "test-seams")))]
         self.text_materialization_work
             .observe_lexical_lock(lock_started);
         match *state {
@@ -3888,14 +3875,14 @@ impl Store {
             StoreState::Closing => return Err(QueryError::Store(StoreError::Closing)),
             StoreState::Closed => return Err(QueryError::Store(StoreError::Closed)),
         }
-        #[cfg(all(feature = "query-timing", any(test, feature = "test-support")))]
+        #[cfg(all(feature = "query-timing", any(test, feature = "test-seams")))]
         let lock_started = std::time::Instant::now();
         let active_guard = self.active.lock().map_err(|_| {
             QueryError::Store(StoreError::Synchronization {
                 component: "active segment",
             })
         })?;
-        #[cfg(all(feature = "query-timing", any(test, feature = "test-support")))]
+        #[cfg(all(feature = "query-timing", any(test, feature = "test-seams")))]
         self.text_materialization_work
             .observe_lexical_lock(lock_started);
         let active_state = active_guard
@@ -3903,7 +3890,7 @@ impl Store {
             .ok_or(QueryError::Store(StoreError::Closed))?;
         let generation = active_state.generation;
         let active = Arc::clone(&active_state.segment);
-        #[cfg(all(feature = "query-timing", any(test, feature = "test-support")))]
+        #[cfg(all(feature = "query-timing", any(test, feature = "test-seams")))]
         let lock_started = std::time::Instant::now();
         let snapshot = self
             .snapshot
@@ -3914,7 +3901,7 @@ impl Store {
                 })
             })
             .inspect(|_| {
-                #[cfg(all(feature = "query-timing", any(test, feature = "test-support")))]
+                #[cfg(all(feature = "query-timing", any(test, feature = "test-seams")))]
                 self.text_materialization_work
                     .observe_lexical_lock(lock_started);
             })?
@@ -4166,7 +4153,7 @@ impl Store {
             active_query,
             ..
         } = self.admit_lexical_query()?;
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         self.text_materialization_work
             .reverse_version_lookups
             .fetch_add(1, Ordering::Relaxed);
@@ -4180,7 +4167,7 @@ impl Store {
             return Ok(text.map(str::to_owned));
         }
         for segment in snapshot.segments() {
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             self.text_materialization_work
                 .reverse_version_lookups
                 .fetch_add(1, Ordering::Relaxed);
@@ -4875,19 +4862,19 @@ impl Store {
             active: &admitted.active_segment,
             accounting: &self.accounting,
         };
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         let preparation_observer = crate::fts::preparation_observer::current();
         let mut lexical_preparation = prepared_lexical::PreparedLexicalQuery::new(lexical_query);
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         let fresh_preparation = hybrid::fresh_round_test_control();
         let run_lexical_leg = |preparation: &mut prepared_lexical::PreparedLexicalQuery<'_>,
                                bound,
                                queued| {
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             if fresh_preparation {
                 preparation.reset_for_test();
             }
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             let _preparation_scope =
                 crate::fts::preparation_observer::enter(preparation_observer.clone());
             let queue_time = timing_elapsed(self.clock.as_ref(), queued);
@@ -4972,7 +4959,7 @@ impl Store {
                 started,
                 self.clock.as_ref(),
                 vector_preparation,
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 self.vector_fault_controller.as_ref(),
             )
             .map_err(crate::fusion::FusionError::from)
@@ -5033,7 +5020,7 @@ impl Store {
                     std::time::Duration::ZERO,
                 )
             });
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         if let Ok(mut receipt) = self.hybrid_execution_receipt.lock() {
             *receipt = Some(HybridExecutionReceipt {
                 vector_thread: std::thread::current().id(),
@@ -5042,7 +5029,7 @@ impl Store {
                 lexical_completed: true,
             });
         }
-        #[cfg(not(any(test, feature = "test-support")))]
+        #[cfg(not(any(test, feature = "test-seams")))]
         let _ = lexical_thread_name;
         // run_scoped has joined lexical work even when vector preparation
         // failed or panicked. A stopped admission takes precedence over a late
@@ -5304,7 +5291,7 @@ impl Store {
     /// Exists so a test can prove the cache is actually reused, and actually
     /// rebuilt when its inputs move, rather than inferring either from a
     /// timing.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     #[must_use]
     pub fn lexical_index_cache_counters(&self) -> (u64, u64) {
         (
@@ -5314,7 +5301,7 @@ impl Store {
     }
 
     /// `(hits, builds)` of immutable lexical statistics contributions.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     #[must_use]
     pub fn lexical_contribution_cache_counters(&self) -> (u64, u64) {
         (
@@ -5328,7 +5315,7 @@ impl Store {
     }
 
     fn consume_hybrid_test_fault(&self, leg: crate::fusion::FusionLeg) -> bool {
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         {
             let Ok(mut fault) = self.hybrid_leg_fault.lock() else {
                 return false;
@@ -5338,7 +5325,7 @@ impl Store {
                 return true;
             }
         }
-        #[cfg(not(any(test, feature = "test-support")))]
+        #[cfg(not(any(test, feature = "test-seams")))]
         let _ = leg;
         false
     }
@@ -5402,7 +5389,7 @@ impl Store {
                 started,
                 self.clock.as_ref(),
                 &mut vector_preparation,
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 self.vector_fault_controller.as_ref(),
             )?;
             if let Some(timings) = &mut outcome.diagnostics.timings {
@@ -5410,14 +5397,14 @@ impl Store {
             }
             finish(outcome, &admitted, &control)
         };
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         let result = crate::kernels::vector_fault::run_store_scoring(
             self.kernel_fault_controller.as_ref(),
             score,
         );
-        #[cfg(not(any(test, feature = "test-support")))]
+        #[cfg(not(any(test, feature = "test-seams")))]
         let result = score();
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         {
             if let Some(controller) = self.vector_fault_controller.as_ref() {
                 controller.finalize_search(result.is_ok());
@@ -5486,7 +5473,7 @@ impl Store {
         options: SearchOptions,
         hybrid_default: bool,
     ) -> Result<AdmittedVectorSearch<'_>, QueryError> {
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         self.text_materialization_work
             .admissions
             .fetch_add(1, Ordering::Relaxed);
@@ -5854,13 +5841,13 @@ impl CachedLexicalAssembly {
 /// a cached newer generation. Only immutable contribution Arcs cross rebuilds.
 pub(crate) struct LexicalIndexCache {
     entry: Mutex<Option<CachedLexicalAssembly>>,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     hits: AtomicU64,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     builds: AtomicU64,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     contribution_hits: AtomicU64,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     contribution_builds: AtomicU64,
 }
 
@@ -5868,41 +5855,41 @@ impl LexicalIndexCache {
     pub(crate) const fn new() -> Self {
         Self {
             entry: Mutex::new(None),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             hits: AtomicU64::new(0),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             builds: AtomicU64::new(0),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             contribution_hits: AtomicU64::new(0),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             contribution_builds: AtomicU64::new(0),
         }
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     fn record_hit(&self) {
         self.hits.fetch_add(1, Ordering::Relaxed);
     }
 
-    #[cfg(not(any(test, feature = "test-support")))]
+    #[cfg(not(any(test, feature = "test-seams")))]
     const fn record_hit(&self) {}
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     fn record_build(&self) {
         self.builds.fetch_add(1, Ordering::Relaxed);
     }
 
-    #[cfg(not(any(test, feature = "test-support")))]
+    #[cfg(not(any(test, feature = "test-seams")))]
     const fn record_build(&self) {}
 
     fn record_contribution(&self, hit: bool) {
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         if hit {
             self.contribution_hits.fetch_add(1, Ordering::Relaxed);
         } else {
             self.contribution_builds.fetch_add(1, Ordering::Relaxed);
         }
-        #[cfg(not(any(test, feature = "test-support")))]
+        #[cfg(not(any(test, feature = "test-seams")))]
         let _ = hit;
     }
 
@@ -6013,7 +6000,7 @@ fn assemble_lexical_index(
         }
         .map_err(map_eligibility_error)?;
         let mut eligible = (**alive).clone();
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         crate::fts::preparation_observer::record_filter_work(0, 0, 1);
         eligible.retain(&rows);
         alive_sets.push(Arc::new(eligible));
@@ -6758,7 +6745,7 @@ fn search_pinned(
     started: std::time::Instant,
     clock: &dyn MonotonicClock,
     vector_preparation: &mut prepared::PreparedVectorQuery<'_>,
-    #[cfg(any(test, feature = "test-support"))] vector_fault_controller: Option<
+    #[cfg(any(test, feature = "test-seams"))] vector_fault_controller: Option<
         &crate::scan::vector_fault::VectorFaultController,
     >,
 ) -> Result<crate::ingest::SearchOutcome, QueryError> {
@@ -6861,9 +6848,9 @@ fn search_pinned(
                         lane: exact_lane,
                     },
                     &mut exact_memory,
-                    #[cfg(any(test, feature = "test-support"))]
+                    #[cfg(any(test, feature = "test-seams"))]
                     vector_fault_controller,
-                    #[cfg(any(test, feature = "test-support"))]
+                    #[cfg(any(test, feature = "test-seams"))]
                     vector_fault_tier(options.tier()),
                 )?
             }
@@ -6890,11 +6877,11 @@ fn search_pinned(
                     scan_options,
                     control.clone(),
                     SnapshotLease::new_at(Arc::clone(snapshot), generation),
-                    #[cfg(any(test, feature = "test-support"))]
+                    #[cfg(any(test, feature = "test-seams"))]
                     vector_fault_controller,
-                    #[cfg(any(test, feature = "test-support"))]
+                    #[cfg(any(test, feature = "test-seams"))]
                     crate::scan::vector_fault::VectorRowSource::Active,
-                    #[cfg(any(test, feature = "test-support"))]
+                    #[cfg(any(test, feature = "test-seams"))]
                     vector_fault_tier(options.tier()),
                 )?
             }
@@ -6914,9 +6901,9 @@ fn search_pinned(
                         lane: exact_lane,
                     },
                     &mut exact_memory,
-                    #[cfg(any(test, feature = "test-support"))]
+                    #[cfg(any(test, feature = "test-seams"))]
                     vector_fault_controller,
-                    #[cfg(any(test, feature = "test-support"))]
+                    #[cfg(any(test, feature = "test-seams"))]
                     vector_fault_tier(options.tier()),
                 )?
             }
@@ -6951,9 +6938,9 @@ fn search_pinned(
             &mut bytes_read,
             &mut worker_thread_ids,
             exact_score,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             vector_fault_controller,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             vector_fault_tier(options.tier()),
         )?;
         let mut plan = crate::planner::SegmentPlan::unfiltered_scan(
@@ -7032,7 +7019,7 @@ fn search_pinned(
                 generation,
                 &control,
                 competitive_distance,
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 vector_fault_controller,
                 options.tier(),
             )?
@@ -7045,7 +7032,7 @@ fn search_pinned(
                 &mut bytes_read,
                 &mut worker_thread_ids,
                 &mut graph_stats,
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 vector_fault_controller,
                 options.tier(),
             )?;
@@ -7079,7 +7066,7 @@ fn search_pinned(
             &mut exact_memory,
             source,
             options.tier(),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             vector_fault_controller,
         )?;
         let mut exact_score = full_precision || segment.meta().scheme == 0;
@@ -7089,9 +7076,9 @@ fn search_pinned(
             let cancellation = QueryCancellation::new(&control, &lease);
             let vectors = exact_rescore_rows_for_search(
                 segment,
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 vector_fault_controller,
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 vector_fault_tier(options.tier()),
             )?;
             let (counters, exhaustive, worst) = rescored_scan::rescore(
@@ -7126,9 +7113,9 @@ fn search_pinned(
             &mut bytes_read,
             &mut worker_thread_ids,
             exact_score,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             vector_fault_controller,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             vector_fault_tier(options.tier()),
         )?;
         let tier = if segment
@@ -7435,7 +7422,7 @@ impl<'a> SegmentGraphResult<'a> {
         bytes_read: &mut u64,
         worker_thread_ids: &mut Vec<std::thread::ThreadId>,
         graph_stats: &mut crate::ingest::GraphSearchStats,
-        #[cfg(any(test, feature = "test-support"))] vector_fault_controller: Option<
+        #[cfg(any(test, feature = "test-seams"))] vector_fault_controller: Option<
             &crate::scan::vector_fault::VectorFaultController,
         >,
         _tier: SearchTier,
@@ -7482,9 +7469,9 @@ impl<'a> SegmentGraphResult<'a> {
                         .iter()
                         .filter(|candidate| alive.is_alive(candidate.row_id()))
                         .count(),
-                    #[cfg(any(test, feature = "test-support"))]
+                    #[cfg(any(test, feature = "test-seams"))]
                     vector_fault_controller,
-                    #[cfg(any(test, feature = "test-support"))]
+                    #[cfg(any(test, feature = "test-seams"))]
                     vector_fault_tier(_tier),
                 )?;
                 for candidate in result.candidates() {
@@ -7537,7 +7524,7 @@ fn traverse_segment_graph<'a>(
     generation: u64,
     control: &QueryControl,
     competitive_distance: Option<f32>,
-    #[cfg(any(test, feature = "test-support"))] vector_fault_controller: Option<
+    #[cfg(any(test, feature = "test-seams"))] vector_fault_controller: Option<
         &crate::scan::vector_fault::VectorFaultController,
     >,
     _tier: SearchTier,
@@ -7570,9 +7557,9 @@ fn traverse_segment_graph<'a>(
         };
     let rescore = query_rescore_rows_for_search(
         segment,
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         vector_fault_controller,
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         vector_fault_tier(_tier),
     )?;
     let node_count = graph.node_count() as usize;
@@ -7667,7 +7654,7 @@ fn traverse_segment_graph<'a>(
     )
     .map_err(map_graph_error)?
     .with_rescore_validator(segment);
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     if let Some(after_hops) = graph_options.cancel_after_hops() {
         let token = cancellation.cancel_token_for_test().ok_or_else(|| {
             QueryError::Graph(crate::graph::search::GraphSearchError::Geometry(
@@ -7676,7 +7663,7 @@ fn traverse_segment_graph<'a>(
         })?;
         let _observed_hops = searcher.cancel_after_hops(after_hops, token);
     }
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     if let Some(controller) = vector_fault_controller {
         searcher = searcher.with_vector_fault_controller(
             controller,
@@ -7763,7 +7750,7 @@ fn traverse_segment_graph<'a>(
         graph_options.profile(),
     );
     let caller_thread = std::thread::current().id();
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     drop(searcher);
     Ok(SegmentGraphResult::Traversed {
         result,
@@ -7831,7 +7818,7 @@ fn scan_sealed_segment(
     exact_memory: &mut ExactScanMemory,
     _source: crate::ingest::RowSource,
     _tier: SearchTier,
-    #[cfg(any(test, feature = "test-support"))] vector_fault_controller: Option<
+    #[cfg(any(test, feature = "test-seams"))] vector_fault_controller: Option<
         &crate::scan::vector_fault::VectorFaultController,
     >,
 ) -> Result<crate::scan::ScanOutcome, QueryError> {
@@ -7841,9 +7828,9 @@ fn scan_sealed_segment(
         let lease = SnapshotLease::new_at(Arc::clone(snapshot), generation);
         let vectors = exact_rescore_rows_for_search(
             segment,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             vector_fault_controller,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             vector_fault_tier(_tier),
         )?;
         return scan_squared_l2(
@@ -7861,11 +7848,11 @@ fn scan_sealed_segment(
                 lane: exact_lane,
             },
             exact_memory,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             vector_fault_controller,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             vector_fault_source(_source),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             vector_fault_tier(_tier),
         );
     }
@@ -7890,11 +7877,11 @@ fn scan_sealed_segment(
             scan_options,
             control.clone(),
             SnapshotLease::new_at(Arc::clone(snapshot), generation),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             vector_fault_controller,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             vector_fault_source(_source),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             vector_fault_tier(_tier),
         ),
         4 => execute_store_scan(
@@ -7923,11 +7910,11 @@ fn scan_sealed_segment(
             scan_options,
             control.clone(),
             SnapshotLease::new_at(Arc::clone(snapshot), generation),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             vector_fault_controller,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             vector_fault_source(_source),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             vector_fault_tier(_tier),
         ),
         2 => {
@@ -7955,11 +7942,11 @@ fn scan_sealed_segment(
                 scan_options,
                 control.clone(),
                 SnapshotLease::new_at(Arc::clone(snapshot), generation),
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 vector_fault_controller,
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 vector_fault_source(_source),
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 vector_fault_tier(_tier),
             )
         }
@@ -7979,13 +7966,13 @@ fn execute_store_scan(
     options: crate::scan::ScanOptions,
     control: QueryControl,
     lease: SnapshotLease,
-    #[cfg(any(test, feature = "test-support"))] controller: Option<
+    #[cfg(any(test, feature = "test-seams"))] controller: Option<
         &crate::scan::vector_fault::VectorFaultController,
     >,
-    #[cfg(any(test, feature = "test-support"))] source: crate::scan::vector_fault::VectorRowSource,
-    #[cfg(any(test, feature = "test-support"))] tier: crate::scan::vector_fault::VectorSearchTier,
+    #[cfg(any(test, feature = "test-seams"))] source: crate::scan::vector_fault::VectorRowSource,
+    #[cfg(any(test, feature = "test-seams"))] tier: crate::scan::vector_fault::VectorSearchTier,
 ) -> Result<crate::scan::ScanOutcome, QueryError> {
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     if let Some(controller) = controller {
         let geometry = crate::scan::scan_geometry(request).map_err(QueryError::Scan)?;
         let cancellation = QueryCancellation::new(&control, &lease);
@@ -8013,7 +8000,7 @@ fn execute_store_scan(
     pool.execute(request, k, options, control, lease)
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 fn vector_fault_tier(tier: SearchTier) -> crate::scan::vector_fault::VectorSearchTier {
     match tier {
         SearchTier::Exact => crate::scan::vector_fault::VectorSearchTier::Exact,
@@ -8023,7 +8010,7 @@ fn vector_fault_tier(tier: SearchTier) -> crate::scan::vector_fault::VectorSearc
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 fn vector_fault_source(
     source: crate::ingest::RowSource,
 ) -> crate::scan::vector_fault::VectorRowSource {
@@ -8078,18 +8065,18 @@ pub(crate) fn exact_rescore_rows(
         .map_err(|source| QueryError::Store(StoreError::Segment(source)))
 }
 
-#[cfg(not(any(test, feature = "test-support")))]
+#[cfg(not(any(test, feature = "test-seams")))]
 use exact_rescore_rows as exact_rescore_rows_for_search;
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 fn exact_rescore_rows_for_search<'a>(
     segment: &'a crate::segment::reader::SegmentReader,
-    #[cfg(any(test, feature = "test-support"))] controller: Option<
+    #[cfg(any(test, feature = "test-seams"))] controller: Option<
         &crate::scan::vector_fault::VectorFaultController,
     >,
-    #[cfg(any(test, feature = "test-support"))] tier: crate::scan::vector_fault::VectorSearchTier,
+    #[cfg(any(test, feature = "test-seams"))] tier: crate::scan::vector_fault::VectorSearchTier,
 ) -> Result<&'a [f32], QueryError> {
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     if let Some(available_rows) = controller.and_then(|controller| {
         controller.missing_rescore_rows(
             crate::scan::vector_fault::VectorRowSource::Sealed(*segment.meta().id.as_bytes()),
@@ -8111,18 +8098,18 @@ pub(crate) fn query_rescore_rows(
         .map_err(|source| QueryError::Store(StoreError::Segment(source)))
 }
 
-#[cfg(not(any(test, feature = "test-support")))]
+#[cfg(not(any(test, feature = "test-seams")))]
 use query_rescore_rows as query_rescore_rows_for_search;
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 fn query_rescore_rows_for_search<'a>(
     segment: &'a crate::segment::reader::SegmentReader,
-    #[cfg(any(test, feature = "test-support"))] controller: Option<
+    #[cfg(any(test, feature = "test-seams"))] controller: Option<
         &crate::scan::vector_fault::VectorFaultController,
     >,
-    #[cfg(any(test, feature = "test-support"))] tier: crate::scan::vector_fault::VectorSearchTier,
+    #[cfg(any(test, feature = "test-seams"))] tier: crate::scan::vector_fault::VectorSearchTier,
 ) -> Result<&'a [f32], QueryError> {
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     if let Some(available_rows) = controller.and_then(|controller| {
         controller.missing_rescore_rows(
             crate::scan::vector_fault::VectorRowSource::Sealed(*segment.meta().id.as_bytes()),
@@ -8136,7 +8123,7 @@ fn query_rescore_rows_for_search<'a>(
     query_rescore_rows(segment)
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 fn missing_rescore_rows_error(
     segment: &crate::segment::reader::SegmentReader,
     available_rows: u32,
@@ -8207,10 +8194,10 @@ fn scan_active_squared_l2(
     k: usize,
     dispatch: ExactScanDispatch<'_>,
     memory: &mut ExactScanMemory,
-    #[cfg(any(test, feature = "test-support"))] controller: Option<
+    #[cfg(any(test, feature = "test-seams"))] controller: Option<
         &crate::scan::vector_fault::VectorFaultController,
     >,
-    #[cfg(any(test, feature = "test-support"))] tier: crate::scan::vector_fault::VectorSearchTier,
+    #[cfg(any(test, feature = "test-seams"))] tier: crate::scan::vector_fault::VectorSearchTier,
 ) -> Result<crate::scan::ScanOutcome, QueryError> {
     scan_squared_l2(
         active.vectors(),
@@ -8220,11 +8207,11 @@ fn scan_active_squared_l2(
         k,
         dispatch,
         memory,
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         controller,
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         crate::scan::vector_fault::VectorRowSource::Active,
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         tier,
     )
 }
@@ -8295,11 +8282,11 @@ fn scan_squared_l2(
     k: usize,
     dispatch: ExactScanDispatch<'_>,
     memory: &mut ExactScanMemory,
-    #[cfg(any(test, feature = "test-support"))] controller: Option<
+    #[cfg(any(test, feature = "test-seams"))] controller: Option<
         &crate::scan::vector_fault::VectorFaultController,
     >,
-    #[cfg(any(test, feature = "test-support"))] source: crate::scan::vector_fault::VectorRowSource,
-    #[cfg(any(test, feature = "test-support"))] tier: crate::scan::vector_fault::VectorSearchTier,
+    #[cfg(any(test, feature = "test-seams"))] source: crate::scan::vector_fault::VectorRowSource,
+    #[cfg(any(test, feature = "test-seams"))] tier: crate::scan::vector_fault::VectorSearchTier,
 ) -> Result<crate::scan::ScanOutcome, QueryError> {
     if let Some(pool) = dispatch.pool
         && pool.exact_workers(row_count, query.len(), dispatch.thread_budget) > 1
@@ -8316,16 +8303,16 @@ fn scan_squared_l2(
             dispatch.lease,
             dispatch.accounting,
             memory,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             controller,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             source,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             tier,
         );
     }
     let cancellation = QueryCancellation::new(dispatch.control, dispatch.lease);
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     if controller.is_some_and(|controller| controller.has_exact_row_hooks()) {
         return scan_exact_partition::<false>(
             vectors,
@@ -8336,11 +8323,11 @@ fn scan_squared_l2(
             k,
             &cancellation,
             memory,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             controller,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             source,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             tier,
         )
         .map_err(ExactScanError::into_query);
@@ -8354,11 +8341,11 @@ fn scan_squared_l2(
         &cancellation,
         &mut memory.candidates,
         &mut memory.worker_ids,
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         controller,
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         source,
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         tier,
     )
 }
@@ -8373,11 +8360,11 @@ fn scan_exact_partition<const OFFSET_ROWS: bool>(
     k: usize,
     cancellation: &QueryCancellation<'_>,
     memory: &mut ExactScanMemory,
-    #[cfg(any(test, feature = "test-support"))] controller: Option<
+    #[cfg(any(test, feature = "test-seams"))] controller: Option<
         &crate::scan::vector_fault::VectorFaultController,
     >,
-    #[cfg(any(test, feature = "test-support"))] source: crate::scan::vector_fault::VectorRowSource,
-    #[cfg(any(test, feature = "test-support"))] tier: crate::scan::vector_fault::VectorSearchTier,
+    #[cfg(any(test, feature = "test-seams"))] source: crate::scan::vector_fault::VectorRowSource,
+    #[cfg(any(test, feature = "test-seams"))] tier: crate::scan::vector_fault::VectorSearchTier,
 ) -> Result<crate::scan::ScanOutcome, ExactScanError> {
     if query.is_empty() {
         return Err(QueryError::Scan(crate::scan::ScanError::ZeroDimension).into());
@@ -8436,14 +8423,14 @@ fn scan_exact_partition<const OFFSET_ROWS: bool>(
             )
         })
         .filter(|(row, _)| u32::try_from(*row).is_ok_and(|row| alive.is_alive(row)));
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     let mut trace =
         controller.and_then(|controller| controller.trace_rows(source, tier, range.clone()));
     let scored_rows = crate::quant::exact_squared_l2_with_sink(
         query,
         rows,
         |_row, is_checkpoint| {
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             if let Some(controller) = controller {
                 if let Some(trace) = &mut trace {
                     trace.checked(_row);
@@ -8497,7 +8484,7 @@ fn scan_exact_partition<const OFFSET_ROWS: bool>(
     let (candidates, _collector_capacity) = collector
         .try_into_sorted_with_ties(&mut memory.candidates)
         .map_err(QueryError::Store)?;
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     if let Some(controller) = controller {
         controller.record_exact_scan(crate::scan::vector_fault::ExactScanWork {
             sorted_items: candidates.len(),
@@ -8553,11 +8540,11 @@ fn scan_serial_squared_l2(
     cancellation: &QueryCancellation<'_>,
     memory: &mut stats::AccountedCounter,
     worker_memory: &mut stats::AccountedCounter,
-    #[cfg(any(test, feature = "test-support"))] controller: Option<
+    #[cfg(any(test, feature = "test-seams"))] controller: Option<
         &crate::scan::vector_fault::VectorFaultController,
     >,
-    #[cfg(any(test, feature = "test-support"))] source: crate::scan::vector_fault::VectorRowSource,
-    #[cfg(any(test, feature = "test-support"))] tier: crate::scan::vector_fault::VectorSearchTier,
+    #[cfg(any(test, feature = "test-seams"))] source: crate::scan::vector_fault::VectorRowSource,
+    #[cfg(any(test, feature = "test-seams"))] tier: crate::scan::vector_fault::VectorSearchTier,
 ) -> Result<crate::scan::ScanOutcome, QueryError> {
     if query.is_empty() {
         return Err(QueryError::Scan(crate::scan::ScanError::ZeroDimension));
@@ -8598,7 +8585,7 @@ fn scan_serial_squared_l2(
             if is_checkpoint {
                 cancellation.check_graph().map_err(map_scan_error)?;
             }
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             if controller
                 .is_some_and(|controller| controller.after_eligible_row(source, tier, _row))
             {
@@ -8641,7 +8628,7 @@ fn scan_serial_squared_l2(
     let (candidates, _collector_capacity) = collector
         .try_into_sorted_with_ties(memory)
         .map_err(QueryError::Store)?;
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     if let Some(controller) = controller {
         controller.record_exact_scan(crate::scan::vector_fault::ExactScanWork {
             sorted_items: candidates.len(),
@@ -8743,10 +8730,10 @@ fn merge_store_outcome(
     bytes_read: &mut u64,
     worker_thread_ids: &mut Vec<std::thread::ThreadId>,
     exact_score: bool,
-    #[cfg(any(test, feature = "test-support"))] vector_fault_controller: Option<
+    #[cfg(any(test, feature = "test-seams"))] vector_fault_controller: Option<
         &crate::scan::vector_fault::VectorFaultController,
     >,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     vector_fault_tier: crate::scan::vector_fault::VectorSearchTier,
 ) -> Result<(), QueryError> {
     *dims_touched = dims_touched
@@ -8763,9 +8750,9 @@ fn merge_store_outcome(
     reserve_global_candidates(
         candidates,
         outcome.candidates.len(),
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         vector_fault_controller,
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         vector_fault_tier,
     )?;
     for candidate in outcome.candidates {
@@ -8784,10 +8771,10 @@ fn merge_store_outcome(
 pub(crate) fn reserve_global_candidates(
     candidates: &mut Vec<crate::ingest::SearchCandidate>,
     additional: usize,
-    #[cfg(any(test, feature = "test-support"))] vector_fault_controller: Option<
+    #[cfg(any(test, feature = "test-seams"))] vector_fault_controller: Option<
         &crate::scan::vector_fault::VectorFaultController,
     >,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     vector_fault_tier: crate::scan::vector_fault::VectorSearchTier,
 ) -> Result<(), QueryError> {
     if additional == 0 {
@@ -8800,7 +8787,7 @@ pub(crate) fn reserve_global_candidates(
     let needed = items
         .checked_mul(candidate_bytes)
         .ok_or(QueryError::Scan(crate::scan::ScanError::ArithmeticOverflow))?;
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     if vector_fault_controller.is_some_and(|controller| {
         controller.deny_global_candidate_allocation(vector_fault_tier, items, needed)
     }) {
@@ -10359,23 +10346,49 @@ mod tests {
     }
 
     #[test]
-    fn memory_vfs_store_open_does_not_create_host_directory() {
+    fn memory_vfs_writable_open_requires_host_lease_directory() {
         let parent = tempdir().expect("parent directory");
         let store_path = parent.path().join("memory-only-store");
         let dependencies = StoreTestDependencies::new(
             Arc::new(MemoryVfs::new()),
             Arc::new(ManualMonotonicClock::new()),
         );
-
-        let store =
-            Store::open_with_test_dependencies(&store_path, OpenOptions::read_only(), dependencies)
-                .expect("MemoryVfs-backed store open");
-        store.close().expect("MemoryVfs-backed store close");
-
+        let result =
+            Store::open_with_test_dependencies(&store_path, OpenOptions::default(), dependencies);
         assert!(
-            !store_path.exists(),
-            "MemoryVfs-backed Store touched the host filesystem"
+            matches!(result, Err(StoreError::Lock(super::lock::StoreLockError::Io { ref source, .. })) if source.kind() == std::io::ErrorKind::NotFound),
+            "writable open must refuse the missing host lease directory"
         );
+        assert!(!store_path.exists());
+    }
+
+    #[test]
+    fn memory_vfs_store_retains_real_reader_lease() {
+        let directory = tempdir().expect("host lease directory");
+        let dependencies = StoreTestDependencies::new(
+            Arc::new(MemoryVfs::new()),
+            Arc::new(ManualMonotonicClock::new()),
+        );
+        let store = Store::open_with_test_dependencies(
+            directory.path(),
+            OpenOptions::default(),
+            dependencies,
+        )
+        .expect("MemoryVfs store with host lease");
+        let snapshot = store.open_snapshot().expect("snapshot view");
+        assert!(matches!(
+            super::lock::StoreLock::reclaim_exclusive(directory.path()),
+            Err(super::lock::StoreLockError::Io { source, .. })
+                if source.kind() == std::io::ErrorKind::WouldBlock
+        ));
+        drop(store);
+        assert!(matches!(
+            super::lock::StoreLock::reclaim_exclusive(directory.path()),
+            Err(super::lock::StoreLockError::Io { source, .. })
+                if source.kind() == std::io::ErrorKind::WouldBlock
+        ));
+        drop(snapshot);
+        drop(super::lock::StoreLock::reclaim_exclusive(directory.path()).expect("released lease"));
     }
 
     #[test]

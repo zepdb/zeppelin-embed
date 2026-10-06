@@ -22,7 +22,7 @@ use super::{
     ALLOW_LIST_ROWS_THRESHOLD, PlanError, PlanFallback, PlanNode, SegmentBranch, SegmentPlan,
     SegmentTier, choose_scan_branch, segment_may_match, validate_predicate,
 };
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 use super::{
     MetadataControllerError, MetadataExecutionReceipt, MetadataQueryContext, MetadataTestController,
 };
@@ -66,7 +66,7 @@ pub enum FilteredSearchError {
     /// A planner-internal node reached an incompatible vector executor.
     InvalidPlanNode(&'static str),
     /// Hidden metadata qualification controller was misused or poisoned.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     TestController(MetadataControllerError),
 }
 
@@ -85,7 +85,7 @@ impl std::fmt::Display for FilteredSearchError {
             Self::InvalidPlanNode(detail) => {
                 write!(formatter, "invalid vector plan node: {detail}")
             }
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             Self::TestController(error) => error.fmt(formatter),
         }
     }
@@ -99,7 +99,7 @@ impl std::error::Error for FilteredSearchError {
             Self::ActiveMetadata(_)
             | Self::PlanReportMismatch { .. }
             | Self::InvalidPlanNode(_) => None,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             Self::TestController(error) => Some(error),
         }
     }
@@ -117,7 +117,7 @@ impl From<QueryError> for FilteredSearchError {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 impl From<MetadataControllerError> for FilteredSearchError {
     fn from(error: MetadataControllerError) -> Self {
         Self::TestController(error)
@@ -212,9 +212,9 @@ fn execute_store(
     let lease = SnapshotLease::new_at(Arc::clone(&snapshot), generation);
     let cancellation = QueryCancellation::new(&control, &lease);
     cancellation.check_graph().map_err(map_scan_error)?;
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     let metadata_controller = store.metadata_test_controller.as_deref();
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     let metadata_query = metadata_controller
         .map(MetadataTestController::begin_query)
         .transpose()?
@@ -233,22 +233,22 @@ fn execute_store(
             options,
             &cancellation,
             started,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             metadata_controller,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             metadata_query.as_ref(),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             store.vector_fault_controller.as_ref(),
         )
     };
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     let result = crate::kernels::vector_fault::run_store_scoring(
         store.kernel_fault_controller.as_ref(),
         score,
     );
-    #[cfg(not(any(test, feature = "test-support")))]
+    #[cfg(not(any(test, feature = "test-seams")))]
     let result = score();
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     {
         if let Some(controller) = store.vector_fault_controller.as_ref() {
             controller.finalize_search(result.is_ok());
@@ -272,11 +272,9 @@ fn execute_pinned(
     options: SearchOptions,
     cancellation: &QueryCancellation<'_>,
     started: std::time::Instant,
-    #[cfg(any(test, feature = "test-support"))] metadata_controller: Option<
-        &MetadataTestController,
-    >,
-    #[cfg(any(test, feature = "test-support"))] metadata_query: Option<&MetadataQueryContext>,
-    #[cfg(any(test, feature = "test-support"))] vector_fault_controller: Option<
+    #[cfg(any(test, feature = "test-seams"))] metadata_controller: Option<&MetadataTestController>,
+    #[cfg(any(test, feature = "test-seams"))] metadata_query: Option<&MetadataQueryContext>,
+    #[cfg(any(test, feature = "test-seams"))] vector_fault_controller: Option<
         &crate::scan::vector_fault::VectorFaultController,
     >,
 ) -> Result<FilteredSearchOutcome, FilteredSearchError> {
@@ -321,11 +319,11 @@ fn execute_pinned(
             &mut plans,
             accounting,
             &mut rescore_counters,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             metadata_controller,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             metadata_query,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             vector_fault_controller,
         )?;
     }
@@ -340,7 +338,7 @@ fn execute_pinned(
             SegmentTier::SealedScan
         };
         if !segment_may_match(segment.meta().clustering_key_range, predicate) {
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             record_pruned_receipt(
                 metadata_controller,
                 metadata_query,
@@ -357,7 +355,7 @@ fn execute_pinned(
         let columns = match segment.query_columns() {
             Ok(columns) => columns,
             Err(error) => {
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 record_column_refusal(metadata_controller, metadata_query, source, &error)?;
                 return Err(QueryError::Store(error).into());
             }
@@ -365,7 +363,7 @@ fn execute_pinned(
         let alive = match segment.query_alive() {
             Ok(alive) => alive,
             Err(error) => {
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 record_alive_refusal(metadata_controller, metadata_query, source, &error)?;
                 return Err(QueryError::Store(error).into());
             }
@@ -393,18 +391,18 @@ fn execute_pinned(
             &mut stats,
             &mut graph_stats,
             &mut plans,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             metadata_controller,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             metadata_query,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             vector_fault_controller,
         )?;
         if !matches!(graph_outcome, SealedGraphOutcome::Scan) {
             continue;
         }
         let branch = choose_scan_branch(allow_list.cardinality());
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         record_selectivity_decision(
             metadata_controller,
             metadata_query,
@@ -417,7 +415,7 @@ fn execute_pinned(
         let mut plan =
             SegmentPlan::exact(source, tier, branch, allow_list.cardinality(), scan_reason)
                 .with_predicate(predicate);
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         let receipt_context = metadata_execution_receipt_context(
             metadata_controller,
             metadata_query,
@@ -443,7 +441,7 @@ fn execute_pinned(
             full_precision,
             &bit4_query,
             &int8_query,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             receipt_context,
         )?;
         let _rescore_memory = if let Some(rescore) = options.scan_rescore() {
@@ -466,10 +464,10 @@ fn execute_pinned(
         } else {
             None
         };
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         let reported_branch =
             metadata_query.map_or(plan.branch, |query| query.reported_branch(plan.branch));
-        #[cfg(not(any(test, feature = "test-support")))]
+        #[cfg(not(any(test, feature = "test-seams")))]
         let reported_branch = plan.branch;
         verify_execution_branch(reported_branch, execution.branch)?;
         append_candidates(
@@ -483,9 +481,9 @@ fn execute_pinned(
             },
             &mut candidates,
             full_precision || segment.meta().scheme == 0 || options.scan_rescore().is_some(),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             vector_fault_controller,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             vector_fault_tier(options.tier()),
         )?;
         stats.add(local_stats)?;
@@ -563,17 +561,15 @@ fn execute_active_filtered(
     plans: &mut Vec<SegmentPlan>,
     accounting: &Arc<crate::lifecycle::stats::Accounting>,
     rescore_counters: &mut crate::diag::ScanRescoreCounters,
-    #[cfg(any(test, feature = "test-support"))] metadata_controller: Option<
-        &MetadataTestController,
-    >,
-    #[cfg(any(test, feature = "test-support"))] metadata_query: Option<&MetadataQueryContext>,
-    #[cfg(any(test, feature = "test-support"))] vector_fault_controller: Option<
+    #[cfg(any(test, feature = "test-seams"))] metadata_controller: Option<&MetadataTestController>,
+    #[cfg(any(test, feature = "test-seams"))] metadata_query: Option<&MetadataQueryContext>,
+    #[cfg(any(test, feature = "test-seams"))] vector_fault_controller: Option<
         &crate::scan::vector_fault::VectorFaultController,
     >,
 ) -> Result<(), FilteredSearchError> {
     let alive = active.alive().map_err(QueryError::Store)?;
     let columns = active_columns(active, schema)?;
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     let alive = match metadata_query {
         Some(query) => query.evaluator_alive(columns.row_count(), alive)?,
         None => alive,
@@ -581,7 +577,7 @@ fn execute_active_filtered(
     let allow_list = evaluate_for_plan(predicate, &columns, &alive)?;
     let branch = choose_scan_branch(allow_list.cardinality());
     let source = RowSource::Active;
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     record_selectivity_decision(
         metadata_controller,
         metadata_query,
@@ -597,7 +593,7 @@ fn execute_active_filtered(
         Some(crate::planner::ScanReason::ActiveSegment),
     )
     .with_predicate(predicate);
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     let receipt_context = metadata_execution_receipt_context(
         metadata_controller,
         metadata_query,
@@ -621,7 +617,7 @@ fn execute_active_filtered(
             &allow_list,
             frontier,
             cancellation,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             receipt_context,
         )?
     } else {
@@ -638,7 +634,7 @@ fn execute_active_filtered(
             active.row_count(),
             frontier,
             cancellation,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             receipt_context,
         )?
     };
@@ -662,10 +658,10 @@ fn execute_active_filtered(
     } else {
         None
     };
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     let reported_branch =
         metadata_query.map_or(plan.branch, |query| query.reported_branch(plan.branch));
-    #[cfg(not(any(test, feature = "test-support")))]
+    #[cfg(not(any(test, feature = "test-seams")))]
     let reported_branch = plan.branch;
     verify_execution_branch(reported_branch, execution.branch)?;
     append_candidates(
@@ -674,9 +670,9 @@ fn execute_active_filtered(
         |row| Ok(active.document(row)),
         candidates,
         full_precision || options.scan_rescore().is_some(),
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         vector_fault_controller,
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         vector_fault_tier(options.tier()),
     )?;
     stats.add(local_stats)?;
@@ -697,7 +693,7 @@ fn scan_sealed_filtered(
     full_precision: bool,
     bit4_query: &Bit4Query,
     int8_query: &Int8Query,
-    #[cfg(any(test, feature = "test-support"))] receipt_context: Option<
+    #[cfg(any(test, feature = "test-seams"))] receipt_context: Option<
         MetadataExecutionReceiptContext<'_>,
     >,
 ) -> Result<(Vec<LocalCandidate>, ScanStats, ScanExecutionFacts), FilteredSearchError> {
@@ -711,7 +707,7 @@ fn scan_sealed_filtered(
             allow_list,
             k,
             cancellation,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             receipt_context,
         );
     }
@@ -731,7 +727,7 @@ fn scan_sealed_filtered(
             row_count,
             k,
             cancellation,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             receipt_context,
         ),
         2 => {
@@ -763,7 +759,7 @@ fn scan_sealed_filtered(
                 row_count,
                 k,
                 cancellation,
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 receipt_context,
             )
         }
@@ -786,7 +782,7 @@ fn scan_sealed_filtered(
             row_count,
             k,
             cancellation,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             receipt_context,
         ),
         scheme => Err(QueryError::Store(StoreError::Segment(
@@ -822,11 +818,9 @@ fn sealed_graph_filtered(
     stats: &mut MutableStats,
     graph_stats: &mut crate::ingest::GraphSearchStats,
     plans: &mut Vec<SegmentPlan>,
-    #[cfg(any(test, feature = "test-support"))] metadata_controller: Option<
-        &MetadataTestController,
-    >,
-    #[cfg(any(test, feature = "test-support"))] metadata_query: Option<&MetadataQueryContext>,
-    #[cfg(any(test, feature = "test-support"))] vector_fault_controller: Option<
+    #[cfg(any(test, feature = "test-seams"))] metadata_controller: Option<&MetadataTestController>,
+    #[cfg(any(test, feature = "test-seams"))] metadata_query: Option<&MetadataQueryContext>,
+    #[cfg(any(test, feature = "test-seams"))] vector_fault_controller: Option<
         &crate::scan::vector_fault::VectorFaultController,
     >,
 ) -> Result<SealedGraphOutcome, FilteredSearchError> {
@@ -847,7 +841,7 @@ fn sealed_graph_filtered(
         && (norm_range.squared_l2_lower_bound(query) as f32) > competitive_distance
     {
         cancellation.check_graph().map_err(map_scan_error)?;
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         record_pruned_receipt(
             metadata_controller,
             metadata_query,
@@ -877,9 +871,9 @@ fn sealed_graph_filtered(
         accounting,
         prepared.graph_validated,
         prepared.entry_seed_discovered,
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         metadata_query,
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         metadata_execution_receipt_context(
             metadata_controller,
             metadata_query,
@@ -889,7 +883,7 @@ fn sealed_graph_filtered(
             query.len(),
             true,
         )?,
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         vector_fault_controller,
     )?;
     let plan = SegmentPlan::filtered_graph(
@@ -902,13 +896,13 @@ fn sealed_graph_filtered(
         graph_options.profile(),
     )
     .with_predicate(predicate);
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     let reported_branch =
         metadata_query.map_or(plan.branch, |query| query.reported_branch(plan.branch));
-    #[cfg(not(any(test, feature = "test-support")))]
+    #[cfg(not(any(test, feature = "test-seams")))]
     let reported_branch = plan.branch;
     verify_execution_branch(reported_branch, execution.branch)?;
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     record_visited_fallback_feature(
         metadata_controller,
         metadata_query,
@@ -927,9 +921,9 @@ fn sealed_graph_filtered(
         },
         candidates,
         true,
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         vector_fault_controller,
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         vector_fault_tier(_options.tier()),
     )?;
     stats.add(execution.stats)?;
@@ -968,13 +962,13 @@ struct FilteredGraphExecution {
     ef_requested: Option<usize>,
     ef_effective: usize,
     graph_stats: crate::ingest::GraphSearchStats,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     graph_nodes_visited: usize,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     exact_fallback_rows_examined: u64,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     visited_budget: usize,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     visited_budget_guard: Option<(usize, usize)>,
 }
 
@@ -1021,7 +1015,7 @@ fn filtered_graph_budget(
     allow_count: usize,
     node_count: usize,
     k: usize,
-    #[cfg(any(test, feature = "test-support"))] metadata_query: Option<&MetadataQueryContext>,
+    #[cfg(any(test, feature = "test-seams"))] metadata_query: Option<&MetadataQueryContext>,
 ) -> Result<FilteredGraphBudget, FilteredSearchError> {
     let target_k = k.min(node_count).min(allow_count);
     if target_k == 0 {
@@ -1052,12 +1046,12 @@ fn filtered_graph_budget(
         .and_then(|value| value.checked_mul(FILTERED_VISITED_BUDGET_MULTIPLIER))
         .ok_or(QueryError::Scan(ScanError::ArithmeticOverflow))?
         .min(node_count);
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     let filtered_visited_budget = metadata_query
         .and_then(MetadataQueryContext::visited_budget_override)
         .unwrap_or(computed_visited_budget)
         .min(node_count);
-    #[cfg(not(any(test, feature = "test-support")))]
+    #[cfg(not(any(test, feature = "test-seams")))]
     let filtered_visited_budget = computed_visited_budget;
     let scratch_capacity = ef_effective.max(filtered_visited_budget);
     let maximum_corrective_ef = allow_count.min(scratch_capacity);
@@ -1078,9 +1072,9 @@ struct FallbackContext<'a, 'cancel> {
     k: usize,
     cancellation: &'a QueryCancellation<'cancel>,
     ef_requested: Option<usize>,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     filtered_visited_budget: usize,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     receipt_context: Option<MetadataExecutionReceiptContext<'a>>,
 }
 
@@ -1095,11 +1089,11 @@ fn execute_filtered_graph(
     accounting: &Arc<crate::lifecycle::stats::Accounting>,
     graph_validated_before: bool,
     entry_seed_discovered_before: bool,
-    #[cfg(any(test, feature = "test-support"))] metadata_query: Option<&MetadataQueryContext>,
-    #[cfg(any(test, feature = "test-support"))] receipt_context: Option<
+    #[cfg(any(test, feature = "test-seams"))] metadata_query: Option<&MetadataQueryContext>,
+    #[cfg(any(test, feature = "test-seams"))] receipt_context: Option<
         MetadataExecutionReceiptContext<'_>,
     >,
-    #[cfg(any(test, feature = "test-support"))] vector_fault_controller: Option<
+    #[cfg(any(test, feature = "test-seams"))] vector_fault_controller: Option<
         &crate::scan::vector_fault::VectorFaultController,
     >,
 ) -> Result<FilteredGraphExecution, FilteredSearchError> {
@@ -1126,7 +1120,7 @@ fn execute_filtered_graph(
         allow_count,
         node_count,
         k,
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         metadata_query,
     )?;
     let mut scratch = segment
@@ -1145,7 +1139,7 @@ fn execute_filtered_graph(
     )
     .map_err(map_graph_error)?
     .with_rescore_validator(segment);
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     if let Some(controller) = vector_fault_controller {
         searcher = searcher.with_vector_fault_controller(
             controller,
@@ -1161,7 +1155,7 @@ fn execute_filtered_graph(
         entry_seed_discoveries: usize::from(entry_seed_discovered),
         ..crate::ingest::GraphSearchStats::default()
     };
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     let mut graph_nodes_visited = 0_usize;
     let fallback_context = FallbackContext {
         rescore,
@@ -1171,9 +1165,9 @@ fn execute_filtered_graph(
         k,
         cancellation,
         ef_requested,
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         filtered_visited_budget,
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         receipt_context,
     };
     loop {
@@ -1191,7 +1185,7 @@ fn execute_filtered_graph(
                 counters,
                 ..
             }) => {
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 {
                     graph_nodes_visited = graph_nodes_visited
                         .checked_add(counters.visited())
@@ -1205,9 +1199,9 @@ fn execute_filtered_graph(
                     PlanFallback::CandidateShortfall,
                     current_ef,
                     graph_stats,
-                    #[cfg(any(test, feature = "test-support"))]
+                    #[cfg(any(test, feature = "test-seams"))]
                     graph_nodes_visited,
-                    #[cfg(any(test, feature = "test-support"))]
+                    #[cfg(any(test, feature = "test-seams"))]
                     None,
                 );
             }
@@ -1215,7 +1209,7 @@ fn execute_filtered_graph(
         };
         match outcome {
             FilteredGraphSearchOutcome::Traversed(result) => {
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 {
                     graph_nodes_visited = graph_nodes_visited
                         .checked_add(result.counters().visited())
@@ -1244,16 +1238,16 @@ fn execute_filtered_graph(
                         ef_requested,
                         ef_effective: current_ef,
                         graph_stats: with_traversed_segment(graph_stats)?,
-                        #[cfg(any(test, feature = "test-support"))]
+                        #[cfg(any(test, feature = "test-seams"))]
                         graph_nodes_visited,
-                        #[cfg(any(test, feature = "test-support"))]
+                        #[cfg(any(test, feature = "test-seams"))]
                         exact_fallback_rows_examined: 0,
-                        #[cfg(any(test, feature = "test-support"))]
+                        #[cfg(any(test, feature = "test-seams"))]
                         visited_budget: filtered_visited_budget,
-                        #[cfg(any(test, feature = "test-support"))]
+                        #[cfg(any(test, feature = "test-seams"))]
                         visited_budget_guard: None,
                     };
-                    #[cfg(any(test, feature = "test-support"))]
+                    #[cfg(any(test, feature = "test-seams"))]
                     if let Some(context) = fallback_context.receipt_context {
                         context.record_graph(&execution)?;
                     }
@@ -1272,9 +1266,9 @@ fn execute_filtered_graph(
                     PlanFallback::CandidateShortfall,
                     current_ef,
                     graph_stats,
-                    #[cfg(any(test, feature = "test-support"))]
+                    #[cfg(any(test, feature = "test-seams"))]
                     graph_nodes_visited,
-                    #[cfg(any(test, feature = "test-support"))]
+                    #[cfg(any(test, feature = "test-seams"))]
                     None,
                 );
             }
@@ -1283,9 +1277,9 @@ fn execute_filtered_graph(
                 budget,
                 counters,
             } => {
-                #[cfg(not(any(test, feature = "test-support")))]
+                #[cfg(not(any(test, feature = "test-seams")))]
                 let _ = (visited, budget);
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 {
                     graph_nodes_visited = graph_nodes_visited
                         .checked_add(counters.visited())
@@ -1299,9 +1293,9 @@ fn execute_filtered_graph(
                     PlanFallback::VisitedBudget,
                     current_ef,
                     graph_stats,
-                    #[cfg(any(test, feature = "test-support"))]
+                    #[cfg(any(test, feature = "test-seams"))]
                     graph_nodes_visited,
-                    #[cfg(any(test, feature = "test-support"))]
+                    #[cfg(any(test, feature = "test-seams"))]
                     Some((visited, budget)),
                 );
             }
@@ -1315,8 +1309,8 @@ fn exact_filtered_graph_fallback(
     fallback: PlanFallback,
     ef_effective: usize,
     graph_stats: crate::ingest::GraphSearchStats,
-    #[cfg(any(test, feature = "test-support"))] graph_nodes_visited: usize,
-    #[cfg(any(test, feature = "test-support"))] visited_budget_guard: Option<(usize, usize)>,
+    #[cfg(any(test, feature = "test-seams"))] graph_nodes_visited: usize,
+    #[cfg(any(test, feature = "test-seams"))] visited_budget_guard: Option<(usize, usize)>,
 ) -> Result<FilteredGraphExecution, FilteredSearchError> {
     let (candidates, exact_stats, _) = execute_squared_l2_rows(
         context.rescore,
@@ -1326,11 +1320,11 @@ fn exact_filtered_graph_fallback(
         SegmentBranch::ExactAllowList,
         context.k,
         context.cancellation,
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         None,
     )?;
     traversal_stats.add(exact_stats)?;
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     let exact_fallback_rows_examined = context.allow_list.cardinality();
     let execution = FilteredGraphExecution {
         candidates,
@@ -1340,16 +1334,16 @@ fn exact_filtered_graph_fallback(
         ef_requested: context.ef_requested,
         ef_effective,
         graph_stats: with_traversed_segment(graph_stats)?,
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         graph_nodes_visited,
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         exact_fallback_rows_examined,
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         visited_budget: context.filtered_visited_budget,
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         visited_budget_guard,
     };
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     if let Some(receipt_context) = context.receipt_context {
         receipt_context.record_graph(&execution)?;
     }
@@ -1481,7 +1475,7 @@ fn active_columns(
         .map_err(|error| FilteredSearchError::ActiveMetadata(error.to_string()))
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 fn record_selectivity_decision(
     controller: Option<&MetadataTestController>,
     query: Option<&MetadataQueryContext>,
@@ -1501,7 +1495,7 @@ fn record_selectivity_decision(
     Ok(())
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 fn record_pruned_receipt(
     controller: Option<&MetadataTestController>,
     query: Option<&MetadataQueryContext>,
@@ -1531,7 +1525,7 @@ fn record_pruned_receipt(
     Ok(())
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 fn record_column_refusal(
     controller: Option<&MetadataTestController>,
     query: Option<&MetadataQueryContext>,
@@ -1544,7 +1538,7 @@ fn record_column_refusal(
     Ok(())
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 fn record_alive_refusal(
     controller: Option<&MetadataTestController>,
     query: Option<&MetadataQueryContext>,
@@ -1557,7 +1551,7 @@ fn record_alive_refusal(
     Ok(())
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 fn record_visited_fallback_feature(
     controller: Option<&MetadataTestController>,
     query: Option<&MetadataQueryContext>,
@@ -1607,13 +1601,13 @@ impl rescored_scan::RescoreCandidate for LocalCandidate {
 #[derive(Clone, Copy, Debug)]
 struct ScanExecutionFacts {
     branch: SegmentBranch,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     rows_examined: u64,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     allowed_rows_examined: u64,
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[derive(Clone, Copy)]
 struct MetadataExecutionReceiptContext<'a> {
     controller: &'a MetadataTestController,
@@ -1625,7 +1619,7 @@ struct MetadataExecutionReceiptContext<'a> {
     sealed: bool,
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 impl MetadataExecutionReceiptContext<'_> {
     fn record_scan(
         self,
@@ -1685,7 +1679,7 @@ impl MetadataExecutionReceiptContext<'_> {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[allow(clippy::too_many_arguments)]
 fn metadata_execution_receipt_context<'a>(
     controller: Option<&'a MetadataTestController>,
@@ -1718,7 +1712,7 @@ fn execute_scan_request(
     branch: SegmentBranch,
     k: usize,
     cancellation: &QueryCancellation<'_>,
-    #[cfg(any(test, feature = "test-support"))] receipt_context: Option<
+    #[cfg(any(test, feature = "test-seams"))] receipt_context: Option<
         MetadataExecutionReceiptContext<'_>,
     >,
 ) -> Result<(Vec<LocalCandidate>, ScanStats, ScanExecutionFacts), FilteredSearchError> {
@@ -1741,12 +1735,12 @@ fn execute_scan_request(
             },
             ScanExecutionFacts {
                 branch: SegmentBranch::Pruned,
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 rows_examined: 0,
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 allowed_rows_examined: 0,
             },
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             receipt_context,
         ),
         SegmentBranch::ExactAllowList => {
@@ -1755,12 +1749,12 @@ fn execute_scan_request(
                 outcome,
                 ScanExecutionFacts {
                     branch: SegmentBranch::ExactAllowList,
-                    #[cfg(any(test, feature = "test-support"))]
+                    #[cfg(any(test, feature = "test-seams"))]
                     rows_examined: request.row_mask.map_or(0, roaring::RoaringBitmap::len),
-                    #[cfg(any(test, feature = "test-support"))]
+                    #[cfg(any(test, feature = "test-seams"))]
                     allowed_rows_examined: request.row_mask.map_or(0, roaring::RoaringBitmap::len),
                 },
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 receipt_context,
             )
         }
@@ -1780,16 +1774,16 @@ fn execute_scan_request(
                 },
                 ScanExecutionFacts {
                     branch,
-                    #[cfg(any(test, feature = "test-support"))]
+                    #[cfg(any(test, feature = "test-seams"))]
                     rows_examined: u64::try_from(row_count)
                         .map_err(|_| QueryError::Scan(ScanError::ArithmeticOverflow))?,
-                    #[cfg(any(test, feature = "test-support"))]
+                    #[cfg(any(test, feature = "test-seams"))]
                     allowed_rows_examined: request
                         .row_mask
                         .map_or_else(|| u64::try_from(row_count), |mask| Ok(mask.len()))
                         .map_err(|_| QueryError::Scan(ScanError::ArithmeticOverflow))?,
                 },
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 receipt_context,
             )
         }
@@ -1799,11 +1793,11 @@ fn execute_scan_request(
 fn finish_scan_request(
     outcome: crate::scan::ScanOutcome,
     execution: ScanExecutionFacts,
-    #[cfg(any(test, feature = "test-support"))] receipt_context: Option<
+    #[cfg(any(test, feature = "test-seams"))] receipt_context: Option<
         MetadataExecutionReceiptContext<'_>,
     >,
 ) -> Result<(Vec<LocalCandidate>, ScanStats, ScanExecutionFacts), FilteredSearchError> {
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     if let Some(context) = receipt_context {
         context.record_scan(execution, &outcome.stats, outcome.candidates.len())?;
     }
@@ -1827,7 +1821,7 @@ fn execute_scan_plan(
     row_count: usize,
     k: usize,
     cancellation: &QueryCancellation<'_>,
-    #[cfg(any(test, feature = "test-support"))] receipt_context: Option<
+    #[cfg(any(test, feature = "test-seams"))] receipt_context: Option<
         MetadataExecutionReceiptContext<'_>,
     >,
 ) -> Result<(Vec<LocalCandidate>, ScanStats, ScanExecutionFacts), FilteredSearchError> {
@@ -1838,7 +1832,7 @@ fn execute_scan_plan(
             row_count,
             k,
             cancellation,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             receipt_context,
         ),
         PlanNode::Scan { branch, .. } => execute_scan_request(
@@ -1847,7 +1841,7 @@ fn execute_scan_plan(
             *branch,
             k,
             cancellation,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             receipt_context,
         ),
         PlanNode::Graph {
@@ -1860,11 +1854,11 @@ fn execute_scan_plan(
                 row_count,
                 k,
                 cancellation,
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 None,
             )?;
             execution.branch = SegmentBranch::GraphExactFallback;
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             if let Some(context) = receipt_context {
                 context.record_scan(execution, &stats, candidates.len())?;
             }
@@ -1891,7 +1885,7 @@ fn execute_squared_l2_plan(
     allow_list: &crate::meta::DocBitmap,
     k: usize,
     cancellation: &QueryCancellation<'_>,
-    #[cfg(any(test, feature = "test-support"))] receipt_context: Option<
+    #[cfg(any(test, feature = "test-seams"))] receipt_context: Option<
         MetadataExecutionReceiptContext<'_>,
     >,
 ) -> Result<(Vec<LocalCandidate>, ScanStats, ScanExecutionFacts), FilteredSearchError> {
@@ -1904,7 +1898,7 @@ fn execute_squared_l2_plan(
             allow_list,
             k,
             cancellation,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             receipt_context,
         ),
         PlanNode::Scan { branch, .. } => execute_squared_l2_rows(
@@ -1915,7 +1909,7 @@ fn execute_squared_l2_plan(
             *branch,
             k,
             cancellation,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             receipt_context,
         ),
         PlanNode::Graph {
@@ -1930,11 +1924,11 @@ fn execute_squared_l2_plan(
                 allow_list,
                 k,
                 cancellation,
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 None,
             )?;
             execution.branch = SegmentBranch::GraphExactFallback;
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             if let Some(context) = receipt_context {
                 context.record_scan(execution, &stats, candidates.len())?;
             }
@@ -1961,7 +1955,7 @@ fn execute_squared_l2_rows(
     branch: SegmentBranch,
     k: usize,
     cancellation: &QueryCancellation<'_>,
-    #[cfg(any(test, feature = "test-support"))] receipt_context: Option<
+    #[cfg(any(test, feature = "test-seams"))] receipt_context: Option<
         MetadataExecutionReceiptContext<'_>,
     >,
 ) -> Result<(Vec<LocalCandidate>, ScanStats, ScanExecutionFacts), FilteredSearchError> {
@@ -1980,9 +1974,9 @@ fn execute_squared_l2_rows(
     }
     let mut candidates = Vec::new();
     let mut scored_rows = 0_u64;
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     let mut rows_examined = 0_u64;
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     let mut allowed_rows_examined = 0_u64;
     match branch {
         SegmentBranch::FilteredGraph | SegmentBranch::Graph => {
@@ -1996,16 +1990,16 @@ fn execute_squared_l2_rows(
             query.len(),
             SegmentBranch::Pruned,
             k,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             rows_examined,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             allowed_rows_examined,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             receipt_context,
         ),
         SegmentBranch::ExactAllowList => {
             for row in allow_list.iter() {
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 {
                     rows_examined = rows_examined
                         .checked_add(1)
@@ -2032,17 +2026,17 @@ fn execute_squared_l2_rows(
                 query.len(),
                 SegmentBranch::ExactAllowList,
                 k,
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 rows_examined,
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 allowed_rows_examined,
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 receipt_context,
             )
         }
         SegmentBranch::MaskedScan | SegmentBranch::GraphExactFallback => {
             for row in 0..row_count {
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 {
                     rows_examined = rows_examined
                         .checked_add(1)
@@ -2054,7 +2048,7 @@ fn execute_squared_l2_rows(
                 let local_row = u32::try_from(row)
                     .map_err(|_| QueryError::Scan(ScanError::ArithmeticOverflow))?;
                 if allow_list.contains(local_row) {
-                    #[cfg(any(test, feature = "test-support"))]
+                    #[cfg(any(test, feature = "test-seams"))]
                     {
                         allowed_rows_examined = allowed_rows_examined
                             .checked_add(1)
@@ -2077,11 +2071,11 @@ fn execute_squared_l2_rows(
                 query.len(),
                 branch,
                 k,
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 rows_examined,
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 allowed_rows_examined,
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 receipt_context,
             )
         }
@@ -2095,9 +2089,9 @@ fn finish_squared_l2_rows(
     dimensions: usize,
     executed_branch: SegmentBranch,
     k: usize,
-    #[cfg(any(test, feature = "test-support"))] rows_examined: u64,
-    #[cfg(any(test, feature = "test-support"))] allowed_rows_examined: u64,
-    #[cfg(any(test, feature = "test-support"))] receipt_context: Option<
+    #[cfg(any(test, feature = "test-seams"))] rows_examined: u64,
+    #[cfg(any(test, feature = "test-seams"))] allowed_rows_examined: u64,
+    #[cfg(any(test, feature = "test-seams"))] receipt_context: Option<
         MetadataExecutionReceiptContext<'_>,
     >,
 ) -> Result<(Vec<LocalCandidate>, ScanStats, ScanExecutionFacts), FilteredSearchError> {
@@ -2127,12 +2121,12 @@ fn finish_squared_l2_rows(
     };
     let execution = ScanExecutionFacts {
         branch: executed_branch,
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         rows_examined,
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         allowed_rows_examined,
     };
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     if let Some(context) = receipt_context {
         context.record_scan(execution, &stats, candidates.len())?;
     }
@@ -2192,18 +2186,18 @@ fn append_candidates(
     document: impl Fn(usize) -> Result<Option<crate::ingest::DocumentVersion>, QueryError>,
     candidates: &mut Vec<SearchCandidate>,
     exact_score: bool,
-    #[cfg(any(test, feature = "test-support"))] vector_fault_controller: Option<
+    #[cfg(any(test, feature = "test-seams"))] vector_fault_controller: Option<
         &crate::scan::vector_fault::VectorFaultController,
     >,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     vector_fault_tier: crate::scan::vector_fault::VectorSearchTier,
 ) -> Result<(), FilteredSearchError> {
     crate::lifecycle::reserve_global_candidates(
         candidates,
         local.len(),
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         vector_fault_controller,
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         vector_fault_tier,
     )?;
     for candidate in local {
@@ -2219,7 +2213,7 @@ fn append_candidates(
     Ok(())
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 fn vector_fault_tier(tier: SearchTier) -> crate::scan::vector_fault::VectorSearchTier {
     match tier {
         SearchTier::Exact => crate::scan::vector_fault::VectorSearchTier::Exact,

@@ -81,7 +81,7 @@ impl DocBitmap {
     /// Iterates identifiers in ascending order.
     pub fn iter(&self) -> impl Iterator<Item = u32> + '_ {
         self.inner.iter().inspect(|_| {
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             super::bitmap_observer::row();
         })
     }
@@ -89,7 +89,7 @@ impl DocBitmap {
     /// Finds the first row outside a dense `0..row_count` segment without
     /// walking its valid prefix. The inclusive lower bound also covers MAX.
     pub(crate) fn first_at_or_after(&self, row_count: u32) -> Option<u32> {
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         super::bitmap_observer::probe();
         self.inner.range(row_count..).next()
     }

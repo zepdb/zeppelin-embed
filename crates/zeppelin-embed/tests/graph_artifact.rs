@@ -226,7 +226,7 @@ fn native_graph_formats_are_required_and_append_only() {
     );
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 #[test]
 fn exclusive_creation_survives_vfs_decorators_and_fault_images() {
     use zeppelin_embed::vfs::CountingVfs;

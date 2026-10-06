@@ -20,7 +20,7 @@ pub(super) fn table_for_arm(arm: KernelArm) -> Option<KernelTable> {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "benchmark-kernels"))]
 pub(super) fn variant_tables() -> [Option<KernelTable>; 9] {
     let detected = features();
     [
@@ -48,7 +48,7 @@ pub(super) fn initialize() -> Result<KernelArm, KernelInitError> {
     initialize_table(table)
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(super) fn initialize_forced(
     backend: super::KernelBackendId,
 ) -> Result<super::KernelBackendId, KernelInitError> {
@@ -158,85 +158,85 @@ fn neon_table(_features: KernelFeatures) -> Option<KernelTable> {
 }
 
 #[cfg(target_arch = "aarch64")]
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "benchmark-kernels"))]
 fn neon_widen_table(features: KernelFeatures) -> Option<KernelTable> {
     features.neon.then(|| super::neon::widen_table(features))
 }
 
 #[cfg(not(target_arch = "aarch64"))]
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "benchmark-kernels"))]
 fn neon_widen_table(_features: KernelFeatures) -> Option<KernelTable> {
     None
 }
 
 #[cfg(target_arch = "aarch64")]
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "benchmark-kernels"))]
 fn neon_dotprod_table(features: KernelFeatures) -> Option<KernelTable> {
     (features.neon && features.dotprod).then(|| super::neon::dotprod_table(features))
 }
 
 #[cfg(target_arch = "aarch64")]
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "benchmark-kernels"))]
 fn neon_i8mm_table(features: KernelFeatures) -> Option<KernelTable> {
     (features.neon && features.dotprod && features.i8mm).then(|| super::neon::i8mm_table(features))
 }
 
 #[cfg(target_arch = "aarch64")]
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "benchmark-kernels"))]
 fn neon_dotprod_u2_table(features: KernelFeatures) -> Option<KernelTable> {
     (features.neon && features.dotprod).then(|| super::neon::dotprod_u2_table(features))
 }
 
 #[cfg(not(target_arch = "aarch64"))]
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "benchmark-kernels"))]
 fn neon_dotprod_u2_table(_features: KernelFeatures) -> Option<KernelTable> {
     None
 }
 
 #[cfg(target_arch = "aarch64")]
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "benchmark-kernels"))]
 fn neon_dotprod_u6_table(features: KernelFeatures) -> Option<KernelTable> {
     (features.neon && features.dotprod).then(|| super::neon::dotprod_u6_table(features))
 }
 
 #[cfg(not(target_arch = "aarch64"))]
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "benchmark-kernels"))]
 fn neon_dotprod_u6_table(_features: KernelFeatures) -> Option<KernelTable> {
     None
 }
 
 #[cfg(target_arch = "aarch64")]
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "benchmark-kernels"))]
 fn neon_dotprod_u8_table(features: KernelFeatures) -> Option<KernelTable> {
     (features.neon && features.dotprod).then(|| super::neon::dotprod_u8_table(features))
 }
 
 #[cfg(not(target_arch = "aarch64"))]
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "benchmark-kernels"))]
 fn neon_dotprod_u8_table(_features: KernelFeatures) -> Option<KernelTable> {
     None
 }
 
 #[cfg(target_arch = "aarch64")]
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "benchmark-kernels"))]
 fn neon_dotprod_prefetch_table(features: KernelFeatures) -> Option<KernelTable> {
     (features.neon && features.dotprod).then(|| super::neon::dotprod_prefetch_table(features))
 }
 
 #[cfg(not(target_arch = "aarch64"))]
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "benchmark-kernels"))]
 fn neon_dotprod_prefetch_table(_features: KernelFeatures) -> Option<KernelTable> {
     None
 }
 
 #[cfg(not(target_arch = "aarch64"))]
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "benchmark-kernels"))]
 fn neon_i8mm_table(_features: KernelFeatures) -> Option<KernelTable> {
     None
 }
 
 #[cfg(not(target_arch = "aarch64"))]
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "benchmark-kernels"))]
 fn neon_dotprod_table(_features: KernelFeatures) -> Option<KernelTable> {
     None
 }

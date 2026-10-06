@@ -16,7 +16,7 @@ mod dispatch;
 /// Posting-block decode kernels: bit-unpack and delta prefix sum.
 pub mod postings;
 mod scalar;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[doc(hidden)]
 pub mod vector_fault;
 
@@ -63,7 +63,7 @@ pub enum InstructionTier {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
+#[cfg_attr(not(any(test, feature = "benchmark-kernels")), allow(dead_code))]
 enum KernelBackendTag {
     Scalar,
     #[cfg(target_arch = "aarch64")]
@@ -89,7 +89,7 @@ enum KernelBackendTag {
 /// This is test-support evidence rather than a user-selectable production
 /// arm. In particular, the experimental DotProd shapes are enumerable for
 /// parity campaigns but cannot be selected through `ZE_KERNEL`.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "benchmark-kernels"))]
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[doc(hidden)]
 pub enum KernelBackendId {
@@ -113,7 +113,7 @@ pub enum KernelBackendId {
     Avx2,
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "benchmark-kernels"))]
 impl KernelBackendId {
     const fn from_tag(tag: KernelBackendTag) -> Self {
         match tag {
@@ -323,7 +323,7 @@ type ScoreBit4PtrsFn = unsafe fn(
 );
 #[derive(Clone, Copy)]
 struct KernelTable {
-    #[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
+    #[cfg_attr(not(any(test, feature = "benchmark-kernels")), allow(dead_code))]
     backend: KernelBackendTag,
     arm: KernelArm,
     tier: InstructionTier,
@@ -571,7 +571,7 @@ impl KernelVariant {
     /// independently. That is a test and measurement surface, not an engine
     /// surface, so it is gated: a consumer of the shipped staticlib does not
     /// see it.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "benchmark-kernels"))]
     pub fn available() -> impl Iterator<Item = Self> {
         dispatch::variant_tables()
             .into_iter()
@@ -592,7 +592,7 @@ impl KernelVariant {
     }
 
     /// Returns this concrete table's stable evidence identity.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "benchmark-kernels"))]
     #[doc(hidden)]
     #[must_use]
     pub const fn backend_id(self) -> KernelBackendId {
@@ -790,9 +790,9 @@ pub fn platform_wide_stream_checksum(bytes: &[u8]) -> Option<u64> {
 pub fn dot_i8(a: &[i8], b: &[i8]) -> i32 {
     let table = dispatch::active_table();
     let result = (table.dot_i8)(a, b);
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     observe_selected_score(table, vector_fault_kernel_id_dot_i8(), a.len());
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     vector_fault::observe_selected_result(vector_fault::KernelScoreValue::I32(result));
     result
 }
@@ -805,9 +805,9 @@ pub fn dot_i8(a: &[i8], b: &[i8]) -> i32 {
 pub fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
     let table = dispatch::active_table();
     let result = (table.dot_f32)(a, b);
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     observe_selected_score(table, vector_fault_kernel_id_dot_f32(), a.len());
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     vector_fault::observe_selected_result(vector_fault::KernelScoreValue::F32(result.to_bits()));
     result
 }
@@ -821,9 +821,9 @@ pub fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
 pub fn dot_f16(a: &[u16], b: &[u16]) -> f32 {
     let table = dispatch::active_table();
     let result = (table.dot_f16)(a, b);
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     observe_selected_score(table, vector_fault_kernel_id_dot_f16(), a.len());
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     vector_fault::observe_selected_result(vector_fault::KernelScoreValue::F32(result.to_bits()));
     result
 }
@@ -837,9 +837,9 @@ pub fn dot_f16(a: &[u16], b: &[u16]) -> f32 {
 pub fn hamming_u1(a: &[u8], b: &[u8]) -> u32 {
     let table = dispatch::active_table();
     let result = (table.hamming_u1)(a, b);
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     observe_selected_score(table, vector_fault_kernel_id_hamming(), a.len());
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     vector_fault::observe_selected_result(vector_fault::KernelScoreValue::U32(result));
     result
 }
@@ -852,13 +852,13 @@ pub fn hamming_u1(a: &[u8], b: &[u8]) -> u32 {
 pub fn dot_i8_batch(q: &[i8], rows: &[i8], d: usize, out: &mut [i32]) {
     let table = dispatch::active_table();
     (table.dot_i8_batch)(q, rows, d, out);
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     observe_selected_score(
         table,
         vector_fault_kernel_id_dot_i8_batch(),
         d.saturating_mul(out.len()),
     );
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     vector_fault::observe_selected_result(vector_fault::KernelScoreValue::I32s(out.to_vec()));
 }
 
@@ -870,13 +870,13 @@ pub fn dot_i8_batch(q: &[i8], rows: &[i8], d: usize, out: &mut [i32]) {
 pub fn hamming_u1_batch(q: &[u8], rows: &[u8], d_bytes: usize, out: &mut [u32]) {
     let table = dispatch::active_table();
     (table.hamming_u1_batch)(q, rows, d_bytes, out);
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     observe_selected_score(
         table,
         vector_fault_kernel_id_hamming_batch(),
         d_bytes.saturating_mul(out.len()),
     );
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     vector_fault::observe_selected_result(vector_fault::KernelScoreValue::U32s(out.to_vec()));
 }
 
@@ -891,9 +891,9 @@ pub fn hamming_u1_batch(q: &[u8], rows: &[u8], d_bytes: usize, out: &mut [u32]) 
 pub fn dot_bit4(q: &[i8], codes: &[u8]) -> i32 {
     let table = dispatch::active_table();
     let result = (table.dot_bit4)(q, codes);
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     observe_selected_score(table, vector_fault_kernel_id_dot_bit4(), q.len());
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     vector_fault::observe_selected_result(vector_fault::KernelScoreValue::I32(result));
     result
 }
@@ -901,9 +901,9 @@ pub fn dot_bit4(q: &[i8], codes: &[u8]) -> i32 {
 pub(crate) fn dot_bit4_prepared(q: &[i8], query_sum: i32, codes: &[u8]) -> i32 {
     let table = dispatch::active_table();
     let result = (table.dot_bit4_prepared)(q, query_sum, codes);
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     observe_selected_score(table, vector_fault_kernel_id_dot_bit4_prepared(), q.len());
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     vector_fault::observe_selected_result(vector_fault::KernelScoreValue::I32(result));
     result
 }
@@ -919,19 +919,19 @@ pub(crate) fn score_bit4_prepared_batch(
 ) {
     let table = dispatch::active_table();
     (table.score_bit4_prepared_batch)(q, query_sum, query_scale_half, rows, d, factors, out);
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     observe_selected_score(
         table,
         vector_fault_kernel_id_score_bit4_batch(),
         d.saturating_mul(out.len()),
     );
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     vector_fault::observe_selected_result(vector_fault::KernelScoreValue::F32s(
         out.iter().map(|value| value.to_bits()).collect(),
     ));
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 fn observe_selected_score(
     table: &KernelTable,
     kernel: vector_fault::KernelOperationId,
@@ -942,7 +942,7 @@ fn observe_selected_score(
 
 macro_rules! vector_fault_kernel_id {
     ($name:ident, $variant:ident) => {
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         const fn $name() -> vector_fault::KernelOperationId {
             vector_fault::KernelOperationId::$variant
         }
@@ -983,15 +983,15 @@ pub fn score_bit4_ptrs(
     let table = dispatch::active_table();
     let result =
         score_bit4_ptrs_with_table(table, (q, query_sum, query_scale_half), rows, factors, out);
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     if result.is_ok() {
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         observe_selected_score(
             table,
             vector_fault_kernel_id_score_bit4_ptrs(),
             q.len().saturating_mul(out.len()),
         );
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         vector_fault::observe_selected_result(vector_fault::KernelScoreValue::F32s(
             out.iter().map(|value| value.to_bits()).collect(),
         ));
@@ -1007,12 +1007,12 @@ pub fn score_bit4_ptrs(
 pub fn dot_bit4_batch(q: &[i8], rows: &[u8], d: usize, out: &mut [i32]) {
     let table = dispatch::active_table();
     (table.dot_bit4_batch)(q, rows, d, out);
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     observe_selected_score(
         table,
         vector_fault_kernel_id_dot_bit4_batch(),
         d.saturating_mul(out.len()),
     );
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     vector_fault::observe_selected_result(vector_fault::KernelScoreValue::I32s(out.to_vec()));
 }

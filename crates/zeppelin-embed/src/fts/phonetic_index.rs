@@ -64,7 +64,7 @@ impl PhoneticIndex {
         }
         super::control::sort_by(&mut entries, Ord::cmp, work)?;
         work.check_now()?;
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         super::preparation_observer::phonetic_index_build();
         Ok(Self { entries })
     }
@@ -75,7 +75,7 @@ impl PhoneticIndex {
         let start = self.entries.partition_point(|entry| entry.code < code);
         let remaining = self.entries.split_at(start).1;
         let count = remaining.partition_point(|entry| entry.code == code);
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         super::preparation_observer::phonetic_bucket(count);
         remaining.split_at(count).0.iter().map(|entry| entry.term)
     }

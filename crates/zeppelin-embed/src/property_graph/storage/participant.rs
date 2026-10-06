@@ -158,7 +158,7 @@ pub fn prepare_directories<'a, S: BlockSink>(
             ),
         ],
     };
-    #[cfg(all(feature = "graph-cypher", feature = "test-support"))]
+    #[cfg(all(feature = "graph-cypher", feature = "test-seams"))]
     if crate::property_graph::query::native_relational_test_support::capacity_fixture_active() {
         capacity_fixture::create(&mut state, sink, batch, r)?;
         return Ok(NativeDirectoryCandidate {
@@ -600,5 +600,5 @@ impl<S: BlockSource> LeafValidator<S> for MembershipValues {
     }
 }
 
-#[cfg(all(feature = "graph-cypher", feature = "test-support"))]
+#[cfg(all(feature = "graph-cypher", feature = "test-seams"))]
 mod capacity_fixture;

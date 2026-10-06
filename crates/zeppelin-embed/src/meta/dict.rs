@@ -174,7 +174,7 @@ impl StringStorage {
         self.offsets.len().saturating_sub(1)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn byte_len(&self) -> usize {
         self.bytes.len()
     }
@@ -281,12 +281,12 @@ impl DictionaryBuilder {
         u64::try_from(self.lookup.len()).unwrap_or(u64::MAX)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn contains(&self, value: &str) -> bool {
         self.lookup.contains_key(value)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn string_bytes(&self) -> usize {
         self.values.byte_len()
     }

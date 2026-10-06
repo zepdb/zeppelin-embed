@@ -108,26 +108,26 @@ impl Store {
             reader_drain_timeout: self.reader_drain_timeout,
             accounting: Arc::clone(&self.accounting),
             active_queries: AtomicU64::new(0),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             text_materialization_work: super::materialize::TestMaterializationWork::default(),
             epoch: self.epoch.clone(),
             epoch_alias: crate::epoch::EpochAliasCell::new(self.epoch_alias.load()),
             tokenizer: self.tokenizer.clone(),
             schema: self.schema.clone(),
             lexical_index_cache: LexicalIndexCache::new(),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             ingest_retention_fault_controller: None,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             hybrid_leg_fault: Mutex::new(None),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             hybrid_execution_receipt: Mutex::new(None),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             metadata_test_controller: None,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             vector_fault_controller: None,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             kernel_fault_controller: None,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             vector_seal_scheme: None,
             #[cfg(test)]
             teardown_probe: Arc::new(super::close::TeardownProbe::new()),

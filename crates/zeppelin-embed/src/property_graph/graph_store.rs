@@ -30,7 +30,7 @@ use crate::property_graph::staging::{ItemReceipt, StageError, StructuredWrite};
 use crate::property_graph::{BatchDisposition, GraphGeneration};
 use std::path::{Path, PathBuf};
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) mod commit_recovery_test_support;
 
 mod maintenance;
@@ -304,7 +304,7 @@ impl GraphStore {
         &self.store
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     #[doc(hidden)]
     pub fn create_with_allocator_seed_for_test(
         path: impl AsRef<Path>,
@@ -326,7 +326,7 @@ impl GraphStore {
 
     /// Nonshipping allocator setup for full-width binding fixtures. Subsequent
     /// mutations and reads use the ordinary public lifecycle.
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "test-seams")]
     #[doc(hidden)]
     pub fn jump_allocators_for_test(
         &self,

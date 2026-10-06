@@ -15,7 +15,7 @@ use crate::property_graph::wal::{
     ArtifactDescriptor, BatchId, InventoryChange, InventoryState, RequiredRef,
 };
 use crate::property_graph::{GraphGeneration, StoreInstanceId};
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 use std::cell::Cell;
 
 const MAX_PREPARED_MANIFEST_DESCRIPTORS: usize = 8_192;
@@ -28,17 +28,17 @@ pub(crate) const INVENTORY_FOLD_MANIFEST_LIMIT: usize = 64;
 /// bookkeeping. Rooting grants no deletion authority.
 pub(crate) const INVENTORY_ADOPTION_LIMIT: usize = 256;
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 thread_local! {
     static NEXT_FOLD_FAULT: Cell<u8> = const { Cell::new(0) };
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) fn force_next_incomplete_inventory_retirement() {
     NEXT_FOLD_FAULT.with(|fault| fault.set(1));
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) fn force_next_contradictory_inventory_addition() {
     NEXT_FOLD_FAULT.with(|fault| fault.set(2));
 }
@@ -324,7 +324,7 @@ pub(crate) fn prepare_inventory_fold<'lease, 'm>(
     changes
         .as_mut_slice()
         .sort_unstable_by_key(|change| change.object.artifact);
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     NEXT_FOLD_FAULT.with(|fault| match fault.replace(0) {
         1 => retired = selected.as_slice().len(),
         2 => {
@@ -454,11 +454,11 @@ fn validate_root_serials_in_windows(
 }
 
 const fn inventory_mapping_window_rows() -> usize {
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     {
         1
     }
-    #[cfg(not(any(test, feature = "test-support")))]
+    #[cfg(not(any(test, feature = "test-seams")))]
     {
         8
     }
@@ -554,7 +554,7 @@ const fn covered_state(state: InventoryState) -> bool {
 /// Require that a materialized fold contains exactly the normalized admitted
 /// union. This comparison treats inventory values as allocation bookkeeping;
 /// it neither traces them as live roots nor weakens immutable descriptors.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) fn validate_fold_conservation(
     expected: &[InventoryChange],
     actual: &[InventoryChange],

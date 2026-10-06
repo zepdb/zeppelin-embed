@@ -1078,7 +1078,7 @@ fn observe_watches(
 
 /// The directed production paths behind ZE-36 acceptance. A receipt is pushed
 /// only after its body returned, so a receipt proves its assertions passed.
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 pub(super) fn run_actual_probe(_seed: u64) -> IdentityProbeReport {
     let bodies: [(&'static str, u64, fn()); 5] = [
         (

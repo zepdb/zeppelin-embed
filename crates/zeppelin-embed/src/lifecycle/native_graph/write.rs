@@ -2104,7 +2104,7 @@ pub(super) fn protect_and_commit(
         writer.complete_envelopes = next_complete_envelopes;
         Ok(())
     };
-    #[cfg(all(feature = "allocation-audit", any(test, feature = "test-support")))]
+    #[cfg(all(feature = "allocation-audit", any(test, feature = "test-seams")))]
     {
         if audit_publication {
             let ((result, denials), audit) = crate::allocation_audit::audit_engine_path(|| {
@@ -2117,7 +2117,7 @@ pub(super) fn protect_and_commit(
             });
         }
     }
-    #[cfg(not(all(feature = "allocation-audit", any(test, feature = "test-support"))))]
+    #[cfg(not(all(feature = "allocation-audit", any(test, feature = "test-seams"))))]
     let _ = audit_publication;
     expose()?;
     Ok(NativeCommitAudit::default())
@@ -2202,7 +2202,7 @@ pub(super) fn commit_staged_batch<'m>(
         })
     };
     let pack_limits = PackLimits::default();
-    #[cfg(all(feature = "graph-cypher", feature = "test-support"))]
+    #[cfg(all(feature = "graph-cypher", feature = "test-seams"))]
     let pack_limits =
         if crate::property_graph::query::native_relational_test_support::capacity_fixture_active() {
             PackLimits {
@@ -2380,7 +2380,7 @@ pub(super) fn commit_staged_batch<'m>(
     let _supplemental_registration = lease.register_prepared(supplemental.as_slice())?;
     #[allow(unused_mut)]
     let mut final_roots = prepared.candidate().roots();
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     if store
         .native_graph
         .substitute_old_out
@@ -2453,7 +2453,7 @@ impl crate::lifecycle::Store {
     }
 
     /// Test-only durable monotone jump; ordinary writes still allocate IDs.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn jump_native_graph_allocators_for_test(
         &self,
         next_node: crate::property_graph::NodeId,
@@ -2573,15 +2573,15 @@ impl crate::lifecycle::Store {
             let default_preparation_work = (64_u64 * 1024 * 1024)
                 .checked_mul(mutation_count)
                 .ok_or(NativeGraphError::Read(TreeError::Work))?;
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             let (storage_limit, preparation_work) =
                 crate::property_graph::storage::search::native_vector_index_test_limits(
                     32 * 1024 * 1024,
                     default_preparation_work,
                 );
-            #[cfg(not(any(test, feature = "test-support")))]
+            #[cfg(not(any(test, feature = "test-seams")))]
             let (storage_limit, preparation_work) = (32 * 1024 * 1024, default_preparation_work);
-            #[cfg(all(feature = "graph-cypher", feature = "test-support"))]
+            #[cfg(all(feature = "graph-cypher", feature = "test-seams"))]
             let preparation_work =
                 crate::property_graph::query::native_relational_test_support::capacity_fixture_work(
                     preparation_work,
@@ -2648,7 +2648,7 @@ impl crate::lifecycle::Store {
                 CommitStep::Checkpointed => continue,
                 CommitStep::Committed { audit, generation } => (audit, generation),
             };
-            #[cfg(all(feature = "allocation-audit", any(test, feature = "test-support")))]
+            #[cfg(all(feature = "allocation-audit", any(test, feature = "test-seams")))]
             {
                 let ((result, handoff_denied), handoff) =
                     crate::allocation_audit::audit_engine_path(|| {
@@ -2666,7 +2666,7 @@ impl crate::lifecycle::Store {
                 );
                 return Ok(result);
             }
-            #[cfg(not(all(feature = "allocation-audit", any(test, feature = "test-support"))))]
+            #[cfg(not(all(feature = "allocation-audit", any(test, feature = "test-seams"))))]
             {
                 let _ = commit_audit;
                 return Ok(NativePreparedResult::from_materialized(
@@ -2763,7 +2763,7 @@ impl crate::lifecycle::Store {
         super::maintenance::commit(self, admission, control)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn commit_native_graph_maintenance_with_limits(
         &self,
         admission: &super::NativeMaintenanceAdmission,

@@ -535,7 +535,7 @@ impl Store {
     /// Creates a new native graph store with no document embedding tower,
     /// for tests outside this crate. The release lifecycle API and its typed
     /// error belong to ZE-66's `GraphStore`, not to this helper.
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "test-seams")]
     #[doc(hidden)]
     pub fn create_graph_store(
         path: impl AsRef<std::path::Path>,
@@ -545,7 +545,7 @@ impl Store {
     }
 
     /// Creates a native graph store using the supplied test filesystem and clock.
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "test-seams")]
     #[doc(hidden)]
     pub fn create_graph_store_with_test_dependencies(
         path: impl AsRef<std::path::Path>,
@@ -563,7 +563,7 @@ impl Store {
     }
 
     /// Opens a native graph store using the supplied test filesystem and clock.
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "test-seams")]
     #[doc(hidden)]
     pub fn open_graph_store_with_test_dependencies(
         path: impl AsRef<std::path::Path>,
@@ -581,7 +581,7 @@ impl Store {
 
     /// Opens an existing native graph store with no document embedding tower,
     /// for tests outside this crate (see [`Store::create_graph_store`]).
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "test-seams")]
     #[doc(hidden)]
     pub fn open_graph_store(
         path: impl AsRef<std::path::Path>,

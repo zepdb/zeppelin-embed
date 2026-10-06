@@ -30,12 +30,12 @@ impl<K: Clone + Ord> StoreFusionScratch<K> {
         }
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn capacity(&self) -> usize {
         self.hits.capacity()
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn peak_bytes(&self) -> u64 {
         self.peak_bytes
     }

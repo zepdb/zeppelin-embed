@@ -51,18 +51,18 @@ pub const MAX_EDIT_DISTANCE: u32 = 2;
 pub(crate) struct BoundedDistance {
     previous: [u32; 5],
     current: [u32; 5],
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     cells: usize,
 }
 
 impl BoundedDistance {
     pub(crate) fn new() -> Self {
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         super::preparation_observer::fuzzy_scratch();
         Self {
             previous: [0; 5],
             current: [0; 5],
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             cells: 0,
         }
     }
@@ -86,13 +86,13 @@ impl BoundedDistance {
         work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
     ) -> Result<Option<u32>, E> {
         work.check_now()?;
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         {
             self.cells = 0;
         }
         let result = self.bounded(left, right, maximum, work);
         // Record the partial work even when a checkpoint stops the candidate.
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         super::preparation_observer::fuzzy_distance(self.cells, 0);
         result
     }
@@ -130,7 +130,7 @@ impl BoundedDistance {
                 let value = if column == 0 {
                     row as u32 // This column exists only while row <= maximum.
                 } else {
-                    #[cfg(any(test, feature = "test-support"))]
+                    #[cfg(any(test, feature = "test-seams"))]
                     {
                         self.cells += 1;
                     }

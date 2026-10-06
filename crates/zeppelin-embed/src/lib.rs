@@ -39,12 +39,12 @@ compile_error!("graph-cypher supports macOS (arm64, x86_64) and Windows x64 only
 #[cfg(feature = "allocation-audit")]
 mod allocation_audit;
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[doc(hidden)]
 pub mod adversarial_test_support;
 
 /// Fixed keyed fixture for integration tests of the Cypher writer seam.
-#[cfg(all(feature = "graph-cypher", feature = "test-support"))]
+#[cfg(all(feature = "graph-cypher", feature = "test-seams"))]
 #[doc(hidden)]
 pub mod graph_structured_write_test_support {
     use crate::lifecycle::{CancelToken, QueryControl, Store};
@@ -91,7 +91,7 @@ pub mod graph_structured_write_test_support {
     }
 }
 
-#[cfg(all(feature = "graph-cypher", feature = "test-support"))]
+#[cfg(all(feature = "graph-cypher", feature = "test-seams"))]
 #[doc(hidden)]
 pub mod graph_native_vector_index_test_support {
     pub use crate::property_graph::storage::search::{
@@ -105,7 +105,7 @@ pub mod graph_native_vector_index_test_support {
     };
 }
 
-#[cfg(all(feature = "graph-cypher", feature = "test-support"))]
+#[cfg(all(feature = "graph-cypher", feature = "test-seams"))]
 #[doc(hidden)]
 pub mod graph_read_view_test_support {
     /// One completed production boundary, emitted only after its exact direct
@@ -153,7 +153,7 @@ pub mod graph_read_view_test_support {
     }
 }
 
-#[cfg(all(feature = "graph-cypher", feature = "test-support"))]
+#[cfg(all(feature = "graph-cypher", feature = "test-seams"))]
 #[doc(hidden)]
 pub mod graph_publication_test_support {
     /// Runs only the directed production coordinator paths and returns observed receipts.
@@ -162,7 +162,7 @@ pub mod graph_publication_test_support {
     }
 }
 
-#[cfg(all(feature = "graph-cypher", feature = "test-support"))]
+#[cfg(all(feature = "graph-cypher", feature = "test-seams"))]
 #[doc(hidden)]
 pub mod graph_identity_test_support {
     use crate::graph_read_view_test_support::PathReceipt;
@@ -245,7 +245,7 @@ pub mod graph_identity_test_support {
     }
 }
 
-#[cfg(all(feature = "graph-cypher", feature = "test-support"))]
+#[cfg(all(feature = "graph-cypher", feature = "test-seams"))]
 #[doc(hidden)]
 pub mod graph_reclaim_test_support {
     use crate::graph_read_view_test_support::{ObservedRelationship, PathReceipt};
@@ -304,7 +304,7 @@ pub mod graph_reclaim_test_support {
     }
 }
 
-#[cfg(all(feature = "graph-cypher", feature = "test-support"))]
+#[cfg(all(feature = "graph-cypher", feature = "test-seams"))]
 #[doc(hidden)]
 pub mod graph_storage_fault_test_support {
     use crate::graph_read_view_test_support::{ObservedRelationship, PathReceipt};
@@ -532,7 +532,7 @@ pub mod graph_storage_fault_test_support {
     }
 }
 
-#[cfg(all(feature = "graph-cypher", feature = "test-support"))]
+#[cfg(all(feature = "graph-cypher", feature = "test-seams"))]
 #[doc(hidden)]
 pub mod graph_recovery_test_support {
     use crate::graph_read_view_test_support::{ObservedRelationship, PathReceipt};
@@ -570,7 +570,7 @@ pub mod graph_recovery_test_support {
 }
 
 /// Nonshipping public-facade observations for seeded ZE-41 qualification.
-#[cfg(all(feature = "graph-cypher", any(test, feature = "test-support")))]
+#[cfg(all(feature = "graph-cypher", any(test, feature = "test-seams")))]
 pub mod graph_commit_recovery_test_support {
     pub use crate::property_graph::commit_recovery_test_support::*;
 }

@@ -641,11 +641,11 @@ struct PublicationState {
     creation_serial_fence: u64,
     closing: bool,
     admissions_stopped: bool,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     admission_hook: Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     maintenance_writer_hook: Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     close_owner_hook: Option<(u64, Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>,
 }
 
@@ -676,17 +676,17 @@ pub(crate) struct NativeGraphPublication {
     sweep_resume: Mutex<crate::property_graph::storage::consolidation::SweepResume>,
     maintenance_policy: Mutex<crate::property_graph::GraphMaintenancePolicy>,
     read_only: AtomicBool,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     fail_next_publication: AtomicBool,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     substitute_old_out: AtomicBool,
-    #[cfg(all(feature = "allocation-audit", any(test, feature = "test-support")))]
+    #[cfg(all(feature = "allocation-audit", any(test, feature = "test-seams")))]
     commit_allocations: std::sync::atomic::AtomicU64,
-    #[cfg(all(feature = "allocation-audit", any(test, feature = "test-support")))]
+    #[cfg(all(feature = "allocation-audit", any(test, feature = "test-seams")))]
     commit_allocation_denials: std::sync::atomic::AtomicU64,
     /// Exact tree work charged by the most recent `prepare_durable_proof`.
     /// ZE-163 gates its growth against the uncheckpointed envelope count.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(super) proof_work: std::sync::atomic::AtomicU64,
 }
 
@@ -797,11 +797,11 @@ impl NativeGraphPublication {
                 creation_serial_fence: 0,
                 closing: false,
                 admissions_stopped: false,
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 admission_hook: None,
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 maintenance_writer_hook: None,
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 close_owner_hook: None,
             }),
             changed: Condvar::new(),
@@ -811,15 +811,15 @@ impl NativeGraphPublication {
             sweep_resume: Mutex::new(Default::default()),
             maintenance_policy: Mutex::new(crate::property_graph::GraphMaintenancePolicy::default()),
             read_only: AtomicBool::new(false),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             fail_next_publication: AtomicBool::new(false),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             substitute_old_out: AtomicBool::new(false),
-            #[cfg(all(feature = "allocation-audit", any(test, feature = "test-support")))]
+            #[cfg(all(feature = "allocation-audit", any(test, feature = "test-seams")))]
             commit_allocations: std::sync::atomic::AtomicU64::new(u64::MAX),
-            #[cfg(all(feature = "allocation-audit", any(test, feature = "test-support")))]
+            #[cfg(all(feature = "allocation-audit", any(test, feature = "test-seams")))]
             commit_allocation_denials: std::sync::atomic::AtomicU64::new(u64::MAX),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             proof_work: std::sync::atomic::AtomicU64::new(u64::MAX),
         }))
     }
@@ -1082,7 +1082,7 @@ impl NativeGraphPublication {
         admitted: &Arc<NativeGraphBundle>,
         next: Arc<NativeGraphBundle>,
     ) -> Result<(), NativeGraphError> {
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         if self.fail_next_publication.swap(false, Ordering::AcqRel) {
             return Err(NativeGraphError::Invalid(
                 "scheduled native graph publication failure",
@@ -1145,7 +1145,7 @@ impl NativeGraphPublication {
                 .as_ref()
                 .ok_or(NativeGraphError::NotInstalled)?,
         );
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         if let Some((entered, release)) = state.admission_hook.take() {
             entered.wait();
             release.wait();
@@ -1419,7 +1419,7 @@ impl NativeGraphPublication {
                     continue;
                 };
                 owner.cancelled.store(true, Ordering::Release);
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 if state
                     .close_owner_hook
                     .as_ref()
@@ -1466,7 +1466,7 @@ impl NativeGraphPublication {
                 continue;
             };
             owner.cancelled.store(true, Ordering::Release);
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             if state
                 .close_owner_hook
                 .as_ref()
@@ -1726,7 +1726,7 @@ impl NativeReadLease {
         }
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn wait_until_cancelled_for_test(&self) -> Result<(), NativeGraphError> {
         let publication =
             self.owner
@@ -1928,14 +1928,14 @@ impl Store {
             })
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn fail_next_native_graph_publication_for_test(&self) {
         self.native_graph
             .fail_next_publication
             .store(true, Ordering::Release);
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn install_native_graph_for_test(
         &self,
         input: NativeGraphBundleInput,
@@ -2025,7 +2025,7 @@ impl Store {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) mod tests {
     #![allow(
         dead_code,
@@ -2056,7 +2056,7 @@ pub(crate) mod tests {
     pub(crate) mod storage_faults;
     mod text_lifecycle;
 
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "test-seams")]
     pub(crate) fn run_storage_fault_probe(
         seed: u64,
         schedule: crate::graph_storage_fault_test_support::StorageFaultSchedule,
@@ -2064,28 +2064,28 @@ pub(crate) mod tests {
         storage_faults::run_actual_probe(seed, schedule)
     }
 
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "test-seams")]
     pub(crate) fn run_identity_probe(
         seed: u64,
     ) -> crate::graph_identity_test_support::IdentityProbeReport {
         identity::run_actual_probe(seed)
     }
 
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "test-seams")]
     pub(crate) fn run_reclaim_probe(
         seed: u64,
     ) -> crate::graph_reclaim_test_support::ReclaimProbeReport {
         consolidation::run_actual_probe(seed)
     }
 
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "test-seams")]
     pub(crate) fn run_ze176_race_probe(
         seed: u64,
     ) -> crate::graph_reclaim_test_support::RaceProbeReport {
         consolidation::run_ze176_race_probe(seed)
     }
 
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "test-seams")]
     pub(crate) fn run_recovery_probe(
         seed: u64,
     ) -> crate::graph_recovery_test_support::RecoveryProbeReport {

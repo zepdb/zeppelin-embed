@@ -118,7 +118,7 @@ impl<'query> PreparedLexicalQuery<'query> {
         }
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(super) fn reset_for_test(&mut self) {
         self.term = None;
         self.structured = None;

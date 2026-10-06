@@ -274,15 +274,15 @@ enum SearchTraceBinding {
 /// corruption tests. Maintenance consumes its value state between windows.
 pub(crate) struct SearchTraceCursor<'s, 'm, S, C> {
     state: SearchTraceState<'m>,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     source: &'s S,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     catalog: &'s C,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     lease: &'s NativeReadLease,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     document: Option<&'s crate::epoch::EmbeddingTower>,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     memory: &'m crate::property_graph::storage::memory::StorageMemory<'m>,
     borrowed: core::marker::PhantomData<(&'s S, &'s C)>,
 }
@@ -322,15 +322,15 @@ impl<'s, 'lease, 'm>
         )?;
         Ok(Self {
             state,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             source,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             catalog,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             lease: source.lease(),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             document: bundle.document(),
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             memory: source.memory(),
             borrowed: core::marker::PhantomData,
         })
@@ -1101,7 +1101,7 @@ impl<'s, 'm, S: BlockSource, C: RecordCatalog<S>> SearchTraceCursor<'s, 'm, S, C
         })
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn trace(
         &mut self,
         output: &mut [Option<PhysicalRef>],

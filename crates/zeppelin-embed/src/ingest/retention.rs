@@ -115,7 +115,7 @@ impl Store {
         now_ts: i64,
     ) -> Result<DropPartitionReport, StoreError> {
         let range = policy.partition_to_drop(now_ts);
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         let receipt_plan = match self.ingest_retention_fault_controller.as_ref() {
             Some(controller) => controller
                 .retention_clock_boundary_plan(now_ts, policy.window, range.end)
@@ -125,7 +125,7 @@ impl Store {
             None => None,
         };
         let report = self.drop_partition(range)?;
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         if let Some(invocation_id) = receipt_plan
             && let Some(controller) = self.ingest_retention_fault_controller.as_ref()
         {

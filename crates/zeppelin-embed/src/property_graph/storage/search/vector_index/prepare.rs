@@ -21,7 +21,7 @@ pub(crate) struct NativeVectorRow {
     pub(crate) revision: u64,
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 fn observe(
     stage: super::test_support::NativePrepareStage,
     units: u64,
@@ -84,7 +84,7 @@ pub(crate) fn prepare_vector_index<S: BlockSink>(
     let mut codes = StorageBuffer::new(memory, code_length)?;
     while codes.as_slice().len() < code_length {
         let count = (code_length - codes.as_slice().len()).min(256);
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         observe(
             super::test_support::NativePrepareStage::CodeInitialization,
             count as u64,
@@ -110,7 +110,7 @@ pub(crate) fn prepare_vector_index<S: BlockSink>(
             .get_mut(start..end)
             .ok_or(TreeError::Invalid("native vector code output"))?;
         let factor = quantize_bit4_controlled(row, output, &mut scratch, &mut |units| {
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             observe(
                 super::test_support::NativePrepareStage::Quantize,
                 units,
@@ -138,7 +138,7 @@ pub(crate) fn prepare_vector_index<S: BlockSink>(
             params,
             NATIVE_BUILD_SEED,
             &mut |units| {
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 observe(
                     super::test_support::NativePrepareStage::Build,
                     units,
@@ -181,9 +181,9 @@ pub(crate) fn prepare_vector_index<S: BlockSink>(
             },
         )
     };
-    #[cfg(all(feature = "allocation-audit", any(test, feature = "test-support")))]
+    #[cfg(all(feature = "allocation-audit", any(test, feature = "test-seams")))]
     let graph = super::test_support::with_build_allocation_schedule(build);
-    #[cfg(not(all(feature = "allocation-audit", any(test, feature = "test-support"))))]
+    #[cfg(not(all(feature = "allocation-audit", any(test, feature = "test-seams"))))]
     let graph = build();
     let graph = graph.map_err(|error| match error {
         NativeGraphBuildError::Control(error) => error,
@@ -197,7 +197,7 @@ pub(crate) fn prepare_vector_index<S: BlockSink>(
     }
     let mut graph_control_error = None;
     let decoded_graph = decode_node_blocks_controlled(graph.encoded_region(), &mut |units| {
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         observe(
             super::test_support::NativePrepareStage::OutputValidation,
             units,
@@ -236,7 +236,7 @@ pub(crate) fn prepare_vector_index<S: BlockSink>(
         *offset = total;
         total = total.checked_add(length).ok_or(TreeError::Memory)?;
     }
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     observe(
         super::test_support::NativePrepareStage::ImageAllocation,
         0,
@@ -247,7 +247,7 @@ pub(crate) fn prepare_vector_index<S: BlockSink>(
     let mut image = StorageBuffer::new(memory, total)?;
     while image.as_slice().len() < total {
         let count = (total - image.as_slice().len()).min(256);
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         observe(
             super::test_support::NativePrepareStage::ImageInitialization,
             count as u64,
@@ -311,7 +311,7 @@ pub(crate) fn prepare_vector_index<S: BlockSink>(
         put(bytes, 240 + index * 4, &seed.to_le_bytes())?;
     }
     for (ordinal, row) in rows.iter().enumerate() {
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         observe(
             super::test_support::NativePrepareStage::Serialization,
             24,
@@ -333,7 +333,7 @@ pub(crate) fn prepare_vector_index<S: BlockSink>(
         .get(1)
         .ok_or(TreeError::Invalid("native vector codes offset"))?;
     for (chunk_index, chunk) in codes.as_slice().chunks(256).enumerate() {
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         observe(
             super::test_support::NativePrepareStage::Serialization,
             chunk.len() as u64,
@@ -345,7 +345,7 @@ pub(crate) fn prepare_vector_index<S: BlockSink>(
         put(bytes, codes_offset + chunk_index * 256, chunk)?;
     }
     for (ordinal, factor) in factors.as_slice().iter().enumerate() {
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         observe(
             super::test_support::NativePrepareStage::Serialization,
             12,
@@ -369,7 +369,7 @@ pub(crate) fn prepare_vector_index<S: BlockSink>(
         .copied()
         .ok_or(TreeError::Invalid("native vector rescore offset"))?;
     for (chunk_index, chunk) in coordinates.chunks(256).enumerate() {
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         observe(
             super::test_support::NativePrepareStage::Serialization,
             chunk.len() as u64,
@@ -393,7 +393,7 @@ pub(crate) fn prepare_vector_index<S: BlockSink>(
         .get(4)
         .ok_or(TreeError::Invalid("native vector graph offset"))?;
     for (chunk_index, chunk) in graph.encoded_region().chunks(256).enumerate() {
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         observe(
             super::test_support::NativePrepareStage::Serialization,
             chunk.len() as u64,

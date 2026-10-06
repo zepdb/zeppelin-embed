@@ -556,7 +556,7 @@ impl SpillIo for NativeSpillWriter<'_, '_> {
         output: &mut [u8],
         resources: &mut TreeResources<'_>,
     ) -> Result<usize, TreeError> {
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         qualification::read(reference);
         let reserved_before = self.memory.reserved_bytes();
         let length = self.source.copy_spill_page(
@@ -635,7 +635,7 @@ fn put_required(
 }
 
 /// Thread-local, one-shot qualification seam at a real merge input read.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(in crate::lifecycle::native_graph) mod qualification {
     use crate::property_graph::wal::RequiredRef;
     use std::cell::{Cell, RefCell};

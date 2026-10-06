@@ -1346,7 +1346,7 @@ impl ActiveSegment {
                 budget: u64::MAX,
                 component: "active segment",
             })?;
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         crate::segment::reader::account_active_postings_decode(resident_bytes);
         let mut cache_accounting = AccountedCounter::new(accounting, AllocationComponent::Active)?;
         cache_accounting.set(resident_bytes)?;
@@ -2063,7 +2063,7 @@ impl StoreWal {
         result
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn restore_after_failed_append(
         &mut self,
         vfs: &dyn Vfs,

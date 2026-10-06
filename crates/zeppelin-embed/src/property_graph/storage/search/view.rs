@@ -260,7 +260,7 @@ pub(crate) struct SparseMember<'a, S: BlockSource> {
     pub(crate) vector: Option<StoredVector<'a, S>>,
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SparsePhysicalSnapshot {
     pub(crate) source: crate::property_graph::storage::artifact::PhysicalRef,
@@ -505,14 +505,14 @@ impl<'a, 'm, S: BlockSource, C: RecordCatalog<S>> SparseView<'a, 'm, S, C> {
         })
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) const fn text_count(&self) -> u64 {
         match self.text {
             Some(descriptor) => descriptor.live_rows,
             None => 0,
         }
     }
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) const fn vector_count(&self) -> u64 {
         match self.vector {
             Some(descriptor) => descriptor.live_rows,
@@ -789,7 +789,7 @@ impl<'a, 'm, S: BlockSource, C: RecordCatalog<S>> SparseView<'a, 'm, S, C> {
         )?))
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn physical_snapshot(
         &self,
         modality: Modality,
@@ -1524,7 +1524,7 @@ impl<'v, 'a, 'm, S: BlockSource, C: RecordCatalog<S>> SparseSource<'v, 'a, 'm, S
         self.manifest.rows
     }
 
-    #[cfg(any(test, all(feature = "graph-cypher", feature = "test-support")))]
+    #[cfg(any(test, all(feature = "graph-cypher", feature = "test-seams")))]
     pub(crate) const fn source_reference_for_test(
         &self,
     ) -> crate::property_graph::storage::artifact::PhysicalRef {
@@ -1541,7 +1541,7 @@ impl<'v, 'a, 'm, S: BlockSource, C: RecordCatalog<S>> SparseSource<'v, 'a, 'm, S
         self.manifest.vector_index.is_some()
     }
 
-    #[cfg(any(test, all(feature = "graph-cypher", feature = "test-support")))]
+    #[cfg(any(test, all(feature = "graph-cypher", feature = "test-seams")))]
     pub(crate) fn vector_index_physical_references_for_test(
         &self,
         resources: &mut TreeResources<'_>,

@@ -4,7 +4,7 @@ mod choose;
 mod exec;
 mod lexical;
 mod prune;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 mod receipt;
 
 pub use choose::{ALLOW_LIST_ROWS_THRESHOLD, choose_scan_branch};
@@ -15,9 +15,9 @@ pub use lexical::{
     search_lexical_filtered,
 };
 pub use prune::{PlanError, segment_may_match, validate_predicate};
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) use receipt::MetadataQueryContext;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-seams"))]
 #[doc(hidden)]
 pub use receipt::{
     MetadataControllerError, MetadataExecutionReceipt, MetadataFeatureDetail,

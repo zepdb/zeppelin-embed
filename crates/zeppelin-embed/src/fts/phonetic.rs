@@ -80,7 +80,7 @@ pub(crate) fn encode_controlled<E>(
     work: &mut super::control::WorkCheck<impl FnMut() -> Result<(), E>>,
 ) -> Result<String, E> {
     work.check_now()?;
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     super::preparation_observer::phonetic_encoding();
     let word = normalize(term, work)?;
     if word.is_empty() {

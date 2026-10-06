@@ -568,7 +568,7 @@ fn value_limits_accept_exact_depth_and_stop_before_unreserved_work() {
     ));
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test-seams")]
 #[test]
 fn deadline_is_checked_inside_byte_chunks_and_list_elements() {
     use std::sync::{

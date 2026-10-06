@@ -96,14 +96,14 @@ impl Vocabulary {
         let mut terms = Vec::with_capacity(term_bytes.unwrap_or(0));
         let mut fields = Vec::with_capacity(sorted.len());
         let mut remaining = sorted.as_slice();
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         let mut group_checks = 0;
         while let Some((term, _)) = remaining.first() {
             work.step()?;
             let mut end = 0;
             for (candidate, _) in remaining {
                 work.step()?;
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 {
                     group_checks += 1;
                 }
@@ -129,7 +129,7 @@ impl Vocabulary {
             });
             remaining = rest;
         }
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         {
             super::preparation_observer::record_vocabulary_group_checks(group_checks);
         }
@@ -144,7 +144,7 @@ impl Vocabulary {
             work,
         )?;
         work.check_now()?;
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, feature = "test-seams"))]
         super::preparation_observer::vocabulary_build(terms.len());
         Ok(Self {
             entries,
@@ -183,7 +183,7 @@ impl Vocabulary {
 
     pub(crate) fn exact(&self, term: &[u8]) -> Option<&[u8]> {
         let index = self.entries.partition_point(|entry| {
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             super::preparation_observer::vocabulary_seek();
             self.term(entry) < term
         });
@@ -223,7 +223,7 @@ impl Vocabulary {
 
     pub(crate) fn prefix<'a>(&'a self, prefix: &'a [u8]) -> impl Iterator<Item = &'a [u8]> {
         let start = self.entries.partition_point(|entry| {
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "test-seams"))]
             super::preparation_observer::vocabulary_seek();
             self.term(entry) < prefix
         });
@@ -231,7 +231,7 @@ impl Vocabulary {
             .iter()
             .skip(start)
             .take_while(move |entry| {
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(any(test, feature = "test-seams"))]
                 super::preparation_observer::vocabulary_visit();
                 self.term(entry).starts_with(prefix)
             })

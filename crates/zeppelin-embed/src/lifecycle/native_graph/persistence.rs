@@ -825,7 +825,7 @@ impl Store {
         )
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn create_native_graph_with_allocator_seed_for_test(
         path: impl AsRef<Path>,
         options: OpenOptions,
@@ -871,7 +871,7 @@ impl Store {
         )
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn create_native_graph_with_infrastructure(
         path: impl AsRef<Path>,
         options: OpenOptions,
@@ -883,7 +883,7 @@ impl Store {
         create(path.as_ref(), options, document, vfs, clock, entropy)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn open_native_graph_with_infrastructure(
         path: impl AsRef<Path>,
         options: OpenOptions,

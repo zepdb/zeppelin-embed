@@ -1,5 +1,5 @@
 #![allow(clippy::expect_used, clippy::indexing_slicing)]
-#[cfg(all(feature = "test-support", unix))]
+#[cfg(all(feature = "test-seams", unix))]
 mod test_support;
 use std::path::Path;
 use zeppelin_embed::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
@@ -125,7 +125,7 @@ fn durable_cascade_deletes_transitive_dependants_and_rejects_cycles() {
     assert_eq!(state(root.path()), vec![vec![false, true]; 3]);
 }
 
-#[cfg(all(feature = "test-support", unix))]
+#[cfg(all(feature = "test-seams", unix))]
 mod kills {
     use super::test_support;
     use super::*;
