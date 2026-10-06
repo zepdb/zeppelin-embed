@@ -81,6 +81,25 @@ jobs:
       - name: Exercise every runtime kernel arm
         run: PROPTEST_CASES=1024 cargo test -p zeppelin-embed kernels
 
+  format-compat:
+    name: format-compat (macos-14)
+    runs-on: macos-14
+    env:
+      CARGO_BUILD_JOBS: "3"
+      ZE_FORMAT_COMPAT: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Populate the offline release-reader build cache
+        run: cargo fetch --locked
+      - run: cargo test -p zeppelin-embed --test format_compat
+      - run: cargo test -p zeppelin-embed --test format_compat -- --ignored --skip a_relocated_0_6_0_namespace_store_is_refused_today
+
   swift-test:
     name: swift-test (macos-14)
     runs-on: macos-14

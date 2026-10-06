@@ -194,3 +194,119 @@ fn a_relocated_0_6_0_namespace_store_is_refused_today() {
         );
     }
 }
+
+fn old_reader() -> &'static std::path::PathBuf {
+    static READER: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    READER.get_or_init(|| {
+        assert_eq!(
+            std::env::var("ZE_FORMAT_COMPAT").as_deref(),
+            Ok("1"),
+            "set ZE_FORMAT_COMPAT=1 for release-reader tests"
+        );
+        let scratch = tempfile::tempdir().expect("reader scratch").keep();
+        let binary = scratch.join("old-reader");
+        let status = std::process::Command::new("bash")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../scripts/fixtures/build-old-reader.sh"
+            ))
+            .arg(&binary)
+            .status()
+            .expect("build old reader");
+        assert!(status.success(), "old-reader build failed");
+        binary
+    })
+}
+
+fn run_old_reader(path: &Path, mode: &str) -> String {
+    let output = std::process::Command::new(old_reader())
+        .arg(path)
+        .arg(mode)
+        .output()
+        .expect("run old reader");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).expect("reader JSON")
+}
+
+// U6 will replace this header-only fixture with a real graph-enabled store.
+// Reuse the validated v2 body and frame codec; recompute the whole-file trailer.
+fn mint_v3_manifest(path: &Path) {
+    use zeppelin_embed::format::FormatFamily;
+    use zeppelin_embed::format::frame::{
+        FILE_HEADER_LEN, FILE_TRAILER_LEN, decode_artifact, encode_header,
+    };
+    let path = path.join("manifest.ze");
+    let bytes = std::fs::read(&path).expect("manifest");
+    let decoded =
+        decode_artifact("manifest.ze", FormatFamily::Manifest, &bytes).expect("valid v2 frame");
+    assert_eq!(decoded.header.version, 2);
+    let mut header = decoded.header;
+    header.version = 3;
+    let mut minted = encode_header(header);
+    minted.extend_from_slice(
+        bytes
+            .get(FILE_HEADER_LEN..bytes.len() - FILE_TRAILER_LEN)
+            .expect("framed body"),
+    );
+    minted.extend_from_slice(&xxhash_rust::xxh3::xxh3_64(&minted).to_le_bytes());
+    std::fs::write(path, minted).expect("mint v3 manifest");
+}
+
+fn data_bytes(root: &Path) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
+    // Exact bytes also detect additions/removals, without hash collisions.
+    std::fs::read_dir(root)
+        .expect("data directory")
+        .map(|entry| {
+            let entry = entry.expect("data entry");
+            (
+                std::path::PathBuf::from(entry.file_name()),
+                std::fs::read(entry.path()).expect("data bytes"),
+            )
+        })
+        .collect()
+}
+
+#[test]
+#[ignore = "builds v0.6.0; run with ZE_FORMAT_COMPAT=1 in the format-compat job"]
+fn a_v3_store_is_refused_by_the_v0_6_0_reader_and_its_data_files_are_byte_identical() {
+    let scratch = tempfile::tempdir().expect("scratch");
+    copy_tree(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/releases/v0.6.0"),
+        scratch.path(),
+    );
+    mint_v3_manifest(scratch.path());
+    let before = data_bytes(scratch.path());
+    for mode in ["ro", "rw"] {
+        assert_eq!(
+            run_old_reader(scratch.path(), mode).trim(),
+            "{\"version_refused\": true, \"abi_code\": 56}"
+        );
+        assert_eq!(
+            data_bytes(scratch.path()),
+            before,
+            "refused {mode} open changed files"
+        );
+    }
+}
+
+#[test]
+#[ignore = "builds v0.6.0; run with ZE_FORMAT_COMPAT=1 in the format-compat job"]
+fn a_graph_free_store_written_by_this_build_opens_in_the_v0_6_0_reader() {
+    let scratch = tempfile::tempdir().expect("scratch");
+    let store = Store::open(
+        scratch.path(),
+        common::options(false).with_schema(common::schema()),
+    )
+    .expect("new store");
+    store
+        .ingest(common::batch(vec![common::document(1, "orchard")]))
+        .expect("ingest");
+    store.close().expect("close");
+    for mode in ["ro", "rw"] {
+        assert!(run_old_reader(scratch.path(), mode).contains("\"version_refused\": false"));
+    }
+}
