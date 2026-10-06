@@ -1,4 +1,5 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
+#[allow(dead_code)]
 #[path = "../../../scripts/fixtures/common.rs"]
 mod common;
 use std::path::Path;
@@ -102,7 +103,7 @@ fn every_release_fixture_opens_read_only_and_answers_expected_queries() {
         let json = std::fs::read_to_string(scratch.path().join("expected.json")).expect("oracle");
         let path = scratch.path();
         for read_only in [true, false] {
-            let store = Store::open(&path, common::options(read_only))
+            let store = Store::open(path, common::options(read_only))
                 .unwrap_or_else(|error| panic!("{tag} read_only={read_only}: {error:?}"));
             check(&store, &json, false);
             if !read_only {
@@ -122,7 +123,7 @@ fn every_release_fixture_opens_read_only_and_answers_expected_queries() {
             }
             store.close().expect("close");
         }
-        let reopened = Store::open(&path, common::options(true)).expect("reopen appended store");
+        let reopened = Store::open(path, common::options(true)).expect("reopen appended store");
         check(&reopened, &json, true);
         reopened.close().expect("close reopened");
     }
