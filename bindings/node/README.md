@@ -528,7 +528,10 @@ try {
 original application's namespace spec. It retains tokenizer compatibility
 checks and rejects writes. Ordinary `Store` and `openNamespace` epoch/schema
 validation is unchanged. This shell inspects document stores, not graph stores.
-## Graph documents and Cypher — 0.5.0 MVP
+## Graph documents and Cypher — 0.6.0 MVP
+
+Structured graph query, node/relationship getters and resource APIs are not
+yet exposed in Node. The existing graph MVP methods ship in 0.6.0.
 
 **Disk reclamation.** Writable graph stores default to `autoReclaim: true`
 with `reclaimAfterBytes: 67108864` (64 MiB). Set a safe integer threshold of

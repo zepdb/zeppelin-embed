@@ -18,6 +18,7 @@ jobs:
     env:
       CARGO_BUILD_JOBS: "3"
     strategy:
+      fail-fast: false
       matrix:
         include:
           - artifact: legacy
@@ -133,6 +134,8 @@ jobs:
           pattern: zeppelin-embed-macos-*
           merge-multiple: true
           path: dist
+      - name: Build graph profile consumer
+        run: cargo build --locked -p zeppelin-embed-workspace-tests --features graph-cypher --bin graph-profile
       - name: Installed C and typed Swift execution
         run: |
           sw_vers

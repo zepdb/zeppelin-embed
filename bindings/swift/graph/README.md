@@ -1,5 +1,11 @@
 # Swift graph component
 
+The 0.6.0 graph XCFramework and graph C SDK ship as GitHub release assets:
+[ZeppelinEmbedGraph.xcframework.zip](https://github.com/zepdb/zeppelin-embed/releases/download/v0.6.0/ZeppelinEmbedGraph.xcframework.zip)
+and [graph C SDK](https://github.com/zepdb/zeppelin-embed/releases/download/v0.6.0/zeppelin-embed-graph-cypher-macos-arm64.tar.gz).
+The package at `bindings/swift/graph` is not yet remotely resolvable through
+SwiftPM (ZE-322); use the released assets with a local package arrangement.
+
 The `ZeppelinEmbedGraph` product wraps the opt-in `graph-cypher` C artifact.
 It exposes `ZeppelinGraphStore`, keyed typed batches with ordered receipts,
 structured queries and mutations, vector/text/hybrid search, entity getters,

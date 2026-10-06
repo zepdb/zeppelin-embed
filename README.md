@@ -79,7 +79,7 @@ python -m pip install zeppelin-embed
 python bindings/python/examples/five_vectors_search.py
 ```
 
-The example supplies its own document and query vectors. Zeppelin Embed v0.4.0
+The example supplies its own document and query vectors. Zeppelin Embed v0.6.0
 does not bundle or download an embedding model.
 
 The directory is the database. Reopen the same path to recover its committed
@@ -110,7 +110,7 @@ embed or link the C ABI.
 The macOS SDK archive is language-neutral. Any runtime with C-compatible
 foreign functions can use its header and static or dynamic library.
 
-## Node graph MVP in 0.5.0
+## Graph APIs in 0.6.0
 
 `@zepdb/zeppelin-embed` ships a labelled graph MVP on darwin-arm64,
 darwin-x64 and win32-x64 (Node-API 8 and Electron 44). The macOS deployment
@@ -129,12 +129,15 @@ try {
 }
 ```
 
-See the [Node graph API](bindings/node/README.md#graph-documents-and-cypher--050-mvp)
-and [release limits](CHANGELOG.md#known-limits). Cypher writes are bounded
+See the [Node graph API](bindings/node/README.md#graph-documents-and-cypher--060-mvp)
+and [release limits](CHANGELOG.md#distribution-limits). Cypher writes are bounded
 (about 121 created nodes per statement); results default to 1,024 rows with
 `maxRows` up to 65,536. Graph search in Cypher and full graph qualification
-are deferred. This release publishes Node only; other distribution channels
-remain unchanged.
+are deferred. Only the Rust core publishes to crates.io. The graph C SDK and
+`ZeppelinEmbedGraph` XCFramework ship as GitHub release assets for macOS 14+
+arm64. The Swift graph subpackage is not yet remotely resolvable through
+SwiftPM (ZE-322). Node does not yet expose structured graph query,
+node/relationship getters or resource APIs.
 
 ## Platform support
 

@@ -5,7 +5,7 @@ import PackageDescription
 let local = ProcessInfo.processInfo.environment["ZE_USE_LOCAL_GRAPH_XCFRAMEWORK"] == "1"
 // This separate package is the graph shipping contract. CI pins release bytes;
 // the legacy root package never resolves this binary.
-let binaryChecksum = "3e0b9c2810c1097ee54047593c9a5a33b701b67c9c4f4562957c74ca5f50c0b4"  // ze:xcframework-checksum
+let binaryChecksum = "0000000000000000000000000000000000000000000000000000000000000000"  // ze:xcframework-checksum
 let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent(
   "../../.."
 ).standardizedFileURL.path
@@ -23,7 +23,7 @@ let binary: Target =
     : .binaryTarget(
       name: "CZeppelinEmbedGraph",
       url:
-        "https://github.com/zepdb/zeppelin-embed/releases/download/v0.5.0/ZeppelinEmbedGraph.xcframework.zip",
+        "https://github.com/zepdb/zeppelin-embed/releases/download/v0.6.0/ZeppelinEmbedGraph.xcframework.zip",
       checksum: binaryChecksum)
 let package = Package(
   name: "ZeppelinEmbedGraph",

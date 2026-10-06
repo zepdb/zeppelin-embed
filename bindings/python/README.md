@@ -27,7 +27,7 @@ wheel loads its bundled library from `zeppelin_embed/.dylibs`. Source-tree use
 also recognizes the workspace's debug and release Cargo outputs for development.
 An invalid override fails loudly and does not fall back to another library.
 
-The v0.4.0 wheel supports macOS 11 or newer on Apple silicon. Other platforms
+The v0.6.0 wheel supports macOS 11 or newer on Apple silicon. Other platforms
 are not part of this PyPI release.
 
 The bundled wheel library does not enable the optional Rust `text` feature.
@@ -57,8 +57,9 @@ requires the repository's baked model fixture and a library built with
 
 ## Releasing
 
-Publishing a GitHub release whose tag matches `v<version>` builds and verifies
-the macOS arm64 wheel, then uploads it with PyPI Trusted Publishing. Configure
+Manually dispatching `python-release.yml` with release tag `v<version>` builds
+and verifies the macOS arm64 wheel, then uploads it with PyPI Trusted
+Publishing. Configure
 the PyPI publisher with owner `zepdb`, repository `zeppelin-embed`, workflow
 `python-release.yml`, and environment `pypi`.
 

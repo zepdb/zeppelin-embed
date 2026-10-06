@@ -4,15 +4,65 @@ All notable changes to Zeppelin Embed are recorded here. Versions follow
 semantic versioning, with the 0.x rule that a new public surface is a minor
 release and a compatible correction is a patch release.
 
-## Unreleased
+## 0.6.0 - 2026-10-05
+
+### Added
+
+- Opt-in `graph-cypher` Rust API: `property_graph::GraphStore`, keyed
+  atomic batches, typed structured queries and mutations, vector/text/hybrid
+  search, node and relationship getters, resource reports, and maintenance.
+- Graph C SDK and `ZeppelinEmbedGraph` XCFramework, separate from the
+  legacy artifacts, for macOS 14+ arm64. New C ABI functions:
+  `ze_graph_query`, `ze_graph_get_nodes`, `ze_graph_get_relationships`,
+  and `ze_graph_resources`.
+- Separate Swift graph package at `bindings/swift/graph`, exposing
+  `ZeppelinGraphStore`, typed batches/plans/results, `query`, `getNodes`,
+  `getRelationships`, parameterized `cypher`, and native diagnostics and
+  write dispositions.
+- Lexical preparation: Rust `Store::warm_lexical`, C `ze_warm_lexical`,
+  Node `warmLexical` / `warmLexicalAsync`, Swift `warmLexical`, and Python
+  `warm_lexical`. Preparation includes the prefix vocabulary; mutations
+  invalidate it.
 
 ### Changed
 
-Type-ahead queries with more than 32 prefix expansions retain only 32; matches available only through discarded expansions are dropped. Each retained prefix term has boost_thousandths = 31 instead of 1000 divided by the original expansion count.
-This cap and ranking change (ZE-263, ZE-291) retains expansions by descending
-live document frequency, then term bytes. Prefixes with at most 32 expansions
-retain boosts of 1000 divided by the expansion count. Leading exact terms
-remain unchanged, and explicit `Prefix` queries remain exhaustive.
+- Raw-string `in` filters scan each column once. Filtered queries reuse
+  cached eligible rows and the shared prefix vocabulary.
+- Type-ahead prefixes retain at most 32 expansions, ordered by descending
+  live document frequency and then term bytes. Discarded expansions lose
+  their matches. Above 32 expansions each retained term has
+  `boost_thousandths = 31`; at most 32 retain `1000 / expansion_count`.
+  Leading exact terms are unchanged; explicit `Prefix` remains exhaustive.
+- Automatic graph reclaim also triggers after 32 commits, alongside the
+  configured byte threshold, which defaults to 64 MiB.
+- Refused and no-op graph writes publish nothing and preserve the generation.
+- Post-strip linked-section budgets are 5,632 KiB for graph-free core/FFI
+  archives on every platform and 12,288 KiB for complete graph FFI archives.
+  The contained graph core is reported separately without another gate.
+
+### Fixed
+
+- Closing a graph store cancels a live write before its WAL append.
+- Graph retirement and reclaim preserve the durable publication boundary.
+- Namespace transaction recovery reclaims abandoned artifacts and permits
+  read-only access after a committed purge.
+
+### Distribution limits
+
+- Rust/C/Swift graph distribution is opt-in; the packaged graph C SDK and
+  XCFramework are macOS 14+ arm64 only. Only the Rust core publishes to
+  crates.io.
+- Node retains its graph MVP methods: `GraphStore.isSupported`, `open`,
+  `close`, `apply` / `applyAsync`, `cypher` / `cypherAsync`, and
+  `maintain` / `maintainAsync`, with maintenance options at open.
+  These ship in the macOS arm64/x64 and Windows x64 addons.
+- Node does not yet expose structured graph query, node/relationship getters
+  or resource APIs. Python wheels contain the legacy ABI, without
+  graph-cypher or text.
+- The Swift graph subpackage is not yet remotely resolvable through SwiftPM
+  (ZE-322); the graph XCFramework and C SDK ship as GitHub release assets.
+- Full graph release qualification (ZE-78) was skipped by owner decision;
+  unexecuted platform and qualification cells remain unclaimed.
 
 ## 0.5.0 - 2026-09-27
 
