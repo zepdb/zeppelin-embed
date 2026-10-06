@@ -36,6 +36,9 @@ ARCHIVE_ZIP="$BUILD_DIR/$NAME.xcframework.zip"
 SLICE_EVIDENCE="$ROOT_DIR/tasks/evidence/ze-107-$SELECTOR-slices.md"
 SIZE_EVIDENCE="$ROOT_DIR/tasks/evidence/ze-107-$SELECTOR-size.md"
 ALLOWLIST="$ROOT_DIR/crates/zeppelin-embed-ffi/symbols.allowlist"
+if [ "$SELECTOR" = graph-cypher ]; then
+    ALLOWLIST="$ROOT_DIR/crates/zeppelin-embed-ffi/symbols.graph.allowlist"
+fi
 PRIVACY_MANIFEST="$SCRIPT_DIR/PrivacyInfo.xcprivacy"
 
 # The release static library is built with a pinned nightly toolchain so it
