@@ -64,7 +64,7 @@ decision O6, taken 2026-08-24 on measured evidence: size-optimized builds
 cost the lexical query path 1.65x on TREC-COVID and 1.33x on FiQA against
 tantivy, which is the difference between winning three of four BEIR corpora
 and winning two. Level 3 costs +150 KB of linked sections (1,873 to 2,023 KB)
-against a 5,632 KB budget. The rule is best-and-fastest, not smallest; trade
+against a 5,120 KB budget. The rule is best-and-fastest, not smallest; trade
 speed for size only when the static-library gate is under real pressure.
 
 The 5 MB static-library gate measures post-strip linkable sections with the
@@ -74,7 +74,7 @@ the linked-section total still includes Rust `std`, unwind support, and every
 engine section, so later code growth remains gated on each architecture.
 
 Owner decision 2026-09-27 (ZE-253): the graph-free FFI archive retains the
-5,632 KB gate. Graph-enabled FFI archives (core, FFI and Cypher together)
+5,120 KB gate. Graph-enabled FFI archives (core, FFI and Cypher together)
 have a separate 12,288 KB gate, using the same post-strip linked-section
 measurement. This does not raise the graph-free budget or the dependency
 allowlist. `scripts/size-budget.sh` and the Node archive checks enforce it.
