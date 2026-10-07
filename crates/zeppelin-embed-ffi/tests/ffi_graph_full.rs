@@ -111,7 +111,7 @@ fn ze241_query_reads_and_mutates_through_c() {
         last_error(store.handle.token)
     );
     assert_eq!(response.disposition, 2);
-    assert_eq!(response.changed_generation, 1);
+    assert_eq!(response.changed_generation, 2);
     assert_eq!(rows(&response)[0][0].tag, 5);
     let column = unsafe { &*response.columns };
     let bytes =
@@ -1216,7 +1216,7 @@ fn ze72_noop_replay_mixed_generations_and_conflicts_preserve_wal() {
         ZeErrorCode::ZeOk
     );
     let id = receipts(&r)[0].node;
-    assert_eq!(receipts(&r)[0].generation, 1);
+    assert_eq!(receipts(&r)[0].generation, 2);
     ze_graph_response_free(&mut r);
     let before = ze72_wal_bytes(&store.path);
     for (items, disposition) in [(Vec::new(), 4), (vec![first], 3)] {
@@ -1237,13 +1237,13 @@ fn ze72_noop_replay_mixed_generations_and_conflicts_preserve_wal() {
         ),
         ZeErrorCode::ZeOk
     );
-    assert_eq!(r.changed_generation, 2);
+    assert_eq!(r.changed_generation, 3);
     assert_eq!(
         receipts(&r)
             .iter()
             .map(|x| (x.disposition, x.generation))
             .collect::<Vec<_>>(),
-        [(3, 1), (2, 2)]
+        [(3, 2), (2, 3)]
     );
     ze_graph_response_free(&mut r);
     let stable = ze72_wal_bytes(&store.path);
@@ -1608,7 +1608,7 @@ fn ze311_vector_parameter_query(refuse: bool) {
     assert_eq!(result[0][1].floating, 0.0);
     assert_eq!(response.report_count, 1);
     let report = unsafe { &*response.reports };
-    assert_eq!((report.call_id, report.generation), (0, 1));
+    assert_eq!((report.call_id, report.generation), (0, 2));
     assert_eq!(ze_graph_response_free(&mut response), ZeErrorCode::ZeOk);
 }
 

@@ -101,12 +101,17 @@ impl Store {
     /// physical purge is pending the call is refused with
     /// [`StoreError::SnapshotPurgePending`].
     ///
-    /// Writers are blocked only while the generation is pinned, which is
-    /// O(manifest + unsealed records) and copies no document bytes. Writes,
+    /// Writers are blocked while the generation is pinned and any graph tail
+    /// is checkpointed. Graph-free pinning is O(manifest + unsealed records)
+    /// and copies no document bytes. Writes,
     /// seal and maintenance run during the copy and are absent from the
     /// snapshot. Close cancels an in-flight snapshot
     /// ([`StoreError::ReadCancelled`]); a failed snapshot removes its
     /// staging directory and never creates `target`.
+    ///
+    /// A graph snapshot first checkpoints the graph tail and may advance the
+    /// manifest generation. Unabsorbed namespace document writes must be sealed
+    /// before export, since their transaction authority belongs to the source.
     ///
     /// The snapshot directory is an ordinary store: opening it read-only or
     /// read-write restores exactly the state at the returned generation.
@@ -141,20 +146,20 @@ impl Store {
         // Every manifest commit and snapshot publication holds this mutex,
         // so the manifest file, the published snapshot, the active
         // generation and the WAL tail agree while it is held.
-        let wal = self
+        let mut wal = self
             .wal_writer
             .lock()
             .map_err(|_| StoreError::Synchronization {
                 component: "WAL writer",
             })?;
-        let writer = wal.as_ref().ok_or(StoreError::ReadOnly)?;
-        let active = self
+        let writer = wal.as_mut().ok_or(StoreError::ReadOnly)?;
+        let mut active_slot = self
             .active
             .lock()
             .map_err(|_| StoreError::Synchronization {
                 component: "active segment",
             })?;
-        let generation = active.as_ref().ok_or(StoreError::Closed)?.generation;
+        let active = active_slot.as_mut().ok_or(StoreError::Closed)?;
         // `purge` returns with its intent on disk and the bytes it will
         // remove still in the store; copying them would defeat the purge.
         let intent = self
@@ -165,6 +170,19 @@ impl Store {
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
             Err(source) => return Err(io(&intent, source)),
         }
+        // Fold the graph tail under the locks already excluding every publisher.
+        // Its manifest inventory then contains all objects needed by the copy.
+        #[cfg(feature = "graph-cypher")]
+        if let Some(through) = self.graph_checkpoint_through(self.vfs.as_ref())? {
+            self.checkpoint_native_graph_locked(writer, active, through, self.vfs.as_ref())
+                .map_err(|error| match error {
+                    super::native_graph::NativeGraphError::Store(error) => error,
+                    _ => StoreError::SnapshotPin {
+                        detail: "graph checkpoint failed before snapshot pinning",
+                    },
+                })?;
+        }
+        let generation = active.generation;
         let published = self
             .snapshot
             .read()
@@ -179,7 +197,19 @@ impl Store {
         let graph_objects = self.pinned_graph_objects(manifest.as_deref())?;
         let absorbed_through = published.absorbed_through();
         let wal_records = writer.unabsorbed_records(absorbed_through)?;
-        drop(active);
+        // Prepared namespace records bind to their original participant directory.
+        // A standalone copy cannot carry the parent transaction authority.
+        #[cfg(feature = "graph-cypher")]
+        if published.graph_enabled
+            && wal_records
+                .iter()
+                .any(|record| record.op == crate::ingest::wal_payload::PREPARED_MUTATION_V1)
+        {
+            return Err(StoreError::SnapshotPin {
+                detail: "seal namespace document writes before exporting a graph snapshot",
+            });
+        }
+        drop(active_slot);
         drop(wal);
         drop(state);
         Ok(Pinned {

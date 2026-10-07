@@ -2089,6 +2089,24 @@ enum PublicationWriter {
     Shared(Arc<WalWriter>),
 }
 
+impl StoreError {
+    // These refusals occur before staging any record or performing WAL I/O.
+    pub(crate) fn is_definite_wal_refusal(&self) -> bool {
+        matches!(
+            self,
+            Self::WalWrite(
+                crate::wal::WalWriteError::GroupTooLarge { .. }
+                    | crate::wal::WalWriteError::Record(_)
+                    | crate::wal::WalWriteError::SequenceExhausted
+                    | crate::wal::WalWriteError::Header(_)
+            ) | Self::BudgetExceeded {
+                component: "wal",
+                ..
+            }
+        )
+    }
+}
+
 impl ManifestPublication {
     // Constructors must retain main's manifest-before-WAL order. No writer
     // can be admitted until it is created, bound here, and the Store returned.
@@ -2118,6 +2136,13 @@ impl ManifestPublication {
         // Arm before the first write, including errors reported after rename.
         self.armed = true;
         crate::manifest::io::commit_manifest(vfs, directory, manifest, policy)
+    }
+
+    pub(crate) fn on_wal_error(self, error: &StoreError) {
+        if error.is_definite_wal_refusal() {
+            self.complete();
+        }
+        // Every other error drops the armed guard and fences the writer.
     }
 
     pub(crate) fn complete(mut self) {

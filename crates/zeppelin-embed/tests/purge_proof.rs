@@ -610,6 +610,26 @@ fn purge_keeps_acked_wal_after_failed_seal_commit() {
     );
     assert!(!vfs.is_armed(), "manifest temp write fault did not fire");
 
+    // A manifest I/O failure fences this writer even when the WAL is intact.
+    // Reopen must recover both acknowledged revisions before purge proceeds.
+    let refused = store
+        .ingest(IngestBatch::new(vec![IngestDocument::new(
+            DocumentVersion::new(purged, Revision::new(1)),
+            vec![-1.0, 0.0],
+        )]))
+        .expect_err("failed publication must fence later writes");
+    assert!(matches!(
+        refused,
+        zeppelin_embed::ingest::IngestError::Store(StoreError::WalWrite(
+            zeppelin_embed::wal::WalWriteError::Failed { ref detail, .. }
+        )) if detail.as_ref() == "writer publication did not complete"
+    ));
+    store.close().expect("close fenced failed-seal store");
+    let store = Store::open(directory.path(), OpenOptions::default())
+        .expect("recover acknowledged WAL before purge");
+    assert_eq!(search_one(&store, &[1.0, 0.0]).document(), Some(first_v2));
+    assert_eq!(search_one(&store, &[0.0, 1.0]).document(), Some(second_v2));
+
     store
         .ingest(IngestBatch::new(vec![IngestDocument::new(
             DocumentVersion::new(purged, Revision::new(1)),

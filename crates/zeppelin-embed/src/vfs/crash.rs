@@ -284,6 +284,12 @@ impl<V: Vfs> Vfs for RecordingVfs<V> {
         self.inner.ensure_directory(path, create)
     }
 
+    fn create_directory(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.create_directory(path)
+    }
+    fn remove_directory(&self, path: &Path) -> std::io::Result<()> {
+        self.inner.remove_directory(path)
+    }
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         self.inner.open(path)
     }
@@ -531,10 +537,29 @@ impl Vfs for MemoryVfs {
 
     fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         let mut files = self.lock_files()?;
-        let bytes = files.remove(from).ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::NotFound, "rename source is absent")
-        })?;
-        files.insert(to.to_path_buf(), bytes);
+        if let Some(bytes) = files.remove(from) {
+            files.insert(to.to_path_buf(), bytes);
+            return Ok(());
+        }
+        // Directory publication moves every captured child, as StdVfs does.
+        let children: Vec<_> = files
+            .keys()
+            .filter(|path| path.starts_with(from))
+            .cloned()
+            .collect();
+        if children.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "rename source is absent",
+            ));
+        }
+        for path in children {
+            let relative = path.strip_prefix(from).map_err(std::io::Error::other)?;
+            let destination = to.join(relative);
+            if let Some(bytes) = files.remove(&path) {
+                files.insert(destination, bytes);
+            }
+        }
         Ok(())
     }
 
@@ -2072,4 +2097,26 @@ mod tests {
             "4096-state enumeration did not report its cap"
         );
     }
+}
+
+#[cfg(test)]
+#[test]
+#[allow(clippy::unwrap_used)]
+fn memory_directory_rename_preserves_snapshot_child_bytes() {
+    let vfs = MemoryVfs::new();
+    vfs.write(Path::new("staging/manifest.ze"), b"manifest")
+        .unwrap();
+    vfs.write(Path::new("staging/graph.zgraph"), b"graph")
+        .unwrap();
+    vfs.rename(Path::new("staging"), Path::new("snapshot"))
+        .unwrap();
+    assert_eq!(
+        vfs.read(Path::new("snapshot/manifest.ze")).unwrap(),
+        b"manifest"
+    );
+    assert_eq!(
+        vfs.read(Path::new("snapshot/graph.zgraph")).unwrap(),
+        b"graph"
+    );
+    assert!(vfs.list(Path::new("staging")).unwrap().is_empty());
 }

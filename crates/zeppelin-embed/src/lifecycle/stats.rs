@@ -1274,8 +1274,9 @@ mod tests {
             None,
         )
         .expect("native store");
-        assert!(store.active.lock().expect("active").is_none());
-        assert!(store.snapshot.read().expect("snapshot").is_none());
+        // Unified graph creation owns an empty document state and a v3 snapshot.
+        assert!(store.active.lock().expect("active").is_some());
+        assert!(store.snapshot.read().expect("snapshot").is_some());
         let stats = store.stats().expect("open native stats");
         assert_eq!(stats.segment_bytes, 0);
         assert_eq!(stats.active_segment_bytes, 0);
@@ -1283,7 +1284,7 @@ mod tests {
         assert_eq!(stats.active_row_count, 0);
         assert_eq!(stats.tombstone_count, 0);
         assert_eq!(stats.tombstone_bytes, 0);
-        assert_eq!(stats.snapshot_bytes, 0);
+        assert!(stats.snapshot_bytes > 0);
         assert_eq!(stats.active_snapshot_leases, 0);
         assert!(stats.native_graph_bytes > 0);
         assert_eq!(

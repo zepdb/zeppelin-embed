@@ -2883,6 +2883,26 @@ pub(super) fn run_actual_probe(
         run_ze40_serial_scan_preserves_pre_wal_orphans_and_refuses_ambiguous_corruption(),
         run_ze40_checkpoint_cutoff_reopens_exactly_and_retains_required_inventories(),
         run_ze40_read_only_replay_preserves_tail_and_all_files(),
+        {
+            begin_recovery_path();
+            super::epoch::an_epoch_switch_on_a_graph_store_is_refused_and_the_store_reopens();
+            finish_recovery_path("property-graph.recovery.epoch-refusal")
+        },
+        {
+            begin_recovery_path();
+            a_snapshot_after_an_unabsorbed_graph_write_reopens();
+            finish_recovery_path("property-graph.recovery.snapshot-export")
+        },
+        {
+            begin_recovery_path();
+            a_snapshot_checkpoint_failure_is_loud_and_the_source_reopens();
+            finish_recovery_path("property-graph.recovery.snapshot-checkpoint-failure")
+        },
+        {
+            begin_recovery_path();
+            a_definite_group_too_large_refusal_keeps_the_writers_open();
+            finish_recovery_path("property-graph.recovery.definite-refusal")
+        },
     ];
     let receipts = observed
         .into_iter()
@@ -3124,7 +3144,7 @@ fn read_only_open_replays_without_writing() {
     assert_eq!(file_snapshot(directory.path()), before);
 }
 
-fn commit_tail_test_node(store: &Store, key: &str) -> NodeId {
+pub(super) fn commit_tail_test_node(store: &Store, key: &str) -> NodeId {
     let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
     let receipts = store
         .apply_native_graph(
@@ -3328,7 +3348,7 @@ fn generation_epoch() -> crate::epoch::StoreEpoch {
     }
 }
 
-fn disable_generation_fixture_maintenance(store: &Store) {
+pub(super) fn disable_generation_fixture_maintenance(store: &Store) {
     store
         .set_native_graph_maintenance_policy(crate::property_graph::GraphMaintenancePolicy {
             automatic: false,
@@ -5504,7 +5524,11 @@ fn an_epoch_drop_manifest_rename_post_commit_error_fences_the_writers() {
     epoch_manifest_rename_failure(true);
 }
 
-pub(super) fn epoch_manifest_rename_failure(drop_epoch: bool) {
+pub(super) fn two_epoch_fixture() -> (
+    tempfile::TempDir,
+    crate::epoch::StoreEpoch,
+    crate::epoch::StoreEpoch,
+) {
     use crate::manifest::{EpochMeta, Manifest};
     use crate::segment::writer::{
         SegmentBuild, SegmentDocumentVersions, SegmentFactors, write_segment_with_documents,
@@ -5513,6 +5537,8 @@ pub(super) fn epoch_manifest_rename_failure(drop_epoch: bool) {
     let a = generation_epoch();
     let mut b = a.clone();
     b.embedding.alignment_digest = vec![2];
+    b.embedding.document.model_version = "B".to_owned();
+    b.embedding.query.model_version = "B".to_owned();
     let columns = crate::meta::ColumnStoreBuilder::new(crate::meta::Schema::timestamp_only())
         .finish()
         .unwrap();
@@ -5562,6 +5588,11 @@ pub(super) fn epoch_manifest_rename_failure(drop_epoch: bool) {
         policy,
     )
     .unwrap();
+    (directory, a, b)
+}
+
+pub(super) fn epoch_manifest_rename_failure(drop_epoch: bool) {
+    let (directory, a, b) = two_epoch_fixture();
     let options = native_options().with_epoch(a.clone());
     let vfs = Arc::new(RecordingVfs::default());
     let store = Store::open_with_test_dependencies(
@@ -5573,8 +5604,7 @@ pub(super) fn epoch_manifest_rename_failure(drop_epoch: bool) {
         ),
     )
     .unwrap();
-    assert_eq!(store.enable_graph().unwrap(), 2);
-    disable_generation_fixture_maintenance(&store);
+    // Graph stores refuse epoch transitions; exercise the unchanged v2 publisher.
     vfs.arm_fault(FaultPoint::PostManifestRename);
     if drop_epoch {
         assert!(store.drop_epoch(b.identity().embedding).is_err());
@@ -5582,16 +5612,170 @@ pub(super) fn epoch_manifest_rename_failure(drop_epoch: bool) {
         assert!(store.switch_epoch_alias(b.identity()).is_err());
     }
     vfs.assert_fired_once();
-    assert_eq!(store.snapshot().unwrap().generation(), 2);
-    assert_shared_writer_stopped(&store);
+    assert_eq!(store.snapshot().unwrap().generation(), 1);
+    assert!(matches!(
+        store.ingest(purge_documents(&[99], 1).with_epoch(a.identity())),
+        Err(crate::ingest::IngestError::Store(
+            crate::lifecycle::StoreError::WalWrite(crate::wal::WalWriteError::Failed { .. })
+        ))
+    ));
+    assert!(store.reindex_text().is_err());
     drop(store);
     let options = native_options().with_epoch(if drop_epoch { a } else { b });
     let recovered = Store::open(directory.path(), options.clone()).unwrap();
-    assert_eq!(recovered.snapshot().unwrap().generation(), 3);
-    disable_generation_fixture_maintenance(&recovered);
-    let node = commit_tail_test_node(&recovered, "after-epoch-rename");
-    let observation = observe_node(&recovered, node);
+    assert_eq!(recovered.snapshot().unwrap().generation(), 2);
+    recovered
+        .ingest(purge_documents(&[99], 1).with_epoch(recovered.epoch_identity().unwrap()))
+        .unwrap();
     drop(recovered);
     let recovered = Store::open(directory.path(), options).unwrap();
-    assert_eq!(observe_node(&recovered, node), observation);
+    assert_eq!(recovered.count_documents(None, None).unwrap().count, 1);
+}
+
+#[cfg_attr(test, test)]
+fn a_snapshot_after_an_unabsorbed_graph_write_reopens() {
+    use crate::lifecycle::AccessMode;
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source");
+    let copy = root.path().join("copy");
+    let store = Store::open(&source, native_options()).unwrap();
+    store.enable_graph().unwrap();
+    disable_generation_fixture_maintenance(&store);
+    let first = commit_tail_test_node(&store, "snapshot-tail");
+    let captured = store.write_snapshot(&copy).unwrap();
+    for access in [AccessMode::ReadOnly, AccessMode::ReadWrite] {
+        let reopened = Store::open(&copy, native_options().with_access_mode(access)).unwrap();
+        assert_eq!(reopened.snapshot().unwrap().generation(), captured);
+        assert!(observe_node(&reopened, first).is_some());
+    }
+    let reopened = Store::open(&copy, native_options()).unwrap();
+    disable_generation_fixture_maintenance(&reopened);
+    let next = commit_tail_test_node(&reopened, "after-snapshot");
+    drop(reopened);
+    let reopened = Store::open(&copy, native_options()).unwrap();
+    assert!(observe_node(&reopened, first).is_some());
+    assert!(observe_node(&reopened, next).is_some());
+}
+
+#[cfg_attr(test, test)]
+fn a_snapshot_checkpoint_failure_is_loud_and_the_source_reopens() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source");
+    let copy = root.path().join("copy");
+    let vfs = Arc::new(RecordingVfs::default());
+    let store = Store::open_with_test_dependencies(
+        &source,
+        native_options(),
+        crate::lifecycle::StoreTestDependencies::new(
+            vfs.clone(),
+            Arc::new(crate::lifecycle::SystemMonotonicClock),
+        ),
+    )
+    .unwrap();
+    store.enable_graph().unwrap();
+    disable_generation_fixture_maintenance(&store);
+    let first = commit_tail_test_node(&store, "snapshot-failure-tail");
+    vfs.arm_fault(FaultPoint::ManifestSync);
+    let error = store.write_snapshot(&copy).unwrap_err();
+    assert!(
+        matches!(error, crate::lifecycle::StoreError::Manifest(_)),
+        "checkpoint must fail before copying: {error:?}"
+    );
+    vfs.assert_fired_once();
+    assert!(!copy.exists());
+    assert_eq!(
+        std::fs::read_dir(root.path()).unwrap().count(),
+        1,
+        "no snapshot staging files"
+    );
+    drop(store);
+    let reopened = Store::open(&source, native_options()).unwrap();
+    assert!(observe_node(&reopened, first).is_some());
+    disable_generation_fixture_maintenance(&reopened);
+    let next = commit_tail_test_node(&reopened, "after-snapshot-failure");
+    drop(reopened);
+    let reopened = Store::open(&source, native_options()).unwrap();
+    assert!(observe_node(&reopened, first).is_some());
+    assert!(observe_node(&reopened, next).is_some());
+}
+
+#[cfg_attr(test, test)]
+fn a_definite_group_too_large_refusal_keeps_the_writers_open() {
+    use crate::ingest::{
+        DocId, DocumentVersion, IngestBatch, IngestDocument, IngestError, Revision,
+    };
+    use crate::lifecycle::StoreError;
+    use crate::lifecycle::native_graph::NativeGraphError;
+    for graph in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let vfs = Arc::new(RecordingVfs::default());
+        let store = Store::open_with_test_dependencies(
+            directory.path(),
+            OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+            crate::lifecycle::StoreTestDependencies::new(
+                vfs.clone(),
+                Arc::new(crate::lifecycle::SystemMonotonicClock),
+            ),
+        )
+        .unwrap();
+        store.enable_graph().unwrap();
+        disable_generation_fixture_maintenance(&store);
+        vfs.clear_events();
+        let before = store.snapshot().unwrap().generation();
+        if graph {
+            let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+            let key = "x".repeat(crate::wal::DEFAULT_MAX_GROUP_BYTES);
+            let error = store
+                .apply_native_graph(
+                    &[StructuredWrite {
+                        key: ApplicationKey::new(EntityKind::Node, "too-large", &key).unwrap(),
+                        revision: GraphRevision::new(1).unwrap(),
+                        operation: StructuredOperation::Create,
+                        image: Some(WriteImage::Node(&image)),
+                    }],
+                    &QueryControl::Cancel(CancelToken::new()),
+                )
+                .err()
+                .expect("oversized graph refusal");
+            assert!(
+                matches!(
+                    error,
+                    NativeGraphError::Store(StoreError::WalWrite(
+                        crate::wal::WalWriteError::GroupTooLarge { .. }
+                    ))
+                ),
+                "{error:?}"
+            );
+        } else {
+            let large = IngestDocument::new(
+                DocumentVersion::new(DocId::new(90), Revision::new(1)),
+                vec![1.0, 0.0],
+            )
+            .with_text("x".repeat(2 * 1024 * 1024));
+            let error = store.ingest(IngestBatch::new(vec![large])).unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    IngestError::Store(StoreError::WalWrite(
+                        crate::wal::WalWriteError::GroupTooLarge { .. }
+                    ))
+                ),
+                "{error:?}"
+            );
+        }
+        assert_eq!(store.snapshot().unwrap().generation(), before);
+        assert!(
+            !vfs.take()
+                .iter()
+                .any(|event| matches!(event, DurabilityEvent::Append(_)))
+        );
+        store
+            .ingest(purge_documents(&[91], 1))
+            .expect("small document after definite refusal");
+        let node = commit_tail_test_node(&store, "after-definite-refusal");
+        drop(store);
+        let reopened = Store::open(directory.path(), native_options()).unwrap();
+        assert_eq!(reopened.count_documents(None, None).unwrap().count, 1);
+        assert!(observe_node(&reopened, node).is_some());
+    }
 }

@@ -94,28 +94,34 @@ fn graph_store_creates_a_graph_only_store_with_forced_durable_writes() {
     assert_eq!(store.store_for_test().durability_policy, durable);
 
     let first = create_node(&store, "first", 1);
-    assert_eq!(first.admitted_generation(), generation(0));
+    // Graph creation publishes manifest generation 1; the first write advances it to 2.
+    assert_eq!(first.admitted_generation(), generation(1));
     assert_eq!(
         first.outcome(),
         GraphWriteOutcome::Committed {
-            generation: generation(1)
+            generation: generation(2)
         }
     );
     assert_eq!(first.receipts().len(), 1);
     assert!(!first.receipts()[0].replayed);
-    assert_eq!(first.receipts()[0].generation, generation(1));
+    assert_eq!(first.receipts()[0].generation, generation(2));
     store.close().expect("close graph store");
     drop(store);
 
-    // Only graph files exist: no legacy manifest or legacy WAL was created.
+    // The graph store uses the unified manifest and WAL, with no legacy selector.
     for file in snapshot(&path).keys() {
         let name = file.file_name().and_then(|name| name.to_str()).unwrap();
         assert!(
-            name.starts_with("graph-") || name == "writer.lock",
+            name.starts_with("graph-")
+                || matches!(
+                    name,
+                    "writer.lock" | ".ze-readers.lock" | "manifest.ze" | "wal.ze"
+                ),
             "unexpected file in a graph-only store: {name}"
         );
     }
 
+    assert!(!path.join("graph-root.ze").exists());
     let reopened = GraphStore::open(&path, options(), None).expect("reopen graph store");
     assert_eq!(reopened.store_for_test().durability_policy, durable);
     let second = create_node(&reopened, "second", 1);
@@ -154,10 +160,8 @@ fn graph_store_creates_a_graph_only_store_with_forced_durable_writes() {
 fn legacy_open_refuses_a_graph_store_directory_with_a_typed_error() {
     let parent = tempfile::tempdir().expect("temporary parent");
     let path = parent.path().join("graph");
-    let store = GraphStore::create(&path, options(), None).expect("graph store");
-    create_node(&store, "only", 1);
-    store.close().expect("close graph store");
-    drop(store);
+    std::fs::create_dir(&path).expect("legacy graph directory");
+    std::fs::write(path.join("graph-root.ze"), b"legacy graph selector").expect("legacy selector");
 
     let before = snapshot(&path);
     for legacy_options in [OpenOptions::new(), OpenOptions::read_only()] {
@@ -187,10 +191,9 @@ mod legacy_graph_dir {
     fn a_0_6_0_graph_directory_is_refused_before_any_write() {
         let parent = tempfile::tempdir().expect("temporary parent");
         let path = parent.path().join("graph");
-        let store = GraphStore::create(&path, options(), None).expect("graph store");
-        create_node(&store, "only", 1);
-        store.close().expect("close graph store");
-        drop(store);
+        std::fs::create_dir(&path).expect("legacy graph directory");
+        std::fs::write(path.join("graph-root.ze"), b"legacy graph selector")
+            .expect("legacy selector");
 
         // Also cover a crash leaving only the selector's real temporary name:
         // other graph artifacts would mask a broken temporary-file guard.
@@ -360,10 +363,10 @@ fn graph_store_exact_retry_replays_with_its_original_generation() {
     // the original generation, and nothing new is written.
     let replayed = create_node(&store, "first", 1);
     assert_eq!(replayed.outcome(), GraphWriteOutcome::Replayed);
-    assert_eq!(replayed.admitted_generation(), generation(1));
+    assert_eq!(replayed.admitted_generation(), generation(2));
     assert!(replayed.receipts()[0].replayed);
     assert_eq!(replayed.receipts()[0].entity, installed.entity);
-    assert_eq!(replayed.receipts()[0].generation, generation(1));
+    assert_eq!(replayed.receipts()[0].generation, generation(2));
 
     // A mixed batch commits once; each receipt carries its own record.
     let image = CanonicalContents::node(&mut [], &mut [], Some("text"), None).expect("image");
@@ -389,19 +392,19 @@ fn graph_store_exact_retry_replays_with_its_original_generation() {
     assert_eq!(
         mixed.outcome(),
         GraphWriteOutcome::Committed {
-            generation: generation(2)
+            generation: generation(3)
         }
     );
-    assert_eq!(mixed.admitted_generation(), generation(1));
+    assert_eq!(mixed.admitted_generation(), generation(2));
     assert!(mixed.receipts()[0].replayed);
-    assert_eq!(mixed.receipts()[0].generation, generation(1));
+    assert_eq!(mixed.receipts()[0].generation, generation(2));
     assert!(!mixed.receipts()[1].replayed);
-    assert_eq!(mixed.receipts()[1].generation, generation(2));
+    assert_eq!(mixed.receipts()[1].generation, generation(3));
 
     // An empty batch changes nothing.
     let empty = store.apply_batch(&[], &control()).expect("empty batch");
     assert_eq!(empty.outcome(), GraphWriteOutcome::NoOp);
-    assert_eq!(empty.admitted_generation(), generation(2));
+    assert_eq!(empty.admitted_generation(), generation(3));
     assert!(empty.receipts().is_empty());
     store.close().expect("close graph store");
 }
@@ -441,7 +444,7 @@ fn graph_store_refuses_a_stale_incarnation_with_nothing_committed() {
     assert_eq!(
         recreated.outcome(),
         GraphWriteOutcome::Committed {
-            generation: generation(3)
+            generation: generation(4)
         }
     );
     assert_ne!(node_id(&recreated, 0), first);
@@ -469,11 +472,11 @@ fn graph_store_refuses_a_stale_incarnation_with_nothing_committed() {
     // Nothing committed: the next change is admitted at the same generation
     // the refused batch saw, and publishes the one after it.
     let next = create_node(&store, "after", 1);
-    assert_eq!(next.admitted_generation(), generation(3));
+    assert_eq!(next.admitted_generation(), generation(4));
     assert_eq!(
         next.outcome(),
         GraphWriteOutcome::Committed {
-            generation: generation(4)
+            generation: generation(5)
         }
     );
     store.close().expect("close graph store");
@@ -501,13 +504,13 @@ fn graph_write_results_stay_readable_after_close() {
     assert_eq!(
         result.outcome(),
         GraphWriteOutcome::Committed {
-            generation: generation(1)
+            generation: generation(2)
         }
     );
     let receipts = result.into_receipts();
     assert_eq!(receipts.len(), 1);
     assert_eq!(receipts[0].revision, revision(1));
-    assert_eq!(receipts[0].generation, generation(1));
+    assert_eq!(receipts[0].generation, generation(2));
 }
 
 #[test]
@@ -738,11 +741,11 @@ fn ze194_single_batch_400_nodes_with_and_without_vectors() {
         let result = store
             .apply_batch(&requests, &control())
             .expect("400-node single batch under production preparation allowance");
-        assert_eq!(result.admitted_generation(), generation(0));
+        assert_eq!(result.admitted_generation(), generation(1));
         assert_eq!(
             result.outcome(),
             GraphWriteOutcome::Committed {
-                generation: generation(1),
+                generation: generation(2),
             }
         );
         assert_eq!(result.receipts().len(), 400);
@@ -750,7 +753,7 @@ fn ze194_single_batch_400_nodes_with_and_without_vectors() {
             result
                 .receipts()
                 .iter()
-                .all(|receipt| receipt.generation == generation(1) && !receipt.replayed)
+                .all(|receipt| receipt.generation == generation(2) && !receipt.replayed)
         );
         let nodes: Vec<_> = (0..400).map(|index| node_id(&result, index)).collect();
         assert_eq!(
@@ -926,7 +929,8 @@ fn ze257_close_checkpoint_failure_is_reported_and_releases_the_writer() {
         .unwrap(),
     };
     create_node(&store, "durable", 1);
-    vfs.arm_fault(FaultPoint::Create);
+    // Unified close publishes the manifest instead of creating a legacy root.
+    vfs.arm_fault(FaultPoint::ManifestSync);
     assert!(
         store.close().is_err(),
         "checkpoint failure must not be hidden"
@@ -942,7 +946,7 @@ fn ze257_close_checkpoint_failure_is_reported_and_releases_the_writer() {
             .bundle()
             .base()
             .generation,
-        generation(1)
+        generation(2)
     );
     assert!(
         reopened

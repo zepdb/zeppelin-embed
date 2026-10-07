@@ -2209,7 +2209,7 @@ pub fn seed_capacity_store(store: &Store, count: usize, with_values: bool) -> Re
     if receipts.len() != count
         || receipts
             .iter()
-            .any(|receipt| receipt.generation.get() != 1 || receipt.replayed)
+            .any(|receipt| receipt.generation.get() != 2 || receipt.replayed)
     {
         return Err(String::from(
             "capacity fixture must create every node in one commit",

@@ -70,7 +70,8 @@ fn ze57_local_mixed_structured_and_cypher_revisions_keep_deleted_key_fence() {
     assert_eq!(created.receipts().len(), 1);
     let receipt = created.receipts()[0];
     assert_eq!(receipt.revision, revision(1));
-    assert_eq!(receipt.generation, GraphGeneration::new(1));
+    // Creation 1 + structured create 1 = generation 2.
+    assert_eq!(receipt.generation, GraphGeneration::new(2));
     assert!(!receipt.replayed);
     let EntityId::Node(id) = receipt.entity else {
         panic!("expected node receipt")
@@ -142,7 +143,8 @@ fn ze57_local_mixed_structured_and_cypher_revisions_keep_deleted_key_fence() {
     assert_eq!(
         put.outcome(),
         GraphWriteOutcome::Committed {
-            generation: GraphGeneration::new(3)
+            // Creation + create + Cypher SET + structured PUT.
+            generation: GraphGeneration::new(4)
         }
     );
     assert_node(&graph, id, 3, 3, &control);

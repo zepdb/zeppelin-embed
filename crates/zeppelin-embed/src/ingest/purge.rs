@@ -1034,7 +1034,10 @@ impl Store {
     }
 
     #[cfg(feature = "graph-cypher")]
-    fn purge_graph_checkpoint_through(&self, vfs: &dyn Vfs) -> Result<Option<u64>, PurgeError> {
+    pub(crate) fn graph_checkpoint_through(
+        &self,
+        vfs: &dyn Vfs,
+    ) -> Result<Option<u64>, StoreError> {
         let snapshot = self
             .snapshot
             .read()
@@ -1159,7 +1162,7 @@ impl Store {
             return Err(PurgeError::UnknownToken { token_id: token.id });
         }
         #[cfg(feature = "graph-cypher")]
-        let graph_checkpoint = self.purge_graph_checkpoint_through(vfs)?;
+        let graph_checkpoint = self.graph_checkpoint_through(vfs)?;
         let mut active = self
             .active
             .lock()
@@ -1169,7 +1172,7 @@ impl Store {
         let active_state = active.as_mut().ok_or(StoreError::Closed)?;
         #[cfg(feature = "graph-cypher")]
         if let Some(through) = graph_checkpoint {
-            self.checkpoint_native_graph_for_purge_locked(writer, active_state, through, vfs)
+            self.checkpoint_native_graph_locked(writer, active_state, through, vfs)
                 .map_err(|error| StoreError::PurgeRecovery {
                     detail: format!("purge graph checkpoint: {error}"),
                 })?;

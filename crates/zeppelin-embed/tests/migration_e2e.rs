@@ -423,58 +423,121 @@ fn reindex_preserves_retained_embedding_epochs() {
 
 #[cfg(feature = "graph-cypher")]
 #[test]
-fn graph_epoch_alias_commits_record_manifest_only_generations() {
+fn graph_epoch_alias_refuses_without_recording_a_generation() {
     let fixture = publish_two_epoch_fixture();
     let options = OpenOptions::default().with_epoch(fixture.epoch_a.clone());
     let store = Store::open(fixture.directory.path(), options.clone()).expect("open");
-    store.enable_graph().expect("graph");
-    store
-        .switch_epoch_alias(fixture.epoch_b.identity())
-        .expect("switch B");
-    store
-        .switch_epoch_alias(fixture.epoch_a.identity())
-        .expect("switch A");
-    drop(store);
-    let manifest = zeppelin_embed::manifest::io::load_manifest(
-        &StdVfs,
-        &fixture.directory.path().join("manifest.ze"),
-        0,
-    )
-    .expect("manifest");
-    assert_eq!(manifest.generation, 4);
+    let generation = store.enable_graph().expect("graph");
+    let before = std::fs::read(fixture.directory.path().join("manifest.ze")).expect("manifest");
+    assert!(matches!(
+        store.switch_epoch_alias(fixture.epoch_b.identity()),
+        Err(EpochTransitionError::GraphEpochTransition)
+    ));
     assert_eq!(
-        manifest.graph.expect("graph").generation_bumps,
-        vec![(0, 3)]
+        std::fs::read(fixture.directory.path().join("manifest.ze")).expect("manifest"),
+        before
     );
-    let reopened = Store::open(fixture.directory.path(), options).expect("reopen");
-    assert_eq!(reopened.snapshot().expect("snapshot").generation(), 4);
+    drop(store);
+    let reopened = Store::open(fixture.directory.path(), options).expect("reopen A");
+    assert_eq!(
+        reopened.snapshot().expect("snapshot").generation(),
+        generation
+    );
 }
 
 #[cfg(feature = "graph-cypher")]
 #[test]
-fn graph_epoch_drop_records_its_manifest_only_generation() {
+fn graph_epoch_drop_refuses_without_recording_a_generation() {
     let fixture = publish_two_epoch_fixture();
     let options = OpenOptions::default().with_epoch(fixture.epoch_a.clone());
     let store = Store::open(fixture.directory.path(), options.clone()).expect("open");
-    store.enable_graph().expect("graph");
+    let generation = store.enable_graph().expect("graph");
+    let before = std::fs::read(fixture.directory.path().join("manifest.ze")).expect("manifest");
+    assert!(matches!(
+        store.drop_epoch(fixture.epoch_b.identity().embedding),
+        Err(EpochTransitionError::GraphEpochTransition)
+    ));
     assert_eq!(
-        store
-            .drop_epoch(fixture.epoch_b.identity().embedding)
-            .expect("drop B")
-            .generation(),
-        3
+        std::fs::read(fixture.directory.path().join("manifest.ze")).expect("manifest"),
+        before
     );
     drop(store);
-    let manifest = zeppelin_embed::manifest::io::load_manifest(
-        &StdVfs,
-        &fixture.directory.path().join("manifest.ze"),
-        0,
-    )
-    .expect("manifest");
+    let reopened = Store::open(fixture.directory.path(), options).expect("reopen A");
     assert_eq!(
-        manifest.graph.expect("graph").generation_bumps,
-        vec![(0, 2)]
+        reopened.snapshot().expect("snapshot").generation(),
+        generation
     );
-    let reopened = Store::open(fixture.directory.path(), options).expect("reopen");
-    assert_eq!(reopened.snapshot().expect("snapshot").generation(), 3);
+}
+
+#[test]
+fn graph_free_epoch_snapshot_and_refusal_bytes_match_main() {
+    use zeppelin_embed::ingest::{DocumentVersion, IngestBatch, IngestDocument, IngestError};
+    use zeppelin_embed::lifecycle::StoreError;
+    let fixture = publish_two_epoch_fixture();
+    let store = Store::open(
+        fixture.directory.path(),
+        OpenOptions::default().with_epoch(fixture.epoch_a.clone()),
+    )
+    .expect("open");
+    store
+        .switch_epoch_alias(fixture.epoch_b.identity())
+        .expect("switch B");
+    store
+        .drop_epoch(fixture.epoch_a.identity().embedding)
+        .expect("drop A");
+    let large = IngestDocument::new(
+        DocumentVersion::new(DocId::new(99), Revision::new(1)),
+        vec![1.0; DIMS],
+    )
+    .with_text("x".repeat(2 * 1024 * 1024));
+    let error = store
+        .ingest(IngestBatch::new(vec![large]).with_epoch(fixture.epoch_b.identity()))
+        .expect_err("group cap");
+    assert!(matches!(
+        error,
+        IngestError::Store(StoreError::WalWrite(
+            zeppelin_embed::wal::WalWriteError::GroupTooLarge { .. }
+        ))
+    ));
+    store
+        .ingest(
+            IngestBatch::new(vec![
+                IngestDocument::new(
+                    DocumentVersion::new(DocId::new(99), Revision::new(1)),
+                    vec![1.0; DIMS],
+                )
+                .with_text("small"),
+            ])
+            .with_epoch(fixture.epoch_b.identity()),
+        )
+        .expect("continued service");
+    store
+        .delete(zeppelin_embed::ingest::DeleteBatch::new(vec![DocId::new(
+            99,
+        )]))
+        .expect("delete");
+    let copies = tempdir().expect("copy root");
+    let copy = copies.path().join("snapshot");
+    store.write_snapshot(&copy).expect("snapshot");
+    if let Ok(destination) = std::env::var("ZE_GRAPH_FREE_PROBE_DIR") {
+        let root = Path::new(&destination);
+        for (name, source) in [
+            ("source", fixture.directory.path()),
+            ("snapshot", copy.as_path()),
+        ] {
+            let target = root.join(name);
+            std::fs::create_dir_all(&target).expect("probe directory");
+            for entry in std::fs::read_dir(source).expect("probe files") {
+                let entry = entry.expect("entry");
+                std::fs::copy(entry.path(), target.join(entry.file_name())).expect("probe bytes");
+            }
+        }
+    }
+    drop(store);
+    let reopened = Store::open(&copy, OpenOptions::default().with_epoch(fixture.epoch_b))
+        .expect("reopen copy");
+    assert_eq!(
+        reopened.count_documents(None, None).expect("count").count,
+        3
+    );
 }

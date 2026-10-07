@@ -166,13 +166,13 @@ fn graph_apply_commits_a_document_node_and_its_edge_atomically() {
     assert_eq!(code, ZeErrorCode::ZeOk);
     assert_eq!(r.disposition, 2);
     assert_eq!(r.has_changed_generation, 1);
-    assert_eq!(r.changed_generation, 1);
+    assert_eq!(r.changed_generation, 2);
     assert_eq!(r.receipt_count, 3);
     assert_ne!(r.owner_token, 0);
     for (i, receipt) in receipts(&r).iter().enumerate() {
         assert_eq!(receipt.item, i as u32);
         assert_eq!(receipt.entity_kind, u32::from(i == 2));
-        assert_eq!(receipt.generation, 1);
+        assert_eq!(receipt.generation, 2);
         if i == 2 {
             assert_ne!(receipt.relationship, ZeRelId::default());
         } else {
@@ -211,7 +211,7 @@ fn graph_apply_refuses_a_malformed_item_with_no_effect() {
     let fresh = single_node(&mut b, "different");
     let (code, mut r) = apply(s.handle, &b, &[fresh]);
     assert_eq!(code, ZeErrorCode::ZeOk);
-    assert_eq!(r.changed_generation, 1);
+    assert_eq!(r.changed_generation, 2);
     free(&mut r);
 }
 #[test]
@@ -270,7 +270,7 @@ fn graph_apply_rejects_bad_response_descriptors_before_any_work() {
     }
     let (code, mut r) = apply(s.handle, &b, &items);
     assert_eq!(code, ZeErrorCode::ZeOk);
-    assert_eq!(r.changed_generation, 1);
+    assert_eq!(r.changed_generation, 2);
     free(&mut r);
 }
 #[test]
@@ -340,7 +340,7 @@ fn graph_cypher_write_then_read_returns_typed_rows() {
     let mut r = cypher_ok(s.handle, "CREATE (:Doc {title: 'alpha'})");
     assert_eq!(
         (r.disposition, r.changed_generation, r.row_count),
-        (2, 1, 0)
+        (2, 2, 0)
     );
     assert_eq!(ze_graph_response_free(&mut r), ZeErrorCode::ZeOk);
     let mut r = cypher_ok(s.handle, "MATCH (n:Doc) RETURN n.title AS title");

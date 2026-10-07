@@ -43,9 +43,12 @@ enum Operation {
     Checkpoint,
     Maintenance,
     Namespace,
+    EpochSwitch,
+    Snapshot,
+    Oversized,
 }
 
-const OPERATIONS: [Operation; 15] = [
+const OPERATIONS: [Operation; 18] = [
     Operation::Ingest,
     Operation::Batch,
     Operation::Upsert,
@@ -61,6 +64,9 @@ const OPERATIONS: [Operation; 15] = [
     Operation::Checkpoint,
     Operation::Maintenance,
     Operation::Namespace,
+    Operation::EpochSwitch,
+    Operation::Snapshot,
+    Operation::Oversized,
 ];
 
 struct Step {
@@ -151,6 +157,12 @@ impl SequenceVfs {
 impl Vfs for SequenceVfs {
     fn ensure_directory(&self, path: &Path, create: bool) -> std::io::Result<bool> {
         self.recorded.ensure_directory(path, create)
+    }
+    fn create_directory(&self, path: &Path) -> std::io::Result<()> {
+        self.recorded.create_directory(path)
+    }
+    fn remove_directory(&self, path: &Path) -> std::io::Result<()> {
+        self.recorded.remove_directory(path)
     }
     fn open(&self, path: &Path) -> std::io::Result<u64> {
         self.recorded.open(path)
@@ -451,8 +463,8 @@ pub(super) fn run() {
                 operations.push(operation);
                 operation_counts[operation as usize] += 1;
                 let operation = &operation;
-                let start = vfs.operations().unwrap().len();
-                let before = model.clone();
+                let mut start = vfs.operations().unwrap().len();
+                let mut before = model.clone();
                 let s = store.as_ref().unwrap();
                 let generation = match operation {
                     Operation::Ingest | Operation::Batch => {
@@ -636,6 +648,124 @@ pub(super) fn run() {
                         graph_unfolded = true;
                         s.snapshot().unwrap().generation()
                     }
+                    Operation::EpochSwitch => {
+                        // The two complete epochs isolate interpretation transitions
+                        // from the document history in the main visibility model.
+                        let (epochs, a, b) = two_epoch_fixture();
+                        let options = native_options().with_epoch(a.clone());
+                        let epoch_store = Store::open(epochs.path(), options.clone()).unwrap();
+                        for target in [b.identity(), a.identity()] {
+                            epoch_store
+                                .switch_epoch_alias(target)
+                                .expect("graph-free switch");
+                        }
+                        epoch_store.enable_graph().unwrap();
+                        disable_generation_fixture_maintenance(&epoch_store);
+                        let before = file_snapshot(epochs.path());
+                        assert!(matches!(
+                            epoch_store.switch_epoch_alias(b.identity()),
+                            Err(crate::epoch::EpochTransitionError::GraphEpochTransition)
+                        ));
+                        assert_eq!(file_snapshot(epochs.path()), before);
+                        let (node, _) = write_node(&epoch_store, "after-epoch-refusal");
+                        drop(epoch_store);
+                        let reopened = Store::open(epochs.path(), options).unwrap();
+                        assert!(observe_node(&reopened, node).is_some());
+                        s.snapshot().unwrap().generation()
+                    }
+                    Operation::Snapshot => {
+                        // Force an unabsorbed graph commit even after a prior fold.
+                        let (node, generation) = write_node(s, &format!("before-snapshot-{index}"));
+                        model.nodes.insert(node);
+                        model.acknowledge(generation);
+                        let end = vfs.operations().unwrap().len();
+                        steps.push(Step {
+                            start,
+                            end,
+                            before,
+                            after: model.clone(),
+                            purge: false,
+                        });
+                        start = end;
+                        before = model.clone();
+                        let copy = root.as_path().join(format!("snapshot-{index}"));
+                        let captured = match s.write_snapshot(&copy) {
+                            Ok(generation) => generation,
+                            Err(crate::lifecycle::StoreError::SnapshotPin { detail }) => {
+                                assert!(
+                                    matches!(
+                                        detail,
+                                        "seal namespace document writes before exporting a graph snapshot"
+                                            | "the retained WAL tail does not continue the absorbed prefix"
+                                    ),
+                                    "unexpected snapshot refusal: {detail}"
+                                );
+                                assert!(same_visibility(&visible(s, &all_documents), &model));
+                                assert!(!copy.exists());
+                                model.acknowledge(s.snapshot().unwrap().generation());
+                                s.checkpoint_native_graph(
+                                    &QueryControl::Cancel(CancelToken::new()),
+                                )
+                                .unwrap();
+                                model.acknowledge(s.snapshot().unwrap().generation());
+                                model.acknowledge(s.seal().unwrap());
+                                sealed = model.documents.clone();
+                                let (node, generation) =
+                                    write_node(s, &format!("before-retry-snapshot-{index}"));
+                                model.nodes.insert(node);
+                                model.acknowledge(generation);
+                                s.write_snapshot(&copy).unwrap()
+                            }
+                            Err(error) => panic!("snapshot failed: {error}"),
+                        };
+                        for access in [AccessMode::ReadOnly, AccessMode::ReadWrite] {
+                            let backup =
+                                Store::open(&copy, native_options().with_access_mode(access))
+                                    .unwrap();
+                            assert_eq!(backup.snapshot().unwrap().generation(), captured);
+                            assert!(same_visibility(&visible(&backup, &all_documents), &model));
+                        }
+                        graph_unfolded = false;
+                        captured
+                    }
+                    Operation::Oversized => {
+                        use crate::lifecycle::StoreError;
+                        let large = document(next_document)
+                            .with_text("x".repeat(crate::wal::DEFAULT_MAX_GROUP_BYTES_DURABLE));
+                        let error = s.ingest(IngestBatch::new(vec![large])).unwrap_err();
+                        assert!(
+                            matches!(
+                                error,
+                                crate::ingest::IngestError::Store(StoreError::WalWrite(
+                                    crate::wal::WalWriteError::GroupTooLarge { .. }
+                                ))
+                            ),
+                            "{error:?}"
+                        );
+                        let id = next_document;
+                        next_document += 1;
+                        model.acknowledge(
+                            s.ingest(IngestBatch::new(vec![document(id)]))
+                                .expect("document after definite refusal")
+                                .generation(),
+                        );
+                        model.documents.insert(id);
+                        all_documents.insert(id);
+                        let end = vfs.operations().unwrap().len();
+                        steps.push(Step {
+                            start,
+                            end,
+                            before,
+                            after: model.clone(),
+                            purge: false,
+                        });
+                        start = end;
+                        before = model.clone();
+                        let (node, generation) = write_node(s, &format!("after-oversized-{index}"));
+                        model.nodes.insert(node);
+                        graph_unfolded = true;
+                        generation
+                    }
                     Operation::Namespace => {
                         use crate::lifecycle::{LiveNamespaceMutation, NamespaceMutation};
                         let other = open(&root.as_path().join("beta"), &vfs, native_options());
@@ -696,13 +826,27 @@ pub(super) fn run() {
                 cuts.insert(step.start);
                 cuts.insert(step.end);
                 for (index, operation) in bytes.iter().enumerate().take(step.end).skip(step.start) {
-                    if matches!(
-                        operation,
-                        CrashOperation::Append { .. }
-                            | CrashOperation::Sync { .. }
-                            | CrashOperation::Rename { .. }
-                    ) {
-                        cuts.insert(index + 1);
+                    let path = match operation {
+                        CrashOperation::Append { path, .. } | CrashOperation::Sync { path, .. } => {
+                            Some(path)
+                        }
+                        CrashOperation::Rename { from, .. } => Some(from),
+                        _ => None,
+                    };
+                    // These cuts model the source. Copy output does not mutate
+                    // it, and the complete backup has its own RO/RW oracle.
+                    if let Some(path) = path {
+                        let snapshot_output = path
+                            .strip_prefix(root.as_path())
+                            .ok()
+                            .and_then(|relative| relative.components().next())
+                            .is_some_and(|part| {
+                                let name = part.as_os_str().to_string_lossy();
+                                name.starts_with("snapshot-") || name.starts_with(".snapshot-")
+                            });
+                        if !snapshot_output {
+                            cuts.insert(index + 1);
+                        }
                     }
                 }
             }

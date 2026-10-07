@@ -123,6 +123,8 @@ pub enum ZeErrorCode {
     ZeErrLegacyGraphDirectory = 58,
     /// This build cannot open a store containing graph state.
     ZeErrGraphUnsupportedBuild = 59,
+    /// Graph catalogs cannot yet carry an epoch alias switch or epoch drop.
+    ZeErrGraphEpochTransition = 60,
 }
 
 /// Opaque generation-tagged store handle.

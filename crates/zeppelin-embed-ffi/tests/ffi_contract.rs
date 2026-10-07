@@ -175,6 +175,11 @@ const ERROR_CODE_GOLDEN: &[(ZeErrorCode, i32, &str)] = &[
         59,
         "ZE_ERR_GRAPH_UNSUPPORTED_BUILD",
     ),
+    (
+        ZeErrorCode::ZeErrGraphEpochTransition,
+        60,
+        "ZE_ERR_GRAPH_EPOCH_TRANSITION",
+    ),
 ];
 
 fn header_error_codes() -> Vec<(String, i32)> {

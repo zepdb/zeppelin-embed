@@ -395,6 +395,11 @@ fn ze190_fence_only_statement_commits_and_reopens() {
         let fence = nodes.iter().map(|node| node.get()).max().unwrap();
         let before = store.generation();
         store.store.checkpoint_native_graph(&control()).unwrap();
+        assert_eq!(
+            store.store.snapshot().unwrap().generation(),
+            before + 1,
+            "checkpoint publishes a manifest generation"
+        );
         let lease = store.store.admit_native_read().unwrap();
         let roots = lease.bundle().roots().references();
         let high = lease.bundle().high_waters();
@@ -429,8 +434,8 @@ fn ze190_fence_only_statement_commits_and_reopens() {
         let (rows, report) = committed(mutate(&store, &spec, IMAGES));
         assert_eq!(rows, vec![(fence + 1, 9)]);
         assert_eq!(report.disposition, BatchDisposition::Changed);
-        assert_eq!(report.changed.map(GraphGeneration::get), Some(before + 1));
-        assert_eq!(store.generation(), before + 1);
+        assert_eq!(report.changed.map(GraphGeneration::get), Some(before + 2));
+        assert_eq!(store.generation(), before + 2);
         let lease = store.store.admit_native_read().unwrap();
         assert_eq!(lease.bundle().roots().references(), roots);
         assert_eq!(lease.bundle().high_waters().node, high.node + 2);
@@ -472,7 +477,7 @@ fn ze190_fence_only_statement_commits_and_reopens() {
                 document,
             }
         };
-        assert_eq!(store.generation(), before + 1);
+        assert_eq!(store.generation(), before + 2);
         assert_eq!(sorted(read(&store, &scan_p())), pairs(&nodes, &[1, 2, 3]));
         assert_eq!(revisions(&store, &nodes), vec![2, 1, 1]);
         let lease = store.store.admit_native_read().unwrap();
@@ -736,20 +741,19 @@ fn search_membership(
 }
 
 fn assert_fence_only_wal(path: &std::path::Path) {
-    let bytes = std::fs::read_dir(path)
+    // Unified graph envelopes live in op 10 of wal.ze, with no ZE-38 header.
+    let wal = crate::wal::WalReader::open(&crate::vfs::StdVfs, &path.join("wal.ze"))
         .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| {
-            path.file_name()
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .starts_with("graph-wal-")
-        })
-        .map(|path| std::fs::read(path).unwrap())
-        .max_by_key(|bytes| u64::from_le_bytes(bytes[48..56].try_into().unwrap()))
+        .into_clean()
         .unwrap();
-    let mut offset = crate::property_graph::wal::HEADER_BYTES;
+    let record = wal
+        .records()
+        .iter()
+        .rev()
+        .find(|record| record.op == crate::ingest::wal_payload::GRAPH_COMMIT_V1)
+        .unwrap();
+    let bytes = crate::ingest::wal_payload::decode_graph_commit(record.payload().unwrap()).unwrap();
+    let mut offset = 0;
     let mut commits = 0;
     let mut mutations = 0;
     let mut last_mutations = None;

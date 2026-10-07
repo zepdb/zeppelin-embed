@@ -1421,6 +1421,7 @@ impl Store {
                     &batch,
                     &records,
                 )?;
+                publication.on_wal_error(&error);
                 return Err(error.into());
             }
         };
@@ -1560,6 +1561,7 @@ impl Store {
                 if let Some(prepared) = prepared {
                     prepared.abort(self.vfs.as_ref(), &self.directory, self.durability_policy)?;
                 }
+                publication.on_wal_error(&error);
                 return Err(error.into());
             }
         };

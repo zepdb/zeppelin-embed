@@ -217,6 +217,7 @@ fn sealed_store_torn_wal_header_is_not_masked_by_manifest_coverage() {
     let mut bytes = read(&wal);
     bytes.truncate(20);
     write(&wal, &bytes);
+    let before = directory_bytes(directory.path());
     let controller = storage_controller(
         StorageTestFault::TornWalHeader,
         StorageFaultPlan::new(17, "wal.ze").with_offset(20),
@@ -230,17 +231,20 @@ fn sealed_store_torn_wal_header_is_not_masked_by_manifest_coverage() {
     .err()
     .expect("sealed torn WAL header must refuse public open");
 
-    assert!(matches!(
-        error,
-        zeppelin_embed::lifecycle::StoreError::WalRecovery(
-            zeppelin_embed::wal::WalRecoveryError::InvalidHeader(
-                zeppelin_embed::wal::header::WalHeaderError::Truncated {
-                    needed: 40,
-                    available: 20
-                }
+    assert!(
+        matches!(
+            &error,
+            zeppelin_embed::lifecycle::StoreError::WalRecovery(
+                zeppelin_embed::wal::WalRecoveryError::InvalidHeader(
+                    zeppelin_embed::wal::header::WalHeaderError::Truncated {
+                        needed: 40,
+                        available: 20
+                    }
+                )
             )
-        )
-    ));
+        ),
+        "{error:?}"
+    );
     let receipt = assert_receipt(
         &controller,
         "wal-prefix",
@@ -249,6 +253,7 @@ fn sealed_store_torn_wal_header_is_not_masked_by_manifest_coverage() {
     );
     assert_eq!(receipt.plan().op_index(), 17);
     assert_eq!(receipt.plan().offset(), Some(20));
+    assert_eq!(directory_bytes(directory.path()), before);
 }
 
 #[test]

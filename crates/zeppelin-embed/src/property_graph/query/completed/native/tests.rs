@@ -961,7 +961,7 @@ fn native_result_lists_bits_and_entity_identity() {
         );
         assert_eq!(
             bundle.base().generation,
-            crate::property_graph::GraphGeneration::new(0)
+            crate::property_graph::GraphGeneration::new(1)
         );
         assert_eq!(bundle.sequence(), 0);
         assert!(bundle.roots().references().iter().all(Option::is_none));

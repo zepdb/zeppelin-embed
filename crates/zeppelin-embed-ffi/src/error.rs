@@ -285,6 +285,7 @@ impl FfiError {
             EpochTransitionError::PublishedEpoch { .. } => ZeErrorCode::ZeErrEpochPublished,
             EpochTransitionError::UnsealedWrites { .. } => ZeErrorCode::ZeErrUnsealedWrites,
             EpochTransitionError::MissingDocumentIdentity { .. } => ZeErrorCode::ZeErrCorrupt,
+            EpochTransitionError::GraphEpochTransition => ZeErrorCode::ZeErrGraphEpochTransition,
             EpochTransitionError::ReclaimedBytesOverflow => ZeErrorCode::ZeErrInternal,
         };
         Self::new(code, message)

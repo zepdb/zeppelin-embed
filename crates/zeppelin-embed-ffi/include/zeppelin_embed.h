@@ -364,6 +364,10 @@ enum ze_error_code
      This build cannot open a store containing graph state.
      */
     ZE_ERR_GRAPH_UNSUPPORTED_BUILD = 59,
+    /*
+     Graph catalogs cannot yet carry an epoch alias switch or epoch drop.
+     */
+    ZE_ERR_GRAPH_EPOCH_TRANSITION = 60,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L

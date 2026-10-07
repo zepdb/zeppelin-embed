@@ -641,7 +641,7 @@ pub(super) mod ze202 {
             assert_eq!(receipts.len(), 1);
             assert_eq!(receipts[0].entity, EntityId::Node(NodeId::new(id).unwrap()));
             assert_eq!(receipts[0].revision.get(), 1);
-            assert_eq!(receipts[0].generation.get(), if index == 0 { 1 } else { 4 });
+            assert_eq!(receipts[0].generation.get(), if index == 0 { 2 } else { 5 });
             drop(receipts);
             let rel_props = [GraphProperty::new(
                 GraphName::new("p").unwrap(),
@@ -669,7 +669,7 @@ pub(super) mod ze202 {
                 EntityId::Relationship(RelId::new(rel).unwrap())
             );
             assert_eq!(receipts[0].revision.get(), 1);
-            assert_eq!(receipts[0].generation.get(), if index == 0 { 2 } else { 5 });
+            assert_eq!(receipts[0].generation.get(), if index == 0 { 3 } else { 6 });
         }
         (store, dir)
     }

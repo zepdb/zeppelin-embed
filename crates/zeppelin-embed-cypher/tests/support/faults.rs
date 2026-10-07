@@ -1,4 +1,4 @@
-//! One-shot, N-th graph-WAL append failure over the real filesystem.
+//! One-shot, N-th unified WAL append failure over the real filesystem.
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -81,7 +81,7 @@ impl<V: Vfs> Vfs for FailingAppendVfs<V> {
         if path
             .file_name()
             .and_then(|n| n.to_str())
-            .is_some_and(|n| n.starts_with("graph-wal-") && n.ends_with(".ze"))
+            .is_some_and(|n| n == "wal.ze")
         {
             Ok(Box::new(FailingFile {
                 inner,

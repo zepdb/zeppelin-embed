@@ -9850,6 +9850,8 @@ mod tests {
     use crate::manifest::{Manifest, ManifestError};
     use crate::meta::Schema;
     use crate::vfs::StdVfs;
+    #[cfg(feature = "graph-cypher")]
+    use crate::vfs::Vfs;
     use crate::vfs::crash::MemoryVfs;
 
     use super::durability::{CommitTier, DurabilityMode, DurabilityPolicyError};
@@ -9893,7 +9895,8 @@ mod tests {
         })
         .expect("fixture");
         assert_eq!(
-            std::fs::read(directory.path().join("manifest.ze"))
+            StdVfs
+                .read(&directory.path().join("manifest.ze"))
                 .expect("main publishes the initial manifest before opening the writer"),
             expected
         );
@@ -9940,7 +9943,7 @@ mod tests {
                     let entry = entry.expect("entry");
                     (
                         entry.file_name(),
-                        std::fs::read(entry.path()).expect("bytes"),
+                        StdVfs.read(&entry.path()).expect("bytes"),
                     )
                 })
                 .collect::<std::collections::BTreeMap<_, _>>()
@@ -10021,7 +10024,7 @@ mod tests {
             StoreTestDependencies::new(vfs.clone(), Arc::new(super::SystemMonotonicClock)),
         )
         .expect("open");
-        let wal = std::fs::read(directory.path().join("wal.ze")).expect("WAL");
+        let wal = StdVfs.read(&directory.path().join("wal.ze")).expect("WAL");
         vfs.arm_fault(point);
         assert!(store.enable_graph().is_err());
         vfs.assert_fired_once();
@@ -10058,7 +10061,7 @@ mod tests {
             "retry must complete the directory durability barrier"
         );
         assert_eq!(
-            std::fs::read(directory.path().join("wal.ze")).expect("WAL"),
+            StdVfs.read(&directory.path().join("wal.ze")).expect("WAL"),
             wal
         );
         assert_eq!(store.enable_graph().expect("idempotent"), 1);

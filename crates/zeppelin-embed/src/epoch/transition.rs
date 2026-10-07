@@ -69,6 +69,8 @@ pub enum EpochTransitionError {
         /// Largest sequence durable in the WAL.
         durable_end: u64,
     },
+    /// Graph catalogs cannot yet carry an epoch alias switch or epoch drop.
+    GraphEpochTransition,
     /// Summing the reclaimed segment bytes exceeded `u64`.
     ReclaimedBytesOverflow,
 }
@@ -119,6 +121,7 @@ impl std::fmt::Display for EpochTransitionError {
                 formatter,
                 "epoch transition requires a sealed WAL: active rows {active_rows}, manifest absorbed through {absorbed_through}, durable WAL end {durable_end}"
             ),
+            Self::GraphEpochTransition => formatter.write_str("graph stores cannot switch or drop epochs until graph catalogs can carry the transition"),
             Self::ReclaimedBytesOverflow => {
                 formatter.write_str("dropped epoch segment bytes exceed u64")
             }
@@ -136,6 +139,7 @@ impl std::error::Error for EpochTransitionError {
             | Self::EmbeddingEpochUnavailable { .. }
             | Self::PublishedEpoch { .. }
             | Self::UnsealedWrites { .. }
+            | Self::GraphEpochTransition
             | Self::ReclaimedBytesOverflow => None,
         }
     }
@@ -259,6 +263,10 @@ impl Store {
         let manifest_path = self.directory.join(MANIFEST_FILE);
         let manifest =
             load_manifest(vfs, &manifest_path, durable_end).map_err(StoreError::Manifest)?;
+        #[cfg(feature = "graph-cypher")]
+        if manifest.graph.is_some() {
+            return Err(EpochTransitionError::GraphEpochTransition);
+        }
         require_absorbed(active_state.segment.row_count(), &manifest, durable_end)?;
         Ok(EpochTransitionAdmission {
             active,

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -66,4 +66,14 @@ test('releases the handle and reports use after close', () => {
   } finally {
     rmSync(directory, { force: true, recursive: true });
   }
+});
+
+// Names are obtained dynamically from ze_error_code_name by the addon.
+// Pin the appended C value and the JavaScript error representation.
+test('graph epoch transition error retains its append-only name and value', () => {
+  const header = readFileSync(new URL('../../../crates/zeppelin-embed-ffi/include/zeppelin_embed.h', import.meta.url), 'utf8');
+  assert.match(header, /ZE_ERR_GRAPH_EPOCH_TRANSITION = 60,/);
+  const error = new ZeppelinError('graph epoch transition refused', 'ZE_ERR_GRAPH_EPOCH_TRANSITION', 60);
+  assert.equal(error.code, 'ZE_ERR_GRAPH_EPOCH_TRANSITION');
+  assert.equal(error.errorCode, 60);
 });

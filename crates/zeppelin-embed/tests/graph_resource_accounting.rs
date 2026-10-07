@@ -210,7 +210,8 @@ fn ze76_oversize_and_control_failures_release_without_partial_effects() {
     assert_eq!(resources.reserved_bytes().unwrap(), baseline);
     let result =
         read_p_with_options(&fixture.store, &control(), &GraphQueryOptions::default()).unwrap();
-    assert_eq!(result.metadata().generation.get(), 1);
+    // Unified creation publishes 1; the fixture's single batch publishes 2.
+    assert_eq!(result.metadata().generation.get(), 2);
     assert_eq!(result.metadata().rows, 3);
     assert_eq!(result.cell(0, 0), Some(&Value::I64(11)));
 }

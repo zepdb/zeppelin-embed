@@ -2217,14 +2217,10 @@ pub(super) fn protect_and_commit(
     );
     let range = match result {
         Ok(range) => range,
-        Err(
-            source @ crate::lifecycle::StoreError::WalWrite(
-                crate::wal::WalWriteError::GroupTooLarge { .. }
-                | crate::wal::WalWriteError::SequenceExhausted
-                | crate::wal::WalWriteError::Record(_)
-                | crate::wal::WalWriteError::Header(_),
-            ),
-        ) => return Err(NativeGraphError::Store(source)),
+        Err(source) if source.is_definite_wal_refusal() => {
+            publication.complete();
+            return Err(NativeGraphError::Store(source));
+        }
         Err(source) => {
             writer.stopped = true;
             let _ = store.native_graph.stop_admissions();
@@ -2907,10 +2903,10 @@ impl crate::lifecycle::Store {
         }
     }
 
-    /// Purge already owns state, WAL and active. Taking the native writer here
+    /// Purge and snapshot export already own state, WAL and active. Taking the native writer here
     /// would reverse the graph write lock order. Its counters/protection remain
     /// conservative until its next checkpoint; the manifest owns durability.
-    pub(crate) fn checkpoint_native_graph_for_purge_locked(
+    pub(crate) fn checkpoint_native_graph_locked(
         &self,
         wal: &mut crate::ingest::StoreWal,
         active: &mut crate::ingest::ActiveState,

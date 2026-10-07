@@ -3100,6 +3100,28 @@ mod graph_write {
                 .iter()
                 .any(|event| matches!(event, DurabilityEvent::Append(_)))
         );
+        store
+            .apply_native_graph(
+                &[StructuredWrite {
+                    key: ApplicationKey::new(EntityKind::Node, "group-cap", "small").unwrap(),
+                    revision: GraphRevision::new(1).unwrap(),
+                    operation: StructuredOperation::Create,
+                    image: Some(WriteImage::Node(&image)),
+                }],
+                &QueryControl::Cancel(CancelToken::new()),
+            )
+            .expect("small graph write after definite refusal");
+        store
+            .ingest(crate::ingest::IngestBatch::new(vec![
+                crate::ingest::IngestDocument::new(
+                    crate::ingest::DocumentVersion::new(
+                        crate::ingest::DocId::new(91),
+                        crate::ingest::Revision::new(1),
+                    ),
+                    vec![1.0, 0.0],
+                ),
+            ]))
+            .expect("small document after graph refusal");
         store.close().unwrap();
     }
 

@@ -1064,7 +1064,7 @@ fn ze202_same_low64_search_and_eligibility_keep_selected_id() {
             assert_eq!(result.pools().reports.len(), 1);
             let report = result.pools().reports[0];
             assert_eq!(report.call, SearchCallId(0));
-            assert_eq!(report.generation.get(), 5);
+            assert_eq!(report.generation.get(), 6);
             assert_eq!(report.kind, kind);
             assert_eq!(report.candidate_count, expected.len() as u64);
             assert_eq!(

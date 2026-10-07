@@ -473,6 +473,16 @@ impl PublishedSnapshot {
             }
         }
         let wal = WalReader::open(vfs, &directory.join(STORE_WAL_FILE)).map_err(StoreError::Wal)?;
+        // A malformed header cannot provide a manifest boundary. Preserve the
+        // header refusal before comparing the manifest to that boundary.
+        if let Some(crate::wal::replay::ReplayTerminator::InvalidHeader(reason)) = wal.terminator()
+            && reason != crate::wal::header::WalHeaderError::Missing
+        {
+            let error = crate::wal::WalRecoveryError::InvalidHeader(reason);
+            #[cfg(any(test, feature = "test-seams"))]
+            super::record_storage_wal_recovery_fault(&error);
+            return Err(StoreError::WalRecovery(error));
+        }
         let durable_end = wal.durable_end();
         let manifest =
             load_manifest(vfs, &manifest_path, durable_end).map_err(StoreError::Manifest)?;

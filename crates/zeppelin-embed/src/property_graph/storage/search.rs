@@ -50,3 +50,5 @@ pub(crate) use view::SparseView;
 
 #[cfg(any(test, feature = "test-seams"))]
 mod tests;
+
+pub(crate) use view::root_catalog;

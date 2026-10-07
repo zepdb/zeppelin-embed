@@ -25,6 +25,7 @@ fn control() -> QueryControl {
     QueryControl::Cancel(CancelToken::new())
 }
 
+// Unified creation publishes generation 1; each fixture batch advances it once.
 fn store_options() -> OpenOptions {
     OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024)
 }
@@ -68,7 +69,7 @@ fn apply_and_settle_commits_a_real_write_and_publishes_its_receipt() {
     assert_eq!(
         guarded.outcome,
         OperationOutcome::Success(SuccessfulOutcome::Committed(
-            std::num::NonZeroU64::new(1).unwrap()
+            std::num::NonZeroU64::new(2).unwrap()
         ))
     );
     let mut response = guarded.value.expect("no panic").expect("committed");
@@ -77,8 +78,8 @@ fn apply_and_settle_commits_a_real_write_and_publishes_its_receipt() {
         ZeGraphDisposition::ZeGraphDispositionCommitted as u32
     );
     assert_eq!(response.has_changed_generation, 1);
-    assert_eq!(response.changed_generation, 1);
-    assert_eq!(response.admitted_generation, 0);
+    assert_eq!(response.changed_generation, 2);
+    assert_eq!(response.admitted_generation, 1);
     assert_eq!(response.receipt_count, 1);
     let receipts = unsafe { std::slice::from_raw_parts(response.receipts, response.receipt_count) };
     assert_eq!(receipts[0].item, 0);
@@ -87,7 +88,7 @@ fn apply_and_settle_commits_a_real_write_and_publishes_its_receipt() {
         ZeGraphEntityKind::ZeGraphEntityNode as u32
     );
     assert_eq!(receipts[0].deleted, 0);
-    assert_eq!(receipts[0].generation, 1);
+    assert_eq!(receipts[0].generation, 2);
     REGISTRY.free(&mut response).expect("free");
     store.close().expect("close graph store");
 }
@@ -122,7 +123,7 @@ fn apply_and_settle_replays_an_exact_retry() {
         std::slice::from_raw_parts(second_response.receipts, second_response.receipt_count)
     };
     assert_eq!(receipts[0].node, installed);
-    assert_eq!(receipts[0].generation, 1);
+    assert_eq!(receipts[0].generation, 2);
     REGISTRY.free(&mut second_response).expect("free");
     store.close().expect("close graph store");
 }
@@ -283,7 +284,7 @@ fn run_query_reads_real_committed_nodes() {
     let mut response = read_all(&REGISTRY, &store, &control()).expect("real read");
     assert_eq!(response.row_count, 1);
     assert_eq!(response.has_admitted_generation, 1);
-    assert_eq!(response.admitted_generation, 1);
+    assert_eq!(response.admitted_generation, 2);
     assert_eq!(response.pool.node_count, 1);
     REGISTRY.free(&mut response).expect("free");
     store.close().expect("close graph store");
@@ -361,7 +362,7 @@ fn ze241_receipt_response_failure_leaves_batch_not_committed() {
     assert_eq!(
         retry.outcome,
         OperationOutcome::Success(SuccessfulOutcome::Committed(
-            std::num::NonZeroU64::new(1).unwrap()
+            std::num::NonZeroU64::new(2).unwrap()
         ))
     );
     let mut response = retry.value.unwrap().unwrap();
@@ -543,11 +544,11 @@ fn ze211_nodes_preserve_sparse_order_and_payloads() {
     )
     .unwrap();
     store.close().unwrap();
-    ze211_check_rows(&deleted, &[0], 3);
+    ze211_check_rows(&deleted, &[0], 4);
     REGISTRY.free(&mut deleted).unwrap();
-    ze211_check_rows(&response, &[5, 0, 5, 5], 2);
-    ze211_check_rows(&empty, &[], 2);
-    ze211_check_rows(&absent, &[0], 2);
+    ze211_check_rows(&response, &[5, 0, 5, 5], 3);
+    ze211_check_rows(&empty, &[], 3);
+    ze211_check_rows(&absent, &[0], 3);
     let nodes =
         unsafe { std::slice::from_raw_parts(response.pool.nodes, response.pool.node_count) };
     assert_eq!(nodes.len(), 2);
@@ -648,11 +649,11 @@ fn ze211_relationships_preserve_sparse_order_and_payloads() {
         .unwrap();
     let mut deleted = run_get_relationships(&REGISTRY, &store, &[edge], &control()).unwrap();
     store.close().unwrap();
-    ze211_check_rows(&deleted, &[0], 4);
+    ze211_check_rows(&deleted, &[0], 5);
     REGISTRY.free(&mut deleted).unwrap();
-    ze211_check_rows(&response, &[6, 0, 6, 6], 3);
-    ze211_check_rows(&empty, &[], 3);
-    ze211_check_rows(&absent, &[0], 3);
+    ze211_check_rows(&response, &[6, 0, 6, 6], 4);
+    ze211_check_rows(&empty, &[], 4);
+    ze211_check_rows(&absent, &[0], 4);
     assert_eq!(response.pool.relationship_count, 2);
     let relationships = unsafe { std::slice::from_raw_parts(response.pool.relationships, 2) };
     assert_eq!(relationships[1].source, node_id(ids[1].get()));

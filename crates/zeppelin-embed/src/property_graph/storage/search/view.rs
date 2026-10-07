@@ -1762,3 +1762,15 @@ impl<'v, 'a, 'm, S: BlockSource, C: RecordCatalog<S>> SparseSource<'v, 'a, 'm, S
         Ok(self.lexical.as_ref().map(SparseLexical::sealed))
     }
 }
+
+// A sparse root may retain the catalog from an earlier generation. A portable
+// checkpoint inventory must carry that catalog as well as the current catalog.
+pub(crate) fn root_catalog<S: BlockSource>(
+    source: &S,
+    required: RequiredRef,
+    resources: &mut TreeResources<'_>,
+) -> Result<RequiredRef, TreeError> {
+    source.with_block(required.block, resources, |block, _| {
+        RootDescriptor::decode(block.payload()).map(|descriptor| descriptor.catalog)
+    })
+}

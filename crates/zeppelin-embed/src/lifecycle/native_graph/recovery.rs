@@ -6104,6 +6104,8 @@ fn install_unified_inner(
     REOPEN_PROFILE.with(|report| *report.borrow_mut() = ReopenProfile::default());
     #[cfg(test)]
     let mut phase_start = std::time::Instant::now();
+    #[cfg(test)]
+    FENCE_CANDIDATES.with(|count| count.set(0));
     store.accounting.enable_graph_ceiling()?;
     let checkpoint = graph
         .state()
@@ -6284,6 +6286,17 @@ fn install_unified_inner(
         }
     }
     #[cfg(test)]
+    let resident_peak = shared.peak_reserved_bytes()?;
+    #[cfg(test)]
+    OPEN_METRICS.with(|metrics| {
+        metrics.set((
+            resources.consumed(),
+            storage.peak_reserved_bytes(),
+            FENCE_CANDIDATES.with(Cell::get),
+            resident_peak,
+        ))
+    });
+    #[cfg(test)]
     reopen_phase("bundle_writer_installation", &mut phase_start);
     Ok(())
 }
@@ -6335,6 +6348,11 @@ pub(super) fn manifest_inventory(
         .chain(bundle.prepared_inventories().iter().copied())
     {
         offer(required.object)?;
+    }
+    for required in [state.text, state.vector].into_iter().flatten() {
+        let catalog =
+            crate::property_graph::storage::search::root_catalog(&source, required, &mut tree)?;
+        offer(catalog.object)?;
     }
     let root = bundle.roots().directory(TreeKind::ObjectInventory)?;
     let mut cursor =

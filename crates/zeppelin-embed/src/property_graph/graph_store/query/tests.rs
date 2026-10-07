@@ -333,9 +333,8 @@ fn graph_query_write_plan_commits_and_reads_back() {
         crate::property_graph::query::completed::Outcome::Committed { changed } => changed,
         other => panic!("expected Committed, observed {other:?}"),
     };
-    // Generation 1 is the fixture's own create batch; this SET is the second
-    // durable change.
-    assert_eq!(generation, GraphGeneration::new(2));
+    // Manifest creation is generation 1, the fixture batch is 2, and SET is 3.
+    assert_eq!(generation, GraphGeneration::new(3));
     let expected: Vec<_> = fixture
         .nodes
         .iter()

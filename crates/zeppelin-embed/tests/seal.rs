@@ -1112,12 +1112,28 @@ fn a_failed_directory_sync_after_the_wal_rename_keeps_later_writes_durable() {
     store
         .seal_with_cancel_on_vfs(&CancelToken::new(), &vfs)
         .expect_err("the directory sync failure is reported");
-    expected.push(ingest_one(&store, 7));
-    expected.sort_unstable();
+    let refused = store
+        .ingest(IngestBatch::new(vec![IngestDocument::new(
+            DocumentVersion::new(DocId::new(7), Revision::new(1)),
+            vec![7.0, 1.0],
+        )]))
+        .expect_err("directory sync failure must fence later writes");
+    assert!(matches!(
+        refused,
+        IngestError::Store(StoreError::WalWrite(
+            zeppelin_embed::wal::WalWriteError::Failed { ref detail, .. }
+        )) if detail.as_ref() == "writer publication did not complete"
+    ));
     store.close().expect("close store");
 
     let reopened = Store::open(directory.path(), durable_options()).expect("reopen");
     assert_eq!(live_versions(&reopened), expected);
+    // Only recovery may admit writes after this uncertain publication.
+    expected.push(ingest_one(&reopened, 7));
+    expected.sort_unstable();
+    reopened.close().expect("close recovered writer");
+    let again = Store::open(directory.path(), durable_options()).expect("second reopen");
+    assert_eq!(live_versions(&again), expected);
 }
 
 #[test]

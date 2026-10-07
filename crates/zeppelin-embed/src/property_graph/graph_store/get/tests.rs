@@ -384,13 +384,13 @@ fn graph_store_get_nodes_admits_one_generation_for_the_whole_call() {
     assert_eq!(
         first.outcome(),
         crate::property_graph::GraphWriteOutcome::Committed {
-            generation: generation(1)
+            generation: generation(2)
         }
     );
     assert_eq!(
         second.outcome(),
         crate::property_graph::GraphWriteOutcome::Committed {
-            generation: generation(2)
+            generation: generation(3)
         }
     );
 
@@ -405,17 +405,17 @@ fn graph_store_get_nodes_admits_one_generation_for_the_whole_call() {
         .expect("get both nodes in one call");
     assert_eq!(
         result.generation(),
-        generation(2),
+        generation(3),
         "the whole call observes one current admitted generation"
     );
     let first_node = result.nodes()[0].as_ref().expect("first node present");
     let second_node = result.nodes()[1].as_ref().expect("second node present");
     assert_eq!(
         first_node.generation,
-        generation(1),
+        generation(2),
         "each entity keeps its own installing generation"
     );
-    assert_eq!(second_node.generation, generation(2));
+    assert_eq!(second_node.generation, generation(3));
     store.close().expect("close store");
 }
 

@@ -759,9 +759,9 @@ fn ze202_same_low64_set_changes_only_selected_entity() {
                 .collect::<Vec<_>>()
         };
         let mut expected = metadata(&before);
-        expected[selected] = (2, 6);
+        expected[selected] = (2, 7);
         assert_eq!(metadata(&after), expected);
-        assert_eq!(after.metadata().outcome, committed_at(6));
+        assert_eq!(after.metadata().outcome, committed_at(7));
         store.close().unwrap();
         drop(store);
         let reopened = Store::open_native_graph(

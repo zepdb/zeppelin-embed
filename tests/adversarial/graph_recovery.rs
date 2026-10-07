@@ -67,6 +67,7 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
             "property-graph.recovery.serial-orphan",
             "property-graph.recovery.checkpoint",
             "property-graph.recovery.read-only",
+            "property-graph.recovery.snapshot-checkpoint-failure",
         ]
         .contains(&receipt.key)
             && receipt.fires == 0
@@ -75,7 +76,7 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
         }
         coverage.hit(receipt.key);
     }
-    if seen.len() != 9 {
+    if seen.len() != 13 {
         return Err("missing recovery boundary receipts".into());
     }
     probe_commit_boundaries(seed, coverage)?;

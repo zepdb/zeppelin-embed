@@ -744,14 +744,16 @@ fn ze53_slice_s2_checkpointed_attempt_is_rebuilt_and_settled_once() {
         })
         .unwrap();
     let nodes = three_nodes(&store);
-    // The fixture is one complete envelope; 63 more make the next commit
+    // Creation publishes generation 1. The fixture is one envelope; 63 more make the next commit
     // checkpoint first.
     for _ in 0..63 {
         committed(mutate(&store, &increment_p(), IMAGES));
     }
     let before = store.generation();
-    assert_eq!(before, 64);
+    assert_eq!(before, 1 + 1 + 63);
 
+    // The bundle still admits at before; checkpoint publishes manifest before + 1,
+    // and the rebuilt write publishes before + 2.
     let (invocations, settles) = (Cell::new(0), Cell::new(0));
     let (result, report) = written(write_counted(
         &store,
@@ -764,12 +766,12 @@ fn ze53_slice_s2_checkpointed_attempt_is_rebuilt_and_settled_once() {
     assert_eq!(invocations.get(), 2);
     assert_eq!(settles.get(), 1);
     assert_eq!(report.admitted.get(), before);
-    assert_eq!(report.changed.map(GraphGeneration::get), Some(before + 1));
-    assert_eq!(result.metadata().outcome, committed_at(before + 1));
+    assert_eq!(report.changed.map(GraphGeneration::get), Some(before + 2));
+    assert_eq!(result.metadata().outcome, committed_at(before + 2));
     let expected: Vec<_> = nodes
         .iter()
         .zip([65, 66, 67])
-        .map(|(node, value)| (node.get(), value, p(value), 65, before + 1))
+        .map(|(node, value)| (node.get(), value, p(value), 65, before + 2))
         .collect();
     assert_eq!(increment_rows(&result), expected);
 

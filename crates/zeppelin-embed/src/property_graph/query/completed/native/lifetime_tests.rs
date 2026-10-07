@@ -270,17 +270,18 @@ fn ze53_s4_results_outlive_relocation_close_and_reopen() {
         .expect("relocating maintenance");
     drop(admission);
     assert!(report.replaced_physical_refs > 0, "nothing was relocated");
-    assert_eq!(report.generation.get(), before + 2);
+    // Maintenance checkpoints the tail (+1) before publishing relocation (+1).
+    assert_eq!(report.generation.get(), before + 3);
     assert_eq!(snapshot(&read), read_before);
     assert_eq!(snapshot(&write), write_before);
 
     let relocated = fixture.read().unwrap();
-    assert_eq!(relocated.metadata().generation.get(), before + 2);
+    assert_eq!(relocated.metadata().generation.get(), before + 3);
     assert_eq!(node_values(&relocated).unwrap(), rows(&fixture, 1));
     let relocated_before = snapshot(&relocated);
 
     let expected = rows(&fixture, 1);
-    assert_eq!(reopen_and_read(fixture), (before + 2, expected.clone()));
+    assert_eq!(reopen_and_read(fixture), (before + 3, expected.clone()));
     // The producing store is closed and its directory removed.
     assert_eq!(snapshot(&read), read_before);
     assert_eq!(snapshot(&write), write_before);
@@ -298,11 +299,36 @@ fn ze53_s4_results_outlive_relocation_close_and_reopen() {
 /// memory, storage memory, read-lease owners, native registries), and the
 /// admitted-query count.
 fn charged(store: &Store) -> (u64, u64) {
+    let snapshot = store.snapshot.read().unwrap();
+    let snapshot = snapshot.as_ref().unwrap();
+    let manifest_backing = snapshot
+        .graph_manifest
+        .as_ref()
+        .unwrap()
+        .backing_bytes()
+        .unwrap() as u64;
+    let wal = store.wal_writer.lock().unwrap();
+    let wal_bytes: u64 = wal
+        .as_ref()
+        .unwrap()
+        .unabsorbed_records(snapshot.absorbed_through())
+        .unwrap()
+        .iter()
+        .map(|record| record.encoded().unwrap().len() as u64)
+        .sum();
+    let audit = store.accounting.audit().unwrap();
+    assert_eq!(
+        audit.wal_bytes, wal_bytes,
+        "retained WAL charge equals encoded records"
+    );
+    assert_eq!(audit.resident_owned_bytes, audit.component_sum());
     (
         GraphResources::from_store(store)
             .unwrap()
             .reserved_bytes()
-            .unwrap(),
+            .unwrap()
+            - wal_bytes
+            - manifest_backing,
         store.active_queries.load(Ordering::SeqCst),
     )
 }
@@ -332,7 +358,9 @@ fn fold(store: &Store) -> u64 {
 /// through the seam leave the store's exact accounting where they found it.
 /// A held result charges the store nothing: it is application-owned. A read,
 /// a search or a refused statement leaves exactly the charge it found. A
-/// commit grows it by exactly one prepared-inventory `RequiredRef`, and once
+/// Unified WAL record bytes and manifest backing are independently sized and
+/// removed from the transient-owner comparison. A commit grows the remaining
+/// charge by exactly one prepared-inventory `RequiredRef`, and once
 /// maintenance folds that bookkeeping every round returns to one baseline,
 /// so no query, lease, search, overlay or writer charge accumulates.
 #[test]
@@ -445,10 +473,11 @@ fn ze53_s4_repeated_statements_return_accounting_to_baseline() {
         maintenance_generations += fold(&fixture.store);
         assert_eq!(charged(&fixture.store), baseline, "round {round}: folded");
     }
-    // Each round publishes one write plus the required maintenance phases.
+    // Each write adds one generation. Each maintenance phase checkpoints (+1)
+    // and publishes its maintenance mutation (+1).
     assert_eq!(
         fixture.generation().unwrap(),
-        start + 16 + maintenance_generations
+        start + 16 + 2 * maintenance_generations
     );
     fixture.remove().unwrap();
 }

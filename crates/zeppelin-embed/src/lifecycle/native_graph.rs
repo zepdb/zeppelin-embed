@@ -2094,6 +2094,7 @@ pub(crate) mod tests {
     mod mutation_admission;
     // Real second processes re-invoke the unit-test executable, so these live
     // only in the test binary and never in a `test-support` library build.
+    mod epoch;
     #[cfg(test)]
     mod process_lock;
     pub(crate) mod publication;
