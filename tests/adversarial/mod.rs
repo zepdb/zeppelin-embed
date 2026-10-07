@@ -32,6 +32,8 @@ pub mod property_graph_storage;
 pub mod runner;
 pub mod storage_durability;
 pub mod tiering_maintenance;
+#[cfg(feature = "graph-cypher")]
+pub mod unified_graph;
 pub mod vamana_graph;
 pub mod vector_execution;
 

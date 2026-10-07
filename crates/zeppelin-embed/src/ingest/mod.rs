@@ -52,6 +52,8 @@ pub use retention_fault::{
     PartialBatchAppendVfs, PurgeUnlinkErrorVfs,
 };
 
+#[cfg(feature = "graph-cypher")]
+pub(crate) use active::RecoveredGraphCommit;
 pub(crate) use active::{ActiveSegment, ActiveState, SealedTombstoneDemand, StoreWal};
 pub(crate) use atomic_batch::{committed_mutations_with_decisions, cut_interrupted_append};
 

@@ -48,8 +48,8 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
         report.state.first_node,
         report.state.second_node,
     );
-    compare_state((1, 1, 1, 2), state).map_err(str::to_owned)?;
-    if compare_state((2, 1, 1, 2), state).is_ok() {
+    compare_state((2, 1, 1, 2), state).map_err(str::to_owned)?;
+    if compare_state((3, 1, 1, 2), state).is_ok() {
         return Err("recovery comparator accepted an incorrect generation".into());
     }
 
@@ -148,7 +148,7 @@ fn oracle_row(
 pub fn compare_batch(fixture: &Fixture, actual: &BatchObservation) -> Result<(), String> {
     use zeppelin_embed_adversarial_oracle::graph_contents::{Contents, Observation, Value, check};
     if actual.store.get() != fixture.store
-        || actual.generation.get() != 1
+        || actual.generation.get() != 2
         || actual.sequence != 1
         || actual.first_revision != 1
         || actual.second_revision != 1
@@ -161,7 +161,7 @@ pub fn compare_batch(fixture: &Fixture, actual: &BatchObservation) -> Result<(),
         || actual.relationship_type_name != b"LINKS"
         || actual.label_counts != [0, 0]
         || actual.relationship_revision != 1
-        || actual.original_generations != [1, 1, 1]
+        || actual.original_generations != [2, 2, 2]
         || actual.keys != [b"a".to_vec(), b"b".to_vec(), b"ab".to_vec()]
         || actual.namespaces != [b"ze41".to_vec(), b"ze41".to_vec(), b"ze41".to_vec()]
     {
@@ -246,10 +246,10 @@ fn compare_retry(
         GraphWriteOutcome::Replayed
     } else {
         GraphWriteOutcome::Committed {
-            generation: GraphGeneration::new(1),
+            generation: GraphGeneration::new(2),
         }
     };
-    if outcome != expected_outcome || admitted_generation != u64::from(present) {
+    if outcome != expected_outcome || admitted_generation != 1 + u64::from(present) {
         return Err("retry disposition/admitted generation differs".into());
     }
     for (index, receipt) in receipts.iter().enumerate() {
@@ -268,11 +268,11 @@ fn compare_retry(
             revision: 1,
             bits: index as u64,
         };
-        let initial = match predict(None, action, id, 1) {
+        let initial = match predict(None, action, id, 2) {
             Observation::Changed(record) => record,
             _ => return Err("invalid fixture history".into()),
         };
-        let expected = predict(present.then_some(initial), action, id, 1);
+        let expected = predict(present.then_some(initial), action, id, 2);
         let observed_record = Record {
             id: actual_id,
             revision: receipt.revision.get(),
@@ -305,7 +305,7 @@ pub fn comparator_mutations(fixture: &Fixture, good: &BatchObservation) -> Resul
         store,
         zeppelin_embed::property_graph::StoreInstanceId::new(fixture.store ^ 2).unwrap()
     );
-    mutate!(generation, GraphGeneration::new(2));
+    mutate!(generation, GraphGeneration::new(3));
     mutate!(sequence, 2);
     mutate!(node_count, 3);
     mutate!(canonical_properties, [2, 0, 0]);
@@ -424,10 +424,26 @@ pub fn run_boundary_pair(
         present,
     )?;
     retry_comparator_mutations(&actual.retry, present)?;
-    // A faulted operation has not published a new memory owner. Its old
-    // live-view baseline must remain; teardown must release every owner.
-    let live_baseline = actual.reservation_before;
-    if actual.reservation_after != live_baseline
+    // A stopped outer WAL retains its staged frame for visibility. Charge
+    // exactly the same frame as the independent clean control, and require
+    // every non-WAL owner to stay at its pre-operation baseline.
+    let staged = matches!(
+        boundary,
+        Boundary::WalAppend
+            | Boundary::WalPartialAppend
+            | Boundary::WalSync
+            | Boundary::Publication
+    );
+    let expected_wal = if staged {
+        clean.wal_bytes_after
+    } else {
+        actual.wal_bytes_before
+    };
+    if actual.wal_bytes_after != expected_wal {
+        return Err(format!("{boundary:?}: retained outer WAL bytes differ"));
+    }
+    let live_baseline = actual.reservation_before - actual.wal_bytes_before;
+    if actual.reservation_after - actual.wal_bytes_after != live_baseline
         || actual.remaining_ownership != 0
         || clean.remaining_ownership != 0
     {
@@ -449,7 +465,19 @@ pub fn probe_commit_boundaries(seed: u64, coverage: &mut CoverageRegistry) -> Re
     let (fixture, boundaries) = schedule_for(seed);
     for boundary in boundaries {
         run_boundary_pair(&fixture, boundary, coverage)?;
+        let unified_key = match boundary {
+            Boundary::ArtifactWrite => Some("storage-durability.graph-commit.artifact-write"),
+            Boundary::ArtifactSync => Some("storage-durability.graph-commit.artifact-sync"),
+            Boundary::WalAppend => Some("storage-durability.graph-commit.wal-append"),
+            Boundary::WalSync => Some("storage-durability.graph-commit.wal-sync"),
+            Boundary::CheckpointReplace => Some("storage-durability.graph-fold.manifest-rename"),
+            _ => None,
+        };
+        if let Some(key) = unified_key {
+            coverage.hit(key);
+        }
     }
+    coverage.hit("op.GraphApply");
     for receipt in zeppelin_embed::graph_commit_recovery_test_support::run_reclaim_boundaries() {
         if receipt.fires != 1 || receipt.clean_controls != 1 {
             return Err("unmeasured reclaim boundary".into());
@@ -512,7 +540,7 @@ fn process_child_inner() {
         assert_eq!(
             result.outcome(),
             GraphWriteOutcome::Committed {
-                generation: GraphGeneration::new(1)
+                generation: GraphGeneration::new(2)
             }
         );
         let wal = std::fs::read_dir(&path)
@@ -522,10 +550,10 @@ fn process_child_inner() {
                 path.file_name()
                     .unwrap()
                     .to_string_lossy()
-                    .starts_with("graph-wal-")
+                    .starts_with("wal.ze")
             })
             .unwrap();
-        super::fault_vfs::kill_native_graph_process(&wal, "published-generation-1");
+        super::fault_vfs::kill_native_graph_process(&wal, "published-generation-2");
     }
     panic!("native process kill did not fire");
 }
@@ -609,8 +637,8 @@ pub fn lifecycle_loss_observations(
         }
         let receipt = std::fs::read_to_string(path.with_extension("kill-receipt"))
             .map_err(|e| e.to_string())?;
-        let operation = ["append", "full-sync", "published-generation-1"][mode];
-        if !receipt.starts_with(operation) || !receipt.contains("graph-wal-") {
+        let operation = ["append", "full-sync", "published-generation-2"][mode];
+        if !receipt.starts_with(operation) || !receipt.contains("wal.ze") {
             return Err("native kill has no matching path receipt".into());
         }
         let reopened = ProbeStore::open(&path).map_err(|e| format!("process reopen: {e:?}"))?;
@@ -652,7 +680,7 @@ pub fn lifecycle_loss_observations(
             nth_match: 1,
             expected_matches: None,
             deadline_budget_seconds: None,
-            path_contains: Some("graph-wal-".into()),
+            path_contains: Some("wal.ze".into()),
             fired: false,
             fire_count: 0,
             path: None,
@@ -680,7 +708,7 @@ pub fn lifecycle_loss_observations(
                 || !events[0]
                     .path
                     .as_ref()
-                    .is_some_and(|p| p.to_string_lossy().contains("graph-wal-"))
+                    .is_some_and(|p| p.to_string_lossy().contains("wal.ze"))
             {
                 return Err("power sync fault did not fire at native WAL".into());
             }
@@ -747,7 +775,7 @@ pub fn lifecycle_loss_observations(
         } else {
             let (name, data) = files
                 .iter()
-                .find(|(name, _)| name.to_string_lossy().starts_with("graph-wal-"))
+                .find(|(name, _)| name.to_string_lossy().starts_with("wal.ze"))
                 .ok_or("no native WAL")?;
             let mut bytes = data.clone();
             *bytes.last_mut().ok_or("empty WAL")? ^= 0x80;
@@ -799,9 +827,9 @@ fn run_after_boundary_pair(
         Boundary::ArtifactCreate | Boundary::ArtifactWrite => (FaultSite::Write, ".zgraph"),
         Boundary::ArtifactSync => (FaultSite::Sync, ".zgraph"),
         Boundary::DirectorySync => (FaultSite::Sync, "fault"),
-        Boundary::WalAppend | Boundary::WalPartialAppend => (FaultSite::Append, "graph-wal-"),
-        Boundary::WalSync => (FaultSite::Sync, "graph-wal-"),
-        Boundary::CheckpointReplace => (FaultSite::Rename, "graph-root.ze"),
+        Boundary::WalAppend | Boundary::WalPartialAppend => (FaultSite::Append, "wal.ze"),
+        Boundary::WalSync => (FaultSite::Sync, "wal.ze"),
+        Boundary::CheckpointReplace => (FaultSite::Rename, "manifest.ze"),
         Boundary::CheckpointSync => (FaultSite::Sync, "fault"),
         // The post-publication SIGKILL cell separately qualifies lost delivery.
         Boundary::Publication => return Ok(()),
@@ -931,7 +959,12 @@ pub fn retry_comparator_mutations(
         retry.receipts(),
     )
     .is_ok()
-        || compare(retry.outcome(), u64::from(!present), retry.receipts()).is_ok()
+        || compare(
+            retry.outcome(),
+            retry.admitted_generation().get() + 1,
+            retry.receipts(),
+        )
+        .is_ok()
     {
         return Err("retry comparator accepted altered disposition or generation".into());
     }
@@ -954,7 +987,7 @@ pub fn retry_comparator_mutations(
                     }
                 }
                 2 => receipt.revision = GraphRevision::new(2).unwrap(),
-                3 => receipt.generation = GraphGeneration::new(2),
+                3 => receipt.generation = GraphGeneration::new(3),
                 _ => receipt.replayed = !receipt.replayed,
             }
             if compare(

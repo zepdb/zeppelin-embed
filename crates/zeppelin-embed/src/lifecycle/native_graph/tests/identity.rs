@@ -177,7 +177,7 @@ fn run_ze36_identity_replay_survives_reopen_and_reclamation() {
     let edge = relationship(&installed[2]);
     let original: Vec<_> = installed.iter().copied().collect();
     assert!(original.iter().all(|receipt| !receipt.replayed));
-    assert!(original.iter().all(|receipt| receipt.generation.get() == 1));
+    assert!(original.iter().all(|receipt| receipt.generation.get() == 2));
     drop(installed);
 
     let replay = |store: &Store| {
@@ -804,7 +804,7 @@ fn run_ze36_identity_indeterminate_commit_resolves_once() {
         .apply_native_graph(&request, &control())
         .expect("durable retry");
     assert!(resolved[0].replayed);
-    assert_eq!(resolved[0].generation.get(), 1);
+    assert_eq!(resolved[0].generation.get(), 2);
     let durable = node(&reopened, &resolved[0]);
     drop(resolved);
     let again = reopened
@@ -859,7 +859,7 @@ fn run_ze36_identity_indeterminate_commit_resolves_once() {
         .apply_native_graph(&request, &control())
         .expect("fresh commit after a pre-durable failure");
     assert!(!committed[0].replayed);
-    assert_eq!(committed[0].generation.get(), 1);
+    assert_eq!(committed[0].generation.get(), 2);
     let fresh = node(&reopened, &committed[0]);
     drop(committed);
     assert_eq!(observe_node(&reopened, fresh).map(|node| node.2), Some(1));
@@ -1184,7 +1184,7 @@ fn ze202_live_allocator_jump_is_monotone_and_durable() {
     let changed = store
         .jump_native_graph_allocators_for_test(next_node, next_rel, &control())
         .expect("live allocator jump must publish");
-    assert_eq!(changed.get(), 3);
+    assert_eq!(changed.get(), 4);
     let before = store.admit_native_read().unwrap().bundle().high_waters();
     assert!(
         store

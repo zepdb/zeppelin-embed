@@ -1196,7 +1196,7 @@ mod actual_cases {
             initial.bundle().high_waters().relationship,
             (1_u128 << 96) + 6
         );
-        assert_eq!(initial.bundle().base().generation.get(), 0);
+        assert_eq!(initial.bundle().base().generation.get(), 1);
         assert_eq!(initial.bundle().sequence(), 0);
         drop(initial);
         store.close().expect("close seeded empty graph");
@@ -1283,8 +1283,8 @@ mod actual_cases {
         );
         assert!(right_report.visited > 0);
         let root = store.admit_native_read().expect("outer version admission");
-        assert_eq!(root.bundle().root_envelope().object.version, 1);
-        assert_eq!(root.bundle().root_envelope().block.version, 1);
+        assert_eq!(root.bundle().catalog().object.version, 1);
+        assert_eq!(root.bundle().catalog().block.version, 1);
         assert!(root
             .bundle()
             .vector()

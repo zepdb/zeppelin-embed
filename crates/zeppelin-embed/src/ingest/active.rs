@@ -56,6 +56,21 @@ pub(crate) struct ActiveState {
     pub(crate) segment: Arc<ActiveSegment>,
 }
 
+pub(crate) struct RecoveredState {
+    pub(crate) active: ActiveState,
+    pub(crate) wal: Option<CleanWalReader>,
+    pub(crate) tombstones: Vec<SealedTombstoneDemand>,
+    #[cfg(feature = "graph-cypher")]
+    pub(crate) graph: Vec<RecoveredGraphCommit>,
+}
+
+#[cfg(feature = "graph-cypher")]
+pub(crate) struct RecoveredGraphCommit {
+    pub(crate) seq: LogSeq,
+    pub(crate) generation: u64,
+    pub(crate) bytes: Vec<u8>,
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct SealedTombstoneDemand {
     doc_id: DocId,
@@ -107,15 +122,30 @@ impl ActiveState {
         generation: u64,
         absorbed_through: u64,
         graph_absorbed_through: u64,
+        #[cfg(feature = "graph-cypher")] graph_enabled: bool,
         accounting: &Arc<Accounting>,
         schema: &crate::meta::Schema,
         analyzer: &Analyzer,
         preparation: Option<&crate::lifecycle::namespace_batch::PrivatePreparation>,
-    ) -> Result<(Self, Option<CleanWalReader>, Vec<SealedTombstoneDemand>), StoreError> {
+    ) -> Result<RecoveredState, StoreError> {
         match vfs.open(path) {
-            Ok(0) => Ok((Self::empty(generation), None, Vec::new())),
+            Ok(0) => Ok(RecoveredState {
+                active: Self::empty(generation),
+                wal: None,
+                tombstones: Vec::new(),
+                #[cfg(feature = "graph-cypher")]
+                graph: Vec::new(),
+            }),
             Ok(_) => {
                 let reader = WalReader::open(vfs, path).map_err(StoreError::Wal)?;
+                #[cfg(feature = "graph-cypher")]
+                let clean = if graph_enabled {
+                    reader.into_graph_prefix()
+                } else {
+                    reader.into_clean()
+                }
+                .map_err(StoreError::WalRecovery)?;
+                #[cfg(not(feature = "graph-cypher"))]
                 let clean = reader.into_clean().map_err(StoreError::WalRecovery)?;
                 let decisions = crate::lifecycle::namespace_batch::transaction_decisions(
                     vfs,
@@ -124,11 +154,13 @@ impl ActiveState {
                     absorbed_through.min(graph_absorbed_through),
                     preparation,
                 )?;
-                let (mut active, sealed_tombstones) = Self::replay(
+                let mut recovered = Self::replay(
                     generation,
                     absorbed_through,
                     graph_absorbed_through,
                     &clean,
+                    #[cfg(feature = "graph-cypher")]
+                    graph_enabled,
                     accounting,
                     schema,
                     analyzer,
@@ -144,16 +176,23 @@ impl ActiveState {
                         |b| decisions.get(&b.transaction).copied(),
                     )?
                     .len() as u64;
-                    active.generation = binding
+                    recovered.active.generation = binding
                         .final_generation
                         .checked_add(later)
                         .ok_or(StoreError::GenerationOverflow)?;
                 }
-                Ok((active, Some(clean), sealed_tombstones))
+                {
+                    recovered.wal = Some(clean);
+                    Ok(recovered)
+                }
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                Ok((Self::empty(generation), None, Vec::new()))
-            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(RecoveredState {
+                active: Self::empty(generation),
+                wal: None,
+                tombstones: Vec::new(),
+                #[cfg(feature = "graph-cypher")]
+                graph: Vec::new(),
+            }),
             Err(error) => Err(StoreError::Wal(WalReadError::Io(error))),
         }
     }
@@ -173,11 +212,28 @@ impl ActiveState {
         absorbed_through: u64,
         graph_absorbed_through: u64,
         recovered: &CleanWalReader,
+        #[cfg(feature = "graph-cypher")] graph_enabled: bool,
         accounting: &Arc<Accounting>,
         schema: &crate::meta::Schema,
         analyzer: &Analyzer,
         decisions: &std::collections::BTreeMap<u128, wal_payload::TransactionBinding>,
-    ) -> Result<(Self, Vec<SealedTombstoneDemand>), StoreError> {
+    ) -> Result<RecoveredState, StoreError> {
+        #[cfg(feature = "graph-cypher")]
+        if !graph_enabled
+            && let Some(record) = recovered.records().iter().find(|record| {
+                matches!(
+                    record.op,
+                    wal_payload::GRAPH_COMMIT_V1 | wal_payload::MIXED_BATCH_MEMBER_V1
+                )
+            })
+        {
+            return Err(StoreError::UnsupportedWalMutation {
+                seq: record.seq,
+                op: record.op,
+            });
+        }
+        #[cfg(feature = "graph-cypher")]
+        let mut graph = Vec::new();
         let mut documents = Vec::new();
         let mut steps = Vec::new();
         let mut deleted_ids = 0_usize;
@@ -186,12 +242,35 @@ impl ActiveState {
             absorbed_through.min(graph_absorbed_through),
             |binding| decisions.get(&binding.transaction).copied(),
         )? {
+            #[cfg(feature = "graph-cypher")]
+            if graph_enabled
+                && let Some((first, _, _)) = batch.members.first()
+                && [absorbed_through, graph_absorbed_through]
+                    .into_iter()
+                    .any(|mark| first.get() <= mark && mark < batch.last_seq.get())
+            {
+                return Err(StoreError::Manifest(
+                    crate::manifest::ManifestError::Decode(
+                        "watermark splits a committed batch".to_owned(),
+                    ),
+                ));
+            }
             if batch.last_seq.get() > absorbed_through.max(graph_absorbed_through) {
                 generation = generation
                     .checked_add(1)
                     .ok_or(StoreError::GenerationOverflow)?;
             }
             for (seq, op, mutation) in batch.members {
+                #[cfg(feature = "graph-cypher")]
+                if matches!(mutation, MutationPayload::GraphCommit(_)) && seq != batch.last_seq {
+                    return Err(StoreError::WalMutation {
+                        seq,
+                        op,
+                        source: wal_payload::PayloadError::GraphEnvelope(
+                            crate::property_graph::wal::WalError::Sequence,
+                        ),
+                    });
+                }
                 let watermark = match &mutation {
                     #[cfg(feature = "graph-cypher")]
                     MutationPayload::GraphCommit(_) => graph_absorbed_through,
@@ -202,8 +281,15 @@ impl ActiveState {
                 }
                 match mutation {
                     #[cfg(feature = "graph-cypher")]
-                    MutationPayload::GraphCommit(_) => {
-                        return Err(StoreError::UnsupportedWalMutation { seq, op });
+                    MutationPayload::GraphCommit(bytes) => {
+                        if !graph_enabled {
+                            return Err(StoreError::UnsupportedWalMutation { seq, op });
+                        }
+                        graph.push(RecoveredGraphCommit {
+                            seq,
+                            generation,
+                            bytes,
+                        });
                     }
                     MutationPayload::Upsert(document) => {
                         super::validate_document_columns(schema, &document)
@@ -295,13 +381,16 @@ impl ActiveState {
                 .refresh_lexical_accounting(accounting)
                 .map_err(|error| recovery_apply_error(seq, op, error))?;
         }
-        Ok((
-            Self {
+        Ok(RecoveredState {
+            active: Self {
                 generation,
                 segment: Arc::new(segment),
             },
-            sealed_tombstones,
-        ))
+            wal: None,
+            tombstones: sealed_tombstones,
+            #[cfg(feature = "graph-cypher")]
+            graph,
+        })
     }
 }
 
@@ -1906,6 +1995,11 @@ pub(crate) struct StoreWal {
 }
 
 impl StoreWal {
+    #[cfg(feature = "graph-cypher")]
+    pub(crate) fn io_work(&self) -> [u64; 4] {
+        self.writer.io_work()
+    }
+
     pub(crate) fn create(
         vfs: Arc<dyn Vfs>,
         directory: &Path,

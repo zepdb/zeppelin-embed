@@ -63,6 +63,7 @@ cargo test "${WORKSPACE_ARGS[@]}"
 # host zeppelin-embed's own unit tests never compile the native graph paths.
 # That is how a store-lifetime accounting regression survived from ZE-45.
 cargo test -p zeppelin-embed --lib --features graph-cypher
+cargo test -p zeppelin-embed --features graph-cypher --test wal_unified_golden --test manifest_v3
 cargo test -p zeppelin-embed --features allocation-audit \
     lifecycle::stats::tests::nothing_allocates_outside_accounting \
     -- --exact --test-threads=1

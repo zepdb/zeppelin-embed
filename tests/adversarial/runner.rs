@@ -2918,6 +2918,12 @@ fn run_program_for_with_clock(
     let mut coverage = CoverageRegistry::default();
     if campaign == CampaignKind::StorageDurability {
         storage_adapter::namespace_probe(seed, &mut coverage)?;
+        #[cfg(feature = "graph-cypher")]
+        super::unified_graph::run(
+            super::unified_graph::Operation::EnableGraph,
+            seed,
+            &mut coverage,
+        )?;
     }
     #[cfg(feature = "graph-cypher")]
     {

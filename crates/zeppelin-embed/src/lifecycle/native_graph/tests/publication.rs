@@ -67,6 +67,7 @@ pub(crate) enum FaultPoint {
     Publish,
     OpenAppend,
     SelectorSync,
+    ManifestSync,
     Delete,
 }
 
@@ -228,6 +229,16 @@ impl VfsFile for RecordingFile {
     }
 
     fn append_vectored(&mut self, buffers: &mut [IoSlice<'_>]) -> std::io::Result<()> {
+        if matches!(
+            self.faults.lock().expect("fault schedule").armed,
+            Some(FaultPoint::Append | FaultPoint::PartialAppend)
+        ) {
+            let bytes: Vec<_> = buffers
+                .iter()
+                .flat_map(|buffer| buffer.iter().copied())
+                .collect();
+            return self.append(&bytes);
+        }
         self.inner.append_vectored(buffers)?;
         self.events
             .lock()
@@ -237,12 +248,7 @@ impl VfsFile for RecordingFile {
     }
 
     fn sync(&self, kind: SyncKind) -> std::io::Result<()> {
-        if kind == SyncKind::Full
-            && self
-                .path
-                .file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with("graph-wal-"))
-        {
+        if kind == SyncKind::Full && self.path.file_name().is_some_and(|name| name == "wal.ze") {
             let mut faults = self.faults.lock().expect("fault schedule");
             if faults.armed == Some(FaultPoint::WalSync) {
                 faults.armed = None;
@@ -255,12 +261,7 @@ impl VfsFile for RecordingFile {
             .lock()
             .expect("recording VFS events")
             .push(DurabilityEvent::Sync(self.path.clone(), kind));
-        if kind == SyncKind::Full
-            && self
-                .path
-                .file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with("graph-wal-"))
-        {
+        if kind == SyncKind::Full && self.path.file_name().is_some_and(|name| name == "wal.ze") {
             let gate = self.wal_sync_gate.lock().expect("WAL sync gate").take();
             if let Some((entered, release)) = gate {
                 entered.wait();
@@ -359,7 +360,7 @@ impl Vfs for RecordingVfs {
     fn sync(&self, path: &Path, kind: SyncKind) -> std::io::Result<()> {
         if kind == SyncKind::Full {
             let selected = path.is_dir() && self.events.lock().unwrap().last().is_some_and(|event|
-                matches!(event, DurabilityEvent::Rename(_, to) if to.file_name().is_some_and(|name| name == "graph-root.ze")));
+                matches!(event, DurabilityEvent::Rename(_, to) if to.file_name().is_some_and(|name| name == "manifest.ze")));
             if selected && self.fire(FaultPoint::SelectorSync) {
                 return Err(std::io::Error::other(
                     "scheduled selector directory sync failure",
@@ -372,6 +373,11 @@ impl Vfs for RecordingVfs {
                 .is_some_and(|extension| extension == "zgraph")
             {
                 Some(FaultPoint::ObjectSync)
+            } else if path
+                .file_name()
+                .is_some_and(|name| name == ".manifest.ze.tmp")
+            {
+                Some(FaultPoint::ManifestSync)
             } else {
                 None
             };
@@ -546,8 +552,8 @@ fn run_ze39_fresh_mixed_commit_is_durable_and_coherent() -> Vec<RelationshipRow>
     )
     .expect("fresh native store");
     assert!(
-        !path.join("wal.ze").exists(),
-        "legacy WAL must not bootstrap graph"
+        path.join("wal.ze").exists(),
+        "graph and documents share the Store WAL"
     );
     let creation = vfs.take();
     assert!(creation.iter().any(|event| {
@@ -628,7 +634,7 @@ fn run_ze39_fresh_mixed_commit_is_durable_and_coherent() -> Vec<RelationshipRow>
     let events = vfs.take();
     let directory_sync = events
         .iter()
-        .rposition(|event| {
+        .position(|event| {
             matches!(event, DurabilityEvent::Sync(target, SyncKind::Full) if target == &path)
         })
         .expect("graph directory Full sync");
@@ -639,7 +645,7 @@ fn run_ze39_fresh_mixed_commit_is_durable_and_coherent() -> Vec<RelationshipRow>
     let wal_sync = events
         .iter()
         .position(|event| {
-            matches!(event, DurabilityEvent::Sync(target, SyncKind::Full) if target.file_name().is_some_and(|name| name.to_string_lossy().starts_with("graph-wal-")))
+            matches!(event, DurabilityEvent::Sync(target, SyncKind::Full) if target.file_name().is_some_and(|name| name == "wal.ze"))
         })
         .expect("WAL Full sync");
     let publication = events
@@ -1116,18 +1122,18 @@ fn run_ze39_retained_reader_and_new_admission_observe_whole_generations() {
             writer_store.apply_native_graph(&changed, &QueryControl::Cancel(CancelToken::new()))
         });
         entered.wait();
+        let held_generation = store
+            .admit_native_read()
+            .expect("admission while WAL Full sync is held")
+            .bundle()
+            .base()
+            .generation
+            .get();
+        release.wait();
         assert_eq!(
-            store
-                .admit_native_read()
-                .expect("admission while WAL Full sync is held")
-                .bundle()
-                .base()
-                .generation
-                .get(),
-            1,
+            held_generation, 2,
             "publication must remain old until WAL Full sync returns"
         );
-        release.wait();
         let receipts = commit
             .join()
             .expect("commit thread")
@@ -1158,9 +1164,9 @@ fn run_ze39_retained_reader_and_new_admission_observe_whole_generations() {
     assert_eq!(
         old,
         GenerationSnapshot {
-            generation: 1,
+            generation: 2,
             revision: 1,
-            original_generation: 1,
+            original_generation: 2,
             canonical: {
                 let mut bytes = Vec::new();
                 old_node
@@ -1181,9 +1187,9 @@ fn run_ze39_retained_reader_and_new_admission_observe_whole_generations() {
     assert_eq!(
         new,
         GenerationSnapshot {
-            generation: 2,
+            generation: 3,
             revision: 2,
-            original_generation: 2,
+            original_generation: 3,
             canonical: {
                 let mut bytes = Vec::new();
                 new_node
@@ -1254,7 +1260,7 @@ fn run_ze39_noop_replay_and_mixed_receipts_do_not_publish_extra_work() {
         .expect("exact replay");
     assert_eq!(replay.len(), 1);
     assert!(replay[0].replayed);
-    assert_eq!(replay[0].generation.get(), 1);
+    assert_eq!(replay[0].generation.get(), 2);
     assert!(vfs.take().is_empty());
     assert_eq!(
         store
@@ -1280,9 +1286,9 @@ fn run_ze39_noop_replay_and_mixed_receipts_do_not_publish_extra_work() {
         .expect("mixed replay and changed commit");
     assert_eq!(mixed_receipts.len(), 2);
     assert!(mixed_receipts[0].replayed);
-    assert_eq!(mixed_receipts[0].generation.get(), 1);
+    assert_eq!(mixed_receipts[0].generation.get(), 2);
     assert!(!mixed_receipts[1].replayed);
-    assert_eq!(mixed_receipts[1].generation.get(), 2);
+    assert_eq!(mixed_receipts[1].generation.get(), 3);
     assert_eq!(
         vfs.take()
             .iter()
@@ -1350,7 +1356,7 @@ fn run_ze39_checkpoint_thresholds_and_failure_preserve_acknowledged_state() {
         let receipt = store
             .apply_native_graph(&request, &QueryControl::Cancel(CancelToken::new()))
             .expect("complete envelope");
-        assert_eq!(receipt[0].generation.get(), revision);
+        assert_eq!(receipt[0].generation.get(), revision + 1);
     }
     let before = store.admit_native_read().expect("generation 64 admission");
     assert_eq!(
@@ -1358,7 +1364,7 @@ fn run_ze39_checkpoint_thresholds_and_failure_preserve_acknowledged_state() {
         64,
         "each complete allocation inventory remains protected until consolidation"
     );
-    let checkpoint_before = before.bundle().root_envelope();
+    let checkpoint_before = before.bundle().base().fold;
     drop(before);
     vfs.take();
 
@@ -1394,37 +1400,37 @@ fn run_ze39_checkpoint_thresholds_and_failure_preserve_acknowledged_state() {
     let receipt = store
         .apply_native_graph(&changed, &QueryControl::Cancel(CancelToken::new()))
         .expect("checkpoint then changed commit");
-    assert_eq!(receipt[0].generation.get(), 65);
+    assert_eq!(receipt[0].generation.get(), 67);
     let current = store.admit_native_read().expect("generation 65 admission");
-    assert_ne!(current.bundle().root_envelope(), checkpoint_before);
-    assert_eq!(current.bundle().root_envelope().object.generation.get(), 64);
-    assert_eq!(current.bundle().base().generation.get(), 65);
-    let selected = super::super::persistence::classify_native_graph(vfs.as_ref(), &path);
-    assert!(matches!(
-        selected,
-        super::super::persistence::NativeStoreClassification::Complete { root, .. }
-            if root == current.bundle().root_envelope()
-    ));
+    assert_ne!(current.bundle().base().fold, checkpoint_before);
+    assert_eq!(current.bundle().base().fold.envelope_sequence, 64);
+    assert_eq!(current.bundle().base().generation.get(), 67);
+    let manifest =
+        crate::manifest::io::load_manifest(vfs.as_ref(), &path.join("manifest.ze"), 65).unwrap();
+    assert_eq!(
+        manifest.graph.as_ref().unwrap().state().unwrap().sequence,
+        64
+    );
     drop(current);
 
     let events = vfs.take();
     let rotated_wal = events
         .iter()
         .position(|event| {
-            matches!(event, DurabilityEvent::Create(path) if path.file_name().is_some_and(|name| name.to_string_lossy().starts_with("graph-wal-")))
+            matches!(event, DurabilityEvent::Rename(_, path) if path.file_name().is_some_and(|name| name == "wal.ze"))
         })
-        .expect("rotated WAL create");
+        .expect("rotated WAL replacement");
     let selected_root = events
         .iter()
         .position(|event| {
-            matches!(event, DurabilityEvent::Rename(_, target) if target.file_name().is_some_and(|name| name == "graph-root.ze"))
+            matches!(event, DurabilityEvent::Rename(_, target) if target.file_name().is_some_and(|name| name == "manifest.ze"))
         })
         .expect("checkpoint selector rename");
     let changed_append = events
         .iter()
         .rposition(|event| matches!(event, DurabilityEvent::Append(_)))
         .expect("post-checkpoint append");
-    assert!(rotated_wal < selected_root && selected_root < changed_append);
+    assert!(selected_root < rotated_wal && rotated_wal < changed_append);
 
     let blocked = [StructuredWrite {
         key: create[0].key,
@@ -1433,7 +1439,7 @@ fn run_ze39_checkpoint_thresholds_and_failure_preserve_acknowledged_state() {
         image: Some(WriteImage::Node(&image)),
     }];
     for point in [
-        FaultPoint::ObjectSync,
+        FaultPoint::ManifestSync,
         FaultPoint::DirectorySync,
         FaultPoint::OpenAppend,
         FaultPoint::Rename,
@@ -1442,7 +1448,8 @@ fn run_ze39_checkpoint_thresholds_and_failure_preserve_acknowledged_state() {
         vfs.arm_fault(point);
         assert!(matches!(
             store.checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new())),
-            Err(super::super::NativeGraphError::Io { .. })
+            Err(super::super::NativeGraphError::Io { .. }
+                | super::super::NativeGraphError::Store(_))
         ));
         vfs.assert_fired_once();
         assert_eq!(
@@ -1453,7 +1460,7 @@ fn run_ze39_checkpoint_thresholds_and_failure_preserve_acknowledged_state() {
                 .base()
                 .generation
                 .get(),
-            65
+            67
         );
         assert!(matches!(
             store.apply_native_graph(&blocked, &QueryControl::Cancel(CancelToken::new())),
@@ -1469,13 +1476,14 @@ fn run_ze39_checkpoint_thresholds_and_failure_preserve_acknowledged_state() {
             .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
             .expect("clean explicit checkpoint retry");
     }
+    let store_generation = store.snapshot().unwrap().generation();
     assert_eq!(
         store
             .apply_native_graph(&blocked, &QueryControl::Cancel(CancelToken::new()))
             .expect("changed admission resumes")[0]
             .generation
             .get(),
-        66
+        store_generation + 1
     );
     store.close().expect("close native store");
     checkpoint_pending_byte_boundary();
@@ -1492,6 +1500,24 @@ fn checkpoint_pending_byte_boundary() {
         None,
     )
     .unwrap();
+    store
+        .set_native_graph_maintenance_policy(crate::property_graph::GraphMaintenancePolicy {
+            automatic: false,
+            ..Default::default()
+        })
+        .unwrap();
+    let envelope_bytes_on_disk = || {
+        let bytes = std::fs::read(store.directory.join("wal.ze")).unwrap();
+        let replay = crate::wal::replay::replay(&bytes);
+        replay
+            .records
+            .iter()
+            .map(|record| {
+                assert_eq!(record.op, crate::ingest::wal_payload::GRAPH_COMMIT_V1);
+                record.payload.len()
+            })
+            .sum::<usize>()
+    };
     let key = "k".repeat(512 * 1024);
     let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
     let mut rotated = false;
@@ -1499,13 +1525,10 @@ fn checkpoint_pending_byte_boundary() {
         let (old_identity, old_bytes, old_count) = {
             let guard = store.native_graph.writer.lock().unwrap();
             let writer = guard.as_ref().unwrap();
-            assert_eq!(
-                std::fs::metadata(&writer.wal.path).unwrap().len() as usize,
-                writer.wal.bytes
-            );
+            assert_eq!(envelope_bytes_on_disk(), writer.envelope_bytes);
             (
-                writer.wal.identity,
-                writer.wal.bytes,
+                writer.last_graph_seq,
+                writer.envelope_bytes,
                 writer.complete_envelopes,
             )
         };
@@ -1519,31 +1542,28 @@ fn checkpoint_pending_byte_boundary() {
             },
             image: Some(WriteImage::Node(&image)),
         }];
-        assert_eq!(
-            store
-                .apply_native_graph(&request, &QueryControl::Cancel(CancelToken::new()))
-                .unwrap()[0]
-                .generation
-                .get(),
-            revision
-        );
+        let before_generation = store.snapshot().unwrap().generation();
+        let generation = store
+            .apply_native_graph(&request, &QueryControl::Cancel(CancelToken::new()))
+            .unwrap()[0]
+            .generation
+            .get();
         let guard = store.native_graph.writer.lock().unwrap();
         let writer = guard.as_ref().unwrap();
-        assert_eq!(
-            std::fs::metadata(&writer.wal.path).unwrap().len() as usize,
-            writer.wal.bytes
-        );
-        let tail = writer.wal.bytes - crate::property_graph::wal::HEADER_BYTES;
+        assert_eq!(envelope_bytes_on_disk(), writer.envelope_bytes);
+        let tail = writer.envelope_bytes;
         assert!(tail <= crate::property_graph::wal::MAX_ENVELOPE_BYTES);
-        if writer.wal.identity != old_identity {
+        assert!(writer.last_graph_seq > old_identity);
+        let folded = old_count != 0 && writer.complete_envelopes == 1;
+        assert_eq!(generation, before_generation + 1 + u64::from(folded));
+        if folded {
             assert!(
                 old_count < 64,
                 "byte trigger precedes envelope-count trigger"
             );
             assert_eq!(writer.complete_envelopes, 1);
             assert!(
-                old_bytes - crate::property_graph::wal::HEADER_BYTES + tail
-                    > crate::property_graph::wal::MAX_ENVELOPE_BYTES,
+                old_bytes + tail > crate::property_graph::wal::MAX_ENVELOPE_BYTES,
                 "actual encoded pending envelope crosses the exact 16 MiB bound"
             );
             rotated = true;
@@ -1586,17 +1606,14 @@ fn run_ze39_protection_capture_and_maintenance_recheck_are_atomic() {
         .apply_native_graph(&first, &QueryControl::Cancel(CancelToken::new()))
         .expect("first commit");
     let admitted = store.admit_native_read().expect("first admission");
-    let old_root = admitted.bundle().root_envelope();
+    let old_root = admitted.bundle().catalog();
+    let old_fold = admitted.bundle().base().fold;
     drop(admitted);
     let before = store
         .capture_native_read_roots()
         .expect("initial protected capture");
     assert!(before.contains(old_root));
-    assert!(
-        before
-            .wal()
-            .is_some_and(|wal| wal.first_sequence == 1 && wal.bytes > 0)
-    );
+    assert!(before.wal().is_some_and(|wal| wal.bytes > 0));
     assert!(!before.prepared.is_empty());
     let before_fence = before.serial_fence();
 
@@ -1643,7 +1660,7 @@ fn run_ze39_protection_capture_and_maintenance_recheck_are_atomic() {
         release.wait();
         let old_lease = retained.join().expect("read thread");
         let receipt = commit.join().expect("write thread");
-        assert_eq!(receipt[0].generation.get(), 2);
+        assert_eq!(receipt[0].generation.get(), 3);
         let protected = captured.join().expect("capture thread");
         assert!(protected.contains(old_root));
         assert!(protected.bundle_count() >= 2);
@@ -1658,12 +1675,14 @@ fn run_ze39_protection_capture_and_maintenance_recheck_are_atomic() {
         Err(super::super::NativeGraphError::StalePreparation)
     ));
     let current = store.admit_native_read().expect("current admission");
-    assert_eq!(current.bundle().root_envelope(), old_root);
+    assert_eq!(current.bundle().base().fold, old_fold);
     let checkpoint_catalog = current.bundle().catalog();
     let raw_lagged = super::super::NativeGraphBundleInput {
         base: crate::property_graph::staging::BaseIdentity {
             store: current.bundle().base().store,
-            generation: crate::property_graph::GraphGeneration::new(3),
+            generation: crate::property_graph::GraphGeneration::new(
+                current.bundle().base().generation.get() + 1,
+            ),
             fold: current.bundle().base().fold,
             roots: current.bundle().base().roots,
         },
@@ -1695,7 +1714,7 @@ fn run_ze39_protection_capture_and_maintenance_recheck_are_atomic() {
     let report = store
         .commit_native_graph_maintenance(&maintenance, &QueryControl::Cancel(CancelToken::new()))
         .expect("bounded replacement maintenance");
-    assert_eq!(report.generation.get(), 3);
+    assert_eq!(report.generation.get(), 5);
     assert!(report.replaced_physical_refs > 0);
     drop(maintenance);
     store
@@ -1705,13 +1724,13 @@ fn run_ze39_protection_capture_and_maintenance_recheck_are_atomic() {
         .capture_native_read_roots()
         .expect("post-checkpoint capture");
     assert!(after.serial_fence() > before_fence);
-    assert!(after.wal().is_some_and(|wal| wal.first_sequence == 4));
+    assert!(after.wal().is_some_and(|wal| wal.bytes == 0));
     assert!(after.prepared.is_empty());
     let selected = store
         .admit_native_read()
         .expect("selected maintenance root");
-    assert_ne!(selected.bundle().root_envelope(), old_root);
-    assert_eq!(selected.bundle().base().generation.get(), 3);
+    assert_ne!(selected.bundle().base().fold, old_fold);
+    assert_eq!(selected.bundle().base().generation.get(), 5);
     assert_eq!(selected.bundle().catalog(), checkpoint_catalog);
     drop(selected);
     drop(stale);
@@ -1756,7 +1775,7 @@ fn run_ze39_protection_capture_and_maintenance_recheck_are_atomic() {
             .base()
             .generation
             .get(),
-        3
+        5
     );
     assert_eq!(
         store
@@ -1764,7 +1783,7 @@ fn run_ze39_protection_capture_and_maintenance_recheck_are_atomic() {
             .unwrap()[0]
             .generation
             .get(),
-        4
+        7
     );
     let store = Arc::into_inner(store).expect("sole store owner");
     store.close().expect("close native store");
@@ -1885,7 +1904,7 @@ fn run_ze39_precommit_failure_keeps_graph_and_path_ownership_private() {
                 .base()
                 .generation
                 .get(),
-            1
+            2
         );
         if point == FaultPoint::Create {
             let foreign = vfs
@@ -1899,7 +1918,7 @@ fn run_ze39_precommit_failure_keeps_graph_and_path_ownership_private() {
         let retry = store
             .apply_native_graph(&changed, &QueryControl::Cancel(CancelToken::new()))
             .expect("clean same-input retry");
-        assert_eq!(retry[0].generation.get(), 2);
+        assert_eq!(retry[0].generation.get(), 3);
         store
             .with_native_read(
                 &QueryControl::Cancel(CancelToken::new()),
@@ -1967,11 +1986,11 @@ fn run_ze39_commit_attempt_errors_are_indeterminate_and_stop_admission() {
                     .load(Ordering::Acquire)
             );
             VERIFIED_FAULTS.with(|count| count.set(count.get() + 1));
-            assert!(vfs.take().iter().any(|event| matches!(event, DurabilityEvent::Sync(path, SyncKind::Full) if path.file_name().unwrap().to_string_lossy().starts_with("graph-wal-"))));
+            assert!(vfs.take().iter().any(|event| matches!(event, DurabilityEvent::Sync(path, SyncKind::Full) if path.file_name().unwrap() == "wal.ze")));
         } else {
             vfs.assert_fired_once();
         }
-        assert_eq!(old.bundle().base().generation.get(), 0);
+        assert_eq!(old.bundle().base().generation.get(), 1);
         assert!(matches!(
             store.apply_native_graph(&request, &QueryControl::Cancel(CancelToken::new())),
             Err(super::super::NativeGraphError::WritesStopped)
@@ -1999,7 +2018,7 @@ fn run_ze39_commit_attempt_errors_are_indeterminate_and_stop_admission() {
                 .unwrap()[0]
                 .generation
                 .get(),
-            1
+            2
         );
         clean.close().unwrap();
     }
@@ -2115,7 +2134,7 @@ fn run_ze39_result_preparation_and_postcommit_cancel_obey_commit_boundary() {
             .base()
             .generation
             .get(),
-        0
+        1
     );
 
     let limit_calls = Arc::new(AtomicU64::new(0));
@@ -2234,9 +2253,7 @@ fn run_ze39_fresh_create_failures_never_adopt_or_replace_identity() {
         &mut crate::property_graph::storage::allocation::OsEntropy,
     )
     .expect("valid fresh store");
-    let selected_before = vfs
-        .read(&path.join("graph-root.ze"))
-        .expect("selected root");
+    let selected_before = vfs.read(&path.join("manifest.ze")).expect("selected root");
     let repeated = Store::create_native_graph_with_infrastructure(
         &path,
         options(),
@@ -2251,14 +2268,13 @@ fn run_ze39_fresh_create_failures_never_adopt_or_replace_identity() {
             if source.kind() == std::io::ErrorKind::AlreadyExists
     ));
     assert_eq!(
-        vfs.read(&path.join("graph-root.ze"))
+        vfs.read(&path.join("manifest.ze"))
             .expect("unchanged selected root"),
         selected_before
     );
-    assert!(matches!(
-        super::super::persistence::classify_native_graph(vfs.as_ref(), &path),
-        super::super::persistence::NativeStoreClassification::Complete { .. }
-    ));
+    let manifest =
+        crate::manifest::io::load_manifest(vfs.as_ref(), &path.join("manifest.ze"), 0).unwrap();
+    assert!(manifest.graph.is_some());
     store.close().expect("close valid store");
 
     let incomplete = parent.path().join("incomplete");
@@ -2276,7 +2292,7 @@ fn run_ze39_fresh_create_failures_never_adopt_or_replace_identity() {
             Arc::new(crate::lifecycle::SystemMonotonicClock),
             &mut crate::property_graph::storage::allocation::OsEntropy,
         ),
-        Err(super::super::NativeGraphError::StoreInitializationIncomplete)
+        Err(super::super::NativeGraphError::Io { source, .. }) if source.kind() == std::io::ErrorKind::AlreadyExists
     ));
 
     let incompatible = parent.path().join("incompatible");
@@ -2299,9 +2315,7 @@ fn run_ze39_fresh_create_failures_never_adopt_or_replace_identity() {
             Arc::new(crate::lifecycle::SystemMonotonicClock),
             &mut crate::property_graph::storage::allocation::OsEntropy,
         ),
-        Err(super::super::NativeGraphError::Invalid(
-            "incompatible native graph root"
-        ))
+        Err(super::super::NativeGraphError::Io { source, .. }) if source.kind() == std::io::ErrorKind::AlreadyExists
     ));
 
     let corrupt = parent.path().join("corrupt");
@@ -2329,9 +2343,7 @@ fn run_ze39_fresh_create_failures_never_adopt_or_replace_identity() {
             Arc::new(crate::lifecycle::SystemMonotonicClock),
             &mut crate::property_graph::storage::allocation::OsEntropy,
         ),
-        Err(super::super::NativeGraphError::Invalid(
-            "corrupt native graph root"
-        ))
+        Err(super::super::NativeGraphError::Io { source, .. }) if source.kind() == std::io::ErrorKind::AlreadyExists
     ));
 
     let entropy_path = parent.path().join("entropy-failure");
@@ -2529,6 +2541,19 @@ fn ze76_commit_io_matches_independent_vfs_witness() {
         &mut crate::property_graph::storage::allocation::OsEntropy,
     )
     .unwrap();
+    // Initialize the lazy outer WAL header before measuring one op-10 frame.
+    let warmup = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    store
+        .apply_native_graph(
+            &[StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "ze76", "warmup").unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&warmup)),
+            }],
+            &QueryControl::Cancel(CancelToken::new()),
+        )
+        .unwrap();
     let resources = GraphResources::from_store(&store).unwrap();
     let before = resources.work_ledger().unwrap();
     vfs.reset();
@@ -2623,17 +2648,38 @@ fn ze76_commit_io_matches_independent_vfs_witness() {
         })
         .unwrap();
     let wal = std::fs::read(wal_path).unwrap();
-    let envelope = &wal[64..];
+    let outer = crate::wal::replay::replay(&wal);
+    let record = outer.records.last().unwrap();
+    assert_eq!(record.op, crate::ingest::wal_payload::GRAPH_COMMIT_V1);
+    let envelope = record.payload;
+    assert_eq!(
+        vfs.bytes_appended(),
+        (envelope.len() + crate::wal::record::MIN_RECORD_LEN) as u64
+    );
     let mut offset = 0usize;
     let mut units = 0u64;
     let mut records = 0u64;
     let mut commit_start = 0usize;
+    let mut prepared_count = 0u64;
     while offset < envelope.len() {
         assert_eq!(&envelope[offset..offset + 4], b"ZGWF");
         let payload =
             u32::from_le_bytes(envelope[offset + 8..offset + 12].try_into().unwrap()) as usize;
         if u16::from_le_bytes(envelope[offset + 4..offset + 6].try_into().unwrap()) == 6 {
             commit_start = offset;
+            let state = &envelope[offset + 64 + 16..offset + 64 + payload];
+            let mut cancelled = || false;
+            let mut resources = crate::property_graph::wal::WalResources::new(
+                u64::MAX,
+                crate::property_graph::wal::STACK_RESERVATION_BYTES,
+                &mut cancelled,
+            )
+            .unwrap();
+            prepared_count = crate::property_graph::wal::decode_commit_state(state, &mut resources)
+                .unwrap()
+                .prepared_inventories
+                .len()
+                .unwrap() as u64;
         }
         if u16::from_le_bytes(envelope[offset + 4..offset + 6].try_into().unwrap()) == 2 {
             let provenance =
@@ -2645,7 +2691,7 @@ fn ze76_commit_io_matches_independent_vfs_witness() {
         offset += 72 + payload;
     }
     assert_eq!(offset, envelope.len());
-    units += commit_start as u64 + 2 * (records - 2) + 6;
+    units += commit_start as u64 + 2 * (records - 2) + 6 * prepared_count;
     assert_eq!(after.wal_codec_units - before.wal_codec_units, units);
     store.close().unwrap();
 }
@@ -2700,13 +2746,13 @@ fn ze76_failed_sync_keeps_exact_attempt_and_release_prefix() {
             .base()
             .generation
             .get(),
-        0
+        1
     );
     assert_eq!(resources.reserved_bytes().unwrap(), baseline);
     let result = store
         .apply_native_graph(&[write], &QueryControl::Cancel(CancelToken::new()))
         .unwrap();
-    assert_eq!(result.changed_generation().unwrap().get(), 1);
+    assert_eq!(result.changed_generation().unwrap().get(), 2);
     drop(result);
     store.close().unwrap();
 }
@@ -2752,7 +2798,7 @@ fn ze76_counter_failure_cannot_change_commit() {
             .base()
             .generation
             .get(),
-        1
+        2
     );
     assert_eq!(store.accounting.ze76_work_merges() - merges, 1);
     store
@@ -2774,7 +2820,7 @@ fn ze76_counter_failure_cannot_change_commit() {
             .base()
             .generation
             .get(),
-        2
+        3
     );
 }
 
@@ -2819,7 +2865,7 @@ fn ze76_poisoned_counter_cannot_change_commit() {
             .base()
             .generation
             .get(),
-        1
+        2
     );
     assert_eq!(store.accounting.ze76_work_merges() - merges, 1);
     store
@@ -2841,6 +2887,622 @@ fn ze76_poisoned_counter_cannot_change_commit() {
             .base()
             .generation
             .get(),
-        2
+        3
     );
+}
+
+#[cfg(test)]
+mod graph_write {
+    use super::*;
+
+    #[test]
+    fn writable_reopen_does_not_reset_the_reclaim_count_allowance() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path(), OpenOptions::new()).unwrap();
+        store.enable_graph().unwrap();
+        let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+        store
+            .apply_native_graph(
+                &[StructuredWrite {
+                    key: ApplicationKey::new(EntityKind::Node, "allowance", "one").unwrap(),
+                    revision: GraphRevision::new(1).unwrap(),
+                    operation: StructuredOperation::Create,
+                    image: Some(WriteImage::Node(&image)),
+                }],
+                &QueryControl::Cancel(CancelToken::new()),
+            )
+            .unwrap();
+        store.close().unwrap();
+        let reopened = Store::open(directory.path(), OpenOptions::new()).unwrap();
+        assert_eq!(
+            reopened
+                .native_graph
+                .commits_since_reclaim
+                .load(Ordering::Relaxed),
+            crate::lifecycle::native_graph::automatic::RECLAIM_AFTER_COMMITS,
+            "reopening retained history must not grant a fresh count allowance"
+        );
+        reopened.close().unwrap();
+    }
+
+    #[test]
+    fn a_group_cap_rejection_is_definite_and_keeps_admissions_open() {
+        let directory = tempfile::tempdir().unwrap();
+        let vfs = Arc::new(RecordingVfs::default());
+        let store = Store::open_with_test_dependencies(
+            directory.path(),
+            OpenOptions::new(),
+            crate::lifecycle::StoreTestDependencies::new(
+                vfs.clone(),
+                Arc::new(crate::lifecycle::SystemMonotonicClock),
+            ),
+        )
+        .unwrap();
+        store.enable_graph().unwrap();
+        vfs.clear_events();
+        let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+        let names = ["x".repeat(crate::wal::DEFAULT_MAX_GROUP_BYTES)];
+        let writes: Vec<_> = names
+            .iter()
+            .map(|name| StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "group-cap", name).unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            })
+            .collect();
+        let error = store
+            .apply_native_graph(&writes, &QueryControl::Cancel(CancelToken::new()))
+            .err()
+            .expect("legal graph envelope exceeds this store's one MiB group cap");
+        assert!(
+            matches!(
+                error,
+                crate::lifecycle::native_graph::NativeGraphError::Store(
+                    crate::lifecycle::StoreError::WalWrite(
+                        crate::wal::WalWriteError::GroupTooLarge { .. }
+                    )
+                )
+            ),
+            "{error:?}"
+        );
+        assert_eq!(store.admit_native_read().unwrap().bundle().sequence(), 0);
+        assert!(
+            !vfs.take()
+                .iter()
+                .any(|event| matches!(event, DurabilityEvent::Append(_)))
+        );
+        store.close().unwrap();
+    }
+
+    #[test]
+    fn reclaim_proof_writes_follow_the_store_policy() {
+        for (mode, tier, expected) in [
+            (DurabilityMode::Derived, CommitTier::Ordered, None),
+            (
+                DurabilityMode::Durable,
+                CommitTier::Ordered,
+                Some(SyncKind::Barrier),
+            ),
+            (
+                DurabilityMode::Durable,
+                CommitTier::Durable,
+                Some(SyncKind::Full),
+            ),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let vfs = Arc::new(RecordingVfs::default());
+            let store = Store::open_with_test_dependencies(
+                directory.path(),
+                OpenOptions::new().with_durability(mode, tier),
+                crate::lifecycle::StoreTestDependencies::new(
+                    vfs.clone(),
+                    Arc::new(crate::lifecycle::SystemMonotonicClock),
+                ),
+            )
+            .unwrap();
+            store.enable_graph().unwrap();
+            vfs.clear_events();
+            let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+            store
+                .apply_native_graph(
+                    &[StructuredWrite {
+                        key: ApplicationKey::new(EntityKind::Node, "policy", "node").unwrap(),
+                        revision: GraphRevision::new(1).unwrap(),
+                        operation: StructuredOperation::Create,
+                        image: Some(WriteImage::Node(&image)),
+                    }],
+                    &QueryControl::Cancel(CancelToken::new()),
+                )
+                .unwrap();
+            super::super::consolidation::commit_maintenance(&store).unwrap();
+            let events = vfs.take();
+            let syncs: Vec<_> = events
+                .iter()
+                .filter_map(|event| match event {
+                    DurabilityEvent::Sync(_, kind) => Some(*kind),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(!syncs.is_empty(), expected.is_some());
+            assert!(
+                syncs.iter().all(|kind| Some(*kind) == expected),
+                "{mode:?}/{tier:?}: {syncs:?}"
+            );
+            store.close().unwrap();
+        }
+    }
+
+    #[test]
+    fn writable_recovery_completes_reclaim_on_wal_ze() {
+        let directory = tempfile::tempdir().unwrap();
+        let vfs = Arc::new(RecordingVfs::default());
+        let options =
+            OpenOptions::new().with_durability(DurabilityMode::Durable, CommitTier::Durable);
+        let store = Store::open_with_test_dependencies(
+            directory.path(),
+            options.clone(),
+            crate::lifecycle::StoreTestDependencies::new(
+                vfs.clone(),
+                Arc::new(crate::lifecycle::SystemMonotonicClock),
+            ),
+        )
+        .unwrap();
+        store.enable_graph().unwrap();
+        for index in 0..10 {
+            let contents = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+            store
+                .apply_native_graph(
+                    &[StructuredWrite {
+                        key: ApplicationKey::new(EntityKind::Node, "reclaim", &index.to_string())
+                            .unwrap(),
+                        revision: GraphRevision::new(1).unwrap(),
+                        operation: StructuredOperation::Create,
+                        image: Some(WriteImage::Node(&contents)),
+                    }],
+                    &QueryControl::Cancel(CancelToken::new()),
+                )
+                .unwrap();
+        }
+        super::super::consolidation::commit_maintenance(&store).unwrap();
+        store
+            .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+            .unwrap();
+        vfs.arm_fault_after(FaultPoint::Delete, 1);
+        let mut interrupted = false;
+        for _ in 0..8 {
+            if super::super::consolidation::commit_maintenance(&store).is_err() {
+                interrupted = true;
+                break;
+            }
+            store
+                .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+                .unwrap();
+        }
+        assert!(interrupted, "fixture must reach a candidate unlink");
+        vfs.assert_fired_once();
+        assert!(store.native_graph.has_pending_reclaim().unwrap());
+        store.close().unwrap();
+        let reader = Store::open(
+            directory.path(),
+            options
+                .clone()
+                .with_access_mode(crate::lifecycle::AccessMode::ReadOnly),
+        )
+        .unwrap();
+        assert!(reader.native_graph.has_pending_reclaim().unwrap());
+        reader.close().unwrap();
+        vfs.clear_events();
+        let writer = Store::open_with_test_dependencies(
+            directory.path(),
+            options,
+            crate::lifecycle::StoreTestDependencies::new(
+                vfs.clone(),
+                Arc::new(crate::lifecycle::SystemMonotonicClock),
+            ),
+        )
+        .unwrap();
+        assert!(!writer.native_graph.has_pending_reclaim().unwrap());
+        assert!(vfs.take().iter().any(
+            |event| matches!(event, DurabilityEvent::Append(path) if path.ends_with("wal.ze"))
+        ));
+        assert!(!directory.path().join("graph-root.ze").exists());
+        writer.close().unwrap();
+    }
+
+    #[test]
+    fn a_failure_after_append_is_indeterminate() {
+        for point in [
+            FaultPoint::PartialAppend,
+            FaultPoint::WalSync,
+            FaultPoint::Publish,
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let vfs = Arc::new(RecordingVfs::default());
+            let store = Store::open_with_test_dependencies(
+                directory.path(),
+                OpenOptions::new().with_durability(DurabilityMode::Durable, CommitTier::Durable),
+                crate::lifecycle::StoreTestDependencies::new(
+                    vfs.clone(),
+                    Arc::new(crate::lifecycle::SystemMonotonicClock),
+                ),
+            )
+            .unwrap();
+            store.enable_graph().unwrap();
+            let contents = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+            if point == FaultPoint::Publish {
+                store
+                    .native_graph
+                    .fail_next_publication
+                    .store(true, Ordering::Release);
+            } else {
+                vfs.arm_fault(point);
+            }
+            let error = store
+                .apply_native_graph(
+                    &[StructuredWrite {
+                        key: ApplicationKey::new(EntityKind::Node, "failure", "node").unwrap(),
+                        revision: GraphRevision::new(1).unwrap(),
+                        operation: StructuredOperation::Create,
+                        image: Some(WriteImage::Node(&contents)),
+                    }],
+                    &QueryControl::Cancel(CancelToken::new()),
+                )
+                .err()
+                .expect("append fault must refuse");
+            assert!(
+                matches!(
+                    error,
+                    crate::lifecycle::native_graph::NativeGraphError::CommitIndeterminate { .. }
+                ),
+                "{error:?}"
+            );
+            if point == FaultPoint::Publish {
+                assert!(
+                    !store
+                        .native_graph
+                        .fail_next_publication
+                        .load(Ordering::Acquire)
+                );
+            } else {
+                vfs.assert_fired_once();
+            }
+            assert!(store.admit_native_read().is_err());
+            store.close().unwrap();
+            let reopened = Store::open(directory.path(), OpenOptions::new()).unwrap();
+            assert_eq!(
+                reopened.admit_native_read().unwrap().bundle().sequence(),
+                u64::from(point != FaultPoint::PartialAppend)
+            );
+            reopened.close().unwrap();
+        }
+    }
+
+    #[test]
+    fn objects_are_synced_before_the_wal_append() {
+        let directory = tempfile::tempdir().unwrap();
+        let vfs = Arc::new(RecordingVfs::default());
+        let store = Store::open_with_test_dependencies(
+            directory.path(),
+            OpenOptions::new()
+                .with_max_resident_bytes(256 * 1024 * 1024)
+                .with_durability(DurabilityMode::Durable, CommitTier::Durable),
+            crate::lifecycle::StoreTestDependencies::new(
+                vfs.clone(),
+                Arc::new(crate::lifecycle::SystemMonotonicClock),
+            ),
+        )
+        .unwrap();
+        store.enable_graph().unwrap();
+        vfs.clear_events();
+        let contents = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+        let request = StructuredWrite {
+            key: ApplicationKey::new(EntityKind::Node, "app", "first").unwrap(),
+            revision: GraphRevision::new(1).unwrap(),
+            operation: StructuredOperation::Create,
+            image: Some(WriteImage::Node(&contents)),
+        };
+        let result = store
+            .apply_native_graph(&[request], &QueryControl::Cancel(CancelToken::new()))
+            .unwrap();
+        assert_eq!(
+            result.changed_generation(),
+            Some(crate::property_graph::GraphGeneration::new(2))
+        );
+        let events = vfs.take();
+        let append = events.iter().position(|event| matches!(event, DurabilityEvent::Append(path) if path.file_name().unwrap() == "wal.ze")).unwrap();
+        let objects: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                DurabilityEvent::Create(path)
+                    if path.extension().is_some_and(|ext| ext == "zgraph") =>
+                {
+                    Some(path)
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(!objects.is_empty());
+        for path in objects {
+            assert!(
+                events[..append].contains(&DurabilityEvent::Sync(path.clone(), SyncKind::Full))
+            );
+        }
+        assert!(events[..append].contains(&DurabilityEvent::Sync(
+            directory.path().to_path_buf(),
+            SyncKind::Full
+        )));
+        assert!(!directory.path().join("graph-root.ze").exists());
+        assert!(std::fs::read_dir(directory.path()).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("graph-wal-")
+        }));
+        store.close().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod graph_checkpoint {
+    use super::*;
+
+    fn write_one(store: &Store) {
+        let contents = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+        store
+            .apply_native_graph(
+                &[StructuredWrite {
+                    key: ApplicationKey::new(EntityKind::Node, "checkpoint", "node").unwrap(),
+                    revision: GraphRevision::new(1).unwrap(),
+                    operation: StructuredOperation::Create,
+                    image: Some(WriteImage::Node(&contents)),
+                }],
+                &QueryControl::Cancel(CancelToken::new()),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn a_captured_base_binds_the_fold_generation_without_changing_graph_generation() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path(), OpenOptions::new()).unwrap();
+        store.enable_graph().unwrap();
+        write_one(&store);
+        store
+            .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+            .unwrap();
+        let lease = store.admit_native_read().unwrap();
+        let state = crate::lifecycle::native_graph::write::commit_state(lease.bundle());
+        let fold = lease.bundle().base().fold;
+        assert!(fold.manifest_generation > state.generation.get());
+        let binding = crate::property_graph::storage::reclaim::SpillBinding {
+            store: state.store,
+            session: crate::property_graph::storage::artifact::ArtifactId::new(77).unwrap(),
+            capture_generation: state.generation,
+            target_generation: crate::property_graph::GraphGeneration::new(
+                fold.manifest_generation + 1,
+            ),
+            sequence: state.sequence,
+            serial_fence: state.high_waters.creation_serial,
+        };
+        let mut output = vec![0; 8192];
+        let mut cancelled = || false;
+        let mut resources = crate::property_graph::wal::WalResources::new(
+            u64::MAX,
+            crate::property_graph::wal::STACK_RESERVATION_BYTES,
+            &mut cancelled,
+        )
+        .unwrap();
+        let (length, _) = crate::property_graph::storage::reclaim::encode_captured_base(
+            binding,
+            fold,
+            state,
+            &mut output,
+            &mut resources,
+        )
+        .unwrap();
+        let captured = crate::property_graph::storage::reclaim::decode_captured_base(
+            &output[..length],
+            &mut resources,
+        )
+        .unwrap();
+        assert_eq!(captured.fold, fold);
+        assert_eq!(captured.state.generation, state.generation);
+        drop(lease);
+        store.close().unwrap();
+    }
+
+    #[test]
+    fn refuses_a_document_tail_that_it_cannot_fold() {
+        use crate::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path(), OpenOptions::new()).unwrap();
+        store.enable_graph().unwrap();
+        write_one(&store);
+        store
+            .ingest(IngestBatch::new(vec![IngestDocument::new(
+                DocumentVersion::new(DocId::new(91), Revision::new(1)),
+                vec![1.0, 0.0],
+            )]))
+            .unwrap();
+        let before = super::super::recovery::file_snapshot(directory.path());
+        assert!(
+            store
+                .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+                .is_err(),
+            "a graph-only fold cannot count the later document batch again on reopen"
+        );
+        assert_eq!(
+            super::super::recovery::file_snapshot(directory.path()),
+            before
+        );
+        store.close().unwrap();
+    }
+
+    #[test]
+    fn advances_graph_absorbed_through_without_sealing() {
+        use crate::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+        let directory = tempfile::tempdir().unwrap();
+        let options = OpenOptions::new()
+            .with_max_resident_bytes(256 * 1024 * 1024)
+            .with_durability(DurabilityMode::Durable, CommitTier::Durable);
+        let store = Store::open(directory.path(), options.clone()).unwrap();
+        store.enable_graph().unwrap();
+        store
+            .ingest(IngestBatch::new(vec![IngestDocument::new(
+                DocumentVersion::new(DocId::new(91), Revision::new(1)),
+                vec![1.0, 0.0],
+            )]))
+            .unwrap();
+        write_one(&store);
+        store
+            .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+            .unwrap();
+        let manifest =
+            crate::manifest::io::load_manifest(&StdVfs, &directory.path().join("manifest.ze"), 2)
+                .unwrap();
+        assert_eq!(manifest.generation, 4);
+        assert_eq!(manifest.log_seq, 0);
+        assert!(manifest.segments.is_empty());
+        let graph = manifest.graph.as_ref().unwrap();
+        assert_eq!(graph.graph_absorbed_through, 2);
+        assert_eq!(graph.state().unwrap().generation.get(), 3);
+        assert_eq!(graph.state().unwrap().sequence, 1);
+        store.close().unwrap();
+        let reopened = Store::open(
+            directory.path(),
+            options.with_access_mode(crate::lifecycle::AccessMode::ReadOnly),
+        )
+        .unwrap();
+        assert_eq!(reopened.snapshot().unwrap().generation(), 4);
+        assert_eq!(reopened.count_documents(None, None).unwrap().count, 1);
+        assert_eq!(
+            reopened
+                .admit_native_read()
+                .unwrap()
+                .bundle()
+                .base()
+                .fold
+                .manifest_generation,
+            4
+        );
+        reopened.close().unwrap();
+    }
+
+    #[test]
+    fn rotates_the_wal_when_the_active_segment_is_empty() {
+        let directory = tempfile::tempdir().unwrap();
+        let options = OpenOptions::new()
+            .with_max_resident_bytes(256 * 1024 * 1024)
+            .with_durability(DurabilityMode::Durable, CommitTier::Durable);
+        let store = Store::open(directory.path(), options.clone()).unwrap();
+        store.enable_graph().unwrap();
+        write_one(&store);
+        assert!(
+            !crate::wal::WalReader::open(&StdVfs, &directory.path().join("wal.ze"))
+                .unwrap()
+                .records()
+                .is_empty()
+        );
+        store
+            .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+            .unwrap();
+        let manifest =
+            crate::manifest::io::load_manifest(&StdVfs, &directory.path().join("manifest.ze"), 1)
+                .unwrap();
+        assert_eq!(manifest.log_seq, 1);
+        assert_eq!(manifest.graph.as_ref().unwrap().graph_absorbed_through, 1);
+        assert!(
+            crate::wal::WalReader::open(&StdVfs, &directory.path().join("wal.ze"))
+                .unwrap()
+                .records()
+                .is_empty()
+        );
+        store.close().unwrap();
+        let reopened = Store::open(directory.path(), options).unwrap();
+        assert_eq!(reopened.snapshot().unwrap().generation(), 3);
+        assert_eq!(
+            reopened
+                .admit_native_read()
+                .unwrap()
+                .bundle()
+                .base()
+                .generation
+                .get(),
+            2
+        );
+        write_one_duplicate(&reopened);
+        reopened.close().unwrap();
+    }
+
+    fn write_one_duplicate(store: &Store) {
+        let contents = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+        let result = store
+            .apply_native_graph(
+                &[StructuredWrite {
+                    key: ApplicationKey::new(EntityKind::Node, "checkpoint", "node").unwrap(),
+                    revision: GraphRevision::new(1).unwrap(),
+                    operation: StructuredOperation::Create,
+                    image: Some(WriteImage::Node(&contents)),
+                }],
+                &QueryControl::Cancel(CancelToken::new()),
+            )
+            .unwrap();
+        assert!(result.changed_generation().is_none());
+        assert_eq!(store.snapshot().unwrap().generation(), 3);
+    }
+}
+
+#[test]
+fn ze76_ordered_commit_counts_only_full_syncs() {
+    use crate::property_graph::resources::GraphResources;
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("ordered-ledger");
+    let vfs = Arc::new(RecordingVfs::default());
+    let store = Store::create_native_graph_with_infrastructure(
+        &path,
+        OpenOptions::new()
+            .with_durability(DurabilityMode::Durable, CommitTier::Ordered)
+            .with_max_resident_bytes(256 * 1024 * 1024),
+        None,
+        vfs.clone(),
+        Arc::new(crate::lifecycle::SystemMonotonicClock),
+        &mut crate::property_graph::storage::allocation::OsEntropy,
+    )
+    .unwrap();
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    let write = |key: &str| {
+        store
+            .apply_native_graph(
+                &[StructuredWrite {
+                    key: ApplicationKey::new(EntityKind::Node, "ordered", key).unwrap(),
+                    revision: GraphRevision::new(1).unwrap(),
+                    operation: StructuredOperation::Create,
+                    image: Some(WriteImage::Node(&image)),
+                }],
+                &QueryControl::Cancel(CancelToken::new()),
+            )
+            .unwrap();
+    };
+    write("warmup");
+    let resources = GraphResources::from_store(&store).unwrap();
+    let before = resources.work_ledger().unwrap();
+    vfs.take();
+    write("measured");
+    let events = vfs.take();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, DurabilityEvent::Sync(_, SyncKind::Barrier)))
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, DurabilityEvent::Sync(_, SyncKind::Full)))
+    );
+    let after = resources.work_ledger().unwrap();
+    assert_eq!(after.full_sync_attempts - before.full_sync_attempts, 0);
+    assert_eq!(after.full_sync_successes - before.full_sync_successes, 0);
+    store.close().unwrap();
 }

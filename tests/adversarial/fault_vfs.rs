@@ -752,7 +752,7 @@ impl VfsFile for ProcessCrashFile {
 fn is_native_graph_wal(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(|name| name.starts_with("graph-wal-") && name.ends_with(".ze"))
+        .is_some_and(|name| name == "wal.ze")
 }
 
 pub(super) fn kill_native_graph_process(path: &Path, operation: &str) {

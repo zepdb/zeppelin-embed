@@ -596,9 +596,9 @@ mod ze172_tests {
                 .unwrap_err()
                 .contains("largest-pending-range")
         );
-        let commits: Vec<_> = (1..=66)
-            .map(|generation| QualificationCommit {
-                generation,
+        let commits: Vec<_> = (0..66)
+            .map(|index| QualificationCommit {
+                generation: index + 2 + index / 64,
                 opens: 61,
                 logged_opens: 61,
                 filled: 60,
@@ -607,6 +607,13 @@ mod ze172_tests {
             .collect();
         check_commits(&commits).expect("counter golden");
         assert!(check_commits(&[]).unwrap_err().contains("missing"));
+        let mut stale_generation = commits.clone();
+        stale_generation[64].generation -= 1;
+        assert!(
+            check_commits(&stale_generation)
+                .unwrap_err()
+                .contains("lying")
+        );
         let mut wrong = commits;
         wrong[0].opens = 60;
         assert!(check_commits(&wrong).unwrap_err().contains("lying"));
@@ -726,7 +733,9 @@ fn check_commits(
         return Err("ZE-172 missing per-commit counters".into());
     }
     for (index, commit) in commits.iter().enumerate() {
-        if commit.generation != index as u64 + 1
+        // Enable consumes generation 1; the 65th write first folds the 64
+        // preceding graph envelopes into a new manifest generation.
+        if commit.generation != index as u64 + 2 + index as u64 / 64
             || commit.opens == 0
             || commit.opens != commit.logged_opens
             || commit.filled > 60

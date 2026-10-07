@@ -1,4 +1,4 @@
-use super::super::persistence::{encode_framed, next_artifact, write_new_full, zeroed};
+use super::super::persistence::{encode_framed, next_artifact, write_new, zeroed};
 use super::super::{
     NativeGraphError, NativeProtectedRoots, NativeReadLease, NativeSpillRegistration,
 };
@@ -81,8 +81,7 @@ impl<'a, 'm> NativeSpillReader<'a, 'm> {
         resources: &mut TreeResources<'_>,
     ) -> Result<(), TreeError> {
         if required.object.family != 17 {
-            // Removed by ZE-346 with legacy checkpoint control files.
-            return self.source.validate_required_reference(required, resources);
+            return Err(TreeError::Invalid("legacy checkpoint reference"));
         }
         if required.object.version != 1 || required.block.artifact != required.object.artifact {
             return Err(TreeError::Invalid("required reference descriptor domain"));
@@ -479,11 +478,12 @@ impl<'a, 'm> NativeSpillWriter<'a, 'm> {
             identity.artifact,
         )?;
         self.maximum_encoded_backing = self.maximum_encoded_backing.max(bytes.as_slice().len());
-        write_new_full(
+        write_new(
             self.lease.bundle().vfs(),
             self.lease.bundle().directory(),
             &path,
             bytes.as_slice(),
+            self.store.durability_policy,
         )?;
         self.disk_bytes = next_disk_bytes;
         self.created_objects = self

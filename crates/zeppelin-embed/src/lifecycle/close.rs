@@ -301,6 +301,15 @@ impl Store {
         let released = writer_lock.take();
         drop(writer_lock);
         drop(released);
+        #[cfg(feature = "graph-cypher")]
+        drop(
+            self.reader_store_lock
+                .lock()
+                .map_err(|_| StoreError::Synchronization {
+                    component: "reader store lock",
+                })?
+                .take(),
+        );
         drop(
             self.logical_writer_lock
                 .lock()
@@ -401,6 +410,14 @@ impl Store {
         };
         let released = writer_slot.take();
         drop(released);
+        #[cfg(feature = "graph-cypher")]
+        {
+            let reader = match self.reader_store_lock.get_mut() {
+                Ok(slot) => slot,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            drop(reader.take());
+        }
         let logical = match self.logical_writer_lock.get_mut() {
             Ok(slot) => slot,
             Err(poisoned) => poisoned.into_inner(),

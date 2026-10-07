@@ -19,8 +19,8 @@ pub fn compare(seed: u64, observed: &Observed) -> Result<(), String> {
         || observed.parameter_numbers != [3, 4]
         || observed.scalar != expected_scalar(seed)
         || observed.tags != [5, 0, 5]
-        || observed.admitted != 1
-        || observed.changed != 1
+        || observed.admitted != 2
+        || observed.changed != 2
         || observed.disposition != 2
     {
         return Err(format!(
@@ -41,13 +41,13 @@ pub struct BindingOutcome {
 }
 pub fn compare_binding(mode: u32, value: &BindingOutcome) -> Result<(), String> {
     let (status, disposition, changed, recovered) = match mode {
-        0 | 4 => ("ZeOk", 2, 1, 1),
+        0 | 4 => ("ZeOk", 2, 2, 1),
         1 => ("ZeErrOutOfMemory", 1, 0, 0),
         // Entering WAL append is uncertain even if its callback refuses first.
         2 => ("ZeErrIndeterminateCommit", 5, 0, 0),
         3 => ("ZeErrIndeterminateCommit", 5, 0, 1),
         5 => ("ZeErrPanic", 5, 0, 1),
-        6 => ("ZeErrPanic", 2, 1, 1),
+        6 => ("ZeErrPanic", 2, 2, 1),
         _ => return Err("ZE-72 unknown binding fault".into()),
     };
     if value.status != status

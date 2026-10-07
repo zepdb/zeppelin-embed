@@ -79,7 +79,10 @@ impl<'a, 'batch> GraphBatchReadView<'a, 'batch> {
             return Err(StageError::Limit);
         }
         control(WritePhase::Overlay)?;
-        if base.identity().generation.get() != 0 && base.identity().roots.is_none() {
+        if base.identity().generation.get() != 0
+            && base.identity().roots.is_none()
+            && base.identity().fold.manifest_generation == 0
+        {
             return Err(StageError::ViewMismatch);
         }
         Ok(Self {

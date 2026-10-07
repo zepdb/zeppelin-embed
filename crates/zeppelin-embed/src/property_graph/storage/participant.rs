@@ -83,6 +83,7 @@ pub fn prepare_directories<'a, S: BlockSink>(
         || base.roots.store() != base.identity.store
         || base.roots.generation() != base.identity.generation
         || (base.identity.roots.is_none()
+            && base.identity.fold.manifest_generation == 0
             && (base.identity.generation.get() != 0
                 || base.roots.references().iter().any(Option::is_some)))
     {

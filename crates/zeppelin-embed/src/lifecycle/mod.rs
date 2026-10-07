@@ -1467,6 +1467,8 @@ pub struct OpenOptions {
     epoch: Option<crate::epoch::StoreEpoch>,
     tokenizer: Option<crate::fts::tokenizer::TokenizerConfig>,
     schema: Option<crate::meta::Schema>,
+    #[cfg(feature = "graph-cypher")]
+    graph_document: Option<crate::epoch::EmbeddingTower>,
 }
 
 /// Filesystem authority requested for one store handle.
@@ -1493,6 +1495,8 @@ impl OpenOptions {
             epoch: None,
             tokenizer: None,
             schema: None,
+            #[cfg(feature = "graph-cypher")]
+            graph_document: None,
         }
     }
 
@@ -1510,6 +1514,8 @@ impl OpenOptions {
             epoch: None,
             tokenizer: None,
             schema: None,
+            #[cfg(feature = "graph-cypher")]
+            graph_document: None,
         }
     }
 
@@ -2619,6 +2625,8 @@ pub struct Store {
     pub(crate) active: Mutex<Option<crate::ingest::ActiveState>>,
     pub(crate) wal_writer: Mutex<Option<crate::ingest::StoreWal>>,
     pub(crate) writer_lock: Mutex<Option<Arc<StoreLock>>>,
+    #[cfg(feature = "graph-cypher")]
+    reader_store_lock: Mutex<Option<StoreLock>>,
     snapshot_pins: Arc<AtomicU64>,
     snapshot_pin: Mutex<Option<snapshot_view::SnapshotPin>>,
     logical_writer_lock: Mutex<Option<StoreLock>>,
@@ -2750,27 +2758,6 @@ pub(crate) fn is_legacy_store_directory(
     Ok(false)
 }
 
-#[cfg(feature = "graph-cypher")]
-fn acquire_native_graph_lock(
-    path: &Path,
-    access_mode: AccessMode,
-    existing: bool,
-) -> Result<Option<StoreLock>, StoreError> {
-    let acquired = match access_mode {
-        AccessMode::ReadWrite if existing => StoreLock::acquire_existing(path),
-        AccessMode::ReadWrite => StoreLock::acquire(path),
-        AccessMode::ReadOnly => StoreLock::acquire_shared(path),
-    };
-    acquired.map(Some).map_err(|error| match error {
-        StoreLockError::Io { path, source } if source.kind() == std::io::ErrorKind::WouldBlock => {
-            StoreError::StoreBusy { path }
-        }
-        StoreLockError::Io { path, source } => {
-            StoreError::Lock(StoreLockError::Io { path, source })
-        }
-    })
-}
-
 /// Returns the schema the opened store serves and whether it is an additive
 /// evolution of the committed schema that open must commit before publishing.
 fn resolve_open_schema(
@@ -2898,106 +2885,6 @@ fn cleanup_open_orphans(
 }
 
 impl Store {
-    #[cfg(feature = "graph-cypher")]
-    pub(crate) fn new_native_graph_owner(
-        path: &Path,
-        options: OpenOptions,
-        vfs: Arc<dyn crate::vfs::Vfs>,
-        clock: Arc<dyn MonotonicClock>,
-    ) -> Result<Self, StoreError> {
-        Self::new_native_graph_owner_inner(path, options, vfs, clock, false)
-    }
-
-    #[cfg(feature = "graph-cypher")]
-    pub(crate) fn new_native_graph_recovery_owner(
-        path: &Path,
-        options: OpenOptions,
-        vfs: Arc<dyn crate::vfs::Vfs>,
-        clock: Arc<dyn MonotonicClock>,
-    ) -> Result<Self, StoreError> {
-        Self::new_native_graph_owner_inner(path, options, vfs, clock, true)
-    }
-
-    #[cfg(feature = "graph-cypher")]
-    fn new_native_graph_owner_inner(
-        path: &Path,
-        options: OpenOptions,
-        vfs: Arc<dyn crate::vfs::Vfs>,
-        clock: Arc<dyn MonotonicClock>,
-        existing: bool,
-    ) -> Result<Self, StoreError> {
-        crate::kernels::initialize().map_err(StoreError::Kernel)?;
-        let durability_policy = DurabilityPolicy::new(options.durability_mode, options.commit_tier)
-            .map_err(StoreError::Durability)?;
-        let accounting = Arc::new(stats::Accounting::new(
-            options.max_resident_bytes,
-            options.max_temp_bytes,
-        ));
-        let writer_lock = acquire_native_graph_lock(path, options.access_mode, existing)?;
-        let tokenizer = crate::fts::tokenizer::Analyzer::new(
-            options
-                .tokenizer
-                .clone()
-                .unwrap_or_else(crate::fts::tokenizer::TokenizerConfig::text_default),
-        )
-        .map_err(StoreError::Tokenizer)?;
-        let native_graph = native_graph::NativeGraphPublication::new(&accounting, true)?;
-        #[cfg(test)]
-        let teardown_probe = Arc::new(close::TeardownProbe::new());
-        Ok(Self {
-            open_migrations: OpenMigrations::default(),
-            private_preparation: None,
-            directory: path.to_path_buf(),
-            vfs,
-            clock,
-            state: Mutex::new(StoreState::Open),
-            state_changed: Condvar::new(),
-            background: Mutex::new(None),
-            query_pool: Mutex::new(None),
-            lexical_worker: Mutex::new(None),
-            native_graph,
-            snapshot: RwLock::new(None),
-            active: Mutex::new(None),
-            wal_writer: Mutex::new(None),
-            writer_lock: Mutex::new(writer_lock.map(Arc::new)),
-            snapshot_pins: Arc::new(AtomicU64::new(0)),
-            snapshot_pin: Mutex::new(None),
-            logical_writer_lock: Mutex::new(None),
-            reclamation_pin: Mutex::new(None),
-            maintenance: Mutex::new(()),
-            health_state: Mutex::new(crate::diag::HealthState::default()),
-            durability_policy,
-            reader_drain_timeout: options.reader_drain_timeout,
-            accounting,
-            active_queries: AtomicU64::new(0),
-            #[cfg(any(test, feature = "test-seams"))]
-            text_materialization_work: materialize::TestMaterializationWork::default(),
-            epoch: options.epoch,
-            epoch_alias: crate::epoch::EpochAliasCell::new(None),
-            tokenizer,
-            schema: options
-                .schema
-                .unwrap_or_else(crate::meta::Schema::timestamp_only),
-            lexical_index_cache: LexicalIndexCache::new(),
-            #[cfg(any(test, feature = "test-seams"))]
-            ingest_retention_fault_controller: None,
-            #[cfg(any(test, feature = "test-seams"))]
-            hybrid_leg_fault: Mutex::new(None),
-            #[cfg(any(test, feature = "test-seams"))]
-            hybrid_execution_receipt: Mutex::new(None),
-            #[cfg(any(test, feature = "test-seams"))]
-            metadata_test_controller: None,
-            #[cfg(any(test, feature = "test-seams"))]
-            vector_fault_controller: None,
-            #[cfg(any(test, feature = "test-seams"))]
-            kernel_fault_controller: None,
-            #[cfg(any(test, feature = "test-seams"))]
-            vector_seal_scheme: None,
-            #[cfg(test)]
-            teardown_probe,
-        })
-    }
-
     /// Opens an existing diagnostics copy read-only using its persisted identity.
     /// Tokenizer compatibility is still validated; this never repairs or writes.
     pub fn open_for_inspection(path: impl AsRef<Path>) -> Result<Self, StoreError> {
@@ -3109,11 +2996,46 @@ impl Store {
         )
     }
 
+    #[cfg(feature = "graph-cypher")]
+    pub(crate) fn open_graph_with_infrastructure(
+        path: &Path,
+        mut options: OpenOptions,
+        document: Option<crate::epoch::EmbeddingTower>,
+        vfs: Arc<dyn crate::vfs::Vfs>,
+        clock: Arc<dyn MonotonicClock>,
+    ) -> Result<Self, StoreError> {
+        options.graph_document = document;
+        options.max_resident_bytes = options
+            .max_resident_bytes
+            .min(crate::property_graph::resources::MAX_GRAPH_RESIDENT_BYTES);
+        Self::open_with_infrastructure(
+            path,
+            options,
+            vfs,
+            clock,
+            None,
+            #[cfg(any(test, feature = "test-seams"))]
+            None,
+            #[cfg(any(test, feature = "test-seams"))]
+            None,
+            #[cfg(any(test, feature = "test-seams"))]
+            None,
+            #[cfg(any(test, feature = "test-seams"))]
+            None,
+            #[cfg(any(test, feature = "test-seams"))]
+            None,
+            #[cfg(any(test, feature = "test-seams"))]
+            None,
+            #[cfg(any(test, feature = "test-seams"))]
+            None,
+        )
+    }
+
     #[allow(
         clippy::too_many_arguments,
         reason = "test-support controllers are explicit optional infrastructure dependencies"
     )]
-    fn open_with_infrastructure(
+    pub(crate) fn open_with_infrastructure(
         path: impl AsRef<Path>,
         options: OpenOptions,
         vfs: Arc<dyn crate::vfs::Vfs>,
@@ -3194,6 +3116,25 @@ impl Store {
             namespace_batch::reader_lease(path, options.access_mode == AccessMode::ReadWrite)?
                 .map(Arc::new);
         namespace_batch::refuse_retired(vfs.as_ref(), path)?;
+        #[cfg(feature = "graph-cypher")]
+        let reader_store_lock = if options.access_mode == AccessMode::ReadOnly
+            && vfs
+                .read_range(&path.join(crate::manifest::io::MANIFEST_FILE), 10, 2)
+                .is_ok_and(|version| version.as_slice() == 3_u16.to_le_bytes())
+        {
+            Some(
+                StoreLock::acquire_shared(path).map_err(|error| match error {
+                    StoreLockError::Io { path, source }
+                        if source.kind() == std::io::ErrorKind::WouldBlock =>
+                    {
+                        StoreError::StoreBusy { path }
+                    }
+                    error => StoreError::Lock(error),
+                })?,
+            )
+        } else {
+            None
+        };
         let writer_lock = acquire_writer_lock(path, options.access_mode)?;
         if options.access_mode == AccessMode::ReadWrite && private_preparation.is_none() {
             namespace_batch::sync_portable_publication_for_open(vfs.as_ref(), path)?;
@@ -3263,31 +3204,24 @@ impl Store {
         validate_tokenizer_epoch(persisted_epoch.or(declared_epoch), &tokenizer)?;
         let absorbed_through = snapshot.absorbed_through();
         let wal_path = path.join("wal.ze");
-        let (mut active, recovered_wal, sealed_tombstones) = crate::ingest::ActiveState::recover(
+        let recovered = crate::ingest::ActiveState::recover(
             vfs.as_ref(),
             &wal_path,
             snapshot.generation(),
             absorbed_through,
             snapshot.graph_absorbed_through,
+            #[cfg(feature = "graph-cypher")]
+            snapshot.graph_enabled,
             &accounting,
             &schema,
             &tokenizer,
             private_preparation.as_ref(),
         )?;
-        if options.access_mode == AccessMode::ReadWrite && manifest_exists {
-            // An adopted manifest may be the survivor of a commit interrupted
-            // between rename and directory sync. Make its dirent durable before
-            // any new generation is acknowledged on top of it.
-            match durability_policy.directory_sync() {
-                SyncRequirement::Skip => {}
-                SyncRequirement::Sync(kind) => {
-                    vfs.sync(path, kind).map_err(|source| StoreError::Io {
-                        path: path.to_path_buf(),
-                        source,
-                    })?;
-                }
-            }
-        }
+        let mut active = recovered.active;
+        let recovered_wal = recovered.wal;
+        let sealed_tombstones = recovered.tombstones;
+        #[cfg(feature = "graph-cypher")]
+        let graph_replay = recovered.graph;
         if schema_evolved {
             // Additive schema evolution is one manifest commit that changes
             // only the schema: the same segments, epochs, and absorbed WAL
@@ -3406,6 +3340,8 @@ impl Store {
             active: Mutex::new(Some(active)),
             wal_writer: Mutex::new(wal_writer),
             writer_lock: Mutex::new(writer_lock.map(Arc::new)),
+            #[cfg(feature = "graph-cypher")]
+            reader_store_lock: Mutex::new(reader_store_lock),
             snapshot_pins: Arc::new(AtomicU64::new(0)),
             snapshot_pin: Mutex::new(None),
             logical_writer_lock: Mutex::new(None),
@@ -3440,7 +3376,65 @@ impl Store {
             #[cfg(test)]
             teardown_probe,
         };
+        #[cfg(feature = "graph-cypher")]
+        if let Some(graph) = snapshot.graph_manifest.as_ref() {
+            native_graph::recovery::install_unified(
+                &store,
+                graph,
+                snapshot.generation(),
+                &graph_replay,
+                options.access_mode,
+                options.graph_document.clone(),
+            )?;
+        }
+        if options.access_mode == AccessMode::ReadWrite && manifest_exists {
+            // An adopted manifest may be the survivor of a commit interrupted
+            // between rename and directory sync. Make its dirent durable before
+            // any new generation is acknowledged on top of it.
+            match durability_policy.directory_sync() {
+                SyncRequirement::Skip => {}
+                SyncRequirement::Sync(kind) => {
+                    store
+                        .vfs
+                        .sync(path, kind)
+                        .map_err(|source| StoreError::Io {
+                            path: path.to_path_buf(),
+                            source,
+                        })?;
+                }
+            }
+        }
         store.publish_snapshot(snapshot)?;
+        #[cfg(feature = "graph-cypher")]
+        if options.access_mode == AccessMode::ReadWrite
+            && store.native_graph.has_pending_reclaim()?
+        {
+            for _ in 0..2 {
+                let admission = store.admit_native_graph_maintenance().map_err(|error| {
+                    StoreError::Manifest(crate::manifest::ManifestError::Decode(error.to_string()))
+                })?;
+                match store.commit_native_graph_maintenance(
+                    &admission,
+                    &QueryControl::Cancel(CancelToken::new()),
+                ) {
+                    Ok(_) => break,
+                    Err(native_graph::NativeGraphError::StalePreparation) => continue,
+                    Err(error) => {
+                        return Err(StoreError::Manifest(
+                            crate::manifest::ManifestError::Decode(error.to_string()),
+                        ));
+                    }
+                }
+            }
+            if store.native_graph.has_pending_reclaim()? {
+                return Err(StoreError::Manifest(
+                    crate::manifest::ManifestError::Decode(
+                        "pending reclaim recovery did not finish after its manifest fold"
+                            .to_owned(),
+                    ),
+                ));
+            }
+        }
         store
             .recover_pending_physical_purge()
             .map_err(|error| StoreError::PurgeRecovery {

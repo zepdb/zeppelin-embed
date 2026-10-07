@@ -133,6 +133,8 @@ impl VfsFile for StdVfsFile {
     }
 
     fn append_vectored(&mut self, buffers: &mut [IoSlice<'_>]) -> std::io::Result<()> {
+        #[cfg(feature = "test-seams")]
+        file_test_support::event(file_test_support::FileEvent::BeforeAppend)?;
         let mut remaining = buffers;
         while !remaining.is_empty() {
             let written = self.0.write_vectored(remaining)?;

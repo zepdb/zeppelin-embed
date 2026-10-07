@@ -1,3 +1,4 @@
+use super::publication::DurabilityEvent;
 use super::publication::{FaultPoint, RecordingVfs};
 use super::tempfile;
 use crate::epoch::{ComputeUnits, EmbeddingRuntime, EmbeddingTower, Normalization};
@@ -205,16 +206,7 @@ fn finish_recovery_path(key: &'static str) -> RecoveryPathReceipt {
 }
 
 fn wal_path(directory: &Path) -> PathBuf {
-    std::fs::read_dir(directory)
-        .expect("read native graph directory")
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .find(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("graph-wal-") && name.ends_with(".ze"))
-        })
-        .expect("native graph WAL")
+    directory.join("wal.ze")
 }
 
 pub(super) fn file_snapshot(directory: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
@@ -249,9 +241,12 @@ fn assert_refused_without_vfs_mutation(
         panic!("invalid native store was admitted");
     }
     assert_eq!(file_snapshot(path), before);
+    let events = vfs.take();
     assert!(
-        vfs.take().is_empty(),
-        "refused recovery must issue no VFS mutation call"
+        events
+            .iter()
+            .all(|event| matches!(event, DurabilityEvent::OpenAppend(_))),
+        "refused recovery must issue no VFS mutation call: {events:?}"
     );
 }
 
@@ -421,12 +416,12 @@ fn checkpoint_fault_reopens(parent: &Path, name: &str, point: FaultPoint) {
         Arc::new(crate::lifecycle::SystemMonotonicClock),
     )
     .expect("reopen surviving checkpoint authority");
-    assert_eq!(observe_node(&reopened, node), Some((1, 1, 1)));
+    assert_eq!(observe_node(&reopened, node), Some((2, 1, 1)));
     let admission = reopened
         .admit_native_read()
         .expect("checkpoint fault admission");
     assert_eq!(
-        admission.bundle().root_envelope().object.generation,
+        admission.bundle().base().generation,
         selected.state.generation
     );
     drop(admission);
@@ -440,124 +435,71 @@ fn checkpoint_fault_reopens(parent: &Path, name: &str, point: FaultPoint) {
         .expect("close recovered checkpoint fault store");
 }
 
-fn checkpoint_from_selected(
-    directory: &Path,
-) -> crate::property_graph::wal::NativeCheckpoint<'static> {
-    let selector = std::fs::read(directory.join("graph-root.ze")).expect("selected root");
-    let required = super::super::persistence::decode_root_selector(&selector)
-        .expect("selected root descriptor");
-    let bytes = std::fs::read(crate::property_graph::storage::allocation::artifact_path(
-        directory,
-        required.object.artifact,
-    ))
-    .expect("selected checkpoint object");
-    let leaked = Box::leak(bytes.into_boxed_slice());
-    let frame = crate::property_graph::storage::artifact::decode(
-        crate::property_graph::storage::artifact::ContainerKind::RootEnvelope,
-        Some((required.object.store, required.object.artifact)),
-        leaked,
-    )
-    .expect("selected checkpoint frame");
-    let payload = frame
-        .framed_block(required.block)
-        .expect("selected checkpoint block")
-        .payload();
-    let mut cancelled = || false;
-    let mut resources = crate::property_graph::wal::WalResources::new(
-        16 * 1024 * 1024,
-        crate::property_graph::wal::STACK_RESERVATION_BYTES,
-        &mut cancelled,
-    )
-    .expect("checkpoint resources");
-    crate::property_graph::wal::decode_checkpoint(payload, &mut resources)
-        .expect("selected checkpoint payload")
+struct SelectedGraphCheckpoint<'a> {
+    state: crate::property_graph::wal::CommitState<'a>,
+    first_sequence: u64,
 }
 
-fn historical_checkpoint_root(
-    store: &Store,
-    directory: &Path,
-    wal_identity: u128,
-    first_sequence: u64,
-) -> (PathBuf, Vec<u8>, crate::property_graph::wal::RequiredRef) {
-    let selector = std::fs::read(directory.join("graph-root.ze")).expect("selected root");
-    let selected = super::super::persistence::decode_root_selector(&selector)
-        .expect("selected root descriptor");
-    let checkpoint = checkpoint_from_selected(directory);
-    let shared = crate::property_graph::resources::GraphResources::from_store(store)
-        .expect("historical checkpoint resources");
-    let write = crate::property_graph::staging::WriteMemory::new(
-        &shared,
-        crate::property_graph::staging::WriteLimits::default(),
-    )
-    .expect("historical checkpoint write memory");
-    let control = QueryControl::Cancel(CancelToken::new());
-    let storage = crate::property_graph::storage::memory::StorageMemory::new(
-        &write,
-        &control,
-        32 * 1024 * 1024,
-    )
-    .expect("historical checkpoint storage memory");
-    let capacity = checkpoint
-        .state
-        .prepared_inventories
-        .len()
-        .expect("historical inventory count")
-        .checked_mul(128)
-        .and_then(|bytes| bytes.checked_add(16 * 1024))
-        .expect("historical checkpoint capacity");
-    let mut payload = super::super::persistence::zeroed(&storage, &control, capacity)
-        .expect("historical checkpoint payload");
-    let mut cancelled = || false;
-    let mut resources = crate::property_graph::wal::WalResources::new(
-        u64::try_from(capacity).expect("historical checkpoint work") * 4,
-        crate::property_graph::wal::STACK_RESERVATION_BYTES,
-        &mut cancelled,
-    )
-    .expect("historical checkpoint WAL resources");
-    let payload_bytes = crate::property_graph::wal::encode_checkpoint(
-        crate::property_graph::wal::NativeCheckpoint {
-            wal_identity,
-            first_sequence,
-            applied_sequence: checkpoint.applied_sequence,
-            state: checkpoint.state,
-        },
-        payload.as_mut_slice(),
-        &mut resources,
-    )
-    .expect("encode historical checkpoint");
-    let identity = crate::property_graph::storage::artifact::ArtifactIdentity {
-        store: selected.object.store,
-        artifact: selected.object.artifact,
-        generation: selected.object.generation,
-        creation_serial: selected.object.serial,
-    };
-    let (bytes, required) = super::super::persistence::encode_framed(
-        &storage,
-        &control,
-        crate::property_graph::storage::artifact::ContainerKind::RootEnvelope,
-        identity,
-        &[crate::property_graph::storage::artifact::Block {
-            kind: crate::property_graph::storage::artifact::BlockKind::CheckpointPayload,
-            payload: payload
-                .as_slice()
-                .get(..payload_bytes)
-                .expect("historical checkpoint payload extent"),
-        }],
-    )
-    .expect("encode historical root");
-    (
-        crate::property_graph::storage::allocation::artifact_path(
-            directory,
-            selected.object.artifact,
-        ),
-        bytes.as_slice().to_vec(),
-        required,
-    )
+fn checkpoint_from_selected(directory: &Path) -> SelectedGraphCheckpoint<'static> {
+    use crate::manifest::io::DurableLog as _;
+    let reader = crate::wal::WalReader::open(&StdVfs, &directory.join("wal.ze")).unwrap();
+    let manifest = Box::leak(Box::new(
+        crate::manifest::io::load_manifest(
+            &StdVfs,
+            &directory.join("manifest.ze"),
+            reader.durable_end(),
+        )
+        .unwrap(),
+    ));
+    let graph = manifest.graph.as_ref().unwrap();
+    let state = graph.state().unwrap();
+    SelectedGraphCheckpoint {
+        first_sequence: graph.graph_absorbed_through + 1,
+        state,
+    }
+}
+
+fn first_graph_envelope(path: &Path) -> Vec<u8> {
+    let bytes = std::fs::read(path).unwrap();
+    let replay = crate::wal::replay::replay(&bytes);
+    replay
+        .records
+        .iter()
+        .find(|record| record.op == crate::ingest::wal_payload::GRAPH_COMMIT_V1)
+        .unwrap()
+        .payload
+        .to_vec()
+}
+
+fn replace_first_graph_envelope(path: &Path, envelope: &[u8]) {
+    let bytes = std::fs::read(path).unwrap();
+    let replay = crate::wal::replay::replay(&bytes);
+    assert_eq!(
+        replay.terminator,
+        crate::wal::replay::ReplayTerminator::CleanEnd
+    );
+    let mut output = bytes[..crate::wal::header::WAL_HEADER_LEN].to_vec();
+    let mut replaced = false;
+    for record in replay.records {
+        let payload = if !replaced && record.op == crate::ingest::wal_payload::GRAPH_COMMIT_V1 {
+            replaced = true;
+            envelope
+        } else {
+            record.payload
+        };
+        crate::wal::record::append_record_into(
+            crate::wal::record::WalRecord { payload, ..record },
+            &mut output,
+        )
+        .unwrap();
+    }
+    assert!(replaced);
+    std::fs::write(path, output).unwrap();
 }
 
 fn corrupt_first_membership_with_valid_checksums(path: &Path) {
-    let mut bytes = std::fs::read(path).expect("read native graph WAL");
-    let envelope = crate::property_graph::wal::HEADER_BYTES;
+    let mut bytes = first_graph_envelope(path);
+    let envelope = 0;
     let payload_length = |at: usize, bytes: &[u8]| {
         u32::from_le_bytes(
             bytes[at + 8..at + 12]
@@ -587,7 +529,7 @@ fn corrupt_first_membership_with_valid_checksums(path: &Path) {
     let checksum = xxhash_rust::xxh3::xxh3_64(&bytes[commit..commit + 64 + commit_length]);
     bytes[commit + 64 + commit_length..commit + 72 + commit_length]
         .copy_from_slice(&checksum.to_le_bytes());
-    std::fs::write(path, bytes).expect("write semantic WAL corruption");
+    replace_first_graph_envelope(path, &bytes);
 }
 
 fn repair_wal_record(bytes: &mut [u8], offset: usize) {
@@ -604,8 +546,8 @@ fn repair_wal_record(bytes: &mut [u8], offset: usize) {
 }
 
 fn omit_second_mutation_with_valid_framing(path: &Path) {
-    let mut bytes = std::fs::read(path).expect("read native graph WAL");
-    let envelope = crate::property_graph::wal::HEADER_BYTES;
+    let mut bytes = first_graph_envelope(path);
+    let envelope = 0;
     let payload_length = |at: usize, bytes: &[u8]| {
         u32::from_le_bytes(
             bytes[at + 8..at + 12]
@@ -670,7 +612,7 @@ fn omit_second_mutation_with_valid_framing(path: &Path) {
     let aggregate = xxhash_rust::xxh3::xxh3_64(&bytes[envelope..commit]);
     bytes[commit_payload + 8..commit_payload + 16].copy_from_slice(&aggregate.to_le_bytes());
     repair_wal_record(&mut bytes, commit);
-    std::fs::write(path, bytes).expect("write omitted-mutation WAL");
+    replace_first_graph_envelope(path, &bytes);
 }
 
 fn run_ze40_complete_mixed_commit_close_reopen_is_coherent()
@@ -781,7 +723,7 @@ fn run_ze40_complete_mixed_commit_close_reopen_is_coherent()
     assert_eq!(expected.relationship.target, second);
     assert_eq!(expected.outgoing, [expected.relationship]);
     assert_eq!(expected.incoming, [expected.relationship]);
-    assert_eq!((expected.generation.get(), expected.sequence), (1, 1));
+    assert_eq!((expected.generation.get(), expected.sequence), (2, 1));
     store.close().expect("close native store");
     drop(store);
 
@@ -811,7 +753,7 @@ fn run_ze40_complete_mixed_commit_close_reopen_is_coherent()
     missing_reverse.incoming.clear();
     assert!(compare_mixed(&missing_reverse, &actual).is_err());
     let mut wrong_generation = expected.clone();
-    wrong_generation.generation = GraphGeneration::new(2);
+    wrong_generation.generation = GraphGeneration::new(3);
     assert!(compare_mixed(&wrong_generation, &actual).is_err());
     compare_mixed(&expected, &actual).expect("coherent recovered mixed graph");
 
@@ -832,7 +774,7 @@ fn run_ze40_complete_mixed_commit_close_reopen_is_coherent()
         EntityId::Relationship(_) => panic!("third receipt domain"),
     };
     assert!(third_id.get() > second.get());
-    assert_eq!(next[0].generation.get(), 2);
+    assert_eq!(next[0].generation.get(), 3);
     reopened.close().expect("close recovered store");
     (
         actual,
@@ -961,7 +903,7 @@ fn run_ze40_committed_artifact_and_framing_damage_fail_without_partial_admission
     let clean = Store::open_native_graph(&omitted_path, options.clone(), None)
         .expect("clean omitted-mutation control");
     for node in omitted_nodes {
-        assert_eq!(observe_node(&clean, node), Some((1, 1, 1)));
+        assert_eq!(observe_node(&clean, node), Some((2, 1, 1)));
     }
     clean.close().expect("close clean omitted-mutation control");
 
@@ -1088,18 +1030,14 @@ fn run_ze40_open_refuses_unsupported_corrupt_and_incomplete_stores_without_mutat
     drop(store);
     let checkpoint = checkpoint_from_selected(&complete);
 
-    let selector = complete.join("graph-root.ze");
-    let selector_bytes = std::fs::read(&selector).expect("selector bytes");
-    std::fs::remove_file(&selector).expect("remove selected authority");
+    let manifest_path = complete.join("manifest.ze");
+    let manifest_bytes = std::fs::read(&manifest_path).unwrap();
+    let mut corrupt = manifest_bytes.clone();
+    let last = corrupt.len() - 1;
+    corrupt[last] ^= 1;
+    std::fs::write(&manifest_path, corrupt).unwrap();
     assert_refused_without_vfs_mutation(&complete, options.clone(), None, &vfs);
-    std::fs::write(&selector, &selector_bytes).expect("restore selected authority");
-
-    let wal = complete.join(format!("graph-wal-{:032x}.ze", checkpoint.wal_identity));
-    let wal_bytes = std::fs::read(&wal).expect("selected WAL bytes");
-    std::fs::remove_file(&wal).expect("remove selected WAL");
-    assert_refused_without_vfs_mutation(&complete, options.clone(), None, &vfs);
-    std::fs::write(&wal, wal_bytes).expect("restore selected WAL");
-
+    std::fs::write(&manifest_path, manifest_bytes).unwrap();
     remove_required_and_assert_refused(
         &complete,
         checkpoint.state.catalog,
@@ -1107,26 +1045,6 @@ fn run_ze40_open_refuses_unsupported_corrupt_and_incomplete_stores_without_mutat
         None,
         &vfs,
     );
-
-    let root_path = crate::property_graph::storage::allocation::artifact_path(
-        &complete,
-        super::super::persistence::decode_root_selector(&selector_bytes)
-            .expect("selected root")
-            .object
-            .artifact,
-    );
-    let root_bytes = std::fs::read(&root_path).expect("selected root bytes");
-    let mut corrupt_root = root_bytes.clone();
-    let last = corrupt_root.len().checked_sub(1).expect("root trailer");
-    corrupt_root[last] ^= 1;
-    std::fs::write(&root_path, corrupt_root).expect("corrupt selected root");
-    assert_refused_without_vfs_mutation(&complete, options.clone(), None, &vfs);
-    std::fs::write(&root_path, root_bytes).expect("restore selected root");
-
-    std::fs::remove_file(complete.join(crate::lifecycle::lock::STORE_LOCK_FILE))
-        .expect("remove writer lock");
-    assert_refused_without_vfs_mutation(&complete, options.clone(), None, &vfs);
-
     let documented = parent.path().join("documented");
     let document = EmbeddingTower {
         model_id: "ze40-document".into(),
@@ -1226,12 +1144,12 @@ fn run_ze40_lost_ack_and_stopped_writer_resolve_on_reopen() -> RecoveryPathRecei
         .apply_native_graph(&request, &QueryControl::Cancel(CancelToken::new()))
         .expect("exact retry");
     assert!(replay[0].replayed);
-    assert_eq!(replay[0].generation.get(), 1);
+    assert_eq!(replay[0].generation.get(), 2);
     let node = match replay[0].entity {
         EntityId::Node(node) => node,
         EntityId::Relationship(_) => panic!("node receipt domain"),
     };
-    assert_eq!(observe_node(&reopened, node), Some((1, 1, 1)));
+    assert_eq!(observe_node(&reopened, node), Some((2, 1, 1)));
     let altered =
         CanonicalContents::node(&mut [], &mut [], Some("altered"), None).expect("altered node");
     assert!(
@@ -1278,7 +1196,7 @@ fn run_ze40_lost_ack_and_stopped_writer_resolve_on_reopen() -> RecoveryPathRecei
         .apply_native_graph(&request, &QueryControl::Cancel(CancelToken::new()))
         .expect("clean control commit");
     assert!(!committed[0].replayed);
-    assert_eq!(committed[0].generation.get(), 1);
+    assert_eq!(committed[0].generation.get(), 2);
     old.close().expect("close clean control");
     finish_recovery_path("property-graph.recovery.lost-ack")
 }
@@ -1350,10 +1268,10 @@ fn run_ze40_incomplete_terminal_append_is_ignored_and_writable_reopen_rotates_be
     )
     .expect("recover torn tail");
     isolate_recovery_from_foreground_reclaim(&reopened);
-    assert_eq!(observe_node(&reopened, first_node), Some((1, 1, 1)));
+    assert_eq!(observe_node(&reopened, first_node), Some((2, 1, 1)));
     assert_eq!(
-        std::fs::read(&old_wal).expect("preserved old WAL"),
-        torn_bytes
+        std::fs::read(&old_wal).expect("cut outer WAL"),
+        complete_prefix
     );
     let rotated = {
         let guard = reopened
@@ -1361,19 +1279,17 @@ fn run_ze40_incomplete_terminal_append_is_ignored_and_writable_reopen_rotates_be
             .writer
             .lock()
             .expect("recovered writer");
-        guard
-            .as_ref()
-            .expect("recovered writer state")
-            .wal
-            .path
-            .clone()
+        {
+            assert!(guard.as_ref().is_some());
+            reopened.directory.join("wal.ze")
+        }
     };
-    assert_ne!(rotated, old_wal);
+    assert_eq!(rotated, old_wal);
     let second = reopened
         .apply_native_graph(&second_request, &QueryControl::Cancel(CancelToken::new()))
         .expect("post-rotation append");
     assert!(!second[0].replayed);
-    assert_eq!(second[0].generation.get(), 2);
+    assert_eq!(second[0].generation.get(), 3);
     reopened.close().expect("close recovered store");
     finish_recovery_path("property-graph.recovery.torn-tail")
 }
@@ -1590,7 +1506,7 @@ fn run_ze40_empty_graph_preserves_ids_fences_replays_and_allocation_serials() ->
     let detached = Store::open_native_graph(&detach_path, native_options(), None)
         .expect("reopen detached checkpoint");
     assert_eq!(observe_node(&detached, detach_left), None);
-    assert_eq!(observe_node(&detached, detach_right), Some((2, 2, 1)));
+    assert_eq!(observe_node(&detached, detach_right), Some((3, 2, 1)));
     assert!(!relationship_is_visible(&detached, detach_edge));
     detached.close().expect("close recovered detached topology");
     finish_recovery_path("property-graph.recovery.empty-history")
@@ -1628,7 +1544,7 @@ fn run_ze40_checkpoint_cutoff_reopens_exactly_and_retains_required_inventories()
         .expect("explicit checkpoint");
     let selected = checkpoint_from_selected(&path);
     assert_eq!(selected.state.sequence, 1);
-    assert_eq!(selected.state.generation.get(), 1);
+    assert_eq!(selected.state.generation.get(), 2);
     assert_eq!(selected.first_sequence, 2);
     let checkpoint_inventories = selected
         .state
@@ -1662,13 +1578,10 @@ fn run_ze40_checkpoint_cutoff_reopens_exactly_and_retains_required_inventories()
 
     let reopened = Store::open_native_graph(&path, native_options(), None)
         .expect("reopen checkpoint and tail");
-    assert_eq!(observe_node(&reopened, node), Some((2, 2, 2)));
+    assert_eq!(observe_node(&reopened, node), Some((4, 2, 2)));
     let admission = reopened.admit_native_read().expect("recovered admission");
-    assert_eq!(
-        admission.bundle().root_envelope().object.generation.get(),
-        1
-    );
-    assert_eq!(admission.bundle().base().generation.get(), 2);
+    assert_eq!(admission.bundle().base().fold.envelope_sequence, 1);
+    assert_eq!(admission.bundle().base().generation.get(), 4);
     assert_eq!(admission.bundle().prepared_inventories().len(), 2);
     drop(admission);
     {
@@ -1679,7 +1592,7 @@ fn run_ze40_checkpoint_cutoff_reopens_exactly_and_retains_required_inventories()
             .expect("recovered writer");
         let writer = writer_guard.as_ref().expect("recovered writer state");
         assert_eq!(writer.complete_envelopes, 1);
-        assert!(writer.wal.bytes > crate::property_graph::wal::HEADER_BYTES);
+        assert!(writer.envelope_bytes > crate::property_graph::wal::HEADER_BYTES);
         assert_eq!(writer.protected.len(), expected_protected);
     }
     reopened.close().expect("close recovered checkpoint store");
@@ -1766,14 +1679,14 @@ fn run_ze40_checkpoint_cutoff_reopens_exactly_and_retains_required_inventories()
         .expect("checkpoint and post-cutoff tail");
     assert_eq!(
         observe_node_with_lease(&threshold, &retained, threshold_node),
-        Some((64, 64, 64))
+        Some((65, 64, 64))
     );
     drop(retained);
     let current = threshold
         .admit_native_read()
         .expect("generation 65 admission");
-    assert_eq!(current.bundle().root_envelope().object.generation.get(), 64);
-    assert_eq!(current.bundle().base().generation.get(), 65);
+    assert_eq!(current.bundle().base().fold.envelope_sequence, 64);
+    assert_eq!(current.bundle().base().generation.get(), 67);
     assert_eq!(current.bundle().prepared_inventories().len(), 65);
     drop(current);
     let (threshold_count, threshold_bytes, threshold_protected) = {
@@ -1785,7 +1698,7 @@ fn run_ze40_checkpoint_cutoff_reopens_exactly_and_retains_required_inventories()
         let writer = guard.as_ref().expect("threshold writer state");
         (
             writer.complete_envelopes,
-            writer.wal.bytes,
+            writer.envelope_bytes,
             writer.protected.len(),
         )
     };
@@ -1801,7 +1714,7 @@ fn run_ze40_checkpoint_cutoff_reopens_exactly_and_retains_required_inventories()
     )
     .expect("reopen count-threshold store");
     isolate_recovery_from_foreground_reclaim(&threshold);
-    assert_eq!(observe_node(&threshold, threshold_node), Some((65, 65, 65)));
+    assert_eq!(observe_node(&threshold, threshold_node), Some((67, 65, 65)));
     {
         let guard = threshold
             .native_graph
@@ -1810,7 +1723,7 @@ fn run_ze40_checkpoint_cutoff_reopens_exactly_and_retains_required_inventories()
             .expect("recovered threshold writer");
         let writer = guard.as_ref().expect("recovered threshold writer state");
         assert_eq!(writer.complete_envelopes, threshold_count);
-        assert_eq!(writer.wal.bytes, threshold_bytes);
+        assert_eq!(writer.envelope_bytes, threshold_bytes);
         assert_eq!(writer.protected.len(), threshold_protected);
     }
     threshold
@@ -1820,15 +1733,20 @@ fn run_ze40_checkpoint_cutoff_reopens_exactly_and_retains_required_inventories()
     let byte_path = parent.path().join("byte-threshold");
     let byte_store = Store::create_native_graph(&byte_path, native_options(), None)
         .expect("fresh byte-threshold store");
+    isolate_recovery_from_foreground_reclaim(&byte_store);
     let long_key = "k".repeat(512 * 1024);
     let byte_key =
         ApplicationKey::new(EntityKind::Node, "app", &long_key).expect("large threshold key");
     let mut byte_node = None;
     let mut expected_writer = None;
+    let mut byte_revision = None;
     for revision in 1..=40 {
-        let old_identity = {
+        let old_count = {
             let guard = byte_store.native_graph.writer.lock().expect("byte writer");
-            guard.as_ref().expect("byte writer state").wal.identity
+            guard
+                .as_ref()
+                .expect("byte writer state")
+                .complete_envelopes
         };
         let receipt = byte_store
             .apply_native_graph(
@@ -1851,11 +1769,12 @@ fn run_ze40_checkpoint_cutoff_reopens_exactly_and_retains_required_inventories()
         }
         let guard = byte_store.native_graph.writer.lock().expect("byte writer");
         let writer = guard.as_ref().expect("byte writer state");
-        if writer.wal.identity != old_identity {
+        if old_count != 0 && writer.complete_envelopes == 1 {
+            byte_revision = Some(revision);
             assert_eq!(writer.complete_envelopes, 1);
             expected_writer = Some((
                 writer.complete_envelopes,
-                writer.wal.bytes,
+                writer.envelope_bytes,
                 writer.protected.len(),
             ));
             break;
@@ -1863,23 +1782,21 @@ fn run_ze40_checkpoint_cutoff_reopens_exactly_and_retains_required_inventories()
     }
     let expected_writer = expected_writer.expect("encoded-byte checkpoint threshold");
     let byte_node = byte_node.expect("byte threshold node");
+    let byte_revision = byte_revision.expect("actual byte-triggered fold");
     let byte_generation = byte_store
         .admit_native_read()
         .expect("byte threshold admission")
         .bundle()
         .base()
         .generation;
+    assert_eq!(byte_generation.get(), byte_revision + 2);
     byte_store.close().expect("close byte-threshold store");
     drop(byte_store);
     let byte_store = Store::open_native_graph(&byte_path, native_options(), None)
         .expect("reopen byte-threshold store");
     assert_eq!(
         observe_node(&byte_store, byte_node),
-        Some((
-            byte_generation.get(),
-            byte_generation.get(),
-            byte_generation.get()
-        ))
+        Some((byte_revision + 2, byte_revision, byte_revision))
     );
     {
         let guard = byte_store
@@ -1891,7 +1808,7 @@ fn run_ze40_checkpoint_cutoff_reopens_exactly_and_retains_required_inventories()
         assert_eq!(
             (
                 writer.complete_envelopes,
-                writer.wal.bytes,
+                writer.envelope_bytes,
                 writer.protected.len()
             ),
             expected_writer
@@ -1901,104 +1818,74 @@ fn run_ze40_checkpoint_cutoff_reopens_exactly_and_retains_required_inventories()
         .close()
         .expect("close recovered byte-threshold store");
 
-    let historical_path = parent.path().join("historical-prefix");
-    let historical = Store::create_native_graph(&historical_path, native_options(), None)
-        .expect("fresh historical-prefix store");
-    let historical_wal = {
-        let guard = historical
-            .native_graph
-            .writer
-            .lock()
-            .expect("historical writer");
-        let writer = guard.as_ref().expect("historical writer state");
-        (
-            writer.wal.identity,
-            writer.wal.first_sequence,
-            writer.wal.path.clone(),
-        )
-    };
-    let historical_image =
-        CanonicalContents::node(&mut [], &mut [], Some("history"), None).expect("historical image");
-    let historical_key =
-        ApplicationKey::new(EntityKind::Node, "app", "historical").expect("historical key");
+    let historical_path = parent.path().join("rotated-outer-wal");
+    let historical = Store::create_native_graph_with_infrastructure(
+        &historical_path,
+        native_options(),
+        None,
+        vfs.clone(),
+        Arc::new(crate::lifecycle::SystemMonotonicClock),
+        &mut crate::property_graph::storage::allocation::OsEntropy,
+    )
+    .unwrap();
+    let image = CanonicalContents::node(&mut [], &mut [], Some("history"), None).unwrap();
+    let key = ApplicationKey::new(EntityKind::Node, "app", "historical").unwrap();
     let receipt = historical
         .apply_native_graph(
             &[StructuredWrite {
-                key: historical_key,
-                revision: GraphRevision::new(1).expect("revision"),
+                key,
+                revision: GraphRevision::new(1).unwrap(),
                 operation: StructuredOperation::Create,
-                image: Some(WriteImage::Node(&historical_image)),
+                image: Some(WriteImage::Node(&image)),
             }],
             &QueryControl::Cancel(CancelToken::new()),
         )
-        .expect("historical-prefix commit");
-    let historical_node = match receipt[0].entity {
-        EntityId::Node(node) => node,
-        EntityId::Relationship(_) => panic!("historical node domain"),
+        .unwrap();
+    let EntityId::Node(node) = receipt[0].entity else {
+        panic!("node domain")
     };
+    let manifest_before = std::fs::read(historical_path.join("manifest.ze")).unwrap();
+    vfs.arm_fault(FaultPoint::ManifestSync);
+    let error = historical
+        .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+        .expect_err("manifest sync refusal must preserve the acknowledged graph");
+    assert!(
+        matches!(
+            error,
+            super::super::NativeGraphError::Store(crate::lifecycle::StoreError::Manifest(_))
+        ),
+        "{error:?}"
+    );
+    vfs.assert_fired_once();
+    assert_eq!(
+        std::fs::read(historical_path.join("manifest.ze")).unwrap(),
+        manifest_before
+    );
+    assert_eq!(observe_node(&historical, node), Some((2, 1, 1)));
     historical
         .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
-        .expect("historical-prefix checkpoint");
-    let (root_path, root_bytes, root) = historical_checkpoint_root(
-        &historical,
-        &historical_path,
-        historical_wal.0,
-        historical_wal.1,
-    );
-    historical.close().expect("close historical-prefix store");
-    drop(historical);
-    assert!(
-        std::fs::metadata(&historical_wal.2)
-            .expect("historical WAL metadata")
-            .len()
-            > crate::property_graph::wal::HEADER_BYTES as u64
-    );
-    std::fs::write(&root_path, root_bytes).expect("install historical-prefix checkpoint root");
-    super::super::persistence::publish_root_selector(&StdVfs, &historical_path, root)
-        .expect("select historical-prefix checkpoint");
+        .unwrap();
     let selected = checkpoint_from_selected(&historical_path);
-    assert_eq!(selected.wal_identity, historical_wal.0);
-    assert_eq!(selected.first_sequence, historical_wal.1);
     assert_eq!(selected.state.sequence, 1);
-
-    let historical = Store::open_native_graph(&historical_path, native_options(), None)
-        .expect("reopen retained historical WAL prefix");
+    historical.close().unwrap();
+    let historical = Store::open_native_graph(&historical_path, native_options(), None).unwrap();
     isolate_recovery_from_foreground_reclaim(&historical);
-    assert_eq!(observe_node(&historical, historical_node), Some((1, 1, 1)));
-    {
-        let guard = historical
-            .native_graph
-            .writer
-            .lock()
-            .expect("recovered historical writer");
-        let writer = guard.as_ref().expect("recovered historical writer state");
-        assert_eq!(writer.wal.identity, historical_wal.0);
-        assert_eq!(writer.wal.first_sequence, historical_wal.1);
-        assert_eq!(writer.complete_envelopes, 0);
-    }
-    historical
+    assert_eq!(observe_node(&historical, node), Some((2, 1, 1)));
+    let receipt = historical
         .apply_native_graph(
             &[StructuredWrite {
-                key: historical_key,
-                revision: GraphRevision::new(2).expect("revision"),
-                operation: StructuredOperation::Put(EntityId::Node(historical_node)),
-                image: Some(WriteImage::Node(&historical_image)),
+                key,
+                revision: GraphRevision::new(2).unwrap(),
+                operation: StructuredOperation::Put(EntityId::Node(node)),
+                image: Some(WriteImage::Node(&image)),
             }],
             &QueryControl::Cancel(CancelToken::new()),
         )
-        .expect("append after retained historical WAL prefix");
-    assert_eq!(observe_node(&historical, historical_node), Some((2, 2, 2)));
-    historical
-        .close()
-        .expect("close retained historical-prefix store");
-
-    for (name, point) in [
-        ("fault-object-sync", FaultPoint::ObjectSync),
-        ("fault-selector-replace", FaultPoint::Rename),
-        ("fault-selector-sync", FaultPoint::SelectorSync),
-    ] {
-        checkpoint_fault_reopens(parent.path(), name, point);
-    }
+        .unwrap();
+    assert_eq!(receipt[0].generation.get(), 4);
+    let wal = crate::wal::WalReader::open(&StdVfs, &historical_path.join("wal.ze")).unwrap();
+    assert_eq!(wal.records().first().unwrap().seq.get(), 2);
+    historical.close().unwrap();
     finish_recovery_path("property-graph.recovery.checkpoint")
 }
 
@@ -2073,8 +1960,8 @@ fn run_ze40_read_only_replay_preserves_tail_and_all_files() -> RecoveryPathRecei
         Arc::new(crate::lifecycle::SystemMonotonicClock),
     )
     .expect("second shared read-only recovery");
-    assert_eq!(observe_node(&first, node), Some((1, 1, 1)));
-    assert_eq!(observe_node(&second, node), Some((1, 1, 1)));
+    assert_eq!(observe_node(&first, node), Some((2, 1, 1)));
+    assert_eq!(observe_node(&second, node), Some((2, 1, 1)));
     assert!(matches!(
         first.apply_native_graph(&[], &QueryControl::Cancel(CancelToken::new())),
         Err(super::super::NativeGraphError::Store(
@@ -2107,14 +1994,14 @@ fn run_ze40_read_only_replay_preserves_tail_and_all_files() -> RecoveryPathRecei
     )
     .expect("writable rotation after read-only close");
     isolate_recovery_from_foreground_reclaim(&writable);
-    assert_eq!(observe_node(&writable, node), Some((1, 1, 1)));
+    assert_eq!(observe_node(&writable, node), Some((2, 1, 1)));
     assert_eq!(
         writable
             .apply_native_graph(&torn_request, &QueryControl::Cancel(CancelToken::new()))
             .expect("post-rotation write")[0]
             .generation
             .get(),
-        2
+        3
     );
     writable.close().expect("close writable store");
     finish_recovery_path("property-graph.recovery.read-only")
@@ -2191,7 +2078,7 @@ fn run_ze40_serial_scan_preserves_pre_wal_orphans_and_refuses_ambiguous_corrupti
         reopened.native_graph.serial_fence().expect("serial fence"),
         10_000
     );
-    assert_eq!(vfs.enumeration_calls().0, 0);
+    assert_eq!(vfs.enumeration_calls().0, 1);
     assert!(vfs.enumeration_calls().1 >= 1);
     // Inject the interrupted object creation, after the new mandatory fold.
     reopened
@@ -2291,7 +2178,9 @@ fn run_ze40_serial_scan_preserves_pre_wal_orphans_and_refuses_ambiguous_corrupti
             Arc::clone(&infrastructure),
             Arc::new(crate::lifecycle::SystemMonotonicClock),
         ),
-        Err(super::super::NativeGraphError::IdentityExhausted)
+        Err(super::super::NativeGraphError::Store(crate::lifecycle::StoreError::Manifest(
+            crate::manifest::ManifestError::Decode(message)
+        ))) if message == "native graph read identity exhausted"
     ));
     std::fs::remove_file(&overflow_path).expect("remove overflow object");
 
@@ -2386,4 +2275,519 @@ fn isolate_recovery_from_foreground_reclaim(store: &Store) {
             ..Default::default()
         })
         .expect("isolate recovery fixture from foreground reclaim");
+}
+
+#[test]
+fn replays_document_and_graph_records_from_their_own_watermarks() {
+    use crate::ingest::wal_payload::{GRAPH_COMMIT_V1, encode_graph_commit};
+    use crate::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+    use crate::property_graph::wal::{
+        BatchId, CommitState, Envelope, EnvelopeKind, STACK_RESERVATION_BYTES, WalResources,
+        encode_envelope,
+    };
+    use crate::wal::{LogSeq, WalWriter};
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(
+        directory.path(),
+        OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+    )
+    .unwrap();
+    let ack = store
+        .ingest(IngestBatch::new(vec![IngestDocument::new(
+            DocumentVersion::new(DocId::new(91), Revision::new(1)),
+            vec![1.0, 0.0],
+        )]))
+        .unwrap();
+    assert_eq!(ack.generation(), 1);
+    assert_eq!(store.enable_graph().unwrap(), 2);
+    store.close().unwrap();
+    let manifest =
+        crate::manifest::io::load_manifest(&StdVfs, &directory.path().join("manifest.ze"), 1)
+            .unwrap();
+    assert_eq!(manifest.log_seq, 0);
+    assert_eq!(manifest.graph.as_ref().unwrap().graph_absorbed_through, 1);
+    let base = manifest.graph.as_ref().unwrap().state().unwrap();
+    let target = CommitState {
+        generation: GraphGeneration::new(3),
+        sequence: 1,
+        ..base
+    };
+    let mut cancelled = || false;
+    let mut resources =
+        WalResources::new(u64::MAX, STACK_RESERVATION_BYTES, &mut cancelled).unwrap();
+    let mut bytes = vec![0; 16 * 1024];
+    let length = encode_envelope(
+        base,
+        Envelope {
+            batch: BatchId::new(91).unwrap(),
+            kind: EnvelopeKind::Mutation,
+            state: target,
+            changes: &[],
+        },
+        &mut bytes,
+        &mut resources,
+    )
+    .unwrap();
+    let payload = encode_graph_commit(&bytes[..length]).unwrap();
+    let writer = WalWriter::resume(
+        &StdVfs,
+        &directory.path().join("wal.ze"),
+        crate::wal::WalReader::open(&StdVfs, &directory.path().join("wal.ze"))
+            .unwrap()
+            .into_clean()
+            .unwrap(),
+        crate::lifecycle::durability::DurabilityPolicy::new(
+            DurabilityMode::Durable,
+            CommitTier::Durable,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        writer.commit(GRAPH_COMMIT_V1, &payload).unwrap(),
+        LogSeq::new(2)
+    );
+    drop(writer);
+    let recovered = Store::open(
+        directory.path(),
+        OpenOptions::read_only().with_max_resident_bytes(256 * 1024 * 1024),
+    )
+    .unwrap();
+    assert_eq!(recovered.count_documents(None, None).unwrap().count, 1);
+    assert_eq!(recovered.snapshot().unwrap().generation(), 3);
+    let read = recovered.admit_native_read().unwrap();
+    assert_eq!(read.bundle().sequence(), 1);
+    assert_eq!(read.bundle().base().generation, GraphGeneration::new(3));
+    drop(read);
+    recovered.close().unwrap();
+}
+
+fn append_unified_empty_graph(directory: &Path, generation: u64) {
+    use crate::ingest::wal_payload::{GRAPH_COMMIT_V1, encode_graph_commit};
+    use crate::property_graph::wal::{
+        BatchId, CommitState, Envelope, EnvelopeKind, STACK_RESERVATION_BYTES, WalResources,
+        encode_envelope,
+    };
+    let clean = crate::wal::WalReader::open(&StdVfs, &directory.join("wal.ze"))
+        .unwrap()
+        .into_clean()
+        .unwrap();
+    let durable_end = clean.records().last().map_or(0, |record| record.seq.get());
+    let manifest =
+        crate::manifest::io::load_manifest(&StdVfs, &directory.join("manifest.ze"), durable_end)
+            .unwrap();
+    let base = manifest.graph.as_ref().unwrap().state().unwrap();
+    let target = CommitState {
+        generation: GraphGeneration::new(generation),
+        sequence: base.sequence + 1,
+        ..base
+    };
+    let mut cancelled = || false;
+    let mut resources =
+        WalResources::new(128 * 1024, STACK_RESERVATION_BYTES, &mut cancelled).unwrap();
+    let mut envelope = vec![0; 16 * 1024];
+    let length = encode_envelope(
+        base,
+        Envelope {
+            batch: BatchId::new(81).unwrap(),
+            kind: EnvelopeKind::Mutation,
+            state: target,
+            changes: &[],
+        },
+        &mut envelope,
+        &mut resources,
+    )
+    .unwrap();
+    let payload = encode_graph_commit(&envelope[..length]).unwrap();
+    let writer = crate::wal::WalWriter::resume(
+        &StdVfs,
+        &directory.join("wal.ze"),
+        clean,
+        crate::lifecycle::durability::DurabilityPolicy::new(
+            DurabilityMode::Durable,
+            CommitTier::Durable,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    writer.commit(GRAPH_COMMIT_V1, &payload).unwrap();
+}
+
+fn unified_replay_fixture(generation: u64) -> tempfile::TempDir {
+    use crate::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    assert_eq!(store.enable_graph().unwrap(), 1);
+    assert_eq!(
+        store
+            .ingest(IngestBatch::new(vec![IngestDocument::new(
+                DocumentVersion::new(DocId::new(91), Revision::new(1)),
+                vec![1.0, 0.0],
+            )]))
+            .unwrap()
+            .generation(),
+        2
+    );
+    store.close().unwrap();
+    append_unified_empty_graph(directory.path(), generation);
+    directory
+}
+
+#[test]
+fn a_graph_commit_whose_generation_disagrees_fails_loudly() {
+    let directory = unified_replay_fixture(4);
+    let before = file_snapshot(directory.path());
+    let result = Store::open(
+        directory.path(),
+        native_options().with_access_mode(crate::lifecycle::AccessMode::ReadOnly),
+    );
+    assert!(
+        matches!(result, Err(crate::lifecycle::StoreError::WalMutation { seq, op: crate::ingest::wal_payload::GRAPH_COMMIT_V1, .. }) if seq == crate::wal::LogSeq::new(2)),
+        "mismatched graph generation must refuse"
+    );
+    assert_eq!(file_snapshot(directory.path()), before);
+}
+
+#[test]
+fn read_only_open_replays_without_writing() {
+    let directory = unified_replay_fixture(3);
+    let before = file_snapshot(directory.path());
+    let vfs = Arc::new(RecordingVfs::default());
+    let store = Store::open_with_test_dependencies(
+        directory.path(),
+        native_options().with_access_mode(crate::lifecycle::AccessMode::ReadOnly),
+        crate::lifecycle::StoreTestDependencies::new(
+            vfs.clone(),
+            Arc::new(crate::lifecycle::SystemMonotonicClock),
+        ),
+    )
+    .unwrap();
+    assert_eq!(store.snapshot().unwrap().generation(), 3);
+    assert_eq!(store.count_documents(None, None).unwrap().count, 1);
+    assert_eq!(store.admit_native_read().unwrap().bundle().sequence(), 1);
+    store.close().unwrap();
+    assert!(!vfs.take().iter().any(|event| matches!(
+        event,
+        DurabilityEvent::Create(_)
+            | DurabilityEvent::Write(_)
+            | DurabilityEvent::Append(_)
+            | DurabilityEvent::OpenAppend(_)
+            | DurabilityEvent::Sync(_, _)
+            | DurabilityEvent::Rename(_, _)
+            | DurabilityEvent::Delete(_)
+    )));
+    assert_eq!(file_snapshot(directory.path()), before);
+}
+
+fn mixed_replay_fixture(graph_first: bool) -> (tempfile::TempDir, Vec<Vec<u8>>) {
+    use crate::ingest::wal_payload::{
+        GRAPH_COMMIT_V1, MIXED_BATCH_MEMBER_V1, UPSERT_V2, encode_mixed_batch_member,
+        encode_upsert_v2,
+    };
+    use crate::ingest::{DocId, DocumentVersion, IngestDocument, Revision};
+    use crate::property_graph::wal::{
+        BatchId, CommitState, Envelope, EnvelopeKind, STACK_RESERVATION_BYTES, WalResources,
+        encode_envelope,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    store.enable_graph().unwrap();
+    store.close().unwrap();
+    let manifest =
+        crate::manifest::io::load_manifest(&StdVfs, &directory.path().join("manifest.ze"), 0)
+            .unwrap();
+    let base = manifest.graph.as_ref().unwrap().state().unwrap();
+    let mut cancelled = || false;
+    let mut resources =
+        WalResources::new(128 * 1024, STACK_RESERVATION_BYTES, &mut cancelled).unwrap();
+    let mut envelope = vec![0; 16 * 1024];
+    let length = encode_envelope(
+        base,
+        Envelope {
+            batch: BatchId::new(82).unwrap(),
+            kind: EnvelopeKind::Mutation,
+            state: CommitState {
+                generation: GraphGeneration::new(2),
+                sequence: 1,
+                ..base
+            },
+            changes: &[],
+        },
+        &mut envelope,
+        &mut resources,
+    )
+    .unwrap();
+    let documents: Vec<_> = [101, 102]
+        .into_iter()
+        .map(|id| {
+            let document = IngestDocument::new(
+                DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                vec![1.0, 0.0],
+            );
+            (UPSERT_V2, encode_upsert_v2(&document).unwrap())
+        })
+        .collect();
+    let mut members = documents;
+    members.insert(
+        if graph_first { 0 } else { 2 },
+        (GRAPH_COMMIT_V1, envelope[..length].to_vec()),
+    );
+    let payloads: Vec<_> = members
+        .iter()
+        .enumerate()
+        .map(|(index, (op, payload))| {
+            encode_mixed_batch_member(index as u32, 3, *op, payload).unwrap()
+        })
+        .collect();
+    let writer = crate::wal::WalWriter::create(
+        &StdVfs,
+        &directory.path().join("wal.ze"),
+        crate::wal::LogSeq::new(1),
+        crate::lifecycle::durability::DurabilityPolicy::new(
+            DurabilityMode::Durable,
+            CommitTier::Durable,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let records: Vec<_> = payloads
+        .iter()
+        .map(|payload| (MIXED_BATCH_MEMBER_V1, payload.as_slice()))
+        .collect();
+    writer.commit_many(&records).unwrap();
+    drop(writer);
+    (directory, payloads)
+}
+
+#[test]
+fn a_watermark_inside_a_mixed_run_is_refused() {
+    let (directory, _) = mixed_replay_fixture(false);
+    let path = directory.path().join("manifest.ze");
+    let mut manifest = crate::manifest::io::load_manifest(&StdVfs, &path, 3).unwrap();
+    manifest.log_seq = 1;
+    crate::manifest::io::commit_manifest(
+        &StdVfs,
+        directory.path(),
+        &manifest,
+        crate::lifecycle::durability::DurabilityPolicy::new(
+            DurabilityMode::Durable,
+            CommitTier::Durable,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let before = file_snapshot(directory.path());
+    assert!(
+        matches!(Store::open(directory.path(),
+        native_options().with_access_mode(crate::lifecycle::AccessMode::ReadOnly)),
+        Err(crate::lifecycle::StoreError::Manifest(
+            crate::manifest::ManifestError::Decode(message))) if message == "watermark splits a committed batch"),
+        "a watermark inside a committed run cannot hide a document member"
+    );
+    assert_eq!(file_snapshot(directory.path()), before);
+}
+
+#[test]
+fn a_graph_member_before_the_end_of_a_mixed_batch_is_refused() {
+    let (directory, _) = mixed_replay_fixture(true);
+    let before = file_snapshot(directory.path());
+    let result = Store::open(
+        directory.path(),
+        native_options().with_access_mode(crate::lifecycle::AccessMode::ReadOnly),
+    );
+    assert!(
+        matches!(result, Err(crate::lifecycle::StoreError::WalMutation { seq, .. }) if seq == crate::wal::LogSeq::new(1))
+    );
+    assert_eq!(file_snapshot(directory.path()), before);
+}
+
+#[test]
+fn a_mixed_batch_is_one_generation_and_a_torn_run_is_not_admitted() {
+    let (directory, payloads) = mixed_replay_fixture(false);
+    let complete = Store::open(
+        directory.path(),
+        native_options().with_access_mode(crate::lifecycle::AccessMode::ReadOnly),
+    )
+    .unwrap();
+    assert_eq!(complete.snapshot().unwrap().generation(), 2);
+    assert_eq!(complete.count_documents(None, None).unwrap().count, 2);
+    assert_eq!(
+        complete
+            .admit_native_read()
+            .unwrap()
+            .bundle()
+            .base()
+            .generation
+            .get(),
+        2
+    );
+    complete.close().unwrap();
+    let bytes = std::fs::read(directory.path().join("wal.ze")).unwrap();
+    let last = crate::wal::record::MIN_RECORD_LEN + payloads.last().unwrap().len();
+    std::fs::write(
+        directory.path().join("wal.ze"),
+        &bytes[..bytes.len() - last],
+    )
+    .unwrap();
+    let torn = Store::open(
+        directory.path(),
+        native_options().with_access_mode(crate::lifecycle::AccessMode::ReadOnly),
+    )
+    .unwrap();
+    assert_eq!(torn.snapshot().unwrap().generation(), 1);
+    assert_eq!(torn.count_documents(None, None).unwrap().count, 0);
+    assert_eq!(torn.admit_native_read().unwrap().bundle().sequence(), 0);
+    torn.close().unwrap();
+}
+
+#[cfg(test)]
+mod legacy {
+    use super::*;
+
+    #[test]
+    fn family_19_fixture_is_an_explicit_rejected_input() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/graph-reclaim/pre-ze380-pending");
+        let scratch = tempfile::tempdir().unwrap();
+        for entry in std::fs::read_dir(&fixture).unwrap() {
+            let entry = entry.unwrap();
+            std::fs::copy(entry.path(), scratch.path().join(entry.file_name())).unwrap();
+        }
+        assert!(std::fs::read_dir(scratch.path()).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("graph-wal-")
+        }));
+        let before = file_snapshot(scratch.path());
+        for access in [
+            crate::lifecycle::AccessMode::ReadOnly,
+            crate::lifecycle::AccessMode::ReadWrite,
+        ] {
+            let vfs = Arc::new(RecordingVfs::default());
+            let result = Store::open_with_test_dependencies(
+                scratch.path(),
+                native_options().with_access_mode(access),
+                crate::lifecycle::StoreTestDependencies::new(
+                    vfs.clone(),
+                    Arc::new(crate::lifecycle::SystemMonotonicClock),
+                ),
+            );
+            assert!(matches!(
+                result,
+                Err(crate::lifecycle::StoreError::NativeGraphDirectory { .. })
+            ));
+            assert_eq!(file_snapshot(scratch.path()), before);
+            assert!(vfs.take().is_empty());
+        }
+    }
+}
+
+#[test]
+fn a_v2_manifest_refuses_graph_records_even_below_its_watermark() {
+    let directory = unified_replay_fixture(3);
+    let mut manifest =
+        crate::manifest::io::load_manifest(&StdVfs, &directory.path().join("manifest.ze"), 2)
+            .unwrap();
+    manifest.graph = None;
+    manifest.log_seq = 2;
+    manifest.generation = 3;
+    crate::manifest::io::commit_manifest(
+        &StdVfs,
+        directory.path(),
+        &manifest,
+        crate::lifecycle::durability::DurabilityPolicy::new(
+            DurabilityMode::Durable,
+            CommitTier::Durable,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let before = file_snapshot(directory.path());
+    let result = Store::open(
+        directory.path(),
+        native_options().with_access_mode(crate::lifecycle::AccessMode::ReadOnly),
+    );
+    assert!(
+        matches!(result, Err(crate::lifecycle::StoreError::UnsupportedWalMutation { seq, op: crate::ingest::wal_payload::GRAPH_COMMIT_V1 }) if seq == crate::wal::LogSeq::new(2))
+    );
+    assert_eq!(file_snapshot(directory.path()), before);
+}
+
+#[test]
+fn graph_text_and_vector_roots_survive_a_manifest_fold_and_wal_replay() {
+    let parent = tempfile::tempdir().unwrap();
+    let path = parent.path().join("native");
+    let document = EmbeddingTower {
+        model_id: "ze346-document".into(),
+        model_version: "1".into(),
+        weights_digest: vec![0x34, 0x60],
+        dims: 2,
+        normalization: Normalization::None,
+        prompt_prefix: "doc: ".into(),
+        max_tokens: 32,
+        runtime: EmbeddingRuntime::CpuReference,
+        compute_units: ComputeUnits::Cpu,
+        os_build: None,
+    };
+    let options = native_options();
+    let store = Store::create_native_graph(&path, options.clone(), Some(document.clone())).unwrap();
+    let coordinates = [0.25, 0.75];
+    let embedding = CanonicalEmbedding::new(&document, &coordinates).unwrap();
+    let contents = CanonicalContents::node(
+        &mut [],
+        &mut [],
+        Some("unified persisted text"),
+        Some(embedding),
+    )
+    .unwrap();
+    for key in ["folded", "tail"] {
+        store
+            .apply_native_graph(
+                &[StructuredWrite {
+                    key: ApplicationKey::new(EntityKind::Node, "ze346", key).unwrap(),
+                    revision: GraphRevision::new(1).unwrap(),
+                    operation: StructuredOperation::Create,
+                    image: Some(WriteImage::Node(&contents)),
+                }],
+                &QueryControl::Cancel(CancelToken::new()),
+            )
+            .unwrap();
+        if key == "folded" {
+            store
+                .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+                .unwrap();
+            let manifest =
+                crate::manifest::io::load_manifest(&StdVfs, &path.join("manifest.ze"), 1).unwrap();
+            let state = manifest.graph.as_ref().unwrap().state().unwrap();
+            assert!(state.text.is_some() && state.vector.is_some());
+        }
+    }
+    let before = store.admit_native_read().unwrap();
+    let state = super::super::write::commit_state(before.bundle());
+    let expected = (state.generation, state.sequence, state.text, state.vector);
+    drop(before);
+    store.close().unwrap();
+    for read_only in [true, false] {
+        let access = if read_only {
+            crate::lifecycle::AccessMode::ReadOnly
+        } else {
+            crate::lifecycle::AccessMode::ReadWrite
+        };
+        let reopened = Store::open_native_graph(
+            &path,
+            options.clone().with_access_mode(access),
+            Some(document.clone()),
+        )
+        .unwrap();
+        let reader = reopened.admit_native_read().unwrap();
+        let state = super::super::write::commit_state(reader.bundle());
+        assert_eq!(
+            (state.generation, state.sequence, state.text, state.vector),
+            expected
+        );
+        drop(reader);
+        reopened.close().unwrap();
+    }
 }

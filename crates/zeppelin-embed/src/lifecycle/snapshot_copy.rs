@@ -351,6 +351,14 @@ impl Target {
 }
 
 fn stage(vfs: &dyn Vfs, staging: &Path, pinned: &Pinned) -> Result<(), StoreError> {
+    // Graph read-only admission uses the persistent store lock. Publish that
+    // empty lock file with the snapshot so admission remains purely read-only.
+    #[cfg(feature = "graph-cypher")]
+    let _graph_lock = if pinned.graph_objects.is_empty() {
+        None
+    } else {
+        Some(super::StoreLock::acquire(staging).map_err(StoreError::Lock)?)
+    };
     let lease = &pinned.lease;
     for segment in lease.all_segments() {
         let bytes = segment.file_bytes();

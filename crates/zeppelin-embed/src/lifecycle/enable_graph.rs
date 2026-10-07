@@ -82,19 +82,15 @@ impl Store {
             self.native_graph.enable_registries()?;
             return Ok(current.generation);
         }
+        self.accounting.enable_graph_ceiling()?;
         let generation = current
             .generation
             .checked_add(1)
             .ok_or(StoreError::GenerationOverflow)?;
-        // Manifest generation is the absorbed base. The unabsorbed document
-        // tail still contributes its generations on reopen, exactly once.
-        manifest.generation = manifest
-            .generation
-            .checked_add(1)
-            .ok_or(StoreError::GenerationOverflow)?;
+        manifest.generation = generation;
         manifest.epochs = self.epoch_registry(&manifest.epochs);
         manifest.epoch_alias = self.epoch_identity();
-        manifest.graph = Some(self.empty_graph(generation, manifest.log_seq)?);
+        manifest.graph = Some(self.empty_graph(generation, writer.durable_end())?);
         // The version barrier must survive before a future writer can append
         // an op an older binary cannot read, including in Derived stores.
         let barrier = super::durability::DurabilityPolicy::new(
@@ -124,6 +120,21 @@ impl Store {
             })?;
         *published = Some(Arc::new(remapped));
         current.generation = generation;
+        drop(published);
+        drop(active);
+        drop(wal);
+        drop(lock);
+        drop(state);
+        if let Some(graph) = manifest.graph.as_ref() {
+            super::native_graph::recovery::install_unified(
+                self,
+                graph,
+                manifest.generation,
+                &[],
+                super::AccessMode::ReadWrite,
+                None,
+            )?;
+        }
         Ok(generation)
     }
 
@@ -256,7 +267,7 @@ impl Store {
 }
 
 /// Open/remap hook: a v3 manifest must have every immutable object it names.
-/// This validates objects without installing the future unified graph writer.
+/// This validates the committed immutable inventory before replay.
 pub(super) fn validate_objects(
     vfs: &dyn Vfs,
     directory: &Path,

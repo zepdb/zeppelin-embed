@@ -46,7 +46,7 @@ const ROOT_CLEAN: &str = "property-graph.storage-faults.root-replacement.clean";
 
 /// Byte offset of the root selector's graph-generation field. The selector is
 /// a fixed 120-byte record, not an artifact with a 96-byte header.
-const ROOT_SELECTOR_GENERATION: usize = 48;
+const MANIFEST_GENERATION: usize = crate::format::frame::FILE_HEADER_LEN + 8;
 
 /// Keyed nodes per class-2 commit. Class 2 discovers which chunk splits the
 /// node directory at this granularity, so the chunk is small enough to name
@@ -93,7 +93,7 @@ fn file_snapshot(directory: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 }
 
 fn root_bundle_path(directory: &Path) -> PathBuf {
-    directory.join("graph-root.ze")
+    directory.join("manifest.ze")
 }
 
 /// Chooses a damage offset strictly inside the artifact payload.
@@ -1162,18 +1162,18 @@ fn run_root_replacement_class(schedule: StorageFaultSchedule) -> RootOutcome {
     std::fs::write(&bundle, &original).expect("restore root bundle");
     assert_eq!(file_snapshot(&path), baseline, "byte-exact restore");
 
-    // The selector's generation field is bytes 48..56. Lowering it names a
-    // root generation older than the checkpoint base without touching any
-    // other field, so only the selector's own integrity can refuse it.
+    // The manifest generation begins after the file header and payload length. Lowering it names a
+    // manifest generation older than the graph checkpoint without touching any
+    // other field, so only the manifest's own integrity can refuse it.
     let mut stale = original.clone();
     let generation = u64::from_le_bytes(
         original
-            .get(ROOT_SELECTOR_GENERATION..ROOT_SELECTOR_GENERATION + 8)
+            .get(MANIFEST_GENERATION..MANIFEST_GENERATION + 8)
             .and_then(|field| <[u8; 8]>::try_from(field).ok())
             .expect("selector generation field"),
     );
     stale
-        .get_mut(ROOT_SELECTOR_GENERATION..ROOT_SELECTOR_GENERATION + 8)
+        .get_mut(MANIFEST_GENERATION..MANIFEST_GENERATION + 8)
         .expect("selector generation field")
         .copy_from_slice(&generation.checked_sub(1).unwrap_or(u64::MAX).to_le_bytes());
     assert_ne!(stale, original, "stale-generation fault damaged no byte");
@@ -1497,7 +1497,29 @@ fn run_reclaim_cell(
             .checkpoint_native_graph(&control())
             .expect("cut fold history");
     } else {
-        seed_reclaimable_manifest(&store, &format!("seed-{seed}"));
+        let key = format!("seed-{seed}");
+        seed_reclaimable_manifest(&store, &key);
+        // Retire a real text participant; the unified store has no superseded
+        // family-18/19 authority files to supply a second deletion candidate.
+        let image = CanonicalContents::node(&mut [], &mut [], Some("replacement"), None)
+            .expect("replacement contents");
+        store
+            .apply_native_graph(
+                &[StructuredWrite {
+                    key: ApplicationKey::new(EntityKind::Node, "reclaim-proof", &key)
+                        .expect("replacement key"),
+                    revision: GraphRevision::new(2).expect("replacement revision"),
+                    operation: StructuredOperation::Put(EntityId::Node(
+                        NodeId::new(1).expect("first seeded node"),
+                    )),
+                    image: Some(WriteImage::Node(&image)),
+                }],
+                &control(),
+            )
+            .expect("retire first text participant");
+        store
+            .checkpoint_native_graph(&control())
+            .expect("release replaced text roots");
     }
     if count_triggered {
         for index in 0..32 {
@@ -1529,7 +1551,11 @@ fn run_reclaim_cell(
             "count fixture must reach an authorized candidate"
         );
     } else {
-        assert!(targets.len() >= 2, "fixture must reach second candidate");
+        assert!(
+            targets.len() >= 2,
+            "{name} fixture must reach second candidate; got {}",
+            targets.len()
+        );
     }
     let inventory = pending
         .bundle()
@@ -1755,7 +1781,7 @@ fn run_scoped_mapping_fault_class(
         );
         let reports = capture.take();
         for observed in &reports {
-            assert!(observed.generation <= index as u64 + 1);
+            assert!(observed.generation <= index as u64 + 2);
             assert!(observed.filled <= observed.capacity);
             if observed.kind
                 == crate::property_graph::storage::mapping_slot_capture::Kind::Preparation
@@ -2136,7 +2162,7 @@ fn ze177_measure_reopen(large: bool) {
             path.file_name()
                 .expect("name")
                 .to_string_lossy()
-                .starts_with("graph-wal-")
+                .eq("wal.ze")
         })
         .map(|path| std::fs::metadata(path).expect("wal metadata").len())
         .sum();

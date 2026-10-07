@@ -162,7 +162,7 @@ fn read_root<S: BlockSource>(
     resources: &mut TreeResources<'_>,
 ) -> Result<SparseRootState, TreeError> {
     let Some(required) = required else {
-        if base_generation.get() != 0 {
+        if base_generation.get() != 0 && base_sequence != 0 {
             return Err(TreeError::Invalid("missing noninitial sparse root"));
         }
         return Ok(SparseRootState {

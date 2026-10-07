@@ -435,8 +435,9 @@ impl<'a, 'm, S: BlockSource, C: RecordCatalog<S>> SparseView<'a, 'm, S, C> {
         resources: &mut TreeResources<'_>,
     ) -> Result<Self, TreeError> {
         owner.check(resources)?;
-        let initial_empty =
-            native.generation().get() == 0 && roots.text.is_none() && roots.vector.is_none();
+        let initial_empty = native.references().iter().all(Option::is_none)
+            && roots.text.is_none()
+            && roots.vector.is_none();
         if roots.text.is_none() && !initial_empty {
             return Err(TreeError::Invalid("missing sparse text root"));
         }

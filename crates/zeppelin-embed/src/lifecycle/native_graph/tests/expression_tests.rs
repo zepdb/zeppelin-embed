@@ -355,7 +355,7 @@ fn expression_producer_bundle_with_extra_nodes(
                 fold: Default::default(),
                 roots: Some(root_identity.artifact),
             },
-            root_envelope,
+            root_envelope: Some(root_envelope),
             roots,
             wal_roots,
             sequence,

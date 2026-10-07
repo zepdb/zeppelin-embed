@@ -410,7 +410,7 @@ where
             fold: Default::default(),
             roots: Some(root_identity.artifact),
         },
-        root_envelope,
+        root_envelope: Some(root_envelope),
         roots,
         wal_roots,
         sequence,
@@ -718,7 +718,7 @@ fn ze61_sparse_populations_match_model() {
         &[],
         Some(&document),
     );
-    input0.root_envelope = write_framed_file(
+    input0.root_envelope = Some(write_framed_file(
         directory.path(),
         ContainerKind::RootEnvelope,
         ArtifactIdentity {
@@ -731,7 +731,7 @@ fn ze61_sparse_populations_match_model() {
             kind: BlockKind::CheckpointPayload,
             payload: b"ze61-sparse-base",
         }],
-    );
+    ));
     input0.document = Some(document.clone());
     input0.high_waters.creation_serial = 10;
     store.install_native_graph_for_test(input0).unwrap();
@@ -1401,7 +1401,7 @@ fn run_sparse_lifecycle_acceptance(
     );
     let mut input0 = bundle(identity, 0, 61_201);
     input0.base = base_identity;
-    input0.root_envelope = root0;
+    input0.root_envelope = Some(root0);
     input0.catalog = catalog0;
     input0.high_waters = HighWaters {
         node: 1_u128 << 64,

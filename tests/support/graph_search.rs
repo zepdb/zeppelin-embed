@@ -47,7 +47,11 @@ impl Corpus {
         let mut this = Self {
             dir,
             store: Some(store),
-            model: oracle::Graph::default(),
+            // EnableGraph is the first Store generation, before graph data.
+            model: oracle::Graph {
+                generation: 1,
+                ..Default::default()
+            },
         };
         // IDs: project, alice, meeting, item, entity, eligible duals, excluded
         // nearest vector, text only, vector only, absent/empty/whitespace text.
@@ -298,6 +302,12 @@ impl Corpus {
             CompileLimits::default(),
         )
         .unwrap()
+    }
+    pub fn checkpoint(&mut self) -> Result<(), GraphStoreError> {
+        self.store.as_ref().unwrap().checkpoint()?;
+        // A manifest fold advances the Store clock without changing receipts.
+        self.model.generation += 1;
+        Ok(())
     }
     pub fn reopen(&mut self) {
         assert_eq!(self.store.take().unwrap().release(), 0);

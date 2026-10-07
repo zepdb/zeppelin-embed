@@ -163,7 +163,7 @@ fn manifest_v3_rejects_malformed_graph_sections() {
 
 #[cfg(feature = "graph-cypher")]
 #[test]
-fn manifest_v3_refuses_separate_search_roots_and_incomplete_inventory() {
+fn manifest_v3_carries_search_roots_and_refuses_incomplete_inventory() {
     use zeppelin_embed::manifest::GraphManifest;
     let manifest = decode_manifest("golden", &golden()).unwrap();
     let graph = manifest.graph.unwrap();
@@ -174,7 +174,9 @@ fn manifest_v3_refuses_separate_search_roots_and_incomplete_inventory() {
         } else {
             state.text = Some(state.catalog);
         }
-        assert!(GraphManifest::new(state, 37, graph.objects.clone()).is_err());
+        let carried = GraphManifest::new(state, 37, graph.objects.clone()).unwrap();
+        assert_eq!(carried.state().unwrap().vector, state.vector);
+        assert_eq!(carried.state().unwrap().text, state.text);
     }
     assert!(GraphManifest::new(graph.state().unwrap(), 37, Vec::new()).is_err());
     let mut duplicates = graph.objects.clone();

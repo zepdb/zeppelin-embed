@@ -29,7 +29,7 @@ mod base;
 mod maintenance;
 mod mutate;
 mod persistence;
-mod recovery;
+pub(crate) mod recovery;
 #[cfg(test)]
 pub(crate) use recovery::{open_metrics_for_test, serial_probes_for_test};
 mod write;
@@ -175,7 +175,7 @@ pub(crate) trait NativeReadConsumer<T> {
 pub(crate) struct NativeGraphBundleInput {
     pub(crate) base: BaseIdentity,
     // removed by ZE-346 when the graph WAL and root selector are deleted
-    pub(crate) root_envelope: RequiredRef,
+    pub(crate) root_envelope: Option<RequiredRef>,
     pub(crate) roots: GraphRoots,
     pub(crate) wal_roots: WalGraphRoots,
     pub(crate) sequence: u64,
@@ -196,7 +196,7 @@ pub(crate) struct NativeGraphBundle {
     base: BaseIdentity,
     // Legacy reclaim/recovery locator, never part of bundle identity.
     // removed by ZE-346 when the graph WAL and root selector are deleted
-    root_envelope: RequiredRef,
+    root_envelope: Option<RequiredRef>,
     roots: GraphRoots,
     wal_roots: WalGraphRoots,
     sequence: u64,
@@ -369,9 +369,9 @@ impl NativeGraphBundle {
         resources: &GraphResources,
         admitted: &Arc<Self>,
         fold: FoldMark,
-        root_envelope: RequiredRef,
+        root_envelope: Option<RequiredRef>,
     ) -> Result<Arc<Self>, NativeGraphError> {
-        if fold.manifest_generation != admitted.base.generation.get()
+        if fold.manifest_generation < admitted.base.generation.get()
             || fold.envelope_sequence != admitted.sequence
         {
             return Err(NativeGraphError::Invalid("unproved native fold transition"));
@@ -384,7 +384,7 @@ impl NativeGraphBundle {
                     store: admitted.base.store,
                     generation: admitted.base.generation,
                     fold,
-                    roots: Some(root_envelope.object.artifact),
+                    roots: root_envelope.map(|root| root.object.artifact),
                 },
                 root_envelope,
                 roots: admitted.roots,
@@ -407,11 +407,10 @@ impl NativeGraphBundle {
     }
 
     fn needs_fold_before_retirement(&self) -> bool {
-        self.base.fold.manifest_generation != self.base.generation.get()
-            || self.base.fold.envelope_sequence != self.sequence
+        self.base.fold.envelope_sequence != self.sequence
     }
 
-    pub(crate) const fn root_envelope(&self) -> RequiredRef {
+    pub(crate) const fn root_envelope(&self) -> Option<RequiredRef> {
         self.root_envelope
     }
 
@@ -468,7 +467,7 @@ impl NativeGraphBundle {
     }
 
     fn contains(&self, reference: RequiredRef) -> bool {
-        self.root_envelope == reference
+        self.root_envelope == Some(reference)
             || self.catalog == reference
             || self.vector == Some(reference)
             || self.text == Some(reference)
@@ -492,7 +491,7 @@ impl NativeGraphBundle {
 
     pub(super) fn protected_references(&self) -> [Option<RequiredRef>; 13] {
         let mut output = [None; 13];
-        output[0] = Some(self.root_envelope);
+        output[0] = self.root_envelope;
         output[1..9].copy_from_slice(&self.wal_roots.slots);
         output[9] = Some(self.catalog);
         output[10] = self.vector;
@@ -530,24 +529,33 @@ fn bundle_owned_bytes(
 
 fn validate_bundle(input: &NativeGraphBundleInput) -> Result<(), NativeGraphError> {
     let base = input.base;
-    // Removed by ZE-346 when the graph WAL and root selector are deleted.
-    let root = input.root_envelope;
-    if root.object.store != base.store
-        || root.object.family != 18
-        || root.object.version != 1
-        || root.block.kind != BlockKind::CheckpointPayload
-        || root.block.version != 1
-        || root.block.artifact != root.object.artifact
-        || root.object.generation > base.generation
-        || base.roots != Some(root.object.artifact)
-    {
+    if let Some(root) = input.root_envelope {
+        if root.object.store != base.store
+            || root.object.family != 18
+            || root.object.version != 1
+            || root.block.kind != BlockKind::CheckpointPayload
+            || root.block.version != 1
+            || root.block.artifact != root.object.artifact
+            || root.object.generation > base.generation
+            || base.roots != Some(root.object.artifact)
+        {
+            return Err(NativeGraphError::Invalid(
+                "legacy checkpoint reference identity",
+            ));
+        }
+    } else if base.roots.is_some() {
         return Err(NativeGraphError::Invalid(
-            "legacy checkpoint reference identity",
+            "unified bundle has a legacy root identity",
         ));
     }
     if base.store != input.roots.store()
         || base.generation != input.roots.generation()
-        || base.fold.manifest_generation > base.generation.get()
+        || (input.root_envelope.is_none()
+            && if base.fold.envelope_sequence == input.sequence {
+                base.fold.manifest_generation < base.generation.get()
+            } else {
+                base.fold.manifest_generation >= base.generation.get()
+            })
         || base.fold.envelope_sequence > input.sequence
     {
         return Err(NativeGraphError::Invalid("bundle identity"));
@@ -1420,9 +1428,7 @@ impl NativeGraphPublication {
             spills,
             proofs,
             wal: writer.as_ref().map(|writer| NativeProtectedWal {
-                identity: writer.wal.identity,
-                first_sequence: writer.wal.first_sequence,
-                bytes: writer.wal.bytes,
+                bytes: writer.envelope_bytes,
             }),
             serial_fence: state.creation_serial_fence,
             _charge: charge,
@@ -1870,8 +1876,6 @@ pub(crate) struct NativeMaintenanceAdmission {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NativeProtectedWal {
-    identity: u128,
-    first_sequence: u64,
     bytes: usize,
 }
 
@@ -1938,14 +1942,6 @@ impl NativeProtectedRoots {
 }
 
 impl NativeProtectedWal {
-    pub(super) const fn identity(self) -> u128 {
-        self.identity
-    }
-
-    pub(super) const fn first_sequence(self) -> u64 {
-        self.first_sequence
-    }
-
     pub(super) const fn bytes(self) -> usize {
         self.bytes
     }
@@ -2359,7 +2355,7 @@ pub(crate) mod tests {
                 fold: Default::default(),
                 roots: Some(root_envelope.object.artifact),
             },
-            root_envelope,
+            root_envelope: Some(root_envelope),
             roots: GraphRoots::from_references(store, generation, [None; 8]).unwrap(),
             wal_roots: WalGraphRoots::default(),
             sequence: generation.get(),
@@ -2383,10 +2379,15 @@ pub(crate) mod tests {
         fn legacy_checkpoint_reference_is_checked_until_ze346() {
             let store = StoreInstanceId::new(123).unwrap();
             let mutations: [fn(&mut NativeGraphBundleInput); 5] = [
-                |input| input.root_envelope.object.family = 17,
-                |input| input.root_envelope.object.version = 2,
-                |input| input.root_envelope.block.kind = BlockKind::CommitParticipant,
-                |input| input.root_envelope.object.generation = GraphGeneration::new(8),
+                |input| input.root_envelope.as_mut().unwrap().object.family = 17,
+                |input| input.root_envelope.as_mut().unwrap().object.version = 2,
+                |input| {
+                    input.root_envelope.as_mut().unwrap().block.kind = BlockKind::CommitParticipant
+                },
+                |input| {
+                    input.root_envelope.as_mut().unwrap().object.generation =
+                        GraphGeneration::new(8)
+                },
                 |input| input.base.roots = None,
             ];
             for mutate in mutations {
@@ -2423,7 +2424,7 @@ pub(crate) mod tests {
                 envelope_sequence: 7,
             };
             // Make the legacy locator misleadingly older after the fold.
-            bundle.root_envelope.object.generation = GraphGeneration::new(0);
+            bundle.root_envelope.as_mut().unwrap().object.generation = GraphGeneration::new(0);
             assert!(!bundle.needs_fold_before_retirement());
             let mut legacy_copy = bundle.base();
             legacy_copy.roots = Some(ArtifactId::new(999).unwrap());
@@ -2512,7 +2513,7 @@ pub(crate) mod tests {
                     graph_absorbed_through: 7,
                     envelope_sequence: 7,
                 },
-                legacy_root,
+                Some(legacy_root),
             )
             .unwrap();
             assert_eq!(
@@ -3310,7 +3311,7 @@ pub(crate) mod tests {
                     fold: Default::default(),
                     roots: Some(initial_root_identity.artifact),
                 },
-                root_envelope: initial_root,
+                root_envelope: Some(initial_root),
                 roots: GraphRoots::from_references(identity, initial_generation, [None; 8])
                     .unwrap(),
                 wal_roots: WalGraphRoots::default(),
@@ -3540,7 +3541,7 @@ pub(crate) mod tests {
                     fold: Default::default(),
                     roots: Some(root_identity.artifact),
                 },
-                root_envelope,
+                root_envelope: Some(root_envelope),
                 roots,
                 wal_roots,
                 sequence,
@@ -3600,7 +3601,7 @@ pub(crate) mod tests {
         let bundle = lease.bundle();
         NativeGraphBundleInput {
             base: bundle.base(),
-            root_envelope: bundle.root_envelope(),
+            root_envelope: Some(bundle.root_envelope().unwrap()),
             roots: bundle.roots(),
             wal_roots: bundle.wal_roots(),
             sequence: bundle.sequence(),
@@ -3799,7 +3800,7 @@ pub(crate) mod tests {
                 fold: Default::default(),
                 roots: Some(root_identity.artifact),
             },
-            root_envelope,
+            root_envelope: Some(root_envelope),
             roots,
             wal_roots,
             sequence,
@@ -3978,7 +3979,7 @@ pub(crate) mod tests {
                 fold: Default::default(),
                 roots: Some(root_identity.artifact),
             },
-            root_envelope,
+            root_envelope: Some(root_envelope),
             roots,
             wal_roots,
             sequence: admitted.sequence + 1,
@@ -4174,7 +4175,7 @@ pub(crate) mod tests {
         let lease = admitted.join().unwrap();
         let captured = replacement.join().unwrap();
 
-        assert!(captured.contains(old_root));
+        assert!(captured.contains(old_root.unwrap()));
         assert_eq!(captured.bundle_count(), 2);
         drop(lease);
         drop(captured);
@@ -4547,7 +4548,7 @@ pub(crate) mod tests {
         let mut input = bundle(identity, 0, 45001);
         input.catalog =
             install_catalog_file(directory.path(), identity, GraphGeneration::new(0), 45002);
-        input.root_envelope = write_framed_file(
+        input.root_envelope = Some(write_framed_file(
             directory.path(),
             ContainerKind::RootEnvelope,
             ArtifactIdentity {
@@ -4560,7 +4561,7 @@ pub(crate) mod tests {
                 kind: BlockKind::CheckpointPayload,
                 payload: b"coordinator-base",
             }],
-        );
+        ));
         input.high_waters.creation_serial = 10;
         store.install_native_graph_for_test(input).unwrap();
         let lease = store.admit_native_read().unwrap();

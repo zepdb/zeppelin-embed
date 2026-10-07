@@ -77,6 +77,7 @@ pub(crate) fn encode_checkpoint(
     Ok(total)
 }
 
+#[cfg(test)]
 pub(crate) fn decode_checkpoint<'a>(
     input: &'a [u8],
     resources: &mut WalResources<'_>,

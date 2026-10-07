@@ -1,4 +1,4 @@
-use super::{NativeGraphBundleInput, NativeGraphError};
+use super::NativeGraphError;
 use crate::epoch::EmbeddingTower;
 use crate::format::FormatFamily;
 use crate::fts::tokenizer::TokenizerEpoch;
@@ -8,7 +8,7 @@ use crate::lifecycle::{MonotonicClock, OpenOptions, Store, SystemMonotonicClock}
 use crate::property_graph::catalog::{
     CatalogDeclaration, CatalogImage, GraphInterpretation, SymbolCatalog, SymbolHighWaters,
 };
-use crate::property_graph::staging::{BaseIdentity, WriteLimits, WriteMemory};
+use crate::property_graph::staging::{WriteLimits, WriteMemory};
 use crate::property_graph::storage::allocation::{
     EntropyProvider, OsEntropy, artifact_path, fresh_store_identity,
 };
@@ -16,21 +16,23 @@ use crate::property_graph::storage::artifact::{
     self, ArtifactId, ArtifactIdentity, Block, BlockKind, ContainerKind,
 };
 use crate::property_graph::storage::memory::{StorageBuffer, StorageMemory};
-use crate::property_graph::storage::tree::directory::GraphRoots;
 use crate::property_graph::wal::{
-    ArtifactDescriptor, CommitState, HighWaters, NativeCheckpoint, ReferenceList, RequiredRef,
-    STACK_RESERVATION_BYTES, WalGraphRoots, WalResources, decode_checkpoint, encode_checkpoint,
-    encode_header,
+    ArtifactDescriptor, CommitState, HighWaters, ReferenceList, RequiredRef, WalGraphRoots,
 };
-use crate::vfs::{SyncKind, Vfs, VfsFile};
-use std::path::{Path, PathBuf};
+use crate::vfs::{SyncKind, Vfs};
+use std::path::Path;
 use std::sync::Arc;
+#[cfg(any(test, feature = "test-seams"))]
 use xxhash_rust::xxh3::xxh3_64;
 
+#[cfg(any(test, feature = "test-seams"))]
 pub(super) const ROOT_SELECTOR: &str = "graph-root.ze";
+#[cfg(any(test, feature = "test-seams"))]
 const ROOT_SELECTOR_MAGIC: &[u8; 8] = b"ZGROOT01";
+#[cfg(any(test, feature = "test-seams"))]
 pub(super) const ROOT_SELECTOR_BYTES: usize = 120;
 
+#[cfg(any(test, feature = "test-seams"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum NativeStoreClassification {
     Complete {
@@ -42,14 +44,6 @@ pub(crate) enum NativeStoreClassification {
     Corrupt,
 }
 
-pub(super) struct NativeWal {
-    pub(super) handle: Box<dyn VfsFile>,
-    pub(super) path: PathBuf,
-    pub(super) identity: u128,
-    pub(super) first_sequence: u64,
-    pub(super) bytes: usize,
-}
-
 fn io(path: &Path, source: std::io::Error) -> NativeGraphError {
     NativeGraphError::Io {
         path: path.to_path_buf(),
@@ -57,6 +51,7 @@ fn io(path: &Path, source: std::io::Error) -> NativeGraphError {
     }
 }
 
+#[cfg(any(test, feature = "test-seams"))]
 fn put_descriptor(
     output: &mut [u8],
     descriptor: ArtifactDescriptor,
@@ -99,6 +94,7 @@ fn put_descriptor(
     Ok(())
 }
 
+#[cfg(any(test, feature = "test-seams"))]
 fn encode_root_selector(root: RequiredRef) -> Result<[u8; ROOT_SELECTOR_BYTES], NativeGraphError> {
     let mut output = [0_u8; ROOT_SELECTOR_BYTES];
     output
@@ -155,6 +151,7 @@ fn encode_root_selector(root: RequiredRef) -> Result<[u8; ROOT_SELECTOR_BYTES], 
     Ok(output)
 }
 
+#[cfg(any(test, feature = "test-seams"))]
 fn u16_at(input: &[u8], start: usize) -> Option<u16> {
     input
         .get(start..start + 2)
@@ -163,6 +160,7 @@ fn u16_at(input: &[u8], start: usize) -> Option<u16> {
         .map(u16::from_le_bytes)
 }
 
+#[cfg(any(test, feature = "test-seams"))]
 fn u32_at(input: &[u8], start: usize) -> Option<u32> {
     input
         .get(start..start + 4)
@@ -171,6 +169,7 @@ fn u32_at(input: &[u8], start: usize) -> Option<u32> {
         .map(u32::from_le_bytes)
 }
 
+#[cfg(any(test, feature = "test-seams"))]
 fn u64_at(input: &[u8], start: usize) -> Option<u64> {
     input
         .get(start..start + 8)
@@ -179,6 +178,7 @@ fn u64_at(input: &[u8], start: usize) -> Option<u64> {
         .map(u64::from_le_bytes)
 }
 
+#[cfg(any(test, feature = "test-seams"))]
 fn u128_at(input: &[u8], start: usize) -> Option<u128> {
     input
         .get(start..start + 16)
@@ -187,6 +187,7 @@ fn u128_at(input: &[u8], start: usize) -> Option<u128> {
         .map(u128::from_le_bytes)
 }
 
+#[cfg(any(test, feature = "test-seams"))]
 pub(super) fn decode_root_selector(input: &[u8]) -> Result<RequiredRef, NativeStoreClassification> {
     if input.len() != ROOT_SELECTOR_BYTES || input.get(..8) != Some(ROOT_SELECTOR_MAGIC.as_slice())
     {
@@ -249,6 +250,7 @@ pub(super) fn decode_root_selector(input: &[u8]) -> Result<RequiredRef, NativeSt
     Ok(RequiredRef { object, block })
 }
 
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) fn classify_native_graph(vfs: &dyn Vfs, path: &Path) -> NativeStoreClassification {
     let selector_path = path.join(ROOT_SELECTOR);
     let selector = match vfs.read(&selector_path) {
@@ -297,6 +299,7 @@ pub(crate) fn classify_native_graph(vfs: &dyn Vfs, path: &Path) -> NativeStoreCl
     }
 }
 
+#[cfg(any(test, feature = "test-seams"))]
 pub(super) fn publish_root_selector(
     vfs: &dyn Vfs,
     directory: &Path,
@@ -522,6 +525,25 @@ fn empty_catalog<'a>(
     )
 }
 
+pub(super) fn write_new(
+    vfs: &dyn Vfs,
+    directory: &Path,
+    path: &Path,
+    bytes: &[u8],
+    policy: crate::lifecycle::durability::DurabilityPolicy,
+) -> Result<(), NativeGraphError> {
+    vfs.create_new(path, bytes)
+        .map_err(|source| io(path, source))?;
+    if let crate::lifecycle::durability::SyncRequirement::Sync(kind) = policy.data_file_sync() {
+        vfs.sync(path, kind).map_err(|source| io(path, source))?;
+    }
+    if let crate::lifecycle::durability::SyncRequirement::Sync(kind) = policy.directory_sync() {
+        vfs.sync(directory, kind)
+            .map_err(|source| io(directory, source))?;
+    }
+    Ok(())
+}
+
 pub(super) fn write_new_full(
     vfs: &dyn Vfs,
     directory: &Path,
@@ -574,45 +596,26 @@ fn create_with_high_waters(
             crate::lifecycle::StoreError::ReadOnly,
         ));
     }
-    let required = crate::lifecycle::durability::DurabilityPolicy::new(
-        DurabilityMode::Durable,
-        CommitTier::Durable,
-    )
-    .map_err(crate::lifecycle::StoreError::Durability)?;
-    let actual = crate::lifecycle::durability::DurabilityPolicy::new(
-        options.durability_mode,
-        options.commit_tier,
-    )
-    .map_err(crate::lifecycle::StoreError::Durability)?;
-    if actual != required {
-        return Err(NativeGraphError::Invalid(
-            "native graph creation requires Durable+Durable",
-        ));
-    }
-    if let Err(source) = vfs.create_directory(path) {
-        if source.kind() == std::io::ErrorKind::AlreadyExists {
-            return match classify_native_graph(vfs.as_ref(), path) {
-                NativeStoreClassification::Complete { .. } => Err(io(path, source)),
-                NativeStoreClassification::Incomplete => {
-                    Err(NativeGraphError::StoreInitializationIncomplete)
-                }
-                NativeStoreClassification::Incompatible => {
-                    Err(NativeGraphError::Invalid("incompatible native graph root"))
-                }
-                NativeStoreClassification::Corrupt => {
-                    Err(NativeGraphError::Invalid("corrupt native graph root"))
-                }
-            };
-        }
-        return Err(io(path, source));
-    }
-    let store = Store::new_native_graph_owner(path, options, Arc::clone(&vfs), clock)?;
+    vfs.create_directory(path)
+        .map_err(|source| io(path, source))?;
+    let parent = path
+        .parent()
+        .ok_or(NativeGraphError::Invalid("store parent"))?;
+    vfs.sync(parent, SyncKind::Full)
+        .map_err(|source| io(parent, source))?;
+    let store = Store::open_graph_with_infrastructure(
+        path,
+        options,
+        document.clone(),
+        Arc::clone(&vfs),
+        clock,
+    )?;
     let shared = crate::property_graph::resources::GraphResources::from_store(&store)?;
     let write_memory = WriteMemory::new(&shared, WriteLimits::default())?;
     let control = QueryControl::Cancel(CancelToken::new());
     let storage = StorageMemory::new(&write_memory, &control, 32 * 1024 * 1024)?;
     let identity = fresh_store_identity(entropy).map_err(|source| io(path, source))?;
-    let generation = crate::property_graph::GraphGeneration::new(0);
+    let generation = crate::property_graph::GraphGeneration::new(1);
     let lexical = store.tokenizer.epoch();
 
     let catalog_identity = ArtifactIdentity {
@@ -644,24 +647,6 @@ fn create_with_high_waters(
     let catalog_path = artifact_path(path, catalog_identity.artifact);
     write_new_full(vfs.as_ref(), path, &catalog_path, catalog_bytes.as_slice())?;
 
-    let wal_identity = fresh_store_identity(entropy)
-        .map_err(|source| io(path, source))?
-        .get();
-    let wal_path = path.join(format!("graph-wal-{wal_identity:032x}.ze"));
-    let mut header = [0_u8; 64];
-    let header_bytes = encode_header(identity, 1, &mut header)?;
-    write_new_full(
-        vfs.as_ref(),
-        path,
-        &wal_path,
-        header
-            .get(..header_bytes)
-            .ok_or(NativeGraphError::Invalid("native WAL header"))?,
-    )?;
-    let wal_handle = vfs
-        .open_append(&wal_path)
-        .map_err(|source| io(&wal_path, source))?;
-
     let state = CommitState {
         store: identity,
         generation,
@@ -675,123 +660,61 @@ fn create_with_high_waters(
             node: node_high_water,
             relationship: relationship_high_water,
             symbols: [0; 4],
-            creation_serial: 2,
+            creation_serial: 1,
         },
         prepared_inventories: ReferenceList::Values(&[]),
     };
-    let checkpoint = NativeCheckpoint {
-        wal_identity,
-        first_sequence: 1,
-        applied_sequence: 0,
+    let mut manifest =
+        crate::ingest::load_current_manifest(vfs.as_ref(), path, 0, 0, &store.schema)?;
+    manifest.generation = generation.get();
+    let graph = crate::manifest::GraphManifest::new(
         state,
-    };
-    let mut checkpoint_payload = zeroed(&storage, &control, 16 * 1024)?;
-    let checkpoint_work = u64::try_from(checkpoint_payload.as_slice().len())
-        .ok()
-        .and_then(|bytes| bytes.checked_mul(4))
-        .ok_or(NativeGraphError::Invalid("checkpoint work bound"))?;
-    let mut checkpoint_cancelled = || false;
-    let mut checkpoint_resources = WalResources::new(
-        checkpoint_work,
-        STACK_RESERVATION_BYTES,
-        &mut checkpoint_cancelled,
-    )?;
-    let checkpoint_bytes = encode_checkpoint(
-        checkpoint,
-        checkpoint_payload.as_mut_slice(),
-        &mut checkpoint_resources,
-    )?;
-    let checkpoint_payload = checkpoint_payload
-        .as_slice()
-        .get(..checkpoint_bytes)
-        .ok_or(NativeGraphError::Invalid("checkpoint extent"))?;
-    let root_identity = ArtifactIdentity {
-        store: identity,
-        artifact: next_artifact(entropy)?,
-        generation,
-        creation_serial: 2,
-    };
-    let (root_bytes, root_envelope) = encode_framed(
-        &storage,
-        &control,
-        ContainerKind::RootEnvelope,
-        root_identity,
-        &[Block {
-            kind: BlockKind::CheckpointPayload,
-            payload: checkpoint_payload,
+        0,
+        vec![crate::manifest::GraphObject {
+            artifact: catalog.object.artifact,
+            length: u64::from(catalog.object.bytes),
+            checksum: catalog.object.checksum,
         }],
-    )?;
-    let root_path = artifact_path(path, root_identity.artifact);
-    write_new_full(vfs.as_ref(), path, &root_path, root_bytes.as_slice())?;
-    publish_root_selector(vfs.as_ref(), path, root_envelope)?;
-    if let Some(parent) = path.parent() {
-        vfs.sync(parent, SyncKind::Full)
-            .map_err(|source| io(parent, source))?;
-    }
-    let decoded_frame = artifact::decode(
-        ContainerKind::RootEnvelope,
-        Some((identity, root_identity.artifact)),
-        root_bytes.as_slice(),
     )
-    .map_err(|_| NativeGraphError::Invalid("root checkpoint validation"))?;
-    let decoded_payload = decoded_frame
-        .framed_block(root_envelope.block)
-        .map_err(|_| NativeGraphError::Invalid("root checkpoint block"))?
-        .payload();
-    let decode_work = u64::try_from(decoded_payload.len())
-        .ok()
-        .and_then(|bytes| bytes.checked_mul(4))
-        .ok_or(NativeGraphError::Invalid("checkpoint decode work bound"))?;
-    let mut decode_cancelled = || false;
-    let mut decode_resources =
-        WalResources::new(decode_work, STACK_RESERVATION_BYTES, &mut decode_cancelled)?;
-    let decoded = decode_checkpoint(decoded_payload, &mut decode_resources)?;
-    if decoded.state.sequence != 0 || decoded.state.catalog != catalog {
-        return Err(NativeGraphError::Invalid("root checkpoint state"));
+    .map_err(crate::lifecycle::StoreError::Manifest)?;
+    manifest.graph = Some(graph.clone());
+    let barrier = crate::lifecycle::durability::DurabilityPolicy::new(
+        DurabilityMode::Durable,
+        CommitTier::Durable,
+    )
+    .map_err(crate::lifecycle::StoreError::Durability)?;
+    crate::manifest::io::commit_manifest(vfs.as_ref(), path, &manifest, barrier)
+        .map_err(crate::lifecycle::StoreError::Manifest)?;
+    store.native_graph.enable_registries()?;
+    let snapshot = crate::lifecycle::PublishedSnapshot::from_manifest(
+        vfs.as_ref(),
+        path,
+        &manifest,
+        &store.accounting,
+    )?;
+    store.publish_snapshot(snapshot)?;
+    {
+        let mut active =
+            store
+                .active
+                .lock()
+                .map_err(|_| crate::lifecycle::StoreError::Synchronization {
+                    component: "active segment",
+                })?;
+        active
+            .as_mut()
+            .ok_or(crate::lifecycle::StoreError::Closed)?
+            .generation = generation.get();
     }
-    let bundle = super::NativeGraphBundle::install(
+    super::recovery::install_unified(
         &store,
-        &crate::property_graph::resources::GraphResources::from_store(&store)?,
-        NativeGraphBundleInput {
-            base: BaseIdentity {
-                store: identity,
-                generation,
-                fold: crate::property_graph::staging::FoldMark {
-                    manifest_generation: decoded.state.generation.get(),
-                    graph_absorbed_through: decoded.applied_sequence,
-                    envelope_sequence: decoded.state.sequence,
-                },
-                roots: Some(root_identity.artifact),
-            },
-            root_envelope,
-            roots: GraphRoots::from_references(identity, generation, [None; 8])?,
-            wal_roots: WalGraphRoots::default(),
-            sequence: 0,
-            catalog,
-            vector: None,
-            text: None,
-            reclaim: None,
-            high_waters: state.high_waters,
-            prepared_inventories: Vec::new(),
-            lexical,
-            document,
-        },
+        &graph,
+        generation.get(),
+        &[],
+        crate::lifecycle::AccessMode::ReadWrite,
+        document,
     )?;
-    store.native_graph.install(bundle)?;
-    let resources = crate::property_graph::resources::GraphResources::from_store(&store)?;
-    store.native_graph.initialize_writer(
-        super::write::NativeWriter::new(
-            NativeWal {
-                handle: wal_handle,
-                path: wal_path,
-                identity: wal_identity,
-                first_sequence: 1,
-                bytes: header_bytes,
-            },
-            &resources,
-        )?,
-        2,
-    )?;
+
     Ok(store)
 }
 

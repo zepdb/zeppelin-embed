@@ -19,7 +19,7 @@ mod enable_graph {
         )
         .unwrap();
         let old = std::fs::read(scratch.path().join("manifest.ze")).unwrap();
-        store
+        let ack = store
             .ingest(common::batch(vec![common::document(1, "orchard")]))
             .unwrap();
         let wal = std::fs::read(scratch.path().join("wal.ze")).unwrap();
@@ -28,14 +28,14 @@ mod enable_graph {
         assert_eq!(u16::from_le_bytes([bytes[10], bytes[11]]), 3);
         let before = decode_manifest("before", &old).unwrap();
         let after = decode_manifest("after", &bytes).unwrap();
-        assert_eq!(after.generation, before.generation + 1);
+        assert_eq!(after.generation, ack.generation() + 1);
         assert_eq!(after.log_seq, before.log_seq);
         assert_eq!(after.segments, before.segments);
         let graph = after.graph.as_ref().unwrap();
         let state = graph.state().unwrap();
         assert_eq!(state.sequence, 0);
         assert!(state.graph.slots.iter().all(Option::is_none));
-        assert_eq!(graph.graph_absorbed_through, before.log_seq);
+        assert_eq!(graph.graph_absorbed_through, ack.seq().get());
         assert_eq!(std::fs::read(scratch.path().join("wal.ze")).unwrap(), wal);
         assert_eq!(store.enable_graph().unwrap(), 2);
         assert_eq!(
@@ -191,7 +191,7 @@ mod enable_graph {
         use std::sync::Arc;
         use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode};
         use zeppelin_embed::lifecycle::{StoreTestDependencies, SystemMonotonicClock};
-        use zeppelin_embed::vfs::crash::{CrashOperation, CrashVfs, MemoryVfs};
+        use zeppelin_embed::vfs::crash::{CrashOperation, CrashVfs, MemoryVfs, RecordingVfs};
         // Derived and both durable tiers must establish the version barrier.
         for (mode, tier) in [
             (DurabilityMode::Derived, CommitTier::Ordered),
@@ -199,20 +199,18 @@ mod enable_graph {
             (DurabilityMode::Durable, CommitTier::Durable),
         ] {
             let scratch = tempfile::tempdir().unwrap();
-            let initial = MemoryVfs::new();
             let options = common::options(false).with_durability(mode, tier);
-            let store = Store::open_with_test_dependencies(
-                scratch.path(),
-                options.clone(),
-                StoreTestDependencies::new(
-                    Arc::new(initial.clone()),
-                    Arc::new(SystemMonotonicClock),
-                ),
-            )
-            .unwrap();
+            let store = Store::open(scratch.path(), options.clone()).unwrap();
             store.close().unwrap();
+            let initial = MemoryVfs::new();
+            for entry in std::fs::read_dir(scratch.path()).unwrap() {
+                let path = entry.unwrap().path();
+                initial
+                    .insert(&path, std::fs::read(&path).unwrap())
+                    .unwrap();
+            }
             let old = initial.files().unwrap();
-            let recorder = Arc::new(CrashVfs::new(initial).unwrap());
+            let recorder = Arc::new(RecordingVfs::new(zeppelin_embed::vfs::StdVfs));
             let store = Store::open_with_test_dependencies(
                 scratch.path(),
                 options,
@@ -228,7 +226,10 @@ mod enable_graph {
                     .iter()
                     .any(|op| matches!(op, CrashOperation::Append { .. }))
             );
-            let states = recorder.crash_states().unwrap();
+            let states = CrashVfs::from_recorded(initial, operations.clone())
+                .unwrap()
+                .crash_states()
+                .unwrap();
             assert!(!states.was_capped());
             assert!(
                 states.len() > operations.len() + 1,
@@ -256,15 +257,33 @@ mod enable_graph {
                     0
                 };
                 for read_only in [true, false] {
-                    let image = Arc::new(crash.vfs().snapshot().unwrap());
-                    let reopened = Store::open_with_test_dependencies(
-                        scratch.path(),
-                        common::options(read_only),
-                        StoreTestDependencies::new(image.clone(), Arc::new(SystemMonotonicClock)),
-                    )
-                    .unwrap_or_else(|error| {
-                        panic!("{:?}, read_only={read_only}: {error}", crash.kind())
-                    });
+                    // Reopen the exact materialized crash bytes through the normal
+                    // file-backed mapping seam used by graph objects. MemoryVfs
+                    // intentionally cannot provide mmap handles.
+                    let image = tempfile::tempdir().unwrap();
+                    for (path, bytes) in &files {
+                        let relative = path.strip_prefix(scratch.path()).unwrap();
+                        let target = image.path().join(relative);
+                        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+                        std::fs::write(target, bytes).unwrap();
+                    }
+                    let disk_image = || {
+                        std::fs::read_dir(image.path())
+                            .unwrap()
+                            .map(|entry| {
+                                let path = entry.unwrap().path();
+                                (
+                                    path.file_name().unwrap().to_owned(),
+                                    std::fs::read(&path).unwrap(),
+                                )
+                            })
+                            .collect::<std::collections::BTreeMap<_, _>>()
+                    };
+                    let before = disk_image();
+                    let reopened = Store::open(image.path(), common::options(read_only))
+                        .unwrap_or_else(|error| {
+                            panic!("{:?}, read_only={read_only}: {error}", crash.kind())
+                        });
                     assert_eq!(
                         reopened.count_documents(None, None).unwrap().generation,
                         expected
@@ -272,7 +291,7 @@ mod enable_graph {
                     assert_eq!(reopened.count_documents(None, None).unwrap().count, 0);
                     reopened.close().unwrap();
                     if read_only {
-                        assert_eq!(image.files().unwrap(), files);
+                        assert_eq!(disk_image(), before);
                     }
                 }
             }
@@ -326,6 +345,40 @@ mod enable_graph {
         );
         store.close().unwrap();
         let reader = Store::open(scratch.path(), OpenOptions::read_only()).unwrap();
+        reader.close().unwrap();
+    }
+
+    #[test]
+    fn a_shared_graph_lock_does_not_authorize_document_writes() {
+        use zeppelin_embed::lifecycle::{
+            InMemorySegment, InMemorySegmentFactors, OpenOptions, StoreError,
+        };
+        use zeppelin_embed::meta::{AliveSet, ColumnStoreBuilder, Schema};
+        let scratch = tempfile::tempdir().unwrap();
+        let writer = Store::open(scratch.path(), OpenOptions::new()).unwrap();
+        writer.enable_graph().unwrap();
+        writer.close().unwrap();
+        let reader = Store::open(scratch.path(), OpenOptions::read_only()).unwrap();
+        let before = std::fs::read(scratch.path().join("manifest.ze")).unwrap();
+        let columns = ColumnStoreBuilder::new(Schema::new(Vec::new()).unwrap())
+            .finish()
+            .unwrap();
+        let alive = AliveSet::new(0);
+        let result = reader.prepare_segment(InMemorySegment {
+            id: zeppelin_embed::segment::SegmentId::new(1, [2; 10]),
+            scheme: 4,
+            dims: 2,
+            codes: Vec::new(),
+            factors: InMemorySegmentFactors::Bit4(Vec::new()),
+            rescore: Vec::new(),
+            columns: &columns,
+            alive: &alive,
+        });
+        assert!(matches!(result, Err(StoreError::ReadOnly)));
+        assert_eq!(
+            std::fs::read(scratch.path().join("manifest.ze")).unwrap(),
+            before
+        );
         reader.close().unwrap();
     }
 

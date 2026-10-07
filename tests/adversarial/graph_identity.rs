@@ -110,15 +110,15 @@ fn sequence(state: &IdentityState) -> Result<Sequence, String> {
     Ok(Sequence {
         batches: vec![
             Batch {
-                generation: 1,
-                steps: install(first, peer, edge),
-            },
-            Batch {
-                generation: 1,
+                generation: 2,
                 steps: install(first, peer, edge),
             },
             Batch {
                 generation: 2,
+                steps: install(first, peer, edge),
+            },
+            Batch {
+                generation: 3,
                 steps: vec![node_step(
                     KEY_FIRST,
                     Action::Put {
@@ -130,7 +130,7 @@ fn sequence(state: &IdentityState) -> Result<Sequence, String> {
                 )],
             },
             Batch {
-                generation: 3,
+                generation: 4,
                 steps: vec![node_step(
                     KEY_FIRST,
                     Action::Delete {
@@ -142,7 +142,7 @@ fn sequence(state: &IdentityState) -> Result<Sequence, String> {
                 )],
             },
             Batch {
-                generation: 4,
+                generation: 5,
                 steps: vec![node_step(
                     KEY_FIRST,
                     Action::Recreate {
@@ -154,7 +154,7 @@ fn sequence(state: &IdentityState) -> Result<Sequence, String> {
                 )],
             },
             Batch {
-                generation: 5,
+                generation: 6,
                 steps: vec![edge_step(
                     KEY_SECOND_EDGE,
                     Action::Create {
@@ -165,7 +165,7 @@ fn sequence(state: &IdentityState) -> Result<Sequence, String> {
                 )],
             },
             Batch {
-                generation: 5,
+                generation: 6,
                 steps: vec![node_step(
                     KEY_FIRST,
                     Action::Put {
@@ -391,9 +391,9 @@ fn leases(sequence: &Sequence, state: &IdentityState) -> Result<(), String> {
         direction: Direction::Outgoing,
     };
     let retained = sequence.watched_rows(RETAINED_BATCH, watch)?;
-    if state.retained_generation != 2 {
+    if state.retained_generation != 3 {
         return Err(format!(
-            "ZE-36 retained reader holds generation {} instead of 2",
+            "ZE-36 retained reader holds generation {} instead of 3",
             state.retained_generation
         ));
     }

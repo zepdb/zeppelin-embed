@@ -95,6 +95,8 @@ impl Store {
             })),
             wal_writer: Mutex::new(None),
             writer_lock: Mutex::new(None),
+            #[cfg(feature = "graph-cypher")]
+            reader_store_lock: Mutex::new(None),
             logical_writer_lock: Mutex::new(None),
             reclamation_pin: Mutex::new(
                 self.reclamation_pin

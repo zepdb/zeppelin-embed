@@ -68,12 +68,6 @@ impl StoreLock {
         Self::acquire_exclusive(directory, true)
     }
 
-    /// Acquires exclusive ownership only when the persistent lock already exists.
-    #[cfg(feature = "graph-cypher")]
-    pub(crate) fn acquire_existing(directory: &Path) -> Result<Self, StoreLockError> {
-        Self::acquire_exclusive(directory, false)
-    }
-
     fn acquire_exclusive(directory: &Path, create: bool) -> Result<Self, StoreLockError> {
         Self::exclusive_named(directory, create, false)
     }

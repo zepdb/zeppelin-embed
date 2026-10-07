@@ -395,6 +395,19 @@ fn refuse_legacy_directory(path: &Path) -> Result<(), GraphStoreError> {
     let legacy = crate::lifecycle::is_legacy_store_directory(&crate::vfs::StdVfs, path)
         .map_err(|error| GraphStoreError::graph(NativeGraphError::Store(error)))?;
     if legacy {
+        let manifest_path = path.join(crate::manifest::io::MANIFEST_FILE);
+        if let Ok(bytes) = crate::vfs::Vfs::read(&crate::vfs::StdVfs, &manifest_path) {
+            let manifest =
+                crate::manifest::decode_manifest(&manifest_path.to_string_lossy(), &bytes)
+                    .map_err(|error| {
+                        GraphStoreError::graph(NativeGraphError::Store(
+                            crate::lifecycle::StoreError::Manifest(error),
+                        ))
+                    })?;
+            if manifest.graph.is_some() {
+                return Ok(());
+            }
+        }
         return Err(GraphStoreError {
             cause: Cause::LegacyStore {
                 path: path.to_path_buf(),

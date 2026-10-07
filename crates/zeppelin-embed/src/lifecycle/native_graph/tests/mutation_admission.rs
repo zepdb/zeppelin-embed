@@ -113,17 +113,20 @@ fn published_generation(store: &Store) -> GraphGeneration {
         .generation
 }
 
-/// The document store supplies the clock until the unified coordinator lands.
-/// Graph publication, artifacts, staging and recovery all use their real paths.
+/// Document and graph commits share the real Store clock and WAL.
 #[test]
 fn burns_three_store_generations_between_two_graph_commits() {
     use crate::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
-
     let directory = super::tempfile::tempdir().expect("temporary parent");
-    let documents = Store::open(directory.path().join("documents"), OpenOptions::new())
-        .expect("document generation source");
+    let path = directory.path().join("unified");
+    let graph = Store::create_native_graph(&path, fixture_options(), None).expect("graph store");
+    let first = commit_node(&graph, "before-gap");
+    assert_eq!(
+        super::recovery::observe_node(&graph, first),
+        Some((2, 1, 1))
+    );
     let ingest = |id: u128| {
-        documents
+        graph
             .ingest(IngestBatch::new(vec![IngestDocument::new(
                 DocumentVersion::new(DocId::new(id), Revision::new(1)),
                 vec![1.0, 0.0],
@@ -131,49 +134,23 @@ fn burns_three_store_generations_between_two_graph_commits() {
             .expect("burn store generation")
             .generation()
     };
-    assert_eq!(ingest(1), 1);
-    let path = directory.path().join("graph");
-    let graph = Store::create_native_graph(&path, fixture_options(), None).expect("graph store");
-    let first = commit_node(&graph, "before-gap");
-    assert_eq!(published_generation(&graph).get(), 1);
-    assert_eq!(
-        super::recovery::observe_node(&graph, first),
-        Some((1, 1, 1))
-    );
-
-    assert_eq!([ingest(2), ingest(3), ingest(4)], [2, 3, 4]);
-    let expected = documents
-        .count_documents(None, None)
-        .expect("store clock")
-        .generation
-        + 1;
-    assert_eq!(expected, 5);
-    graph
-        .native_graph
-        .assigned_generation
-        .store(expected, std::sync::atomic::Ordering::Release);
+    assert_eq!([ingest(101), ingest(102), ingest(103)], [3, 4, 5]);
+    assert_eq!(published_generation(&graph).get(), 2);
     let second = commit_node(&graph, "after-gap");
-    assert_eq!(published_generation(&graph).get(), 5);
-    assert_eq!(
-        super::recovery::observe_node(&graph, first),
-        Some((5, 2, 1))
-    );
-    assert_eq!(
-        super::recovery::observe_node(&graph, second),
-        Some((5, 2, 1))
-    );
+    for node in [first, second] {
+        assert_eq!(super::recovery::observe_node(&graph, node), Some((6, 2, 1)));
+    }
+    assert_eq!(graph.count_documents(None, None).unwrap().count, 3);
     graph.close().expect("close graph");
     let recovered = Store::open_native_graph(&path, fixture_options(), None).expect("recover gap");
-    assert_eq!(
-        super::recovery::observe_node(&recovered, first),
-        Some((5, 2, 1))
-    );
-    assert_eq!(
-        super::recovery::observe_node(&recovered, second),
-        Some((5, 2, 1))
-    );
+    for node in [first, second] {
+        assert_eq!(
+            super::recovery::observe_node(&recovered, node),
+            Some((6, 2, 1))
+        );
+    }
+    assert_eq!(recovered.count_documents(None, None).unwrap().count, 3);
     recovered.close().expect("close recovered graph");
-    documents.close().expect("close document source");
 }
 
 /// Every live node the admitted read view reports, in scan order.
@@ -345,7 +322,7 @@ fn ze52_slice_d1_query_admission_deletes_a_scanned_node_and_reopens() {
     let fixture = MutationFixture::commit();
     let [first, second, third] = fixture.nodes;
     let admitted_before = published_generation(&fixture.store);
-    assert_eq!(admitted_before.get(), 3);
+    assert_eq!(admitted_before.get(), 4);
 
     let invocations = std::cell::Cell::new(0);
     let (scanned, report) = admit(
@@ -372,7 +349,7 @@ fn ze52_slice_d1_query_admission_deletes_a_scanned_node_and_reopens() {
     assert_eq!(live_nodes(&fixture.store), sorted([second, third]));
 
     let (_directory, reopened) = fixture.reopen();
-    assert_eq!(published_generation(&reopened).get(), 4);
+    assert_eq!(published_generation(&reopened).get(), 5);
     assert_eq!(live_nodes(&reopened), sorted([second, third]));
     assert!(!lazily_admitted_entity_exists(&reopened, first));
     assert!(lazily_admitted_entity_exists(&reopened, second));
@@ -527,7 +504,7 @@ fn ze52_slice_d1_query_admission_reruns_consumer_after_checkpoint() {
         assert!(!receipt[0].replayed);
     }
     let admitted_before = published_generation(&fixture.store);
-    assert_eq!(admitted_before.get(), 64);
+    assert_eq!(admitted_before.get(), 65);
 
     let invocations = std::cell::Cell::new(0);
     let (scanned, report) = admit(
@@ -543,12 +520,12 @@ fn ze52_slice_d1_query_admission_reruns_consumer_after_checkpoint() {
     assert_eq!(scanned, sorted([first, second, third]));
     assert_eq!(report.disposition, BatchDisposition::Changed);
     assert_eq!(report.admitted, admitted_before);
-    assert_eq!(report.changed.map(GraphGeneration::get), Some(65));
+    assert_eq!(report.changed.map(GraphGeneration::get), Some(67));
 
     // Exactly one deletion committed.
     assert_eq!(live_nodes(&fixture.store), sorted([second, third]));
     let (_directory, reopened) = fixture.reopen();
-    assert_eq!(published_generation(&reopened).get(), 65);
+    assert_eq!(published_generation(&reopened).get(), 67);
     assert_eq!(live_nodes(&reopened), sorted([second, third]));
     assert!(!lazily_admitted_entity_exists(&reopened, first));
     reopened.close().expect("close reopened store");
@@ -570,7 +547,7 @@ fn ze52_slice_d1_structured_path_is_unchanged() {
     let store = &fixture.store;
 
     // Three creates, one generation each.
-    assert_eq!(published_generation(store).get(), 3);
+    assert_eq!(published_generation(store).get(), 4);
     assert_eq!(live_nodes(store), sorted([first, second, third]));
 
     let key = |name: &'static str| {
@@ -593,7 +570,7 @@ fn ze52_slice_d1_structured_path_is_unchanged() {
     assert_eq!(changed.len(), 1);
     assert_eq!(changed[0].entity, EntityId::Node(first));
     assert_eq!(changed[0].revision.get(), 2);
-    assert_eq!(changed[0].generation.get(), 4);
+    assert_eq!(changed[0].generation.get(), 5);
     assert!(!changed[0].replayed);
 
     // The identical PUT is an exact retry: same generation, replayed, and no
@@ -604,9 +581,9 @@ fn ze52_slice_d1_structured_path_is_unchanged() {
     assert_eq!(retried.len(), 1);
     assert_eq!(retried[0].entity, EntityId::Node(first));
     assert_eq!(retried[0].revision.get(), 2);
-    assert_eq!(retried[0].generation.get(), 4);
+    assert_eq!(retried[0].generation.get(), 5);
     assert!(retried[0].replayed);
-    assert_eq!(published_generation(store).get(), 4);
+    assert_eq!(published_generation(store).get(), 5);
 
     // A DELETE advances one generation and removes the node publicly.
     let delete = [StructuredWrite {
@@ -621,7 +598,7 @@ fn ze52_slice_d1_structured_path_is_unchanged() {
     assert_eq!(removed.len(), 1);
     assert_eq!(removed[0].entity, EntityId::Node(second));
     assert_eq!(removed[0].revision.get(), 2);
-    assert_eq!(removed[0].generation.get(), 5);
+    assert_eq!(removed[0].generation.get(), 6);
     assert!(!removed[0].replayed);
 
     // An empty statement is a no-op with no receipts and no generation.
@@ -631,12 +608,12 @@ fn ze52_slice_d1_structured_path_is_unchanged() {
             .expect("empty statement")
             .is_empty()
     );
-    assert_eq!(published_generation(store).get(), 5);
+    assert_eq!(published_generation(store).get(), 6);
     assert_eq!(live_nodes(store), sorted([first, third]));
 
     // The same state survives a reopen.
     let (_directory, reopened) = fixture.reopen();
-    assert_eq!(published_generation(&reopened).get(), 5);
+    assert_eq!(published_generation(&reopened).get(), 6);
     assert_eq!(live_nodes(&reopened), sorted([first, third]));
     reopened.close().expect("close reopened store");
 }
@@ -846,7 +823,7 @@ fn failed_generation_five_preparation() -> (super::tempfile::TempDir, PathBuf, N
         u64::from_le_bytes(bytes[64..72].try_into().expect("generation field")),
         5
     );
-    assert_eq!(published_generation(&graph).get(), 1);
+    assert_eq!(published_generation(&graph).get(), 2);
     graph.close().expect("close rejected graph write");
     (directory, path, first, orphan)
 }
@@ -863,7 +840,7 @@ fn assigned_generation_precommit_orphan_reopens() {
     .expect("read-only recovery ignores unreferenced preparation");
     assert_eq!(
         super::recovery::observe_node(&reader, first),
-        Some((1, 1, 1))
+        Some((2, 1, 1))
     );
     reader.close().expect("close read-only graph");
     assert_eq!(super::recovery::file_snapshot(&path), before);
@@ -872,7 +849,7 @@ fn assigned_generation_precommit_orphan_reopens() {
         .expect("valid gapped preparation orphan must not prevent recovery");
     assert_eq!(
         super::recovery::observe_node(&reopened, first),
-        Some((1, 1, 1))
+        Some((2, 1, 1))
     );
     reopened.close().expect("close recovered graph");
 }
@@ -904,7 +881,7 @@ fn future_generation_orphan_with_bad_header_or_checksum_is_refused() {
             "corrupt recognized native artifact header"
         };
         assert!(
-            matches!(error, NativeGraphError::Invalid(message) if message == expected),
+            matches!(&error, NativeGraphError::Store(crate::lifecycle::StoreError::Manifest(crate::manifest::ManifestError::Decode(message))) if message.contains(expected)),
             "wrong refusal for {corruption}: {error:?}"
         );
         assert_eq!(
@@ -917,7 +894,7 @@ fn future_generation_orphan_with_bad_header_or_checksum_is_refused() {
         Store::open_native_graph(&path, fixture_options(), None).expect("valid control reopens");
     assert_eq!(
         super::recovery::observe_node(&reopened, first),
-        Some((1, 1, 1))
+        Some((2, 1, 1))
     );
     reopened.close().expect("close valid control");
 }

@@ -113,6 +113,7 @@ pub enum ReplayStep<'a> {
 /// Framing-only immutable capture evidence. This proves one complete encoded
 /// envelope boundary and exposes its typed changes for protected-root tracing;
 /// it is not semantic replay admission or cleanup authority.
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) struct FramedCaptureEnvelope<'a> {
     change_bytes: &'a [u8],
     change_count: u32,
@@ -126,6 +127,7 @@ pub(crate) struct FramedCaptureEnvelope<'a> {
     clippy::large_enum_variant,
     reason = "framed WAL capture preserves inline terminal evidence"
 )]
+#[cfg(any(test, feature = "test-seams"))]
 pub(crate) enum FramedCaptureStep<'a> {
     Envelope(FramedCaptureEnvelope<'a>),
     #[allow(
@@ -226,6 +228,17 @@ pub(crate) fn validate_envelope_framing(
 }
 
 impl<'a> Replay<'a> {
+    /// Starts semantic replay at one complete headerless unified-WAL envelope.
+    pub(crate) fn envelope(bytes: &'a [u8], state: CommitState<'a>) -> Self {
+        Self {
+            bytes,
+            state,
+            offset: 0,
+            failed: false,
+            end: None,
+        }
+    }
+
     /// Authenticates the selected WAL header and returns its declared first sequence.
     pub(crate) fn checked_first_sequence(
         bytes: &[u8],
@@ -233,73 +246,6 @@ impl<'a> Replay<'a> {
         r: &mut WalResources<'_>,
     ) -> Result<u64, WalError> {
         read_header(bytes, store, r)
-    }
-
-    /// Locates the exact complete envelope boundary for a retained checkpoint
-    /// state while validating every scalar frame in the historical prefix.
-    pub(crate) fn checked_checkpoint_watermark(
-        bytes: &'a [u8],
-        checkpoint: CommitState<'a>,
-        r: &mut WalResources<'_>,
-    ) -> Result<usize, WalError> {
-        use super::codec::*;
-        let first = read_header(bytes, checkpoint.store, r)?;
-        if first
-            == checkpoint
-                .sequence
-                .checked_add(1)
-                .ok_or(WalError::Sequence)?
-        {
-            return Ok(HEADER_BYTES);
-        }
-        if first > checkpoint.sequence {
-            return Err(WalError::Sequence);
-        }
-        let begin = super::framing::read_record(
-            bytes.get(HEADER_BYTES..).ok_or(WalError::Malformed)?,
-            0,
-            None,
-            first,
-            Some(1),
-            r,
-        )?
-        .ok_or(WalError::Malformed)?;
-        let mut rd = Reader {
-            bytes: begin.payload,
-            pos: 24,
-        };
-        let generation = GraphGeneration::new(rd.u64(r)?);
-        let seed = CommitState {
-            generation,
-            sequence: first.checked_sub(1).ok_or(WalError::Sequence)?,
-            high_waters: HighWaters::default(),
-            graph: WalGraphRoots::default(),
-            vector: None,
-            text: None,
-            reclaim: None,
-            prepared_inventories: ReferenceList::Values(&[]),
-            ..checkpoint
-        };
-        let mut replay = Self {
-            bytes,
-            state: seed,
-            offset: HEADER_BYTES,
-            failed: false,
-            end: None,
-        };
-        loop {
-            match replay.next_inner(None, r)? {
-                ReplayStep::Envelope(_) if replay.state.sequence < checkpoint.sequence => {}
-                ReplayStep::Envelope(_) if replay.state.sequence == checkpoint.sequence => {
-                    if !same_commit_state(replay.state, checkpoint, r)? {
-                        return Err(WalError::Participant);
-                    }
-                    return Ok(replay.offset);
-                }
-                ReplayStep::Envelope(_) => return Err(WalError::Sequence),
-                ReplayStep::End(_) => return Err(WalError::Sequence),
-            }
-        }
     }
 
     /// Checks the exact complete-envelope byte watermark of an admitted
@@ -425,6 +371,7 @@ impl<'a> Replay<'a> {
         result
     }
 
+    #[cfg(any(test, feature = "test-seams"))]
     pub(crate) fn next_framed_capture(
         &mut self,
         r: &mut WalResources<'_>,
@@ -867,6 +814,7 @@ impl<'a> ValidatedEnvelope<'a> {
         }
     }
 }
+#[cfg(any(test, feature = "test-seams"))]
 impl<'a> FramedCaptureEnvelope<'a> {
     pub(crate) const fn changes(&self) -> ChangeReader<'a> {
         ChangeReader {

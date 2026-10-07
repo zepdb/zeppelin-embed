@@ -29,7 +29,7 @@ fn compare_replay(expected: (u64, bool), actual: (u64, bool)) -> Result<(), &'st
 }
 
 fn compare_detach_sweep(actual: (bool, u64)) -> bool {
-    actual == (false, 2)
+    actual == (false, 3)
 }
 
 fn compare_bytes(removed: u64, unlinked: u64) -> Result<(), &'static str> {
@@ -91,7 +91,7 @@ pub fn observe(
     if !compare_detach_sweep(report.detach_sweep) {
         return Err("DETACH sweep changed visibility or original installing generation".into());
     }
-    if compare_detach_sweep((true, 2)) || compare_detach_sweep((false, 3)) {
+    if compare_detach_sweep((true, 3)) || compare_detach_sweep((false, 4)) {
         return Err("DETACH sweep comparator accepted wrong visibility/generation".into());
     }
     let expected = [
@@ -126,8 +126,8 @@ pub fn observe(
         return Err("reclaim cycle changed a node identity".into());
     }
     let replay = (report.state.replay_generation, report.state.replayed);
-    compare_replay((1, true), replay).map_err(str::to_owned)?;
-    if compare_replay((2, true), replay).is_ok() {
+    compare_replay((2, true), replay).map_err(str::to_owned)?;
+    if compare_replay((3, true), replay).is_ok() {
         return Err("reclaim comparator accepted a wrong original replay generation".into());
     }
     compare_bytes(report.state.removed_bytes, report.state.unlinked_file_bytes)

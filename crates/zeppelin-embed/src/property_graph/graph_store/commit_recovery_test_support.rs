@@ -374,7 +374,7 @@ impl ProbeStore {
             .expect("ZE41 admission");
         if lease.bundle().high_waters().node == 0 {
             assert_eq!(lease.bundle().high_waters().relationship, 0);
-            assert_eq!(lease.bundle().base().generation.get(), 0);
+            assert_eq!(lease.bundle().base().generation.get(), 1);
             assert_eq!(lease.bundle().sequence(), 0);
             drop(lease);
             assert_eq!(self.query_node_count(), 0);
@@ -572,6 +572,8 @@ pub struct BoundaryReport {
     pub retry: GraphWriteResult,
     pub reservation_before: u64,
     pub reservation_after: u64,
+    pub wal_bytes_before: u64,
+    pub wal_bytes_after: u64,
     pub remaining_ownership: u64,
     pub post_sync_ordinal: usize,
     pub error_kind: Option<String>,
@@ -617,6 +619,7 @@ fn run_boundary_inner(
     let protected_before = image(path);
     vfs.clear_events();
     let before = store.reserved();
+    let wal_bytes_before = store.graph.store.stats().unwrap().wal_bytes;
     if fault {
         if boundary == Boundary::Publication {
             store.publish_fault();
@@ -669,6 +672,7 @@ fn run_boundary_inner(
             0
         };
     let after = store.reserved();
+    let wal_bytes_after = store.graph.store.stats().unwrap().wal_bytes;
     let stopped_error = if fault && !checkpoint && !nothing_committed {
         Some(format!(
             "{:?}",
@@ -731,6 +735,8 @@ fn run_boundary_inner(
         retry,
         reservation_before: before,
         reservation_after: after,
+        wal_bytes_before,
+        wal_bytes_after,
         remaining_ownership: remaining,
         post_sync_ordinal,
         error_kind,

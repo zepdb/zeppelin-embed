@@ -1480,3 +1480,29 @@ fn ze329_check_scale_queries(store: &GraphStore) {
         }
     }
 }
+
+#[test]
+fn a_unified_empty_graph_store_reopens_through_the_compatibility_handle() {
+    let parent = tempfile::tempdir().unwrap();
+    let path = parent.path().join("unified");
+    let store = GraphStore::create(&path, options(), None).unwrap();
+    store.close().unwrap();
+    for read_only in [true, false] {
+        let reopened = if read_only {
+            GraphStore::open_read_only(&path, options(), None)
+        } else {
+            GraphStore::open(&path, options(), None)
+        }
+        .unwrap();
+        assert_eq!(
+            reopened
+                .store
+                .admit_native_read()
+                .unwrap()
+                .bundle()
+                .sequence(),
+            0
+        );
+        reopened.close().unwrap();
+    }
+}

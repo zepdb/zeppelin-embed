@@ -1025,7 +1025,7 @@ fn ze195_unindexed_v1_refuses_scan_and_graph() {
             .slots
             .iter_mut()
             .flatten()
-            .chain([&mut bundle.catalog, &mut bundle.root_envelope])
+            .chain([&mut bundle.catalog])
             .chain(bundle.vector.iter_mut())
             .chain(bundle.text.iter_mut())
         {

@@ -67,7 +67,7 @@ fn ze65_application_queries_match_oracle() {
 #[test]
 fn ze65_membership_checkpoint_replay() {
     let mut c = Corpus::new();
-    c.store.as_ref().unwrap().checkpoint().unwrap();
+    c.checkpoint().unwrap();
     c.node("a", "Eligible", None, None, 2, oracle::Operation::Put);
     c.node(
         "b",

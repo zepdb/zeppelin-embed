@@ -252,6 +252,7 @@ pub struct WalWriter {
     sync: SyncRequirement,
     max_group_bytes: usize,
     durable_progress: AtomicU64,
+    io_work: [AtomicU64; 4],
 }
 
 struct CreatedDirectorySync {
@@ -315,6 +316,7 @@ impl WalWriter {
             sync: policy.data_file_sync(),
             max_group_bytes,
             durable_progress: AtomicU64::new(durable_progress),
+            io_work: std::array::from_fn(|_| AtomicU64::new(0)),
         })
     }
 
@@ -379,6 +381,7 @@ impl WalWriter {
             sync: policy.data_file_sync(),
             max_group_bytes,
             durable_progress: AtomicU64::new(first_seq.get().saturating_sub(1)),
+            io_work: std::array::from_fn(|_| AtomicU64::new(0)),
         })
     }
 
@@ -932,6 +935,15 @@ impl WalWriter {
         }
     }
 
+    #[cfg(feature = "graph-cypher")]
+    pub(crate) fn io_work(&self) -> [u64; 4] {
+        std::array::from_fn(|index| {
+            self.io_work
+                .get(index)
+                .map_or(0, |counter| counter.load(Ordering::Relaxed))
+        })
+    }
+
     fn write_group(&self, group: &Group) -> std::io::Result<()> {
         let mut buffers = Vec::with_capacity(group.chunks.len());
         for chunk in &group.chunks {
@@ -941,10 +953,30 @@ impl WalWriter {
             .file
             .lock()
             .map_err(|_| std::io::Error::other("WAL file mutex poisoned"))?;
+        if let Some(counter) = self.io_work.first() {
+            counter.fetch_add(1, Ordering::Relaxed);
+        }
         file.append_vectored(&mut buffers)?;
+        if let Some(counter) = self.io_work.get(1) {
+            counter.fetch_add(group.encoded_bytes as u64, Ordering::Relaxed);
+        }
         match self.sync {
             SyncRequirement::Skip => Ok(()),
-            SyncRequirement::Sync(kind) => file.sync(kind),
+            SyncRequirement::Sync(kind) => {
+                if kind == SyncKind::Full
+                    && let Some(counter) = self.io_work.get(2)
+                {
+                    counter.fetch_add(1, Ordering::Relaxed);
+                }
+                let result = file.sync(kind);
+                if kind == SyncKind::Full
+                    && result.is_ok()
+                    && let Some(counter) = self.io_work.get(3)
+                {
+                    counter.fetch_add(1, Ordering::Relaxed);
+                }
+                result
+            }
         }?;
         drop(file);
         let mut created_directory_sync = self
@@ -1391,6 +1423,23 @@ impl WalReader {
     #[must_use]
     pub const fn terminator(&self) -> Option<ReplayTerminator> {
         self.terminator
+    }
+
+    #[cfg(feature = "graph-cypher")]
+    pub(crate) fn into_graph_prefix(mut self) -> Result<CleanWalReader, WalRecoveryError> {
+        if matches!(
+            self.terminator,
+            Some(ReplayTerminator::CorruptAt {
+                reason: replay::CorruptionReason::Record {
+                    location: replay::CorruptionLocation::Tail,
+                    error: RecordError::BodyTruncated { .. },
+                },
+                ..
+            })
+        ) {
+            self.terminator = Some(ReplayTerminator::CleanEnd);
+        }
+        self.into_clean()
     }
 
     pub(crate) fn into_clean(self) -> Result<CleanWalReader, WalRecoveryError> {

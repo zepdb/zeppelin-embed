@@ -36,7 +36,7 @@ fn wal_error(error: crate::property_graph::wal::WalError) -> ManifestError {
 
 impl GraphManifest {
     /// Copies an admitted CommitState using its existing wire codec.
-    /// Vector and text roots are forbidden: their payloads belong to documents.
+    /// Graph text/vector roots remain participants until document projection lands.
     pub fn new(
         state: CommitState<'_>,
         graph_absorbed_through: u64,
@@ -57,6 +57,14 @@ impl GraphManifest {
         Ok(graph)
     }
 
+    pub(crate) fn backing_bytes(&self) -> Option<usize> {
+        self.state.capacity().checked_add(
+            self.objects
+                .capacity()
+                .checked_mul(std::mem::size_of::<GraphObject>())?,
+        )
+    }
+
     /// Borrows the typed state without introducing another persisted codec.
     pub fn state(&self) -> Result<CommitState<'_>, ManifestError> {
         let mut cancel = || false;
@@ -67,10 +75,14 @@ impl GraphManifest {
 
     fn validate(&self) -> Result<(), ManifestError> {
         let state = self.state()?;
-        if state.vector.is_some() || state.text.is_some() {
-            return Err(ManifestError::Decode(
-                "manifest graph has vector or text roots".to_owned(),
-            ));
+        for reference in state.vector.into_iter().chain(state.text) {
+            if reference.block.kind
+                != crate::property_graph::storage::artifact::BlockKind::CommitParticipant
+            {
+                return Err(ManifestError::Decode(
+                    "invalid graph search root role".to_owned(),
+                ));
+            }
         }
         let mut inventory = BTreeMap::new();
         for object in &self.objects {
@@ -102,6 +114,8 @@ impl GraphManifest {
             .into_iter()
             .flatten()
             .chain(Some(state.catalog))
+            .chain(state.vector)
+            .chain(state.text)
             .chain(state.reclaim)
         {
             check(reference)?;

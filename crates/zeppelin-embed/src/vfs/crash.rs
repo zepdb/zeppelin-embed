@@ -697,6 +697,19 @@ impl CrashVfs {
         })
     }
 
+    /// Materializes a stream recorded against a file-backed VFS from its
+    /// exact initial bytes, including paths used by immutable mmap artifacts.
+    pub fn from_recorded(
+        initial: MemoryVfs,
+        operations: Vec<CrashOperation>,
+    ) -> std::io::Result<Self> {
+        Ok(Self {
+            inner: initial.snapshot()?,
+            initial,
+            operations: Arc::new(Mutex::new(operations)),
+        })
+    }
+
     /// Returns a snapshot of the complete ordered mutation stream.
     pub fn operations(&self) -> std::io::Result<Vec<CrashOperation>> {
         Ok(self.lock_operations()?.clone())

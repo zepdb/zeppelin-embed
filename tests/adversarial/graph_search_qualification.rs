@@ -33,7 +33,7 @@ pub fn schedule(seed: u64) -> [(&'static str, FaultSite, Option<&'static str>); 
     let mut rng = super::test_support::seeded_rng("ze65-search-schedule", seed);
     let mut sites = [
         ("artifact", FaultSite::Sync, Some(".zgraph")),
-        ("wal", FaultSite::Sync, Some("graph-wal-")),
+        ("wal", FaultSite::Sync, Some("wal.ze")),
         ("checkpoint", FaultSite::Rename, None),
     ];
     if rng.random::<bool>() {
@@ -106,11 +106,7 @@ pub fn lifecycle_observations(
                 },
             ));
             let mut c = Corpus::with_vfs(vfs.clone());
-            c.store
-                .as_ref()
-                .unwrap()
-                .checkpoint()
-                .map_err(|e| e.to_string())?;
+            c.checkpoint().map_err(|e| e.to_string())?;
             // Create/replace/remove membership before the injected boundary. These
             // committed deltas survive either failure and modeled power loss.
             c.node("a", "Eligible", None, None, 2, oracle::Operation::Put);
@@ -156,11 +152,7 @@ pub fn lifecycle_observations(
                 detach: true,
                 image: None,
             });
-            c.store
-                .as_ref()
-                .unwrap()
-                .checkpoint()
-                .map_err(|e| e.to_string())?;
+            c.checkpoint().map_err(|e| e.to_string())?;
             let before = observe(&c.run(apps::APPLICATIONS[2]));
             let mut rng = super::test_support::seeded_rng("ze65-membership-value", seed);
             let point = [rng.random_range(0.125..0.5), 0.0];
@@ -176,7 +168,7 @@ pub fn lifecycle_observations(
             }
             vfs.set_operation(1);
             let result = if name == "checkpoint" {
-                c.store.as_ref().unwrap().checkpoint().map(|_| ())
+                c.checkpoint()
             } else {
                 let tower = document();
                 let mut labels = [GraphName::new("Eligible").unwrap()];

@@ -28,7 +28,7 @@ use zeppelin_embed_adversarial_oracle::storage_durability as independent;
 
 #[allow(dead_code)]
 #[path = "../../scripts/fixtures/common.rs"]
-mod release_fixture;
+pub(super) mod release_fixture;
 
 const MANIFEST: &str = "manifest.ze";
 const WAL: &str = "wal.ze";

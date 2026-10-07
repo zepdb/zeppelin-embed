@@ -524,7 +524,10 @@ fn ze106_read_only_child_recovers_torn_tail_and_pending_intent_without_disk_muta
     // Tear the WAL tail with a real partial append inside a real commit.
     let wal_before = {
         let guard = store.native_graph.writer.lock().expect("native writer");
-        guard.as_ref().expect("installed writer").wal.path.clone()
+        {
+            assert!(guard.as_ref().is_some());
+            store.directory.join("wal.ze")
+        }
     };
     let complete_prefix = std::fs::read(&wal_before).expect("complete WAL prefix");
     let torn_image = CanonicalContents::node(&mut [], &mut [], Some("torn"), None).expect("image");
@@ -577,17 +580,20 @@ fn ze106_read_only_child_recovers_torn_tail_and_pending_intent_without_disk_muta
     assert_eq!(observe_node(&resumed, node), Some(1));
     let wal_after = {
         let guard = resumed.native_graph.writer.lock().expect("resumed writer");
-        guard
-            .as_ref()
-            .expect("resumed writer state")
-            .wal
-            .path
-            .clone()
+        {
+            assert!(guard.as_ref().is_some());
+            resumed.directory.join("wal.ze")
+        }
     };
-    assert_ne!(
+    assert_eq!(
         wal_after, wal_before,
-        "a writable resume of a torn tail must rotate the WAL"
+        "recovery keeps the single Store WAL path"
     );
+    let checked = crate::wal::WalReader::open(resumed.vfs.as_ref(), &wal_after)
+        .unwrap()
+        .into_clean()
+        .expect("writable recovery removed the torn tail");
+    assert!(!checked.records().is_empty());
     resumed.close().expect("close resumed store");
     for candidate in &candidates {
         assert!(

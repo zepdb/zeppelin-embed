@@ -243,6 +243,8 @@ struct AccountingState {
 
 pub(crate) struct Accounting {
     budgets: Budgets,
+    #[cfg(feature = "graph-cypher")]
+    resident_ceiling: std::sync::atomic::AtomicU64,
     state: Mutex<AccountingState>,
     graph_work: Mutex<GraphWorkLedger>,
     #[cfg(test)]
@@ -253,6 +255,8 @@ impl Accounting {
     pub(crate) const fn new(max_resident_bytes: u64, max_temp_bytes: u64) -> Self {
         Self {
             budgets: Budgets::new(max_resident_bytes, max_temp_bytes),
+            #[cfg(feature = "graph-cypher")]
+            resident_ceiling: std::sync::atomic::AtomicU64::new(max_resident_bytes),
             #[cfg(test)]
             graph_work_merges: std::sync::atomic::AtomicU64::new(0),
             graph_work: Mutex::new(GraphWorkLedger {
@@ -302,8 +306,30 @@ impl Accounting {
     }
 
     #[cfg(feature = "graph-cypher")]
-    pub(crate) const fn resident_limit(&self) -> u64 {
-        self.budgets.resident_limit()
+    pub(crate) fn resident_limit(&self) -> u64 {
+        self.resident_ceiling
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Enabling graph shares its hard ceiling with every store participant.
+    #[cfg(feature = "graph-cypher")]
+    pub(crate) fn enable_graph_ceiling(&self) -> Result<(), StoreError> {
+        let state = self.state.lock().map_err(|_| StoreError::Synchronization {
+            component: "memory accounting",
+        })?;
+        let limit = self
+            .resident_limit()
+            .min(crate::property_graph::resources::MAX_GRAPH_RESIDENT_BYTES);
+        if state.resident_owned_bytes > limit {
+            return Err(StoreError::BudgetExceeded {
+                needed: state.resident_owned_bytes,
+                budget: limit,
+                component: "graph aggregate configuration",
+            });
+        }
+        self.resident_ceiling
+            .store(limit, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
     }
 
     #[cfg(feature = "graph-cypher")]
@@ -341,6 +367,14 @@ impl Accounting {
             component.name(),
             component.is_temporary(),
         )?;
+        #[cfg(feature = "graph-cypher")]
+        if resident > self.resident_limit() {
+            return Err(StoreError::BudgetExceeded {
+                needed: resident,
+                budget: self.resident_limit(),
+                component: component.name(),
+            });
+        }
         state.resident_owned_bytes = resident;
         state.resident_peak_bytes = state.resident_peak_bytes.max(resident);
         #[cfg(feature = "graph-cypher")]
@@ -998,6 +1032,15 @@ impl Store {
             })?;
         let base_open_files =
             u64::from(writer_lock.is_some()).saturating_add(u64::from(wal_writer.is_some()));
+        #[cfg(feature = "graph-cypher")]
+        let base_open_files = base_open_files.saturating_add(u64::from(
+            self.reader_store_lock
+                .lock()
+                .map_err(|_| StoreError::Synchronization {
+                    component: "reader store lock",
+                })?
+                .is_some(),
+        ));
         let active_guard = self
             .active
             .lock()

@@ -329,9 +329,12 @@ pub(crate) use framing::{
     commit_state_size, decode_commit_state, encode_commit_state, envelope_size,
 };
 pub use framing::{encode_envelope, encode_header};
+#[cfg(test)]
 mod checkpoint;
-pub(crate) use checkpoint::{NativeCheckpoint, decode_checkpoint, encode_checkpoint};
-pub(crate) use replay::{FramedCaptureStep, same_commit_state, validate_envelope_framing};
+
+#[cfg(any(test, feature = "test-seams"))]
+pub(crate) use replay::FramedCaptureStep;
+pub(crate) use replay::{same_commit_state, validate_envelope_framing};
 /// Metadata-only binding reused by the native storage participant. The retained
 /// artifact owner still admits complete bytes/checksum and the coherent lease.
 pub(crate) fn validate_graph_root_reference(

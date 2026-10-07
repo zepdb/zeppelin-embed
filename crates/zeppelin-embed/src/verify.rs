@@ -532,6 +532,8 @@ impl Walk<'_> {
                     absorbed_through
                 }
             },
+            #[cfg(feature = "graph-cypher")]
+            decoded.is_some_and(|manifest| manifest.graph.is_some()),
             &accounting,
             &schema,
             &analyzer,

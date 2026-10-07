@@ -1,8 +1,7 @@
 use super::base::NativeAdmittedBase;
 use super::maintenance::{ValidatedCompletedReclaim, spill::PreparedDurableSpill};
 use super::persistence::{
-    NativeWal, artifact_descriptor, catalog_payload, encode_framed, next_artifact,
-    publish_root_selector, write_new_full, zeroed,
+    artifact_descriptor, catalog_payload, encode_framed, next_artifact, zeroed,
 };
 use super::{
     NativeGraphBundle, NativeGraphBundleInput, NativeGraphError, NativeGraphPublication,
@@ -38,12 +37,11 @@ use crate::property_graph::storage::{
 };
 use crate::property_graph::wal::{
     BatchId, Change, CommitState, DescriptorList, Envelope, EnvelopeKind, HighWaters,
-    InventoryChange, InventoryState, MAX_ENVELOPE_BYTES, Membership, Mutation, NativeCheckpoint,
-    ReclaimComplete, ReclaimIntent, ReferenceList, RequiredRef, STACK_RESERVATION_BYTES,
-    WalGraphRoots, WalResources, encode_checkpoint, encode_envelope, encode_header,
+    InventoryChange, InventoryState, MAX_ENVELOPE_BYTES, Membership, Mutation, ReclaimComplete,
+    ReclaimIntent, ReferenceList, RequiredRef, STACK_RESERVATION_BYTES, WalGraphRoots,
+    WalResources, encode_envelope,
 };
 use crate::property_graph::{BatchDisposition, EntityId, GraphGeneration};
-use crate::vfs::SyncKind;
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 
@@ -68,16 +66,29 @@ pub(super) fn assigned_generation(
             return Ok(assigned);
         }
     }
-    #[cfg(not(test))]
-    let _ = store;
-    base.get()
+    let current = store.active.lock().map_err(|_| {
+        NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
+            component: "active segment",
+        })
+    })?;
+    let current = current
+        .as_ref()
+        .ok_or(crate::lifecycle::StoreError::Closed)?
+        .generation;
+    if current < base.get() {
+        return Err(NativeGraphError::Invalid(
+            "graph generation exceeds store generation",
+        ));
+    }
+    current
         .checked_add(1)
         .map(GraphGeneration::new)
         .ok_or(NativeGraphError::IdentityExhausted)
 }
 
 pub(super) struct NativeWriter {
-    pub(super) wal: NativeWal,
+    pub(super) last_graph_seq: u64,
+    pub(super) envelope_bytes: usize,
     pub(super) complete_envelopes: u64,
     pub(super) stopped: bool,
     pub(super) checkpoint_failed: bool,
@@ -225,6 +236,7 @@ where
     };
     verify_prepared_inventory(inventory_artifact, inventory, None, tree_resources)?;
     let sparse = sparse_checkpoint.finalize(inventory)?;
+
     validate_persisted_maintenance_transition(
         objects,
         SparseCheckpoint {
@@ -244,6 +256,7 @@ where
         objects.memory(),
         tree_resources,
     )?;
+
     let graph = wal_roots(roots, inventory, admitted.wal_roots())?;
     let reference_count = admitted
         .prepared_inventories()
@@ -479,6 +492,7 @@ where
     };
     verify_prepared_inventory(inventory_artifact, inventory, None, tree_resources)?;
     let sparse = sparse_checkpoint.finalize(inventory)?;
+
     validate_persisted_maintenance_transition(
         objects,
         SparseCheckpoint {
@@ -498,6 +512,7 @@ where
         objects.memory(),
         tree_resources,
     )?;
+
     let graph = wal_roots(roots, inventory, admitted.wal_roots())?;
     let reference_count = admitted
         .prepared_inventories()
@@ -619,7 +634,7 @@ impl NativeWriter {
     const MAX_DURABLE_PROTECTIONS: usize = 64;
 
     pub(super) fn new(
-        wal: NativeWal,
+        last_graph_seq: u64,
         resources: &GraphResources,
     ) -> Result<Self, NativeGraphError> {
         let bytes = Self::MAX_PROTECTED_DESCRIPTORS
@@ -664,7 +679,8 @@ impl NativeWriter {
                 .ok_or(NativeGraphError::Invalid("protected descriptor capacity"))?,
         )?;
         Ok(Self {
-            wal,
+            last_graph_seq,
+            envelope_bytes: 0,
             complete_envelopes: 0,
             stopped: false,
             checkpoint_failed: false,
@@ -675,12 +691,12 @@ impl NativeWriter {
     }
 
     pub(super) fn resume(
-        wal: NativeWal,
+        last_graph_seq: u64,
         resources: &GraphResources,
         complete_envelopes: u64,
         protected: &[crate::property_graph::wal::ArtifactDescriptor],
     ) -> Result<Self, NativeGraphError> {
-        let mut writer = Self::new(wal, resources)?;
+        let mut writer = Self::new(last_graph_seq, resources)?;
         writer.can_protect(protected.len())?;
         writer.protected.extend_from_slice(protected);
         writer.complete_envelopes = complete_envelopes;
@@ -750,136 +766,124 @@ fn checkpoint_current_inner(
     control
         .checkpoint()
         .map_err(|_| NativeGraphError::Stage(StageError::Cancelled))?;
-    let first_sequence = admitted
-        .sequence()
-        .checked_add(1)
-        .ok_or(NativeGraphError::IdentityExhausted)?;
-    let wal_identity = crate::property_graph::storage::allocation::fresh_store_identity(
-        &mut crate::property_graph::storage::allocation::OsEntropy,
-    )
-    .map_err(|source| io(admitted.directory(), source))?
-    .get();
-    let wal_path = admitted
-        .directory()
-        .join(format!("graph-wal-{wal_identity:032x}.ze"));
-    let mut header = [0_u8; crate::property_graph::wal::HEADER_BYTES];
-    let header_bytes = encode_header(admitted.base().store, first_sequence, &mut header)?;
-
-    let checkpoint = NativeCheckpoint {
-        wal_identity,
-        first_sequence,
-        applied_sequence: admitted.sequence(),
-        state: commit_state(admitted),
-    };
     let checkpoint_memory = WriteMemory::new(resources, WriteLimits::default())?;
     let storage = StorageMemory::new(&checkpoint_memory, control, 32 * 1024 * 1024)?;
-    let payload_capacity = admitted
-        .prepared_inventories()
-        .len()
-        .checked_mul(128)
-        .and_then(|bytes| bytes.checked_add(16 * 1024))
-        .ok_or(NativeGraphError::IdentityExhausted)?;
-    let mut payload = zeroed(&storage, control, payload_capacity)?;
-    let work = u64::try_from(payload.as_slice().len())
-        .ok()
-        .and_then(|bytes| bytes.checked_mul(4))
-        .ok_or(NativeGraphError::Invalid("checkpoint work bound"))?;
-    let mut cancelled = || control.checkpoint().is_err();
-    let mut wal_resources = WalResources::new(work, STACK_RESERVATION_BYTES, &mut cancelled)?;
-    let payload_bytes = encode_checkpoint(checkpoint, payload.as_mut_slice(), &mut wal_resources)?;
-    let payload = payload
-        .as_slice()
-        .get(..payload_bytes)
-        .ok_or(NativeGraphError::Invalid("checkpoint extent"))?;
-
-    let root_serial = store.native_graph.burn_creation_serial()?;
-    let root_identity = ArtifactIdentity {
-        store: admitted.base().store,
-        artifact: next_artifact(&mut crate::property_graph::storage::allocation::OsEntropy)?,
-        generation: admitted.base().generation,
-        creation_serial: root_serial,
-    };
-    let (root_bytes, root_envelope) = encode_framed(
-        &storage,
-        control,
-        ContainerKind::RootEnvelope,
-        root_identity,
-        &[Block {
-            kind: BlockKind::CheckpointPayload,
-            payload,
-        }],
+    let objects = super::recovery::manifest_inventory(store, admitted, &storage)?;
+    let mut wal_slot = store.wal_writer.lock().map_err(|_| {
+        NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
+            component: "WAL writer",
+        })
+    })?;
+    let wal = wal_slot
+        .as_mut()
+        .ok_or(crate::lifecycle::StoreError::ReadOnly)?;
+    let mut active_slot = store.active.lock().map_err(|_| {
+        NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
+            component: "active segment",
+        })
+    })?;
+    let active = active_slot
+        .as_mut()
+        .ok_or(crate::lifecycle::StoreError::Closed)?;
+    let mut manifest = crate::ingest::load_current_manifest(
+        store.vfs.as_ref(),
+        &store.directory,
+        wal.durable_end(),
+        0,
+        &store.schema,
     )?;
+    let graph_mark = writer.last_graph_seq.max(
+        manifest
+            .graph
+            .as_ref()
+            .ok_or(NativeGraphError::Invalid(
+                "graph checkpoint without version barrier",
+            ))?
+            .graph_absorbed_through,
+    );
+    if !active.segment.is_empty() && wal.durable_end() > graph_mark {
+        return Err(NativeGraphError::Invalid(
+            "graph checkpoint cannot fold a later document batch",
+        ));
+    }
+    let generation = active
+        .generation
+        .checked_add(1)
+        .ok_or(crate::lifecycle::StoreError::GenerationOverflow)?;
+    manifest.generation = generation;
+    manifest.graph = Some(
+        crate::manifest::GraphManifest::new(commit_state(admitted), graph_mark, objects)
+            .map_err(crate::lifecycle::StoreError::Manifest)?,
+    );
+    if active.segment.is_empty() {
+        manifest.log_seq = wal.durable_end();
+    }
     let next = NativeGraphBundle::fold_transition(
         store,
         resources,
         admitted,
         crate::property_graph::staging::FoldMark {
-            manifest_generation: checkpoint.state.generation.get(),
-            graph_absorbed_through: checkpoint.applied_sequence,
-            envelope_sequence: checkpoint.state.sequence,
+            manifest_generation: generation,
+            graph_absorbed_through: graph_mark,
+            envelope_sequence: admitted.sequence(),
         },
-        root_envelope,
+        None,
     )?;
-    let root_path = crate::property_graph::storage::allocation::artifact_path(
-        admitted.directory(),
-        root_identity.artifact,
-    );
-    let result = (|| {
-        write_new_full(
-            admitted.vfs(),
-            admitted.directory(),
-            &wal_path,
-            header
-                .get(..header_bytes)
-                .ok_or(NativeGraphError::Invalid("native WAL header"))?,
-        )?;
-        write_new_full(
-            admitted.vfs(),
-            admitted.directory(),
-            &root_path,
-            root_bytes.as_slice(),
-        )?;
-        let handle = admitted
-            .vfs()
-            .open_append(&wal_path)
-            .map_err(|source| io(&wal_path, source))?;
-        let next_wal = NativeWal {
-            handle,
-            path: wal_path.clone(),
-            identity: wal_identity,
-            first_sequence,
-            bytes: header_bytes,
-        };
-        let failure_path = wal_path.clone();
-        publish_root_selector(admitted.vfs(), admitted.directory(), root_envelope)?;
+    let remapped = crate::lifecycle::PublishedSnapshot::from_manifest(
+        store.vfs.as_ref(),
+        &store.directory,
+        &manifest,
+        &store.accounting,
+    )?;
+    crate::manifest::io::commit_manifest(
+        store.vfs.as_ref(),
+        &store.directory,
+        &manifest,
+        store.durability_policy,
+    )
+    .map_err(crate::lifecycle::StoreError::Manifest)?;
+    let failure_path = store.directory.join(crate::manifest::io::MANIFEST_FILE);
+    let mut snapshot =
         store
-            .native_graph
-            .publish_transition(admitted, next)
+            .snapshot
+            .write()
             .map_err(|_| NativeGraphError::CommitIndeterminate {
-                stage: "checkpoint publication",
-                path: failure_path,
+                stage: "checkpoint snapshot publication",
+                path: failure_path.clone(),
                 source: None,
             })?;
-        writer.wal = next_wal;
-        writer.complete_envelopes = 0;
-        writer.checkpoint_failed = false;
-        writer.protected.clear();
-        // A proof is named by its own WAL envelope and, while a reclaim
-        // cycle is open, by the rooted reclaim state. This checkpoint cut
-        // the WAL, so only an open cycle still needs its proof protected.
-        if admitted.reclaim().is_some() {
-            writer
-                .durable_protected
-                .retain(|proof| proof.intent.is_some());
-        } else {
-            writer.durable_protected.clear();
-        }
-        Ok(())
-    })();
-    if result.is_err() {
-        writer.checkpoint_failed = true;
+    *snapshot = Some(Arc::new(remapped));
+    active.generation = generation;
+    store
+        .native_graph
+        .publish_transition(admitted, next)
+        .map_err(|_| NativeGraphError::CommitIndeterminate {
+            stage: "checkpoint graph publication",
+            path: failure_path,
+            source: None,
+        })?;
+    writer.complete_envelopes = 0;
+    writer.envelope_bytes = 0;
+    writer.checkpoint_failed = false;
+    writer.protected.clear();
+    if admitted.reclaim().is_some() {
+        writer
+            .durable_protected
+            .retain(|proof| proof.intent.is_some());
+    } else {
+        writer.durable_protected.clear();
     }
-    result
+    writer.last_graph_seq = graph_mark;
+    if manifest.log_seq == graph_mark && manifest.log_seq == wal.durable_end() {
+        wal.retire_visible_through(crate::wal::LogSeq::new(manifest.log_seq))?;
+        wal.truncate_absorbed(
+            store.vfs.as_ref(),
+            &store.directory,
+            store.durability_policy,
+            crate::wal::LogSeq::new(manifest.log_seq),
+        )?;
+    }
+    Ok(())
 }
 
 impl NativeGraphPublication {
@@ -1797,6 +1801,7 @@ where
         ));
     }
     let sparse = sparse_checkpoint.finalize(inventory)?;
+
     validate_persisted_maintenance_transition(
         objects,
         SparseCheckpoint {
@@ -1816,6 +1821,7 @@ where
         objects.memory(),
         tree_resources,
     )?;
+
     consolidated.inventory_fold().validate_candidate(
         objects,
         consolidated.inventory_fold_root(),
@@ -2052,34 +2058,45 @@ pub(super) fn protect_and_commit(
             .map_err(|source| io(&path, source))?;
         record(W::ArtifactWrites, 1);
         record(W::ArtifactBytesWritten, artifact.bytes.len() as u64);
-        record(W::FullSyncAttempts, 1);
+        if let crate::lifecycle::durability::SyncRequirement::Sync(kind) =
+            store.durability_policy.data_file_sync()
+        {
+            if kind == crate::vfs::SyncKind::Full {
+                record(W::FullSyncAttempts, 1);
+            }
+            transition
+                .admitted
+                .vfs()
+                .sync(&path, kind)
+                .map_err(|source| io(&path, source))?;
+            if kind == crate::vfs::SyncKind::Full {
+                record(W::FullSyncSuccesses, 1);
+            }
+        }
+    }
+    if let crate::lifecycle::durability::SyncRequirement::Sync(kind) =
+        store.durability_policy.directory_sync()
+    {
+        record(W::DirectorySyncAttempts, 1);
         transition
             .admitted
             .vfs()
-            .sync(&path, SyncKind::Full)
-            .map_err(|source| io(&path, source))?;
-        record(W::FullSyncSuccesses, 1);
+            .sync(directory, kind)
+            .map_err(|source| io(directory, source))?;
+        record(W::DirectorySyncSuccesses, 1);
     }
-    record(W::DirectorySyncAttempts, 1);
-    transition
-        .admitted
-        .vfs()
-        .sync(directory, SyncKind::Full)
-        .map_err(|source| io(directory, source))?;
-    record(W::DirectorySyncSuccesses, 1);
 
     // Both counters are established before append. Once append begins, every
     // failure is indeterminate and stops admission rather than recomputing state.
     let next_wal_bytes = writer
-        .wal
-        .bytes
+        .envelope_bytes
         .checked_add(transition.wal_bytes().len())
         .ok_or(NativeGraphError::IdentityExhausted)?;
     let next_complete_envelopes = writer
         .complete_envelopes
         .checked_add(1)
         .ok_or(NativeGraphError::IdentityExhausted)?;
-    let failure_path = writer.wal.path.clone();
+    let failure_path = store.directory.join("wal.ze").clone();
     // Close wins over caller cancellation, only before the irreversible append.
     match store.state().map_err(NativeGraphError::Store)? {
         crate::lifecycle::StoreState::Open => {}
@@ -2097,30 +2114,81 @@ pub(super) fn protect_and_commit(
     control
         .checkpoint()
         .map_err(|_| NativeGraphError::Stage(StageError::Cancelled))?;
-    if let Err(source) = writer.wal.handle.append(transition.wal_bytes()) {
-        writer.stopped = true;
-        let _ = store.native_graph.stop_admissions();
-        return Err(NativeGraphError::CommitIndeterminate {
-            stage: "WAL append",
-            path: failure_path,
-            source: Some(source),
-        });
+    let payload = crate::ingest::wal_payload::encode_graph_commit(transition.wal_bytes())
+        .map_err(|_| NativeGraphError::Invalid("graph WAL payload"))?;
+    let mut wal_slot = store.wal_writer.lock().map_err(|_| {
+        NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
+            component: "WAL writer",
+        })
+    })?;
+    let wal = wal_slot
+        .as_mut()
+        .ok_or(crate::lifecycle::StoreError::ReadOnly)?;
+    let mut active_slot = store.active.lock().map_err(|_| {
+        NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
+            component: "active segment",
+        })
+    })?;
+    let active = active_slot
+        .as_mut()
+        .ok_or(crate::lifecycle::StoreError::Closed)?;
+    let generation = transition.next.base().generation.get();
+    if active.generation.checked_add(1) != Some(generation) {
+        return Err(NativeGraphError::StalePreparation);
     }
-    record(W::WalAppends, 1);
-    record(W::WalBytesAppended, transition.wal_bytes().len() as u64);
-    writer.wal.bytes = next_wal_bytes;
-    record(W::FullSyncAttempts, 1);
-    if let Err(source) = writer.wal.handle.sync(SyncKind::Full) {
-        writer.stopped = true;
-        let _ = store.native_graph.stop_admissions();
-        return Err(NativeGraphError::CommitIndeterminate {
-            stage: "WAL Full sync",
-            path: failure_path,
-            source: Some(source),
-        });
+    let before_io = wal.io_work();
+    let result = wal.commit_many(&[(crate::ingest::wal_payload::GRAPH_COMMIT_V1, &payload)]);
+    let after_io = wal.io_work();
+    for (index, kind) in [
+        W::WalAppends,
+        W::WalBytesAppended,
+        W::FullSyncAttempts,
+        W::FullSyncSuccesses,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        record(
+            kind,
+            after_io
+                .get(index)
+                .copied()
+                .unwrap_or(0)
+                .saturating_sub(before_io.get(index).copied().unwrap_or(0)),
+        );
     }
-    record(W::FullSyncSuccesses, 1);
+    record(
+        W::EncodedWalBytes,
+        after_io
+            .get(1)
+            .copied()
+            .unwrap_or(0)
+            .saturating_sub(before_io.get(1).copied().unwrap_or(0)),
+    );
+    let range = match result {
+        Ok(range) => range,
+        Err(
+            source @ crate::lifecycle::StoreError::WalWrite(
+                crate::wal::WalWriteError::GroupTooLarge { .. }
+                | crate::wal::WalWriteError::SequenceExhausted
+                | crate::wal::WalWriteError::Record(_)
+                | crate::wal::WalWriteError::Header(_),
+            ),
+        ) => return Err(NativeGraphError::Store(source)),
+        Err(source) => {
+            writer.stopped = true;
+            let _ = store.native_graph.stop_admissions();
+            return Err(NativeGraphError::CommitIndeterminate {
+                stage: "WAL commit",
+                path: failure_path,
+                source: Some(std::io::Error::other(source.to_string())),
+            });
+        }
+    };
+    writer.last_graph_seq = range.start.get();
+    writer.envelope_bytes = next_wal_bytes;
     let expose = || {
+        active.generation = generation;
         if store
             .native_graph
             .publish_committed_transition(transition)
@@ -2207,11 +2275,7 @@ pub(super) fn commit_staged_batch<'m>(
     if writer.checkpoint_failed {
         return Err(NativeGraphError::CheckpointRequired);
     }
-    let committed_tail = writer
-        .wal
-        .bytes
-        .checked_sub(crate::property_graph::wal::HEADER_BYTES)
-        .ok_or(NativeGraphError::Invalid("native WAL byte accounting"))?;
+    let committed_tail = writer.envelope_bytes;
     if writer.complete_envelopes >= 64 || committed_tail >= MAX_ENVELOPE_BYTES {
         checkpoint_current(store, writer, admitted, shared, control)?;
         return Ok(CommitStep::Checkpointed);
@@ -2377,7 +2441,7 @@ pub(super) fn commit_staged_batch<'m>(
         crate::property_graph::storage::allocation::fresh_store_identity(
             &mut crate::property_graph::storage::allocation::OsEntropy,
         )
-        .map_err(|source| io(&writer.wal.path, source))?
+        .map_err(|source| io(&store.directory.join("wal.ze"), source))?
         .get(),
     )?;
     // The format maximum is a refusal bound, not a reservation for every batch.
@@ -2452,21 +2516,12 @@ pub(super) fn commit_staged_batch<'m>(
         &mut wal_resources,
     )?;
 
-    shared.record_work(
-        crate::lifecycle::stats::GraphWorkKind::EncodedWalBytes,
-        transition.wal_bytes().len() as u64,
-    );
-
     #[cfg(all(test, feature = "graph-cypher"))]
     crate::property_graph::storage::preparation_work_capture::phase(
         "transition-end",
         resources.work(),
     );
-    let tail_bytes = writer
-        .wal
-        .bytes
-        .checked_sub(crate::property_graph::wal::HEADER_BYTES)
-        .ok_or(NativeGraphError::Invalid("native WAL byte accounting"))?;
+    let tail_bytes = writer.envelope_bytes;
     let pending_tail_bytes = tail_bytes
         .checked_add(transition.wal_bytes().len())
         .ok_or(NativeGraphError::IdentityExhausted)?;

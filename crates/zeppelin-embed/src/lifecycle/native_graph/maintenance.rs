@@ -36,7 +36,6 @@ use crate::property_graph::wal::{
     BatchId, InventoryChange, InventoryState, MAX_ENVELOPE_BYTES, STACK_RESERVATION_BYTES,
     WalResources,
 };
-use crate::vfs::SyncKind;
 use std::sync::Arc;
 
 fn spill_error(
@@ -148,8 +147,6 @@ fn capture_record_at(
                 .flatten()
                 .chain(
                     [
-                        // Removed by ZE-346 when the graph WAL and root selector are deleted.
-                        Some(bundle.root_envelope()),
                         Some(bundle.catalog()),
                         bundle.text(),
                         bundle.vector(),
@@ -760,7 +757,7 @@ fn prepare_durable_proof<'m>(
     };
 
     if admitted.base().fold.envelope_sequence != admitted.sequence()
-        || admitted.base().fold.manifest_generation != admitted.base().generation.get()
+        || admitted.base().fold.manifest_generation < admitted.base().generation.get()
     {
         return Err(NativeGraphError::Invalid(
             "reclaim capture must follow a fold",
@@ -813,20 +810,6 @@ fn prepare_durable_proof<'m>(
         let lease = capture.lease_for(bundle).ok_or(NativeGraphError::Invalid(
             "captured graph bundle has no retained lease",
         ))?;
-        // S6c retains the reader's checkpoint/WAL identities, not its WAL history.
-        // Removed by ZE-346 when the graph WAL and root selector are deleted.
-        let wal_identity = super::recovery::checkpoint_wal_identity(
-            store,
-            bundle.directory(),
-            bundle.root_envelope(),
-            control,
-        )?;
-        mark.emit(
-            crate::property_graph::storage::artifact::ArtifactId::new(wal_identity)
-                .map_err(crate::property_graph::storage::tree::directory::TreeError::Format)?,
-            &mut writer,
-            resources,
-        )?;
         // A fold changes only the publication token and legacy control locator.
         // Its retained admission has the same immutable CommitState as Current,
         // whose complete trace already proves this identical closure live.
@@ -879,7 +862,7 @@ fn prepare_durable_proof<'m>(
                 return Err(spill_error(&writer, error));
             }
         }
-        {
+        if bundle.text().is_some() || bundle.vector().is_some() {
             let mut state = {
                 let source = NativePreparationSource::new(lease, storage, 64)?;
                 let catalog = NativePreparationCatalog::open(&source, resources)?;
@@ -991,7 +974,6 @@ fn prepare_durable_proof<'m>(
     let orphans::OrphanSelection {
         adoptions,
         partials,
-        history,
     } = orphans::select_adoptions(
         admission,
         &capture,
@@ -1001,10 +983,6 @@ fn prepare_durable_proof<'m>(
         resources,
         crate::property_graph::storage::reclaim::MAX_CANDIDATES - candidates.as_slice().len(),
     )?;
-    // Removed by ZE-346 when the graph WAL and root selector are deleted.
-    for descriptor in history.as_slice().iter().copied() {
-        candidates.push(descriptor)?;
-    }
     candidates
         .as_mut_slice()
         .sort_unstable_by_key(|v| v.artifact);
@@ -1208,6 +1186,23 @@ fn resume_pending_reclaim(
 ) -> Result<NativeMaintenanceReport, NativeGraphError> {
     let admitted = Arc::clone(admission.lease.bundle());
     let shared = GraphResources::from_store(store)?;
+    // Publish the pending intent's live inventory before its authorized unlinks.
+    // Reopen must never start from a manifest that still requires a removed object.
+    if admitted.base().fold.envelope_sequence != admitted.sequence() {
+        let mut slot = store
+            .native_graph
+            .writer
+            .lock()
+            .map_err(|_| NativeGraphError::Invalid("native graph writer lock"))?;
+        let writer = slot
+            .as_mut()
+            .ok_or_else(|| store.absent_native_graph_writer())?;
+        if !store.native_graph.is_current_bundle(&admitted)? {
+            return Err(NativeGraphError::StalePreparation);
+        }
+        super::write::checkpoint_current(store, writer, &admitted, &shared, control)?;
+        return Err(NativeGraphError::StalePreparation);
+    }
     let write_memory = WriteMemory::new(&shared, WriteLimits::default())?;
     let limits = MaintenanceLimits::default();
     let storage = StorageMemory::new(&write_memory, control, limits.storage_bytes)?;
@@ -1436,11 +1431,7 @@ fn resume_pending_reclaim(
     if !store.native_graph.is_current_bundle(&admitted)? {
         return Err(NativeGraphError::StalePreparation);
     }
-    let committed_tail = writer
-        .wal
-        .bytes
-        .checked_sub(crate::property_graph::wal::HEADER_BYTES)
-        .ok_or(NativeGraphError::Invalid("native WAL byte accounting"))?;
+    let committed_tail = writer.envelope_bytes;
     let pending_tail = committed_tail
         .checked_add(transition.wal_bytes().len())
         .ok_or(NativeGraphError::IdentityExhausted)?;
@@ -1530,10 +1521,14 @@ fn resume_pending_reclaim(
         drop(path);
         drop(path_charge);
     }
-    admitted
-        .vfs()
-        .sync(admitted.directory(), SyncKind::Full)
-        .map_err(|source| io(admitted.directory(), source))?;
+    if let crate::lifecycle::durability::SyncRequirement::Sync(kind) =
+        store.durability_policy.directory_sync()
+    {
+        admitted
+            .vfs()
+            .sync(admitted.directory(), kind)
+            .map_err(|source| io(admitted.directory(), source))?;
+    }
     let _ = protect_and_commit(store, writer, transition, control, false)?;
     let reclaimed_bytes = pending
         .candidates
@@ -1765,11 +1760,7 @@ fn retire_completed_reclaim(
     if !store.native_graph.is_current_bundle(&admitted)? {
         return Err(NativeGraphError::StalePreparation);
     }
-    let committed_tail = writer
-        .wal
-        .bytes
-        .checked_sub(crate::property_graph::wal::HEADER_BYTES)
-        .ok_or(NativeGraphError::Invalid("native WAL byte accounting"))?;
+    let committed_tail = writer.envelope_bytes;
     let pending_tail = committed_tail
         .checked_add(transition.wal_bytes().len())
         .ok_or(NativeGraphError::IdentityExhausted)?;
@@ -2221,11 +2212,7 @@ pub(super) fn commit_with_limits(
     if !store.native_graph.is_current_bundle(&admitted)? {
         return Err(NativeGraphError::StalePreparation);
     }
-    let committed_tail = writer
-        .wal
-        .bytes
-        .checked_sub(crate::property_graph::wal::HEADER_BYTES)
-        .ok_or(NativeGraphError::Invalid("native WAL byte accounting"))?;
+    let committed_tail = writer.envelope_bytes;
     if writer.complete_envelopes >= 64 || committed_tail >= MAX_ENVELOPE_BYTES {
         super::write::checkpoint_current(store, writer, &admitted, &shared, control)?;
         return Err(NativeGraphError::StalePreparation);

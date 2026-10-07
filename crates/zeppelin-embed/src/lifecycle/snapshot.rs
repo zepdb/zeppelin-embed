@@ -299,6 +299,58 @@ impl Store {
     }
 }
 
+#[cfg(feature = "graph-cypher")]
+pub(crate) struct SnapshotGraphManifest {
+    graph: crate::manifest::GraphManifest,
+    _charge: super::stats::AccountedCounter,
+}
+
+#[cfg(feature = "graph-cypher")]
+impl Deref for SnapshotGraphManifest {
+    type Target = crate::manifest::GraphManifest;
+    fn deref(&self) -> &Self::Target {
+        &self.graph
+    }
+}
+
+#[cfg(feature = "graph-cypher")]
+impl SnapshotGraphManifest {
+    fn copy(
+        graph: &crate::manifest::GraphManifest,
+        accounting: &Arc<Accounting>,
+    ) -> Result<Arc<Self>, StoreError> {
+        let bytes = |graph: &crate::manifest::GraphManifest| {
+            graph
+                .backing_bytes()
+                .and_then(|bytes| {
+                    bytes
+                        .checked_add(std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>())
+                })
+                .ok_or(StoreError::AllocationFailed {
+                    needed: u64::MAX,
+                    component: "snapshot graph manifest",
+                })
+        };
+        let mut charge =
+            super::stats::AccountedCounter::new(accounting, AllocationComponent::Snapshot)?;
+        charge.set(bytes(graph)?)?;
+        #[cfg(feature = "allocation-audit")]
+        let graph = crate::allocation_audit::attributed(|| graph.clone());
+        #[cfg(not(feature = "allocation-audit"))]
+        let graph = graph.clone();
+        charge.set(bytes(&graph)?)?;
+        let owner = Self {
+            graph,
+            _charge: charge,
+        };
+        #[cfg(feature = "allocation-audit")]
+        let owner = crate::allocation_audit::attributed(|| Arc::new(owner));
+        #[cfg(not(feature = "allocation-audit"))]
+        let owner = Arc::new(owner);
+        Ok(owner)
+    }
+}
+
 /// One atomically published generation and its immutable segment readers.
 pub struct PublishedSnapshot {
     generation: u64,
@@ -306,6 +358,8 @@ pub struct PublishedSnapshot {
     pub(crate) graph_absorbed_through: u64,
     #[cfg(feature = "graph-cypher")]
     pub(crate) graph_enabled: bool,
+    #[cfg(feature = "graph-cypher")]
+    pub(crate) graph_manifest: Option<Arc<SnapshotGraphManifest>>,
     epoch_alias: Option<crate::epoch::EpochIdentity>,
     graph_profile:
         Result<crate::graph::search::EpochGraphProfile, crate::graph::search::GraphProfileError>,
@@ -332,6 +386,8 @@ impl PublishedSnapshot {
             graph_absorbed_through: 0,
             #[cfg(feature = "graph-cypher")]
             graph_enabled: false,
+            #[cfg(feature = "graph-cypher")]
+            graph_manifest: None,
             epoch_alias: None,
             graph_profile: Err(crate::graph::search::GraphProfileError::EpochUnstamped),
             schema: crate::meta::Schema::timestamp_only(),
@@ -391,16 +447,24 @@ impl PublishedSnapshot {
         }
         let wal = WalReader::open(vfs, &directory.join(STORE_WAL_FILE)).map_err(StoreError::Wal)?;
         let durable_end = wal.durable_end();
+        let manifest =
+            load_manifest(vfs, &manifest_path, durable_end).map_err(StoreError::Manifest)?;
         if !matches!(
             wal.terminator(),
             None | Some(crate::wal::replay::ReplayTerminator::InvalidHeader(
                 crate::wal::header::WalHeaderError::Missing
             ))
         ) {
+            #[cfg(feature = "graph-cypher")]
+            if manifest.graph.is_some() {
+                wal.into_graph_prefix()
+            } else {
+                wal.into_clean()
+            }
+            .map_err(StoreError::WalRecovery)?;
+            #[cfg(not(feature = "graph-cypher"))]
             wal.into_clean().map_err(StoreError::WalRecovery)?;
         }
-        let manifest =
-            load_manifest(vfs, &manifest_path, durable_end).map_err(StoreError::Manifest)?;
         if probe_segment_headers {
             for expected in &manifest.segments {
                 let path = directory.join(expected.id.file_name());
@@ -505,6 +569,12 @@ impl PublishedSnapshot {
             absorbed_through: manifest.log_seq,
             #[cfg(feature = "graph-cypher")]
             graph_enabled: manifest.graph.is_some(),
+            #[cfg(feature = "graph-cypher")]
+            graph_manifest: manifest
+                .graph
+                .as_ref()
+                .map(|graph| SnapshotGraphManifest::copy(graph, accounting))
+                .transpose()?,
             graph_absorbed_through: {
                 #[cfg(feature = "graph-cypher")]
                 {
@@ -541,6 +611,8 @@ impl PublishedSnapshot {
             graph_absorbed_through: self.graph_absorbed_through,
             #[cfg(feature = "graph-cypher")]
             graph_enabled: self.graph_enabled,
+            #[cfg(feature = "graph-cypher")]
+            graph_manifest: self.graph_manifest.clone(),
             epoch_alias: self.epoch_alias,
             graph_profile: self.graph_profile,
             schema: self.schema.clone(),
@@ -1087,5 +1159,28 @@ mod tests {
             "the first durable WAL group must sync its new directory entry before ack"
         );
         store.close().expect("close");
+    }
+}
+
+#[cfg(all(test, feature = "graph-cypher"))]
+#[allow(clippy::unwrap_used)]
+mod unified_capacity {
+    use super::*;
+
+    #[test]
+    fn retained_readers_share_the_manifest_graph_capacity() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path(), super::super::OpenOptions::new()).unwrap();
+        store.enable_graph().unwrap();
+        let original = store.snapshot.read().unwrap().as_ref().unwrap().clone();
+        let fork = original.fork_read_view(&store.accounting).unwrap();
+        assert_eq!(
+            original.graph_manifest.as_ref().unwrap().objects.as_ptr(),
+            fork.graph_manifest.as_ref().unwrap().objects.as_ptr(),
+            "immutable manifest inventory has one capacity owner"
+        );
+        drop(fork);
+        drop(original);
+        store.close().unwrap();
     }
 }

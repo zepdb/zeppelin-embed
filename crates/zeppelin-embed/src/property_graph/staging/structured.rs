@@ -218,7 +218,10 @@ pub(super) fn stage_structured_with_preflight<'a>(
     control(WritePhase::Validate)?;
     let identity = base.identity();
     let mut high_waters = base.high_waters();
-    if identity.generation.get() != 0 && identity.roots.is_none() {
+    if identity.generation.get() != 0
+        && identity.roots.is_none()
+        && identity.fold.manifest_generation == 0
+    {
         return Err(StageError::ViewMismatch);
     }
     if requests.len() > memory.limits.changes

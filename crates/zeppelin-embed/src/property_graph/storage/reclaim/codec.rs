@@ -1279,7 +1279,7 @@ pub(crate) fn decode_captured_base<'a>(
     if state.store != binding.store
         || state.generation != binding.capture_generation
         || state.sequence != binding.sequence
-        || fold.manifest_generation != state.generation.get()
+        || fold.manifest_generation < state.generation.get()
     {
         return Err(TreeError::Invalid("captured base state binding"));
     }
