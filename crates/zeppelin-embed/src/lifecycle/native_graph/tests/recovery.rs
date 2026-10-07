@@ -2479,6 +2479,321 @@ fn read_only_open_replays_without_writing() {
     assert_eq!(file_snapshot(directory.path()), before);
 }
 
+fn commit_tail_test_node(store: &Store, key: &str) -> NodeId {
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    let receipts = store
+        .apply_native_graph(
+            &[StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "tail", key).unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            }],
+            &QueryControl::Cancel(CancelToken::new()),
+        )
+        .unwrap();
+    match receipts[0].entity {
+        EntityId::Node(node) => node,
+        EntityId::Relationship(_) => panic!("expected node"),
+    }
+}
+
+fn graph_torn_tail_fixture(needed: usize) -> (tempfile::TempDir, NodeId, Vec<u8>) {
+    use crate::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    store.enable_graph().unwrap();
+    store
+        .ingest(IngestBatch::new(vec![IngestDocument::new(
+            DocumentVersion::new(DocId::new(91), Revision::new(1)),
+            vec![1.0, 0.0],
+        )]))
+        .unwrap();
+    let node = commit_tail_test_node(&store, "a");
+    drop(store);
+    let wal = directory.path().join("wal.ze");
+    let prefix = std::fs::read(&wal).unwrap();
+    let mut tail = Vec::new();
+    tail.extend_from_slice(
+        &u32::try_from(needed - crate::wal::record::MIN_RECORD_LEN)
+            .unwrap()
+            .to_le_bytes(),
+    );
+    tail.extend_from_slice(&3_u64.to_le_bytes());
+    tail.extend_from_slice(&crate::ingest::wal_payload::GRAPH_COMMIT_V1.to_le_bytes());
+    StdVfs.open_append(&wal).unwrap().append(&tail).unwrap();
+    (directory, node, prefix)
+}
+
+#[test]
+fn an_oversized_torn_tail_with_graph_is_refused_not_dropped() {
+    let (directory, _, _) = graph_torn_tail_fixture(32 * 1_048_576);
+    let before = file_snapshot(directory.path());
+    for access in [
+        crate::lifecycle::AccessMode::ReadWrite,
+        crate::lifecycle::AccessMode::ReadOnly,
+    ] {
+        let result = Store::open(directory.path(), native_options().with_access_mode(access));
+        assert!(
+            matches!(result, Err(crate::lifecycle::StoreError::WalRecovery(
+                crate::wal::WalRecoveryError::CorruptAt {
+                    reason: crate::wal::replay::CorruptionReason::Record {
+                        error: crate::wal::record::RecordError::BodyTruncated { needed, .. },
+                        ..
+                    },
+                    ..
+                }
+            )) if needed > crate::wal::DEFAULT_MAX_GROUP_BYTES_DURABLE),
+            "oversized corruption must refuse before admitting another writer"
+        );
+        assert_eq!(file_snapshot(directory.path()), before);
+    }
+}
+
+#[test]
+fn a_bounded_torn_tail_with_graph_is_cut_before_acknowledging_another_write() {
+    for needed in [64, crate::wal::DEFAULT_MAX_GROUP_BYTES_DURABLE] {
+        let (directory, first, prefix) = graph_torn_tail_fixture(needed);
+        let before = file_snapshot(directory.path());
+        let reader = Store::open(
+            directory.path(),
+            native_options().with_access_mode(crate::lifecycle::AccessMode::ReadOnly),
+        )
+        .unwrap();
+        assert_eq!(reader.count_documents(None, None).unwrap().count, 1);
+        assert_eq!(observe_node(&reader, first), Some((3, 1, 1)));
+        reader.close().unwrap();
+        assert_eq!(file_snapshot(directory.path()), before);
+        let writer = Store::open(directory.path(), native_options()).unwrap();
+        assert_eq!(
+            std::fs::read(directory.path().join("wal.ze")).unwrap(),
+            prefix
+        );
+        // Isolate tail repair and the next acknowledged append from the
+        // separate automatic-maintenance cycle triggered by retained history.
+        writer
+            .set_native_graph_maintenance_policy(crate::property_graph::GraphMaintenancePolicy {
+                automatic: false,
+                ..Default::default()
+            })
+            .unwrap();
+        let second = commit_tail_test_node(&writer, "b");
+        drop(writer);
+        let recovered = Store::open(directory.path(), native_options()).unwrap();
+        assert_eq!(recovered.count_documents(None, None).unwrap().count, 1);
+        assert_eq!(observe_node(&recovered, first), Some((4, 2, 1)));
+        assert_eq!(observe_node(&recovered, second), Some((4, 2, 1)));
+        recovered.close().unwrap();
+    }
+}
+
+#[test]
+fn a_reader_that_observes_graph_enable_after_its_version_probe_refuses() {
+    let directory = tempfile::tempdir().unwrap();
+    let writer = Arc::new(Store::open(directory.path(), native_options()).unwrap());
+    writer
+        .ingest(crate::ingest::IngestBatch::new(vec![
+            crate::ingest::IngestDocument::new(
+                crate::ingest::DocumentVersion::new(
+                    crate::ingest::DocId::new(91),
+                    crate::ingest::Revision::new(1),
+                ),
+                vec![1.0, 0.0],
+            ),
+        ]))
+        .unwrap();
+    writer.seal().unwrap();
+    let vfs = Arc::new(RecordingVfs::default());
+    vfs.after_manifest_version(move || {
+        writer.enable_graph().unwrap();
+        writer.close().unwrap();
+    });
+    let result = Store::open_with_test_dependencies(
+        directory.path(),
+        native_options().with_access_mode(crate::lifecycle::AccessMode::ReadOnly),
+        crate::lifecycle::StoreTestDependencies::new(
+            vfs.clone(),
+            Arc::new(crate::lifecycle::SystemMonotonicClock),
+        ),
+    );
+    assert!(
+        matches!(&result, Err(crate::lifecycle::StoreError::StoreBusy { .. })),
+        "raced open returned {:?}",
+        result.as_ref().err()
+    );
+    assert!(!vfs.take().iter().any(|event| matches!(
+        event,
+        DurabilityEvent::Create(_)
+            | DurabilityEvent::Write(_)
+            | DurabilityEvent::Append(_)
+            | DurabilityEvent::OpenAppend(_)
+            | DurabilityEvent::Sync(_, _)
+            | DurabilityEvent::Rename(_, _)
+            | DurabilityEvent::Delete(_)
+    )));
+    let reader = Store::open(
+        directory.path(),
+        native_options().with_access_mode(crate::lifecycle::AccessMode::ReadOnly),
+    )
+    .unwrap();
+    assert!(matches!(
+        Store::open(directory.path(), native_options()),
+        Err(crate::lifecycle::StoreError::StoreBusy { .. })
+    ));
+    reader.close().unwrap();
+}
+
+#[test]
+fn a_manifest_generation_bump_without_watermark_move_does_not_break_graph_replay() {
+    use crate::ingest::{
+        DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, Revision,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    let document = DocId::new(91);
+    assert_eq!(
+        store
+            .ingest(IngestBatch::new(vec![IngestDocument::new(
+                DocumentVersion::new(document, Revision::new(1)),
+                vec![1.0, 0.0],
+            )]))
+            .unwrap()
+            .generation(),
+        1
+    );
+    assert_eq!(store.seal().unwrap(), 2);
+    assert_eq!(store.enable_graph().unwrap(), 3);
+    assert_eq!(
+        store
+            .delete(DeleteBatch::new(vec![document]))
+            .unwrap()
+            .generation(),
+        4
+    );
+    let manifest =
+        crate::manifest::io::load_manifest(&StdVfs, &directory.path().join("manifest.ze"), 2)
+            .unwrap();
+    assert_eq!(manifest.generation, 4);
+    assert_eq!(manifest.log_seq, 1);
+    assert_eq!(manifest.graph.as_ref().unwrap().graph_absorbed_through, 1);
+    let node = commit_tail_test_node(&store, "after-delete");
+    assert_eq!(observe_node(&store, node), Some((5, 1, 1)));
+    // Drop the handle without the explicit close/checkpoint path: the synced
+    // delete and graph records must recover against the generation-4 manifest.
+    drop(store);
+    let before = file_snapshot(directory.path());
+    for access in [
+        crate::lifecycle::AccessMode::ReadOnly,
+        crate::lifecycle::AccessMode::ReadWrite,
+    ] {
+        let reopened = Store::open(directory.path(), native_options().with_access_mode(access))
+            .expect("manifest-covered delete must not burn its generation twice");
+        assert_eq!(reopened.snapshot().unwrap().generation(), 5);
+        assert_eq!(reopened.count_documents(None, None).unwrap().count, 0);
+        assert_eq!(observe_node(&reopened, node), Some((5, 1, 1)));
+        drop(reopened);
+        if access == crate::lifecycle::AccessMode::ReadOnly {
+            assert_eq!(file_snapshot(directory.path()), before);
+        }
+    }
+}
+
+#[test]
+fn a_manifest_generation_boundary_counts_batches_on_both_sides_exactly_once() {
+    use crate::ingest::{
+        DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, Revision,
+    };
+    for replace_sealed in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path(), native_options()).unwrap();
+        let document = |id, revision| {
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(id), Revision::new(revision)),
+                vec![1.0, 0.0],
+            )
+        };
+        store
+            .ingest(IngestBatch::new(vec![document(91, 1), document(92, 1)]))
+            .unwrap();
+        store.seal().unwrap();
+        store.enable_graph().unwrap();
+        let (first, second, expected_generation, expected_count) = if replace_sealed {
+            // One multi-record batch replaces sealed rows and publishes its
+            // generation, while the active documents still need WAL replay.
+            assert_eq!(
+                store
+                    .ingest(IngestBatch::new(vec![document(91, 2), document(92, 2)]))
+                    .unwrap()
+                    .generation(),
+                4
+            );
+            (commit_tail_test_node(&store, "after-upserts"), None, 5, 2)
+        } else {
+            // The manifest counts the earlier active document and graph batch
+            // too. A later unknown-id delete still consumes its own generation.
+            assert_eq!(
+                store
+                    .ingest(IngestBatch::new(vec![document(93, 1)]))
+                    .unwrap()
+                    .generation(),
+                4
+            );
+            let first = commit_tail_test_node(&store, "before-delete");
+            assert_eq!(
+                store
+                    .delete(DeleteBatch::new(vec![DocId::new(91)]))
+                    .unwrap()
+                    .generation(),
+                6
+            );
+            assert_eq!(
+                store
+                    .delete(DeleteBatch::new(vec![DocId::new(999)]))
+                    .unwrap()
+                    .generation(),
+                7
+            );
+            (
+                first,
+                Some(commit_tail_test_node(&store, "after-delete")),
+                8,
+                2,
+            )
+        };
+        drop(store);
+        let before = file_snapshot(directory.path());
+        for access in [
+            crate::lifecycle::AccessMode::ReadOnly,
+            crate::lifecycle::AccessMode::ReadWrite,
+        ] {
+            let recovered =
+                Store::open(directory.path(), native_options().with_access_mode(access)).unwrap();
+            assert_eq!(
+                recovered.snapshot().unwrap().generation(),
+                expected_generation
+            );
+            assert_eq!(
+                recovered.count_documents(None, None).unwrap().count,
+                expected_count
+            );
+            assert_eq!(
+                observe_node(&recovered, first),
+                Some((expected_generation, if second.is_some() { 2 } else { 1 }, 1))
+            );
+            if let Some(second) = second {
+                assert_eq!(
+                    observe_node(&recovered, second),
+                    Some((expected_generation, 2, 1))
+                );
+            }
+            drop(recovered);
+            if access == crate::lifecycle::AccessMode::ReadOnly {
+                assert_eq!(file_snapshot(directory.path()), before);
+            }
+        }
+    }
+}
+
 fn mixed_replay_fixture(graph_first: bool) -> (tempfile::TempDir, Vec<Vec<u8>>) {
     use crate::ingest::wal_payload::{
         GRAPH_COMMIT_V1, MIXED_BATCH_MEMBER_V1, UPSERT_V2, encode_mixed_batch_member,

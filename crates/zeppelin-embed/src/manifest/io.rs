@@ -77,10 +77,15 @@ pub fn load_manifest(
     }
     #[cfg(feature = "graph-cypher")]
     if let Some(graph) = &manifest.graph
-        && graph.graph_absorbed_through > durable_log_end
+        && graph
+            .graph_absorbed_through
+            .max(graph.generation_absorbed_through.unwrap_or(0))
+            > durable_log_end
     {
         return Err(ManifestError::AheadOfLog {
-            snapshot: graph.graph_absorbed_through,
+            snapshot: graph
+                .graph_absorbed_through
+                .max(graph.generation_absorbed_through.unwrap_or(0)),
             durable: durable_log_end,
         });
     }

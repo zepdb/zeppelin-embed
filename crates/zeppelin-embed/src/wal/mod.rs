@@ -1432,10 +1432,10 @@ impl WalReader {
             Some(ReplayTerminator::CorruptAt {
                 reason: replay::CorruptionReason::Record {
                     location: replay::CorruptionLocation::Tail,
-                    error: RecordError::BodyTruncated { .. },
+                    error: RecordError::BodyTruncated { needed, .. },
                 },
                 ..
-            })
+            }) if needed <= DEFAULT_MAX_GROUP_BYTES_DURABLE
         ) {
             self.terminator = Some(ReplayTerminator::CleanEnd);
         }

@@ -4220,8 +4220,8 @@ fn run_ze46_intent_unlink_sync_completion_crashes_resume_idempotently() {
         .expect("cleared reclaim reader");
     assert!(cleared.bundle().reclaim().is_none());
     assert_eq!(
-        cleared.bundle().base().generation,
-        cleared.bundle().base().generation
+        cleared.bundle().base().fold.envelope_sequence,
+        cleared.bundle().sequence()
     );
     drop(cleared);
     writable.close().expect("close completed reclaim store");
@@ -4329,8 +4329,8 @@ fn run_ze46_readonly_pending_reclaim_and_checkpoint_retirement_are_exact() {
     let cleared = store.admit_native_read().expect("cleared reader");
     assert!(cleared.bundle().reclaim().is_none());
     assert_eq!(
-        cleared.bundle().base().generation,
-        cleared.bundle().base().generation
+        cleared.bundle().base().fold.envelope_sequence,
+        cleared.bundle().sequence()
     );
     drop(cleared);
     assert_eq!(held_snapshot(&store), held_before);

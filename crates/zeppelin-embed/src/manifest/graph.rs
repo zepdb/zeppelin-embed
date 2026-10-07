@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use xxhash_rust::xxh3::xxh3_64;
 
 const MAGIC: &[u8; 4] = b"ZGR3";
+const GENERATION_BOUNDARY_V1: &[u8; 8] = b"ZGEN\x01\x00\x00\x00";
 
 /// One live immutable .zgraph object, identified independently of its directory.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -26,6 +27,9 @@ pub struct GraphManifest {
     state: Vec<u8>,
     /// Last graph WAL record absorbed by this manifest.
     pub graph_absorbed_through: u64,
+    /// WAL boundary already counted in the manifest generation, when a sealed
+    /// document mutation commits without absorbing its active WAL records.
+    pub generation_absorbed_through: Option<u64>,
     /// Live .zgraph objects; no paths are persisted.
     pub objects: Vec<GraphObject>,
 }
@@ -51,6 +55,7 @@ impl GraphManifest {
         let graph = Self {
             state: bytes,
             graph_absorbed_through,
+            generation_absorbed_through: None,
             objects,
         };
         graph.validate()?;
@@ -140,7 +145,12 @@ pub(super) fn append(graph: &GraphManifest, output: &mut Vec<u8>) -> Result<(), 
     let start = output.len();
     output.extend_from_slice(MAGIC);
     let length = 24_usize
-        .checked_add(graph.state.len())
+        .checked_add(if graph.generation_absorbed_through.is_some() {
+            16
+        } else {
+            0
+        })
+        .and_then(|size| size.checked_add(graph.state.len()))
         .and_then(|size| {
             graph
                 .objects
@@ -160,6 +170,10 @@ pub(super) fn append(graph: &GraphManifest, output: &mut Vec<u8>) -> Result<(), 
         output.extend_from_slice(&object.artifact.get().to_le_bytes());
         output.extend_from_slice(&object.length.to_le_bytes());
         output.extend_from_slice(&object.checksum.to_le_bytes());
+    }
+    if let Some(sequence) = graph.generation_absorbed_through {
+        output.extend_from_slice(GENERATION_BOUNDARY_V1);
+        output.extend_from_slice(&sequence.to_le_bytes());
     }
     let section = output
         .get(start..)
@@ -199,7 +213,10 @@ pub(super) fn decode(cursor: &mut ManifestCursor<'_>) -> Result<GraphManifest, M
     let length = graph.usize_from_u32()?;
     let state = graph.take(length)?.to_vec();
     let count = graph.usize_from_u32()?;
-    if count.checked_mul(32) != Some(graph.remaining()) {
+    let object_bytes = count.checked_mul(32);
+    let has_generation_boundary =
+        object_bytes.and_then(|bytes| bytes.checked_add(16)) == Some(graph.remaining());
+    if object_bytes != Some(graph.remaining()) && !has_generation_boundary {
         return Err(ManifestError::Decode(
             "graph object count/length mismatch".to_owned(),
         ));
@@ -216,10 +233,21 @@ pub(super) fn decode(cursor: &mut ManifestCursor<'_>) -> Result<GraphManifest, M
             checksum: graph.u64()?,
         });
     }
+    let generation_absorbed_through = if has_generation_boundary {
+        if graph.take(8)? != GENERATION_BOUNDARY_V1 {
+            return Err(ManifestError::Decode(
+                "unknown graph generation boundary".to_owned(),
+            ));
+        }
+        Some(graph.u64()?)
+    } else {
+        None
+    };
     graph.finish()?;
     let decoded = GraphManifest {
         state,
         graph_absorbed_through,
+        generation_absorbed_through,
         objects,
     };
     decoded.validate()?;

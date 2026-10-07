@@ -1370,6 +1370,13 @@ impl Store {
             writer.durable_end(),
             generation,
             writer.durable_end().saturating_add(1),
+            #[cfg(feature = "graph-cypher")]
+            Some(
+                writer
+                    .durable_end()
+                    .checked_add(records.len() as u64)
+                    .ok_or(StoreError::GenerationOverflow)?,
+            ),
             self.durability_policy,
             &self.accounting,
         )?;
@@ -1529,6 +1536,13 @@ impl Store {
             writer.durable_end(),
             generation,
             writer.durable_end().saturating_add(1),
+            #[cfg(feature = "graph-cypher")]
+            Some(
+                writer
+                    .durable_end()
+                    .checked_add(1)
+                    .ok_or(StoreError::GenerationOverflow)?,
+            ),
             self.durability_policy,
             &self.accounting,
         )?;

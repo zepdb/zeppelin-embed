@@ -87,6 +87,7 @@ pub(crate) struct RecordingVfs {
     wal_sync_gate: SyncGate,
     faults: Arc<Mutex<FaultSchedule>>,
     after_create: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    after_manifest_version: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     list_calls: AtomicU64,
     child_calls: AtomicU64,
 }
@@ -100,6 +101,10 @@ struct RecordingFile {
 }
 
 impl RecordingVfs {
+    pub(super) fn after_manifest_version(&self, action: impl FnOnce() + Send + 'static) {
+        *self.after_manifest_version.lock().unwrap() = Some(Box::new(action));
+    }
+
     pub(super) fn take(&self) -> Vec<DurabilityEvent> {
         std::mem::take(&mut *self.events.lock().expect("recording VFS events"))
     }
@@ -298,7 +303,15 @@ impl Vfs for RecordingVfs {
     }
 
     fn read_range(&self, path: &Path, offset: u64, length: usize) -> std::io::Result<Vec<u8>> {
-        StdVfs.read_range(path, offset, length)
+        let bytes = StdVfs.read_range(path, offset, length)?;
+        if path.file_name().is_some_and(|name| name == "manifest.ze") && offset == 10 && length == 2
+        {
+            let action = self.after_manifest_version.lock().unwrap().take();
+            if let Some(action) = action {
+                action();
+            }
+        }
+        Ok(bytes)
     }
 
     fn write(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -3434,6 +3447,58 @@ mod graph_checkpoint {
         );
         write_one_duplicate(&reopened);
         reopened.close().unwrap();
+    }
+
+    #[test]
+    fn a_rotation_directory_sync_failure_refuses_later_document_writes() {
+        use crate::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+        let directory = tempfile::tempdir().unwrap();
+        let vfs = Arc::new(RecordingVfs::default());
+        let store = Store::open_with_test_dependencies(
+            directory.path(),
+            OpenOptions::new()
+                .with_max_resident_bytes(256 * 1024 * 1024)
+                .with_durability(DurabilityMode::Durable, CommitTier::Durable),
+            crate::lifecycle::StoreTestDependencies::new(
+                vfs.clone(),
+                Arc::new(crate::lifecycle::SystemMonotonicClock),
+            ),
+        )
+        .unwrap();
+        store.enable_graph().unwrap();
+        write_one(&store);
+        vfs.take();
+        vfs.arm_fault_after(FaultPoint::DirectorySync, 1);
+        assert!(
+            store
+                .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+                .is_err()
+        );
+        vfs.assert_fired_once();
+        assert!(vfs.take().iter().any(|event| matches!(event,
+            DurabilityEvent::Rename(_, path) if path.file_name().is_some_and(|name| name == "wal.ze")
+        )));
+        let before = std::fs::read(directory.path().join("wal.ze")).unwrap();
+        let result = store.ingest(IngestBatch::new(vec![IngestDocument::new(
+            DocumentVersion::new(DocId::new(91), Revision::new(1)),
+            vec![1.0, 0.0],
+        )]));
+        assert!(
+            matches!(
+                result,
+                Err(crate::ingest::IngestError::Store(
+                    crate::lifecycle::StoreError::WalWrite(
+                        crate::wal::WalWriteError::Failed { .. }
+                    )
+                ))
+            ),
+            "a failed WAL-name sync must stop every writer"
+        );
+        assert_eq!(
+            std::fs::read(directory.path().join("wal.ze")).unwrap(),
+            before
+        );
+        let _ = store.close();
     }
 
     fn write_one_duplicate(store: &Store) {

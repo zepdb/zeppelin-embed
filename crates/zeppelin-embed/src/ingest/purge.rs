@@ -199,6 +199,7 @@ pub(crate) fn prepare_sealed_tombstones(
     durable_end: u64,
     generation: u64,
     nonce: u64,
+    #[cfg(feature = "graph-cypher")] generation_absorbed_through: Option<u64>,
     policy: DurabilityPolicy,
     accounting: &Arc<Accounting>,
 ) -> Result<Option<PreparedSealedTombstones>, StoreError> {
@@ -245,6 +246,12 @@ pub(crate) fn prepare_sealed_tombstones(
             return Ok(None);
         }
         manifest.generation = generation;
+        #[cfg(feature = "graph-cypher")]
+        if let Some(graph) = &mut manifest.graph {
+            // The pending delete's WAL batch is counted in this generation,
+            // but neither replay watermark can move past unsealed documents.
+            graph.generation_absorbed_through = generation_absorbed_through;
+        }
         let remapped = PublishedSnapshot::from_manifest(vfs, directory, &manifest, accounting)?;
         Ok(Some(PreparedSealedTombstones {
             manifest,
@@ -567,6 +574,8 @@ impl Store {
             writer.durable_end(),
             generation,
             writer.durable_end().saturating_add(1),
+            #[cfg(feature = "graph-cypher")]
+            Some(writer.durable_end()),
             self.durability_policy,
             &self.accounting,
         )?;

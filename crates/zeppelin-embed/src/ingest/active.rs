@@ -122,6 +122,7 @@ impl ActiveState {
         generation: u64,
         absorbed_through: u64,
         graph_absorbed_through: u64,
+        #[cfg(feature = "graph-cypher")] generation_absorbed_through: Option<u64>,
         #[cfg(feature = "graph-cypher")] graph_enabled: bool,
         accounting: &Arc<Accounting>,
         schema: &crate::meta::Schema,
@@ -158,6 +159,8 @@ impl ActiveState {
                     generation,
                     absorbed_through,
                     graph_absorbed_through,
+                    #[cfg(feature = "graph-cypher")]
+                    generation_absorbed_through,
                     &clean,
                     #[cfg(feature = "graph-cypher")]
                     graph_enabled,
@@ -211,6 +214,7 @@ impl ActiveState {
         mut generation: u64,
         absorbed_through: u64,
         graph_absorbed_through: u64,
+        #[cfg(feature = "graph-cypher")] generation_absorbed_through: Option<u64>,
         recovered: &CleanWalReader,
         #[cfg(feature = "graph-cypher")] graph_enabled: bool,
         accounting: &Arc<Accounting>,
@@ -237,11 +241,36 @@ impl ActiveState {
         let mut documents = Vec::new();
         let mut steps = Vec::new();
         let mut deleted_ids = 0_usize;
-        for batch in super::atomic_batch::committed_batches(
+        let batches = super::atomic_batch::committed_batches(
             recovered.records(),
             absorbed_through.min(graph_absorbed_through),
             |binding| decisions.get(&binding.transaction).copied(),
-        )? {
+        )?;
+        #[cfg(feature = "graph-cypher")]
+        if let Some(boundary) = generation_absorbed_through {
+            if boundary > absorbed_through.max(graph_absorbed_through)
+                && !batches.iter().any(|batch| batch.last_seq.get() == boundary)
+            {
+                return Err(StoreError::Manifest(
+                    crate::manifest::ManifestError::Decode(
+                        "generation boundary is not a committed batch boundary".to_owned(),
+                    ),
+                ));
+            }
+            // Reconstruct the generations of historical graph records too:
+            // these batches still replay, but the manifest already counted them.
+            let already_counted = batches
+                .iter()
+                .filter(|batch| {
+                    batch.last_seq.get() > absorbed_through.max(graph_absorbed_through)
+                        && batch.last_seq.get() <= boundary
+                })
+                .count();
+            generation = generation
+                .checked_sub(already_counted as u64)
+                .ok_or(StoreError::GenerationOverflow)?;
+        }
+        for batch in batches {
             #[cfg(feature = "graph-cypher")]
             if graph_enabled
                 && let Some((first, _, _)) = batch.members.first()
@@ -2275,11 +2304,14 @@ impl StoreWal {
                 .map_err(StoreError::WalWrite)?
                 .retained_bytes,
         )?;
-        if let SyncRequirement::Sync(kind) = policy.directory_sync() {
-            vfs.sync(directory, kind).map_err(|source| StoreError::Io {
+        if let SyncRequirement::Sync(kind) = policy.directory_sync()
+            && let Err(source) = vfs.sync(directory, kind)
+        {
+            self.writer.poison(&source).map_err(StoreError::WalWrite)?;
+            return Err(StoreError::Io {
                 path: directory.to_path_buf(),
                 source,
-            })?;
+            });
         }
         Ok(())
     }

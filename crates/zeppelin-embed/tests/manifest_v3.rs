@@ -211,3 +211,36 @@ fn existing_manifest_goldens_are_unchanged() {
         );
     }
 }
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn manifest_generation_boundary_round_trips_and_cannot_be_ahead_of_the_log() {
+    use zeppelin_embed::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
+    use zeppelin_embed::manifest::ManifestError;
+    use zeppelin_embed::manifest::io::{commit_manifest, load_manifest};
+    use zeppelin_embed::vfs::StdVfs;
+    let mut manifest = decode_manifest("golden", &golden()).unwrap();
+    manifest.graph.as_mut().unwrap().generation_absorbed_through = Some(43);
+    let bytes = encode_manifest(&manifest).unwrap();
+    assert_eq!(
+        decode_manifest("generation-boundary", &bytes).unwrap(),
+        manifest
+    );
+    let directory = tempfile::tempdir().unwrap();
+    commit_manifest(
+        &StdVfs,
+        directory.path(),
+        &manifest,
+        DurabilityPolicy::new(DurabilityMode::Durable, CommitTier::Durable).unwrap(),
+    )
+    .unwrap();
+    let path = directory.path().join("manifest.ze");
+    assert!(matches!(
+        load_manifest(&StdVfs, &path, 42),
+        Err(ManifestError::AheadOfLog {
+            snapshot: 43,
+            durable: 42
+        })
+    ));
+    assert_eq!(load_manifest(&StdVfs, &path, 43).unwrap(), manifest);
+}

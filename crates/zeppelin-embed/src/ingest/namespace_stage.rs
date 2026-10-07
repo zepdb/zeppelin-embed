@@ -136,6 +136,8 @@ impl Store {
             durable_end,
             generation,
             durable_end.saturating_add(1),
+            #[cfg(feature = "graph-cypher")]
+            None, // Namespace batches carry their own explicit final generation.
             crate::lifecycle::durability::DurabilityPolicy::new(
                 crate::lifecycle::durability::DurabilityMode::Durable,
                 crate::lifecycle::durability::CommitTier::Durable,

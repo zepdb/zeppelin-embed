@@ -3173,6 +3173,17 @@ impl Store {
             vfs.as_ref(),
             private_preparation.as_ref(),
         )?;
+        #[cfg(feature = "graph-cypher")]
+        if options.access_mode == AccessMode::ReadOnly
+            && snapshot.graph_enabled
+            && reader_store_lock.is_none()
+        {
+            // Graph enable raced the unlocked v2 probe. Retry open under the
+            // shared graph lock rather than admitting this unlocked snapshot.
+            return Err(StoreError::StoreBusy {
+                path: path.join(lock::STORE_LOCK_FILE),
+            });
+        }
         let (schema, schema_evolved) = resolve_open_schema(
             manifest_exists,
             &snapshot,
@@ -3210,6 +3221,11 @@ impl Store {
             snapshot.generation(),
             absorbed_through,
             snapshot.graph_absorbed_through,
+            #[cfg(feature = "graph-cypher")]
+            snapshot
+                .graph_manifest
+                .as_ref()
+                .and_then(|graph| graph.generation_absorbed_through),
             #[cfg(feature = "graph-cypher")]
             snapshot.graph_enabled,
             &accounting,

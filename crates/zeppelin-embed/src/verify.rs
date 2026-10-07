@@ -533,6 +533,10 @@ impl Walk<'_> {
                 }
             },
             #[cfg(feature = "graph-cypher")]
+            decoded
+                .and_then(|manifest| manifest.graph.as_ref())
+                .and_then(|graph| graph.generation_absorbed_through),
+            #[cfg(feature = "graph-cypher")]
             decoded.is_some_and(|manifest| manifest.graph.is_some()),
             &accounting,
             &schema,
