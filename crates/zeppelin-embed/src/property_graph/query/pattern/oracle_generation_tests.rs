@@ -41,7 +41,7 @@ fn control() -> QueryControl {
     QueryControl::Cancel(CancelToken::new())
 }
 
-/// The number of maintenance calls after which every live node record has been
+/// The number of consolidation rounds after which every live node record has been
 /// relocated and every pending adjacency range in each direction has been
 /// merged at least once.
 ///
@@ -72,24 +72,32 @@ fn maintenance_rounds(graph: &oracle::Graph) -> usize {
         .max(1)
 }
 
-/// Commits one maintenance generation and returns the physical references it
-/// replaced. A `StalePreparation` refusal means a concurrent change invalidated
-/// the admitted base, which is a re-admit and retry; every other error is a
-/// real failure.
-fn maintain_once(store: &Store, call: usize) -> u64 {
-    for attempt in 0..2 {
-        let admission = store
-            .admit_native_graph_maintenance()
-            .expect("maintenance admission");
-        match store.commit_native_graph_maintenance(&admission, &control()) {
-            Ok(report) => return report.replaced_physical_refs,
-            Err(NativeGraphError::StalePreparation) => {
-                assert!(attempt == 0, "call {call} stayed stale across two attempts");
+/// Requires one consolidation round, allowing the two reclaim-only phases
+/// (drain, retire) that may precede it. ZE-380's fold before capture can arm
+/// reclaim before the fixture's explicit halfway checkpoint.
+/// A stale admission is retried once; every other refusal is a failure.
+fn consolidate_once(store: &Store, round: usize) -> u64 {
+    for phase in 0..3 {
+        for attempt in 0..2 {
+            let admission = store
+                .admit_native_graph_maintenance()
+                .expect("maintenance admission");
+            match store.commit_native_graph_maintenance(&admission, &control()) {
+                Ok(report) if report.replaced_physical_refs > 0 => {
+                    return report.replaced_physical_refs;
+                }
+                Ok(_) => break,
+                Err(NativeGraphError::StalePreparation) => {
+                    assert!(
+                        attempt == 0,
+                        "round {round}, phase {phase} stayed stale across two attempts"
+                    );
+                }
+                Err(error) => panic!("round {round}, phase {phase} failed: {error:?}"),
             }
-            Err(error) => panic!("maintenance call {call} failed: {error:?}"),
         }
     }
-    panic!("call {call} never committed")
+    panic!("round {round} replaced no physical reference within three maintenance phases")
 }
 
 /// The raw node-directory value (the physical record reference) of every id.
@@ -123,11 +131,11 @@ fn still_exact(fixture: &Fixture, patterns: &[TinyPattern], expected: &[oracle::
 }
 
 /// The shared ZE-169 contract: the bag of every pattern is exactly the bag the
-/// fresh graph produced, after `2K` maintenance calls with a checkpoint at the
+/// fresh graph produced, after `2K` consolidation rounds with a checkpoint at the
 /// halfway point, and again after a close/reopen.
 ///
 /// `relocated` names the node ids whose physical record must have moved within
-/// the first `K` calls. A tombstoned node is never selected for relocation, so
+/// the first `K` rounds. A tombstoned node is never selected for relocation, so
 /// it is deliberately excluded by the caller.
 fn prove_across_maintenance(
     fixture: &mut Fixture,
@@ -143,12 +151,11 @@ fn prove_across_maintenance(
         .collect::<Vec<oracle::Bag>>();
     let original = node_records(fixture, relocated);
 
-    // No reclaim is armed yet, so each of the first `K` calls is a
-    // consolidation call and must replace physical references.
+    // Require K actual consolidations, including when reclaim is armed early.
     for call in 0..rounds {
         assert!(
-            maintain_once(&fixture.store, call) > 0,
-            "maintenance call {call} replaced no physical reference"
+            consolidate_once(&fixture.store, call) > 0,
+            "consolidation round {call} replaced no physical reference"
         );
     }
     for (index, (now, before)) in node_records(fixture, relocated)
@@ -158,30 +165,13 @@ fn prove_across_maintenance(
     {
         assert_ne!(
             now, before,
-            "node {index} kept its physical record through {rounds} maintenance calls"
+            "node {index} kept its physical record through {rounds} consolidation rounds"
         );
     }
     still_exact(fixture, patterns, &expected, "after the first half");
 
-    // The checkpoint cuts the WAL, so the second half of the calls is what a
-    // reopen has to replay on top of a checkpointed base.
-    //
-    // A `replaced_physical_refs == 0` call in that half is not convergence; it
-    // is a call that did no consolidation at all. A consolidation call that
-    // retires packs arms a reclaim, and while the admitted bundle carries a
-    // reclaim root `native_graph/maintenance.rs::commit_with_limits` returns
-    // through `resume_pending_reclaim` (subtype 2, which unlinks the retired
-    // packs) and then `retire_completed_reclaim` (subtype 3). Both report
-    // `replaced_physical_refs: 0` by construction and never reach
-    // `prepare_one_replacement`, so steady-state maintenance is a three-call
-    // cycle: consolidate, drain the reclaim, retire it. Measured over 6K calls
-    // on all ten fixtures, every consolidation call still selected a live node,
-    // so nothing had converged; zero calls come in runs of exactly two, and
-    // relocation resumes on the call after each pair.
-    //
-    // The second half therefore still has to do consolidation work, which is
-    // what the total below requires. It cannot be a per-call requirement: a
-    // window of `K` calls straddles at most one such pair.
+    // Run another K consolidations after an explicit checkpoint, then verify
+    // close/reopen against the same expected bag.
     fixture
         .store
         .checkpoint_native_graph(&control())
@@ -189,11 +179,11 @@ fn prove_across_maintenance(
     let mut replaced_after_checkpoint = 0_u64;
     for call in rounds..rounds.saturating_mul(2) {
         replaced_after_checkpoint =
-            replaced_after_checkpoint.saturating_add(maintain_once(&fixture.store, call));
+            replaced_after_checkpoint.saturating_add(consolidate_once(&fixture.store, call));
     }
     assert!(
         replaced_after_checkpoint > 0,
-        "the {rounds} calls after the checkpoint replaced no physical reference"
+        "the {rounds} consolidation rounds after the checkpoint replaced no physical reference"
     );
     still_exact(fixture, patterns, &expected, "after maintenance");
 

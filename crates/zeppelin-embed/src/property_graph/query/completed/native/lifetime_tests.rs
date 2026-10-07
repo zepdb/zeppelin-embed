@@ -13,6 +13,7 @@ use super::entry_probe::{Assign, Fixture, control, node_values, options, write_p
 use super::entry_tests::{FixedHits, lexical, search_nodes};
 use super::error::GraphQueryErrorKind;
 use crate::lifecycle::durability::{CommitTier, DurabilityMode};
+use crate::lifecycle::native_graph::NativeGraphError;
 use crate::lifecycle::{CancelToken, OpenOptions, QueryControl, Store, StoreState};
 use crate::property_graph::GraphGeneration;
 use crate::property_graph::query::plan::SearchCallId;
@@ -306,15 +307,25 @@ fn charged(store: &Store) -> (u64, u64) {
     )
 }
 
-/// Folds the writer's per-commit bookkeeping through one maintenance
-/// generation. That bookkeeping grows by a fixed amount per committed
-/// generation until a checkpoint, for the structured writer exactly as for
-/// this seam (96 bytes per commit on this fixture, measured both ways).
-fn fold(store: &Store) {
-    let admission = store.admit_native_graph_maintenance().unwrap();
-    store
-        .commit_native_graph_maintenance(&admission, &control())
-        .expect("maintenance");
+/// Folds prepared-inventory bookkeeping through an actual consolidation.
+/// Reclaim drain and retirement each retain another RequiredRef; neither folds
+/// inventories. Allow those two phases, then require consolidation within the
+/// three-phase cycle. Return the number of maintenance generations committed.
+fn fold(store: &Store) -> u64 {
+    for committed in 1..=3 {
+        for attempt in 0..2 {
+            let admission = store.admit_native_graph_maintenance().unwrap();
+            match store.commit_native_graph_maintenance(&admission, &control()) {
+                Ok(report) if report.replaced_physical_refs > 0 => return committed,
+                Ok(_) => break,
+                Err(NativeGraphError::StalePreparation) => {
+                    assert!(attempt == 0, "maintenance stayed stale across two attempts");
+                }
+                Err(error) => panic!("maintenance failed: {error:?}"),
+            }
+        }
+    }
+    panic!("maintenance did not fold inventories within three phases")
 }
 
 /// Repeated read, search, failed-search, write and refused-write statements
@@ -345,6 +356,7 @@ fn ze53_s4_repeated_statements_return_accounting_to_baseline() {
         calls: 0,
         fail: false,
     };
+    let mut maintenance_generations = 0;
     for round in 0..16_i64 {
         let read = fixture.read().unwrap();
         assert_eq!(
@@ -430,11 +442,14 @@ fn ze53_s4_repeated_statements_return_accounting_to_baseline() {
             "round {round}: refused write"
         );
 
-        fold(&fixture.store);
+        maintenance_generations += fold(&fixture.store);
         assert_eq!(charged(&fixture.store), baseline, "round {round}: folded");
     }
-    // Each round publishes one write and one maintenance generation.
-    assert_eq!(fixture.generation().unwrap(), start + 32);
+    // Each round publishes one write plus the required maintenance phases.
+    assert_eq!(
+        fixture.generation().unwrap(),
+        start + 16 + maintenance_generations
+    );
     fixture.remove().unwrap();
 }
 
