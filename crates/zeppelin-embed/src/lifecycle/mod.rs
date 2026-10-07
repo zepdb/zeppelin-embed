@@ -9980,6 +9980,88 @@ mod tests {
 
     #[cfg(feature = "graph-cypher")]
     #[test]
+    pub(super) fn replacement_snapshot_backup_reopens_with_nonzero_watermarks() {
+        use crate::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+        use crate::meta::{AliveSet, ColumnStoreBuilder, Schema};
+        let directory = tempdir().expect("source");
+        let parent = tempdir().expect("backup parent");
+        let options =
+            OpenOptions::new().with_durability(DurabilityMode::Durable, CommitTier::Durable);
+        let store = Store::open(directory.path(), options.clone()).expect("open source");
+        assert_eq!(store.enable_graph().expect("enable graph"), 1);
+        let document = |id| {
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                vec![1.0, 0.0],
+            )
+        };
+        let ack = store
+            .ingest(IngestBatch::new(vec![document(1)]))
+            .expect("ingest");
+        assert_eq!(ack.seq().get(), 1);
+        assert_eq!(store.seal().expect("seal"), 3);
+        let columns = ColumnStoreBuilder::new(Schema::timestamp_only())
+            .finish()
+            .expect("columns");
+        let alive = AliveSet::new(0);
+        let prepared = store
+            .prepare_segment(super::InMemorySegment {
+                id: crate::segment::SegmentId::new(1, [2; 10]),
+                scheme: 4,
+                dims: 2,
+                codes: Vec::new(),
+                factors: super::InMemorySegmentFactors::Bit4(Vec::new()),
+                rescore: Vec::new(),
+                columns: &columns,
+                alive: &alive,
+            })
+            .expect("prepare empty replacement");
+        assert_eq!(store.seal_snapshot(prepared).expect("replace snapshot"), 4);
+        let target = parent.path().join("backup");
+        assert_eq!(
+            store.write_snapshot(&target).expect("acknowledge backup"),
+            4
+        );
+        // No crash or source close: a successfully acknowledged backup must open.
+        for access in [super::AccessMode::ReadOnly, super::AccessMode::ReadWrite] {
+            let backup = Store::open(&target, options.clone().with_access_mode(access))
+                .expect("acknowledged replacement backup must open");
+            assert_eq!(backup.snapshot().expect("snapshot").generation(), 4);
+            assert_eq!(backup.count_documents(None, None).expect("count").count, 0);
+            assert!(backup.admit_native_read().is_ok());
+            backup.close().expect("close backup");
+        }
+        let manifest = crate::manifest::io::load_manifest(&StdVfs, &target.join("manifest.ze"), 1)
+            .expect("backup manifest");
+        assert_eq!(manifest.log_seq, 1);
+        assert_eq!(
+            manifest
+                .graph
+                .expect("graph section")
+                .graph_absorbed_through,
+            1
+        );
+        let backup = Store::open(&target, options.clone()).expect("writable backup");
+        let ack = backup
+            .ingest(IngestBatch::new(vec![document(2)]))
+            .expect("continue backup WAL");
+        assert_eq!(ack.seq().get(), 2);
+        assert_eq!(ack.generation(), 5);
+        backup.close().expect("close continued backup");
+        store.close().expect("close source");
+        let source = Store::open(directory.path(), options).expect("reopen replacement source");
+        assert_eq!(
+            source
+                .count_documents(None, None)
+                .expect("source count")
+                .count,
+            0
+        );
+        assert_eq!(source.snapshot().expect("source snapshot").generation(), 4);
+    }
+
+    #[cfg(feature = "graph-cypher")]
+    #[test]
     fn enable_graph_retry_completes_a_failed_install() {
         enable_graph_retry_completes(
             super::native_graph::tests::publication::FaultPoint::Enumeration,

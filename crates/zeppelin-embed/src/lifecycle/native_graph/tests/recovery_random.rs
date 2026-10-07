@@ -380,6 +380,8 @@ pub(super) fn run() {
             // publisher is exercised at the default eight sequences; failures
             // must refuse all subsequent acknowledgements until reopen.
             crate::lifecycle::tests::enable_graph_retry_completes(FaultPoint::PostManifestRename);
+            crate::lifecycle::tests::enable_graph_retry_completes(FaultPoint::SelectorSync);
+            crate::lifecycle::tests::replacement_snapshot_backup_reopens_with_nonzero_watermarks();
             for fault_index in [Some(sequence % 8), (sequence < 4).then_some(sequence + 8)]
                 .into_iter()
                 .flatten()
