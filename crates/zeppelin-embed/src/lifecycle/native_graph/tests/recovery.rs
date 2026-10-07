@@ -3269,6 +3269,146 @@ fn active_physical_purge_preserves_generation_when_rewriting_the_wal() {
 }
 
 #[test]
+fn a_physical_purge_of_a_multi_member_batch_reopens() {
+    use crate::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+    for members in [7, 2, 3] {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path(), native_options()).unwrap();
+        assert_eq!(store.enable_graph().unwrap(), 1);
+        disable_generation_fixture_maintenance(&store);
+        let first = commit_tail_test_node(&store, "before-multi-purge");
+        assert_eq!(observe_node(&store, first), Some((2, 1, 1)));
+        store
+            .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+            .unwrap();
+        assert_eq!(store.snapshot().unwrap().generation(), 3);
+        assert_eq!(
+            store
+                .ingest(IngestBatch::new(
+                    (91..91 + members)
+                        .map(|id| {
+                            IngestDocument::new(
+                                DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                                vec![1.0, 0.0],
+                            )
+                        })
+                        .collect()
+                ))
+                .unwrap()
+                .generation(),
+            4
+        );
+        let token = store.purge(&[DocId::new(91)]).unwrap();
+        assert_eq!(store.await_physical_purge(token).unwrap().generation(), 5);
+        drop(store);
+        for access in [
+            crate::lifecycle::AccessMode::ReadOnly,
+            crate::lifecycle::AccessMode::ReadWrite,
+            crate::lifecycle::AccessMode::ReadOnly,
+            crate::lifecycle::AccessMode::ReadWrite,
+        ] {
+            let reopened = Store::open(directory.path(), native_options().with_access_mode(access))
+                .unwrap_or_else(|error| panic!("members={members}, access={access:?}: {error}"));
+            assert_eq!(reopened.snapshot().unwrap().generation(), 5);
+            assert_eq!(
+                reopened.count_documents(None, None).unwrap().count,
+                (members - 1) as u64
+            );
+            assert!(
+                reopened
+                    .get_documents(&[DocId::new(91)], crate::lifecycle::DocumentFields::NONE)
+                    .unwrap()[0]
+                    .is_none()
+            );
+            for id in 92..91 + members {
+                assert!(
+                    reopened
+                        .get_documents(&[DocId::new(id)], crate::lifecycle::DocumentFields::NONE)
+                        .unwrap()[0]
+                        .is_some()
+                );
+            }
+            assert_eq!(observe_node(&reopened, first), Some((2, 1, 1)));
+            drop(reopened);
+        }
+        let reopened = Store::open(directory.path(), native_options()).unwrap();
+        disable_generation_fixture_maintenance(&reopened);
+        let second = commit_tail_test_node(&reopened, "after-multi-purge");
+        assert_eq!(observe_node(&reopened, second), Some((6, 2, 1)));
+        drop(reopened);
+        let recovered = Store::open(directory.path(), native_options()).unwrap();
+        assert_eq!(recovered.snapshot().unwrap().generation(), 6);
+        assert_eq!(observe_node(&recovered, second), Some((6, 2, 1)));
+        assert_eq!(
+            recovered.count_documents(None, None).unwrap().count,
+            (members - 1) as u64
+        );
+    }
+}
+
+#[test]
+fn a_namespace_rollback_keeps_an_earlier_publication_fence() {
+    use crate::ingest::{DeleteBatch, DocId, DocumentVersion, IngestDocument, Revision};
+    use crate::lifecycle::{LiveNamespaceMutation, NamespaceMutation, namespace_batch_live};
+    let root = tempfile::tempdir().unwrap();
+    let vfs = Arc::new(RecordingVfs::default());
+    let first = Store::open_with_test_dependencies(
+        root.path().join("a"),
+        native_options(),
+        crate::lifecycle::StoreTestDependencies::new(
+            vfs.clone(),
+            Arc::new(crate::lifecycle::SystemMonotonicClock),
+        ),
+    )
+    .unwrap();
+    let second = Store::open(root.path().join("b"), native_options()).unwrap();
+    generation_fixture(&first, 91);
+    generation_fixture(&second, 92);
+    assert_eq!(first.enable_graph().unwrap(), 3);
+    disable_generation_fixture_maintenance(&first);
+    let node = commit_tail_test_node(&first, "before-namespace-rollback");
+    assert_eq!(observe_node(&first, node), Some((4, 1, 1)));
+    vfs.arm_fault_after(FaultPoint::Rename, 1);
+    assert!(
+        first
+            .delete(DeleteBatch::new(vec![DocId::new(91)]))
+            .is_err()
+    );
+    vfs.assert_fired_once();
+    assert_eq!(first.snapshot().unwrap().generation(), 4);
+    // No write probes between the earlier failure and the namespace append.
+    let participants = [(&first, "a", 101), (&second, "b", 102)]
+        .into_iter()
+        .map(|(store, name, id)| LiveNamespaceMutation {
+            store,
+            mutation: NamespaceMutation {
+                name: name.to_owned(),
+                options: native_options(),
+                upserts: vec![IngestDocument::new(
+                    DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                    vec![1.0, 0.0],
+                )],
+                deletes: Vec::new(),
+                delete_where: None,
+            },
+        })
+        .collect();
+    let result = namespace_batch_live(root.path(), participants);
+    assert!(
+        matches!(result, Err(crate::lifecycle::StoreError::WalWrite(_))),
+        "{result:?}"
+    );
+    assert_shared_writer_stopped(&first);
+    assert_eq!(first.snapshot().unwrap().generation(), 4);
+    drop(first);
+    drop(second);
+    assert_clean_reopen_after_publication_failure(&root.path().join("a"), node, 0);
+    let second = Store::open(root.path().join("b"), native_options()).unwrap();
+    assert_eq!(second.count_documents(None, None).unwrap().count, 1);
+    assert_eq!(second.snapshot().unwrap().generation(), 2);
+}
+
+#[test]
 fn a_failed_delete_publication_poisons_later_graph_writes() {
     failed_document_publication_poisons_writes(false);
 }
@@ -4008,5 +4148,53 @@ fn graph_text_and_vector_roots_survive_a_manifest_fold_and_wal_replay() {
         );
         drop(reader);
         reopened.close().unwrap();
+    }
+}
+
+#[test]
+fn a_cutoff_inside_a_committed_batch_is_refused() {
+    use crate::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    store.enable_graph().unwrap();
+    store
+        .ingest(IngestBatch::new(
+            (91..94)
+                .map(|id| {
+                    IngestDocument::new(
+                        DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                        vec![1.0, 0.0],
+                    )
+                })
+                .collect(),
+        ))
+        .unwrap();
+    drop(store);
+    let path = directory.path().join("manifest.ze");
+    let mut manifest = crate::manifest::io::load_manifest(&StdVfs, &path, 3).unwrap();
+    manifest.generation = 3;
+    manifest.record_generation_bump(1).unwrap();
+    crate::manifest::io::commit_manifest(
+        &StdVfs,
+        directory.path(),
+        &manifest,
+        crate::lifecycle::durability::DurabilityPolicy::new(
+            DurabilityMode::Durable,
+            CommitTier::Durable,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let before = file_snapshot(directory.path());
+    for access in [
+        crate::lifecycle::AccessMode::ReadOnly,
+        crate::lifecycle::AccessMode::ReadWrite,
+    ] {
+        assert!(
+            matches!(Store::open(directory.path(), native_options().with_access_mode(access)),
+            Err(crate::lifecycle::StoreError::Manifest(crate::manifest::ManifestError::Decode(message)))
+                if message == "generation boundary is not a committed batch boundary")
+        );
+        assert_eq!(file_snapshot(directory.path()), before);
     }
 }

@@ -984,6 +984,27 @@ impl Store {
         let rewrite_first_seq = LogSeq::new(durable_end.checked_add(1).ok_or(
             StoreError::WalWrite(crate::wal::WalWriteError::SequenceExhausted),
         )?);
+        #[cfg(feature = "graph-cypher")]
+        let framed;
+        #[cfg(feature = "graph-cypher")]
+        let records = if manifest.graph.is_some() && records.len() > 1 {
+            // Replay counts batches, so frame the replacement image as one batch
+            // covered by the purge cutoff, including any trailing tombstones.
+            let count = u32::try_from(records.len())
+                .map_err(|_| PurgeError::WalPayload(wal_payload::PayloadError::LengthOverflow))?;
+            framed = records
+                .iter()
+                .zip(0_u32..)
+                .map(|((op, payload), index)| {
+                    wal_payload::encode_mixed_batch_member(index, count, *op, payload)
+                        .map(|payload| (wal_payload::MIXED_BATCH_MEMBER_V1, payload))
+                        .map_err(PurgeError::WalPayload)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            framed.as_slice()
+        } else {
+            records
+        };
         writer.rewrite(vfs, &self.directory, policy, rewrite_first_seq, records)?;
         assign_rewritten_sequences(next_active, rewrite_first_seq, tombstoned)?;
         Ok(())

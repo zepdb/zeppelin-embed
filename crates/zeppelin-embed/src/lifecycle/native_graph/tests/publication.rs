@@ -278,6 +278,10 @@ impl VfsFile for RecordingFile {
 }
 
 impl Vfs for RecordingVfs {
+    fn truncate(&self, path: &Path, length: u64) -> std::io::Result<()> {
+        StdVfs.truncate(path, length)
+    }
+
     fn segment_data_read_counter(&self) -> Option<Arc<AtomicU64>> {
         StdVfs.segment_data_read_counter()
     }

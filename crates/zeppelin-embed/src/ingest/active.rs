@@ -2123,8 +2123,8 @@ impl Drop for ManifestPublication<'_> {
 
 impl StoreWal {
     pub(crate) fn manifest_publication(&self) -> Result<ManifestPublication<'_>, StoreError> {
-        // Writers hold the store WAL mutex: no pending group can be in flight.
-        // This checks the existing shared failure state without issuing I/O.
+        // Check the shared failure state and wait for any pending group flush
+        // before admitting a manifest publication.
         self.writer.flush().map_err(StoreError::WalWrite)?;
         Ok(ManifestPublication {
             wal: self,
@@ -2187,6 +2187,9 @@ impl StoreWal {
         absorbed: u64,
         accounting: &Arc<Accounting>,
     ) -> Result<(), StoreError> {
+        // Truncation only aborts this transaction's suffix. It cannot resolve
+        // an earlier indeterminate publication or make its generation current.
+        let failure = self.writer.flush().err();
         vfs.truncate(path, length)
             .map_err(|source| StoreError::Io {
                 path: path.to_path_buf(),
@@ -2202,6 +2205,9 @@ impl StoreWal {
             .into_clean()
             .map_err(StoreError::WalRecovery)?;
         *self = Self::resume(vfs, path, recovered, policy, absorbed, accounting)?;
+        if let Some(failure) = failure {
+            self.poison_after_manifest_failure(&failure.to_string())?;
+        }
         Ok(())
     }
 
