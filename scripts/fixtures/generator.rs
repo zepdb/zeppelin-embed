@@ -91,6 +91,26 @@ fn main() {
             .expect("public committed prepared batch");
             oracle(&out.join("a"), &out);
         }
+        #[cfg(release_namespace)]
+        "namespace-cascade" => {
+            use zeppelin_embed::lifecycle::{NamespaceMutation, namespace_delete_cascade};
+            let generations = namespace_delete_cascade(
+                &out,
+                ["a", "b"]
+                    .into_iter()
+                    .map(|name| NamespaceMutation {
+                        name: name.into(),
+                        options: common::options(false)
+                            .with_durability(DurabilityMode::Durable, CommitTier::Durable),
+                        upserts: vec![],
+                        deletes: vec![DocId::new(2)],
+                        delete_where: None,
+                    })
+                    .collect(),
+            )
+            .expect("release routed cascade");
+            println!("{generations:?}");
+        }
         _ => panic!("unknown mode"),
     }
 }

@@ -695,6 +695,8 @@ pub const REQUIRED_NAMESPACE_COVERAGE: &[&str] = &[
     "storage.namespace.whole-root-copy",
     "storage.namespace.detached-root-refusal",
     "storage.namespace.bootstrap-root.clean",
+    "storage.namespace.bootstrap-rename.clean",
+    "storage.namespace.bootstrap-rename.fired",
     "storage.namespace.bootstrap-root.fired",
     "storage.namespace.bootstrap-reference.clean",
     "storage.namespace.bootstrap-reference.fired",
@@ -719,6 +721,7 @@ pub const REQUIRED_NAMESPACE_COVERAGE: &[&str] = &[
     "storage.namespace.conversion-parent-sync.fired",
     "storage.namespace.conversion-parent-sync.can-fire",
     "storage.namespace.conversion-comparator-rejects-partial",
+    "storage.namespace.conversion-writable-publication-sync",
     "storage.namespace.plain-under-portable-root",
 ];
 

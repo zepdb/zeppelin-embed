@@ -3195,6 +3195,9 @@ impl Store {
                 .map(Arc::new);
         namespace_batch::refuse_retired(vfs.as_ref(), path)?;
         let writer_lock = acquire_writer_lock(path, options.access_mode)?;
+        if options.access_mode == AccessMode::ReadWrite && private_preparation.is_none() {
+            namespace_batch::sync_portable_publication_for_open(vfs.as_ref(), path)?;
+        }
         // Recheck after reclamation admission and the writer lock: the first
         // read is only a refusal probe and cannot authorize any mutation.
         validate_persisted_epoch_before_open(vfs.as_ref(), path, &options)?;

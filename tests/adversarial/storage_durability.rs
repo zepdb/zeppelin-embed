@@ -5529,7 +5529,7 @@ mod namespace_probe_tests {
         }
         assert_eq!(
             super::super::coverage::REQUIRED_NAMESPACE_COVERAGE.len(),
-            58
+            61
         );
         let required = super::super::campaign::CampaignSpec::for_kind(
             super::super::campaign::CampaignKind::StorageDurability,
@@ -5561,6 +5561,7 @@ mod namespace_probe_tests {
 /// purge unlink uses the existing scheduled VFS after durable adoption.
 #[derive(Clone, Copy, Debug)]
 pub enum NamespaceFault {
+    BootstrapRename,
     BootstrapRoot,
     BootstrapReference,
     EnlistReference,
@@ -5575,7 +5576,8 @@ pub enum NamespaceFault {
     PurgeUnlink,
 }
 impl NamespaceFault {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
+        Self::BootstrapRename,
         Self::BootstrapRoot,
         Self::BootstrapReference,
         Self::EnlistReference,
@@ -5591,6 +5593,7 @@ impl NamespaceFault {
     ];
     pub const fn key(self) -> &'static str {
         match self {
+            Self::BootstrapRename => "bootstrap-rename",
             Self::BootstrapRoot => "bootstrap-root",
             Self::BootstrapReference => "bootstrap-reference",
             Self::EnlistReference => "enlist-reference",
@@ -5607,6 +5610,7 @@ impl NamespaceFault {
     }
     const fn step(self) -> &'static str {
         match self {
+            Self::BootstrapRename => "commit rename",
             Self::BootstrapRoot => "bootstrap root published",
             Self::BootstrapReference | Self::EnlistReference => "participant reference installed",
             Self::PrepareAppend => "prepared append",
@@ -5623,7 +5627,8 @@ impl NamespaceFault {
     const fn committed(self) -> bool {
         !matches!(
             self,
-            Self::BootstrapRoot
+            Self::BootstrapRename
+                | Self::BootstrapRoot
                 | Self::BootstrapReference
                 | Self::EnlistReference
                 | Self::PrepareAppend
@@ -5973,7 +5978,8 @@ fn namespace_run(
     if inject
         && matches!(
             fault,
-            NamespaceFault::BootstrapRoot
+            NamespaceFault::BootstrapRename
+                | NamespaceFault::BootstrapRoot
                 | NamespaceFault::BootstrapReference
                 | NamespaceFault::EnlistReference
         )
@@ -6061,7 +6067,9 @@ pub fn namespace_probe(
             for fault in NamespaceFault::ALL {
                 if matches!(
                     fault,
-                    NamespaceFault::BootstrapRoot | NamespaceFault::BootstrapReference
+                    NamespaceFault::BootstrapRename
+                        | NamespaceFault::BootstrapRoot
+                        | NamespaceFault::BootstrapReference
                 ) && phase != NamespacePhase::Bootstrap
                     || matches!(fault, NamespaceFault::EnlistReference)
                         && phase != NamespacePhase::Enlist
@@ -6112,7 +6120,8 @@ pub fn namespace_probe(
                 }
                 let suffixes: &[&str] = if matches!(
                     fault,
-                    NamespaceFault::BootstrapRoot
+                    NamespaceFault::BootstrapRename
+                        | NamespaceFault::BootstrapRoot
                         | NamespaceFault::BootstrapReference
                         | NamespaceFault::EnlistReference
                 ) {
@@ -6231,6 +6240,46 @@ fn namespace_conversion_run(
         return Err("conversion published a staging prefix".into());
     }
     let observed = if published {
+        if inject && site.0 == "publish" {
+            use zeppelin_embed::lifecycle::{StoreTestDependencies, SystemMonotonicClock};
+            use zeppelin_embed::vfs::{
+                SyncKind,
+                crash::{CrashOperation, RecordingVfs},
+            };
+            let recorder = std::sync::Arc::new(RecordingVfs::new(StdVfs));
+            let directory =
+                std::fs::canonicalize(destination.join("a")).map_err(|e| e.to_string())?;
+            let writer = Store::open_with_test_dependencies(
+                directory,
+                release_fixture::options(false),
+                StoreTestDependencies::new(
+                    recorder.clone(),
+                    std::sync::Arc::new(SystemMonotonicClock),
+                ),
+            )
+            .map_err(|e| e.to_string())?;
+            let operations = recorder.operations().map_err(|e| e.to_string())?;
+            let parent = std::fs::canonicalize(temp.path()).map_err(|e| e.to_string())?;
+            let sync = operations
+                .iter()
+                .position(|op| {
+                    matches!(op,
+                        CrashOperation::Sync { path, kind: SyncKind::Full } if path == &parent
+                    )
+                })
+                .ok_or("writable open skipped interrupted conversion publication sync")?;
+            if operations.iter().take(sync).any(|op| {
+                matches!(
+                    op,
+                    CrashOperation::Write { .. }
+                        | CrashOperation::Append { .. }
+                        | CrashOperation::Rename { .. }
+                )
+            }) {
+                return Err("writable recovery preceded conversion publication sync".into());
+            }
+            writer.close().map_err(|e| e.to_string())?;
+        }
         // Whole-root rename and copy must retain the portable identity.
         let renamed = temp.path().join("renamed");
         std::fs::rename(&destination, &renamed).map_err(|e| e.to_string())?;
@@ -6286,6 +6335,9 @@ fn namespace_conversion_probe(
         let clean = namespace_conversion_run(seed, site, false)?;
         independent::check_namespace_publication(&absent, &expected, &clean, true)?;
         let observed = namespace_conversion_run(seed, site, true)?;
+        if site.0 == "publish" {
+            coverage.hit("storage.namespace.conversion-writable-publication-sync");
+        }
         let published = matches!(site.0, "publish" | "parent-sync");
         independent::check_namespace_publication(&absent, &expected, &observed, published)?;
         // Plant a one-participant image under each same-seed cut. The independent

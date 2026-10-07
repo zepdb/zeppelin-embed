@@ -116,6 +116,8 @@ fn staged(root: &Path, routed: bool) {
             let route = format!(".ze-batch-conversion/{name}");
             let target = root.join(&route);
             copy_tree(&root.join(name), &target);
+            std::fs::remove_file(target.join(".ze-namespace-root"))
+                .expect("0.6.0 copy protocol retains references only in logical directories");
             std::fs::write(target.join(".ze-prepared"), envelope(route.as_bytes()))
                 .expect("preparation");
             routes.push_str(&format!("{name}\t{route}\n"));
@@ -161,6 +163,118 @@ fn observe(root: &Path) {
     }
 }
 #[test]
+#[ignore = "builds v0.6.0; run with ZE_FORMAT_COMPAT=1 in the format-compat job"]
+fn conversion_accepts_the_routed_layout_written_by_0_6_0() {
+    static WRITER: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    let writer = WRITER.get_or_init(|| {
+        let scratch = tempfile::tempdir().expect("writer scratch").keep();
+        let binary = scratch.join("old-writer");
+        let status = std::process::Command::new("bash")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../scripts/fixtures/build-old-writer.sh"
+            ))
+            .arg(&binary)
+            .status()
+            .expect("build real 0.6.0 writer");
+        assert!(status.success(), "old-writer build failed");
+        binary
+    });
+    let temp = tempfile::tempdir().expect("scratch");
+    let original = temp.path().join("original");
+    std::fs::create_dir(&original).expect("original root");
+    for mode in ["namespace-seed", "namespace-commit", "namespace-cascade"] {
+        let output = std::process::Command::new(writer)
+            .arg(mode)
+            .arg(&original)
+            .output()
+            .expect("release writer");
+        assert!(
+            output.status.success(),
+            "{mode}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if mode == "namespace-cascade" {
+            assert_eq!(
+                String::from_utf8(output.stdout).expect("release oracle"),
+                "[10, 10]\n"
+            );
+        }
+    }
+    let routed = std::fs::read_dir(&original)
+        .expect("root entries")
+        .map(|entry| entry.expect("entry").path())
+        .find(|path| {
+            path.file_name()
+                .expect("name")
+                .to_string_lossy()
+                .starts_with(".ze-batch-")
+        })
+        .expect("release copy-protocol route");
+    for name in ["a", "b"] {
+        assert!(original.join(name).join(".ze-namespace-root").is_file());
+        assert!(
+            !routed.join(name).join(".ze-namespace-root").exists(),
+            "0.6.0 references are logical only"
+        );
+        let store = Store::open(original.join(name), common::options(true))
+            .expect("unmoved 0.6.0 store opens");
+        assert_eq!(
+            store
+                .count_documents(None, None)
+                .expect("release generation")
+                .generation,
+            10
+        );
+        store.close().expect("close");
+    }
+    let source = temp.path().join("source");
+    std::fs::rename(&original, &source).expect("move complete legacy root");
+    let before = bytes(&source);
+    let error = Store::open(source.join("a"), common::options(true))
+        .err()
+        .expect("raw legacy relocation refuses");
+    assert!(
+        error
+            .to_string()
+            .contains("namespace requires its original transaction root")
+    );
+    let destination = temp.path().join("converted");
+    namespace_relocate(&source, &destination).expect("convert real release routed layout");
+    for name in ["a", "b"] {
+        let reference = std::fs::read(
+            destination
+                .join(routed.strip_prefix(&original).expect("relative route"))
+                .join(name)
+                .join(".ze-namespace-root"),
+        )
+        .expect("converted physical reference");
+        assert!(reference.starts_with(b"ZENR0002"));
+        for read_only in [true, false] {
+            let store = Store::open(destination.join(name), common::options(read_only))
+                .expect("converted routed store");
+            let documents = store
+                .get_documents(
+                    &[DocId::new(1), DocId::new(2), DocId::new(3), DocId::new(4)],
+                    DocumentFields::ALL,
+                )
+                .expect("get");
+            assert!(documents[0].is_some() && documents[3].is_some());
+            assert!(documents[1].is_none() && documents[2].is_none());
+            assert_eq!(
+                store
+                    .count_documents(None, None)
+                    .expect("generation")
+                    .generation,
+                10
+            );
+            store.close().expect("close");
+        }
+    }
+    assert_eq!(bytes(&source), before, "conversion preserves source bytes");
+}
+
+#[test]
 fn conversion_preserves_committed_and_undecided_prepared_runs() {
     for (selected, routed) in [(false, false), (true, false), (true, true)] {
         let temp = tempfile::tempdir().expect("scratch");
@@ -174,6 +288,8 @@ fn conversion_preserves_committed_and_undecided_prepared_runs() {
         }
         // Also retain an unselected preparation, which must remain private.
         copy_tree(&source.join("a"), &source.join(".ze-batch-undecided/a"));
+        std::fs::remove_file(source.join(".ze-batch-undecided/a/.ze-namespace-root"))
+            .expect("unselected legacy copy has no reference");
         std::fs::write(
             source.join(".ze-batch-undecided/intent.ze"),
             envelope(b"a\t.ze-batch-undecided/a\n"),
@@ -248,6 +364,92 @@ fn conversion_refuses_pending_namespace_cleanup_without_modifying_data() {
     );
     assert!(!destination.exists());
     assert_eq!(bytes(&source), before);
+}
+
+#[test]
+fn interrupted_conversion_syncs_destination_parent_before_acknowledged_writes() {
+    use std::sync::Arc;
+    use zeppelin_embed::lifecycle::{StoreTestDependencies, SystemMonotonicClock};
+    use zeppelin_embed::vfs::{
+        SyncKind,
+        crash::{CrashOperation, RecordingVfs},
+    };
+
+    let temp = tempfile::tempdir().expect("scratch");
+    let parent = std::fs::canonicalize(temp.path()).expect("parent");
+    let source = parent.join("source");
+    let destination = parent.join("converted");
+    copy_tree(&fixture(), &source);
+    let before = bytes(&source);
+    let error = namespace_relocate_with_steps(&source, &destination, &mut |step| {
+        if step == "conversion publish" {
+            return Err(std::io::Error::other("process died before parent sync"));
+        }
+        Ok(())
+    })
+    .expect_err("interrupted publication");
+    assert!(error.to_string().contains("publication is indeterminate"));
+    assert!(
+        destination.is_dir(),
+        "rename is visible without a parent sync"
+    );
+    namespace_relocate(&source, &destination)
+        .expect_err("existing destination must not be overwritten");
+
+    let recording = Arc::new(RecordingVfs::new(StdVfs));
+    let store = Store::open_with_test_dependencies(
+        destination.join("a"),
+        common::options(true),
+        StoreTestDependencies::new(recording.clone(), Arc::new(SystemMonotonicClock)),
+    )
+    .expect("read-only open of visible destination");
+    store.close().expect("close reader");
+    assert!(recording.operations().expect("operations").is_empty());
+    let store = Store::open_with_test_dependencies(
+        destination.join("a"),
+        common::options(false),
+        StoreTestDependencies::new(recording.clone(), Arc::new(SystemMonotonicClock)),
+    )
+    .expect("writable open completes publication");
+    store
+        .ingest(common::batch(vec![common::document(
+            5,
+            "acknowledged after relocation",
+        )]))
+        .expect("durable acknowledged write");
+    let operations = recording.operations().expect("operations");
+    let parent_sync = operations
+        .iter()
+        .position(|op| {
+            matches!(op,
+                CrashOperation::Sync { path, kind: SyncKind::Full } if path == &parent
+            )
+        })
+        .expect("destination parent must be synced before any write can be acknowledged");
+    let first_write = operations
+        .iter()
+        .position(|op| {
+            matches!(
+                op,
+                CrashOperation::Write { .. }
+                    | CrashOperation::Append { .. }
+                    | CrashOperation::Rename { .. }
+            )
+        })
+        .expect("acknowledged mutation");
+    assert!(
+        parent_sync < first_write,
+        "publication sync must precede recovery and writes"
+    );
+    store.close().expect("close writer");
+    let reopened = Store::open(destination.join("a"), common::options(true)).expect("reopen");
+    assert!(
+        reopened
+            .get_documents(&[DocId::new(5)], DocumentFields::ALL)
+            .expect("acknowledged row")[0]
+            .is_some()
+    );
+    assert_eq!(bytes(&source), before, "source must stay unchanged");
 }
 
 #[test]
@@ -431,8 +633,9 @@ fn conversion_rejects_damaged_evidence_busy_roots_and_existing_destinations() {
             }
             "missing-route-reference" => {
                 staged(&source, true);
-                std::fs::remove_file(source.join(".ze-batch-conversion/a/.ze-namespace-root"))
-                    .expect("remove routed authority");
+                // Legacy routed authority lives in the logical directory.
+                std::fs::remove_file(source.join("a/.ze-namespace-root"))
+                    .expect("remove logical routed authority");
                 // Remove op 9 to expose the route/reference requirement itself.
                 let path = source.join(".ze-batch-conversion/a/wal.ze");
                 let wal = WalReader::open(&StdVfs, &path).expect("WAL");

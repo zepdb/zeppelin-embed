@@ -401,6 +401,10 @@ fn execute_live(
                     step,
                 )?;
                 step("bootstrap root published").map_err(|e| io(&root, e))?;
+            } else {
+                // Visibility after an interrupted rename does not prove that
+                // the root entry is durable. References must never outlive it.
+                sync_dir(vfs, &root, step)?;
             }
             for p in &ordered {
                 let logical = root.join(&p.mutation.name);
@@ -937,6 +941,27 @@ pub(super) fn sync_dir(
     vfs.sync(path, SyncKind::Full).map_err(|e| io(path, e))?;
     step("directory sync").map_err(|e| io(path, e))
 }
+
+pub(super) fn sync_portable_publication_for_open(
+    vfs: &dyn Vfs,
+    directory: &Path,
+) -> Result<(), StoreError> {
+    if let Some((root, _, _)) = portable::authority(vfs, directory)? {
+        // A converted root can be visible after rename without its name being
+        // durable. Complete that publication before recovery or later writes.
+        if let Some(parent) = root.parent() {
+            let parent = if parent.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                parent
+            };
+            sync_dir(vfs, parent, &mut |_| Ok(()))?;
+        }
+        sync_dir(vfs, root, &mut |_| Ok(()))?;
+    }
+    Ok(())
+}
+
 fn publish(
     vfs: &dyn Vfs,
     root: &Path,

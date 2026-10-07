@@ -2322,6 +2322,110 @@ fn a_plain_store_under_a_portable_root_opens_and_can_be_enlisted() {
 
 #[cfg(feature = "test-seams")]
 #[test]
+fn bootstrap_retry_syncs_visible_root_before_installing_references() {
+    use std::sync::Arc;
+    use zeppelin_embed::lifecycle::{
+        LiveNamespaceMutation, StoreTestDependencies, SystemMonotonicClock,
+        namespace_batch_live_on_vfs, namespace_batch_live_with_steps,
+    };
+    use zeppelin_embed::vfs::{
+        StdVfs, SyncKind,
+        crash::{CrashOperation, RecordingVfs},
+    };
+
+    let scratch = tempfile::tempdir().expect("root");
+    let root = std::fs::canonicalize(scratch.path()).expect("canonical root");
+    let recording = Arc::new(RecordingVfs::new(StdVfs));
+    let stores = ["a", "b"].map(|name| {
+        let store = Store::open_with_test_dependencies(
+            root.join(name),
+            OpenOptions::new(),
+            StoreTestDependencies::new(recording.clone(), Arc::new(SystemMonotonicClock)),
+        )
+        .expect("plain participant");
+        store
+            .ingest(IngestBatch::new(vec![doc(1, 1)]))
+            .expect("acknowledged seed");
+        store.seal().expect("clean input");
+        store
+    });
+    let participants = || {
+        stores
+            .iter()
+            .zip(["a", "b"])
+            .map(|(store, name)| LiveNamespaceMutation {
+                store,
+                mutation: mutation(name, vec![doc(2, 1)]),
+            })
+            .collect()
+    };
+    namespace_batch_live_with_steps(&root, participants(), &mut |step| {
+        if step == "commit rename" {
+            return Err(std::io::Error::other(
+                "process died before bootstrap root sync",
+            ));
+        }
+        Ok(())
+    })
+    .expect_err("interrupted root publication");
+    let bootstrap = std::fs::read(root.join(".ze-namespaces")).expect("visible root");
+    assert!(!root.join("a/.ze-namespace-root").exists());
+    drop(stores);
+    let stores = ["a", "b"].map(|name| {
+        Store::open_with_test_dependencies(
+            root.join(name),
+            OpenOptions::new(),
+            StoreTestDependencies::new(recording.clone(), Arc::new(SystemMonotonicClock)),
+        )
+        .expect("restart plain participant")
+    });
+    let participants = stores
+        .iter()
+        .zip(["a", "b"])
+        .map(|(store, name)| LiveNamespaceMutation {
+            store,
+            mutation: mutation(name, vec![doc(2, 1)]),
+        })
+        .collect();
+    let start = recording.operations().expect("operations").len();
+    namespace_batch_live_on_vfs(&root, participants, recording.as_ref()).expect("retry batch");
+    let operations = recording.operations().expect("operations");
+    let retry = operations.get(start..).expect("retry operations");
+    let first_reference = retry
+        .iter()
+        .position(|op| {
+            matches!(op,
+                CrashOperation::Rename { to, .. } if to == &root.join("a/.ze-namespace-root")
+            )
+        })
+        .expect("first participant reference");
+    assert!(
+        retry.iter().take(first_reference).any(|op| matches!(op,
+            CrashOperation::Sync { path, kind: SyncKind::Full } if path == &root
+        )),
+        "retry must sync the visible bootstrap root before installing references"
+    );
+    let final_root = std::fs::read(root.join(".ze-namespaces")).expect("final root");
+    assert_eq!(
+        bootstrap.get(8..24),
+        final_root.get(8..24),
+        "retry retains root ID"
+    );
+    drop(stores);
+    for name in ["a", "b"] {
+        let store = Store::open(root.join(name), OpenOptions::read_only()).expect("read retry");
+        assert!(
+            store
+                .get_documents(&[DocId::new(1), DocId::new(2)], DocumentFields::ALL)
+                .expect("acknowledged rows")
+                .iter()
+                .all(Option::is_some)
+        );
+    }
+}
+
+#[cfg(feature = "test-seams")]
+#[test]
 fn a_fresh_portable_root_and_every_reference_are_durable_before_any_prepared_frame() {
     use std::sync::Arc;
     use zeppelin_embed::lifecycle::{

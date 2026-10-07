@@ -10,6 +10,8 @@ use crate::manifest::io::DurableLog;
 /// The destination requires the portable namespace reader. Only whole-root copies
 /// are portable. An error during publication is indeterminate: inspect the
 /// destination before retrying; it can be absent or a complete converted root.
+/// A writable open completes a visible destination's publication sync; conversion
+/// itself continues to refuse an existing destination.
 pub fn namespace_relocate(source_root: &Path, absent_destination: &Path) -> Result<(), StoreError> {
     execute(source_root, absent_destination, &mut |_| Ok(()))
 }
@@ -165,6 +167,7 @@ fn validate(
     root: &Path,
     inventory: &Inventory,
     descriptor: &RootDescriptor,
+    portable_root: bool,
     participant_id: &dyn Fn(&str) -> Result<u128, StoreError>,
 ) -> Result<(), StoreError> {
     let routes = descriptor_routes(descriptor);
@@ -183,7 +186,11 @@ fn validate(
         if decode_routes(&intent, &bytes)?.get(name) != Some(route) {
             return Err(invalid(&intent, "conversion route disagrees with intent"));
         }
-        let reference = root.join(route).join(REFERENCE);
+        // The 0.6.0 copy protocol references the root from logical directories
+        // only. Portable routes additionally require their physical reference.
+        let reference = root
+            .join(if portable_root { route } else { name })
+            .join(REFERENCE);
         if !reference.is_file() {
             return Err(invalid(
                 &reference,
@@ -353,7 +360,12 @@ fn validate(
                 .map_err(|e| invalid(&wal_path, &e.to_string()))?;
             let member = wal_payload::decode_prepared(payload)
                 .map_err(|e| invalid(&wal_path, &e.to_string()))?;
-            if member.binding.participant != id || !directory.join(REFERENCE).exists() {
+            let reference = if !portable_root && relative.components().count() == 2 {
+                root.join(name).join(REFERENCE)
+            } else {
+                directory.join(REFERENCE)
+            };
+            if member.binding.participant != id || !reference.is_file() {
                 return Err(invalid(
                     &wal_path,
                     "conversion prepared participant identity",
@@ -605,7 +617,7 @@ fn execute(
     }
     let _coordinator = StoreLock::acquire(&source).map_err(StoreError::Lock)?;
     let _admission = StoreLock::reclaim_exclusive(&source).map_err(StoreError::Lock)?;
-    let inventory = inventory(&source)?;
+    let mut inventory = inventory(&source)?;
     let _participants = inventory
         .participants
         .iter()
@@ -615,7 +627,7 @@ fn execute(
     let bytes = StdVfs.read(&path).map_err(|e| io(&path, e))?;
     let descriptor = decode_descriptor(&path, &bytes)?;
     let stored = legacy_path(&source, &inventory)?;
-    validate(&source, &inventory, &descriptor, &|name| {
+    validate(&source, &inventory, &descriptor, false, &|name| {
         Ok(identity(&stored, name))
     })?;
     let id = NamespaceRootId::generate().map_err(|e| io(&source, e))?;
@@ -651,6 +663,19 @@ fn execute(
     }
     for relative in &inventory.participants {
         let directory = staging.join(relative);
+        if relative.components().count() == 2 && !directory.join(REFERENCE).exists() {
+            let name = relative
+                .file_name()
+                .and_then(|s| s.to_str())
+                .ok_or_else(|| invalid(&directory, "participant name"))?;
+            let reference = directory.join(REFERENCE);
+            let bytes = encode_participant_reference(Some(id), &staging, name, 2)?;
+            StdVfs
+                .write(&reference, &bytes)
+                .map_err(|e| io(&reference, e))?;
+            step("conversion write").map_err(|e| io(&reference, e))?;
+            inventory.files.push(relative.join(REFERENCE));
+        }
         if directory.join(REFERENCE).exists() {
             let name = relative
                 .file_name()
@@ -668,7 +693,7 @@ fn execute(
             }
         }
     }
-    validate(&staging, &inventory, &staged_descriptor, &|name| {
+    validate(&staging, &inventory, &staged_descriptor, true, &|name| {
         portable::participant_id(id, name)
     })?;
     for relative in &inventory.files {
