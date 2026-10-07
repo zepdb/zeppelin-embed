@@ -2193,6 +2193,16 @@ fn run_ze40_serial_scan_preserves_pre_wal_orphans_and_refuses_ambiguous_corrupti
     );
     assert_eq!(vfs.enumeration_calls().0, 0);
     assert!(vfs.enumeration_calls().1 >= 1);
+    // Inject the interrupted object creation, after the new mandatory fold.
+    reopened
+        .set_native_graph_maintenance_policy(crate::property_graph::GraphMaintenancePolicy {
+            automatic: false,
+            ..Default::default()
+        })
+        .unwrap();
+    reopened
+        .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+        .unwrap();
     let before_partial = file_snapshot(&path);
     vfs.arm_fault(FaultPoint::PartialCreate);
     assert!(

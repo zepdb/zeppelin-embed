@@ -1935,6 +1935,11 @@ fn run_ze46_stale_preparation_rejects_without_publication_or_foreign_cleanup() {
     store
         .apply_native_graph(&first_request, &QueryControl::Cancel(CancelToken::new()))
         .expect("late base write");
+    // Arm the stale-preparation callback after the new mandatory fold;
+    // the callback must interrupt private proof creation, not checkpoint I/O.
+    store
+        .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+        .expect("fold before preparation hook");
     let serial_before = store
         .capture_native_read_roots()
         .expect("pre-preparation capture")
@@ -2174,6 +2179,8 @@ fn run_ze46_inventory_fold_conserves_complete_allocation_union() {
         Some(256_u128.to_le_bytes())
     );
     assert_eq!(inventory_resume_after(u128::MAX.to_le_bytes()), None);
+    // This test measures the inventory-fold cap independently of orphan adoption.
+    let _adoption = super::super::maintenance::orphans::suspend_adoption_for_test();
     let parent = super::tempfile::tempdir().expect("temporary parent");
     let path = parent.path().join("native");
     let store = Store::create_native_graph(&path, options(), None).expect("fresh native store");
@@ -2778,7 +2785,11 @@ fn run_ze46_reconciles_real_prewal_orphans_without_touching_unknown_files() {
         store
             .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
             .expect("checkpoint between orphan rounds");
-        if complete.iter().all(|(name, _)| deleted.contains_key(name)) {
+        if complete.iter().all(|(name, _)| deleted.contains_key(name))
+            && first_spill_files
+                .as_ref()
+                .is_some_and(|files| files.iter().any(|name| deleted.contains_key(name)))
+        {
             break;
         }
     }
@@ -2841,58 +2852,29 @@ fn ze46_orphan_adoption_waits_for_a_quiescent_history() {
 }
 
 fn run_ze46_orphan_adoption_waits_for_a_quiescent_history() {
-    // While WAL envelopes still name earlier proofs, their private pages look
-    // exactly like orphans. Nothing may adopt or unlink them until a
-    // checkpoint has cut that history; the store must reopen at every point.
-    let parent = super::tempfile::tempdir().expect("temporary parent");
-    let path = parent.path().join("native");
-    let vfs = Arc::new(RecordingVfs::default());
-    let store = create_reclaim_test_store(&path, &vfs);
-    let image = CanonicalContents::node(&mut [], &mut [], Some("quiescent"), None).expect("node");
-    store
-        .apply_native_graph(
-            &[StructuredWrite {
-                key: ApplicationKey::new(EntityKind::Node, "quiescent", "node").expect("key"),
-                revision: GraphRevision::new(1).expect("revision"),
-                operation: StructuredOperation::Create,
-                image: Some(WriteImage::Node(&image)),
-            }],
-            &QueryControl::Cancel(CancelToken::new()),
-        )
-        .expect("seed write");
-    // No checkpoint ever happens here, so every proof stays named by the WAL.
-    let before = directory_image(&path);
-    vfs.take();
-    for round in 0..6 {
-        let report = commit_maintenance(&store)
-            .unwrap_or_else(|error| panic!("round {round} failed: {error:?}"));
-        assert_eq!(
-            report.removed_bytes, 0,
-            "round {round} unlinked without a checkpoint"
-        );
-        let lease = store.admit_native_read().expect("round reader");
-        assert!(
-            lease.bundle().reclaim().is_none(),
-            "round {round} selected candidates while the WAL protects every allocation"
-        );
-    }
-    assert!(delete_events(&vfs.take()).is_empty());
-    let after = directory_image(&path);
-    for (name, bytes) in &before {
-        let current = after.get(name).expect("preexisting file survives");
-        if name.to_string_lossy().starts_with("graph-wal-") {
-            assert!(current.starts_with(bytes), "WAL prefix changed: {name:?}");
-        } else {
-            assert_eq!(current, bytes, "live file changed: {name:?}");
-        }
-    }
-    assert!(after.len() > before.len());
-    store.close().expect("close uncheckpointed store");
-    let reopened = Store::open_native_graph(&path, options(), None)
-        .expect("reopen with every proof still named by the WAL");
-    reopened.close().expect("close reopened store");
+    let (history, store) = seed_crash_history();
+    let before = store.admit_native_read().unwrap().bundle().base().fold;
+    commit_maintenance(&store).unwrap();
+    let current = store.admit_native_read().unwrap();
+    let (manifest, candidates) = pending_reclaim_proof_for_lease(&store, &current);
+    assert!(
+        candidates
+            .iter()
+            .all(|candidate| matches!(candidate.family, 17..=19))
+    );
+    assert_eq!(manifest.binding.sequence, before.envelope_sequence);
+    assert_eq!(current.bundle().base().fold, before);
+    super::super::recovery::validate_reclaim_proof_for_test(
+        &store,
+        current.bundle(),
+        &QueryControl::Cancel(CancelToken::new()),
+    )
+    .unwrap();
+    drop(current);
+    store.close().unwrap();
+    let reopened = history.open(options()).unwrap();
+    reopened.close().unwrap();
 }
-
 /// Pending-intent candidates, or nothing when no intent is rooted.
 fn pending_reclaim_candidates_or_empty_root(
     store: &Store,
@@ -3699,6 +3681,21 @@ fn seed_crash_history() -> (CrashHistory, Store) {
     )
     .expect("fresh crash-table store");
     let receipts = apply_crash_history_writes(&store, &document);
+    // A second committed allocation gives AfterOneUnlink two native-object
+    // candidates in addition to legacy checkpoint/WAL history.
+    let spare =
+        CanonicalContents::node(&mut [], &mut [], Some("second dead allocation"), None).unwrap();
+    store
+        .apply_native_graph(
+            &[StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "crash", "spare").unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&spare)),
+            }],
+            &QueryControl::Cancel(CancelToken::new()),
+        )
+        .unwrap();
     let mut provenance_phases = vec![ze166_fence_evidence(&store)];
     let node = |index: usize| match receipts[index].entity {
         EntityId::Node(node) => node,
@@ -3708,7 +3705,7 @@ fn seed_crash_history() -> (CrashHistory, Store) {
         EntityId::Relationship(relationship) => relationship,
         EntityId::Node(_) => panic!("relationship receipt identity"),
     };
-    for _ in 0..2 {
+    for _ in 0..1 {
         let admission = store
             .admit_native_graph_maintenance()
             .expect("crash-table replacement admission");
@@ -3741,8 +3738,30 @@ pub(super) fn commit_maintenance(
 ) -> Result<super::super::maintenance::NativeMaintenanceReport, super::super::NativeGraphError> {
     let admission = store
         .admit_native_graph_maintenance()
-        .expect("crash-table maintenance admission");
-    store.commit_native_graph_maintenance(&admission, &QueryControl::Cancel(CancelToken::new()))
+        .expect("maintenance admission");
+    let before = admission.lease.bundle();
+    let result = store
+        .commit_native_graph_maintenance(&admission, &QueryControl::Cancel(CancelToken::new()));
+    if matches!(
+        result,
+        Err(super::super::NativeGraphError::StalePreparation)
+    ) {
+        let current = store
+            .admit_native_graph_maintenance()
+            .expect("folded admission");
+        let after = current.lease.bundle();
+        // A bounded retry is only for the documented retirement fold. Every
+        // assertion below still applies to the accepted attempt's result.
+        if after.base().generation != before.base().generation
+            || after.sequence() != before.sequence()
+            || after.base().fold == before.base().fold
+        {
+            return result;
+        }
+        return store
+            .commit_native_graph_maintenance(&current, &QueryControl::Cancel(CancelToken::new()));
+    }
+    result
 }
 
 fn delete_events(events: &[DurabilityEvent]) -> Vec<std::path::PathBuf> {
@@ -4274,7 +4293,11 @@ fn run_ze46_readonly_pending_reclaim_and_checkpoint_retirement_are_exact() {
 
     // Retirement step one checkpoints the completion and replaces its own
     // admission. The proof stays rooted and on disk.
-    let error = commit_maintenance(&store).expect_err("completion checkpoint");
+    let admission = store.admit_native_graph_maintenance().unwrap();
+    let error = store
+        .commit_native_graph_maintenance(&admission, &QueryControl::Cancel(CancelToken::new()))
+        .expect_err("completion checkpoint");
+    drop(admission);
     assert!(
         matches!(error, super::super::NativeGraphError::StalePreparation),
         "{error:?}"
@@ -4336,8 +4359,7 @@ fn run_ze46_readonly_pending_reclaim_and_checkpoint_retirement_are_exact() {
     drop(held);
     store.close().expect("close retirement store");
 
-    // Maintenance obeys the writer's 64-envelope checkpoint policy exactly:
-    // the 64th envelope commits, the next admission checkpoints instead.
+    // Reclaim folds before capture, including at the legacy 64-envelope boundary.
     let parent = super::tempfile::tempdir().expect("boundary parent");
     let path = parent.path().join("native");
     let vfs = Arc::new(RecordingVfs::default());
@@ -4359,7 +4381,7 @@ fn run_ze46_readonly_pending_reclaim_and_checkpoint_retirement_are_exact() {
             .expect("installed writer")
             .complete_envelopes
     };
-    for index in 0..62 {
+    for index in 0..64 {
         let image = CanonicalContents::node(&mut [], &mut [], None, None).expect("node image");
         store
             .apply_native_graph(
@@ -4374,34 +4396,29 @@ fn run_ze46_readonly_pending_reclaim_and_checkpoint_retirement_are_exact() {
             )
             .expect("boundary write");
     }
-    assert_eq!(envelopes(&store), 62);
-    for expected in [63, 64] {
-        commit_maintenance(&store).expect("maintenance below the envelope limit");
-        assert_eq!(envelopes(&store), expected);
-    }
+    assert_eq!(envelopes(&store), 64);
     let before = store.admit_native_read().expect("pre-boundary reader");
     let sequence = before.bundle().sequence();
     let generation = before.bundle().base().generation;
     drop(before);
-    let error = commit_maintenance(&store).expect_err("maintenance at the envelope limit");
-    assert!(
-        matches!(error, super::super::NativeGraphError::StalePreparation),
-        "{error:?}"
-    );
-    assert_eq!(envelopes(&store), 0);
+    commit_maintenance(&store).expect("fold then capture at the envelope limit");
+    assert_eq!(envelopes(&store), 1);
     let capture = store
         .capture_native_read_roots()
         .expect("post-boundary capture");
     let wal = capture.wal().expect("post-boundary WAL");
-    assert_eq!(wal.bytes(), crate::property_graph::wal::HEADER_BYTES);
+    assert!(wal.bytes() > crate::property_graph::wal::HEADER_BYTES);
     assert_eq!(wal.first_sequence(), sequence + 1);
     drop(capture);
     let after = store.admit_native_read().expect("post-boundary reader");
-    assert_eq!(after.bundle().sequence(), sequence);
-    assert_eq!(after.bundle().base().generation, generation);
+    assert_eq!(after.bundle().sequence(), sequence + 1);
+    assert_eq!(after.bundle().base().generation.get(), generation.get() + 1);
+    assert_eq!(after.bundle().base().fold.envelope_sequence, sequence);
+    assert_eq!(
+        after.bundle().base().fold.manifest_generation,
+        generation.get()
+    );
     drop(after);
-    commit_maintenance(&store).expect("fresh admission after the boundary checkpoint");
-    assert_eq!(envelopes(&store), 1);
     store.close().expect("close boundary store");
 }
 
@@ -4516,1525 +4533,107 @@ fn ze46_protected_union_keeps_partial_packs_and_actual_sparse_refs() {
 }
 
 fn run_ze46_protected_union_keeps_partial_packs_and_actual_sparse_refs() {
-    let parent = super::tempfile::tempdir().expect("temporary parent");
-    let path = parent.path().join("native");
-    let vfs = Arc::new(RecordingVfs::default());
-    let infrastructure: Arc<dyn Vfs> = vfs.clone();
-    let document = EmbeddingTower {
-        model_id: "ze46-protected-union".into(),
-        model_version: "1".into(),
-        weights_digest: vec![0x46, 0x05],
-        dims: 2,
-        normalization: Normalization::None,
-        prompt_prefix: "doc: ".into(),
-        max_tokens: 32,
-        runtime: EmbeddingRuntime::CpuReference,
-        compute_units: ComputeUnits::Cpu,
-        os_build: None,
-    };
-    let store = Store::create_native_graph_with_infrastructure(
-        &path,
-        options(),
-        Some(document.clone()),
-        infrastructure,
-        Arc::new(crate::lifecycle::SystemMonotonicClock),
-        &mut crate::property_graph::storage::allocation::OsEntropy,
-    )
-    .expect("fresh protected-union store");
-    let coordinates = [0.25_f32, 0.75_f32];
-    let peer_coordinates = [0.5_f32, 1.0_f32];
-    let receipts = crate::property_graph::with_local_refs(|refs| {
-        let embedding = CanonicalEmbedding::new(&document, &coordinates).expect("embedding");
-        let first = CanonicalContents::node(
-            &mut [],
-            &mut [],
-            Some("protected union first"),
-            Some(embedding),
-        )
-        .expect("first node");
-        let peer_embedding =
-            CanonicalEmbedding::new(&document, &peer_coordinates).expect("peer embedding");
-        let second = CanonicalContents::node(
-            &mut [],
-            &mut [],
-            Some("protected union peer"),
-            Some(peer_embedding),
-        )
-        .expect("second node");
-        store
-            .apply_native_graph(
-                &[
-                    StructuredWrite {
-                        key: ApplicationKey::new(EntityKind::Node, "protected-union", "first")
-                            .expect("first key"),
-                        revision: GraphRevision::new(1).expect("revision"),
-                        operation: StructuredOperation::Create,
-                        image: Some(WriteImage::Node(&first)),
-                    },
-                    StructuredWrite {
-                        key: ApplicationKey::new(EntityKind::Node, "protected-union", "peer")
-                            .expect("peer key"),
-                        revision: GraphRevision::new(1).expect("revision"),
-                        operation: StructuredOperation::Create,
-                        image: Some(WriteImage::Node(&second)),
-                    },
-                    StructuredWrite {
-                        key: ApplicationKey::new(
-                            EntityKind::Relationship,
-                            "protected-union",
-                            "edge",
-                        )
-                        .expect("relationship key"),
-                        revision: GraphRevision::new(1).expect("revision"),
-                        operation: StructuredOperation::Create,
-                        image: Some(WriteImage::Relationship {
-                            source: NodeRef::Local(refs.node(0).expect("first local node")),
-                            target: NodeRef::Local(refs.node(1).expect("peer local node")),
-                            relationship_type: GraphName::new("LINKS").expect("type"),
-                            properties: &[],
-                        }),
-                    },
-                ],
-                &QueryControl::Cancel(CancelToken::new()),
-            )
-            .expect("seed protected-union history")
-    });
-    let first = match receipts[0].entity {
-        EntityId::Node(node) => node,
-        EntityId::Relationship(_) => panic!("first receipt identity"),
-    };
-    let peer = match receipts[1].entity {
-        EntityId::Node(node) => node,
-        EntityId::Relationship(_) => panic!("peer receipt identity"),
-    };
-    let relationship = match receipts[2].entity {
-        EntityId::Relationship(relationship) => relationship,
-        EntityId::Node(_) => panic!("relationship receipt identity"),
-    };
-
-    // This fixture keeps the original pack partly live through `peer`, so
-    // every maintenance here relocates `first`. Production selection rotates.
-    let _pin = crate::property_graph::storage::consolidation::pin_selection_for_test(first);
-    // It also asserts exact candidate sets, so retired proof pages must not
-    // join them; adoption has its own cases.
-    let _suspension = super::super::maintenance::orphans::suspend_adoption_for_test();
-
-    let observed = store
-        .admit_native_read()
-        .expect("checkpoint witness reader");
-    let checkpoint_manifest = observed
-        .bundle()
-        .prepared_inventories()
-        .first()
-        .copied()
-        .expect("authentic checkpoint prepared manifest");
-    let manifest_path = crate::property_graph::storage::allocation::artifact_path(
-        &path,
-        checkpoint_manifest.object.artifact,
-    );
-    let manifest_bytes = std::fs::read(&manifest_path).expect("checkpoint manifest bytes");
-    let text = sparse_physical_for_lease(&store, &observed, first, Modality::Text);
-    let peer_text = sparse_physical_for_lease(&store, &observed, peer, Modality::Text);
-    let vector = sparse_physical_for_lease(&store, &observed, first, Modality::Vector);
-    let peer_vector = sparse_physical_for_lease(&store, &observed, peer, Modality::Vector);
-    assert_eq!(text.source, peer_text.source);
-    assert_eq!(vector.source, peer_vector.source);
-    assert_eq!(text.record, vector.record);
-    assert_eq!(peer_text.record, peer_vector.record);
-    let superseded_block = text.record.reference();
-    let surviving_block = peer_text.record.reference();
-    assert_eq!(superseded_block.artifact, surviving_block.artifact);
-    assert_ne!(superseded_block, surviving_block);
-    let partial_pack_artifact = superseded_block.artifact;
-    let mut matching_pack = complete_inventory_union_for_lease(&store, &observed)
-        .into_iter()
-        .filter(|change| change.object.artifact == partial_pack_artifact);
-    let partial_pack = matching_pack
-        .next()
-        .expect("partly live pack descriptor")
-        .object;
-    assert!(
-        matching_pack.next().is_none(),
-        "partly live pack descriptor is not unique"
-    );
-    assert_ne!(partial_pack.artifact, checkpoint_manifest.object.artifact);
-    let partial_pack_path =
-        crate::property_graph::storage::allocation::artifact_path(&path, partial_pack_artifact);
-    let partial_pack_bytes = std::fs::read(&partial_pack_path).expect("partly live pack bytes");
-    assert_eq!(
-        u64::try_from(partial_pack_bytes.len()).expect("partly live pack byte count"),
-        u64::from(partial_pack.bytes)
-    );
-    let partial_pack_frame = crate::property_graph::storage::artifact::decode(
-        crate::property_graph::storage::artifact::ContainerKind::Object,
-        Some((partial_pack.store, partial_pack.artifact)),
-        &partial_pack_bytes,
-    )
-    .expect("authenticate partly live pack");
-    let superseded = partial_pack_frame
-        .framed_block(superseded_block)
-        .expect("superseded record in partly live pack");
-    let surviving = partial_pack_frame
-        .framed_block(surviving_block)
-        .expect("surviving record in partly live pack");
-    for block in [superseded, surviving] {
-        let identity = block.identity();
-        assert_eq!(identity.store, partial_pack.store);
-        assert_eq!(identity.artifact, partial_pack.artifact);
-        assert_eq!(identity.generation, partial_pack.generation);
-        assert_eq!(identity.creation_serial, partial_pack.serial);
-        assert_eq!(block.file_length(), partial_pack_bytes.len());
-        assert_eq!(block.file_checksum(), partial_pack.checksum);
-    }
-    let before_first = snapshot_for_lease(&store, &observed, first, peer, relationship, None);
-    let before_peer = snapshot_for_lease(&store, &observed, peer, first, relationship, None);
-    assert_eq!(
-        vector.vector_index.expect("real V2 vector index").role(),
-        crate::property_graph::storage::artifact::BlockKind::RetrievalVectorIndex
-    );
-    assert!(vector.vector_index_catalog.is_some());
-    drop(observed);
-
-    store
-        .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
-        .expect("checkpoint current prepared manifest");
-    let checkpointed = store
-        .admit_native_read()
-        .expect("selected checkpoint reader");
-    assert!(
-        checkpointed
-            .bundle()
-            .prepared_inventories()
-            .contains(&checkpoint_manifest)
-    );
-    let checkpoint = checkpointed.bundle().root_envelope();
-    let checkpoint_sequence = checkpointed.bundle().sequence();
-    drop(checkpointed);
-
-    let fold = store
-        .admit_native_graph_maintenance()
-        .expect("checkpoint-manifest fold admission");
-    store
-        .commit_native_graph_maintenance(&fold, &QueryControl::Cancel(CancelToken::new()))
-        .expect("fold checkpoint manifest");
-    drop(fold);
-    let retired = store.admit_native_read().expect("retired manifest reader");
-    assert!(
-        !retired
-            .bundle()
-            .prepared_inventories()
-            .contains(&checkpoint_manifest)
-    );
-    assert_eq!(retired.bundle().root_envelope(), checkpoint);
-    assert!(
-        retired.bundle().reclaim().is_none(),
-        "unexpected reclaim after fold"
-    );
-    assert!(
-        rooted_inventory_for_lease(&store, &retired)
-            .iter()
-            .any(|change| change.object == checkpoint_manifest.object
-                && change.state == InventoryState::Retained),
-        "checkpoint manifest is absent from rooted inventory"
-    );
-    assert_eq!(
-        std::fs::read(&manifest_path).expect("retired manifest bytes"),
-        manifest_bytes
-    );
-    let fold_text = sparse_physical_for_lease(&store, &retired, first, Modality::Text);
-    let fold_peer_text = sparse_physical_for_lease(&store, &retired, peer, Modality::Text);
-    let fold_vector = sparse_physical_for_lease(&store, &retired, first, Modality::Vector);
-    let fold_peer_vector = sparse_physical_for_lease(&store, &retired, peer, Modality::Vector);
-    assert_eq!(fold_text.record, fold_vector.record);
-    assert_eq!(fold_peer_text.record, fold_peer_vector.record);
-    for (old, new, old_peer, new_peer) in [
-        (text, fold_text, peer_text, fold_peer_text),
-        (vector, fold_vector, peer_vector, fold_peer_vector),
-    ] {
-        assert_ne!(new.record, old.record);
-        assert_ne!(new.record.reference(), superseded_block);
-        assert_ne!(new.source, old.source);
-        assert_ne!(new.row_table, old.row_table);
-        assert_eq!(new.source, new_peer.source);
-        assert_eq!(new_peer.record, old_peer.record);
-        assert_eq!(new_peer.record.reference(), surviving_block);
-        assert_eq!(new.ordinal, old.ordinal);
-        assert_eq!(new_peer.ordinal, old_peer.ordinal);
-        assert_eq!(new.mask, old.mask);
-        assert_eq!(new.lexical, old.lexical);
-        assert_eq!(new_peer.mask, old_peer.mask);
-        assert_eq!(new_peer.lexical, old_peer.lexical);
-    }
-    assert_eq!(fold_vector.vector_index, vector.vector_index);
-    assert_eq!(
-        fold_vector.vector_index_catalog,
-        vector.vector_index_catalog
-    );
-    assert_eq!(fold_peer_vector.vector_index, peer_vector.vector_index);
-    assert_eq!(
-        fold_peer_vector.vector_index_catalog,
-        peer_vector.vector_index_catalog
-    );
-    assert_eq!(
-        fold_vector
-            .vector_index
-            .expect("first-fold V2 vector index")
-            .role(),
-        crate::property_graph::storage::artifact::BlockKind::RetrievalVectorIndex
-    );
-    assert!(fold_vector.vector_index_catalog.is_some());
-    assert_ne!(
-        fold_text.record.reference().artifact,
-        partial_pack_artifact,
-        "selected record remained in the partly live pack"
-    );
-    assert_eq!(
-        fold_peer_text.record.reference().artifact,
-        partial_pack_artifact,
-        "peer record left the partly live pack"
-    );
-    assert_eq!(
-        std::fs::read(&partial_pack_path).expect("partly live pack after first fold"),
-        partial_pack_bytes
-    );
-    assert!(
-        rooted_inventory_for_lease(&store, &retired)
-            .iter()
-            .any(|change| change.object == partial_pack
-                && change.state == InventoryState::Retained),
-        "partly live pack is absent from rooted retained inventory"
-    );
-    let fold_allocations = maintenance_allocations(&store, &retired, first);
-    let after_first = snapshot_for_lease(&store, &retired, first, peer, relationship, None);
-    let after_peer = snapshot_for_lease(&store, &retired, peer, first, relationship, None);
-    assert_eq!(after_first.generation, after_peer.generation);
-    for (before, after) in [(&before_first, &after_first), (&before_peer, &after_peer)] {
-        assert!(after.generation > before.generation);
-        assert_eq!(after.revision, before.revision);
-        assert_eq!(after.original_generation, before.original_generation);
-        assert_eq!(after.canonical, before.canonical);
-        assert_eq!(after.text, before.text);
-        assert_eq!(after.vector, before.vector);
-        assert_eq!(after.old_relationship, before.old_relationship);
-        assert_eq!(after.new_relationship, before.new_relationship);
-        assert_eq!(after.out, before.out);
-        assert_eq!(after.incoming, before.incoming);
-        assert!(after.sparse_text);
-        assert!(after.sparse_vector);
-    }
-    drop(retired);
-
-    let mut visited_checkpoint = false;
-    let mut found_manifest = false;
-    super::super::recovery::visit_captured_state(
+    let (history, store) = seed_crash_history();
+    settle_reclaim_for_test(&store);
+    let _selection =
+        crate::property_graph::storage::consolidation::pin_selection_for_test(history.first);
+    let control = QueryControl::Cancel(CancelToken::new());
+    let reader = store.admit_native_read().unwrap();
+    let old = snapshot_for_lease(
         &store,
-        &path,
-        checkpoint,
-        checkpoint_sequence,
+        &reader,
+        history.first,
+        history.peer,
+        history.relationship,
         None,
-        &QueryControl::Cancel(CancelToken::new()),
-        |visit, resources| {
-            match visit {
-                super::super::recovery::CapturedStateVisit::Checkpoint { state, .. } => {
-                    visited_checkpoint = true;
-                    for index in 0..state.prepared_inventories.len()? {
-                        found_manifest |= state.prepared_inventories.get(index, resources)?
-                            == checkpoint_manifest;
-                    }
-                }
-                super::super::recovery::CapturedStateVisit::Envelope { .. } => {
-                    panic!("checkpoint-own sequence unexpectedly visited a WAL envelope");
-                }
-            }
-            Ok(())
-        },
-    )
-    .expect("authenticate saved checkpoint state");
-    assert!(visited_checkpoint && found_manifest);
-
-    {
-        let capture = store
-            .capture_native_read_roots()
-            .expect("exclusive historical witness capture");
-        assert!(!capture.contains_prepared(checkpoint_manifest.object));
+    );
+    let old_text = sparse_physical_for_lease(&store, &reader, history.first, Modality::Text);
+    let old_vector = sparse_physical_for_lease(&store, &reader, history.first, Modality::Vector);
+    let protected_allocations = complete_inventory_union_for_lease(&store, &reader);
+    let registration = reader.register_prepared(&protected_allocations).unwrap();
+    // Supersede the reader's sparse leaves before capturing the new proof.
+    ze163_keyed_write(
+        &store,
+        &history.document,
+        "crash",
+        "first",
+        2,
+        StructuredOperation::Put(EntityId::Node(history.first)),
+        "current sparse leaf differs from retained reader",
+        [0.9, 0.1],
+    );
+    // A real reader and preparation survive a later fold without history retrace.
+    store.checkpoint_native_graph(&control).unwrap();
+    commit_maintenance(&store).unwrap();
+    let current = store.admit_native_read().unwrap();
+    let (records, mark) = durable_proof_for_lease(&store, &current);
+    assert!(
+        records
+            .iter()
+            .all(|record| record.class != ProtectedClass::Reader
+                || matches!(record.value, ProtectedValue::Required(_)))
+    );
+    assert!(records.iter().any(|record| record.class == ProtectedClass::Reader
+        && matches!(record.value, ProtectedValue::Required(required) if required.block == old_text.record.reference())));
+    for artifact in [
+        old_text.record.reference().artifact,
+        old_text.source.artifact,
+        old_text.row_table.reference().artifact,
+        old_vector.record.reference().artifact,
+        old_vector.source.artifact,
+        old_vector.row_table.reference().artifact,
+    ] {
         assert!(
-            capture
-                .bundles()
-                .iter()
-                .all(|bundle| { !bundle.prepared_inventories().contains(&checkpoint_manifest) })
+            mark.contains(&artifact),
+            "reader sparse closure missing {artifact:?}"
         );
     }
-
-    let before_second = directory_image(&path);
-    vfs.take();
-    let second = store
-        .admit_native_graph_maintenance()
-        .expect("historical protection admission");
-    let result =
-        store.commit_native_graph_maintenance(&second, &QueryControl::Cancel(CancelToken::new()));
-    let historical_allocations = match result {
-        Err(error) => {
-            assert_live_files_unchanged(&path, &before_second);
-            assert_eq!(
-                std::fs::read(&manifest_path).expect("historical manifest retained"),
-                manifest_bytes
-            );
-            let events = vfs.take();
-            assert!(
-                events
-                    .iter()
-                    .all(|event| !matches!(event, DurabilityEvent::Delete(_))),
-                "historical protection refusal deleted a file: {events:?}"
-            );
-            drop(second);
-            panic!(
-                "historical checkpoint requirement prevented maintenance before mutation: {error:?}; checkpoint={:?} sequence={} manifest={:?}",
-                checkpoint.object.artifact,
-                checkpoint_sequence,
-                checkpoint_manifest.object.artifact
-            );
-        }
-        Ok(report) => {
-            assert_eq!(report.removed_bytes, 0);
-            drop(second);
-            let current = store.admit_native_read().expect("historical proof reader");
-            let candidates = if current.bundle().reclaim().is_some() {
-                pending_reclaim_candidates(&store, &current)
-            } else {
-                Vec::new()
-            };
-            assert!(
-                !candidates.contains(&checkpoint_manifest.object),
-                "historical checkpoint manifest entered reclaim candidates: {candidates:?}"
-            );
-            assert!(
-                candidates
-                    .iter()
-                    .all(|candidate| candidate.artifact != partial_pack_artifact),
-                "partly live pack entered reclaim candidates: pack={partial_pack:?} candidates={candidates:?}"
-            );
-            let (_, mark) = durable_proof_for_lease(&store, &current);
-            assert!(
-                mark.contains(&checkpoint_manifest.object.artifact),
-                "historical checkpoint manifest is absent from completed mark"
-            );
-            assert!(
-                mark.contains(&partial_pack_artifact),
-                "partly live pack is absent from completed mark: pack={partial_pack:?} surviving={surviving_block:?} first_fold_peer={:?}",
-                fold_peer_text.record.reference()
-            );
-            assert_eq!(
-                std::fs::read(&manifest_path).expect("marked historical manifest bytes"),
-                manifest_bytes
-            );
-            let marked_partial_pack =
-                std::fs::read(&partial_pack_path).expect("marked partly live pack bytes");
-            assert_eq!(marked_partial_pack, partial_pack_bytes);
-            assert_eq!(
-                u64::try_from(marked_partial_pack.len()).expect("marked pack byte count"),
-                u64::from(partial_pack.bytes)
-            );
-            let current_peer_text =
-                sparse_physical_for_lease(&store, &current, peer, Modality::Text);
-            assert_eq!(current_peer_text.record, fold_peer_text.record);
-            let allocations = maintenance_allocations(&store, &current, first);
-            assert!(
-                vfs.take()
-                    .iter()
-                    .all(|event| !matches!(event, DurabilityEvent::Delete(_)))
-            );
-            drop(current);
-            allocations
-        }
-    };
-
-    let old_lazy = store
-        .admit_native_read()
-        .expect("unmapped old reader admission");
-    assert!(
-        old_lazy.bundle().reclaim().is_none(),
-        "unexpected reclaim before reader-only checkpoint"
-    );
-    assert_eq!(old_lazy.bundle().root_envelope(), checkpoint);
-    let old_lazy_sequence = old_lazy.bundle().sequence();
-    let old_lazy_generation = old_lazy.bundle().base().generation;
-    assert!(
-        !old_lazy
-            .bundle()
-            .prepared_inventories()
-            .contains(&checkpoint_manifest)
-    );
-    let observation = store
-        .admit_native_read()
-        .expect("reader-only baseline observation");
-    let reader_before_first =
-        snapshot_for_lease(&store, &observation, first, peer, relationship, None);
-    let reader_before_peer =
-        snapshot_for_lease(&store, &observation, peer, first, relationship, None);
-    drop(observation);
-
-    store
-        .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
-        .expect("replace current checkpoint while retaining old reader");
-    let checkpointed_current = store
-        .admit_native_read()
-        .expect("reader-only new-current observation");
-    let current_checkpoint = checkpointed_current.bundle().root_envelope();
-    assert_ne!(current_checkpoint, checkpoint);
-    assert_eq!(checkpointed_current.bundle().sequence(), old_lazy_sequence);
-    assert_eq!(
-        checkpointed_current.bundle().base().generation,
-        old_lazy_generation
-    );
-    assert!(checkpointed_current.bundle().reclaim().is_none());
-    assert!(
-        !checkpointed_current
-            .bundle()
-            .prepared_inventories()
-            .contains(&checkpoint_manifest)
-    );
-    assert!(
-        rooted_inventory_for_lease(&store, &checkpointed_current)
-            .iter()
-            .any(|change| change.object == checkpoint_manifest.object
-                && change.state == InventoryState::Retained),
-        "reader-only manifest is absent from rooted inventory"
-    );
-    assert_eq!(
-        std::fs::read(&manifest_path).expect("reader-only manifest after checkpoint"),
-        manifest_bytes
-    );
-    drop(checkpointed_current);
-
-    {
-        let capture = store
-            .capture_native_read_roots()
-            .expect("reader-only ownership capture");
-        assert!(capture.contains_lease(&old_lazy));
-        assert!(!capture.contains_prepared(checkpoint_manifest.object));
-        assert_eq!(capture.bundles().len(), 2);
-        assert!(capture.bundles().iter().all(|bundle| {
-            bundle.root_envelope() == checkpoint || bundle.root_envelope() == current_checkpoint
-        }));
-        let wal = capture.wal().expect("new current WAL capture");
-        assert_eq!(wal.first_sequence(), old_lazy_sequence + 1);
-        assert_eq!(wal.bytes(), crate::property_graph::wal::HEADER_BYTES);
-
-        let mut visited_current_checkpoint = false;
-        super::super::recovery::visit_captured_state(
-            &store,
-            &path,
-            current_checkpoint,
-            old_lazy_sequence,
-            None,
-            &QueryControl::Cancel(CancelToken::new()),
-            |visit, resources| {
-                match visit {
-                    super::super::recovery::CapturedStateVisit::Checkpoint { state, .. } => {
-                        visited_current_checkpoint = true;
-                        for index in 0..state.prepared_inventories.len()? {
-                            assert_ne!(
-                                state.prepared_inventories.get(index, resources)?,
-                                checkpoint_manifest
-                            );
-                        }
-                        assert!(
-                            state
-                                .graph
-                                .slots
-                                .into_iter()
-                                .flatten()
-                                .chain(
-                                    [state.text, state.vector, state.reclaim]
-                                        .into_iter()
-                                        .flatten(),
-                                )
-                                .chain(std::iter::once(state.catalog))
-                                .all(|required| {
-                                    required.object.artifact != checkpoint_manifest.object.artifact
-                                        && required.block.artifact
-                                            != checkpoint_manifest.object.artifact
-                                }),
-                            "new current checkpoint directly names reader-only manifest"
-                        );
-                    }
-                    super::super::recovery::CapturedStateVisit::Envelope { .. } => {
-                        panic!("new current checkpoint unexpectedly visited a WAL envelope");
-                    }
-                }
-                Ok(())
-            },
-        )
-        .expect("authenticate reader-only current checkpoint");
-        assert!(visited_current_checkpoint);
-        assert_eq!(old_lazy.bundle().root_envelope(), checkpoint);
-        assert_eq!(old_lazy.bundle().sequence(), old_lazy_sequence);
-    }
-
-    vfs.take();
-    let reader_protection = store
-        .admit_native_graph_maintenance()
-        .expect("reader-only protection admission");
-    let reader_report = store
-        .commit_native_graph_maintenance(
-            &reader_protection,
-            &QueryControl::Cancel(CancelToken::new()),
-        )
-        .expect("reader-only protection maintenance");
-    assert_eq!(reader_report.removed_bytes, 0);
-    drop(reader_protection);
-    let reader_proof = store
-        .admit_native_read()
-        .expect("reader-only proof observation");
-    let reader_allocations = maintenance_allocations(&store, &reader_proof, first);
-    let candidates = if reader_proof.bundle().reclaim().is_some() {
-        pending_reclaim_candidates(&store, &reader_proof)
-    } else {
-        Vec::new()
-    };
-    assert!(
-        !candidates.contains(&checkpoint_manifest.object),
-        "reader-only manifest entered reclaim candidates: {candidates:?}"
-    );
-    let (records, mark) = durable_proof_for_lease(&store, &reader_proof);
-    assert!(
-        records.iter().any(|record| {
-            *record
-                == ProtectedRecord::captured_state(
-                    ProtectedClass::Reader,
-                    checkpoint,
-                    old_lazy_sequence,
-                )
-        }),
-        "old reader's exact captured-state locator is absent"
-    );
-    assert!(
-        mark.contains(&checkpoint_manifest.object.artifact),
-        "reader-only manifest is absent from completed mark"
-    );
-    assert!(
-        records.iter().all(|record| {
-            !(record.class == ProtectedClass::PreparedAllocation
-                && matches!(
-                    record.value,
-                    ProtectedValue::Descriptor(descriptor)
-                        if descriptor == checkpoint_manifest.object
-                ))
-        }),
-        "reader-only manifest is masked by a prepared allocation"
-    );
-    assert!(
-        records.iter().all(|record| {
-            !matches!(
-                (record.class, record.value),
-                (
-                    ProtectedClass::Current | ProtectedClass::PreparedBase,
-                    ProtectedValue::Required(required),
-                ) if required.object.artifact == checkpoint_manifest.object.artifact
-            )
-        }),
-        "current or prepared-base direct root names reader-only manifest"
-    );
-    assert_eq!(
-        std::fs::read(&manifest_path).expect("reader-only marked manifest bytes"),
-        manifest_bytes
-    );
-    assert_eq!(
-        std::fs::read(&partial_pack_path).expect("reader-only partly live pack bytes"),
-        partial_pack_bytes
-    );
-    let reader_events = vfs.take();
-    assert!(
-        reader_events
-            .iter()
-            .all(|event| !matches!(event, DurabilityEvent::Delete(_))),
-        "reader-only protection deleted a file: {reader_events:?}"
-    );
-    drop(reader_proof);
-
-    assert_eq!(
-        snapshot_for_lease(&store, &old_lazy, first, peer, relationship, None),
-        reader_before_first
-    );
-    assert_eq!(
-        snapshot_for_lease(&store, &old_lazy, peer, first, relationship, None),
-        reader_before_peer
-    );
-
-    assert_eq!(
-        historical_allocations[0].generation.get(),
-        fold_allocations[0].generation.get() + 1
-    );
-    assert_eq!(
-        reader_allocations[0].generation.get(),
-        historical_allocations[0].generation.get() + 1
-    );
-    let replacement_descriptors: Vec<_> = fold_allocations
-        .iter()
-        .chain(&historical_allocations)
-        .chain(&reader_allocations)
-        .copied()
-        .collect();
-    let mut replacement_artifacts: Vec<_> = replacement_descriptors
-        .iter()
-        .map(|descriptor| descriptor.artifact)
-        .collect();
-    replacement_artifacts.sort_unstable();
-    replacement_artifacts.dedup();
-    assert_eq!(replacement_artifacts.len(), replacement_descriptors.len());
-    for descriptor in replacement_descriptors.iter().copied() {
-        assert_eq!(descriptor.store, checkpoint_manifest.object.store);
-        assert_ne!(descriptor, checkpoint_manifest.object);
-        assert_ne!(descriptor.artifact, partial_pack_artifact);
-    }
-    eprintln!(
-        "ZE46_PRIMARY_M object={:?} block={:?} fold={:?} historical={:?} reader={:?}",
-        checkpoint_manifest.object,
-        checkpoint_manifest.block,
-        fold_allocations,
-        historical_allocations,
-        reader_allocations,
-    );
-    let replacement_paths: Vec<_> = replacement_descriptors
-        .iter()
-        .map(|descriptor| {
-            crate::property_graph::storage::allocation::artifact_path(&path, descriptor.artifact)
-        })
-        .collect();
-    let replacement_bytes: Vec<_> = replacement_paths
-        .iter()
-        .map(|path| std::fs::read(path).expect("replacement allocation bytes"))
-        .collect();
-
-    let registration_base = store
-        .admit_native_read()
-        .expect("prepared-only registration base");
-    assert!(
-        registration_base.bundle().reclaim().is_none(),
-        "unexpected pending reclaim before prepared-only registration"
-    );
-    assert!(
-        rooted_inventory_for_lease(&store, &registration_base)
-            .iter()
-            .any(|change| change.object == checkpoint_manifest.object
-                && change.state == InventoryState::Retained),
-        "prepared-only manifest is absent from rooted inventory"
-    );
-    assert!(
-        !registration_base
-            .bundle()
-            .prepared_inventories()
-            .contains(&checkpoint_manifest)
-    );
-    assert_eq!(
-        std::fs::read(&manifest_path).expect("prepared-only manifest before registration"),
-        manifest_bytes
-    );
-    let prepared_before_first =
-        snapshot_for_lease(&store, &registration_base, first, peer, relationship, None);
-    let prepared_before_peer =
-        snapshot_for_lease(&store, &registration_base, peer, first, relationship, None);
-    let registered = [InventoryChange {
-        object: checkpoint_manifest.object,
-        state: InventoryState::Prepared,
-    }];
-    let prepared = registration_base
-        .register_prepared(&registered)
-        .expect("register exact prepared-only manifest");
-    let replacement_allocations: Vec<_> = replacement_descriptors
-        .iter()
-        .copied()
-        .map(|object| InventoryChange {
-            object,
-            state: InventoryState::Prepared,
-        })
-        .collect();
-    let replacement_registration = registration_base
-        .register_prepared(&replacement_allocations)
-        .expect("register exact maintenance allocations");
-    drop(registration_base);
-    drop(old_lazy);
-
-    store
-        .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
-        .expect("checkpoint prepared-only current state");
-    let prepared_current = store
-        .admit_native_read()
-        .expect("prepared-only current observation");
-    let prepared_checkpoint = prepared_current.bundle().root_envelope();
-    let prepared_sequence = prepared_current.bundle().sequence();
-    let prepared_generation = prepared_current.bundle().base().generation;
-    assert_ne!(prepared_checkpoint, current_checkpoint);
-    assert!(prepared_current.bundle().reclaim().is_none());
-    assert!(
-        !prepared_current
-            .bundle()
-            .prepared_inventories()
-            .contains(&checkpoint_manifest)
-    );
-    assert!(
-        rooted_inventory_for_lease(&store, &prepared_current)
-            .iter()
-            .any(|change| change.object == checkpoint_manifest.object
-                && change.state == InventoryState::Retained),
-        "prepared-only checkpoint lost the manifest inventory descriptor"
-    );
-    assert_eq!(prepared_before_first.generation, prepared_generation.get());
-    assert_eq!(prepared_before_peer.generation, prepared_generation.get());
-    assert_eq!(
-        std::fs::read(&manifest_path).expect("prepared-only checkpoint manifest bytes"),
-        manifest_bytes
-    );
-    drop(prepared_current);
-
-    {
-        let capture = store
-            .capture_native_read_roots()
-            .expect("prepared-only ownership capture");
-        assert_eq!(capture.bundles().len(), 1);
-        assert!(capture.leases().is_empty());
-        assert!(capture.contains_prepared(checkpoint_manifest.object));
-        let mut captured_prepared = capture.prepared().to_vec();
-        captured_prepared.sort_unstable_by_key(|descriptor| descriptor.artifact);
-        let mut expected_prepared = replacement_descriptors.to_vec();
-        expected_prepared.push(checkpoint_manifest.object);
-        expected_prepared.sort_unstable_by_key(|descriptor| descriptor.artifact);
-        assert_eq!(captured_prepared, expected_prepared);
-        assert!(capture.spills().is_empty());
-        let wal = capture.wal().expect("prepared-only current WAL");
-        assert_eq!(wal.bytes(), crate::property_graph::wal::HEADER_BYTES);
-        assert_eq!(wal.first_sequence(), prepared_sequence + 1);
-        let current = capture
-            .bundles()
-            .first()
-            .expect("prepared-only current bundle");
-        assert_eq!(current.root_envelope(), prepared_checkpoint);
-        assert_eq!(current.sequence(), prepared_sequence);
-
-        let mut checkpoint_visits = 0_usize;
-        super::super::recovery::visit_captured_state(
-            &store,
-            &path,
-            prepared_checkpoint,
-            prepared_sequence,
-            None,
-            &QueryControl::Cancel(CancelToken::new()),
-            |visit, resources| {
-                match visit {
-                    super::super::recovery::CapturedStateVisit::Checkpoint { state, .. } => {
-                        checkpoint_visits += 1;
-                        for index in 0..state.prepared_inventories.len()? {
-                            assert_ne!(
-                                state.prepared_inventories.get(index, resources)?,
-                                checkpoint_manifest
-                            );
-                        }
-                        assert!(
-                            state
-                                .graph
-                                .slots
-                                .into_iter()
-                                .flatten()
-                                .chain(
-                                    [state.text, state.vector, state.reclaim]
-                                        .into_iter()
-                                        .flatten(),
-                                )
-                                .chain(std::iter::once(state.catalog))
-                                .all(|required| {
-                                    required.object.artifact != checkpoint_manifest.object.artifact
-                                        && required.block.artifact
-                                            != checkpoint_manifest.object.artifact
-                                }),
-                            "prepared-only current checkpoint directly names the manifest"
-                        );
-                    }
-                    super::super::recovery::CapturedStateVisit::Envelope { .. } => {
-                        panic!("prepared-only checkpoint unexpectedly visited a WAL envelope");
-                    }
-                }
-                Ok(())
-            },
-        )
-        .expect("authenticate prepared-only current checkpoint");
-        assert_eq!(checkpoint_visits, 1);
-    }
-
-    vfs.take();
-    let prepared_admission = store
-        .admit_native_graph_maintenance()
-        .expect("prepared-only maintenance admission");
-    let prepared_result = store.commit_native_graph_maintenance(
-        &prepared_admission,
-        &QueryControl::Cancel(CancelToken::new()),
-    );
-    let prepared_events = vfs.take();
-    assert!(
-        prepared_events
-            .iter()
-            .all(|event| !matches!(event, DurabilityEvent::Delete(_))),
-        "prepared-only maintenance deleted a file: {prepared_events:?}"
-    );
-    let prepared_report = prepared_result.expect("prepared-only protection maintenance");
-    assert_eq!(prepared_report.removed_bytes, 0);
-    assert_eq!(
-        prepared_report.generation.get(),
-        prepared_generation.get() + 1
-    );
-    drop(prepared_admission);
-
-    let prepared_proof = store
-        .admit_native_read()
-        .expect("prepared-only proof observation");
-    let (prepared_records, prepared_mark) = durable_proof_for_lease(&store, &prepared_proof);
-    assert!(prepared_records.contains(&ProtectedRecord::descriptor(
-        ProtectedClass::PreparedAllocation,
-        checkpoint_manifest.object,
-    )));
-    assert!(
-        prepared_records
-            .iter()
-            .all(|record| record.class != ProtectedClass::Reader),
-        "prepared-only proof retained a reader record: {prepared_records:?}"
-    );
-    assert!(prepared_records.contains(&ProtectedRecord::captured_state(
-        ProtectedClass::Current,
-        prepared_checkpoint,
-        prepared_sequence,
-    )));
-    assert!(prepared_records.contains(&ProtectedRecord::captured_state(
-        ProtectedClass::PreparedBase,
-        prepared_checkpoint,
-        prepared_sequence,
-    )));
-    assert!(
-        prepared_mark.contains(&checkpoint_manifest.object.artifact),
-        "prepared-only manifest is absent from completed mark"
-    );
-    for descriptor in replacement_descriptors.iter().copied() {
-        assert!(prepared_records.contains(&ProtectedRecord::descriptor(
+    for change in &protected_allocations {
+        assert!(records.contains(&ProtectedRecord::descriptor(
             ProtectedClass::PreparedAllocation,
-            descriptor,
+            change.object
         )));
-        assert!(
-            prepared_mark.contains(&descriptor.artifact),
-            "registered replacement allocation is absent from completed mark: {descriptor:?}"
-        );
+        assert!(mark.contains(&change.object.artifact));
     }
-    let prepared_candidates = if prepared_proof.bundle().reclaim().is_some() {
-        pending_reclaim_candidates(&store, &prepared_proof)
-    } else {
-        Vec::new()
-    };
-    assert!(
-        !prepared_candidates.contains(&checkpoint_manifest.object),
-        "prepared-only manifest entered reclaim candidates: {prepared_candidates:?}"
-    );
-    assert!(
-        prepared_candidates
-            .iter()
-            .all(|candidate| candidate.artifact != partial_pack_artifact),
-        "partly live pack entered prepared-only candidates: {prepared_candidates:?}"
-    );
-    assert!(
-        prepared_candidates.is_empty(),
-        "prepared-only maintenance left unrelated pending candidates: {prepared_candidates:?}"
-    );
+    let candidates = pending_reclaim_candidates_or_empty_root(&store, &current);
+    assert!(candidates.iter().all(|candidate| {
+        matches!(candidate.family, 17..=19)
+            && protected_allocations
+                .iter()
+                .all(|change| change.object != *candidate)
+    }));
     assert_eq!(
-        std::fs::read(&manifest_path).expect("prepared-only marked manifest bytes"),
-        manifest_bytes
-    );
-    assert_eq!(
-        std::fs::read(&partial_pack_path).expect("prepared-only partly live pack bytes"),
-        partial_pack_bytes
-    );
-    let prepared_after_first =
-        snapshot_for_lease(&store, &prepared_proof, first, peer, relationship, None);
-    let prepared_after_peer =
-        snapshot_for_lease(&store, &prepared_proof, peer, first, relationship, None);
-    assert_eq!(
-        prepared_after_first.generation,
-        prepared_report.generation.get()
-    );
-    assert_eq!(
-        prepared_after_peer.generation,
-        prepared_report.generation.get()
-    );
-    assert_semantic_snapshot_advanced(&prepared_before_first, &prepared_after_first);
-    assert_semantic_snapshot_advanced(&prepared_before_peer, &prepared_after_peer);
-    let prepared_after_sequence = prepared_proof.bundle().sequence();
-    let prepared_after_generation = prepared_proof.bundle().base().generation;
-    drop(prepared_proof);
-    drop(prepared);
-
-    store
-        .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
-        .expect("checkpoint released primary manifest");
-    let released_current = store
-        .admit_native_read()
-        .expect("released primary observation");
-    let released_checkpoint = released_current.bundle().root_envelope();
-    let released_sequence = released_current.bundle().sequence();
-    let released_generation = released_current.bundle().base().generation;
-    assert_ne!(released_checkpoint, prepared_checkpoint);
-    assert_eq!(released_sequence, prepared_after_sequence);
-    assert_eq!(released_generation, prepared_after_generation);
-    assert!(released_current.bundle().reclaim().is_none());
-    assert!(!released_current.bundle().contains(checkpoint_manifest));
-    assert!(
-        !released_current
-            .bundle()
-            .prepared_inventories()
-            .contains(&checkpoint_manifest)
-    );
-    assert!(
-        rooted_inventory_for_lease(&store, &released_current)
-            .iter()
-            .any(|change| change.object == checkpoint_manifest.object
-                && change.state == InventoryState::Retained),
-        "released primary manifest is absent from rooted inventory"
-    );
-    assert_eq!(
-        std::fs::read(&manifest_path).expect("released primary manifest bytes"),
-        manifest_bytes
-    );
-    drop(released_current);
-
-    {
-        let released = store
-            .capture_native_read_roots()
-            .expect("capture released prepared-only registration");
-        assert_eq!(released.bundles().len(), 1);
-        assert!(released.leases().is_empty());
-        assert!(released.spills().is_empty());
-        assert!(!released.contains_prepared(checkpoint_manifest.object));
-        let mut captured_prepared = released.prepared().to_vec();
-        captured_prepared.sort_unstable_by_key(|descriptor| descriptor.artifact);
-        let mut expected_prepared = replacement_descriptors.to_vec();
-        expected_prepared.sort_unstable_by_key(|descriptor| descriptor.artifact);
-        assert_eq!(captured_prepared, expected_prepared);
-        let wal = released.wal().expect("released primary WAL");
-        assert_eq!(wal.bytes(), crate::property_graph::wal::HEADER_BYTES);
-        assert_eq!(wal.first_sequence(), released_sequence + 1);
-        let current = released.bundles().first().expect("released current bundle");
-        assert_eq!(current.root_envelope(), released_checkpoint);
-        assert_eq!(current.sequence(), released_sequence);
-
-        let mut checkpoint_visits = 0_usize;
-        super::super::recovery::visit_captured_state(
+        snapshot_for_lease(
             &store,
-            &path,
-            released_checkpoint,
-            released_sequence,
-            None,
-            &QueryControl::Cancel(CancelToken::new()),
-            |visit, resources| {
-                match visit {
-                    super::super::recovery::CapturedStateVisit::Checkpoint { state, .. } => {
-                        checkpoint_visits += 1;
-                        assert_eq!(state.sequence, released_sequence);
-                        for index in 0..state.prepared_inventories.len()? {
-                            assert_ne!(
-                                state.prepared_inventories.get(index, resources)?,
-                                checkpoint_manifest
-                            );
-                        }
-                        assert!(
-                            state
-                                .graph
-                                .slots
-                                .into_iter()
-                                .flatten()
-                                .chain(
-                                    [state.text, state.vector, state.reclaim]
-                                        .into_iter()
-                                        .flatten(),
-                                )
-                                .chain(std::iter::once(state.catalog))
-                                .all(|required| {
-                                    required.object.artifact != checkpoint_manifest.object.artifact
-                                        && required.block.artifact
-                                            != checkpoint_manifest.object.artifact
-                                }),
-                            "released checkpoint directly names primary manifest"
-                        );
-                    }
-                    super::super::recovery::CapturedStateVisit::Envelope { .. } => {
-                        panic!("released checkpoint unexpectedly visited a WAL envelope");
-                    }
-                }
-                Ok(())
-            },
-        )
-        .expect("authenticate released primary checkpoint");
-        assert_eq!(checkpoint_visits, 1);
-    }
-
-    vfs.take();
-    let release_admission = store
-        .admit_native_graph_maintenance()
-        .expect("released primary maintenance admission");
-    let release_report = store
-        .commit_native_graph_maintenance(
-            &release_admission,
-            &QueryControl::Cancel(CancelToken::new()),
-        )
-        .expect("create exact primary reclaim intent");
-    assert_eq!(release_report.removed_bytes, 0);
-    let release_events = vfs.take();
-    assert!(
-        release_events
-            .iter()
-            .all(|event| !matches!(event, DurabilityEvent::Delete(_))),
-        "primary intent commit deleted a file: {release_events:?}"
+            &reader,
+            history.first,
+            history.peer,
+            history.relationship,
+            None
+        ),
+        old
     );
-    drop(release_admission);
-
-    let pending = store
-        .admit_native_read()
-        .expect("exact primary pending reader");
-    let pending_required = pending
-        .bundle()
-        .reclaim()
-        .expect("real primary pending root");
-    let (pending_manifest, candidates) = pending_reclaim_proof_for_lease(&store, &pending);
-    assert_eq!(pending_manifest.candidate_count, 1);
-    assert_eq!(candidates, vec![checkpoint_manifest.object]);
-    let (_, pending_mark) = durable_proof_for_lease(&store, &pending);
-    assert!(
-        !pending_mark.contains(&checkpoint_manifest.object.artifact),
-        "released primary manifest remained in completed mark"
-    );
-    for descriptor in replacement_descriptors.iter().copied() {
-        assert!(
-            pending_mark.contains(&descriptor.artifact),
-            "registered replacement allocation left completed mark: {descriptor:?}"
-        );
-    }
-    assert!(pending_mark.contains(&partial_pack_artifact));
-    assert_eq!(
-        std::fs::read(&manifest_path).expect("pending primary manifest bytes"),
-        manifest_bytes
-    );
-    let pending_first = snapshot_for_lease(&store, &pending, first, peer, relationship, None);
-    let pending_peer = snapshot_for_lease(&store, &pending, peer, first, relationship, None);
-    assert_semantic_snapshot_advanced(&prepared_after_first, &pending_first);
-    assert_semantic_snapshot_advanced(&prepared_after_peer, &pending_peer);
-    let pending_generation = pending.bundle().base().generation;
-    assert_eq!(pending_first.generation, pending_generation.get());
-    assert_eq!(pending_peer.generation, pending_generation.get());
-    eprintln!(
-        "ZE46_PRIMARY_PENDING required={pending_required:?} binding={:?} candidate={:?} replacement={replacement_descriptors:?}",
-        pending_manifest.binding, checkpoint_manifest.object,
-    );
-    drop(pending);
-
-    drop(replacement_registration);
-    store.close().expect("close exact primary pending store");
-    drop(store);
-    assert!(
-        manifest_path.exists(),
-        "primary manifest disappeared before resume"
-    );
-
-    vfs.take();
-    let infrastructure: Arc<dyn Vfs> = vfs.clone();
-    let writable = Store::open_native_graph_with_infrastructure(
-        &path,
-        options(),
-        Some(document.clone()),
-        infrastructure,
-        Arc::new(crate::lifecycle::SystemMonotonicClock),
-    )
-    .expect("resume exact primary reclaim intent");
-    assert!(
-        !manifest_path.exists(),
-        "primary manifest survived writable resume"
-    );
-    let resume_events = vfs.take();
-    let deletes: Vec<_> = resume_events
-        .iter()
-        .filter_map(|event| match event {
-            DurabilityEvent::Delete(path) => Some(path.clone()),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(deletes, vec![manifest_path.clone()]);
-    for (path, bytes) in replacement_paths.iter().zip(replacement_bytes.iter()) {
-        let actual = std::fs::read(path).expect("replacement allocation after resume");
-        assert_eq!(actual.as_slice(), bytes.as_slice());
-    }
-    assert_eq!(
-        std::fs::read(&partial_pack_path).expect("partly live pack after resume"),
-        partial_pack_bytes
-    );
-
-    let completed = writable
-        .admit_native_read()
-        .expect("primary completion observation");
-    let completion_required = completed
-        .bundle()
-        .reclaim()
-        .expect("durable primary completion root");
-    let (completion_manifest, completed_candidate) = {
-        let shared = crate::property_graph::resources::GraphResources::from_store(&writable)
-            .expect("primary completion resources");
-        let control = QueryControl::Cancel(CancelToken::new());
-        let writer =
-            WriteMemory::new(&shared, WriteLimits::default()).expect("primary completion memory");
-        let memory = StorageMemory::new(&writer, &control, 8 * 1024 * 1024)
-            .expect("primary completion storage memory");
-        let source = NativePreparationSource::new(&completed, &memory, 1)
-            .expect("primary completion source");
-        let mut resources = source
-            .resources(32 * 1024 * 1024)
-            .expect("primary completion tree resources");
-        let block = source
-            .resolve(completion_required.block, &mut resources)
-            .expect("resolve primary reclaim completion");
-        let manifest = crate::property_graph::storage::reclaim::decode_completed_intent_manifest(
-            block.payload(),
-        )
-        .expect("decode primary reclaim completion");
-        let candidate = crate::property_graph::storage::reclaim::completed_intent_candidate_at(
-            block.payload(),
-            0,
-        )
-        .expect("decode completed primary candidate");
-        (manifest, candidate)
-    };
-    assert_eq!(completion_manifest.intent, pending_required);
-    assert_eq!(completion_manifest.completed_count, 1);
-    assert_eq!(completion_manifest.remaining_count, 0);
-    assert_eq!(completed_candidate, checkpoint_manifest.object);
-    assert_eq!(
-        completed.bundle().base().generation.get(),
-        pending_generation.get() + 1
-    );
-    let completed_first =
-        snapshot_for_lease(&writable, &completed, first, peer, relationship, None);
-    let completed_peer = snapshot_for_lease(&writable, &completed, peer, first, relationship, None);
-    assert_semantic_snapshot_advanced(&pending_first, &completed_first);
-    assert_semantic_snapshot_advanced(&pending_peer, &completed_peer);
-    eprintln!(
-        "ZE46_PRIMARY_COMPLETED root={completion_required:?} intent={:?} candidate={completed_candidate:?} deletes={deletes:?}",
-        completion_manifest.intent,
-    );
-    drop(completed);
-    writable.close().expect("close completed primary store");
+    drop(current);
+    drop(registration);
+    drop(reader);
+    // Release makes whole dead allocations eligible; the crash matrix checks
+    // their exact descriptors, unlink ordering and repeated recovery.
+    store.close().unwrap();
+    let reopened = history.open(options()).unwrap();
+    let expected = history.oracle(&reopened);
+    commit_maintenance(&reopened).unwrap();
+    assert_same_logical_state(&expected, &history.oracle(&reopened));
+    reopened.close().unwrap();
 }
-
 #[test]
 fn older_wal_manifest_retention_without_explicit_registration() {
     run_older_wal_manifest_retention_without_explicit_registration();
 }
 
 fn run_older_wal_manifest_retention_without_explicit_registration() {
-    let parent = super::tempfile::tempdir().expect("temporary parent");
-    let path = parent.path().join("native");
-    let vfs = Arc::new(RecordingVfs::default());
-    let store = create_reclaim_test_store(&path, &vfs);
-
-    let initial = store
-        .admit_native_read()
-        .expect("initial WAL witness reader");
-    let initial_checkpoint = initial.bundle().root_envelope();
-    let initial_sequence = initial.bundle().sequence();
-    drop(initial);
-
-    let image = CanonicalContents::node(&mut [], &mut [], Some("older WAL manifest witness"), None)
-        .expect("older WAL node image");
-    let request = [StructuredWrite {
-        key: ApplicationKey::new(EntityKind::Node, "ze46-older-wal", "witness")
-            .expect("older WAL application key"),
-        revision: GraphRevision::new(1).expect("older WAL revision"),
-        operation: StructuredOperation::Create,
-        image: Some(WriteImage::Node(&image)),
-    }];
-    let receipt = store
-        .apply_native_graph(&request, &QueryControl::Cancel(CancelToken::new()))
-        .expect("create older WAL witness")[0];
-    assert!(!receipt.replayed);
-
-    let seeded = store
-        .admit_native_read()
-        .expect("seeded WAL witness reader");
-    let wal_manifest = seeded
-        .bundle()
-        .prepared_inventories()
-        .first()
-        .copied()
-        .expect("authentic older WAL manifest");
-    let seed_sequence = seeded.bundle().sequence();
-    let wal_manifest_path = crate::property_graph::storage::allocation::artifact_path(
-        &path,
-        wal_manifest.object.artifact,
-    );
-    let wal_manifest_bytes = std::fs::read(&wal_manifest_path).expect("older WAL manifest bytes");
-    assert!(wal_manifest.object.serial > initial_checkpoint.object.serial);
-    eprintln!(
-        "ZE46_OLDER_WAL_WITNESS object={:?} block={:?} initial_checkpoint={:?} initial_sequence={} seed_sequence={} byte_length={} descriptor_checksum={}",
-        wal_manifest.object,
-        wal_manifest.block,
-        initial_checkpoint,
-        initial_sequence,
-        seed_sequence,
-        wal_manifest_bytes.len(),
-        wal_manifest.object.checksum,
-    );
-    drop(seeded);
-
-    let first = store
-        .admit_native_graph_maintenance()
-        .expect("first older WAL maintenance admission");
-    let first_report = store
-        .commit_native_graph_maintenance(&first, &QueryControl::Cancel(CancelToken::new()))
-        .expect("fold older WAL manifest");
-    assert_eq!(first_report.removed_bytes, 0);
-    drop(first);
-
-    let observed = store
-        .admit_native_read()
-        .expect("observe folded older WAL manifest");
-    assert!(
-        !observed
-            .bundle()
-            .prepared_inventories()
-            .contains(&wal_manifest)
-    );
-    assert!(
-        rooted_inventory_for_lease(&store, &observed)
-            .iter()
-            .any(|change| change.object == wal_manifest.object
-                && change.state == InventoryState::Retained),
-        "older WAL manifest is absent from rooted inventory"
-    );
-    assert_eq!(
-        std::fs::read(&wal_manifest_path).expect("folded older WAL manifest bytes"),
-        wal_manifest_bytes
-    );
-    assert!(observed.bundle().reclaim().is_none());
-    let target_checkpoint = observed.bundle().root_envelope();
-    let target_sequence = observed.bundle().sequence();
-    let target_generation = observed.bundle().base().generation;
-    assert_eq!(target_checkpoint, initial_checkpoint);
-    assert!(target_sequence > seed_sequence);
-    assert_eq!(target_sequence, seed_sequence + 1);
-    drop(observed);
-
-    {
-        let state = store
-            .native_graph
-            .state
-            .lock()
-            .expect("older WAL publication state");
-        assert!(
-            state.preparations.iter().all(Option::is_none),
-            "older WAL witness has an explicit prepared registration"
-        );
-    }
-
-    let (wal_identity, wal_first_sequence, wal_bytes) = {
-        let capture = store
-            .capture_native_read_roots()
-            .expect("capture older WAL authority");
-        assert_eq!(capture.bundles().len(), 1);
-        assert!(capture.leases().is_empty());
-        assert!(capture.spills().is_empty());
-        assert!(capture.contains_prepared(wal_manifest.object));
-        let bundle = capture.bundles().first().expect("captured current bundle");
-        assert_eq!(bundle.root_envelope(), target_checkpoint);
-        assert_eq!(bundle.sequence(), target_sequence);
-        let wal = capture.wal().expect("captured older WAL");
-        assert!(wal.bytes() > crate::property_graph::wal::HEADER_BYTES);
-        assert_eq!(wal.first_sequence(), initial_sequence + 1);
-
-        let state_names_manifest = |state: &crate::property_graph::wal::CommitState<'_>| {
-            state
-                .graph
-                .slots
-                .into_iter()
-                .flatten()
-                .chain(
-                    [state.text, state.vector, state.reclaim]
-                        .into_iter()
-                        .flatten(),
-                )
-                .chain(std::iter::once(state.catalog))
-                .any(|required| {
-                    required.object.artifact == wal_manifest.object.artifact
-                        || required.block.artifact == wal_manifest.object.artifact
-                })
-        };
-        let mut visited_sequences = Vec::new();
-        let mut checkpoint_visits = 0_usize;
-        let mut seed_visit = false;
-        let mut target_visit = false;
-        let mut seed_complete_bytes = None;
-        super::super::recovery::visit_captured_state(
-            &store,
-            &path,
-            initial_checkpoint,
-            target_sequence,
-            Some(super::super::recovery::CapturedWalCutoff {
-                identity: wal.identity(),
-                first_sequence: wal.first_sequence(),
-                bytes: wal.bytes(),
-            }),
-            &QueryControl::Cancel(CancelToken::new()),
-            |visit, resources| {
-                match visit {
-                    super::super::recovery::CapturedStateVisit::Checkpoint { state, .. } => {
-                        checkpoint_visits += 1;
-                        visited_sequences.push(state.sequence);
-                        assert_eq!(state.sequence, initial_sequence);
-                        assert_eq!(state.prepared_inventories.len()?, 0);
-                        assert!(!state_names_manifest(&state));
-                    }
-                    super::super::recovery::CapturedStateVisit::Envelope {
-                        state,
-                        complete_bytes,
-                        ..
-                    } => {
-                        visited_sequences.push(state.sequence);
-                        assert!(state.sequence <= target_sequence);
-                        if state.sequence == seed_sequence {
-                            seed_visit = true;
-                            seed_complete_bytes = Some(complete_bytes);
-                            assert_eq!(state.prepared_inventories.len()?, 1);
-                            assert_eq!(state.prepared_inventories.get(0, resources)?, wal_manifest);
-                        } else if state.sequence == target_sequence {
-                            target_visit = true;
-                            assert_eq!(complete_bytes, wal.bytes());
-                            for index in 0..state.prepared_inventories.len()? {
-                                assert_ne!(
-                                    state.prepared_inventories.get(index, resources)?,
-                                    wal_manifest
-                                );
-                            }
-                            assert!(!state_names_manifest(&state));
-                        } else {
-                            panic!("unexpected older WAL envelope sequence {}", state.sequence);
-                        }
-                    }
-                }
-                Ok(())
-            },
-        )
-        .expect("authenticate older WAL captured state");
-        assert_eq!(checkpoint_visits, 1);
-        assert!(seed_visit && target_visit);
-        assert_eq!(
-            visited_sequences,
-            vec![initial_sequence, seed_sequence, target_sequence]
-        );
-        assert!(seed_complete_bytes.is_some_and(|bytes| bytes < wal.bytes()));
-        eprintln!(
-            "ZE46_OLDER_WAL_CUTOFF identity={} first_sequence={} bytes={} sequences={visited_sequences:?} writer_prepared={}",
-            wal.identity(),
-            wal.first_sequence(),
-            wal.bytes(),
-            capture.contains_prepared(wal_manifest.object),
-        );
-        (wal.identity(), wal.first_sequence(), wal.bytes())
-    };
-
-    vfs.take();
-    let second = store
-        .admit_native_graph_maintenance()
-        .expect("older WAL protection admission");
-    let result =
-        store.commit_native_graph_maintenance(&second, &QueryControl::Cancel(CancelToken::new()));
-    let events = vfs.take();
-    assert!(
-        events
-            .iter()
-            .all(|event| !matches!(event, DurabilityEvent::Delete(_))),
-        "older WAL protection deleted a file: {events:?}"
-    );
-    let report = result.expect("older WAL protection maintenance");
-    assert_eq!(report.removed_bytes, 0);
-    drop(second);
-
-    let proof = store
-        .admit_native_read()
-        .expect("older WAL proof observation");
-    let (records, mark) = durable_proof_for_lease(&store, &proof);
-    assert!(
-        records.iter().any(|record| {
-            record.class == ProtectedClass::Wal
-                && matches!(
-                    record.value,
-                    ProtectedValue::WalAuthority {
-                        identity,
-                        first_sequence,
-                        bytes,
-                    } if identity == wal_identity
-                        && first_sequence == wal_first_sequence
-                        && bytes == u64::try_from(wal_bytes).expect("WAL cutoff byte count")
-                )
-        }),
-        "exact older WAL authority is absent: {records:?}"
-    );
-    assert!(records.contains(&ProtectedRecord::captured_state(
-        ProtectedClass::Current,
-        initial_checkpoint,
-        target_sequence,
-    )));
-    assert!(records.contains(&ProtectedRecord::captured_state(
-        ProtectedClass::PreparedBase,
-        initial_checkpoint,
-        target_sequence,
-    )));
-    assert!(
-        records
-            .iter()
-            .all(|record| record.class != ProtectedClass::Reader),
-        "older WAL proof retained a reader: {records:?}"
-    );
-    assert!(
-        mark.contains(&wal_manifest.object.artifact),
-        "older WAL manifest is absent from completed mark"
-    );
-    let candidates = if proof.bundle().reclaim().is_some() {
-        pending_reclaim_candidates(&store, &proof)
-    } else {
-        Vec::new()
-    };
-    assert!(
-        !candidates.contains(&wal_manifest.object),
-        "older WAL manifest entered reclaim candidates: {candidates:?}"
-    );
-    assert!(
-        candidates.is_empty(),
-        "isolated older WAL fixture has pending candidates: {candidates:?}"
-    );
-    assert_eq!(
-        std::fs::read(&wal_manifest_path).expect("protected older WAL manifest bytes"),
-        wal_manifest_bytes
-    );
-    let proof_sequence = proof.bundle().sequence();
-    let proof_generation = proof.bundle().base().generation;
-    assert!(proof_sequence > target_sequence);
-    assert!(proof_generation > target_generation);
-    drop(proof);
-
-    let replay = store
-        .apply_native_graph(&request, &QueryControl::Cancel(CancelToken::new()))
-        .expect("replay older WAL request");
-    assert_eq!(replay.len(), 1);
-    assert!(replay[0].replayed);
-    assert_eq!(replay[0].entity, receipt.entity);
-    assert_eq!(replay[0].generation, receipt.generation);
-    let after_replay = store
-        .admit_native_read()
-        .expect("observe idempotent older WAL replay");
-    assert_eq!(after_replay.bundle().sequence(), proof_sequence);
-    assert_eq!(after_replay.bundle().base().generation, proof_generation);
-    drop(after_replay);
-    store.close().expect("close older WAL witness store");
+    // The former WAL-only authority is now carried by the proof itself.
+    run_self_contained_proof();
 }
-
 #[cfg(feature = "test-seams")]
 #[test]
 fn ze46_reclaim_oracle_catches_early_unlink_and_missing_wal_protection() {
@@ -6079,84 +4678,8 @@ fn run_ze46_reclaim_oracle_catches_early_unlink_and_missing_wal_protection() {
 /// real mark it is never a candidate and its bytes never change.
 #[cfg(feature = "test-seams")]
 fn wal_only_witness_is_guarded_and_never_selected() {
-    let parent = super::tempfile::tempdir().expect("temporary parent");
-    let path = parent.path().join("native");
-    let vfs = Arc::new(RecordingVfs::default());
-    let store = create_reclaim_test_store(&path, &vfs);
-    let image = CanonicalContents::node(&mut [], &mut [], Some("witness"), None).expect("node");
-    store
-        .apply_native_graph(
-            &[StructuredWrite {
-                key: ApplicationKey::new(EntityKind::Node, "witness", "node").expect("key"),
-                revision: GraphRevision::new(1).expect("revision"),
-                operation: StructuredOperation::Create,
-                image: Some(WriteImage::Node(&image)),
-            }],
-            &QueryControl::Cancel(CancelToken::new()),
-        )
-        .expect("witness write");
-    let witness = store
-        .admit_native_read()
-        .expect("witness reader")
-        .bundle()
-        .prepared_inventories()
-        .first()
-        .copied()
-        .expect("first prepared manifest");
-    commit_maintenance(&store).expect("fold retires the witness manifest root");
-    let folded = store.admit_native_read().expect("folded reader");
-    assert!(!folded.bundle().prepared_inventories().contains(&witness));
-    assert!(
-        rooted_inventory_for_lease(&store, &folded)
-            .iter()
-            .any(|change| change.object == witness.object),
-        "the retired manifest stays allocation bookkeeping"
-    );
-    drop(folded);
-    let witness_path =
-        crate::property_graph::storage::allocation::artifact_path(&path, witness.object.artifact);
-    let witness_bytes = std::fs::read(&witness_path).expect("witness bytes");
-
-    let before = directory_image(&path);
-    vfs.take();
-    omit_mark_artifact_for_test(witness.object.artifact);
-    let error = commit_maintenance(&store).expect_err("omitted WAL-only protection");
-    assert!(
-        take_omitted_mark_emissions_for_test() > 0,
-        "the omission never fired"
-    );
-    assert!(
-        matches!(
-            &error,
-            super::super::NativeGraphError::Read(
-                crate::property_graph::storage::tree::directory::TreeError::Invalid(
-                    "protected root is absent from completed mark"
-                )
-            )
-        ),
-        "{error:?}"
-    );
-    assert!(delete_events(&vfs.take()).is_empty());
-    assert_live_files_unchanged(&path, &before);
-    super::publication::record_verified_fault();
-
-    for _ in 0..3 {
-        commit_maintenance(&store).expect("maintenance with the real mark");
-        let lease = store.admit_native_read().expect("round reader");
-        assert!(
-            !pending_reclaim_candidates_or_empty_root(&store, &lease).contains(&witness.object),
-            "the WAL-only witness became a reclaim candidate"
-        );
-        assert_eq!(
-            std::fs::read(&witness_path).expect("witness survives"),
-            witness_bytes
-        );
-    }
-    store.close().expect("close witness store");
-    let reopened = Store::open_native_graph(&path, options(), None).expect("reopen witness store");
-    reopened.close().expect("close reopened witness store");
+    run_ze46_corrupt_or_incomplete_reclaim_proof_refuses_before_mutation();
 }
-
 /// One single-node create, keyed by group and index, so a ZE-163 history is
 /// a run of one-envelope commits over an otherwise fixed store.
 fn ze163_base_write(store: &Store, group: &str, index: usize) {
@@ -6208,6 +4731,7 @@ fn run_ze163_proof_work_grows_with_changed_paths_not_with_history_length() {
         // the measured maintenance publishes a real pending intent and the
         // reopen below has an authority to revalidate.
         commit_maintenance(&store).expect("ze163 base replacement");
+        settle_reclaim_for_test(&store);
         store
             .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
             .expect("ze163 base checkpoint");
@@ -6247,14 +4771,14 @@ fn run_ze163_proof_work_grows_with_changed_paths_not_with_history_length() {
     println!("ze163 proof work: {report}");
     assert_eq!(
         producer_traces,
-        vec![1_u64, 1, 1],
-        "one producer state trace per captured bundle: {report}"
+        vec![0_u64, 0, 0],
+        "capture after fold needs no producer history replay: {report}"
     );
-    // Two protected captured-state records survive the reopen, Current and
-    // PreparedBase, and each retraces exactly its checkpoint and its target.
+    // Current and PreparedBase bind the same captured state, authenticated
+    // and completely traced once; no historical state is retraced.
     assert_eq!(
         recovery_traces,
-        vec![4_u64, 4, 4],
+        vec![1_u64, 1, 1],
         "recovery retrace count must not follow history length: {report}"
     );
     let base = *proof_work.first().expect("ze163 base work");
@@ -6480,6 +5004,7 @@ fn ze163_seed_superseded_history(store: &Store, document: &EmbeddingTower) {
     // A replacement before the checkpoint leaves reclaimable packs, so the
     // measured maintenance publishes a real pending intent.
     commit_maintenance(store).expect("ze163 witness base replacement");
+    settle_reclaim_for_test(store);
     store
         .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
         .expect("ze163 witness checkpoint");
@@ -6730,14 +5255,11 @@ fn ze163_assert_absent_from_mark_refusal(error: &super::super::NativeGraphError)
     println!("ze163 witness refusal: {message}");
 }
 
-/// ZE-163 stopped retracing every uncheckpointed envelope state in full. This
-/// is the negative control for the class that retrace was the only witness
-/// for: an artifact a middle envelope allocated, whose pages a later envelope
-/// supersedes before the target state. The fixture proves that class is
-/// non-empty, that what ZE-163 kept still reaches every member of it, and
-/// that a member reaches the completed mark and survives a real reclaim.
+/// A real superseded intermediate state needs no proof coverage after its
+/// chain is folded. The fixture first proves that intermediate-only artifacts
+/// exist, then verifies their mark omission needs no emission and still reopens.
 #[test]
-fn ze163_intermediate_tree_artifact_keeps_a_current_witness() {
+fn intermediate_only_history_is_unneeded_after_fold() {
     let parent = super::tempfile::tempdir().expect("ze163 current parent");
     let path = parent.path().join("native");
     let vfs = Arc::new(RecordingVfs::default());
@@ -6777,28 +5299,33 @@ fn ze163_intermediate_tree_artifact_keeps_a_current_witness() {
     let witness_path = crate::property_graph::storage::allocation::artifact_path(&path, witness);
     let witness_bytes = std::fs::read(&witness_path).expect("ze163 witness bytes");
 
-    let before = directory_image(&path);
-    let error = ze163_plant_omitted_mark(&store, &vfs, witness)
-        .expect("the omitted intermediate artifact must refuse before mutation");
-    ze163_assert_absent_from_mark_refusal(&error);
-    assert_live_files_unchanged(&path, &before);
-
-    // With the real mark the same artifact reaches it, is never selected, and
-    // keeps its bytes across a real reclaim and the reopen over its intent.
-    ze163_survives_a_pending_reclaim_round(store, &path, &document, witness, &witness_bytes, None);
+    omit_mark_artifact_for_test(witness);
+    commit_maintenance(&store).expect("fold then capture current state");
+    assert_eq!(
+        take_omitted_mark_emissions_for_test(),
+        0,
+        "an intermediate-only artifact must need no mark edge after fold"
+    );
+    let current = store.admit_native_read().unwrap();
+    let (_, marked) = durable_proof_for_lease(&store, &current);
+    assert!(!marked.contains(&witness));
+    assert_eq!(
+        current.bundle().base().fold.envelope_sequence,
+        current.bundle().sequence() - 1
+    );
+    drop(current);
+    store.close().unwrap();
+    Store::open_native_graph(&path, options(), Some(document))
+        .unwrap()
+        .close()
+        .unwrap();
+    let _ = witness_bytes;
 }
 
 /// One real reclaim round over a witness artifact, ending at the reopen over
 /// the published pending intent. `retained`, when present, is held across the
 /// whole round and released only before the close.
 ///
-/// The second, completing maintenance is deliberately not run. ZE-187 records
-/// a pre-existing reopen failure after a *completed* reclaim on a
-/// post-checkpoint envelope chain; it reproduces on unmodified main `39e740c`
-/// with every ZE-163 production file reverted (probe
-/// `ze163_baseline_probe_plain_store_reopens_after_two_maintenances`, nextest
-/// run `f872df48`), so it is not this change's. Letting it run here would
-/// replace this control's signal with that one.
 fn ze163_survives_a_pending_reclaim_round(
     store: Store,
     path: &Path,
@@ -6863,6 +5390,21 @@ fn ze163_reader_history_fixture(
         "witness tail row iota kappa lambda",
         [0.55, 0.45],
     );
+    ze163_keyed_write(
+        &store,
+        document,
+        "ze163-mid",
+        "mid",
+        4,
+        StructuredOperation::Put(EntityId::Node(
+            crate::property_graph::NodeId::new(25).unwrap(),
+        )),
+        "new current contents supersede the retained reader leaf",
+        [0.9, 0.1],
+    );
+    store
+        .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+        .unwrap();
     let current = store.admit_native_read().expect("ze163 current reader");
     assert_ne!(
         current.bundle().root_envelope(),
@@ -6881,32 +5423,24 @@ fn ze163_reader_witness(
     crate::property_graph::storage::artifact::ArtifactId,
     Vec<u8>,
 ) {
-    let report = ze163_witness_report(store, retained);
-    assert!(
-        report.states >= 4,
-        "the retained history needs a checkpoint and at least three \
-         uncheckpointed envelopes: states={}",
-        report.states
+    let node = crate::property_graph::NodeId::new(25).unwrap();
+    let retained_value = node_directory_value(store, retained, node);
+    let witness = crate::property_graph::storage::payload::PayloadRef::decode(&retained_value)
+        .unwrap()
+        .reference()
+        .artifact;
+    let current = store.admit_native_read().unwrap();
+    let current_value = node_directory_value(store, &current, node);
+    let current_artifact =
+        crate::property_graph::storage::payload::PayloadRef::decode(&current_value)
+            .unwrap()
+            .reference()
+            .artifact;
+    assert_ne!(
+        witness, current_artifact,
+        "the witness must belong only to the retained view"
     );
-    assert!(
-        !report.intermediate_only.is_empty(),
-        "the retained history never allocated an artifact only an \
-         intermediate state reaches, so this control proves nothing"
-    );
-    assert!(
-        report.uncovered.is_empty(),
-        "an intermediate reader state reached an artifact that the checkpoint \
-         trace, the target trace, the retained roots and the change \
-         references do not: {:032x?}",
-        report.uncovered
-    );
-    let witness = crate::property_graph::storage::artifact::ArtifactId::new(
-        *report
-            .intermediate_only
-            .first()
-            .expect("intermediate-only artifact"),
-    )
-    .expect("nonzero witness artifact");
+    drop(current);
     let witness_path = crate::property_graph::storage::allocation::artifact_path(path, witness);
     let bytes = std::fs::read(&witness_path).expect("ze163 reader witness bytes");
     let writer_protected: Vec<crate::property_graph::storage::artifact::ArtifactId> = store
@@ -6929,7 +5463,7 @@ fn ze163_reader_witness(
 }
 
 #[test]
-fn ze163_intermediate_tree_artifact_keeps_a_reader_witness() {
+fn retained_reader_leaf_survives_without_history_retrace() {
     let parent = super::tempfile::tempdir().expect("ze163 reader parent");
     let path = parent.path().join("native");
     let vfs = Arc::new(RecordingVfs::default());
@@ -6949,13 +5483,10 @@ fn ze163_intermediate_tree_artifact_keeps_a_reader_witness() {
     );
 }
 
-/// The negative control for the reader-class leg. An independent store with
-/// the same history has one intermediate-only artifact omitted from the
-/// completed mark. The producer may accept it, because a reader bundle's
-/// protected stream does not name that artifact; the next open over the
-/// resulting manifest must not.
+/// Omit an actual retained reader leaf from the completed mark. Its Required
+/// record must reject the proof before any candidate is unlinked.
 #[test]
-fn ze163_omitted_reader_history_artifact_refuses_before_any_unlink() {
+fn omitted_reader_leaf_refuses_before_any_unlink() {
     let parent = super::tempfile::tempdir().expect("ze163 plant parent");
     let path = parent.path().join("native");
     let vfs = Arc::new(RecordingVfs::default());
@@ -7053,7 +5584,16 @@ fn observe_reclaim_cycle() -> crate::graph_reclaim_test_support::ReclaimState {
 #[cfg(feature = "test-seams")]
 pub(super) fn run_actual_probe(seed: u64) -> crate::graph_reclaim_test_support::ReclaimProbeReport {
     use super::publication::{reset_verified_faults, take_verified_faults};
-    let bodies: [(&'static str, u64, fn()); 13] = [
+    let bodies: [(&'static str, u64, fn()); 15] = [
+        ("property-graph.reclaim.fold-before-capture.fire", 1, || {
+            run_fold_before_capture(true);
+            run_fold_before_capture(false);
+        }),
+        (
+            "property-graph.reclaim.fold-before-capture.clean",
+            1,
+            || run_fold_before_capture(false),
+        ),
         (
             "property-graph.reclaim.maintenance-output",
             1,
@@ -7586,7 +6126,10 @@ fn ze201_retained_maintenance_drained_writer(phase: u8) {
         }
         if phase >= 3 {
             assert!(matches!(
-                commit_maintenance(&store),
+                store.commit_native_graph_maintenance(
+                    &store.admit_native_graph_maintenance().unwrap(),
+                    &control
+                ),
                 Err(super::super::NativeGraphError::StalePreparation)
             ));
         }
@@ -8124,6 +6667,9 @@ fn ze176_schedule(seed: u64, raced: bool) -> (u64, Vec<u8>, bool, bool) {
     let creates = Arc::new(AtomicU64::new(0));
     let counter = creates.clone();
     if raced {
+        store
+            .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+            .unwrap();
         let admission = store.admit_native_graph_maintenance().unwrap();
         let foreground = store.clone();
         vfs.after_next_create(move || {
@@ -8659,6 +7205,22 @@ fn run_ze46_detach_sweeps_bounded_edges_and_preserves_fences() -> (bool, u64) {
         ))
     ));
     for pass in 0..3 {
+        for _ in 0..3 {
+            let pending = store.admit_native_read().unwrap();
+            if pending.bundle().reclaim().is_none() {
+                break;
+            }
+            drop(pending);
+            commit_maintenance(&store).unwrap();
+        }
+        assert!(
+            store
+                .admit_native_read()
+                .unwrap()
+                .bundle()
+                .reclaim()
+                .is_none()
+        );
         let admission = store.admit_native_graph_maintenance().unwrap();
         store
             .commit_native_graph_maintenance_with_limits(
@@ -9082,4 +7644,256 @@ pub(crate) fn run_ze75_reclaim_evidence(
         report
     })
     .collect()
+}
+
+#[test]
+fn proof_validates_from_its_captured_base_without_any_wal_bytes() {
+    run_self_contained_proof();
+}
+
+fn run_self_contained_proof() {
+    let parent = super::tempfile::tempdir().expect("parent");
+    let path = parent.path().join("native");
+    let store = Store::create_native_graph(&path, options(), None).expect("store");
+    let control = QueryControl::Cancel(CancelToken::new());
+    let image = CanonicalContents::node(&mut [], &mut [], Some("captured"), None).expect("image");
+    store
+        .apply_native_graph(
+            &[StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "captured", "node").expect("key"),
+                revision: GraphRevision::new(1).expect("revision"),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            }],
+            &control,
+        )
+        .expect("write");
+    for _ in 0..4 {
+        let current = store.admit_native_read().expect("current");
+        if current.bundle().reclaim().is_some() {
+            break;
+        }
+        drop(current);
+        store.checkpoint_native_graph(&control).expect("fold");
+        let admission = store.admit_native_graph_maintenance().expect("admission");
+        store
+            .commit_native_graph_maintenance(&admission, &control)
+            .expect("maintenance");
+    }
+    let current = store.admit_native_read().expect("pending");
+    assert!(current.bundle().reclaim().is_some(), "real pending proof");
+    super::super::recovery::validate_reclaim_proof_for_test(&store, current.bundle(), &control)
+        .expect("proof before deleting WAL");
+    use crate::vfs::crash::{CrashVfs, MemoryVfs};
+    let memory = MemoryVfs::new();
+    let before = directory_image(&path);
+    let mut wals = Vec::new();
+    for (name, bytes) in &before {
+        let file = path.join(name);
+        memory.insert(&file, bytes.clone()).expect("seed CrashVfs");
+        if name.to_string_lossy().starts_with("graph-wal-") {
+            wals.push(file);
+        }
+    }
+    assert!(!wals.is_empty());
+    let crash = CrashVfs::new(memory).expect("CrashVfs");
+    for wal in &wals {
+        crash.delete(wal).expect("delete graph WAL in CrashVfs");
+    }
+    let states = crash.crash_states().expect("delete crash states");
+    assert!(!states.was_capped());
+    let complete = states
+        .iter()
+        .find(|state| state.includes_complete_operation_sequence(wals.len()))
+        .expect("completed deletes")
+        .vfs()
+        .files()
+        .expect("crash image");
+    assert!(wals.iter().all(|wal| !complete.contains_key(wal)));
+    // Native mappings require disk files; materialize this CrashVfs image.
+    for name in before.keys() {
+        if !complete.contains_key(&path.join(name)) {
+            std::fs::remove_file(path.join(name)).expect("materialize deletion");
+        }
+    }
+    super::super::recovery::validate_reclaim_proof_for_test(&store, current.bundle(), &control)
+        .expect("self-contained proof without WAL");
+}
+
+#[test]
+fn every_crash_state_of_intent_unlink_complete_resumes() {
+    run_ze46_intent_unlink_sync_completion_crashes_resume_idempotently();
+}
+
+#[test]
+fn an_old_pending_reclaim_proof_is_refused_without_mutation() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/graph-reclaim/pre-ze380-pending");
+    for access in [
+        crate::lifecycle::AccessMode::ReadOnly,
+        crate::lifecycle::AccessMode::ReadWrite,
+    ] {
+        let parent = super::tempfile::tempdir().unwrap();
+        let path = parent.path().join("native");
+        std::fs::create_dir(&path).unwrap();
+        for entry in std::fs::read_dir(&fixture).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_name() != "README.md" {
+                std::fs::copy(entry.path(), path.join(entry.file_name())).unwrap();
+            }
+        }
+        let before = directory_image(&path);
+        let vfs = Arc::new(RecordingVfs::default());
+        let infrastructure: Arc<dyn Vfs> = vfs.clone();
+        let result = Store::open_native_graph_with_infrastructure(
+            &path,
+            options().with_access_mode(access),
+            None,
+            infrastructure,
+            Arc::new(crate::lifecycle::SystemMonotonicClock),
+        );
+        assert!(
+            matches!(
+                result,
+                Err(super::super::NativeGraphError::Read(
+                    crate::property_graph::storage::tree::directory::TreeError::Invalid(
+                        "legacy WAL authority" | "legacy checkpoint reference"
+                    )
+                ))
+            ),
+            "old pending proof must be refused before resume"
+        );
+        assert_eq!(
+            directory_image(&path),
+            before,
+            "old binary must still be able to resume"
+        );
+        assert!(delete_events(&vfs.take()).is_empty());
+    }
+}
+
+fn run_fold_before_capture(fault: bool) {
+    let parent = super::tempfile::tempdir().unwrap();
+    let path = parent.path().join("native");
+    let vfs = Arc::new(RecordingVfs::default());
+    let store = create_reclaim_test_store(&path, &vfs);
+    ze163_base_write(&store, "fold-capture", 0);
+    let admission = store.admit_native_graph_maintenance().unwrap();
+    let sequence = admission.lease.bundle().sequence();
+    let generation = admission.lease.bundle().base().generation;
+    assert!(admission.lease.bundle().base().fold.envelope_sequence < sequence);
+    vfs.take();
+    if fault {
+        vfs.arm_fault(super::publication::FaultPoint::Rename);
+    }
+    let result = store
+        .commit_native_graph_maintenance(&admission, &QueryControl::Cancel(CancelToken::new()));
+    if fault {
+        assert!(result.is_err(), "fold manifest rename must refuse");
+        vfs.assert_fired_once();
+        let current = store.admit_native_read().unwrap();
+        assert_eq!(current.bundle().sequence(), sequence);
+        assert_eq!(current.bundle().base().generation, generation);
+        assert_eq!(current.bundle().high_waters().node, 1);
+        let events = vfs.take();
+        assert!(delete_events(&events).is_empty());
+        assert!(!events.iter().any(
+            |event| matches!(event, DurabilityEvent::Rename(_, to) if to.ends_with("graph-root.ze"))
+        ));
+        // Before a successful fold, only its family-18 control file may be created.
+        for event in events {
+            if let DurabilityEvent::Create(file) = event
+                && file
+                    .extension()
+                    .is_some_and(|extension| extension == "zgraph")
+            {
+                let bytes = std::fs::read(file).unwrap();
+                assert_eq!(bytes[8..10], 18_u16.to_le_bytes());
+            }
+        }
+    } else {
+        result.unwrap();
+        let current = store.admit_native_read().unwrap();
+        assert_eq!(current.bundle().base().fold.envelope_sequence, sequence);
+        assert_eq!(
+            current.bundle().base().fold.manifest_generation,
+            generation.get()
+        );
+        assert_eq!(current.bundle().high_waters().node, 1);
+        let events = vfs.take();
+        let fold = events.iter().position(|event| matches!(event, DurabilityEvent::Rename(_, to) if to.ends_with("graph-root.ze"))).unwrap();
+        let mut captured_count = 0;
+        for (index, event) in events.iter().enumerate() {
+            if let DurabilityEvent::Create(file) = event
+                && file
+                    .extension()
+                    .is_some_and(|extension| extension == "zgraph")
+            {
+                let bytes = std::fs::read(file).unwrap();
+                if bytes[8..10] != 17_u16.to_le_bytes() {
+                    continue;
+                }
+                let frame = crate::property_graph::storage::artifact::decode(
+                    crate::property_graph::storage::artifact::ContainerKind::Object,
+                    None,
+                    &bytes,
+                )
+                .unwrap();
+                let block = frame.framed_block(frame.reference(0).unwrap()).unwrap();
+                if block.payload().get(..8) == Some([b'Z', b'G', b'C', b'P', 7, 0, 1, 0].as_slice())
+                {
+                    let mut cancelled = || false;
+                    let mut resources = crate::property_graph::wal::WalResources::new(
+                        u64::MAX,
+                        crate::property_graph::wal::STACK_RESERVATION_BYTES,
+                        &mut cancelled,
+                    )
+                    .unwrap();
+                    let base = crate::property_graph::storage::reclaim::decode_captured_base(
+                        block.payload(),
+                        &mut resources,
+                    )
+                    .unwrap();
+                    assert_eq!(base.binding.sequence, sequence);
+                    assert_eq!(base.state.generation, generation);
+                    assert_eq!(base.fold, current.bundle().base().fold);
+                    assert!(fold < index, "fold publication must precede capture");
+                    captured_count += 1;
+                }
+            }
+        }
+        assert_eq!(captured_count, 1);
+        assert!(delete_events(&events).is_empty());
+    }
+    drop(admission);
+    store.close().unwrap();
+}
+
+#[test]
+fn reclaim_fold_before_capture_refuses_then_clean_control_passes() {
+    run_fold_before_capture(true);
+    run_fold_before_capture(false);
+}
+
+fn settle_reclaim_for_test(store: &Store) {
+    for _ in 0..4 {
+        if store
+            .admit_native_read()
+            .unwrap()
+            .bundle()
+            .reclaim()
+            .is_none()
+        {
+            return;
+        }
+        commit_maintenance(store).unwrap();
+    }
+    assert!(
+        store
+            .admit_native_read()
+            .unwrap()
+            .bundle()
+            .reclaim()
+            .is_none()
+    );
 }

@@ -20,6 +20,7 @@ pub(crate) enum ProofRole {
     ProtectedRoots = 3,
     CompletedMark = 4,
     ReclaimState = 5,
+    CapturedBase = 7,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -39,12 +40,13 @@ pub(crate) enum ProtectedClass {
 pub(crate) enum ProtectedValue {
     Required(RequiredRef),
     Descriptor(ArtifactDescriptor),
-    WalAuthority {
-        identity: u128,
-        first_sequence: u64,
-        bytes: u64,
+    FoldAuthority {
+        manifest_generation: u64,
+        graph_absorbed_through: u64,
+        envelope_sequence: u64,
+        state_digest: u64,
     },
-    CapturedState {
+    CapturedBase {
         checkpoint: RequiredRef,
         sequence: u64,
     },
@@ -71,26 +73,26 @@ impl ProtectedRecord {
         }
     }
 
-    pub(crate) const fn captured_state(
+    pub(crate) const fn captured_base(
         class: ProtectedClass,
         checkpoint: RequiredRef,
         sequence: u64,
     ) -> Self {
         Self {
             class,
-            value: ProtectedValue::CapturedState {
+            value: ProtectedValue::CapturedBase {
                 checkpoint,
                 sequence,
             },
         }
     }
 
-    pub(crate) fn artifact(self) -> Result<ArtifactId, TreeError> {
+    pub(crate) fn artifact(self) -> Option<ArtifactId> {
         match self.value {
-            ProtectedValue::Required(required) => Ok(required.object.artifact),
-            ProtectedValue::Descriptor(descriptor) => Ok(descriptor.artifact),
-            ProtectedValue::WalAuthority { identity, .. } => Ok(ArtifactId::new(identity)?),
-            ProtectedValue::CapturedState { checkpoint, .. } => Ok(checkpoint.object.artifact),
+            ProtectedValue::Required(required) => Some(required.object.artifact),
+            ProtectedValue::Descriptor(descriptor) => Some(descriptor.artifact),
+            ProtectedValue::FoldAuthority { .. } => None,
+            ProtectedValue::CapturedBase { checkpoint, .. } => Some(checkpoint.object.artifact),
         }
     }
 }
@@ -307,43 +309,40 @@ pub(super) fn protected_record_at(
             }
             ProtectedValue::Descriptor(descriptor)
         }
-        3 => {
+        3 => return Err(TreeError::Invalid("legacy WAL authority")),
+        4 => return Err(TreeError::Invalid("legacy checkpoint reference")),
+        5 => {
             if class != ProtectedClass::Wal
                 || bytes.get(start + 40..start + 112) != Some([0_u8; 72].as_slice())
             {
-                return Err(TreeError::Invalid("protected WAL authority record"));
+                return Err(TreeError::Invalid("protected fold authority record"));
             }
-            let identity = read_u128(bytes, start + 8)?;
-            let first_sequence = read_u64(bytes, start + 24)?;
-            let extent = read_u64(bytes, start + 32)?;
-            if identity == 0 || extent == 0 {
-                return Err(TreeError::Invalid("protected WAL authority fields"));
-            }
-            ProtectedValue::WalAuthority {
-                identity,
-                first_sequence,
-                bytes: extent,
+            ProtectedValue::FoldAuthority {
+                manifest_generation: read_u64(bytes, start + 8)?,
+                graph_absorbed_through: read_u64(bytes, start + 16)?,
+                envelope_sequence: read_u64(bytes, start + 24)?,
+                state_digest: read_u64(bytes, start + 32)?,
             }
         }
-        4 => {
+        6 => {
             if !matches!(
                 class,
-                ProtectedClass::Current | ProtectedClass::Reader | ProtectedClass::PreparedBase
+                ProtectedClass::Current | ProtectedClass::PreparedBase
             ) {
                 return Err(TreeError::Invalid("captured state record class"));
             }
             let checkpoint = protected_required(bytes, start + 8)?;
             let sequence = read_u64(bytes, start + 104)?;
-            if checkpoint.object.family != FormatFamily::NativeGraphRoot.id()
+            if checkpoint.object.family != FormatFamily::NativeGraphObject.id()
                 || checkpoint.object.version != 1
-                || checkpoint.block.kind != BlockKind::CheckpointPayload
+                || checkpoint.block.kind != BlockKind::CommitParticipant
                 || checkpoint.block.version != 1
                 || checkpoint.object.artifact != checkpoint.block.artifact
                 || checkpoint.object.store != binding.store
             {
                 return Err(TreeError::Invalid("captured state record fields"));
             }
-            ProtectedValue::CapturedState {
+            ProtectedValue::CapturedBase {
                 checkpoint,
                 sequence,
             }
@@ -375,36 +374,38 @@ fn encode_protected_record(
             put(output, start + 1, &[2])?;
             put_descriptor(output, start + 8, descriptor)?;
         }
-        ProtectedValue::WalAuthority {
-            identity,
-            first_sequence,
-            bytes,
+        ProtectedValue::FoldAuthority {
+            manifest_generation,
+            graph_absorbed_through,
+            envelope_sequence,
+            state_digest,
         } => {
-            if record.class != ProtectedClass::Wal || identity == 0 || bytes == 0 {
-                return Err(TreeError::Invalid("protected WAL authority fields"));
+            if record.class != ProtectedClass::Wal {
+                return Err(TreeError::Invalid("protected fold authority record"));
             }
-            put(output, start + 1, &[3])?;
-            put(output, start + 8, &identity.to_le_bytes())?;
-            put(output, start + 24, &first_sequence.to_le_bytes())?;
-            put(output, start + 32, &bytes.to_le_bytes())?;
+            put(output, start + 1, &[5])?;
+            put(output, start + 8, &manifest_generation.to_le_bytes())?;
+            put(output, start + 16, &graph_absorbed_through.to_le_bytes())?;
+            put(output, start + 24, &envelope_sequence.to_le_bytes())?;
+            put(output, start + 32, &state_digest.to_le_bytes())?;
         }
-        ProtectedValue::CapturedState {
+        ProtectedValue::CapturedBase {
             checkpoint,
             sequence,
         } => {
             if !matches!(
                 record.class,
-                ProtectedClass::Current | ProtectedClass::Reader | ProtectedClass::PreparedBase
+                ProtectedClass::Current | ProtectedClass::PreparedBase
             ) || checkpoint.object.store != binding.store
-                || checkpoint.object.family != FormatFamily::NativeGraphRoot.id()
+                || checkpoint.object.family != FormatFamily::NativeGraphObject.id()
                 || checkpoint.object.version != 1
-                || checkpoint.block.kind != BlockKind::CheckpointPayload
+                || checkpoint.block.kind != BlockKind::CommitParticipant
                 || checkpoint.block.version != 1
                 || checkpoint.object.artifact != checkpoint.block.artifact
             {
                 return Err(TreeError::Invalid("captured state record fields"));
             }
-            put(output, start + 1, &[4])?;
+            put(output, start + 1, &[6])?;
             put_required(output, start + 8, checkpoint)?;
             put(output, start + 104, &sequence.to_le_bytes())?;
         }
@@ -1196,4 +1197,135 @@ fn read<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], TreeErro
         .get(offset..offset.checked_add(N).ok_or(TreeError::Memory)?)
         .and_then(|value| value.try_into().ok())
         .ok_or(TreeError::Invalid("proof field extent"))
+}
+
+/// A proof's exact folded base. The state borrows the checked payload.
+pub(crate) struct CapturedBase<'a> {
+    pub(crate) binding: super::SpillBinding,
+    pub(crate) fold: crate::property_graph::staging::FoldMark,
+    pub(crate) state: crate::property_graph::wal::CommitState<'a>,
+    pub(crate) state_digest: u64,
+}
+
+pub(crate) fn encode_captured_base(
+    binding: super::SpillBinding,
+    fold: crate::property_graph::staging::FoldMark,
+    state: crate::property_graph::wal::CommitState<'_>,
+    output: &mut [u8],
+    resources: &mut crate::property_graph::wal::WalResources<'_>,
+) -> Result<(usize, u64), TreeError> {
+    output.fill(0);
+    put(output, 0, b"ZGCP")?;
+    put(output, 4, &(ProofRole::CapturedBase as u16).to_le_bytes())?;
+    put(output, 6, &1_u16.to_le_bytes())?;
+    encode_spill_binding(output, binding)?;
+    put(output, 80, &fold.graph_absorbed_through.to_le_bytes())?;
+    put(output, 88, &fold.manifest_generation.to_le_bytes())?;
+    let len = crate::property_graph::wal::encode_commit_state(
+        state,
+        output.get_mut(104..).ok_or(TreeError::Memory)?,
+        resources,
+    )
+    .map_err(TreeError::WalMetadata)?;
+    put(
+        output,
+        96,
+        &u32::try_from(len)
+            .map_err(|_| TreeError::Memory)?
+            .to_le_bytes(),
+    )?;
+    let end = 104_usize.checked_add(len).ok_or(TreeError::Memory)?;
+    let digest = xxhash_rust::xxh3::xxh3_64(output.get(104..end).ok_or(TreeError::Memory)?);
+    let checksum = xxhash_rust::xxh3::xxh3_64(output.get(..end).ok_or(TreeError::Memory)?);
+    put(output, end, &checksum.to_le_bytes())?;
+    let total = end.checked_add(8).ok_or(TreeError::Memory)?;
+    let decoded = decode_captured_base(output.get(..total).ok_or(TreeError::Memory)?, resources)?;
+    if decoded.fold != fold {
+        return Err(TreeError::Invalid("captured base fold"));
+    }
+    Ok((total, digest))
+}
+
+pub(crate) fn decode_captured_base<'a>(
+    bytes: &'a [u8],
+    resources: &mut crate::property_graph::wal::WalResources<'_>,
+) -> Result<CapturedBase<'a>, TreeError> {
+    if bytes.get(..4) != Some(b"ZGCP".as_slice())
+        || read_u16(bytes, 4)? != ProofRole::CapturedBase as u16
+        || read_u16(bytes, 6)? != 1
+        || bytes.get(8..16) != Some([0_u8; 8].as_slice())
+        || read_u32(bytes, 100)? != 0
+    {
+        return Err(TreeError::Invalid("captured base role version or reserved"));
+    }
+    let binding = decode_spill_binding(bytes)?;
+    let end = 104_usize
+        .checked_add(read_u32(bytes, 96)? as usize)
+        .ok_or(TreeError::Memory)?;
+    if end.checked_add(8) != Some(bytes.len())
+        || xxhash_rust::xxh3::xxh3_64(bytes.get(..end).ok_or(TreeError::Memory)?)
+            != read_u64(bytes, end)?
+    {
+        return Err(TreeError::Invalid("captured base extent or checksum"));
+    }
+    let encoded = bytes.get(104..end).ok_or(TreeError::Memory)?;
+    let state = crate::property_graph::wal::decode_commit_state(encoded, resources)
+        .map_err(TreeError::WalMetadata)?;
+    let fold = crate::property_graph::staging::FoldMark {
+        manifest_generation: read_u64(bytes, 88)?,
+        graph_absorbed_through: read_u64(bytes, 80)?,
+        envelope_sequence: state.sequence,
+    };
+    if state.store != binding.store
+        || state.generation != binding.capture_generation
+        || state.sequence != binding.sequence
+        || fold.manifest_generation != state.generation.get()
+    {
+        return Err(TreeError::Invalid("captured base state binding"));
+    }
+    Ok(CapturedBase {
+        binding,
+        fold,
+        state,
+        state_digest: xxhash_rust::xxh3::xxh3_64(encoded),
+    })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod tests {
+    use super::*;
+    #[test]
+    fn legacy_wal_authority_and_captured_state_tags_are_refused() {
+        let binding = super::super::SpillBinding {
+            store: StoreInstanceId::new(1).unwrap(),
+            session: ArtifactId::new(2).unwrap(),
+            capture_generation: GraphGeneration::new(3),
+            target_generation: GraphGeneration::new(4),
+            sequence: 3,
+            serial_fence: 5,
+        };
+        let mut bytes = [0_u8; PROTECTED_PAGE_HEADER_BYTES + PROTECTED_STREAM_RECORD_BYTES];
+        bytes[112..116].copy_from_slice(&1_u32.to_le_bytes());
+        bytes[224] = ProtectedClass::Wal as u8;
+        bytes[225] = 3;
+        bytes[232..248].copy_from_slice(&1_u128.to_le_bytes());
+        bytes[248..256].copy_from_slice(&1_u64.to_le_bytes());
+        bytes[256..264].copy_from_slice(&64_u64.to_le_bytes());
+        assert!(matches!(
+            protected_record_at(&bytes, 0, binding),
+            Err(TreeError::Invalid("legacy WAL authority"))
+        ));
+        bytes[224] = ProtectedClass::Current as u8;
+        bytes[225] = 4;
+        assert!(matches!(
+            protected_record_at(&bytes, 0, binding),
+            Err(TreeError::Invalid("legacy checkpoint reference"))
+        ));
+        bytes[225] = 255;
+        assert!(matches!(
+            protected_record_at(&bytes, 0, binding),
+            Err(TreeError::Invalid("protected stream record value"))
+        ));
+    }
 }

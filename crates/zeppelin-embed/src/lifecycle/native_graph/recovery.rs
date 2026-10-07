@@ -628,6 +628,70 @@ pub(super) enum CapturedStateVisit<'a> {
     },
 }
 
+// Removed by ZE-346 when the graph WAL and root selector are deleted.
+// Protecting legacy control files requires their identities, never WAL contents.
+pub(super) fn checkpoint_wal_identity(
+    store: &Store,
+    directory: &Path,
+    checkpoint_ref: RequiredRef,
+    control: &QueryControl,
+) -> Result<u128, NativeGraphError> {
+    if checkpoint_ref.object.family != crate::format::FormatFamily::NativeGraphRoot.id()
+        || checkpoint_ref.object.version != 1
+        || checkpoint_ref.block.artifact != checkpoint_ref.object.artifact
+        || checkpoint_ref.block.kind != BlockKind::CheckpointPayload
+        || checkpoint_ref.block.version != 1
+    {
+        return Err(NativeGraphError::Invalid(
+            "captured checkpoint reference binding",
+        ));
+    }
+    let root_path = crate::property_graph::storage::allocation::artifact_path(
+        directory,
+        checkpoint_ref.object.artifact,
+    );
+    let root_mapping = map_file(store, &root_path, MAX_ARTIFACT_BYTES)?;
+    let descriptor = artifact_descriptor(
+        ArtifactIdentity {
+            store: checkpoint_ref.object.store,
+            artifact: checkpoint_ref.object.artifact,
+            generation: checkpoint_ref.object.generation,
+            creation_serial: checkpoint_ref.object.serial,
+        },
+        ContainerKind::RootEnvelope,
+        root_mapping.as_bytes(),
+    )?;
+    if descriptor != checkpoint_ref.object {
+        return Err(NativeGraphError::Invalid(
+            "captured checkpoint descriptor mismatch",
+        ));
+    }
+    let root_frame = reopen_validation!(
+        ContainerKind::RootEnvelope,
+        Some((checkpoint_ref.object.store, checkpoint_ref.object.artifact)),
+        root_mapping.as_bytes(),
+    )
+    .map_err(|_| NativeGraphError::Invalid("corrupt captured checkpoint"))?;
+    let payload = root_frame
+        .framed_block(checkpoint_ref.block)
+        .map_err(|_| NativeGraphError::Invalid("captured checkpoint block mismatch"))?
+        .payload();
+    let checkpoint_work = u64::try_from(payload.len())
+        .ok()
+        .and_then(|bytes| bytes.checked_mul(64))
+        .ok_or(NativeGraphError::Invalid("captured checkpoint work bound"))?;
+    let mut cancelled = || control.checkpoint().is_err();
+    let mut checkpoint_resources =
+        WalResources::new(checkpoint_work, STACK_RESERVATION_BYTES, &mut cancelled)?;
+    let checkpoint = decode_checkpoint(payload, &mut checkpoint_resources)?;
+    if checkpoint.state.store != checkpoint_ref.object.store
+        || checkpoint.state.generation != checkpoint_ref.object.generation
+    {
+        return Err(NativeGraphError::Invalid("captured checkpoint state"));
+    }
+    Ok(checkpoint.wal_identity)
+}
+
 /// Authenticates one historical checkpoint and visits the complete immutable
 /// WAL prefix through the exact captured state. The returned records are
 /// framing evidence only; semantic replay admission remains the ordinary open
@@ -1752,47 +1816,6 @@ fn validate_captured_change_references<'m>(
     )
 }
 
-fn validate_protected_required_reference(
-    source: &RecoverySource<'_, '_>,
-    protected: crate::property_graph::storage::reclaim::DurableProtectedStream,
-    io: &impl crate::property_graph::storage::reclaim::SpillIo,
-    memory: &StorageMemory<'_>,
-    class: crate::property_graph::storage::reclaim::ProtectedClass,
-    required: RequiredRef,
-    resources: &mut TreeResources<'_>,
-) -> Result<(), TreeError> {
-    if required.object.family != crate::format::FormatFamily::NativeGraphRoot.id() {
-        return source.validate_required_reference_scoped(required, resources);
-    }
-    let mut matched = false;
-    crate::property_graph::storage::reclaim::validate_protected_stream(
-        protected,
-        io,
-        memory,
-        resources,
-        |record, _resources| {
-            if record.class == class
-                && matches!(
-                    record.value,
-                    crate::property_graph::storage::reclaim::ProtectedValue::CapturedState {
-                        checkpoint,
-                        ..
-                    } if checkpoint == required
-                )
-            {
-                matched = true;
-            }
-            Ok(())
-        },
-    )?;
-    if !matched {
-        return Err(TreeError::Invalid(
-            "protected checkpoint lacks exact captured locator",
-        ));
-    }
-    source.validate_checkpoint_control_reference(required, resources)
-}
-
 #[allow(
     clippy::too_many_arguments,
     reason = "one independently reconstructed reclaim authority"
@@ -1815,9 +1838,14 @@ fn validate_complete_reclaim_authority(
     #[cfg(test)]
     let _timer = ReopenTimer::new("validate_complete_reclaim_authority", 0);
     let io = RecoverySpillIo { source };
-    let mut wal_authority = None;
-    let mut current_count = 0_usize;
-    let mut prepared_base_count = 0_usize;
+    let mut fold = None;
+    let mut current = None;
+    let mut prepared = None;
+    // Reader closure records often name many blocks in one immutable pack.
+    // Reuse the existing charged authentication cache; each block and exact
+    // descriptor still validates, without hashing the same pack per record.
+    let capacity = usize::try_from(manifest.protected.count).map_err(|_| TreeError::Memory)?;
+    let mut authenticated = StorageBuffer::new(memory, capacity)?;
     crate::property_graph::storage::reclaim::validate_protected_stream(
         manifest.protected,
         &io,
@@ -1826,64 +1854,73 @@ fn validate_complete_reclaim_authority(
         |record, resources| {
             match record.value {
                 crate::property_graph::storage::reclaim::ProtectedValue::Required(required) => {
-                    validate_protected_required_reference(
-                        source,
-                        manifest.protected,
-                        &io,
-                        memory,
-                        record.class,
-                        required,
-                        resources,
-                    )?;
+                    if required.object.family == 18 {
+                        source.validate_checkpoint_control_reference(required, resources)?;
+                    } else {
+                        source.validate_protected_reference_cached(
+                            required,
+                            false,
+                            resources,
+                            Some(&mut authenticated),
+                        )?;
+                    }
+                    // Removed by ZE-346 when the graph WAL and root selector are deleted.
+                    // The checkpoint binds its WAL identity; no WAL bytes are read.
+                    if required.object.family == 18 {
+                        let identity = checkpoint_wal_identity(store, directory, required, control)
+                            .map_err(|error| source.latch_source(error))?;
+                        let artifact = ArtifactId::new(identity).map_err(TreeError::Format)?;
+                        validate_mark_reference(mark_reader, &io, candidates, artifact, resources)?;
+                    }
                 }
                 crate::property_graph::storage::reclaim::ProtectedValue::Descriptor(descriptor) => {
+                    if descriptor.family != 17 {
+                        return Err(TreeError::Invalid("legacy protected descriptor family"));
+                    }
                     source.validate_descriptor(descriptor, resources)?;
                 }
-                crate::property_graph::storage::reclaim::ProtectedValue::WalAuthority {
-                    identity,
-                    first_sequence,
-                    bytes,
-                } => {
-                    if wal_authority.is_some()
-                        || record.class
-                            != crate::property_graph::storage::reclaim::ProtectedClass::Wal
-                    {
-                        return Err(TreeError::Invalid("duplicate protected WAL authority"));
-                    }
-                    wal_authority = Some(CapturedWalCutoff {
-                        identity,
-                        first_sequence,
-                        bytes: usize::try_from(bytes).map_err(|_| TreeError::Memory)?,
-                    });
-                }
-                crate::property_graph::storage::reclaim::ProtectedValue::CapturedState {
-                    checkpoint,
+                crate::property_graph::storage::reclaim::ProtectedValue::FoldAuthority {
                     ..
                 } => {
-                    source.validate_checkpoint_control_reference(checkpoint, resources)?;
-                    match record.class {
+                    if fold.replace(record).is_some() {
+                        return Err(TreeError::Invalid("duplicate protected fold authority"));
+                    }
+                }
+                crate::property_graph::storage::reclaim::ProtectedValue::CapturedBase {
+                    checkpoint,
+                    sequence,
+                } => {
+                    source.validate_protected_reference_cached(
+                        checkpoint,
+                        false,
+                        resources,
+                        Some(&mut authenticated),
+                    )?;
+                    let slot = match record.class {
                         crate::property_graph::storage::reclaim::ProtectedClass::Current => {
-                            current_count = current_count.checked_add(1).ok_or(TreeError::Work)?;
+                            &mut current
                         }
                         crate::property_graph::storage::reclaim::ProtectedClass::PreparedBase => {
-                            prepared_base_count =
-                                prepared_base_count.checked_add(1).ok_or(TreeError::Work)?;
+                            &mut prepared
                         }
-                        crate::property_graph::storage::reclaim::ProtectedClass::Reader => {}
-                        _ => {
-                            return Err(TreeError::Invalid("captured state protected class"));
-                        }
+                        _ => return Err(TreeError::Invalid("captured base protected class")),
+                    };
+                    if slot.replace((checkpoint, sequence)).is_some() {
+                        return Err(TreeError::Invalid("duplicate captured base"));
                     }
                 }
             }
-            validate_mark_reference(mark_reader, &io, candidates, record.artifact()?, resources)
+            if let Some(artifact) = record.artifact() {
+                validate_mark_reference(mark_reader, &io, candidates, artifact, resources)?;
+            }
+            Ok(())
         },
     )?;
-    let wal_authority =
-        wal_authority.ok_or(TreeError::Invalid("protected WAL authority is absent"))?;
-    if current_count != 1 || prepared_base_count != 1 {
+    let fold = fold.ok_or(TreeError::Invalid("protected fold authority is absent"))?;
+    let current = current.ok_or(TreeError::Invalid("protected current base is absent"))?;
+    if prepared != Some(current) {
         return Err(TreeError::Invalid(
-            "protected current or prepared-base locator count",
+            "protected prepared base differs from current",
         ));
     }
     if authentic_base.is_some()
@@ -1894,127 +1931,118 @@ fn validate_complete_reclaim_authority(
             "reclaim intent immediate base transition",
         ));
     }
-    crate::property_graph::storage::reclaim::validate_protected_stream(
-        manifest.protected,
-        &io,
-        memory,
-        resources,
-        |record, resources| {
-            let crate::property_graph::storage::reclaim::ProtectedValue::CapturedState {
-                checkpoint,
-                sequence,
-            } = record.value
-            else {
-                return Ok(());
-            };
-            let exact_cutoff = (record.class
-                == crate::property_graph::storage::reclaim::ProtectedClass::Current)
-                .then_some(wal_authority);
-            let binding_required = matches!(
-                record.class,
-                crate::property_graph::storage::reclaim::ProtectedClass::Current
-                    | crate::property_graph::storage::reclaim::ProtectedClass::PreparedBase
-            );
-            let mut reached_target = false;
-            visit_captured_state(
+    visit_captured_base(
+        store,
+        directory,
+        current.0,
+        current.1,
+        manifest.binding,
+        fold,
+        control,
+        |state, wal_resources| {
+            validate_captured_state_reachability(
                 store,
                 directory,
-                checkpoint,
-                sequence,
-                exact_cutoff,
-                control,
-                |visit, wal_resources| {
-                    let (state, changes, is_checkpoint) = match visit {
-                        CapturedStateVisit::Checkpoint {
-                            state,
-                            wal_identity,
-                            ..
-                        } => {
-                            // Older intents contain only object candidates and
-                            // did not mark historical checkpoint WAL identities.
-                            if candidates.iter().any(|candidate| candidate.family == 19) {
-                                validate_mark_reference(
-                                    mark_reader,
-                                    &io,
-                                    candidates,
-                                    ArtifactId::new(wal_identity).map_err(TreeError::Format)?,
-                                    resources,
-                                )?;
-                            }
-                            (state, None, true)
-                        }
-                        CapturedStateVisit::Envelope { state, changes, .. } => {
-                            (state, Some(changes), false)
-                        }
-                    };
-                    if let Some(changes) = changes {
-                        validate_captured_change_references(
-                            store,
-                            directory,
-                            state,
-                            changes,
-                            wal_resources,
-                            memory,
-                            mark_reader,
-                            &io,
-                            candidates,
-                        )?;
-                    }
-                    // The producer's mirror: only the checkpoint and the exact
-                    // target carry a full reachability retrace. An
-                    // intermediate state still needs its own roots proved
-                    // live, because replay maps exactly those before it
-                    // replays that envelope.
-                    let depth = if is_checkpoint || state.sequence == sequence {
-                        CapturedTraceDepth::Complete
-                    } else {
-                        CapturedTraceDepth::Roots
-                    };
-                    validate_captured_state_reachability(
-                        store,
-                        directory,
-                        checkpoint,
-                        state,
-                        expected,
-                        document,
-                        memory,
-                        depth,
-                        mark_reader,
-                        &io,
-                        candidates,
-                    )?;
-                    if state.sequence == sequence {
-                        reached_target = true;
-                        if binding_required
-                            && (state.store != manifest.binding.store
-                                || state.generation != manifest.binding.capture_generation
-                                || state.sequence != manifest.binding.sequence)
-                        {
-                            return Err(NativeGraphError::Invalid("captured reclaim base binding"));
-                        }
-                        if record.class
-                            == crate::property_graph::storage::reclaim::ProtectedClass::Current
-                            && let Some(base) = authentic_base
-                            && !crate::property_graph::wal::same_commit_state(
-                                state,
-                                base,
-                                wal_resources,
-                            )?
-                        {
-                            return Err(NativeGraphError::Invalid("captured current base changed"));
-                        }
-                    }
-                    Ok(())
-                },
-            )
-            .map_err(|error| source.latch_source(error))?;
-            if !reached_target {
-                return Err(TreeError::Invalid("captured state target is absent"));
+                current.0,
+                state,
+                expected,
+                document,
+                memory,
+                CapturedTraceDepth::Complete,
+                mark_reader,
+                &io,
+                candidates,
+            )?;
+            if let Some(base) = authentic_base
+                && !crate::property_graph::wal::same_commit_state(state, base, wal_resources)?
+            {
+                return Err(NativeGraphError::Invalid("captured current base changed"));
             }
             Ok(())
         },
-    )?;
+    )
+    .map_err(|error| source.latch_source(error))?;
     Ok(())
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one exact self-contained proof binding"
+)]
+fn visit_captured_base(
+    store: &Store,
+    directory: &Path,
+    reference: RequiredRef,
+    sequence: u64,
+    binding: crate::property_graph::storage::reclaim::SpillBinding,
+    authority: crate::property_graph::storage::reclaim::ProtectedRecord,
+    control: &QueryControl,
+    visit: impl FnOnce(CommitState<'_>, &mut WalResources<'_>) -> Result<(), NativeGraphError>,
+) -> Result<(), NativeGraphError> {
+    if reference.object.family != 17
+        || reference.object.version != 1
+        || reference.block.artifact != reference.object.artifact
+        || reference.block.kind != BlockKind::CommitParticipant
+        || reference.block.version != 1
+        || reference.object.store != binding.store
+        || reference.object.generation != binding.target_generation
+    {
+        return Err(NativeGraphError::Invalid("captured base reference binding"));
+    }
+    let path = crate::property_graph::storage::allocation::artifact_path(
+        directory,
+        reference.object.artifact,
+    );
+    let mapping = map_file(store, &path, MAX_ARTIFACT_BYTES)?;
+    let descriptor = artifact_descriptor(
+        ArtifactIdentity {
+            store: reference.object.store,
+            artifact: reference.object.artifact,
+            generation: reference.object.generation,
+            creation_serial: reference.object.serial,
+        },
+        ContainerKind::Object,
+        mapping.as_bytes(),
+    )?;
+    if descriptor != reference.object {
+        return Err(NativeGraphError::Invalid(
+            "captured base descriptor mismatch",
+        ));
+    }
+    let frame = reopen_validation!(
+        ContainerKind::Object,
+        Some((binding.store, reference.object.artifact)),
+        mapping.as_bytes()
+    )
+    .map_err(|_| NativeGraphError::Invalid("corrupt captured base object"))?;
+    let payload = frame
+        .framed_block(reference.block)
+        .map_err(|_| NativeGraphError::Invalid("captured base block mismatch"))?
+        .payload();
+    let mut cancelled = || control.checkpoint().is_err();
+    let mut resources = WalResources::new(u64::MAX, STACK_RESERVATION_BYTES, &mut cancelled)?;
+    let captured =
+        crate::property_graph::storage::reclaim::decode_captured_base(payload, &mut resources)?;
+    let crate::property_graph::storage::reclaim::ProtectedValue::FoldAuthority {
+        manifest_generation,
+        graph_absorbed_through,
+        envelope_sequence,
+        state_digest,
+    } = authority.value
+    else {
+        return Err(NativeGraphError::Invalid("captured fold authority kind"));
+    };
+    if authority.class != crate::property_graph::storage::reclaim::ProtectedClass::Wal
+        || captured.binding != binding
+        || sequence != captured.state.sequence
+        || manifest_generation != captured.fold.manifest_generation
+        || graph_absorbed_through != captured.fold.graph_absorbed_through
+        || envelope_sequence != captured.fold.envelope_sequence
+        || state_digest != captured.state_digest
+    {
+        return Err(NativeGraphError::Invalid("captured fold authority binding"));
+    }
+    visit(captured.state, &mut resources)
 }
 
 impl RecoverySource<'_, '_> {
@@ -4380,9 +4408,6 @@ struct SemanticReplay<'a, 'm> {
     expected: GraphInterpretation<'a>,
     document: Option<&'a EmbeddingTower>,
     control: &'a QueryControl,
-    wal_identity: u128,
-    wal_first_sequence: u64,
-    wal_bytes: usize,
     artifact_capacity: usize,
     resources: &'a GraphResources,
     memory: &'m StorageMemory<'m>,
@@ -4413,9 +4438,6 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
         expected: GraphInterpretation<'a>,
         document: Option<&'a EmbeddingTower>,
         control: &'a QueryControl,
-        wal_identity: u128,
-        wal_first_sequence: u64,
-        wal_bytes: usize,
         artifact_capacity: usize,
         resources: &'a GraphResources,
         memory: &'m StorageMemory<'m>,
@@ -4456,9 +4478,6 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
             expected,
             document,
             control,
-            wal_identity,
-            wal_first_sequence,
-            wal_bytes,
             artifact_capacity,
             resources,
             memory,
@@ -4556,68 +4575,6 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
             });
             drop(image);
             drop(descriptor_charge);
-        }
-        Ok(())
-    }
-
-    fn validate_wal_authority(
-        &self,
-        source: &RecoverySource<'_, '_>,
-        identity: u128,
-        first_sequence: u64,
-        bytes: u64,
-        resources: &mut TreeResources<'_>,
-    ) -> Result<(), TreeError> {
-        let captured = usize::try_from(bytes).map_err(|_| TreeError::Memory)?;
-        // A checkpoint may replace the WAL while a reclaim cycle is open: the
-        // writer's envelope policy does so on its own. The proof then names a
-        // superseded WAL. That file stays on disk, still is the authority for
-        // the captured history, and must start before the selected WAL.
-        let current = identity == self.wal_identity;
-        if captured < crate::property_graph::wal::HEADER_BYTES
-            || (current && (first_sequence != self.wal_first_sequence || captured > self.wal_bytes))
-            || (!current && first_sequence >= self.wal_first_sequence)
-        {
-            return Err(TreeError::Invalid("recovery protected WAL authority"));
-        }
-        let path = self.directory.join(format!("graph-wal-{identity:032x}.ze"));
-        let length = if current {
-            self.wal_bytes
-        } else {
-            let length = self
-                .store
-                .vfs
-                .open(&path)
-                .map_err(|error| source.latch_source(super::write::io(&path, error)))?;
-            usize::try_from(length).map_err(|_| TreeError::Memory)?
-        };
-        if captured > length {
-            return Err(TreeError::Invalid("recovery protected WAL cutoff"));
-        }
-        let mapping =
-            map_file(self.store, &path, length).map_err(|error| source.latch_source(error))?;
-        resources.step(bytes)?;
-        if mapping.as_bytes().len() != length {
-            return Err(TreeError::Invalid("recovery protected WAL length"));
-        }
-        let mut cancelled = || false;
-        let mut wal_resources = WalResources::new(
-            bytes.checked_mul(2).ok_or(TreeError::Work)?,
-            STACK_RESERVATION_BYTES,
-            &mut cancelled,
-        )
-        .map_err(|_| TreeError::Memory)?;
-        let first = Replay::checked_first_sequence(
-            mapping
-                .as_bytes()
-                .get(..captured)
-                .ok_or(TreeError::Invalid("recovery protected WAL cutoff"))?,
-            source.expected_store,
-            &mut wal_resources,
-        )
-        .map_err(|_| TreeError::Invalid("recovery protected WAL header"))?;
-        if first != first_sequence {
-            return Err(TreeError::Invalid("recovery protected WAL first sequence"));
         }
         Ok(())
     }
@@ -4740,52 +4697,6 @@ impl<'a, 'm> SemanticReplay<'a, 'm> {
         let mut mark_reader = crate::property_graph::storage::reclaim::DurableRunReader::new(
             manifest.mark,
             self.memory,
-        )?;
-        crate::property_graph::storage::reclaim::validate_protected_stream(
-            manifest.protected,
-            &io,
-            self.memory,
-            resources,
-            |record, resources| {
-                match record.value {
-                    crate::property_graph::storage::reclaim::ProtectedValue::Required(required) => {
-                        validate_protected_required_reference(
-                            source,
-                            manifest.protected,
-                            &io,
-                            self.memory,
-                            record.class,
-                            required,
-                            resources,
-                        )?;
-                    }
-                    crate::property_graph::storage::reclaim::ProtectedValue::Descriptor(
-                        descriptor,
-                    ) => source.validate_descriptor(descriptor, resources)?,
-                    crate::property_graph::storage::reclaim::ProtectedValue::WalAuthority {
-                        identity,
-                        first_sequence,
-                        bytes,
-                    } => {
-                        self.validate_wal_authority(
-                            source,
-                            identity,
-                            first_sequence,
-                            bytes,
-                            resources,
-                        )?;
-                    }
-                    crate::property_graph::storage::reclaim::ProtectedValue::CapturedState {
-                        checkpoint,
-                        ..
-                    } => source.validate_checkpoint_control_reference(checkpoint, resources)?,
-                }
-                let expected_artifact = record.artifact()?;
-                if !mark_reader.contains(expected_artifact, &io, resources)? {
-                    return Err(TreeError::Invalid("protected root is absent from mark"));
-                }
-                Ok(())
-            },
         )?;
         validate_complete_reclaim_authority(
             self.store,
@@ -6086,9 +5997,6 @@ pub(super) fn open(
         expected,
         document.as_ref(),
         &control,
-        checkpoint.wal_identity,
-        checkpoint.first_sequence,
-        wal_mapping.as_bytes().len(),
         artifact_capacity,
         &shared,
         &storage,
@@ -6520,4 +6428,52 @@ fn validate_swept_lifecycle(
         return Err(TreeError::Invalid("swept lifecycle transition differs"));
     }
     Ok(())
+}
+
+#[cfg(any(test, feature = "test-seams"))]
+pub(super) fn validate_reclaim_proof_for_test(
+    store: &Store,
+    bundle: &super::NativeGraphBundle,
+    control: &QueryControl,
+) -> Result<(), NativeGraphError> {
+    let shared = GraphResources::from_store(store)?;
+    let write = WriteMemory::new(&shared, WriteLimits::default())?;
+    let memory = StorageMemory::new(&write, control, 32 * 1024 * 1024)?;
+    let expected = GraphInterpretation::new(bundle.lexical(), bundle.document())?;
+    let mut replay = SemanticReplay::new(
+        store,
+        bundle.directory(),
+        expected,
+        bundle.document(),
+        control,
+        crate::property_graph::storage::MAX_NATIVE_ARTIFACTS,
+        &shared,
+        &memory,
+    )?;
+    let state = super::write::commit_state(bundle);
+    let source = RecoverySource::new(
+        store,
+        bundle.directory(),
+        state,
+        &memory,
+        crate::property_graph::storage::MAX_NATIVE_ARTIFACTS,
+    )?;
+    let mut resources =
+        source.resources(crate::property_graph::storage::reclaim::MARK_WORK_LIMIT)?;
+    replay
+        .validate_state_reclaim(
+            &source,
+            state,
+            None,
+            bundle
+                .reclaim()
+                .ok_or(NativeGraphError::Invalid("test reclaim root"))?,
+            &mut resources,
+        )
+        .map_err(|error| {
+            replay
+                .first_error
+                .take()
+                .unwrap_or(NativeGraphError::Read(error))
+        })
 }

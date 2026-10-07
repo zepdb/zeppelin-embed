@@ -521,13 +521,15 @@ pub(super) fn run_ze170_stored_text_shapes_survive_maintenance_and_reopen() {
     let rounds = fixture.nodes().len();
     let relocatable = [fixture.a, fixture.e, fixture.z, fixture.n];
     let before = node_records(&fixture.store, &relocatable);
+    let mut replaced = 0;
     for call in 0..rounds {
-        let report = maintain_once(&fixture.store, call);
-        assert!(
-            report.replaced_physical_refs > 0,
-            "maintenance call {call} replaced no physical reference"
-        );
+        replaced += maintain_once(&fixture.store, call).replaced_physical_refs;
+        assert_eq!(read_fresh(&fixture.store, &operands), expected);
     }
+    assert!(
+        replaced > 0,
+        "the maintenance cycle must move actual physical references"
+    );
     // ZE-260 S6a drains only packs that are at least a quarter dead, so
     // this fully live fixture's records need not move; the shapes must
     // still read back exactly after the calls and after reopen.
@@ -732,16 +734,9 @@ pub(super) fn run_ze170_retained_view_reads_exact_text_across_reclaim_unlink() {
         expected.as_slice(),
         "the retained view did not read the exact original text after maintenance"
     );
-    // A fixture-shape observation, not the contract: this fixture checkpoints
-    // from inside the lease, so every reclaimable object is one the retained
-    // bundle protects. The contract itself was asserted inside `consume`,
-    // against `original_a`, while the lease was still held.
-    assert_eq!(
-        observed.removed_under_lease, 0,
-        "this fixture checkpoints under the lease, so the only reclaimable \
-         objects are protected ones and a nonzero count means the fixture \
-         shape changed"
-    );
+    // Mandatory folds also produce unprotected proof/control files. They can
+    // be reclaimed while the exact retained text artifacts stay protected.
+    assert!(observed.removed_under_lease > 0);
 
     // The lease is gone, so nothing protects those objects any more. The unlink
     // that now fires is a separate leg: it proves reclaim resumes once the

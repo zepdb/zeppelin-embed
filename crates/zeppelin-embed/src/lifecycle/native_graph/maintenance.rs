@@ -10,13 +10,10 @@ use super::write::{
 };
 use super::{NativeGraphError, NativeMaintenanceAdmission, NativeReadLease};
 use crate::property_graph::GraphGeneration;
-use crate::property_graph::catalog::GraphInterpretation;
 use crate::property_graph::resources::GraphResources;
 use crate::property_graph::staging::{StageError, WriteLimits, WriteMemory};
 use crate::property_graph::storage::adjacency::RangeScratch;
-use crate::property_graph::storage::artifact::{
-    ArtifactId, ArtifactIdentity, Block, BlockKind, ContainerKind, PhysicalRef,
-};
+use crate::property_graph::storage::artifact::{ArtifactIdentity, Block, BlockKind, ContainerKind};
 use crate::property_graph::storage::consolidation::prepare_one_replacement;
 use crate::property_graph::storage::inventory::{
     INVENTORY_FOLD_ADDITION_LIMIT, apply_inventory, inventory_resume_after, prepare_inventory_fold,
@@ -56,11 +53,13 @@ fn emit_protected(
     writer: &mut spill::NativeSpillWriter<'_, '_>,
     resources: &mut crate::property_graph::storage::tree::directory::TreeResources<'_>,
 ) -> Result<(), NativeGraphError> {
-    let artifact = record.artifact()?;
+    let artifact = record.artifact();
     if let Err(error) = protected.emit(record, writer, resources) {
         return Err(spill_error(writer, error));
     }
-    if let Err(error) = mark.emit(artifact, writer, resources) {
+    if let Some(artifact) = artifact
+        && let Err(error) = mark.emit(artifact, writer, resources)
+    {
         return Err(spill_error(writer, error));
     }
     Ok(())
@@ -83,133 +82,111 @@ fn emit_required(
     )
 }
 
+#[derive(Clone, Copy)]
+struct ProofBaseRecords {
+    captured: crate::property_graph::wal::RequiredRef,
+    fold: ProtectedRecord,
+    closure_count: usize,
+}
+
 fn capture_record_count(
     capture: &super::NativeProtectedRoots,
     admitted: &Arc<super::NativeGraphBundle>,
+    base: ProofBaseRecords,
 ) -> Result<usize, NativeGraphError> {
     let mut count = 0_usize;
-    for bundle in capture.bundles() {
+    while capture_record_at(capture, admitted, base, count).is_some() {
         count = count
-            .checked_add(2)
-            .and_then(|value| value.checked_add(bundle.wal_roots().slots.iter().flatten().count()))
-            .and_then(|value| value.checked_add(1))
-            .and_then(|value| value.checked_add(usize::from(bundle.text().is_some())))
-            .and_then(|value| value.checked_add(usize::from(bundle.vector().is_some())))
-            .and_then(|value| value.checked_add(usize::from(bundle.reclaim().is_some())))
-            .and_then(|value| value.checked_add(bundle.prepared_inventories().len()))
-            .and_then(|value| value.checked_add(2 * usize::from(Arc::ptr_eq(bundle, admitted))))
-            .ok_or(NativeGraphError::IdentityExhausted)?;
-    }
-    count = count
-        .checked_add(capture.prepared().len())
-        .ok_or(NativeGraphError::IdentityExhausted)?;
-    for spill in capture.spills() {
-        count = count
-            .checked_add(usize::from(spill.head.is_some()))
-            .and_then(|value| value.checked_add(spill.pending.iter().flatten().count()))
-            .ok_or(NativeGraphError::IdentityExhausted)?;
-    }
-    for proof in capture.proofs() {
-        count = count
-            .checked_add(3)
-            .and_then(|value| value.checked_add(usize::from(proof.intent.is_some())))
+            .checked_add(1)
             .ok_or(NativeGraphError::IdentityExhausted)?;
     }
     count
-        .checked_add(usize::from(capture.wal().is_some()))
+        .checked_add(base.closure_count)
         .ok_or(NativeGraphError::IdentityExhausted)
 }
 
 fn capture_record_at(
     capture: &super::NativeProtectedRoots,
     admitted: &Arc<super::NativeGraphBundle>,
+    base: ProofBaseRecords,
     mut index: usize,
 ) -> Option<ProtectedRecord> {
-    for bundle in capture.bundles() {
-        let class = if Arc::ptr_eq(bundle, admitted) {
-            ProtectedClass::Current
+    let mut take = |record| {
+        if index == 0 {
+            Some(record)
         } else {
-            ProtectedClass::Reader
-        };
-        let mut take = |record| {
-            if index == 0 {
-                Some(record)
+            index -= 1;
+            None
+        }
+    };
+    for bundle in capture.bundles() {
+        let current = Arc::ptr_eq(bundle, admitted);
+        for class in [
+            Some(if current {
+                ProtectedClass::Current
             } else {
-                index -= 1;
-                None
-            }
-        };
-        if let Some(record) = take(ProtectedRecord::captured_state(
-            class,
-            bundle.root_envelope(),
-            bundle.sequence(),
-        )) {
-            return Some(record);
-        }
-        if let Some(record) = take(ProtectedRecord::required(class, bundle.root_envelope())) {
-            return Some(record);
-        }
-        for required in bundle.wal_roots().slots.into_iter().flatten() {
-            if let Some(record) = take(ProtectedRecord::required(class, required)) {
-                return Some(record);
-            }
-        }
-        for required in [
-            Some(bundle.catalog()),
-            bundle.text(),
-            bundle.vector(),
-            bundle.reclaim(),
+                ProtectedClass::Reader
+            }),
+            current.then_some(ProtectedClass::PreparedBase),
         ]
         .into_iter()
         .flatten()
-        .chain(bundle.prepared_inventories().iter().copied())
         {
-            if let Some(record) = take(ProtectedRecord::required(class, required)) {
+            if current
+                && let Some(record) = take(ProtectedRecord::captured_base(
+                    class,
+                    base.captured,
+                    bundle.sequence(),
+                ))
+            {
                 return Some(record);
             }
-        }
-        if Arc::ptr_eq(bundle, admitted)
-            && let Some(record) = take(ProtectedRecord::captured_state(
-                ProtectedClass::PreparedBase,
-                bundle.root_envelope(),
-                bundle.sequence(),
-            ))
-        {
-            return Some(record);
-        }
-        if Arc::ptr_eq(bundle, admitted)
-            && let Some(record) = take(ProtectedRecord::required(
-                ProtectedClass::PreparedBase,
-                bundle.root_envelope(),
-            ))
-        {
-            return Some(record);
+            for required in bundle
+                .wal_roots()
+                .slots
+                .into_iter()
+                .flatten()
+                .chain(
+                    [
+                        // Removed by ZE-346 when the graph WAL and root selector are deleted.
+                        Some(bundle.root_envelope()),
+                        Some(bundle.catalog()),
+                        bundle.text(),
+                        bundle.vector(),
+                        bundle.reclaim(),
+                    ]
+                    .into_iter()
+                    .flatten(),
+                )
+                .chain(bundle.prepared_inventories().iter().copied())
+            {
+                if let Some(record) = take(ProtectedRecord::required(class, required)) {
+                    return Some(record);
+                }
+            }
         }
     }
     for descriptor in capture.prepared().iter().copied() {
-        if index == 0 {
-            return Some(ProtectedRecord::descriptor(
-                ProtectedClass::PreparedAllocation,
-                descriptor,
-            ));
+        if let Some(record) = take(ProtectedRecord::descriptor(
+            ProtectedClass::PreparedAllocation,
+            descriptor,
+        )) {
+            return Some(record);
         }
-        index -= 1;
     }
     for spill in capture.spills() {
-        if let Some(head) = spill.head {
-            if index == 0 {
-                return Some(ProtectedRecord::required(ProtectedClass::Proof, head));
-            }
-            index -= 1;
+        if let Some(head) = spill.head
+            && let Some(record) = take(ProtectedRecord::required(ProtectedClass::Proof, head))
+        {
+            return Some(record);
         }
         for descriptor in spill.pending.into_iter().flatten() {
-            if index == 0 {
-                return Some(ProtectedRecord::descriptor(
-                    ProtectedClass::InFlight,
-                    descriptor,
-                ));
+            if let Some(record) = take(ProtectedRecord::descriptor(
+                ProtectedClass::InFlight,
+                descriptor,
+            )) {
+                return Some(record);
             }
-            index -= 1;
         }
     }
     for proof in capture.proofs() {
@@ -222,36 +199,24 @@ fn capture_record_at(
         .into_iter()
         .flatten()
         {
-            if index == 0 {
-                return Some(ProtectedRecord::required(ProtectedClass::Proof, required));
+            if let Some(record) = take(ProtectedRecord::required(ProtectedClass::Proof, required)) {
+                return Some(record);
             }
-            index -= 1;
         }
     }
-    if let Some(wal) = capture.wal()
-        && index == 0
-    {
-        return Some(ProtectedRecord {
-            class: ProtectedClass::Wal,
-            value: ProtectedValue::WalAuthority {
-                identity: wal.identity(),
-                first_sequence: wal.first_sequence(),
-                bytes: u64::try_from(wal.bytes()).ok()?,
-            },
-        });
-    }
-    None
+    take(base.fold)
 }
 
 fn validate_authentic_protected_capture(
     capture: &super::NativeProtectedRoots,
     admitted: &Arc<super::NativeGraphBundle>,
     stream: crate::property_graph::storage::reclaim::DurableProtectedStream,
+    base: ProofBaseRecords,
     writer: &spill::NativeSpillWriter<'_, '_>,
     storage: &StorageMemory<'_>,
     resources: &mut crate::property_graph::storage::tree::directory::TreeResources<'_>,
 ) -> Result<(), NativeGraphError> {
-    let count = capture_record_count(capture, admitted)?;
+    let count = capture_record_count(capture, admitted, base)?;
     if stream.count != u64::try_from(count).map_err(|_| NativeGraphError::IdentityExhausted)? {
         return Err(NativeGraphError::Invalid(
             "durable protected capture record count",
@@ -283,7 +248,33 @@ fn validate_authentic_protected_capture(
                 .and_then(|start| start.checked_add(rest % page))
                 .ok_or(crate::property_graph::storage::tree::directory::TreeError::Work)?
         };
-        let expected = capture_record_at(capture, admitted, original).ok_or(
+        if original == count - 1 {
+            if actual != base.fold {
+                return Err(
+                    crate::property_graph::storage::tree::directory::TreeError::Invalid(
+                        "protected fold authority order",
+                    ),
+                );
+            }
+            visited += 1;
+            return Ok(());
+        }
+        if original >= count - base.closure_count - 1 {
+            if actual.class != ProtectedClass::Reader
+                || !matches!(actual.value, ProtectedValue::Required(_))
+            {
+                return Err(
+                    crate::property_graph::storage::tree::directory::TreeError::Invalid(
+                        "reader closure protected record",
+                    ),
+                );
+            }
+            visited = visited
+                .checked_add(1)
+                .ok_or(crate::property_graph::storage::tree::directory::TreeError::Work)?;
+            return Ok(());
+        }
+        let expected = capture_record_at(capture, admitted, base, original).ok_or(
             crate::property_graph::storage::tree::directory::TreeError::Invalid(
                 "durable protected capture expected record",
             ),
@@ -351,7 +342,7 @@ fn select_rooted_candidates<'m>(
             while live.is_some_and(|artifact| artifact < change.object.artifact) {
                 live = reader.next(writer, resources)?;
             }
-            if live != Some(change.object.artifact) {
+            if change.object.family == 17 && live != Some(change.object.artifact) {
                 if !matches!(
                     change.state,
                     InventoryState::Prepared | InventoryState::Retained
@@ -768,81 +759,83 @@ fn prepare_durable_proof<'m>(
         )?
     };
 
+    if admitted.base().fold.envelope_sequence != admitted.sequence()
+        || admitted.base().fold.manifest_generation != admitted.base().generation.get()
+    {
+        return Err(NativeGraphError::Invalid(
+            "reclaim capture must follow a fold",
+        ));
+    }
+    let mut cancelled = || control.checkpoint().is_err();
+    let mut wal_resources = WalResources::new(u64::MAX, STACK_RESERVATION_BYTES, &mut cancelled)?;
+    let capacity = crate::property_graph::wal::commit_state_size(
+        super::write::commit_state(admitted),
+        &mut wal_resources,
+    )?
+    .checked_add(112)
+    .ok_or(NativeGraphError::IdentityExhausted)?;
+    let mut payload = zeroed(storage, control, capacity)?;
+    let (length, state_digest) = crate::property_graph::storage::reclaim::encode_captured_base(
+        binding,
+        admitted.base().fold,
+        super::write::commit_state(admitted),
+        payload.as_mut_slice(),
+        &mut wal_resources,
+    )?;
+    let captured = writer
+        .append_page(
+            payload
+                .as_slice()
+                .get(..length)
+                .ok_or(NativeGraphError::Invalid("captured base extent"))?,
+            resources,
+        )
+        .map_err(|error| spill_error(&writer, error))?;
+    let mut base = ProofBaseRecords {
+        captured,
+        closure_count: 0,
+        fold: ProtectedRecord {
+            class: ProtectedClass::Wal,
+            value: ProtectedValue::FoldAuthority {
+                manifest_generation: admitted.base().fold.manifest_generation,
+                graph_absorbed_through: admitted.base().fold.graph_absorbed_through,
+                envelope_sequence: admitted.base().fold.envelope_sequence,
+                state_digest,
+            },
+        },
+    };
+    for index in 0..capture_record_count(&capture, admitted, base)? - 1 {
+        let record = capture_record_at(&capture, admitted, base, index)
+            .ok_or(NativeGraphError::Invalid("capture record index"))?;
+        emit_protected(record, &mut protected, &mut mark, &mut writer, resources)?;
+    }
     for bundle in capture.bundles() {
-        let class = if Arc::ptr_eq(bundle, admitted) {
-            ProtectedClass::Current
-        } else {
-            ProtectedClass::Reader
-        };
-        emit_protected(
-            ProtectedRecord::captured_state(class, bundle.root_envelope(), bundle.sequence()),
-            &mut protected,
-            &mut mark,
-            &mut writer,
-            resources,
-        )?;
-        emit_required(
-            class,
-            bundle.root_envelope(),
-            &mut protected,
-            &mut mark,
-            &mut writer,
-            resources,
-        )?;
-        for required in bundle.wal_roots().slots.into_iter().flatten() {
-            emit_required(
-                class,
-                required,
-                &mut protected,
-                &mut mark,
-                &mut writer,
-                resources,
-            )?;
-        }
-        for required in [
-            Some(bundle.catalog()),
-            bundle.text(),
-            bundle.vector(),
-            bundle.reclaim(),
-        ]
-        .into_iter()
-        .flatten()
-        .chain(bundle.prepared_inventories().iter().copied())
-        {
-            emit_required(
-                class,
-                required,
-                &mut protected,
-                &mut mark,
-                &mut writer,
-                resources,
-            )?;
-        }
-        if Arc::ptr_eq(bundle, admitted) {
-            emit_protected(
-                ProtectedRecord::captured_state(
-                    ProtectedClass::PreparedBase,
-                    bundle.root_envelope(),
-                    bundle.sequence(),
-                ),
-                &mut protected,
-                &mut mark,
-                &mut writer,
-                resources,
-            )?;
-            emit_required(
-                ProtectedClass::PreparedBase,
-                bundle.root_envelope(),
-                &mut protected,
-                &mut mark,
-                &mut writer,
-                resources,
-            )?;
-        }
-
         let lease = capture.lease_for(bundle).ok_or(NativeGraphError::Invalid(
             "captured graph bundle has no retained lease",
         ))?;
+        // S6c retains the reader's checkpoint/WAL identities, not its WAL history.
+        // Removed by ZE-346 when the graph WAL and root selector are deleted.
+        let wal_identity = super::recovery::checkpoint_wal_identity(
+            store,
+            bundle.directory(),
+            bundle.root_envelope(),
+            control,
+        )?;
+        mark.emit(
+            crate::property_graph::storage::artifact::ArtifactId::new(wal_identity)
+                .map_err(crate::property_graph::storage::tree::directory::TreeError::Format)?,
+            &mut writer,
+            resources,
+        )?;
+        // A fold changes only the publication token and legacy control locator.
+        // Its retained admission has the same immutable CommitState as Current,
+        // whose complete trace already proves this identical closure live.
+        if !Arc::ptr_eq(bundle, admitted)
+            && bundle.base().generation == admitted.base().generation
+            && bundle.sequence() == admitted.sequence()
+        {
+            continue;
+        }
         {
             let source = NativePreparationSource::new(
                 lease,
@@ -851,7 +844,27 @@ fn prepare_durable_proof<'m>(
             )?;
             let catalog = NativePreparationCatalog::open(&source, resources)?;
             let mut range_scratch = RangeScratch::for_prepare(storage, resources)?;
-            if let Err(error) = crate::property_graph::storage::reclaim::trace_graph_bundle(
+            if !Arc::ptr_eq(bundle, admitted) {
+                let mut visitor = |reference, resources: &mut crate::property_graph::storage::tree::directory::TreeResources<'_>| {
+                    let required = reader_required(&source, reference, resources)?;
+                    protected.emit(ProtectedRecord::required(ProtectedClass::Reader, required), &mut writer, resources)?;
+                    mark.emit(reference.artifact, &mut writer, resources)?;
+                    base.closure_count = base.closure_count.checked_add(1).ok_or(crate::property_graph::storage::tree::directory::TreeError::Work)?;
+                    Ok(())
+                };
+                if let Err(error) = crate::property_graph::storage::reclaim::trace_graph_state(
+                    &source,
+                    &catalog,
+                    bundle.roots(),
+                    bundle.sequence(),
+                    bundle.document(),
+                    &mut range_scratch,
+                    &mut visitor,
+                    resources,
+                ) {
+                    return Err(spill_error(&writer, error));
+                }
+            } else if let Err(error) = crate::property_graph::storage::reclaim::trace_graph_bundle(
                 &source,
                 &catalog,
                 bundle.roots(),
@@ -874,11 +887,9 @@ fn prepare_durable_proof<'m>(
             };
             let mut output = [None; crate::property_graph::storage::reclaim::TRACE_OUTPUT_LIMIT];
             loop {
-                let result = {
-                    let source = NativePreparationSource::new(lease, storage, 64)?;
-                    let catalog = NativePreparationCatalog::open(&source, resources)?;
-                    state.trace_preparation(&source, &catalog, &mut output, resources)
-                };
+                let source = NativePreparationSource::new(lease, storage, 64)?;
+                let catalog = NativePreparationCatalog::open(&source, resources)?;
+                let result = state.trace_preparation(&source, &catalog, &mut output, resources);
                 let result = match result {
                     Ok(result) => result,
                     Err(error) => {
@@ -886,6 +897,20 @@ fn prepare_durable_proof<'m>(
                     }
                 };
                 for reference in output.iter().take(result.count).flatten().copied() {
+                    if !Arc::ptr_eq(bundle, admitted) {
+                        let required = reader_required(&source, reference, resources)?;
+                        protected
+                            .emit(
+                                ProtectedRecord::required(ProtectedClass::Reader, required),
+                                &mut writer,
+                                resources,
+                            )
+                            .map_err(|error| spill_error(&writer, error))?;
+                        base.closure_count = base
+                            .closure_count
+                            .checked_add(1)
+                            .ok_or(NativeGraphError::IdentityExhausted)?;
+                    }
                     if let Err(error) = mark.emit(reference.artifact, &mut writer, resources) {
                         return Err(spill_error(&writer, error));
                     }
@@ -895,213 +920,28 @@ fn prepare_durable_proof<'m>(
                 }
             }
         }
-
-        let is_current = Arc::ptr_eq(bundle, admitted);
-        let expected = GraphInterpretation::new(bundle.lexical(), bundle.document())?;
-        let exact_wal_cutoff = if is_current {
-            let wal = capture.wal().ok_or(NativeGraphError::Invalid(
-                "captured current WAL authority is absent",
-            ))?;
-            Some(super::recovery::CapturedWalCutoff {
-                identity: wal.identity(),
-                first_sequence: wal.first_sequence(),
-                bytes: wal.bytes(),
-            })
-        } else {
-            None
-        };
-        let mut reached_target = false;
-        let history_result = {
-            super::recovery::visit_captured_state(
-                store,
-                bundle.directory(),
-                bundle.root_envelope(),
-                bundle.sequence(),
-                exact_wal_cutoff,
-                control,
-                |visit, wal_resources| {
-                    let (state, changes, is_checkpoint) = match visit {
-                        super::recovery::CapturedStateVisit::Checkpoint {
-                            state,
-                            wal_identity,
-                            ..
-                        } => {
-                            mark.emit(ArtifactId::new(wal_identity).map_err(crate::property_graph::storage::tree::directory::TreeError::Format)?, &mut writer, resources)?;
-                            (state, None, true)
-                        }
-                        super::recovery::CapturedStateVisit::Envelope {
-                            state, changes, ..
-                        } => (state, Some(changes), false),
-                    };
-                    let mut emit_reference = |reference: PhysicalRef, resources: &mut crate::property_graph::storage::tree::directory::TreeResources<'_>| {
-                        mark.emit(reference.artifact, &mut writer, resources)
-                    };
-                    if let Some(changes) = changes {
-                        super::recovery::trace_captured_change_references(
-                            store,
-                            bundle.directory(),
-                            state,
-                            changes,
-                            wal_resources,
-                            storage,
-                            resources,
-                            &mut emit_reference,
-                        )?;
-                    }
-                    if state.sequence > bundle.sequence() {
-                        return Err(NativeGraphError::Invalid(
-                            "captured history exceeds target sequence",
-                        ));
-                    }
-                    if state.sequence == bundle.sequence() {
-                        if !crate::property_graph::wal::same_commit_state(
-                            state,
-                            super::write::commit_state(bundle),
-                            wal_resources,
-                        )? {
-                            return Err(NativeGraphError::Invalid(
-                                "captured history target changed",
-                            ));
-                        }
-                        if is_current
-                            && (state.store != binding.store
-                                || state.generation != binding.capture_generation
-                                || state.sequence != binding.sequence)
-                        {
-                            return Err(NativeGraphError::Invalid(
-                                "captured history current binding",
-                            ));
-                        }
-                        reached_target = true;
-                    } else {
-                        // Only the checkpoint needs a full retrace. A commit
-                        // reaches what its base reaches or what that commit
-                        // created, and the target's own bundle trace already
-                        // walked the end of that chain, so an intermediate
-                        // state contributes only the roots replay maps before
-                        // it replays that envelope.
-                        let depth = if is_checkpoint {
-                            super::recovery::CapturedTraceDepth::Complete
-                        } else {
-                            super::recovery::CapturedTraceDepth::Roots
-                        };
-                        super::recovery::trace_captured_state_references(
-                            store,
-                            bundle.directory(),
-                            bundle.root_envelope(),
-                            state,
-                            expected,
-                            bundle.document(),
-                            storage,
-                            depth,
-                            resources,
-                            &mut emit_reference,
-                        )?;
-                    }
-                    Ok(())
-                },
-            )
-        };
-        if let Err(error) = history_result {
-            return Err(writer.take_failure().unwrap_or(error));
-        }
-        if !reached_target {
-            return Err(NativeGraphError::Invalid(
-                "captured history target is absent",
-            ));
-        }
     }
-    for descriptor in capture.prepared().iter().copied() {
-        emit_protected(
-            ProtectedRecord::descriptor(ProtectedClass::PreparedAllocation, descriptor),
-            &mut protected,
-            &mut mark,
-            &mut writer,
-            resources,
-        )?;
-    }
-    for spill in capture.spills() {
-        if let Some(head) = spill.head {
-            emit_required(
-                ProtectedClass::Proof,
-                head,
-                &mut protected,
-                &mut mark,
-                &mut writer,
-                resources,
-            )?;
-        }
-        for descriptor in spill.pending.into_iter().flatten() {
-            emit_protected(
-                ProtectedRecord::descriptor(ProtectedClass::InFlight, descriptor),
-                &mut protected,
-                &mut mark,
-                &mut writer,
-                resources,
-            )?;
-        }
-    }
+    // Open proofs retain their full captured closure, including their role-7
+    // base; a later fold must not make those proof objects reclaimable.
     for proof in capture.proofs() {
-        // Open proofs may still replay a WAL superseded by a checkpoint.
         let reader = spill::NativeSpillReader::new(
             &admission.lease,
             storage,
             proof.mark.binding.target_generation,
         )?;
-        validate_protected_stream(
-            proof.protected,
-            &reader,
-            storage,
-            resources,
-            |record, resources| {
-                if let ProtectedValue::WalAuthority { identity, .. } = record.value {
-                    mark.emit(ArtifactId::new(identity)?, &mut writer, resources)?;
-                }
-                Ok(())
-            },
-        )?;
-        for required in [
-            Some(proof.allocation_head),
-            Some(proof.protected.head),
-            Some(proof.mark.root),
-            proof.intent,
-        ]
-        .into_iter()
-        .flatten()
-        {
-            emit_required(
-                ProtectedClass::Proof,
-                required,
-                &mut protected,
-                &mut mark,
-                &mut writer,
-                resources,
-            )?;
+        let mut cursor = DurableRunReader::new(proof.mark, storage)?;
+        while let Some(artifact) = cursor.next(&reader, resources)? {
+            mark.emit(artifact, &mut writer, resources)
+                .map_err(|error| spill_error(&writer, error))?;
         }
     }
-    if let Some(wal) = capture.wal() {
-        emit_protected(
-            ProtectedRecord {
-                class: ProtectedClass::Wal,
-                value: ProtectedValue::WalAuthority {
-                    identity: wal.identity(),
-                    first_sequence: wal.first_sequence(),
-                    bytes: u64::try_from(wal.bytes())
-                        .map_err(|_| NativeGraphError::IdentityExhausted)?,
-                },
-            },
-            &mut protected,
-            &mut mark,
-            &mut writer,
-            resources,
-        )?;
-    }
+    emit_protected(base.fold, &mut protected, &mut mark, &mut writer, resources)?;
     let protected = match protected.finish(&mut writer, resources) {
         Ok(value) => value,
         Err(error) => return Err(spill_error(&writer, error)),
     };
     validate_authentic_protected_capture(
-        &capture, admitted, protected, &writer, storage, resources,
+        &capture, admitted, protected, base, &writer, storage, resources,
     )?;
     let mark = match mark.finish(&mut writer, resources) {
         Ok(Some(value)) => value,
@@ -1161,6 +1001,7 @@ fn prepare_durable_proof<'m>(
         resources,
         crate::property_graph::storage::reclaim::MAX_CANDIDATES - candidates.as_slice().len(),
     )?;
+    // Removed by ZE-346 when the graph WAL and root selector are deleted.
     for descriptor in history.as_slice().iter().copied() {
         candidates.push(descriptor)?;
     }
@@ -2085,6 +1926,26 @@ pub(super) fn commit_with_limits(
         "maintenance-fold-end",
         resources.work(),
     );
+    if admitted.base().fold.envelope_sequence != admitted.sequence() {
+        let mut slot = store
+            .native_graph
+            .writer
+            .lock()
+            .map_err(|_| NativeGraphError::Invalid("native graph writer lock"))?;
+        let writer = slot
+            .as_mut()
+            .ok_or_else(|| store.absent_native_graph_writer())?;
+        if !store.native_graph.is_current_bundle(&admitted)? {
+            return Err(NativeGraphError::StalePreparation);
+        }
+        super::write::checkpoint_current(store, writer, &admitted, &shared, control)?;
+        drop(slot);
+        drop(folded_inventory);
+        drop(resources);
+        drop(storage);
+        let folded = store.admit_native_graph_maintenance()?;
+        return commit_with_limits(store, &folded, control, limits);
+    }
     let generation = super::write::assigned_generation(store, admitted.base().generation)?;
     let proof = prepare_durable_proof(
         limits.relocation_bytes,
@@ -2387,5 +2248,32 @@ pub(super) fn commit_with_limits(
         reclaimed_bytes: 0,
         removed_bytes: 0,
         already_missing: 0,
+    })
+}
+
+fn reader_required(
+    source: &NativePreparationSource<'_, '_>,
+    reference: crate::property_graph::storage::artifact::PhysicalRef,
+    resources: &mut crate::property_graph::storage::tree::directory::TreeResources<'_>,
+) -> Result<
+    crate::property_graph::wal::RequiredRef,
+    crate::property_graph::storage::tree::directory::TreeError,
+> {
+    use crate::property_graph::storage::tree::directory::BlockSource;
+    let block = source.resolve(reference, resources)?;
+    let identity = block.identity();
+    Ok(crate::property_graph::wal::RequiredRef {
+        object: crate::property_graph::wal::ArtifactDescriptor {
+            store: identity.store,
+            artifact: identity.artifact,
+            generation: identity.generation,
+            serial: identity.creation_serial,
+            bytes: u32::try_from(block.file_length())
+                .map_err(|_| crate::property_graph::storage::tree::directory::TreeError::Memory)?,
+            family: 17,
+            version: 1,
+            checksum: block.file_checksum(),
+        },
+        block: reference,
     })
 }

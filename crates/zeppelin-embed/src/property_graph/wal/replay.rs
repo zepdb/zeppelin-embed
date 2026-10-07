@@ -17,6 +17,8 @@ pub enum ParticipantRole {
     ReclaimState = 5,
     /// Vector or text base/delta state, interpreted by the search owner.
     RetrievalState = 6,
+    /// Exact folded base state carried by a reclaim proof.
+    CapturedBase = 7,
 }
 /// Required object role; semantic validators cannot reinterpret the same block.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -820,7 +822,7 @@ pub fn validate_required_block<'a>(
             };
             let actual = rd.u16(r)?;
             let version = rd.u16(r)?;
-            if !(1..=6).contains(&actual) || version != 1 {
+            if !(1..=7).contains(&actual) || version != 1 {
                 return Err(WalError::Unsupported);
             }
             if actual != role as u16 {

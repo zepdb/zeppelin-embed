@@ -95,6 +95,20 @@
   and tests/fixtures/graph-wal/complete-v1.bin; its matching hex is readable byte
   authority. Object BlockKind10 requires ZGCP role:u16 and version:u16 at4 and6.
   Unsupported roles/versions are never opaque optional participants.
+- ZE-380 adds required ZGCP role 7/v1 CapturedBase (role 6 remains RetrievalState).
+  Its payload uses the existing SpillBinding at 16..80, absorbed-through u64 at
+  80, manifest generation u64 at 88, state length u32 at 96, reserved-zero u32
+  at 100, CommitState bytes at 104, then xxh3-64 of the preceding payload.
+  ProtectedValue slots remain 112 bytes: tag 5 is FoldAuthority (four u64 at
+  8..40, zero thereafter); tag 6 is CapturedBase (RequiredRef at 8..104 and
+  sequence u64 at 104). Old tags 3/4 are refused, including pending/completed
+  old proofs on open, before resume or deletion; finish those cycles with the
+  previous binary before upgrading. The directory remains safely resumable
+  by that reader. Frozen 0.6.0 rejects role 7 as Unsupported and tags 5/6 as
+  an invalid protected-stream value. Family-18/19 S6c candidate reclamation
+  stays until ZE-346 deletes the graph WAL and root selector. Legacy control
+  references still protect their checkpoint and WAL identities, independently
+  of the self-contained proof's folded CommitState, without reading WAL bytes.
 - Unified WAL op 10 `GRAPH_COMMIT_V1` embeds exactly one complete ZE-38
   Begin/Change/Commit envelope without its family-19 file header. Op 11
   `MIXED_BATCH_MEMBER_V1` is `index:u32, count:u32, inner_op:u16, inner payload`,

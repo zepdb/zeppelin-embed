@@ -87,6 +87,8 @@ pub const REQUIRED_GRAPH_SMOKE_COVERAGE: &[&str] = &[
     "property-graph.reclaim.page-relocation",
     "property-graph.reclaim.superseded-history",
     "property-graph.reclaim.corrupt-proof",
+    "property-graph.reclaim.fold-before-capture.fire",
+    "property-graph.reclaim.fold-before-capture.clean",
     "property-graph.reclaim.read-only-retirement",
     "property-graph.identity.replay",
     "property-graph.identity.incarnation",

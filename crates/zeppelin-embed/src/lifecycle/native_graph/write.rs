@@ -398,7 +398,10 @@ where
     if !completed.matches(lease)
         || manifest.binding.store != admitted.base().store
         || manifest.remaining_count != 0
-        || manifest.completed_count == 0
+        || manifest
+            .completed_count
+            .checked_add(manifest.partial_count)
+            .is_none_or(|count| count == 0)
         || !objects.is_finished()
         || objects.store() != admitted.base().store
         || objects.generation() != generation

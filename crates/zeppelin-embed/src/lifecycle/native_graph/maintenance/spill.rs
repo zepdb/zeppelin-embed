@@ -75,6 +75,36 @@ impl<'a, 'm> NativeSpillReader<'a, 'm> {
         })
     }
 
+    fn validate_required(
+        &self,
+        required: RequiredRef,
+        resources: &mut TreeResources<'_>,
+    ) -> Result<(), TreeError> {
+        if required.object.family != 17 {
+            // Removed by ZE-346 with legacy checkpoint control files.
+            return self.source.validate_required_reference(required, resources);
+        }
+        if required.object.version != 1 || required.block.artifact != required.object.artifact {
+            return Err(TreeError::Invalid("required reference descriptor domain"));
+        }
+        // Reuse the source's charged immutable mapping slots. Reader closure
+        // records must authenticate each pack once, while checking every block.
+        use crate::property_graph::storage::tree::directory::BlockSource;
+        let block = self.source.resolve(required.block, resources)?;
+        let identity = block.identity();
+        if identity.store != required.object.store
+            || identity.artifact != required.object.artifact
+            || identity.generation != required.object.generation
+            || identity.creation_serial != required.object.serial
+            || block.file_length() != required.object.bytes as usize
+            || block.file_checksum() != required.object.checksum
+            || block.reference() != required.block
+        {
+            return Err(TreeError::Invalid("required reference descriptor mismatch"));
+        }
+        Ok(())
+    }
+
     pub(super) fn validate_record(
         &self,
         record: crate::property_graph::storage::reclaim::ProtectedRecord,
@@ -82,18 +112,16 @@ impl<'a, 'm> NativeSpillReader<'a, 'm> {
     ) -> Result<(), TreeError> {
         match record.value {
             crate::property_graph::storage::reclaim::ProtectedValue::Required(required) => {
-                self.source.validate_required_reference(required, resources)
+                self.validate_required(required, resources)
             }
             crate::property_graph::storage::reclaim::ProtectedValue::Descriptor(descriptor) => self
                 .source
                 .validate_object_descriptor(descriptor, resources),
-            crate::property_graph::storage::reclaim::ProtectedValue::WalAuthority { .. } => Ok(()),
-            crate::property_graph::storage::reclaim::ProtectedValue::CapturedState {
+            crate::property_graph::storage::reclaim::ProtectedValue::FoldAuthority { .. } => Ok(()),
+            crate::property_graph::storage::reclaim::ProtectedValue::CapturedBase {
                 checkpoint,
                 ..
-            } => self
-                .source
-                .validate_required_reference(checkpoint, resources),
+            } => self.validate_required(checkpoint, resources),
         }
     }
 }
@@ -210,7 +238,9 @@ impl PreparedDurableSpill {
             memory,
             resources,
             |record, resources| {
-                let expected = record.artifact()?;
+                let Some(expected) = record.artifact() else {
+                    return Ok(());
+                };
                 if !mark.contains(expected, &reader, resources)? {
                     return Err(TreeError::Invalid(
                         "protected root is absent from completed mark",

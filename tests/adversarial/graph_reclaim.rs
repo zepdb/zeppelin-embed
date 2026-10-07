@@ -9,6 +9,7 @@ use zeppelin_embed_adversarial_oracle::graph_adjacency_store::{
 
 /// Keys whose body must have fired at least one scheduled fault or refusal.
 const FIRED: &[&str] = &[
+    "property-graph.reclaim.fold-before-capture.fire",
     "property-graph.reclaim.stale-recheck",
     "property-graph.reclaim.inventory-fold",
     "property-graph.reclaim.spill-refusal",

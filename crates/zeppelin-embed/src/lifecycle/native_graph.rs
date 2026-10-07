@@ -174,7 +174,7 @@ pub(crate) trait NativeReadConsumer<T> {
 /// the same value through the controlled installer; it has no publish method.
 pub(crate) struct NativeGraphBundleInput {
     pub(crate) base: BaseIdentity,
-    // removed by ZE-380 (T3) when reclaim proofs become self-contained
+    // removed by ZE-346 when the graph WAL and root selector are deleted
     pub(crate) root_envelope: RequiredRef,
     pub(crate) roots: GraphRoots,
     pub(crate) wal_roots: WalGraphRoots,
@@ -195,7 +195,7 @@ pub(crate) struct NativeGraphBundleInput {
 pub(crate) struct NativeGraphBundle {
     base: BaseIdentity,
     // Legacy reclaim/recovery locator, never part of bundle identity.
-    // removed by ZE-380 (T3) when reclaim proofs become self-contained
+    // removed by ZE-346 when the graph WAL and root selector are deleted
     root_envelope: RequiredRef,
     roots: GraphRoots,
     wal_roots: WalGraphRoots,
@@ -530,6 +530,21 @@ fn bundle_owned_bytes(
 
 fn validate_bundle(input: &NativeGraphBundleInput) -> Result<(), NativeGraphError> {
     let base = input.base;
+    // Removed by ZE-346 when the graph WAL and root selector are deleted.
+    let root = input.root_envelope;
+    if root.object.store != base.store
+        || root.object.family != 18
+        || root.object.version != 1
+        || root.block.kind != BlockKind::CheckpointPayload
+        || root.block.version != 1
+        || root.block.artifact != root.object.artifact
+        || root.object.generation > base.generation
+        || base.roots != Some(root.object.artifact)
+    {
+        return Err(NativeGraphError::Invalid(
+            "legacy checkpoint reference identity",
+        ));
+    }
     if base.store != input.roots.store()
         || base.generation != input.roots.generation()
         || base.fold.manifest_generation > base.generation.get()
@@ -2365,6 +2380,26 @@ pub(crate) mod tests {
         use crate::property_graph::staging::FoldMark;
 
         #[test]
+        fn legacy_checkpoint_reference_is_checked_until_ze346() {
+            let store = StoreInstanceId::new(123).unwrap();
+            let mutations: [fn(&mut NativeGraphBundleInput); 5] = [
+                |input| input.root_envelope.object.family = 17,
+                |input| input.root_envelope.object.version = 2,
+                |input| input.root_envelope.block.kind = BlockKind::CommitParticipant,
+                |input| input.root_envelope.object.generation = GraphGeneration::new(8),
+                |input| input.base.roots = None,
+            ];
+            for mutate in mutations {
+                let mut input = super::bundle(store, 7, 11);
+                mutate(&mut input);
+                assert!(
+                    validate_bundle(&input).is_err(),
+                    "malformed legacy control reference"
+                );
+            }
+        }
+
+        #[test]
         fn retire_detects_a_fold_without_a_root_reference() {
             let directory = tempfile::tempdir().unwrap();
             let store = Store::open(
@@ -2999,6 +3034,51 @@ pub(crate) mod tests {
         };
         std::fs::write(artifact_path(directory, identity.artifact), bytes).unwrap();
         required
+    }
+
+    #[test]
+    fn unknown_commit_participant_role_is_refused() {
+        let directory = tempfile::tempdir().unwrap();
+        let identity = ArtifactIdentity {
+            store: StoreInstanceId::new(123).unwrap(),
+            artifact: ArtifactId::new(456).unwrap(),
+            generation: GraphGeneration::new(1),
+            creation_serial: 1,
+        };
+        let required = write_framed_file(
+            directory.path(),
+            ContainerKind::Object,
+            identity,
+            &[Block {
+                kind: BlockKind::CommitParticipant,
+                payload: &[b'Z', b'G', b'C', b'P', 8, 0, 1, 0],
+            }],
+        );
+        let bytes = std::fs::read(artifact_path(directory.path(), identity.artifact)).unwrap();
+        let frame = artifact::decode(
+            ContainerKind::Object,
+            Some((identity.store, identity.artifact)),
+            &bytes,
+        )
+        .unwrap();
+        let mut cancelled = || false;
+        let mut resources = crate::property_graph::wal::WalResources::new(
+            1024,
+            crate::property_graph::wal::STACK_RESERVATION_BYTES,
+            &mut cancelled,
+        )
+        .unwrap();
+        assert!(matches!(
+            crate::property_graph::wal::validate_required_block(
+                required,
+                crate::property_graph::wal::RequiredRole::Participant(
+                    crate::property_graph::wal::ParticipantRole::CapturedBase
+                ),
+                &frame,
+                &mut resources
+            ),
+            Err(crate::property_graph::wal::WalError::Unsupported)
+        ));
     }
 
     fn write_catalog_with_symbols(

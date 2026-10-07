@@ -30,7 +30,7 @@ pub struct BaseIdentity {
     /// Admitted published generation.
     pub generation: GraphGeneration,
     /// Legacy checkpoint artifact used only by the old reclaim/recovery path.
-    /// removed by ZE-380 (T3) when reclaim proofs become self-contained
+    /// removed by ZE-346 when the graph WAL and root selector are deleted
     pub roots: Option<ArtifactId>,
     /// In-memory position of the last graph fold.
     pub fold: FoldMark,

@@ -5,7 +5,9 @@ mod codec;
 mod trace;
 
 use codec::ProofRole;
-pub(crate) use codec::{ProtectedClass, ProtectedRecord, ProtectedValue};
+pub(crate) use codec::{
+    ProtectedClass, ProtectedRecord, ProtectedValue, decode_captured_base, encode_captured_base,
+};
 pub(crate) use trace::{
     TraceEntrySource, TraceReferenceVisitor, trace_fence_entry_inner, trace_graph_bundle,
     trace_graph_state, trace_payload_references, trace_record_entry_inner,
@@ -409,10 +411,11 @@ impl<'m> ProtectedStreamBuilder<'m> {
         let records = self.records.get(..self.len).ok_or(TreeError::Memory)?;
         let mut compact = [ProtectedRecord {
             class: ProtectedClass::Proof,
-            value: ProtectedValue::WalAuthority {
-                identity: 1,
-                first_sequence: 0,
-                bytes: 1,
+            value: ProtectedValue::FoldAuthority {
+                manifest_generation: 0,
+                graph_absorbed_through: 0,
+                envelope_sequence: 0,
+                state_digest: 0,
             },
         }; codec::PROTECTED_STREAM_PAGE_RECORDS];
         for (index, record) in records.iter().enumerate() {
