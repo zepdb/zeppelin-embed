@@ -374,6 +374,13 @@ pub enum PurgeError {
     IntentDecode(String),
     /// Re-encoding the surviving active state violated the WAL payload contract.
     WalPayload(wal_payload::PayloadError),
+    /// Physical purge is waiting for an explicit graph checkpoint. The intent
+    /// remains pending and the store may reopen; checkpoint then retry the token.
+    #[cfg(feature = "graph-cypher")]
+    GraphCheckpointRequired {
+        /// First graph commit not yet covered by the graph watermark.
+        seq: LogSeq,
+    },
     /// Rewriting the WAL would discard an acknowledged, unabsorbed mutation.
     WalRewriteWouldDropAcked {
         /// First retained sequence not covered by the surviving active state.
@@ -400,6 +407,12 @@ impl std::fmt::Display for PurgeError {
             Self::IntentFormat(error) => write!(formatter, "purge intent: {error}"),
             Self::IntentDecode(detail) => write!(formatter, "purge intent decode failed: {detail}"),
             Self::WalPayload(error) => write!(formatter, "purge WAL payload: {error}"),
+            #[cfg(feature = "graph-cypher")]
+            Self::GraphCheckpointRequired { seq } => write!(
+                formatter,
+                "physical purge requires a graph checkpoint through WAL sequence {}; checkpoint and retry the pending token",
+                seq.get()
+            ),
             Self::WalRewriteWouldDropAcked { seq } => write!(
                 formatter,
                 "purge WAL rewrite would drop acknowledged WAL sequence {}",
@@ -415,6 +428,8 @@ impl std::error::Error for PurgeError {
             Self::Store(error) => Some(error),
             Self::IntentFormat(error) => Some(error),
             Self::WalPayload(error) => Some(error),
+            #[cfg(feature = "graph-cypher")]
+            Self::GraphCheckpointRequired { .. } => None,
             Self::InsufficientTempSpace { .. }
             | Self::PurgeInProgress
             | Self::UnknownToken { .. }
@@ -974,7 +989,7 @@ impl Store {
             ensure_wal_rewrite_covers_retained(
                 vfs,
                 &self.directory,
-                retained_first_seq,
+                manifest,
                 &intent.ids,
                 next_active,
                 snapshot.all_segments(),
@@ -1007,6 +1022,45 @@ impl Store {
         };
         writer.rewrite(vfs, &self.directory, policy, rewrite_first_seq, records)?;
         assign_rewritten_sequences(next_active, rewrite_first_seq, tombstoned)?;
+        Ok(())
+    }
+
+    #[cfg(feature = "graph-cypher")]
+    fn require_purge_graph_checkpoint(&self, vfs: &dyn Vfs) -> Result<(), PurgeError> {
+        let snapshot = self
+            .snapshot
+            .read()
+            .map_err(|_| StoreError::Synchronization {
+                component: "published snapshot",
+            })?;
+        let snapshot = snapshot.as_ref().ok_or(StoreError::Closed)?;
+        if !snapshot.graph_enabled {
+            return Ok(());
+        }
+        let reader = crate::wal::WalReader::open(vfs, &self.directory.join("wal.ze"))
+            .map_err(StoreError::Wal)?;
+        let clean = reader.into_clean().map_err(StoreError::WalRecovery)?;
+        let watermark = snapshot
+            .absorbed_through()
+            .min(snapshot.graph_absorbed_through);
+        let decisions = crate::lifecycle::namespace_batch::transaction_decisions(
+            vfs,
+            &self.directory,
+            clean.records(),
+            watermark,
+            self.private_preparation.as_ref(),
+        )?;
+        for (seq, _, mutation) in super::atomic_batch::committed_mutations_with_decisions(
+            clean.records(),
+            watermark,
+            |binding| decisions.get(&binding.transaction).copied(),
+        )? {
+            if seq.get() > snapshot.graph_absorbed_through
+                && matches!(mutation, wal_payload::MutationPayload::GraphCommit(_))
+            {
+                return Err(PurgeError::GraphCheckpointRequired { seq });
+            }
+        }
         Ok(())
     }
 
@@ -1095,6 +1149,8 @@ impl Store {
         if intent.token_id != token.id {
             return Err(PurgeError::UnknownToken { token_id: token.id });
         }
+        #[cfg(feature = "graph-cypher")]
+        self.require_purge_graph_checkpoint(vfs)?;
         let mut active = self
             .active
             .lock()
@@ -1227,6 +1283,14 @@ impl Store {
         match self.vfs.open(&path) {
             Ok(_) => {
                 let intent = read_intent(self.vfs.as_ref(), &self.directory)?;
+                #[cfg(feature = "graph-cypher")]
+                match self.require_purge_graph_checkpoint(self.vfs.as_ref()) {
+                    // This is a durable waiting obligation, not failed recovery.
+                    // Admit either access mode so a writable caller can checkpoint
+                    // and retry; no purge mutation has started in this state.
+                    Err(PurgeError::GraphCheckpointRequired { .. }) => return Ok(()),
+                    result => result?,
+                }
                 // Accepted namespace deletes already have a committed logical
                 // state. Ordinary purge intents still require writable recovery.
                 if self
@@ -1988,7 +2052,7 @@ fn active_wal_records(segment: &super::ActiveSegment) -> Result<WalImageRecords,
 fn ensure_wal_rewrite_covers_retained(
     vfs: &dyn Vfs,
     directory: &Path,
-    first_seq: LogSeq,
+    manifest: &Manifest,
     purged_ids: &[DocId],
     next_active: &super::ActiveSegment,
     sealed: &[SegmentReader],
@@ -2010,7 +2074,7 @@ fn ensure_wal_rewrite_covers_retained(
     let wal_path = directory.join("wal.ze");
     let reader = crate::wal::WalReader::open(vfs, &wal_path).map_err(StoreError::Wal)?;
     let clean = reader.into_clean().map_err(StoreError::WalRecovery)?;
-    let absorbed_through = first_seq.get().saturating_sub(1);
+    let absorbed_through = manifest.log_seq;
     let decisions = crate::lifecycle::namespace_batch::transaction_decisions(
         vfs,
         directory,
@@ -2030,7 +2094,10 @@ fn ensure_wal_rewrite_covers_retained(
     for (seq, _, mutation) in mutations {
         let covered = match mutation {
             #[cfg(feature = "graph-cypher")]
-            super::wal_payload::MutationPayload::GraphCommit(_) => false,
+            super::wal_payload::MutationPayload::GraphCommit(_) => manifest
+                .graph
+                .as_ref()
+                .is_some_and(|graph| seq.get() <= graph.graph_absorbed_through),
             super::wal_payload::MutationPayload::Upsert(document) => {
                 let version = document.version();
                 super::lookup::contains(&purged_ids, &version.doc_id())
@@ -2045,7 +2112,11 @@ fn ensure_wal_rewrite_covers_retained(
                         && !active_versions
                             .get(&id)
                             .is_some_and(|(_, tombstoned)| *tombstoned)
-                        && !sealed_delete_is_persisted(sealed, id)?
+                        && !delete_is_covered_by_manifest(
+                            sealed,
+                            id,
+                            !active_versions.contains_key(&id),
+                        )?
                     {
                         covered = false;
                         break;
@@ -2064,10 +2135,15 @@ fn ensure_wal_rewrite_covers_retained(
     Ok(())
 }
 
-// A sealed delete commits its replacement alive bitmap before acknowledging
-// the WAL record, without advancing the manifest's active-WAL boundary.
-// Absence alone is not proof: require a stored tombstone and no live copy.
-fn sealed_delete_is_persisted(sealed: &[SegmentReader], id: DocId) -> Result<bool, StoreError> {
+// The manifest-selected segments and replacement active image jointly cover
+// a delete: no sealed live copy, and either a persisted tombstone or no active
+// copy. Retention may have removed the segment that held the tombstone. Every
+// retained upsert must still independently be covered by the rewrite check.
+fn delete_is_covered_by_manifest(
+    sealed: &[SegmentReader],
+    id: DocId,
+    active_absent: bool,
+) -> Result<bool, StoreError> {
     let mut found = false;
     for segment in sealed {
         let rows = segment.query_rows_with_doc_id(id)?;
@@ -2079,7 +2155,7 @@ fn sealed_delete_is_persisted(sealed: &[SegmentReader], id: DocId) -> Result<boo
             found = true;
         }
     }
-    Ok(found)
+    Ok(found || active_absent)
 }
 
 fn purge_ingest_error(error: super::IngestError) -> PurgeError {

@@ -83,6 +83,261 @@ fn a_graph_checkpoint_after_a_later_document_batch_reopens() {
     assert!(observe_node(&reopened, next).is_some());
 }
 
+fn purge_documents(ids: &[u128], revision: u64) -> crate::ingest::IngestBatch {
+    use crate::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+    IngestBatch::new(
+        ids.iter()
+            .map(|id| {
+                IngestDocument::new(
+                    DocumentVersion::new(DocId::new(*id), Revision::new(revision)),
+                    vec![1.0, 0.0],
+                )
+            })
+            .collect(),
+    )
+}
+
+fn assert_purge_reopens(
+    path: &Path,
+    generation: u64,
+    alive: &[u128],
+    dead: &[u128],
+    nodes: &[NodeId],
+) {
+    use crate::lifecycle::{AccessMode, DocumentFields};
+    for access in [
+        AccessMode::ReadOnly,
+        AccessMode::ReadWrite,
+        AccessMode::ReadOnly,
+        AccessMode::ReadWrite,
+    ] {
+        let store = Store::open(path, native_options().with_access_mode(access)).unwrap();
+        assert_eq!(store.snapshot().unwrap().generation(), generation);
+        assert_eq!(
+            store.count_documents(None, None).unwrap().count,
+            alive.len() as u64
+        );
+        for (ids, present) in [(alive, true), (dead, false)] {
+            for id in ids {
+                assert_eq!(
+                    store
+                        .get_documents(&[crate::ingest::DocId::new(*id)], DocumentFields::NONE)
+                        .unwrap()[0]
+                        .is_some(),
+                    present
+                );
+            }
+        }
+        for node in nodes {
+            assert!(observe_node(&store, *node).is_some());
+        }
+    }
+}
+
+#[test]
+fn a_purge_with_an_unabsorbed_graph_write_reopens() {
+    use crate::ingest::DocId;
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    store.enable_graph().unwrap();
+    store.ingest(purge_documents(&[91, 92, 93], 1)).unwrap();
+    let node = commit_tail_test_node(&store, "unabsorbed");
+    let generation = store.snapshot().unwrap().generation();
+    let token = store.purge(&[DocId::new(91)]).unwrap();
+    let before = file_snapshot(directory.path());
+    let error = store.await_physical_purge(token.clone()).unwrap_err();
+    assert!(
+        matches!(error, crate::ingest::PurgeError::GraphCheckpointRequired { seq } if seq == crate::wal::LogSeq::new(4)),
+        "{error}"
+    );
+    assert_eq!(file_snapshot(directory.path()), before);
+    assert_eq!(store.snapshot().unwrap().generation(), generation);
+    drop(store);
+    assert_purge_reopens(directory.path(), generation, &[91, 92, 93], &[], &[node]);
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    store
+        .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+        .unwrap();
+    let generation = store.await_physical_purge(token).unwrap().generation();
+    drop(store);
+    assert_purge_reopens(directory.path(), generation, &[92, 93], &[91], &[node]);
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    disable_generation_fixture_maintenance(&store);
+    let next = commit_tail_test_node(&store, "after-unabsorbed-purge");
+    let next_generation = store.snapshot().unwrap().generation();
+    assert!(next_generation > generation);
+    drop(store);
+    assert_purge_reopens(
+        directory.path(),
+        next_generation,
+        &[92, 93],
+        &[91],
+        &[node, next],
+    );
+}
+
+#[test]
+fn a_purge_after_a_checkpoint_with_active_documents_reopens() {
+    use crate::ingest::DocId;
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    store.enable_graph().unwrap();
+    disable_generation_fixture_maintenance(&store);
+    store.ingest(purge_documents(&[91, 92], 1)).unwrap();
+    store.ingest(purge_documents(&[91], 2)).unwrap();
+    let node = commit_tail_test_node(&store, "folded-with-active-documents");
+    store
+        .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+        .unwrap();
+    let token = store.purge(&[DocId::new(91)]).unwrap();
+    let generation = store.await_physical_purge(token).unwrap().generation();
+    drop(store);
+    assert_purge_reopens(directory.path(), generation, &[92], &[91], &[node]);
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    disable_generation_fixture_maintenance(&store);
+    let next = commit_tail_test_node(&store, "after-folded-purge");
+    let next_generation = store.snapshot().unwrap().generation();
+    assert_eq!(next_generation, generation + 1);
+    drop(store);
+    assert_purge_reopens(
+        directory.path(),
+        next_generation,
+        &[92],
+        &[91],
+        &[node, next],
+    );
+}
+
+#[test]
+fn a_purge_retry_after_a_failed_directory_sync_keeps_the_fence() {
+    use crate::ingest::DocId;
+    let directory = tempfile::tempdir().unwrap();
+    let vfs = Arc::new(RecordingVfs::default());
+    let store = Store::open_with_test_dependencies(
+        directory.path(),
+        native_options(),
+        crate::lifecycle::StoreTestDependencies::new(
+            vfs.clone(),
+            Arc::new(crate::lifecycle::SystemMonotonicClock),
+        ),
+    )
+    .unwrap();
+    store.ingest(purge_documents(&[91, 92], 1)).unwrap();
+    store.seal().unwrap();
+    store.enable_graph().unwrap();
+    disable_generation_fixture_maintenance(&store);
+    let node = commit_tail_test_node(&store, "before-failed-purge");
+    store
+        .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+        .unwrap();
+    let generation = store.snapshot().unwrap().generation();
+    assert_eq!(generation, 5);
+    let token = store.purge(&[DocId::new(91)]).unwrap();
+    vfs.take();
+    vfs.arm_fault_after(FaultPoint::DirectorySync, 1);
+    assert!(store.await_physical_purge(token.clone()).is_err());
+    vfs.assert_fired_once();
+    assert!(
+        vfs.take()
+            .iter()
+            .any(|event| matches!(event, DurabilityEvent::Rename(_, path)
+        if path.file_name().is_some_and(|name| name == "manifest.ze")))
+    );
+    assert_eq!(store.snapshot().unwrap().generation(), generation);
+    assert_eq!(
+        crate::manifest::io::load_manifest(
+            &StdVfs,
+            &directory.path().join("manifest.ze"),
+            u64::MAX
+        )
+        .unwrap()
+        .generation,
+        6
+    );
+    let wal_before = std::fs::read(directory.path().join("wal.ze")).unwrap();
+    let manifest_before = std::fs::read(directory.path().join("manifest.ze")).unwrap();
+    assert!(
+        store.await_physical_purge(token).is_err(),
+        "retry must preserve the publication fence"
+    );
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    assert!(
+        store
+            .apply_native_graph(
+                &[StructuredWrite {
+                    key: ApplicationKey::new(EntityKind::Node, "tail", "after-failed-purge")
+                        .unwrap(),
+                    revision: GraphRevision::new(1).unwrap(),
+                    operation: StructuredOperation::Create,
+                    image: Some(WriteImage::Node(&image)),
+                }],
+                &QueryControl::Cancel(CancelToken::new())
+            )
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::read(directory.path().join("wal.ze")).unwrap(),
+        wal_before
+    );
+    assert_eq!(
+        std::fs::read(directory.path().join("manifest.ze")).unwrap(),
+        manifest_before
+    );
+    assert_eq!(store.snapshot().unwrap().generation(), generation);
+    drop(store);
+    // Writable recovery finishes the already published replacement, at 6.
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    assert_eq!(store.snapshot().unwrap().generation(), 6);
+    drop(store);
+    assert_purge_reopens(directory.path(), 6, &[92], &[91], &[node]);
+}
+
+#[test]
+fn a_purge_after_retention_removed_the_segment_of_an_earlier_delete_reopens() {
+    use crate::ingest::{
+        DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, Revision,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(91), Revision::new(1)),
+                vec![1.0, 0.0],
+            )
+            .with_timestamp(91),
+        ]))
+        .unwrap();
+    store.seal().unwrap();
+    store.enable_graph().unwrap();
+    disable_generation_fixture_maintenance(&store);
+    store.ingest(purge_documents(&[92, 93], 1)).unwrap();
+    store
+        .delete(DeleteBatch::new(vec![DocId::new(91)]))
+        .unwrap();
+    let node = commit_tail_test_node(&store, "before-retention-purge");
+    store.drop_partition(91..92).unwrap();
+    store
+        .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+        .unwrap();
+    assert!(store.snapshot().unwrap().segments().is_empty());
+    let token = store.purge(&[DocId::new(92)]).unwrap();
+    let generation = store.await_physical_purge(token).unwrap().generation();
+    drop(store);
+    assert_purge_reopens(directory.path(), generation, &[93], &[91, 92], &[node]);
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    disable_generation_fixture_maintenance(&store);
+    let next = commit_tail_test_node(&store, "after-retention-purge");
+    drop(store);
+    assert_purge_reopens(
+        directory.path(),
+        generation + 1,
+        &[93],
+        &[91, 92],
+        &[node, next],
+    );
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct MixedObservation {
     store: StoreInstanceId,

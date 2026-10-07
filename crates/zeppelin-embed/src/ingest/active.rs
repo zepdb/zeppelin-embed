@@ -2380,6 +2380,8 @@ impl StoreWal {
         first_seq: LogSeq,
         records: &[(u16, Vec<u8>)],
     ) -> Result<(), StoreError> {
+        // Replacement must not clear an earlier indeterminate-publication fence.
+        self.writer.flush().map_err(StoreError::WalWrite)?;
         let path = directory.join("wal.ze");
         let temporary = directory.join(".wal.ze.purge.tmp");
         let bytes = encode_wal_image(first_seq, records).map_err(StoreError::WalWrite)?;

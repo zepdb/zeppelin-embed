@@ -29,9 +29,11 @@ impl Model {
 enum Operation {
     Ingest,
     Batch,
+    Upsert,
     Seal,
     DeleteSealed,
     Purge,
+    PurgeRetryFault,
     Reindex,
     Schema,
     Retention,
@@ -42,12 +44,14 @@ enum Operation {
     Namespace,
 }
 
-const OPERATIONS: [Operation; 13] = [
+const OPERATIONS: [Operation; 15] = [
     Operation::Ingest,
     Operation::Batch,
+    Operation::Upsert,
     Operation::Seal,
     Operation::DeleteSealed,
     Operation::Purge,
+    Operation::PurgeRetryFault,
     Operation::Reindex,
     Operation::Schema,
     Operation::Retention,
@@ -63,6 +67,7 @@ struct Step {
     end: usize,
     before: Model,
     after: Model,
+    purge: bool,
 }
 
 fn document(id: u128) -> IngestDocument {
@@ -75,20 +80,25 @@ fn document(id: u128) -> IngestDocument {
 }
 
 fn write_node(store: &Store, key: &str) -> (NodeId, u64) {
+    try_write_node(store, key).unwrap()
+}
+
+fn try_write_node(
+    store: &Store,
+    key: &str,
+) -> Result<(NodeId, u64), crate::lifecycle::native_graph::NativeGraphError> {
     let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
-    let receipts = store
-        .apply_native_graph(
-            &[StructuredWrite {
-                key: ApplicationKey::new(EntityKind::Node, "model", key).unwrap(),
-                revision: GraphRevision::new(1).unwrap(),
-                operation: StructuredOperation::Create,
-                image: Some(WriteImage::Node(&image)),
-            }],
-            &QueryControl::Cancel(CancelToken::new()),
-        )
-        .unwrap();
+    let receipts = store.apply_native_graph(
+        &[StructuredWrite {
+            key: ApplicationKey::new(EntityKind::Node, "model", key).unwrap(),
+            revision: GraphRevision::new(1).unwrap(),
+            operation: StructuredOperation::Create,
+            image: Some(WriteImage::Node(&image)),
+        }],
+        &QueryControl::Cancel(CancelToken::new()),
+    )?;
     match receipts[0].entity {
-        EntityId::Node(node) => (node, receipts[0].generation.get()),
+        EntityId::Node(node) => Ok((node, receipts[0].generation.get())),
         EntityId::Relationship(_) => panic!("expected model node"),
     }
 }
@@ -121,14 +131,14 @@ fn open(path: &Path, vfs: &Arc<SequenceVfs>, options: OpenOptions) -> Store {
 // only recovery consumes the changed WAL sequence count. The byte recorder is
 // below the adapter, so every crash cut contains exactly the bytes written.
 struct SequenceVfs {
-    recorded: ByteRecorder<StdVfs>,
+    recorded: ByteRecorder<RecordingVfs>,
     mixed: Arc<std::sync::Mutex<Option<Vec<u128>>>>,
 }
 
 impl SequenceVfs {
     fn new() -> Self {
         Self {
-            recorded: ByteRecorder::new(StdVfs),
+            recorded: ByteRecorder::new(RecordingVfs::default()),
             mixed: Arc::new(std::sync::Mutex::new(None)),
         }
     }
@@ -368,18 +378,18 @@ pub(super) fn run() {
             model.acknowledge(generation);
             let mut steps = Vec::new();
             let mut graph_unfolded = true;
-            let mut graph_in_document_wal = true;
             for index in 0..length {
                 let active = model.documents.difference(&sealed).next().is_some();
-                // Generate admitted operation orders, respecting HEAD's explicit
-                // T5/physical-purge guards. No executed failure is discarded or
-                // retried: any unexpected rejection fails with the entire history.
+                // Seal still requires a graph fold. Purge orders include both
+                // unabsorbed graph tails and checkpoints with active documents.
+                // Only the typed checkpoint wait is retried; other errors fail.
                 let eligible: Vec<_> = OPERATIONS
                     .iter()
                     .copied()
                     .filter(|operation| match operation {
                         Operation::Seal | Operation::Reindex => !active || !graph_unfolded,
-                        Operation::Purge => !graph_in_document_wal && !model.documents.is_empty(),
+                        Operation::Purge | Operation::Upsert => !model.documents.is_empty(),
+                        Operation::PurgeRetryFault => !graph_unfolded && !sealed.is_empty(),
                         Operation::DeleteSealed | Operation::Retention => !sealed.is_empty(),
                         _ => true,
                     })
@@ -421,12 +431,31 @@ pub(super) fn run() {
                         all_documents.extend(ids);
                         ack.generation()
                     }
+                    Operation::Upsert => {
+                        let id = *model
+                            .documents
+                            .iter()
+                            .nth(rng.random_range(0..model.documents.len()))
+                            .unwrap();
+                        let updated = IngestDocument::new(
+                            DocumentVersion::new(DocId::new(id), Revision::new(2 + index as u64)),
+                            vec![1.0, 0.0],
+                        )
+                        .with_timestamp(id as i64)
+                        .with_text("restart model updated document");
+                        let generation = s
+                            .ingest(IngestBatch::new(vec![updated]))
+                            .unwrap()
+                            .generation();
+                        // A replacement of a sealed row now also has an active copy.
+                        sealed.remove(&id);
+                        generation
+                    }
                     Operation::Seal => {
                         let generation = s.seal().unwrap();
                         sealed = model.documents.clone();
                         if active {
                             graph_unfolded = false;
-                            graph_in_document_wal = false;
                         }
                         generation
                     }
@@ -438,19 +467,77 @@ pub(super) fn run() {
                         ack.generation()
                     }
                     Operation::Purge => {
-                        let id = model.documents.iter().next().copied().unwrap_or(91);
+                        let id = *model
+                            .documents
+                            .iter()
+                            .nth(rng.random_range(0..model.documents.len()))
+                            .unwrap();
                         let token = s.purge(&[DocId::new(id)]).unwrap();
-                        let generation = s.await_physical_purge(token).unwrap().generation();
+                        let generation = match s.await_physical_purge(token.clone()) {
+                            Ok(report) => report.generation(),
+                            Err(crate::ingest::PurgeError::GraphCheckpointRequired { .. }) => {
+                                assert_eq!(s.snapshot().unwrap().generation(), model.generation());
+                                assert!(same_visibility(&visible(s, &all_documents), &model));
+                                s.checkpoint_native_graph(
+                                    &QueryControl::Cancel(CancelToken::new()),
+                                )
+                                .unwrap();
+                                s.await_physical_purge(token).unwrap().generation()
+                            }
+                            Err(error) => panic!("purge rejected: {error}"),
+                        };
+                        graph_unfolded = false;
                         model.documents.remove(&id);
                         sealed.remove(&id);
                         generation
+                    }
+                    Operation::PurgeRetryFault => {
+                        let id = *sealed
+                            .iter()
+                            .nth(rng.random_range(0..sealed.len()))
+                            .unwrap();
+                        let token = s.purge(&[DocId::new(id)]).unwrap();
+                        // The first directory sync publishes the replacement
+                        // segment; the second follows the manifest rename.
+                        vfs.recorded
+                            .inner()
+                            .arm_fault_after(FaultPoint::DirectorySync, 1);
+                        assert!(s.await_physical_purge(token.clone()).is_err());
+                        vfs.recorded.inner().assert_fired_once();
+                        assert_eq!(s.snapshot().unwrap().generation(), model.generation());
+                        assert!(
+                            s.await_physical_purge(token.clone()).is_err(),
+                            "purge retry cleared the publication fence"
+                        );
+                        assert!(
+                            try_write_node(s, &format!("fenced-{index}")).is_err(),
+                            "graph write crossed the publication fence"
+                        );
+                        drop(store.take());
+                        store = Some(open(&path, &vfs, native_options()));
+                        let recovered = store.as_ref().unwrap();
+                        // Recovery can append a reclaim record while adopting
+                        // the rejected graph preparation's orphan objects. Fold
+                        // that tail, then finish any explicitly waiting intent.
+                        recovered
+                            .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+                            .unwrap();
+                        match vfs.open(&path.join(crate::ingest::PURGE_INTENT_FILE)) {
+                            Ok(_) => {
+                                recovered.await_physical_purge(token).unwrap();
+                            }
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(error) => panic!("pending purge inspection: {error}"),
+                        }
+                        model.documents.remove(&id);
+                        sealed.remove(&id);
+                        recovered.snapshot().unwrap().generation()
                     }
                     Operation::Reindex => {
                         let generation = s.reindex_text().unwrap();
                         sealed = model.documents.clone();
                         if active {
                             graph_unfolded = false;
-                            graph_in_document_wal = false;
                         }
                         generation
                     }
@@ -487,7 +574,6 @@ pub(super) fn run() {
                         let (node, generation) = write_node(s, &format!("sequence-{index}"));
                         model.nodes.insert(node);
                         graph_unfolded = true;
-                        graph_in_document_wal = true;
                         generation
                     }
                     Operation::Mixed => {
@@ -499,7 +585,6 @@ pub(super) fn run() {
                         drop(store.take());
                         model.nodes.insert(node);
                         graph_unfolded = true;
-                        graph_in_document_wal = true;
                         model.documents.extend(ids);
                         all_documents.extend(ids);
                         store = Some(open(&path, &vfs, native_options()));
@@ -512,9 +597,6 @@ pub(super) fn run() {
                         s.checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
                             .unwrap();
                         graph_unfolded = false;
-                        if !active {
-                            graph_in_document_wal = false;
-                        }
                         s.snapshot().unwrap().generation()
                     }
                     Operation::Maintenance => {
@@ -523,7 +605,6 @@ pub(super) fn run() {
                             .unwrap();
                         model.acknowledge(report.generation.get());
                         graph_unfolded = true;
-                        graph_in_document_wal = true;
                         s.snapshot().unwrap().generation()
                     }
                     Operation::Namespace => {
@@ -574,12 +655,15 @@ pub(super) fn run() {
                     end: vfs.operations().unwrap().len(),
                     before,
                     after: model.clone(),
+                    purge: matches!(operation, Operation::Purge | Operation::PurgeRetryFault),
                 });
             }
             let bytes = vfs.operations().unwrap();
             drop(store);
             let mut cuts = BTreeSet::from([bytes.len()]);
-            for step in steps.iter().rev().take(2) {
+            for step in steps.iter().enumerate().filter_map(|(index, step)| {
+                (step.purge || index + 2 >= steps.len()).then_some(step)
+            }) {
                 cuts.insert(step.start);
                 cuts.insert(step.end);
                 for (index, operation) in bytes.iter().enumerate().take(step.end).skip(step.start) {
