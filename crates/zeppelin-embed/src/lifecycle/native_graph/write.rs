@@ -785,14 +785,61 @@ fn checkpoint_current_inner(
     let active = active_slot
         .as_mut()
         .ok_or(crate::lifecycle::StoreError::Closed)?;
-    let mut manifest = crate::ingest::load_current_manifest(
+    let (graph_mark, document_mark) = checkpoint_manifest_locked(
+        store,
+        admitted,
+        writer.last_graph_seq,
+        wal,
+        active,
+        objects,
+        resources,
         store.vfs.as_ref(),
+    )?;
+    writer.complete_envelopes = 0;
+    writer.envelope_bytes = 0;
+    writer.checkpoint_failed = false;
+    writer.protected.clear();
+    if admitted.reclaim().is_some() {
+        writer
+            .durable_protected
+            .retain(|proof| proof.intent.is_some());
+    } else {
+        writer.durable_protected.clear();
+    }
+    writer.last_graph_seq = graph_mark;
+    if document_mark == graph_mark && document_mark == wal.durable_end() {
+        wal.retire_visible_through(crate::wal::LogSeq::new(document_mark))?;
+        wal.truncate_absorbed(
+            store.vfs.as_ref(),
+            &store.directory,
+            store.durability_policy,
+            crate::wal::LogSeq::new(document_mark),
+        )?;
+    }
+    Ok(())
+}
+
+// The WAL and active locks serialize this fold with every document and graph
+// publication. Purge must use these held locks rather than reacquiring them.
+#[allow(clippy::too_many_arguments)]
+fn checkpoint_manifest_locked(
+    store: &crate::lifecycle::Store,
+    admitted: &Arc<NativeGraphBundle>,
+    graph_mark: u64,
+    wal: &mut crate::ingest::StoreWal,
+    active: &mut crate::ingest::ActiveState,
+    objects: Vec<crate::manifest::GraphObject>,
+    resources: &GraphResources,
+    vfs: &dyn crate::vfs::Vfs,
+) -> Result<(u64, u64), NativeGraphError> {
+    let mut manifest = crate::ingest::load_current_manifest(
+        vfs,
         &store.directory,
         wal.durable_end(),
         0,
         &store.schema,
     )?;
-    let graph_mark = writer.last_graph_seq.max(
+    let graph_mark = graph_mark.max(
         manifest
             .graph
             .as_ref()
@@ -831,19 +878,14 @@ fn checkpoint_current_inner(
         None,
     )?;
     let remapped = crate::lifecycle::PublishedSnapshot::from_manifest(
-        store.vfs.as_ref(),
+        vfs,
         &store.directory,
         &manifest,
         &store.accounting,
     )?;
     let mut publication = wal.manifest_publication()?;
     publication
-        .commit_manifest(
-            store.vfs.as_ref(),
-            &store.directory,
-            &manifest,
-            store.durability_policy,
-        )
+        .commit_manifest(vfs, &store.directory, &manifest, store.durability_policy)
         .map_err(crate::lifecycle::StoreError::Manifest)?;
     let failure_path = store.directory.join(crate::manifest::io::MANIFEST_FILE);
     let mut snapshot =
@@ -866,28 +908,7 @@ fn checkpoint_current_inner(
             source: None,
         })?;
     publication.complete();
-    writer.complete_envelopes = 0;
-    writer.envelope_bytes = 0;
-    writer.checkpoint_failed = false;
-    writer.protected.clear();
-    if admitted.reclaim().is_some() {
-        writer
-            .durable_protected
-            .retain(|proof| proof.intent.is_some());
-    } else {
-        writer.durable_protected.clear();
-    }
-    writer.last_graph_seq = graph_mark;
-    if manifest.log_seq == graph_mark && manifest.log_seq == wal.durable_end() {
-        wal.retire_visible_through(crate::wal::LogSeq::new(manifest.log_seq))?;
-        wal.truncate_absorbed(
-            store.vfs.as_ref(),
-            &store.directory,
-            store.durability_policy,
-            crate::wal::LogSeq::new(manifest.log_seq),
-        )?;
-    }
-    Ok(())
+    Ok((graph_mark, manifest.log_seq))
 }
 
 impl NativeGraphPublication {
@@ -2845,6 +2866,41 @@ impl crate::lifecycle::Store {
         let resources = GraphResources::from_store(self)?;
         let control = crate::lifecycle::QueryControl::Cancel(crate::lifecycle::CancelToken::new());
         checkpoint_current(self, writer, &admitted, &resources, &control)
+    }
+
+    /// Purge already owns state, WAL and active. Taking the native writer here
+    /// would reverse the graph write lock order. Its counters/protection remain
+    /// conservative until its next checkpoint; the manifest owns durability.
+    pub(crate) fn checkpoint_native_graph_for_purge_locked(
+        &self,
+        wal: &mut crate::ingest::StoreWal,
+        active: &mut crate::ingest::ActiveState,
+        graph_mark: u64,
+        vfs: &dyn crate::vfs::Vfs,
+    ) -> Result<(), NativeGraphError> {
+        let admitted = self
+            .native_graph
+            .state
+            .lock()
+            .map_err(|_| {
+                NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
+                    component: "native graph publication",
+                })
+            })?
+            .current
+            .clone()
+            .ok_or(NativeGraphError::Invalid(
+                "purge checkpoint has no current roots",
+            ))?;
+        let resources = GraphResources::from_store(self)?;
+        let control = crate::lifecycle::QueryControl::Cancel(crate::lifecycle::CancelToken::new());
+        let checkpoint_memory = WriteMemory::new(&resources, WriteLimits::default())?;
+        let storage = StorageMemory::new(&checkpoint_memory, &control, 32 * 1024 * 1024)?;
+        let objects = super::recovery::manifest_inventory(self, &admitted, &storage)?;
+        checkpoint_manifest_locked(
+            self, &admitted, graph_mark, wal, active, objects, &resources, vfs,
+        )?;
+        Ok(())
     }
 
     pub(crate) fn checkpoint_native_graph(

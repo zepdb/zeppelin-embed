@@ -182,8 +182,6 @@ impl FfiError {
             PurgeError::Store(error) => Self::store(error).code,
             PurgeError::InsufficientTempSpace { .. } => ZeErrorCode::ZeErrBudgetExceeded,
             PurgeError::PurgeInProgress => ZeErrorCode::ZeErrBusy,
-            #[cfg(feature = "graph-cypher")]
-            PurgeError::GraphCheckpointRequired { .. } => ZeErrorCode::ZeErrBusy,
             PurgeError::UnknownToken { .. } => ZeErrorCode::ZeErrInvalidArgument,
             PurgeError::IntentFormat(_)
             | PurgeError::IntentDecode(_)

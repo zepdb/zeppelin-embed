@@ -134,6 +134,175 @@ fn assert_purge_reopens(
     }
 }
 
+const PURGE_PUBLIC_MARKER: &str = "ZE346PUBLICPURGEDDOCUMENT";
+
+fn public_graph_write(path: &Path, key: &str) -> NodeId {
+    use crate::property_graph::GraphStore;
+    let graph = GraphStore::open(path, native_options(), None).unwrap();
+    graph
+        .set_maintenance_policy(crate::property_graph::GraphMaintenancePolicy {
+            automatic: false,
+            ..Default::default()
+        })
+        .unwrap();
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    let result = graph
+        .apply_batch(
+            &[StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "purge", key).unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            }],
+            &QueryControl::Cancel(CancelToken::new()),
+        )
+        .unwrap();
+    let EntityId::Node(node) = result.receipts()[0].entity else {
+        panic!("node receipt")
+    };
+    // Drop models stopping before close's checkpoint.
+    drop(graph);
+    node
+}
+
+fn public_purge_fixture(path: &Path) -> NodeId {
+    use crate::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+    let store = Store::open(path, native_options()).unwrap();
+    store
+        .ingest(IngestBatch::new(vec![
+            IngestDocument::new(
+                DocumentVersion::new(DocId::new(91), Revision::new(1)),
+                vec![1.0, 0.0],
+            )
+            .with_text(PURGE_PUBLIC_MARKER),
+        ]))
+        .unwrap();
+    store.enable_graph().unwrap();
+    drop(store);
+    public_graph_write(path, "before-purge")
+}
+
+fn assert_public_purge_complete(path: &Path, first: NodeId) {
+    use crate::property_graph::{GraphGetOptions, GraphStore};
+    assert!(!path.join(crate::ingest::PURGE_INTENT_FILE).exists());
+    assert!(file_snapshot(path).values().all(|bytes| {
+        !bytes
+            .windows(PURGE_PUBLIC_MARKER.len())
+            .any(|window| window == PURGE_PUBLIC_MARKER.as_bytes())
+    }));
+    let store = Store::open(path, native_options()).unwrap();
+    assert_eq!(store.count_documents(None, None).unwrap().count, 0);
+    drop(store);
+    let next = public_graph_write(path, "after-purge");
+    let graph = GraphStore::open(path, native_options(), None).unwrap();
+    let nodes = graph
+        .get_nodes(
+            &[first, next],
+            GraphGetOptions::default(),
+            &QueryControl::Cancel(CancelToken::new()),
+        )
+        .unwrap();
+    assert!(nodes.nodes().iter().all(Option::is_some));
+}
+
+#[test]
+fn delete_matching_on_a_store_with_an_unabsorbed_graph_write_completes() {
+    let directory = tempfile::tempdir().unwrap();
+    let node = public_purge_fixture(directory.path());
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    let report = store
+        .delete_matching(&crate::meta::Predicate::And(Vec::new()))
+        .unwrap();
+    assert_eq!(report.deleted_ids(), &[crate::ingest::DocId::new(91)]);
+    drop(store);
+    assert_public_purge_complete(directory.path(), node);
+}
+
+#[test]
+fn a_namespace_delete_on_a_store_with_an_unabsorbed_graph_write_completes() {
+    use crate::lifecycle::{LiveNamespaceMutation, NamespaceMutation, namespace_batch_live};
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("alpha");
+    let node = public_purge_fixture(&path);
+    let store = Store::open(&path, native_options()).unwrap();
+    let other = Store::open(directory.path().join("beta"), native_options()).unwrap();
+    namespace_batch_live(
+        directory.path(),
+        vec![
+            LiveNamespaceMutation {
+                store: &store,
+                mutation: NamespaceMutation {
+                    name: "alpha".into(),
+                    options: native_options(),
+                    upserts: Vec::new(),
+                    deletes: vec![crate::ingest::DocId::new(91)],
+                    delete_where: None,
+                },
+            },
+            LiveNamespaceMutation {
+                store: &other,
+                mutation: NamespaceMutation {
+                    name: "beta".into(),
+                    options: native_options(),
+                    upserts: Vec::new(),
+                    deletes: Vec::new(),
+                    delete_where: None,
+                },
+            },
+        ],
+    )
+    .unwrap();
+    // The other participant retains a usable WAL writer after completion.
+    other.ingest(purge_documents(&[92], 1)).unwrap();
+    drop(store);
+    drop(other);
+    assert_public_purge_complete(&path, node);
+}
+
+#[test]
+fn a_failed_graph_checkpoint_during_purge_leaves_the_store_openable_and_the_purge_retryable() {
+    for (point, live_retry) in [
+        (FaultPoint::ManifestSync, true),
+        (FaultPoint::ManifestSync, false),
+        (FaultPoint::SelectorSync, false),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let node = public_purge_fixture(directory.path());
+        let vfs = Arc::new(RecordingVfs::default());
+        let store = Store::open_with_test_dependencies(
+            directory.path(),
+            native_options(),
+            crate::lifecycle::StoreTestDependencies::new(
+                vfs.clone(),
+                Arc::new(crate::lifecycle::SystemMonotonicClock),
+            ),
+        )
+        .unwrap();
+        let token = store.purge(&[crate::ingest::DocId::new(91)]).unwrap();
+        vfs.arm_fault(point);
+        let error = store.await_physical_purge(token.clone()).unwrap_err();
+        vfs.assert_fired_once();
+        assert!(error.to_string().contains("scheduled"), "{error}");
+        assert!(
+            directory
+                .path()
+                .join(crate::ingest::PURGE_INTENT_FILE)
+                .exists()
+        );
+        if live_retry {
+            store.await_physical_purge(token).unwrap();
+        } else if point == FaultPoint::SelectorSync {
+            // A failure after rename fences the live writer.
+            assert!(store.await_physical_purge(token).is_err());
+        }
+        drop(store);
+        // Writable open retries the checkpoint and pending purge automatically.
+        let store = Store::open(directory.path(), native_options()).unwrap();
+        drop(store);
+        assert_public_purge_complete(directory.path(), node);
+    }
+}
+
 #[test]
 fn a_purge_with_an_unabsorbed_graph_write_reopens() {
     use crate::ingest::DocId;
@@ -142,22 +311,7 @@ fn a_purge_with_an_unabsorbed_graph_write_reopens() {
     store.enable_graph().unwrap();
     store.ingest(purge_documents(&[91, 92, 93], 1)).unwrap();
     let node = commit_tail_test_node(&store, "unabsorbed");
-    let generation = store.snapshot().unwrap().generation();
     let token = store.purge(&[DocId::new(91)]).unwrap();
-    let before = file_snapshot(directory.path());
-    let error = store.await_physical_purge(token.clone()).unwrap_err();
-    assert!(
-        matches!(error, crate::ingest::PurgeError::GraphCheckpointRequired { seq } if seq == crate::wal::LogSeq::new(4)),
-        "{error}"
-    );
-    assert_eq!(file_snapshot(directory.path()), before);
-    assert_eq!(store.snapshot().unwrap().generation(), generation);
-    drop(store);
-    assert_purge_reopens(directory.path(), generation, &[91, 92, 93], &[], &[node]);
-    let store = Store::open(directory.path(), native_options()).unwrap();
-    store
-        .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
-        .unwrap();
     let generation = store.await_physical_purge(token).unwrap().generation();
     drop(store);
     assert_purge_reopens(directory.path(), generation, &[92, 93], &[91], &[node]);

@@ -382,7 +382,7 @@ pub(super) fn run() {
                 let active = model.documents.difference(&sealed).next().is_some();
                 // Seal still requires a graph fold. Purge orders include both
                 // unabsorbed graph tails and checkpoints with active documents.
-                // Only the typed checkpoint wait is retried; other errors fail.
+                // Physical purge folds any graph tail before rewriting.
                 let eligible: Vec<_> = OPERATIONS
                     .iter()
                     .copied()
@@ -473,19 +473,7 @@ pub(super) fn run() {
                             .nth(rng.random_range(0..model.documents.len()))
                             .unwrap();
                         let token = s.purge(&[DocId::new(id)]).unwrap();
-                        let generation = match s.await_physical_purge(token.clone()) {
-                            Ok(report) => report.generation(),
-                            Err(crate::ingest::PurgeError::GraphCheckpointRequired { .. }) => {
-                                assert_eq!(s.snapshot().unwrap().generation(), model.generation());
-                                assert!(same_visibility(&visible(s, &all_documents), &model));
-                                s.checkpoint_native_graph(
-                                    &QueryControl::Cancel(CancelToken::new()),
-                                )
-                                .unwrap();
-                                s.await_physical_purge(token).unwrap().generation()
-                            }
-                            Err(error) => panic!("purge rejected: {error}"),
-                        };
+                        let generation = s.await_physical_purge(token).unwrap().generation();
                         graph_unfolded = false;
                         model.documents.remove(&id);
                         sealed.remove(&id);

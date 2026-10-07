@@ -374,13 +374,6 @@ pub enum PurgeError {
     IntentDecode(String),
     /// Re-encoding the surviving active state violated the WAL payload contract.
     WalPayload(wal_payload::PayloadError),
-    /// Physical purge is waiting for an explicit graph checkpoint. The intent
-    /// remains pending and the store may reopen; checkpoint then retry the token.
-    #[cfg(feature = "graph-cypher")]
-    GraphCheckpointRequired {
-        /// First graph commit not yet covered by the graph watermark.
-        seq: LogSeq,
-    },
     /// Rewriting the WAL would discard an acknowledged, unabsorbed mutation.
     WalRewriteWouldDropAcked {
         /// First retained sequence not covered by the surviving active state.
@@ -407,12 +400,6 @@ impl std::fmt::Display for PurgeError {
             Self::IntentFormat(error) => write!(formatter, "purge intent: {error}"),
             Self::IntentDecode(detail) => write!(formatter, "purge intent decode failed: {detail}"),
             Self::WalPayload(error) => write!(formatter, "purge WAL payload: {error}"),
-            #[cfg(feature = "graph-cypher")]
-            Self::GraphCheckpointRequired { seq } => write!(
-                formatter,
-                "physical purge requires a graph checkpoint through WAL sequence {}; checkpoint and retry the pending token",
-                seq.get()
-            ),
             Self::WalRewriteWouldDropAcked { seq } => write!(
                 formatter,
                 "purge WAL rewrite would drop acknowledged WAL sequence {}",
@@ -428,8 +415,6 @@ impl std::error::Error for PurgeError {
             Self::Store(error) => Some(error),
             Self::IntentFormat(error) => Some(error),
             Self::WalPayload(error) => Some(error),
-            #[cfg(feature = "graph-cypher")]
-            Self::GraphCheckpointRequired { .. } => None,
             Self::InsufficientTempSpace { .. }
             | Self::PurgeInProgress
             | Self::UnknownToken { .. }
@@ -1026,7 +1011,7 @@ impl Store {
     }
 
     #[cfg(feature = "graph-cypher")]
-    fn require_purge_graph_checkpoint(&self, vfs: &dyn Vfs) -> Result<(), PurgeError> {
+    fn purge_graph_checkpoint_through(&self, vfs: &dyn Vfs) -> Result<Option<u64>, PurgeError> {
         let snapshot = self
             .snapshot
             .read()
@@ -1035,7 +1020,7 @@ impl Store {
             })?;
         let snapshot = snapshot.as_ref().ok_or(StoreError::Closed)?;
         if !snapshot.graph_enabled {
-            return Ok(());
+            return Ok(None);
         }
         let reader = crate::wal::WalReader::open(vfs, &self.directory.join("wal.ze"))
             .map_err(StoreError::Wal)?;
@@ -1050,6 +1035,7 @@ impl Store {
             watermark,
             self.private_preparation.as_ref(),
         )?;
+        let mut through = None;
         for (seq, _, mutation) in super::atomic_batch::committed_mutations_with_decisions(
             clean.records(),
             watermark,
@@ -1058,10 +1044,10 @@ impl Store {
             if seq.get() > snapshot.graph_absorbed_through
                 && matches!(mutation, wal_payload::MutationPayload::GraphCommit(_))
             {
-                return Err(PurgeError::GraphCheckpointRequired { seq });
+                through = Some(seq.get());
             }
         }
-        Ok(())
+        Ok(through)
     }
 
     /// Resolves only after rewritten artifacts are committed and old paths are unlinked.
@@ -1150,7 +1136,7 @@ impl Store {
             return Err(PurgeError::UnknownToken { token_id: token.id });
         }
         #[cfg(feature = "graph-cypher")]
-        self.require_purge_graph_checkpoint(vfs)?;
+        let graph_checkpoint = self.purge_graph_checkpoint_through(vfs)?;
         let mut active = self
             .active
             .lock()
@@ -1158,6 +1144,13 @@ impl Store {
                 component: "active segment",
             })?;
         let active_state = active.as_mut().ok_or(StoreError::Closed)?;
+        #[cfg(feature = "graph-cypher")]
+        if let Some(through) = graph_checkpoint {
+            self.checkpoint_native_graph_for_purge_locked(writer, active_state, through, vfs)
+                .map_err(|error| StoreError::PurgeRecovery {
+                    detail: format!("purge graph checkpoint: {error}"),
+                })?;
+        }
         let manifest_path = self.directory.join(MANIFEST_FILE);
         let mut manifest = match vfs.open(&manifest_path) {
             Ok(_) => load_manifest(vfs, &manifest_path, writer.durable_end())
@@ -1283,14 +1276,6 @@ impl Store {
         match self.vfs.open(&path) {
             Ok(_) => {
                 let intent = read_intent(self.vfs.as_ref(), &self.directory)?;
-                #[cfg(feature = "graph-cypher")]
-                match self.require_purge_graph_checkpoint(self.vfs.as_ref()) {
-                    // This is a durable waiting obligation, not failed recovery.
-                    // Admit either access mode so a writable caller can checkpoint
-                    // and retry; no purge mutation has started in this state.
-                    Err(PurgeError::GraphCheckpointRequired { .. }) => return Ok(()),
-                    result => result?,
-                }
                 // Accepted namespace deletes already have a committed logical
                 // state. Ordinary purge intents still require writable recovery.
                 if self
@@ -2071,6 +2056,10 @@ fn ensure_wal_rewrite_covers_retained(
             .entry(*id)
             .or_insert((version, !alive.is_alive(row_u32)));
     }
+    #[cfg(feature = "graph-cypher")]
+    let graph_enabled = manifest.graph.is_some();
+    #[cfg(not(feature = "graph-cypher"))]
+    let graph_enabled = false;
     let wal_path = directory.join("wal.ze");
     let reader = crate::wal::WalReader::open(vfs, &wal_path).map_err(StoreError::Wal)?;
     let clean = reader.into_clean().map_err(StoreError::WalRecovery)?;
@@ -2115,7 +2104,7 @@ fn ensure_wal_rewrite_covers_retained(
                         && !delete_is_covered_by_manifest(
                             sealed,
                             id,
-                            !active_versions.contains_key(&id),
+                            graph_enabled && !active_versions.contains_key(&id),
                         )?
                     {
                         covered = false;
@@ -2136,8 +2125,9 @@ fn ensure_wal_rewrite_covers_retained(
 }
 
 // The manifest-selected segments and replacement active image jointly cover
-// a delete: no sealed live copy, and either a persisted tombstone or no active
-// copy. Retention may have removed the segment that held the tombstone. Every
+// a delete: no sealed live copy, and either a persisted tombstone or, on graph
+// stores only, no active copy. Graph-free stores require main's stored tombstone.
+// Retention may have removed the segment that held the tombstone. Every
 // retained upsert must still independently be covered by the rewrite check.
 fn delete_is_covered_by_manifest(
     sealed: &[SegmentReader],
@@ -2272,6 +2262,78 @@ mod tests {
     use crate::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
     use crate::vfs::StdVfs;
     use crate::wal::LogSeq;
+
+    #[test]
+    fn a_graph_free_purge_after_retention_matches_main() {
+        use crate::ingest::{DeleteBatch, DocumentVersion, IngestBatch, IngestDocument, Revision};
+        use crate::lifecycle::{OpenOptions, Store};
+        let directory = tempfile::tempdir().expect("directory");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+        store
+            .ingest(IngestBatch::new(vec![
+                IngestDocument::new(
+                    DocumentVersion::new(DocId::new(91), Revision::new(1)),
+                    vec![1.0],
+                )
+                .with_timestamp(91),
+            ]))
+            .expect("A");
+        store.seal().expect("seal A");
+        store
+            .ingest(IngestBatch::new(
+                vec![92, 93]
+                    .into_iter()
+                    .map(|id| {
+                        IngestDocument::new(
+                            DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                            vec![1.0],
+                        )
+                    })
+                    .collect(),
+            ))
+            .expect("B C");
+        store
+            .delete(DeleteBatch::new(vec![DocId::new(91)]))
+            .expect("delete A");
+        store.drop_partition(91..92).expect("drop A");
+        let token = store.purge(&[DocId::new(92)]).expect("purge B");
+        let before = std::fs::read(directory.path().join("wal.ze")).expect("WAL before");
+        let result = store.await_physical_purge(token);
+        assert!(
+            matches!(result, Err(PurgeError::WalRewriteWouldDropAcked { seq }) if seq == LogSeq::new(4)),
+            "{result:?}"
+        );
+        assert_eq!(
+            std::fs::read(directory.path().join("wal.ze")).expect("WAL after"),
+            before
+        );
+        // Measured on main 9d217196 in /private/tmp/w346-p1p2-main, a separate
+        // temporary worktree: same test, graph-cypher, rejection at sequence 4.
+        // Pin every durable byte, including the pending intent and unchanged WAL.
+        let main = [
+            (".ze-readers.lock", ""),
+            ("manifest.ze", "5a4550454d4245440a000200000000002000000000000000700000000000000038000000000000000600000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000f6dd00afe67b79862c016c188e60eca8"),
+            ("purge.ze", "5a4550454d4245440f00010000000000200000000000000058000000000000002000000000000000bf09f9ca40c7b1e501000000000000005c0000000000000000000000000000004c66d4b4b29ca4158fc5f105cfc7c200"),
+            ("wal.ze", "5a4550454d4245440b000100000000002800000000000000000000000000000002000000000000002c000000020000000000000008000000000002000000010000005c0000000000000000000000000000000100000000000000010000000000803f14975d8581be8d602c000000030000000000000008000100000002000000010000005d0000000000000000000000000000000100000000000000010000000000803f6c6214603baa8205180000000400000000000000020001000000010000005b000000000000000000000000000000c95f15ae22a86feb"),
+            ("writer.lock", ""),
+        ].into_iter().map(|(name, hex)| {
+            let bytes = hex.as_bytes().chunks_exact(2).map(|pair|
+                u8::from_str_radix(std::str::from_utf8(pair).expect("hex pair"), 16).expect("hex byte")
+            ).collect::<Vec<_>>();
+            (name.to_owned(), bytes)
+        }).collect::<std::collections::BTreeMap<_, _>>();
+        let files = std::fs::read_dir(directory.path())
+            .expect("files")
+            .map(|entry| {
+                let entry = entry.expect("entry");
+                (
+                    entry.file_name().to_string_lossy().into_owned(),
+                    std::fs::read(entry.path()).expect("bytes"),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(files, main);
+    }
 
     #[test]
     fn a_graph_free_tombstone_repair_matches_main_bytes() {
