@@ -652,6 +652,8 @@ struct PublicationState {
     admission_hook: Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>,
     #[cfg(any(test, feature = "test-seams"))]
     maintenance_writer_hook: Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>,
+    #[cfg(test)]
+    checkpoint_inventory_hook: Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>,
     #[cfg(any(test, feature = "test-seams"))]
     close_owner_hook: Option<(u64, Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>,
 }
@@ -734,6 +736,8 @@ impl NativeGraphPublication {
                 admission_hook: None,
                 #[cfg(any(test, feature = "test-seams"))]
                 maintenance_writer_hook: None,
+                #[cfg(test)]
+                checkpoint_inventory_hook: None,
                 #[cfg(any(test, feature = "test-seams"))]
                 close_owner_hook: None,
             }),

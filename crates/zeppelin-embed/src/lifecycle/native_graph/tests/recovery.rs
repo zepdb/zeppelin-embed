@@ -4664,3 +4664,216 @@ fn a_cutoff_inside_a_committed_batch_is_refused() {
         assert_eq!(file_snapshot(directory.path()), before);
     }
 }
+
+#[test]
+fn a_purge_checkpoint_does_not_absorb_an_unrepaired_sealed_delete() {
+    use crate::ingest::DocId;
+    use crate::ingest::wal_payload::{
+        DELETE_V1, GRAPH_COMMIT_V1, MIXED_BATCH_MEMBER_V1, encode_delete, encode_mixed_batch_member,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    store.ingest(purge_documents(&[91, 92], 1)).unwrap();
+    store.seal().unwrap();
+    store.enable_graph().unwrap();
+    store.purge(&[DocId::new(92)]).unwrap();
+    let node = commit_tail_test_node(&store, "mixed-delete-purge");
+    drop(store);
+    let wal_path = directory.path().join("wal.ze");
+    let clean = crate::wal::WalReader::open(&StdVfs, &wal_path)
+        .unwrap()
+        .into_clean()
+        .unwrap();
+    let graph = clean
+        .records()
+        .iter()
+        .find(|record| record.op == GRAPH_COMMIT_V1)
+        .unwrap();
+    let delete = encode_delete(&[DocId::new(91)]).unwrap();
+    let members = [
+        encode_mixed_batch_member(0, 2, DELETE_V1, &delete).unwrap(),
+        encode_mixed_batch_member(1, 2, GRAPH_COMMIT_V1, graph.payload().unwrap()).unwrap(),
+    ];
+    std::fs::remove_file(&wal_path).unwrap();
+    let writer = crate::wal::WalWriter::create(
+        &StdVfs,
+        &wal_path,
+        crate::wal::LogSeq::new(3),
+        crate::lifecycle::durability::DurabilityPolicy::new(
+            DurabilityMode::Durable,
+            CommitTier::Durable,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    writer
+        .commit_many(
+            &members
+                .iter()
+                .map(|payload| (MIXED_BATCH_MEMBER_V1, payload.as_slice()))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+    drop(writer); // Cut 1: complete mixed batch synced, no document publication.
+
+    let vfs = Arc::new(RecordingVfs::default());
+    let manifest_path = directory.path().join("manifest.ze");
+    let reached = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed = Arc::clone(&reached);
+    vfs.after_selector_sync(move || {
+        let manifest = crate::manifest::io::load_manifest(&StdVfs, &manifest_path, 4).unwrap();
+        if manifest.graph.as_ref().unwrap().graph_absorbed_through == 4 {
+            observed.store(true, Ordering::Release);
+            // Cut 2: checkpoint selector is durable, purge has not continued.
+            return Err(std::io::Error::other("durable purge checkpoint cut"));
+        }
+        Ok(())
+    });
+    let error = Store::open_with_test_dependencies(
+        directory.path(),
+        native_options(),
+        crate::lifecycle::StoreTestDependencies::new(
+            vfs,
+            Arc::new(crate::lifecycle::SystemMonotonicClock),
+        ),
+    )
+    .err()
+    .expect("stop at the durable purge checkpoint");
+    assert!(
+        error.to_string().contains("durable purge checkpoint cut"),
+        "{error}"
+    );
+    assert!(reached.load(Ordering::Acquire));
+    for reopen in 1..=2 {
+        let recovered = Store::open(directory.path(), native_options())
+            .unwrap_or_else(|error| panic!("reopen {reopen}: {error}"));
+        assert_eq!(
+            recovered.count_documents(None, None).unwrap().count,
+            0,
+            "DELETE A must survive the purge checkpoint (reopen {reopen})"
+        );
+        assert!(
+            observe_node(&recovered, node).is_some(),
+            "N must survive with DELETE A"
+        );
+        drop(recovered);
+    }
+}
+
+#[test]
+fn a_checkpoint_that_loses_a_race_with_purge_retries_without_fencing() {
+    use crate::ingest::DocId;
+    use std::sync::Barrier;
+    for caller in ["write", "explicit", "close", "maintenance"] {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(directory.path(), native_options()).unwrap());
+        store.ingest(purge_documents(&[91], 1)).unwrap();
+        store.enable_graph().unwrap();
+        disable_generation_fixture_maintenance(&store);
+        let mut nodes = Vec::new();
+        for index in 0..64 {
+            nodes.push(commit_tail_test_node(&store, &format!("race-{index}")));
+        }
+        let token = store.purge(&[DocId::new(91)]).unwrap();
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        store
+            .native_graph
+            .state
+            .lock()
+            .unwrap()
+            .checkpoint_inventory_hook = Some((Arc::clone(&entered), Arc::clone(&release)));
+        let racing = Arc::clone(&store);
+        let worker = std::thread::spawn(move || {
+            let control = QueryControl::Cancel(CancelToken::new());
+            match caller {
+                "write" => {
+                    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+                    racing
+                        .apply_native_graph(
+                            &[StructuredWrite {
+                                key: ApplicationKey::new(EntityKind::Node, "tail", "racing-write")
+                                    .unwrap(),
+                                revision: GraphRevision::new(1).unwrap(),
+                                operation: StructuredOperation::Create,
+                                image: Some(WriteImage::Node(&image)),
+                            }],
+                            &control,
+                        )
+                        .map(|_| ())
+                }
+                "explicit" => racing.checkpoint_native_graph(&control),
+                "close" => racing.checkpoint_native_graph_for_close(),
+                "maintenance" => racing.maintain_native_graph_step(&control).map(|_| ()),
+                _ => unreachable!(),
+            }
+        });
+        entered.wait(); // Inventory is captured; WAL lock is not yet held.
+        let purge = store.await_physical_purge(token);
+        release.wait(); // Release even if purge failed, so no blocked worker remains.
+        purge.unwrap();
+        let result = worker.join().unwrap();
+        assert!(
+            result.is_ok(),
+            "{caller} checkpoint must retry without fencing: {result:?}"
+        );
+        {
+            let writer = store.native_graph.writer.lock().unwrap();
+            assert!(!writer.as_ref().unwrap().checkpoint_failed);
+        }
+        nodes.push(commit_tail_test_node(&store, "after-checkpoint-race"));
+        let generation = store.snapshot().unwrap().generation();
+        drop(store);
+        assert_purge_reopens(directory.path(), generation, &[], &[91], &nodes);
+    }
+}
+
+#[test]
+fn repeated_active_purges_keep_the_generation_history_bounded() {
+    use crate::ingest::DocId;
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    store.enable_graph().unwrap();
+    disable_generation_fixture_maintenance(&store);
+    let node = commit_tail_test_node(&store, "before-repeated-active-purges");
+    store
+        .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+        .unwrap();
+    assert_eq!(store.snapshot().unwrap().generation(), 3);
+    let mut maximum_rows = 0;
+    for cycle in 0..200 {
+        let id = 1000 + cycle;
+        store.ingest(purge_documents(&[id], 1)).unwrap();
+        let token = store.purge(&[DocId::new(id)]).unwrap();
+        let report = store.await_physical_purge(token).unwrap();
+        assert_eq!(report.generation(), 3 + 2 * (cycle as u64 + 1));
+        let clean = crate::wal::WalReader::open(&StdVfs, &directory.path().join("wal.ze"))
+            .unwrap()
+            .into_clean()
+            .unwrap();
+        assert!(
+            clean.records().is_empty(),
+            "each purge retires the entire WAL"
+        );
+        let manifest = crate::manifest::io::load_manifest(
+            &StdVfs,
+            &directory.path().join("manifest.ze"),
+            clean.retained_first_seq() - 1,
+        )
+        .unwrap();
+        maximum_rows = maximum_rows.max(manifest.graph.as_ref().unwrap().generation_bumps.len());
+    }
+    // One row suffices: no retained record needs chronology before the retired boundary.
+    assert!(
+        maximum_rows <= 1,
+        "retired generation history grew to {maximum_rows} rows"
+    );
+    drop(store);
+    assert_purge_reopens(directory.path(), 403, &[], &[1199], &[node]);
+    let recovered = Store::open(directory.path(), native_options()).unwrap();
+    disable_generation_fixture_maintenance(&recovered);
+    let next = commit_tail_test_node(&recovered, "after-repeated-active-purges");
+    assert_eq!(recovered.snapshot().unwrap().generation(), 404);
+    drop(recovered);
+    assert_purge_reopens(directory.path(), 404, &[], &[1199], &[node, next]);
+}

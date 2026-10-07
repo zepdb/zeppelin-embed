@@ -79,6 +79,8 @@ struct FaultSchedule {
     fires: u64,
 }
 
+type ManifestSyncHook = Box<dyn FnMut() -> std::io::Result<()> + Send>;
+
 type SyncGate = Arc<Mutex<Option<(Arc<Barrier>, Arc<Barrier>)>>>;
 
 #[derive(Default)]
@@ -88,6 +90,7 @@ pub(crate) struct RecordingVfs {
     faults: Arc<Mutex<FaultSchedule>>,
     after_create: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     after_manifest_version: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    after_selector_sync: Mutex<Option<ManifestSyncHook>>,
     list_calls: AtomicU64,
     child_calls: AtomicU64,
 }
@@ -101,6 +104,13 @@ struct RecordingFile {
 }
 
 impl RecordingVfs {
+    pub(super) fn after_selector_sync(
+        &self,
+        action: impl FnMut() -> std::io::Result<()> + Send + 'static,
+    ) {
+        *self.after_selector_sync.lock().unwrap() = Some(Box::new(action));
+    }
+
     pub(super) fn after_manifest_version(&self, action: impl FnOnce() + Send + 'static) {
         *self.after_manifest_version.lock().unwrap() = Some(Box::new(action));
     }
@@ -403,6 +413,13 @@ impl Vfs for RecordingVfs {
             }
         }
         StdVfs.sync(path, kind)?;
+        if kind == SyncKind::Full && path.is_dir() {
+            let selected = self.events.lock().unwrap().last().is_some_and(|event|
+                matches!(event, DurabilityEvent::Rename(_, to) if to.file_name().is_some_and(|name| name == "manifest.ze")));
+            if selected && let Some(action) = self.after_selector_sync.lock().unwrap().as_mut() {
+                action()?;
+            }
+        }
         self.record(DurabilityEvent::Sync(path.to_path_buf(), kind));
         Ok(())
     }

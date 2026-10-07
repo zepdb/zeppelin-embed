@@ -3437,6 +3437,9 @@ impl Store {
             }
         }
         store.publish_snapshot(snapshot)?;
+        // Replayed sealed deletes must be durable before any recovery fold
+        // can absorb their WAL records, even when the active segment is empty.
+        store.recover_sealed_tombstones(&sealed_tombstones)?;
         #[cfg(feature = "graph-cypher")]
         if options.access_mode == AccessMode::ReadWrite
             && store.native_graph.has_pending_reclaim()?
@@ -3472,7 +3475,6 @@ impl Store {
             .map_err(|error| StoreError::PurgeRecovery {
                 detail: error.to_string(),
             })?;
-        store.recover_sealed_tombstones(&sealed_tombstones)?;
         if options.access_mode == AccessMode::ReadWrite {
             let cleanup_report = cleanup_open_orphans(&store)?;
             #[cfg(any(test, feature = "test-seams"))]

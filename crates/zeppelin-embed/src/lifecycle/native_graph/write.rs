@@ -750,7 +750,7 @@ pub(super) fn checkpoint_current(
     control: &crate::lifecycle::QueryControl,
 ) -> Result<(), NativeGraphError> {
     let result = checkpoint_current_inner(store, writer, admitted, resources, control);
-    if result.is_err() {
+    if result.is_err() && !matches!(result, Err(NativeGraphError::StalePreparation)) {
         writer.checkpoint_failed = true;
     }
     result
@@ -769,6 +769,24 @@ fn checkpoint_current_inner(
     let checkpoint_memory = WriteMemory::new(resources, WriteLimits::default())?;
     let storage = StorageMemory::new(&checkpoint_memory, control, 32 * 1024 * 1024)?;
     let objects = super::recovery::manifest_inventory(store, admitted, &storage)?;
+    #[cfg(test)]
+    {
+        let gate = store
+            .native_graph
+            .state
+            .lock()
+            .map_err(|_| {
+                NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
+                    component: "native graph publication",
+                })
+            })?
+            .checkpoint_inventory_hook
+            .take();
+        if let Some((entered, release)) = gate {
+            entered.wait();
+            release.wait();
+        }
+    }
     let mut wal_slot = store.wal_writer.lock().map_err(|_| {
         NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
             component: "WAL writer",
@@ -832,6 +850,12 @@ fn checkpoint_manifest_locked(
     resources: &GraphResources,
     vfs: &dyn crate::vfs::Vfs,
 ) -> Result<(u64, u64), NativeGraphError> {
+    // Purge can fold and replace the bundle without the native writer lock.
+    // WAL and active now exclude every publisher; refuse stale inventory before
+    // any durable mutation, so the caller can admit the replacement and retry.
+    if !store.native_graph.is_current_bundle(admitted)? {
+        return Err(NativeGraphError::StalePreparation);
+    }
     let mut manifest = crate::ingest::load_current_manifest(
         vfs,
         &store.directory,
@@ -2302,8 +2326,10 @@ pub(super) fn commit_staged_batch<'m>(
     }
     let committed_tail = writer.envelope_bytes;
     if writer.complete_envelopes >= 64 || committed_tail >= MAX_ENVELOPE_BYTES {
-        checkpoint_current(store, writer, admitted, shared, control)?;
-        return Ok(CommitStep::Checkpointed);
+        return match checkpoint_current(store, writer, admitted, shared, control) {
+            Ok(()) | Err(NativeGraphError::StalePreparation) => Ok(CommitStep::Checkpointed),
+            Err(error) => Err(error),
+        };
     }
 
     let target_generation = staged_batch.target_generation();
@@ -2554,7 +2580,11 @@ pub(super) fn commit_staged_batch<'m>(
         if !*allow_pending_checkpoint {
             return Err(NativeGraphError::WalTailBoundExceeded);
         }
-        checkpoint_current(store, writer, admitted, shared, control)?;
+        match checkpoint_current(store, writer, admitted, shared, control) {
+            Ok(()) => {}
+            Err(NativeGraphError::StalePreparation) => return Ok(CommitStep::Checkpointed),
+            Err(error) => return Err(error),
+        }
         *allow_pending_checkpoint = false;
         return Ok(CommitStep::Checkpointed);
     }
@@ -2849,23 +2879,29 @@ impl crate::lifecycle::Store {
         if writer.stopped || writer.complete_envelopes == 0 {
             return Ok(());
         }
-        let admitted = self
-            .native_graph
-            .state
-            .lock()
-            .map_err(|_| {
-                NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
-                    component: "native graph publication",
-                })
-            })?
-            .current
-            .clone()
-            .ok_or(NativeGraphError::Invalid(
-                "native graph close has no current roots",
-            ))?;
-        let resources = GraphResources::from_store(self)?;
-        let control = crate::lifecycle::QueryControl::Cancel(crate::lifecycle::CancelToken::new());
-        checkpoint_current(self, writer, &admitted, &resources, &control)
+        loop {
+            let admitted = self
+                .native_graph
+                .state
+                .lock()
+                .map_err(|_| {
+                    NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
+                        component: "native graph publication",
+                    })
+                })?
+                .current
+                .clone()
+                .ok_or(NativeGraphError::Invalid(
+                    "native graph close has no current roots",
+                ))?;
+            let resources = GraphResources::from_store(self)?;
+            let control =
+                crate::lifecycle::QueryControl::Cancel(crate::lifecycle::CancelToken::new());
+            match checkpoint_current(self, writer, &admitted, &resources, &control) {
+                Err(NativeGraphError::StalePreparation) => continue,
+                result => return result,
+            }
+        }
     }
 
     /// Purge already owns state, WAL and active. Taking the native writer here
@@ -2919,10 +2955,15 @@ impl crate::lifecycle::Store {
         if writer.stopped {
             return Err(NativeGraphError::WritesStopped);
         }
-        let lease = self.admit_native_read()?;
-        let admitted = Arc::clone(lease.bundle());
-        let resources = GraphResources::from_store(self)?;
-        checkpoint_current(self, writer, &admitted, &resources, control)
+        loop {
+            let lease = self.admit_native_read()?;
+            let admitted = Arc::clone(lease.bundle());
+            let resources = GraphResources::from_store(self)?;
+            match checkpoint_current(self, writer, &admitted, &resources, control) {
+                Err(NativeGraphError::StalePreparation) => continue,
+                result => return result,
+            }
+        }
     }
 
     pub(crate) fn admit_native_graph_maintenance(

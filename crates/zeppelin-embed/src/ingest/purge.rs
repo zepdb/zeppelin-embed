@@ -1231,6 +1231,8 @@ impl Store {
                 policy,
             )?;
         }
+        #[cfg(feature = "graph-cypher")]
+        let retired_through = writer.durable_end();
         self.rewrite_wal_for_purge(
             vfs,
             writer,
@@ -1242,10 +1244,34 @@ impl Store {
             policy,
         )?;
         #[cfg(feature = "graph-cypher")]
-        if manifest
-            .graph
-            .as_ref()
-            .is_some_and(|graph| graph.generation_absorbed_through != Some(writer.durable_end()))
+        let history_folded = if let Some(graph) = &mut manifest.graph
+            && !graph.generation_bumps.is_empty()
+        {
+            // The replacement WAL retires every old record. No retained graph
+            // envelope needs the old ordering; restore these increments once,
+            // before the replacement image. Keep the v2 boundary row that
+            // proves a cutoff immediately before the new WAL header.
+            let count = graph
+                .generation_bumps
+                .iter()
+                .try_fold(0_u64, |total, (_, count)| {
+                    total
+                        .checked_add(*count)
+                        .ok_or(StoreError::GenerationOverflow)
+                })?;
+            let folded = (retired_through, count);
+            let changed = graph.generation_bumps.as_slice() != [folded];
+            graph.generation_bumps.clear();
+            graph.generation_bumps.push(folded);
+            changed
+        } else {
+            false
+        };
+        #[cfg(feature = "graph-cypher")]
+        if history_folded
+            || manifest.graph.as_ref().is_some_and(|graph| {
+                graph.generation_absorbed_through != Some(writer.durable_end())
+            })
         {
             // Rewritten document batches were already counted in this
             // generation. Publish their new cutoff before purge returns or
