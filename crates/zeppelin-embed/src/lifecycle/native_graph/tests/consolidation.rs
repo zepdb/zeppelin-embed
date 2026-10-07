@@ -3850,6 +3850,19 @@ fn run_reclaim_crash_cell_observed(
     cell: CrashCell,
     retain: bool,
 ) -> crate::graph_commit_recovery_test_support::ReclaimEvidence {
+    run_reclaim_crash_cell_fenced(cell, retain, false)
+}
+
+#[test]
+fn a_reclaim_unlink_error_fences_the_shared_writers_until_reopen() {
+    let _ = run_reclaim_crash_cell_fenced(CrashCell::AfterOneUnlink, false, true);
+}
+
+fn run_reclaim_crash_cell_fenced(
+    cell: CrashCell,
+    retain: bool,
+    check_fence: bool,
+) -> crate::graph_commit_recovery_test_support::ReclaimEvidence {
     use super::publication::FaultPoint;
     let (history, mut store) = seed_crash_history();
     let vfs = Arc::clone(&history.vfs);
@@ -3973,6 +3986,10 @@ fn run_reclaim_crash_cell_observed(
         assert_eq!(first_deletes.len(), targets.len());
     }
     assert_unlink_order(&first_events, cell);
+    if check_fence {
+        super::recovery::assert_shared_writer_stopped(&store);
+        vfs.take(); // Discard the refused writers' private preparation events.
+    }
     store.close().expect("close crashed reclaim store");
 
     // Read-only recovery adopts whatever partition the crash left and

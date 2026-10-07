@@ -1368,7 +1368,7 @@ fn run_reclaim_cell(
     let path = parent.path().join("native");
     let vfs = Arc::new(MisdirectVfs::new());
     let infrastructure: Arc<dyn Vfs> = vfs.clone();
-    let store = create_store(&path, &infrastructure);
+    let mut store = create_store(&path, &infrastructure);
     let mut cell = QualificationCell {
         name: name.into(),
         intent_preserved: true,
@@ -1680,7 +1680,33 @@ fn run_reclaim_cell(
             .bundle()
             .reclaim()
             == pending_root;
-        let report = commit_maintenance(&store).expect("resume remaining targets");
+        let report = if name == "delete" || count_triggered {
+            assert!(matches!(
+                commit_maintenance(&store),
+                Err(super::super::NativeGraphError::Store(
+                    crate::lifecycle::StoreError::WalWrite(
+                        crate::wal::WalWriteError::Failed { .. }
+                    )
+                ))
+            ));
+            assert!(deletes(&vfs).is_empty(), "fenced retry must not unlink");
+            super::super::maintenance::QUALIFICATION_RESUME_REPORT
+                .with(|receipt| receipt.set(None));
+            drop(store);
+            store = reopen_store(&path, &infrastructure);
+            assert!(
+                !store
+                    .native_graph
+                    .has_pending_reclaim()
+                    .expect("recovered reclaim phase"),
+                "writable reopen must finish the pending intent"
+            );
+            super::super::maintenance::QUALIFICATION_RESUME_REPORT
+                .with(std::cell::Cell::take)
+                .expect("actual open-time resumption receipt")
+        } else {
+            commit_maintenance(&store).expect("resume remaining targets")
+        };
         let remaining = deletes(&vfs);
         cell.removed_bytes = report.removed_bytes;
         cell.unlinked_bytes = remaining

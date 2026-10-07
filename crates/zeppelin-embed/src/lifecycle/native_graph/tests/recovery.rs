@@ -289,10 +289,10 @@ fn a_failed_graph_checkpoint_during_purge_leaves_the_store_openable_and_the_purg
                 .join(crate::ingest::PURGE_INTENT_FILE)
                 .exists()
         );
-        if live_retry {
-            store.await_physical_purge(token).unwrap();
-        } else if point == FaultPoint::SelectorSync {
-            // A failure after rename fences the live writer.
+        assert_shared_writer_stopped(&store);
+        if live_retry || point == FaultPoint::SelectorSync {
+            // Retrying the failed publication on this handle must refuse.
+            // Writable reopen below still completes the pending purge.
             assert!(store.await_physical_purge(token).is_err());
         }
         drop(store);
@@ -2503,6 +2503,10 @@ fn run_ze40_checkpoint_cutoff_reopens_exactly_and_retains_required_inventories()
         manifest_before
     );
     assert_eq!(observe_node(&historical, node), Some((2, 1, 1)));
+    assert_shared_writer_stopped(&historical);
+    drop(historical);
+    let historical = Store::open_native_graph(&historical_path, native_options(), None).unwrap();
+    assert_eq!(observe_node(&historical, node), Some((2, 1, 1)));
     historical
         .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
         .unwrap();
@@ -4059,7 +4063,7 @@ fn a_failed_replacement_publication_poisons_later_graph_writes() {
     failed_document_publication_poisons_writes(true);
 }
 
-fn assert_shared_writer_stopped(store: &Store) {
+pub(super) fn assert_shared_writer_stopped(store: &Store) {
     let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
     assert!(
         store
@@ -5051,4 +5055,543 @@ fn repeated_active_purges_keep_the_generation_history_bounded() {
     assert_eq!(recovered.snapshot().unwrap().generation(), 404);
     drop(recovered);
     assert_purge_reopens(directory.path(), 404, &[], &[1199], &[node, next]);
+}
+
+#[test]
+fn a_manifest_rename_that_reports_failure_after_succeeding_fences_the_writers() {
+    let directory = tempfile::tempdir().unwrap();
+    let vfs = Arc::new(RecordingVfs::default());
+    let store = Store::open_with_test_dependencies(
+        directory.path(),
+        native_options(),
+        crate::lifecycle::StoreTestDependencies::new(
+            vfs.clone(),
+            Arc::new(crate::lifecycle::SystemMonotonicClock),
+        ),
+    )
+    .unwrap();
+    assert_eq!(store.enable_graph().unwrap(), 1);
+    disable_generation_fixture_maintenance(&store);
+    assert_eq!(
+        store
+            .ingest(purge_documents(&[91], 1))
+            .unwrap()
+            .generation(),
+        2
+    );
+    vfs.arm_fault(FaultPoint::PostManifestRename);
+    assert!(store.seal().is_err());
+    vfs.assert_fired_once();
+    assert_eq!(store.snapshot().unwrap().generation(), 2);
+    let manifest =
+        crate::manifest::io::load_manifest(&StdVfs, &directory.path().join("manifest.ze"), 1)
+            .unwrap();
+    assert_eq!(manifest.generation, 3);
+    assert_shared_writer_stopped(&store);
+    drop(store);
+    let recovered = Store::open(directory.path(), native_options()).unwrap();
+    assert_eq!(recovered.snapshot().unwrap().generation(), 3);
+    assert_eq!(recovered.count_documents(None, None).unwrap().count, 1);
+    disable_generation_fixture_maintenance(&recovered);
+    let node = commit_tail_test_node(&recovered, "after-manifest-rename");
+    assert_eq!(observe_node(&recovered, node), Some((4, 1, 1)));
+    drop(recovered);
+    let recovered = Store::open(directory.path(), native_options()).unwrap();
+    assert_eq!(recovered.snapshot().unwrap().generation(), 4);
+    assert_eq!(observe_node(&recovered, node), Some((4, 1, 1)));
+}
+
+#[test]
+fn a_purge_manifest_rename_post_commit_error_fences_the_writers() {
+    manifest_rename_publisher_failure("purge");
+}
+
+#[test]
+fn a_checkpoint_manifest_rename_post_commit_error_fences_the_writers() {
+    manifest_rename_publisher_failure("checkpoint");
+}
+
+#[test]
+fn a_reindex_manifest_rename_post_commit_error_fences_the_writers() {
+    manifest_rename_publisher_failure("reindex");
+}
+
+pub(super) fn manifest_rename_publisher_failure(family: &str) {
+    manifest_publisher_failure(family, FaultPoint::PostManifestRename);
+}
+
+#[test]
+fn a_manifest_temp_sync_error_fences_the_writers() {
+    manifest_publisher_failure("reindex", FaultPoint::ManifestSync);
+}
+
+fn manifest_publisher_failure(family: &str, point: FaultPoint) {
+    let directory = tempfile::tempdir().unwrap();
+    let vfs = Arc::new(RecordingVfs::default());
+    let store = Store::open_with_test_dependencies(
+        directory.path(),
+        native_options(),
+        crate::lifecycle::StoreTestDependencies::new(
+            vfs.clone(),
+            Arc::new(crate::lifecycle::SystemMonotonicClock),
+        ),
+    )
+    .unwrap();
+    generation_fixture(&store, 91);
+    if family == "merge" {
+        generation_fixture(&store, 92);
+    }
+    store.enable_graph().unwrap();
+    disable_generation_fixture_maintenance(&store);
+    if family == "seal" {
+        store.ingest(purge_documents(&[92], 1)).unwrap();
+    }
+    let node = if family == "checkpoint" {
+        Some(commit_tail_test_node(&store, "before-rename-fault"))
+    } else {
+        None
+    };
+    let before = store.snapshot().unwrap().generation();
+    let token = if family == "purge" {
+        Some(store.purge(&[crate::ingest::DocId::new(91)]).unwrap())
+    } else {
+        None
+    };
+    vfs.arm_fault(point);
+    match family {
+        "purge" => assert!(store.await_physical_purge(token.unwrap()).is_err()),
+        "checkpoint" => assert!(
+            store
+                .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+                .is_err()
+        ),
+        "reindex" => assert!(store.reindex_text().is_err()),
+        "seal" => assert!(store.seal().is_err()),
+        "retention" => assert!(store.drop_partition(91..92).is_err()),
+        "merge" => assert!(store.merge_sealed().is_err()),
+        "snapshot" => {
+            use crate::lifecycle::{InMemorySegment, InMemorySegmentFactors};
+            let columns = crate::meta::ColumnStoreBuilder::new(store.schema().clone())
+                .finish()
+                .unwrap();
+            let alive = crate::meta::AliveSet::new(0);
+            let prepared = store
+                .prepare_segment(InMemorySegment {
+                    id: crate::segment::SegmentId::new(6, [6; 10]),
+                    scheme: 4,
+                    dims: 2,
+                    codes: Vec::new(),
+                    factors: InMemorySegmentFactors::Bit4(Vec::new()),
+                    rescore: Vec::new(),
+                    columns: &columns,
+                    alive: &alive,
+                })
+                .unwrap();
+            assert!(store.seal_snapshot(prepared).is_err());
+        }
+        _ => panic!("unknown publisher"),
+    }
+    vfs.assert_fired_once();
+    assert_eq!(store.snapshot().unwrap().generation(), before);
+    let manifest = crate::manifest::io::load_manifest(
+        &StdVfs,
+        &directory.path().join("manifest.ze"),
+        u64::MAX,
+    )
+    .unwrap();
+    let durable_generation = before + u64::from(point == FaultPoint::PostManifestRename);
+    assert_eq!(manifest.generation, durable_generation);
+    assert_shared_writer_stopped(&store);
+    drop(store);
+    let recovered = Store::open(directory.path(), native_options()).unwrap();
+    assert_eq!(
+        recovered.snapshot().unwrap().generation(),
+        durable_generation
+    );
+    assert_eq!(
+        recovered.count_documents(None, None).unwrap().count,
+        match family {
+            "purge" | "retention" | "snapshot" => 0,
+            "seal" | "merge" => 2,
+            _ => 1,
+        }
+    );
+    if let Some(node) = node {
+        assert!(observe_node(&recovered, node).is_some());
+    }
+    disable_generation_fixture_maintenance(&recovered);
+    let next = commit_tail_test_node(&recovered, "after-rename-fault");
+    let observation = observe_node(&recovered, next);
+    drop(recovered);
+    let recovered = Store::open(directory.path(), native_options()).unwrap();
+    assert_eq!(
+        recovered.snapshot().unwrap().generation(),
+        durable_generation + 1
+    );
+    assert_eq!(observe_node(&recovered, next), observation);
+}
+
+#[test]
+fn a_failed_manifest_publication_fences_even_no_op_publishers() {
+    let directory = tempfile::tempdir().unwrap();
+    let vfs = Arc::new(RecordingVfs::default());
+    let store = Store::open_with_test_dependencies(
+        directory.path(),
+        native_options(),
+        crate::lifecycle::StoreTestDependencies::new(
+            vfs.clone(),
+            Arc::new(crate::lifecycle::SystemMonotonicClock),
+        ),
+    )
+    .unwrap();
+    generation_fixture(&store, 91);
+    store.enable_graph().unwrap();
+    vfs.arm_fault(FaultPoint::PostManifestRename);
+    assert!(store.reindex_text().is_err());
+    vfs.assert_fired_once();
+    let replay = crate::ingest::IngestDocument::new(
+        crate::ingest::DocumentVersion::new(
+            crate::ingest::DocId::new(91),
+            crate::ingest::Revision::new(1),
+        ),
+        vec![1.0, 0.0],
+    )
+    .with_timestamp(91)
+    .with_text("generation fixture");
+    assert!(
+        store
+            .ingest(crate::ingest::IngestBatch::new(vec![replay]))
+            .is_err(),
+        "an ingest replay must respect the shared fence"
+    );
+    assert!(
+        store.purge(&[crate::ingest::DocId::new(999)]).is_err(),
+        "an unknown-id purge must respect the shared fence"
+    );
+    assert!(
+        store.seal().is_err(),
+        "an empty seal must respect the shared fence"
+    );
+    assert!(
+        store.merge_sealed().is_err(),
+        "a one-segment merge must respect the shared fence"
+    );
+    assert!(
+        store.drop_partition(10..10).is_err(),
+        "an empty partition drop must respect the shared fence"
+    );
+}
+
+#[test]
+fn a_namespace_post_adoption_error_fences_every_participant_writer() {
+    use crate::lifecycle::{
+        LiveNamespaceMutation, NamespaceMutation, namespace_batch_live_with_steps,
+    };
+    let root = tempfile::tempdir().unwrap();
+    let vfs = Arc::new(RecordingVfs::default());
+    let open = |name| {
+        Store::open_with_test_dependencies(
+            root.path().join(name),
+            native_options(),
+            crate::lifecycle::StoreTestDependencies::new(
+                vfs.clone(),
+                Arc::new(crate::lifecycle::SystemMonotonicClock),
+            ),
+        )
+        .unwrap()
+    };
+    let first = open("a");
+    let second = open("b");
+    for store in [&first, &second] {
+        generation_fixture(store, 91);
+        store.enable_graph().unwrap();
+        disable_generation_fixture_maintenance(store);
+    }
+    let mut fired = false;
+    let mut installed = false;
+    let result = namespace_batch_live_with_steps(
+        root.path(),
+        vec![
+            LiveNamespaceMutation {
+                store: &first,
+                mutation: NamespaceMutation {
+                    name: "a".into(),
+                    options: native_options(),
+                    upserts: Vec::new(),
+                    deletes: vec![crate::ingest::DocId::new(91)],
+                    delete_where: None,
+                },
+            },
+            LiveNamespaceMutation {
+                store: &second,
+                mutation: NamespaceMutation {
+                    name: "b".into(),
+                    options: native_options(),
+                    upserts: vec![crate::ingest::IngestDocument::new(
+                        crate::ingest::DocumentVersion::new(
+                            crate::ingest::DocId::new(92),
+                            crate::ingest::Revision::new(1),
+                        ),
+                        vec![1.0, 0.0],
+                    )],
+                    deletes: Vec::new(),
+                    delete_where: None,
+                },
+            },
+        ],
+        &mut |step| {
+            if step == "live states installed" {
+                installed = true;
+            }
+            if installed && step == "commit rename" && !fired {
+                fired = true;
+                vfs.arm_fault(FaultPoint::PurgeIntentOpen);
+            }
+            Ok(())
+        },
+    );
+    assert!(fired, "the cleanup publication seam must fire: {result:?}");
+    assert!(result.is_err());
+    vfs.assert_fired_once();
+    assert_shared_writer_stopped(&first);
+    assert_shared_writer_stopped(&second);
+    drop(first);
+    drop(second);
+    for (name, count) in [("a", 0), ("b", 2)] {
+        let recovered = Store::open(root.path().join(name), native_options()).unwrap();
+        assert_eq!(recovered.count_documents(None, None).unwrap().count, count);
+    }
+}
+
+#[test]
+fn a_retention_manifest_rename_post_commit_error_fences_the_writers() {
+    manifest_rename_publisher_failure("retention");
+}
+
+#[test]
+fn a_merge_manifest_rename_post_commit_error_fences_the_writers() {
+    manifest_rename_publisher_failure("merge");
+}
+
+#[test]
+fn a_snapshot_manifest_rename_post_commit_error_fences_the_writers() {
+    manifest_rename_publisher_failure("snapshot");
+}
+
+#[test]
+fn a_schema_manifest_rename_post_commit_error_returns_no_stale_writer() {
+    schema_manifest_rename_failure();
+}
+
+pub(super) fn schema_manifest_rename_failure() {
+    use crate::meta::{ColumnDefinition, ColumnId, ColumnType, Schema};
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    assert_eq!(store.enable_graph().unwrap(), 1);
+    drop(store);
+    let schema = Schema::new(vec![ColumnDefinition::new(
+        ColumnId::new(71),
+        "extra",
+        ColumnType::U64,
+        true,
+    )])
+    .unwrap();
+    let vfs = Arc::new(RecordingVfs::default());
+    vfs.arm_fault(FaultPoint::PostManifestRename);
+    let result = Store::open_with_test_dependencies(
+        directory.path(),
+        native_options().with_schema(schema.clone()),
+        crate::lifecycle::StoreTestDependencies::new(
+            vfs.clone(),
+            Arc::new(crate::lifecycle::SystemMonotonicClock),
+        ),
+    );
+    assert!(result.is_err(), "failed construction must return no writer");
+    vfs.assert_fired_once();
+    let recovered = Store::open(
+        directory.path(),
+        native_options().with_schema(schema.clone()),
+    )
+    .unwrap();
+    assert_eq!(recovered.snapshot().unwrap().generation(), 2);
+    assert_eq!(recovered.schema(), &schema);
+    disable_generation_fixture_maintenance(&recovered);
+    let node = commit_tail_test_node(&recovered, "after-schema-rename");
+    assert_eq!(observe_node(&recovered, node), Some((3, 1, 1)));
+    drop(recovered);
+    let recovered = Store::open(directory.path(), native_options().with_schema(schema)).unwrap();
+    assert_eq!(recovered.snapshot().unwrap().generation(), 3);
+    assert_eq!(observe_node(&recovered, node), Some((3, 1, 1)));
+}
+
+#[test]
+fn a_tier_promotion_manifest_rename_post_commit_error_fences_the_writers() {
+    tier_manifest_rename_failure(false);
+}
+
+#[test]
+fn a_tier_consolidation_manifest_rename_post_commit_error_fences_the_writers() {
+    tier_manifest_rename_failure(true);
+}
+
+pub(super) fn tier_manifest_rename_failure(consolidate: bool) {
+    let directory = tempfile::tempdir().unwrap();
+    let vfs = Arc::new(RecordingVfs::default());
+    let options = native_options().with_epoch(generation_epoch());
+    let store = Store::open_with_test_dependencies(
+        directory.path(),
+        options.clone(),
+        crate::lifecycle::StoreTestDependencies::new(
+            vfs.clone(),
+            Arc::new(crate::lifecycle::SystemMonotonicClock),
+        ),
+    )
+    .unwrap();
+    let rows = if consolidate { 3 } else { 1 };
+    for id in 91..91 + rows {
+        generation_fixture(&store, id);
+    }
+    store.enable_graph().unwrap();
+    disable_generation_fixture_maintenance(&store);
+    let before = store.snapshot().unwrap().generation();
+    let preceding_promotions = if consolidate { 3 } else { 0 };
+    vfs.arm_fault_after(FaultPoint::PostManifestRename, preceding_promotions);
+    let report = store.maintain_with_test_thresholds(
+        crate::tier::maintain::MaintenanceBudget {
+            wall_time: std::time::Duration::from_secs(30),
+            bytes: u64::MAX,
+        },
+        crate::tier::TierThresholds { graph_min_rows: 1 },
+    );
+    assert!(
+        matches!(
+            report.status,
+            crate::tier::maintain::MaintenanceStatus::Failed(_)
+        ),
+        "{report:?}"
+    );
+    vfs.assert_fired_once();
+    assert_eq!(
+        store.snapshot().unwrap().generation(),
+        before + preceding_promotions
+    );
+    assert_shared_writer_stopped(&store);
+    drop(store);
+    let recovered = Store::open(directory.path(), options.clone()).unwrap();
+    assert_eq!(
+        recovered.snapshot().unwrap().generation(),
+        before + preceding_promotions + 1
+    );
+    assert_eq!(
+        recovered.count_documents(None, None).unwrap().count,
+        rows as u64
+    );
+    disable_generation_fixture_maintenance(&recovered);
+    let node = commit_tail_test_node(&recovered, "after-tier-rename");
+    let observation = observe_node(&recovered, node);
+    drop(recovered);
+    let recovered = Store::open(directory.path(), options).unwrap();
+    assert_eq!(observe_node(&recovered, node), observation);
+}
+
+#[test]
+fn an_epoch_alias_manifest_rename_post_commit_error_fences_the_writers() {
+    epoch_manifest_rename_failure(false);
+}
+
+#[test]
+fn an_epoch_drop_manifest_rename_post_commit_error_fences_the_writers() {
+    epoch_manifest_rename_failure(true);
+}
+
+pub(super) fn epoch_manifest_rename_failure(drop_epoch: bool) {
+    use crate::manifest::{EpochMeta, Manifest};
+    use crate::segment::writer::{
+        SegmentBuild, SegmentDocumentVersions, SegmentFactors, write_segment_with_documents,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let a = generation_epoch();
+    let mut b = a.clone();
+    b.embedding.alignment_digest = vec![2];
+    let columns = crate::meta::ColumnStoreBuilder::new(crate::meta::Schema::timestamp_only())
+        .finish()
+        .unwrap();
+    let alive = crate::meta::AliveSet::new(0);
+    let policy = crate::lifecycle::durability::DurabilityPolicy::new(
+        DurabilityMode::Durable,
+        CommitTier::Durable,
+    )
+    .unwrap();
+    let mut segments = Vec::new();
+    for (ordinal, epoch) in [(1, &a), (2, &b)] {
+        let mut segment = write_segment_with_documents(
+            &StdVfs,
+            directory.path(),
+            SegmentBuild {
+                id: crate::segment::SegmentId::new(ordinal, [ordinal as u8; 10]),
+                scheme: 4,
+                dims: 2,
+                codes: &[],
+                factors: SegmentFactors::Bit4(&[]),
+                rescore: &[],
+                columns: &columns,
+                alive: &alive,
+            },
+            SegmentDocumentVersions {
+                doc_ids: &[],
+                revisions: &[],
+            },
+            policy,
+        )
+        .unwrap();
+        segment.epoch_id = Some(epoch.identity().embedding);
+        segments.push(segment);
+    }
+    crate::manifest::io::commit_manifest(
+        &StdVfs,
+        directory.path(),
+        &Manifest {
+            graph: None,
+            generation: 1,
+            log_seq: 0,
+            segments,
+            epochs: vec![EpochMeta::from(&a), EpochMeta::from(&b)],
+            epoch_alias: Some(a.identity()),
+            schema: crate::meta::Schema::timestamp_only(),
+        },
+        policy,
+    )
+    .unwrap();
+    let options = native_options().with_epoch(a.clone());
+    let vfs = Arc::new(RecordingVfs::default());
+    let store = Store::open_with_test_dependencies(
+        directory.path(),
+        options.clone(),
+        crate::lifecycle::StoreTestDependencies::new(
+            vfs.clone(),
+            Arc::new(crate::lifecycle::SystemMonotonicClock),
+        ),
+    )
+    .unwrap();
+    assert_eq!(store.enable_graph().unwrap(), 2);
+    disable_generation_fixture_maintenance(&store);
+    vfs.arm_fault(FaultPoint::PostManifestRename);
+    if drop_epoch {
+        assert!(store.drop_epoch(b.identity().embedding).is_err());
+    } else {
+        assert!(store.switch_epoch_alias(b.identity()).is_err());
+    }
+    vfs.assert_fired_once();
+    assert_eq!(store.snapshot().unwrap().generation(), 2);
+    assert_shared_writer_stopped(&store);
+    drop(store);
+    let options = native_options().with_epoch(if drop_epoch { a } else { b });
+    let recovered = Store::open(directory.path(), options.clone()).unwrap();
+    assert_eq!(recovered.snapshot().unwrap().generation(), 3);
+    disable_generation_fixture_maintenance(&recovered);
+    let node = commit_tail_test_node(&recovered, "after-epoch-rename");
+    let observation = observe_node(&recovered, node);
+    drop(recovered);
+    let recovered = Store::open(directory.path(), options).unwrap();
+    assert_eq!(observe_node(&recovered, node), observation);
 }

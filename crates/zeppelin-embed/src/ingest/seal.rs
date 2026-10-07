@@ -155,6 +155,7 @@ impl Store {
                 component: "WAL writer",
             })?;
         let writer = wal.as_mut().ok_or(StoreError::ReadOnly)?;
+        let mut publication = writer.manifest_publication()?;
         let absorbed_through = writer.durable_end();
         let mut active = self
             .active
@@ -317,7 +318,6 @@ impl Store {
         let mut segments = manifest.segments;
         segments.push(meta);
         let epochs = self.epoch_registry(&manifest.epochs);
-        let mut publication = writer.manifest_publication()?;
         publication
             .commit_manifest(
                 vfs,

@@ -43,7 +43,7 @@ pub(super) fn record_verified_fault() {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum DurabilityEvent {
+pub(crate) enum DurabilityEvent {
     Create(PathBuf),
     Write(PathBuf),
     OpenAppend(PathBuf),
@@ -65,6 +65,10 @@ pub(crate) enum FaultPoint {
     WalSync,
     Rename,
     PostWalRename,
+    PostManifestRename,
+    Enumeration,
+    PostTruncate,
+    PurgeIntentOpen,
     Publish,
     OpenAppend,
     SelectorSync,
@@ -116,7 +120,7 @@ impl RecordingVfs {
         *self.after_manifest_version.lock().unwrap() = Some(Box::new(action));
     }
 
-    pub(super) fn take(&self) -> Vec<DurabilityEvent> {
+    pub(crate) fn take(&self) -> Vec<DurabilityEvent> {
         std::mem::take(&mut *self.events.lock().expect("recording VFS events"))
     }
 
@@ -290,7 +294,11 @@ impl VfsFile for RecordingFile {
 
 impl Vfs for RecordingVfs {
     fn truncate(&self, path: &Path, length: u64) -> std::io::Result<()> {
-        StdVfs.truncate(path, length)
+        StdVfs.truncate(path, length)?;
+        if self.fire(FaultPoint::PostTruncate) {
+            return Err(std::io::Error::other("scheduled post-truncate error"));
+        }
+        Ok(())
     }
 
     fn segment_data_read_counter(&self) -> Option<Arc<AtomicU64>> {
@@ -306,6 +314,11 @@ impl Vfs for RecordingVfs {
     }
 
     fn open(&self, path: &Path) -> std::io::Result<u64> {
+        if path.file_name().is_some_and(|name| name == "purge.ze")
+            && self.fire(FaultPoint::PurgeIntentOpen)
+        {
+            return Err(std::io::Error::other("scheduled purge-intent open failure"));
+        }
         StdVfs.open(path)
     }
 
@@ -387,6 +400,13 @@ impl Vfs for RecordingVfs {
         {
             return Err(std::io::Error::other("scheduled post-WAL-rename error"));
         }
+        if to.file_name().is_some_and(|name| name == "manifest.ze")
+            && self.fire(FaultPoint::PostManifestRename)
+        {
+            return Err(std::io::Error::other(
+                "scheduled manifest Rename/PostCommitError",
+            ));
+        }
         Ok(())
     }
 
@@ -440,6 +460,11 @@ impl Vfs for RecordingVfs {
         directory: &Path,
         visitor: &mut dyn FnMut(&Path) -> std::io::Result<()>,
     ) -> std::io::Result<()> {
+        if self.fire(FaultPoint::Enumeration) {
+            return Err(std::io::Error::other(
+                "scheduled graph install enumeration failure",
+            ));
+        }
         self.child_calls.fetch_add(1, Ordering::Relaxed);
         StdVfs.for_each_direct_child(directory, visitor)
     }
@@ -1514,10 +1539,14 @@ fn run_ze39_checkpoint_thresholds_and_failure_preserve_acknowledged_state() {
         );
         if matches!(
             point,
-            FaultPoint::DirectorySync | FaultPoint::SelectorSync | FaultPoint::OpenAppend
+            FaultPoint::DirectorySync
+                | FaultPoint::ManifestSync
+                | FaultPoint::Rename
+                | FaultPoint::SelectorSync
+                | FaultPoint::OpenAppend
         ) {
-            // Manifest sync failures after rename and WAL reopen failures after
-            // replacement fence the shared writer until recovery.
+            // Every attempted manifest publication and WAL replacement stays
+            // fenced until recovery, including failures before rename.
             assert!(matches!(
                 store.checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new())),
                 Err(super::super::NativeGraphError::Store(

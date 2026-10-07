@@ -2185,6 +2185,7 @@ pub(super) fn protect_and_commit(
     if active.generation.checked_add(1) != Some(generation) {
         return Err(NativeGraphError::StalePreparation);
     }
+    let publication = wal.manifest_publication()?.arm();
     let before_io = wal.io_work();
     let result = wal.commit_many(&[(crate::ingest::wal_payload::GRAPH_COMMIT_V1, &payload)]);
     let after_io = wal.io_work();
@@ -2271,6 +2272,7 @@ pub(super) fn protect_and_commit(
                 crate::allocation_audit::fail_attributed_allocation(1, expose)
             });
             result?;
+            publication.complete();
             return Ok(NativeCommitAudit {
                 allocations: audit.allocations,
                 denials,
@@ -2280,6 +2282,7 @@ pub(super) fn protect_and_commit(
     #[cfg(not(all(feature = "allocation-audit", any(test, feature = "test-seams"))))]
     let _ = audit_publication;
     expose()?;
+    publication.complete();
     Ok(NativeCommitAudit::default())
 }
 

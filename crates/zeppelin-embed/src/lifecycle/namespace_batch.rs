@@ -513,22 +513,35 @@ fn execute_live(
     let published = (|| {
         let temporary = root.join(".ze-namespaces.tmp");
         durable_write(vfs, &temporary, &decision, step)?;
+        let publications = wals
+            .iter()
+            .map(|wal| {
+                wal.as_ref()
+                    .ok_or(StoreError::ReadOnly)?
+                    .manifest_publication()
+                    .map(|publication| publication.arm())
+            })
+            .collect::<Result<Vec<_>, StoreError>>()?;
         publication_attempted = true;
         vfs.rename(&temporary, &root.join(RECORD))
             .map_err(|e| io(&root, e))?;
         step("commit rename").map_err(|e| io(&root, e))?;
-        sync_dir(vfs, &root, step)
+        sync_dir(vfs, &root, step)?;
+        Ok(publications)
     })();
-    if let Err(error) = published {
-        if publication_attempted {
-            for wal in &mut wals {
-                **wal = None;
+    let mut publications = match published {
+        Ok(publications) => publications,
+        Err(error) => {
+            if publication_attempted {
+                for wal in &mut wals {
+                    **wal = None;
+                }
+            } else {
+                rollback_stages(&ordered, staged, &selections, &lengths, &mut wals)?;
             }
-        } else {
-            rollback_stages(&ordered, staged, &selections, &lengths, &mut wals)?;
+            return Err(error);
         }
-        return Err(error);
-    }
+    };
     // Once publication is attempted its outcome may be indeterminate. Never
     // truncate prepared evidence in this branch; fence queued writes instead.
     let adopted = (|| {
@@ -591,11 +604,22 @@ fn execute_live(
         } else {
             stage.active.generation
         };
+        // A participant's purge may have replaced its WAL writer. Carry the
+        // same publication fence on that replacement through final cleanup.
+        publications.push(
+            wal.as_ref()
+                .ok_or(StoreError::ReadOnly)?
+                .manifest_publication()?
+                .arm(),
+        );
         completed.insert(p.mutation.name.clone(), generation);
     }
     if deleting {
         reclamation::run(vfs, &root, step)?;
         reclamation::require_retired_erased(vfs, &root)?;
+    }
+    for publication in publications {
+        publication.complete();
     }
     let by_name = completed;
     drop(wals);

@@ -192,6 +192,10 @@ impl Store {
             .map_err(|_| StoreError::Synchronization {
                 component: "WAL writer",
             })?;
+        let mut publication = wal
+            .as_ref()
+            .ok_or(StoreError::ReadOnly)?
+            .manifest_publication()?;
         let durable_end = wal.as_ref().ok_or(StoreError::ReadOnly)?.durable_end();
         let mut active = self
             .active
@@ -242,10 +246,6 @@ impl Store {
         // pointer swap and cannot fail on segment I/O or accounting budget.
         let remapped =
             PublishedSnapshot::from_manifest(vfs, &self.directory, &manifest, &self.accounting)?;
-        let mut publication = wal
-            .as_ref()
-            .ok_or(StoreError::ReadOnly)?
-            .manifest_publication()?;
         publication
             .commit_manifest(vfs, &self.directory, &manifest, self.durability_policy)
             .map_err(StoreError::Manifest)?;

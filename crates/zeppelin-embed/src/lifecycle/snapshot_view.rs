@@ -88,6 +88,8 @@ impl Store {
             lexical_worker: Mutex::new(None),
             #[cfg(feature = "graph-cypher")]
             native_graph,
+            #[cfg(feature = "graph-cypher")]
+            graph_enable_pending: std::sync::atomic::AtomicBool::new(false),
             snapshot: RwLock::new(Some(Arc::new(snapshot))),
             active: Mutex::new(Some(crate::ingest::ActiveState {
                 generation: active.generation,

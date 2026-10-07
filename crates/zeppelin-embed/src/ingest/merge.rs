@@ -66,6 +66,10 @@ impl Store {
             .map_err(|_| StoreError::Synchronization {
                 component: "WAL writer",
             })?;
+        wal.as_ref()
+            .ok_or(StoreError::ReadOnly)?
+            .manifest_publication()?
+            .complete();
         let durable_end = wal.as_ref().ok_or(StoreError::ReadOnly)?.durable_end();
         let mut active = self
             .active
@@ -90,6 +94,10 @@ impl Store {
             if inputs.len() < 2 {
                 return Ok(current.generation.max(manifest.generation));
             }
+            let mut publication = wal
+                .as_ref()
+                .ok_or(StoreError::ReadOnly)?
+                .manifest_publication()?;
             let generation = current
                 .generation
                 .max(manifest.generation)
@@ -164,10 +172,6 @@ impl Store {
                 .record_generation_bump(durable_end)
                 .map_err(StoreError::Manifest)?;
             // Preserve log_seq: a merge absorbs no active or WAL records.
-            let mut publication = wal
-                .as_ref()
-                .ok_or(StoreError::ReadOnly)?
-                .manifest_publication()?;
             publication
                 .commit_manifest(vfs, &self.directory, &manifest, self.durability_policy)
                 .map_err(StoreError::Manifest)?;

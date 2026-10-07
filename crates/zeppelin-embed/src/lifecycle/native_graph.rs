@@ -1065,6 +1065,13 @@ impl NativeGraphPublication {
         Ok(())
     }
 
+    pub(crate) fn is_installed(&self) -> Result<bool, StoreError> {
+        let state = self.state.lock().map_err(|_| StoreError::Synchronization {
+            component: "native graph publication",
+        })?;
+        Ok(state.current.is_some())
+    }
+
     fn install(&self, bundle: Arc<NativeGraphBundle>) -> Result<(), NativeGraphError> {
         self.enable_registries()?;
         let mut state = self.state.lock().map_err(|_| {

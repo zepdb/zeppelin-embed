@@ -1442,6 +1442,20 @@ fn resume_pending_reclaim(
         super::write::checkpoint_current(store, writer, &admitted, &shared, control)?;
         return Err(NativeGraphError::StalePreparation);
     }
+    // Keep the shared fence across unlink, directory sync, and the matching
+    // completion publication, without holding the WAL mutex across commit.
+    let publication = store
+        .wal_writer
+        .lock()
+        .map_err(|_| {
+            NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
+                component: "WAL writer",
+            })
+        })?
+        .as_ref()
+        .ok_or(crate::lifecycle::StoreError::ReadOnly)?
+        .manifest_publication()?
+        .arm();
     let mut removed_bytes = 0_u64;
     let mut already_missing = 0_u64;
     for candidate in pending.candidates.as_slice().iter().copied() {
@@ -1530,6 +1544,7 @@ fn resume_pending_reclaim(
             .map_err(|source| io(admitted.directory(), source))?;
     }
     let _ = protect_and_commit(store, writer, transition, control, false)?;
+    publication.complete();
     let reclaimed_bytes = pending
         .candidates
         .as_slice()
@@ -1545,7 +1560,7 @@ fn resume_pending_reclaim(
                 .try_fold(total, |total, target| total.checked_add(target.observed))
         })
         .ok_or(NativeGraphError::IdentityExhausted)?;
-    Ok(NativeMaintenanceReport {
+    let report = NativeMaintenanceReport {
         relocated_bytes: 0,
         drained_packs: 0,
         replaced_physical_refs: 0,
@@ -1554,7 +1569,10 @@ fn resume_pending_reclaim(
         reclaimed_bytes,
         removed_bytes,
         already_missing,
-    })
+    };
+    #[cfg(any(test, feature = "test-seams"))]
+    QUALIFICATION_RESUME_REPORT.with(|receipt| receipt.set(Some(report)));
+    Ok(report)
 }
 
 fn retire_completed_reclaim(
@@ -1811,6 +1829,14 @@ pub(crate) struct NativeMaintenanceReport {
     pub(crate) reclaimed_bytes: u64,
     pub(crate) removed_bytes: u64,
     pub(crate) already_missing: u64,
+}
+
+// Open-time recovery consumes the maintenance return internally. Keep its
+// actual receipt for the independent fault probe, without deriving it from
+// expected candidate sizes or changing the production recovery protocol.
+#[cfg(any(test, feature = "test-seams"))]
+thread_local! {
+    pub(super) static QUALIFICATION_RESUME_REPORT: std::cell::Cell<Option<NativeMaintenanceReport>> = const { std::cell::Cell::new(None) };
 }
 
 /// Budgets for one maintenance preparation. Production always uses

@@ -54,7 +54,9 @@ pub use retention_fault::{
 
 #[cfg(feature = "graph-cypher")]
 pub(crate) use active::RecoveredGraphCommit;
-pub(crate) use active::{ActiveSegment, ActiveState, SealedTombstoneDemand, StoreWal};
+pub(crate) use active::{
+    ActiveSegment, ActiveState, ManifestPublication, SealedTombstoneDemand, StoreWal,
+};
 pub(crate) use atomic_batch::{committed_mutations_with_decisions, cut_interrupted_append};
 
 /// Stable application document identifier.
@@ -1279,6 +1281,7 @@ impl Store {
                 component: "WAL writer",
             })?;
         let writer = wal.as_mut().ok_or(StoreError::ReadOnly)?;
+        let mut publication = writer.manifest_publication()?;
         let (current_generation, current_segment) = {
             let active = self
                 .active
@@ -1403,6 +1406,7 @@ impl Store {
             }
             Some(_) | None => None,
         };
+        publication = publication.arm();
         let sequences = match writer.commit_many(&record_refs) {
             Ok(sequences) => sequences,
             Err(error) => {
@@ -1420,7 +1424,6 @@ impl Store {
                 return Err(error.into());
             }
         };
-        let mut publication = writer.manifest_publication()?.after_mutation();
         for ((row, _, _), sequence) in records
             .iter()
             .zip(sequences.start.get()..sequences.end.get())
@@ -1550,6 +1553,7 @@ impl Store {
             &self.accounting,
         )?;
         let payload = wal_payload::encode_delete(doc_ids).map_err(IngestError::Payload)?;
+        let mut publication = writer.manifest_publication()?.arm();
         let seq = match writer.commit(wal_payload::DELETE_V1, &payload) {
             Ok(seq) => seq,
             Err(error) => {
@@ -1559,7 +1563,6 @@ impl Store {
                 return Err(error.into());
             }
         };
-        let mut publication = writer.manifest_publication()?.after_mutation();
         for row in rows {
             next.set_sequence(row, seq)?;
         }

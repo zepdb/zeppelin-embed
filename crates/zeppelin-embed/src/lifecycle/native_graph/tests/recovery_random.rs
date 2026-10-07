@@ -5,6 +5,7 @@ use crate::ingest::{DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocu
 use crate::lifecycle::{AccessMode, DocumentFields};
 use crate::vfs::crash::{CrashOperation, MemoryVfs, RecordingVfs as ByteRecorder, replay_prefix};
 use rand::Rng;
+use rand::seq::SliceRandom;
 use std::collections::BTreeSet;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -342,11 +343,46 @@ pub(super) fn run() {
     let started = std::time::Instant::now();
     let mut cuts_run = 0;
     let mut operation_counts = [0_usize; OPERATIONS.len()];
+    let mut fault_publishers = [
+        "seal",
+        "purge",
+        "checkpoint",
+        "reindex",
+        "retention",
+        "merge",
+        "snapshot",
+        "schema",
+        "alias",
+        "epoch-drop",
+        "promotion",
+        "consolidation",
+    ];
+    fault_publishers.shuffle(&mut rng);
+    let mut fault_counts = [0_usize; 12];
     for sequence in 0..sequences {
         let length = rng.random_range(6..=12);
         let mut operations = Vec::new();
         // Catch only to add reproducibility context, then fail the entire run.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // Shuffle the fault histories with the same replayable seed. Every
+            // publisher is exercised at the default eight sequences; failures
+            // must refuse all subsequent acknowledgements until reopen.
+            crate::lifecycle::tests::enable_graph_retry_completes(FaultPoint::PostManifestRename);
+            for fault_index in [Some(sequence % 8), (sequence < 4).then_some(sequence + 8)]
+                .into_iter()
+                .flatten()
+            {
+                let publisher = fault_publishers[fault_index];
+                match publisher {
+                    "schema" => schema_manifest_rename_failure(),
+                    "alias" => epoch_manifest_rename_failure(false),
+                    "epoch-drop" => epoch_manifest_rename_failure(true),
+                    "promotion" => tier_manifest_rename_failure(false),
+                    "consolidation" => tier_manifest_rename_failure(true),
+                    _ => manifest_rename_publisher_failure(publisher),
+                }
+                fault_counts[fault_index] += 1;
+            }
             let directory = tempfile::tempdir().unwrap();
             let root = std::fs::canonicalize(directory.path()).unwrap();
             let path = root.as_path().join("alpha");
@@ -371,7 +407,12 @@ pub(super) fn run() {
                 model.acknowledge(store.as_ref().unwrap().seal().unwrap());
                 sealed.insert(id);
             }
+            vfs.recorded.inner().arm_fault(FaultPoint::Enumeration);
+            assert!(store.as_ref().unwrap().enable_graph().is_err());
+            vfs.recorded.inner().assert_fired_once();
+            assert_shared_writer_stopped(store.as_ref().unwrap());
             model.acknowledge(store.as_ref().unwrap().enable_graph().unwrap());
+            assert!(store.as_ref().unwrap().admit_native_read().is_ok());
             disable_generation_fixture_maintenance(store.as_ref().unwrap());
             let (node, generation) = write_node(store.as_ref().unwrap(), "initial");
             model.nodes.insert(node);
@@ -755,12 +796,16 @@ pub(super) fn run() {
     }
     if sequences >= 8 {
         assert!(
+            fault_counts.iter().all(|count| *count > 0),
+            "uncovered manifest fault: {fault_publishers:?} {fault_counts:?}"
+        );
+        assert!(
             operation_counts.iter().all(|count| *count > 0),
             "uncovered operation kind: {operation_counts:?}"
         );
     }
     eprintln!(
-        "restart model: seed={seed:?}, sequences={sequences}, cuts={cuts_run}, operation_counts={operation_counts:?} in OPERATIONS order, elapsed={:?}",
+        "restart model: seed={seed:?}, sequences={sequences}, cuts={cuts_run}, operation_counts={operation_counts:?} in OPERATIONS order, fault_publishers={fault_publishers:?}, fault_counts={fault_counts:?}, install_faults={sequences}, elapsed={:?}",
         started.elapsed()
     );
 }

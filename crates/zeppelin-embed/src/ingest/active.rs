@@ -2072,20 +2072,38 @@ fn allocate_retained_buffers(
 }
 
 pub(crate) struct StoreWal {
-    writer: WalWriter,
+    writer: Arc<WalWriter>,
     retained: AccountedCounter,
 }
 
 /// Fences every shared writer if publication fails after changing WAL or
 /// generation state.
 #[must_use]
-pub(crate) struct ManifestPublication<'a> {
-    wal: &'a StoreWal,
+pub(crate) struct ManifestPublication {
+    writer: PublicationWriter,
     armed: bool,
 }
 
-impl ManifestPublication<'_> {
-    pub(crate) fn after_mutation(mut self) -> Self {
+enum PublicationWriter {
+    UnpublishedStore,
+    Shared(Arc<WalWriter>),
+}
+
+impl ManifestPublication {
+    // Constructors must retain main's manifest-before-WAL order. No writer
+    // can be admitted until it is created, bound here, and the Store returned.
+    pub(crate) fn before_writer_creation() -> Self {
+        Self {
+            writer: PublicationWriter::UnpublishedStore,
+            armed: false,
+        }
+    }
+
+    pub(crate) fn bind_writer(&mut self, wal: &StoreWal) {
+        self.writer = PublicationWriter::Shared(Arc::clone(&wal.writer));
+    }
+
+    pub(crate) fn arm(mut self) -> Self {
         self.armed = true;
         self
     }
@@ -2097,11 +2115,9 @@ impl ManifestPublication<'_> {
         manifest: &crate::manifest::Manifest,
         policy: DurabilityPolicy,
     ) -> Result<(), crate::manifest::ManifestError> {
-        // A failed temp write/sync is safe to retry for manifest-only work.
-        // Once rename succeeds, a later error can leave durable state ahead.
-        crate::manifest::io::commit_manifest_with_rename(vfs, directory, manifest, policy, || {
-            self.armed = true;
-        })
+        // Arm before the first write, including errors reported after rename.
+        self.armed = true;
+        crate::manifest::io::commit_manifest(vfs, directory, manifest, policy)
     }
 
     pub(crate) fn complete(mut self) {
@@ -2109,14 +2125,16 @@ impl ManifestPublication<'_> {
     }
 }
 
-impl Drop for ManifestPublication<'_> {
+impl Drop for ManifestPublication {
     fn drop(&mut self) {
-        if self.armed {
+        if self.armed
+            && let PublicationWriter::Shared(writer) = &self.writer
+        {
             // A poisoned writer-state mutex already refuses every commit, so
             // failure to acquire it here cannot leave a usable stale writer.
-            let _ = self
-                .wal
-                .poison_after_manifest_failure("manifest publication did not complete");
+            let _ = writer.poison(&std::io::Error::other(
+                "writer publication did not complete",
+            ));
         }
     }
 }
@@ -2126,33 +2144,22 @@ impl Drop for ManifestPublication<'_> {
 #[must_use]
 pub(crate) struct WalReplacement<'a> {
     pub(crate) wal: &'a mut StoreWal,
-    armed: bool,
+    publication: ManifestPublication,
 }
 
 impl WalReplacement<'_> {
-    pub(crate) fn complete(mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for WalReplacement<'_> {
-    fn drop(&mut self) {
-        if self.armed {
-            // A poisoned state mutex already refuses all shared writers.
-            let _ = self
-                .wal
-                .poison_after_manifest_failure("WAL replacement publication did not complete");
-        }
+    pub(crate) fn complete(self) {
+        self.publication.complete();
     }
 }
 
 impl StoreWal {
-    pub(crate) fn manifest_publication(&self) -> Result<ManifestPublication<'_>, StoreError> {
+    pub(crate) fn manifest_publication(&self) -> Result<ManifestPublication, StoreError> {
         // Check the shared failure state and wait for any pending group flush
         // before admitting a manifest publication.
         self.writer.flush().map_err(StoreError::WalWrite)?;
         Ok(ManifestPublication {
-            wal: self,
+            writer: PublicationWriter::Shared(Arc::clone(&self.writer)),
             armed: false,
         })
     }
@@ -2178,7 +2185,7 @@ impl StoreWal {
         let writer = WalWriter::create_store_wal(vfs, directory, path, LogSeq::new(1), policy)
             .map_err(StoreError::WalWrite)?;
         Ok(Self {
-            writer,
+            writer: Arc::new(writer),
             retained: AccountedCounter::new(accounting, AllocationComponent::Wal)?,
         })
     }
@@ -2200,7 +2207,10 @@ impl StoreWal {
         }
         let mut retained = AccountedCounter::new(accounting, AllocationComponent::Wal)?;
         retained.set(writer.stats().map_err(StoreError::WalWrite)?.retained_bytes)?;
-        Ok(Self { writer, retained })
+        Ok(Self {
+            writer: Arc::new(writer),
+            retained,
+        })
     }
 
     pub(crate) fn abort_namespace_suffix(
@@ -2215,6 +2225,10 @@ impl StoreWal {
         // Truncation only aborts this transaction's suffix. It cannot resolve
         // an earlier indeterminate publication or make its generation current.
         let failure = self.writer.flush().err();
+        let mut publication = ManifestPublication {
+            writer: PublicationWriter::Shared(Arc::clone(&self.writer)),
+            armed: true,
+        };
         vfs.truncate(path, length)
             .map_err(|source| StoreError::Io {
                 path: path.to_path_buf(),
@@ -2230,9 +2244,11 @@ impl StoreWal {
             .into_clean()
             .map_err(StoreError::WalRecovery)?;
         *self = Self::resume(vfs, path, recovered, policy, absorbed, accounting)?;
+        publication.bind_writer(self);
         if let Some(failure) = failure {
             self.poison_after_manifest_failure(&failure.to_string())?;
         }
+        publication.complete();
         Ok(())
     }
 
@@ -2393,7 +2409,7 @@ impl StoreWal {
             .map_err(StoreError::WalWrite)?
             .retained_bytes;
         self.retained.set(retained)?;
-        self.writer = replacement;
+        self.writer = Arc::new(replacement);
         Ok(())
     }
 
@@ -2430,9 +2446,10 @@ impl StoreWal {
         let recovered = reader.into_clean().map_err(StoreError::WalRecovery)?;
         // A VFS may complete rename and then report an error. Fence even that
         // outcome; only successful publication makes this handle writable again.
-        let publication = WalReplacement {
+        let fence = self.manifest_publication()?.arm();
+        let mut publication = WalReplacement {
             wal: self,
-            armed: true,
+            publication: fence,
         };
         vfs.rename(&temporary, &path)
             .map_err(|source| StoreError::Io {
@@ -2441,6 +2458,8 @@ impl StoreWal {
             })?;
         let replacement =
             WalWriter::resume(vfs, &path, recovered, policy).map_err(StoreError::WalWrite)?;
+        let replacement = Arc::new(replacement);
+        publication.publication.writer = PublicationWriter::Shared(Arc::clone(&replacement));
         publication.wal.writer = replacement;
         publication.wal.retained.set(
             publication
@@ -2505,6 +2524,38 @@ mod tests {
     use crate::fts::search::{TermQuery, search};
     use crate::fts::tokenizer::TokenizerConfig;
     use crate::meta::DocBitmap;
+
+    #[cfg(feature = "graph-cypher")]
+    #[test]
+    fn a_namespace_truncate_that_reports_failure_after_succeeding_fences_the_writer() {
+        use crate::lifecycle::native_graph::tests::publication::{FaultPoint, RecordingVfs};
+        let directory = tempfile::tempdir().expect("directory");
+        let vfs = Arc::new(RecordingVfs::default());
+        let accounting = Arc::new(Accounting::new(u64::MAX, u64::MAX));
+        let policy = DurabilityPolicy::new(
+            crate::lifecycle::durability::DurabilityMode::Durable,
+            crate::lifecycle::durability::CommitTier::Durable,
+        )
+        .expect("policy");
+        let path = directory.path().join("wal.ze");
+        let mut writer =
+            StoreWal::create(vfs.clone(), directory.path(), &path, policy, &accounting)
+                .expect("writer");
+        writer.commit(2, b"first").expect("first append");
+        let length = vfs.open(&path).expect("length");
+        vfs.arm_fault(FaultPoint::PostTruncate);
+        assert!(
+            writer
+                .abort_namespace_suffix(vfs.as_ref(), &path, length - 1, policy, 0, &accounting)
+                .is_err()
+        );
+        vfs.assert_fired_once();
+        assert_eq!(vfs.open(&path).expect("length"), length - 1);
+        assert!(
+            writer.commit(2, b"must refuse").is_err(),
+            "an indeterminate truncate must fence the writer"
+        );
+    }
 
     fn lookup_fixture(rows: usize) -> (ActiveSegment, Arc<Accounting>, Analyzer) {
         let accounting = Arc::new(Accounting::new(u64::MAX, u64::MAX));

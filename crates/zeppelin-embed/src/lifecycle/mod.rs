@@ -2619,6 +2619,8 @@ pub struct Store {
     pub(crate) lexical_worker: Mutex<Option<Arc<pool::LexicalWorker>>>,
     #[cfg(feature = "graph-cypher")]
     pub(crate) native_graph: Arc<native_graph::NativeGraphPublication>,
+    #[cfg(feature = "graph-cypher")]
+    graph_enable_pending: std::sync::atomic::AtomicBool,
     pub(crate) snapshot: RwLock<Option<Arc<PublishedSnapshot>>>,
     // Drop order is deliberate: immutable mappings, active buffers, and the
     // WAL descriptor all release before the kernel writer lock.
@@ -3167,7 +3169,7 @@ impl Store {
         // Store-owned VFS before mmap becomes the query data plane. Internal
         // manifest-only remaps deliberately skip this probe so their exact
         // zero-segment-read accounting contracts remain intact.
-        let snapshot = PublishedSnapshot::load_for_open_on_vfs(
+        let mut snapshot = PublishedSnapshot::load_for_open_on_vfs(
             path,
             &accounting,
             vfs.as_ref(),
@@ -3230,40 +3232,70 @@ impl Store {
             &tokenizer,
             private_preparation.as_ref(),
         )?;
-        let active = recovered.active;
+        let mut active = recovered.active;
         let recovered_wal = recovered.wal;
         let sealed_tombstones = recovered.tombstones;
         #[cfg(feature = "graph-cypher")]
         let graph_replay = recovered.graph;
+        let mut open_publication = None;
+        if schema_evolved {
+            let boundary = recovered_wal
+                .as_ref()
+                .map_or(absorbed_through, crate::wal::CleanWalReader::durable_end);
+            let generation = active
+                .generation
+                .checked_add(1)
+                .ok_or(StoreError::GenerationOverflow)?;
+            let mut manifest =
+                crate::manifest::io::load_manifest(vfs.as_ref(), &manifest_path, boundary)
+                    .map_err(StoreError::Manifest)?;
+            manifest.generation = generation;
+            manifest.schema = schema.clone();
+            #[cfg(feature = "graph-cypher")]
+            manifest
+                .record_generation_bump(boundary)
+                .map_err(StoreError::Manifest)?;
+            let mut publication = crate::ingest::ManifestPublication::before_writer_creation();
+            publication
+                .commit_manifest(vfs.as_ref(), path, &manifest, durability_policy)
+                .map_err(StoreError::Manifest)?;
+            snapshot =
+                PublishedSnapshot::from_manifest(vfs.as_ref(), path, &manifest, &accounting)?;
+            active.generation = generation;
+            open_publication = Some(publication);
+        }
         if options.access_mode == AccessMode::ReadWrite
             && !manifest_exists
             && (options.epoch.is_some() || options.schema.is_some())
         {
-            crate::manifest::io::commit_manifest(
-                vfs.as_ref(),
-                path,
-                &crate::manifest::Manifest {
-                    #[cfg(feature = "graph-cypher")]
-                    graph: None,
-                    generation: active.generation,
-                    log_seq: 0,
-                    segments: Vec::new(),
-                    epochs: options
-                        .epoch
-                        .as_ref()
-                        .cloned()
-                        .map(crate::manifest::EpochMeta::from)
-                        .into_iter()
-                        .collect(),
-                    epoch_alias: options
-                        .epoch
-                        .as_ref()
-                        .map(crate::epoch::StoreEpoch::identity),
-                    schema: schema.clone(),
-                },
-                durability_policy,
-            )
-            .map_err(StoreError::Manifest)?;
+            let mut publication = crate::ingest::ManifestPublication::before_writer_creation();
+            publication
+                .commit_manifest(
+                    vfs.as_ref(),
+                    path,
+                    &crate::manifest::Manifest {
+                        #[cfg(feature = "graph-cypher")]
+                        graph: None,
+                        generation: active.generation,
+                        log_seq: 0,
+                        segments: Vec::new(),
+                        epochs: options
+                            .epoch
+                            .as_ref()
+                            .cloned()
+                            .map(crate::manifest::EpochMeta::from)
+                            .into_iter()
+                            .collect(),
+                        epoch_alias: options
+                            .epoch
+                            .as_ref()
+                            .map(crate::epoch::StoreEpoch::identity),
+                        schema: schema.clone(),
+                    },
+                    durability_policy,
+                )
+                .map_err(StoreError::Manifest)?;
+            open_publication = Some(publication);
         }
         let wal_writer = match options.access_mode {
             AccessMode::ReadWrite => Some(match recovered_wal {
@@ -3288,6 +3320,9 @@ impl Store {
                 None
             }
         };
+        if let Some(publication) = open_publication.as_mut() {
+            publication.bind_writer(wal_writer.as_ref().ok_or(StoreError::ReadOnly)?);
+        }
         let background = match options.access_mode {
             AccessMode::ReadWrite => Some(BackgroundThread::start()?),
             AccessMode::ReadOnly => None,
@@ -3296,7 +3331,7 @@ impl Store {
         let native_graph =
             native_graph::NativeGraphPublication::new(&accounting, snapshot.graph_enabled)?;
         #[cfg(test)]
-        let (mut snapshot, background, teardown_probe) = {
+        let (snapshot, background, teardown_probe) = {
             let mut snapshot = snapshot;
             let mut background = background;
             let teardown_probe = Arc::new(close::TeardownProbe::new());
@@ -3306,8 +3341,6 @@ impl Store {
             }
             (snapshot, background, teardown_probe)
         };
-        #[cfg(not(test))]
-        let mut snapshot = snapshot;
         let mut store = Self {
             private_preparation,
             open_migrations: OpenMigrations {
@@ -3325,6 +3358,8 @@ impl Store {
             lexical_worker: Mutex::new(None),
             #[cfg(feature = "graph-cypher")]
             native_graph,
+            #[cfg(feature = "graph-cypher")]
+            graph_enable_pending: std::sync::atomic::AtomicBool::new(false),
             snapshot: RwLock::new(None),
             active: Mutex::new(Some(active)),
             wal_writer: Mutex::new(wal_writer),
@@ -3376,49 +3411,6 @@ impl Store {
                 options.graph_document.clone(),
             )?;
         }
-        if schema_evolved {
-            let wal = store
-                .wal_writer
-                .lock()
-                .map_err(|_| StoreError::Synchronization {
-                    component: "WAL writer",
-                })?;
-            let writer = wal.as_ref().ok_or(StoreError::ReadOnly)?;
-            let boundary = writer.durable_end();
-            let mut active = store
-                .active
-                .lock()
-                .map_err(|_| StoreError::Synchronization {
-                    component: "active segment",
-                })?;
-            let active = active.as_mut().ok_or(StoreError::Closed)?;
-            let generation = active
-                .generation
-                .checked_add(1)
-                .ok_or(StoreError::GenerationOverflow)?;
-            let mut manifest =
-                crate::manifest::io::load_manifest(store.vfs.as_ref(), &manifest_path, boundary)
-                    .map_err(StoreError::Manifest)?;
-            manifest.generation = generation;
-            manifest.schema = store.schema.clone();
-            #[cfg(feature = "graph-cypher")]
-            manifest
-                .record_generation_bump(boundary)
-                .map_err(StoreError::Manifest)?;
-            let remapped = PublishedSnapshot::from_manifest(
-                store.vfs.as_ref(),
-                path,
-                &manifest,
-                &store.accounting,
-            )?;
-            let mut publication = writer.manifest_publication()?;
-            publication
-                .commit_manifest(store.vfs.as_ref(), path, &manifest, durability_policy)
-                .map_err(StoreError::Manifest)?;
-            active.generation = generation;
-            publication.complete();
-            snapshot = remapped;
-        }
         if options.access_mode == AccessMode::ReadWrite && manifest_exists {
             // An adopted manifest may be the survivor of a commit interrupted
             // between rename and directory sync. Make its dirent durable before
@@ -3441,6 +3433,9 @@ impl Store {
         #[cfg(not(feature = "graph-cypher"))]
         let repair_before_purge = false;
         store.publish_snapshot(snapshot)?;
+        if let Some(publication) = open_publication {
+            publication.complete();
+        }
         if repair_before_purge {
             // Graph folds must not absorb unrepaired sealed deletes.
             store.recover_sealed_tombstones(&sealed_tombstones)?;
@@ -9863,6 +9858,231 @@ mod tests {
         SearchOptions, SearchTier, Store, StoreError, StoreTestDependencies,
         resolve_hybrid_leg_results,
     };
+
+    #[cfg(feature = "graph-cypher")]
+    #[test]
+    fn graph_free_initial_manifest_bytes_survive_a_failed_writer_open_as_on_main() {
+        use super::native_graph::tests::publication::{FaultPoint, RecordingVfs};
+        let directory = tempfile::tempdir().expect("fixture");
+        let schema = crate::meta::Schema::new(vec![crate::meta::ColumnDefinition::new(
+            crate::meta::ColumnId::new(1),
+            "extra",
+            crate::meta::ColumnType::U64,
+            true,
+        )])
+        .expect("fixture");
+        let vfs = Arc::new(RecordingVfs::default());
+        vfs.arm_fault(FaultPoint::OpenAppend);
+        assert!(
+            Store::open_with_test_dependencies(
+                directory.path(),
+                OpenOptions::default().with_schema(schema.clone()),
+                StoreTestDependencies::new(vfs.clone(), Arc::new(super::SystemMonotonicClock)),
+            )
+            .is_err()
+        );
+        vfs.assert_fired_once();
+        let expected = crate::manifest::encode_manifest(&crate::manifest::Manifest {
+            graph: None,
+            generation: 0,
+            log_seq: 0,
+            segments: Vec::new(),
+            epochs: Vec::new(),
+            epoch_alias: None,
+            schema,
+        })
+        .expect("fixture");
+        assert_eq!(
+            std::fs::read(directory.path().join("manifest.ze"))
+                .expect("main publishes the initial manifest before opening the writer"),
+            expected
+        );
+    }
+
+    #[cfg(feature = "graph-cypher")]
+    #[test]
+    fn graph_free_schema_evolution_bytes_survive_a_failed_writer_open_as_on_main() {
+        use super::native_graph::tests::publication::{FaultPoint, RecordingVfs};
+        let directory = tempdir().expect("directory");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("store");
+        store
+            .ingest(crate::ingest::IngestBatch::new(vec![
+                crate::ingest::IngestDocument::new(
+                    crate::ingest::DocumentVersion::new(
+                        crate::ingest::DocId::new(91),
+                        crate::ingest::Revision::new(1),
+                    ),
+                    vec![1.0],
+                ),
+            ]))
+            .expect("document");
+        store.seal().expect("seal");
+        store.close().expect("close");
+        let schema = Schema::new(vec![crate::meta::ColumnDefinition::new(
+            crate::meta::ColumnId::new(1),
+            "extra",
+            crate::meta::ColumnType::U64,
+            true,
+        )])
+        .expect("schema");
+        let mut expected = crate::manifest::io::load_manifest(
+            &StdVfs,
+            &directory.path().join("manifest.ze"),
+            u64::MAX,
+        )
+        .expect("prior manifest");
+        expected.generation += 1;
+        expected.schema = schema.clone();
+        let snapshot = || {
+            std::fs::read_dir(directory.path())
+                .expect("files")
+                .map(|entry| {
+                    let entry = entry.expect("entry");
+                    (
+                        entry.file_name(),
+                        std::fs::read(entry.path()).expect("bytes"),
+                    )
+                })
+                .collect::<std::collections::BTreeMap<_, _>>()
+        };
+        let mut expected_files = snapshot();
+        expected_files.insert(
+            std::ffi::OsString::from("manifest.ze"),
+            crate::manifest::encode_manifest(&expected).expect("main bytes"),
+        );
+        let vfs = Arc::new(RecordingVfs::default());
+        vfs.arm_fault(FaultPoint::OpenAppend);
+        assert!(
+            Store::open_with_test_dependencies(
+                directory.path(),
+                OpenOptions::default().with_schema(schema),
+                StoreTestDependencies::new(vfs.clone(), Arc::new(super::SystemMonotonicClock)),
+            )
+            .is_err()
+        );
+        vfs.assert_fired_once();
+        assert_eq!(
+            crate::manifest::io::load_manifest(
+                &StdVfs,
+                &directory.path().join("manifest.ze"),
+                u64::MAX
+            )
+            .expect("published schema")
+            .generation,
+            expected.generation,
+            "main commits schema before opening the writer"
+        );
+        assert_eq!(snapshot(), expected_files);
+    }
+
+    #[cfg(feature = "graph-cypher")]
+    #[test]
+    fn enable_graph_retry_completes_a_failed_install() {
+        enable_graph_retry_completes(
+            super::native_graph::tests::publication::FaultPoint::Enumeration,
+        );
+    }
+
+    #[cfg(feature = "graph-cypher")]
+    #[test]
+    fn enable_graph_retry_completes_a_failed_directory_sync() {
+        enable_graph_retry_completes(
+            super::native_graph::tests::publication::FaultPoint::SelectorSync,
+        );
+    }
+
+    #[cfg(feature = "graph-cypher")]
+    #[test]
+    fn enable_graph_retry_survives_a_failed_writer_reopen() {
+        enable_graph_retry_with_writer_reopen_failure(
+            super::native_graph::tests::publication::FaultPoint::Enumeration,
+            true,
+        );
+    }
+
+    #[cfg(feature = "graph-cypher")]
+    pub(super) fn enable_graph_retry_completes(
+        point: super::native_graph::tests::publication::FaultPoint,
+    ) {
+        enable_graph_retry_with_writer_reopen_failure(point, false)
+    }
+
+    #[cfg(feature = "graph-cypher")]
+    fn enable_graph_retry_with_writer_reopen_failure(
+        point: super::native_graph::tests::publication::FaultPoint,
+        fail_writer_reopen: bool,
+    ) {
+        use super::native_graph::tests::publication::{DurabilityEvent, RecordingVfs};
+        let directory = tempdir().expect("directory");
+        let vfs = Arc::new(RecordingVfs::default());
+        let store = Store::open_with_test_dependencies(
+            directory.path(),
+            OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+            StoreTestDependencies::new(vfs.clone(), Arc::new(super::SystemMonotonicClock)),
+        )
+        .expect("open");
+        let wal = std::fs::read(directory.path().join("wal.ze")).expect("WAL");
+        vfs.arm_fault(point);
+        assert!(store.enable_graph().is_err());
+        vfs.assert_fired_once();
+        assert!(
+            store
+                .ingest(crate::ingest::IngestBatch::new(vec![
+                    crate::ingest::IngestDocument::new(
+                        crate::ingest::DocumentVersion::new(
+                            crate::ingest::DocId::new(99),
+                            crate::ingest::Revision::new(1)
+                        ),
+                        vec![1.0, 0.0],
+                    )
+                ]))
+                .is_err(),
+            "failed enable must fence document writes until the retry completes"
+        );
+        if fail_writer_reopen {
+            vfs.arm_fault(super::native_graph::tests::publication::FaultPoint::OpenAppend);
+            assert!(store.enable_graph().is_err());
+            vfs.assert_fired_once();
+        }
+        vfs.clear_events();
+        assert_eq!(store.enable_graph().expect("retry completes upgrade"), 1);
+        assert_eq!(store.snapshot().expect("snapshot").generation(), 1);
+        assert!(
+            store.admit_native_read().is_ok(),
+            "retry must install the bundle"
+        );
+        assert!(
+            vfs.take().iter().any(|event| matches!(event,
+                DurabilityEvent::Sync(path, crate::vfs::SyncKind::Full) if path == directory.path()
+            )),
+            "retry must complete the directory durability barrier"
+        );
+        assert_eq!(
+            std::fs::read(directory.path().join("wal.ze")).expect("WAL"),
+            wal
+        );
+        assert_eq!(store.enable_graph().expect("idempotent"), 1);
+        let ack = store
+            .ingest(crate::ingest::IngestBatch::new(vec![
+                crate::ingest::IngestDocument::new(
+                    crate::ingest::DocumentVersion::new(
+                        crate::ingest::DocId::new(91),
+                        crate::ingest::Revision::new(1),
+                    ),
+                    vec![1.0, 0.0],
+                ),
+            ]))
+            .expect("document writer repaired");
+        assert_eq!(ack.generation(), 2);
+        drop(store);
+        let reopened = Store::open(
+            directory.path(),
+            OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
+        )
+        .expect("reopen");
+        assert_eq!(reopened.snapshot().expect("snapshot").generation(), 2);
+        assert!(reopened.admit_native_read().is_ok());
+    }
 
     #[test]
     fn astra_12_vocabulary_charge_survives_eviction_and_close() {

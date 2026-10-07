@@ -79,7 +79,60 @@ impl Store {
             &self.schema,
         )?;
         if manifest.graph.is_some() {
-            self.native_graph.enable_registries()?;
+            if self
+                .graph_enable_pending
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                // Only this handle's unfinished upgrade may repair its fence.
+                // No WAL mutation was admitted after the failed publication.
+                self.vfs
+                    .sync(&self.directory, SyncKind::Full)
+                    .map_err(|source| io(&self.directory, source))?;
+                let path = self.directory.join("wal.ze");
+                *writer = if self.vfs.open(&path).map_err(|source| io(&path, source))? == 0 {
+                    // The unopened WAL header is pending until the first append,
+                    // exactly as on ordinary writable open of an empty store.
+                    crate::ingest::StoreWal::create(
+                        self.vfs.clone(),
+                        &self.directory,
+                        &path,
+                        self.durability_policy,
+                        &self.accounting,
+                    )?
+                } else {
+                    let recovered = crate::wal::WalReader::open(self.vfs.as_ref(), &path)
+                        .map_err(StoreError::Wal)?
+                        .into_clean()
+                        .map_err(StoreError::WalRecovery)?;
+                    crate::ingest::StoreWal::resume(
+                        self.vfs.as_ref(),
+                        &path,
+                        recovered,
+                        self.durability_policy,
+                        manifest.log_seq,
+                        &self.accounting,
+                    )?
+                };
+                let publication = writer.manifest_publication()?.arm();
+                self.finish_graph_enable(&manifest, current)?;
+                publication.complete();
+                self.graph_enable_pending
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+            } else {
+                // Idempotence must not turn a previous publication failure into
+                // an acknowledgement on a stale writer.
+                let publication = writer.manifest_publication()?;
+                self.vfs
+                    .sync(&self.directory, SyncKind::Full)
+                    .map_err(|source| io(&self.directory, source))?;
+                self.native_graph.enable_registries()?;
+                if !self.native_graph.is_installed()? {
+                    return Err(invalid(
+                        "graph enable has no installed bundle; reopen required",
+                    ));
+                }
+                publication.complete();
+            }
             return Ok(current.generation);
         }
         self.accounting.enable_graph_ceiling()?;
@@ -102,41 +155,50 @@ impl Store {
         )
         .map_err(StoreError::Durability)?;
         let mut publication = writer.manifest_publication()?;
+        self.graph_enable_pending
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         publication
             .commit_manifest(self.vfs.as_ref(), &self.directory, &manifest, barrier)
             .map_err(StoreError::Manifest)?;
+        self.finish_graph_enable(&manifest, current)?;
+        publication.complete();
+        self.graph_enable_pending
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        Ok(generation)
+    }
+
+    fn finish_graph_enable(
+        &self,
+        manifest: &crate::manifest::Manifest,
+        current: &mut crate::ingest::ActiveState,
+    ) -> Result<(), StoreError> {
         self.native_graph.enable_registries()?;
         let remapped = PublishedSnapshot::from_manifest(
             self.vfs.as_ref(),
             &self.directory,
-            &manifest,
+            manifest,
             &self.accounting,
         )?;
-        let mut published = self
+        *self
             .snapshot
             .write()
             .map_err(|_| StoreError::Synchronization {
                 component: "published snapshot",
-            })?;
-        *published = Some(Arc::new(remapped));
-        current.generation = generation;
-        publication.complete();
-        drop(published);
-        drop(active);
-        drop(wal);
-        drop(lock);
-        drop(state);
-        if let Some(graph) = manifest.graph.as_ref() {
-            super::native_graph::recovery::install_unified(
-                self,
-                graph,
-                manifest.generation,
-                &[],
-                super::AccessMode::ReadWrite,
-                None,
-            )?;
-        }
-        Ok(generation)
+            })? = Some(Arc::new(remapped));
+        current.generation = manifest.generation;
+        let graph = manifest
+            .graph
+            .as_ref()
+            .ok_or_else(|| invalid("graph upgrade section is absent"))?;
+        super::native_graph::recovery::install_unified(
+            self,
+            graph,
+            manifest.generation,
+            &[],
+            super::AccessMode::ReadWrite,
+            None,
+        )?;
+        Ok(())
     }
 
     fn empty_graph(&self, generation: u64, log_seq: u64) -> Result<GraphManifest, StoreError> {

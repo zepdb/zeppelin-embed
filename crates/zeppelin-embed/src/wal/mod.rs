@@ -1338,6 +1338,10 @@ pub(crate) struct CleanWalReader {
 }
 
 impl CleanWalReader {
+    pub(crate) fn durable_end(&self) -> u64 {
+        self.durable_end.map_or(0, LogSeq::get)
+    }
+
     #[cfg(feature = "graph-cypher")]
     pub(crate) fn retained_first_seq(&self) -> u64 {
         self.records

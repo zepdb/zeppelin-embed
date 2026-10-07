@@ -691,7 +691,17 @@ fn create_with_high_waters(
         CommitTier::Durable,
     )
     .map_err(crate::lifecycle::StoreError::Durability)?;
-    crate::manifest::io::commit_manifest(vfs.as_ref(), path, &manifest, barrier)
+    let mut publication = store
+        .wal_writer
+        .lock()
+        .map_err(|_| crate::lifecycle::StoreError::Synchronization {
+            component: "WAL writer",
+        })?
+        .as_ref()
+        .ok_or(crate::lifecycle::StoreError::ReadOnly)?
+        .manifest_publication()?;
+    publication
+        .commit_manifest(vfs.as_ref(), path, &manifest, barrier)
         .map_err(crate::lifecycle::StoreError::Manifest)?;
     store.native_graph.enable_registries()?;
     let snapshot = crate::lifecycle::PublishedSnapshot::from_manifest(
@@ -722,6 +732,7 @@ fn create_with_high_waters(
         crate::lifecycle::AccessMode::ReadWrite,
         document,
     )?;
+    publication.complete();
 
     Ok(store)
 }

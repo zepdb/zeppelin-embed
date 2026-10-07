@@ -40,6 +40,10 @@ impl Store {
             .map_err(|_| StoreError::Synchronization {
                 component: "WAL writer",
             })?;
+        let mut publication = wal
+            .as_ref()
+            .ok_or(StoreError::ReadOnly)?
+            .manifest_publication()?;
         let durable_end = wal.as_ref().ok_or(StoreError::ReadOnly)?.durable_end();
         let mut active = self
             .active
@@ -109,10 +113,6 @@ impl Store {
         manifest
             .record_generation_bump(durable_end)
             .map_err(StoreError::Manifest)?;
-        let mut publication = wal
-            .as_ref()
-            .ok_or(StoreError::ReadOnly)?
-            .manifest_publication()?;
         publication
             .commit_manifest(
                 self.vfs.as_ref(),

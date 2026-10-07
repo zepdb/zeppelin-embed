@@ -244,6 +244,10 @@ impl Store {
             .map_err(|_| StoreError::Synchronization {
                 component: "WAL writer",
             })?;
+        wal.as_ref()
+            .ok_or(StoreError::ReadOnly)?
+            .manifest_publication()?
+            .complete();
         let durable_end = wal.as_ref().ok_or(StoreError::ReadOnly)?.durable_end();
         let mut active = self
             .active
@@ -351,7 +355,6 @@ impl Store {
             })?;
         let prior_snapshot = published.replace(Arc::new(remapped));
         active_state.generation = generation;
-        publication.complete();
         drop(published);
         if let Some(snapshot) = prior_snapshot.as_ref() {
             let drain_result = snapshot.drain_readers(self.reader_drain_timeout);
@@ -360,6 +363,7 @@ impl Store {
         } else {
             self.epoch_alias.store(Some(target));
         }
+        publication.complete();
         drop(prior_snapshot);
         drop(active);
         drop(wal);

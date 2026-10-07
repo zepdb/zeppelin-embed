@@ -65,7 +65,7 @@ impl PreparedSealedTombstones {
 
     pub(crate) fn commit(
         mut self,
-        publication: &mut super::active::ManifestPublication<'_>,
+        publication: &mut super::active::ManifestPublication,
         store: &Store,
         vfs: &dyn Vfs,
         directory: &Path,
@@ -679,7 +679,18 @@ impl Store {
         if writer_lock.is_none() {
             return Err(StoreError::ReadOnly.into());
         }
-        let token = self.schedule_purge_locked(ids, available_bytes, vfs)?;
+        let wal = self
+            .wal_writer
+            .lock()
+            .map_err(|_| StoreError::Synchronization {
+                component: "WAL writer",
+            })?;
+        let token = self.schedule_purge_locked(
+            ids,
+            available_bytes,
+            vfs,
+            wal.as_ref().ok_or(StoreError::ReadOnly)?,
+        )?;
         drop(writer_lock);
         drop(state);
         Ok(token)
@@ -703,7 +714,9 @@ impl Store {
         ids: &[DocId],
         available_bytes: u64,
         vfs: &dyn Vfs,
+        writer: &super::StoreWal,
     ) -> Result<PurgeToken, PurgeError> {
+        let publication = writer.manifest_publication()?;
         self.require_no_snapshot_views()?;
         let intent_path = self.directory.join(PURGE_INTENT_FILE);
         match vfs.open(&intent_path) {
@@ -752,6 +765,7 @@ impl Store {
         }
         #[cfg(any(test, feature = "test-seams"))]
         let crash_target_ids = known.iter().map(|id| id.get()).collect::<Vec<_>>();
+        let publication = publication.arm();
         write_intent(
             vfs,
             &self.directory,
@@ -785,13 +799,21 @@ impl Store {
         }
         drop(snapshot);
         drop(active);
+        publication.complete();
         Ok(token)
     }
 
     /// Removes the intent written by [`Self::schedule_purge_locked`] when the
     /// mutation it was scheduled for did not commit. Same locks held.
-    pub(crate) fn abandon_scheduled_purge_locked(&self, vfs: &dyn Vfs) -> Result<(), PurgeError> {
-        remove_intent(vfs, &self.directory, self.durability_policy)
+    pub(crate) fn abandon_scheduled_purge_locked(
+        &self,
+        vfs: &dyn Vfs,
+        writer: &super::StoreWal,
+    ) -> Result<(), PurgeError> {
+        let publication = writer.manifest_publication()?.arm();
+        remove_intent(vfs, &self.directory, self.durability_policy)?;
+        publication.complete();
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -913,7 +935,7 @@ impl Store {
     ) -> Result<(), PurgeError> {
         // The caller already advanced active generation or rewrote the WAL.
         // Even a pre-rename failure requires recovery before another write.
-        let mut publication = writer.manifest_publication()?.after_mutation();
+        let mut publication = writer.manifest_publication()?.arm();
         let _durable_end = writer.durable_end();
         manifest.generation = generation;
         #[cfg(feature = "graph-cypher")]
@@ -1289,8 +1311,8 @@ impl Store {
             )?;
         }
         active_state.segment = Arc::new(next_active);
-        publication.complete();
         remove_intent(vfs, &self.directory, policy)?;
+        publication.complete();
         let generation = active_state.generation;
         drop(active);
         Ok(PurgeReport {
