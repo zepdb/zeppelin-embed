@@ -1271,7 +1271,7 @@ fn read_u64_at(bytes: &[u8], offset: usize) -> Option<u64> {
     Some(u64::from_le_bytes(raw))
 }
 
-fn replay_prefix(
+pub(crate) fn replay_prefix(
     initial: &MemoryVfs,
     operations: &[CrashOperation],
     completed_operations: usize,

@@ -3390,30 +3390,63 @@ mod graph_checkpoint {
     }
 
     #[test]
-    fn refuses_a_document_tail_that_it_cannot_fold() {
+    fn folds_graph_state_without_absorbing_a_later_document_batch() {
         use crate::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
         let directory = tempfile::tempdir().unwrap();
         let store = Store::open(directory.path(), OpenOptions::new()).unwrap();
         store.enable_graph().unwrap();
         write_one(&store);
-        store
+        let acknowledged = store
             .ingest(IngestBatch::new(vec![IngestDocument::new(
                 DocumentVersion::new(DocId::new(91), Revision::new(1)),
                 vec![1.0, 0.0],
             )]))
+            .unwrap()
+            .generation();
+        let wal = directory.path().join("wal.ze");
+        let before = std::fs::read(&wal).unwrap();
+        store
+            .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
             .unwrap();
-        let before = super::super::recovery::file_snapshot(directory.path());
-        assert!(
-            store
-                .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
-                .is_err(),
-            "a graph-only fold cannot count the later document batch again on reopen"
-        );
-        assert_eq!(
-            super::super::recovery::file_snapshot(directory.path()),
-            before
-        );
+        let manifest =
+            crate::manifest::io::load_manifest(&StdVfs, &directory.path().join("manifest.ze"), 2)
+                .unwrap();
+        assert_eq!(manifest.generation, acknowledged + 1);
+        assert_eq!(manifest.log_seq, 0);
+        assert!(manifest.segments.is_empty());
+        let graph = manifest.graph.as_ref().unwrap();
+        assert_eq!(graph.graph_absorbed_through, 1);
+        assert_eq!(graph.generation_absorbed_through, Some(2));
+        assert_eq!(graph.generation_bumps, vec![(2, 1)]);
+        assert_eq!(graph.state().unwrap().generation.get(), 2);
+        assert_eq!(std::fs::read(&wal).unwrap(), before);
         store.close().unwrap();
+        for access in [
+            crate::lifecycle::AccessMode::ReadWrite,
+            crate::lifecycle::AccessMode::ReadOnly,
+            crate::lifecycle::AccessMode::ReadWrite,
+        ] {
+            let reopened = Store::open(
+                directory.path(),
+                OpenOptions::new().with_access_mode(access),
+            )
+            .unwrap();
+            assert_eq!(reopened.snapshot().unwrap().generation(), acknowledged + 1);
+            assert_eq!(reopened.count_documents(None, None).unwrap().count, 1);
+            assert!(
+                reopened
+                    .get_documents(&[DocId::new(91)], crate::lifecycle::DocumentFields::NONE)
+                    .unwrap()[0]
+                    .is_some()
+            );
+            assert!(
+                super::super::recovery::observe_node(
+                    &reopened,
+                    crate::property_graph::NodeId::new(1).unwrap()
+                )
+                .is_some()
+            );
+        }
     }
 
     #[test]

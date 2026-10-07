@@ -801,11 +801,9 @@ fn checkpoint_current_inner(
             ))?
             .graph_absorbed_through,
     );
-    if !active.segment.is_empty() && wal.durable_end() > graph_mark {
-        return Err(NativeGraphError::Invalid(
-            "graph checkpoint cannot fold a later document batch",
-        ));
-    }
+    // Later document batches stay in the WAL above the unchanged document
+    // watermark. The generation cutoff recorded at durable_end counts them
+    // without absorbing their data, including a fold required by reclaim replay.
     let generation = active
         .generation
         .checked_add(1)

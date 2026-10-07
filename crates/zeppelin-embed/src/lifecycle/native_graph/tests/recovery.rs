@@ -26,6 +26,63 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+#[cfg(test)]
+#[path = "recovery_random.rs"]
+mod random;
+
+#[test]
+fn random_operation_sequences_reopen_to_the_model_state() {
+    random::run();
+}
+
+#[test]
+fn a_graph_checkpoint_after_a_later_document_batch_reopens() {
+    use crate::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    store.enable_graph().unwrap();
+    disable_generation_fixture_maintenance(&store);
+    let node = commit_tail_test_node(&store, "before-later-document");
+    let acknowledged = store
+        .ingest(IngestBatch::new(vec![IngestDocument::new(
+            DocumentVersion::new(DocId::new(91), Revision::new(1)),
+            vec![1.0, 0.0],
+        )]))
+        .unwrap()
+        .generation();
+    store
+        .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+        .unwrap();
+    assert_eq!(store.snapshot().unwrap().generation(), acknowledged + 1);
+    drop(store);
+    for access in [
+        crate::lifecycle::AccessMode::ReadWrite,
+        crate::lifecycle::AccessMode::ReadOnly,
+        crate::lifecycle::AccessMode::ReadWrite,
+    ] {
+        let reopened =
+            Store::open(directory.path(), native_options().with_access_mode(access)).unwrap();
+        assert_eq!(reopened.snapshot().unwrap().generation(), acknowledged + 1);
+        assert_eq!(reopened.count_documents(None, None).unwrap().count, 1);
+        assert!(
+            reopened
+                .get_documents(&[DocId::new(91)], crate::lifecycle::DocumentFields::NONE)
+                .unwrap()[0]
+                .is_some()
+        );
+        assert!(observe_node(&reopened, node).is_some());
+    }
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    disable_generation_fixture_maintenance(&store);
+    let next = commit_tail_test_node(&store, "after-later-document");
+    drop(store);
+    let reopened = Store::open(directory.path(), native_options()).unwrap();
+    assert_eq!(reopened.snapshot().unwrap().generation(), acknowledged + 2);
+    assert_eq!(reopened.count_documents(None, None).unwrap().count, 1);
+    assert!(observe_node(&reopened, node).is_some());
+    assert!(observe_node(&reopened, next).is_some());
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct MixedObservation {
     store: StoreInstanceId,
