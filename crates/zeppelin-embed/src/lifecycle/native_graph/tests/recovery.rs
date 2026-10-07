@@ -5779,3 +5779,207 @@ fn a_definite_group_too_large_refusal_keeps_the_writers_open() {
         assert!(observe_node(&reopened, node).is_some());
     }
 }
+
+#[test]
+fn ze390_seal_rotation_directory_sync_failure_fences_retry() {
+    ze390_seal_rotation_fault();
+}
+
+pub(super) fn ze390_seal_rotation_fault() {
+    use crate::ingest::DocId;
+    for graph_enabled in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let vfs = Arc::new(RecordingVfs::default());
+        let store = Store::open_with_test_dependencies(
+            directory.path(),
+            native_options(),
+            crate::lifecycle::StoreTestDependencies::new(
+                vfs.clone(),
+                Arc::new(crate::lifecycle::SystemMonotonicClock),
+            ),
+        )
+        .unwrap();
+        if graph_enabled {
+            store.enable_graph().unwrap();
+        }
+        let base = u64::from(graph_enabled);
+        assert_eq!(
+            store
+                .ingest(purge_documents(&[91], 1))
+                .unwrap()
+                .generation(),
+            base + 1
+        );
+        let wal_path = directory.path().join("wal.ze");
+        let old_wal = std::fs::read(&wal_path).unwrap();
+        // Segment rename and manifest rename sync successfully; WAL rename's sync fails.
+        vfs.arm_fault_after(FaultPoint::DirectorySync, 2);
+        assert!(store.seal().is_err());
+        vfs.assert_fired_once();
+        assert!(
+            matches!(vfs.take().last(), Some(DurabilityEvent::OpenAppend(path)) if path == &wal_path)
+        );
+        assert!(
+            store.ingest(purge_documents(&[92], 1)).is_err(),
+            "B must not be acknowledged after an unsynced WAL rename"
+        );
+        drop(store);
+        // Select the permitted power-loss image where only the WAL rename rolls back.
+        std::fs::write(&wal_path, old_wal).unwrap();
+        for access in [
+            crate::lifecycle::AccessMode::ReadOnly,
+            crate::lifecycle::AccessMode::ReadWrite,
+        ] {
+            let recovered =
+                Store::open(directory.path(), native_options().with_access_mode(access)).unwrap();
+            assert_eq!(recovered.snapshot().unwrap().generation(), base + 2);
+            assert_eq!(recovered.count_documents(None, None).unwrap().count, 1);
+            assert!(
+                recovered
+                    .get_documents(&[DocId::new(91)], crate::lifecycle::DocumentFields::NONE)
+                    .unwrap()[0]
+                    .is_some()
+            );
+            assert!(
+                recovered
+                    .get_documents(&[DocId::new(92)], crate::lifecycle::DocumentFields::NONE)
+                    .unwrap()[0]
+                    .is_none()
+            );
+        }
+        let recovered = Store::open(directory.path(), native_options()).unwrap();
+        assert_eq!(
+            recovered
+                .ingest(purge_documents(&[92], 1))
+                .unwrap()
+                .generation(),
+            base + 3
+        );
+    }
+}
+
+#[test]
+fn ze390_failed_upsert_manifest_write_fences_identical_retry() {
+    ze390_upsert_manifest_fault();
+}
+
+pub(super) fn ze390_upsert_manifest_fault() {
+    use crate::ingest::DocId;
+    for graph_enabled in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let vfs = Arc::new(RecordingVfs::default());
+        let store = Store::open_with_test_dependencies(
+            directory.path(),
+            native_options(),
+            crate::lifecycle::StoreTestDependencies::new(
+                vfs.clone(),
+                Arc::new(crate::lifecycle::SystemMonotonicClock),
+            ),
+        )
+        .unwrap();
+        if graph_enabled {
+            store.enable_graph().unwrap();
+        }
+        store.ingest(purge_documents(&[91], 1)).unwrap();
+        store.seal().unwrap();
+        vfs.arm_fault(FaultPoint::ManifestWrite);
+        assert!(store.ingest(purge_documents(&[91], 2)).is_err());
+        vfs.assert_fired_once();
+        let wal_path = directory.path().join("wal.ze");
+        let wal_after = std::fs::read(&wal_path).unwrap();
+        assert_eq!(
+            crate::wal::WalReader::open(&StdVfs, &wal_path)
+                .unwrap()
+                .records()
+                .last()
+                .unwrap()
+                .seq
+                .get(),
+            2
+        );
+        assert!(
+            store.ingest(purge_documents(&[91], 2)).is_err(),
+            "identical retry must be fenced before sequence 3"
+        );
+        assert_eq!(std::fs::read(&wal_path).unwrap(), wal_after);
+        drop(store);
+        // Writable recovery repairs the sealed tombstone, then both access modes open.
+        for access in [
+            crate::lifecycle::AccessMode::ReadWrite,
+            crate::lifecycle::AccessMode::ReadOnly,
+        ] {
+            let recovered =
+                Store::open(directory.path(), native_options().with_access_mode(access)).unwrap();
+            let rows = recovered
+                .get_documents(&[DocId::new(91)], crate::lifecycle::DocumentFields::NONE)
+                .unwrap();
+            assert_eq!(rows[0].as_ref().unwrap().revision.get(), 2);
+            assert_eq!(recovered.count_documents(None, None).unwrap().count, 1);
+        }
+    }
+}
+
+#[test]
+fn ze390_graph_free_sealed_delete_preserves_main_generation_behavior() {
+    // Owner decision: preserve v2 bytes, including main's retained-delete double count.
+    ze390_sealed_delete_generation(false);
+}
+
+#[test]
+fn ze390_acknowledged_graph_sealed_delete_recovers_generation_once() {
+    ze390_sealed_delete_generation(true);
+}
+
+fn ze390_sealed_delete_generation(graph_enabled: bool) {
+    use crate::ingest::{DeleteBatch, DocId};
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    if graph_enabled {
+        store.enable_graph().unwrap();
+    }
+    // v2 literals measured on main in a separate checkout; v3 counts the delete once.
+    let (ingest_generation, seal_generation, delete_generation, recovered_generation) =
+        if graph_enabled {
+            (2, 3, 4, 4)
+        } else {
+            (1, 2, 3, 4)
+        };
+    assert_eq!(
+        store
+            .ingest(purge_documents(&[91], 1))
+            .unwrap()
+            .generation(),
+        ingest_generation
+    );
+    assert_eq!(store.seal().unwrap(), seal_generation);
+    assert_eq!(
+        store
+            .delete(DeleteBatch::new(vec![DocId::new(91)]))
+            .unwrap()
+            .generation(),
+        delete_generation
+    );
+    drop(store);
+    let manifest_path = directory.path().join("manifest.ze");
+    let manifest_bytes = std::fs::read(&manifest_path).unwrap();
+    let manifest = crate::manifest::decode_manifest("sealed delete", &manifest_bytes).unwrap();
+    assert_eq!(manifest.generation, delete_generation);
+    assert_eq!(manifest.log_seq, 1);
+    assert_eq!(manifest.graph.is_some(), graph_enabled);
+    for access in [
+        crate::lifecycle::AccessMode::ReadOnly,
+        crate::lifecycle::AccessMode::ReadWrite,
+    ] {
+        let recovered =
+            Store::open(directory.path(), native_options().with_access_mode(access)).unwrap();
+        assert_eq!(
+            recovered.snapshot().unwrap().generation(),
+            recovered_generation,
+            "graph_enabled={graph_enabled}, access={access:?}"
+        );
+        assert_eq!(recovered.count_documents(None, None).unwrap().count, 0);
+        if !graph_enabled {
+            assert_eq!(std::fs::read(&manifest_path).unwrap(), manifest_bytes);
+        }
+    }
+}

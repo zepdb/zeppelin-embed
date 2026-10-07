@@ -73,6 +73,7 @@ pub(crate) enum FaultPoint {
     OpenAppend,
     SelectorSync,
     ManifestSync,
+    ManifestWrite,
     Delete,
 }
 
@@ -343,6 +344,13 @@ impl Vfs for RecordingVfs {
     }
 
     fn write(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        if path
+            .file_name()
+            .is_some_and(|name| name == ".manifest.ze.tmp")
+            && self.fire(FaultPoint::ManifestWrite)
+        {
+            return Err(std::io::Error::other("scheduled manifest write failure"));
+        }
         StdVfs.write(path, bytes)?;
         self.record(DurabilityEvent::Write(path.to_path_buf()));
         Ok(())
