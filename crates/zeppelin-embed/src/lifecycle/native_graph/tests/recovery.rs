@@ -363,6 +363,181 @@ fn a_purge_after_a_checkpoint_with_active_documents_reopens() {
 }
 
 #[test]
+fn a_wal_rename_that_succeeds_then_reports_failure_fences_the_writers() {
+    use crate::ingest::DocId;
+    let directory = tempfile::tempdir().unwrap();
+    let vfs = Arc::new(RecordingVfs::default());
+    let store = Store::open_with_test_dependencies(
+        directory.path(),
+        native_options(),
+        crate::lifecycle::StoreTestDependencies::new(
+            vfs.clone(),
+            Arc::new(crate::lifecycle::SystemMonotonicClock),
+        ),
+    )
+    .unwrap();
+    store.enable_graph().unwrap();
+    disable_generation_fixture_maintenance(&store);
+    let node = commit_tail_test_node(&store, "before-rename-error");
+    store.ingest(purge_documents(&[91, 92, 93], 1)).unwrap();
+    let token = store.purge(&[DocId::new(91)]).unwrap();
+    vfs.take();
+    vfs.arm_fault(FaultPoint::PostWalRename);
+    let error = store.await_physical_purge(token).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("scheduled post-WAL-rename error"),
+        "{error}"
+    );
+    vfs.assert_fired_once();
+    assert!(vfs.take().iter().any(|event| matches!(event, DurabilityEvent::Rename(_, to) if to.file_name().is_some_and(|name| name == "wal.ze"))));
+    let wal = std::fs::read(directory.path().join("wal.ze")).unwrap();
+    assert!(
+        store.ingest(purge_documents(&[999], 1)).is_err(),
+        "a reported rename error must fence even if rename happened"
+    );
+    assert_eq!(std::fs::read(directory.path().join("wal.ze")).unwrap(), wal);
+    drop(store);
+    let reopened = Store::open(directory.path(), native_options()).unwrap();
+    disable_generation_fixture_maintenance(&reopened);
+    let generation = reopened.snapshot().unwrap().generation();
+    let next = commit_tail_test_node(&reopened, "after-rename-error");
+    drop(reopened);
+    assert_purge_reopens(
+        directory.path(),
+        generation + 1,
+        &[92, 93],
+        &[91, 999],
+        &[node, next],
+    );
+}
+
+#[test]
+fn a_budget_failure_after_wal_replacement_fences_the_writers() {
+    use crate::ingest::{DeleteBatch, DocId};
+    use crate::lifecycle::stats::{AccountedCounter, AllocationComponent};
+    let directory = tempfile::tempdir().unwrap();
+    let vfs = Arc::new(RecordingVfs::default());
+    let store = Store::open_with_test_dependencies(
+        directory.path(),
+        native_options(),
+        crate::lifecycle::StoreTestDependencies::new(
+            vfs.clone(),
+            Arc::new(crate::lifecycle::SystemMonotonicClock),
+        ),
+    )
+    .unwrap();
+    store.enable_graph().unwrap();
+    disable_generation_fixture_maintenance(&store);
+    let node = commit_tail_test_node(&store, "before-budget-purge");
+    // Individual batches have no op-11 overhead. The retained image grows
+    // when purge wraps these small documents into one replacement batch.
+    for id in 91..219 {
+        store.ingest(purge_documents(&[id], 1)).unwrap();
+    }
+    let generation = store.snapshot().unwrap().generation();
+    let token = store.purge(&[DocId::new(91)]).unwrap();
+    let pressure = Arc::new(std::sync::Mutex::new(None));
+    let held = pressure.clone();
+    let accounting = store.accounting.clone();
+    let path = directory.path().join("manifest.ze");
+    // Existing post-manifest-sync seam: next_active is already allocated,
+    // and the active purge generation is durable, but WAL replacement follows.
+    vfs.after_selector_sync(move || {
+        let manifest = crate::manifest::io::load_manifest(&StdVfs, &path, u64::MAX).unwrap();
+        if manifest.generation == generation + 2 && held.lock().unwrap().is_none() {
+            let current = accounting.graph_resource_bytes().unwrap().0;
+            let mut reservation =
+                AccountedCounter::new(&accounting, AllocationComponent::Cache).unwrap();
+            reservation
+                .set(usize::try_from(accounting.resident_limit() - current).unwrap())
+                .unwrap();
+            *held.lock().unwrap() = Some(reservation);
+        }
+        Ok(())
+    });
+    let original_wal_bytes = std::fs::metadata(directory.path().join("wal.ze"))
+        .unwrap()
+        .len();
+    vfs.take();
+    let error = store.await_physical_purge(token.clone()).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            crate::ingest::PurgeError::Store(crate::lifecycle::StoreError::BudgetExceeded {
+                component: "wal",
+                ..
+            })
+        ),
+        "{error:?}"
+    );
+    let events = vfs.take();
+    assert!(events.iter().any(|event| matches!(event, DurabilityEvent::Rename(_, to) if to.file_name().is_some_and(|name| name == "wal.ze"))), "failure must be after WAL rename");
+    assert!(
+        std::fs::metadata(directory.path().join("wal.ze"))
+            .unwrap()
+            .len()
+            > original_wal_bytes,
+        "op-11 replacement must grow the WAL"
+    );
+    let rename = events.iter().position(|event| matches!(event, DurabilityEvent::Rename(_, to) if to.file_name().is_some_and(|name| name == "wal.ze"))).unwrap();
+    assert!(
+        !events[rename + 1..].iter().any(
+            |event| matches!(event, DurabilityEvent::Sync(path, _) if path == directory.path())
+        ),
+        "accounting failure precedes directory sync"
+    );
+    assert!(pressure.lock().unwrap().take().is_some());
+    let wal = std::fs::read(directory.path().join("wal.ze")).unwrap();
+    assert!(
+        store.ingest(purge_documents(&[999], 1)).is_err(),
+        "document writers must be fenced"
+    );
+    assert!(
+        store
+            .delete(DeleteBatch::new(vec![DocId::new(92)]))
+            .is_err(),
+        "delete writers must be fenced"
+    );
+    assert!(
+        store.await_physical_purge(token).is_err(),
+        "purge retry must preserve the fence"
+    );
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    assert!(
+        store
+            .apply_native_graph(
+                &[StructuredWrite {
+                    key: ApplicationKey::new(EntityKind::Node, "tail", "budget-fenced").unwrap(),
+                    revision: GraphRevision::new(1).unwrap(),
+                    operation: StructuredOperation::Create,
+                    image: Some(WriteImage::Node(&image)),
+                }],
+                &QueryControl::Cancel(CancelToken::new())
+            )
+            .is_err(),
+        "graph writers must be fenced"
+    );
+    assert_eq!(std::fs::read(directory.path().join("wal.ze")).unwrap(), wal);
+    drop(store);
+    let reopened = Store::open(directory.path(), native_options()).unwrap();
+    disable_generation_fixture_maintenance(&reopened);
+    assert_eq!(reopened.count_documents(None, None).unwrap().count, 127);
+    assert!(observe_node(&reopened, node).is_some());
+    let recovered_generation = reopened.snapshot().unwrap().generation();
+    let next = commit_tail_test_node(&reopened, "after-budget-purge");
+    drop(reopened);
+    assert_purge_reopens(
+        directory.path(),
+        recovered_generation + 1,
+        &(92..219).collect::<Vec<_>>(),
+        &[91, 999],
+        &[node, next],
+    );
+}
+
+#[test]
 fn a_purge_retry_after_a_failed_directory_sync_keeps_the_fence() {
     use crate::ingest::DocId;
     let directory = tempfile::tempdir().unwrap();

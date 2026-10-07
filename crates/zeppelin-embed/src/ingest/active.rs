@@ -2121,6 +2121,31 @@ impl Drop for ManifestPublication<'_> {
     }
 }
 
+/// Holds the WAL replacement fence until its cutoff and active image are
+/// published. Any intervening failure requires recovery before another write.
+#[must_use]
+pub(crate) struct WalReplacement<'a> {
+    pub(crate) wal: &'a mut StoreWal,
+    armed: bool,
+}
+
+impl WalReplacement<'_> {
+    pub(crate) fn complete(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for WalReplacement<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            // A poisoned state mutex already refuses all shared writers.
+            let _ = self
+                .wal
+                .poison_after_manifest_failure("WAL replacement publication did not complete");
+        }
+    }
+}
+
 impl StoreWal {
     pub(crate) fn manifest_publication(&self) -> Result<ManifestPublication<'_>, StoreError> {
         // Check the shared failure state and wait for any pending group flush
@@ -2379,7 +2404,7 @@ impl StoreWal {
         policy: DurabilityPolicy,
         first_seq: LogSeq,
         records: &[(u16, Vec<u8>)],
-    ) -> Result<(), StoreError> {
+    ) -> Result<WalReplacement<'_>, StoreError> {
         // Replacement must not clear an earlier indeterminate-publication fence.
         self.writer.flush().map_err(StoreError::WalWrite)?;
         let path = directory.join("wal.ze");
@@ -2403,39 +2428,35 @@ impl StoreWal {
         // later step can return.
         let reader = WalReader::open(vfs, &temporary).map_err(StoreError::Wal)?;
         let recovered = reader.into_clean().map_err(StoreError::WalRecovery)?;
+        // A VFS may complete rename and then report an error. Fence even that
+        // outcome; only successful publication makes this handle writable again.
+        let publication = WalReplacement {
+            wal: self,
+            armed: true,
+        };
         vfs.rename(&temporary, &path)
             .map_err(|source| StoreError::Io {
                 path: path.clone(),
                 source,
             })?;
-        let replacement = match WalWriter::resume(vfs, &path, recovered, policy) {
-            Ok(replacement) => replacement,
-            Err(error) => {
-                self.writer
-                    .poison(&std::io::Error::other(format!(
-                        "wal.ze was replaced but its writer did not reopen: {error}"
-                    )))
-                    .map_err(StoreError::WalWrite)?;
-                return Err(StoreError::WalWrite(error));
-            }
-        };
-        self.writer = replacement;
-        self.retained.set(
-            self.writer
+        let replacement =
+            WalWriter::resume(vfs, &path, recovered, policy).map_err(StoreError::WalWrite)?;
+        publication.wal.writer = replacement;
+        publication.wal.retained.set(
+            publication
+                .wal
+                .writer
                 .stats()
                 .map_err(StoreError::WalWrite)?
                 .retained_bytes,
         )?;
-        if let SyncRequirement::Sync(kind) = policy.directory_sync()
-            && let Err(source) = vfs.sync(directory, kind)
-        {
-            self.writer.poison(&source).map_err(StoreError::WalWrite)?;
-            return Err(StoreError::Io {
+        if let SyncRequirement::Sync(kind) = policy.directory_sync() {
+            vfs.sync(directory, kind).map_err(|source| StoreError::Io {
                 path: directory.to_path_buf(),
                 source,
-            });
+            })?;
         }
-        Ok(())
+        Ok(publication)
     }
 
     /// Replaces `wal.ze` with an empty log that continues the sequence after
@@ -2467,7 +2488,11 @@ impl StoreWal {
             .ok_or(StoreError::WalWrite(
                 crate::wal::WalWriteError::SequenceExhausted,
             ))?;
-        self.rewrite(vfs, directory, policy, LogSeq::new(first_seq), &[])
+        // These callers have already published the absorbing manifest and
+        // active state, so directory sync is the last replacement boundary.
+        self.rewrite(vfs, directory, policy, LogSeq::new(first_seq), &[])?
+            .complete();
+        Ok(())
     }
 }
 

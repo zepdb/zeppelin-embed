@@ -64,6 +64,7 @@ pub(crate) enum FaultPoint {
     PartialAppend,
     WalSync,
     Rename,
+    PostWalRename,
     Publish,
     OpenAppend,
     SelectorSync,
@@ -381,6 +382,11 @@ impl Vfs for RecordingVfs {
             from.to_path_buf(),
             to.to_path_buf(),
         ));
+        if to.file_name().is_some_and(|name| name == "wal.ze")
+            && self.fire(FaultPoint::PostWalRename)
+        {
+            return Err(std::io::Error::other("scheduled post-WAL-rename error"));
+        }
         Ok(())
     }
 

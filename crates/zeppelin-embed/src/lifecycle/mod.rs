@@ -3436,10 +3436,15 @@ impl Store {
                 }
             }
         }
+        #[cfg(feature = "graph-cypher")]
+        let repair_before_purge = snapshot.graph_enabled;
+        #[cfg(not(feature = "graph-cypher"))]
+        let repair_before_purge = false;
         store.publish_snapshot(snapshot)?;
-        // Replayed sealed deletes must be durable before any recovery fold
-        // can absorb their WAL records, even when the active segment is empty.
-        store.recover_sealed_tombstones(&sealed_tombstones)?;
+        if repair_before_purge {
+            // Graph folds must not absorb unrepaired sealed deletes.
+            store.recover_sealed_tombstones(&sealed_tombstones)?;
+        }
         #[cfg(feature = "graph-cypher")]
         if options.access_mode == AccessMode::ReadWrite
             && store.native_graph.has_pending_reclaim()?
@@ -3475,6 +3480,10 @@ impl Store {
             .map_err(|error| StoreError::PurgeRecovery {
                 detail: error.to_string(),
             })?;
+        if !repair_before_purge {
+            // Preserve main's exact graph-free generation, bytes and refusals.
+            store.recover_sealed_tombstones(&sealed_tombstones)?;
+        }
         if options.access_mode == AccessMode::ReadWrite {
             let cleanup_report = cleanup_open_orphans(&store)?;
             #[cfg(any(test, feature = "test-seams"))]

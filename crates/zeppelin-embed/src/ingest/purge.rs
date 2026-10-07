@@ -945,17 +945,17 @@ impl Store {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn rewrite_wal_for_purge(
+    fn rewrite_wal_for_purge<'a>(
         &self,
         vfs: &dyn Vfs,
-        writer: &mut super::StoreWal,
+        writer: &'a mut super::StoreWal,
         manifest: &Manifest,
         intent: &PurgeIntent,
         next_active: &mut super::ActiveSegment,
         records: &[(u16, Vec<u8>)],
         tombstoned: &[bool],
         policy: DurabilityPolicy,
-    ) -> Result<(), PurgeError> {
+    ) -> Result<super::active::WalReplacement<'a>, PurgeError> {
         let retained_first_seq = LogSeq::new(
             manifest
                 .log_seq
@@ -1005,9 +1005,10 @@ impl Store {
         } else {
             records
         };
-        writer.rewrite(vfs, &self.directory, policy, rewrite_first_seq, records)?;
+        let publication =
+            writer.rewrite(vfs, &self.directory, policy, rewrite_first_seq, records)?;
         assign_rewritten_sequences(next_active, rewrite_first_seq, tombstoned)?;
-        Ok(())
+        Ok(publication)
     }
 
     #[cfg(feature = "graph-cypher")]
@@ -1233,7 +1234,7 @@ impl Store {
         }
         #[cfg(feature = "graph-cypher")]
         let retired_through = writer.durable_end();
-        self.rewrite_wal_for_purge(
+        let publication = self.rewrite_wal_for_purge(
             vfs,
             writer,
             &manifest,
@@ -1243,6 +1244,8 @@ impl Store {
             &tombstoned,
             policy,
         )?;
+        #[cfg(feature = "graph-cypher")]
+        let writer = &*publication.wal;
         #[cfg(feature = "graph-cypher")]
         let history_folded = if let Some(graph) = &mut manifest.graph
             && !graph.generation_bumps.is_empty()
@@ -1286,6 +1289,7 @@ impl Store {
             )?;
         }
         active_state.segment = Arc::new(next_active);
+        publication.complete();
         remove_intent(vfs, &self.directory, policy)?;
         let generation = active_state.generation;
         drop(active);
@@ -2433,6 +2437,107 @@ mod tests {
         assert_eq!(
             recovered.count_documents(None, None).expect("count").count,
             0
+        );
+    }
+
+    fn graph_free_pending_purge_crash(ids: &[u128]) -> tempfile::TempDir {
+        use crate::ingest::{DeleteBatch, DocumentVersion, IngestBatch, IngestDocument, Revision};
+        use crate::lifecycle::{OpenOptions, Store};
+        let directory = tempfile::tempdir().expect("directory");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+        store
+            .ingest(IngestBatch::new(
+                ids.iter()
+                    .map(|id| {
+                        IngestDocument::new(
+                            DocumentVersion::new(DocId::new(*id), Revision::new(1)),
+                            vec![1.0],
+                        )
+                    })
+                    .collect(),
+            ))
+            .expect("ingest");
+        store.seal().expect("seal");
+        store
+            .purge(&[DocId::new(if ids.len() == 1 { 91 } else { 92 })])
+            .expect("schedule purge");
+        let path = directory.path().join("manifest.ze");
+        let before = std::fs::read(&path).expect("manifest before delete");
+        let manifest = crate::manifest::decode_manifest("before", &before).expect("decode");
+        let segment_path = directory.path().join(
+            manifest
+                .segments
+                .first()
+                .expect("sealed segment")
+                .id
+                .file_name(),
+        );
+        let segment = std::fs::read(&segment_path).expect("sealed bytes");
+        assert_eq!(
+            store
+                .delete(DeleteBatch::new(vec![DocId::new(91)]))
+                .expect("delete")
+                .generation(),
+            3
+        );
+        drop(store);
+        // Keep the synced delete WAL; lose its manifest and segment publication.
+        std::fs::write(&path, before).expect("restore manifest");
+        std::fs::write(&segment_path, segment).expect("restore segment");
+        directory
+    }
+
+    #[test]
+    fn a_graph_free_pending_purge_with_an_unmanifested_delete_matches_main() {
+        use crate::lifecycle::{OpenOptions, Store};
+        let directory = graph_free_pending_purge_crash(&[91]);
+        let recovered = Store::open(directory.path(), OpenOptions::default()).expect("recover");
+        let bytes = std::fs::read(directory.path().join("manifest.ze")).expect("manifest");
+        let manifest = crate::manifest::decode_manifest("recovered", &bytes).expect("decode");
+        // Measured on main 9d217196 in the separate temporary worktree
+        // /private/tmp/w346-main-byte-reference: review_pending_purge::record_main_pending_purge.
+        assert_eq!(manifest.generation, 4);
+        assert_eq!(
+            manifest
+                .segments
+                .first()
+                .expect("replacement")
+                .id
+                .to_string(),
+            "0000000000000004e326c259b011dc7d"
+        );
+        let main_hex = "5a4550454d4245440a000200000000002000000000000000c4000000000000008c0000000000000004000000000000000100000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004e326c259b011dc7d00000000040000000100000060800100000000000000000000000000000000000000000054535231010000000100000000000000000000000000000000000000000000002a37ad4743e41889dc2754017bb05dc9";
+        let expected = main_hex
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| {
+                u8::from_str_radix(std::str::from_utf8(pair).expect("hex pair"), 16)
+                    .expect("hex byte")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            bytes, expected,
+            "complete graph-free manifest must match main"
+        );
+        assert_eq!(recovered.snapshot().expect("snapshot").generation(), 4);
+        assert_eq!(
+            recovered.count_documents(None, None).expect("count").count,
+            0
+        );
+    }
+
+    #[test]
+    fn a_graph_free_pending_purge_of_another_document_preserves_main_refusal() {
+        use crate::lifecycle::{OpenOptions, Store};
+        let directory = graph_free_pending_purge_crash(&[91, 92, 93]);
+        // The same independent main worktree reports this exact refusal.
+        // Preserve it even though repairing first could make this state open.
+        let error = Store::open(directory.path(), OpenOptions::default())
+            .err()
+            .expect("main refuses this crash state");
+        assert!(
+            matches!(error, StoreError::PurgeRecovery { ref detail } if detail == "purge WAL rewrite would drop acknowledged WAL sequence 4"),
+            "{error:?}"
         );
     }
 
