@@ -21,7 +21,7 @@ use crate::lifecycle::{
     Deadline, DeadlineError, PublishedSnapshot, QueryCancellation, QueryControl, SnapshotLease,
     Store, StoreError,
 };
-use crate::manifest::io::{MANIFEST_FILE, commit_manifest, load_manifest};
+use crate::manifest::io::{MANIFEST_FILE, load_manifest};
 use crate::segment::layout::RegionKind;
 use crate::segment::reader::SegmentReader;
 use crate::segment::{ClusteringKeyRange, SegmentError, SegmentId};
@@ -1199,14 +1199,20 @@ fn publish_consolidation(
         .map_err(StoreError::Manifest)
         .map_err(MaintenanceError::Store)?;
     manifest.epochs = store.epoch_registry(&manifest.epochs);
-    commit_manifest(
-        store.vfs.as_ref(),
-        &store.directory,
-        &manifest,
-        store.durability_policy,
-    )
-    .map_err(StoreError::Manifest)
-    .map_err(MaintenanceError::Store)?;
+    let mut publication = wal
+        .as_ref()
+        .ok_or(MaintenanceError::Store(StoreError::ReadOnly))?
+        .manifest_publication()
+        .map_err(MaintenanceError::Store)?;
+    publication
+        .commit_manifest(
+            store.vfs.as_ref(),
+            &store.directory,
+            &manifest,
+            store.durability_policy,
+        )
+        .map_err(StoreError::Manifest)
+        .map_err(MaintenanceError::Store)?;
     let remapped =
         PublishedSnapshot::load_on_vfs(&store.directory, &store.accounting, store.vfs.as_ref())
             .map_err(MaintenanceError::Store)?;
@@ -1217,6 +1223,7 @@ fn publish_consolidation(
     })?;
     let previous = published.replace(Arc::new(remapped));
     active_state.generation = manifest.generation;
+    publication.complete();
     let generation = manifest.generation;
     drop(published);
     drop(previous);
@@ -1390,14 +1397,20 @@ fn publish_transition(
         .map_err(StoreError::Manifest)
         .map_err(MaintenanceError::Store)?;
     manifest.epochs = store.epoch_registry(&manifest.epochs);
-    commit_manifest(
-        store.vfs.as_ref(),
-        &store.directory,
-        &manifest,
-        store.durability_policy,
-    )
-    .map_err(StoreError::Manifest)
-    .map_err(MaintenanceError::Store)?;
+    let mut publication = wal
+        .as_ref()
+        .ok_or(MaintenanceError::Store(StoreError::ReadOnly))?
+        .manifest_publication()
+        .map_err(MaintenanceError::Store)?;
+    publication
+        .commit_manifest(
+            store.vfs.as_ref(),
+            &store.directory,
+            &manifest,
+            store.durability_policy,
+        )
+        .map_err(StoreError::Manifest)
+        .map_err(MaintenanceError::Store)?;
     let remapped =
         PublishedSnapshot::load_on_vfs(&store.directory, &store.accounting, store.vfs.as_ref())
             .map_err(MaintenanceError::Store)?;
@@ -1408,6 +1421,7 @@ fn publish_transition(
     })?;
     let previous = published.replace(Arc::new(remapped));
     active_state.generation = manifest.generation;
+    publication.complete();
     drop(published);
     drop(previous);
     drop(active);

@@ -2783,6 +2783,111 @@ fn additive_schema_evolution_on_a_graph_store_reopens() {
 }
 
 #[test]
+fn a_manifest_only_publication_after_an_unfinished_batch_reopens() {
+    publication_after_unfinished_batch("schema");
+}
+
+#[test]
+fn reindex_after_an_unfinished_batch_reopens() {
+    publication_after_unfinished_batch("reindex");
+}
+
+#[test]
+fn retention_after_an_unfinished_batch_reopens() {
+    publication_after_unfinished_batch("retention");
+}
+
+fn publication_after_unfinished_batch(publisher: &str) {
+    use crate::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+    use crate::meta::{ColumnDefinition, ColumnId, ColumnType, Schema};
+    {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path(), native_options()).unwrap();
+        generation_fixture(&store, 91);
+        store.enable_graph().unwrap();
+        disable_generation_fixture_maintenance(&store);
+        let node = commit_tail_test_node(&store, "before-unfinished-batch");
+        let wal = directory.path().join("wal.ze");
+        let prefix = std::fs::read(&wal).unwrap();
+        store
+            .ingest(IngestBatch::new(
+                [92, 93]
+                    .into_iter()
+                    .map(|id| {
+                        IngestDocument::new(
+                            DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                            vec![1.0, 0.0],
+                        )
+                    })
+                    .collect(),
+            ))
+            .unwrap();
+        let full = std::fs::read(&wal).unwrap();
+        let replay = crate::wal::replay::replay(&full);
+        let member = replay
+            .records
+            .iter()
+            .find(|record| record.op == crate::ingest::wal_payload::UPSERT_V2_BATCH_MEMBER)
+            .unwrap();
+        let mut unfinished = prefix;
+        crate::wal::record::append_record_into(
+            crate::wal::record::WalRecord {
+                seq: member.seq,
+                op: member.op,
+                payload: member.payload,
+            },
+            &mut unfinished,
+        )
+        .unwrap();
+        drop(store);
+        std::fs::write(&wal, unfinished).unwrap();
+        let store = if publisher == "schema" {
+            let schema = Schema::new(vec![ColumnDefinition::new(
+                ColumnId::new(71),
+                "extra",
+                ColumnType::U64,
+                true,
+            )])
+            .unwrap();
+            Store::open(directory.path(), native_options().with_schema(schema)).unwrap()
+        } else {
+            let store = Store::open(directory.path(), native_options()).unwrap();
+            if publisher == "reindex" {
+                assert_eq!(store.reindex_text().unwrap(), 5);
+            } else {
+                assert_eq!(store.drop_partition(91..92).unwrap().generation(), 5);
+            }
+            store
+        };
+        assert_eq!(store.snapshot().unwrap().generation(), 5);
+        assert_eq!(observe_node(&store, node), Some((4, 1, 1)));
+        drop(store);
+        let recovered = Store::open(directory.path(), native_options())
+            .unwrap_or_else(|error| panic!("{publisher}: {error}"));
+        assert_eq!(recovered.snapshot().unwrap().generation(), 5);
+        assert_eq!(
+            recovered.count_documents(None, None).unwrap().count,
+            u64::from(publisher != "retention")
+        );
+        assert_eq!(observe_node(&recovered, node), Some((4, 1, 1)));
+        disable_generation_fixture_maintenance(&recovered);
+        let next = commit_tail_test_node(&recovered, "after-unfinished-batch");
+        drop(recovered);
+        for _ in 0..2 {
+            let reopened = Store::open(directory.path(), native_options()).unwrap();
+            assert_eq!(reopened.snapshot().unwrap().generation(), 6);
+            assert_eq!(
+                reopened.count_documents(None, None).unwrap().count,
+                u64::from(publisher != "retention")
+            );
+            assert_eq!(observe_node(&reopened, node), Some((6, 2, 1)));
+            assert_eq!(observe_node(&reopened, next), Some((6, 2, 1)));
+            drop(reopened);
+        }
+    }
+}
+
+#[test]
 fn reindex_after_the_last_graph_write_reopens() {
     let directory = tempfile::tempdir().unwrap();
     let store = Store::open(directory.path(), native_options()).unwrap();
@@ -3161,6 +3266,151 @@ fn active_physical_purge_preserves_generation_when_rewriting_the_wal() {
             drop(recovered);
         }
     }
+}
+
+#[test]
+fn a_failed_delete_publication_poisons_later_graph_writes() {
+    failed_document_publication_poisons_writes(false);
+}
+
+#[test]
+fn a_failed_replacement_publication_poisons_later_graph_writes() {
+    failed_document_publication_poisons_writes(true);
+}
+
+fn assert_shared_writer_stopped(store: &Store) {
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    assert!(
+        store
+            .apply_native_graph(
+                &[StructuredWrite {
+                    key: ApplicationKey::new(EntityKind::Node, "tail", "must-not-ack").unwrap(),
+                    revision: GraphRevision::new(1).unwrap(),
+                    operation: StructuredOperation::Create,
+                    image: Some(WriteImage::Node(&image)),
+                }],
+                &QueryControl::Cancel(CancelToken::new())
+            )
+            .is_err(),
+        "a stale generation must never acknowledge another graph write"
+    );
+    use crate::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+    assert!(
+        store
+            .ingest(IngestBatch::new(vec![IngestDocument::new(
+                DocumentVersion::new(DocId::new(99), Revision::new(1)),
+                vec![1.0, 0.0]
+            )]))
+            .is_err(),
+        "the document writer must also stop"
+    );
+    assert!(
+        store.reindex_text().is_err(),
+        "manifest-only writers must also stop"
+    );
+}
+
+fn assert_clean_reopen_after_publication_failure(path: &Path, first: NodeId, count: u64) {
+    let recovered = Store::open(path, native_options()).unwrap();
+    assert_eq!(recovered.snapshot().unwrap().generation(), 5);
+    assert_eq!(recovered.count_documents(None, None).unwrap().count, count);
+    assert_eq!(observe_node(&recovered, first), Some((4, 1, 1)));
+    disable_generation_fixture_maintenance(&recovered);
+    let second = commit_tail_test_node(&recovered, "after-publication-failure");
+    assert_eq!(observe_node(&recovered, second), Some((6, 2, 1)));
+    drop(recovered);
+    for _ in 0..2 {
+        let reopened = Store::open(path, native_options()).unwrap();
+        assert_eq!(reopened.snapshot().unwrap().generation(), 6);
+        assert_eq!(reopened.count_documents(None, None).unwrap().count, count);
+        assert_eq!(observe_node(&reopened, first), Some((6, 2, 1)));
+        assert_eq!(observe_node(&reopened, second), Some((6, 2, 1)));
+        drop(reopened);
+    }
+}
+
+fn failed_document_publication_poisons_writes(replacement: bool) {
+    use crate::ingest::{
+        DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, Revision,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let vfs = Arc::new(RecordingVfs::default());
+    let store = Store::open_with_test_dependencies(
+        directory.path(),
+        native_options(),
+        crate::lifecycle::StoreTestDependencies::new(
+            vfs.clone(),
+            Arc::new(crate::lifecycle::SystemMonotonicClock),
+        ),
+    )
+    .unwrap();
+    generation_fixture(&store, 91);
+    store.enable_graph().unwrap();
+    disable_generation_fixture_maintenance(&store);
+    let node = commit_tail_test_node(&store, "before-publication-failure");
+    // Let the replacement segment rename finish; fail the manifest rename.
+    vfs.arm_fault_after(FaultPoint::Rename, 1);
+    if replacement {
+        assert!(
+            store
+                .ingest(IngestBatch::new(vec![IngestDocument::new(
+                    DocumentVersion::new(DocId::new(91), Revision::new(2)),
+                    vec![0.0, 1.0]
+                )]))
+                .is_err()
+        );
+    } else {
+        assert!(
+            store
+                .delete(DeleteBatch::new(vec![DocId::new(91)]))
+                .is_err()
+        );
+    }
+    vfs.assert_fired_once();
+    assert_eq!(store.snapshot().unwrap().generation(), 4);
+    let reader = crate::wal::WalReader::open(&StdVfs, &directory.path().join("wal.ze")).unwrap();
+    assert_eq!(
+        reader.records().last().unwrap().seq.get(),
+        3,
+        "the rejected publication follows a complete durable document mutation"
+    );
+    assert_shared_writer_stopped(&store);
+    drop(store);
+    assert_clean_reopen_after_publication_failure(directory.path(), node, u64::from(replacement));
+}
+
+#[test]
+fn a_failed_reindex_directory_sync_poisons_later_graph_writes() {
+    let directory = tempfile::tempdir().unwrap();
+    let vfs = Arc::new(RecordingVfs::default());
+    let store = Store::open_with_test_dependencies(
+        directory.path(),
+        native_options(),
+        crate::lifecycle::StoreTestDependencies::new(
+            vfs.clone(),
+            Arc::new(crate::lifecycle::SystemMonotonicClock),
+        ),
+    )
+    .unwrap();
+    generation_fixture(&store, 91);
+    store.enable_graph().unwrap();
+    disable_generation_fixture_maintenance(&store);
+    let node = commit_tail_test_node(&store, "before-reindex-failure");
+    // SelectorSync fires only on the directory sync immediately after manifest rename.
+    vfs.arm_fault(FaultPoint::SelectorSync);
+    assert!(store.reindex_text().is_err());
+    vfs.assert_fired_once();
+    assert_eq!(store.snapshot().unwrap().generation(), 4);
+    let manifest =
+        crate::manifest::io::load_manifest(&StdVfs, &directory.path().join("manifest.ze"), 2)
+            .unwrap();
+    assert_eq!(
+        manifest.generation, 5,
+        "rename published the generation before directory sync failed"
+    );
+    assert_shared_writer_stopped(&store);
+    drop(store);
+    assert_clean_reopen_after_publication_failure(directory.path(), node, 1);
 }
 
 #[test]

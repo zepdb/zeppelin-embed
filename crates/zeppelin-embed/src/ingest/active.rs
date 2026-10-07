@@ -253,12 +253,25 @@ impl ActiveState {
         )?;
         #[cfg(feature = "graph-cypher")]
         if let Some(boundary) = graph_manifest.and_then(|graph| graph.generation_absorbed_through) {
+            // Manifest-only publishers record the physical durable end.
+            // Abandoned runs contribute no generation, but their validated
+            // records remain valid positions. Never split a committed batch.
+            let retained_boundary = recovered
+                .records()
+                .iter()
+                .any(|record| record.seq.get() == boundary)
+                && !batches.iter().any(|batch| {
+                    batch.members.first().is_some_and(|(first, _, _)| {
+                        first.get() <= boundary && boundary < batch.last_seq.get()
+                    })
+                });
+            // Physical purge can retire the whole covered prefix. Its
+            // replacement WAL header pins that boundary independently.
+            let retired_boundary = graph_manifest
+                .is_some_and(|graph| !graph.generation_bumps.is_empty())
+                && boundary.checked_add(1) == Some(recovered.retained_first_seq());
             if boundary > absorbed_through.max(graph_absorbed_through)
-                && !batches.iter().any(|batch| batch.last_seq.get() == boundary)
-                // Physical purge can retire the whole covered prefix. Its
-                // replacement WAL header pins that boundary independently.
-                && !(graph_manifest.is_some_and(|graph| !graph.generation_bumps.is_empty())
-                    && boundary.checked_add(1) == Some(recovered.retained_first_seq()))
+                && !(retained_boundary || retired_boundary)
             {
                 return Err(StoreError::Manifest(
                     crate::manifest::ManifestError::Decode(
@@ -2063,8 +2076,62 @@ pub(crate) struct StoreWal {
     retained: AccountedCounter,
 }
 
+/// Fences every shared writer if publication fails after changing WAL or
+/// generation state.
+#[must_use]
+pub(crate) struct ManifestPublication<'a> {
+    wal: &'a StoreWal,
+    armed: bool,
+}
+
+impl ManifestPublication<'_> {
+    pub(crate) fn after_mutation(mut self) -> Self {
+        self.armed = true;
+        self
+    }
+
+    pub(crate) fn commit_manifest(
+        &mut self,
+        vfs: &dyn Vfs,
+        directory: &Path,
+        manifest: &crate::manifest::Manifest,
+        policy: DurabilityPolicy,
+    ) -> Result<(), crate::manifest::ManifestError> {
+        // A failed temp write/sync is safe to retry for manifest-only work.
+        // Once rename succeeds, a later error can leave durable state ahead.
+        crate::manifest::io::commit_manifest_with_rename(vfs, directory, manifest, policy, || {
+            self.armed = true;
+        })
+    }
+
+    pub(crate) fn complete(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ManifestPublication<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            // A poisoned writer-state mutex already refuses every commit, so
+            // failure to acquire it here cannot leave a usable stale writer.
+            let _ = self
+                .wal
+                .poison_after_manifest_failure("manifest publication did not complete");
+        }
+    }
+}
+
 impl StoreWal {
-    #[cfg(feature = "graph-cypher")]
+    pub(crate) fn manifest_publication(&self) -> Result<ManifestPublication<'_>, StoreError> {
+        // Writers hold the store WAL mutex: no pending group can be in flight.
+        // This checks the existing shared failure state without issuing I/O.
+        self.writer.flush().map_err(StoreError::WalWrite)?;
+        Ok(ManifestPublication {
+            wal: self,
+            armed: false,
+        })
+    }
+
     pub(crate) fn poison_after_manifest_failure(&self, detail: &str) -> Result<(), StoreError> {
         self.writer
             .poison(&std::io::Error::other(detail.to_owned()))

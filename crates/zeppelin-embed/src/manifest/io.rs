@@ -38,6 +38,16 @@ pub fn commit_manifest(
     manifest: &Manifest,
     policy: DurabilityPolicy,
 ) -> Result<(), ManifestError> {
+    commit_manifest_with_rename(vfs, directory, manifest, policy, || {})
+}
+
+pub(crate) fn commit_manifest_with_rename(
+    vfs: &dyn Vfs,
+    directory: &Path,
+    manifest: &Manifest,
+    policy: DurabilityPolicy,
+    after_rename: impl FnOnce(),
+) -> Result<(), ManifestError> {
     let bytes = encode_manifest(manifest)?;
     let temporary = directory.join(MANIFEST_TEMP_FILE);
     let committed = directory.join(MANIFEST_FILE);
@@ -51,6 +61,7 @@ pub fn commit_manifest(
     }
     vfs.rename(&temporary, &committed)
         .map_err(|error| ManifestError::io(&committed, error))?;
+    after_rename();
     match policy.directory_sync() {
         SyncRequirement::Skip => Ok(()),
         SyncRequirement::Sync(kind) => vfs

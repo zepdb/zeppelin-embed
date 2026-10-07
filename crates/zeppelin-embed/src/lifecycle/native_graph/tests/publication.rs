@@ -1325,7 +1325,7 @@ fn run_ze39_checkpoint_thresholds_and_failure_preserve_acknowledged_state() {
     let path = parent.path().join("native");
     let vfs = Arc::new(RecordingVfs::default());
     let infrastructure: Arc<dyn Vfs> = vfs.clone();
-    let store = Store::create_native_graph_with_infrastructure(
+    let mut store = Store::create_native_graph_with_infrastructure(
         &path,
         OpenOptions::new()
             .with_durability(DurabilityMode::Durable, CommitTier::Durable)
@@ -1485,6 +1485,65 @@ fn run_ze39_checkpoint_thresholds_and_failure_preserve_acknowledged_state() {
                 .expect("no-op remains available after checkpoint failure")
                 .is_empty()
         );
+        if matches!(
+            point,
+            FaultPoint::DirectorySync | FaultPoint::SelectorSync | FaultPoint::OpenAppend
+        ) {
+            // Manifest sync failures after rename and WAL reopen failures after
+            // replacement fence the shared writer until recovery.
+            assert!(matches!(
+                store.checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new())),
+                Err(super::super::NativeGraphError::Store(
+                    crate::lifecycle::StoreError::WalWrite(
+                        crate::wal::WalWriteError::Failed { .. }
+                    )
+                ))
+            ));
+            let document = crate::ingest::IngestDocument::new(
+                crate::ingest::DocumentVersion::new(
+                    crate::ingest::DocId::new(91),
+                    crate::ingest::Revision::new(1),
+                ),
+                vec![1.0, 0.0],
+            );
+            assert!(matches!(
+                store.ingest(crate::ingest::IngestBatch::new(vec![document])),
+                Err(crate::ingest::IngestError::Store(
+                    crate::lifecycle::StoreError::WalWrite(
+                        crate::wal::WalWriteError::Failed { .. }
+                    )
+                ))
+            ));
+            drop(store);
+            store = Store::open_native_graph_with_infrastructure(
+                &path,
+                OpenOptions::new()
+                    .with_durability(DurabilityMode::Durable, CommitTier::Durable)
+                    .with_max_resident_bytes(256 * 1024 * 1024),
+                None,
+                vfs.clone(),
+                Arc::new(crate::lifecycle::SystemMonotonicClock),
+            )
+            .expect("recover renamed checkpoint before retry");
+            store
+                .set_native_graph_maintenance_policy(
+                    crate::property_graph::GraphMaintenancePolicy {
+                        automatic: false,
+                        ..Default::default()
+                    },
+                )
+                .expect("isolate recovered checkpoint cadence");
+            assert_eq!(
+                store
+                    .admit_native_read()
+                    .expect("recovered acknowledged graph")
+                    .bundle()
+                    .base()
+                    .generation
+                    .get(),
+                67
+            );
+        }
         store
             .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
             .expect("clean explicit checkpoint retry");

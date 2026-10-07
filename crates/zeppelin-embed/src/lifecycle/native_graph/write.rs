@@ -838,13 +838,15 @@ fn checkpoint_current_inner(
         &manifest,
         &store.accounting,
     )?;
-    crate::manifest::io::commit_manifest(
-        store.vfs.as_ref(),
-        &store.directory,
-        &manifest,
-        store.durability_policy,
-    )
-    .map_err(crate::lifecycle::StoreError::Manifest)?;
+    let mut publication = wal.manifest_publication()?;
+    publication
+        .commit_manifest(
+            store.vfs.as_ref(),
+            &store.directory,
+            &manifest,
+            store.durability_policy,
+        )
+        .map_err(crate::lifecycle::StoreError::Manifest)?;
     let failure_path = store.directory.join(crate::manifest::io::MANIFEST_FILE);
     let mut snapshot =
         store
@@ -865,6 +867,7 @@ fn checkpoint_current_inner(
             path: failure_path,
             source: None,
         })?;
+    publication.complete();
     writer.complete_envelopes = 0;
     writer.envelope_bytes = 0;
     writer.checkpoint_failed = false;

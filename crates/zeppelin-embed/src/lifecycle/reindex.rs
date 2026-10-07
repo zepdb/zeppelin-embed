@@ -1,6 +1,6 @@
 //! Explicit same-tokenizer reindex using immutable segment replacement.
 use super::{PublishedSnapshot, Store, StoreError, StoreState};
-use crate::manifest::io::{MANIFEST_FILE, commit_manifest, load_manifest};
+use crate::manifest::io::{MANIFEST_FILE, load_manifest};
 use crate::segment::SegmentId;
 use std::sync::Arc;
 
@@ -109,13 +109,18 @@ impl Store {
         manifest
             .record_generation_bump(durable_end)
             .map_err(StoreError::Manifest)?;
-        commit_manifest(
-            self.vfs.as_ref(),
-            &self.directory,
-            &manifest,
-            self.durability_policy,
-        )
-        .map_err(StoreError::Manifest)?;
+        let mut publication = wal
+            .as_ref()
+            .ok_or(StoreError::ReadOnly)?
+            .manifest_publication()?;
+        publication
+            .commit_manifest(
+                self.vfs.as_ref(),
+                &self.directory,
+                &manifest,
+                self.durability_policy,
+            )
+            .map_err(StoreError::Manifest)?;
         let remapped =
             PublishedSnapshot::load_on_vfs(&self.directory, &self.accounting, self.vfs.as_ref())?;
         *self
@@ -125,6 +130,7 @@ impl Store {
                 component: "published snapshot",
             })? = Some(Arc::new(remapped));
         current.generation = generation;
+        publication.complete();
         // Keep old files for pinned readers; ordinary open reachability cleanup reclaims them.
         Ok(generation)
     }

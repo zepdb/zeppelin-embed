@@ -7,7 +7,7 @@ use crate::fts::sealed::{SealedSegment, SealedSegmentError};
 use crate::lifecycle::durability::{DurabilityPolicy, SyncRequirement};
 use crate::lifecycle::{CancelToken, Store, StoreError, StoreState};
 use crate::manifest::Manifest;
-use crate::manifest::io::{MANIFEST_FILE, commit_manifest, load_manifest};
+use crate::manifest::io::{MANIFEST_FILE, load_manifest};
 use crate::meta::{ColumnStore, ColumnStoreBuilder, Schema};
 use crate::segment::writer::{
     SegmentBuild, SegmentDocumentVersions, SegmentFactors, SegmentPayloads, SegmentPostings,
@@ -317,22 +317,24 @@ impl Store {
         let mut segments = manifest.segments;
         segments.push(meta);
         let epochs = self.epoch_registry(&manifest.epochs);
-        commit_manifest(
-            vfs,
-            &self.directory,
-            &Manifest {
-                #[cfg(feature = "graph-cypher")]
-                graph: manifest.graph,
-                generation,
-                log_seq: absorbed_through,
-                segments,
-                epochs,
-                epoch_alias: manifest.epoch_alias,
-                schema: manifest.schema,
-            },
-            self.durability_policy,
-        )
-        .map_err(StoreError::Manifest)?;
+        let mut publication = writer.manifest_publication()?;
+        publication
+            .commit_manifest(
+                vfs,
+                &self.directory,
+                &Manifest {
+                    #[cfg(feature = "graph-cypher")]
+                    graph: manifest.graph,
+                    generation,
+                    log_seq: absorbed_through,
+                    segments,
+                    epochs,
+                    epoch_alias: manifest.epoch_alias,
+                    schema: manifest.schema,
+                },
+                self.durability_policy,
+            )
+            .map_err(StoreError::Manifest)?;
         let remapped = crate::lifecycle::PublishedSnapshot::load_on_vfs(
             &self.directory,
             &self.accounting,
@@ -348,6 +350,7 @@ impl Store {
         drop(published);
         drop(previous);
         *active = Some(ActiveState::empty(generation));
+        publication.complete();
         writer.retire_visible_through(LogSeq::new(absorbed_through))?;
         // The manifest above durably absorbs every record, so the log can
         // shrink to a header; without this wal.ze grows for the store's life.

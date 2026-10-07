@@ -1370,6 +1370,80 @@ fn run_ze260_maintenance_emits_each_tree_root_once_per_call() {
     }
 }
 
+fn reclaim_payload_file_count(path: &Path) -> usize {
+    use crate::property_graph::storage::artifact::{self, BlockKind, ContainerKind};
+    std::fs::read_dir(path)
+        .unwrap()
+        .filter(|entry| {
+            let entry = entry.as_ref().unwrap();
+            if entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "zgraph")
+            {
+                let bytes = std::fs::read(entry.path()).unwrap();
+                let frame = artifact::decode(ContainerKind::Object, None, &bytes).unwrap();
+                // A sole commit participant is immutable checkpoint/maintenance
+                // control evidence, not a data pack. Count mixed packs as data.
+                if frame.reference(0).unwrap().kind == BlockKind::CommitParticipant
+                    && frame.reference(1).is_err()
+                {
+                    return false;
+                }
+            }
+            true
+        })
+        .count()
+}
+
+fn assert_idle_reclaim_progress(
+    before_bytes: u64,
+    sizes: &[(u64, usize)],
+    payload_files: &[usize],
+) {
+    assert!(sizes[1].0 <= sizes[0].0, "cycle two grew store bytes");
+    assert!(
+        payload_files[1] <= payload_files[0],
+        "cycle two grew payload file count"
+    );
+    // Unified-WAL checkpointing can reclaim the 1.5 MB in cycle one.
+    // Retain the original cycle-two reduction when cycle one still holds it.
+    if sizes[0].0 >= 1_500_000 {
+        assert!(sizes[0].0 - sizes[1].0 >= 1_500_000);
+        assert!(sizes[1].1 < sizes[0].1);
+    }
+    assert!(before_bytes - sizes[1].0 >= 1_500_000);
+    // Compare completed cycles 5 through 8 (sizes is zero-indexed).
+    for cycle in 5..8 {
+        assert_eq!(sizes[cycle].1, sizes[cycle - 1].1);
+        assert!(sizes[cycle].0.abs_diff(sizes[cycle - 1].0) <= 8_192);
+    }
+    assert!(sizes[7].0 <= 810_000);
+    assert!(sizes[7].1 <= 55);
+}
+
+#[test]
+fn reclaim_progress_rejects_a_growing_second_cycle() {
+    // Mutation of the real test's measured trace: all absolute budgets and
+    // late stabilization checks pass, but cycle two undoes reclaim progress.
+    for second in [(600_000, 45), (600_000, 40), (400_000, 45)] {
+        let mut sizes = vec![(400_000, 40); 8];
+        sizes[1..].fill(second);
+        assert!(
+            std::panic::catch_unwind(|| assert_idle_reclaim_progress(
+                3_000_000,
+                &sizes,
+                &sizes.iter().map(|(_, files)| *files).collect::<Vec<_>>()
+            ))
+            .is_err(),
+            "growing trace {sizes:?} escaped the reclaim comparator"
+        );
+    }
+    let mut shrinking = vec![(300_000, 39); 8];
+    shrinking[0] = (400_000, 40);
+    assert_idle_reclaim_progress(3_000_000, &shrinking, &[40, 39, 39, 39, 39, 39, 39, 39]);
+}
+
 #[test]
 fn ze260_idle_maintenance_reaches_a_fixed_point() {
     let parent = super::tempfile::tempdir().unwrap();
@@ -1487,6 +1561,7 @@ fn ze260_idle_maintenance_reaches_a_fixed_point() {
     let mut completed_cycles = 0;
     let mut first_cycle_bytes = None;
     let mut sizes = Vec::new();
+    let mut payload_files = Vec::new();
     let mut previous_removed = 0;
     // One preparation call plus intent, completion and retirement per cycle.
     for _ in 0..MAX_COMPLETED_CYCLES * 4 {
@@ -1509,13 +1584,15 @@ fn ze260_idle_maintenance_reaches_a_fixed_point() {
             subtypes.push(0);
             completed_cycles += 1;
             eprintln!(
-                "S6_MUST_MAKE_IDLE_CYCLES_NET_NEGATIVE cycle={completed_cycles} bytes={} growth={} files={} removed_bytes={}",
+                "S6_MUST_MAKE_IDLE_CYCLES_NET_NEGATIVE cycle={completed_cycles} bytes={} growth={} files={} payload_files={} removed_bytes={}",
                 bytes(),
                 i128::from(bytes()) - i128::from(before_bytes),
                 std::fs::read_dir(&path).unwrap().count(),
+                reclaim_payload_file_count(&path),
                 removed - previous_removed,
             );
             sizes.push((bytes(), std::fs::read_dir(&path).unwrap().count()));
+            payload_files.push(reclaim_payload_file_count(&path));
             previous_removed = removed;
             first_cycle_bytes.get_or_insert_with(bytes);
             if completed_cycles == MAX_COMPLETED_CYCLES {
@@ -1524,14 +1601,7 @@ fn ze260_idle_maintenance_reaches_a_fixed_point() {
         }
     }
     assert_eq!(completed_cycles, 8);
-    assert!(before_bytes - sizes[1].0 >= 1_500_000);
-    // Compare completed cycles 5 through 8 (sizes is zero-indexed).
-    for cycle in 5..8 {
-        assert_eq!(sizes[cycle].1, sizes[cycle - 1].1);
-        assert!(sizes[cycle].0.abs_diff(sizes[cycle - 1].0) <= 8_192);
-    }
-    assert!(sizes[7].0 <= 810_000);
-    assert!(sizes[7].1 <= 55);
+    assert_idle_reclaim_progress(before_bytes, &sizes, &payload_files);
     eprintln!(
         "ZE260_S5 before_bytes={before_bytes} after_bytes={} removed_bytes={removed} completed_cycles={completed_cycles} max_completed_cycles={MAX_COMPLETED_CYCLES} first_cycle_bytes={first_cycle_bytes:?} subtypes={subtypes:?}",
         bytes()

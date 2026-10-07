@@ -101,13 +101,10 @@ impl Store {
             super::durability::CommitTier::Durable,
         )
         .map_err(StoreError::Durability)?;
-        crate::manifest::io::commit_manifest(
-            self.vfs.as_ref(),
-            &self.directory,
-            &manifest,
-            barrier,
-        )
-        .map_err(StoreError::Manifest)?;
+        let mut publication = writer.manifest_publication()?;
+        publication
+            .commit_manifest(self.vfs.as_ref(), &self.directory, &manifest, barrier)
+            .map_err(StoreError::Manifest)?;
         self.native_graph.enable_registries()?;
         let remapped = PublishedSnapshot::from_manifest(
             self.vfs.as_ref(),
@@ -123,6 +120,7 @@ impl Store {
             })?;
         *published = Some(Arc::new(remapped));
         current.generation = generation;
+        publication.complete();
         drop(published);
         drop(active);
         drop(wal);

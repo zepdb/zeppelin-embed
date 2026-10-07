@@ -12,7 +12,7 @@ use crate::lifecycle::durability::{DurabilityPolicy, SyncRequirement};
 use crate::lifecycle::stats::Accounting;
 use crate::lifecycle::{PublishedSnapshot, Store, StoreError, StoreState};
 use crate::manifest::Manifest;
-use crate::manifest::io::{MANIFEST_FILE, commit_manifest, load_manifest};
+use crate::manifest::io::{MANIFEST_FILE, load_manifest};
 use crate::meta::{
     AliveSet, Column, ColumnInput, ColumnStore, ColumnStoreBuilder, ColumnValue, TIMESTAMP_COLUMN,
 };
@@ -65,13 +65,16 @@ impl PreparedSealedTombstones {
 
     pub(crate) fn commit(
         mut self,
+        publication: &mut super::active::ManifestPublication<'_>,
         store: &Store,
         vfs: &dyn Vfs,
         directory: &Path,
         policy: DurabilityPolicy,
     ) -> Result<(PublishedSnapshot, Vec<PathBuf>), StoreError> {
         self.manifest.epochs = store.epoch_registry(&self.manifest.epochs);
-        commit_manifest(vfs, directory, &self.manifest, policy).map_err(StoreError::Manifest)?;
+        publication
+            .commit_manifest(vfs, directory, &self.manifest, policy)
+            .map_err(StoreError::Manifest)?;
         Ok((self.snapshot, self.replaced_paths))
     }
 }
@@ -556,7 +559,20 @@ impl Store {
                 component: "active segment",
             })?;
         let current = active.as_ref().ok_or(StoreError::Closed)?;
-        let generation = current.generation;
+        // Graph-free recovery retains main's repair publication and segment ID.
+        // Graph stores publish the already replayed delete generation exactly.
+        #[cfg(feature = "graph-cypher")]
+        let graph_enabled = snapshot.graph_manifest.is_some();
+        #[cfg(not(feature = "graph-cypher"))]
+        let graph_enabled = false;
+        let generation = if graph_enabled {
+            current.generation
+        } else {
+            current
+                .generation
+                .checked_add(1)
+                .ok_or(StoreError::GenerationOverflow)?
+        };
         let active_segment = Arc::clone(&current.segment);
         let mut ids = surviving
             .iter()
@@ -581,7 +597,9 @@ impl Store {
         let Some(prepared) = prepared else {
             return Ok(());
         };
+        let mut publication = writer.manifest_publication()?;
         let (remapped, replaced_paths) = prepared.commit(
+            &mut publication,
             self,
             self.vfs.as_ref(),
             &self.directory,
@@ -598,6 +616,7 @@ impl Store {
             generation,
             segment: active_segment,
         });
+        publication.complete();
         drop(published);
         drop(previous);
         unlink_replaced_segments(
@@ -781,12 +800,13 @@ impl Store {
         vfs: &dyn Vfs,
         manifest: &mut Manifest,
         active_state: &mut ActiveState,
-        _durable_end: u64,
+        writer: &super::StoreWal,
         original: &SegmentMeta,
         ids: &super::lookup::LookupSet<DocId>,
         token_id: u64,
         policy: DurabilityPolicy,
     ) -> Result<bool, PurgeError> {
+        let _durable_end = writer.durable_end();
         let path = self.directory.join(original.id.file_name());
         let reader = SegmentReader::open(vfs, &path, original.id).map_err(StoreError::Segment)?;
         let survivors = survivor_rows(&reader, ids)?;
@@ -829,7 +849,10 @@ impl Store {
         manifest.epochs = self.epoch_registry(&manifest.epochs);
         let remapped =
             PublishedSnapshot::from_manifest(vfs, &self.directory, manifest, &self.accounting)?;
-        commit_manifest(vfs, &self.directory, manifest, policy).map_err(StoreError::Manifest)?;
+        let mut publication = writer.manifest_publication()?;
+        publication
+            .commit_manifest(vfs, &self.directory, manifest, policy)
+            .map_err(StoreError::Manifest)?;
         let mut published = self
             .snapshot
             .write()
@@ -838,6 +861,7 @@ impl Store {
             })?;
         let previous = published.replace(Arc::new(remapped));
         active_state.generation = generation;
+        publication.complete();
         drop(published);
         drop(previous);
         if let Err(source) = vfs.delete(&path) {
@@ -883,10 +907,14 @@ impl Store {
         vfs: &dyn Vfs,
         manifest: &mut Manifest,
         generation: u64,
-        _durable_end: u64,
+        writer: &super::StoreWal,
         _generation_bump: bool,
         policy: DurabilityPolicy,
     ) -> Result<(), PurgeError> {
+        // The caller already advanced active generation or rewrote the WAL.
+        // Even a pre-rename failure requires recovery before another write.
+        let mut publication = writer.manifest_publication()?.after_mutation();
+        let _durable_end = writer.durable_end();
         manifest.generation = generation;
         #[cfg(feature = "graph-cypher")]
         if _generation_bump {
@@ -900,7 +928,9 @@ impl Store {
         manifest.epochs = self.epoch_registry(&manifest.epochs);
         let remapped =
             PublishedSnapshot::from_manifest(vfs, &self.directory, manifest, &self.accounting)?;
-        commit_manifest(vfs, &self.directory, manifest, policy).map_err(StoreError::Manifest)?;
+        publication
+            .commit_manifest(vfs, &self.directory, manifest, policy)
+            .map_err(StoreError::Manifest)?;
         let mut published = self
             .snapshot
             .write()
@@ -908,6 +938,7 @@ impl Store {
                 component: "published snapshot",
             })?;
         let previous = published.replace(Arc::new(remapped));
+        publication.complete();
         drop(published);
         drop(previous);
         Ok(())
@@ -1082,7 +1113,7 @@ impl Store {
                 vfs,
                 &mut manifest,
                 active_state,
-                writer.durable_end(),
+                writer,
                 &original,
                 &purge_ids,
                 token.id,
@@ -1125,7 +1156,7 @@ impl Store {
                 vfs,
                 &mut manifest,
                 active_state.generation,
-                writer.durable_end(),
+                writer,
                 active_has_target,
                 policy,
             )?;
@@ -1149,17 +1180,14 @@ impl Store {
             // Rewritten document batches were already counted in this
             // generation. Publish their new cutoff before purge returns or
             // another graph write can be acknowledged.
-            if let Err(error) = self.commit_bumped_manifest(
+            self.commit_bumped_manifest(
                 vfs,
                 &mut manifest,
                 active_state.generation,
-                writer.durable_end(),
+                writer,
                 false,
                 policy,
-            ) {
-                writer.poison_after_manifest_failure(&error.to_string())?;
-                return Err(error);
-            }
+            )?;
         }
         active_state.segment = Arc::new(next_active);
         remove_intent(vfs, &self.directory, policy)?;
@@ -2147,6 +2175,81 @@ mod tests {
     use crate::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
     use crate::vfs::StdVfs;
     use crate::wal::LogSeq;
+
+    #[test]
+    fn a_graph_free_tombstone_repair_matches_main_bytes() {
+        use crate::ingest::{DeleteBatch, DocumentVersion, IngestBatch, IngestDocument, Revision};
+        use crate::lifecycle::{OpenOptions, Store};
+        let directory = tempfile::tempdir().expect("directory");
+        let store = Store::open(directory.path(), OpenOptions::default()).expect("open");
+        assert_eq!(
+            store
+                .ingest(IngestBatch::new(vec![IngestDocument::new(
+                    DocumentVersion::new(DocId::new(91), Revision::new(1)),
+                    vec![1.0]
+                )]))
+                .expect("ingest")
+                .generation(),
+            1
+        );
+        assert_eq!(store.seal().expect("seal"), 2);
+        let manifest_path = directory.path().join("manifest.ze");
+        let old_manifest = std::fs::read(&manifest_path).expect("old manifest");
+        let segment_path = directory
+            .path()
+            .join("segment-00000000000000020000000000000001.zseg");
+        let old_segment = std::fs::read(&segment_path).expect("old segment");
+        assert_eq!(
+            store
+                .delete(DeleteBatch::new(vec![DocId::new(91)]))
+                .expect("delete")
+                .generation(),
+            3
+        );
+        // Lose only the delete publication: retain the synced WAL and old sealed bytes.
+        drop(store);
+        std::fs::write(&manifest_path, old_manifest).expect("restore manifest");
+        std::fs::write(&segment_path, old_segment).expect("restore segment");
+        let recovered = Store::open(directory.path(), OpenOptions::default()).expect("recover");
+        let bytes = std::fs::read(&manifest_path).expect("repaired manifest");
+        let manifest = crate::manifest::decode_manifest("repaired", &bytes).expect("decode");
+        // Measured twice on main 9d217196 in a separate temporary worktree,
+        // without stashing: review_main_bytes::record_main_repair_bytes.
+        assert_eq!(manifest.generation, 4);
+        assert_eq!(
+            manifest
+                .segments
+                .first()
+                .expect("replacement")
+                .id
+                .to_string(),
+            "00000000000000049e7321e873816107"
+        );
+        let main_hex = concat!(
+            "5a4550454d4245440a000200000000002000000000000000c4000000000000008c00000000000000",
+            "04000000000000000100000000000000010000000000000000000000000000000000000000000000",
+            "0000000000000000000000000000000000000000000000049e7321e8738161070100000004000000",
+            "0100000070c001000000000000000000000000000000000000000000545352310100000001000000",
+            "00000000000000000000000000000000000000000026433d9a49bbe058e92629d0d9c543",
+        );
+        let expected = main_hex
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| {
+                u8::from_str_radix(std::str::from_utf8(pair).expect("hex pair"), 16)
+                    .expect("hex byte")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            bytes, expected,
+            "graph-free recovery must preserve main's complete manifest bytes"
+        );
+        assert_eq!(recovered.snapshot().expect("snapshot").generation(), 4);
+        assert_eq!(
+            recovered.count_documents(None, None).expect("count").count,
+            0
+        );
+    }
 
     #[test]
     fn sealed_purge_lookup_work_is_linear() {

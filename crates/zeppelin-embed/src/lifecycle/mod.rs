@@ -3377,15 +3377,14 @@ impl Store {
             )?;
         }
         if schema_evolved {
-            let boundary = store
+            let wal = store
                 .wal_writer
                 .lock()
                 .map_err(|_| StoreError::Synchronization {
                     component: "WAL writer",
-                })?
-                .as_ref()
-                .ok_or(StoreError::ReadOnly)?
-                .durable_end();
+                })?;
+            let writer = wal.as_ref().ok_or(StoreError::ReadOnly)?;
+            let boundary = writer.durable_end();
             let mut active = store
                 .active
                 .lock()
@@ -3412,14 +3411,12 @@ impl Store {
                 &manifest,
                 &store.accounting,
             )?;
-            crate::manifest::io::commit_manifest(
-                store.vfs.as_ref(),
-                path,
-                &manifest,
-                durability_policy,
-            )
-            .map_err(StoreError::Manifest)?;
+            let mut publication = writer.manifest_publication()?;
+            publication
+                .commit_manifest(store.vfs.as_ref(), path, &manifest, durability_policy)
+                .map_err(StoreError::Manifest)?;
             active.generation = generation;
+            publication.complete();
             snapshot = remapped;
         }
         if options.access_mode == AccessMode::ReadWrite && manifest_exists {

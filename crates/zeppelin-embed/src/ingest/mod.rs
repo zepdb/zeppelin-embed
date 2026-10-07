@@ -1420,6 +1420,7 @@ impl Store {
                 return Err(error.into());
             }
         };
+        let mut publication = writer.manifest_publication()?.after_mutation();
         for ((row, _, _), sequence) in records
             .iter()
             .zip(sequences.start.get()..sequences.end.get())
@@ -1430,6 +1431,7 @@ impl Store {
         let committed = prepared
             .map(|prepared| {
                 prepared.commit(
+                    &mut publication,
                     self,
                     self.vfs.as_ref(),
                     &self.directory,
@@ -1447,6 +1449,7 @@ impl Store {
         validate_republish_generation(current_generation, actual_generation)?;
         let replaced_paths =
             self.publish_committed_active(&mut active, committed, generation, next)?;
+        publication.complete();
         drop(active);
         purge::unlink_replaced_segments(
             self,
@@ -1556,12 +1559,14 @@ impl Store {
                 return Err(error.into());
             }
         };
+        let mut publication = writer.manifest_publication()?.after_mutation();
         for row in rows {
             next.set_sequence(row, seq)?;
         }
         let committed = prepared
             .map(|prepared| {
                 prepared.commit(
+                    &mut publication,
                     self,
                     self.vfs.as_ref(),
                     &self.directory,
@@ -1579,6 +1584,7 @@ impl Store {
         validate_republish_generation(current_generation, actual_generation)?;
         let replaced_paths =
             self.publish_committed_active(&mut active, committed, generation, next)?;
+        publication.complete();
         drop(active);
         purge::unlink_replaced_segments(
             self,

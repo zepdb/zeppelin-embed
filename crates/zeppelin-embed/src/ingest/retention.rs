@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::lifecycle::durability::SyncRequirement;
 use crate::lifecycle::{PublishedSnapshot, Store, StoreError, StoreState};
-use crate::manifest::io::{MANIFEST_FILE, commit_manifest, load_manifest};
+use crate::manifest::io::{MANIFEST_FILE, load_manifest};
 use crate::segment::{ClusteringKeyRange, SegmentId, SegmentMeta};
 use crate::vfs::Vfs;
 
@@ -242,7 +242,12 @@ impl Store {
         // pointer swap and cannot fail on segment I/O or accounting budget.
         let remapped =
             PublishedSnapshot::from_manifest(vfs, &self.directory, &manifest, &self.accounting)?;
-        commit_manifest(vfs, &self.directory, &manifest, self.durability_policy)
+        let mut publication = wal
+            .as_ref()
+            .ok_or(StoreError::ReadOnly)?
+            .manifest_publication()?;
+        publication
+            .commit_manifest(vfs, &self.directory, &manifest, self.durability_policy)
             .map_err(StoreError::Manifest)?;
 
         // Store admission holds `state` across the manifest commit and this
@@ -256,6 +261,7 @@ impl Store {
             })?;
         let previous = published.replace(Arc::new(remapped));
         active_state.generation = generation;
+        publication.complete();
         drop(published);
         drop(previous);
 

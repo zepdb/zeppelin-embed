@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::lifecycle::durability::SyncRequirement;
 use crate::lifecycle::{PublishedSnapshot, Store, StoreError, StoreState};
-use crate::manifest::io::{MANIFEST_FILE, commit_manifest, load_manifest};
+use crate::manifest::io::{MANIFEST_FILE, load_manifest};
 use crate::segment::SegmentId;
 use crate::vfs::Vfs;
 
@@ -336,7 +336,12 @@ impl Store {
                 unexpected_documents,
             });
         }
-        commit_manifest(vfs, &self.directory, &manifest, self.durability_policy)
+        let mut publication = wal
+            .as_ref()
+            .ok_or(StoreError::ReadOnly)?
+            .manifest_publication()?;
+        publication
+            .commit_manifest(vfs, &self.directory, &manifest, self.durability_policy)
             .map_err(StoreError::Manifest)?;
         let mut published = self
             .snapshot
@@ -346,6 +351,7 @@ impl Store {
             })?;
         let prior_snapshot = published.replace(Arc::new(remapped));
         active_state.generation = generation;
+        publication.complete();
         drop(published);
         if let Some(snapshot) = prior_snapshot.as_ref() {
             let drain_result = snapshot.drain_readers(self.reader_drain_timeout);
@@ -425,7 +431,12 @@ impl Store {
             .map_err(StoreError::Manifest)?;
         let remapped =
             PublishedSnapshot::from_manifest(vfs, &self.directory, &manifest, &self.accounting)?;
-        commit_manifest(vfs, &self.directory, &manifest, self.durability_policy)
+        let mut publication = wal
+            .as_ref()
+            .ok_or(StoreError::ReadOnly)?
+            .manifest_publication()?;
+        publication
+            .commit_manifest(vfs, &self.directory, &manifest, self.durability_policy)
             .map_err(StoreError::Manifest)?;
         let mut published = self
             .snapshot
@@ -435,6 +446,7 @@ impl Store {
             })?;
         let prior_snapshot = published.replace(Arc::new(remapped));
         active_state.generation = generation;
+        publication.complete();
         drop(published);
         drop(prior_snapshot);
 

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::graph::consolidate::{ConsolidateError, merge_segments, merged_clustering};
 use crate::lifecycle::durability::SyncRequirement;
 use crate::lifecycle::{CancelToken, PublishedSnapshot, Store, StoreError, StoreState};
-use crate::manifest::io::{MANIFEST_FILE, commit_manifest, load_manifest};
+use crate::manifest::io::{MANIFEST_FILE, load_manifest};
 use crate::segment::layout::RegionKind;
 use crate::segment::reader::SegmentReader;
 use crate::segment::{SegmentError, SegmentId};
@@ -164,7 +164,12 @@ impl Store {
                 .record_generation_bump(durable_end)
                 .map_err(StoreError::Manifest)?;
             // Preserve log_seq: a merge absorbs no active or WAL records.
-            commit_manifest(vfs, &self.directory, &manifest, self.durability_policy)
+            let mut publication = wal
+                .as_ref()
+                .ok_or(StoreError::ReadOnly)?
+                .manifest_publication()?;
+            publication
+                .commit_manifest(vfs, &self.directory, &manifest, self.durability_policy)
                 .map_err(StoreError::Manifest)?;
             let remapped = PublishedSnapshot::load_on_vfs(&self.directory, &self.accounting, vfs)?;
             let mut published = self
@@ -175,6 +180,7 @@ impl Store {
                 })?;
             let previous = published.replace(Arc::new(remapped));
             current.generation = generation;
+            publication.complete();
             drop(published);
             drop(previous);
             let old_paths = inputs

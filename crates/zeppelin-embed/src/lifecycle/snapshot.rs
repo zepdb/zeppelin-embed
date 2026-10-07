@@ -7,7 +7,6 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::manifest::Manifest;
-use crate::manifest::io::commit_manifest;
 use crate::manifest::io::{DurableLog, MANIFEST_FILE, load_manifest};
 use crate::meta::{AliveSet, ColumnStore};
 use crate::quant::Bit4Factors;
@@ -234,6 +233,13 @@ impl Store {
         if !Arc::ptr_eq(&segment.accounting, &self.accounting) {
             return Err(StoreError::ForeignPreparedSegment);
         }
+        let wal = self
+            .wal_writer
+            .lock()
+            .map_err(|_| StoreError::Synchronization {
+                component: "WAL writer",
+            })?;
+        let writer = wal.as_ref().ok_or(StoreError::ReadOnly)?;
         let generation = self
             .active
             .lock()
@@ -256,15 +262,7 @@ impl Store {
         };
         #[cfg(feature = "graph-cypher")]
         if committed.graph.is_some() {
-            let boundary = self
-                .wal_writer
-                .lock()
-                .map_err(|_| StoreError::Synchronization {
-                    component: "WAL writer",
-                })?
-                .as_ref()
-                .ok_or(StoreError::ReadOnly)?
-                .durable_end();
+            let boundary = writer.durable_end();
             committed
                 .record_generation_bump(boundary)
                 .map_err(StoreError::Manifest)?;
@@ -280,25 +278,27 @@ impl Store {
         .map_err(StoreError::Segment)?;
         let epoch_alias = self.epoch_identity();
         meta.epoch_id = epoch_alias.map(|identity| identity.embedding);
-        commit_manifest(
-            vfs,
-            &self.directory,
-            &Manifest {
-                #[cfg(feature = "graph-cypher")]
-                graph,
-                generation,
-                #[cfg(feature = "graph-cypher")]
-                log_seq: graph_log_seq,
-                #[cfg(not(feature = "graph-cypher"))]
-                log_seq: 0,
-                segments: vec![meta],
-                epochs: self.epoch_registry(&[]),
-                epoch_alias,
-                schema: segment.columns.schema().clone(),
-            },
-            self.durability_policy,
-        )
-        .map_err(StoreError::Manifest)?;
+        let mut publication = writer.manifest_publication()?;
+        publication
+            .commit_manifest(
+                vfs,
+                &self.directory,
+                &Manifest {
+                    #[cfg(feature = "graph-cypher")]
+                    graph,
+                    generation,
+                    #[cfg(feature = "graph-cypher")]
+                    log_seq: graph_log_seq,
+                    #[cfg(not(feature = "graph-cypher"))]
+                    log_seq: 0,
+                    segments: vec![meta],
+                    epochs: self.epoch_registry(&[]),
+                    epoch_alias,
+                    schema: segment.columns.schema().clone(),
+                },
+                self.durability_policy,
+            )
+            .map_err(StoreError::Manifest)?;
         let remapped = PublishedSnapshot::load_on_vfs(&self.directory, &self.accounting, vfs)?;
         let mut published = self
             .snapshot
@@ -317,6 +317,8 @@ impl Store {
                 component: "active segment",
             })?;
         active_guard.as_mut().ok_or(StoreError::Closed)?.generation = generation;
+        publication.complete();
+        drop(wal);
         drop(active_guard);
         drop(writer_lock);
         drop(state);
