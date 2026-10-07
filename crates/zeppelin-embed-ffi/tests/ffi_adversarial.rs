@@ -322,6 +322,10 @@ const ABI_REGISTRY: &[AbiEntry] = &[
         coverage: AbiCoverage::InvalidProbe(probe_query_filtered),
     },
     AbiEntry {
+        name: "ze_query_v2",
+        coverage: AbiCoverage::InvalidProbe(probe_query_v2),
+    },
+    AbiEntry {
         name: "ze_query_snippet_source_ranges",
         coverage: AbiCoverage::InvalidProbe(probe_query_snippet_source_ranges),
     },
@@ -1205,6 +1209,17 @@ fn probe_query_with_snippets(context: &MatrixContext) -> ProbeResult {
 
 fn probe_query_filtered(context: &MatrixContext) -> ProbeResult {
     ProbeResult::Status(ze_query_filtered(
+        context.store.handle,
+        std::ptr::null(),
+        std::ptr::null(),
+        0,
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+    ))
+}
+
+fn probe_query_v2(context: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_query_v2(
         context.store.handle,
         std::ptr::null(),
         std::ptr::null(),

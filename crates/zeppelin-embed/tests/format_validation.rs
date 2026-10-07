@@ -301,7 +301,7 @@ fn manifest_clustering_extension_rejects_each_semantic_corruption() {
     type Corruption = (&'static str, Box<dyn Fn(&mut Vec<u8>)>);
     let cases: Vec<Corruption> = vec![
         (
-            "unknown manifest extension",
+            "32 trailing payload bytes",
             Box::new(move |bytes| bytes[extension] ^= 1),
         ),
         (

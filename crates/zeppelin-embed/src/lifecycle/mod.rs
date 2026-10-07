@@ -3009,6 +3009,7 @@ impl Store {
     /// Opens a store directory with the requested access and durability policy.
     pub fn open(path: impl AsRef<Path>, options: OpenOptions) -> Result<Self, StoreError> {
         let path = path.as_ref();
+        namespace_batch::validate_store_path(path)?;
         if options.access_mode == AccessMode::ReadWrite {
             namespace_batch::reclaim_for_open(path)?;
         }

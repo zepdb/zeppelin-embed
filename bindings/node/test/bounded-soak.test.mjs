@@ -9,8 +9,12 @@ function fixedCorpusRssGrowth(samples, hours) {
   // Warm the fixed-corpus workload for half the phase: allocator arenas and
   // background merges can reach steady state after ingestion has ended. Keep
   // the same 64 MiB bound over the remaining half, including its boundary.
-  const warmed = fixed.slice(Math.floor(hours / 2) - 1);
-  return Math.max(...warmed.map(s => s.rss)) - warmed[0].rss;
+  // Compare high waters so a temporary allocator release at the boundary
+  // does not make a later rebound below the warmup peak look like growth.
+  const halfway = Math.floor(hours / 2);
+  const baseline = Math.max(...fixed.slice(0, halfway).map(s => s.rss));
+  const warmed = fixed.slice(halfway - 1);
+  return Math.max(0, Math.max(...warmed.map(s => s.rss)) - baseline);
 }
 
 test('RSS bound tolerates warmup but detects sustained growth', () => {
@@ -20,6 +24,8 @@ test('RSS bound tolerates warmup but detects sustained growth', () => {
     ...rss.map(value => ({ phase: 1, rss: value * mib })),
   ];
   assert.equal(fixedCorpusRssGrowth(samples([120, 160, 180, 200, 205, 210, 208, 209]), 8), 10 * mib);
+  assert.equal(fixedCorpusRssGrowth(samples([310, 230, 260, 210, 240, 220, 250, 280]), 8), 0);
+  assert.ok(fixedCorpusRssGrowth(samples([310, 230, 260, 210, 300, 320, 350, 380]), 8) >= 64 * mib);
   assert.ok(fixedCorpusRssGrowth(samples([120, 160, 180, 200, 220, 240, 260, 280]), 8) >= 64 * mib);
 });
 

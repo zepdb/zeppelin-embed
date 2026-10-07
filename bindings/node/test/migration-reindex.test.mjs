@@ -43,7 +43,7 @@ test('open reports an interrupted final WAL record cut', () => {
 });
 
 test('old and future manifest formats fail with distinct codes and preserve bytes', () => {
-  for (const [version, code] of [[1, 'ZE_ERR_FORMAT_VERSION'], [3, 'ZE_ERR_FORMAT_TOO_NEW']]) {
+  for (const [version, code] of [[1, 'ZE_ERR_FORMAT_VERSION'], [4, 'ZE_ERR_FORMAT_TOO_NEW']]) {
     const root = mkdtempSync(join(tmpdir(), 'ze-format-'));
     try {
       openNamespace(root, 'notes', spec).close();

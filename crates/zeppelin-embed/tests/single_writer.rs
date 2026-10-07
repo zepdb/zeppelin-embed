@@ -276,9 +276,14 @@ fn open_filesystem_rejections_are_typed() {
     let file_path = parent.path().join("not-a-directory");
     std::fs::File::create(&file_path).expect("plain file");
 
-    let not_directory = open_error(Store::open(&file_path, OpenOptions::read_only()));
-    assert!(matches!(not_directory, StoreError::NotDirectory { .. }));
-    assert!(not_directory.to_string().contains("not a directory"));
+    for options in [OpenOptions::read_only(), OpenOptions::default()] {
+        let not_directory = open_error(Store::open(&file_path, options));
+        assert!(
+            matches!(not_directory, StoreError::NotDirectory { .. }),
+            "{not_directory}"
+        );
+        assert!(not_directory.to_string().contains("not a directory"));
+    }
 
     let missing = parent.path().join("missing");
     let missing_error = open_error(Store::open(&missing, OpenOptions::read_only()));

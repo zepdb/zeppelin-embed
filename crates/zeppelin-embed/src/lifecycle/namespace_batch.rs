@@ -804,8 +804,8 @@ fn decode_routes(path: &Path, bytes: &[u8]) -> Result<Routes, StoreError> {
     Ok(result)
 }
 
-/// Selects one complete committed namespace. No sibling is opened or repaired.
-pub(super) fn resolve(path: &Path) -> Result<PathBuf, StoreError> {
+// Missing logical paths can still resolve through a committed namespace route.
+pub(super) fn validate_store_path(path: &Path) -> Result<(), StoreError> {
     match std::fs::metadata(path) {
         Ok(metadata) if !metadata.is_dir() => {
             return Err(StoreError::NotDirectory {
@@ -816,6 +816,12 @@ pub(super) fn resolve(path: &Path) -> Result<PathBuf, StoreError> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(io(path, error)),
     }
+    Ok(())
+}
+
+/// Selects one complete committed namespace. No sibling is opened or repaired.
+pub(super) fn resolve(path: &Path) -> Result<PathBuf, StoreError> {
+    validate_store_path(path)?;
     let Some(parent) = path.parent() else {
         return Ok(path.to_path_buf());
     };

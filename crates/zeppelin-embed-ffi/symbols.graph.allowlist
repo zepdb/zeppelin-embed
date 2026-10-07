@@ -55,6 +55,7 @@ ze_query_filtered
 ze_query_result_free
 ze_query_snippet_source_ranges
 ze_query_snippets_free
+ze_query_v2
 ze_query_with_snippets
 ze_reindex_text
 ze_scan
