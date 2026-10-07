@@ -250,7 +250,9 @@ pub(crate) fn prepare_sealed_tombstones(
         if let Some(graph) = &mut manifest.graph {
             // The pending delete's WAL batch is counted in this generation,
             // but neither replay watermark can move past unsealed documents.
-            graph.generation_absorbed_through = generation_absorbed_through;
+            if let Some(boundary) = generation_absorbed_through {
+                graph.generation_absorbed_through = Some(boundary);
+            }
         }
         let remapped = PublishedSnapshot::from_manifest(vfs, directory, &manifest, accounting)?;
         Ok(Some(PreparedSealedTombstones {
@@ -554,10 +556,7 @@ impl Store {
                 component: "active segment",
             })?;
         let current = active.as_ref().ok_or(StoreError::Closed)?;
-        let generation = current
-            .generation
-            .checked_add(1)
-            .ok_or(StoreError::GenerationOverflow)?;
+        let generation = current.generation;
         let active_segment = Arc::clone(&current.segment);
         let mut ids = surviving
             .iter()
@@ -782,6 +781,7 @@ impl Store {
         vfs: &dyn Vfs,
         manifest: &mut Manifest,
         active_state: &mut ActiveState,
+        _durable_end: u64,
         original: &SegmentMeta,
         ids: &super::lookup::LookupSet<DocId>,
         token_id: u64,
@@ -822,6 +822,10 @@ impl Store {
         })?;
         *target = replacement;
         manifest.generation = generation;
+        #[cfg(feature = "graph-cypher")]
+        manifest
+            .record_generation_bump(_durable_end)
+            .map_err(StoreError::Manifest)?;
         manifest.epochs = self.epoch_registry(&manifest.epochs);
         let remapped =
             PublishedSnapshot::from_manifest(vfs, &self.directory, manifest, &self.accounting)?;
@@ -879,9 +883,20 @@ impl Store {
         vfs: &dyn Vfs,
         manifest: &mut Manifest,
         generation: u64,
+        _durable_end: u64,
+        _generation_bump: bool,
         policy: DurabilityPolicy,
     ) -> Result<(), PurgeError> {
         manifest.generation = generation;
+        #[cfg(feature = "graph-cypher")]
+        if _generation_bump {
+            manifest
+                .record_generation_bump(_durable_end)
+                .map_err(StoreError::Manifest)?;
+        } else if let Some(graph) = &mut manifest.graph {
+            // WAL replay, not a fresh mutation, supplied this generation.
+            graph.generation_absorbed_through = Some(_durable_end);
+        }
         manifest.epochs = self.epoch_registry(&manifest.epochs);
         let remapped =
             PublishedSnapshot::from_manifest(vfs, &self.directory, manifest, &self.accounting)?;
@@ -1067,6 +1082,7 @@ impl Store {
                 vfs,
                 &mut manifest,
                 active_state,
+                writer.durable_end(),
                 &original,
                 &purge_ids,
                 token.id,
@@ -1105,7 +1121,14 @@ impl Store {
         };
         let (records, tombstoned) = active_wal_records(&next_active)?;
         if manifest.generation < active_state.generation {
-            self.commit_bumped_manifest(vfs, &mut manifest, active_state.generation, policy)?;
+            self.commit_bumped_manifest(
+                vfs,
+                &mut manifest,
+                active_state.generation,
+                writer.durable_end(),
+                active_has_target,
+                policy,
+            )?;
         }
         self.rewrite_wal_for_purge(
             vfs,
@@ -1117,6 +1140,27 @@ impl Store {
             &tombstoned,
             policy,
         )?;
+        #[cfg(feature = "graph-cypher")]
+        if manifest
+            .graph
+            .as_ref()
+            .is_some_and(|graph| graph.generation_absorbed_through != Some(writer.durable_end()))
+        {
+            // Rewritten document batches were already counted in this
+            // generation. Publish their new cutoff before purge returns or
+            // another graph write can be acknowledged.
+            if let Err(error) = self.commit_bumped_manifest(
+                vfs,
+                &mut manifest,
+                active_state.generation,
+                writer.durable_end(),
+                false,
+                policy,
+            ) {
+                writer.poison_after_manifest_failure(&error.to_string())?;
+                return Err(error);
+            }
+        }
         active_state.segment = Arc::new(next_active);
         remove_intent(vfs, &self.directory, policy)?;
         let generation = active_state.generation;

@@ -91,6 +91,9 @@ impl Store {
         manifest.epochs = self.epoch_registry(&manifest.epochs);
         manifest.epoch_alias = self.epoch_identity();
         manifest.graph = Some(self.empty_graph(generation, writer.durable_end())?);
+        manifest
+            .record_generation_bump(writer.durable_end())
+            .map_err(StoreError::Manifest)?;
         // The version barrier must survive before a future writer can append
         // an op an older binary cannot read, including in Derived stores.
         let barrier = super::durability::DurabilityPolicy::new(

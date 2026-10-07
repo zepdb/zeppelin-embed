@@ -551,11 +551,8 @@ fn validate_bundle(input: &NativeGraphBundleInput) -> Result<(), NativeGraphErro
     if base.store != input.roots.store()
         || base.generation != input.roots.generation()
         || (input.root_envelope.is_none()
-            && if base.fold.envelope_sequence == input.sequence {
-                base.fold.manifest_generation < base.generation.get()
-            } else {
-                base.fold.manifest_generation >= base.generation.get()
-            })
+            && base.fold.envelope_sequence == input.sequence
+            && base.fold.manifest_generation < base.generation.get())
         || base.fold.envelope_sequence > input.sequence
     {
         return Err(NativeGraphError::Invalid("bundle identity"));

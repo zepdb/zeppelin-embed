@@ -61,7 +61,20 @@
   checksum:u64)` rows. A trailing xxh3-64 covers `ZGR3`, length and body; the
   existing enclosing block/file checksums remain. Unknown fields, non-zero
   reserved bytes, absent/unknown presence tags, bad lengths/checksums and
-  trailing bytes are refused. Vector/text roots are absent; required state
+  trailing bytes are refused. After the object rows and before the section
+  checksum, graph sections may carry the 16-byte generation cutoff extension:
+  `ZGEN`, version `1:u32`, `counted_through:u64` (all integers little-endian).
+  It records WAL batches already counted in the manifest generation without
+  advancing either replay watermark. Manifest-only increments use version 2:
+  `ZGEN`, `2:u32`, `counted_through:u64`, `row_count:u32`, reserved-zero `u32`,
+  then `row_count` pairs of `(after_sequence:u64, increment_count:u64)`.
+  Counts are positive, rows strictly ordered by sequence, and no row is beyond
+  the cutoff. Replay subtracts the covered batches and manifest-only increments,
+  then restores each increment after its recorded WAL boundary. Both extensions
+  are written only when the graph section exists; graph-free v2 bytes are
+  unchanged. Pre-ZGEN v3 readers refuse the 16-byte extension as trailing object
+  bytes; the previous v1-cutoff decoder refuses the v2 extension. Unknown ZGEN
+  versions are refused. Vector/text roots are absent; required state
   participants must match the live inventory. Artifact ids are non-zero nonces,
   never paths. Graph-free builds refuse v3 at the codec boundary.
 - WAL mutation operation id 4 is timestamped-upsert v1. It retains operation

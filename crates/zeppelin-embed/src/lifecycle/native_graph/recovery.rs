@@ -6108,6 +6108,11 @@ fn install_unified_inner(
     let checkpoint = graph
         .state()
         .map_err(|e| NativeGraphError::Store(crate::lifecycle::StoreError::Manifest(e)))?;
+    if checkpoint.generation.get() > manifest_generation {
+        return Err(NativeGraphError::Invalid(
+            "checkpoint generation ahead of manifest",
+        ));
+    }
     let shared = GraphResources::from_store(store)?;
     let control = QueryControl::Cancel(CancelToken::new());
     let write = WriteMemory::new(&shared, WriteLimits::default())?;

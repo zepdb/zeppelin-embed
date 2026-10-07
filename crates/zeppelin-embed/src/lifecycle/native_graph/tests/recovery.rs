@@ -2643,6 +2643,660 @@ fn a_reader_that_observes_graph_enable_after_its_version_probe_refuses() {
     reader.close().unwrap();
 }
 
+fn generation_fixture(store: &Store, id: u128) {
+    use crate::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+    let mut batch = IngestBatch::new(vec![
+        IngestDocument::new(
+            DocumentVersion::new(DocId::new(id), Revision::new(1)),
+            vec![1.0, 0.0],
+        )
+        .with_timestamp(id as i64)
+        .with_text("generation fixture"),
+    ]);
+    if let Some(epoch) = store.epoch_identity() {
+        batch = batch.with_epoch(epoch);
+    }
+    store.ingest(batch).unwrap();
+    store.seal().unwrap();
+}
+
+fn generation_epoch() -> crate::epoch::StoreEpoch {
+    let document = EmbeddingTower {
+        model_id: "generation-fixture".to_owned(),
+        model_version: "1".to_owned(),
+        weights_digest: vec![1],
+        dims: 2,
+        normalization: Normalization::None,
+        prompt_prefix: String::new(),
+        max_tokens: 32,
+        runtime: EmbeddingRuntime::CpuReference,
+        compute_units: ComputeUnits::Cpu,
+        os_build: None,
+    };
+    crate::epoch::StoreEpoch {
+        embedding: crate::epoch::EmbeddingEpoch {
+            query: document.clone(),
+            document,
+            alignment_digest: Vec::new(),
+        },
+        tokenizer: crate::fts::tokenizer::TokenizerConfig::text_default().epoch(),
+    }
+}
+
+fn disable_generation_fixture_maintenance(store: &Store) {
+    store
+        .set_native_graph_maintenance_policy(crate::property_graph::GraphMaintenancePolicy {
+            automatic: false,
+            ..Default::default()
+        })
+        .unwrap();
+}
+
+fn assert_generation_reopens(
+    path: &Path,
+    node: NodeId,
+    generation: u64,
+    graph_generation: u64,
+    count: u64,
+) {
+    assert_generation_reopens_with_options(
+        path,
+        native_options(),
+        node,
+        generation,
+        graph_generation,
+        count,
+    );
+}
+
+fn assert_generation_reopens_with_options(
+    path: &Path,
+    options: OpenOptions,
+    node: NodeId,
+    generation: u64,
+    graph_generation: u64,
+    count: u64,
+) {
+    for access in [
+        crate::lifecycle::AccessMode::ReadOnly,
+        crate::lifecycle::AccessMode::ReadWrite,
+        crate::lifecycle::AccessMode::ReadWrite,
+    ] {
+        let recovered = Store::open(path, options.clone().with_access_mode(access)).unwrap();
+        assert_eq!(recovered.snapshot().unwrap().generation(), generation);
+        assert_eq!(recovered.count_documents(None, None).unwrap().count, count);
+        assert_eq!(
+            observe_node(&recovered, node),
+            Some((graph_generation, 1, 1))
+        );
+        drop(recovered);
+    }
+}
+
+#[test]
+fn a_delete_after_the_last_graph_write_reopens() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    generation_fixture(&store, 91);
+    store.enable_graph().unwrap();
+    disable_generation_fixture_maintenance(&store);
+    let node = commit_tail_test_node(&store, "before-delete");
+    assert_eq!(
+        store
+            .delete(crate::ingest::DeleteBatch::new(vec![
+                crate::ingest::DocId::new(91)
+            ]))
+            .unwrap()
+            .generation(),
+        5
+    );
+    drop(store);
+    assert_generation_reopens(directory.path(), node, 5, 4, 0);
+}
+
+#[test]
+fn additive_schema_evolution_on_a_graph_store_reopens() {
+    use crate::meta::{ColumnDefinition, ColumnId, ColumnType, Schema};
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    store.enable_graph().unwrap();
+    disable_generation_fixture_maintenance(&store);
+    let node = commit_tail_test_node(&store, "before-schema");
+    drop(store);
+    let schema = Schema::new(vec![ColumnDefinition::new(
+        ColumnId::new(71),
+        "extra",
+        ColumnType::U64,
+        true,
+    )])
+    .unwrap();
+    let evolved = Store::open(
+        directory.path(),
+        native_options().with_schema(schema.clone()),
+    )
+    .unwrap();
+    assert_eq!(evolved.schema(), &schema);
+    assert_eq!(evolved.snapshot().unwrap().generation(), 3);
+    assert_eq!(observe_node(&evolved, node), Some((2, 1, 1)));
+    drop(evolved);
+    assert_generation_reopens(directory.path(), node, 3, 2, 0);
+}
+
+#[test]
+fn reindex_after_the_last_graph_write_reopens() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    generation_fixture(&store, 91);
+    store.enable_graph().unwrap();
+    disable_generation_fixture_maintenance(&store);
+    let node = commit_tail_test_node(&store, "before-reindex");
+    assert_eq!(store.reindex_text().unwrap(), 5);
+    drop(store);
+    assert_generation_reopens(directory.path(), node, 5, 4, 1);
+}
+
+#[test]
+fn merge_after_the_last_graph_write_reopens() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    generation_fixture(&store, 91);
+    generation_fixture(&store, 92);
+    store.enable_graph().unwrap();
+    disable_generation_fixture_maintenance(&store);
+    let node = commit_tail_test_node(&store, "before-merge");
+    assert_eq!(store.merge_sealed().unwrap(), 7);
+    drop(store);
+    assert_generation_reopens(directory.path(), node, 7, 6, 2);
+}
+
+#[test]
+fn partition_drop_after_the_last_graph_write_reopens() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    generation_fixture(&store, 91);
+    store.enable_graph().unwrap();
+    disable_generation_fixture_maintenance(&store);
+    let node = commit_tail_test_node(&store, "before-partition-drop");
+    assert_eq!(store.drop_partition(91..92).unwrap().generation(), 5);
+    drop(store);
+    assert_generation_reopens(directory.path(), node, 5, 4, 0);
+}
+
+#[test]
+fn a_namespace_batch_preserves_prior_generation_boundaries() {
+    use crate::lifecycle::{LiveNamespaceMutation, NamespaceMutation, namespace_batch_live};
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("alpha");
+    let other = Store::open(directory.path().join("beta"), native_options()).unwrap();
+    let store = Store::open(&path, native_options()).unwrap();
+    generation_fixture(&store, 91);
+    generation_fixture(&store, 92);
+    store.enable_graph().unwrap();
+    disable_generation_fixture_maintenance(&store);
+    let node = commit_tail_test_node(&store, "before-namespace");
+    store
+        .delete(crate::ingest::DeleteBatch::new(vec![
+            crate::ingest::DocId::new(91),
+        ]))
+        .unwrap();
+    assert_eq!(
+        namespace_batch_live(
+            directory.path(),
+            vec![
+                LiveNamespaceMutation {
+                    store: &store,
+                    mutation: NamespaceMutation {
+                        name: "alpha".to_owned(),
+                        options: native_options(),
+                        upserts: vec![crate::ingest::IngestDocument::new(
+                            crate::ingest::DocumentVersion::new(
+                                crate::ingest::DocId::new(92),
+                                crate::ingest::Revision::new(2)
+                            ),
+                            vec![1.0, 0.0]
+                        )],
+                        deletes: Vec::new(),
+                        delete_where: None,
+                    }
+                },
+                LiveNamespaceMutation {
+                    store: &other,
+                    mutation: NamespaceMutation {
+                        name: "beta".to_owned(),
+                        options: native_options(),
+                        upserts: Vec::new(),
+                        deletes: Vec::new(),
+                        delete_where: None,
+                    }
+                }
+            ]
+        )
+        .unwrap(),
+        vec![8, 0]
+    );
+    drop(store);
+    assert_generation_reopens(&path, node, 8, 6, 1);
+}
+
+#[test]
+fn snapshot_replacement_after_the_last_graph_write_reopens() {
+    use crate::lifecycle::{InMemorySegment, InMemorySegmentFactors};
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    store.enable_graph().unwrap();
+    disable_generation_fixture_maintenance(&store);
+    let node = commit_tail_test_node(&store, "before-snapshot");
+    let columns = crate::meta::ColumnStoreBuilder::new(store.schema().clone())
+        .finish()
+        .unwrap();
+    let alive = crate::meta::AliveSet::new(0);
+    let prepared = store
+        .prepare_segment(InMemorySegment {
+            id: crate::segment::SegmentId::new(6, [6; 10]),
+            scheme: 4,
+            dims: 2,
+            codes: Vec::new(),
+            factors: InMemorySegmentFactors::Bit4(Vec::new()),
+            rescore: Vec::new(),
+            columns: &columns,
+            alive: &alive,
+        })
+        .unwrap();
+    assert_eq!(store.seal_snapshot(prepared).unwrap(), 3);
+    drop(store);
+    assert_generation_reopens(directory.path(), node, 3, 2, 0);
+}
+
+#[test]
+fn repeated_graph_checkpoints_without_watermark_movement_reopen() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    store.enable_graph().unwrap();
+    disable_generation_fixture_maintenance(&store);
+    let node = commit_tail_test_node(&store, "before-checkpoints");
+    for _ in 0..2 {
+        store
+            .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+            .unwrap();
+    }
+    let generation = store.snapshot().unwrap().generation();
+    drop(store);
+    assert_generation_reopens(directory.path(), node, generation, 2, 0);
+}
+
+#[test]
+fn manifest_only_bumps_between_graph_writes_keep_their_original_positions() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    generation_fixture(&store, 91);
+    store.enable_graph().unwrap();
+    disable_generation_fixture_maintenance(&store);
+    let first = commit_tail_test_node(&store, "before-first-bump");
+    assert_eq!(store.reindex_text().unwrap(), 5);
+    let second = commit_tail_test_node(&store, "between-bumps");
+    assert_eq!(store.reindex_text().unwrap(), 7);
+    assert_eq!(store.reindex_text().unwrap(), 8);
+    drop(store);
+    for access in [
+        crate::lifecycle::AccessMode::ReadOnly,
+        crate::lifecycle::AccessMode::ReadWrite,
+    ] {
+        let recovered =
+            Store::open(directory.path(), native_options().with_access_mode(access)).unwrap();
+        assert_eq!(recovered.snapshot().unwrap().generation(), 8);
+        assert_eq!(observe_node(&recovered, first), Some((6, 2, 1)));
+        assert_eq!(observe_node(&recovered, second), Some((6, 2, 1)));
+        drop(recovered);
+    }
+    let recovered = Store::open(directory.path(), native_options()).unwrap();
+    disable_generation_fixture_maintenance(&recovered);
+    let third = commit_tail_test_node(&recovered, "after-reopen");
+    assert_eq!(observe_node(&recovered, third), Some((9, 3, 1)));
+    drop(recovered);
+    let recovered = Store::open(directory.path(), native_options()).unwrap();
+    assert_eq!(observe_node(&recovered, third), Some((9, 3, 1)));
+}
+
+#[test]
+fn failed_graph_admission_does_not_publish_additive_schema_evolution() {
+    use crate::meta::{ColumnDefinition, ColumnId, ColumnType, Schema};
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    store.enable_graph().unwrap();
+    disable_generation_fixture_maintenance(&store);
+    let node = commit_tail_test_node(&store, "before-failed-schema");
+    drop(store);
+    let manifest_path = directory.path().join("manifest.ze");
+    let before = std::fs::read(&manifest_path).unwrap();
+    let manifest = crate::manifest::decode_manifest("before", &before).unwrap();
+    let artifact = crate::property_graph::storage::allocation::artifact_path(
+        directory.path(),
+        manifest.graph.unwrap().objects[0].artifact,
+    );
+    let bytes = std::fs::read(&artifact).unwrap();
+    std::fs::remove_file(&artifact).unwrap();
+    let schema = Schema::new(vec![ColumnDefinition::new(
+        ColumnId::new(71),
+        "extra",
+        ColumnType::U64,
+        true,
+    )])
+    .unwrap();
+    assert!(Store::open(directory.path(), native_options().with_schema(schema)).is_err());
+    assert_eq!(std::fs::read(&manifest_path).unwrap(), before);
+    std::fs::write(artifact, bytes).unwrap();
+    assert_generation_reopens(directory.path(), node, 2, 2, 0);
+}
+
+#[test]
+fn tier_promotion_after_the_last_graph_write_reopens() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(
+        directory.path(),
+        native_options().with_epoch(generation_epoch()),
+    )
+    .unwrap();
+    generation_fixture(&store, 91);
+    store.enable_graph().unwrap();
+    disable_generation_fixture_maintenance(&store);
+    let node = commit_tail_test_node(&store, "before-promotion");
+    let report = store.maintain_with_test_thresholds(
+        crate::tier::maintain::MaintenanceBudget {
+            wall_time: std::time::Duration::from_secs(30),
+            bytes: u64::MAX,
+        },
+        crate::tier::TierThresholds { graph_min_rows: 1 },
+    );
+    assert!(
+        matches!(
+            report.status,
+            crate::tier::maintain::MaintenanceStatus::Complete
+        ),
+        "{report:?}"
+    );
+    assert_eq!(report.graphs_built, 1);
+    assert_eq!(report.consolidations, 0);
+    assert_eq!(report.passes_applied, 4);
+    assert_eq!(report.refinement_generation, Some(9));
+    drop(store);
+    assert_generation_reopens_with_options(
+        directory.path(),
+        native_options().with_epoch(generation_epoch()),
+        node,
+        9,
+        4,
+        1,
+    );
+}
+
+#[test]
+fn tier_consolidation_after_the_last_graph_write_reopens() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(
+        directory.path(),
+        native_options().with_epoch(generation_epoch()),
+    )
+    .unwrap();
+    for id in [91, 92, 93] {
+        generation_fixture(&store, id);
+    }
+    store.enable_graph().unwrap();
+    disable_generation_fixture_maintenance(&store);
+    let node = commit_tail_test_node(&store, "before-consolidation");
+    let report = store.maintain_with_test_thresholds(
+        crate::tier::maintain::MaintenanceBudget {
+            wall_time: std::time::Duration::from_secs(30),
+            bytes: u64::MAX,
+        },
+        crate::tier::TierThresholds { graph_min_rows: 1 },
+    );
+    assert!(
+        matches!(
+            report.status,
+            crate::tier::maintain::MaintenanceStatus::Complete
+        ),
+        "{report:?}"
+    );
+    assert_eq!(report.graphs_built, 3);
+    assert_eq!(report.consolidations, 1);
+    assert_eq!(report.consolidation_generation, Some(16));
+    drop(store);
+    assert_generation_reopens_with_options(
+        directory.path(),
+        native_options().with_epoch(generation_epoch()),
+        node,
+        16,
+        8,
+        3,
+    );
+}
+
+#[test]
+fn sealed_physical_purge_records_its_manifest_only_generation() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    generation_fixture(&store, 91);
+    store.enable_graph().unwrap();
+    disable_generation_fixture_maintenance(&store);
+    let node = commit_tail_test_node(&store, "before-physical-purge");
+    store
+        .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+        .unwrap();
+    let token = store.purge(&[crate::ingest::DocId::new(91)]).unwrap();
+    assert_eq!(store.await_physical_purge(token).unwrap().generation(), 6);
+    let manifest =
+        crate::manifest::io::load_manifest(&StdVfs, &directory.path().join("manifest.ze"), 2)
+            .unwrap();
+    assert_eq!(manifest.graph.unwrap().generation_bumps, vec![(2, 2)]);
+    drop(store);
+    assert_generation_reopens(directory.path(), node, 6, 4, 0);
+}
+
+#[test]
+fn graph_enable_records_its_manifest_only_generation() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    assert_eq!(store.enable_graph().unwrap(), 1);
+    let manifest =
+        crate::manifest::io::load_manifest(&StdVfs, &directory.path().join("manifest.ze"), 0)
+            .unwrap();
+    assert_eq!(manifest.graph.unwrap().generation_bumps, vec![(0, 1)]);
+    drop(store);
+    let reopened = Store::open(directory.path(), native_options()).unwrap();
+    assert_eq!(reopened.snapshot().unwrap().generation(), 1);
+}
+
+#[test]
+fn active_physical_purge_preserves_generation_when_rewriting_the_wal() {
+    use crate::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+    for retain_document in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path(), native_options()).unwrap();
+        store.enable_graph().unwrap();
+        disable_generation_fixture_maintenance(&store);
+        let first = commit_tail_test_node(&store, "before-active-purge");
+        store
+            .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+            .unwrap();
+        let mut documents = vec![IngestDocument::new(
+            DocumentVersion::new(DocId::new(91), Revision::new(1)),
+            vec![1.0, 0.0],
+        )];
+        if retain_document {
+            documents.push(IngestDocument::new(
+                DocumentVersion::new(DocId::new(92), Revision::new(1)),
+                vec![0.0, 1.0],
+            ));
+        }
+        assert_eq!(
+            store
+                .ingest(IngestBatch::new(documents))
+                .unwrap()
+                .generation(),
+            4
+        );
+        let token = store.purge(&[DocId::new(91)]).unwrap();
+        assert_eq!(store.await_physical_purge(token).unwrap().generation(), 5);
+        drop(store);
+        let store = Store::open(directory.path(), native_options()).unwrap();
+        assert_eq!(store.snapshot().unwrap().generation(), 5);
+        assert_eq!(
+            store.count_documents(None, None).unwrap().count,
+            u64::from(retain_document)
+        );
+        assert_eq!(observe_node(&store, first), Some((2, 1, 1)));
+        disable_generation_fixture_maintenance(&store);
+        let second = commit_tail_test_node(&store, "after-active-purge");
+        assert_eq!(observe_node(&store, second), Some((6, 2, 1)));
+        drop(store);
+        for _ in 0..2 {
+            let recovered = Store::open(directory.path(), native_options()).unwrap();
+            assert_eq!(recovered.snapshot().unwrap().generation(), 6);
+            assert_eq!(
+                recovered.count_documents(None, None).unwrap().count,
+                u64::from(retain_document)
+            );
+            assert_eq!(observe_node(&recovered, first), Some((6, 2, 1)));
+            assert_eq!(observe_node(&recovered, second), Some((6, 2, 1)));
+            drop(recovered);
+        }
+    }
+}
+
+#[test]
+fn failed_purge_cutoff_publication_fences_graph_writes_and_recovers() {
+    use crate::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
+    let directory = tempfile::tempdir().unwrap();
+    let vfs = Arc::new(RecordingVfs::default());
+    let store = Store::open_with_test_dependencies(
+        directory.path(),
+        native_options(),
+        crate::lifecycle::StoreTestDependencies::new(
+            vfs.clone(),
+            Arc::new(crate::lifecycle::SystemMonotonicClock),
+        ),
+    )
+    .unwrap();
+    store.enable_graph().unwrap();
+    disable_generation_fixture_maintenance(&store);
+    let first = commit_tail_test_node(&store, "before-purge-fault");
+    store
+        .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+        .unwrap();
+    store
+        .ingest(IngestBatch::new(
+            [91, 92]
+                .into_iter()
+                .map(|id| {
+                    IngestDocument::new(
+                        DocumentVersion::new(DocId::new(id), Revision::new(1)),
+                        vec![1.0, 0.0],
+                    )
+                })
+                .collect(),
+        ))
+        .unwrap();
+    let token = store.purge(&[DocId::new(91)]).unwrap();
+    // First rename commits the active purge generation; second replaces WAL;
+    // the third publishes the rewritten batches' generation cutoff.
+    vfs.arm_fault_after(FaultPoint::Rename, 2);
+    assert!(store.await_physical_purge(token).is_err());
+    vfs.assert_fired_once();
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    assert!(
+        store
+            .apply_native_graph(
+                &[StructuredWrite {
+                    key: ApplicationKey::new(EntityKind::Node, "tail", "must-not-ack").unwrap(),
+                    revision: GraphRevision::new(1).unwrap(),
+                    operation: StructuredOperation::Create,
+                    image: Some(WriteImage::Node(&image)),
+                }],
+                &QueryControl::Cancel(CancelToken::new())
+            )
+            .is_err()
+    );
+    drop(store);
+    let recovered = Store::open(directory.path(), native_options()).unwrap();
+    assert_eq!(recovered.count_documents(None, None).unwrap().count, 1);
+    assert_eq!(observe_node(&recovered, first), Some((2, 1, 1)));
+    disable_generation_fixture_maintenance(&recovered);
+    let second = commit_tail_test_node(&recovered, "after-purge-fault");
+    let observation = observe_node(&recovered, second);
+    drop(recovered);
+    for _ in 0..2 {
+        let reopened = Store::open(directory.path(), native_options()).unwrap();
+        assert_eq!(reopened.count_documents(None, None).unwrap().count, 1);
+        assert_eq!(observe_node(&reopened, second), observation);
+        drop(reopened);
+    }
+}
+
+#[test]
+fn a_sealed_tombstone_recovery_bump_does_not_break_the_next_reopen() {
+    use crate::ingest::{
+        DeleteBatch, DocId, DocumentVersion, IngestBatch, IngestDocument, Revision,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    let document = DocId::new(91);
+    store
+        .ingest(IngestBatch::new(vec![IngestDocument::new(
+            DocumentVersion::new(document, Revision::new(1)),
+            vec![1.0, 0.0],
+        )]))
+        .unwrap();
+    store.seal().unwrap();
+    store.enable_graph().unwrap();
+    store
+        .set_native_graph_maintenance_policy(crate::property_graph::GraphMaintenancePolicy {
+            automatic: false,
+            ..Default::default()
+        })
+        .unwrap();
+    let node = commit_tail_test_node(&store, "before-recovered-delete");
+    let manifest_path = directory.path().join("manifest.ze");
+    let before_delete = std::fs::read(&manifest_path).unwrap();
+    let sealed = file_snapshot(directory.path())
+        .into_iter()
+        .filter(|(path, _)| {
+            path.extension()
+                .is_some_and(|extension| extension == "zseg")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        store
+            .delete(DeleteBatch::new(vec![document]))
+            .unwrap()
+            .generation(),
+        5
+    );
+    // Keep the acknowledged graph and delete WAL records, but lose the
+    // delete's manifest publication. Dropping avoids a close checkpoint.
+    drop(store);
+    std::fs::write(&manifest_path, before_delete).unwrap();
+    for (path, bytes) in sealed {
+        std::fs::write(directory.path().join(path), bytes).unwrap();
+    }
+    let first = Store::open(directory.path(), native_options()).unwrap();
+    let generation = first.snapshot().unwrap().generation();
+    assert_eq!(first.count_documents(None, None).unwrap().count, 0);
+    assert_eq!(observe_node(&first, node), Some((4, 1, 1)));
+    drop(first);
+    for reopen in [2, 3] {
+        let recovered = Store::open(directory.path(), native_options())
+            .unwrap_or_else(|error| panic!("reopen {reopen}: {error}"));
+        assert_eq!(recovered.snapshot().unwrap().generation(), generation);
+        assert_eq!(recovered.count_documents(None, None).unwrap().count, 0);
+        assert_eq!(observe_node(&recovered, node), Some((4, 1, 1)));
+        drop(recovered);
+    }
+    assert_eq!(
+        generation, 5,
+        "recovery must retain the acknowledged generation"
+    );
+}
+
 #[test]
 fn a_manifest_generation_bump_without_watermark_move_does_not_break_graph_replay() {
     use crate::ingest::{

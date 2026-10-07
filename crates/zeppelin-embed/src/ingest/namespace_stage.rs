@@ -137,7 +137,11 @@ impl Store {
             generation,
             durable_end.saturating_add(1),
             #[cfg(feature = "graph-cypher")]
-            None, // Namespace batches carry their own explicit final generation.
+            Some(
+                durable_end
+                    .checked_add(records.len() as u64)
+                    .ok_or(StoreError::GenerationOverflow)?,
+            ),
             crate::lifecycle::durability::DurabilityPolicy::new(
                 crate::lifecycle::durability::DurabilityMode::Durable,
                 crate::lifecycle::durability::CommitTier::Durable,
@@ -159,6 +163,21 @@ impl Store {
             ),
         };
         manifest.generation = generation;
+        #[cfg(feature = "graph-cypher")]
+        if !records.is_empty() {
+            let boundary = durable_end
+                .checked_add(records.len() as u64)
+                .ok_or(StoreError::GenerationOverflow)?;
+            if let Some(graph) = &mut manifest.graph {
+                graph.generation_absorbed_through = Some(boundary);
+            }
+            // Upserts and deletes can consume two generations in one prepared run.
+            for _ in 1..generation.saturating_sub(current.generation) {
+                manifest
+                    .record_generation_bump(boundary)
+                    .map_err(StoreError::Manifest)?;
+            }
+        }
         manifest.epochs = self.epoch_registry(&manifest.epochs);
         let snapshot = Arc::new(PublishedSnapshot::from_manifest(
             self.vfs.as_ref(),

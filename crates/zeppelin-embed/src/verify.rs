@@ -243,7 +243,7 @@ enum ManifestState {
     /// A manifest exists but is unreadable or corrupt; already reported.
     Damaged,
     /// A decoded manifest.
-    Decoded(Manifest),
+    Decoded(Box<Manifest>),
 }
 
 impl ManifestState {
@@ -282,7 +282,7 @@ impl Walk<'_> {
             }
         };
         match decode_manifest(MANIFEST_FILE, &bytes) {
-            Ok(manifest) => ManifestState::Decoded(manifest),
+            Ok(manifest) => ManifestState::Decoded(Box::new(manifest)),
             Err(error) => {
                 self.record(
                     FindingKind::ManifestCorrupt,
@@ -533,9 +533,7 @@ impl Walk<'_> {
                 }
             },
             #[cfg(feature = "graph-cypher")]
-            decoded
-                .and_then(|manifest| manifest.graph.as_ref())
-                .and_then(|graph| graph.generation_absorbed_through),
+            decoded.and_then(|manifest| manifest.graph.as_ref()),
             #[cfg(feature = "graph-cypher")]
             decoded.is_some_and(|manifest| manifest.graph.is_some()),
             &accounting,

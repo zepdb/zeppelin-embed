@@ -318,6 +318,10 @@ impl Store {
             .checked_add(1)
             .ok_or(StoreError::GenerationOverflow)?;
         manifest.generation = generation;
+        #[cfg(feature = "graph-cypher")]
+        manifest
+            .record_generation_bump(manifest.log_seq)
+            .map_err(StoreError::Manifest)?;
         manifest.epoch_alias = Some(target);
         let remapped =
             PublishedSnapshot::from_manifest(vfs, &self.directory, &manifest, &self.accounting)?;
@@ -415,6 +419,10 @@ impl Store {
             .ok_or(StoreError::GenerationOverflow)?;
         manifest.generation = generation;
         manifest.segments = retained;
+        #[cfg(feature = "graph-cypher")]
+        manifest
+            .record_generation_bump(manifest.log_seq)
+            .map_err(StoreError::Manifest)?;
         let remapped =
             PublishedSnapshot::from_manifest(vfs, &self.directory, &manifest, &self.accounting)?;
         commit_manifest(vfs, &self.directory, &manifest, self.durability_policy)

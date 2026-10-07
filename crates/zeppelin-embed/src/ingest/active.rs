@@ -122,7 +122,7 @@ impl ActiveState {
         generation: u64,
         absorbed_through: u64,
         graph_absorbed_through: u64,
-        #[cfg(feature = "graph-cypher")] generation_absorbed_through: Option<u64>,
+        #[cfg(feature = "graph-cypher")] graph_manifest: Option<&crate::manifest::GraphManifest>,
         #[cfg(feature = "graph-cypher")] graph_enabled: bool,
         accounting: &Arc<Accounting>,
         schema: &crate::meta::Schema,
@@ -160,7 +160,7 @@ impl ActiveState {
                     absorbed_through,
                     graph_absorbed_through,
                     #[cfg(feature = "graph-cypher")]
-                    generation_absorbed_through,
+                    graph_manifest,
                     &clean,
                     #[cfg(feature = "graph-cypher")]
                     graph_enabled,
@@ -170,8 +170,13 @@ impl ActiveState {
                     &decisions,
                 )?;
                 let generation_watermark = absorbed_through.max(graph_absorbed_through);
+                #[cfg(feature = "graph-cypher")]
+                let explicit_namespace_generation = !graph_enabled;
+                #[cfg(not(feature = "graph-cypher"))]
+                let explicit_namespace_generation = true;
                 if let Some(binding) = decisions.values().max_by_key(|binding| binding.last_seq)
                     && binding.last_seq > generation_watermark
+                    && explicit_namespace_generation
                 {
                     let later = super::atomic_batch::committed_batches(
                         clean.records(),
@@ -214,7 +219,7 @@ impl ActiveState {
         mut generation: u64,
         absorbed_through: u64,
         graph_absorbed_through: u64,
-        #[cfg(feature = "graph-cypher")] generation_absorbed_through: Option<u64>,
+        #[cfg(feature = "graph-cypher")] graph_manifest: Option<&crate::manifest::GraphManifest>,
         recovered: &CleanWalReader,
         #[cfg(feature = "graph-cypher")] graph_enabled: bool,
         accounting: &Arc<Accounting>,
@@ -247,9 +252,13 @@ impl ActiveState {
             |binding| decisions.get(&binding.transaction).copied(),
         )?;
         #[cfg(feature = "graph-cypher")]
-        if let Some(boundary) = generation_absorbed_through {
+        if let Some(boundary) = graph_manifest.and_then(|graph| graph.generation_absorbed_through) {
             if boundary > absorbed_through.max(graph_absorbed_through)
                 && !batches.iter().any(|batch| batch.last_seq.get() == boundary)
+                // Physical purge can retire the whole covered prefix. Its
+                // replacement WAL header pins that boundary independently.
+                && !(graph_manifest.is_some_and(|graph| !graph.generation_bumps.is_empty())
+                    && boundary.checked_add(1) == Some(recovered.retained_first_seq()))
             {
                 return Err(StoreError::Manifest(
                     crate::manifest::ManifestError::Decode(
@@ -270,7 +279,32 @@ impl ActiveState {
                 .checked_sub(already_counted as u64)
                 .ok_or(StoreError::GenerationOverflow)?;
         }
+        #[cfg(feature = "graph-cypher")]
+        // A cutoff alone accounts for WAL batches, not manifest-only changes.
+        // Restore each such increment after the batches that preceded it so
+        // historical graph envelopes keep their exact acknowledged generations.
+        let mut bumps = graph_manifest
+            .into_iter()
+            .flat_map(|graph| graph.generation_bumps.iter().copied())
+            .filter(|(sequence, _)| *sequence >= absorbed_through.max(graph_absorbed_through))
+            .peekable();
+        #[cfg(feature = "graph-cypher")]
+        for (_, count) in bumps.clone() {
+            generation = generation
+                .checked_sub(count)
+                .ok_or(StoreError::GenerationOverflow)?;
+        }
         for batch in batches {
+            #[cfg(feature = "graph-cypher")]
+            while bumps
+                .peek()
+                .is_some_and(|(sequence, _)| *sequence < batch.last_seq.get())
+            {
+                let (_, count) = bumps.next().ok_or(StoreError::GenerationOverflow)?;
+                generation = generation
+                    .checked_add(count)
+                    .ok_or(StoreError::GenerationOverflow)?;
+            }
             #[cfg(feature = "graph-cypher")]
             if graph_enabled
                 && let Some((first, _, _)) = batch.members.first()
@@ -339,6 +373,12 @@ impl ActiveState {
                     }
                 }
             }
+        }
+        #[cfg(feature = "graph-cypher")]
+        for (_, count) in bumps {
+            generation = generation
+                .checked_add(count)
+                .ok_or(StoreError::GenerationOverflow)?;
         }
         let mut segment = match (documents.first(), steps.first()) {
             (Some(first), Some((seq, op, _))) => ActiveSegment::empty()
@@ -2024,6 +2064,13 @@ pub(crate) struct StoreWal {
 }
 
 impl StoreWal {
+    #[cfg(feature = "graph-cypher")]
+    pub(crate) fn poison_after_manifest_failure(&self, detail: &str) -> Result<(), StoreError> {
+        self.writer
+            .poison(&std::io::Error::other(detail.to_owned()))
+            .map_err(StoreError::WalWrite)
+    }
+
     #[cfg(feature = "graph-cypher")]
     pub(crate) fn io_work(&self) -> [u64; 4] {
         self.writer.io_work()

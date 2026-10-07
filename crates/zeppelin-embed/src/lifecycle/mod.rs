@@ -3167,7 +3167,7 @@ impl Store {
         // Store-owned VFS before mmap becomes the query data plane. Internal
         // manifest-only remaps deliberately skip this probe so their exact
         // zero-segment-read accounting contracts remain intact.
-        let mut snapshot = PublishedSnapshot::load_for_open_on_vfs(
+        let snapshot = PublishedSnapshot::load_for_open_on_vfs(
             path,
             &accounting,
             vfs.as_ref(),
@@ -3222,10 +3222,7 @@ impl Store {
             absorbed_through,
             snapshot.graph_absorbed_through,
             #[cfg(feature = "graph-cypher")]
-            snapshot
-                .graph_manifest
-                .as_ref()
-                .and_then(|graph| graph.generation_absorbed_through),
+            snapshot.graph_manifest.as_ref().map(|graph| &***graph),
             #[cfg(feature = "graph-cypher")]
             snapshot.graph_enabled,
             &accounting,
@@ -3233,37 +3230,11 @@ impl Store {
             &tokenizer,
             private_preparation.as_ref(),
         )?;
-        let mut active = recovered.active;
+        let active = recovered.active;
         let recovered_wal = recovered.wal;
         let sealed_tombstones = recovered.tombstones;
         #[cfg(feature = "graph-cypher")]
         let graph_replay = recovered.graph;
-        if schema_evolved {
-            // Additive schema evolution is one manifest commit that changes
-            // only the schema: the same segments, epochs, and absorbed WAL
-            // boundary under the next generation. Sealed segments are not
-            // rewritten; their readers decode against the evolved schema.
-            let generation = active
-                .generation
-                .checked_add(1)
-                .ok_or(StoreError::GenerationOverflow)?;
-            let committed =
-                crate::manifest::io::load_manifest(vfs.as_ref(), &manifest_path, absorbed_through)
-                    .map_err(StoreError::Manifest)?;
-            crate::manifest::io::commit_manifest(
-                vfs.as_ref(),
-                path,
-                &crate::manifest::Manifest {
-                    generation,
-                    schema: schema.clone(),
-                    ..committed
-                },
-                durability_policy,
-            )
-            .map_err(StoreError::Manifest)?;
-            active.generation = generation;
-            snapshot = PublishedSnapshot::load_on_vfs(path, &accounting, vfs.as_ref())?;
-        }
         if options.access_mode == AccessMode::ReadWrite
             && !manifest_exists
             && (options.epoch.is_some() || options.schema.is_some())
@@ -3325,7 +3296,7 @@ impl Store {
         let native_graph =
             native_graph::NativeGraphPublication::new(&accounting, snapshot.graph_enabled)?;
         #[cfg(test)]
-        let (snapshot, background, teardown_probe) = {
+        let (mut snapshot, background, teardown_probe) = {
             let mut snapshot = snapshot;
             let mut background = background;
             let teardown_probe = Arc::new(close::TeardownProbe::new());
@@ -3335,6 +3306,8 @@ impl Store {
             }
             (snapshot, background, teardown_probe)
         };
+        #[cfg(not(test))]
+        let mut snapshot = snapshot;
         let mut store = Self {
             private_preparation,
             open_migrations: OpenMigrations {
@@ -3402,6 +3375,52 @@ impl Store {
                 options.access_mode,
                 options.graph_document.clone(),
             )?;
+        }
+        if schema_evolved {
+            let boundary = store
+                .wal_writer
+                .lock()
+                .map_err(|_| StoreError::Synchronization {
+                    component: "WAL writer",
+                })?
+                .as_ref()
+                .ok_or(StoreError::ReadOnly)?
+                .durable_end();
+            let mut active = store
+                .active
+                .lock()
+                .map_err(|_| StoreError::Synchronization {
+                    component: "active segment",
+                })?;
+            let active = active.as_mut().ok_or(StoreError::Closed)?;
+            let generation = active
+                .generation
+                .checked_add(1)
+                .ok_or(StoreError::GenerationOverflow)?;
+            let mut manifest =
+                crate::manifest::io::load_manifest(store.vfs.as_ref(), &manifest_path, boundary)
+                    .map_err(StoreError::Manifest)?;
+            manifest.generation = generation;
+            manifest.schema = store.schema.clone();
+            #[cfg(feature = "graph-cypher")]
+            manifest
+                .record_generation_bump(boundary)
+                .map_err(StoreError::Manifest)?;
+            let remapped = PublishedSnapshot::from_manifest(
+                store.vfs.as_ref(),
+                path,
+                &manifest,
+                &store.accounting,
+            )?;
+            crate::manifest::io::commit_manifest(
+                store.vfs.as_ref(),
+                path,
+                &manifest,
+                durability_policy,
+            )
+            .map_err(StoreError::Manifest)?;
+            active.generation = generation;
+            snapshot = remapped;
         }
         if options.access_mode == AccessMode::ReadWrite && manifest_exists {
             // An adopted manifest may be the survivor of a commit interrupted

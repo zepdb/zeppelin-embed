@@ -246,9 +246,31 @@ impl Store {
             .checked_add(1)
             .ok_or(StoreError::GenerationOverflow)?;
         #[cfg(feature = "graph-cypher")]
-        let graph =
-            crate::ingest::load_current_manifest(vfs, &self.directory, u64::MAX, 0, &self.schema)?
-                .graph;
+        let mut committed =
+            crate::ingest::load_current_manifest(vfs, &self.directory, u64::MAX, 0, &self.schema)?;
+        #[cfg(feature = "graph-cypher")]
+        let graph_log_seq = if committed.graph.is_some() {
+            committed.log_seq
+        } else {
+            0
+        };
+        #[cfg(feature = "graph-cypher")]
+        if committed.graph.is_some() {
+            let boundary = self
+                .wal_writer
+                .lock()
+                .map_err(|_| StoreError::Synchronization {
+                    component: "WAL writer",
+                })?
+                .as_ref()
+                .ok_or(StoreError::ReadOnly)?
+                .durable_end();
+            committed
+                .record_generation_bump(boundary)
+                .map_err(StoreError::Manifest)?;
+        }
+        #[cfg(feature = "graph-cypher")]
+        let graph = committed.graph;
         let mut meta = write_segment(
             vfs,
             &self.directory,
@@ -265,6 +287,9 @@ impl Store {
                 #[cfg(feature = "graph-cypher")]
                 graph,
                 generation,
+                #[cfg(feature = "graph-cypher")]
+                log_seq: graph_log_seq,
+                #[cfg(not(feature = "graph-cypher"))]
                 log_seq: 0,
                 segments: vec![meta],
                 epochs: self.epoch_registry(&[]),

@@ -232,6 +232,10 @@ impl Store {
             .ok_or(StoreError::GenerationOverflow)?;
         manifest.generation = generation;
         manifest.segments = selection.retained;
+        #[cfg(feature = "graph-cypher")]
+        manifest
+            .record_generation_bump(durable_end)
+            .map_err(StoreError::Manifest)?;
         manifest.epochs = self.epoch_registry(&manifest.epochs);
         // Construct and validate the replacement snapshot before crossing the
         // manifest commit point. After commit, publication is an in-memory

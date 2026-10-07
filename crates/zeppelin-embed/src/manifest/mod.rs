@@ -23,6 +23,32 @@ use crate::segment::{ClusteringKeyRange, SegmentId, SegmentMeta};
 const CLUSTERING_RANGE_EXTENSION_MAGIC: [u8; 4] = *b"TSR1";
 const CLUSTERING_RANGE_RECORD_LEN: usize = 24;
 
+#[cfg(feature = "graph-cypher")]
+impl Manifest {
+    // Every manifest-only increment is recorded at the current durable WAL
+    // boundary in the same commit. Watermarks fold older offsets into the base;
+    // offsets at the watermark still precede the next unabsorbed batch.
+    pub(crate) fn record_generation_bump(&mut self, boundary: u64) -> Result<(), ManifestError> {
+        if let Some(graph) = &mut self.graph {
+            let watermark = self.log_seq.max(graph.graph_absorbed_through);
+            graph
+                .generation_bumps
+                .retain(|(sequence, _)| *sequence >= watermark);
+            graph.generation_absorbed_through = Some(boundary);
+            if let Some((sequence, count)) = graph.generation_bumps.last_mut()
+                && *sequence == boundary
+            {
+                *count = count
+                    .checked_add(1)
+                    .ok_or_else(|| ManifestError::Decode("generation bump overflow".to_owned()))?;
+            } else {
+                graph.generation_bumps.push((boundary, 1));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Interpretation-critical model/tokenizer identity for one coexistence epoch.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EpochMeta {

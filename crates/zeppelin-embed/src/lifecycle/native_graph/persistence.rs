@@ -677,7 +677,15 @@ fn create_with_high_waters(
         }],
     )
     .map_err(crate::lifecycle::StoreError::Manifest)?;
-    manifest.graph = Some(graph.clone());
+    manifest.graph = Some(graph);
+    manifest
+        .record_generation_bump(0)
+        .map_err(crate::lifecycle::StoreError::Manifest)?;
+    let graph = manifest
+        .graph
+        .as_ref()
+        .ok_or(NativeGraphError::Invalid("initial graph manifest"))?
+        .clone();
     let barrier = crate::lifecycle::durability::DurabilityPolicy::new(
         DurabilityMode::Durable,
         CommitTier::Durable,

@@ -159,6 +159,10 @@ impl Store {
                 .retain(|meta| !inputs.iter().any(|input| input.meta().id == meta.id));
             manifest.segments.extend(replacement);
             manifest.generation = generation;
+            #[cfg(feature = "graph-cypher")]
+            manifest
+                .record_generation_bump(durable_end)
+                .map_err(StoreError::Manifest)?;
             // Preserve log_seq: a merge absorbs no active or WAL records.
             commit_manifest(vfs, &self.directory, &manifest, self.durability_policy)
                 .map_err(StoreError::Manifest)?;

@@ -105,6 +105,10 @@ impl Store {
         }
         manifest.segments = replacements;
         manifest.generation = generation;
+        #[cfg(feature = "graph-cypher")]
+        manifest
+            .record_generation_bump(durable_end)
+            .map_err(StoreError::Manifest)?;
         commit_manifest(
             self.vfs.as_ref(),
             &self.directory,

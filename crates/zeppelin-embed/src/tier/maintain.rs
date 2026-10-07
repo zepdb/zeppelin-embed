@@ -1193,6 +1193,11 @@ fn publish_consolidation(
         .max(active_state.generation)
         .checked_add(1)
         .ok_or(MaintenanceError::Store(StoreError::GenerationOverflow))?;
+    #[cfg(feature = "graph-cypher")]
+    manifest
+        .record_generation_bump(durable_end)
+        .map_err(StoreError::Manifest)
+        .map_err(MaintenanceError::Store)?;
     manifest.epochs = store.epoch_registry(&manifest.epochs);
     commit_manifest(
         store.vfs.as_ref(),
@@ -1379,6 +1384,11 @@ fn publish_transition(
         .max(active_state.generation)
         .checked_add(1)
         .ok_or(MaintenanceError::Store(StoreError::GenerationOverflow))?;
+    #[cfg(feature = "graph-cypher")]
+    manifest
+        .record_generation_bump(durable_end)
+        .map_err(StoreError::Manifest)
+        .map_err(MaintenanceError::Store)?;
     manifest.epochs = store.epoch_registry(&manifest.epochs);
     commit_manifest(
         store.vfs.as_ref(),

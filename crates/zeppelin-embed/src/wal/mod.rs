@@ -1338,6 +1338,13 @@ pub(crate) struct CleanWalReader {
 }
 
 impl CleanWalReader {
+    #[cfg(feature = "graph-cypher")]
+    pub(crate) fn retained_first_seq(&self) -> u64 {
+        self.records
+            .first()
+            .map_or(self.next_seq, |record| record.seq.get())
+    }
+
     pub(crate) fn records(&self) -> &[VisibleRecord] {
         &self.records
     }

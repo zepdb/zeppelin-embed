@@ -170,6 +170,9 @@ mod enable_graph {
             .purge(&[zeppelin_embed::ingest::DocId::new(1)])
             .unwrap();
         store.await_physical_purge(token).unwrap();
+        let mut expected = graph.clone().unwrap();
+        expected.generation_absorbed_through = Some(ack.seq().get());
+        expected.generation_bumps = vec![(ack.seq().get(), 1)];
         assert_eq!(
             decode_manifest(
                 "purged",
@@ -177,7 +180,7 @@ mod enable_graph {
             )
             .unwrap()
             .graph,
-            graph
+            Some(expected)
         );
         store.close().unwrap();
         let reopened = Store::open(scratch.path(), common::options(false)).unwrap();
@@ -334,6 +337,9 @@ mod enable_graph {
             })
             .unwrap();
         store.seal_snapshot(prepared).unwrap();
+        let mut expected = graph.unwrap();
+        expected.generation_absorbed_through = Some(0);
+        expected.generation_bumps = vec![(0, 2)];
         assert_eq!(
             decode_manifest(
                 "replacement",
@@ -341,7 +347,7 @@ mod enable_graph {
             )
             .unwrap()
             .graph,
-            graph
+            Some(expected)
         );
         store.close().unwrap();
         let reader = Store::open(scratch.path(), OpenOptions::read_only()).unwrap();

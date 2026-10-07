@@ -420,3 +420,61 @@ fn reindex_preserves_retained_embedding_epochs() {
         .expect("epoch A remains complete");
     assert_eq!(search_bits(&store), before);
 }
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn graph_epoch_alias_commits_record_manifest_only_generations() {
+    let fixture = publish_two_epoch_fixture();
+    let options = OpenOptions::default().with_epoch(fixture.epoch_a.clone());
+    let store = Store::open(fixture.directory.path(), options.clone()).expect("open");
+    store.enable_graph().expect("graph");
+    store
+        .switch_epoch_alias(fixture.epoch_b.identity())
+        .expect("switch B");
+    store
+        .switch_epoch_alias(fixture.epoch_a.identity())
+        .expect("switch A");
+    drop(store);
+    let manifest = zeppelin_embed::manifest::io::load_manifest(
+        &StdVfs,
+        &fixture.directory.path().join("manifest.ze"),
+        0,
+    )
+    .expect("manifest");
+    assert_eq!(manifest.generation, 4);
+    assert_eq!(
+        manifest.graph.expect("graph").generation_bumps,
+        vec![(0, 3)]
+    );
+    let reopened = Store::open(fixture.directory.path(), options).expect("reopen");
+    assert_eq!(reopened.snapshot().expect("snapshot").generation(), 4);
+}
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn graph_epoch_drop_records_its_manifest_only_generation() {
+    let fixture = publish_two_epoch_fixture();
+    let options = OpenOptions::default().with_epoch(fixture.epoch_a.clone());
+    let store = Store::open(fixture.directory.path(), options.clone()).expect("open");
+    store.enable_graph().expect("graph");
+    assert_eq!(
+        store
+            .drop_epoch(fixture.epoch_b.identity().embedding)
+            .expect("drop B")
+            .generation(),
+        3
+    );
+    drop(store);
+    let manifest = zeppelin_embed::manifest::io::load_manifest(
+        &StdVfs,
+        &fixture.directory.path().join("manifest.ze"),
+        0,
+    )
+    .expect("manifest");
+    assert_eq!(
+        manifest.graph.expect("graph").generation_bumps,
+        vec![(0, 2)]
+    );
+    let reopened = Store::open(fixture.directory.path(), options).expect("reopen");
+    assert_eq!(reopened.snapshot().expect("snapshot").generation(), 3);
+}

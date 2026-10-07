@@ -818,6 +818,9 @@ fn checkpoint_current_inner(
     if active.segment.is_empty() {
         manifest.log_seq = wal.durable_end();
     }
+    manifest
+        .record_generation_bump(wal.durable_end())
+        .map_err(crate::lifecycle::StoreError::Manifest)?;
     let next = NativeGraphBundle::fold_transition(
         store,
         resources,
