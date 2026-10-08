@@ -539,6 +539,51 @@ pub mod graph_storage_fault_test_support {
 pub mod graph_recovery_test_support {
     use crate::graph_read_view_test_support::{ObservedRelationship, PathReceipt};
 
+    /// Selects explicit maintenance for the runner's acknowledgement ledger.
+    #[allow(clippy::result_large_err)]
+    pub fn configure_unified_runner(
+        store: &crate::lifecycle::Store,
+    ) -> Result<(), crate::property_graph::GraphStoreError> {
+        store
+            .set_native_graph_maintenance_policy(crate::property_graph::GraphMaintenancePolicy {
+                automatic: false,
+                ..Default::default()
+            })
+            .map_err(Into::into)
+    }
+
+    /// Dispatches runner requests to the same Store's production writer.
+    #[allow(clippy::result_large_err)]
+    pub fn apply_unified_batch(
+        store: &crate::lifecycle::Store,
+        documents: Option<&crate::ingest::IngestBatch>,
+        requests: &[crate::property_graph::staging::StructuredWrite<'_, '_>],
+        control: &crate::lifecycle::QueryControl,
+    ) -> Result<(u64, bool), crate::property_graph::GraphStoreError> {
+        let result = match documents {
+            Some(documents) => store.apply_native_mixed(documents, requests, control),
+            None => store.apply_native_graph(requests, control),
+        }
+        .map_err(crate::property_graph::GraphStoreError::from)?;
+        let changed = result.changed_generation();
+        Ok((
+            changed.unwrap_or(result.admitted_generation()).get(),
+            changed.is_some(),
+        ))
+    }
+
+    /// Observes whether this Store has an installed graph publication.
+    #[allow(clippy::result_large_err)]
+    pub fn unified_graph_enabled(
+        store: &crate::lifecycle::Store,
+    ) -> Result<bool, crate::property_graph::GraphStoreError> {
+        store.native_graph.is_installed().map_err(|error| {
+            crate::property_graph::GraphStoreError::from(
+                crate::lifecycle::native_graph::NativeGraphError::Store(error),
+            )
+        })
+    }
+
     /// Drives the production mixed writer through the nonshipping fault facade.
     pub fn apply_mixed_batch(
         store: &crate::lifecycle::Store,

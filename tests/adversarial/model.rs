@@ -56,6 +56,14 @@ pub enum ModelEpoch {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Model {
+    #[cfg(feature = "graph-cypher")]
+    pub graph_enabled: bool,
+    #[cfg(feature = "graph-cypher")]
+    pub graph_nodes: BTreeSet<u32>,
+    #[cfg(feature = "graph-cypher")]
+    pub edges: BTreeMap<u32, (u32, u32)>,
+    #[cfg(feature = "graph-cypher")]
+    pub unified_generation: u64,
     live: BTreeMap<u32, ModelDoc>,
     deleted: BTreeSet<u32>,
     purged: BTreeSet<u32>,
@@ -563,4 +571,57 @@ fn squared_l2_f64(left: &[f32], right: &[f32]) -> f32 {
             delta * delta
         })
         .sum::<f64>() as f32
+}
+
+#[cfg(feature = "graph-cypher")]
+impl Model {
+    pub fn unified_candidate(&self, op: &program::Op) -> Result<(Self, bool), String> {
+        let mut next = self.clone();
+        let changed = match *op {
+            program::Op::EnableGraph => {
+                next.graph_enabled = true;
+                !self.graph_enabled
+            }
+            program::Op::GraphApply { graph_key } | program::Op::MixedBatch { graph_key, .. } => {
+                if !self.graph_enabled {
+                    return Err("graph mutation before enable".into());
+                }
+                let from = graph_key.checked_mul(2).ok_or("graph key overflow")?;
+                let to = from.checked_add(1).ok_or("graph key overflow")?;
+                next.graph_nodes.extend([from, to]);
+                next.edges.insert(graph_key, (from, to));
+                match *op {
+                    program::Op::MixedBatch {
+                        doc_id,
+                        revision,
+                        timestamp,
+                        ..
+                    } => {
+                        let document_changed = match self.live.get(&doc_id) {
+                            Some(document) if revision < document.revision => {
+                                return Err(
+                                    "mixed batch submitted a stale document revision".into()
+                                );
+                            }
+                            Some(document) if revision == document.revision => false,
+                            _ => true,
+                        };
+                        if document_changed {
+                            next.acknowledge(doc_id, revision, timestamp);
+                        }
+                        document_changed || !self.edges.contains_key(&graph_key)
+                    }
+                    _ => !self.edges.contains_key(&graph_key),
+                }
+            }
+            _ => return Err("not a unified mutation".into()),
+        };
+        if changed {
+            next.unified_generation = self
+                .unified_generation
+                .checked_add(1)
+                .ok_or("generation overflow")?;
+        }
+        Ok((next, changed))
+    }
 }

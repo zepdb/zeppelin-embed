@@ -78,6 +78,11 @@ jobs:
           --test adversarial_tests
           property_graph_response_probe_checks_real_owners_and_paired_faults
           -- --exact
+      - name: Exercise bounded unified-store runner contracts
+        run: >-
+          cargo test -p zeppelin-embed-workspace-tests
+          --features graph-result-test-support
+          --test adversarial_tests unified_store::
       - name: Exercise every runtime kernel arm
         run: PROPTEST_CASES=1024 cargo test -p zeppelin-embed kernels
 

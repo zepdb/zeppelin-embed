@@ -326,6 +326,17 @@ pub(super) fn run() {
     let mut rng = crate::test_support::seeded_rng(
         "recovery::random_operation_sequences_reopen_to_the_model_state",
     );
+    // Mixed append refusal, torn append, and sync-before-publication share the
+    // submitted pre/post model. Shuffle actual fault shapes with the seed.
+    let mut mixed_faults = [
+        FaultPoint::Append,
+        FaultPoint::PartialAppend,
+        FaultPoint::WalSync,
+    ];
+    mixed_faults.shuffle(&mut rng);
+    for point in mixed_faults {
+        mixed_fault_model(point, rng.random_range(100..=1_000));
+    }
     // A retained reader produces repeated references to the same artifacts.
     // Stop after intent publication, then validate RO and resume RW. The
     // >160k-reference regression is separate; keep the seeded shape small.
@@ -1059,4 +1070,52 @@ pub(super) fn run() {
         "restart model: seed={seed:?}, sequences={sequences}, cuts={cuts_run}, operation_counts={operation_counts:?} in OPERATIONS order, fault_publishers={fault_publishers:?}, fault_counts={fault_counts:?}, install_faults={sequences}, elapsed={:?}",
         started.elapsed()
     );
+}
+
+// Model a complete append whose WAL sync refuses before memory publication.
+#[test]
+fn mixed_wal_sync_fault_reopens_to_the_complete_model_state() {
+    mixed_fault_model(FaultPoint::WalSync, 91);
+}
+
+fn mixed_fault_model(point: FaultPoint, id: u128) {
+    let root = tempfile::tempdir().unwrap();
+    let vfs = Arc::new(SequenceVfs::new());
+    let store = open(root.path(), &vfs, native_options());
+    store.enable_graph().unwrap();
+    disable_generation_fixture_maintenance(&store);
+    let mut expected = Model::default();
+    expected.acknowledge(1);
+    if point == FaultPoint::WalSync {
+        // First submitted native allocation in this fresh graph is node 1.
+        // A complete mixed run is the next generation even if sync lost its ack.
+        expected.documents.insert(id);
+        expected.nodes.insert(NodeId::new(1).unwrap());
+        expected.acknowledge(2);
+    }
+    let documents = BTreeSet::from([id]);
+    vfs.recorded.inner().arm_fault(point);
+    assert!(try_write_mixed(&store, &[id], "sync-cut").is_err());
+    vfs.recorded.inner().assert_fired_once();
+    assert_shared_writer_stopped(&store);
+    drop(store);
+    for access in [AccessMode::ReadOnly, AccessMode::ReadWrite] {
+        let reopened = Store::open_with_test_dependencies(
+            root.path(),
+            native_options().with_access_mode(access),
+            crate::lifecycle::StoreTestDependencies::new(
+                vfs.clone(),
+                Arc::new(crate::lifecycle::SystemMonotonicClock),
+            ),
+        )
+        .unwrap();
+        assert!(
+            same_visibility(&visible(&reopened, &documents), &expected),
+            "{point:?} must recover the complete submitted model"
+        );
+        assert_eq!(
+            reopened.snapshot().unwrap().generation(),
+            expected.generation()
+        );
+    }
 }

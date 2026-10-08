@@ -2053,7 +2053,38 @@ pub fn plan_schedule(seed: u64, environment: Environment, program: &Program) -> 
                     (_, Some(_)) | (_, None) => (drawn_nth_match, None),
                 }
             };
+            #[cfg(feature = "graph-cypher")]
+            let (nth_match, expected_matches) = match operation {
+                Op::EnableGraph | Op::GraphApply { .. } => (1, None),
+                Op::MixedBatch { .. } => (
+                    if site == FaultSite::Append {
+                        drawn_nth_match.clamp(1, 2)
+                    } else {
+                        1
+                    },
+                    None,
+                ),
+                _ => (nth_match, expected_matches),
+            };
             let ordinal = events.len();
+            #[cfg(feature = "graph-cypher")]
+            let path_contains = match (operation, site) {
+                (Op::EnableGraph, FaultSite::Write | FaultSite::Sync) => Some(".zgraph".into()),
+                (Op::EnableGraph, FaultSite::Rename) => Some("manifest.ze".into()),
+                (Op::GraphApply { .. }, FaultSite::Write) => Some(".zgraph".into()),
+                (Op::GraphApply { .. }, FaultSite::Sync)
+                    if (seed ^ op_index as u64).is_multiple_of(2) =>
+                {
+                    Some(".zgraph".into())
+                }
+                (
+                    Op::GraphApply { .. } | Op::MixedBatch { .. },
+                    FaultSite::Append | FaultSite::Sync,
+                ) => Some("wal.ze".into()),
+                _ => None,
+            };
+            #[cfg(not(feature = "graph-cypher"))]
+            let path_contains = None;
             events.push(FaultEvent {
                 id: format!("{}-{seed}-{op_index}-{ordinal}", layer.key()),
                 op_index,
@@ -2063,7 +2094,7 @@ pub fn plan_schedule(seed: u64, environment: Environment, program: &Program) -> 
                 nth_match,
                 expected_matches,
                 deadline_budget_seconds,
-                path_contains: None,
+                path_contains,
                 fired: false,
                 fire_count: 0,
                 path: None,
@@ -2075,6 +2106,12 @@ pub fn plan_schedule(seed: u64, environment: Environment, program: &Program) -> 
 
 fn expected_matches(operation: &Op, site: FaultSite, first_wal_mutation: bool) -> Option<usize> {
     match (operation, site) {
+        #[cfg(feature = "graph-cypher")]
+        (Op::EnableGraph | Op::GraphApply { .. }, _) => Some(1),
+        #[cfg(feature = "graph-cypher")]
+        (Op::MixedBatch { .. }, FaultSite::Append) => Some(2),
+        #[cfg(feature = "graph-cypher")]
+        (Op::MixedBatch { .. }, FaultSite::Sync) => Some(1),
         (
             Op::Crash {
                 boundary: CrashBoundary::MidWalGroup,
@@ -2138,6 +2175,10 @@ fn expected_matches(operation: &Op, site: FaultSite, first_wal_mutation: bool) -
 }
 
 fn is_wal_mutation(operation: &Op) -> bool {
+    #[cfg(feature = "graph-cypher")]
+    if matches!(operation, Op::GraphApply { .. } | Op::MixedBatch { .. }) {
+        return true;
+    }
     matches!(
         operation,
         Op::Ingest { .. }
@@ -2149,6 +2190,17 @@ fn is_wal_mutation(operation: &Op) -> bool {
 }
 
 fn reachable_sites(operation: &Op, layer: Layer) -> &'static [FaultSite] {
+    #[cfg(feature = "graph-cypher")]
+    if layer == Layer::Io {
+        match operation {
+            Op::EnableGraph => return &[FaultSite::Write, FaultSite::Sync, FaultSite::Rename],
+            Op::GraphApply { .. } => {
+                return &[FaultSite::Write, FaultSite::Sync, FaultSite::Append];
+            }
+            Op::MixedBatch { .. } => return &[FaultSite::Append, FaultSite::Sync],
+            _ => {}
+        }
+    }
     if layer == Layer::Busy {
         return match operation {
             Op::Seal

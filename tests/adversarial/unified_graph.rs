@@ -16,6 +16,38 @@ pub const REQUIRED: &[&str] = &[
     "storage-durability.mixed-batch.comparator",
 ];
 
+pub const PART_A_REQUIRED: &[&str] = &[
+    "op.enable_graph",
+    "op.graph_apply",
+    "op.mixed_batch",
+    "storage-durability.graph-commit.fire",
+    "storage-durability.graph-commit.clean",
+    "storage-durability.graph-commit.enable.fire",
+    "storage-durability.graph-commit.enable.clean",
+    "storage-durability.graph-commit.artifact-write.fire",
+    "storage-durability.graph-commit.artifact-write.clean",
+    "storage-durability.graph-commit.artifact-sync.fire",
+    "storage-durability.graph-commit.artifact-sync.clean",
+    "storage-durability.graph-commit.wal-append.fire",
+    "storage-durability.graph-commit.wal-append.clean",
+    "storage-durability.graph-commit.wal-sync.fire",
+    "storage-durability.graph-commit.wal-sync.clean",
+    "storage-durability.graph-fold.fire",
+    "storage-durability.graph-fold.clean",
+    "storage-durability.graph-fold.manifest-rename.fire",
+    "storage-durability.graph-fold.manifest-rename.clean",
+    "storage-durability.graph-fold.rotation.fire",
+    "storage-durability.graph-fold.rotation.clean",
+    "storage-durability.mixed-batch.fire",
+    "storage-durability.mixed-batch.clean",
+    "storage-durability.mixed-batch.members.fire",
+    "storage-durability.mixed-batch.members.clean",
+    "storage-durability.mixed-batch.sync.fire",
+    "storage-durability.mixed-batch.sync.clean",
+    "storage-durability.mixed-batch.torn-final.fire",
+    "storage-durability.mixed-batch.torn-final.clean",
+];
+
 #[derive(Clone, Copy)]
 pub enum Operation {
     EnableGraph,

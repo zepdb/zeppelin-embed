@@ -140,6 +140,19 @@ impl SearchKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Op {
     Open,
+    #[cfg(feature = "graph-cypher")]
+    EnableGraph,
+    #[cfg(feature = "graph-cypher")]
+    GraphApply {
+        graph_key: u32,
+    },
+    #[cfg(feature = "graph-cypher")]
+    MixedBatch {
+        doc_id: u32,
+        revision: u64,
+        timestamp: i64,
+        graph_key: u32,
+    },
     Ingest {
         first_id: u32,
         count: u32,
@@ -222,6 +235,12 @@ impl Op {
     pub const fn kind(&self) -> &'static str {
         match self {
             Self::Open => "open",
+            #[cfg(feature = "graph-cypher")]
+            Self::EnableGraph => "enable_graph",
+            #[cfg(feature = "graph-cypher")]
+            Self::GraphApply { .. } => "graph_apply",
+            #[cfg(feature = "graph-cypher")]
+            Self::MixedBatch { .. } => "mixed_batch",
             Self::Ingest { .. } => "ingest",
             Self::EpochMismatchProbe { .. } => "epoch_mismatch_probe",
             Self::PrepareEpochB => "prepare_epoch_b",
@@ -253,6 +272,21 @@ impl Op {
     #[must_use]
     pub fn json_line(&self, index: usize) -> String {
         match self {
+            #[cfg(feature = "graph-cypher")]
+            Self::EnableGraph => format!("{{\"op\":{index},\"kind\":\"enable_graph\"}}"),
+            #[cfg(feature = "graph-cypher")]
+            Self::GraphApply { graph_key } => {
+                format!("{{\"op\":{index},\"kind\":\"graph_apply\",\"graph_key\":{graph_key}}}")
+            }
+            #[cfg(feature = "graph-cypher")]
+            Self::MixedBatch {
+                doc_id,
+                revision,
+                timestamp,
+                graph_key,
+            } => format!(
+                "{{\"op\":{index},\"kind\":\"mixed_batch\",\"doc_id\":{doc_id},\"revision\":{revision},\"timestamp\":{timestamp},\"graph_key\":{graph_key}}}"
+            ),
             Self::Open
             | Self::PrepareEpochB
             | Self::SwitchAliasToB
@@ -440,6 +474,40 @@ impl Program {
                     phased.extend(scheduled[index].drain(..).map(Op::Feature));
                 }
                 program.ops = phased;
+                #[cfg(feature = "graph-cypher")]
+                if campaign == CampaignKind::StorageDurability {
+                    let mut phase = 0;
+                    let mut expanded = Vec::new();
+                    for op in program.ops {
+                        let anchor = (phase == 0 && matches!(op, Op::Ingest { .. }))
+                            || (phase == 1 && matches!(op, Op::Seal))
+                            || (phase == 2 && matches!(op, Op::Reopen));
+                        expanded.push(op);
+                        if anchor && phase < 3 {
+                            // Separate graph identities; no legacy document endpoints (ZE-350).
+                            let graph_key = phase * 2 + 1;
+                            expanded.extend([
+                                Op::EnableGraph,
+                                Op::GraphApply { graph_key },
+                                Op::MixedBatch {
+                                    doc_id: 10_000 + phase,
+                                    revision: 1,
+                                    timestamp: 80,
+                                    graph_key: graph_key + 1,
+                                },
+                                Op::GraphApply { graph_key }, // exact keyed replay
+                                Op::MixedBatch {
+                                    doc_id: 10_000 + phase,
+                                    revision: 1,
+                                    timestamp: 80,
+                                    graph_key: graph_key + 1,
+                                }, // document and graph keyed replay
+                            ]);
+                            phase += 1;
+                        }
+                    }
+                    program.ops = expanded;
+                }
                 program
             }
         }

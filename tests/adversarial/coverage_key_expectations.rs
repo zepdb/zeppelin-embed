@@ -95,6 +95,47 @@ const LEGACY_KEYS: &[&str] = &[
 
 #[cfg(feature = "graph-cypher")]
 const GRAPH_KEYS: &[&str] = &[
+    "property-graph.reclaim.fold-before-capture.clean",
+    "property-graph.reclaim.fold-before-capture.fire",
+    "property-graph.recovery.definite-refusal",
+    "property-graph.recovery.epoch-refusal",
+    "property-graph.recovery.snapshot-checkpoint-failure",
+    "property-graph.recovery.snapshot-export",
+    "storage-durability.enable.catalog-partial-create",
+    "storage-durability.enable.catalog-sync",
+    "storage-durability.enable.manifest-temp-sync-retry",
+    "storage-durability.seal.graph-rotation.post-rename",
+    "storage-durability.seal.graph-rotation.rename",
+    "storage-durability.seal.graph-rotation.sync",
+    "op.enable_graph",
+    "op.graph_apply",
+    "op.mixed_batch",
+    "storage-durability.graph-commit.fire",
+    "storage-durability.graph-commit.clean",
+    "storage-durability.graph-commit.enable.fire",
+    "storage-durability.graph-commit.enable.clean",
+    "storage-durability.graph-commit.artifact-write.fire",
+    "storage-durability.graph-commit.artifact-write.clean",
+    "storage-durability.graph-commit.artifact-sync.fire",
+    "storage-durability.graph-commit.artifact-sync.clean",
+    "storage-durability.graph-commit.wal-append.fire",
+    "storage-durability.graph-commit.wal-append.clean",
+    "storage-durability.graph-commit.wal-sync.fire",
+    "storage-durability.graph-commit.wal-sync.clean",
+    "storage-durability.graph-fold.fire",
+    "storage-durability.graph-fold.clean",
+    "storage-durability.graph-fold.manifest-rename.fire",
+    "storage-durability.graph-fold.manifest-rename.clean",
+    "storage-durability.graph-fold.rotation.fire",
+    "storage-durability.graph-fold.rotation.clean",
+    "storage-durability.mixed-batch.fire",
+    "storage-durability.mixed-batch.clean",
+    "storage-durability.mixed-batch.members.fire",
+    "storage-durability.mixed-batch.members.clean",
+    "storage-durability.mixed-batch.sync.fire",
+    "storage-durability.mixed-batch.sync.clean",
+    "storage-durability.mixed-batch.torn-final.fire",
+    "storage-durability.mixed-batch.torn-final.clean",
     "property-graph.adjacency-store.append.clean",
     "property-graph.adjacency-store.append.fire",
     "property-graph.adjacency-store.budget.clean",
@@ -629,4 +670,26 @@ fn namespace_relocation_coverage_keys_are_required() {
         crate::adversarial::storage_durability::NamespaceFault::ALL.len(),
         12
     );
+}
+
+// Skipped by design: these keys require legacy documents to be native graph nodes.
+// This allowlist is explicit and does not waive any Part A coverage requirement.
+#[cfg(feature = "graph-cypher")]
+const SKIPPED_BY_DESIGN: &[(&str, &str)] = &[
+    ("op.cypher", "ZE-350"),
+    ("op.graph_apply.document-endpoint", "ZE-350"),
+    ("op.mixed_batch.document-endpoint", "ZE-350"),
+    ("property-graph.document-dependency-probe", "ZE-350"),
+];
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn document_endpoint_coverage_is_explicitly_deferred_to_ze350() {
+    for (key, dependency) in SKIPPED_BY_DESIGN {
+        assert_eq!(*dependency, "ZE-350");
+        assert!(
+            !expected_smoke_keys().contains(key),
+            "premature document-node claim {key}"
+        );
+    }
 }

@@ -479,6 +479,15 @@ pub fn probe_commit_boundaries(seed: u64, coverage: &mut CoverageRegistry) -> Re
         };
         if let Some(key) = unified_key {
             coverage.hit(key);
+            coverage.hit(format!("{key}.fire"));
+            coverage.hit(format!("{key}.clean"));
+            let aggregate = if boundary == Boundary::CheckpointReplace {
+                "storage-durability.graph-fold"
+            } else {
+                "storage-durability.graph-commit"
+            };
+            coverage.hit(format!("{aggregate}.fire"));
+            coverage.hit(format!("{aggregate}.clean"));
         }
     }
     coverage.hit("op.GraphApply");

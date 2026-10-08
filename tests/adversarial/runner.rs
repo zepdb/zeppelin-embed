@@ -1622,6 +1622,13 @@ impl Engine for RealEngine {
             )
             .map_err(|error| error.to_string())?,
         );
+        #[cfg(feature = "graph-cypher")]
+        if zeppelin_embed::graph_recovery_test_support::unified_graph_enabled(self.store()?)
+            .map_err(|e| e.to_string())?
+        {
+            zeppelin_embed::graph_recovery_test_support::configure_unified_runner(self.store()?)
+                .map_err(|e| e.to_string())?;
+        }
         Ok(())
     }
 
@@ -1853,17 +1860,16 @@ impl Engine for RealEngine {
 
     fn seal(&mut self) -> Result<MutationAck, String> {
         let store = self.store()?;
-        let changed = store
-            .stats()
+        let before = store
+            .snapshot()
             .map_err(|error| error.to_string())?
-            .active_row_count
-            > 0;
+            .generation();
         let generation = store
             .seal_with_cancel(&CancelToken::new())
             .map_err(|error| error.to_string())?;
         Ok(MutationAck {
             generation,
-            changed,
+            changed: generation != before,
         })
     }
 
@@ -2925,6 +2931,8 @@ fn run_program_for_with_clock(
         ] {
             super::unified_graph::run(operation, seed, &mut coverage)?;
         }
+        #[cfg(feature = "graph-cypher")]
+        unified::exercise_unified_faults(seed, &mut coverage)?;
     }
     #[cfg(feature = "graph-cypher")]
     {
@@ -2958,6 +2966,14 @@ fn run_program_for_with_clock(
         for receipt in zeppelin_embed::graph_recovery_test_support::run_seal_rotation_probe() {
             if receipt.fires != 1 || receipt.clean_controls != 1 {
                 return Err(format!("invalid graph rotation receipt {}", receipt.key));
+            }
+            coverage.hit(receipt.key);
+            coverage.hit("storage-durability.graph-fold.rotation.fire");
+            coverage.hit("storage-durability.graph-fold.rotation.clean");
+        }
+        for receipt in zeppelin_embed::graph_recovery_test_support::run_enable_retry_probe() {
+            if receipt.fires != 1 || receipt.clean_controls != 1 {
+                return Err(format!("invalid graph enable receipt {}", receipt.key));
             }
             coverage.hit(receipt.key);
         }
@@ -3030,6 +3046,10 @@ fn run_program_for_with_clock(
     }
 
     for (op_index, op) in program.ops.iter().enumerate() {
+        #[cfg(feature = "graph-cypher")]
+        {
+            model.unified_generation = last_generation;
+        }
         executed_operations = executed_operations.saturating_add(1);
         coverage.hit(format!("attempt.op.{}", op.kind()));
         let cancel_scheduled = fault_plan
@@ -3166,6 +3186,10 @@ fn run_program_for_with_clock(
             Err(error) => Err(error),
             Ok(()) => match op {
                 Op::Open => engine.open().map(|_| None),
+                #[cfg(feature = "graph-cypher")]
+                Op::EnableGraph | Op::GraphApply { .. } | Op::MixedBatch { .. } => {
+                    engine.execute_unified(&mut model, op)
+                }
                 Op::Ingest {
                     first_id,
                     count,
@@ -3623,7 +3647,13 @@ fn run_program_for_with_clock(
                     }
                     None
                 }),
-                Op::Close => engine.close().map(|_| None),
+                Op::Close => (|| {
+                    #[cfg(feature = "graph-cypher")]
+                    if model.graph_enabled {
+                        unified::check_unified(&model, &engine.observe_unified()?)?;
+                    }
+                    engine.close().map(|_| None)
+                })(),
                 Op::Reopen if spawn_event && pending_busy_child.is_some() => (|| {
                     let child = pending_busy_child
                         .take()
@@ -3652,7 +3682,11 @@ fn run_program_for_with_clock(
                     }
                     Ok(None)
                 })(),
-                Op::Reopen => engine.reopen().map(|_| {
+                Op::Reopen => engine.reopen().and_then(|_| {
+                    #[cfg(feature = "graph-cypher")]
+                    if model.graph_enabled {
+                        unified::check_unified(&model, &engine.observe_unified()?)?;
+                    }
                     match engine.stats() {
                         Ok(stats) => {
                             if let Some(violation) =
@@ -3669,7 +3703,7 @@ fn run_program_for_with_clock(
                             format!("reopen stats failed: {error}"),
                         )),
                     }
-                    None
+                    Ok(None)
                 }),
                 Op::Crash {
                     doc_id,
@@ -3826,6 +3860,10 @@ fn run_program_for_with_clock(
         }
 
         let mut operation_succeeded = false;
+        #[cfg(feature = "graph-cypher")]
+        if let Ok(Some(ack)) = &operation_result {
+            model.unified_generation = ack.generation;
+        }
         match operation_result {
             Ok(Some(ack)) => {
                 if clock_timeout_expected {
@@ -4018,6 +4056,18 @@ fn run_program_for_with_clock(
                     });
                     if campaign == CampaignKind::Overall && !imminent_crash {
                         break;
+                    }
+                    #[cfg(feature = "graph-cypher")]
+                    if model.graph_enabled
+                        && matches!(op, Op::Reopen)
+                        && !persisted_content_fault_preceded(&scheduled_vfs.events(), op_index)
+                        && !purge_refusal_after_fault
+                        && fired_at_operation.iter().any(|event| {
+                            event.layer == fault_vfs::Layer::Content
+                                && event.site == fault_vfs::FaultSite::Read
+                        })
+                    {
+                        engine.recover_unified_read_refusal(&model)?;
                     }
                     continue;
                 } else if runner_retries_faulted_operation(&fired_at_operation, op_index) {
@@ -17666,6 +17716,10 @@ fn recover_and_retry_faulted_operation(
 ) -> Result<Option<MutationAck>, String> {
     engine.reopen()?;
     match op {
+        #[cfg(feature = "graph-cypher")]
+        Op::EnableGraph | Op::GraphApply { .. } | Op::MixedBatch { .. } => {
+            engine.recover_unified(model, op)
+        }
         Op::Ingest {
             first_id,
             count,
@@ -19165,3 +19219,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(feature = "graph-cypher")]
+#[path = "unified_runner.rs"]
+pub mod unified;

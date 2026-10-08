@@ -2078,6 +2078,7 @@ impl CampaignSpec {
             keys.extend(
                 super::unified_graph::REQUIRED
                     .iter()
+                    .chain(super::unified_graph::PART_A_REQUIRED)
                     .map(|key| (*key).to_owned()),
             );
             keys.extend(
