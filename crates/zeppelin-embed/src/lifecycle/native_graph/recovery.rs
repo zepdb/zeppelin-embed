@@ -1729,10 +1729,12 @@ fn validate_complete_reclaim_authority(
     let mut fold = None;
     let mut current = None;
     let mut prepared = None;
-    // Reader closure records often name many blocks in one immutable pack.
-    // Reuse the existing charged authentication cache; each block and exact
-    // descriptor still validates, without hashing the same pack per record.
-    let capacity = usize::try_from(manifest.protected.count).map_err(|_| TreeError::Memory)?;
+    // The authenticated mark is sorted unique and must contain every protected
+    // artifact, so its count bounds this cache's distinct entries. Reader
+    // closure records may name the same pack thousands of times; each block
+    // and exact descriptor still validates. StorageBuffer checks byte overflow
+    // and the shared 32 MiB allowance, returning TreeError::Memory if it cannot fit.
+    let capacity = usize::try_from(manifest.mark.count).map_err(|_| TreeError::Memory)?;
     let mut authenticated = StorageBuffer::new(memory, capacity)?;
     crate::property_graph::storage::reclaim::validate_protected_stream(
         manifest.protected,

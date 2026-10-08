@@ -36,6 +36,110 @@ fn random_operation_sequences_reopen_to_the_model_state() {
 }
 
 #[test]
+fn ze393_duplicate_reader_references_reopen_within_the_recovery_allowance() {
+    // The 32k-node, single-reader shape exceeds maintenance's work allowance
+    // before recording the intent. Retain smaller, overlapping generations to
+    // reproduce the same >160k-reference recovery allocation with fewer nodes.
+    duplicate_reader_references_reopen(2_000, 16);
+}
+
+fn duplicate_reader_references_reopen(node_count: usize, reader_count: usize) {
+    let directory = tempfile::tempdir().unwrap();
+    let options = native_options();
+    let store = Store::open(directory.path(), options.clone()).unwrap();
+    store.enable_graph().unwrap();
+    disable_generation_fixture_maintenance(&store);
+    // Seed an unreachable, inventoried artifact before any retained reader.
+    super::consolidation::seed_reclaimable_manifest(&store, "ze393");
+    let control = QueryControl::Cancel(CancelToken::new());
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    let mut nodes = Vec::new();
+    for start in (0..node_count).step_by(500) {
+        let names: Vec<_> = (start..node_count.min(start + 500))
+            .map(|row| row.to_string())
+            .collect();
+        let writes: Vec<_> = names
+            .iter()
+            .map(|name| StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "ze393", name).unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            })
+            .collect();
+        let result = store.apply_native_graph(&writes, &control).unwrap();
+        for receipt in result.iter() {
+            let EntityId::Node(node) = receipt.entity else {
+                panic!("node receipt");
+            };
+            nodes.push(node);
+        }
+    }
+    assert_eq!(nodes.len(), node_count);
+    let mut retained = vec![store.admit_native_read().unwrap()];
+    let mut tail = commit_tail_test_node(&store, "after-reader");
+    for reader in 1..reader_count {
+        retained.push(store.admit_native_read().unwrap());
+        tail = commit_tail_test_node(&store, &format!("after-reader-{reader}"));
+    }
+    for _ in 0..2 {
+        store.checkpoint_native_graph(&control).unwrap();
+    }
+    super::consolidation::commit_maintenance(&store).unwrap();
+    let pending = store.admit_native_read().unwrap();
+    let (proof, candidates) =
+        super::consolidation::pending_reclaim_proof_for_lease(&store, &pending);
+    assert!(
+        proof.protected.count >= 5 * node_count as u64 * reader_count as u64,
+        "{:?}",
+        proof.protected
+    );
+    assert!(proof.mark.count < 8_192, "{:?}", proof.mark);
+    eprintln!(
+        "ZE393 nodes={node_count}, readers={reader_count}, protected_references={}, distinct_marked_artifacts={}",
+        proof.protected.count, proof.mark.count
+    );
+    assert!(!candidates.is_empty());
+    let candidate_paths: Vec<_> = candidates
+        .iter()
+        .map(|candidate| {
+            crate::property_graph::storage::allocation::artifact_path(
+                directory.path(),
+                candidate.artifact,
+            )
+        })
+        .collect();
+    assert!(candidate_paths.iter().all(|path| path.exists()));
+    drop(pending);
+    drop(retained);
+    // Stop after the durable intent, before completion or close's checkpoint.
+    drop(store);
+    let before = file_snapshot(directory.path());
+    let readonly = Store::open(
+        directory.path(),
+        options
+            .clone()
+            .with_access_mode(crate::lifecycle::AccessMode::ReadOnly),
+    )
+    .expect("read-only recovery must fit duplicate protected references");
+    for node in [nodes[0], nodes[node_count / 2], nodes[node_count - 1], tail] {
+        assert_eq!(observe_node(&readonly, node).unwrap().2, 1);
+    }
+    drop(readonly);
+    assert_eq!(file_snapshot(directory.path()), before);
+    assert!(candidate_paths.iter().all(|path| path.exists()));
+    let writable = Store::open(directory.path(), options.clone())
+        .expect("writable recovery must resume duplicate protected references");
+    assert!(candidate_paths.iter().all(|path| !path.exists()));
+    for node in [nodes[0], nodes[node_count / 2], nodes[node_count - 1], tail] {
+        assert_eq!(observe_node(&writable, node).unwrap().2, 1);
+    }
+    drop(writable);
+    let restarted = Store::open(directory.path(), options).unwrap();
+    assert_eq!(observe_node(&restarted, tail).unwrap().2, 1);
+}
+
+#[test]
 fn a_graph_checkpoint_after_a_later_document_batch_reopens() {
     use crate::ingest::{DocId, DocumentVersion, IngestBatch, IngestDocument, Revision};
     let directory = tempfile::tempdir().unwrap();

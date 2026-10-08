@@ -348,6 +348,12 @@ pub(super) fn run() {
     let mut rng = crate::test_support::seeded_rng(
         "recovery::random_operation_sequences_reopen_to_the_model_state",
     );
+    // A retained reader produces repeated references to the same artifacts.
+    // Stop after intent publication, then validate RO and resume RW. The
+    // >160k-reference regression is separate; keep the seeded shape small.
+    let mut reclaim_rng =
+        crate::test_support::seeded_rng("recovery::duplicate_reader_references_reopen");
+    duplicate_reader_references_reopen(reclaim_rng.random_range(64..=1_000), 1);
     let sequences = std::env::var("ZE_RESTART_SEQUENCES")
         .map(|n| n.parse::<usize>().expect("positive ZE_RESTART_SEQUENCES"))
         .unwrap_or(8);
