@@ -13,22 +13,20 @@ line_length = 80
 
 [export]
 include = [
-    "ze_graph_open",
-    "ze_graph_close",
-    "ze_graph_apply",
+    "ze_store_graph_apply",
     "ze_graph_response_free",
-    "ze_graph_cypher",
-    "ze_graph_cypher_with_row_limit",
-    "ze_graph_open_with_relationship_types",
-    "ze_graph_set_maintenance_policy",
-    "ze_graph_maintain",
-    "ze_graph_get_nodes",
-    "ze_graph_get_relationships",
-    "ze_graph_query",
+    "ze_store_enable_graph",
+    "ze_store_cypher",
+    "ze_store_cypher_with_row_limit",
+    "ze_store_create_with_relationship_types",
+    "ze_store_set_graph_maintenance_policy",
+    "ze_store_graph_maintain",
+    "ze_store_get_nodes",
+    "ze_store_get_relationships",
+    "ze_store_graph_query",
 
     "ZeNodeId",
     "ZeRelId",
-    "ZeGraphHandle",
     "ZeGraphResources",
     "ZeGraphRange",
     "ZeGraphValueTag",
@@ -98,6 +96,7 @@ prefix_with_name = false
 
 [export.rename]
 "ZeErrorCode" = "ze_error_code"
+"ZeHandle" = "ze_handle"
 
 [fn]
 args = "auto"

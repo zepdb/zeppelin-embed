@@ -61,15 +61,25 @@ void GMetadata(napi_env env, napi_value obj, const ZeGraphResponse &r) {
   GSet(env, obj, "changedGeneration", r.has_changed_generation ? GU64(env, r.changed_generation) : GNull(env));
   GSet(env, obj, "generation", r.has_changed_generation ? GU64(env, r.changed_generation) : r.has_admitted_generation ? GU64(env, r.admitted_generation) : GNull(env));
 }
+ze_error_code GStoreOpen(const ZeGraphOpenRequest &request, ze_handle *out) {
+  if (request.mode == 0) return ze_store_create_with_relationship_types(&request, nullptr, 0, out);
+  if (request.mode > 2) return ZE_ERR_INVALID_ARGUMENT;
+  ZeOpenRequest open{}; open.abi_size = sizeof(open);
+  open.path = request.path.data; open.path_len = request.path.count;
+  open.access_mode = request.mode == 2 ? 1 : 0; open.durability_mode = 1; open.commit_tier = 2;
+  open.reader_drain_timeout_ms = request.reader_drain_timeout_ms;
+  open.max_resident_bytes = request.max_resident_bytes; open.max_temp_bytes = UINT64_MAX;
+  return ze_open(&open, out);
+}
 struct GraphOwner {
-  ZeGraphHandle handle{};
-  ~GraphOwner() { if (handle.token != 0) ze_graph_close(handle); }
+  ze_handle handle{};
+  ~GraphOwner() { if (handle != 0) ze_close(handle); }
 };
 void GFinalize(napi_env, void *data, void *) { delete static_cast<GraphOwner *>(data); }
 GraphOwner *GOwner(napi_env env, napi_value external) {
   void *data; GCheck(env, napi_get_value_external(env, external, &data));
   auto *owner = static_cast<GraphOwner *>(data);
-  if (!owner || owner->handle.token == 0) { ThrowClosed(env); throw GraphPending{}; }
+  if (!owner || owner->handle == 0) { ThrowClosed(env); throw GraphPending{}; }
   return owner;
 }
 struct GResponse {
@@ -234,9 +244,9 @@ napi_value GValue(napi_env env, const ZeGraphValuePool &p, uint32_t index, unsig
   default: throw std::runtime_error("invalid graph value tag");
   }
 }
-napi_value GResult(napi_env env, ZeGraphHandle handle, ze_error_code status, const ZeGraphResponse &r, const std::string *message = nullptr) {
+napi_value GResult(napi_env env, ze_handle handle, ze_error_code status, const ZeGraphResponse &r, const std::string *message = nullptr) {
   if (status != ZE_OK) {
-    napi_value error; if (!(message ? CreateZeppelinErrorWithMessage(env, status, *message, &error) : CreateZeppelinError(env, handle.token, status, &error))) throw GraphPending{};
+    napi_value error; if (!(message ? CreateZeppelinErrorWithMessage(env, status, *message, &error) : CreateZeppelinError(env, handle, status, &error))) throw GraphPending{};
     GMetadata(env, error, r); GCheck(env, napi_throw(env, error)); throw GraphPending{};
   }
   auto result = GObject(env); GMetadata(env, result, r);
@@ -276,8 +286,8 @@ napi_value GraphOpen(napi_env env, napi_callback_info info) {
       rule.on_delete = action == "restrict" ? 1 : 2; rules.push_back(rule);
     }
     auto owner = std::make_unique<GraphOwner>();
-    const auto status = count == 0 ? ze_graph_open(&request, &owner->handle) :
-      ze_graph_open_with_relationship_types(&request, rules.data(), rules.size(), &owner->handle);
+    const auto status = count == 0 ? GStoreOpen(request, &owner->handle) :
+      ze_store_create_with_relationship_types(&request, rules.data(), rules.size(), &owner->handle);
     if (status != ZE_OK) return ThrowZeppelin(env, 0, status);
     napi_value external; GCheck(env, napi_create_external(env, owner.get(), GFinalize, nullptr, &external)); owner.release(); return external;
   });
@@ -286,13 +296,13 @@ napi_value GraphClose(napi_env env, napi_callback_info info) {
   return GGuard(env, [&]() -> napi_value {
     napi_value arg; size_t argc = 1; GCheck(env, napi_get_cb_info(env, info, &argc, &arg, nullptr, nullptr)); GRequire(env, argc == 1, "graphClose arguments");
     void *data; GCheck(env, napi_get_value_external(env, arg, &data)); auto *owner = static_cast<GraphOwner *>(data);
-    if (owner && owner->handle.token != 0) {
+    if (owner && owner->handle != 0) {
       const auto handle = owner->handle;
-      const auto status = ze_graph_close(handle);
+      const auto status = ze_close(handle);
       // Ordinary close failures still consume the C handle. A caught panic
       // leaves a poisoned handle that must remain available for teardown.
-      if (status != ZE_ERR_PANIC) owner->handle.token = 0;
-      if (status != ZE_OK) return ThrowZeppelin(env, handle.token, status);
+      if (status != ZE_ERR_PANIC) owner->handle = 0;
+      if (status != ZE_OK) return ThrowZeppelin(env, handle, status);
     }
     napi_value result; GCheck(env, napi_get_undefined(env, &result)); return result;
   });
@@ -308,8 +318,8 @@ napi_value GraphSetMaintenancePolicy(napi_env env, napi_callback_info info) {
     GRequire(env, std::isfinite(bytes) && bytes >= 1048576 && bytes <= 9007199254740991.0 && std::floor(bytes) == bytes, "invalid reclaimAfterBytes");
     auto policy = GStruct<ZeGraphMaintenancePolicy>();
     policy.automatic = automatic; policy.reclaim_after_bytes = static_cast<uint64_t>(bytes);
-    const auto status = ze_graph_set_maintenance_policy(handle, &policy);
-    if (status != ZE_OK) return ThrowZeppelin(env, handle.token, status);
+    const auto status = ze_store_set_graph_maintenance_policy(handle, &policy);
+    if (status != ZE_OK) return ThrowZeppelin(env, handle, status);
     napi_value result; GCheck(env, napi_get_undefined(env, &result)); return result;
   });
 }
@@ -321,8 +331,8 @@ napi_value GraphMaintain(napi_env env, napi_callback_info info) {
     GRequire(env, argc == 1, "graphMaintain arguments");
     const auto handle = GOwner(env, arg)->handle;
     auto report = std::make_shared<ZeGraphMaintainReport>(GStruct<ZeGraphMaintainReport>());
-    return RunNative<Async>(env, arg, handle.token, [report, handle]() {
-      return ze_graph_maintain(handle, nullptr, report.get());
+    return RunNative<Async>(env, arg, handle, [report, handle]() {
+      return ze_store_graph_maintain(handle, nullptr, report.get());
     }, [report, env](ze_error_code status, const std::string &message) {
       return GGuard(env, [&]() -> napi_value {
         if (status != ZE_OK) return ThrowWorkerError(env, status, message);
@@ -380,10 +390,10 @@ napi_value GraphApply(napi_env env, napi_callback_info info) {
       }
       items.push_back(item);
     }
-    return RunNative<Async>(env, args[0], handle.token, [data, handle]() {
+    return RunNative<Async>(env, args[0], handle, [data, handle]() {
       auto view = data->pool.view(); auto request = GStruct<ZeGraphBatchRequest>();
       request.items = data->items.data(); request.item_count = data->items.size(); request.pool = &view;
-      return ze_graph_apply(handle, &request, &data->response.value);
+      return ze_store_graph_apply(handle, &request, &data->response.value);
     }, [data, env, handle](ze_error_code status, const std::string &message) {
       return GGuard(env, [&]() { return GResult(env, handle, status, data->response.value, &message); });
     });
@@ -404,12 +414,12 @@ napi_value GraphCypher(napi_env env, napi_callback_info info) {
       auto param = GStruct<ZeGraphParameterValue>(); param.name = pool.text(GText(env, name)); param.value = pool.parameter(env, value); parameters.push_back(param);
     }
     const auto max_rows = GDouble(env, args[3]); GRequire(env, std::isfinite(max_rows) && max_rows >= 0 && max_rows <= 65536 && std::floor(max_rows) == max_rows, "invalid maxRows");
-    return RunNative<Async>(env, args[0], handle.token, [data, handle, max_rows]() {
+    return RunNative<Async>(env, args[0], handle, [data, handle, max_rows]() {
       auto view = data->pool.view(); auto request = GStruct<ZeGraphCypherRequest>();
       request.query = {reinterpret_cast<const uint8_t *>(data->text.data()), data->text.size()};
       request.parameters = data->parameters.data(); request.parameter_count = data->parameters.size(); request.parameter_pool = &view;
       request.control = &data->control;
-      return ze_graph_cypher_with_row_limit(handle, &request, static_cast<uint32_t>(max_rows), &data->response.value);
+      return ze_store_cypher_with_row_limit(handle, &request, static_cast<uint32_t>(max_rows), &data->response.value);
     }, [data, env, handle](ze_error_code status, const std::string &message) {
       return GGuard(env, [&]() { return GResult(env, handle, status, data->response.value, &message); });
     });

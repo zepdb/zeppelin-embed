@@ -17,6 +17,8 @@ struct Slot<S, P> {
     generation: u32,
     payload: Option<Arc<S>>,
     epoch: Option<EpochIdentity>,
+    #[cfg(feature = "graph-cypher")]
+    document: Option<zeppelin_embed::epoch::EmbeddingTower>,
     record_only: Option<bool>,
     writer: Arc<Mutex<()>>,
     purge_tokens: Arc<Mutex<HashMap<u64, P>>>,
@@ -32,6 +34,8 @@ pub(crate) struct Access<S, P> {
     pub(crate) store: Arc<S>,
     /// Identity declared when the handle was opened.
     pub(crate) epoch: Option<EpochIdentity>,
+    #[cfg(feature = "graph-cypher")]
+    pub(crate) document: Option<zeppelin_embed::epoch::EmbeddingTower>,
     pub(crate) record_only: bool,
     pub(crate) writer: Arc<Mutex<()>>,
     pub(crate) purge_tokens: Arc<Mutex<HashMap<u64, P>>>,
@@ -115,6 +119,10 @@ impl<S, P> SlotTable<S, P> {
             let handle = encode(index, slot.generation)?;
             slot.payload = Some(Arc::new(payload));
             slot.epoch = epoch;
+            #[cfg(feature = "graph-cypher")]
+            {
+                slot.document = None;
+            }
             slot.record_only = None;
             slot.writer = Arc::new(Mutex::new(()));
             slot.purge_tokens = Arc::new(Mutex::new(HashMap::new()));
@@ -145,6 +153,8 @@ impl<S, P> SlotTable<S, P> {
             generation: 1,
             payload: Some(Arc::new(payload)),
             epoch,
+            #[cfg(feature = "graph-cypher")]
+            document: None,
             record_only: None,
             writer: Arc::new(Mutex::new(())),
             purge_tokens: Arc::new(Mutex::new(HashMap::new())),
@@ -153,6 +163,21 @@ impl<S, P> SlotTable<S, P> {
             closing: false,
         });
         Ok(handle)
+    }
+
+    #[cfg(feature = "graph-cypher")]
+    pub(crate) fn set_document(
+        &mut self,
+        handle: u64,
+        document: Option<zeppelin_embed::epoch::EmbeddingTower>,
+    ) -> Result<(), FfiError> {
+        let (index, generation) = decode(handle)?;
+        let slot = self.slots.get_mut(index).ok_or_else(never_allocated)?;
+        if slot.generation != generation || slot.payload.is_none() {
+            return Err(closed_or_stale());
+        }
+        slot.document = document;
+        Ok(())
     }
 
     pub(crate) fn lookup(
@@ -189,6 +214,8 @@ impl<S, P> SlotTable<S, P> {
         Ok(Access {
             store,
             epoch: slot.epoch,
+            #[cfg(feature = "graph-cypher")]
+            document: slot.document.clone(),
             record_only,
             writer: Arc::clone(&slot.writer),
             purge_tokens: Arc::clone(&slot.purge_tokens),

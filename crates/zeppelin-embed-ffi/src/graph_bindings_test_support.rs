@@ -15,7 +15,7 @@ use zeppelin_embed::vfs::file_test_support::{FileEvent, FileOperationScope};
 #[unsafe(no_mangle)]
 #[allow(clippy::panic)]
 pub unsafe extern "C" fn ze72_test_cypher(
-    handle: ZeGraphHandle,
+    handle: ZeHandle,
     request: *const ZeGraphCypherRequest,
     response: *mut ZeGraphResponse,
     mode: u32,
@@ -68,10 +68,10 @@ pub unsafe extern "C" fn ze72_test_cypher(
         Ok(())
     });
     if mode == 6 {
-        arm_abi_panic_probe("ze_graph_cypher:after-execute");
+        arm_abi_panic_probe("ze_store_cypher:after-execute");
     }
     let panic_fires = abi_panic_probe_fire_count();
-    let code = ze_graph_cypher(handle, &copied, response);
+    let code = ze_store_cypher(handle, &copied, response);
     count.fetch_add(abi_panic_probe_fire_count() - panic_fires, Ordering::SeqCst);
     drop(scope);
     unsafe {
@@ -93,7 +93,7 @@ pub unsafe extern "C" fn ze72_test_cypher(
 /// cbindgen:ignore
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ze72_test_apply_at_append(
-    handle: ZeGraphHandle,
+    handle: ZeHandle,
     request: *const ZeGraphBatchRequest,
     response: *mut ZeGraphResponse,
     callback: Option<extern "C" fn(*mut std::ffi::c_void)>,
@@ -114,7 +114,7 @@ pub unsafe extern "C" fn ze72_test_apply_at_append(
         }
         Ok(())
     });
-    let code = ze_graph_apply(handle, request, response);
+    let code = ze_store_graph_apply(handle, request, response);
     drop(scope);
     unsafe {
         *fires = receipt.load(Ordering::SeqCst);

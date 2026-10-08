@@ -45,3 +45,40 @@ fn a_v3_store_is_refused_with_the_stable_c_code_before_any_write() {
         assert_eq!(files, vec![("manifest.ze".into(), bytes)]);
     }
 }
+
+#[test]
+fn graph_calls_refuse_an_unsupported_build_without_touching_pointers() {
+    use zeppelin_embed_ffi::*;
+    assert_eq!(
+        ze_store_enable_graph(0, std::ptr::null_mut()),
+        ZeErrorCode::ZeErrGraphUnsupportedBuild
+    );
+    assert_eq!(
+        ze_store_graph_apply(0, std::ptr::null(), std::ptr::null_mut()),
+        ZeErrorCode::ZeErrGraphUnsupportedBuild
+    );
+    assert_eq!(
+        ze_store_cypher(0, std::ptr::null(), std::ptr::null_mut()),
+        ZeErrorCode::ZeErrGraphUnsupportedBuild
+    );
+    assert_eq!(
+        ze_store_cypher_with_row_limit(0, std::ptr::null(), 1, std::ptr::null_mut()),
+        ZeErrorCode::ZeErrGraphUnsupportedBuild
+    );
+    assert_eq!(
+        ze_store_graph_query(0, std::ptr::null(), std::ptr::null_mut()),
+        ZeErrorCode::ZeErrGraphUnsupportedBuild
+    );
+    assert_eq!(
+        ze_store_get_nodes(0, std::ptr::null(), std::ptr::null_mut()),
+        ZeErrorCode::ZeErrGraphUnsupportedBuild
+    );
+    assert_eq!(
+        ze_store_get_relationships(0, std::ptr::null(), std::ptr::null_mut()),
+        ZeErrorCode::ZeErrGraphUnsupportedBuild
+    );
+    assert_eq!(
+        ze_store_graph_resources(0, std::ptr::null_mut()),
+        ZeErrorCode::ZeErrGraphUnsupportedBuild
+    );
+}

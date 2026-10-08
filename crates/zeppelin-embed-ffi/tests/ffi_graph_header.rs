@@ -15,14 +15,14 @@ _Static_assert(sizeof(ZeNodeId) == 16, "node width");
 _Static_assert(sizeof(ZeRelId) == 16, "relationship width");
 _Static_assert(offsetof(ZeNodeId, high) == 0, "high word first");
 _Static_assert(offsetof(ZeNodeId, low) == 8, "low word second");
-_Static_assert(sizeof(ZeGraphHandle) == 8, "graph handle wrapper");
+_Static_assert(sizeof(ze_handle) == 8, "store handle");
 int main(void) {
     ZeNodeId a = {UINT64_C(0x8000000000000000), UINT64_C(7)};
     ZeNodeId b = {UINT64_C(0x8000000000000001), UINT64_C(7)};
     ZeRelId r = {UINT64_MAX, UINT64_MAX};
-    ZeGraphHandle handle = {UINT64_C(19)};
+    ze_handle handle = UINT64_C(19);
     return !(a.low == b.low && a.high != b.high &&
-             r.high == UINT64_MAX && r.low == UINT64_MAX && handle.token == 19);
+             r.high == UINT64_MAX && r.low == UINT64_MAX && handle == 19);
 }
 "#,
     )
@@ -131,7 +131,7 @@ fn legacy_header_and_exports_do_not_advertise_graph_contracts() {
             .lines()
             .filter(|s| s.starts_with("ze_graph_"))
             .collect::<Vec<_>>(),
-        vec!["ze_graph_resources"]
+        vec!["ze_graph_response_free"]
     );
 }
 
@@ -239,18 +239,22 @@ fn graph_runtime_header_matches_the_graph_export_allowlist() {
     let header = std::fs::read_to_string(root.join("include/zeppelin_graph_contracts.h")).unwrap();
     let declared: std::collections::BTreeSet<_> = header
         .lines()
-        .filter(|line| line.starts_with("ze_error_code ze_graph_"))
+        .filter(|line| {
+            line.starts_with("ze_error_code ze_graph_")
+                || line.starts_with("ze_error_code ze_store_")
+        })
         .filter_map(|line| {
-            line.split_once("ze_graph_")
-                .map(|(_, rest)| format!("ze_graph_{}", rest.split('(').next().unwrap()))
+            line.split_whitespace()
+                .nth(1)
+                .map(|rest| rest.split('(').next().unwrap().to_owned())
         })
         .collect();
     let symbols = std::fs::read_to_string(root.join("symbols.graph.allowlist")).unwrap();
     let allowed: std::collections::BTreeSet<_> = symbols
         .lines()
-        .filter(|line| line.starts_with("ze_graph_"))
+        .filter(|line| line.starts_with("ze_graph_") || line.starts_with("ze_store_"))
         .map(str::to_owned)
         .collect();
-    assert_eq!(declared.len(), 13);
+    assert_eq!(declared.len(), 12);
     assert_eq!(declared, allowed);
 }

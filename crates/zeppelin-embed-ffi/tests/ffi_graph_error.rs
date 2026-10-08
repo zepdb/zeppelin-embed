@@ -28,6 +28,7 @@ const GRAPH_ERRORS: &[(i32, &str)] = &[
     (58, "ZE_ERR_LEGACY_GRAPH_DIRECTORY"),
     (59, "ZE_ERR_GRAPH_UNSUPPORTED_BUILD"),
     (60, "ZE_ERR_GRAPH_EPOCH_TRANSITION"),
+    (61, "ZE_ERR_GRAPH_DISABLED"),
 ];
 
 #[test]
@@ -36,7 +37,7 @@ fn appended_graph_error_names_are_distinct_and_stable() {
         let actual = unsafe { std::ffi::CStr::from_ptr(ze_error_code_name(code)) };
         assert_eq!(actual.to_str().unwrap(), expected);
     }
-    for unknown in [-1, 61, i32::MAX] {
+    for unknown in [-1, 62, i32::MAX] {
         let actual = unsafe { std::ffi::CStr::from_ptr(ze_error_code_name(unknown)) };
         assert_eq!(actual.to_str().unwrap(), "ZE_ERR_UNKNOWN");
     }

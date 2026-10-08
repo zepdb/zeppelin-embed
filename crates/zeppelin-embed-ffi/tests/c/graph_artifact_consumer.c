@@ -3,13 +3,27 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+
+static ze_error_code fixture_store_open(const ZeGraphOpenRequest *request, ze_handle *out) {
+    if (request->mode == 0) return ze_store_create_with_relationship_types(request, NULL, 0, out);
+    ZeOpenRequest open = {0}; open.abi_size = sizeof(open);
+    open.path = request->path.data; open.path_len = request->path.count;
+    open.access_mode = request->mode == 2; open.durability_mode = 1; open.commit_tier = 2;
+    open.reader_drain_timeout_ms = request->reader_drain_timeout_ms;
+    open.max_resident_bytes = request->max_resident_bytes; open.max_temp_bytes = UINT64_MAX;
+    if (!request->document_tower) return ze_open(&open, out);
+    ZeEpochRequest epoch = {0}; epoch.abi_size = sizeof(epoch);
+    epoch.embedding.document = *request->document_tower; epoch.embedding.query = *request->document_tower;
+    return ze_open_with_epoch(&open, &epoch, out);
+}
+
 #define SIZED(T) ((T){.abi_size = sizeof(T)})
-static ZeGraphResponse query(ZeGraphHandle handle, const char *text) {
+static ZeGraphResponse query(ze_handle handle, const char *text) {
     ZeGraphCypherRequest q = SIZED(ZeGraphCypherRequest);
     q.query = (ZeGraphBytes){(const uint8_t *)text, strlen(text)};
     ZeGraphResponse r = SIZED(ZeGraphResponse);
     r.pool.abi_size = sizeof(r.pool);
-    assert(ze_graph_cypher(handle, &q, &r) == ZE_OK);
+    assert(ze_store_cypher(handle, &q, &r) == ZE_OK);
     return r;
 }
 int main(int argc, char **argv) {
@@ -27,8 +41,8 @@ int main(int argc, char **argv) {
     ZeGraphOpenRequest open = SIZED(ZeGraphOpenRequest);
     open.path = (ZeGraphBytes){(const uint8_t *)path, strlen(path)};
     open.reader_drain_timeout_ms = 250; open.max_resident_bytes = 256ULL << 20;
-    ZeGraphHandle graph = {0};
-    assert(ze_graph_open(&open, &graph) == ZE_OK);
+    ze_handle graph = {0};
+    assert(fixture_store_open(&open, &graph) == ZE_OK);
     /* Same two-node/relationship fixture as the installed Swift consumer. */
     const uint8_t bytes[] = "DocalphatitleLINKfixtureabr";
     ZeGraphValue title = SIZED(ZeGraphValue);
@@ -63,7 +77,7 @@ int main(int argc, char **argv) {
     ZeGraphBatchRequest batch = SIZED(ZeGraphBatchRequest);
     batch.items = items; batch.item_count = 3; batch.pool = &pool;
     ZeGraphResponse r = SIZED(ZeGraphResponse); r.pool.abi_size = sizeof(r.pool);
-    assert(ze_graph_apply(graph, &batch, &r) == ZE_OK);
+    assert(ze_store_graph_apply(graph, &batch, &r) == ZE_OK);
     /* One store counter: enable_graph commits 1; the first graph write and its reads use 2. */
     assert(r.has_changed_generation == 1 && r.changed_generation == 2 && r.receipt_count == 3);
     assert(ze_graph_response_free(&r) == ZE_OK);
@@ -74,9 +88,9 @@ int main(int argc, char **argv) {
     assert(value->tag == 4 && value->range.count == 5);
     assert(memcmp(r.pool.bytes + value->range.start, "alpha", 5) == 0);
     assert(ze_graph_response_free(&r) == ZE_OK);
-    assert(ze_graph_close(graph) == ZE_OK);
+    assert(ze_close(graph) == ZE_OK);
     open.mode = 1;
-    assert(ze_graph_open(&open, &graph) == ZE_OK);
+    assert(fixture_store_open(&open, &graph) == ZE_OK);
     ZeGraphValue parameter_value = SIZED(ZeGraphValue);
     parameter_value.tag = 2; parameter_value.integer = 42;
     ZeGraphValuePool parameters = SIZED(ZeGraphValuePool);
@@ -89,7 +103,7 @@ int main(int argc, char **argv) {
     q.query = (ZeGraphBytes){(const uint8_t *)text, strlen(text)};
     q.parameters = &parameter; q.parameter_count = 1; q.parameter_pool = &parameters;
     r = SIZED(ZeGraphResponse); r.pool.abi_size = sizeof(r.pool);
-    assert(ze_graph_cypher(graph, &q, &r) == ZE_OK);
+    assert(ze_store_cypher(graph, &q, &r) == ZE_OK);
     assert(r.admitted_generation == 2 && r.row_count == 1 && r.column_count == 2);
     value = &r.pool.values[r.cells[0]];
     assert(value->tag == 4 && value->range.count == 5);
@@ -97,10 +111,10 @@ int main(int argc, char **argv) {
     value = &r.pool.values[r.cells[1]];
     assert(value->tag == 2 && value->integer == 42);
     assert(ze_graph_response_free(&r) == ZE_OK);
-    assert(ze_graph_close(graph) == ZE_OK);
+    assert(ze_close(graph) == ZE_OK);
     /* The shipping structured C entry and gets are present on main. */
     open.mode = 1;
-    assert(ze_graph_open(&open, &graph) == ZE_OK);
+    assert(fixture_store_open(&open, &graph) == ZE_OK);
     ZeGraphOperator scan = SIZED(ZeGraphOperator);
     scan.kind = 4; scan.node_slot = 7;
     ZeGraphValuePool structured_pool = SIZED(ZeGraphValuePool);
@@ -108,25 +122,25 @@ int main(int argc, char **argv) {
     plan.operators = &scan; plan.operator_count = 1; plan.pool = &structured_pool;
     ZeGraphQueryRequest structured = SIZED(ZeGraphQueryRequest); structured.plan = &plan;
     r = SIZED(ZeGraphResponse); r.pool.abi_size = sizeof(r.pool);
-    assert(ze_graph_query(graph, &structured, &r) == ZE_OK);
+    assert(ze_store_graph_query(graph, &structured, &r) == ZE_OK);
     assert(r.row_count == 2 && r.pool.node_count == 2);
     ZeNodeId ids[3] = {r.pool.nodes[0].id, {UINT64_MAX, UINT64_MAX}, r.pool.nodes[0].id};
     assert(ze_graph_response_free(&r) == ZE_OK);
     ZeGraphGetNodesRequest get = SIZED(ZeGraphGetNodesRequest);
     get.ids = ids; get.id_count = 3;
-    assert(ze_graph_get_nodes(graph, &get, &r) == ZE_OK);
+    assert(ze_store_get_nodes(graph, &get, &r) == ZE_OK);
     assert(r.row_count == 3);
     assert(r.pool.values[r.cells[0]].tag == 5 && r.pool.values[r.cells[1]].tag == 0);
     assert(r.pool.values[r.cells[0]].entity_index == r.pool.values[r.cells[2]].entity_index);
     ZeGraphResources resources = SIZED(ZeGraphResources);
-    assert(ze_graph_resources(graph, &resources) == ZE_OK);
+    assert(ze_store_graph_resources(graph, &resources) == ZE_OK);
     assert(resources.engine_peak_bytes >= resources.engine_bytes);
-    assert(ze_graph_close(graph) == ZE_OK);
+    assert(ze_close(graph) == ZE_OK);
     assert(r.pool.values[r.cells[0]].tag == 5);
     assert(ze_graph_response_free(&r) == ZE_OK);
     /* ZE-72 graph-bindings-v1 completed/null/list/bag fixture. */
     open.mode = 1;
-    assert(ze_graph_open(&open, &graph) == ZE_OK);
+    assert(fixture_store_open(&open, &graph) == ZE_OK);
     r = query(graph, "RETURN null, '', [], [1,null,['nested']]");
     assert(r.row_count == 1 && r.column_count == 4);
     assert(r.pool.values[r.cells[0]].tag == 0);
@@ -143,11 +157,11 @@ int main(int argc, char **argv) {
     const ZeGraphValue *text_value = &r.pool.values[r.pool.children[nested->range.start]];
     assert(text_value->tag == 4 && text_value->range.count == 6);
     assert(memcmp(r.pool.bytes + text_value->range.start, "nested", 6) == 0);
-    assert(ze_graph_close(graph) == ZE_OK);
+    assert(ze_close(graph) == ZE_OK);
     /* Access the retained descriptor after close, then use the matching free. */
     assert(r.pool.values[r.cells[3]].range.count == 3);
     assert(ze_graph_response_free(&r) == ZE_OK);
-    assert(ze_graph_open(&open, &graph) == ZE_OK);
+    assert(fixture_store_open(&open, &graph) == ZE_OK);
     r = query(graph, "MATCH (n) RETURN null ORDER BY n");
     assert(r.row_count == 2 && r.cell_count == 2);
     assert(r.pool.values[r.cells[0]].tag == 0 && r.pool.values[r.cells[1]].tag == 0);
@@ -155,7 +169,7 @@ int main(int argc, char **argv) {
     r = query(graph, "MATCH (n:Missing) RETURN n");
     assert(r.row_count == 0 && r.cell_count == 0);
     assert(ze_graph_response_free(&r) == ZE_OK);
-    assert(ze_graph_close(graph) == ZE_OK);
+    assert(ze_close(graph) == ZE_OK);
     puts("graph artifact consumer: legacy open/close, apply, Cypher relationship/parameter/read/free/close/reopen PASS");
     puts("ZE_GRAPH_INSTALLED_RECEIPT\t{\"executed\":[\"batch\",\"structured\",\"get\",\"cypher\"],\"resources\":true,\"artifact_kind\":\"graph-cypher\",\"exit_status\":0}");
     return 0;

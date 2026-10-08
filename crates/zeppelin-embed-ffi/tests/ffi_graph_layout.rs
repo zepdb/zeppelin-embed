@@ -16,7 +16,6 @@ fn every_graph_struct_has_the_frozen_c_size_alignment_and_field_offsets() {
     layout!(ZeNodeId, 16, 8; high => 0, low => 8);
     layout!(ZeRelId, 16, 8; high => 0, low => 8);
     layout!(ZeGraphResources, 40, 8; abi_size => 0, abi_reserved => 4, engine_bytes => 8, engine_peak_bytes => 16, application_bytes => 24, application_peak_bytes => 32);
-    layout!(ZeGraphHandle, 8, 8; token => 0);
     layout!(ZeGraphRange, 8, 4; start => 0, count => 4);
     layout!(ZeGraphValue, 48, 8; abi_size => 0, abi_reserved => 4, tag => 8, list_kind => 12, boolean => 16, entity_index => 20, integer => 24, floating => 32, range => 40);
     layout!(ZeGraphBytes, 16, 8; data => 0, count => 8);
@@ -248,18 +247,18 @@ fn ze241_new_entry_requests_keep_frozen_layouts_and_signatures() {
     layout!(ZeGraphGetNodesRequest,48,8; abi_size=>0,abi_reserved=>4,ids=>8,id_count=>16,include_text=>24,include_vector=>28,control=>32,limits=>40);
     layout!(ZeGraphGetRelsRequest,40,8; abi_size=>0,abi_reserved=>4,ids=>8,id_count=>16,control=>24,limits=>32);
     let _: extern "C" fn(
-        ZeGraphHandle,
+        ZeHandle,
         *const ZeGraphQueryRequest,
         *mut ZeGraphResponse,
-    ) -> ZeErrorCode = ze_graph_query;
+    ) -> ZeErrorCode = ze_store_graph_query;
     let _: extern "C" fn(
-        ZeGraphHandle,
+        ZeHandle,
         *const ZeGraphGetNodesRequest,
         *mut ZeGraphResponse,
-    ) -> ZeErrorCode = ze_graph_get_nodes;
+    ) -> ZeErrorCode = ze_store_get_nodes;
     let _: extern "C" fn(
-        ZeGraphHandle,
+        ZeHandle,
         *const ZeGraphGetRelsRequest,
         *mut ZeGraphResponse,
-    ) -> ZeErrorCode = ze_graph_get_relationships;
+    ) -> ZeErrorCode = ze_store_get_relationships;
 }

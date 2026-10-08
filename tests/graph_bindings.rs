@@ -303,8 +303,8 @@ fn ze72_rust_c_applications_match_independent_oracle() {
     open.mode = 1;
     open.max_resident_bytes = 256 << 20;
     open.document_tower = &tower;
-    let mut handle = ZeGraphHandle { token: 0 };
-    assert_eq!(ze_graph_open(&open, &mut handle), ZeErrorCode::ZeOk);
+    let mut handle = 0;
+    assert_eq!(bindings::store_open(&open, &mut handle), ZeErrorCode::ZeOk);
     for (name, q, expected, reports) in &cases {
         let mut r = bindings::query(handle, q);
         let mut actual = bindings::c_observe(&r);
@@ -352,12 +352,12 @@ fn ze72_rust_c_applications_match_independent_oracle() {
     get.include_vector = 1;
     let mut payloads: ZeGraphResponse = bindings::sized();
     assert_eq!(
-        ze_graph_get_nodes(handle, &get, &mut payloads),
+        ze_store_get_nodes(handle, &get, &mut payloads),
         ZeErrorCode::ZeOk
     );
     assert_eq!(payloads.row_count, ids.len());
     check_c_nodes(&payloads, &snapshot, true);
-    assert_eq!(ze_graph_close(handle), ZeErrorCode::ZeOk);
+    assert_eq!(ze_close(handle), ZeErrorCode::ZeOk);
     check_c_nodes(&payloads, &snapshot, true);
     assert_eq!(ze_graph_response_free(&mut payloads), ZeErrorCode::ZeOk);
     if let Ok(output) = std::env::var("ZE72_CORPUS_OUTPUT") {

@@ -340,7 +340,7 @@ def generate_c(manifest):
     text += 'static const Ze74Case ze74_cases[] = {\n'
     for i, case in enumerate(manifest['local']):
         text += '{' + json.dumps(case['id']) + ',' + json.dumps(case['query']) + f',setup_{i},' + str(len(case['setup'])) + ',' + str(int(case['structured'] is not None)) + '},\n'
-    text += '};\nstatic int32_t ze74_structured(size_t index, ZeGraphHandle h, ZeGraphResponse *out) { switch(index) {\n'
+    text += '};\nstatic int32_t ze74_structured(size_t index, ze_handle h, ZeGraphResponse *out) { switch(index) {\n'
     kinds = dict(unit=0, scan=4, eager=5, mutate=6, aggregate=7, limit=9, expand=13, bounded=14, optional=15, project=16, with_=17)
     for index, case in enumerate(manifest['local']):
         if not case['structured']:
@@ -406,7 +406,7 @@ def generate_c(manifest):
         text += 'ZeGraphMutation mutation = {.abi_size=sizeof(ZeGraphMutation),.output=3};\n'
         text += 'ZeGraphValuePool pool = {.abi_size=sizeof(ZeGraphValuePool),.bytes=bytes,.byte_count='+str(len(data))+',.values=values,.value_count='+str(len(values))+'};\n'
         text += 'ZeGraphPlan plan = {.abi_size=sizeof(ZeGraphPlan),.root='+str(p['root'])+',.pool=&pool,.expressions=expressions,.expression_count='+str(len(expressions))+',.operators=operators,.operator_count='+str(len(operators))+',.inputs=inputs,.input_count='+str(len(inputs))+',.projections=projections,.projection_count='+str(len(projections))+',.expression_children=children,.expression_child_count='+str(len(children))+',.mutations=&mutation,.mutation_count=1};\n'
-        text += 'ZeGraphQueryRequest request = {.abi_size=sizeof(ZeGraphQueryRequest),.plan=&plan}; return ze_graph_query(h,&request,out);}\n'
+        text += 'ZeGraphQueryRequest request = {.abi_size=sizeof(ZeGraphQueryRequest),.plan=&plan}; return ze_store_graph_query(h,&request,out);}\n'
     return text + 'default: fprintf(stderr,"ZE-74: no declared structured plan\\n"); exit(2); }}\n'
 
 

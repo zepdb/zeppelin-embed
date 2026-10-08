@@ -125,6 +125,8 @@ pub enum ZeErrorCode {
     ZeErrGraphUnsupportedBuild = 59,
     /// Graph catalogs cannot yet carry an epoch alias switch or epoch drop.
     ZeErrGraphEpochTransition = 60,
+    /// This store has no enabled graph writer.
+    ZeErrGraphDisabled = 61,
 }
 
 /// Opaque generation-tagged store handle.

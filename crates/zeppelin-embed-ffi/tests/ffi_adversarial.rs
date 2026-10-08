@@ -84,73 +84,56 @@ const DETAILED_MATRIX: &[(&str, MatrixCall)] = &[
 ];
 
 const ABI_REGISTRY: &[AbiEntry] = &[
-    #[cfg(feature = "graph-cypher")]
     AbiEntry {
-        name: "ze_graph_resources",
+        name: "ze_store_graph_resources",
         coverage: AbiCoverage::InvalidProbe(probe_graph_resources),
     },
     AbiEntry {
         name: "ze_warm_lexical",
         coverage: AbiCoverage::InvalidProbe(probe_warm_lexical),
     },
-    #[cfg(feature = "graph-cypher")]
     AbiEntry {
-        name: "ze_graph_open",
+        name: "ze_store_enable_graph",
         coverage: AbiCoverage::InvalidProbe(probe_graph_open),
     },
-    #[cfg(feature = "graph-cypher")]
     AbiEntry {
-        name: "ze_graph_close",
-        coverage: AbiCoverage::InvalidProbe(probe_graph_close),
-    },
-    #[cfg(feature = "graph-cypher")]
-    AbiEntry {
-        name: "ze_graph_apply",
+        name: "ze_store_graph_apply",
         coverage: AbiCoverage::InvalidProbe(probe_graph_apply),
     },
-    #[cfg(feature = "graph-cypher")]
     AbiEntry {
         name: "ze_graph_response_free",
         coverage: AbiCoverage::InvalidProbe(probe_graph_response_free),
     },
-    #[cfg(feature = "graph-cypher")]
     AbiEntry {
-        name: "ze_graph_cypher",
+        name: "ze_store_cypher",
         coverage: AbiCoverage::InvalidProbe(probe_graph_cypher),
     },
-    #[cfg(feature = "graph-cypher")]
     AbiEntry {
-        name: "ze_graph_cypher_with_row_limit",
+        name: "ze_store_cypher_with_row_limit",
         coverage: AbiCoverage::InvalidProbe(probe_graph_cypher_with_row_limit),
     },
-    #[cfg(feature = "graph-cypher")]
     AbiEntry {
-        name: "ze_graph_get_nodes",
+        name: "ze_store_get_nodes",
         coverage: AbiCoverage::InvalidProbe(probe_graph_get_nodes),
     },
-    #[cfg(feature = "graph-cypher")]
     AbiEntry {
-        name: "ze_graph_get_relationships",
+        name: "ze_store_get_relationships",
         coverage: AbiCoverage::InvalidProbe(probe_graph_get_relationships),
     },
-    #[cfg(feature = "graph-cypher")]
     AbiEntry {
-        name: "ze_graph_query",
+        name: "ze_store_graph_query",
         coverage: AbiCoverage::InvalidProbe(probe_graph_query),
     },
-    #[cfg(feature = "graph-cypher")]
     AbiEntry {
-        name: "ze_graph_maintain",
+        name: "ze_store_graph_maintain",
         coverage: AbiCoverage::InvalidProbe(probe_graph_maintain),
     },
-    #[cfg(feature = "graph-cypher")]
     AbiEntry {
-        name: "ze_graph_set_maintenance_policy",
+        name: "ze_store_set_graph_maintenance_policy",
         coverage: AbiCoverage::InvalidProbe(probe_graph_maintenance_policy),
     },
-    #[cfg(feature = "graph-cypher")]
     AbiEntry {
-        name: "ze_graph_open_with_relationship_types",
+        name: "ze_store_create_with_relationship_types",
         coverage: AbiCoverage::InvalidProbe(probe_graph_relationship_types),
     },
     AbiEntry {
@@ -1341,9 +1324,8 @@ fn probe_text_query_result_free(_: &MatrixContext) -> ProbeResult {
     ProbeResult::Status(ze_text_query_result_free(std::ptr::null_mut()))
 }
 
-#[cfg(feature = "graph-cypher")]
 fn probe_graph_relationship_types(_: &MatrixContext) -> ProbeResult {
-    ProbeResult::Status(ze_graph_open_with_relationship_types(
+    ProbeResult::Status(ze_store_create_with_relationship_types(
         std::ptr::null(),
         std::ptr::null(),
         0,
@@ -1367,7 +1349,6 @@ fn every_exported_symbol_has_executable_adversarial_registry_coverage() {
             .map(str::to_owned)
     })
     .collect::<std::collections::BTreeSet<_>>();
-    #[cfg(feature = "graph-cypher")]
     let exported = exported
         .into_iter()
         .chain(
@@ -1416,7 +1397,8 @@ fn every_exported_symbol_has_executable_adversarial_registry_coverage() {
                     assert_ne!(code, ZeErrorCode::ZeOk, "{} invalid probe", entry.name);
                     assert_ne!(code, ZeErrorCode::ZeErrPanic, "{} panicked", entry.name);
                     assert!(
-                        (1..=34).contains(&(code as i32)),
+                        (1..=34).contains(&(code as i32))
+                            || code == ZeErrorCode::ZeErrGraphUnsupportedBuild,
                         "{} typed code",
                         entry.name
                     );
@@ -1566,81 +1548,73 @@ fn probe_namespace_delete_cascade(_: &MatrixContext) -> ProbeResult {
     ProbeResult::Status(ze_namespace_delete_cascade(std::ptr::null()))
 }
 
-#[cfg(feature = "graph-cypher")]
 fn probe_graph_maintain(_: &MatrixContext) -> ProbeResult {
+    #[cfg(feature = "graph-cypher")]
     let store = common::graph::GraphTestStore::create();
-    ProbeResult::Status(ze_graph_maintain(
-        store.handle,
+    #[cfg(feature = "graph-cypher")]
+    let handle = store.handle;
+    #[cfg(not(feature = "graph-cypher"))]
+    let handle = 0;
+    ProbeResult::Status(ze_store_graph_maintain(
+        handle,
         std::ptr::null(),
         std::ptr::null_mut(),
     ))
 }
-#[cfg(feature = "graph-cypher")]
 fn probe_graph_maintenance_policy(_: &MatrixContext) -> ProbeResult {
+    #[cfg(feature = "graph-cypher")]
     let store = common::graph::GraphTestStore::create();
-    ProbeResult::Status(ze_graph_set_maintenance_policy(
-        store.handle,
+    #[cfg(feature = "graph-cypher")]
+    let handle = store.handle;
+    #[cfg(not(feature = "graph-cypher"))]
+    let handle = 0;
+    ProbeResult::Status(ze_store_set_graph_maintenance_policy(
+        handle,
         std::ptr::null(),
     ))
 }
 
-#[cfg(feature = "graph-cypher")]
 fn probe_graph_open(_: &MatrixContext) -> ProbeResult {
-    ProbeResult::Status(ze_graph_open(std::ptr::null(), std::ptr::null_mut()))
+    ProbeResult::Status(ze_store_enable_graph(0, std::ptr::null_mut()))
 }
-#[cfg(feature = "graph-cypher")]
-fn probe_graph_close(_: &MatrixContext) -> ProbeResult {
-    ProbeResult::Status(ze_graph_close(ZeGraphHandle { token: 0 }))
-}
-#[cfg(feature = "graph-cypher")]
 fn probe_graph_apply(_: &MatrixContext) -> ProbeResult {
-    ProbeResult::Status(ze_graph_apply(
-        ZeGraphHandle { token: 0 },
+    ProbeResult::Status(ze_store_graph_apply(
+        0,
         std::ptr::null(),
         std::ptr::null_mut(),
     ))
 }
-#[cfg(feature = "graph-cypher")]
 fn probe_graph_response_free(_: &MatrixContext) -> ProbeResult {
     ProbeResult::Status(ze_graph_response_free(std::ptr::null_mut()))
 }
-#[cfg(feature = "graph-cypher")]
 fn probe_graph_cypher(_: &MatrixContext) -> ProbeResult {
-    ProbeResult::Status(ze_graph_cypher(
-        ZeGraphHandle { token: 0 },
-        std::ptr::null(),
-        std::ptr::null_mut(),
-    ))
+    ProbeResult::Status(ze_store_cypher(0, std::ptr::null(), std::ptr::null_mut()))
 }
-#[cfg(feature = "graph-cypher")]
 fn probe_graph_cypher_with_row_limit(_: &MatrixContext) -> ProbeResult {
-    ProbeResult::Status(ze_graph_cypher_with_row_limit(
-        ZeGraphHandle { token: 0 },
+    ProbeResult::Status(ze_store_cypher_with_row_limit(
+        0,
         std::ptr::null(),
         0,
         std::ptr::null_mut(),
     ))
 }
-#[cfg(feature = "graph-cypher")]
 fn probe_graph_get_nodes(_: &MatrixContext) -> ProbeResult {
-    ProbeResult::Status(ze_graph_get_nodes(
-        ZeGraphHandle { token: 0 },
+    ProbeResult::Status(ze_store_get_nodes(
+        0,
         std::ptr::null(),
         std::ptr::null_mut(),
     ))
 }
-#[cfg(feature = "graph-cypher")]
 fn probe_graph_get_relationships(_: &MatrixContext) -> ProbeResult {
-    ProbeResult::Status(ze_graph_get_relationships(
-        ZeGraphHandle { token: 0 },
+    ProbeResult::Status(ze_store_get_relationships(
+        0,
         std::ptr::null(),
         std::ptr::null_mut(),
     ))
 }
-#[cfg(feature = "graph-cypher")]
 fn probe_graph_query(_: &MatrixContext) -> ProbeResult {
-    ProbeResult::Status(ze_graph_query(
-        ZeGraphHandle { token: 0 },
+    ProbeResult::Status(ze_store_graph_query(
+        0,
         std::ptr::null(),
         std::ptr::null_mut(),
     ))
@@ -1650,10 +1624,6 @@ fn probe_warm_lexical(context: &MatrixContext) -> ProbeResult {
     ProbeResult::Status(ze_warm_lexical(context.store.handle, std::ptr::null()))
 }
 
-#[cfg(feature = "graph-cypher")]
 fn probe_graph_resources(_: &MatrixContext) -> ProbeResult {
-    ProbeResult::Status(ze_graph_resources(
-        ZeGraphHandle { token: 0 },
-        std::ptr::null_mut(),
-    ))
+    ProbeResult::Status(ze_store_graph_resources(0, std::ptr::null_mut()))
 }

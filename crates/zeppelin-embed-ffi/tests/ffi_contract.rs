@@ -180,6 +180,7 @@ const ERROR_CODE_GOLDEN: &[(ZeErrorCode, i32, &str)] = &[
         60,
         "ZE_ERR_GRAPH_EPOCH_TRANSITION",
     ),
+    (ZeErrorCode::ZeErrGraphDisabled, 61, "ZE_ERR_GRAPH_DISABLED"),
 ];
 
 fn header_error_codes() -> Vec<(String, i32)> {
@@ -1571,7 +1572,7 @@ fn open_migrations_layout_is_frozen() {
 // Creation takes no existing handle, so this export is deliberately outside
 // poison_function_table: there is no existing owner for it to poison.
 #[cfg(feature = "graph-cypher")]
-const GRAPH_HANDLE_FREE_EXPORTS: &[&str] = &["ze_graph_open_with_relationship_types"];
+const GRAPH_HANDLE_FREE_EXPORTS: &[&str] = &["ze_store_create_with_relationship_types"];
 
 #[cfg(feature = "graph-cypher")]
 #[test]
@@ -1584,7 +1585,7 @@ fn graph_declaration_export_is_registered_without_a_poison_handle() {
         assert!(!POISON_TABLE_NAMES.contains(name));
     }
     assert_eq!(
-        ze_graph_open_with_relationship_types(
+        ze_store_create_with_relationship_types(
             std::ptr::null(),
             std::ptr::null(),
             0,
@@ -1619,8 +1620,10 @@ fn cascade_declaration_has_frozen_layout() {
 
 // Graph handles have their own registry; never send them through legacy poison calls.
 #[cfg(feature = "graph-cypher")]
-const GRAPH_MAINTENANCE_POISON_TABLE: &[&str] =
-    &["ze_graph_maintain", "ze_graph_set_maintenance_policy"];
+const GRAPH_MAINTENANCE_POISON_TABLE: &[&str] = &[
+    "ze_store_graph_maintain",
+    "ze_store_set_graph_maintenance_policy",
+];
 
 #[cfg(feature = "graph-cypher")]
 #[test]
@@ -1645,31 +1648,30 @@ fn graph_maintenance_exports_and_frozen_layouts() {
 #[test]
 fn ze241_every_graph_export_has_an_explicit_handle_policy() {
     let handle = [
-        "ze_graph_close",
-        "ze_graph_apply",
-        "ze_graph_cypher",
-        "ze_graph_cypher_with_row_limit",
-        "ze_graph_query",
-        "ze_graph_get_nodes",
-        "ze_graph_get_relationships",
-        "ze_graph_resources",
-        "ze_graph_maintain",
-        "ze_graph_set_maintenance_policy",
+        "ze_store_enable_graph",
+        "ze_store_graph_apply",
+        "ze_store_cypher",
+        "ze_store_cypher_with_row_limit",
+        "ze_store_graph_query",
+        "ze_store_get_nodes",
+        "ze_store_get_relationships",
+        "ze_store_graph_resources",
+        "ze_store_graph_maintain",
+        "ze_store_set_graph_maintenance_policy",
     ];
     let exceptions = [
-        "ze_graph_open",
-        "ze_graph_open_with_relationship_types",
+        "ze_store_create_with_relationship_types",
         "ze_graph_response_free",
     ];
     let exported: Vec<_> = include_str!("../symbols.graph.allowlist")
         .lines()
-        .filter(|name| name.starts_with("ze_graph_"))
+        .filter(|name| name.starts_with("ze_graph_") || name.starts_with("ze_store_"))
         .collect();
     assert_eq!(exported.len(), handle.len() + exceptions.len());
     let mut declared = 0;
     for declaration in include_str!("../include/zeppelin_graph_contracts.h")
         .split(';')
-        .filter(|declaration| declaration.contains("struct ZeGraphHandle handle"))
+        .filter(|declaration| declaration.contains("ze_handle handle"))
     {
         let name = declaration
             .rsplit("ze_error_code ")

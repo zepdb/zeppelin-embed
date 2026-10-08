@@ -92,13 +92,6 @@ fn panic_message(payload: Box<dyn Any + Send>) -> String {
 }
 
 fn poison_handle(handle: Option<ZeHandle>, message: String) {
-    #[cfg(feature = "graph-cypher")]
-    if let Some(graph) = handle.filter(|handle| graph_abi::is_graph_handle(*handle)) {
-        if let Some(message) = graph_abi::poison(graph, message) {
-            registry::poison(None, message);
-        }
-        return;
-    }
     #[cfg(feature = "text")]
     if handle.is_some_and(text_registry::is_text_handle) {
         if let Some(message) = text_registry::poison(handle, message) {
@@ -110,13 +103,6 @@ fn poison_handle(handle: Option<ZeHandle>, message: String) {
 }
 
 fn set_handle_error(handle: Option<ZeHandle>, message: String) {
-    #[cfg(feature = "graph-cypher")]
-    if let Some(graph) = handle.filter(|handle| graph_abi::is_graph_handle(*handle)) {
-        if let Some(message) = graph_abi::set_error(graph, message) {
-            registry::set_error(None, message);
-        }
-        return;
-    }
     #[cfg(feature = "text")]
     if handle.is_some_and(text_registry::is_text_handle) {
         if let Some(message) = text_registry::set_error(handle, message) {
@@ -128,10 +114,6 @@ fn set_handle_error(handle: Option<ZeHandle>, message: String) {
 }
 
 fn handle_error(handle: ZeHandle) -> Result<String, FfiError> {
-    #[cfg(feature = "graph-cypher")]
-    if graph_abi::is_graph_handle(handle) {
-        return graph_abi::last_error(handle);
-    }
     #[cfg(feature = "text")]
     if text_registry::is_text_handle(handle) {
         return text_registry::last_error(handle);
@@ -935,6 +917,8 @@ fn open_store_at(
     out_handle: *mut ZeHandle,
 ) -> Result<(), FfiError> {
     let identity = epoch.as_ref().map(StoreEpoch::identity);
+    #[cfg(feature = "graph-cypher")]
+    let document = epoch.as_ref().map(|epoch| epoch.embedding.document.clone());
     if let Some(epoch) = epoch {
         options = options
             .with_tokenizer(tokenizer_for_epoch(epoch.tokenizer)?)
@@ -944,6 +928,9 @@ fn open_store_at(
         options = options.with_schema(schema);
     }
     let store = Store::open(path, options).map_err(FfiError::store)?;
+    #[cfg(feature = "graph-cypher")]
+    let handle = registry::insert_store_with_document(store, identity, document)?;
+    #[cfg(not(feature = "graph-cypher"))]
     let handle = registry::insert_store(store, identity)?;
     marshal::write_scalar(out_handle, handle);
     Ok(())
@@ -5166,6 +5153,10 @@ pub extern "C" fn ze_open_snapshot(handle: ZeHandle, out_handle: *mut ZeHandle) 
                 let access = registry::lookup(handle)?;
                 let snapshot = access.store.open_snapshot().map_err(FfiError::store)?;
                 let epoch = snapshot.epoch_identity();
+                #[cfg(feature = "graph-cypher")]
+                let opened =
+                    registry::insert_store_with_document(snapshot, epoch, access.document.clone())?;
+                #[cfg(not(feature = "graph-cypher"))]
                 let opened = registry::insert_store(snapshot, epoch)?;
                 marshal::write_scalar(out_handle, opened);
                 Ok(())
@@ -5570,6 +5561,7 @@ pub extern "C" fn ze_error_code_name(code: i32) -> *const c_char {
             58 => b"ZE_ERR_LEGACY_GRAPH_DIRECTORY\0",
             59 => b"ZE_ERR_GRAPH_UNSUPPORTED_BUILD\0",
             60 => b"ZE_ERR_GRAPH_EPOCH_TRANSITION\0",
+            61 => b"ZE_ERR_GRAPH_DISABLED\0",
             _ => b"ZE_ERR_UNKNOWN\0",
         };
         bytes.as_ptr().cast::<c_char>()
@@ -5678,10 +5670,8 @@ compile_error!("graph-cypher contracts support macOS (arm64, x86_64) and Windows
 mod verify;
 pub use verify::*;
 
-#[cfg(feature = "graph-cypher")]
 /// cbindgen:ignore
 mod graph_contracts;
-#[cfg(feature = "graph-cypher")]
 pub use graph_contracts::*;
 #[cfg(feature = "graph-cypher")]
 mod graph_abi;

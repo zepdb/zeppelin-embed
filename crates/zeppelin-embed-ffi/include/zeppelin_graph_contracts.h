@@ -892,94 +892,6 @@ typedef uint32_t ZeGraphWorkKind;
 #endif // __cplusplus
 
 /*
- Fixed caller-owned byte span; length is bytes, not NUL termination.
- */
-typedef struct ZeGraphBytes {
-    /*
-     Accessible bytes for the synchronous call; null only at count zero.
-     */
-    const uint8_t *data;
-    /*
-     Accessible byte count; UTF-8/domain rules depend on the named field.
-     */
-    size_t count;
-} ZeGraphBytes;
-
-/*
- Cooperative request controls; existing cancellation token registry is reused.
- */
-typedef struct ZeGraphControl {
-    /*
-     Exact sizeof this version-one descriptor; fixed array stride.
-     */
-    uint32_t abi_size;
-    /*
-     Must be zero.
-     */
-    uint32_t abi_reserved;
-    /*
-     Zero means no explicit token; nonzero must name a live cancellation token.
-     */
-    uint64_t cancel_token;
-    /*
-     Relative monotonic deadline from call entry; zero means absent.
-     */
-    uint64_t deadline_ns;
-} ZeGraphControl;
-
-/*
- Graph-only open declaration. Document-tower identity is persisted; query tower/alignment is intentionally absent. ZE-69/coordinator own locks, format admission and initialization.
- */
-typedef struct ZeGraphOpenRequest {
-    /*
-     Exact sizeof this version-one descriptor; fixed array stride.
-     */
-    uint32_t abi_size;
-    /*
-     Must be zero.
-     */
-    uint32_t abi_reserved;
-    /*
-     Nonempty UTF-8 filesystem path; embedded NUL forbidden.
-     */
-    struct ZeGraphBytes path;
-    /*
-     One ZeGraphOpenMode.
-     */
-    uint32_t mode;
-    /*
-     0 existing general-purpose tokenizer; unknown profiles reject.
-     */
-    uint32_t tokenizer_profile;
-    /*
-     Null declares graph without vector space; otherwise exact optional document interpretation.
-     */
-    const ZeEmbeddingTower *document_tower;
-    /*
-     Close drain grace period in milliseconds, using existing lifecycle semantics.
-     */
-    uint64_t reader_drain_timeout_ms;
-    /*
-     Nonzero shared store owned-capacity ceiling, at most 256 MiB; includes concurrent graph work.
-     */
-    uint64_t max_resident_bytes;
-    /*
-     Optional cancellation/deadline for bounded create/open work.
-     */
-    const struct ZeGraphControl *control;
-} ZeGraphOpenRequest;
-
-/*
- Opaque graph-only generation-tagged handle. Zero is never a live handle.
- */
-typedef struct ZeGraphHandle {
-    /*
-     The handle registry owns interpretation; this is not a store pointer.
-     */
-    uint64_t token;
-} ZeGraphHandle;
-
-/*
  Fixed pool span. `start` and `count` use the named target array's elements.
  Checked addition and full containment are required before dereferencing.
  */
@@ -1393,6 +1305,28 @@ typedef struct ZeGraphValuePool {
 } ZeGraphValuePool;
 
 /*
+ Cooperative request controls; existing cancellation token registry is reused.
+ */
+typedef struct ZeGraphControl {
+    /*
+     Exact sizeof this version-one descriptor; fixed array stride.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Zero means no explicit token; nonzero must name a live cancellation token.
+     */
+    uint64_t cancel_token;
+    /*
+     Relative monotonic deadline from call entry; zero means absent.
+     */
+    uint64_t deadline_ns;
+} ZeGraphControl;
+
+/*
  One synchronous atomic structured batch. Total canonical input including framing is at most 8 MiB; runtime/staging validates ownership and exact replay.
  */
 typedef struct ZeGraphBatchRequest {
@@ -1793,6 +1727,20 @@ typedef struct ZeGraphResponse {
 } ZeGraphResponse;
 
 /*
+ Fixed caller-owned byte span; length is bytes, not NUL termination.
+ */
+typedef struct ZeGraphBytes {
+    /*
+     Accessible bytes for the synchronous call; null only at count zero.
+     */
+    const uint8_t *data;
+    /*
+     Accessible byte count; UTF-8/domain rules depend on the named field.
+     */
+    size_t count;
+} ZeGraphBytes;
+
+/*
  Named nonentity parameter binding; no extra/duplicate/missing names.
  */
 typedef struct ZeGraphParameterValue {
@@ -1991,6 +1939,48 @@ typedef struct ZeGraphCypherRequest {
      */
     const struct ZeGraphCompileLimits *compile_limits;
 } ZeGraphCypherRequest;
+
+/*
+ Graph-only open declaration. Document-tower identity is persisted; query tower/alignment is intentionally absent. ZE-69/coordinator own locks, format admission and initialization.
+ */
+typedef struct ZeGraphOpenRequest {
+    /*
+     Exact sizeof this version-one descriptor; fixed array stride.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Nonempty UTF-8 filesystem path; embedded NUL forbidden.
+     */
+    struct ZeGraphBytes path;
+    /*
+     One ZeGraphOpenMode.
+     */
+    uint32_t mode;
+    /*
+     0 existing general-purpose tokenizer; unknown profiles reject.
+     */
+    uint32_t tokenizer_profile;
+    /*
+     Null declares graph without vector space; otherwise exact optional document interpretation.
+     */
+    const ZeEmbeddingTower *document_tower;
+    /*
+     Close drain grace period in milliseconds, using existing lifecycle semantics.
+     */
+    uint64_t reader_drain_timeout_ms;
+    /*
+     Nonzero shared store owned-capacity ceiling, at most 256 MiB; includes concurrent graph work.
+     */
+    uint64_t max_resident_bytes;
+    /*
+     Optional cancellation/deadline for bounded create/open work.
+     */
+    const struct ZeGraphControl *control;
+} ZeGraphOpenRequest;
 
 /*
  Immutable incoming-reference policy, accepted only during graph creation.
@@ -2766,33 +2756,15 @@ extern "C" {
 #endif // __cplusplus
 
 /*
- Opens (`mode` 1 read-write, 2 read-only) or creates (`mode` 0) one native
- graph store; a legacy store directory is refused with
- `ZE_ERR_STORE_KIND`; below macOS 14 it is `ZE_ERR_UNSUPPORTED`.
- `max_resident_bytes` must be in 1..=256 MiB,
- `tokenizer_profile` must be 0 and `control` must be null.
- `document_tower` is null for a store without vectors; otherwise node
- vectors are validated against it and it must match the persisted tower.
- */
-ze_error_code ze_graph_open(const struct ZeGraphOpenRequest *request,
-                            struct ZeGraphHandle *out_handle);
-
-/*
- Closes a graph store and releases its handle; outstanding responses stay
- valid until freed. Closing a stale or closed handle is `ZE_ERR_CLOSED`.
- */
-ze_error_code ze_graph_close(struct ZeGraphHandle handle);
-
-/*
  Applies one atomic structured batch: every node (document) and
  relationship item commits durably together, or none does. On success
  `out_response` holds one receipt per item in item order, the disposition
  and the admitted and changed generations; free it with
  `ze_graph_response_free`. An exact keyed retry replays.
  */
-ze_error_code ze_graph_apply(struct ZeGraphHandle handle,
-                             const struct ZeGraphBatchRequest *request,
-                             struct ZeGraphResponse *out_response);
+ze_error_code ze_store_graph_apply(ze_handle handle,
+                                   const struct ZeGraphBatchRequest *request,
+                                   struct ZeGraphResponse *out_response);
 
 /*
  Releases one response and resets it to the empty descriptor. An empty
@@ -2806,7 +2778,7 @@ ze_error_code ze_graph_response_free(struct ZeGraphResponse *response);
  parameters and a default maximum of 1,024 returned rows. Query options
  declare interpretation and may tighten memory/work limits.
  */
-ze_error_code ze_graph_cypher(struct ZeGraphHandle handle,
+ze_error_code ze_store_cypher(ze_handle handle,
                               const struct ZeGraphCypherRequest *request,
                               struct ZeGraphResponse *out_response);
 
@@ -2815,51 +2787,51 @@ ze_error_code ze_graph_cypher(struct ZeGraphHandle handle,
  returned-row cap: 0 selects 1,024; 1..=65,536 is accepted. Exceeding the
  cap fails, never truncates. Other work and memory budgets still apply.
  */
-ze_error_code ze_graph_cypher_with_row_limit(struct ZeGraphHandle handle,
+ze_error_code ze_store_cypher_with_row_limit(ze_handle handle,
                                              const struct ZeGraphCypherRequest *request,
                                              uint32_t result_row_limit,
                                              struct ZeGraphResponse *out_response);
 
 /*
- Creates a graph with immutable per-relationship-type incoming-reference rules.
- `request.mode` must be create (0). Rules survive reopen through ze_graph_open.
+ Creates a Store with immutable per-relationship-type incoming-reference rules.
+ `request.mode` must be create (0). Rules survive reopen through ze_open.
  A child is the source of an edge into the deleted target. Restrict refuses
  surviving children; cascade deletes them transitively in the same mutation,
  including Cypher DELETE/DETACH DELETE. Undeclared types keep existing semantics.
  At most 16384 unique rules and 8 MiB of encoded declarations are accepted.
  */
-ze_error_code ze_graph_open_with_relationship_types(const struct ZeGraphOpenRequest *request,
-                                                    const struct ZeGraphRelationshipType *rules,
-                                                    size_t rule_count,
-                                                    struct ZeGraphHandle *out_handle);
+ze_error_code ze_store_create_with_relationship_types(const struct ZeGraphOpenRequest *request,
+                                                      const struct ZeGraphRelationshipType *rules,
+                                                      size_t rule_count,
+                                                      ze_handle *out_handle);
 
 /*
  Sets the per-open writer policy. Read-only handles and thresholds below
  1 MiB are refused. A concurrent writer call returns ZE_ERR_BUSY.
  */
-ze_error_code ze_graph_set_maintenance_policy(struct ZeGraphHandle handle,
-                                              const struct ZeGraphMaintenancePolicy *policy);
+ze_error_code ze_store_set_graph_maintenance_policy(ze_handle handle,
+                                                    const struct ZeGraphMaintenancePolicy *policy);
 
 /*
  Performs one bounded maintenance step. Loop until cycle_complete is 1
  to finish a cycle. The caller initializes out_report.abi_size; the report
  owns no allocations. A concurrent writer call returns ZE_ERR_BUSY.
  */
-ze_error_code ze_graph_maintain(struct ZeGraphHandle handle,
-                                const struct ZeGraphControl *control,
-                                struct ZeGraphMaintainReport *out_report);
+ze_error_code ze_store_graph_maintain(ze_handle handle,
+                                      const struct ZeGraphControl *control,
+                                      struct ZeGraphMaintainReport *out_report);
 
 /*
  Reads nodes in input order, preserving duplicates and Null for missing IDs.
  */
-ze_error_code ze_graph_get_nodes(struct ZeGraphHandle handle,
+ze_error_code ze_store_get_nodes(ze_handle handle,
                                  const struct ZeGraphGetNodesRequest *request,
                                  struct ZeGraphResponse *out_response);
 
 /*
  Reads relationships in input order, preserving duplicates and Null for missing IDs.
  */
-ze_error_code ze_graph_get_relationships(struct ZeGraphHandle handle,
+ze_error_code ze_store_get_relationships(ze_handle handle,
                                          const struct ZeGraphGetRelsRequest *request,
                                          struct ZeGraphResponse *out_response);
 
@@ -2868,16 +2840,23 @@ ze_error_code ze_graph_get_relationships(struct ZeGraphHandle handle,
  Output columns are named `slot_<logical ID>`, in validated root-schema order.
  Names are derived from the core schema; the frozen plan layout is unchanged.
  */
-ze_error_code ze_graph_query(struct ZeGraphHandle handle,
-                             const struct ZeGraphQueryRequest *request,
-                             struct ZeGraphResponse *out_response);
+ze_error_code ze_store_graph_query(ze_handle handle,
+                                   const struct ZeGraphQueryRequest *request,
+                                   struct ZeGraphResponse *out_response);
 
 /*
  Returns one coherent allocation snapshot; out must have the exact abi_size
  and zero abi_reserved. This observes capacities, not process memory or I/O.
  */
-ze_error_code ze_graph_resources(struct ZeGraphHandle handle,
-                                 struct ZeGraphResources *out);
+ze_error_code ze_store_graph_resources(ze_handle handle,
+                                       struct ZeGraphResources *out);
+
+/*
+ Enables graph storage using the Store writer and returns its generation.
+ Repeated calls are idempotent; read-only stores refuse.
+ */
+ze_error_code ze_store_enable_graph(ze_handle handle,
+                                    ZeGenerationReport *out_report);
 
 #ifdef __cplusplus
 }  // extern "C"

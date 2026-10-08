@@ -99,7 +99,7 @@ pub fn sized<T>() -> T {
     }
     v
 }
-pub fn query(handle: ZeGraphHandle, text: &str) -> ZeGraphResponse {
+pub fn query(handle: ZeHandle, text: &str) -> ZeGraphResponse {
     let mut request: ZeGraphCypherRequest = sized();
     request.query = ZeGraphBytes {
         data: text.as_ptr(),
@@ -107,7 +107,7 @@ pub fn query(handle: ZeGraphHandle, text: &str) -> ZeGraphResponse {
     };
     let mut response = sized();
     assert_eq!(
-        ze_graph_cypher(handle, &request, &mut response),
+        ze_store_cypher(handle, &request, &mut response),
         ZeErrorCode::ZeOk
     );
     response
@@ -124,8 +124,8 @@ pub fn fault(mode: u32) -> zeppelin_embed_adversarial_oracle::graph_c_entry::Bin
         count: path.len(),
     };
     open.max_resident_bytes = 256 << 20;
-    let mut handle = ZeGraphHandle { token: 0 };
-    assert_eq!(ze_graph_open(&open, &mut handle), ZeErrorCode::ZeOk);
+    let mut handle = 0;
+    assert_eq!(store_open(&open, &mut handle), ZeErrorCode::ZeOk);
     let mut request: ZeGraphCypherRequest = sized();
     let text = "CREATE (:Fault)";
     request.query = ZeGraphBytes {
@@ -140,21 +140,21 @@ pub fn fault(mode: u32) -> zeppelin_embed_adversarial_oracle::graph_c_entry::Bin
     if mode == 5 || mode == 6 {
         let mut read: ZeGraphResponse = sized();
         assert_eq!(
-            ze_graph_cypher(handle, &request, &mut read),
+            ze_store_cypher(handle, &request, &mut read),
             ZeErrorCode::ZeErrPoisoned
         );
         ze_graph_response_free(&mut read);
     }
-    let code = ze_graph_close(handle);
+    let code = ze_close(handle);
     assert!(matches!(
         code,
         ZeErrorCode::ZeOk | ZeErrorCode::ZeErrPoisoned
     ));
     open.mode = 1;
-    assert_eq!(ze_graph_open(&open, &mut handle), ZeErrorCode::ZeOk);
+    assert_eq!(store_open(&open, &mut handle), ZeErrorCode::ZeOk);
     let mut recovered = query(handle, "MATCH (n:Fault) RETURN count(n)");
     let value = unsafe { *recovered.pool.values.add(*recovered.cells as usize) }.integer;
-    assert_eq!(ze_graph_close(handle), ZeErrorCode::ZeOk);
+    assert_eq!(ze_close(handle), ZeErrorCode::ZeOk);
     assert_eq!(ze_graph_response_free(&mut recovered), ZeErrorCode::ZeOk);
     zeppelin_embed_adversarial_oracle::graph_c_entry::BindingOutcome {
         status: format!("{status:?}"),
@@ -174,13 +174,16 @@ pub fn semantics() {
         count: bytes.len(),
     };
     open.max_resident_bytes = 256 << 20;
-    let mut handle = ZeGraphHandle { token: 0 };
-    assert_eq!(ze_graph_open(&open, &mut handle), ZeErrorCode::ZeOk);
+    let mut handle = 0;
+    assert_eq!(store_open(&open, &mut handle), ZeErrorCode::ZeOk);
     let pool: ZeGraphValuePool = sized();
     let mut batch: ZeGraphBatchRequest = sized();
     batch.pool = &pool;
     let mut noop: ZeGraphResponse = sized();
-    assert_eq!(ze_graph_apply(handle, &batch, &mut noop), ZeErrorCode::ZeOk);
+    assert_eq!(
+        ze_store_graph_apply(handle, &batch, &mut noop),
+        ZeErrorCode::ZeOk
+    );
     assert_eq!(noop.disposition, 4);
     assert_eq!(noop.has_changed_generation, 0);
     ze_graph_response_free(&mut noop);
@@ -192,7 +195,7 @@ pub fn semantics() {
         compare(name, &expected, &c_observe(&r)).unwrap();
         retained.push((name, expected, r));
     }
-    assert_eq!(ze_graph_close(handle), ZeErrorCode::ZeOk);
+    assert_eq!(ze_close(handle), ZeErrorCode::ZeOk);
     for (name, expected, mut r) in retained {
         compare(name, &expected, &c_observe(&r)).unwrap();
         assert_eq!(ze_graph_response_free(&mut r), ZeErrorCode::ZeOk);
@@ -208,4 +211,42 @@ pub fn property_cases() -> Vec<(&'static str, u32, &'static str)> {
             (fields[0], fields[1].parse().unwrap(), fields[2])
         })
         .collect()
+}
+
+pub fn store_open(request: &ZeGraphOpenRequest, out: &mut ZeHandle) -> ZeErrorCode {
+    let open = ZeOpenRequest {
+        abi_size: std::mem::size_of::<ZeOpenRequest>() as u32,
+        abi_reserved: 0,
+        path: request.path.data,
+        path_len: request.path.count,
+        access_mode: i32::from(request.mode == 2),
+        durability_mode: 1,
+        commit_tier: 2,
+        reader_drain_timeout_ms: request.reader_drain_timeout_ms,
+        max_resident_bytes: request.max_resident_bytes,
+        max_temp_bytes: u64::MAX,
+    };
+    let code = if request.document_tower.is_null() {
+        ze_open(&open, out)
+    } else {
+        let tower = unsafe { *request.document_tower };
+        let epoch = ZeEpochRequest {
+            abi_size: std::mem::size_of::<ZeEpochRequest>() as u32,
+            abi_reserved: 0,
+            embedding: ZeEmbeddingEpoch {
+                document: tower,
+                query: tower,
+                alignment_digest: std::ptr::null(),
+                alignment_digest_len: 0,
+            },
+            tokenizer_profile: 0,
+            reserved: 0,
+        };
+        ze_open_with_epoch(&open, &epoch, out)
+    };
+    if code != ZeErrorCode::ZeOk || request.mode != 0 {
+        return code;
+    }
+    let mut report = sized();
+    ze_store_enable_graph(*out, &mut report)
 }

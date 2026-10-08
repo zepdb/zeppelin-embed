@@ -185,7 +185,7 @@ final class GraphBindingsParityTests: XCTestCase {
 #if ZE72_TEST_BRIDGE
 @_silgen_name("ze72_test_cypher")
 private func ze72TestCypher(
-  _ handle: ZeGraphHandle, _ request: UnsafePointer<ZeGraphCypherRequest>,
+  _ handle: ze_handle, _ request: UnsafePointer<ZeGraphCypherRequest>,
   _ response: UnsafeMutablePointer<ZeGraphResponse>, _ mode: UInt32,
   _ fires: UnsafeMutablePointer<UInt64>
 ) -> Int32
@@ -195,14 +195,14 @@ extension GraphBindingsParityTests {
     for mode: UInt32 in 0...6 {
       let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
       defer { try? FileManager.default.removeItem(at: path) }
-      var handle = ZeGraphHandle()
+      var handle = ze_handle(0)
       var open = ZeGraphOpenRequest()
       open.abi_size = graphSize(ZeGraphOpenRequest.self)
       open.max_resident_bytes = 256 << 20
       let bytes = Array(path.path.utf8)
       try bytes.withUnsafeBufferPointer { buffer in
         open.path = ZeGraphBytes(data: buffer.baseAddress, count: buffer.count)
-        XCTAssertEqual(ze_graph_open(&open, &handle), 0)
+        XCTAssertEqual(openGraphStoreHandle(&open, &handle), 0)
         let query = Array("CREATE (:Fault)".utf8)
         var fires: UInt64 = 0
         var metadata: GraphMetadata?
@@ -225,19 +225,19 @@ extension GraphBindingsParityTests {
         let disposition: GraphDisposition = mode == 1 ? .notCommitted
           : (mode == 2 || mode == 3 || mode == 5) ? .indeterminate : .committed
         XCTAssertEqual(metadata?.disposition, disposition)
-        let close = ze_graph_close(handle)
+        let close = ze_close(handle)
         XCTAssertTrue(close == 0 || mode == 5 || mode == 6)
         open.mode = 1
-        XCTAssertEqual(ze_graph_open(&open, &handle), 0)
+        XCTAssertEqual(openGraphStoreHandle(&open, &handle), 0)
         let readQuery = Array("MATCH (n:Fault) RETURN count(n)".utf8)
         try readQuery.withUnsafeBufferPointer { text in
           var request = ZeGraphCypherRequest()
           request.abi_size = graphSize(ZeGraphCypherRequest.self)
           request.query = ZeGraphBytes(data: text.baseAddress, count: text.count)
-          let result = try graphResponse { ze_graph_cypher(handle, &request, &$0) }
+          let result = try graphResponse { ze_store_cypher(handle, &request, &$0) }
           XCTAssertEqual(result.rows, [[.integer(mode == 1 || mode == 2 ? 0 : 1)]])
         }
-        XCTAssertEqual(ze_graph_close(handle), 0)
+        XCTAssertEqual(ze_close(handle), 0)
       }
     }
   }
@@ -265,7 +265,7 @@ private func waitBeforeAppend(_ context: UnsafeMutableRawPointer?) {
 }
 @_silgen_name("ze72_test_apply_at_append")
 private func ze72TestApplyAtAppend(
-  _ handle: ZeGraphHandle, _ request: UnsafePointer<ZeGraphBatchRequest>,
+  _ handle: ze_handle, _ request: UnsafePointer<ZeGraphBatchRequest>,
   _ response: UnsafeMutablePointer<ZeGraphResponse>,
   _ callback: @convention(c) (UnsafeMutableRawPointer?) -> Void,
   _ context: UnsafeMutableRawPointer?, _ fires: UnsafeMutablePointer<UInt64>
@@ -275,20 +275,20 @@ extension GraphBindingsParityTests {
     let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: path) }
     let bytes = Array(path.path.utf8)
-    var handle = ZeGraphHandle()
+    var handle = ze_handle(0)
     bytes.withUnsafeBufferPointer { buffer in
       var request = ZeGraphOpenRequest()
       request.abi_size = graphSize(ZeGraphOpenRequest.self)
       request.path = ZeGraphBytes(data: buffer.baseAddress, count: buffer.count)
       request.max_resident_bytes = 256 << 20
-      XCTAssertEqual(ze_graph_open(&request, &handle), 0)
+      XCTAssertEqual(openGraphStoreHandle(&request, &handle), 0)
     }
     let barrier = NativeEntryBarrier()
     let calls = GraphNativeCalls(
       apply: { token, request, response in
         var fires: UInt64 = 0
         let status = ze72TestApplyAtAppend(
-          ZeGraphHandle(token: token), request, response, waitBeforeAppend,
+          token, request, response, waitBeforeAppend,
           Unmanaged.passUnretained(barrier).toOpaque(), &fires)
         XCTAssertEqual(fires, status == 0 ? 1 : 0)
         if status == ZeppelinError.busy.rawValue { barrier.busyReturned.signal() }
@@ -296,9 +296,9 @@ extension GraphBindingsParityTests {
       },
       close: { token in
         barrier.closeEntered.signal()
-        return ze_graph_close(ZeGraphHandle(token: token))
+        return ze_close(token)
       })
-    let store = ZeppelinGraphStore(token: handle.token, calls: calls)
+    let store = ZeppelinGraphStore(token: handle, calls: calls)
     var first = GraphBatch()
     first.node(key: GraphKey(namespace: "ze72", key: "first"), revision: 1,
       .create(GraphNodeImage(labels: ["First"])))

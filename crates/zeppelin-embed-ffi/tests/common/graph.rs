@@ -19,16 +19,52 @@ pub fn open_request(path: &[u8], mode: u32) -> ZeGraphOpenRequest {
         control: std::ptr::null(),
     }
 }
-pub fn graph_open(path: &Path, mode: u32) -> (ZeErrorCode, ZeGraphHandle) {
+/// Opens through the ordinary Store API; graph enable is explicit on creation.
+pub fn store_open(request: &ZeGraphOpenRequest, out: &mut ZeHandle) -> ZeErrorCode {
+    let open = ZeOpenRequest {
+        abi_size: size_of::<ZeOpenRequest>() as u32,
+        abi_reserved: 0,
+        path: request.path.data,
+        path_len: request.path.count,
+        access_mode: i32::from(request.mode == MODE_READ_ONLY),
+        durability_mode: 1,
+        commit_tier: 2,
+        reader_drain_timeout_ms: request.reader_drain_timeout_ms,
+        max_resident_bytes: request.max_resident_bytes,
+        max_temp_bytes: u64::MAX,
+    };
+    let code = if request.document_tower.is_null() {
+        ze_open(&open, out)
+    } else {
+        let tower = unsafe { *request.document_tower };
+        let epoch = ZeEpochRequest {
+            abi_size: size_of::<ZeEpochRequest>() as u32,
+            abi_reserved: 0,
+            embedding: ZeEmbeddingEpoch {
+                document: tower,
+                query: tower,
+                alignment_digest: std::ptr::null(),
+                alignment_digest_len: 0,
+            },
+            tokenizer_profile: 0,
+            reserved: 0,
+        };
+        ze_open_with_epoch(&open, &epoch, out)
+    };
+    if code != ZeErrorCode::ZeOk || request.mode != MODE_CREATE {
+        return code;
+    }
+    let mut report = sized_zeroed();
+    ze_store_enable_graph(*out, &mut report)
+}
+
+pub fn graph_open(path: &Path, mode: u32) -> (ZeErrorCode, ZeHandle) {
     let path = path.to_str().expect("UTF-8 path").as_bytes();
-    let mut handle = ZeGraphHandle { token: 0 };
-    (
-        ze_graph_open(&open_request(path, mode), &mut handle),
-        handle,
-    )
+    let mut handle = 0;
+    (store_open(&open_request(path, mode), &mut handle), handle)
 }
 pub struct GraphTestStore {
-    pub handle: ZeGraphHandle,
+    pub handle: ZeHandle,
     pub path: PathBuf,
     dir: Option<TempDir>,
 }
@@ -45,15 +81,15 @@ impl GraphTestStore {
         }
     }
     pub fn close(&mut self) -> ZeErrorCode {
-        let code = ze_graph_close(self.handle);
-        self.handle.token = 0;
+        let code = ze_close(self.handle);
+        self.handle = 0;
         code
     }
 }
 impl Drop for GraphTestStore {
     fn drop(&mut self) {
-        if self.handle.token != 0 {
-            let _ = ze_graph_close(self.handle);
+        if self.handle != 0 {
+            let _ = ze_close(self.handle);
         }
         let _ = self.dir.take();
     }
@@ -322,13 +358,13 @@ pub fn column_names(r: &ZeGraphResponse) -> Vec<String> {
         .map(|c| range_string(r, c.name))
         .collect()
 }
-pub fn cypher_ok(handle: ZeGraphHandle, text: &str) -> ZeGraphResponse {
+pub fn cypher_ok(handle: ZeHandle, text: &str) -> ZeGraphResponse {
     let mut r = empty_response();
     assert_eq!(
-        ze_graph_cypher(handle, &cypher_request(text.as_bytes(), &[], None), &mut r),
+        ze_store_cypher(handle, &cypher_request(text.as_bytes(), &[], None), &mut r),
         ZeErrorCode::ZeOk,
         "{}",
-        last_error(handle.token)
+        last_error(handle)
     );
     r
 }

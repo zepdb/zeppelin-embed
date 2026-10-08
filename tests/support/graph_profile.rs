@@ -489,14 +489,14 @@ fn rust_structured(
         )
         .map_err(|e| format!("{e:?}"))
 }
-fn c_cypher(handle: ZeGraphHandle, query: &str) -> (ZeErrorCode, ZeGraphResponse) {
+fn c_cypher(handle: ZeHandle, query: &str) -> (ZeErrorCode, ZeGraphResponse) {
     let mut r = empty_response();
     let q = cypher_request(query.as_bytes(), &[], None);
-    let code = ze_graph_cypher(handle, &q, &mut r);
+    let code = ze_store_cypher(handle, &q, &mut r);
     (code, r)
 }
 fn c_structured(
-    handle: ZeGraphHandle,
+    handle: ZeHandle,
     authored: &Json,
     params: &[(String, V)],
 ) -> (ZeErrorCode, ZeGraphResponse) {
@@ -831,7 +831,7 @@ fn c_structured(
     q.parameters = cp.bindings.as_ptr();
     q.parameter_count = cp.bindings.len();
     let mut r = empty_response();
-    let code = ze_graph_query(handle, &q, &mut r);
+    let code = ze_store_graph_query(handle, &q, &mut r);
     (code, r)
 }
 unsafe fn slice<'a, T>(p: *const T, n: usize) -> &'a [T] {
@@ -1149,7 +1149,7 @@ pub fn run_local(case: &Json, path: &str) -> Result<Json, String> {
         };
         if r.disposition == 5 {
             ze_graph_response_free(&mut r);
-            ze_graph_close(h);
+            ze_close(h);
             return Err(
                 "indeterminate C write: recovery required before observing TCK state".into(),
             );
@@ -1161,7 +1161,7 @@ pub fn run_local(case: &Json, path: &str) -> Result<Json, String> {
             let error = format!("{code:?}");
             let after = state(query)?;
             assert_eq!(ze_graph_response_free(&mut r), ZeErrorCode::ZeOk);
-            assert_eq!(ze_graph_close(h), ZeErrorCode::ZeOk);
+            assert_eq!(ze_close(h), ZeErrorCode::ZeOk);
             if error != case["error"]["c"].as_str().unwrap() {
                 return Err(format!(
                     "expected public C error {}, got {error}",
@@ -1180,7 +1180,7 @@ pub fn run_local(case: &Json, path: &str) -> Result<Json, String> {
                 assert_eq!(ze_graph_response_free(&mut r), ZeErrorCode::ZeOk);
                 Ok(table)
             })?;
-            assert_eq!(ze_graph_close(reopened), ZeErrorCode::ZeOk);
+            assert_eq!(ze_close(reopened), ZeErrorCode::ZeOk);
             if durable != after {
                 return Err("C rejected state changed on reopen".into());
             }
@@ -1189,9 +1189,9 @@ pub fn run_local(case: &Json, path: &str) -> Result<Json, String> {
             );
         }
         if code != ZeErrorCode::ZeOk {
-            let error = format!("{code:?}: {}", last_error(h.token));
+            let error = format!("{code:?}: {}", last_error(h));
             ze_graph_response_free(&mut r);
-            ze_graph_close(h);
+            ze_close(h);
             return Err(error);
         }
         if r.disposition != expected_outcome
@@ -1202,7 +1202,7 @@ pub fn run_local(case: &Json, path: &str) -> Result<Json, String> {
             || c_generation(h) != generation + u64::from(changed)
         {
             ze_graph_response_free(&mut r);
-            ze_graph_close(h);
+            ze_close(h);
             return Err("wrong C disposition/admitted/changed/final generation".into());
         }
         let after = state(query)?;
@@ -1210,7 +1210,7 @@ pub fn run_local(case: &Json, path: &str) -> Result<Json, String> {
             "disposition={};admitted={};changed={}",
             r.disposition, r.admitted_generation, r.changed_generation
         );
-        assert_eq!(ze_graph_close(h), ZeErrorCode::ZeOk);
+        assert_eq!(ze_close(h), ZeErrorCode::ZeOk);
         let actual = c_table(&r);
         let column_kinds = unsafe { slice(r.columns, r.column_count) }
             .iter()
@@ -1226,7 +1226,7 @@ pub fn run_local(case: &Json, path: &str) -> Result<Json, String> {
             assert_eq!(ze_graph_response_free(&mut r), ZeErrorCode::ZeOk);
             Ok(table)
         })?;
-        assert_eq!(ze_graph_close(h), ZeErrorCode::ZeOk);
+        assert_eq!(ze_close(h), ZeErrorCode::ZeOk);
         if reopened != after {
             return Err("C reopen changed state".into());
         }
@@ -1591,7 +1591,7 @@ impl CParameters {
         }
         p
     }
-    fn query(&self, h: ZeGraphHandle, text: &str) -> (ZeErrorCode, ZeGraphResponse) {
+    fn query(&self, h: ZeHandle, text: &str) -> (ZeErrorCode, ZeGraphResponse) {
         let mut pool: ZeGraphValuePool = sized_zeroed();
         pool.bytes = self.bytes.as_ptr();
         pool.byte_count = self.bytes.len();
@@ -1601,7 +1601,7 @@ impl CParameters {
         pool.child_count = self.children.len();
         let q = cypher_request(text.as_bytes(), &self.bindings, Some(&pool));
         let mut r = empty_response();
-        let code = ze_graph_cypher(h, &q, &mut r);
+        let code = ze_store_cypher(h, &q, &mut r);
         (code, r)
     }
 }
@@ -1681,7 +1681,7 @@ pub fn high_id_roundtrip() -> Result<(), String> {
     assert_eq!(code, ZeErrorCode::ZeOk);
     assert_eq!(changed.disposition, 2);
     assert_eq!(ze_graph_response_free(&mut changed), ZeErrorCode::ZeOk);
-    assert_eq!(ze_graph_close(h), ZeErrorCode::ZeOk);
+    assert_eq!(ze_close(h), ZeErrorCode::ZeOk);
     assert_eq!(c_table(&r), before);
     assert_eq!(ze_graph_response_free(&mut r), ZeErrorCode::ZeOk);
     assert_eq!(
@@ -1754,7 +1754,7 @@ fn statement_error(error: zeppelin_embed_cypher::StatementError) -> String {
     }
 }
 
-fn c_generation(handle: ZeGraphHandle) -> u64 {
+fn c_generation(handle: ZeHandle) -> u64 {
     let (code, mut r) = c_cypher(handle, "RETURN 1");
     assert_eq!(code, ZeErrorCode::ZeOk);
     assert_eq!(r.disposition, 0);

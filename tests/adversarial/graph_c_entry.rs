@@ -71,13 +71,13 @@ impl Drop for Response {
         let _ = ze_graph_response_free(&mut self.0);
     }
 }
-struct Store(ZeGraphHandle);
+struct Store(ZeHandle);
 impl Drop for Store {
     fn drop(&mut self) {
-        let _ = ze_graph_close(self.0);
+        let _ = ze_close(self.0);
     }
 }
-fn retained_parameters(handle: ZeGraphHandle) -> Result<Response, String> {
+fn retained_parameters(handle: ZeHandle) -> Result<Response, String> {
     let mut bytes = *b"shellov";
     let mut values: [ZeGraphValue; 4] = [sized(); 4];
     values[0].tag = 4;
@@ -149,7 +149,7 @@ fn retained_parameters(handle: ZeGraphHandle) -> Result<Response, String> {
     query.parameter_count = 2;
     query.parameter_pool = &pool;
     let mut response = Response::new();
-    status(ze_graph_query(handle, &query, &mut response.0))?;
+    status(ze_store_graph_query(handle, &query, &mut response.0))?;
     bytes.fill(0);
     values.fill(sized());
     children.fill(0);
@@ -165,8 +165,8 @@ fn run(seed: u64) -> Result<Observed, String> {
         count: bytes.len(),
     };
     open.max_resident_bytes = 256 << 20;
-    let mut store = Store(ZeGraphHandle { token: 0 });
-    status(ze_graph_open(&open, &mut store.0))?;
+    let mut store = Store(0);
+    status(store_open(&open, &mut store.0))?;
     let mut value: ZeGraphValue = sized();
     value.tag = 2;
     value.integer = (seed % 31) as i64 + 17;
@@ -187,7 +187,7 @@ fn run(seed: u64) -> Result<Observed, String> {
     cypher.parameter_count = 1;
     cypher.parameter_pool = &pool;
     let mut write = Response::new();
-    status(ze_graph_cypher(store.0, &cypher, &mut write.0))?;
+    status(ze_store_cypher(store.0, &cypher, &mut write.0))?;
     if write.0.pool.node_count != 1 || write.0.pool.nodes.is_null() {
         return Err("C entry write node geometry".into());
     }
@@ -226,7 +226,7 @@ fn run(seed: u64) -> Result<Observed, String> {
     let mut query: ZeGraphQueryRequest = sized();
     query.plan = &plan;
     let mut read = Response::new();
-    status(ze_graph_query(store.0, &query, &mut read.0))?;
+    status(ze_store_graph_query(store.0, &query, &mut read.0))?;
     let values = read.values()?;
     if values.len() != 1 || values.first().map(|v| v.tag) != Some(2) {
         return Err("C entry scalar shape".into());
@@ -248,7 +248,7 @@ fn run(seed: u64) -> Result<Observed, String> {
     let mut get: ZeGraphGetNodesRequest = sized();
     get.ids = ids.as_ptr();
     get.id_count = ids.len();
-    status(ze_graph_get_nodes(store.0, &get, &mut read.0))?;
+    status(ze_store_get_nodes(store.0, &get, &mut read.0))?;
     let tags = read.values()?.iter().map(|v| v.tag).collect();
     read.free()?;
     let relationship_ids = [ZeRelId {
@@ -258,7 +258,7 @@ fn run(seed: u64) -> Result<Observed, String> {
     let mut relationships: ZeGraphGetRelsRequest = sized();
     relationships.ids = relationship_ids.as_ptr();
     relationships.id_count = 1;
-    status(ze_graph_get_relationships(
+    status(ze_store_get_relationships(
         store.0,
         &relationships,
         &mut read.0,
@@ -268,8 +268,8 @@ fn run(seed: u64) -> Result<Observed, String> {
     }
     let mut retained = retained_parameters(store.0)?;
     // Ownership must survive closing the producing handle.
-    status(ze_graph_close(store.0))?;
-    store.0.token = 0;
+    status(ze_close(store.0))?;
+    store.0 = 0;
     read.free()?;
     let parameter_values = retained.values()?;
     let string = parameter_values.first().ok_or("retained string absent")?;
@@ -378,4 +378,42 @@ fn binding_faults(coverage: &mut CoverageRegistry) -> Result<(), String> {
         coverage.hit(key);
     }
     Ok(())
+}
+
+pub fn store_open(request: &ZeGraphOpenRequest, out: &mut ZeHandle) -> ZeErrorCode {
+    let open = ZeOpenRequest {
+        abi_size: std::mem::size_of::<ZeOpenRequest>() as u32,
+        abi_reserved: 0,
+        path: request.path.data,
+        path_len: request.path.count,
+        access_mode: i32::from(request.mode == 2),
+        durability_mode: 1,
+        commit_tier: 2,
+        reader_drain_timeout_ms: request.reader_drain_timeout_ms,
+        max_resident_bytes: request.max_resident_bytes,
+        max_temp_bytes: u64::MAX,
+    };
+    let code = if request.document_tower.is_null() {
+        ze_open(&open, out)
+    } else {
+        let tower = unsafe { *request.document_tower };
+        let epoch = ZeEpochRequest {
+            abi_size: std::mem::size_of::<ZeEpochRequest>() as u32,
+            abi_reserved: 0,
+            embedding: ZeEmbeddingEpoch {
+                document: tower,
+                query: tower,
+                alignment_digest: std::ptr::null(),
+                alignment_digest_len: 0,
+            },
+            tokenizer_profile: 0,
+            reserved: 0,
+        };
+        ze_open_with_epoch(&open, &epoch, out)
+    };
+    if code != ZeErrorCode::ZeOk || request.mode != 0 {
+        return code;
+    }
+    let mut report = sized();
+    ze_store_enable_graph(*out, &mut report)
 }

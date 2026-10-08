@@ -18,7 +18,10 @@ pub(super) struct Boundary<'a> {
     out: *mut ZeGraphResponse,
 }
 impl<'a> Boundary<'a> {
-    pub(super) fn new(access: &'a Access<GraphHandleState, ()>, out: *mut ZeGraphResponse) -> Self {
+    pub(super) fn new(
+        access: &'a crate::registry::HandleAccess,
+        out: *mut ZeGraphResponse,
+    ) -> Self {
         Self {
             writer: &access.writer,
             writer_guard: RefCell::new(None),

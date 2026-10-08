@@ -197,11 +197,14 @@ fn assert_header_gate() {
 
     let header = std::fs::read_to_string(crate_dir.join("include/zeppelin_embed.h"))
         .expect("committed header");
-    let declared = declared_functions(&header);
+    let graph_header =
+        std::fs::read_to_string(crate_dir.join("include/zeppelin_graph_contracts.h"))
+            .expect("graph header");
+    let declared = declared_functions(&format!("{header}\n{graph_header}"));
     let allowlist = std::fs::read_to_string(crate_dir.join("symbols.allowlist"))
         .expect("symbol allowlist")
         .lines()
-        .filter(|line| !line.is_empty() && !line.starts_with("ze_graph_"))
+        .filter(|line| !line.is_empty())
         .map(str::to_owned)
         .collect::<BTreeSet<_>>();
 
@@ -265,7 +268,7 @@ fn assert_header_gate() {
     assert_eq!(declared, allowlist, "header and allowlist differ");
     assert_eq!(exported, allowlist, "staticlib and allowlist differ");
 
-    let source = ["src/lib.rs", "src/verify.rs"]
+    let source = ["src/lib.rs", "src/verify.rs", "src/graph_entry.rs"]
         .map(|path| std::fs::read_to_string(crate_dir.join(path)).expect("FFI source"))
         .join("\n");
     for function in &allowlist {

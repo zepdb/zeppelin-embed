@@ -21,14 +21,6 @@ pub struct ZeRelId {
     pub low: u64,
 }
 
-/// Opaque graph-only generation-tagged handle. Zero is never a live handle.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-#[repr(C)]
-pub struct ZeGraphHandle {
-    /// The handle registry owns interpretation; this is not a store pointer.
-    pub token: u64,
-}
-
 /// Fixed pool span. `start` and `count` use the named target array's elements.
 /// Checked addition and full containment are required before dereferencing.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

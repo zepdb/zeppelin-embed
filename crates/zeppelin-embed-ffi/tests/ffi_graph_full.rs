@@ -14,7 +14,7 @@ fn ze241_get_preserves_missing_order_duplicates_and_optional_tags() {
     let items = [create_node_item(ns, key, 1, image)];
     let mut applied = empty_response();
     assert_eq!(
-        ze_graph_apply(store.handle, &batch_request(&items, &pool), &mut applied),
+        ze_store_graph_apply(store.handle, &batch_request(&items, &pool), &mut applied),
         ZeErrorCode::ZeOk
     );
     let id = receipts(&applied)[0].node;
@@ -32,10 +32,10 @@ fn ze241_get_preserves_missing_order_duplicates_and_optional_tags() {
     request.include_text = 1;
     let mut response = empty_response();
     assert_eq!(
-        ze_graph_get_nodes(store.handle, &request, &mut response),
+        ze_store_get_nodes(store.handle, &request, &mut response),
         ZeErrorCode::ZeOk,
         "{}",
-        last_error(store.handle.token)
+        last_error(store.handle)
     );
     let values = rows(&response);
     assert_eq!(
@@ -54,10 +54,10 @@ fn ze241_get_preserves_missing_order_duplicates_and_optional_tags() {
     assert_eq!(code, ZeErrorCode::ZeOk);
     assert_eq!(ze_graph_response_free(&mut applied), ZeErrorCode::ZeOk);
     assert_eq!(ze_graph_response_free(&mut response), ZeErrorCode::ZeOk);
-    assert_eq!(ze_graph_close(reopened), ZeErrorCode::ZeOk);
+    assert_eq!(ze_close(reopened), ZeErrorCode::ZeOk);
     let request: ZeGraphGetRelsRequest = sized_zeroed();
     assert_eq!(
-        ze_graph_get_relationships(reopened, &request, &mut response),
+        ze_store_get_relationships(reopened, &request, &mut response),
         ZeErrorCode::ZeErrClosed
     );
 }
@@ -105,10 +105,10 @@ fn ze241_query_reads_and_mutates_through_c() {
     request.plan = &plan;
     let mut response = empty_response();
     assert_eq!(
-        ze_graph_query(store.handle, &request, &mut response),
+        ze_store_graph_query(store.handle, &request, &mut response),
         ZeErrorCode::ZeOk,
         "{}",
-        last_error(store.handle.token)
+        last_error(store.handle)
     );
     assert_eq!(response.disposition, 2);
     assert_eq!(response.changed_generation, 2);
@@ -125,7 +125,7 @@ fn ze241_query_reads_and_mutates_through_c() {
     plan.pool = &pool;
     request.plan = &plan;
     assert_eq!(
-        ze_graph_query(store.handle, &request, &mut response),
+        ze_store_graph_query(store.handle, &request, &mut response),
         ZeErrorCode::ZeErrInvalidArgument
     );
 }
@@ -162,10 +162,10 @@ fn ze241_cypher_vector_parameter_and_options_execute() {
     request.options = &options;
     let mut response = empty_response();
     assert_eq!(
-        ze_graph_cypher(store.handle, &request, &mut response),
+        ze_store_cypher(store.handle, &request, &mut response),
         ZeErrorCode::ZeOk,
         "{}",
-        last_error(store.handle.token)
+        last_error(store.handle)
     );
     let result = rows(&response);
     assert_eq!((result[0][0].integer, result[0][1].integer), (2, 4));
@@ -181,7 +181,7 @@ fn ze241_response_capacity_failure_commits_nothing() {
         let mut response = empty_response();
         let fault = AllocationFaultScope::arm(1);
         let code = if entry == 0 {
-            ze_graph_cypher(
+            ze_store_cypher(
                 store.handle,
                 &cypher_request(b"CREATE (:BeforeCommit) RETURN 1 AS x", &[], None),
                 &mut response,
@@ -190,7 +190,7 @@ fn ze241_response_capacity_failure_commits_nothing() {
             let mut builder = PoolBuilder::new();
             let item = single_node(&mut builder, "before-commit");
             let pool = builder.pool();
-            ze_graph_apply(store.handle, &batch_request(&[item], &pool), &mut response)
+            ze_store_graph_apply(store.handle, &batch_request(&[item], &pool), &mut response)
         };
         assert_eq!(fault.receipt().fires, 1);
         drop(fault);
@@ -213,7 +213,7 @@ fn ze241_structured_search_preserves_intent_and_reports() {
     let pool = builder.pool();
     let mut applied = empty_response();
     assert_eq!(
-        ze_graph_apply(store.handle, &batch_request(&[item], &pool), &mut applied),
+        ze_store_graph_apply(store.handle, &batch_request(&[item], &pool), &mut applied),
         ZeErrorCode::ZeOk
     );
     assert_eq!(ze_graph_response_free(&mut applied), ZeErrorCode::ZeOk);
@@ -255,10 +255,10 @@ fn ze241_structured_search_preserves_intent_and_reports() {
     request.plan = &plan;
     let mut response = empty_response();
     assert_eq!(
-        ze_graph_query(store.handle, &request, &mut response),
+        ze_store_graph_query(store.handle, &request, &mut response),
         ZeErrorCode::ZeOk,
         "{}",
-        last_error(store.handle.token)
+        last_error(store.handle)
     );
     assert_eq!(response.report_count, 1);
     let report = unsafe { &*response.reports };
@@ -278,7 +278,7 @@ fn ze241_structured_search_preserves_intent_and_reports() {
     plan.eager_searches = eager.as_ptr();
     request.plan = &plan;
     assert_eq!(
-        ze_graph_query(store.handle, &request, &mut response),
+        ze_store_graph_query(store.handle, &request, &mut response),
         ZeErrorCode::ZeErrInvalidArgument
     );
 }
@@ -304,7 +304,7 @@ fn ze241_concurrent_writers_are_busy() {
             Ok(())
         });
         let mut response = empty_response();
-        let code = ze_graph_cypher(
+        let code = ze_store_cypher(
             handle,
             &cypher_request(b"CREATE (:First)", &[], None),
             &mut response,
@@ -315,14 +315,24 @@ fn ze241_concurrent_writers_are_busy() {
     });
     entered.wait();
     let mut response = empty_response();
-    let code = ze_graph_cypher(
+    let code = ze_store_cypher(
         handle,
         &cypher_request(b"CREATE (:Second)", &[], None),
         &mut response,
     );
+    let seal = ZeSealRequest {
+        abi_size: std::mem::size_of::<ZeSealRequest>() as u32,
+        abi_reserved: 0,
+        cancel_token: 0,
+    };
+    let mut report = sized_zeroed();
+    let document_code = ze_seal(handle, &seal, &mut report);
+    let enable_code = ze_store_enable_graph(handle, &mut report);
     release.wait();
     assert_eq!(writer.join().unwrap(), (ZeErrorCode::ZeOk, 2));
     assert_eq!(code, ZeErrorCode::ZeErrBusy);
+    assert_eq!(document_code, ZeErrorCode::ZeErrBusy);
+    assert_eq!(enable_code, ZeErrorCode::ZeErrBusy);
     assert_eq!(response.disposition, 1);
     let mut read = cypher_ok(handle, "MATCH (n) RETURN count(n) AS count");
     assert_eq!(rows(&read)[0][0].integer, 1);
@@ -352,10 +362,10 @@ fn ze241_postcommit_cancel_preserves_commit() {
     request.control = &control;
     let mut response = empty_response();
     assert_eq!(
-        ze_graph_cypher(store.handle, &request, &mut response),
+        ze_store_cypher(store.handle, &request, &mut response),
         ZeErrorCode::ZeOk,
         "{}",
-        last_error(store.handle.token)
+        last_error(store.handle)
     );
     // One store counter: enable_graph commits generation 1; this first graph write commits 2.
     assert_eq!((response.disposition, response.changed_generation), (2, 2));
@@ -387,13 +397,13 @@ fn ze241_io_uncertainty_requires_reopen() {
     let mut response = empty_response();
     let request = cypher_request(b"CREATE (:Uncertain)", &[], None);
     assert_eq!(
-        ze_graph_cypher(store.handle, &request, &mut response),
+        ze_store_cypher(store.handle, &request, &mut response),
         ZeErrorCode::ZeErrIndeterminateCommit
     );
     assert_eq!(response.disposition, 5);
     drop(scope);
     assert!(matches!(
-        ze_graph_cypher(store.handle, &request, &mut response),
+        ze_store_cypher(store.handle, &request, &mut response),
         ZeErrorCode::ZeErrAccessMode | ZeErrorCode::ZeErrIndeterminateCommit
     ));
     let path = store.path.clone();
@@ -403,7 +413,7 @@ fn ze241_io_uncertainty_requires_reopen() {
     let mut read = cypher_ok(handle, "MATCH (n:Uncertain) RETURN count(n) AS count");
     assert_eq!(rows(&read)[0][0].integer, 1);
     ze_graph_response_free(&mut read);
-    ze_graph_close(handle);
+    ze_close(handle);
 }
 
 #[test]
@@ -418,13 +428,13 @@ fn ze241_boundary_refusals_leave_no_effects() {
     let mut request = cypher_request(b"CREATE (:Cancelled)", &[], None);
     request.control = &control;
     assert_eq!(
-        ze_graph_cypher(store.handle, &request, &mut response),
+        ze_store_cypher(store.handle, &request, &mut response),
         ZeErrorCode::ZeErrCancelled
     );
     ze_cancel_token_free(cancel);
     let request = cypher_request(b"CREATE (:Unsupported) RETURN sin(1)", &[], None);
     assert_eq!(
-        ze_graph_cypher(store.handle, &request, &mut response),
+        ze_store_cypher(store.handle, &request, &mut response),
         ZeErrorCode::ZeErrQueryUnsupported
     );
     let mut pool: ZeGraphValuePool = sized_zeroed();
@@ -441,40 +451,40 @@ fn ze241_boundary_refusals_leave_no_effects() {
     let mut query: ZeGraphQueryRequest = sized_zeroed();
     query.plan = &plan;
     assert_ne!(
-        ze_graph_query(store.handle, &query, &mut response),
+        ze_store_graph_query(store.handle, &query, &mut response),
         ZeErrorCode::ZeOk
     );
     inputs[0] = 7;
     plan.inputs = inputs.as_ptr();
     query.plan = &plan;
     assert_ne!(
-        ze_graph_query(store.handle, &query, &mut response),
+        ze_store_graph_query(store.handle, &query, &mut response),
         ZeErrorCode::ZeOk
     );
     pool.abi_reserved = 1;
     plan.pool = &pool;
     query.plan = &plan;
     assert_eq!(
-        ze_graph_query(store.handle, &query, &mut response),
+        ze_store_graph_query(store.handle, &query, &mut response),
         ZeErrorCode::ZeErrInvalidArgument
     );
     let mut get: ZeGraphGetNodesRequest = sized_zeroed();
     for flag in [2, u32::MAX] {
         get.include_text = flag;
         assert_eq!(
-            ze_graph_get_nodes(store.handle, &get, &mut response),
+            ze_store_get_nodes(store.handle, &get, &mut response),
             ZeErrorCode::ZeErrInvalidArgument
         );
     }
     get.include_text = 0;
     get.id_count = 1;
     assert_eq!(
-        ze_graph_get_nodes(store.handle, &get, &mut response),
+        ze_store_get_nodes(store.handle, &get, &mut response),
         ZeErrorCode::ZeErrInvalidArgument
     );
     get.id_count = usize::MAX;
     assert_eq!(
-        ze_graph_get_nodes(store.handle, &get, &mut response),
+        ze_store_get_nodes(store.handle, &get, &mut response),
         ZeErrorCode::ZeErrInvalidArgument
     );
     get.id_count = 0;
@@ -482,19 +492,13 @@ fn ze241_boundary_refusals_leave_no_effects() {
     invalid_control.abi_reserved = 1;
     get.control = &invalid_control;
     assert_eq!(
-        ze_graph_get_nodes(store.handle, &get, &mut response),
+        ze_store_get_nodes(store.handle, &get, &mut response),
         ZeErrorCode::ZeErrInvalidArgument
     );
     get.control = std::ptr::null();
     let legacy = common::TestStore::new();
     assert_eq!(
-        ze_graph_get_nodes(
-            ZeGraphHandle {
-                token: legacy.handle
-            },
-            &get,
-            &mut response
-        ),
+        ze_store_get_nodes(legacy.handle | (1 << 30), &get, &mut response),
         ZeErrorCode::ZeErrInvalidHandle
     );
     let mut read = cypher_ok(store.handle, "MATCH (n) RETURN count(n) AS count");
@@ -531,14 +535,14 @@ fn ze241_get_full_width_nodes_and_relationships_survive_reopen() {
     let pool = builder.pool();
     let mut applied = empty_response();
     assert_eq!(
-        ze_graph_apply(
+        ze_store_graph_apply(
             handle,
             &batch_request(&[first, second, rel], &pool),
             &mut applied
         ),
         ZeErrorCode::ZeOk,
         "{}",
-        last_error(handle.token)
+        last_error(handle)
     );
     let receipts = receipts(&applied);
     assert_eq!(
@@ -564,7 +568,7 @@ fn ze241_get_full_width_nodes_and_relationships_survive_reopen() {
         },
         receipts[2].relationship,
     ];
-    assert_eq!(ze_graph_close(handle), ZeErrorCode::ZeOk);
+    assert_eq!(ze_close(handle), ZeErrorCode::ZeOk);
     let (code, handle) = graph_open(&path, MODE_READ_WRITE);
     assert_eq!(code, ZeErrorCode::ZeOk);
     let mut get: ZeGraphGetRelsRequest = sized_zeroed();
@@ -572,7 +576,7 @@ fn ze241_get_full_width_nodes_and_relationships_survive_reopen() {
     get.id_count = rels.len();
     let mut response = empty_response();
     assert_eq!(
-        ze_graph_get_relationships(handle, &get, &mut response),
+        ze_store_get_relationships(handle, &get, &mut response),
         ZeErrorCode::ZeOk
     );
     assert_eq!(
@@ -592,7 +596,7 @@ fn ze241_get_full_width_nodes_and_relationships_survive_reopen() {
         (relationships[0].source, relationships[0].target),
         (nodes[0], nodes[1])
     );
-    assert_eq!(ze_graph_close(handle), ZeErrorCode::ZeOk);
+    assert_eq!(ze_close(handle), ZeErrorCode::ZeOk);
     assert_eq!(ze_graph_response_free(&mut response), ZeErrorCode::ZeOk);
     assert_eq!(ze_graph_response_free(&mut applied), ZeErrorCode::ZeOk);
 }
@@ -606,8 +610,8 @@ fn ze241_search_acceptance_has_worked_rows_and_reports() {
     let bytes = path.to_str().unwrap().as_bytes();
     let mut open = open_request(bytes, MODE_CREATE);
     open.document_tower = &declaration;
-    let mut handle = ZeGraphHandle { token: 0 };
-    assert_eq!(ze_graph_open(&open, &mut handle), ZeErrorCode::ZeOk);
+    let mut handle = 0;
+    assert_eq!(store_open(&open, &mut handle), ZeErrorCode::ZeOk);
     let mut builder = PoolBuilder::new();
     let ns = builder.text("docs");
     for (kind, name) in [
@@ -639,10 +643,10 @@ fn ze241_search_acceptance_has_worked_rows_and_reports() {
     let pool = builder.pool();
     let mut response = empty_response();
     assert_eq!(
-        ze_graph_apply(handle, &batch_request(&items, &pool), &mut response),
+        ze_store_graph_apply(handle, &batch_request(&items, &pool), &mut response),
         ZeErrorCode::ZeOk,
         "{}",
-        last_error(handle.token)
+        last_error(handle)
     );
     let ids = receipts(&response)
         .iter()
@@ -655,7 +659,7 @@ fn ze241_search_acceptance_has_worked_rows_and_reports() {
     get.include_text = 1;
     get.include_vector = 1;
     assert_eq!(
-        ze_graph_get_nodes(handle, &get, &mut response),
+        ze_store_get_nodes(handle, &get, &mut response),
         ZeErrorCode::ZeOk
     );
     let nodes =
@@ -726,7 +730,7 @@ fn ze241_search_acceptance_has_worked_rows_and_reports() {
     plan.searches = &search;
     request.plan = &plan;
     assert_eq!(
-        ze_graph_query(handle, &request, &mut response),
+        ze_store_graph_query(handle, &request, &mut response),
         ZeErrorCode::ZeErrInvalidArgument
     );
     for (has_tier, tier) in [(0, 0), (1, 0), (1, 1), (1, 2), (1, 3)] {
@@ -740,10 +744,10 @@ fn ze241_search_acceptance_has_worked_rows_and_reports() {
         plan.searches = &search;
         request.plan = &plan;
         assert_eq!(
-            ze_graph_query(handle, &request, &mut response),
+            ze_store_graph_query(handle, &request, &mut response),
             ZeErrorCode::ZeOk,
             "tier {tier}: {}",
-            last_error(handle.token)
+            last_error(handle)
         );
         let result = rows(&response);
         assert_eq!(result.len(), 2);
@@ -768,7 +772,7 @@ fn ze241_search_acceptance_has_worked_rows_and_reports() {
     plan.searches = &search;
     request.plan = &plan;
     assert_ne!(
-        ze_graph_query(handle, &request, &mut response),
+        ze_store_graph_query(handle, &request, &mut response),
         ZeErrorCode::ZeOk
     );
     search.window = ZeGraphOptionalIndex {
@@ -793,10 +797,10 @@ fn ze241_search_acceptance_has_worked_rows_and_reports() {
     plan.searches = &search;
     request.plan = &plan;
     assert_eq!(
-        ze_graph_query(handle, &request, &mut response),
+        ze_store_graph_query(handle, &request, &mut response),
         ZeErrorCode::ZeOk,
         "{}",
-        last_error(handle.token)
+        last_error(handle)
     );
     let result = rows(&response);
     assert_eq!(result.len(), 2);
@@ -814,7 +818,7 @@ fn ze241_search_acceptance_has_worked_rows_and_reports() {
     plan.searches = &search;
     request.plan = &plan;
     assert_eq!(
-        ze_graph_query(handle, &request, &mut response),
+        ze_store_graph_query(handle, &request, &mut response),
         ZeErrorCode::ZeOk
     );
     assert_eq!(response.row_count, 2);
@@ -852,10 +856,10 @@ fn ze241_search_acceptance_has_worked_rows_and_reports() {
     plan.searches = &search;
     request.plan = &plan;
     assert_eq!(
-        ze_graph_query(handle, &request, &mut response),
+        ze_store_graph_query(handle, &request, &mut response),
         ZeErrorCode::ZeOk,
         "{}",
-        last_error(handle.token)
+        last_error(handle)
     );
     let result = rows(&response);
     assert_eq!(result.len(), 3);
@@ -873,7 +877,7 @@ fn ze241_search_acceptance_has_worked_rows_and_reports() {
     plan.searches = &search;
     request.plan = &plan;
     assert_eq!(
-        ze_graph_query(handle, &request, &mut response),
+        ze_store_graph_query(handle, &request, &mut response),
         ZeErrorCode::ZeOk
     );
     assert_eq!(unsafe { (*response.reports).effective_alpha }, 0.4);
@@ -892,7 +896,7 @@ fn ze241_search_acceptance_has_worked_rows_and_reports() {
     plan.root = 1;
     request.plan = &plan;
     assert_eq!(
-        ze_graph_query(handle, &request, &mut response),
+        ze_store_graph_query(handle, &request, &mut response),
         ZeErrorCode::ZeOk
     );
     assert_eq!((response.row_count, response.report_count), (0, 1));
@@ -905,7 +909,7 @@ fn ze241_search_acceptance_has_worked_rows_and_reports() {
     plan.searches = &search;
     request.plan = &plan;
     assert_ne!(
-        ze_graph_query(handle, &request, &mut response),
+        ze_store_graph_query(handle, &request, &mut response),
         ZeErrorCode::ZeOk
     );
     search.window = ZeGraphOptionalIndex {
@@ -941,10 +945,10 @@ fn ze241_search_acceptance_has_worked_rows_and_reports() {
     plan.eager_searches = eager.as_ptr();
     request.plan = &plan;
     assert_eq!(
-        ze_graph_query(handle, &request, &mut response),
+        ze_store_graph_query(handle, &request, &mut response),
         ZeErrorCode::ZeOk,
         "{}",
-        last_error(handle.token)
+        last_error(handle)
     );
     assert_eq!((response.row_count, response.report_count), (0, 1));
     assert_eq!(response.column_count, 4);
@@ -968,7 +972,7 @@ fn ze241_search_acceptance_has_worked_rows_and_reports() {
         assert_eq!(response.report_count, 1);
         ze_graph_response_free(&mut response);
     }
-    assert_eq!(ze_graph_close(handle), ZeErrorCode::ZeOk);
+    assert_eq!(ze_close(handle), ZeErrorCode::ZeOk);
 }
 
 #[test]
@@ -977,10 +981,10 @@ fn ze241_empty_gets_accept_null_zero_and_validate_controls() {
     let mut response = empty_response();
     let mut get: ZeGraphGetNodesRequest = sized_zeroed();
     assert_eq!(
-        ze_graph_get_nodes(store.handle, &get, &mut response),
+        ze_store_get_nodes(store.handle, &get, &mut response),
         ZeErrorCode::ZeOk,
         "{}",
-        last_error(store.handle.token)
+        last_error(store.handle)
     );
     assert_eq!((response.row_count, response.column_count), (0, 1));
     ze_graph_response_free(&mut response);
@@ -988,15 +992,15 @@ fn ze241_empty_gets_accept_null_zero_and_validate_controls() {
     control.abi_reserved = 1;
     get.control = &control;
     assert_eq!(
-        ze_graph_get_nodes(store.handle, &get, &mut response),
+        ze_store_get_nodes(store.handle, &get, &mut response),
         ZeErrorCode::ZeErrInvalidArgument
     );
     let rels: ZeGraphGetRelsRequest = sized_zeroed();
     assert_eq!(
-        ze_graph_get_relationships(store.handle, &rels, &mut response),
+        ze_store_get_relationships(store.handle, &rels, &mut response),
         ZeErrorCode::ZeOk,
         "{}",
-        last_error(store.handle.token)
+        last_error(store.handle)
     );
     assert_eq!((response.row_count, response.column_count), (0, 1));
     ze_graph_response_free(&mut response);
@@ -1054,7 +1058,7 @@ fn ze241_mid_query_deadline_returns_no_partial_rows() {
     request.control = &control;
     let mut response = empty_response();
     assert_eq!(
-        ze_graph_query(store.handle, &request, &mut response),
+        ze_store_graph_query(store.handle, &request, &mut response),
         ZeErrorCode::ZeErrTimeout
     );
     assert!(clock.calls.load(Ordering::SeqCst) > 20);
@@ -1089,7 +1093,7 @@ fn ze72_shared_semantics_match_independent_oracle() {
         graph_bindings::compare(name, &expected, &graph_bindings::c_observe(&response)).unwrap();
         assert_eq!(ze_graph_response_free(&mut response), ZeErrorCode::ZeOk);
     }
-    assert_eq!(ze_graph_close(reopened), ZeErrorCode::ZeOk);
+    assert_eq!(ze_close(reopened), ZeErrorCode::ZeOk);
 }
 
 #[cfg(all(feature = "graph-result-test-support", feature = "abi-panic-probe"))]
@@ -1165,7 +1169,7 @@ fn ze72_same_low_half_ids_remain_distinct_after_reopen() {
     get.id_count = 2;
     let mut result = empty_response();
     assert_eq!(
-        ze_graph_get_nodes(handle, &get, &mut result),
+        ze_store_get_nodes(handle, &get, &mut result),
         ZeErrorCode::ZeOk
     );
     assert_eq!(
@@ -1181,7 +1185,7 @@ fn ze72_same_low_half_ids_remain_distinct_after_reopen() {
     graph_bindings::compare("same-low-half", &expected, &actual).unwrap();
     assert_ne!(nodes[0].id.high, nodes[1].id.high);
     assert_eq!(nodes[0].id.low, nodes[1].id.low);
-    assert_eq!(ze_graph_close(handle), ZeErrorCode::ZeOk);
+    assert_eq!(ze_close(handle), ZeErrorCode::ZeOk);
     assert_eq!(ze_graph_response_free(&mut result), ZeErrorCode::ZeOk);
     if let Ok(output) = std::env::var("ZE72_CORPUS_OUTPUT") {
         std::fs::write(format!("{output}.twins"), expected).unwrap();
@@ -1215,7 +1219,7 @@ fn ze72_noop_replay_mixed_generations_and_conflicts_preserve_wal() {
     let pool = b.pool();
     let mut r = empty_response();
     assert_eq!(
-        ze_graph_apply(store.handle, &batch_request(&[first], &pool), &mut r),
+        ze_store_graph_apply(store.handle, &batch_request(&[first], &pool), &mut r),
         ZeErrorCode::ZeOk
     );
     let id = receipts(&r)[0].node;
@@ -1224,7 +1228,7 @@ fn ze72_noop_replay_mixed_generations_and_conflicts_preserve_wal() {
     let before = ze72_wal_bytes(&store.path);
     for (items, disposition) in [(Vec::new(), 4), (vec![first], 3)] {
         assert_eq!(
-            ze_graph_apply(store.handle, &batch_request(&items, &pool), &mut r),
+            ze_store_graph_apply(store.handle, &batch_request(&items, &pool), &mut r),
             ZeErrorCode::ZeOk
         );
         assert_eq!(r.disposition, disposition);
@@ -1233,7 +1237,7 @@ fn ze72_noop_replay_mixed_generations_and_conflicts_preserve_wal() {
         ze_graph_response_free(&mut r);
     }
     assert_eq!(
-        ze_graph_apply(
+        ze_store_graph_apply(
             store.handle,
             &batch_request(&[first, second], &pool),
             &mut r
@@ -1251,7 +1255,7 @@ fn ze72_noop_replay_mixed_generations_and_conflicts_preserve_wal() {
     ze_graph_response_free(&mut r);
     let stable = ze72_wal_bytes(&store.path);
     assert_eq!(
-        ze_graph_apply(store.handle, &batch_request(&[first, first], &pool), &mut r),
+        ze_store_graph_apply(store.handle, &batch_request(&[first, first], &pool), &mut r),
         ZeErrorCode::ZeErrDuplicateTarget
     );
     ze_graph_response_free(&mut r);
@@ -1260,35 +1264,35 @@ fn ze72_noop_replay_mixed_generations_and_conflicts_preserve_wal() {
     put.expected_node = id;
     put.revision = 2;
     assert_eq!(
-        ze_graph_apply(store.handle, &batch_request(&[put], &pool), &mut r),
+        ze_store_graph_apply(store.handle, &batch_request(&[put], &pool), &mut r),
         ZeErrorCode::ZeOk
     );
     ze_graph_response_free(&mut r);
     let updated = ze72_wal_bytes(&store.path);
     assert_ne!(stable, updated);
     assert_eq!(
-        ze_graph_apply(store.handle, &batch_request(&[first], &pool), &mut r),
+        ze_store_graph_apply(store.handle, &batch_request(&[first], &pool), &mut r),
         ZeErrorCode::ZeErrStaleRevision
     );
     ze_graph_response_free(&mut r);
     put.revision = 3;
     put.expected_node.high = u64::MAX;
     assert_eq!(
-        ze_graph_apply(store.handle, &batch_request(&[put], &pool), &mut r),
+        ze_store_graph_apply(store.handle, &batch_request(&[put], &pool), &mut r),
         ZeErrorCode::ZeErrIncarnationConflict
     );
     ze_graph_response_free(&mut r);
     assert_eq!(ze72_wal_bytes(&store.path), updated);
     let get: ZeGraphGetNodesRequest = sized_zeroed();
     assert_eq!(
-        ze_graph_get_nodes(store.handle, &get, &mut r),
+        ze_store_get_nodes(store.handle, &get, &mut r),
         ZeErrorCode::ZeOk
     );
     assert_eq!(r.row_count, 0);
     ze_graph_response_free(&mut r);
     let rels: ZeGraphGetRelsRequest = sized_zeroed();
     assert_eq!(
-        ze_graph_get_relationships(store.handle, &rels, &mut r),
+        ze_store_get_relationships(store.handle, &rels, &mut r),
         ZeErrorCode::ZeOk
     );
     assert_eq!(r.row_count, 0);
@@ -1302,8 +1306,8 @@ fn ze72_present_empty_vector_is_rejected_without_wal_or_generation() {
     let tower = epoch.request().embedding.document;
     let mut open = open_request(path.to_str().unwrap().as_bytes(), MODE_CREATE);
     open.document_tower = &tower;
-    let mut handle = ZeGraphHandle { token: 0 };
-    assert_eq!(ze_graph_open(&open, &mut handle), ZeErrorCode::ZeOk);
+    let mut handle = 0;
+    assert_eq!(store_open(&open, &mut handle), ZeErrorCode::ZeOk);
     let before = ze72_wal_bytes(&path);
     let mut b = PoolBuilder::new();
     let ns = b.text("ze72");
@@ -1313,7 +1317,7 @@ fn ze72_present_empty_vector_is_rejected_without_wal_or_generation() {
     let pool = b.pool();
     let mut r = empty_response();
     assert_eq!(
-        ze_graph_apply(
+        ze_store_graph_apply(
             handle,
             &batch_request(&[create_node_item(ns, key, 1, image)], &pool),
             &mut r
@@ -1323,7 +1327,7 @@ fn ze72_present_empty_vector_is_rejected_without_wal_or_generation() {
     assert_eq!(r.has_changed_generation, 0);
     assert_eq!(ze72_wal_bytes(&path), before);
     ze_graph_response_free(&mut r);
-    assert_eq!(ze_graph_close(handle), ZeErrorCode::ZeOk);
+    assert_eq!(ze_close(handle), ZeErrorCode::ZeOk);
 }
 
 #[cfg(feature = "abi-panic-probe")]
@@ -1371,7 +1375,7 @@ fn ze72_close_racing_admitted_query_keeps_results_owned() {
         let mut request = cypher_request(b"MATCH (n:Race) RETURN n,[n,null]", &[], None);
         request.control = &control;
         let mut response = empty_response();
-        let code = ze_graph_cypher(handle, &request, &mut response);
+        let code = ze_store_cypher(handle, &request, &mut response);
         reader_finished.wait();
         if code == ZeErrorCode::ZeOk {
             assert_eq!(response.row_count, 2);
@@ -1391,12 +1395,12 @@ fn ze72_close_racing_admitted_query_keeps_results_owned() {
         code
     });
     entered.wait();
-    let closer = std::thread::spawn(move || ze_graph_close(handle));
+    let closer = std::thread::spawn(move || ze_close(handle));
     let start = std::time::Instant::now();
     loop {
         // Invalid output refuses before maintenance and does not acquire the
         // response ownership gate held by the paused query.
-        let code = ze_graph_maintain(handle, std::ptr::null(), std::ptr::null_mut());
+        let code = ze_store_graph_maintain(handle, std::ptr::null(), std::ptr::null_mut());
         if matches!(code, ZeErrorCode::ZeErrClosing | ZeErrorCode::ZeErrClosed) {
             break;
         }
@@ -1413,7 +1417,7 @@ fn ze72_close_racing_admitted_query_keeps_results_owned() {
     let status = reader.join().unwrap();
     assert_eq!(closed, ZeErrorCode::ZeOk);
     assert!(clock.fired.load(Ordering::SeqCst));
-    store.handle.token = 0;
+    store.handle = 0;
     println!(
         "ZE72 admitted-query close: actual classification hook fired, status={status:?}, retained free GREEN"
     );
@@ -1434,7 +1438,7 @@ fn ze72_stored_list_kinds_match_shared_fixture() {
     let pool = b.pool();
     let mut response = empty_response();
     assert_eq!(
-        ze_graph_apply(
+        ze_store_graph_apply(
             store.handle,
             &batch_request(&[create_node_item(ns, key, 1, image)], &pool),
             &mut response
@@ -1449,7 +1453,7 @@ fn ze72_stored_list_kinds_match_shared_fixture() {
     get.include_text = 1;
     get.include_vector = 1;
     assert_eq!(
-        ze_graph_get_nodes(store.handle, &get, &mut response),
+        ze_store_get_nodes(store.handle, &get, &mut response),
         ZeErrorCode::ZeOk
     );
     assert_eq!(store.close(), ZeErrorCode::ZeOk);
@@ -1486,8 +1490,8 @@ fn ze311_vector_parameter_query(refuse: bool) {
     let declaration = epoch.request().embedding.document;
     let mut open = open_request(path.to_str().unwrap().as_bytes(), MODE_CREATE);
     open.document_tower = &declaration;
-    let mut handle = ZeGraphHandle { token: 0 };
-    assert_eq!(ze_graph_open(&open, &mut handle), ZeErrorCode::ZeOk);
+    let mut handle = 0;
+    assert_eq!(store_open(&open, &mut handle), ZeErrorCode::ZeOk);
     let mut builder = PoolBuilder::new();
     let ns = builder.text("docs");
     let near_key = builder.text("near");
@@ -1503,7 +1507,7 @@ fn ze311_vector_parameter_query(refuse: bool) {
     ];
     let mut response = empty_response();
     assert_eq!(
-        ze_graph_apply(handle, &batch_request(&items, &pool), &mut response),
+        ze_store_graph_apply(handle, &batch_request(&items, &pool), &mut response),
         ZeErrorCode::ZeOk
     );
     let expected = receipts(&response)[1].node;
@@ -1574,13 +1578,13 @@ fn ze311_vector_parameter_query(refuse: bool) {
     if refuse {
         request.options = &options;
     }
-    let code = ze_graph_query(handle, &request, &mut response);
+    let code = ze_store_graph_query(handle, &request, &mut response);
     if refuse {
         assert_eq!(
             code,
             ZeErrorCode::ZeErrBudgetExceeded,
             "{}",
-            last_error(handle.token)
+            last_error(handle)
         );
         assert_eq!(
             (
@@ -1594,16 +1598,16 @@ fn ze311_vector_parameter_query(refuse: bool) {
         // The same handle and backing must remain usable after refusal.
         request.options = std::ptr::null();
         assert_eq!(
-            ze_graph_query(handle, &request, &mut response),
+            ze_store_graph_query(handle, &request, &mut response),
             ZeErrorCode::ZeOk,
             "{}",
-            last_error(handle.token)
+            last_error(handle)
         );
     } else {
-        assert_eq!(code, ZeErrorCode::ZeOk, "{}", last_error(handle.token));
+        assert_eq!(code, ZeErrorCode::ZeOk, "{}", last_error(handle));
     }
     values.fill(sized_zeroed());
-    assert_eq!(ze_graph_close(handle), ZeErrorCode::ZeOk);
+    assert_eq!(ze_close(handle), ZeErrorCode::ZeOk);
     let result = rows(&response);
     assert_eq!(result.len(), 1);
     let node = unsafe { &*response.pool.nodes.add(result[0][0].entity_index as usize) };

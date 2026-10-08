@@ -83,7 +83,7 @@ fn graph_apply_and_free_loops_keep_the_heap_flat() {
         round += 1;
         let mut response = empty_response();
         assert_eq!(
-            ze_graph_apply(
+            ze_store_graph_apply(
                 store.handle,
                 &batch_request(&[item], &b.pool()),
                 &mut response
@@ -146,17 +146,17 @@ fn ze241_query_and_get_responses_free_in_a_flat_heap_loop() {
     assert_heap_flat("structured query/gets/free", || {
         let mut response = empty_response();
         assert_eq!(
-            ze_graph_query(store.handle, &query, &mut response),
+            ze_store_graph_query(store.handle, &query, &mut response),
             ZeErrorCode::ZeOk
         );
         assert_eq!(ze_graph_response_free(&mut response), ZeErrorCode::ZeOk);
         assert_eq!(
-            ze_graph_get_nodes(store.handle, &get, &mut response),
+            ze_store_get_nodes(store.handle, &get, &mut response),
             ZeErrorCode::ZeOk
         );
         assert_eq!(ze_graph_response_free(&mut response), ZeErrorCode::ZeOk);
         assert_eq!(
-            ze_graph_get_relationships(store.handle, &relationships, &mut response),
+            ze_store_get_relationships(store.handle, &relationships, &mut response),
             ZeErrorCode::ZeOk
         );
         assert_eq!(ze_graph_response_free(&mut response), ZeErrorCode::ZeOk);
@@ -175,7 +175,7 @@ fn ze72_nested_search_error_and_retained_responses_keep_heap_flat() {
         let pool = b.pool();
         let mut created = empty_response();
         assert_eq!(
-            ze_graph_apply(
+            ze_store_graph_apply(
                 store.handle,
                 &batch_request(&[create_node_item(ns, key, 1, image)], &pool),
                 &mut created
@@ -192,7 +192,7 @@ fn ze72_nested_search_error_and_retained_responses_keep_heap_flat() {
         assert_eq!(search.row_count, 1);
         let mut error = empty_response();
         assert_eq!(
-            ze_graph_cypher(
+            ze_store_cypher(
                 store.handle,
                 &cypher_request(b"RETURN sin(1)", &[], None),
                 &mut error
@@ -207,7 +207,7 @@ fn ze72_nested_search_error_and_retained_responses_keep_heap_flat() {
         assert_eq!(rows(&search)[0][0].tag, 5);
         assert_eq!(ze_graph_response_free(&mut nested), ZeErrorCode::ZeOk);
         assert_eq!(ze_graph_response_free(&mut search), ZeErrorCode::ZeOk);
-        assert_eq!(ze_graph_close(reopened), ZeErrorCode::ZeOk);
+        assert_eq!(ze_close(reopened), ZeErrorCode::ZeOk);
     });
 }
 
@@ -220,7 +220,7 @@ fn ze76_public_resources_report_engine_capacities() {
         ..ZeGraphResources::default()
     };
     assert_eq!(
-        ze_graph_resources(store.handle, &mut observation),
+        ze_store_graph_resources(store.handle, &mut observation),
         ZeErrorCode::ZeOk
     );
     assert!(observation.engine_bytes > 0);
@@ -235,7 +235,7 @@ fn ze76_public_resources_report_engine_capacities() {
     let mut invalid = observation;
     invalid.abi_reserved = 1;
     assert_eq!(
-        ze_graph_resources(store.handle, &mut invalid),
+        ze_store_graph_resources(store.handle, &mut invalid),
         ZeErrorCode::ZeErrInvalidArgument
     );
     assert_eq!(invalid.engine_bytes, observation.engine_bytes);

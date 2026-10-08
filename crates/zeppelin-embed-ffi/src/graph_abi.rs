@@ -1,4 +1,4 @@
-//! Graph handles, structured batches and Cypher C boundary.
+//! Store graph batches and Cypher C boundary.
 use crate::{ZeGraphCompileLimits, ZeGraphCypherRequest};
 use zeppelin_embed::lifecycle::Store;
 use zeppelin_embed::property_graph::query::completed::{GraphQueryOptions, Outcome};
@@ -9,12 +9,10 @@ mod options;
 mod plan;
 mod values;
 use crate::error::FfiError;
-use crate::slots::{Access, CloseAccess, SlotTable};
-use crate::sync::{Arc, TryLockError};
+use crate::registry::{lookup, with_writer};
+use crate::sync::TryLockError;
 use crate::sync::{Mutex, MutexGuard};
-use crate::{ZeErrorCode, ZeGraphControl, ZeGraphHandle, ZeGraphOpenRequest, marshal};
-use std::sync::OnceLock;
-use zeppelin_embed::epoch::EmbeddingTower;
+use crate::{ZeErrorCode, ZeGraphControl, ZeGraphOpenRequest, ZeHandle, marshal};
 use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl};
 use zeppelin_embed::property_graph::{GraphStoreError, GraphStoreErrorKind};
 
@@ -47,100 +45,7 @@ fn set_disposition(out: *mut ZeGraphResponse, disposition: ZeGraphDisposition) {
     }
 }
 
-const GRAPH_INDEX_BIT: u64 = 1 << 30;
-const TEXT_INDEX_BIT: u64 = 1 << 31;
 const MAX_RESIDENT_BYTES: u64 = 256 * 1024 * 1024;
-/// One open native graph store and the document interpretation it was opened
-/// with, which node vectors are validated against.
-pub(crate) struct GraphHandleState {
-    store: Store,
-    document: Option<EmbeddingTower>,
-}
-
-fn handles() -> &'static Mutex<SlotTable<GraphHandleState, ()>> {
-    static HANDLES: OnceLock<Mutex<SlotTable<GraphHandleState, ()>>> = OnceLock::new();
-    HANDLES.get_or_init(|| Mutex::new(SlotTable::new()))
-}
-
-fn lock_handles() -> Result<MutexGuard<'static, SlotTable<GraphHandleState, ()>>, FfiError> {
-    handles().lock().map_err(|_| {
-        FfiError::new(
-            ZeErrorCode::ZeErrSynchronization,
-            "graph handle registry mutex is poisoned",
-        )
-    })
-}
-
-/// True for a token minted by [`open`]; such a token names no legacy or text store.
-pub(crate) const fn is_graph_handle(handle: u64) -> bool {
-    handle & GRAPH_INDEX_BIT != 0 && handle & TEXT_INDEX_BIT == 0
-}
-
-fn internal(handle: u64) -> Result<u64, FfiError> {
-    if !is_graph_handle(handle) {
-        return Err(FfiError::new(
-            ZeErrorCode::ZeErrInvalidHandle,
-            "handle does not name a graph store",
-        ));
-    }
-    Ok(handle & !GRAPH_INDEX_BIT)
-}
-
-fn lookup(handle: ZeGraphHandle) -> Result<crate::slots::Access<GraphHandleState, ()>, FfiError> {
-    lock_handles()?.lookup(internal(handle.token)?, |_| false)
-}
-
-/// A second concurrent structured write on one handle is busy.
-fn with_graph_writer<T>(
-    handle: ZeGraphHandle,
-    operation: impl FnOnce(&Access<GraphHandleState, ()>) -> Result<T, FfiError>,
-) -> Result<T, FfiError> {
-    let access = lookup(handle)?;
-    let lock = Arc::clone(&access.writer);
-    let guard = match lock.try_lock() {
-        Ok(guard) => guard,
-        Err(TryLockError::WouldBlock) => {
-            return Err(FfiError::new(
-                ZeErrorCode::ZeErrBusy,
-                "another FFI writer call is active on this handle",
-            ));
-        }
-        Err(TryLockError::Poisoned(_)) => {
-            return Err(FfiError::new(
-                ZeErrorCode::ZeErrSynchronization,
-                "per-handle writer mutex is poisoned",
-            ));
-        }
-    };
-    let result = operation(&access);
-    drop(guard);
-    result
-}
-
-pub(crate) fn set_error(handle: u64, message: String) -> Option<String> {
-    let Ok(internal) = internal(handle) else {
-        return Some(message);
-    };
-    match handles().lock() {
-        Ok(mut table) => table.set_error(internal, message),
-        Err(_) => Some(message),
-    }
-}
-
-pub(crate) fn poison(handle: u64, message: String) -> Option<String> {
-    let Ok(internal) = internal(handle) else {
-        return Some(message);
-    };
-    let mut table = match handles().lock() {
-        Ok(table) => table,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    table.poison(internal, message)
-}
-
-pub(crate) fn last_error(handle: u64) -> Result<String, FfiError> {
-    lock_handles()?.last_error(internal(handle)?)
-}
 
 fn invalid(message: impl Into<String>) -> FfiError {
     FfiError::invalid(message)
@@ -300,18 +205,11 @@ fn producer_error(error: &ProducerError, statement: bool) -> FfiError {
     }
 }
 
-pub(crate) fn open(
-    request: *const ZeGraphOpenRequest,
-    out_handle: *mut ZeGraphHandle,
-) -> Result<(), FfiError> {
-    open_declared(request, out_handle, None)
-}
-
 pub(crate) fn open_with_relationship_types(
     request: *const ZeGraphOpenRequest,
     rules: *const crate::ZeGraphRelationshipType,
     rule_count: usize,
-    out_handle: *mut ZeGraphHandle,
+    out_handle: *mut ZeHandle,
 ) -> Result<(), FfiError> {
     use zeppelin_embed::property_graph::catalog::{OnDelete, RelationshipRule};
     use zeppelin_embed::property_graph::{GraphName, MAX_GRAPH_CHANGES, MAX_GRAPH_INPUT_BYTES};
@@ -349,17 +247,17 @@ pub(crate) fn open_with_relationship_types(
             },
         });
     }
-    open_declared(request, out_handle, Some(&declared))
+    create_declared(request, out_handle, &declared)
 }
 
-fn open_declared(
+fn create_declared(
     request: *const ZeGraphOpenRequest,
-    out_handle: *mut ZeGraphHandle,
-    rules: Option<&[zeppelin_embed::property_graph::catalog::RelationshipRule<'_>]>,
+    out_handle: *mut ZeHandle,
+    rules: &[zeppelin_embed::property_graph::catalog::RelationshipRule<'_>],
 ) -> Result<(), FfiError> {
     crate::scalar_output(out_handle)?;
     let request = read_exact(request, |request| request.abi_size, "graph open request")?;
-    if rules.is_some() && request.mode != 0 {
+    if request.mode != 0 {
         return Err(invalid(
             "relationship types can only be declared at creation",
         ));
@@ -403,65 +301,51 @@ fn open_declared(
             request.document_tower,
         ))?)
     };
-    let options = OpenOptions::new()
+    let mut options = OpenOptions::new()
         .with_reader_drain_timeout(std::time::Duration::from_millis(
             request.reader_drain_timeout_ms,
         ))
         .with_max_resident_bytes(request.max_resident_bytes);
-    use crate::ZeGraphOpenMode as M;
-    let store = match request.mode {
-        mode if mode == M::ZeGraphOpenCreate as u32 => match rules {
-            Some(rules) => {
-                Store::create_graph_with_relationship_types(path, options, document.clone(), rules)
-            }
-            None => Store::create_graph(path, options, document.clone()),
-        },
-        mode if mode == M::ZeGraphOpenReadWrite as u32 => {
-            Store::open_graph(path, options, document.clone())
-        }
-        mode if mode == M::ZeGraphOpenReadOnly as u32 => {
-            Store::open_graph_read_only(path, options, document.clone())
-        }
-        _ => {
-            return Err(invalid(
-                "graph open mode must be 0 create, 1 read-write or 2 read-only",
-            ));
-        }
+    if let Some(tower) = &document {
+        options = options.with_epoch(zeppelin_embed::epoch::StoreEpoch {
+            embedding: zeppelin_embed::epoch::EmbeddingEpoch {
+                document: tower.clone(),
+                query: tower.clone(),
+                alignment_digest: Vec::new(),
+            },
+            tokenizer: zeppelin_embed::fts::tokenizer::TokenizerConfig::text_default().epoch(),
+        });
     }
-    .map_err(|error| store_error(&error, false))?;
-    let raw = lock_handles()?.insert(GraphHandleState { store, document }, None)?;
-    marshal::write_scalar(
-        out_handle,
-        ZeGraphHandle {
-            token: raw | GRAPH_INDEX_BIT,
-        },
-    );
+    let store = Store::create_graph_with_relationship_types(path, options, document.clone(), rules)
+        .map_err(|error| store_error(&error, false))?;
+    let identity = store.epoch_identity();
+    let handle = crate::registry::insert_store_with_document(store, identity, document)?;
+    marshal::write_scalar(out_handle, handle);
     Ok(())
 }
 
-/// Closes one graph store and releases its handle. Responses stay valid.
-pub(crate) fn close(handle: ZeGraphHandle) -> Result<(), FfiError> {
-    let internal = internal(handle.token)?;
-    let access = lock_handles()?.begin_close(internal)?;
-    match access {
-        CloseAccess::Poisoned => Err(FfiError::new(
-            ZeErrorCode::ZeErrPoisoned,
-            "graph handle is poisoned",
-        )),
-        CloseAccess::Store(state) => {
-            let close = state
-                .store
-                .close_graph()
-                .map_err(|error| store_error(&error, false));
-            let release = lock_handles()?.finish_close(internal);
-            close.and(release)
-        }
-    }
+pub(crate) fn enable_graph(
+    handle: ZeHandle,
+    out: *mut crate::ZeGenerationReport,
+) -> Result<(), FfiError> {
+    let abi_size = marshal::validate_output(out)?;
+    with_writer(handle, |access| {
+        let generation = access.store.enable_graph().map_err(FfiError::store)?;
+        marshal::write_output(
+            out,
+            crate::ZeGenerationReport {
+                abi_size,
+                abi_reserved: 0,
+                generation,
+            },
+        );
+        Ok(())
+    })
 }
 
 /// Applies one atomic structured batch and publishes its receipts.
 pub(crate) fn apply(
-    handle: ZeGraphHandle,
+    handle: ZeHandle,
     request: *const ZeGraphBatchRequest,
     out: *mut ZeGraphResponse,
 ) -> Result<(), FfiError> {
@@ -474,11 +358,12 @@ pub(crate) fn apply(
     }
     let pool = Pool::read(request.pool, "graph batch pool")?;
     let control = read_control(request.control)?;
-    let guarded = with_graph_writer(handle, |access| {
+    let guarded = with_writer(handle, |access| {
         let _gate = response_gate();
-        with_batch(&pool, items, access.store.document.as_ref(), |writes| {
+        let document = &access.document;
+        with_batch(&pool, items, document.as_ref(), |writes| {
             set_disposition(out, ZeGraphDisposition::ZeGraphDispositionIndeterminate);
-            apply_and_settle(&RESPONSES, &access.store.store, writes, &control)
+            apply_and_settle(&RESPONSES, &access.store, writes, &control)
         })
     })?;
     match guarded.value {
@@ -493,7 +378,7 @@ pub(crate) fn apply(
         Err(WriteInterrupted::Panicked) => {
             set_outcome(out, guarded.outcome);
             let message = "a panic interrupted the graph write; its outcome is reported in the response disposition".to_owned();
-            let _ = poison(handle.token, message.clone());
+            crate::poison_handle(Some(handle), message.clone());
             Err(FfiError::new(ZeErrorCode::ZeErrPanic, message))
         }
     }
@@ -581,7 +466,7 @@ fn compile_limits(pointer: *const ZeGraphCompileLimits) -> Result<CompileLimits,
 
 /// Compiles and runs one statement of the documented Cypher profile.
 pub(crate) fn cypher(
-    handle: ZeGraphHandle,
+    handle: ZeHandle,
     request: *const ZeGraphCypherRequest,
     out: *mut ZeGraphResponse,
 ) -> Result<(), FfiError> {
@@ -589,7 +474,7 @@ pub(crate) fn cypher(
 }
 
 pub(crate) fn cypher_with_row_limit(
-    handle: ZeGraphHandle,
+    handle: ZeHandle,
     request: *const ZeGraphCypherRequest,
     result_row_limit: u32,
     out: *mut ZeGraphResponse,
@@ -622,8 +507,9 @@ pub(crate) fn cypher_with_row_limit(
     let limits = compile_limits(request.compile_limits)?;
     let control = read_control(request.control)?;
     let access = lookup(handle)?;
-    let store = &access.store.store;
-    let options = options::query(request.options, access.store.document.as_ref(), options)?;
+    let store = &access.store;
+    let document = &access.document;
+    let options = options::query(request.options, document.as_ref(), options)?;
     values::with_parameters_accounted(
         bindings,
         pool.as_ref(),
@@ -665,7 +551,7 @@ pub(crate) fn cypher_with_row_limit(
                 out,
                 OperationOutcome::Success(outcome_of(result.metadata().outcome)),
             );
-            crate::run_named_panic_probe("ze_graph_cypher:after-execute");
+            crate::run_named_panic_probe("ze_store_cypher:after-execute");
             let response = boundary.publish(&result)?;
             marshal::write_output(out, response);
             Ok(())
@@ -697,10 +583,10 @@ fn validate_maintenance_descriptor<T>(pointer: *const T) -> Result<(), FfiError>
 }
 
 pub(crate) fn set_maintenance_policy(
-    handle: ZeGraphHandle,
+    handle: ZeHandle,
     policy: *const crate::ZeGraphMaintenancePolicy,
 ) -> Result<(), FfiError> {
-    with_graph_writer(handle, |access| {
+    with_writer(handle, |access| {
         validate_maintenance_descriptor(policy)?;
         let policy = marshal::read_value(policy);
         if policy.automatic > 1 || policy.reclaim_after_bytes < 1024 * 1024 {
@@ -709,7 +595,6 @@ pub(crate) fn set_maintenance_policy(
             ));
         }
         access
-            .store
             .store
             .set_graph_maintenance_policy(zeppelin_embed::property_graph::GraphMaintenancePolicy {
                 automatic: policy.automatic == 1,
@@ -720,11 +605,11 @@ pub(crate) fn set_maintenance_policy(
 }
 
 pub(crate) fn maintain(
-    handle: ZeGraphHandle,
+    handle: ZeHandle,
     control: *const ZeGraphControl,
     out: *mut crate::ZeGraphMaintainReport,
 ) -> Result<(), FfiError> {
-    with_graph_writer(handle, |access| {
+    with_writer(handle, |access| {
         validate_maintenance_descriptor(out.cast_const())?;
         let size = std::mem::size_of::<crate::ZeGraphMaintainReport>() as u32;
         let empty = crate::ZeGraphMaintainReport {
@@ -744,7 +629,6 @@ pub(crate) fn maintain(
         }
         let control = read_control(control)?;
         let report = access
-            .store
             .store
             .graph_maintain_step(&control)
             .map_err(|error| store_error(&error, false))?;
@@ -782,7 +666,7 @@ fn get_ids<A: Copy, B: TryFrom<A>>(pointer: *const A, count: usize) -> Result<Ve
 }
 
 pub(crate) fn get_nodes(
-    handle: ZeGraphHandle,
+    handle: ZeHandle,
     request: *const crate::ZeGraphGetNodesRequest,
     out: *mut ZeGraphResponse,
 ) -> Result<(), FfiError> {
@@ -801,7 +685,7 @@ pub(crate) fn get_nodes(
     let _gate = response_gate();
     let response = crate::graph_result::conversion::run_get_nodes_with_limits(
         &RESPONSES,
-        &access.store.store,
+        &access.store,
         &ids,
         zeppelin_embed::property_graph::GraphGetOptions {
             text: request.include_text == 1,
@@ -816,7 +700,7 @@ pub(crate) fn get_nodes(
 }
 
 pub(crate) fn get_relationships(
-    handle: ZeGraphHandle,
+    handle: ZeHandle,
     request: *const crate::ZeGraphGetRelsRequest,
     out: *mut ZeGraphResponse,
 ) -> Result<(), FfiError> {
@@ -832,7 +716,7 @@ pub(crate) fn get_relationships(
     let _gate = response_gate();
     let response = crate::graph_result::conversion::run_get_relationships_with_limits(
         &RESPONSES,
-        &access.store.store,
+        &access.store,
         &ids,
         &control,
         &limits,
@@ -843,7 +727,7 @@ pub(crate) fn get_relationships(
 }
 
 pub(crate) fn query(
-    handle: ZeGraphHandle,
+    handle: ZeHandle,
     request: *const crate::ZeGraphQueryRequest,
     out: *mut ZeGraphResponse,
 ) -> Result<(), FfiError> {
@@ -867,16 +751,16 @@ pub(crate) fn query(
         |bindings, backing, scratch_bytes, _retained_bytes| {
             plan::with_plan(request.plan, bindings, backing, |plan, _writes| {
                 let access = lookup(handle)?;
+                let document = &access.document;
                 let options = options::query(
                     request.options,
-                    access.store.document.as_ref(),
+                    document.as_ref(),
                     GraphQueryOptions::default().with_slot_column_names(),
                 )?;
                 let (_parameter_charge, options) =
-                    charge_parameters(&access.store.store, options, scratch_bytes)?;
+                    charge_parameters(&access.store, options, scratch_bytes)?;
                 let boundary = completion::Boundary::new(&access, out);
                 let result = access
-                    .store
                     .store
                     .graph_query_with_boundary(&control, &options, plan, &boundary);
                 if let Some(error) = boundary.take_error() {
@@ -896,7 +780,7 @@ pub(crate) fn query(
                     out,
                     OperationOutcome::Success(outcome_of(result.metadata().outcome)),
                 );
-                crate::run_named_panic_probe("ze_graph_query:after-execute");
+                crate::run_named_panic_probe("ze_store_graph_query:after-execute");
                 marshal::write_output(out, boundary.publish(&result)?);
                 Ok(())
             })
@@ -934,7 +818,7 @@ fn charge_parameters(
 }
 
 pub(crate) fn resources(
-    handle: ZeGraphHandle,
+    handle: ZeHandle,
     out: *mut crate::ZeGraphResources,
 ) -> Result<(), FfiError> {
     validate_maintenance_descriptor(out)?;
@@ -944,7 +828,6 @@ pub(crate) fn resources(
     }
     let access = lookup(handle)?;
     let resources = access
-        .store
         .store
         .graph_resources()
         .map_err(|error| store_error(&error, false))?;
@@ -987,50 +870,5 @@ mod tests {
                 ZeErrorCode::ZeErrUnsupported
             );
         }
-    }
-
-    #[test]
-    fn a_second_writer_on_the_same_graph_handle_is_busy() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("graph");
-        let bytes = path.to_str().unwrap().as_bytes();
-        let request = ZeGraphOpenRequest {
-            abi_size: std::mem::size_of::<ZeGraphOpenRequest>() as u32,
-            abi_reserved: 0,
-            path: crate::ZeGraphBytes {
-                data: bytes.as_ptr(),
-                count: bytes.len(),
-            },
-            mode: 0,
-            tokenizer_profile: 0,
-            document_tower: std::ptr::null(),
-            reader_drain_timeout_ms: 250,
-            max_resident_bytes: MAX_RESIDENT_BYTES,
-            control: std::ptr::null(),
-        };
-        let mut handle = ZeGraphHandle { token: 0 };
-        open(&request, &mut handle).unwrap();
-        let access = lookup(handle).unwrap();
-        let held = access.writer.lock().unwrap();
-        assert_eq!(
-            with_graph_writer(handle, |_| Ok(())).unwrap_err().code,
-            ZeErrorCode::ZeErrBusy
-        );
-        assert_eq!(
-            set_maintenance_policy(handle, std::ptr::null())
-                .unwrap_err()
-                .code,
-            ZeErrorCode::ZeErrBusy
-        );
-        assert_eq!(
-            maintain(handle, std::ptr::null(), std::ptr::null_mut())
-                .unwrap_err()
-                .code,
-            ZeErrorCode::ZeErrBusy
-        );
-        drop(held);
-        with_graph_writer(handle, |_| Ok(())).unwrap();
-        drop(access);
-        close(handle).unwrap();
     }
 }

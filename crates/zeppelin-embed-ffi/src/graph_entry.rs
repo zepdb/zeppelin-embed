@@ -1,33 +1,27 @@
-//! Graph C entries, exported only with graph-cypher.
-use super::ZeGraphCypherRequest;
-use super::{ZeGraphBatchRequest, ZeGraphHandle, ZeGraphOpenRequest, ZeGraphResponse};
-use crate::ZeErrorCode;
+//! Graph C entries on the unified Store handle.
+use super::{ZeGraphBatchRequest, ZeGraphCypherRequest, ZeGraphOpenRequest, ZeGraphResponse};
+use crate::{ZeErrorCode, ZeHandle};
 
-/// Opens (`mode` 1 read-write, 2 read-only) or creates (`mode` 0) one native
-/// graph store; a legacy store directory is refused with
-/// `ZE_ERR_STORE_KIND`; below macOS 14 it is `ZE_ERR_UNSUPPORTED`.
-/// `max_resident_bytes` must be in 1..=256 MiB,
-/// `tokenizer_profile` must be 0 and `control` must be null.
-/// `document_tower` is null for a store without vectors; otherwise node
-/// vectors are validated against it and it must match the persisted tower.
-#[unsafe(no_mangle)]
-pub extern "C" fn ze_graph_open(
-    request: *const ZeGraphOpenRequest,
-    out_handle: *mut ZeGraphHandle,
-) -> ZeErrorCode {
-    ffi_entry!(None, ZeErrorCode::ZeErrPanic, {
-        crate::finish(None, crate::graph_abi::open(request, out_handle))
-    })
+// The graph-free ABI refuses at the boundary, without compiling the engine.
+macro_rules! graph_call {
+    ($method:ident($($arg:expr),* $(,)?)) => {{
+        #[cfg(feature = "graph-cypher")]
+        { crate::graph_abi::$method($($arg),*) }
+        #[cfg(not(feature = "graph-cypher"))]
+        {
+            let _ = ($($arg),*);
+            unsupported_graph()
+        }
+    }};
 }
 
-/// Closes a graph store and releases its handle; outstanding responses stay
-/// valid until freed. Closing a stale or closed handle is `ZE_ERR_CLOSED`.
-#[unsafe(no_mangle)]
-pub extern "C" fn ze_graph_close(handle: ZeGraphHandle) -> ZeErrorCode {
-    ffi_entry!(Some(handle.token), ZeErrorCode::ZeErrPanic, {
-        crate::run_named_panic_probe("ze_graph_close");
-        crate::finish(Some(handle.token), crate::graph_abi::close(handle))
-    })
+#[cfg(not(feature = "graph-cypher"))]
+#[inline(never)]
+fn unsupported_graph() -> Result<(), crate::error::FfiError> {
+    Err(crate::error::FfiError::new(
+        ZeErrorCode::ZeErrGraphUnsupportedBuild,
+        "this build does not support graph operations",
+    ))
 }
 
 /// Applies one atomic structured batch: every node (document) and
@@ -36,16 +30,16 @@ pub extern "C" fn ze_graph_close(handle: ZeGraphHandle) -> ZeErrorCode {
 /// and the admitted and changed generations; free it with
 /// `ze_graph_response_free`. An exact keyed retry replays.
 #[unsafe(no_mangle)]
-pub extern "C" fn ze_graph_apply(
-    handle: ZeGraphHandle,
+pub extern "C" fn ze_store_graph_apply(
+    handle: ZeHandle,
     request: *const ZeGraphBatchRequest,
     out_response: *mut ZeGraphResponse,
 ) -> ZeErrorCode {
-    ffi_entry!(Some(handle.token), ZeErrorCode::ZeErrPanic, {
-        crate::run_named_panic_probe("ze_graph_apply");
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        crate::run_named_panic_probe("ze_store_graph_apply");
         crate::finish(
-            Some(handle.token),
-            crate::graph_abi::apply(handle, request, out_response),
+            Some(handle),
+            graph_call!(apply(handle, request, out_response)),
         )
     })
 }
@@ -56,7 +50,7 @@ pub extern "C" fn ze_graph_apply(
 #[unsafe(no_mangle)]
 pub extern "C" fn ze_graph_response_free(response: *mut ZeGraphResponse) -> ZeErrorCode {
     ffi_entry!(None, ZeErrorCode::ZeErrPanic, {
-        crate::finish(None, crate::graph_abi::free(response))
+        crate::finish(None, graph_call!(free(response)))
     })
 }
 
@@ -64,16 +58,16 @@ pub extern "C" fn ze_graph_response_free(response: *mut ZeGraphResponse) -> ZeEr
 /// parameters and a default maximum of 1,024 returned rows. Query options
 /// declare interpretation and may tighten memory/work limits.
 #[unsafe(no_mangle)]
-pub extern "C" fn ze_graph_cypher(
-    handle: ZeGraphHandle,
+pub extern "C" fn ze_store_cypher(
+    handle: ZeHandle,
     request: *const ZeGraphCypherRequest,
     out_response: *mut ZeGraphResponse,
 ) -> ZeErrorCode {
-    ffi_entry!(Some(handle.token), ZeErrorCode::ZeErrPanic, {
-        crate::run_named_panic_probe("ze_graph_cypher");
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        crate::run_named_panic_probe("ze_store_cypher");
         crate::finish(
-            Some(handle.token),
-            crate::graph_abi::cypher(handle, request, out_response),
+            Some(handle),
+            graph_call!(cypher(handle, request, out_response)),
         )
     })
 }
@@ -82,44 +76,46 @@ pub extern "C" fn ze_graph_cypher(
 /// returned-row cap: 0 selects 1,024; 1..=65,536 is accepted. Exceeding the
 /// cap fails, never truncates. Other work and memory budgets still apply.
 #[unsafe(no_mangle)]
-pub extern "C" fn ze_graph_cypher_with_row_limit(
-    handle: ZeGraphHandle,
+pub extern "C" fn ze_store_cypher_with_row_limit(
+    handle: ZeHandle,
     request: *const ZeGraphCypherRequest,
     result_row_limit: u32,
     out_response: *mut ZeGraphResponse,
 ) -> ZeErrorCode {
-    ffi_entry!(Some(handle.token), ZeErrorCode::ZeErrPanic, {
-        crate::run_named_panic_probe("ze_graph_cypher_with_row_limit");
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        crate::run_named_panic_probe("ze_store_cypher_with_row_limit");
         crate::finish(
-            Some(handle.token),
-            crate::graph_abi::cypher_with_row_limit(
+            Some(handle),
+            graph_call!(cypher_with_row_limit(
                 handle,
                 request,
                 result_row_limit,
                 out_response,
-            ),
+            )),
         )
     })
 }
 
-/// Creates a graph with immutable per-relationship-type incoming-reference rules.
-/// `request.mode` must be create (0). Rules survive reopen through ze_graph_open.
+/// Creates a Store with immutable per-relationship-type incoming-reference rules.
+/// `request.mode` must be create (0). Rules survive reopen through ze_open.
 /// A child is the source of an edge into the deleted target. Restrict refuses
 /// surviving children; cascade deletes them transitively in the same mutation,
 /// including Cypher DELETE/DETACH DELETE. Undeclared types keep existing semantics.
 /// At most 16384 unique rules and 8 MiB of encoded declarations are accepted.
 #[unsafe(no_mangle)]
-pub extern "C" fn ze_graph_open_with_relationship_types(
+pub extern "C" fn ze_store_create_with_relationship_types(
     request: *const ZeGraphOpenRequest,
     rules: *const crate::ZeGraphRelationshipType,
     rule_count: usize,
-    out_handle: *mut ZeGraphHandle,
+    out_handle: *mut ZeHandle,
 ) -> ZeErrorCode {
     ffi_entry!(None, ZeErrorCode::ZeErrPanic, {
-        crate::run_named_panic_probe("ze_graph_open_with_relationship_types");
+        crate::run_named_panic_probe("ze_store_create_with_relationship_types");
         crate::finish(
             None,
-            crate::graph_abi::open_with_relationship_types(request, rules, rule_count, out_handle),
+            graph_call!(open_with_relationship_types(
+                request, rules, rule_count, out_handle
+            )),
         )
     })
 }
@@ -127,15 +123,15 @@ pub extern "C" fn ze_graph_open_with_relationship_types(
 /// Sets the per-open writer policy. Read-only handles and thresholds below
 /// 1 MiB are refused. A concurrent writer call returns ZE_ERR_BUSY.
 #[unsafe(no_mangle)]
-pub extern "C" fn ze_graph_set_maintenance_policy(
-    handle: ZeGraphHandle,
+pub extern "C" fn ze_store_set_graph_maintenance_policy(
+    handle: ZeHandle,
     policy: *const super::ZeGraphMaintenancePolicy,
 ) -> ZeErrorCode {
-    ffi_entry!(Some(handle.token), ZeErrorCode::ZeErrPanic, {
-        crate::run_named_panic_probe("ze_graph_set_maintenance_policy");
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        crate::run_named_panic_probe("ze_store_set_graph_maintenance_policy");
         crate::finish(
-            Some(handle.token),
-            crate::graph_abi::set_maintenance_policy(handle, policy),
+            Some(handle),
+            graph_call!(set_maintenance_policy(handle, policy)),
         )
     })
 }
@@ -144,48 +140,48 @@ pub extern "C" fn ze_graph_set_maintenance_policy(
 /// to finish a cycle. The caller initializes out_report.abi_size; the report
 /// owns no allocations. A concurrent writer call returns ZE_ERR_BUSY.
 #[unsafe(no_mangle)]
-pub extern "C" fn ze_graph_maintain(
-    handle: ZeGraphHandle,
+pub extern "C" fn ze_store_graph_maintain(
+    handle: ZeHandle,
     control: *const super::ZeGraphControl,
     out_report: *mut super::ZeGraphMaintainReport,
 ) -> ZeErrorCode {
-    ffi_entry!(Some(handle.token), ZeErrorCode::ZeErrPanic, {
-        crate::run_named_panic_probe("ze_graph_maintain");
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        crate::run_named_panic_probe("ze_store_graph_maintain");
         crate::finish(
-            Some(handle.token),
-            crate::graph_abi::maintain(handle, control, out_report),
+            Some(handle),
+            graph_call!(maintain(handle, control, out_report)),
         )
     })
 }
 
 /// Reads nodes in input order, preserving duplicates and Null for missing IDs.
 #[unsafe(no_mangle)]
-pub extern "C" fn ze_graph_get_nodes(
-    handle: ZeGraphHandle,
+pub extern "C" fn ze_store_get_nodes(
+    handle: ZeHandle,
     request: *const super::ZeGraphGetNodesRequest,
     out_response: *mut ZeGraphResponse,
 ) -> ZeErrorCode {
-    ffi_entry!(Some(handle.token), ZeErrorCode::ZeErrPanic, {
-        crate::run_named_panic_probe("ze_graph_get_nodes");
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        crate::run_named_panic_probe("ze_store_get_nodes");
         crate::finish(
-            Some(handle.token),
-            crate::graph_abi::get_nodes(handle, request, out_response),
+            Some(handle),
+            graph_call!(get_nodes(handle, request, out_response)),
         )
     })
 }
 
 /// Reads relationships in input order, preserving duplicates and Null for missing IDs.
 #[unsafe(no_mangle)]
-pub extern "C" fn ze_graph_get_relationships(
-    handle: ZeGraphHandle,
+pub extern "C" fn ze_store_get_relationships(
+    handle: ZeHandle,
     request: *const super::ZeGraphGetRelsRequest,
     out_response: *mut ZeGraphResponse,
 ) -> ZeErrorCode {
-    ffi_entry!(Some(handle.token), ZeErrorCode::ZeErrPanic, {
-        crate::run_named_panic_probe("ze_graph_get_relationships");
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        crate::run_named_panic_probe("ze_store_get_relationships");
         crate::finish(
-            Some(handle.token),
-            crate::graph_abi::get_relationships(handle, request, out_response),
+            Some(handle),
+            graph_call!(get_relationships(handle, request, out_response)),
         )
     })
 }
@@ -194,16 +190,16 @@ pub extern "C" fn ze_graph_get_relationships(
 /// Output columns are named `slot_<logical ID>`, in validated root-schema order.
 /// Names are derived from the core schema; the frozen plan layout is unchanged.
 #[unsafe(no_mangle)]
-pub extern "C" fn ze_graph_query(
-    handle: ZeGraphHandle,
+pub extern "C" fn ze_store_graph_query(
+    handle: ZeHandle,
     request: *const super::ZeGraphQueryRequest,
     out_response: *mut ZeGraphResponse,
 ) -> ZeErrorCode {
-    ffi_entry!(Some(handle.token), ZeErrorCode::ZeErrPanic, {
-        crate::run_named_panic_probe("ze_graph_query");
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        crate::run_named_panic_probe("ze_store_graph_query");
         crate::finish(
-            Some(handle.token),
-            crate::graph_abi::query(handle, request, out_response),
+            Some(handle),
+            graph_call!(query(handle, request, out_response)),
         )
     })
 }
@@ -211,12 +207,25 @@ pub extern "C" fn ze_graph_query(
 /// Returns one coherent allocation snapshot; out must have the exact abi_size
 /// and zero abi_reserved. This observes capacities, not process memory or I/O.
 #[unsafe(no_mangle)]
-pub extern "C" fn ze_graph_resources(
-    handle: ZeGraphHandle,
+pub extern "C" fn ze_store_graph_resources(
+    handle: ZeHandle,
     out: *mut crate::ZeGraphResources,
 ) -> ZeErrorCode {
-    ffi_entry!(Some(handle.token), ZeErrorCode::ZeErrPanic, {
-        crate::run_named_panic_probe("ze_graph_resources");
-        crate::finish(Some(handle.token), crate::graph_abi::resources(handle, out))
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        crate::run_named_panic_probe("ze_store_graph_resources");
+        crate::finish(Some(handle), graph_call!(resources(handle, out)))
+    })
+}
+
+/// Enables graph storage using the Store writer and returns its generation.
+/// Repeated calls are idempotent; read-only stores refuse.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_store_enable_graph(
+    handle: ZeHandle,
+    out_report: *mut crate::ZeGenerationReport,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        crate::run_named_panic_probe("ze_store_enable_graph");
+        crate::finish(Some(handle), graph_call!(enable_graph(handle, out_report)))
     })
 }

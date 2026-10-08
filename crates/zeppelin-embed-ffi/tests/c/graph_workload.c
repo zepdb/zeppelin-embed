@@ -8,6 +8,20 @@
 #include <string.h>
 #include <time.h>
 #include <pthread.h>
+
+static ze_error_code fixture_store_open(const ZeGraphOpenRequest *request, ze_handle *out) {
+    if (request->mode == 0) return ze_store_create_with_relationship_types(request, NULL, 0, out);
+    ZeOpenRequest open = {0}; open.abi_size = sizeof(open);
+    open.path = request->path.data; open.path_len = request->path.count;
+    open.access_mode = request->mode == 2; open.durability_mode = 1; open.commit_tier = 2;
+    open.reader_drain_timeout_ms = request->reader_drain_timeout_ms;
+    open.max_resident_bytes = request->max_resident_bytes; open.max_temp_bytes = UINT64_MAX;
+    if (!request->document_tower) return ze_open(&open, out);
+    ZeEpochRequest epoch = {0}; epoch.abi_size = sizeof(epoch);
+    epoch.embedding.document = *request->document_tower; epoch.embedding.query = *request->document_tower;
+    return ze_open_with_epoch(&open, &epoch, out);
+}
+
 #define MAX 4096
 #define SIZED(T) ((T){.abi_size=sizeof(T)})
 typedef struct {
@@ -72,19 +86,19 @@ case 4:if((uint64_t)v->range.start+v->range.count>r->pool.byte_count)die("string
 case 5:if(v->entity_index>=r->pool.node_count)die("node index");printf("{\"node\":");id(r->pool.nodes[v->entity_index].id.high,r->pool.nodes[v->entity_index].id.low);putchar('}');break;
 case 6:if(v->entity_index>=r->pool.relationship_count)die("rel index");printf("{\"relationship\":");id(r->pool.relationships[v->entity_index].id.high,r->pool.relationships[v->entity_index].id.low);putchar('}');break;
 case 7:if((uint64_t)v->range.start+v->range.count>r->pool.child_count)die("child range");printf("{\"list\":[");for(uint32_t i=0;i<v->range.count;i++){if(i)putchar(',');cell(r,r->pool.children[v->range.start+i],depth+1);}printf("]}");break;default:die("unknown result tag");}}
-static ZeGraphHandle open_store(const char *path){ZeGraphOpenRequest o=SIZED(ZeGraphOpenRequest);o.path=(ZeGraphBytes){(const uint8_t *)path,strlen(path)};o.mode=1;o.reader_drain_timeout_ms=5000;o.max_resident_bytes=256ULL<<20;const uint8_t hash[]={0x73};ZeEmbeddingTower t={.model_id=(const uint8_t *)"ze73-fixture",.model_id_len=12,.model_version=(const uint8_t *)"1",.model_version_len=1,.weights_digest=hash,.weights_digest_len=1,.dims=768,.max_tokens=512,.runtime=3,.compute_units=1};o.document_tower=&t;ZeGraphHandle h={0};int status=ze_graph_open(&o,&h);if(status){fprintf(stderr,"ZE-77 C open status=%d\n",status);exit(1);}return h;}
+static ze_handle open_store(const char *path){ZeGraphOpenRequest o=SIZED(ZeGraphOpenRequest);o.path=(ZeGraphBytes){(const uint8_t *)path,strlen(path)};o.mode=1;o.reader_drain_timeout_ms=5000;o.max_resident_bytes=256ULL<<20;const uint8_t hash[]={0x73};ZeEmbeddingTower t={.model_id=(const uint8_t *)"ze73-fixture",.model_id_len=12,.model_version=(const uint8_t *)"1",.model_version_len=1,.weights_digest=hash,.weights_digest_len=1,.dims=768,.max_tokens=512,.runtime=3,.compute_units=1};o.document_tower=&t;ze_handle h={0};int status=fixture_store_open(&o,&h);if(status){fprintf(stderr,"ZE-77 C open status=%d\n",status);exit(1);}return h;}
 static char **schedule(const char *path,size_t *count){
  char **paths=calloc(10000,sizeof(*paths));if(!paths)die("schedule allocation");*count=0;FILE *f=fopen(path,"r");if(!f)die("schedule input");char *line=NULL;size_t capacity=0;ssize_t length;
  while((length=getline(&line,&capacity,f))>0){bound(*count,10000);if(line[length-1]=='\n')line[--length]=0;if(length<=0||length>4096)die("schedule path");paths[(*count)++]=strdup(line);}free(line);fclose(f);if(!*count)die("empty schedule");return paths;
 }
-static int run_loop(ZeGraphHandle h,int structured,int batch,char **paths,size_t path_count,unsigned long warmups,unsigned long samples,int participant,pthread_mutex_t *output){
+static int run_loop(ze_handle h,int structured,int batch,char **paths,size_t path_count,unsigned long warmups,unsigned long samples,int participant,pthread_mutex_t *output){
  Job *j=NULL;char source[65537];size_t source_len=0;int failed=0;
     for(unsigned long i=0;i<warmups+samples;i++){
         const char *job=paths[(i+(unsigned long)(participant==4?0:participant)*17)%path_count];
         if(structured||batch){j=load(job);}else{FILE *f=fopen(job,"rb");if(!f)die("source input");source_len=fread(source,1,65537,f);fclose(f);if(source_len>65536)die("source exceeds compiler limit");}
         ZeGraphResponse r=SIZED(ZeGraphResponse);r.pool.abi_size=sizeof(r.pool);int status;uint64_t start=now();
-        if(batch){ZeGraphBatchRequest q=SIZED(ZeGraphBatchRequest);q.items=j->items;q.item_count=j->na;q.pool=&j->pool;status=ze_graph_apply(h,&q,&r);}else if(structured){ZeGraphQueryRequest q=SIZED(ZeGraphQueryRequest);q.plan=&j->plan;status=ze_graph_query(h,&q,&r);}else{ZeGraphCypherRequest q=SIZED(ZeGraphCypherRequest);q.query=(ZeGraphBytes){(const uint8_t *)source,source_len};status=ze_graph_cypher(h,&q,&r);}uint64_t elapsed=now()-start;
-        ZeGraphResources resources=SIZED(ZeGraphResources);if(ze_graph_resources(h,&resources))die("resources observation failed");
+        if(batch){ZeGraphBatchRequest q=SIZED(ZeGraphBatchRequest);q.items=j->items;q.item_count=j->na;q.pool=&j->pool;status=ze_store_graph_apply(h,&q,&r);}else if(structured){ZeGraphQueryRequest q=SIZED(ZeGraphQueryRequest);q.plan=&j->plan;status=ze_store_graph_query(h,&q,&r);}else{ZeGraphCypherRequest q=SIZED(ZeGraphCypherRequest);q.query=(ZeGraphBytes){(const uint8_t *)source,source_len};status=ze_store_cypher(h,&q,&r);}uint64_t elapsed=now()-start;
+        ZeGraphResources resources=SIZED(ZeGraphResources);if(ze_store_graph_resources(h,&resources))die("resources observation failed");
         {if(output)pthread_mutex_lock(output);printf("{\"participant\":%d,\"warmup\":%s,\"schedule_index\":%lu,\"sample\":%lu,\"elapsed_ns\":%" PRIu64 ",\"generation\":%" PRIu64 ",\"status\":%d,\"rows\":[",participant,i<warmups?"true":"false",(i+(unsigned long)(participant==4?0:participant)*17)%path_count,i>=warmups?i-warmups:0,elapsed,r.admitted_generation,status);for(size_t row=0;row<r.row_count;row++){if(row)putchar(',');putchar('[');for(size_t col=0;col<r.column_count;col++){if(col)putchar(',');cell(&r,r.cells[row*r.column_count+col],0);}putchar(']');}printf("],\"receipts\":[");for(size_t k=0;k<r.receipt_count;k++){const ZeGraphReceipt *receipt=&r.receipts[k];if(k)putchar(',');printf("{\"item\":%u,\"kind\":\"%s\",\"revision\":%" PRIu64 ",\"generation\":%" PRIu64 ",\"id\":",receipt->item,receipt->entity_kind==0?"node":"relationship",receipt->revision,receipt->generation);if(receipt->entity_kind==0)id(receipt->node.high,receipt->node.low);else id(receipt->relationship.high,receipt->relationship.low);putchar('}');}printf("],\"work_raw\":[");for(size_t w=0;w<r.work_count;w++){if(w)putchar(',');printf("{\"kind\":%u,\"value\":%" PRIu64 "}",r.work[w].kind,r.work[w].value);}printf("],\"global_work\":{\"start\":%u,\"count\":%u},\"resources\":{\"engine_bytes\":%" PRIu64 ",\"engine_peak_bytes\":%" PRIu64 ",\"application_bytes\":%" PRIu64 ",\"application_peak_bytes\":%" PRIu64 "}",r.global_work.start,r.global_work.count,resources.engine_bytes,resources.engine_peak_bytes,resources.application_bytes,resources.application_peak_bytes);}
         uint64_t dispose=now();int freed=ze_graph_response_free(&r);dispose=now()-dispose;printf(",\"disposal_ns\":%" PRIu64 ",\"free_status\":%d}\n",dispose,freed);if(output)pthread_mutex_unlock(output);free(j);j=NULL;if(status||freed){failed=1;break;}
     }
@@ -92,13 +106,13 @@ static int run_loop(ZeGraphHandle h,int structured,int batch,char **paths,size_t
 }
 typedef struct {pthread_mutex_t mutex;pthread_cond_t ready;unsigned arrived;} Barrier;
 static void start_barrier(Barrier *b){pthread_mutex_lock(&b->mutex);if(++b->arrived==5)pthread_cond_broadcast(&b->ready);while(b->arrived<5)pthread_cond_wait(&b->ready,&b->mutex);pthread_mutex_unlock(&b->mutex);}
-typedef struct {ZeGraphHandle handle;Barrier *barrier;pthread_mutex_t *output;char **paths;size_t count;int participant;int failed;} Participant;
+typedef struct {ze_handle handle;Barrier *barrier;pthread_mutex_t *output;char **paths;size_t count;int participant;int failed;} Participant;
 static void *participate(void *arg){Participant *p=arg;start_barrier(p->barrier);p->failed=run_loop(p->handle,p->participant!=4,p->participant==4,p->paths,p->count,0,p->participant==4?200:1000,p->participant,p->output);return NULL;}
 static int mixed(const char *store,const char *read_list,const char *write_list){
  size_t nr,nw;char **reads=schedule(read_list,&nr),**writes=schedule(write_list,&nw);if(nr!=100||nw!=200)die("mixed load requires 100 cases and 200 distinct meeting batches");
- ZeGraphHandle handle=open_store(store);Barrier barrier={.mutex=PTHREAD_MUTEX_INITIALIZER,.ready=PTHREAD_COND_INITIALIZER,.arrived=0};pthread_mutex_t output=PTHREAD_MUTEX_INITIALIZER;pthread_t threads[5];Participant participants[5];
+ ze_handle handle=open_store(store);Barrier barrier={.mutex=PTHREAD_MUTEX_INITIALIZER,.ready=PTHREAD_COND_INITIALIZER,.arrived=0};pthread_mutex_t output=PTHREAD_MUTEX_INITIALIZER;pthread_t threads[5];Participant participants[5];
  for(int i=0;i<5;i++){participants[i]=(Participant){handle,&barrier,&output,i==4?writes:reads,i==4?nw:nr,i,0};if(pthread_create(&threads[i],NULL,participate,&participants[i]))die("mixed startup failed");}
- int failed=0;for(int i=0;i<5;i++){if(pthread_join(threads[i],NULL))die("mixed join failed");failed|=participants[i].failed;}if(ze_graph_close(handle))failed=1;
+ int failed=0;for(int i=0;i<5;i++){if(pthread_join(threads[i],NULL))die("mixed join failed");failed|=participants[i].failed;}if(ze_close(handle))failed=1;
  for(size_t i=0;i<nr;i++)free(reads[i]);for(size_t i=0;i<nw;i++)free(writes[i]);free(reads);free(writes);pthread_cond_destroy(&barrier.ready);pthread_mutex_destroy(&barrier.mutex);pthread_mutex_destroy(&output);return failed;
 }
 int main(int argc,char **argv){
@@ -107,7 +121,7 @@ int main(int argc,char **argv){
     char *end=NULL;unsigned long warmups=strtoul(argv[4],&end,10);if(!end||*end||warmups>1000)die("invalid warmups");unsigned long samples=strtoul(argv[5],&end,10);if(!end||*end||samples==0||samples>10000)die("invalid samples");
     int batch=strcmp(argv[2],"batch")==0;int structured=strcmp(argv[2],"structured")==0;if(!structured&&!batch&&strcmp(argv[2],"cypher"))die("unknown frontend");char **paths=calloc(10000,sizeof(*paths));if(!paths)die("schedule allocation");size_t path_count=0;
     if(argv[3][0]=='@'){FILE *f=fopen(argv[3]+1,"r");if(!f)die("schedule input");char *line=NULL;size_t capacity=0;ssize_t length;while((length=getline(&line,&capacity,f))>0){bound(path_count,10000);if(line[length-1]=='\n')line[--length]=0;if(length<=0||length>4096)die("schedule path");paths[path_count++]=strdup(line);}free(line);fclose(f);}else{paths[path_count++]=strdup(argv[3]);}if(!path_count)die("empty schedule");
-    ZeGraphHandle h=open_store(argv[1]);int failed=0;
+    ze_handle h=open_store(argv[1]);int failed=0;
     failed=run_loop(h,structured,batch,paths,path_count,warmups,samples,0,NULL);
-    for(size_t i=0;i<path_count;i++)free(paths[i]);free(paths);if(ze_graph_close(h))failed=1;return failed;
+    for(size_t i=0;i<path_count;i++)free(paths[i]);free(paths);if(ze_close(h))failed=1;return failed;
 }

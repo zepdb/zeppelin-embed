@@ -2,11 +2,25 @@
 #include <stdio.h>
 #include <string.h>
 
+static ze_error_code fixture_store_open(const ZeGraphOpenRequest *request, ze_handle *out) {
+    if (request->mode == 0) return ze_store_create_with_relationship_types(request, NULL, 0, out);
+    ZeOpenRequest open = {0}; open.abi_size = sizeof(open);
+    open.path = request->path.data; open.path_len = request->path.count;
+    open.access_mode = request->mode == 2; open.durability_mode = 1; open.commit_tier = 2;
+    open.reader_drain_timeout_ms = request->reader_drain_timeout_ms;
+    open.max_resident_bytes = request->max_resident_bytes; open.max_temp_bytes = UINT64_MAX;
+    if (!request->document_tower) return ze_open(&open, out);
+    ZeEpochRequest epoch = {0}; epoch.abi_size = sizeof(epoch);
+    epoch.embedding.document = *request->document_tower; epoch.embedding.query = *request->document_tower;
+    return ze_open_with_epoch(&open, &epoch, out);
+}
+
+
 #define S(T) .abi_size = sizeof(T)
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "failed: %s:%d: %s\n", __FILE__, __LINE__, #x); return 1; } } while (0)
 
 /* Independently query each shape through Unit -> With -> Project. */
-static int query(ZeGraphHandle handle, unsigned shape, ZeGraphResponse *response) {
+static int query(ze_handle handle, unsigned shape, ZeGraphResponse *response) {
     unsigned char bytes[] = "phello";
     ZeGraphValue values[] = {
         {S(ZeGraphValue), .tag = 4, .range = {1, 5}},
@@ -47,7 +61,7 @@ static int query(ZeGraphHandle handle, unsigned shape, ZeGraphResponse *response
         .projections = projections, .projection_count = 2};
     ZeGraphQueryRequest request = {S(ZeGraphQueryRequest), .plan = &plan,
         .parameters = &binding, .parameter_count = 1, .parameter_pool = &parameter_pool};
-    ze_error_code code = ze_graph_query(handle, &request, response);
+    ze_error_code code = ze_store_graph_query(handle, &request, response);
     char diagnostic[2048] = {0}; size_t written = 0;
     ze_last_error_message(handle.token, diagnostic, sizeof(diagnostic), &written);
     printf("shape=%u status=%d diagnostic=%s\n", shape, (int)code, diagnostic);
@@ -71,12 +85,12 @@ int main(int argc, char **argv) {
     CHECK(argc == 2);
     ZeGraphOpenRequest open = {S(ZeGraphOpenRequest), .path = {(const uint8_t *)argv[1], strlen(argv[1])},
         .mode = 0, .max_resident_bytes = 256u << 20};
-    ZeGraphHandle handle = {0};
-    CHECK(ze_graph_open(&open, &handle) == ZE_OK);
+    ze_handle handle = {0};
+    CHECK(fixture_store_open(&open, &handle) == ZE_OK);
     ZeGraphResponse responses[4] = {{S(ZeGraphResponse)}, {S(ZeGraphResponse)}, {S(ZeGraphResponse)}, {S(ZeGraphResponse)}};
     int failures = 0;
     for (unsigned i = 0; i < 4; ++i) failures += query(handle, i, &responses[i]);
-    CHECK(ze_graph_close(handle) == ZE_OK);
+    CHECK(ze_close(handle) == ZE_OK);
     if (failures) return 1;
     for (unsigned i = 0; i < 4; ++i) {
         const ZeGraphResponse *r = &responses[i];

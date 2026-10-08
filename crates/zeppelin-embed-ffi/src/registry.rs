@@ -156,6 +156,18 @@ pub(crate) fn insert_store(
     lock_handles()?.insert(store, epoch)
 }
 
+#[cfg(feature = "graph-cypher")]
+pub(crate) fn insert_store_with_document(
+    store: Store,
+    epoch: Option<EpochIdentity>,
+    document: Option<zeppelin_embed::epoch::EmbeddingTower>,
+) -> Result<ZeHandle, FfiError> {
+    let mut table = lock_handles()?;
+    let handle = table.insert(store, epoch)?;
+    table.set_document(handle, document)?;
+    Ok(handle)
+}
+
 pub(crate) fn lookup(handle: ZeHandle) -> Result<HandleAccess, FfiError> {
     lock_handles()?.lookup(handle, |store| {
         store

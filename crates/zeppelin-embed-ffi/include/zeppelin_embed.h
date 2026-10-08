@@ -383,6 +383,10 @@ enum ze_error_code
      Graph catalogs cannot yet carry an epoch alias switch or epoch drop.
      */
     ZE_ERR_GRAPH_EPOCH_TRANSITION = 60,
+    /*
+     This store has no enabled graph writer.
+     */
+    ZE_ERR_GRAPH_DISABLED = 61,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L

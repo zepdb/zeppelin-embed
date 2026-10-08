@@ -1,21 +1,39 @@
 import CZeppelinEmbedGraph
 import Foundation
 
+// Bridge the existing package's open options to the unified Store ABI.
+func openGraphStoreHandle(_ request: UnsafePointer<ZeGraphOpenRequest>, _ handle: UnsafeMutablePointer<ze_handle>) -> Int32 {
+  let request = request.pointee
+  if request.mode == 0 { return withUnsafePointer(to: request) { ze_store_create_with_relationship_types($0, nil, 0, handle) } }
+  guard request.mode <= 2 else { return Int32(ZE_ERR_INVALID_ARGUMENT.rawValue) }
+  var open = ZeOpenRequest()
+  open.abi_size = UInt32(MemoryLayout<ZeOpenRequest>.size)
+  open.path = request.path.data; open.path_len = request.path.count
+  open.access_mode = request.mode == 2 ? 1 : 0; open.durability_mode = 1; open.commit_tier = 2
+  open.reader_drain_timeout_ms = request.reader_drain_timeout_ms
+  open.max_resident_bytes = request.max_resident_bytes; open.max_temp_bytes = UInt64.max
+  guard let tower = request.document_tower else { return ze_open(&open, handle) }
+  var epoch = ZeEpochRequest()
+  epoch.abi_size = UInt32(MemoryLayout<ZeEpochRequest>.size)
+  epoch.embedding.document = tower.pointee; epoch.embedding.query = tower.pointee
+  return ze_open_with_epoch(&open, &epoch, handle)
+}
+
 // Synchronous native seam used only by deterministic ownership/lifecycle tests.
 struct GraphNativeCalls: Sendable {
   var apply:
     @Sendable (UInt64, UnsafePointer<ZeGraphBatchRequest>, UnsafeMutablePointer<ZeGraphResponse>) ->
-      Int32 = { ze_graph_apply(ZeGraphHandle(token: $0), $1, $2) }
+      Int32 = { ze_store_graph_apply($0, $1, $2) }
   var query:
     @Sendable (UInt64, UnsafePointer<ZeGraphQueryRequest>, UnsafeMutablePointer<ZeGraphResponse>) ->
-      Int32 = { ze_graph_query(ZeGraphHandle(token: $0), $1, $2) }
+      Int32 = { ze_store_graph_query($0, $1, $2) }
   var getNodes:
     @Sendable (UInt64, UnsafePointer<ZeGraphGetNodesRequest>, UnsafeMutablePointer<ZeGraphResponse>)
-      -> Int32 = { ze_graph_get_nodes(ZeGraphHandle(token: $0), $1, $2) }
+      -> Int32 = { ze_store_get_nodes($0, $1, $2) }
   var getRelationships:
     @Sendable (UInt64, UnsafePointer<ZeGraphGetRelsRequest>, UnsafeMutablePointer<ZeGraphResponse>)
-      -> Int32 = { ze_graph_get_relationships(ZeGraphHandle(token: $0), $1, $2) }
-  var close: @Sendable (UInt64) -> Int32 = { ze_graph_close(ZeGraphHandle(token: $0)) }
+      -> Int32 = { ze_store_get_relationships($0, $1, $2) }
+  var close: @Sendable (UInt64) -> Int32 = { ze_close($0) }
   var free: @Sendable (inout ZeGraphResponse) -> Int32 = { ze_graph_response_free(&$0) }
 }
 
@@ -62,10 +80,10 @@ public actor ZeppelinGraphStore {
           request.reader_drain_timeout_ms = readerDrainTimeoutMilliseconds
           request.control = nil
           request.document_tower = tower
-          var handle = ZeGraphHandle()
-          let status = ze_graph_open(&request, &handle)
+          var handle = ze_handle(0)
+          let status = openGraphStoreHandle(&request, &handle)
           guard status == 0 else { throw GraphError(.native(Int32(status))) }
-          return handle.token
+          return handle
         }
       }
     }
@@ -81,7 +99,7 @@ public actor ZeppelinGraphStore {
     return try await Self.runBlocking {
       var observation = ZeGraphResources()
       observation.abi_size = graphSize(ZeGraphResources.self)
-      let status = ze_graph_resources(ZeGraphHandle(token: current), &observation)
+      let status = ze_store_graph_resources(current, &observation)
       guard status == 0 else { throw GraphError(.native(Int32(status))) }
       return GraphResources(
         engineBytes: observation.engine_bytes, enginePeakBytes: observation.engine_peak_bytes,
@@ -162,15 +180,15 @@ public actor ZeppelinGraphStore {
                       request.compile_limits = limits
                       return try graphResponse(
                         call: {
-                          ze_graph_cypher_with_row_limit(
-                            ZeGraphHandle(token: current), &request, controls.rowLimit, &$0)
+                          ze_store_cypher_with_row_limit(
+                            current, &request, controls.rowLimit, &$0)
                         }, nativeMessage: { graphLastError(current) })
                     }
                   }
                   return try graphResponse(
                     call: {
-                      ze_graph_cypher_with_row_limit(
-                        ZeGraphHandle(token: current), &request, controls.rowLimit, &$0)
+                      ze_store_cypher_with_row_limit(
+                        current, &request, controls.rowLimit, &$0)
                     }, nativeMessage: { graphLastError(current) })
                 }
               }

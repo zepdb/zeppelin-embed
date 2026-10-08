@@ -7,6 +7,20 @@
 #include <string.h>
 #include <stdlib.h>
 #include "graph_profile_cases.h"
+
+static ze_error_code fixture_store_open(const ZeGraphOpenRequest *request, ze_handle *out) {
+    if (request->mode == 0) return ze_store_create_with_relationship_types(request, NULL, 0, out);
+    ZeOpenRequest open = {0}; open.abi_size = sizeof(open);
+    open.path = request->path.data; open.path_len = request->path.count;
+    open.access_mode = request->mode == 2; open.durability_mode = 1; open.commit_tier = 2;
+    open.reader_drain_timeout_ms = request->reader_drain_timeout_ms;
+    open.max_resident_bytes = request->max_resident_bytes; open.max_temp_bytes = UINT64_MAX;
+    if (!request->document_tower) return ze_open(&open, out);
+    ZeEpochRequest epoch = {0}; epoch.abi_size = sizeof(epoch);
+    epoch.embedding.document = *request->document_tower; epoch.embedding.query = *request->document_tower;
+    return ze_open_with_epoch(&open, &epoch, out);
+}
+
 #define SIZED(T) ((T){.abi_size = sizeof(T)})
 static void string(const uint8_t *s, size_t n) {
     putchar('"');
@@ -43,16 +57,16 @@ static void value(const ZeGraphValuePool *p,uint32_t index,unsigned depth) {
     default:assert(!"unknown graph value tag");
     }putchar('}');
 }
-static ZeGraphResponse query(ZeGraphHandle h,const char *q,int32_t *status) {
+static ZeGraphResponse query(ze_handle h,const char *q,int32_t *status) {
     ZeGraphCypherRequest request=SIZED(ZeGraphCypherRequest);request.query=(ZeGraphBytes){(const uint8_t*)q,strlen(q)};
-    ZeGraphResponse r=SIZED(ZeGraphResponse);r.pool.abi_size=sizeof(r.pool);*status=ze_graph_cypher(h,&request,&r);return r;
+    ZeGraphResponse r=SIZED(ZeGraphResponse);r.pool.abi_size=sizeof(r.pool);*status=ze_store_cypher(h,&request,&r);return r;
 }
 static void rows(const ZeGraphResponse *r) {
     assert(r->cell_count==r->row_count*r->column_count);putchar('[');
     for(size_t row=0;row<r->row_count;row++){if(row)putchar(',');putchar('[');
         for(size_t col=0;col<r->column_count;col++){if(col)putchar(',');value(&r->pool,r->cells[row*r->column_count+col],0);}putchar(']');}putchar(']');
 }
-static void snapshot(ZeGraphHandle h) {
+static void snapshot(ze_handle h) {
     printf("[");for(unsigned rel=0;rel<2;rel++){int32_t status;ZeGraphResponse r=query(h,rel?"MATCH ()-[r]->() RETURN ze.relationship_id(r), r":"MATCH (n) RETURN ze.node_id(n), n",&status);assert(status==ZE_OK);assert(r.pool.byte_count<=24UL<<20);if(rel)putchar(',');rows(&r);assert(ze_graph_response_free(&r)==ZE_OK);}putchar(']');
 }
 int main(int argc,char **argv) {
@@ -62,12 +76,12 @@ int main(int argc,char **argv) {
         for(unsigned structured=0;structured<=fixture->structured;structured++) {
         char path[4096];assert(snprintf(path,sizeof(path),"%s/case-%zu-%u",argv[1],c,structured)<(int)sizeof(path));
         ZeGraphOpenRequest open=SIZED(ZeGraphOpenRequest);open.path=(ZeGraphBytes){(const uint8_t*)path,strlen(path)};open.max_resident_bytes=256ULL<<20;open.reader_drain_timeout_ms=250;
-        ZeGraphHandle h={0};assert(ze_graph_open(&open,&h)==ZE_OK);
+        ze_handle h={0};assert(fixture_store_open(&open,&h)==ZE_OK);
         for(size_t i=0;i<fixture->setup_count;i++){int32_t status;ZeGraphResponse r=query(h,fixture->setup[i],&status);assert(status==ZE_OK);assert(ze_graph_response_free(&r)==ZE_OK);}
         printf("{\"case\":");string((const uint8_t*)fixture->id,strlen(fixture->id));printf(",\"path\":\"%s\",\"before\":",structured?"c-structured":"c-cypher");snapshot(h);
         int32_t status;ZeGraphResponse r=SIZED(ZeGraphResponse);r.pool.abi_size=sizeof(r.pool);
         if(structured)status=ze74_structured(c,h,&r);else r=query(h,fixture->query,&status);printf(",\"status\":%d,\"disposition\":%u,\"admitted_generation\":%llu,\"changed_generation\":%llu,\"after\":",status,r.disposition,(unsigned long long)r.admitted_generation,(unsigned long long)r.changed_generation);snapshot(h);
-        assert(ze_graph_close(h)==ZE_OK);open.mode=1;assert(ze_graph_open(&open,&h)==ZE_OK);printf(",\"reopened_snapshot\":");snapshot(h);assert(ze_graph_close(h)==ZE_OK);
+        assert(ze_close(h)==ZE_OK);open.mode=1;assert(fixture_store_open(&open,&h)==ZE_OK);printf(",\"reopened_snapshot\":");snapshot(h);assert(ze_close(h)==ZE_OK);
         printf(",\"rows\":");rows(&r);printf(",\"columns\":[");for(size_t i=0;i<r.column_count;i++){if(i)putchar(',');text(&r.pool,r.columns[i].name);}printf("],\"column_kinds\":[");for(size_t i=0;i<r.column_count;i++){if(i)putchar(',');printf("%u",r.columns[i].kinds);}printf("]}");assert(ze_graph_response_free(&r)==ZE_OK);putchar('\n');
         }
     }return 0;
