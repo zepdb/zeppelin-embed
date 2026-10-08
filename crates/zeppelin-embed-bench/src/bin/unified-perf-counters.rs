@@ -65,7 +65,21 @@ fn run() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let mut manifest = None;
     let mut output = None;
+    let mut smoke = false;
+    let mut unified = false;
     while let Some(flag) = args.next() {
+        if flag == "--smoke" && !smoke {
+            smoke = true;
+            continue;
+        }
+        if flag == "--unified" && !unified {
+            check(
+                cfg!(feature = "graph-cypher"),
+                "--unified requires graph-cypher",
+            )?;
+            unified = true;
+            continue;
+        }
         let value = args.next().ok_or_else(|| invalid("flag needs value"))?;
         match flag.as_str() {
             "--manifest" if manifest.is_none() => manifest = Some(PathBuf::from(value)),
@@ -76,7 +90,7 @@ fn run() -> Result<()> {
     let manifest = manifest.ok_or_else(|| invalid("--manifest required"))?;
     let output = output.ok_or_else(|| invalid("--out required"))?;
     check(!output.exists(), "output exists; retain the old receipt")?;
-    let workload = read_workload(&manifest)?;
+    let workload = read_workload(&manifest, smoke)?;
     let schema = schema(&workload)?;
     let epoch = epoch(&workload)?;
     let directory = tempfile::tempdir()?;
@@ -88,7 +102,11 @@ fn run() -> Result<()> {
     )?;
     let mut batch = Vec::new();
     let mut rows = 0_u64;
-    let boundaries = [30000_u64, 60000, 90000, 120000, 150000];
+    let boundaries = if smoke {
+        vec![300_u64]
+    } else {
+        vec![30000_u64, 60000, 90000, 120000, 150000]
+    };
     let corpus = PathBuf::from(text(field(&workload, "corpus")?, "path")?);
     for line in BufReader::new(File::open(corpus)?).lines() {
         let row: Value = serde_json::from_str(&line?)?;
@@ -125,9 +143,27 @@ fn run() -> Result<()> {
         }
     }
     check(
-        rows == 150000 && batch.is_empty(),
-        "fixture must contain exactly 150000 rows",
+        rows == (if smoke { 300 } else { 150000 }) && batch.is_empty(),
+        "fixture row count mismatch",
     )?;
+    let pre_graph_hits = if unified && smoke {
+        let mut hits = serde_json::Map::new();
+        for q in eligible_queries(&workload, smoke)? {
+            hits.insert(
+                text(&q, "name")?.to_owned(),
+                query(&store, field(&q, "request")?, &schema)?.1,
+            );
+        }
+        Value::Object(hits)
+    } else {
+        Value::Null
+    };
+    #[cfg(feature = "graph-cypher")]
+    let relationships = if unified {
+        attach_relationships(&store, smoke)?
+    } else {
+        Vec::new()
+    };
     // Like Node, measure a reopened read-only store rather than the writer's caches.
     store.close()?;
     let store = Store::open(
@@ -136,7 +172,11 @@ fn run() -> Result<()> {
             .with_schema(schema)
             .with_epoch(epoch),
     )?;
-    let counters = measure_counters(&store, &workload)?;
+    #[cfg(feature = "graph-cypher")]
+    if unified {
+        verify_graph(&store, rows, &relationships)?;
+    }
+    let counters = measure_counters(&store, &workload, unified, smoke)?;
     store.close()?;
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let revision = Command::new("git")
@@ -146,11 +186,26 @@ fn run() -> Result<()> {
         .output()?;
     check(revision.status.success(), "git revision unavailable")?;
     let binary = std::env::current_exe()?;
-    let receipt = json!({"schema":"zeppelin-unified-perf-counters-v1",
+    let mut receipt = json!({"schema":"zeppelin-unified-perf-counters-v1",
         "workloadSha256": workload_hash(&manifest)?,
         "manifestSha256": hash_file(&manifest)?, "revision": String::from_utf8(revision.stdout)?.trim(),
         "binarySha256": hash_file(&binary)?, "optLevel": env!("ZEPPELIN_BENCH_OPT_LEVEL"),
         "warmups":20,"samples":5,"threadBudget":1,"queries":counters});
+    if smoke || unified {
+        receipt["acceptance"] = json!(!smoke);
+        receipt["unified"] = json!(unified);
+        receipt["rowCount"] = json!(rows);
+    }
+    if unified {
+        receipt["candidateOnlyQueries"] = json!(eligible_queries(&workload, smoke)?);
+        receipt["graph"] = json!({"documents":rows,"relationships":if smoke {1} else {500}});
+        receipt["eligibilityAccounting"] = json!(
+            "query latency includes construction; work counters omit eligibility-map construction"
+        );
+        if smoke {
+            receipt["preGraphEligibleHits"] = pre_graph_hits;
+        }
+    }
     let mut file = FileOptions::new()
         .write(true)
         .create_new(true)
@@ -190,7 +245,7 @@ fn hash_file(path: &Path) -> Result<String> {
         .map(str::to_owned)
         .ok_or_else(|| invalid("missing SHA-256"))
 }
-fn read_workload(path: &Path) -> Result<Value> {
+fn read_workload(path: &Path, smoke: bool) -> Result<Value> {
     let v: Value = serde_json::from_reader(File::open(path)?)?;
     check(
         text(&v, "schema")? == "zeppelin-unified-perf-v1",
@@ -199,13 +254,24 @@ fn read_workload(path: &Path) -> Result<Value> {
     check(
         integer(&v, "seed")? == 386
             && integer(&v, "dimensions")? == 8
-            && integer(&v, "rowCount")? == 150000,
+            && integer(&v, "rowCount")? == (if smoke { 300 } else { 150000 }),
         "wrong fixture",
     )?;
     check(
-        field(&v, "segmentBoundaries")? == &json!([30000, 60000, 90000, 120000, 150000]),
+        field(&v, "segmentBoundaries")?
+            == &(if smoke {
+                json!([300])
+            } else {
+                json!([30000, 60000, 90000, 120000, 150000])
+            }),
         "wrong boundaries",
     )?;
+    if smoke {
+        check(
+            field(&v, "acceptance")? == &Value::Bool(false),
+            "smoke must be non-acceptance",
+        )?;
+    }
     for name in ["corpus", "queryFile"] {
         let a = field(&v, name)?;
         check(
@@ -394,6 +460,7 @@ fn query(store: &Store, request: &Value, schema: &Schema) -> Result<(QueryDiagno
                 "tier",
                 "alpha",
                 "filter",
+                "eligibleIds",
             ]
             .contains(&name.as_str()),
             "unsupported request field; do not drop predicates",
@@ -413,7 +480,21 @@ fn query(store: &Store, request: &Value, schema: &Schema) -> Result<(QueryDiagno
         "wrong query settings",
     )?;
     let lexical = lexical(request)?;
-    let filter = filter(request, schema)?;
+    let mut filter = filter(request, schema)?;
+    if request.get("eligibleIds").is_some() {
+        let ids = array(request, "eligibleIds")?
+            .iter()
+            .map(|id| {
+                Ok(DocId::new(
+                    id.as_str().ok_or_else(|| invalid("eligible id"))?.parse()?,
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        filter = Some(filter.map_or_else(
+            || QueryFilter::eligible(schema, &ids),
+            |f| f.with_eligible(&ids),
+        ));
+    }
     let (diagnostics, hits) = if request.get("vector").is_some() {
         check(
             text(request, "tier")? == "exact" && field(request, "alpha")?.as_f64() == Some(0.5),
@@ -453,11 +534,15 @@ fn query(store: &Store, request: &Value, schema: &Schema) -> Result<(QueryDiagno
     )?;
     Ok((diagnostics, hits))
 }
-fn measure_counters(store: &Store, workload: &Value) -> Result<Value> {
+fn measure_counters(store: &Store, workload: &Value, unified: bool, smoke: bool) -> Result<Value> {
     let schema = schema(workload)?;
     store.warm_lexical(control())?;
     let mut results = Vec::new();
-    for q in array(workload, "queries")? {
+    let mut queries = array(workload, "queries")?.clone();
+    if unified {
+        queries.extend(eligible_queries(workload, smoke)?);
+    }
+    for q in &queries {
         let request = field(q, "request")?;
         for _ in 0..20 {
             query(store, request, &schema)?;
@@ -483,6 +568,95 @@ fn measure_counters(store: &Store, workload: &Value) -> Result<Value> {
         results.push(json!({"name":text(q,"name")?,"samples":samples,"descriptive":descriptions,"hits":expected_hits}));
     }
     Ok(json!(results))
+}
+fn eligible_queries(workload: &Value, smoke: bool) -> Result<Vec<Value>> {
+    // Match Node's live prefix: skip the note/summary gaps in the transcript IDs.
+    let ids = (0..if smoke { 100_u64 } else { 10000 })
+        .map(|i| json!((i / 300 * 302 + i % 300 + 1).to_string()))
+        .collect::<Vec<_>>();
+    ["lexical", "hybrid"]
+        .into_iter()
+        .map(|kind| {
+            let name = format!("{kind}-unfiltered");
+            let common = array(workload, "queries")?
+                .iter()
+                .find(|q| q.get("name").and_then(Value::as_str) == Some(&name))
+                .ok_or_else(|| invalid("missing unfiltered query"))?;
+            let mut request = field(common, "request")?.clone();
+            request["eligibleIds"] = json!(ids);
+            Ok(json!({"name":format!("{kind}-eligible"),"request":request}))
+        })
+        .collect()
+}
+#[cfg(feature = "graph-cypher")]
+fn attach_relationships(
+    store: &Store,
+    smoke: bool,
+) -> Result<Vec<zeppelin_embed::property_graph::RelId>> {
+    use zeppelin_embed::property_graph::staging::{
+        StructuredOperation, StructuredWrite, WriteImage,
+    };
+    use zeppelin_embed::property_graph::{
+        ApplicationKey, EntityId, EntityKind, GraphName, GraphRevision, NodeId, NodeRef,
+    };
+    store.enable_graph()?;
+    let mut ids = Vec::new();
+    for i in 0..if smoke { 1_u128 } else { 500 } {
+        let key = format!("perf-{i}");
+        let writes = [StructuredWrite {
+            key: ApplicationKey::new(EntityKind::Relationship, "perf", &key)?,
+            revision: GraphRevision::new(1)?,
+            operation: StructuredOperation::Create,
+            image: Some(WriteImage::Relationship {
+                source: NodeRef::Existing(NodeId::new(302 * i + 1)?),
+                target: NodeRef::Existing(NodeId::new(302 * i + 2)?),
+                relationship_type: GraphName::new("PERF_LINK")?,
+                properties: &[],
+            }),
+        }];
+        let result = store.graph_apply(&writes[..], &control())?;
+        let receipt = result
+            .receipts()
+            .first()
+            .ok_or_else(|| invalid("missing relationship receipt"))?;
+        match receipt.entity {
+            EntityId::Relationship(id) => ids.push(id),
+            _ => return Err(invalid("wrong receipt kind")),
+        }
+    }
+    verify_graph(store, if smoke { 300 } else { 150000 }, &ids)?;
+    Ok(ids)
+}
+#[cfg(feature = "graph-cypher")]
+fn verify_graph(
+    store: &Store,
+    rows: u64,
+    ids: &[zeppelin_embed::property_graph::RelId],
+) -> Result<()> {
+    check(
+        store.count_documents(None, None)?.count == rows,
+        "relationships added documents",
+    )?;
+    let result = store.get_relationships(ids, &control())?;
+    check(
+        result.relationships().len() == ids.len(),
+        "wrong graph population",
+    )?;
+    for (i, edge) in result.relationships().iter().enumerate() {
+        let edge = edge
+            .as_ref()
+            .ok_or_else(|| invalid("missing relationship after reopen"))?;
+        check(
+            edge.source.get() == u128::try_from(i)? * 302 + 1
+                && edge.target.get() == edge.source.get() + 1,
+            "wrong relationship endpoints",
+        )?;
+        check(
+            result.string(edge.relationship_type) == Some("PERF_LINK"),
+            "wrong relationship type",
+        )?;
+    }
+    Ok(())
 }
 fn work_counters(d: &QueryDiagnostics) -> Value {
     json!({"lexical":{"docs_evaluated":d.counters.lexical.docs_evaluated,
@@ -560,7 +734,7 @@ mod tests {
         )?;
         let error = query(
             &store,
-            &json!({"text":"harbour","k":10,"threadBudget":1,"eligibleIds":[]}),
+            &json!({"text":"harbour","k":10,"threadBudget":1,"unknownPredicate":[]}),
             &Schema::timestamp_only(),
         )
         .err()
@@ -569,6 +743,22 @@ mod tests {
             error.to_string(),
             "unsupported request field; do not drop predicates"
         );
+        let (_, empty_hits) = query(
+            &store,
+            &json!({"text":"harbour","k":10,"threadBudget":1,"eligibleIds":[]}),
+            &Schema::timestamp_only(),
+        )?;
+        assert_eq!(
+            empty_hits,
+            json!([]),
+            "empty eligibility must not fall back to unfiltered"
+        );
+        let (_, eligible_hits) = query(
+            &store,
+            &json!({"text":"harbour","k":10,"threadBudget":1,"eligibleIds":["1"]}),
+            &Schema::timestamp_only(),
+        )?;
+        assert_eq!(eligible_hits.as_array().ok_or("eligible hits")?.len(), 1);
         let mut d = result.diagnostics;
         d.counters.lexical.docs_evaluated = 11;
         d.counters.lexical.postings_decoded = 12;

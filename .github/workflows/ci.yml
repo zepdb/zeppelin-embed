@@ -83,6 +83,8 @@ jobs:
           cargo test -p zeppelin-embed-workspace-tests
           --features graph-result-test-support
           --test adversarial_tests unified_store::
+      - name: Exercise unified performance counter smoke (no timing acceptance)
+        run: cargo test -p zeppelin-embed-bench --features graph-cypher --test unified_perf_gate
       - name: Exercise every runtime kernel arm
         run: PROPTEST_CASES=1024 cargo test -p zeppelin-embed kernels
 
