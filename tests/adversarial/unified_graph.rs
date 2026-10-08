@@ -53,6 +53,9 @@ pub enum Operation {
     EnableGraph,
     GraphApply,
     MixedBatch,
+    DocumentRelationship,
+    DocumentDelete,
+    MissingDocumentEndpoint,
 }
 
 pub fn run(operation: Operation, seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
@@ -60,6 +63,11 @@ pub fn run(operation: Operation, seed: u64, coverage: &mut CoverageRegistry) -> 
         Operation::EnableGraph => enable_graph(seed, coverage),
         Operation::GraphApply => super::graph_recovery::probe_commit_boundaries(seed, coverage),
         Operation::MixedBatch => mixed_batch(seed, coverage),
+        Operation::DocumentRelationship
+        | Operation::DocumentDelete
+        | Operation::MissingDocumentEndpoint => {
+            super::runner::unified::exercise_document_operation(operation, seed, coverage)
+        }
     }
 }
 
@@ -150,6 +158,9 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
         Operation::EnableGraph,
         Operation::GraphApply,
         Operation::MixedBatch,
+        Operation::DocumentRelationship,
+        Operation::DocumentDelete,
+        Operation::MissingDocumentEndpoint,
     ] {
         run(operation, seed, coverage)?;
     }
@@ -307,6 +318,24 @@ mod tests {
                 coverage.count(key) > 0,
                 "missing unified fault receipt: {key}"
             );
+        }
+    }
+
+    #[test]
+    fn document_endpoint_operations_are_registered_and_executed() {
+        let mut coverage = CoverageRegistry::default();
+        probe(358, &mut coverage).unwrap();
+        let required: Vec<_> = super::super::coverage::required_smoke_coverage().collect();
+        let expected = crate::coverage_key_expectations::expected_smoke_keys();
+        for key in [
+            "op.graph_apply.document-endpoint",
+            "op.delete.document-no-relationships",
+            "op.delete.document-restrict",
+            "op.graph_apply.missing-document-endpoint",
+        ] {
+            assert!(coverage.count(key) > 0, "operation did not execute: {key}");
+            assert!(required.contains(&key), "unregistered {key}");
+            assert!(expected.contains(&key), "expectations omit {key}");
         }
     }
 }

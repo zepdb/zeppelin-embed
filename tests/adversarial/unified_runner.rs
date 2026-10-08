@@ -1,4 +1,4 @@
-//! Part A: the existing runner Store owns both document and graph mutations.
+//! The existing runner Store owns both document and graph mutations.
 use super::*;
 use zeppelin_embed::graph_recovery_test_support::{
     apply_unified_batch, configure_unified_runner, unified_graph_enabled,
@@ -15,12 +15,24 @@ pub struct UnifiedObservation {
     pub generation: u64,
     pub graph_enabled: bool,
     pub documents: Vec<(u32, u64, i64)>,
+    pub document_nodes: Vec<u32>,
+    pub document_edges: Vec<(u32, u32, u32)>,
     pub nodes: Vec<u32>,
     pub edges: Vec<(u32, u32, u32)>,
 }
 
 pub fn check_unified(model: &Model, observed: &UnifiedObservation) -> Result<(), String> {
     let nodes: Vec<_> = model.graph_nodes.iter().copied().collect();
+    let document_nodes: Vec<_> = if model.graph_enabled {
+        model.live_ids().into_iter().collect()
+    } else {
+        Vec::new()
+    };
+    let document_edges: Vec<_> = model
+        .document_edges
+        .iter()
+        .map(|(key, (from, to))| (*key, *from, *to))
+        .collect();
     let edges: Vec<_> = model
         .edges
         .iter()
@@ -29,6 +41,8 @@ pub fn check_unified(model: &Model, observed: &UnifiedObservation) -> Result<(),
     if observed.generation != model.unified_generation
         || observed.graph_enabled != model.graph_enabled
         || observed.documents != model.live_documents()
+        || observed.document_nodes != document_nodes
+        || observed.document_edges != document_edges
         || observed.nodes != nodes
         || observed.edges != edges
     {
@@ -208,7 +222,47 @@ impl RealEngine {
         let graph_enabled = unified_graph_enabled(store).map_err(|e| e.to_string())?;
         let mut nodes = Vec::new();
         let mut edges = Vec::new();
+        let mut document_nodes = Vec::new();
+        let mut document_edges = Vec::new();
         if graph_enabled {
+            for (query, relationship) in [
+                ("MATCH (d:Document) RETURN d", false),
+                (
+                    "MATCH (a:Document)-[r:ZE358_DOC_LINK]->(b:Document) RETURN r.k,a,b",
+                    true,
+                ),
+            ] {
+                let result = zeppelin_embed_cypher::execute(
+                    store,
+                    &QueryControl::Cancel(CancelToken::new()),
+                    &GraphQueryOptions::default(),
+                    query,
+                    &[],
+                    zeppelin_embed_cypher::CompileLimits::default(),
+                )
+                .map_err(|e| e.to_string())?;
+                let node_id = |row, column| -> Result<u32, String> {
+                    let Some(Value::Node(index)) = result.cell(row, column) else {
+                        return Err("document query returned a non-node".into());
+                    };
+                    u32::try_from(result.pools().nodes[*index as usize].id.get())
+                        .map_err(|e| e.to_string())
+                };
+                for row in 0..result.metadata().rows as usize {
+                    if relationship {
+                        let Some(Value::I64(key)) = result.cell(row, 0) else {
+                            return Err("document relationship returned a non-integer key".into());
+                        };
+                        document_edges.push((
+                            u32::try_from(*key).map_err(|e| e.to_string())?,
+                            node_id(row, 1)?,
+                            node_id(row, 2)?,
+                        ));
+                    } else {
+                        document_nodes.push(node_id(row, 0)?);
+                    }
+                }
+            }
             for (query, columns) in [
                 ("MATCH (n:ZE358) RETURN n.k", 1),
                 (
@@ -243,10 +297,14 @@ impl RealEngine {
         }
         nodes.sort_unstable();
         edges.sort_unstable();
+        document_nodes.sort_unstable();
+        document_edges.sort_unstable();
         Ok(UnifiedObservation {
             generation,
             graph_enabled,
             documents,
+            document_nodes,
+            document_edges,
             nodes,
             edges,
         })
@@ -626,23 +684,212 @@ fn fault_fixture(
     Ok((engine, model))
 }
 
+fn file_image(path: &Path) -> Result<BTreeMap<std::ffi::OsString, Vec<u8>>, String> {
+    std::fs::read_dir(path)
+        .map_err(|error| error.to_string())?
+        .map(|entry| {
+            let entry = entry.map_err(|error| error.to_string())?;
+            Ok((
+                entry.file_name(),
+                std::fs::read(entry.path()).map_err(|error| error.to_string())?,
+            ))
+        })
+        .collect()
+}
+
+impl RealEngine {
+    fn document_relationship(
+        &self,
+        source: u32,
+        target: u32,
+    ) -> Result<(u64, bool), Box<zeppelin_embed::property_graph::GraphStoreError>> {
+        use zeppelin_embed::property_graph::NodeId;
+        let properties = [GraphProperty::new(
+            GraphName::new("k").unwrap(),
+            PropertyValue::new(PropertyData::I64(358)).unwrap(),
+        )];
+        apply_unified_batch(
+            self.store.as_ref().unwrap(),
+            None,
+            &[StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Relationship, "ze358", "document-link")
+                    .unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Relationship {
+                    source: NodeRef::Existing(NodeId::new(u128::from(source)).unwrap()),
+                    target: NodeRef::Existing(NodeId::new(u128::from(target)).unwrap()),
+                    relationship_type: GraphName::new("ZE358_DOC_LINK").unwrap(),
+                    properties: &properties,
+                }),
+            }],
+            &QueryControl::Cancel(CancelToken::new()),
+        )
+        .map_err(Box::new)
+    }
+
+    fn execute_document_relationship(&mut self, model: &mut Model) -> Result<(), String> {
+        let next = model.document_relationship_candidate(358, 1, 92)?;
+        let ack = self
+            .document_relationship(1, 92)
+            .map_err(|error| error.to_string())?;
+        if ack != (next.unified_generation, true) {
+            return Err(format!(
+                "document relationship acknowledgement mismatch: {ack:?}"
+            ));
+        }
+        check_unified(&next, &self.observe_unified()?)?;
+        *model = next;
+        Ok(())
+    }
+}
+
+/// Document endpoints run on the same adapter and comparator as Part A.
+pub fn exercise_document_operation(
+    operation: super::super::unified_graph::Operation,
+    seed: u64,
+    coverage: &mut CoverageRegistry,
+) -> Result<(), String> {
+    use super::super::unified_graph::Operation;
+    use zeppelin_embed::property_graph::catalog::{OnDelete, RelationshipRule, RelationshipRules};
+    let root = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let path = root.path().join(format!("documents-{seed}"));
+    let (mut engine, mut model) = if matches!(operation, Operation::DocumentDelete) {
+        let rules = [RelationshipRule {
+            relationship_type: GraphName::new("ZE358_DOC_LINK").unwrap(),
+            on_delete: OnDelete::Restrict,
+        }];
+        let store = zeppelin_embed::graph_recovery_test_support::create_with_relationship_rules(
+            &path,
+            RealEngine::options(ModelEpoch::A),
+            Some(declared_store_epoch().embedding.document),
+            RelationshipRules::new(&rules).map_err(|error| error.to_string())?,
+        )?;
+        store.close().map_err(|error| error.to_string())?;
+        let mut engine = RealEngine::without_faults(path);
+        engine.open()?;
+        let mut model = Model::default();
+        model.graph_enabled = true;
+        model.unified_generation = 1;
+        let ack = engine.ingest(&[DocMutation {
+            doc_id: 1,
+            revision: 1,
+            timestamp: 10,
+        }])?;
+        model.acknowledge(1, 1, 10);
+        model.unified_generation += 1;
+        if ack.generation != model.unified_generation {
+            return Err("Restrict fixture ingest generation mismatch".into());
+        }
+        (engine, model)
+    } else {
+        fault_fixture(path, FaultSchedule::default(), false)?
+    };
+    let ack = engine.ingest(&[
+        DocMutation {
+            doc_id: 92,
+            revision: 1,
+            timestamp: 20,
+        },
+        DocMutation {
+            doc_id: 93,
+            revision: 1,
+            timestamp: 30,
+        },
+    ])?;
+    model.acknowledge(92, 1, 20);
+    model.acknowledge(93, 1, 30);
+    model.unified_generation += 1;
+    if ack.generation != model.unified_generation {
+        return Err("document fixture ingest generation mismatch".into());
+    }
+    if !model.graph_enabled {
+        engine.execute_unified(&mut model, &Op::EnableGraph)?;
+    }
+    check_unified(&model, &engine.observe_unified()?)?;
+    match operation {
+        Operation::DocumentRelationship => {
+            engine.execute_document_relationship(&mut model)?;
+            // Drop without a seal so this observes WAL recovery, not just a folded image.
+            engine.store.take();
+            engine.open()?;
+            check_unified(&model, &engine.observe_unified()?)?;
+            coverage.hit("op.graph_apply.document-endpoint");
+        }
+        Operation::DocumentDelete => {
+            engine.execute_document_relationship(&mut model)?;
+            {
+                let doc_id = 92;
+                if model.document_delete_candidate(doc_id).is_ok() {
+                    return Err("model accepted Restrict document delete".into());
+                }
+                let before = file_image(&engine.directory)?;
+                let error = engine
+                    .store()?
+                    .delete(DeleteBatch::new(vec![DocId::new(u128::from(doc_id))]));
+                if !matches!(error, Err(IngestError::Graph(ref error)) if error.kind() == zeppelin_embed::property_graph::query::completed::GraphQueryErrorKind::Constraint)
+                {
+                    return Err(format!(
+                        "Restrict did not return a typed constraint: {error:?}"
+                    ));
+                }
+                if file_image(&engine.directory)? != before {
+                    return Err("Restrict document delete changed durable bytes".into());
+                }
+                check_unified(&model, &engine.observe_unified()?)?;
+            }
+            coverage.hit("op.delete.document-restrict");
+            // A successful isolated delete also proves the refused writes left admission usable.
+            let next = model.document_delete_candidate(93)?;
+            let ack = engine.delete(93)?;
+            if ack.generation != next.unified_generation {
+                return Err("document delete generation mismatch".into());
+            }
+            model = next;
+            check_unified(&model, &engine.observe_unified()?)?;
+            engine.store.take();
+            engine.open()?;
+            check_unified(&model, &engine.observe_unified()?)?;
+            coverage.hit("op.delete.document-no-relationships");
+        }
+        Operation::MissingDocumentEndpoint => {
+            for (source, target) in [(999_999, 1), (1, 999_999)] {
+                if model
+                    .document_relationship_candidate(358, source, target)
+                    .is_ok()
+                {
+                    return Err("model accepted missing document endpoint".into());
+                }
+                let before = file_image(&engine.directory)?;
+                let error = engine.document_relationship(source, target);
+                if !matches!(error, Err(ref error) if error.kind() == zeppelin_embed::property_graph::GraphStoreErrorKind::Constraint)
+                {
+                    return Err(format!(
+                        "missing document endpoint did not return a typed constraint: {error:?}"
+                    ));
+                }
+                if file_image(&engine.directory)? != before {
+                    return Err("missing document endpoint changed durable bytes".into());
+                }
+                check_unified(&model, &engine.observe_unified()?)?;
+                engine.store.take();
+                engine.open()?;
+                check_unified(&model, &engine.observe_unified()?)?;
+            }
+            engine.execute_document_relationship(&mut model)?;
+            coverage.hit("op.graph_apply.missing-document-endpoint");
+        }
+        _ => return Err("not a document endpoint operation".into()),
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 pub fn probe_unified_refusals() -> Result<(), String> {
     let root = tempfile::tempdir().map_err(|e| e.to_string())?;
     let (mut engine, mut model) =
         fault_fixture(root.path().join("refusal"), FaultSchedule::default(), false)?;
-    let image = || -> Result<std::collections::BTreeMap<std::ffi::OsString, Vec<u8>>, String> {
-        std::fs::read_dir(root.path().join("refusal"))
-            .map_err(|e| e.to_string())?
-            .map(|entry| {
-                let entry = entry.map_err(|e| e.to_string())?;
-                Ok((
-                    entry.file_name(),
-                    std::fs::read(entry.path()).map_err(|e| e.to_string())?,
-                ))
-            })
-            .collect()
-    };
+    let image = || file_image(&root.path().join("refusal"));
     let before = image()?;
     if !matches!(
         engine.apply_unified(&Op::GraphApply { graph_key: 1 }),

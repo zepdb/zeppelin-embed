@@ -63,6 +63,8 @@ pub struct Model {
     #[cfg(feature = "graph-cypher")]
     pub edges: BTreeMap<u32, (u32, u32)>,
     #[cfg(feature = "graph-cypher")]
+    pub document_edges: BTreeMap<u32, (u32, u32)>,
+    #[cfg(feature = "graph-cypher")]
     pub unified_generation: u64,
     live: BTreeMap<u32, ModelDoc>,
     deleted: BTreeSet<u32>,
@@ -575,6 +577,42 @@ fn squared_l2_f64(left: &[f32], right: &[f32]) -> f32 {
 
 #[cfg(feature = "graph-cypher")]
 impl Model {
+    // Document nodes are derived from `live`; they have no separate lifetime or id.
+    pub fn document_relationship_candidate(
+        &self,
+        key: u32,
+        source: u32,
+        target: u32,
+    ) -> Result<Self, String> {
+        if !self.graph_enabled
+            || !self.live.contains_key(&source)
+            || !self.live.contains_key(&target)
+        {
+            return Err("missing document endpoint".into());
+        }
+        let mut next = self.clone();
+        next.document_edges.insert(key, (source, target));
+        next.unified_generation += 1;
+        Ok(next)
+    }
+
+    pub fn document_delete_candidate(&self, doc_id: u32) -> Result<Self, String> {
+        if self
+            .document_edges
+            .values()
+            .any(|(_, target)| *target == doc_id)
+        {
+            return Err("Restrict refuses document delete".into());
+        }
+        if !self.live.contains_key(&doc_id) {
+            return Err("missing document".into());
+        }
+        let mut next = self.clone();
+        next.delete(doc_id);
+        next.unified_generation += 1;
+        Ok(next)
+    }
+
     pub fn unified_candidate(&self, op: &program::Op) -> Result<(Self, bool), String> {
         let mut next = self.clone();
         let changed = match *op {

@@ -539,6 +539,20 @@ pub mod graph_storage_fault_test_support {
 pub mod graph_recovery_test_support {
     use crate::graph_read_view_test_support::{ObservedRelationship, PathReceipt};
 
+    /// Creates a runner fixture with explicit relationship deletion rules.
+    /// The constructor is crate-private; this test seam adds no production API.
+    pub fn create_with_relationship_rules(
+        path: &std::path::Path,
+        options: crate::lifecycle::OpenOptions,
+        document: Option<crate::epoch::EmbeddingTower>,
+        rules: crate::property_graph::catalog::RelationshipRules<'_>,
+    ) -> Result<crate::lifecycle::Store, String> {
+        crate::lifecycle::Store::create_native_graph_with_relationship_types(
+            path, options, document, rules,
+        )
+        .map_err(|error| error.to_string())
+    }
+
     /// Selects explicit maintenance for the runner's acknowledgement ledger.
     #[allow(clippy::result_large_err)]
     pub fn configure_unified_runner(

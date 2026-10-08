@@ -2928,6 +2928,9 @@ fn run_program_for_with_clock(
         for operation in [
             super::unified_graph::Operation::EnableGraph,
             super::unified_graph::Operation::MixedBatch,
+            super::unified_graph::Operation::DocumentRelationship,
+            super::unified_graph::Operation::DocumentDelete,
+            super::unified_graph::Operation::MissingDocumentEndpoint,
         ] {
             super::unified_graph::run(operation, seed, &mut coverage)?;
         }

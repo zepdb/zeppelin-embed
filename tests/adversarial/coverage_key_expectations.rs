@@ -107,9 +107,15 @@ const GRAPH_KEYS: &[&str] = &[
     "storage-durability.seal.graph-rotation.post-rename",
     "storage-durability.seal.graph-rotation.rename",
     "storage-durability.seal.graph-rotation.sync",
+    "storage-durability.seal.cancel-cleanup.delete",
+    "storage-durability.seal.cancel-cleanup.sync",
     "op.enable_graph",
     "op.graph_apply",
     "op.mixed_batch",
+    "op.graph_apply.document-endpoint",
+    "op.delete.document-no-relationships",
+    "op.delete.document-restrict",
+    "op.graph_apply.missing-document-endpoint",
     "storage-durability.graph-commit.fire",
     "storage-durability.graph-commit.clean",
     "storage-durability.graph-commit.enable.fire",
@@ -670,26 +676,4 @@ fn namespace_relocation_coverage_keys_are_required() {
         crate::adversarial::storage_durability::NamespaceFault::ALL.len(),
         12
     );
-}
-
-// Skipped by design: these keys require legacy documents to be native graph nodes.
-// This allowlist is explicit and does not waive any Part A coverage requirement.
-#[cfg(feature = "graph-cypher")]
-const SKIPPED_BY_DESIGN: &[(&str, &str)] = &[
-    ("op.cypher", "ZE-350"),
-    ("op.graph_apply.document-endpoint", "ZE-350"),
-    ("op.mixed_batch.document-endpoint", "ZE-350"),
-    ("property-graph.document-dependency-probe", "ZE-350"),
-];
-
-#[cfg(feature = "graph-cypher")]
-#[test]
-fn document_endpoint_coverage_is_explicitly_deferred_to_ze350() {
-    for (key, dependency) in SKIPPED_BY_DESIGN {
-        assert_eq!(*dependency, "ZE-350");
-        assert!(
-            !expected_smoke_keys().contains(key),
-            "premature document-node claim {key}"
-        );
-    }
 }

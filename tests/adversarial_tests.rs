@@ -11,159 +11,6 @@ mod adversarial;
 mod coverage_key_expectations;
 
 #[cfg(feature = "graph-cypher")]
-mod unified_store {
-    use super::adversarial::{campaign::CampaignKind, program::Program};
-
-    #[test]
-    fn generated_program_executes_graph_and_mixed_ops_on_one_store() {
-        let program = Program::generate_for(CampaignKind::StorageDurability, 256);
-        for kind in ["enable_graph", "graph_apply", "mixed_batch"] {
-            assert!(
-                program.ops.iter().any(|op| op.kind() == kind),
-                "generated storage program lacks {kind}"
-            );
-        }
-        assert_eq!(
-            program.jsonl(),
-            Program::generate_for(CampaignKind::StorageDurability, 256).jsonl()
-        );
-        super::adversarial::runner::unified::probe_unified_program(&program).unwrap();
-    }
-
-    #[test]
-    fn graph_faults_fire_only_at_the_named_operation_and_path() {
-        super::adversarial::runner::unified::probe_unified_faults().unwrap();
-    }
-    #[test]
-    fn unified_comparator_rejects_missing_edge_partial_batch_and_wrong_generation() {
-        use super::adversarial::{
-            model::Model,
-            runner::unified::{UnifiedObservation, check_unified},
-        };
-        let mut model = Model::default();
-        model.graph_enabled = true;
-        model.unified_generation = 4;
-        model.acknowledge(91, 2, 10);
-        model.graph_nodes.extend([2, 3]);
-        model.edges.insert(1, (2, 3));
-        let good = UnifiedObservation {
-            generation: 4,
-            graph_enabled: true,
-            documents: vec![(91, 2, 10)],
-            nodes: vec![2, 3],
-            edges: vec![(1, 2, 3)],
-        };
-        check_unified(&model, &good).unwrap();
-        let mut mutations = vec![];
-        let mut missing = good.clone();
-        missing.edges.clear();
-        mutations.push(missing);
-        let mut partial = good.clone();
-        partial.documents.clear();
-        mutations.push(partial);
-        let mut partial = good.clone();
-        partial.nodes.pop();
-        mutations.push(partial);
-        let mut wrong = good.clone();
-        wrong.generation = 5;
-        mutations.push(wrong);
-        let mut wrong = good.clone();
-        wrong.documents[0].1 = 1;
-        mutations.push(wrong);
-        let mut wrong = good.clone();
-        wrong.edges[0].1 = 3;
-        mutations.push(wrong);
-        for observed in mutations {
-            assert!(
-                check_unified(&model, &observed).is_err(),
-                "accepted {observed:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn mixed_member_cuts_recover_both_or_neither_at_one_generation() {
-        let mut coverage = super::adversarial::coverage::CoverageRegistry::default();
-        super::adversarial::runner::unified::exercise_unified_faults(256, &mut coverage).unwrap();
-        for key in [
-            "storage-durability.mixed-batch.members.fire",
-            "storage-durability.mixed-batch.torn-final.fire",
-            "storage-durability.mixed-batch.torn-final.clean",
-        ] {
-            assert!(coverage.count(key) > 0, "unmeasured mixed cut {key}");
-        }
-    }
-
-    #[test]
-    fn indeterminate_mixed_commit_is_reconciled_without_blind_retry() {
-        let mut coverage = super::adversarial::coverage::CoverageRegistry::default();
-        // The adapter checks the submitted complete pre/post model, then proves
-        // that reconciling a complete commit did not append another WAL run.
-        super::adversarial::runner::unified::exercise_unified_faults(257, &mut coverage).unwrap();
-        assert!(coverage.count("storage-durability.mixed-batch.sync.fire") > 0);
-    }
-
-    #[test]
-    fn fold_rotation_and_reclaim_preserve_the_unabsorbed_graph_tail() {
-        let mut coverage = super::adversarial::coverage::CoverageRegistry::default();
-        super::adversarial::graph_recovery::probe_commit_boundaries(256, &mut coverage).unwrap();
-        for receipt in zeppelin_embed::graph_recovery_test_support::run_seal_rotation_probe() {
-            assert_eq!((receipt.fires, receipt.clean_controls), (1, 1));
-        }
-        super::adversarial::graph_reclaim::probe(256, &mut coverage).unwrap();
-        for key in [
-            "storage-durability.graph-fold.manifest-rename.fire",
-            "storage-durability.graph-fold.manifest-rename.clean",
-            "property-graph.reclaim.fold-before-capture.fire",
-            "property-graph.reclaim.fold-before-capture.clean",
-        ] {
-            assert!(
-                coverage.count(key) > 0,
-                "missing measured lifecycle case {key}"
-            );
-        }
-    }
-
-    #[test]
-    fn definite_unified_refusal_preserves_bytes_and_writer_admission() {
-        super::adversarial::runner::unified::probe_unified_refusals().unwrap();
-    }
-
-    #[test]
-    fn duplicate_keyed_mixed_replay_keeps_the_acknowledged_generation() {
-        super::adversarial::runner::unified::probe_mixed_replay().unwrap();
-    }
-
-    #[test]
-    fn transient_reopen_read_refusal_preserves_unified_state_before_the_next_phase() {
-        super::adversarial::runner::unified::probe_unified_read_refusal().unwrap();
-    }
-
-    #[test]
-    fn part_a_coverage_keys_are_registered_and_required() {
-        let required: Vec<_> = super::adversarial::coverage::required_smoke_coverage().collect();
-        let expected = super::coverage_key_expectations::expected_smoke_keys();
-        for key in [
-            "op.enable_graph",
-            "op.graph_apply",
-            "op.mixed_batch",
-            "storage-durability.graph-commit.fire",
-            "storage-durability.graph-commit.clean",
-            "storage-durability.graph-fold.fire",
-            "storage-durability.graph-fold.clean",
-            "storage-durability.mixed-batch.fire",
-            "storage-durability.mixed-batch.clean",
-        ] {
-            assert!(required.contains(&key), "unregistered {key}");
-            assert!(
-                expected.contains(&key),
-                "independent expectations omit {key}"
-            );
-        }
-    }
-}
-
-#[cfg(feature = "graph-cypher")]
 #[test]
 fn property_graph_catalog_probe_preserves_independent_symbol_and_admission_contracts() {
     let mut coverage = adversarial::coverage::CoverageRegistry::default();
@@ -20423,5 +20270,206 @@ fn ze72_c_entry_fault_smoke() {
         .chain(adversarial::graph_c_entry::BINDING_FAULT_COVERAGE)
     {
         assert_eq!(coverage.count(key), 1, "{key}");
+    }
+}
+
+#[cfg(feature = "graph-cypher")]
+mod unified_store {
+    use super::adversarial::{campaign::CampaignKind, program::Program};
+
+    #[test]
+    fn document_relationship_reads_back_with_shared_ids_after_reopen() {
+        let mut coverage = super::adversarial::coverage::CoverageRegistry::default();
+        super::adversarial::unified_graph::run(
+            super::adversarial::unified_graph::Operation::DocumentRelationship,
+            358,
+            &mut coverage,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn document_delete_obeys_restrict_and_removes_the_isolated_node_after_reopen() {
+        let mut coverage = super::adversarial::coverage::CoverageRegistry::default();
+        super::adversarial::unified_graph::run(
+            super::adversarial::unified_graph::Operation::DocumentDelete,
+            358,
+            &mut coverage,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn missing_document_endpoints_refuse_before_writes_and_leave_writer_usable() {
+        let mut coverage = super::adversarial::coverage::CoverageRegistry::default();
+        super::adversarial::unified_graph::run(
+            super::adversarial::unified_graph::Operation::MissingDocumentEndpoint,
+            358,
+            &mut coverage,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn generated_program_executes_graph_and_mixed_ops_on_one_store() {
+        let program = Program::generate_for(CampaignKind::StorageDurability, 256);
+        for kind in ["enable_graph", "graph_apply", "mixed_batch"] {
+            assert!(
+                program.ops.iter().any(|op| op.kind() == kind),
+                "generated storage program lacks {kind}"
+            );
+        }
+        assert_eq!(
+            program.jsonl(),
+            Program::generate_for(CampaignKind::StorageDurability, 256).jsonl()
+        );
+        super::adversarial::runner::unified::probe_unified_program(&program).unwrap();
+    }
+
+    #[test]
+    fn graph_faults_fire_only_at_the_named_operation_and_path() {
+        super::adversarial::runner::unified::probe_unified_faults().unwrap();
+    }
+    #[test]
+    fn unified_comparator_rejects_missing_edge_partial_batch_and_wrong_generation() {
+        use super::adversarial::{
+            model::Model,
+            runner::unified::{UnifiedObservation, check_unified},
+        };
+        let mut model = Model::default();
+        model.graph_enabled = true;
+        model.unified_generation = 4;
+        model.acknowledge(91, 2, 10);
+        model.graph_nodes.extend([2, 3]);
+        model.edges.insert(1, (2, 3));
+        model.document_edges.insert(358, (91, 91));
+        let good = UnifiedObservation {
+            generation: 4,
+            graph_enabled: true,
+            documents: vec![(91, 2, 10)],
+            document_nodes: vec![91],
+            document_edges: vec![(358, 91, 91)],
+            nodes: vec![2, 3],
+            edges: vec![(1, 2, 3)],
+        };
+        check_unified(&model, &good).unwrap();
+        let mut mutations = vec![];
+        let mut missing_document_node = good.clone();
+        missing_document_node.document_nodes.clear();
+        mutations.push(missing_document_node);
+        let mut missing_document_edge = good.clone();
+        missing_document_edge.document_edges.clear();
+        mutations.push(missing_document_edge);
+        let mut wrong_document_node = good.clone();
+        wrong_document_node.document_nodes[0] = 2;
+        mutations.push(wrong_document_node);
+        let mut wrong_document_endpoint = good.clone();
+        wrong_document_endpoint.document_edges[0].2 = 2;
+        mutations.push(wrong_document_endpoint);
+        let mut missing = good.clone();
+        missing.edges.clear();
+        mutations.push(missing);
+        let mut partial = good.clone();
+        partial.documents.clear();
+        mutations.push(partial);
+        let mut partial = good.clone();
+        partial.nodes.pop();
+        mutations.push(partial);
+        let mut wrong = good.clone();
+        wrong.generation = 5;
+        mutations.push(wrong);
+        let mut wrong = good.clone();
+        wrong.documents[0].1 = 1;
+        mutations.push(wrong);
+        let mut wrong = good.clone();
+        wrong.edges[0].1 = 3;
+        mutations.push(wrong);
+        for observed in mutations {
+            assert!(
+                check_unified(&model, &observed).is_err(),
+                "accepted {observed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mixed_member_cuts_recover_both_or_neither_at_one_generation() {
+        let mut coverage = super::adversarial::coverage::CoverageRegistry::default();
+        super::adversarial::runner::unified::exercise_unified_faults(256, &mut coverage).unwrap();
+        for key in [
+            "storage-durability.mixed-batch.members.fire",
+            "storage-durability.mixed-batch.torn-final.fire",
+            "storage-durability.mixed-batch.torn-final.clean",
+        ] {
+            assert!(coverage.count(key) > 0, "unmeasured mixed cut {key}");
+        }
+    }
+
+    #[test]
+    fn indeterminate_mixed_commit_is_reconciled_without_blind_retry() {
+        let mut coverage = super::adversarial::coverage::CoverageRegistry::default();
+        // The adapter checks the submitted complete pre/post model, then proves
+        // that reconciling a complete commit did not append another WAL run.
+        super::adversarial::runner::unified::exercise_unified_faults(257, &mut coverage).unwrap();
+        assert!(coverage.count("storage-durability.mixed-batch.sync.fire") > 0);
+    }
+
+    #[test]
+    fn fold_rotation_and_reclaim_preserve_the_unabsorbed_graph_tail() {
+        let mut coverage = super::adversarial::coverage::CoverageRegistry::default();
+        super::adversarial::graph_recovery::probe_commit_boundaries(256, &mut coverage).unwrap();
+        for receipt in zeppelin_embed::graph_recovery_test_support::run_seal_rotation_probe() {
+            assert_eq!((receipt.fires, receipt.clean_controls), (1, 1));
+        }
+        super::adversarial::graph_reclaim::probe(256, &mut coverage).unwrap();
+        for key in [
+            "storage-durability.graph-fold.manifest-rename.fire",
+            "storage-durability.graph-fold.manifest-rename.clean",
+            "property-graph.reclaim.fold-before-capture.fire",
+            "property-graph.reclaim.fold-before-capture.clean",
+        ] {
+            assert!(
+                coverage.count(key) > 0,
+                "missing measured lifecycle case {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn definite_unified_refusal_preserves_bytes_and_writer_admission() {
+        super::adversarial::runner::unified::probe_unified_refusals().unwrap();
+    }
+
+    #[test]
+    fn duplicate_keyed_mixed_replay_keeps_the_acknowledged_generation() {
+        super::adversarial::runner::unified::probe_mixed_replay().unwrap();
+    }
+
+    #[test]
+    fn transient_reopen_read_refusal_preserves_unified_state_before_the_next_phase() {
+        super::adversarial::runner::unified::probe_unified_read_refusal().unwrap();
+    }
+
+    #[test]
+    fn part_a_coverage_keys_are_registered_and_required() {
+        let required: Vec<_> = super::adversarial::coverage::required_smoke_coverage().collect();
+        let expected = super::coverage_key_expectations::expected_smoke_keys();
+        for key in [
+            "op.enable_graph",
+            "op.graph_apply",
+            "op.mixed_batch",
+            "storage-durability.graph-commit.fire",
+            "storage-durability.graph-commit.clean",
+            "storage-durability.graph-fold.fire",
+            "storage-durability.graph-fold.clean",
+            "storage-durability.mixed-batch.fire",
+            "storage-durability.mixed-batch.clean",
+        ] {
+            assert!(required.contains(&key), "unregistered {key}");
+            assert!(
+                expected.contains(&key),
+                "independent expectations omit {key}"
+            );
+        }
     }
 }
