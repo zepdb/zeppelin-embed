@@ -9,6 +9,9 @@ use zeppelin_embed_adversarial_oracle::graph_adjacency_store::{
 
 /// Keys whose body must have fired at least one scheduled fault or refusal.
 const FIRED: &[&str] = &[
+    "property-graph.reclaim.host-budget",
+    "property-graph.reclaim.host-create",
+    "property-graph.reclaim.host-unlink",
     "property-graph.reclaim.fold-before-capture.fire",
     "property-graph.reclaim.stale-recheck",
     "property-graph.reclaim.inventory-fold",
@@ -141,6 +144,17 @@ pub fn observe(
         return Err("reclaim comparator accepted wrong byte accounting".into());
     }
 
+    super::tiering_maintenance::compare_host_graph_budget(report.host_budget)?;
+    let (limit, charged, steps, _) = report.host_budget;
+    for altered in [
+        (limit, limit + 1, steps, true),
+        (limit, charged, 5, true),
+        (limit, charged, steps, false),
+    ] {
+        if super::tiering_maintenance::compare_host_graph_budget(altered).is_ok() {
+            return Err("host maintenance comparator accepted altered admission/progress".into());
+        }
+    }
     let race_keys = [
         "property-graph.reclaim.capture-race",
         "property-graph.reclaim.publication-race",

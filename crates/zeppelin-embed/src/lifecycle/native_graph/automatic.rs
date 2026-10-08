@@ -32,16 +32,40 @@ impl Store {
         &self,
         control: &QueryControl,
     ) -> Result<GraphMaintenanceReport, NativeGraphError> {
+        self.maintain_native_graph_step_with_budget(control, None)
+    }
+
+    pub(crate) fn maintain_native_graph_step_budgeted(
+        &self,
+        control: &QueryControl,
+        budget: &super::maintenance::NativeMaintenanceBudget,
+    ) -> Result<GraphMaintenanceReport, NativeGraphError> {
+        self.maintain_native_graph_step_with_budget(control, Some(budget))
+    }
+
+    fn maintain_native_graph_step_with_budget(
+        &self,
+        control: &QueryControl,
+        budget: Option<&super::maintenance::NativeMaintenanceBudget>,
+    ) -> Result<GraphMaintenanceReport, NativeGraphError> {
         let admission = self.admit_native_graph_maintenance()?;
-        #[cfg(not(test))]
-        let result = self.commit_native_graph_maintenance(&admission, control);
+        #[allow(unused_mut)]
+        let mut limits = super::maintenance::MaintenanceLimits::default();
         #[cfg(test)]
-        let result = {
-            let mut limits = super::maintenance::MaintenanceLimits::default();
-            if PARTIAL_FOLD.with(std::cell::Cell::get) {
-                limits.inventory_additions = 1;
+        if PARTIAL_FOLD.with(std::cell::Cell::get) {
+            limits.inventory_additions = 1;
+        }
+        let result = if let Some(budget) = budget {
+            super::maintenance::commit_with_limits(self, &admission, control, limits, Some(budget))
+        } else {
+            #[cfg(not(test))]
+            {
+                self.commit_native_graph_maintenance(&admission, control)
             }
-            self.commit_native_graph_maintenance_with_limits(&admission, control, limits)
+            #[cfg(test)]
+            {
+                self.commit_native_graph_maintenance_with_limits(&admission, control, limits)
+            }
         };
         let current = self.admit_native_read()?;
         // Retirement first checkpoints the completion and asks for a fresh

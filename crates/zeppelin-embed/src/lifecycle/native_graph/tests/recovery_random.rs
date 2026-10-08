@@ -356,6 +356,11 @@ pub(super) fn run() {
             // Manifest-absent graph debris: List is a definite no-write
             // refusal; failed first/later unlinks fence and reopen resumes.
             super::super::orphans::sweep_faults(rng.random());
+            // The host's byte refusal and shared-fence create/unlink failures
+            // retain the same independent view through writable reopen.
+            for kind in 0..3 {
+                super::super::consolidation::maintain::run_fault_case(kind);
+            }
             // Shuffle the fault histories with the same replayable seed. Every
             // publisher is exercised at the default eight sequences; failures
             // must refuse all subsequent acknowledgements until reopen.
@@ -675,10 +680,19 @@ pub(super) fn run() {
                         s.snapshot().unwrap().generation()
                     }
                     Operation::Maintenance => {
-                        let report = s
-                            .maintain_native_graph_step(&QueryControl::Cancel(CancelToken::new()))
-                            .unwrap();
-                        model.acknowledge(report.generation.get());
+                        let bytes = [1, 4096, 64 * 1024 * 1024][sequence % 3];
+                        let report = s.maintain(crate::tier::MaintenanceBudget {
+                            wall_time: std::time::Duration::from_secs(60),
+                            bytes,
+                        });
+                        assert!(report.bytes_consumed <= bytes, "{report:?}");
+                        assert!(
+                            !matches!(report.status, crate::tier::MaintenanceStatus::Failed(_)),
+                            "{report:?}"
+                        );
+                        if let Some(generation) = report.generation {
+                            model.acknowledge(generation);
+                        }
                         graph_unfolded = true;
                         s.snapshot().unwrap().generation()
                     }

@@ -214,6 +214,10 @@ impl FfiError {
             MaintenanceError::Graph(_) => ZeErrorCode::ZeErrCorrupt,
             MaintenanceError::Consolidate(_) => ZeErrorCode::ZeErrCorrupt,
             MaintenanceError::Deadline(_) => ZeErrorCode::ZeErrInvalidArgument,
+            #[cfg(feature = "graph-cypher")]
+            MaintenanceError::PropertyGraph(error) => {
+                crate::graph_abi::store_error(&error, false).code
+            }
             MaintenanceError::ArithmeticOverflow => ZeErrorCode::ZeErrInternal,
         };
         Self::new(code, message)

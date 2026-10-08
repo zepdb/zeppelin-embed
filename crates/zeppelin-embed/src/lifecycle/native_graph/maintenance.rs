@@ -38,6 +38,54 @@ use crate::property_graph::wal::{
 };
 use std::sync::Arc;
 
+/// One host-call work ledger, shared by every step and reclaim continuation.
+pub(crate) struct NativeMaintenanceBudget {
+    limit: u64,
+    consumed: std::cell::Cell<u64>,
+}
+
+impl NativeMaintenanceBudget {
+    pub(crate) fn new(bytes: u64) -> Self {
+        Self {
+            limit: bytes,
+            consumed: std::cell::Cell::new(0),
+        }
+    }
+    pub(crate) fn charge(&self, bytes: u64) -> Result<(), NativeGraphError> {
+        let next = self
+            .consumed
+            .get()
+            .checked_add(bytes)
+            .ok_or(NativeGraphError::IdentityExhausted)?;
+        if next > self.limit {
+            return Err(NativeGraphError::MaintenanceBudgetExhausted);
+        }
+        self.consumed.set(next);
+        Ok(())
+    }
+    pub(crate) fn consumed(&self) -> u64 {
+        self.consumed.get()
+    }
+    pub(crate) fn remaining(&self) -> u64 {
+        self.limit - self.consumed.get()
+    }
+}
+
+pub(super) fn arm_publication(
+    store: &crate::lifecycle::Store,
+) -> Result<crate::ingest::ManifestPublication, NativeGraphError> {
+    Ok(store
+        .wal_writer
+        .lock()
+        .map_err(|_| crate::lifecycle::StoreError::Synchronization {
+            component: "WAL writer",
+        })?
+        .as_ref()
+        .ok_or(crate::lifecycle::StoreError::ReadOnly)?
+        .manifest_publication()?
+        .arm())
+}
+
 fn spill_error(
     writer: &spill::NativeSpillWriter<'_, '_>,
     error: crate::property_graph::storage::tree::directory::TreeError,
@@ -705,6 +753,10 @@ pub(super) fn active_reclaim_subtype(
     Ok(u16::from_le_bytes(subtype))
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "byte admission is separate from preparation memory, work and deadline limits"
+)]
 fn prepare_durable_proof<'m>(
     relocation_bytes: u64,
     target_generation: GraphGeneration,
@@ -713,6 +765,7 @@ fn prepare_durable_proof<'m>(
     storage: &'m StorageMemory<'m>,
     control: &crate::lifecycle::QueryControl,
     resources: &mut crate::property_graph::storage::tree::directory::TreeResources<'m>,
+    budget: Option<&NativeMaintenanceBudget>,
 ) -> Result<PreparedReclaimProof<'m>, NativeGraphError> {
     let capture = store.capture_native_read_roots()?;
     let admitted = admission.lease.bundle();
@@ -742,6 +795,7 @@ fn prepare_durable_proof<'m>(
         control,
         binding,
         64 * 1024 * 1024,
+        budget,
     )?;
     let mut protected = ProtectedStreamBuilder::new(storage, binding)?;
     #[cfg(any(test, feature = "test-seams"))]
@@ -1106,6 +1160,7 @@ pub(super) fn run_spill_probe(
         &control,
         binding,
         64 * 1024 * 1024,
+        None,
     )?;
     let mut mark = SpillMark::new(&storage, writer.binding(), chunk)?;
     for value in input {
@@ -1191,6 +1246,8 @@ fn resume_pending_reclaim(
     store: &crate::lifecycle::Store,
     admission: &NativeMaintenanceAdmission,
     control: &crate::lifecycle::QueryControl,
+    limits: MaintenanceLimits,
+    budget: Option<&NativeMaintenanceBudget>,
 ) -> Result<NativeMaintenanceReport, NativeGraphError> {
     let admitted = Arc::clone(admission.lease.bundle());
     let shared = GraphResources::from_store(store)?;
@@ -1212,7 +1269,6 @@ fn resume_pending_reclaim(
         return Err(NativeGraphError::StalePreparation);
     }
     let write_memory = WriteMemory::new(&shared, WriteLimits::default())?;
-    let limits = MaintenanceLimits::default();
     let storage = StorageMemory::new(&write_memory, control, limits.storage_bytes)?;
     let mut resources =
         crate::property_graph::storage::tree::directory::TreeResources::for_prepare(
@@ -1450,6 +1506,9 @@ fn resume_pending_reclaim(
         super::write::checkpoint_current(store, writer, &admitted, &shared, control)?;
         return Err(NativeGraphError::StalePreparation);
     }
+    if let Some(budget) = budget {
+        transition.charge_artifacts(budget)?;
+    }
     // Keep the shared fence across unlink, directory sync, and the matching
     // completion publication, without holding the WAL mutex across commit.
     let publication = store
@@ -1466,82 +1525,122 @@ fn resume_pending_reclaim(
         .arm();
     let mut removed_bytes = 0_u64;
     let mut already_missing = 0_u64;
-    for candidate in pending.candidates.as_slice().iter().copied() {
-        let validator = NativePreparationSource::new(&admission.lease, &storage, 1)?;
-        match validator.validate_object_descriptor(candidate, &mut resources) {
-            Ok(()) => {
-                let (path, path_charge) = NativePreparationSource::charged_candidate_path(
-                    &storage,
-                    admitted.directory(),
-                    candidate,
-                )?;
-                match admitted.vfs().delete(&path) {
-                    Ok(()) => {
-                        removed_bytes = removed_bytes
-                            .checked_add(u64::from(candidate.bytes))
-                            .ok_or(NativeGraphError::IdentityExhausted)?;
+    let unlink_result = (|| -> Result<(), NativeGraphError> {
+        for candidate in pending.candidates.as_slice().iter().copied() {
+            let validator = NativePreparationSource::new(&admission.lease, &storage, 1)?;
+            match validator.validate_object_descriptor(candidate, &mut resources) {
+                Ok(()) => {
+                    let (path, path_charge) = NativePreparationSource::charged_candidate_path(
+                        &storage,
+                        admitted.directory(),
+                        candidate,
+                    )?;
+                    control
+                        .checkpoint()
+                        .map_err(|_| NativeGraphError::Stage(StageError::Cancelled))
+                        .and_then(|()| {
+                            budget
+                                .map_or(Ok(()), |budget| budget.charge(u64::from(candidate.bytes)))
+                        })?;
+                    match admitted.vfs().delete(&path) {
+                        Ok(()) => {
+                            removed_bytes = removed_bytes
+                                .checked_add(u64::from(candidate.bytes))
+                                .ok_or(NativeGraphError::IdentityExhausted)?;
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            already_missing = already_missing
+                                .checked_add(1)
+                                .ok_or(NativeGraphError::IdentityExhausted)?;
+                        }
+                        Err(source) => return Err(io(&path, source)),
                     }
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        already_missing = already_missing
-                            .checked_add(1)
-                            .ok_or(NativeGraphError::IdentityExhausted)?;
-                    }
-                    Err(source) => return Err(io(&path, source)),
+                    drop(path);
+                    drop(path_charge);
                 }
-                drop(path);
-                drop(path_charge);
-            }
-            Err(crate::property_graph::storage::tree::directory::TreeError::Io(error))
-                if error.kind() == std::io::ErrorKind::NotFound =>
-            {
-                already_missing = already_missing
-                    .checked_add(1)
-                    .ok_or(NativeGraphError::IdentityExhausted)?;
-            }
-            Err(error) => return Err(error.into()),
-        }
-    }
-    // Interrupted creations. There is no descriptor to validate, so the file's
-    // own bytes are the proof: re-observe the length and the digest the intent
-    // recorded and unlink only on an exact match. Anything else means the path
-    // now holds something this intent never named, and it is retained.
-    for target in pending.partials.as_slice().iter().copied() {
-        let (path, path_charge) =
-            NativePreparationSource::charged_path(&storage, admitted.directory(), target.artifact)?;
-        let observed = match admitted.vfs().open(&path) {
-            Ok(length) => Some(length),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(source) => return Err(io(&path, source)),
-        };
-        match observed {
-            None => {
-                already_missing = already_missing
-                    .checked_add(1)
-                    .ok_or(NativeGraphError::IdentityExhausted)?;
-            }
-            Some(length)
-                if length == target.observed
-                    && orphans::observe_digest(admitted.vfs(), &path, length, &mut resources)?
-                        == target.digest =>
-            {
-                match admitted.vfs().delete(&path) {
-                    Ok(()) => {
-                        removed_bytes = removed_bytes
-                            .checked_add(target.observed)
-                            .ok_or(NativeGraphError::IdentityExhausted)?;
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        already_missing = already_missing
-                            .checked_add(1)
-                            .ok_or(NativeGraphError::IdentityExhausted)?;
-                    }
-                    Err(source) => return Err(io(&path, source)),
+                Err(crate::property_graph::storage::tree::directory::TreeError::Io(error))
+                    if error.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    already_missing = already_missing
+                        .checked_add(1)
+                        .ok_or(NativeGraphError::IdentityExhausted)?;
                 }
+                Err(error) => return Err(error.into()),
             }
-            Some(_) => {}
         }
-        drop(path);
-        drop(path_charge);
+        // Interrupted creations. There is no descriptor to validate, so the file's
+        // own bytes are the proof: re-observe the length and the digest the intent
+        // recorded and unlink only on an exact match. Anything else means the path
+        // now holds something this intent never named, and it is retained.
+        for target in pending.partials.as_slice().iter().copied() {
+            let (path, path_charge) = NativePreparationSource::charged_path(
+                &storage,
+                admitted.directory(),
+                target.artifact,
+            )?;
+            let observed = match admitted.vfs().open(&path) {
+                Ok(length) => Some(length),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(source) => return Err(io(&path, source)),
+            };
+            match observed {
+                None => {
+                    already_missing = already_missing
+                        .checked_add(1)
+                        .ok_or(NativeGraphError::IdentityExhausted)?;
+                }
+                Some(length)
+                    if length == target.observed
+                        && orphans::observe_digest(
+                            admitted.vfs(),
+                            &path,
+                            length,
+                            &mut resources,
+                        )? == target.digest =>
+                {
+                    control
+                        .checkpoint()
+                        .map_err(|_| NativeGraphError::Stage(StageError::Cancelled))
+                        .and_then(|()| budget.map_or(Ok(()), |budget| budget.charge(length)))?;
+                    match admitted.vfs().delete(&path) {
+                        Ok(()) => {
+                            removed_bytes = removed_bytes
+                                .checked_add(target.observed)
+                                .ok_or(NativeGraphError::IdentityExhausted)?;
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            already_missing = already_missing
+                                .checked_add(1)
+                                .ok_or(NativeGraphError::IdentityExhausted)?;
+                        }
+                        Err(source) => return Err(io(&path, source)),
+                    }
+                }
+                Some(_) => {}
+            }
+            drop(path);
+            drop(path_charge);
+        }
+        Ok(())
+    })();
+    if let Err(error) = unlink_result {
+        // The durable intent authorizes earlier unlinks. A host deadline or
+        // byte stop at any read/allocation/admission boundary remains resumable.
+        if matches!(
+            error,
+            NativeGraphError::MaintenanceBudgetExhausted
+                | NativeGraphError::Stage(StageError::Cancelled)
+        ) || (budget.is_some()
+            && matches!(
+                error,
+                NativeGraphError::Read(
+                    crate::property_graph::storage::tree::directory::TreeError::Control(_)
+                )
+            ))
+        {
+            publication.complete();
+        }
+        return Err(error);
     }
     if let crate::lifecycle::durability::SyncRequirement::Sync(kind) =
         store.durability_policy.directory_sync()
@@ -1551,7 +1650,10 @@ fn resume_pending_reclaim(
             .sync(admitted.directory(), kind)
             .map_err(|source| io(admitted.directory(), source))?;
     }
-    let _ = protect_and_commit(store, writer, transition, control, false)?;
+    let completion_control = budget
+        .map(|_| crate::lifecycle::QueryControl::Cancel(crate::lifecycle::CancelToken::new()));
+    let publication_control = completion_control.as_ref().unwrap_or(control);
+    let _ = protect_and_commit(store, writer, transition, publication_control, false, None)?;
     publication.complete();
     let reclaimed_bytes = pending
         .candidates
@@ -1587,6 +1689,8 @@ fn retire_completed_reclaim(
     store: &crate::lifecycle::Store,
     admission: &NativeMaintenanceAdmission,
     control: &crate::lifecycle::QueryControl,
+    limits: MaintenanceLimits,
+    budget: Option<&NativeMaintenanceBudget>,
 ) -> Result<NativeMaintenanceReport, NativeGraphError> {
     let admitted = Arc::clone(admission.lease.bundle());
     let shared = GraphResources::from_store(store)?;
@@ -1610,7 +1714,6 @@ fn retire_completed_reclaim(
     }
 
     let write_memory = WriteMemory::new(&shared, WriteLimits::default())?;
-    let limits = MaintenanceLimits::default();
     let storage = StorageMemory::new(&write_memory, control, limits.storage_bytes)?;
     let mut resources =
         crate::property_graph::storage::tree::directory::TreeResources::for_prepare(
@@ -1797,10 +1900,13 @@ fn retire_completed_reclaim(
         super::write::checkpoint_current(store, writer, &admitted, &shared, control)?;
         return Err(NativeGraphError::StalePreparation);
     }
-    let _ = protect_and_commit(store, writer, transition, control, false)?;
+    let _ = protect_and_commit(store, writer, transition, control, false, budget)?;
     let cleared = store.admit_native_read()?;
     let cleared_bundle = Arc::clone(cleared.bundle());
-    super::write::checkpoint_current(store, writer, &cleared_bundle, &shared, control)?;
+    let completion_control = budget
+        .map(|_| crate::lifecycle::QueryControl::Cancel(crate::lifecycle::CancelToken::new()));
+    let publication_control = completion_control.as_ref().unwrap_or(control);
+    super::write::checkpoint_current(store, writer, &cleared_bundle, &shared, publication_control)?;
     store
         .native_graph
         .pack_bytes_since_reclaim
@@ -1876,7 +1982,13 @@ pub(super) fn commit(
     admission: &NativeMaintenanceAdmission,
     control: &crate::lifecycle::QueryControl,
 ) -> Result<NativeMaintenanceReport, NativeGraphError> {
-    commit_with_limits(store, admission, control, MaintenanceLimits::default())
+    commit_with_limits(
+        store,
+        admission,
+        control,
+        MaintenanceLimits::default(),
+        None,
+    )
 }
 
 pub(super) fn commit_with_limits(
@@ -1884,11 +1996,12 @@ pub(super) fn commit_with_limits(
     admission: &NativeMaintenanceAdmission,
     control: &crate::lifecycle::QueryControl,
     limits: MaintenanceLimits,
+    budget: Option<&NativeMaintenanceBudget>,
 ) -> Result<NativeMaintenanceReport, NativeGraphError> {
     if admission.lease.bundle().reclaim().is_some() {
         return match active_reclaim_subtype(store, admission, control)? {
-            2 => resume_pending_reclaim(store, admission, control),
-            3 => retire_completed_reclaim(store, admission, control),
+            2 => resume_pending_reclaim(store, admission, control, limits, budget),
+            3 => retire_completed_reclaim(store, admission, control, limits, budget),
             _ => Err(NativeGraphError::Invalid(
                 "unsupported reclaim state subtype",
             )),
@@ -1969,7 +2082,7 @@ pub(super) fn commit_with_limits(
         drop(resources);
         drop(storage);
         let folded = store.admit_native_graph_maintenance()?;
-        return commit_with_limits(store, &folded, control, limits);
+        return commit_with_limits(store, &folded, control, limits, budget);
     }
     let generation = super::write::assigned_generation(store, admitted.base().generation)?;
     let proof = prepare_durable_proof(
@@ -1980,6 +2093,7 @@ pub(super) fn commit_with_limits(
         &storage,
         control,
         &mut resources,
+        budget,
     )?;
     #[cfg(all(test, feature = "graph-cypher"))]
     crate::property_graph::storage::preparation_work_capture::phase(
@@ -2258,7 +2372,7 @@ pub(super) fn commit_with_limits(
         super::write::checkpoint_current(store, writer, &admitted, &shared, control)?;
         return Err(NativeGraphError::StalePreparation);
     }
-    let _ = protect_and_commit(store, writer, transition, control, false)?;
+    let _ = protect_and_commit(store, writer, transition, control, false, budget)?;
     *sweep_progress = next_sweep;
     Ok(NativeMaintenanceReport {
         relocated_bytes: consolidated.relocated_bytes(),

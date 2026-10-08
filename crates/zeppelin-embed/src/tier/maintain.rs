@@ -1,5 +1,13 @@
 //! Host-invoked execution of due tier transitions.
 
+#![cfg_attr(
+    feature = "graph-cypher",
+    allow(
+        clippy::result_large_err,
+        reason = "maintenance retains the existing unboxed GraphStoreError cause"
+    )
+)]
+
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -48,6 +56,13 @@ pub struct MaintenanceBudget {
 
 /// Why one maintenance call stopped.
 #[derive(Debug)]
+#[cfg_attr(
+    feature = "graph-cypher",
+    allow(
+        clippy::large_enum_variant,
+        reason = "the existing public Failed variant retains its typed cause without allocating"
+    )
+)]
 pub enum MaintenanceStatus {
     /// Every non-deferred transition considered by this call is complete or not due.
     Complete,
@@ -77,6 +92,13 @@ pub enum UncarriedRegionKind {
 
 /// Typed maintenance failure retained in [`MaintenanceReport`].
 #[derive(Debug)]
+#[cfg_attr(
+    feature = "graph-cypher",
+    allow(
+        clippy::large_enum_variant,
+        reason = "the graph facade keeps GraphStoreError unboxed"
+    )
+)]
 pub enum MaintenanceError {
     /// Store lifecycle, publication, or accounting failed.
     Store(StoreError),
@@ -88,6 +110,9 @@ pub enum MaintenanceError {
     Consolidate(ConsolidateError),
     /// The wall-time deadline was outside the monotonic clock range.
     Deadline(DeadlineError),
+    /// Property graph maintenance failed.
+    #[cfg(feature = "graph-cypher")]
+    PropertyGraph(crate::property_graph::GraphStoreError),
     /// Checked maintenance byte arithmetic overflowed.
     ArithmeticOverflow,
 }
@@ -102,6 +127,8 @@ impl std::fmt::Display for MaintenanceError {
                 write!(formatter, "tier maintenance consolidation: {error}")
             }
             Self::Deadline(error) => write!(formatter, "tier maintenance deadline: {error}"),
+            #[cfg(feature = "graph-cypher")]
+            Self::PropertyGraph(error) => write!(formatter, "property graph maintenance: {error}"),
             Self::ArithmeticOverflow => {
                 formatter.write_str("tier maintenance byte arithmetic overflow")
             }
@@ -117,6 +144,8 @@ impl std::error::Error for MaintenanceError {
             Self::Graph(error) => Some(error),
             Self::Consolidate(error) => Some(error),
             Self::Deadline(error) => Some(error),
+            #[cfg(feature = "graph-cypher")]
+            Self::PropertyGraph(error) => Some(error),
             Self::ArithmeticOverflow => None,
         }
     }
@@ -189,8 +218,75 @@ pub struct MaintenanceReport {
     pub pass_counters: RefinementPassCounters,
     /// Final manifest generation of this call when it published a refinement.
     pub refinement_generation: Option<u64>,
+    /// Successful property graph maintenance steps.
+    #[cfg(feature = "graph-cypher")]
+    pub graph_steps: u64,
+    /// Combined property graph progress.
+    #[cfg(feature = "graph-cypher")]
+    pub graph: Option<crate::property_graph::GraphMaintenanceReport>,
+    /// Last generation published by either phase; absent when nothing was published.
+    pub generation: Option<u64>,
     /// Final disposition of the call.
     pub status: MaintenanceStatus,
+}
+
+impl Default for MaintenanceReport {
+    fn default() -> Self {
+        empty_report(MaintenanceStatus::Complete)
+    }
+}
+
+impl MaintenanceReport {
+    /// Accumulates property graph counters and the last publication for outer adapters.
+    /// Byte and segment counters are merged separately by the adapter.
+    /// # Errors
+    /// Returns checked counter overflow.
+    #[doc(hidden)]
+    pub fn merge_property_graph_progress(&mut self, other: &Self) -> Result<(), MaintenanceError> {
+        if other.generation.is_some() {
+            self.generation = other.generation;
+        }
+        #[cfg(feature = "graph-cypher")]
+        {
+            self.graph_steps = self
+                .graph_steps
+                .checked_add(other.graph_steps)
+                .ok_or(MaintenanceError::ArithmeticOverflow)?;
+            if let Some(step) = other.graph {
+                if let Some(total) = self.graph.as_mut() {
+                    total.generation = step.generation;
+                    total.cycle_complete = step.cycle_complete;
+                    total.replaced_physical_refs = total
+                        .replaced_physical_refs
+                        .checked_add(step.replaced_physical_refs)
+                        .ok_or(MaintenanceError::ArithmeticOverflow)?;
+                    total.new_pack_bytes = total
+                        .new_pack_bytes
+                        .checked_add(step.new_pack_bytes)
+                        .ok_or(MaintenanceError::ArithmeticOverflow)?;
+                    total.relocated_bytes = total
+                        .relocated_bytes
+                        .checked_add(step.relocated_bytes)
+                        .ok_or(MaintenanceError::ArithmeticOverflow)?;
+                    total.drained_packs = total
+                        .drained_packs
+                        .checked_add(step.drained_packs)
+                        .ok_or(MaintenanceError::ArithmeticOverflow)?;
+                    total.reclaimed_bytes = total
+                        .reclaimed_bytes
+                        .checked_add(step.reclaimed_bytes)
+                        .ok_or(MaintenanceError::ArithmeticOverflow)?;
+                    total.removed_bytes = total
+                        .removed_bytes
+                        .checked_add(step.removed_bytes)
+                        .ok_or(MaintenanceError::ArithmeticOverflow)?;
+                } else {
+                    self.graph = Some(step);
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Store {
@@ -216,7 +312,47 @@ impl Store {
         budget: MaintenanceBudget,
         thresholds: Option<TierThresholds>,
     ) -> MaintenanceReport {
-        let report = match maintain_one(self, budget, thresholds) {
+        let report = match (|| {
+            let _maintenance = self.maintenance.lock().map_err(|_| {
+                MaintenanceError::Store(StoreError::Synchronization {
+                    component: "tier maintenance",
+                })
+            })?;
+            if budget.wall_time.is_zero() || budget.bytes == 0 {
+                return Ok(empty_report(MaintenanceStatus::BudgetExhausted));
+            }
+            let build_time = budget.wall_time.mul_f64(0.9);
+            if build_time.is_zero() {
+                return Ok(empty_report(MaintenanceStatus::BudgetExhausted));
+            }
+            // One deadline reserves ten percent for publication in both phases.
+            let control = QueryControl::Deadline(
+                Deadline::after_with_clock(build_time, Arc::clone(&self.clock))
+                    .map_err(MaintenanceError::Deadline)?,
+            );
+            #[allow(
+                unused_mut,
+                reason = "the property graph phase mutates this report when enabled"
+            )]
+            let mut report = maintain_one(self, budget, thresholds, &control)?;
+            #[cfg(feature = "graph-cypher")]
+            if matches!(report.status, MaintenanceStatus::Complete) {
+                let result = (|| {
+                    if self
+                        .snapshot()
+                        .map_err(MaintenanceError::Store)?
+                        .graph_enabled
+                    {
+                        maintain_property_graph(self, budget, &control, &mut report)?;
+                    }
+                    Ok::<(), MaintenanceError>(())
+                })();
+                if let Err(error) = result {
+                    report.status = MaintenanceStatus::Failed(error);
+                }
+            }
+            Ok(report)
+        })() {
             Ok(report) => report,
             Err(error) => empty_report(MaintenanceStatus::Failed(error)),
         };
@@ -228,6 +364,64 @@ impl Store {
         }
         report
     }
+}
+
+#[cfg(feature = "graph-cypher")]
+fn maintain_property_graph(
+    store: &Store,
+    budget: MaintenanceBudget,
+    control: &QueryControl,
+    report: &mut MaintenanceReport,
+) -> Result<(), MaintenanceError> {
+    use crate::lifecycle::native_graph::NativeGraphError;
+    use crate::lifecycle::native_graph::maintenance::NativeMaintenanceBudget;
+    let graph_budget =
+        NativeMaintenanceBudget::new(budget.bytes.saturating_sub(report.bytes_consumed));
+    let segment_bytes = report.bytes_consumed;
+    for _ in 0..4 {
+        if graph_budget.remaining() == 0 || control.checkpoint().is_err() {
+            report.status = MaintenanceStatus::BudgetExhausted;
+            return Ok(());
+        }
+        let before = current_generation(store).map_err(MaintenanceError::Store)?;
+        let result = store.maintain_native_graph_step_budgeted(control, &graph_budget);
+        report.bytes_consumed = segment_bytes
+            .checked_add(graph_budget.consumed())
+            .ok_or(MaintenanceError::ArithmeticOverflow)?;
+        let after = current_generation(store).map_err(MaintenanceError::Store)?;
+        if after > before {
+            report.generation = Some(after);
+        }
+        let step = match result {
+            Ok(step) => step,
+            Err(NativeGraphError::MaintenanceBudgetExhausted)
+            | Err(NativeGraphError::Read(
+                crate::property_graph::storage::tree::directory::TreeError::Control(
+                    crate::lifecycle::QueryError::Timeout { .. },
+                ),
+            )) => {
+                report.status = MaintenanceStatus::BudgetExhausted;
+                return Ok(());
+            }
+            Err(NativeGraphError::Stage(crate::property_graph::staging::StageError::Cancelled))
+                if control.checkpoint().is_err() =>
+            {
+                report.status = MaintenanceStatus::BudgetExhausted;
+                return Ok(());
+            }
+            Err(error) => return Err(MaintenanceError::PropertyGraph(error.into())),
+        };
+        report.merge_property_graph_progress(&MaintenanceReport {
+            graph_steps: 1,
+            graph: Some(step),
+            ..MaintenanceReport::default()
+        })?;
+        if step.cycle_complete {
+            return Ok(());
+        }
+    }
+    report.status = MaintenanceStatus::BudgetExhausted;
+    Ok(())
 }
 
 fn empty_report(status: MaintenanceStatus) -> MaintenanceReport {
@@ -243,6 +437,11 @@ fn empty_report(status: MaintenanceStatus) -> MaintenanceReport {
         passes_applied: 0,
         pass_counters: RefinementPassCounters::default(),
         refinement_generation: None,
+        #[cfg(feature = "graph-cypher")]
+        graph_steps: 0,
+        #[cfg(feature = "graph-cypher")]
+        graph: None,
+        generation: None,
         status,
     }
 }
@@ -280,15 +479,8 @@ fn maintain_one(
     store: &Store,
     budget: MaintenanceBudget,
     thresholds: Option<TierThresholds>,
+    control: &QueryControl,
 ) -> Result<MaintenanceReport, MaintenanceError> {
-    if budget.wall_time.is_zero() || budget.bytes == 0 {
-        return Ok(empty_report(MaintenanceStatus::BudgetExhausted));
-    }
-    let _maintenance = store.maintenance.lock().map_err(|_| {
-        MaintenanceError::Store(StoreError::Synchronization {
-            component: "tier maintenance",
-        })
-    })?;
     let lease = store.snapshot().map_err(MaintenanceError::Store)?;
     {
         let writer = store.writer_lock.lock().map_err(|_| {
@@ -300,126 +492,127 @@ fn maintain_one(
             return Err(MaintenanceError::Store(StoreError::ReadOnly));
         }
     }
-    let build_time = budget.wall_time.mul_f64(0.9);
-    if build_time.is_zero() {
-        return Ok(empty_report(MaintenanceStatus::BudgetExhausted));
-    }
-    // Keep ten percent of the host's wall budget for completed-artifact and
-    // manifest publication after construction stops consulting the deadline.
-    let deadline = Deadline::after_with_clock(build_time, Arc::clone(&store.clock))
-        .map_err(MaintenanceError::Deadline)?;
-    let control = QueryControl::Deadline(deadline);
     let mut report = empty_report(MaintenanceStatus::Complete);
-    let mut selected_profile = None;
-    for segment in lease
-        .segments()
-        .iter()
-        .filter(|segment| transition_due(segment, thresholds))
-    {
-        if let Some(deferral) = promotion_deferral(segment) {
-            report.promotion_deferrals.push(deferral);
-            continue;
-        }
-        let (epoch, profile) = match selected_profile {
-            Some(selected) => selected,
-            None => {
-                let epoch = lease.epoch_alias().ok_or(MaintenanceError::Graph(
-                    GraphBuildError::Profile(
-                        crate::graph::search::GraphProfileError::EpochUnstamped,
-                    ),
-                ))?;
-                let profile = lease
-                    .graph_profile()
-                    .map_err(GraphBuildError::Profile)
-                    .map_err(MaintenanceError::Graph)?;
-                selected_profile = Some((epoch, profile));
-                (epoch, profile)
+    let result = (|| {
+        let mut selected_profile = None;
+        for segment in lease
+            .segments()
+            .iter()
+            .filter(|segment| transition_due(segment, thresholds))
+        {
+            if let Some(deferral) = promotion_deferral(segment) {
+                report.promotion_deferrals.push(deferral);
+                continue;
             }
-        };
-        let params = profile
-            .build_params()
-            .with_checkpoint_batch_rows(MAINTENANCE_CHECKPOINT_ROWS as u32)
-            .map_err(MaintenanceError::Parameters)?;
-        let remaining_bytes = budget.bytes.saturating_sub(report.bytes_consumed);
-        let (stride, admitted_rows) = admit_maintenance_rows(segment, params, remaining_bytes)?;
-        if admitted_rows == 0 {
-            report.status = MaintenanceStatus::BudgetExhausted;
-            return Ok(report);
-        }
-        let (checkpoint, checkpoint_resumed) = probe_checkpoint_resume(
-            store.vfs.as_ref(),
-            checkpoint_path(&store.directory, segment.meta().id),
-        )?;
-        report.checkpoints_resumed = report
-            .checkpoints_resumed
-            .checked_add(u64::from(checkpoint_resumed))
-            .ok_or(MaintenanceError::ArithmeticOverflow)?;
-        let artifact = match build_graph_checkpointed(
-            store,
-            segment,
-            CheckpointedGraphBuild::new(
-                params,
-                MAINTENANCE_SEED,
-                GraphBuildPasses::One,
-                &checkpoint,
-                &control,
-            )
-            .with_max_work_rows(admitted_rows),
-            &lease,
-        ) {
-            Ok(artifact) => artifact,
-            Err(GraphBuildError::BudgetExhausted { rows_completed }) => {
-                let consumed = rows_completed
-                    .checked_mul(stride)
-                    .ok_or(MaintenanceError::ArithmeticOverflow)?;
-                report.bytes_consumed = report
-                    .bytes_consumed
-                    .checked_add(consumed)
-                    .ok_or(MaintenanceError::ArithmeticOverflow)?;
+            let (epoch, profile) = match selected_profile {
+                Some(selected) => selected,
+                None => {
+                    let epoch = lease.epoch_alias().ok_or(MaintenanceError::Graph(
+                        GraphBuildError::Profile(
+                            crate::graph::search::GraphProfileError::EpochUnstamped,
+                        ),
+                    ))?;
+                    let profile = lease
+                        .graph_profile()
+                        .map_err(GraphBuildError::Profile)
+                        .map_err(MaintenanceError::Graph)?;
+                    selected_profile = Some((epoch, profile));
+                    (epoch, profile)
+                }
+            };
+            let params = profile
+                .build_params()
+                .with_checkpoint_batch_rows(MAINTENANCE_CHECKPOINT_ROWS as u32)
+                .map_err(MaintenanceError::Parameters)?;
+            let remaining_bytes = budget.bytes.saturating_sub(report.bytes_consumed);
+            let (stride, admitted_rows) = admit_maintenance_rows(segment, params, remaining_bytes)?;
+            if admitted_rows == 0 {
                 report.status = MaintenanceStatus::BudgetExhausted;
-                return Ok(report);
+                return Ok(());
             }
-            Err(GraphBuildError::Timeout { .. }) => {
-                report.status = MaintenanceStatus::BudgetExhausted;
-                return Ok(report);
-            }
-            Err(error) => return Err(MaintenanceError::Graph(error)),
-        };
-        let consumed = artifact
-            .work_rows_completed()
-            .checked_mul(stride)
-            .and_then(|bytes| bytes.checked_add(crate::graph::block::NODE_BLOCK_TRAILER_LEN as u64))
-            .ok_or(MaintenanceError::ArithmeticOverflow)?;
-        report.bytes_consumed = report
-            .bytes_consumed
-            .checked_add(consumed)
-            .ok_or(MaintenanceError::ArithmeticOverflow)?;
-        let output_id = graph_segment_id(segment.meta().id, lease.generation());
-        let meta = artifact
-            .write_segment_with_graph(
+            let (checkpoint, checkpoint_resumed) = probe_checkpoint_resume(
                 store.vfs.as_ref(),
-                &store.directory,
-                segment,
-                output_id,
-                store.durability_policy,
-            )
-            .map_err(MaintenanceError::Graph)?;
-        if publish_transition(store, segment.meta().id, meta)? {
-            report.graphs_built = report
-                .graphs_built
-                .checked_add(1)
+                checkpoint_path(&store.directory, segment.meta().id),
+            )?;
+            report.checkpoints_resumed = report
+                .checkpoints_resumed
+                .checked_add(u64::from(checkpoint_resumed))
                 .ok_or(MaintenanceError::ArithmeticOverflow)?;
-            report.graph_profiles.push(GraphBuildProfileReport {
-                segment_id: output_id,
-                epoch,
-                profile,
-            });
+            let artifact = match build_graph_checkpointed(
+                store,
+                segment,
+                CheckpointedGraphBuild::new(
+                    params,
+                    MAINTENANCE_SEED,
+                    GraphBuildPasses::One,
+                    &checkpoint,
+                    control,
+                )
+                .with_max_work_rows(admitted_rows),
+                &lease,
+            ) {
+                Ok(artifact) => artifact,
+                Err(GraphBuildError::BudgetExhausted { rows_completed }) => {
+                    let consumed = rows_completed
+                        .checked_mul(stride)
+                        .ok_or(MaintenanceError::ArithmeticOverflow)?;
+                    report.bytes_consumed = report
+                        .bytes_consumed
+                        .checked_add(consumed)
+                        .ok_or(MaintenanceError::ArithmeticOverflow)?;
+                    report.status = MaintenanceStatus::BudgetExhausted;
+                    return Ok(());
+                }
+                Err(GraphBuildError::Timeout { .. }) => {
+                    report.status = MaintenanceStatus::BudgetExhausted;
+                    return Ok(());
+                }
+                Err(error) => return Err(MaintenanceError::Graph(error)),
+            };
+            let consumed = artifact
+                .work_rows_completed()
+                .checked_mul(stride)
+                .and_then(|bytes| {
+                    bytes.checked_add(crate::graph::block::NODE_BLOCK_TRAILER_LEN as u64)
+                })
+                .ok_or(MaintenanceError::ArithmeticOverflow)?;
+            report.bytes_consumed = report
+                .bytes_consumed
+                .checked_add(consumed)
+                .ok_or(MaintenanceError::ArithmeticOverflow)?;
+            let output_id = graph_segment_id(segment.meta().id, lease.generation());
+            let meta = artifact
+                .write_segment_with_graph(
+                    store.vfs.as_ref(),
+                    &store.directory,
+                    segment,
+                    output_id,
+                    store.durability_policy,
+                )
+                .map_err(MaintenanceError::Graph)?;
+            if publish_transition(store, segment.meta().id, meta)? {
+                report.generation =
+                    Some(current_generation(store).map_err(MaintenanceError::Store)?);
+                report.graphs_built = report
+                    .graphs_built
+                    .checked_add(1)
+                    .ok_or(MaintenanceError::ArithmeticOverflow)?;
+                report.graph_profiles.push(GraphBuildProfileReport {
+                    segment_id: output_id,
+                    epoch,
+                    profile,
+                });
+            }
         }
-    }
-    drop(lease);
-    maintain_consolidation(store, budget, thresholds, &control, &mut report)?;
-    if matches!(report.status, MaintenanceStatus::Complete) {
-        maintain_refinements(store, budget, &control, &mut report)?;
+        drop(lease);
+        maintain_consolidation(store, budget, thresholds, control, &mut report)?;
+        if matches!(report.status, MaintenanceStatus::Complete) {
+            maintain_refinements(store, budget, control, &mut report)?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        report.status = MaintenanceStatus::Failed(error);
     }
     Ok(report)
 }
@@ -519,6 +712,14 @@ fn maintain_refinements(
             }
             Err(error) => return Err(refinement_maintenance_error(error)),
         };
+        let consumed = artifact
+            .work_rows_completed()
+            .checked_mul(stride)
+            .ok_or(MaintenanceError::ArithmeticOverflow)?;
+        report.bytes_consumed = report
+            .bytes_consumed
+            .checked_add(consumed)
+            .ok_or(MaintenanceError::ArithmeticOverflow)?;
         let meta = artifact
             .write_segment(
                 store.vfs.as_ref(),
@@ -542,14 +743,6 @@ fn maintain_refinements(
             }
             return Ok(());
         }
-        let consumed = artifact
-            .work_rows_completed()
-            .checked_mul(stride)
-            .ok_or(MaintenanceError::ArithmeticOverflow)?;
-        report.bytes_consumed = report
-            .bytes_consumed
-            .checked_add(consumed)
-            .ok_or(MaintenanceError::ArithmeticOverflow)?;
         report.passes_applied = report
             .passes_applied
             .checked_add(1)
@@ -557,6 +750,7 @@ fn maintain_refinements(
         report.pass_counters.increment(pass)?;
         let generation = current_generation(store).map_err(MaintenanceError::Store)?;
         report.refinement_generation = Some(generation);
+        report.generation = Some(generation);
         if report.consolidation_generation.is_some() {
             report.consolidation_generation = Some(generation);
         }
@@ -842,6 +1036,7 @@ fn maintain_consolidation(
                 .consolidations
                 .checked_add(1)
                 .ok_or(MaintenanceError::ArithmeticOverflow)?;
+            report.generation = Some(current_generation(store).map_err(MaintenanceError::Store)?);
             report.consolidation_generation = Some(generation);
             report.graph_profiles.push(GraphBuildProfileReport {
                 segment_id: output_id,

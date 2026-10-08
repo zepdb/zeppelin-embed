@@ -1371,3 +1371,18 @@ mod tests {
             .expect("connectivity repair phase crash");
     }
 }
+
+/// Compare host admission to the supplied limit and the ticket's bounded cycle.
+pub(super) fn compare_host_graph_budget(observed: (u64, u64, u64, bool)) -> Result<(), String> {
+    let (limit, consumed, steps, exhausted) = observed;
+    if limit != 1
+        || consumed > limit
+        || steps > super::program::HOST_GRAPH_MAINTENANCE_STEPS
+        || !exhausted
+    {
+        return Err(format!(
+            "host graph maintenance exceeded admission or missed the byte refusal: {observed:?}"
+        ));
+    }
+    Ok(())
+}

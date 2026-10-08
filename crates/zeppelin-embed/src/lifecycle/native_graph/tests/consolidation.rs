@@ -5749,6 +5749,7 @@ pub(super) fn run_actual_probe(seed: u64) -> crate::graph_reclaim_test_support::
             run_ze46_readonly_pending_reclaim_and_checkpoint_retirement_are_exact,
         ),
     ];
+    let mut host_budget = (0, 0, 0, false);
     let mut receipts = Vec::new();
     for (key, clean_controls, body) in bodies {
         reset_verified_faults();
@@ -5757,6 +5758,27 @@ pub(super) fn run_actual_probe(seed: u64) -> crate::graph_reclaim_test_support::
             key,
             fires: take_verified_faults(),
             clean_controls,
+        });
+    }
+    for (kind, key) in [
+        (0, "property-graph.reclaim.host-budget"),
+        (1, "property-graph.reclaim.host-create"),
+        (2, "property-graph.reclaim.host-unlink"),
+    ] {
+        reset_verified_faults();
+        let observed = maintain::run_fault_case(kind);
+        if kind == 0 {
+            host_budget = observed;
+        }
+        let fires = if kind == 0 {
+            u64::from(observed.3)
+        } else {
+            take_verified_faults()
+        };
+        receipts.push(crate::graph_read_view_test_support::PathReceipt {
+            key,
+            fires,
+            clean_controls: 1,
         });
     }
     run_ze176_race_probe(seed);
@@ -5770,6 +5792,7 @@ pub(super) fn run_actual_probe(seed: u64) -> crate::graph_reclaim_test_support::
         receipts,
         state: observe_reclaim_cycle(),
         detach_sweep,
+        host_budget,
     }
 }
 
@@ -7940,4 +7963,762 @@ fn settle_reclaim_for_test(store: &Store) {
             .reclaim()
             .is_none()
     );
+}
+
+#[cfg(any(test, feature = "test-seams"))]
+pub(crate) mod maintain {
+    use super::*;
+    use crate::tier::{MaintenanceBudget, MaintenanceStatus};
+    use std::time::Duration;
+
+    fn budget(bytes: u64) -> MaintenanceBudget {
+        MaintenanceBudget {
+            wall_time: Duration::from_secs(60),
+            bytes,
+        }
+    }
+
+    #[cfg(test)]
+    fn segment_store(
+        path: &Path,
+        vfs: Arc<RecordingVfs>,
+        clock: Arc<crate::lifecycle::ManualMonotonicClock>,
+    ) -> Store {
+        let document = EmbeddingTower {
+            model_id: "sift-profile-fixture".into(),
+            model_version: "1".into(),
+            weights_digest: vec![0x16],
+            dims: 128,
+            normalization: Normalization::None,
+            prompt_prefix: String::new(),
+            max_tokens: 512,
+            runtime: EmbeddingRuntime::CpuReference,
+            compute_units: ComputeUnits::Cpu,
+            os_build: None,
+        };
+        let epoch = crate::epoch::StoreEpoch {
+            embedding: crate::epoch::EmbeddingEpoch {
+                query: document.clone(),
+                document,
+                alignment_digest: Vec::new(),
+            },
+            tokenizer: crate::fts::tokenizer::TokenizerConfig::text_default().epoch(),
+        };
+        Store::open_with_test_dependencies(
+            path,
+            options().with_epoch(epoch),
+            crate::lifecycle::StoreTestDependencies::new(vfs, clock),
+        )
+        .unwrap()
+    }
+
+    #[cfg(test)]
+    fn due_segment(store: &Store, tag: u8) {
+        use crate::lifecycle::{InMemorySegment, InMemorySegmentFactors};
+        use crate::meta::{AliveSet, ColumnStoreBuilder, Schema};
+        let vectors = (0..4)
+            .flat_map(|row| std::iter::repeat_n(row as f32, 128))
+            .collect::<Vec<_>>();
+        let mut codes = vec![0; 4 * 64];
+        let factors = vectors
+            .chunks_exact(128)
+            .zip(codes.chunks_exact_mut(64))
+            .map(|(row, encoded)| crate::quant::quantize_bit4(row, encoded).unwrap())
+            .collect();
+        let mut columns = ColumnStoreBuilder::new(Schema::new(Vec::new()).unwrap());
+        for row in 0..4 {
+            columns.push_row(row, &[]).unwrap();
+        }
+        let columns = columns.finish().unwrap();
+        let alive = AliveSet::new(4);
+        let prepared = store
+            .prepare_segment(InMemorySegment {
+                id: crate::segment::SegmentId::new(u64::from(tag), [tag; 10]),
+                scheme: 4,
+                dims: 128,
+                codes,
+                factors: InMemorySegmentFactors::Bit4(factors),
+                rescore: vectors,
+                columns: &columns,
+                alive: &alive,
+            })
+            .unwrap();
+        store.seal_snapshot(prepared).unwrap();
+    }
+
+    #[cfg(test)]
+    fn thresholds() -> crate::tier::TierThresholds {
+        crate::tier::TierThresholds { graph_min_rows: 1 }
+    }
+
+    #[test]
+    fn reports_graph_steps_in_the_maintenance_report() {
+        let parent = super::super::tempfile::tempdir().unwrap();
+        let path = parent.path().join("native");
+        let store = segment_store(
+            &path,
+            Arc::new(RecordingVfs::default()),
+            Arc::new(crate::lifecycle::ManualMonotonicClock::new()),
+        );
+        store.enable_graph().unwrap();
+        due_segment(&store, 1);
+        ze260_add_unlabelled_node(&store, "host-maintenance");
+        let before = store.snapshot().unwrap().generation();
+        let report = store.maintain_with_test_thresholds(budget(64 * 1024 * 1024), thresholds());
+        assert_eq!(report.graphs_built, 1);
+        assert!(
+            matches!(report.status, MaintenanceStatus::Complete),
+            "{report:?}"
+        );
+        assert!(
+            store.snapshot().unwrap().generation() > before,
+            "Store::maintain must publish due property graph maintenance: {report:?}"
+        );
+        assert!(report.bytes_consumed > 0);
+        assert!(report.graph_steps > 0 && report.graph_steps <= 4);
+        assert!(report.graph.unwrap().cycle_complete);
+        assert_eq!(
+            report.generation,
+            Some(store.snapshot().unwrap().generation())
+        );
+    }
+    #[test]
+    fn automatic_reclaim_debt_still_triggers_after_32_commits() {
+        use crate::property_graph::GraphMaintenancePolicy;
+        use std::sync::atomic::Ordering;
+        let parent = super::super::tempfile::tempdir().unwrap();
+        let store =
+            Store::create_native_graph(parent.path().join("native"), options(), None).unwrap();
+        for index in 0..31 {
+            ze260_add_unlabelled_node(&store, &format!("cadence-{index}"));
+        }
+        assert!(!store.native_graph_maintenance_due().unwrap());
+        ze260_add_unlabelled_node(&store, "cadence-31");
+        assert!(store.native_graph_maintenance_due().unwrap());
+        assert_eq!(
+            store
+                .native_graph
+                .commits_since_reclaim
+                .load(Ordering::Relaxed),
+            32
+        );
+        // Replaying the same write must neither run maintenance nor reset debt.
+        ze260_add_unlabelled_node(&store, "cadence-31");
+        assert_eq!(
+            store
+                .native_graph
+                .commits_since_reclaim
+                .load(Ordering::Relaxed),
+            32
+        );
+        let before = store.snapshot().unwrap().generation();
+        let control = QueryControl::Cancel(CancelToken::new());
+        assert!(store.apply_native_graph(&[], &control).unwrap().is_empty());
+        let mut labels = [GraphName::new("Different").unwrap()];
+        let conflicting = CanonicalContents::node(&mut labels, &mut [], None, None).unwrap();
+        assert!(
+            store
+                .apply_native_graph(
+                    &[StructuredWrite {
+                        key: ApplicationKey::new(EntityKind::Node, "s6a-garbage", "cadence-31")
+                            .unwrap(),
+                        revision: GraphRevision::new(1).unwrap(),
+                        operation: StructuredOperation::Create,
+                        image: Some(WriteImage::Node(&conflicting)),
+                    }],
+                    &control
+                )
+                .is_err()
+        );
+        assert_eq!(store.snapshot().unwrap().generation(), before);
+        assert_eq!(
+            store
+                .native_graph
+                .commits_since_reclaim
+                .load(Ordering::Relaxed),
+            32
+        );
+        let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+        let changed = store
+            .apply_native_graph(
+                &[StructuredWrite {
+                    key: ApplicationKey::new(EntityKind::Node, "s6a-garbage", "cadence-32")
+                        .unwrap(),
+                    revision: GraphRevision::new(1).unwrap(),
+                    operation: StructuredOperation::Create,
+                    image: Some(WriteImage::Node(&image)),
+                }],
+                &control,
+            )
+            .unwrap();
+        assert!(
+            changed[0].generation.get() > before + 1,
+            "maintenance must run before the changed write"
+        );
+        assert_eq!(
+            store.snapshot().unwrap().generation(),
+            changed[0].generation.get()
+        );
+        store
+            .native_graph
+            .pack_bytes_since_reclaim
+            .store(64 * 1024 * 1024, Ordering::Relaxed);
+        assert!(store.native_graph_maintenance_due().unwrap());
+        store
+            .set_native_graph_maintenance_policy(GraphMaintenancePolicy {
+                automatic: false,
+                reclaim_after_bytes: 64 * 1024 * 1024,
+            })
+            .unwrap();
+        assert!(!store.native_graph_maintenance_due().unwrap());
+    }
+
+    #[test]
+    fn segment_and_graph_share_one_budget() {
+        let parent = super::super::tempfile::tempdir().unwrap();
+        let store =
+            Store::create_native_graph(parent.path().join("native"), options(), None).unwrap();
+        let empty = store.maintain(budget(1));
+        assert!(
+            matches!(empty.status, MaintenanceStatus::Complete),
+            "{empty:?}"
+        );
+        assert_eq!(empty.bytes_consumed, 0);
+        assert_eq!(empty.generation, None);
+        ze260_add_unlabelled_node(&store, "budget");
+        store
+            .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+            .unwrap();
+        for bytes in [0, 1, 256] {
+            let before = store.snapshot().unwrap().generation();
+            let report = store.maintain(budget(bytes));
+            assert!(
+                matches!(report.status, MaintenanceStatus::BudgetExhausted),
+                "{report:?}"
+            );
+            assert!(report.bytes_consumed <= bytes, "{report:?}");
+            assert_eq!(store.snapshot().unwrap().generation(), before);
+            ze260_add_unlabelled_node(&store, "budget"); // definite refusals must not poison the writer
+        }
+        let report = store.maintain(budget(64 * 1024 * 1024));
+        assert!(
+            matches!(report.status, MaintenanceStatus::Complete),
+            "{report:?}"
+        );
+        let segment_only = segment_store(
+            &parent.path().join("segment-only"),
+            Arc::new(RecordingVfs::default()),
+            Arc::new(crate::lifecycle::ManualMonotonicClock::new()),
+        );
+        due_segment(&segment_only, 1);
+        let segment_report =
+            segment_only.maintain_with_test_thresholds(budget(64 * 1024 * 1024), thresholds());
+        assert_eq!(segment_report.graphs_built, 1);
+        assert_eq!(segment_report.graph_steps, 0);
+        assert!(segment_report.graph.is_none());
+        let combined = segment_store(
+            &parent.path().join("combined"),
+            Arc::new(RecordingVfs::default()),
+            Arc::new(crate::lifecycle::ManualMonotonicClock::new()),
+        );
+        combined.enable_graph().unwrap();
+        due_segment(&combined, 1);
+        ze260_add_unlabelled_node(&combined, "combined");
+        let exhausted = combined.maintain_with_test_thresholds(budget(1), thresholds());
+        assert!(matches!(
+            exhausted.status,
+            MaintenanceStatus::BudgetExhausted
+        ));
+        assert_eq!(exhausted.graph_steps, 0);
+        let shared = combined
+            .maintain_with_test_thresholds(budget(segment_report.bytes_consumed + 1), thresholds());
+        assert!(
+            matches!(shared.status, MaintenanceStatus::BudgetExhausted),
+            "{shared:?}"
+        );
+        assert_eq!(shared.graphs_built, 1);
+        assert_eq!(
+            shared.graph_steps, 0,
+            "graph must receive one remaining byte, not the original allowance"
+        );
+        assert_eq!(shared.bytes_consumed, segment_report.bytes_consumed);
+    }
+
+    #[test]
+    fn pending_reclaim_and_spills_cannot_bypass_the_budget() {
+        let (history, store) = seed_crash_history();
+        let before = store.snapshot().unwrap().generation();
+        let report = store.maintain(budget(1));
+        assert!(
+            matches!(report.status, MaintenanceStatus::BudgetExhausted),
+            "{report:?}"
+        );
+        assert!(report.bytes_consumed <= 1);
+        let after = store.snapshot().unwrap().generation();
+        assert_eq!(
+            report.generation,
+            (after > before).then_some(after),
+            "a checkpoint preceding exhaustion is still a publication"
+        );
+        let oracle = history.oracle(&store);
+        // Real pending intent from the established reclaim fixture.
+        commit_maintenance(&store).unwrap();
+        assert!(
+            store
+                .admit_native_read()
+                .unwrap()
+                .bundle()
+                .reclaim()
+                .is_some()
+        );
+        store
+            .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+            .unwrap();
+        let image = directory_image(&history.path);
+        for bytes in [1, 4096] {
+            history.vfs.clear_events();
+            let report = store.maintain(budget(bytes));
+            assert!(
+                matches!(report.status, MaintenanceStatus::BudgetExhausted),
+                "{report:?}"
+            );
+            assert!(report.bytes_consumed <= bytes);
+            assert_eq!(
+                directory_image(&history.path),
+                image,
+                "completion admission precedes unlink"
+            );
+        }
+        let stopped = store.maintain(budget(32 * 1024));
+        assert!(
+            matches!(stopped.status, MaintenanceStatus::BudgetExhausted),
+            "{stopped:?}"
+        );
+        assert!(stopped.bytes_consumed > 0 && stopped.bytes_consumed <= 32 * 1024);
+        assert!(
+            stopped.graph_steps > 0,
+            "pending completion must precede retirement exhaustion: {stopped:?}"
+        );
+        assert!(stopped.graph.unwrap().removed_bytes > 0);
+        let report = store.maintain(budget(64 * 1024 * 1024));
+        assert!(
+            matches!(report.status, MaintenanceStatus::Complete),
+            "{report:?}"
+        );
+        assert!(report.graph.unwrap().cycle_complete);
+        assert!(
+            store
+                .admit_native_read()
+                .unwrap()
+                .bundle()
+                .reclaim()
+                .is_none()
+        );
+        assert_same_logical_state(&oracle, &history.oracle(&store));
+    }
+
+    #[test]
+    fn failure_preserves_completed_phase_counters() {
+        use super::super::publication::FaultPoint;
+        let parent = super::super::tempfile::tempdir().unwrap();
+        let vfs = Arc::new(RecordingVfs::default());
+        let clock = Arc::new(crate::lifecycle::ManualMonotonicClock::new());
+        let path = parent.path().join("native");
+        let store = segment_store(&path, vfs.clone(), clock);
+        store.enable_graph().unwrap();
+        due_segment(&store, 1);
+        ze260_add_unlabelled_node(&store, "failure");
+        let fault_vfs = vfs.clone();
+        vfs.after_next_create(move || fault_vfs.arm_fault(FaultPoint::PartialCreate));
+        let report = store.maintain_with_test_thresholds(budget(64 * 1024 * 1024), thresholds());
+        vfs.assert_fired_once();
+        assert!(
+            matches!(
+                report.status,
+                MaintenanceStatus::Failed(crate::tier::MaintenanceError::PropertyGraph(_))
+            ),
+            "{report:?}"
+        );
+        assert_eq!(report.graphs_built, 1);
+        assert!(report.bytes_consumed > 0);
+        assert_eq!(
+            report.generation,
+            Some(store.snapshot().unwrap().generation())
+        );
+        assert!(
+            store
+                .apply_native_graph(&[], &QueryControl::Cancel(CancelToken::new()))
+                .is_err(),
+            "durable create failure must fence shared writes"
+        );
+        store.close().unwrap();
+        let readonly = Store::open_with_test_dependencies(
+            &path,
+            OpenOptions::read_only().with_epoch(store.epoch.clone().unwrap()),
+            crate::lifecycle::StoreTestDependencies::new(
+                vfs.clone(),
+                Arc::new(crate::lifecycle::ManualMonotonicClock::new()),
+            ),
+        )
+        .unwrap();
+        vfs.clear_events();
+        assert!(matches!(
+            readonly.maintain(budget(64 * 1024 * 1024)).status,
+            MaintenanceStatus::Failed(_)
+        ));
+        readonly.close().unwrap();
+        assert!(matches!(
+            readonly.maintain(budget(64 * 1024 * 1024)).status,
+            MaintenanceStatus::Failed(_)
+        ));
+        assert!(vfs.take().is_empty());
+    }
+
+    #[test]
+    fn segment_deadline_is_not_restarted_for_graph_work() {
+        let parent = super::super::tempfile::tempdir().unwrap();
+        let vfs = Arc::new(RecordingVfs::default());
+        let clock = Arc::new(crate::lifecycle::ManualMonotonicClock::new());
+        let store = segment_store(&parent.path().join("native"), vfs.clone(), clock.clone());
+        store.enable_graph().unwrap();
+        due_segment(&store, 1);
+        ze260_add_unlabelled_node(&store, "deadline");
+        let mut publications = 0;
+        vfs.clear_events();
+        vfs.after_selector_sync(move || {
+            publications += 1;
+            if publications == 5 {
+                clock.advance(Duration::from_secs(60));
+            }
+            Ok(())
+        });
+        let report = store.maintain_with_test_thresholds(budget(64 * 1024 * 1024), thresholds());
+        assert!(
+            matches!(report.status, MaintenanceStatus::BudgetExhausted),
+            "{report:?}"
+        );
+        assert_eq!(report.graphs_built, 1);
+        assert_eq!(report.passes_applied, 4);
+        assert_eq!(report.graph_steps, 0);
+        assert!(!vfs.take().iter().any(|event| matches!(event, DurabilityEvent::Create(path) if path.extension().is_some_and(|extension| extension == "zgraph"))));
+        assert!(report.generation.is_some());
+        ze260_add_unlabelled_node(&store, "deadline-control");
+    }
+
+    #[test]
+    fn segment_failure_preserves_published_progress() {
+        use super::super::publication::FaultPoint;
+        let parent = super::super::tempfile::tempdir().unwrap();
+        let control_vfs = Arc::new(RecordingVfs::default());
+        let clock = Arc::new(crate::lifecycle::ManualMonotonicClock::new());
+        let control = segment_store(
+            &parent.path().join("control"),
+            control_vfs.clone(),
+            clock.clone(),
+        );
+        due_segment(&control, 1);
+        control_vfs.after_selector_sync(move || {
+            clock.advance(Duration::from_secs(60));
+            Ok(())
+        });
+        let initial = control.maintain_with_test_thresholds(budget(64 * 1024 * 1024), thresholds());
+        assert!(
+            matches!(initial.status, MaintenanceStatus::BudgetExhausted),
+            "{initial:?}"
+        );
+        assert_eq!(initial.graphs_built, 1);
+        assert_eq!(initial.passes_applied, 0);
+        let vfs = Arc::new(RecordingVfs::default());
+        let store = segment_store(
+            &parent.path().join("native"),
+            vfs.clone(),
+            Arc::new(crate::lifecycle::ManualMonotonicClock::new()),
+        );
+        due_segment(&store, 1);
+        vfs.arm_fault_after(FaultPoint::ManifestWrite, 1);
+        let report = store.maintain_with_test_thresholds(budget(64 * 1024 * 1024), thresholds());
+        vfs.assert_fired_once();
+        assert!(
+            matches!(report.status, MaintenanceStatus::Failed(_)),
+            "{report:?}"
+        );
+        assert_eq!(
+            report.graphs_built, 1,
+            "a later segment failure must preserve the first publication"
+        );
+        assert!(report.bytes_consumed > 0);
+        assert!(
+            report.bytes_consumed > initial.bytes_consumed,
+            "a failed refinement publication must retain its completed work charge: {report:?}; initial={initial:?}"
+        );
+        assert_eq!(
+            report.generation,
+            Some(store.snapshot().unwrap().generation())
+        );
+    }
+
+    #[cfg(test)]
+    fn advance_after_creates(
+        vfs: Arc<RecordingVfs>,
+        clock: Arc<crate::lifecycle::ManualMonotonicClock>,
+        remaining: usize,
+    ) {
+        let hook_vfs = vfs.clone();
+        vfs.after_next_create(move || {
+            if remaining == 1 {
+                clock.advance(Duration::from_secs(60));
+            } else {
+                advance_after_creates(hook_vfs, clock, remaining - 1);
+            }
+        });
+    }
+
+    #[test]
+    fn an_admitted_graph_publication_finishes_after_the_deadline() {
+        let parent = super::super::tempfile::tempdir().unwrap();
+        let mut creates = 0;
+        for fault in [false, true] {
+            let vfs = Arc::new(RecordingVfs::default());
+            let clock = Arc::new(crate::lifecycle::ManualMonotonicClock::new());
+            let path = parent
+                .path()
+                .join(if fault { "expired" } else { "control" });
+            let store = Store::open_with_test_dependencies(
+                &path,
+                options(),
+                crate::lifecycle::StoreTestDependencies::new(vfs.clone(), clock.clone()),
+            )
+            .unwrap();
+            store.enable_graph().unwrap();
+            ze260_add_unlabelled_node(&store, "admitted");
+            store
+                .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+                .unwrap();
+            vfs.clear_events();
+            if fault {
+                advance_after_creates(vfs.clone(), clock, creates);
+            }
+            let report = store.maintain(budget(64 * 1024 * 1024));
+            assert!(
+                matches!(report.status, MaintenanceStatus::Complete),
+                "{report:?}"
+            );
+            assert!(report.graph.unwrap().cycle_complete);
+            if !fault {
+                creates = vfs.take().iter().filter(|event| matches!(event, DurabilityEvent::Create(path) if path.extension().is_some_and(|extension| extension == "zgraph"))).count();
+                assert!(creates > 0);
+            }
+            ze260_add_unlabelled_node(&store, "admitted-control");
+        }
+    }
+
+    #[test]
+    fn retirement_publication_finishes_after_the_deadline() {
+        let mut creates = 0;
+        for fault in [false, true] {
+            let (history, mut store) = seed_crash_history();
+            commit_maintenance(&store).unwrap();
+            store
+                .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+                .unwrap();
+            let clock = Arc::new(crate::lifecycle::ManualMonotonicClock::new());
+            store.clock = clock.clone();
+            history.vfs.clear_events();
+            if fault {
+                advance_after_creates(history.vfs.clone(), clock, creates);
+            }
+            let report = store.maintain(budget(64 * 1024 * 1024));
+            assert!(
+                matches!(report.status, MaintenanceStatus::Complete),
+                "{report:?}"
+            );
+            assert!(report.graph.unwrap().cycle_complete);
+            assert_eq!(
+                report.generation,
+                Some(store.snapshot().unwrap().generation())
+            );
+            assert_eq!(
+                store
+                    .native_graph
+                    .commits_since_reclaim
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                0
+            );
+            if !fault {
+                creates = history.vfs.take().iter().filter(|event| matches!(event, DurabilityEvent::Create(path) if path.extension().is_some_and(|extension| extension == "zgraph"))).count();
+                assert!(creates > 0);
+            }
+        }
+    }
+
+    #[test]
+    fn deadline_during_pending_reclaim_leaves_the_writer_resumable() {
+        struct AfterUnlink {
+            vfs: Arc<RecordingVfs>,
+            clock: crate::lifecycle::ManualMonotonicClock,
+            fired: std::sync::atomic::AtomicBool,
+        }
+        impl crate::lifecycle::MonotonicClock for AfterUnlink {
+            fn now(&self) -> std::time::Instant {
+                if self
+                    .vfs
+                    .take()
+                    .iter()
+                    .any(|event| matches!(event, DurabilityEvent::Delete(_)))
+                {
+                    self.fired.store(true, std::sync::atomic::Ordering::Relaxed);
+                    self.clock.advance(Duration::from_secs(60));
+                }
+                self.clock.now()
+            }
+        }
+        let (history, mut store) = seed_crash_history();
+        let oracle = history.oracle(&store);
+        commit_maintenance(&store).unwrap();
+        store
+            .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+            .unwrap();
+        history.vfs.clear_events();
+        let clock = Arc::new(AfterUnlink {
+            vfs: history.vfs.clone(),
+            clock: crate::lifecycle::ManualMonotonicClock::new(),
+            fired: std::sync::atomic::AtomicBool::new(false),
+        });
+        store.clock = clock.clone();
+        let report = store.maintain(budget(64 * 1024 * 1024));
+        assert!(clock.fired.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(
+            matches!(report.status, MaintenanceStatus::BudgetExhausted),
+            "{report:?}"
+        );
+        assert!(report.bytes_consumed <= 64 * 1024 * 1024);
+        apply_crash_history_writes(&store, &history.document);
+        store.clock = Arc::new(crate::lifecycle::ManualMonotonicClock::new());
+        let resumed = store.maintain(budget(64 * 1024 * 1024));
+        assert!(
+            matches!(resumed.status, MaintenanceStatus::Complete),
+            "{resumed:?}"
+        );
+        assert_same_logical_state(&oracle, &history.oracle(&store));
+    }
+
+    /// An admitted artifact charge survives close before publication.
+    #[test]
+    fn closing_after_graph_work_retains_the_admitted_charge() {
+        let parent = super::super::tempfile::tempdir().unwrap();
+        let vfs = Arc::new(RecordingVfs::default());
+        let store = Arc::new(
+            Store::open_with_test_dependencies(
+                parent.path().join("native"),
+                options(),
+                crate::lifecycle::StoreTestDependencies::new(
+                    vfs.clone(),
+                    Arc::new(crate::lifecycle::ManualMonotonicClock::new()),
+                ),
+            )
+            .unwrap(),
+        );
+        store.enable_graph().unwrap();
+        ze260_add_unlabelled_node(&store, "close-charge");
+        store
+            .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+            .unwrap();
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let closer_release = release.clone();
+        let closer = store.clone();
+        let (closing_tx, closing_rx) = std::sync::mpsc::channel();
+        let (worker_tx, worker_rx) = std::sync::mpsc::channel();
+        vfs.after_next_create(move || {
+            let worker = std::thread::spawn(move || {
+                closer.close_with_final_writer(|| {
+                    closing_tx.send(()).unwrap();
+                    closer_release.wait();
+                })
+            });
+            worker_tx.send(worker).unwrap();
+            closing_rx.recv().unwrap();
+        });
+        let report = store.maintain(budget(64 * 1024 * 1024));
+        release.wait();
+        worker_rx.recv().unwrap().join().unwrap().unwrap();
+        assert!(
+            matches!(report.status, MaintenanceStatus::Failed(_)),
+            "{report:?}"
+        );
+        assert!(
+            report.bytes_consumed > 0 && report.bytes_consumed <= 64 * 1024 * 1024,
+            "closing must not erase admitted graph work: {report:?}"
+        );
+        assert_eq!(report.generation, None);
+    }
+
+    /// Real host byte refusal and graph create/unlink faults, followed by reopen.
+    pub(crate) fn run_fault_case(kind: u8) -> (u64, u64, u64, bool) {
+        use super::super::publication::FaultPoint;
+        let (history, store) = seed_crash_history();
+        let oracle = history.oracle(&store);
+        if kind == 2 {
+            commit_maintenance(&store).unwrap();
+            assert!(
+                store
+                    .admit_native_read()
+                    .unwrap()
+                    .bundle()
+                    .reclaim()
+                    .is_some()
+            );
+        }
+        store
+            .checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))
+            .unwrap();
+        let limit = if kind == 0 { 1 } else { 64 * 1024 * 1024 };
+        match kind {
+            0 => {}
+            1 => history.vfs.arm_fault(FaultPoint::PartialCreate),
+            2 => history.vfs.arm_fault(FaultPoint::Delete),
+            _ => panic!("unknown host maintenance fault shape"),
+        }
+        let report = store.maintain(budget(limit));
+        let exhausted = matches!(report.status, MaintenanceStatus::BudgetExhausted);
+        let observed = (limit, report.bytes_consumed, report.graph_steps, exhausted);
+        assert!(report.bytes_consumed <= limit, "{report:?}");
+        if kind == 0 {
+            assert!(exhausted, "{report:?}");
+            // A no-write byte refusal leaves this writer usable.
+            apply_crash_history_writes(&store, &history.document);
+        } else {
+            history.vfs.assert_fired_once();
+            assert!(
+                matches!(
+                    report.status,
+                    MaintenanceStatus::Failed(crate::tier::MaintenanceError::PropertyGraph(_))
+                ),
+                "{report:?}"
+            );
+            assert!(
+                store
+                    .apply_native_graph(&[], &QueryControl::Cancel(CancelToken::new()))
+                    .is_err()
+            );
+        }
+        store.close().unwrap();
+        let reopened = history.open(options()).unwrap();
+        assert_same_logical_state(&oracle, &history.oracle(&reopened));
+        let mut complete = false;
+        for _ in 0..2 {
+            let control = reopened.maintain(budget(64 * 1024 * 1024));
+            assert!(
+                !matches!(control.status, MaintenanceStatus::Failed(_)),
+                "{control:?}"
+            );
+            if matches!(control.status, MaintenanceStatus::Complete) {
+                complete = true;
+                break;
+            }
+        }
+        assert!(complete, "larger host budget must resume the same work");
+        assert_same_logical_state(&oracle, &history.oracle(&reopened));
+        reopened.close().unwrap();
+        observed
+    }
 }

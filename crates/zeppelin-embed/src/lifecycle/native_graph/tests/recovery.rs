@@ -3644,6 +3644,7 @@ fn assert_generation_reopens(
         node,
         generation,
         graph_generation,
+        1,
         count,
     );
 }
@@ -3654,6 +3655,7 @@ fn assert_generation_reopens_with_options(
     node: NodeId,
     generation: u64,
     graph_generation: u64,
+    graph_sequence: u64,
     count: u64,
 ) {
     for access in [
@@ -3666,7 +3668,7 @@ fn assert_generation_reopens_with_options(
         assert_eq!(recovered.count_documents(None, None).unwrap().count, count);
         assert_eq!(
             observe_node(&recovered, node),
-            Some((graph_generation, 1, 1))
+            Some((graph_generation, graph_sequence, 1))
         );
         drop(recovered);
     }
@@ -4062,13 +4064,21 @@ fn tier_promotion_after_the_last_graph_write_reopens() {
     assert_eq!(report.consolidations, 0);
     assert_eq!(report.passes_applied, 4);
     assert_eq!(report.refinement_generation, Some(9));
+    // The segment phase still ends at 9; the host now folds and publishes
+    // one property graph step before returning.
+    assert_eq!(report.graph_steps, 1);
+    assert_eq!(report.graph.as_ref().unwrap().generation.get(), 11);
+    assert!(report.graph.as_ref().unwrap().cycle_complete);
+    assert_eq!(report.generation, Some(11));
+    assert_eq!(store.snapshot().unwrap().generation(), 11);
     drop(store);
     assert_generation_reopens_with_options(
         directory.path(),
         native_options().with_epoch(generation_epoch()),
         node,
-        9,
-        4,
+        11,
+        11,
+        2,
         1,
     );
 }
@@ -4104,13 +4114,21 @@ fn tier_consolidation_after_the_last_graph_write_reopens() {
     assert_eq!(report.graphs_built, 3);
     assert_eq!(report.consolidations, 1);
     assert_eq!(report.consolidation_generation, Some(16));
+    // The segment phase still ends at 16; the host now folds and publishes
+    // one property graph step before returning.
+    assert_eq!(report.graph_steps, 1);
+    assert_eq!(report.graph.as_ref().unwrap().generation.get(), 18);
+    assert!(report.graph.as_ref().unwrap().cycle_complete);
+    assert_eq!(report.generation, Some(18));
+    assert_eq!(store.snapshot().unwrap().generation(), 18);
     drop(store);
     assert_generation_reopens_with_options(
         directory.path(),
         native_options().with_epoch(generation_epoch()),
         node,
-        16,
-        8,
+        18,
+        18,
+        2,
         3,
     );
 }

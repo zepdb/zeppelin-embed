@@ -279,6 +279,8 @@ pub mod graph_reclaim_test_support {
         pub state: ReclaimState,
         /// Actual post-sweep key visibility and original install replay generation.
         pub detach_sweep: (bool, u64),
+        /// Host byte limit, observed charge, successful steps and byte refusal.
+        pub host_budget: (u64, u64, u64, bool),
     }
 
     /// Narrow measured reader-race observations and serialized controls.

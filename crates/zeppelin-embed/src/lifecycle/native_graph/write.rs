@@ -1314,6 +1314,17 @@ pub(super) struct NativeCommittedTransition<'a> {
 }
 
 impl<'a> NativeCommittedTransition<'a> {
+    pub(super) fn charge_artifacts(
+        &self,
+        budget: &super::maintenance::NativeMaintenanceBudget,
+    ) -> Result<(), NativeGraphError> {
+        let bytes = self.artifacts.iter().try_fold(0_u64, |sum, artifact| {
+            sum.checked_add(artifact.bytes.len() as u64)
+                .ok_or(NativeGraphError::IdentityExhausted)
+        })?;
+        budget.charge(bytes)
+    }
+
     pub(super) const fn wal_bytes(&self) -> &[u8] {
         self.encoded
     }
@@ -2065,8 +2076,17 @@ pub(super) fn protect_and_commit(
     transition: NativeCommittedTransition<'_>,
     control: &crate::lifecycle::QueryControl,
     audit_publication: bool,
+    budget: Option<&super::maintenance::NativeMaintenanceBudget>,
 ) -> Result<NativeCommitAudit, NativeGraphError> {
-    protect_and_commit_with_documents(store, writer, transition, control, audit_publication, None)
+    protect_and_commit_with_documents(
+        store,
+        writer,
+        transition,
+        control,
+        audit_publication,
+        None,
+        budget,
+    )
 }
 
 struct NativeWalRun<'s> {
@@ -2172,6 +2192,7 @@ fn protect_and_commit_with_documents(
     control: &crate::lifecycle::QueryControl,
     audit_publication: bool,
     mut documents: Option<crate::ingest::mixed::PreparedMixedDocuments>,
+    budget: Option<&super::maintenance::NativeMaintenanceBudget>,
 ) -> Result<NativeCommitAudit, NativeGraphError> {
     use crate::lifecycle::stats::GraphWorkKind as W;
     let work = GraphResources::from_store(store)?;
@@ -2216,7 +2237,15 @@ fn protect_and_commit_with_documents(
     } else {
         None
     };
-    let mut early_publication = None;
+    let mut early_publication = if let Some(budget) = budget {
+        control
+            .checkpoint()
+            .map_err(|_| NativeGraphError::Stage(StageError::Cancelled))?;
+        transition.charge_artifacts(budget)?;
+        Some(super::maintenance::arm_publication(store)?)
+    } else {
+        None
+    };
     let prepared_documents = if let Some(run) = run.as_mut() {
         let wal = run
             .wal_slot
@@ -2241,6 +2270,11 @@ fn protect_and_commit_with_documents(
     } else {
         None
     };
+    // Artifact admission includes its WAL publication. Once creation starts,
+    // complete that admitted commit even if preparation's deadline has elapsed.
+    let finish_control = budget
+        .map(|_| crate::lifecycle::QueryControl::Cancel(crate::lifecycle::CancelToken::new()));
+    let control = finish_control.as_ref().unwrap_or(control);
     for artifact in transition.artifacts {
         writer.protected.push(artifact.descriptor);
     }
@@ -2371,7 +2405,7 @@ fn protect_and_commit_with_documents(
     );
     let range = match result {
         Ok(range) => range,
-        Err(source) if !mixed && source.is_definite_wal_refusal() => {
+        Err(source) if !mixed && budget.is_none() && source.is_definite_wal_refusal() => {
             publication.complete();
             return Err(NativeGraphError::Store(source));
         }
@@ -2803,8 +2837,9 @@ fn commit_staged_batch_with_documents<'m>(
     }
 
     let mixed = documents.is_some();
-    let committed =
-        protect_and_commit_with_documents(store, writer, transition, control, true, documents);
+    let committed = protect_and_commit_with_documents(
+        store, writer, transition, control, true, documents, None,
+    );
     if mixed && committed.is_err() {
         let wal_slot = store.wal_writer.lock().map_err(|_| {
             NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
@@ -3360,6 +3395,6 @@ impl crate::lifecycle::Store {
         control: &crate::lifecycle::QueryControl,
         limits: super::maintenance::MaintenanceLimits,
     ) -> Result<super::maintenance::NativeMaintenanceReport, NativeGraphError> {
-        super::maintenance::commit_with_limits(self, admission, control, limits)
+        super::maintenance::commit_with_limits(self, admission, control, limits, None)
     }
 }

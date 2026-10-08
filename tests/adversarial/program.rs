@@ -4,6 +4,8 @@ use super::campaign::{CampaignKind, FeatureOperation};
 use super::test_support;
 
 pub const DIMENSIONS: usize = 4;
+/// Host Maintain admits at most four property graph steps per call.
+pub const HOST_GRAPH_MAINTENANCE_STEPS: u64 = 4;
 /// The graph promotion threshold this harness hands to
 /// `maintain_with_test_thresholds`, and therefore the row count a graph
 /// program must ingest before `maintain()` will build one.

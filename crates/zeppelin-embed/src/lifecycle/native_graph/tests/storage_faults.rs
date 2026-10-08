@@ -2054,6 +2054,7 @@ fn run_selection_probe(
             relocation_bytes: 1,
             ..Default::default()
         },
+        None,
     )
     .expect("oldest pack and largest pending range maintenance");
     drop(admission);

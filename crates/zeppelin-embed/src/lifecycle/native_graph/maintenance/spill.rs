@@ -37,6 +37,7 @@ pub(super) struct NativeSpillWriter<'a, 'm> {
     source: NativePreparationSource<'a, 'm>,
     memory: &'m StorageMemory<'m>,
     control: &'a QueryControl,
+    budget: Option<&'a super::NativeMaintenanceBudget>,
     binding: SpillBinding,
     registration: NativeSpillRegistration,
     allocation_head: Option<RequiredRef>,
@@ -309,6 +310,7 @@ impl<'a, 'm> NativeSpillWriter<'a, 'm> {
         control: &'a QueryControl,
         binding: SpillBinding,
         disk_limit: u64,
+        budget: Option<&'a super::NativeMaintenanceBudget>,
     ) -> Result<Self, NativeGraphError> {
         if binding.store != lease.bundle().base().store
             || binding.capture_generation != lease.bundle().base().generation
@@ -328,6 +330,7 @@ impl<'a, 'm> NativeSpillWriter<'a, 'm> {
             )?,
             memory,
             control,
+            budget,
             binding,
             registration: lease.register_spill()?,
             allocation_head: None,
@@ -478,6 +481,12 @@ impl<'a, 'm> NativeSpillWriter<'a, 'm> {
             identity.artifact,
         )?;
         self.maximum_encoded_backing = self.maximum_encoded_backing.max(bytes.as_slice().len());
+        let publication = if let Some(budget) = self.budget {
+            budget.charge(bytes.as_slice().len() as u64)?;
+            Some(super::arm_publication(self.store)?)
+        } else {
+            None
+        };
         write_new(
             self.lease.bundle().vfs(),
             self.lease.bundle().directory(),
@@ -490,6 +499,9 @@ impl<'a, 'm> NativeSpillWriter<'a, 'm> {
             .created_objects
             .checked_add(1)
             .ok_or(NativeGraphError::IdentityExhausted)?;
+        if let Some(publication) = publication {
+            publication.complete();
+        }
         drop(bytes);
         drop(path);
         drop(path_charge);

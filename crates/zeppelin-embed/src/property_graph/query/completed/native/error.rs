@@ -468,7 +468,9 @@ fn graph(error: &NativeGraphError) -> Kind {
         NativeGraphError::Invalid(_) | NativeGraphError::Catalog(_) | NativeGraphError::Wal(_) => {
             Kind::Corruption
         }
-        NativeGraphError::LeaseLimit | NativeGraphError::WalTailBoundExceeded => Kind::Limit,
+        NativeGraphError::LeaseLimit
+        | NativeGraphError::WalTailBoundExceeded
+        | NativeGraphError::MaintenanceBudgetExhausted => Kind::Limit,
         NativeGraphError::PreparedBaseChanged | NativeGraphError::WriterAbsent => Kind::Internal,
         NativeGraphError::NotInstalled
         | NativeGraphError::IdentityExhausted

@@ -1086,26 +1086,19 @@ impl TextStore {
 }
 
 fn empty_maintenance_report() -> MaintenanceReport {
-    MaintenanceReport {
-        graphs_built: 0,
-        bytes_consumed: 0,
-        checkpoints_resumed: 0,
-        promotion_deferrals: Vec::new(),
-        graph_profiles: Vec::new(),
-        consolidations: 0,
-        consolidation_generation: None,
-        consolidation_deferrals: Vec::new(),
-        passes_applied: 0,
-        pass_counters: Default::default(),
-        refinement_generation: None,
-        status: MaintenanceStatus::Complete,
-    }
+    MaintenanceReport::default()
 }
 
 fn merge_maintenance_reports(
     aggregate: &mut MaintenanceReport,
     slice: &mut MaintenanceReport,
 ) -> Result<(), TextError> {
+    aggregate
+        .merge_property_graph_progress(slice)
+        .map_err(|error| TextError::Pipeline {
+            stage: "maintenance to completion",
+            detail: error.to_string(),
+        })?;
     aggregate.graphs_built = checked_maintenance_sum(aggregate.graphs_built, slice.graphs_built)?;
     aggregate.bytes_consumed =
         checked_maintenance_sum(aggregate.bytes_consumed, slice.bytes_consumed)?;

@@ -240,7 +240,7 @@ fn stage_code(error: &StageError) -> ZeErrorCode {
 /// staging refusal keeps its precise code; a graph rule with no finer
 /// classification is `ZE_ERR_ENDPOINT` for statements (incident and entity
 /// rules) and `ZE_ERR_KEY_CONFLICT` otherwise.
-fn store_error(error: &GraphStoreError, statement: bool) -> FfiError {
+pub(crate) fn store_error(error: &GraphStoreError, statement: bool) -> FfiError {
     let code = if let Some(stage) = error.stage_error() {
         stage_code(stage)
     } else {

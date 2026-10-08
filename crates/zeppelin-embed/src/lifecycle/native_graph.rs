@@ -26,7 +26,7 @@ use std::time::Instant;
 
 pub(crate) mod automatic;
 mod base;
-mod maintenance;
+pub(crate) mod maintenance;
 mod mutate;
 mod persistence;
 pub(crate) mod recovery;
@@ -79,6 +79,7 @@ pub(crate) enum NativeGraphError {
     WalTailBoundExceeded,
     PreparedBaseChanged,
     WriterAbsent,
+    MaintenanceBudgetExhausted,
 }
 
 impl From<StoreError> for NativeGraphError {
@@ -97,6 +98,9 @@ impl std::fmt::Display for NativeGraphError {
             ),
             Self::PreparedBaseChanged => {
                 f.write_str("invalid native graph bundle: prepared native base changed")
+            }
+            Self::MaintenanceBudgetExhausted => {
+                f.write_str("native graph maintenance byte budget exhausted")
             }
             Self::WriterAbsent => {
                 f.write_str("invalid native graph bundle: native graph writer is absent")
