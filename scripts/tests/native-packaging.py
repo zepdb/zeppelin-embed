@@ -30,7 +30,7 @@ class NativePackaging(unittest.TestCase):
                 sections = llvm('llvm-readobj', '--sections', archive)
                 self.assertNotRegex(sections, r'Name: (?:__bitcode|__cmdline|\.llvmbc|\.llvmcmd)(?: |\n)')
                 symbols = llvm('llvm-nm', '--quiet', '--extern-only', '--defined-only', archive)
-                self.assertRegex(symbols, r'\b_?ze_graph_open\b')
+                self.assertRegex(symbols, r'\b_?ze_store_graph_apply\b')
                 def defined(path):
                     output = llvm('llvm-nm', '--quiet', '--extern-only', '--defined-only',
                                   '--no-llvm-bc', '--format=just-symbols', path)

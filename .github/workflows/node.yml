@@ -74,7 +74,7 @@ jobs:
         run: |
           set -euo pipefail
           for t in aarch64-apple-darwin x86_64-apple-darwin; do
-            nm -gU "target/native-archives/$t/libzeppelin_embed_ffi.a" | grep ' T _ze_graph_open$'
+            nm -gU "target/native-archives/$t/libzeppelin_embed_ffi.a" | grep ' T _ze_store_graph_apply$'
             du -k "target/native-archives/$t/libzeppelin_embed_ffi.a"
             size "target/native-archives/$t/libzeppelin_embed_ffi.a"
             scripts/size-budget.sh --graph-archive "target/native-archives/$t/libzeppelin_embed_ffi.a"
@@ -215,7 +215,7 @@ jobs:
       - name: Verify the FFI archive carries the graph entry points
         shell: cmd
         run: |
-          dumpbin /symbols target\native-archives\x86_64-pc-windows-msvc\zeppelin_embed_ffi.lib | findstr /C:"ze_graph_open"
+          dumpbin /symbols target\native-archives\x86_64-pc-windows-msvc\zeppelin_embed_ffi.lib | findstr /C:"ze_store_graph_apply"
           if errorlevel 1 exit /b 1
           dumpbin /headers target\native-archives\x86_64-pc-windows-msvc\zeppelin_embed_ffi.lib
           if errorlevel 1 exit /b 1
