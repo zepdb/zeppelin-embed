@@ -376,9 +376,12 @@ pub(super) fn run() {
         "consolidation",
         "seal-rotation",
         "upsert-manifest-write",
+        "schema-admission",
+        "graph-noop",
+        "namespace-noop",
     ];
     fault_publishers.shuffle(&mut rng);
-    let mut fault_counts = [0_usize; 14];
+    let mut fault_counts = [0_usize; 17];
     for sequence in 0..sequences {
         let length = rng.random_range(6..=12);
         let mut operations = Vec::new();
@@ -390,14 +393,25 @@ pub(super) fn run() {
             crate::lifecycle::tests::enable_graph_retry_completes(FaultPoint::PostManifestRename);
             crate::lifecycle::tests::enable_graph_retry_completes(FaultPoint::SelectorSync);
             crate::lifecycle::tests::replacement_snapshot_backup_reopens_with_nonzero_watermarks();
-            for fault_index in [Some(sequence % 8), (sequence < 6).then_some(sequence + 8)]
-                .into_iter()
-                .flatten()
+            for fault_index in [
+                Some(sequence % 8),
+                (sequence < 8).then_some(sequence + 8),
+                (sequence == 0).then_some(16),
+            ]
+            .into_iter()
+            .flatten()
             {
                 let publisher = fault_publishers[fault_index];
                 match publisher {
                     "seal-rotation" => ze390_seal_rotation_fault(),
                     "upsert-manifest-write" => ze390_upsert_manifest_fault(),
+                    "schema-admission" => {
+                        a_rejected_graph_admission_leaves_the_schema_and_generation_unchanged()
+                    }
+                    "graph-noop" => a_graph_noop_after_a_fenced_publication_is_refused(),
+                    "namespace-noop" => {
+                        an_all_noop_namespace_batch_after_a_fenced_publication_is_refused()
+                    }
                     "schema" => schema_manifest_rename_failure(),
                     "alias" => epoch_manifest_rename_failure(false),
                     "epoch-drop" => epoch_manifest_rename_failure(true),

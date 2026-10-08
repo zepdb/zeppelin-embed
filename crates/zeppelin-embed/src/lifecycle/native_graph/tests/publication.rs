@@ -1737,16 +1737,18 @@ fn run_ze39_checkpoint_thresholds_and_failure_preserve_acknowledged_state() {
                 .get(),
             67
         );
-        assert!(matches!(
-            store.apply_native_graph(&blocked, &QueryControl::Cancel(CancelToken::new())),
-            Err(super::super::NativeGraphError::CheckpointRequired)
-        ));
-        assert!(
-            store
-                .apply_native_graph(&[], &QueryControl::Cancel(CancelToken::new()))
-                .expect("no-op remains available after checkpoint failure")
-                .is_empty()
-        );
+        // A failed publication fences the shared WAL, so both changes and
+        // no-op acknowledgements must refuse until recovery (ZE-394).
+        for requests in [&blocked[..], &[][..]] {
+            assert!(matches!(
+                store.apply_native_graph(requests, &QueryControl::Cancel(CancelToken::new())),
+                Err(super::super::NativeGraphError::Store(
+                    crate::lifecycle::StoreError::WalWrite(
+                        crate::wal::WalWriteError::Failed { .. }
+                    )
+                ))
+            ));
+        }
         if matches!(
             point,
             FaultPoint::DirectorySync

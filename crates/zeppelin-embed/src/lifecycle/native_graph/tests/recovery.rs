@@ -6087,3 +6087,235 @@ fn ze390_sealed_delete_generation(graph_enabled: bool) {
         }
     }
 }
+
+#[test]
+fn a_rejected_graph_admission_leaves_the_schema_and_generation_unchanged() {
+    use crate::meta::{ColumnDefinition, ColumnId, ColumnType, Schema};
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path(), native_options()).unwrap();
+    assert_eq!(store.epoch_identity(), None);
+    assert_eq!(store.enable_graph().unwrap(), 1);
+    let original_schema = store.schema().clone();
+    drop(store);
+    let manifest_path = directory.path().join("manifest.ze");
+    let before = std::fs::read(&manifest_path).unwrap();
+    let schema = Schema::new(vec![ColumnDefinition::new(
+        ColumnId::new(71),
+        "extra",
+        ColumnType::U64,
+        true,
+    )])
+    .unwrap();
+    let error = Store::open(
+        directory.path(),
+        native_options()
+            .with_schema(schema.clone())
+            .with_tokenizer(crate::fts::tokenizer::TokenizerConfig::code()),
+    )
+    .err()
+    .expect("graph interpretation must refuse the changed tokenizer");
+    assert_eq!(
+        error.to_string(),
+        "manifest decode failed: graph WAL: Participant"
+    );
+    assert_eq!(
+        std::fs::read(&manifest_path).unwrap(),
+        before,
+        "rejected admission must preserve manifest bytes"
+    );
+    let reopened = Store::open(directory.path(), native_options()).unwrap();
+    assert_eq!(reopened.schema(), &original_schema);
+    assert_eq!(reopened.snapshot().unwrap().generation(), 1);
+    drop(reopened);
+    let evolved = Store::open(
+        directory.path(),
+        native_options().with_schema(schema.clone()),
+    )
+    .unwrap();
+    assert_eq!(evolved.schema(), &schema);
+    assert_eq!(evolved.snapshot().unwrap().generation(), 2);
+}
+
+#[test]
+fn a_graph_noop_after_a_fenced_publication_is_refused() {
+    let directory = tempfile::tempdir().unwrap();
+    let vfs = Arc::new(RecordingVfs::default());
+    let store = Store::open_with_test_dependencies(
+        directory.path(),
+        native_options(),
+        crate::lifecycle::StoreTestDependencies::new(
+            vfs.clone(),
+            Arc::new(crate::lifecycle::SystemMonotonicClock),
+        ),
+    )
+    .unwrap();
+    store.enable_graph().unwrap();
+    disable_generation_fixture_maintenance(&store);
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    let request = [StructuredWrite {
+        key: ApplicationKey::new(EntityKind::Node, "noop", "same-revision").unwrap(),
+        revision: GraphRevision::new(1).unwrap(),
+        operation: StructuredOperation::Create,
+        image: Some(WriteImage::Node(&image)),
+    }];
+    let control = QueryControl::Cancel(CancelToken::new());
+    store.apply_native_graph(&request, &control).unwrap();
+    // Prove these requests are healthy no-ops before fencing the shared writer.
+    store.apply_native_graph(&request, &control).unwrap();
+    assert!(store.apply_native_graph(&[], &control).unwrap().is_empty());
+    store.checkpoint_native_graph(&control).unwrap();
+    store.ingest(purge_documents(&[91], 1)).unwrap();
+    vfs.arm_fault(FaultPoint::PostManifestRename);
+    let error = store.seal().unwrap_err();
+    assert!(error.to_string().contains("scheduled"), "{error}");
+    vfs.assert_fired_once();
+    let manifest = std::fs::read(directory.path().join("manifest.ze")).unwrap();
+    let wal = std::fs::read(directory.path().join("wal.ze")).unwrap();
+    for requests in [&request[..], &[][..]] {
+        assert!(
+            matches!(
+                store.apply_native_graph(requests, &control),
+                Err(super::super::NativeGraphError::Store(
+                    crate::lifecycle::StoreError::WalWrite(
+                        crate::wal::WalWriteError::Failed { .. }
+                    )
+                ))
+            ),
+            "a graph no-op must refuse the fenced shared writer"
+        );
+    }
+    assert_eq!(
+        std::fs::read(directory.path().join("manifest.ze")).unwrap(),
+        manifest
+    );
+    assert_eq!(std::fs::read(directory.path().join("wal.ze")).unwrap(), wal);
+    drop(store);
+    let reopened = Store::open(directory.path(), native_options()).unwrap();
+    disable_generation_fixture_maintenance(&reopened);
+    reopened.apply_native_graph(&request, &control).unwrap();
+    assert!(
+        reopened
+            .apply_native_graph(&[], &control)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn an_all_noop_namespace_batch_after_a_fenced_publication_is_refused() {
+    use crate::lifecycle::{LiveNamespaceMutation, NamespaceMutation, namespace_batch_live};
+    let root = tempfile::tempdir().unwrap();
+    let vfs = Arc::new(RecordingVfs::default());
+    let open = |name| {
+        Store::open_with_test_dependencies(
+            root.path().join(name),
+            native_options(),
+            crate::lifecycle::StoreTestDependencies::new(
+                vfs.clone(),
+                Arc::new(crate::lifecycle::SystemMonotonicClock),
+            ),
+        )
+        .unwrap()
+    };
+    let first = open("a");
+    let second = open("b");
+    first.enable_graph().unwrap();
+    second.enable_graph().unwrap();
+    second.ingest(purge_documents(&[91], 1)).unwrap();
+    let noop = |name: &str| NamespaceMutation {
+        name: name.into(),
+        options: native_options(),
+        upserts: Vec::new(),
+        deletes: Vec::new(),
+        delete_where: None,
+    };
+    assert_eq!(
+        namespace_batch_live(
+            root.path(),
+            vec![
+                LiveNamespaceMutation {
+                    store: &first,
+                    mutation: noop("a")
+                },
+                LiveNamespaceMutation {
+                    store: &second,
+                    mutation: noop("b")
+                },
+            ]
+        )
+        .unwrap(),
+        vec![1, 2]
+    );
+    vfs.arm_fault(FaultPoint::PostManifestRename);
+    let error = second.seal().unwrap_err();
+    assert!(error.to_string().contains("scheduled"), "{error}");
+    vfs.assert_fired_once();
+    let bytes = || {
+        ["a", "b"].map(|name| {
+            ["manifest.ze", "wal.ze"]
+                .map(|file| std::fs::read(root.path().join(name).join(file)).unwrap())
+        })
+    };
+    let before = bytes();
+    for participants in [
+        vec![
+            LiveNamespaceMutation {
+                store: &first,
+                mutation: noop("a"),
+            },
+            LiveNamespaceMutation {
+                store: &second,
+                mutation: noop("b"),
+            },
+        ],
+        vec![
+            LiveNamespaceMutation {
+                store: &second,
+                mutation: noop("b"),
+            },
+            LiveNamespaceMutation {
+                store: &first,
+                mutation: noop("a"),
+            },
+        ],
+    ] {
+        assert!(
+            matches!(
+                namespace_batch_live(root.path(), participants),
+                Err(crate::lifecycle::StoreError::WalWrite(
+                    crate::wal::WalWriteError::Failed { .. }
+                ))
+            ),
+            "every participant must pass the fence before a no-op acknowledgement"
+        );
+    }
+    assert_eq!(bytes(), before);
+    // Refusing because b is fenced must not poison the healthy participant a.
+    assert!(
+        first
+            .apply_native_graph(&[], &QueryControl::Cancel(CancelToken::new()))
+            .unwrap()
+            .is_empty()
+    );
+    drop(first);
+    drop(second);
+    let first = Store::open(root.path().join("a"), native_options()).unwrap();
+    let second = Store::open(root.path().join("b"), native_options()).unwrap();
+    assert_eq!(
+        namespace_batch_live(
+            root.path(),
+            vec![
+                LiveNamespaceMutation {
+                    store: &first,
+                    mutation: noop("a")
+                },
+                LiveNamespaceMutation {
+                    store: &second,
+                    mutation: noop("b")
+                },
+            ]
+        )
+        .unwrap(),
+        vec![1, 3]
+    );
+}

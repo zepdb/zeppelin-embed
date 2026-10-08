@@ -251,7 +251,12 @@ fn execute_live(
     let mut source_snapshots = Vec::new();
     // All declarations and mutations validate before any WAL append/publication.
     for ((p, wal), active) in ordered.iter().zip(&wals).zip(&actives) {
-        wal.as_ref().ok_or(StoreError::ReadOnly)?;
+        // Check every participant before staging, including an all-no-op batch.
+        // An unarmed health check cannot poison another healthy participant.
+        wal.as_ref()
+            .ok_or(StoreError::ReadOnly)?
+            .manifest_publication()?
+            .complete();
         if read_optional_vfs(
             p.store.vfs.as_ref(),
             &p.store.directory.join(crate::ingest::PURGE_INTENT_FILE),

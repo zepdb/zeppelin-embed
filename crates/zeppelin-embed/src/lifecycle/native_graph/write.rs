@@ -2331,6 +2331,18 @@ pub(super) fn commit_staged_batch<'m>(
     staged_batch: &StagedBatch<'_>,
     allow_pending_checkpoint: &mut bool,
 ) -> Result<CommitStep, NativeGraphError> {
+    // No-op acknowledgements share the same WAL failure state as changes.
+    // Keep this check at the tail used by structured and query mutations.
+    store
+        .wal_writer
+        .lock()
+        .map_err(|_| crate::lifecycle::StoreError::Synchronization {
+            component: "WAL writer",
+        })?
+        .as_ref()
+        .ok_or(crate::lifecycle::StoreError::ReadOnly)?
+        .manifest_publication()?
+        .complete();
     if staged_batch.disposition() != BatchDisposition::Changed {
         return Ok(CommitStep::NoOp);
     }

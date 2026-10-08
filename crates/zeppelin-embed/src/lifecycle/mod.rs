@@ -3240,6 +3240,8 @@ impl Store {
         #[cfg(feature = "graph-cypher")]
         let graph_replay = recovered.graph;
         let mut open_publication = None;
+        #[cfg(feature = "graph-cypher")]
+        let mut pending_graph_schema = None;
         if schema_evolved {
             let boundary = recovered_wal
                 .as_ref()
@@ -3258,12 +3260,22 @@ impl Store {
                 .record_generation_bump(boundary)
                 .map_err(StoreError::Manifest)?;
             let mut publication = crate::ingest::ManifestPublication::before_writer_creation();
-            publication
-                .commit_manifest(vfs.as_ref(), path, &manifest, durability_policy)
-                .map_err(StoreError::Manifest)?;
+            #[cfg(feature = "graph-cypher")]
+            let defer_commit = snapshot.graph_enabled;
+            #[cfg(not(feature = "graph-cypher"))]
+            let defer_commit = false;
+            if !defer_commit {
+                publication
+                    .commit_manifest(vfs.as_ref(), path, &manifest, durability_policy)
+                    .map_err(StoreError::Manifest)?;
+            }
             snapshot =
                 PublishedSnapshot::from_manifest(vfs.as_ref(), path, &manifest, &accounting)?;
             active.generation = generation;
+            #[cfg(feature = "graph-cypher")]
+            if defer_commit {
+                pending_graph_schema = Some(manifest);
+            }
             open_publication = Some(publication);
         }
         if options.access_mode == AccessMode::ReadWrite
@@ -3412,6 +3424,19 @@ impl Store {
                 options.access_mode,
                 options.graph_document.clone(),
             )?;
+        }
+        #[cfg(feature = "graph-cypher")]
+        if let Some(manifest) = pending_graph_schema {
+            // Graph admission must accept the prospective snapshot before its
+            // schema and generation become durable. The bound guard arms at
+            // the first manifest write and completes after snapshot publication.
+            open_publication
+                .as_mut()
+                .ok_or(StoreError::Synchronization {
+                    component: "schema publication",
+                })?
+                .commit_manifest(store.vfs.as_ref(), path, &manifest, durability_policy)
+                .map_err(StoreError::Manifest)?;
         }
         if options.access_mode == AccessMode::ReadWrite && manifest_exists {
             // An adopted manifest may be the survivor of a commit interrupted
