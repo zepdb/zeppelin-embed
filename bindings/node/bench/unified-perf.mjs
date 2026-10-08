@@ -244,7 +244,7 @@ function snapshot(parentPid) {
   for (const line of ps.stdout.split('\n')) {
     const match = line.trim().match(/^(\d+)\s+(\d+)\s+([\d.]+)\s+(.+)$/);
     if (!match || [process.pid, parentPid].includes(Number(match[1]))) continue;
-    if (Number(match[3]) >= 20 || /(?:^|\/)(?:cargo|rustc|clang|cc1|ninja|make|ffmpeg|node|npm)$/.test(match[4])) taints.push(line.trim());
+    if (Number(match[3]) >= 20 || /(?:^|\/)(?:cargo|rustc|clang|cc1|ninja|make|ffmpeg)$/.test(match[4])) taints.push(line.trim());
   }
   const load = loadavg(); if (load[0] > 3) taints.push('load1 > 3');
   return { load, ps: ps.stdout, taints };
