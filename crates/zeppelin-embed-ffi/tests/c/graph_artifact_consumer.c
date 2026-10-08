@@ -64,10 +64,11 @@ int main(int argc, char **argv) {
     batch.items = items; batch.item_count = 3; batch.pool = &pool;
     ZeGraphResponse r = SIZED(ZeGraphResponse); r.pool.abi_size = sizeof(r.pool);
     assert(ze_graph_apply(graph, &batch, &r) == ZE_OK);
-    assert(r.has_changed_generation == 1 && r.changed_generation == 1 && r.receipt_count == 3);
+    /* One store counter: enable_graph commits 1; the first graph write and its reads use 2. */
+    assert(r.has_changed_generation == 1 && r.changed_generation == 2 && r.receipt_count == 3);
     assert(ze_graph_response_free(&r) == ZE_OK);
     r = query(graph, "MATCH (n:Doc)-[:LINK]->(m) RETURN n.title AS title");
-    assert(r.has_admitted_generation == 1 && r.admitted_generation == 1);
+    assert(r.has_admitted_generation == 1 && r.admitted_generation == 2);
     assert(r.row_count == 1 && r.column_count == 1 && r.cell_count == 1);
     const ZeGraphValue *value = &r.pool.values[r.cells[0]];
     assert(value->tag == 4 && value->range.count == 5);
@@ -89,7 +90,7 @@ int main(int argc, char **argv) {
     q.parameters = &parameter; q.parameter_count = 1; q.parameter_pool = &parameters;
     r = SIZED(ZeGraphResponse); r.pool.abi_size = sizeof(r.pool);
     assert(ze_graph_cypher(graph, &q, &r) == ZE_OK);
-    assert(r.admitted_generation == 1 && r.row_count == 1 && r.column_count == 2);
+    assert(r.admitted_generation == 2 && r.row_count == 1 && r.column_count == 2);
     value = &r.pool.values[r.cells[0]];
     assert(value->tag == 4 && value->range.count == 5);
     assert(memcmp(r.pool.bytes + value->range.start, "alpha", 5) == 0);

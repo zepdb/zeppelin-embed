@@ -2470,6 +2470,8 @@ impl StoreError {
     pub fn kind(&self) -> StoreErrorKind {
         match self {
             Self::Io { .. }
+            // A failed manifest publication is I/O, not damaged persisted bytes.
+            | Self::Manifest(crate::manifest::ManifestError::Io { .. })
             | Self::Lock(_)
             | Self::Statistics { .. }
             | Self::BackgroundStart { .. }

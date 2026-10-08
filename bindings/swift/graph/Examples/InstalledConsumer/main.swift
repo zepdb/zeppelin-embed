@@ -21,19 +21,20 @@ struct InstalledConsumer {
     batch.relationship(key: GraphKey(namespace: "fixture", key: "r"), revision: 1,
       .create(GraphRelationshipImage(type: "LINK"), .local(a), .local(b)))
     let written = try await store.apply(batch)
-    guard written.metadata.changedGeneration == 1, written.metadata.receipts.count == 3 else {
+    // One store counter: enable_graph commits 1; the first graph write and its reads use 2.
+    guard written.metadata.changedGeneration == 2, written.metadata.receipts.count == 3 else {
       throw Failure.invalidResult
     }
     let query = "MATCH (n:Doc)-[:LINK]->(m) WHERE n.title = $title RETURN n.title, $number"
     let result = try await store.cypher(query,
       parameters: ["title": .string("alpha"), "number": .integer(42)])
     guard result.rows == [[.string("alpha"), .integer(42)]],
-      result.metadata.admittedGeneration == 1 else { throw Failure.invalidResult }
+      result.metadata.admittedGeneration == 2 else { throw Failure.invalidResult }
     try await store.close()
     let reopened = try await ZeppelinGraphStore.open(at: path, mode: .readWrite)
     let durable = try await reopened.cypher(query,
       parameters: ["title": .string("alpha"), "number": .integer(42)])
-    guard durable.rows == result.rows, durable.metadata.admittedGeneration == 1 else {
+    guard durable.rows == result.rows, durable.metadata.admittedGeneration == 2 else {
       throw Failure.invalidResult
     }
     let values = try await reopened.cypher("RETURN null, '', [], [1,null,['nested']]")
@@ -49,7 +50,7 @@ struct InstalledConsumer {
       root: GraphOperatorID(0),
       operators: [.scanNodes(output: GraphSlotID(7), label: nil)]))
     guard structured.rows.count == 2,
-      structured.metadata.admittedGeneration == 1,
+      structured.metadata.admittedGeneration == 2,
       case .node(let node) = structured.rows[0][0] else { throw Failure.invalidResult }
     let fetched = try await reopened.getNodes([node.id, node.id])
     guard fetched.nodes.count == 2, fetched.nodes[0]?.id == node.id,

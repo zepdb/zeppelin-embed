@@ -49,7 +49,8 @@ extension GraphStoreTests {
       parameters: ["title": .string("alpha"), "number": .integer(42)])
     try await store.close()
     XCTAssertEqual(result.rows, [[.string("alpha"), .integer(42)]])
-    XCTAssertEqual(result.metadata.admittedGeneration, 1)
+    // One store counter: enable_graph commits 1; the first graph write and its reads use 2.
+    XCTAssertEqual(result.metadata.admittedGeneration, 2)
   }
 
   func testCompletedResultsRemainUsableAfterClose() async throws {

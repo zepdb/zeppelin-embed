@@ -27,7 +27,8 @@ test('graph support and lifecycle', () => {
 test('atomic node/relationship round trip and reopen', { skip: !supported }, () => fixture((s, path) => {
   const result = s.apply([node('a', { text: 'hello', properties: { title: 'Alpha', count: 7n, weight: 1.5, active: true, tags: ['a', 'b'] } }), node('b'),
     { kind: 'relationship', operation: 'create', namespace: 'edges', key: 'ab', revision: 1n, type: 'LINKS', source: { local: 0 }, target: { local: 1 }, properties: { strength: 2n } }]);
-  assert.equal(result.disposition, 'Committed'); assert.equal(result.generation, 1n); assert.equal(result.receipts.length, 3);
+  // One store counter: enable_graph commits generation 1; this first graph write commits 2.
+  assert.equal(result.disposition, 'Committed'); assert.equal(result.generation, 2n); assert.equal(result.receipts.length, 3);
   const read = s.cypher('MATCH (a:Doc)-[r:LINKS]->(b:Doc) RETURN a, r, b, ze.stored_text(a)');
   assert.equal(read.rows.length, 1);
   const [a, r, b, text] = read.rows[0];

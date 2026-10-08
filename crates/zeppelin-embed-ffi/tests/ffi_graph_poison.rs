@@ -45,9 +45,10 @@ fn a_panic_after_a_committing_statement_keeps_the_known_outcome() {
         ),
         ZeErrorCode::ZeErrPanic
     );
+    // One store counter: enable_graph commits generation 1; this first graph write commits 2.
     assert_eq!(
         (r.disposition, r.changed_generation, r.owner_token),
-        (2, 1, 0)
+        (2, 2, 0)
     );
     assert_eq!(s.close(), ZeErrorCode::ZeErrPoisoned);
     let (code, h) = graph_open(&s.path, MODE_READ_WRITE);
@@ -182,13 +183,14 @@ fn ze241_query_postcommit_panic_preserves_known_generation() {
         ze_graph_query(store.handle, &request, &mut response),
         ZeErrorCode::ZeErrPanic
     );
+    // One store counter: enable_graph commits generation 1; this first graph write commits 2.
     assert_eq!(
         (
             response.disposition,
             response.changed_generation,
             response.owner_token
         ),
-        (2, 1, 0)
+        (2, 2, 0)
     );
     assert_eq!(store.close(), ZeErrorCode::ZeErrPoisoned);
     let (code, handle) = graph_open(&store.path, MODE_READ_WRITE);

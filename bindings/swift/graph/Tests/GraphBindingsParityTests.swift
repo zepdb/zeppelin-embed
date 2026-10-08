@@ -123,10 +123,12 @@ final class GraphBindingsParityTests: XCTestCase {
     batch.node(key: GraphKey(namespace: "ze72", key: "payload"), revision: 1, .create(image))
     let written = try await store.apply(batch)
     let replay = try await store.apply(batch)
-    XCTAssertEqual(written.metadata.changedGeneration, 1)
+    // One store counter: enable_graph commits 1; the first graph write commits 2.
+    // Replays and entity metadata retain that exact committed generation.
+    XCTAssertEqual(written.metadata.changedGeneration, 2)
     XCTAssertEqual(replay.metadata.disposition, .replayed)
     XCTAssertNil(replay.metadata.changedGeneration)
-    XCTAssertEqual(replay.metadata.receipts.map(\.generation), [1])
+    XCTAssertEqual(replay.metadata.receipts.map(\.generation), [2])
     let result = try await store.cypher("MATCH (n:Payload) RETURN n, ze.stored_text(n)")
     guard case .node(let node) = result.rows[0][0] else { return XCTFail("node result") }
     XCTAssertEqual(result.rows[0][1], .string(""))
@@ -135,7 +137,7 @@ final class GraphBindingsParityTests: XCTestCase {
       XCTAssertEqual(cell(value), String(fields[2]), String(fields[0]))
     }
     XCTAssertEqual(node.revision, 1)
-    XCTAssertEqual(node.lastChangeGeneration, 1)
+    XCTAssertEqual(node.lastChangeGeneration, 2)
     try await store.close()
     XCTAssertEqual(result.rows[0][1], .string(""))
   }
@@ -326,7 +328,8 @@ extension GraphBindingsParityTests {
     let written = try await writer.value
     try await closer.value
     XCTAssertEqual(written.metadata.disposition, .committed)
-    XCTAssertEqual(written.metadata.changedGeneration, 1)
+    // One store counter: enable_graph commits 1; this first graph write commits 2.
+    XCTAssertEqual(written.metadata.changedGeneration, 2)
     XCTAssertEqual(written.metadata.receipts.count, 1)
     let reopened = try await ZeppelinGraphStore.open(at: path, mode: .readWrite)
     let actual = try await reopened.cypher("MATCH (n) RETURN count(n)")

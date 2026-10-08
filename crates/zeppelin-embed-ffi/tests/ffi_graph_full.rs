@@ -357,7 +357,8 @@ fn ze241_postcommit_cancel_preserves_commit() {
         "{}",
         last_error(store.handle.token)
     );
-    assert_eq!((response.disposition, response.changed_generation), (2, 1));
+    // One store counter: enable_graph commits generation 1; this first graph write commits 2.
+    assert_eq!((response.disposition, response.changed_generation), (2, 2));
     ze_graph_response_free(&mut response);
     drop(scope);
     ze_cancel_token_free(cancel);

@@ -205,7 +205,8 @@ extension GraphStructuredQueryTests {
     XCTAssertEqual(before.rows.count, 0)
     let result = try await store.query(plan)
     XCTAssertEqual(result.metadata.disposition, .committed)
-    XCTAssertEqual(result.metadata.changedGeneration, 1)
+    // One store counter: enable_graph commits 1; this first graph write commits 2.
+    XCTAssertEqual(result.metadata.changedGeneration, 2)
     guard case .node(let node) = result.rows[0][0] else { return XCTFail("created node") }
     XCTAssertEqual(node.properties["value"], .integer(42))
     XCTAssertNil(node.properties["remove"])

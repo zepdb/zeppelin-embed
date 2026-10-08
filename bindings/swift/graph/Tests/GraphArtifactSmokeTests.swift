@@ -17,9 +17,10 @@ final class GraphArtifactSmokeTests: XCTestCase {
       XCTAssertEqual(ze_graph_open(&request, &handle), Int32(ZE_OK.rawValue))
     }
     defer { XCTAssertEqual(ze_graph_close(handle), Int32(ZE_OK.rawValue)) }
+    // One store counter: enable_graph commits 1; the first graph write and its reads use 2.
     for (text, generation, rows) in [
-      ("CREATE (:Doc {title: 'alpha'})", UInt64(1), 0),
-      ("MATCH (n:Doc) RETURN n.title AS title", UInt64(1), 1),
+      ("CREATE (:Doc {title: 'alpha'})", UInt64(2), 0),
+      ("MATCH (n:Doc) RETURN n.title AS title", UInt64(2), 1),
     ] {
       let query = Array(text.utf8)
       query.withUnsafeBufferPointer { bytes in

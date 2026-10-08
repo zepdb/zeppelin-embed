@@ -8,7 +8,9 @@
     reason = "tests fail loudly on the first broken contract"
 )]
 
-use super::{GraphStore, GraphStoreErrorKind, GraphWriteOutcome, GraphWriteResult};
+use super::{
+    GraphStore, GraphStoreError, GraphStoreErrorKind, GraphWriteOutcome, GraphWriteResult,
+};
 use crate::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
 use crate::lifecycle::{CancelToken, OpenOptions, QueryControl, Store, StoreError, StoreErrorKind};
 use crate::property_graph::staging::{
@@ -931,9 +933,9 @@ fn ze257_close_checkpoint_failure_is_reported_and_releases_the_writer() {
     create_node(&store, "durable", 1);
     // Unified close publishes the manifest instead of creating a legacy root.
     vfs.arm_fault(FaultPoint::ManifestSync);
-    assert!(
-        store.close().is_err(),
-        "checkpoint failure must not be hidden"
+    assert_eq!(
+        store.close().unwrap_err().kind(),
+        GraphStoreErrorKind::Storage
     );
     vfs.assert_fired_once();
     store.close().unwrap();
@@ -967,6 +969,43 @@ fn ze257_close_checkpoint_failure_is_reported_and_releases_the_writer() {
         }
     );
     reopened.close().unwrap();
+}
+
+#[test]
+fn ze397_manifest_io_and_fenced_writer_keep_storage_class() {
+    use crate::lifecycle::native_graph::tests::publication::{FaultPoint, RecordingVfs};
+    use std::sync::Arc;
+    let parent = tempfile::tempdir().unwrap();
+    let vfs = Arc::new(RecordingVfs::default());
+    let store = GraphStore {
+        store: Store::create_native_graph_with_infrastructure(
+            parent.path().join("graph"),
+            options().with_durability(DurabilityMode::Durable, CommitTier::Durable),
+            None,
+            vfs.clone(),
+            Arc::new(crate::lifecycle::SystemMonotonicClock),
+            &mut crate::property_graph::storage::allocation::OsEntropy,
+        )
+        .unwrap(),
+    };
+    create_node(&store, "durable", 1);
+    vfs.arm_fault(FaultPoint::ManifestSync);
+    let error = store.store.checkpoint_native_graph(&control()).unwrap_err();
+    vfs.assert_fired_once();
+    assert_eq!(
+        GraphStoreError::graph(error).kind(),
+        GraphStoreErrorKind::Storage
+    );
+    let fenced = store.store.checkpoint_native_graph(&control()).unwrap_err();
+    assert!(
+        fenced
+            .to_string()
+            .contains("writer publication did not complete")
+    );
+    assert_eq!(
+        GraphStoreError::graph(fenced).kind(),
+        GraphStoreErrorKind::Storage
+    );
 }
 
 #[test]
