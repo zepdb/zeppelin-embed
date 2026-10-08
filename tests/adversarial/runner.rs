@@ -2919,11 +2919,12 @@ fn run_program_for_with_clock(
     if campaign == CampaignKind::StorageDurability {
         storage_adapter::namespace_probe(seed, &mut coverage)?;
         #[cfg(feature = "graph-cypher")]
-        super::unified_graph::run(
+        for operation in [
             super::unified_graph::Operation::EnableGraph,
-            seed,
-            &mut coverage,
-        )?;
+            super::unified_graph::Operation::MixedBatch,
+        ] {
+            super::unified_graph::run(operation, seed, &mut coverage)?;
+        }
     }
     #[cfg(feature = "graph-cypher")]
     {

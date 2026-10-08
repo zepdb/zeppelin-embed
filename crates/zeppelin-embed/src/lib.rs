@@ -537,6 +537,50 @@ pub mod graph_storage_fault_test_support {
 pub mod graph_recovery_test_support {
     use crate::graph_read_view_test_support::{ObservedRelationship, PathReceipt};
 
+    /// Drives the production mixed writer through the nonshipping fault facade.
+    pub fn apply_mixed_batch(
+        store: &crate::lifecycle::Store,
+        documents: &crate::ingest::IngestBatch,
+        key: &str,
+    ) -> Result<(crate::property_graph::NodeId, u64), String> {
+        use crate::property_graph::staging::{StructuredOperation, StructuredWrite, WriteImage};
+        use crate::property_graph::{
+            ApplicationKey, CanonicalContents, EntityId, EntityKind, GraphRevision,
+        };
+        let image =
+            CanonicalContents::node(&mut [], &mut [], None, None).map_err(|e| e.to_string())?;
+        let requests = [StructuredWrite {
+            key: ApplicationKey::new(EntityKind::Node, "mixed-probe", key)
+                .map_err(|e| e.to_string())?,
+            revision: GraphRevision::new(1).map_err(|e| e.to_string())?,
+            operation: StructuredOperation::Create,
+            image: Some(WriteImage::Node(&image)),
+        }];
+        let result = store
+            .apply_native_mixed(
+                documents,
+                &requests,
+                &crate::lifecycle::QueryControl::Cancel(crate::lifecycle::CancelToken::new()),
+            )
+            .map_err(|e| e.to_string())?;
+        let receipt = result.first().ok_or("mixed probe omitted node receipt")?;
+        let EntityId::Node(node) = receipt.entity else {
+            return Err("mixed probe returned relationship".into());
+        };
+        let generation = result
+            .changed_generation()
+            .ok_or("mixed probe did not commit")?;
+        Ok((node, generation.get()))
+    }
+
+    /// Observes a node through the native read admission after a mixed write.
+    pub fn mixed_node_present(
+        store: &crate::lifecycle::Store,
+        node: crate::property_graph::NodeId,
+    ) -> bool {
+        crate::lifecycle::native_graph::tests::observe_mixed_node(store, node)
+    }
+
     /// Actual state observed after reopening one real mixed native commit.
     #[derive(Clone, Debug, Eq, PartialEq)]
     pub struct RecoveryState {

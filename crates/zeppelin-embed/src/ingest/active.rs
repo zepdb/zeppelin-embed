@@ -2200,6 +2200,11 @@ impl StoreWal {
         self.writer.io_work()
     }
 
+    #[cfg(feature = "graph-cypher")]
+    pub(crate) fn mixed_run_bound(&self) -> Result<(usize, usize), StoreError> {
+        self.writer.atomic_run_bound().map_err(StoreError::WalWrite)
+    }
+
     pub(crate) fn create(
         vfs: Arc<dyn Vfs>,
         directory: &Path,

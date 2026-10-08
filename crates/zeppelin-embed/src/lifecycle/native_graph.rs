@@ -53,6 +53,7 @@ const MAX_NATIVE_SPILL_PREPARATIONS: usize = MAX_NATIVE_READ_LEASES;
 #[derive(Debug)]
 pub(crate) enum NativeGraphError {
     Store(StoreError),
+    Ingest(crate::ingest::IngestError),
     Invalid(&'static str),
     NotInstalled,
     LeaseLimit,
@@ -90,6 +91,7 @@ impl std::fmt::Display for NativeGraphError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Store(error) => error.fmt(f),
+            Self::Ingest(error) => error.fmt(f),
             Self::WalTailBoundExceeded => f.write_str(
                 "invalid native graph bundle: single native WAL envelope exceeds tail bound",
             ),
@@ -137,6 +139,12 @@ impl std::fmt::Display for NativeGraphError {
 }
 
 impl std::error::Error for NativeGraphError {}
+
+impl From<crate::ingest::IngestError> for NativeGraphError {
+    fn from(error: crate::ingest::IngestError) -> Self {
+        Self::Ingest(error)
+    }
+}
 
 impl From<crate::property_graph::storage::tree::directory::TreeError> for NativeGraphError {
     fn from(error: crate::property_graph::storage::tree::directory::TreeError) -> Self {
@@ -2264,6 +2272,8 @@ pub(crate) mod tests {
     mod hybrid_ranking;
     mod identity;
     mod mapping_slots;
+    #[cfg(test)]
+    mod mixed_batch;
     mod mutation_admission;
     // Real second processes re-invoke the unit-test executable, so these live
     // only in the test binary and never in a `test-support` library build.
@@ -2273,6 +2283,11 @@ pub(crate) mod tests {
     pub(crate) mod publication;
     mod ranking;
     pub(crate) mod recovery;
+
+    #[cfg(feature = "test-seams")]
+    pub(crate) fn observe_mixed_node(store: &Store, node: crate::property_graph::NodeId) -> bool {
+        recovery::observe_node(store, node).is_some()
+    }
     mod retrieval;
     pub(crate) mod seal;
     mod sparse;

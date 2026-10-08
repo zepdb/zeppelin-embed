@@ -53,6 +53,12 @@ pub struct MaterializedBatch<'a, R> {
     _registration_charge: WriteReservation<'a>,
 }
 impl<'a, R> MaterializedBatch<'a, R> {
+    /// A changed document participant commits the assigned generation even
+    /// when every graph item is an exact replay. Graph receipts stay exact.
+    pub(crate) fn include_document_change(&mut self) {
+        self.batch.disposition = crate::property_graph::BatchDisposition::Changed;
+    }
+
     /// Private graph/search delta awaiting coordinator publication.
     pub const fn batch(&self) -> &StagedBatch<'_> {
         &self.batch

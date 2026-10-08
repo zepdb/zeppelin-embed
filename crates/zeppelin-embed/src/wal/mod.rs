@@ -944,6 +944,16 @@ impl WalWriter {
         })
     }
 
+    /// Pending bytes (including a fresh header) and the actual group cap.
+    #[cfg(feature = "graph-cypher")]
+    pub(crate) fn atomic_run_bound(&self) -> Result<(usize, usize), WalWriteError> {
+        let state = self.lock_state()?;
+        let pending = state.pending_groups.iter().fold(0_usize, |sum, group| {
+            sum.saturating_add(group.encoded_bytes)
+        });
+        Ok((pending, self.max_group_bytes))
+    }
+
     fn write_group(&self, group: &Group) -> std::io::Result<()> {
         let mut buffers = Vec::with_capacity(group.chunks.len());
         for chunk in &group.chunks {

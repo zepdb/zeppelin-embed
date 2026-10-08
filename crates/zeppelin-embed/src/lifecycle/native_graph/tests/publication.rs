@@ -4080,8 +4080,35 @@ mod snapshot {
             .unwrap();
             store.enable_graph().unwrap();
             write_node(&store, "before-mixed-run");
-            *vfs.mixed.lock().unwrap() = Some(vec![101, 102]);
-            let a = write_node(&store, "a");
+            // One real mixed run: two documents and one graph node, one WAL record run.
+            let a = {
+                let contents = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+                let receipts = store
+                    .apply_native_mixed(
+                        &IngestBatch::new(vec![
+                            IngestDocument::new(
+                                DocumentVersion::new(DocId::new(101), Revision::new(1)),
+                                vec![1.0, 0.0],
+                            ),
+                            IngestDocument::new(
+                                DocumentVersion::new(DocId::new(102), Revision::new(1)),
+                                vec![1.0, 0.0],
+                            ),
+                        ]),
+                        &[StructuredWrite {
+                            key: ApplicationKey::new(EntityKind::Node, "snapshot", "a").unwrap(),
+                            revision: GraphRevision::new(1).unwrap(),
+                            operation: StructuredOperation::Create,
+                            image: Some(WriteImage::Node(&contents)),
+                        }],
+                        &QueryControl::Cancel(CancelToken::new()),
+                    )
+                    .unwrap();
+                match receipts[0].entity {
+                    EntityId::Node(node) => node,
+                    _ => panic!("node receipt"),
+                }
+            };
             drop(store);
             let store = Store::open(&source, super::super::recovery::native_options()).unwrap();
             let b = write_node(&store, "b");

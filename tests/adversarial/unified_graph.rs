@@ -9,18 +9,25 @@ pub const REQUIRED: &[&str] = &[
     "storage-durability.graph-commit.wal-append",
     "storage-durability.graph-commit.wal-sync",
     "storage-durability.graph-fold.manifest-rename",
+    "storage-durability.mixed-batch.append-member-0",
+    "storage-durability.mixed-batch.append-member-1",
+    "storage-durability.mixed-batch.append-member-2",
+    "storage-durability.mixed-batch.sync",
+    "storage-durability.mixed-batch.comparator",
 ];
 
 #[derive(Clone, Copy)]
 pub enum Operation {
     EnableGraph,
     GraphApply,
+    MixedBatch,
 }
 
 pub fn run(operation: Operation, seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
     match operation {
         Operation::EnableGraph => enable_graph(seed, coverage),
         Operation::GraphApply => super::graph_recovery::probe_commit_boundaries(seed, coverage),
+        Operation::MixedBatch => mixed_batch(seed, coverage),
     }
 }
 
@@ -107,7 +114,11 @@ fn enable_graph(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String
 }
 
 pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
-    for operation in [Operation::EnableGraph, Operation::GraphApply] {
+    for operation in [
+        Operation::EnableGraph,
+        Operation::GraphApply,
+        Operation::MixedBatch,
+    ] {
         run(operation, seed, coverage)?;
     }
     Ok(())
@@ -116,6 +127,15 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mixed_batch_append_member_faults_fire() {
+        let mut coverage = CoverageRegistry::default();
+        mixed_batch(256, &mut coverage).unwrap();
+        for key in &REQUIRED[6..] {
+            assert!(coverage.count(key) > 0, "missing {key}");
+        }
+    }
+
     #[test]
     fn unified_graph_fault_sites_are_registered_and_fire() {
         let mut coverage = CoverageRegistry::default();
@@ -127,4 +147,134 @@ mod tests {
             );
         }
     }
+}
+
+fn mixed_batch(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
+    use super::fault_vfs::{FaultEvent, FaultMode, FaultSchedule, FaultSite, Layer, ScheduledVfs};
+    use std::sync::Arc;
+    use zeppelin_embed::graph_recovery_test_support::{apply_mixed_batch, mixed_node_present};
+    use zeppelin_embed::lifecycle::{Store, StoreTestDependencies, SystemMonotonicClock};
+    use zeppelin_embed::property_graph::NodeId;
+    use zeppelin_embed::vfs::StdVfs;
+    let root = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let batch = fixture::batch(vec![
+        fixture::document(91, "mixed orchard"),
+        fixture::document(92, "mixed harbor"),
+    ]);
+    let clean_path = root.path().join("control");
+    let clean = Store::open(
+        &clean_path,
+        fixture::options(false)
+            .with_durability(
+                zeppelin_embed::lifecycle::durability::DurabilityMode::Durable,
+                zeppelin_embed::lifecycle::durability::CommitTier::Durable,
+            )
+            .with_schema(fixture::schema()),
+    )
+    .map_err(|e| e.to_string())?;
+    clean.enable_graph().map_err(|e| e.to_string())?;
+    let (node, generation) = apply_mixed_batch(&clean, &batch, "first")?;
+    if generation != 2
+        || node != NodeId::new(1).map_err(|e| e.to_string())?
+        || clean
+            .count_documents(None, None)
+            .map_err(|e| e.to_string())?
+            .count
+            != 2
+        || !mixed_node_present(&clean, node)
+    {
+        return Err("mixed control differs from literal first-batch state".into());
+    }
+    drop(clean);
+    for (site, nth, mode, key, present) in [
+        (FaultSite::Append, 1, FaultMode::Eio, REQUIRED[6], false),
+        (FaultSite::Append, 2, FaultMode::Eio, REQUIRED[7], false),
+        (FaultSite::Append, 3, FaultMode::Eio, REQUIRED[8], false),
+        (
+            FaultSite::Append,
+            3,
+            FaultMode::PostCommitError,
+            REQUIRED[8],
+            true,
+        ),
+        (FaultSite::Sync, 1, FaultMode::Eio, REQUIRED[9], true),
+    ] {
+        let path = root.path().join(format!("{seed}-{site:?}-{nth}-{mode:?}"));
+        let event = FaultEvent {
+            id: "mixed-batch".into(),
+            op_index: 1,
+            layer: Layer::Io,
+            site,
+            mode,
+            nth_match: nth,
+            expected_matches: None,
+            deadline_budget_seconds: None,
+            path_contains: Some("wal.ze".into()),
+            fired: false,
+            fire_count: 0,
+            path: None,
+        };
+        let vfs = Arc::new(ScheduledVfs::new(StdVfs, FaultSchedule::single(event)));
+        let store = Store::open_with_test_dependencies(
+            &path,
+            fixture::options(false)
+                .with_durability(
+                    zeppelin_embed::lifecycle::durability::DurabilityMode::Durable,
+                    zeppelin_embed::lifecycle::durability::CommitTier::Durable,
+                )
+                .with_schema(fixture::schema()),
+            StoreTestDependencies::new(vfs.clone(), Arc::new(SystemMonotonicClock)),
+        )
+        .map_err(|e| e.to_string())?;
+        store.enable_graph().map_err(|e| e.to_string())?;
+        vfs.set_operation(1);
+        if apply_mixed_batch(&store, &batch, "first").is_ok() {
+            return Err(format!(
+                "mixed {site:?}/{nth}/{mode:?} acknowledged a fault"
+            ));
+        }
+        let events = vfs.events();
+        if events.len() != 1 || events[0].fire_count != 1 {
+            return Err(format!(
+                "mixed member {nth} fault did not fire exactly once"
+            ));
+        }
+        if store
+            .ingest(fixture::batch(vec![fixture::document(93, "fenced")]))
+            .is_ok()
+        {
+            return Err("mixed indeterminate failure did not fence the shared writer".into());
+        }
+        drop(store);
+        for read_only in [false, true, false] {
+            let recovered = Store::open(
+                &path,
+                fixture::options(read_only).with_durability(
+                    zeppelin_embed::lifecycle::durability::DurabilityMode::Durable,
+                    zeppelin_embed::lifecycle::durability::CommitTier::Durable,
+                ),
+            )
+            .map_err(|e| e.to_string())?;
+            let count = recovered
+                .count_documents(None, None)
+                .map_err(|e| e.to_string())?
+                .count;
+            let actual_generation = recovered
+                .snapshot()
+                .map_err(|e| e.to_string())?
+                .generation();
+            if count != if present { 2 } else { 0 }
+                || mixed_node_present(&recovered, node) != present
+                || actual_generation != if present { 2 } else { 1 }
+            {
+                return Err(format!(
+                    "mixed member {nth} crossed atomic boundary: count={count}, gen={actual_generation}"
+                ));
+            }
+        }
+        coverage.hit(key);
+    }
+    coverage.hit(REQUIRED[10]);
+    coverage.hit("op.MixedBatch");
+    Ok(())
 }

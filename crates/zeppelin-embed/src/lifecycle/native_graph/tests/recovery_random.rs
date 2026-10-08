@@ -40,6 +40,7 @@ enum Operation {
     Retention,
     Graph,
     Mixed,
+    MixedAppendFault,
     Checkpoint,
     Maintenance,
     Namespace,
@@ -48,7 +49,7 @@ enum Operation {
     Oversized,
 }
 
-const OPERATIONS: [Operation; 18] = [
+const OPERATIONS: [Operation; 19] = [
     Operation::Ingest,
     Operation::Batch,
     Operation::Upsert,
@@ -61,6 +62,7 @@ const OPERATIONS: [Operation; 18] = [
     Operation::Retention,
     Operation::Graph,
     Operation::Mixed,
+    Operation::MixedAppendFault,
     Operation::Checkpoint,
     Operation::Maintenance,
     Operation::Namespace,
@@ -110,6 +112,28 @@ fn try_write_node(
     }
 }
 
+fn try_write_mixed(
+    store: &Store,
+    ids: &[u128],
+    key: &str,
+) -> Result<(NodeId, u64), crate::lifecycle::native_graph::NativeGraphError> {
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    let result = store.apply_native_mixed(
+        &IngestBatch::new(ids.iter().map(|id| document(*id)).collect()),
+        &[StructuredWrite {
+            key: ApplicationKey::new(EntityKind::Node, "model", key).unwrap(),
+            revision: GraphRevision::new(1).unwrap(),
+            operation: StructuredOperation::Create,
+            image: Some(WriteImage::Node(&image)),
+        }],
+        &QueryControl::Cancel(CancelToken::new()),
+    )?;
+    let EntityId::Node(node) = result[0].entity else {
+        panic!("expected mixed node")
+    };
+    Ok((node, result.changed_generation().unwrap().get()))
+}
+
 fn open(path: &Path, vfs: &Arc<SequenceVfs>, options: OpenOptions) -> Store {
     let store = Store::open_with_infrastructure(
         path,
@@ -132,21 +156,14 @@ fn open(path: &Path, vfs: &Arc<SequenceVfs>, options: OpenOptions) -> Store {
     store
 }
 
-// The mixed writer API is not present at this HEAD. This one-shot adapter uses
-// its existing op-11 wire seam: replace one real, valid graph envelope append
-// with a document/document/graph run. Close immediately after the graph receipt;
-// only recovery consumes the changed WAL sequence count. The byte recorder is
-// below the adapter, so every crash cut contains exactly the bytes written.
 pub(crate) struct SequenceVfs {
     recorded: ByteRecorder<RecordingVfs>,
-    pub(crate) mixed: Arc<std::sync::Mutex<Option<Vec<u128>>>>,
 }
 
 impl SequenceVfs {
     pub(crate) fn new() -> Self {
         Self {
             recorded: ByteRecorder::new(RecordingVfs::default()),
-            mixed: Arc::new(std::sync::Mutex::new(None)),
         }
     }
     fn operations(&self) -> std::io::Result<Vec<CrashOperation>> {
@@ -183,16 +200,9 @@ impl Vfs for SequenceVfs {
         self.recorded.create_new(path, bytes)
     }
     fn open_append(&self, path: &Path) -> std::io::Result<Box<dyn crate::vfs::VfsFile>> {
-        let file = self.recorded.open_append(path)?;
-        if path.file_name().is_some_and(|name| name == "wal.ze") {
-            Ok(Box::new(MixedFile {
-                file,
-                mixed: self.mixed.clone(),
-            }))
-        } else {
-            Ok(file)
-        }
+        self.recorded.open_append(path)
     }
+
     fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
         self.recorded.rename(from, to)
     }
@@ -218,57 +228,6 @@ impl Vfs for SequenceVfs {
         } else {
             self.recorded.delete(path)
         }
-    }
-}
-
-struct MixedFile {
-    file: Box<dyn crate::vfs::VfsFile>,
-    mixed: Arc<std::sync::Mutex<Option<Vec<u128>>>>,
-}
-
-impl crate::vfs::VfsFile for MixedFile {
-    fn append(&mut self, bytes: &[u8]) -> std::io::Result<()> {
-        let Some(ids) = self.mixed.lock().unwrap().take() else {
-            return self.file.append(bytes);
-        };
-        use crate::ingest::wal_payload::{
-            GRAPH_COMMIT_V1, MIXED_BATCH_MEMBER_V1, UPSERT_V2, encode_mixed_batch_member,
-            encode_upsert_v2,
-        };
-        use crate::wal::record::{WalRecord, decode_record, encode_record};
-        let graph = decode_record(bytes).unwrap();
-        assert_eq!(graph.record.op, GRAPH_COMMIT_V1);
-        assert_eq!(graph.encoded_len, bytes.len());
-        let mut members: Vec<_> = ids
-            .iter()
-            .map(|id| (UPSERT_V2, encode_upsert_v2(&document(*id)).unwrap()))
-            .collect();
-        members.push((GRAPH_COMMIT_V1, graph.record.payload.to_vec()));
-        let mut run = Vec::new();
-        for (index, (op, payload)) in members.iter().enumerate() {
-            let payload =
-                encode_mixed_batch_member(index as u32, members.len() as u32, *op, payload)
-                    .unwrap();
-            run.extend(
-                encode_record(WalRecord {
-                    seq: crate::wal::LogSeq::new(graph.record.seq.get() + index as u64),
-                    op: MIXED_BATCH_MEMBER_V1,
-                    payload: &payload,
-                })
-                .unwrap(),
-            );
-        }
-        self.file.append(&run)
-    }
-    fn append_vectored(&mut self, buffers: &mut [std::io::IoSlice<'_>]) -> std::io::Result<()> {
-        let bytes: Vec<_> = buffers
-            .iter()
-            .flat_map(|buffer| buffer.iter().copied())
-            .collect();
-        self.append(&bytes)
-    }
-    fn sync(&self, kind: crate::vfs::SyncKind) -> std::io::Result<()> {
-        self.file.sync(kind)
     }
 }
 
@@ -658,22 +617,43 @@ pub(super) fn run() {
                         graph_unfolded = true;
                         generation
                     }
-                    Operation::Mixed => {
+                    Operation::Mixed | Operation::MixedAppendFault => {
                         let ids = [next_document, next_document + 1];
                         next_document += 2;
-                        assert!(vfs.mixed.lock().unwrap().replace(ids.to_vec()).is_none());
-                        let (node, generation) = write_node(s, &format!("mixed-{index}"));
-                        assert!(vfs.mixed.lock().unwrap().is_none());
-                        drop(store.take());
-                        model.nodes.insert(node);
-                        graph_unfolded = true;
-                        model.documents.extend(ids);
+                        let failed = matches!(operation, Operation::MixedAppendFault);
+                        if failed {
+                            let fault = if rng.random_bool(0.5) {
+                                FaultPoint::Append
+                            } else {
+                                FaultPoint::PartialAppend
+                            };
+                            vfs.recorded.inner().arm_fault(fault);
+                        }
+                        let result = try_write_mixed(s, &ids, &format!("mixed-{index}"));
                         all_documents.extend(ids);
-                        store = Some(open(&path, &vfs, native_options()));
-                        assert!(
-                            store.as_ref().unwrap().snapshot().unwrap().generation() >= generation
-                        );
-                        generation
+                        if failed {
+                            assert!(result.is_err());
+                            vfs.recorded.inner().assert_fired_once();
+                            assert_shared_writer_stopped(s);
+                            drop(store.take());
+                            store = Some(open(&path, &vfs, native_options()));
+                            assert!(same_visibility(
+                                &visible(store.as_ref().unwrap(), &all_documents),
+                                &model
+                            ));
+                            assert_eq!(
+                                store.as_ref().unwrap().snapshot().unwrap().generation(),
+                                model.generation()
+                            );
+                            model.generation()
+                        } else {
+                            let (node, generation) = result.unwrap();
+                            assert_eq!(s.snapshot().unwrap().generation(), model.generation() + 1);
+                            model.nodes.insert(node);
+                            graph_unfolded = true;
+                            model.documents.extend(ids);
+                            generation
+                        }
                     }
                     Operation::Checkpoint => {
                         s.checkpoint_native_graph(&QueryControl::Cancel(CancelToken::new()))

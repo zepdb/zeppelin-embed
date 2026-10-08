@@ -2066,6 +2066,113 @@ pub(super) fn protect_and_commit(
     control: &crate::lifecycle::QueryControl,
     audit_publication: bool,
 ) -> Result<NativeCommitAudit, NativeGraphError> {
+    protect_and_commit_with_documents(store, writer, transition, control, audit_publication, None)
+}
+
+struct NativeWalRun<'s> {
+    wal_slot: std::sync::MutexGuard<'s, Option<crate::ingest::StoreWal>>,
+    active_slot: std::sync::MutexGuard<'s, Option<crate::ingest::ActiveState>>,
+    records: Vec<(u16, Vec<u8>)>,
+}
+
+fn admit_wal_run<'s>(
+    store: &'s crate::lifecycle::Store,
+    generation: u64,
+    envelope: &[u8],
+    documents: Option<&crate::ingest::mixed::PreparedMixedDocuments>,
+) -> Result<NativeWalRun<'s>, NativeGraphError> {
+    let payload = crate::ingest::wal_payload::encode_graph_commit(envelope)
+        .map_err(|_| NativeGraphError::Invalid("graph WAL payload"))?;
+    let mut wal_slot = store.wal_writer.lock().map_err(|_| {
+        NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
+            component: "WAL writer",
+        })
+    })?;
+    let wal = wal_slot
+        .as_mut()
+        .ok_or(crate::lifecycle::StoreError::ReadOnly)?;
+    let active_slot = store.active.lock().map_err(|_| {
+        NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
+            component: "active segment",
+        })
+    })?;
+    let active = active_slot
+        .as_ref()
+        .ok_or(crate::lifecycle::StoreError::Closed)?;
+    if active.generation.checked_add(1) != Some(generation) {
+        return Err(NativeGraphError::StalePreparation);
+    }
+    if documents.is_some_and(|docs| docs.generation != active.generation) {
+        return Err(NativeGraphError::StalePreparation);
+    }
+    let mut records = Vec::new();
+    if let Some(docs) = documents.filter(|docs| !docs.records.is_empty()) {
+        let mut lengths = docs
+            .records
+            .iter()
+            .map(|(_, _, bytes)| bytes.len())
+            .collect::<Vec<_>>();
+        lengths.push(payload.len());
+        let (pending, cap) = wal.mixed_run_bound()?;
+        crate::ingest::wal_payload::mixed_batch_group_bytes(pending, &lengths, cap)
+            .map_err(crate::lifecycle::StoreError::WalWrite)?;
+        let count =
+            u32::try_from(lengths.len()).map_err(|_| NativeGraphError::IdentityExhausted)?;
+        for (index, (_, op, bytes)) in docs.records.iter().enumerate() {
+            records.push((
+                crate::ingest::wal_payload::MIXED_BATCH_MEMBER_V1,
+                crate::ingest::wal_payload::encode_mixed_batch_member(
+                    index as u32,
+                    count,
+                    *op,
+                    bytes,
+                )
+                .map_err(|_| NativeGraphError::Invalid("mixed document WAL payload"))?,
+            ));
+        }
+        records.push((
+            crate::ingest::wal_payload::MIXED_BATCH_MEMBER_V1,
+            crate::ingest::wal_payload::encode_mixed_batch_member(
+                count - 1,
+                count,
+                crate::ingest::wal_payload::GRAPH_COMMIT_V1,
+                &payload,
+            )
+            .map_err(|_| NativeGraphError::Invalid("mixed graph WAL payload"))?,
+        ));
+    } else {
+        if documents.is_some() {
+            let (pending, cap) = wal.mixed_run_bound()?;
+            let encoded_bytes = pending
+                .saturating_add(payload.len())
+                .saturating_add(crate::wal::record::MIN_RECORD_LEN);
+            if encoded_bytes > cap {
+                return Err(crate::lifecycle::StoreError::WalWrite(
+                    crate::wal::WalWriteError::GroupTooLarge {
+                        encoded_bytes,
+                        max_group_bytes: cap,
+                    },
+                )
+                .into());
+            }
+        }
+        records.push((crate::ingest::wal_payload::GRAPH_COMMIT_V1, payload));
+    }
+    Ok(NativeWalRun {
+        wal_slot,
+        active_slot,
+        records,
+    })
+}
+
+fn protect_and_commit_with_documents(
+    store: &crate::lifecycle::Store,
+    writer: &mut NativeWriter,
+    transition: NativeCommittedTransition<'_>,
+    control: &crate::lifecycle::QueryControl,
+    audit_publication: bool,
+    mut documents: Option<crate::ingest::mixed::PreparedMixedDocuments>,
+) -> Result<NativeCommitAudit, NativeGraphError> {
     use crate::lifecycle::stats::GraphWorkKind as W;
     let work = GraphResources::from_store(store)?;
     let _work_batch = work.begin_work();
@@ -2097,6 +2204,43 @@ pub(super) fn protect_and_commit(
             return Err(NativeGraphError::Invalid("commit artifact binding"));
         }
     }
+    let mixed = documents.is_some();
+    let generation = transition.next.base().generation.get();
+    let mut run = if mixed {
+        Some(admit_wal_run(
+            store,
+            generation,
+            transition.wal_bytes(),
+            documents.as_ref(),
+        )?)
+    } else {
+        None
+    };
+    let mut early_publication = None;
+    let prepared_documents = if let Some(run) = run.as_mut() {
+        let wal = run
+            .wal_slot
+            .as_mut()
+            .ok_or(crate::lifecycle::StoreError::ReadOnly)?;
+        let last_seq = wal
+            .durable_end()
+            .checked_add(run.records.len() as u64)
+            .ok_or(NativeGraphError::IdentityExhausted)?;
+        if let Some(documents) = documents.as_mut() {
+            documents.prepare_active_publication(crate::wal::LogSeq::new(
+                wal.durable_end().saturating_add(1),
+            ))?;
+        }
+        // Mixed admission and the whole run cap precede every durable change.
+        early_publication = Some(wal.manifest_publication()?.arm());
+        documents
+            .as_ref()
+            .map(|docs| docs.prepare_tombstones(store, wal.durable_end(), generation, last_seq))
+            .transpose()?
+            .flatten()
+    } else {
+        None
+    };
     for artifact in transition.artifacts {
         writer.protected.push(artifact.descriptor);
     }
@@ -2177,31 +2321,27 @@ pub(super) fn protect_and_commit(
     control
         .checkpoint()
         .map_err(|_| NativeGraphError::Stage(StageError::Cancelled))?;
-    let payload = crate::ingest::wal_payload::encode_graph_commit(transition.wal_bytes())
-        .map_err(|_| NativeGraphError::Invalid("graph WAL payload"))?;
-    let mut wal_slot = store.wal_writer.lock().map_err(|_| {
-        NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
-            component: "WAL writer",
-        })
-    })?;
+    let NativeWalRun {
+        mut wal_slot,
+        mut active_slot,
+        records,
+    } = match run {
+        Some(run) => run,
+        None => admit_wal_run(store, generation, transition.wal_bytes(), None)?,
+    };
     let wal = wal_slot
         .as_mut()
         .ok_or(crate::lifecycle::StoreError::ReadOnly)?;
-    let mut active_slot = store.active.lock().map_err(|_| {
-        NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
-            component: "active segment",
-        })
-    })?;
-    let active = active_slot
-        .as_mut()
-        .ok_or(crate::lifecycle::StoreError::Closed)?;
-    let generation = transition.next.base().generation.get();
-    if active.generation.checked_add(1) != Some(generation) {
-        return Err(NativeGraphError::StalePreparation);
-    }
-    let publication = wal.manifest_publication()?.arm();
+    let mut publication = match early_publication {
+        Some(publication) => publication,
+        None => wal.manifest_publication()?.arm(),
+    };
+    let record_refs = records
+        .iter()
+        .map(|(op, bytes)| (*op, bytes.as_slice()))
+        .collect::<Vec<_>>();
     let before_io = wal.io_work();
-    let result = wal.commit_many(&[(crate::ingest::wal_payload::GRAPH_COMMIT_V1, &payload)]);
+    let result = wal.commit_many(&record_refs);
     let after_io = wal.io_work();
     for (index, kind) in [
         W::WalAppends,
@@ -2231,7 +2371,7 @@ pub(super) fn protect_and_commit(
     );
     let range = match result {
         Ok(range) => range,
-        Err(source) if source.is_definite_wal_refusal() => {
+        Err(source) if !mixed && source.is_definite_wal_refusal() => {
             publication.complete();
             return Err(NativeGraphError::Store(source));
         }
@@ -2245,10 +2385,23 @@ pub(super) fn protect_and_commit(
             });
         }
     };
-    writer.last_graph_seq = range.start.get();
+    writer.last_graph_seq = range.end.get().saturating_sub(1);
     writer.envelope_bytes = next_wal_bytes;
+    let mut replaced_paths = Vec::new();
     let expose = || {
-        active.generation = generation;
+        if let Some(documents) = documents.take() {
+            replaced_paths = documents.publish(
+                store,
+                &mut active_slot,
+                prepared_documents,
+                &mut publication,
+                generation,
+            )?;
+        }
+        active_slot
+            .as_mut()
+            .ok_or(crate::lifecycle::StoreError::Closed)?
+            .generation = generation;
         if store
             .native_graph
             .publish_committed_transition(transition)
@@ -2293,6 +2446,8 @@ pub(super) fn protect_and_commit(
     let _ = audit_publication;
     expose()?;
     publication.complete();
+    drop(active_slot);
+    crate::ingest::mixed::unlink_replaced(store, &replaced_paths);
     Ok(NativeCommitAudit::default())
 }
 
@@ -2331,6 +2486,35 @@ pub(super) fn commit_staged_batch<'m>(
     staged_batch: &StagedBatch<'_>,
     allow_pending_checkpoint: &mut bool,
 ) -> Result<CommitStep, NativeGraphError> {
+    commit_staged_batch_with_documents(
+        store,
+        writer,
+        lease,
+        admitted,
+        shared,
+        storage,
+        control,
+        base,
+        staged_batch,
+        allow_pending_checkpoint,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn commit_staged_batch_with_documents<'m>(
+    store: &crate::lifecycle::Store,
+    writer: &mut NativeWriter,
+    lease: &NativeReadLease,
+    admitted: &Arc<NativeGraphBundle>,
+    shared: &GraphResources,
+    storage: &'m StorageMemory<'m>,
+    control: &crate::lifecycle::QueryControl,
+    base: &NativeAdmittedBase<'_, '_, '_, 'm>,
+    staged_batch: &StagedBatch<'_>,
+    allow_pending_checkpoint: &mut bool,
+    documents: Option<crate::ingest::mixed::PreparedMixedDocuments>,
+) -> Result<CommitStep, NativeGraphError> {
     // No-op acknowledgements share the same WAL failure state as changes.
     // Keep this check at the tail used by structured and query mutations.
     store
@@ -2343,7 +2527,11 @@ pub(super) fn commit_staged_batch<'m>(
         .ok_or(crate::lifecycle::StoreError::ReadOnly)?
         .manifest_publication()?
         .complete();
-    if staged_batch.disposition() != BatchDisposition::Changed {
+    if staged_batch.disposition() != BatchDisposition::Changed
+        && documents
+            .as_ref()
+            .is_none_or(|docs| docs.records.is_empty())
+    {
         return Ok(CommitStep::NoOp);
     }
     if writer.checkpoint_failed {
@@ -2614,7 +2802,26 @@ pub(super) fn commit_staged_batch<'m>(
         return Ok(CommitStep::Checkpointed);
     }
 
-    let audit = protect_and_commit(store, writer, transition, control, true)?;
+    let mixed = documents.is_some();
+    let committed =
+        protect_and_commit_with_documents(store, writer, transition, control, true, documents);
+    if mixed && committed.is_err() {
+        let wal_slot = store.wal_writer.lock().map_err(|_| {
+            NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
+                component: "WAL writer",
+            })
+        })?;
+        // A failed armed publication fences the shared WAL. Stop native
+        // admission too, before a later graph call creates private artifacts.
+        if wal_slot
+            .as_ref()
+            .is_some_and(|wal| wal.manifest_publication().is_err())
+        {
+            writer.stopped = true;
+            let _ = store.native_graph.stop_admissions();
+        }
+    }
+    let audit = committed?;
     Ok(CommitStep::Committed {
         generation: target_generation,
         audit,
@@ -2622,6 +2829,22 @@ pub(super) fn commit_staged_batch<'m>(
 }
 
 impl crate::lifecycle::Store {
+    pub(crate) fn apply_native_mixed(
+        &self,
+        documents: &crate::ingest::IngestBatch,
+        requests: &[crate::property_graph::staging::StructuredWrite<'_, '_>],
+        control: &crate::lifecycle::QueryControl,
+    ) -> Result<NativePreparedResult<ReceiptRegistration>, NativeGraphError> {
+        let mut materializer = ReceiptMaterializer;
+        self.apply_native_graph_with_materializer_inner(
+            requests,
+            control,
+            &mut materializer,
+            true,
+            Some(documents),
+        )
+    }
+
     pub(crate) fn apply_native_graph(
         &self,
         requests: &[crate::property_graph::staging::StructuredWrite<'_, '_>],
@@ -2637,7 +2860,7 @@ impl crate::lifecycle::Store {
         control: &crate::lifecycle::QueryControl,
         materializer: &mut M,
     ) -> Result<NativePreparedResult<M::Registration>, NativeGraphError> {
-        self.apply_native_graph_with_materializer_inner(requests, control, materializer, true)
+        self.apply_native_graph_with_materializer_inner(requests, control, materializer, true, None)
     }
 
     /// Test-only durable monotone jump; ordinary writes still allocate IDs.
@@ -2734,6 +2957,7 @@ impl crate::lifecycle::Store {
         control: &crate::lifecycle::QueryControl,
         materializer: &mut M,
         mut allow_pending_checkpoint: bool,
+        documents: Option<&crate::ingest::IngestBatch>,
     ) -> Result<NativePreparedResult<M::Registration>, NativeGraphError> {
         let request_resources = GraphResources::from_store(self)?;
         let _request_work = request_resources.begin_work();
@@ -2757,6 +2981,32 @@ impl crate::lifecycle::Store {
                 return Err(NativeGraphError::WritesStopped);
             }
 
+            let prepared_documents = if let Some(batch) = documents {
+                let wal_slot = self.wal_writer.lock().map_err(|_| {
+                    crate::lifecycle::StoreError::Synchronization {
+                        component: "WAL writer",
+                    }
+                })?;
+                let wal = wal_slot
+                    .as_ref()
+                    .ok_or(crate::lifecycle::StoreError::ReadOnly)?;
+                let _admission = wal.manifest_publication()?;
+                let active = self.active.lock().map_err(|_| {
+                    crate::lifecycle::StoreError::Synchronization {
+                        component: "active segment",
+                    }
+                })?;
+                Some(
+                    self.prepare_mixed_documents(
+                        batch,
+                        active
+                            .as_ref()
+                            .ok_or(crate::lifecycle::StoreError::Closed)?,
+                    )?,
+                )
+            } else {
+                None
+            };
             let lease = self.admit_native_read()?;
             let admitted = Arc::clone(lease.bundle());
             let shared = GraphResources::from_store(self)?;
@@ -2829,7 +3079,13 @@ impl crate::lifecycle::Store {
                 "staging-end",
                 resources_cell.borrow().work(),
             );
-            let materialized = staged?;
+            let mut materialized = staged?;
+            if prepared_documents
+                .as_ref()
+                .is_some_and(|docs| !docs.records.is_empty())
+            {
+                materialized.include_document_change();
+            }
             let staged_batch = materialized.batch();
             // Refusals, replays and no-ops cannot authorize maintenance.
             // Drop this attempt before maintenance takes the writer lock,
@@ -2841,7 +3097,7 @@ impl crate::lifecycle::Store {
                     continue;
                 }
             }
-            let step = commit_staged_batch(
+            let step = commit_staged_batch_with_documents(
                 self,
                 writer,
                 &lease,
@@ -2852,6 +3108,7 @@ impl crate::lifecycle::Store {
                 &base,
                 staged_batch,
                 &mut allow_pending_checkpoint,
+                prepared_documents,
             )?;
             let (commit_audit, changed) = match step {
                 CommitStep::NoOp => {

@@ -1438,6 +1438,75 @@ struct ScheduledFile {
 }
 
 impl ScheduledFile {
+    // Mixed runs still issue one physical append. The scheduled Append site
+    // observes each member so nth_match can stop at an exact member boundary.
+    fn mixed_append(&mut self, bytes: &[u8]) -> std::io::Result<Option<()>> {
+        use zeppelin_embed::ingest::wal_payload::MIXED_BATCH_MEMBER_V1;
+        use zeppelin_embed::wal::record::decode_record;
+        if !self.path.ends_with("wal.ze")
+            || !self.schedule.events.iter().any(|event| {
+                event.site == FaultSite::Append
+                    && event.op_index == self.current_operation.load(Ordering::Relaxed)
+            })
+        {
+            return Ok(None);
+        }
+        let mut offset = if bytes.starts_with(&zeppelin_embed::format::frame::FILE_MAGIC) {
+            zeppelin_embed::wal::header::WAL_HEADER_LEN
+        } else {
+            0
+        };
+        let Some(first) = bytes.get(offset..) else {
+            return Ok(None);
+        };
+        if !decode_record(first).is_ok_and(|record| record.record.op == MIXED_BATCH_MEMBER_V1) {
+            return Ok(None);
+        }
+        let mut ends = Vec::new();
+        while offset < bytes.len() {
+            let record = decode_record(&bytes[offset..])
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
+            if record.record.op != MIXED_BATCH_MEMBER_V1 {
+                return Err(std::io::Error::other(
+                    "mixed Append schedule encountered another operation",
+                ));
+            }
+            let end = offset + record.encoded_len;
+            ends.push((offset, end));
+            offset = end;
+        }
+        for (offset, end) in ends {
+            match self.action() {
+                Err(error) => {
+                    self.inner.append(&bytes[..offset])?;
+                    return Err(error);
+                }
+                Ok(Some(FaultMode::PostCommitError)) => {
+                    self.inner.append(&bytes[..end])?;
+                    return Err(std::io::Error::other("scheduled post-member append error"));
+                }
+                Ok(Some(FaultMode::Crash)) => {
+                    self.inner.append(&bytes[..end])?;
+                    self.crash_now()?;
+                    return Err(simulated_crash_error());
+                }
+                Ok(Some(FaultMode::SilentDrop | FaultMode::MisdirectedWrite)) => {
+                    return Ok(Some(()));
+                }
+                Ok(Some(mode)) => {
+                    let mut changed = bytes[..offset].to_vec();
+                    changed.extend(self.transform(mode, &bytes[offset..end]));
+                    changed.extend_from_slice(&bytes[end..]);
+                    self.inner.append(&changed)?;
+                    return Ok(Some(()));
+                }
+                Ok(None) => {}
+            }
+        }
+        self.inner.append(bytes)?;
+        Ok(Some(()))
+    }
+
     fn action(&self) -> std::io::Result<Option<FaultMode>> {
         let schedule = ScheduledVfs {
             inner: (),
@@ -1474,6 +1543,9 @@ impl ScheduledFile {
 
 impl VfsFile for ScheduledFile {
     fn append(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        if self.mixed_append(bytes)?.is_some() {
+            return Ok(());
+        }
         match self.action()? {
             Some(FaultMode::Crash) => {
                 self.inner.append(bytes)?;
@@ -1491,6 +1563,21 @@ impl VfsFile for ScheduledFile {
     }
 
     fn append_vectored(&mut self, buffers: &mut [IoSlice<'_>]) -> std::io::Result<()> {
+        if self.path.ends_with("wal.ze")
+            && self
+                .schedule
+                .events
+                .iter()
+                .any(|event| event.site == FaultSite::Append)
+        {
+            let bytes = buffers
+                .iter()
+                .flat_map(|buffer| buffer.iter().copied())
+                .collect::<Vec<_>>();
+            if self.mixed_append(&bytes)?.is_some() {
+                return Ok(());
+            }
+        }
         match self.action()? {
             None => self.inner.append_vectored(buffers),
             Some(FaultMode::Crash) => {

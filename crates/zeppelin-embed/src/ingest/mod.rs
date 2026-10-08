@@ -7,6 +7,8 @@ mod lookup;
 mod namespace_stage;
 pub(crate) use namespace_stage::NamespaceStage;
 mod merge;
+#[cfg(feature = "graph-cypher")]
+pub(crate) mod mixed;
 mod purge;
 
 /// Survivor-rewrite helpers shared with graph-segment consolidation.
