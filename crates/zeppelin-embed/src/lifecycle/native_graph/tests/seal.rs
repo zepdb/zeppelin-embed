@@ -21,6 +21,92 @@ fn document(store: &Store, id: u128) {
 }
 
 #[test]
+fn late_seal_cancellation_restores_bytes_and_admits_both_writers() {
+    cancellation(None);
+}
+
+#[test]
+fn late_seal_cancellation_cleanup_failures_keep_the_writer_fenced() {
+    cancellation(Some(FaultPoint::Delete));
+    cancellation(Some(FaultPoint::DirectorySync));
+}
+
+pub(super) fn cancellation(fault: Option<FaultPoint>) {
+    use crate::ingest::{IngestRetentionFaultController, IngestRetentionTestFault};
+    use crate::lifecycle::{StoreError, StoreTestDependencies, SystemMonotonicClock};
+    use std::collections::BTreeMap;
+
+    let directory = tempfile::tempdir().unwrap();
+    let vfs = Arc::new(RecordingVfs::default());
+    let controller = IngestRetentionFaultController::new(398);
+    let store = Store::open_with_test_dependencies(
+        directory.path(),
+        native_options(),
+        StoreTestDependencies::new(vfs.clone(), Arc::new(SystemMonotonicClock))
+            .with_ingest_retention_fault_controller(controller.clone()),
+    )
+    .unwrap();
+    store.enable_graph().unwrap();
+    disable_generation_fixture_maintenance(&store);
+    document(&store, 91);
+    let node = commit_tail_test_node(&store, "cancel-seal");
+    let generation = store.snapshot().unwrap().generation();
+    let observation = observe_node(&store, node);
+    let files = || {
+        std::fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                (entry.file_name(), std::fs::read(entry.path()).unwrap())
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
+    let before = files();
+    controller
+        .arm(IngestRetentionTestFault::SealCancellation)
+        .unwrap();
+    if let Some(point) = fault {
+        // The first directory sync publishes the segment; the second sync
+        // makes cancellation's deletion durable.
+        vfs.arm_fault_after(point, u64::from(point == FaultPoint::DirectorySync));
+    }
+    let error = store.seal_with_cancel(&CancelToken::new()).unwrap_err();
+    assert_eq!(store.snapshot().unwrap().generation(), generation);
+    assert_eq!(store.count_documents(None, None).unwrap().count, 1);
+    assert_eq!(observe_node(&store, node), observation);
+    if fault.is_some() {
+        assert!(matches!(error, StoreError::Io { .. }), "{error:?}");
+        vfs.assert_fired_once();
+        assert!(controller.take_receipts().unwrap().is_empty());
+        assert_shared_writer_stopped(&store);
+    } else {
+        assert!(matches!(error, StoreError::SealCancelled));
+        assert_eq!(files(), before, "cancelled fold changed durable state");
+        assert_eq!(controller.take_receipts().unwrap().len(), 1);
+        document(&store, 92);
+        commit_tail_test_node(&store, "after-cancel-seal");
+    }
+    drop(store);
+    for access in [
+        AccessMode::ReadWrite,
+        AccessMode::ReadOnly,
+        AccessMode::ReadWrite,
+    ] {
+        let reopened =
+            Store::open(directory.path(), native_options().with_access_mode(access)).unwrap();
+        assert_eq!(
+            reopened.count_documents(None, None).unwrap().count,
+            if fault.is_some() { 1 } else { 2 }
+        );
+        assert!(observe_node(&reopened, node).is_some());
+    }
+    let reopened = Store::open(directory.path(), native_options()).unwrap();
+    reopened
+        .seal()
+        .expect("retry seal after cancellation or recovery");
+}
+
+#[test]
 fn folds_graph_state_into_the_same_manifest() {
     assert_fold();
 }
@@ -212,6 +298,30 @@ pub(crate) fn run_rotation_probe() -> Vec<crate::graph_read_view_test_support::P
     .into_iter()
     .map(|(key, point, skip)| {
         rotation_fault(point, skip);
+        crate::graph_read_view_test_support::PathReceipt {
+            key,
+            fires: 1,
+            clean_controls: 1,
+        }
+    })
+    .collect()
+}
+
+pub(crate) fn run_cancellation_probe() -> Vec<crate::graph_read_view_test_support::PathReceipt> {
+    cancellation(None);
+    [
+        (
+            "storage-durability.seal.cancel-cleanup.delete",
+            FaultPoint::Delete,
+        ),
+        (
+            "storage-durability.seal.cancel-cleanup.sync",
+            FaultPoint::DirectorySync,
+        ),
+    ]
+    .into_iter()
+    .map(|(key, point)| {
+        cancellation(Some(point));
         crate::graph_read_view_test_support::PathReceipt {
             key,
             fires: 1,

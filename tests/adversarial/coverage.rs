@@ -9,6 +9,8 @@ pub const REQUIRED_GRAPH_SMOKE_COVERAGE: &[&str] = &[
     "storage-durability.seal.graph-rotation.rename",
     "storage-durability.seal.graph-rotation.post-rename",
     "storage-durability.seal.graph-rotation.sync",
+    "storage-durability.seal.cancel-cleanup.delete",
+    "storage-durability.seal.cancel-cleanup.sync",
     "property-graph.c-entry.shared-semantics",
     "property-graph.c-entry.response-after-close",
     "property-graph.c-entry.null-bag-comparator",

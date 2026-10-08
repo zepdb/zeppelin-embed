@@ -612,6 +612,11 @@ pub mod graph_recovery_test_support {
         crate::lifecycle::native_graph::tests::seal::run_rotation_probe()
     }
 
+    /// Exercises late seal cancellation and failures of its durable cleanup.
+    pub fn run_seal_cancellation_probe() -> Vec<PathReceipt> {
+        crate::lifecycle::native_graph::tests::seal::run_cancellation_probe()
+    }
+
     /// Exercises interrupted enable catalog creation and writable retry.
     pub fn run_enable_retry_probe() -> Vec<PathReceipt> {
         crate::lifecycle::native_graph::tests::recovery::run_enable_retry_probe()

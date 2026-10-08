@@ -274,6 +274,10 @@ impl Store {
         let forced_late_cancellation: Option<u64> = None;
         if forced_late_cancellation.is_some() || check_cancelled(cancel).is_err() {
             self.abort_seal(vfs, id, forced_late_cancellation, current, absorbed_through)?;
+            // Successful cleanup durably restores the pre-seal state; no
+            // manifest or in-memory publication changed. Cleanup I/O errors
+            // above still drop the armed guard and fence the shared writer.
+            publication.complete();
             return Err(StoreError::SealCancelled);
         }
         let mut segments = manifest.segments;

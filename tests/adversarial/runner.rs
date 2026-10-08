@@ -2961,6 +2961,12 @@ fn run_program_for_with_clock(
             }
             coverage.hit(receipt.key);
         }
+        for receipt in zeppelin_embed::graph_recovery_test_support::run_seal_cancellation_probe() {
+            if receipt.fires != 1 || receipt.clean_controls != 1 {
+                return Err(format!("invalid seal cancellation receipt {}", receipt.key));
+            }
+            coverage.hit(receipt.key);
+        }
         for receipt in zeppelin_embed::graph_recovery_test_support::run_enable_retry_probe() {
             if receipt.fires != 1 || receipt.clean_controls != 1 {
                 return Err(format!("invalid graph enable receipt {}", receipt.key));

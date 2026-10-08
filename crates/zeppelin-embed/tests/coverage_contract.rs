@@ -362,6 +362,19 @@ fn late_seal_cancellation_preserves_exact_active_multiset_and_emits_receipt() {
         .snapshot()
         .expect("snapshot before late seal")
         .generation();
+    let file_image = || {
+        std::fs::read_dir(directory.path())
+            .expect("list store files")
+            .map(|entry| {
+                let entry = entry.expect("store file");
+                (
+                    entry.file_name(),
+                    std::fs::read(entry.path()).expect("file bytes"),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let files_before = file_image();
     controller
         .arm(IngestRetentionTestFault::SealCancellation)
         .expect("arm late seal cancellation");
@@ -370,6 +383,11 @@ fn late_seal_cancellation_preserves_exact_active_multiset_and_emits_receipt() {
         .seal_with_cancel(&CancelToken::new())
         .expect_err("late seal cancellation must refuse publication");
     assert!(matches!(error, StoreError::SealCancelled));
+    assert_eq!(
+        file_image(),
+        files_before,
+        "cancellation must restore every file and byte"
+    );
     let receipts = controller.take_receipts().expect("take late seal receipts");
     assert_eq!(
         receipts.len(),

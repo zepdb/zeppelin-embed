@@ -366,6 +366,12 @@ pub(super) fn run() {
             enable_graph_catalog_collision_is_a_definite_refusal();
             snapshot_after_completed_active_purge_reopens_without_sealing();
             crate::lifecycle::tests::replacement_snapshot_backup_reopens_with_nonzero_watermarks();
+            super::super::seal::cancellation(None);
+            super::super::seal::cancellation(Some(if sequence % 2 == 0 {
+                FaultPoint::Delete
+            } else {
+                FaultPoint::DirectorySync
+            }));
             for fault_index in [
                 Some(sequence % 8),
                 (sequence < 8).then_some(sequence + 8),
