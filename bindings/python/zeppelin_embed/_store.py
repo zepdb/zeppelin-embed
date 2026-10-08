@@ -4,15 +4,21 @@ from __future__ import annotations
 
 import ctypes as ct
 import os
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from enum import IntEnum
 from pathlib import Path
-from typing import Any, Self, TypeVar
+from typing import Any, NoReturn, Self, TypeVar
 
 import numpy as np
 
 from . import _structures as s
-from ._errors import ERROR_TYPES, invalid_argument, last_error_message, raise_for_status
+from ._errors import (
+    ERROR_TYPES,
+    UnsupportedBuild,
+    invalid_argument,
+    last_error_message,
+    raise_for_status,
+)
 from ._library import LIBRARY
 from ._types import (
     AccessMode,
@@ -636,6 +642,48 @@ class Store:
 
     def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
         self.close()
+
+    def enable_graph(self) -> NoReturn:
+        """Raise UnsupportedBuild: Python wheels do not include graph support."""
+        raise UnsupportedBuild("Python wheels do not include graph support")
+
+    def graph_apply(
+        self, items: Sequence[object], *,
+        cancel_token: CancelToken | None = None, deadline_ns: int | None = None,
+    ) -> NoReturn:
+        """Refuse a graph batch without inspecting or applying its items."""
+        raise UnsupportedBuild("Python wheels do not include graph support")
+
+    def graph_query(
+        self, plan: object, parameters: Mapping[str, object] | None = None, *,
+        max_rows: int = 1024, cancel_token: CancelToken | None = None,
+        deadline_ns: int | None = None,
+    ) -> NoReturn:
+        """Refuse a structured graph query without inspecting its plan."""
+        raise UnsupportedBuild("Python wheels do not include graph support")
+
+    def cypher(
+        self, text: str, parameters: Mapping[str, object] | None = None, *,
+        max_rows: int = 1024, cancel_token: CancelToken | None = None,
+        deadline_ns: int | None = None,
+    ) -> NoReturn:
+        """Refuse a Cypher statement without compiling or executing it."""
+        raise UnsupportedBuild("Python wheels do not include graph support")
+
+    def get_nodes(
+        self, ids: Sequence[int | tuple[int, int]], *,
+        text: bool = False, vector: bool = False,
+    ) -> NoReturn:
+        """Refuse graph node reads without accessing the store."""
+        raise UnsupportedBuild("Python wheels do not include graph support")
+
+    def get_relationships(self, ids: Sequence[int | tuple[int, int]]) -> NoReturn:
+        """Refuse graph relationship reads without accessing the store."""
+        raise UnsupportedBuild("Python wheels do not include graph support")
+
+    def graph_resources(self) -> NoReturn:
+        """Refuse graph resource reads without accessing the store."""
+        raise UnsupportedBuild("Python wheels do not include graph support")
 
     def state(self) -> StateReport:
         handle = self._live_handle()

@@ -89,6 +89,19 @@ for _code, _name in enumerate(ERROR_NAMES):
     ERROR_TYPES[_code] = _type
 
 
+class UnsupportedBuild(ZeppelinError):
+    """Graph operations are unavailable in the graph-free Python wheel."""
+
+    code = 59
+    code_name = "ZE_ERR_GRAPH_UNSUPPORTED_BUILD"
+
+
+# Preserve the generated public name while using the requested exception type.
+GraphUnsupportedBuild = UnsupportedBuild
+if len(ERROR_NAMES) > 59 and ERROR_NAMES[59] == UnsupportedBuild.code_name:
+    ERROR_TYPES[59] = UnsupportedBuild
+
+
 def last_error_message(handle: int = 0) -> str:
     """Copy the per-handle or process-global last error from the ABI."""
 
@@ -136,6 +149,8 @@ __all__ = [  # noqa: PLE0604
     "ERROR_TYPES",
     "ErrorCode",
     "ZeppelinError",
+    "UnsupportedBuild",
+    "GraphUnsupportedBuild",
     "error_code_name",
     "last_error_message",
     "raise_for_status",
