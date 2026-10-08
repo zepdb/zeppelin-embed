@@ -1,0 +1,20 @@
+{
+  "package": "@zepdb/zeppelin-embed",
+  "version": "0.6.0",
+  "expectedSourceTag": "v0.6.0",
+  "expectedSourceCommit": "f39087d7b20016138d9a1946055bc229cdffdd23",
+  "platform": "darwin",
+  "arch": "arm64",
+  "node": "v24.21.0",
+  "addon": "prebuilds/darwin-arm64/zeppelin_embed.node",
+  "addonSha256": "a9d73b74246a21fdeb034b03522fbc43652fbf4e548e34990c84187e30497829",
+  "indexSha256": "5d9e76036cfe60f765197b113d750a8d824983f4dadfab313bc7ba1164b4f3b9",
+  "queriesSha256": "4ae461854f48fb1614050851b15c6cbc4f3213749f68e1255db762d0b7078b5c",
+  "generatorSha256": "709a671f8da35e244095604a28aa985b54b092bdeddaaaaab8ac8f7ade92f3dc",
+  "translatedQueriesSha256": "3559eb9b327884394f816a1e4406cae0a0c0207b6c9698c29dfaf6d7f27ff041",
+  "outputSha256": "bf8c503d589b9054e7b64ddc260eb60539fcb459f657229c3726d191306f249d",
+  "documents": 151000,
+  "relationships": 0,
+  "queries": 500,
+  "translatedQueries": 50
+}
