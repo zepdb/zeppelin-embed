@@ -501,7 +501,7 @@ impl ProbeStore {
     /// Release mapped owners without running the facade's graceful checkpoint.
     /// Only after this returns may the runner materialize a modeled power cut.
     pub fn release(self) -> u64 {
-        self.graph.close_graph().expect("ZE41 abrupt-owner release");
+        self.graph.close().expect("ZE41 abrupt-owner release");
         let resources = self.resources.clone();
         drop(self);
         resources.reserved_bytes().unwrap()
