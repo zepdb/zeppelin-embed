@@ -255,6 +255,66 @@ fn graph_runtime_header_matches_the_graph_export_allowlist() {
         .filter(|line| line.starts_with("ze_graph_") || line.starts_with("ze_store_"))
         .map(str::to_owned)
         .collect();
-    assert_eq!(declared.len(), 12);
+    assert_eq!(declared.len(), 13);
     assert_eq!(declared, allowed);
+}
+
+#[cfg(feature = "graph-cypher")]
+#[test]
+fn ze399_external_c_applies_queries_and_reopens_a_document_node() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let directory = tempfile::tempdir().unwrap();
+    let executable = directory.path().join("graph_apply_v2");
+    let deps = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    // The default cdylib path can be overwritten by a graph-free Cargo build.
+    // Build this C consumer's graph library in its own feature-specific target.
+    let target = deps.join("ze399-c-graph");
+    let build = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
+        .current_dir(root.parent().unwrap().parent().unwrap())
+        .args([
+            "build",
+            "--offline",
+            "-p",
+            "zeppelin-embed-ffi",
+            "--features",
+            "graph-cypher",
+            "--target-dir",
+        ])
+        .arg(&target)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let library = target.join("debug");
+    let result = Command::new("clang")
+        .args(["-std=c11", "-Wall", "-Wextra", "-Werror", "-I"])
+        .arg(root.join("include"))
+        .arg(root.join("tests/c/graph_apply_v2.c"))
+        .arg(library.join("libzeppelin_embed_ffi.dylib"))
+        .arg(format!("-Wl,-rpath,{}", library.display()))
+        .arg("-o")
+        .arg(&executable)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let result = Command::new(executable)
+        .arg(directory.path().join("store"))
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
 }

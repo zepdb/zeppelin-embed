@@ -58,6 +58,10 @@ fn graph_calls_refuse_an_unsupported_build_without_touching_pointers() {
         ZeErrorCode::ZeErrGraphUnsupportedBuild
     );
     assert_eq!(
+        ze_store_graph_apply_v2(0, std::ptr::null(), std::ptr::null_mut()),
+        ZeErrorCode::ZeErrGraphUnsupportedBuild
+    );
+    assert_eq!(
         ze_store_cypher(0, std::ptr::null(), std::ptr::null_mut()),
         ZeErrorCode::ZeErrGraphUnsupportedBuild
     );

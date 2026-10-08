@@ -1727,6 +1727,82 @@ typedef struct ZeGraphResponse {
 } ZeGraphResponse;
 
 /*
+ One full document replacement associated with a nondelete node batch item.
+ Text and vector are taken from that item's node image; attributes are
+ validated against the Store schema. A create requires a nonzero caller ID;
+ a put uses the item's expected node and must leave has_id and id zero.
+ */
+typedef struct ZeStoreGraphDocument {
+    /*
+     Exact sizeof this appended descriptor.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Unique index in graph.items.
+     */
+    uint32_t item_index;
+    /*
+     Exactly one for Create, zero for Put.
+     */
+    uint32_t has_id;
+    /*
+     Caller-selected Create identity; zero for Put.
+     */
+    ZeDocId id;
+    /*
+     Document timestamp.
+     */
+    int64_t timestamp;
+    /*
+     Borrowed Store attribute values.
+     */
+    const ZeAttributeValue *attributes;
+    /*
+     Number of attribute values.
+     */
+    size_t attribute_count;
+    /*
+     Borrowed opaque metadata.
+     */
+    const uint8_t *metadata;
+    /*
+     Metadata byte count.
+     */
+    size_t metadata_len;
+} ZeStoreGraphDocument;
+
+/*
+ Appended size-versioned graph batch with per-item document associations.
+ The graph descriptor and all borrowed inputs remain valid for the call.
+ */
+typedef struct ZeStoreGraphBatchRequestV2 {
+    /*
+     Exact sizeof this version-two descriptor.
+     */
+    uint32_t abi_size;
+    /*
+     Must be zero.
+     */
+    uint32_t abi_reserved;
+    /*
+     Required version-one graph batch descriptor.
+     */
+    const struct ZeGraphBatchRequest *graph;
+    /*
+     Supplemental document replacements, at most one per node item.
+     */
+    const struct ZeStoreGraphDocument *documents;
+    /*
+     Number of supplemental documents, at most graph.item_count.
+     */
+    size_t document_count;
+} ZeStoreGraphBatchRequestV2;
+
+/*
  Fixed caller-owned byte span; length is bytes, not NUL termination.
  */
 typedef struct ZeGraphBytes {
@@ -2765,6 +2841,14 @@ extern "C" {
 ze_error_code ze_store_graph_apply(ze_handle handle,
                                    const struct ZeGraphBatchRequest *request,
                                    struct ZeGraphResponse *out_response);
+
+/*
+ Applies one atomic mixed batch with per-item documents and caller node IDs.
+ Free the resulting receipts with ze_graph_response_free.
+ */
+ze_error_code ze_store_graph_apply_v2(ze_handle handle,
+                                      const struct ZeStoreGraphBatchRequestV2 *request,
+                                      struct ZeGraphResponse *out_response);
 
 /*
  Releases one response and resets it to the empty descriptor. An empty

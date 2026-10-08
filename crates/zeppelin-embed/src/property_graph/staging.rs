@@ -285,6 +285,15 @@ pub trait AdmittedBase {
         Ok(self.entity(EntityId::Node(node), control)?.is_some())
     }
 
+    /// Whether a caller-selected identity existed before this mixed batch.
+    fn caller_node_id_reserved(
+        &self,
+        node: NodeId,
+        control: &mut WriteControl<'_>,
+    ) -> Result<bool, StageError> {
+        self.node_id_reserved(node, control)
+    }
+
     /// Whether this admitted catalog declares any incoming-reference policies.
     fn has_relationship_rules(&self) -> bool {
         false
@@ -382,6 +391,8 @@ pub struct StructuredWrite<'a, 'batch> {
 pub enum StructuredOperation {
     /// First creation with explicit absence.
     Create,
+    /// First creation of a document node with a caller-selected identity.
+    CreateWithId(NodeId),
     /// Full replacement of the expected incarnation.
     Put(EntityId),
     /// Deletion of the expected incarnation and explicit integrity mode.

@@ -133,7 +133,7 @@ fn metadata(
 ) -> super::super::key_lifecycle::KeyRequestMetadata {
     use super::super::key_lifecycle::KeyRequestMetadata;
     let (operation, expected, delete_mode) = match operation {
-        StructuredOperation::Create => (
+        StructuredOperation::Create | StructuredOperation::CreateWithId(_) => (
             GraphOperation::StructuredCreate,
             ExpectedGraphState::Absent,
             None,
@@ -252,8 +252,13 @@ pub(super) fn stage_structured_with_preflight<'a>(
     let mut removed = Arena::new(memory, requests.len(), control)?;
     let mut admissions = Arena::new(memory, requests.len(), control)?;
     // No fresh ID or changed generation exists during metadata admission.
-    for request in requests {
+    for (index, request) in requests.iter().enumerate() {
         control(WritePhase::Validate)?;
+        if let StructuredOperation::CreateWithId(node) = request.operation
+            && (request.key.kind() != EntityKind::Node || base.document_version(node)?.is_none()
+                || requests.iter().take(index).any(|prior| matches!(prior.operation, StructuredOperation::CreateWithId(id) if id == node))) {
+            return Err(StageError::InvalidInput);
+        }
         if matches!(request.operation, StructuredOperation::Delete(..)) != request.image.is_none() {
             return Err(StageError::InvalidInput);
         }
@@ -421,6 +426,11 @@ pub(super) fn stage_structured_with_preflight<'a>(
             };
             if let KeyDecision::Replay(p) = decision {
                 let p = p.fields();
+                if let StructuredOperation::CreateWithId(node) = request.operation
+                    && p.incarnation != EntityId::Node(node)
+                {
+                    return Err(StageError::InvalidInput);
+                }
                 *slots
                     .as_mut_slice()
                     .get_mut(index)
@@ -474,7 +484,9 @@ pub(super) fn stage_structured_with_preflight<'a>(
                             || !matches!(input.image, Some(WriteImage::Node(_)))
                             || !matches!(
                                 input.operation,
-                                StructuredOperation::Create | StructuredOperation::Recreate(_)
+                                StructuredOperation::Create
+                                    | StructuredOperation::CreateWithId(_)
+                                    | StructuredOperation::Recreate(_)
                             )
                         {
                             return Err(StageError::Endpoint);
@@ -524,7 +536,15 @@ pub(super) fn stage_structured_with_preflight<'a>(
                 let request = requests.get(index).ok_or(StageError::InvalidInput)?;
                 let id = match change.existing_incarnation() {
                     Some(id) => id,
-                    None => allocate(base, request.key.kind(), &mut high_waters, control)?,
+                    None => match request.operation {
+                        StructuredOperation::CreateWithId(node) => {
+                            if base.caller_node_id_reserved(node, control)? {
+                                return Err(StageError::InvalidInput);
+                            }
+                            EntityId::Node(node)
+                        }
+                        _ => allocate(base, request.key.kind(), &mut high_waters, control)?,
+                    },
                 };
                 let generation = classification
                     .changed_generation

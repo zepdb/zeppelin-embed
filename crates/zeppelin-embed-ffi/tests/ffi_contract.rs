@@ -1650,6 +1650,7 @@ fn ze241_every_graph_export_has_an_explicit_handle_policy() {
     let handle = [
         "ze_store_enable_graph",
         "ze_store_graph_apply",
+        "ze_store_graph_apply_v2",
         "ze_store_cypher",
         "ze_store_cypher_with_row_limit",
         "ze_store_graph_query",

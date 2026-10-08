@@ -75,6 +75,7 @@ ze_store_enable_graph
 ze_store_get_nodes
 ze_store_get_relationships
 ze_store_graph_apply
+ze_store_graph_apply_v2
 ze_store_graph_maintain
 ze_store_graph_query
 ze_store_graph_resources

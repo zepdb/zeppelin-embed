@@ -913,6 +913,16 @@ pub(crate) fn apply_and_settle(
     requests: &[StructuredWrite<'_, '_>],
     control: &QueryControl,
 ) -> GuardedWrite<Result<ZeGraphResponse, ProducerError>> {
+    apply_batch_and_settle(registry, store, requests.into(), control)
+}
+
+pub(crate) fn apply_batch_and_settle<'a, 'b: 'a, 'c: 'a>(
+    registry: &'static GraphResultRegistry,
+    store: &Store,
+    batch: zeppelin_embed::property_graph::GraphBatch<'a, 'b, 'c>,
+    control: &QueryControl,
+) -> GuardedWrite<Result<ZeGraphResponse, ProducerError>> {
+    let requests = batch.writes;
     run_potential_write(|attempt| {
         let mut deleted = Vec::new();
         if deleted.try_reserve_exact(requests.len()).is_err() {
@@ -932,7 +942,7 @@ pub(crate) fn apply_and_settle(
             error: None,
         };
         let (outcome, admitted, registration) =
-            match store.graph_apply_with_materializer(requests, control, &mut materializer) {
+            match store.graph_apply_with_materializer(batch, control, &mut materializer) {
                 Ok(result) => result,
                 Err(error) => {
                     if error.nothing_committed() {

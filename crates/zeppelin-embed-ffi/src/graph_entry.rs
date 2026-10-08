@@ -44,6 +44,23 @@ pub extern "C" fn ze_store_graph_apply(
     })
 }
 
+/// Applies one atomic mixed batch with per-item documents and caller node IDs.
+/// Free the resulting receipts with ze_graph_response_free.
+#[unsafe(no_mangle)]
+pub extern "C" fn ze_store_graph_apply_v2(
+    handle: ZeHandle,
+    request: *const super::ZeStoreGraphBatchRequestV2,
+    out_response: *mut ZeGraphResponse,
+) -> ZeErrorCode {
+    ffi_entry!(Some(handle), ZeErrorCode::ZeErrPanic, {
+        crate::run_named_panic_probe("ze_store_graph_apply_v2");
+        crate::finish(
+            Some(handle),
+            graph_call!(apply_v2(handle, request, out_response)),
+        )
+    })
+}
+
 /// Releases one response and resets it to the empty descriptor. An empty
 /// response, including one an error left behind, is accepted; freeing again
 /// is a no-op. A forged or altered descriptor is `ZE_ERR_INVALID_ARGUMENT`.

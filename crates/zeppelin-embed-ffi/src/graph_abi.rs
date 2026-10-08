@@ -384,6 +384,53 @@ pub(crate) fn apply(
     }
 }
 
+pub(crate) fn apply_v2(
+    handle: ZeHandle,
+    request: *const crate::ZeStoreGraphBatchRequestV2,
+    out: *mut ZeGraphResponse,
+) -> Result<(), FfiError> {
+    begin_response(out)?;
+    let request = read_exact(request, |r| r.abi_size, "graph batch request v2")?;
+    let graph = read_exact(request.graph, |r| r.abi_size, "graph batch request")?;
+    if graph.item_count > MAX_BATCH_ITEMS || request.document_count > graph.item_count {
+        return Err(invalid("graph batch or document count exceeds item limit"));
+    }
+    let items = marshal::read_slice(graph.items, graph.item_count)?;
+    let documents = marshal::read_slice(request.documents, request.document_count)?;
+    let pool = Pool::read(graph.pool, "graph batch pool")?;
+    let control = read_control(graph.control)?;
+    let guarded = with_writer(handle, |access| {
+        let _gate = response_gate();
+        let linked =
+            batch::document_items(&pool, items, documents, &access.store, access.record_only)?;
+        with_batch(&pool, items, access.document.as_ref(), |writes| {
+            set_disposition(out, ZeGraphDisposition::ZeGraphDispositionIndeterminate);
+            crate::graph_result::conversion::apply_batch_and_settle(
+                &RESPONSES,
+                &access.store,
+                zeppelin_embed::property_graph::GraphBatch::with_node_documents(writes, &linked),
+                &control,
+            )
+        })
+    })?;
+    match guarded.value {
+        Ok(Ok(response)) => {
+            marshal::write_output(out, response);
+            Ok(())
+        }
+        Ok(Err(error)) => {
+            set_outcome(out, guarded.outcome);
+            Err(producer_error(&error, false))
+        }
+        Err(WriteInterrupted::Panicked) => {
+            set_outcome(out, guarded.outcome);
+            let message = "a panic interrupted the mixed graph write; its outcome is reported in the response disposition".to_owned();
+            crate::poison_handle(Some(handle), message.clone());
+            Err(FfiError::new(ZeErrorCode::ZeErrPanic, message))
+        }
+    }
+}
+
 pub(crate) fn free(response: *mut ZeGraphResponse) -> Result<(), FfiError> {
     let _gate = response_gate();
     crate::scalar_output(response)?;

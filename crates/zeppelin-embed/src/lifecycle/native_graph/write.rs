@@ -2920,6 +2920,23 @@ impl crate::lifecycle::Store {
         self.apply_native_graph_with_materializer(requests, control, &mut materializer)
     }
 
+    pub(crate) fn apply_native_mixed_with_materializer<M: ResultMaterializer>(
+        &self,
+        documents: Option<&crate::ingest::IngestBatch>,
+        requests: &[crate::property_graph::staging::StructuredWrite<'_, '_>],
+        control: &crate::lifecycle::QueryControl,
+        materializer: &mut M,
+    ) -> Result<NativePreparedResult<M::Registration>, NativeGraphError> {
+        self.apply_native_graph_with_materializer_inner(
+            requests,
+            control,
+            materializer,
+            true,
+            documents,
+            None,
+        )
+    }
+
     pub(crate) fn apply_native_graph_with_materializer<M: ResultMaterializer>(
         &self,
         requests: &[crate::property_graph::staging::StructuredWrite<'_, '_>],

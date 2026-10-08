@@ -101,6 +101,10 @@ const ABI_REGISTRY: &[AbiEntry] = &[
         coverage: AbiCoverage::InvalidProbe(probe_graph_apply),
     },
     AbiEntry {
+        name: "ze_store_graph_apply_v2",
+        coverage: AbiCoverage::InvalidProbe(probe_graph_apply_v2),
+    },
+    AbiEntry {
         name: "ze_graph_response_free",
         coverage: AbiCoverage::InvalidProbe(probe_graph_response_free),
     },
@@ -1579,6 +1583,13 @@ fn probe_graph_open(_: &MatrixContext) -> ProbeResult {
 }
 fn probe_graph_apply(_: &MatrixContext) -> ProbeResult {
     ProbeResult::Status(ze_store_graph_apply(
+        0,
+        std::ptr::null(),
+        std::ptr::null_mut(),
+    ))
+}
+fn probe_graph_apply_v2(_: &MatrixContext) -> ProbeResult {
+    ProbeResult::Status(ze_store_graph_apply_v2(
         0,
         std::ptr::null(),
         std::ptr::null_mut(),

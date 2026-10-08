@@ -262,3 +262,9 @@ fn ze241_new_entry_requests_keep_frozen_layouts_and_signatures() {
         *mut ZeGraphResponse,
     ) -> ZeErrorCode = ze_store_get_relationships;
 }
+
+#[test]
+fn ze399_v2_structs_have_appended_frozen_offsets() {
+    layout!(ZeStoreGraphDocument, 72, 8; abi_size => 0, abi_reserved => 4, item_index => 8, has_id => 12, id => 16, timestamp => 32, attributes => 40, attribute_count => 48, metadata => 56, metadata_len => 64);
+    layout!(ZeStoreGraphBatchRequestV2, 32, 8; abi_size => 0, abi_reserved => 4, graph => 8, documents => 16, document_count => 24);
+}

@@ -932,6 +932,7 @@ where
                     StructuredOperation::Put(entity) | StructuredOperation::Delete(entity, _) => {
                         wanted.push(entity)?
                     }
+                    StructuredOperation::CreateWithId(node) => wanted.push(EntityId::Node(node))?,
                     StructuredOperation::Create | StructuredOperation::Recreate(_) => {}
                 }
                 if let Some(WriteImage::Relationship { source, target, .. }) = request.image {
@@ -1150,6 +1151,14 @@ impl AdmittedBase for NativeAdmittedBase<'_, '_, '_, '_> {
         )?
         .is_some())
     }
+    fn caller_node_id_reserved(
+        &self,
+        node: NodeId,
+        control: &mut WriteControl<'_>,
+    ) -> Result<bool, StageError> {
+        Ok(self.lease.document_version(node)?.is_some() || self.has_node_record(node, control)?)
+    }
+
     fn node_id_reserved(
         &self,
         node: NodeId,

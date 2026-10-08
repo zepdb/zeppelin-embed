@@ -16,3 +16,4 @@ ze_error_code (*query_graph)(ze_handle, const ZeGraphQueryRequest *, ZeGraphResp
 ze_error_code (*get_graph_nodes)(ze_handle, const ZeGraphGetNodesRequest *, ZeGraphResponse *) = ze_store_get_nodes;
 ze_error_code (*get_graph_relationships)(ze_handle, const ZeGraphGetRelsRequest *, ZeGraphResponse *) = ze_store_get_relationships;
 ze_error_code (*enable_graph)(ze_handle, ZeGenerationReport *) = ze_store_enable_graph;
+ze_error_code (*apply_graph_v2)(ze_handle, const ZeStoreGraphBatchRequestV2 *, ZeGraphResponse *) = ze_store_graph_apply_v2;

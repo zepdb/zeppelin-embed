@@ -594,4 +594,23 @@ _Static_assert(ZE_GRAPH_WORK_GROUP_KEYS == 19, "ZeGraphWorkGroupKeys discriminan
 _Static_assert(ZE_GRAPH_WORK_ELIGIBILITY_ENTRIES == 20, "ZeGraphWorkEligibilityEntries discriminant");
 _Static_assert(ZE_GRAPH_WORK_COPIED_BYTES == 21, "ZeGraphWorkCopiedBytes discriminant");
 _Static_assert(ZE_GRAPH_WORK_PEAK_OWNED_BYTES == 22, "ZeGraphWorkPeakOwnedBytes discriminant");
+_Static_assert(sizeof(ZeStoreGraphDocument) == 72, "ZeStoreGraphDocument size");
+_Static_assert(_Alignof(ZeStoreGraphDocument) == 8, "ZeStoreGraphDocument alignment");
+_Static_assert(offsetof(ZeStoreGraphDocument, abi_size) == 0, "ZeStoreGraphDocument.abi_size");
+_Static_assert(offsetof(ZeStoreGraphDocument, abi_reserved) == 4, "ZeStoreGraphDocument.abi_reserved");
+_Static_assert(offsetof(ZeStoreGraphDocument, item_index) == 8, "ZeStoreGraphDocument.item_index");
+_Static_assert(offsetof(ZeStoreGraphDocument, has_id) == 12, "ZeStoreGraphDocument.has_id");
+_Static_assert(offsetof(ZeStoreGraphDocument, id) == 16, "ZeStoreGraphDocument.id");
+_Static_assert(offsetof(ZeStoreGraphDocument, timestamp) == 32, "ZeStoreGraphDocument.timestamp");
+_Static_assert(offsetof(ZeStoreGraphDocument, attributes) == 40, "ZeStoreGraphDocument.attributes");
+_Static_assert(offsetof(ZeStoreGraphDocument, attribute_count) == 48, "ZeStoreGraphDocument.attribute_count");
+_Static_assert(offsetof(ZeStoreGraphDocument, metadata) == 56, "ZeStoreGraphDocument.metadata");
+_Static_assert(offsetof(ZeStoreGraphDocument, metadata_len) == 64, "ZeStoreGraphDocument.metadata_len");
+_Static_assert(sizeof(ZeStoreGraphBatchRequestV2) == 32, "ZeStoreGraphBatchRequestV2 size");
+_Static_assert(_Alignof(ZeStoreGraphBatchRequestV2) == 8, "ZeStoreGraphBatchRequestV2 alignment");
+_Static_assert(offsetof(ZeStoreGraphBatchRequestV2, abi_size) == 0, "ZeStoreGraphBatchRequestV2.abi_size");
+_Static_assert(offsetof(ZeStoreGraphBatchRequestV2, abi_reserved) == 4, "ZeStoreGraphBatchRequestV2.abi_reserved");
+_Static_assert(offsetof(ZeStoreGraphBatchRequestV2, graph) == 8, "ZeStoreGraphBatchRequestV2.graph");
+_Static_assert(offsetof(ZeStoreGraphBatchRequestV2, documents) == 16, "ZeStoreGraphBatchRequestV2.documents");
+_Static_assert(offsetof(ZeStoreGraphBatchRequestV2, document_count) == 24, "ZeStoreGraphBatchRequestV2.document_count");
 int main(void) { return 0; }

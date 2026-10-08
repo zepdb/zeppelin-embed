@@ -113,6 +113,7 @@ fn ze241_every_graph_handle_export_poisons_its_owner() {
         "ze_store_enable_graph",
         "ze_close",
         "ze_store_graph_apply",
+        "ze_store_graph_apply_v2",
         "ze_store_cypher",
         "ze_store_cypher_with_row_limit",
         "ze_store_graph_query",
@@ -128,6 +129,9 @@ fn ze241_every_graph_handle_export_poisons_its_owner() {
             "ze_close" => ze_close(store.handle),
             "ze_store_graph_apply" => {
                 ze_store_graph_apply(store.handle, std::ptr::null(), std::ptr::null_mut())
+            }
+            "ze_store_graph_apply_v2" => {
+                ze_store_graph_apply_v2(store.handle, std::ptr::null(), std::ptr::null_mut())
             }
             "ze_store_cypher" => {
                 ze_store_cypher(store.handle, std::ptr::null(), std::ptr::null_mut())

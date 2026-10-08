@@ -567,3 +567,71 @@ fn a_failed_artifact_sync_fences_graph_writes_before_they_write_again() {
         "a fenced native writer must refuse before creating further private artifacts"
     );
 }
+
+#[test]
+fn ze399_associated_node_commit_has_one_wal_append_and_sync() {
+    use crate::property_graph::{GraphBatch, GraphNodeDocument, NodeId};
+    let directory = tempfile::tempdir().unwrap();
+    let vfs = Arc::new(RecordingVfs::default());
+    let store = open(directory.path(), vfs.clone());
+    let before = store.snapshot().unwrap().generation();
+    let image = CanonicalContents::node(&mut [], &mut [], Some("mixed orchard"), None).unwrap();
+    let documents = [GraphNodeDocument {
+        item_index: 0,
+        document: document(91),
+    }];
+    vfs.clear_events();
+    let result = crate::property_graph::with_local_refs(|refs| {
+        let node = crate::property_graph::NodeRef::Local(refs.node(0).unwrap());
+        let requests = [
+            StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Node, "mixed", "associated").unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Node(&image)),
+            },
+            StructuredWrite {
+                key: ApplicationKey::new(EntityKind::Relationship, "mixed", "self").unwrap(),
+                revision: GraphRevision::new(1).unwrap(),
+                operation: StructuredOperation::Create,
+                image: Some(WriteImage::Relationship {
+                    relationship_type: crate::property_graph::GraphName::new("LINK").unwrap(),
+                    properties: &[],
+                    source: node,
+                    target: node,
+                }),
+            },
+        ];
+        store
+            .graph_apply(
+                GraphBatch::with_node_documents(&requests, &documents),
+                &QueryControl::Cancel(CancelToken::new()),
+            )
+            .unwrap()
+    });
+    let EntityId::Relationship(id) = result.receipts()[1].entity else {
+        panic!("relationship receipt")
+    };
+    let relationships = store
+        .get_relationships(&[id], &QueryControl::Cancel(CancelToken::new()))
+        .unwrap();
+    let relationship = relationships.relationships()[0].as_ref().unwrap();
+    assert_eq!(relationship.source, NodeId::new(91).unwrap());
+    assert_eq!(relationship.target, NodeId::new(91).unwrap());
+    assert_eq!(
+        result.receipts()[0].entity,
+        EntityId::Node(NodeId::new(91).unwrap())
+    );
+    assert_eq!(result.ack().generation(), before + 1);
+    let events = vfs.take();
+    assert_eq!(
+        events
+            .iter()
+            .filter(
+                |event| matches!(event, DurabilityEvent::Append(path) if path.ends_with("wal.ze"))
+            )
+            .count(),
+        1
+    );
+    assert_eq!(events.iter().filter(|event| matches!(event, DurabilityEvent::Sync(path, SyncKind::Full) if path.ends_with("wal.ze"))).count(), 1);
+}

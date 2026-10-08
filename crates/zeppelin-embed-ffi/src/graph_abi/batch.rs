@@ -670,6 +670,127 @@ pub(crate) fn with_batch<R>(
         Ok(run(&writes))
     })
 }
+/// Decode full document replacements before the writer can publish anything.
+pub(crate) fn document_items(
+    pool: &Pool<'_>,
+    items: &[ZeGraphBatchItem],
+    documents: &[crate::ZeStoreGraphDocument],
+    store: &zeppelin_embed::lifecycle::Store,
+    record_only: bool,
+) -> Result<Vec<zeppelin_embed::property_graph::GraphNodeDocument>, FfiError> {
+    use zeppelin_embed::ingest::{DocumentVersion, IngestDocument, Revision};
+    let mut linked = Vec::new();
+    let mut bytes = 0usize;
+    for (position, descriptor) in documents.iter().enumerate() {
+        let descriptor = read_exact(descriptor, |d| d.abi_size, "graph document")?;
+        let index = descriptor.item_index as usize;
+        if documents
+            .iter()
+            .take(position)
+            .any(|prior| prior.item_index == descriptor.item_index)
+        {
+            return Err(invalid("duplicate graph document item index"));
+        }
+        let item = items
+            .get(index)
+            .ok_or_else(|| invalid("graph document item index is out of range"))?;
+        if item.entity_kind != crate::ZeGraphEntityKind::ZeGraphEntityNode as u32
+            || item.has_image != 1
+        {
+            return Err(invalid("graph document requires a nondelete node item"));
+        }
+        let id = match item.operation {
+            0 if descriptor.has_id == 1 => NodeId::new(crate::doc_id(descriptor.id).get())
+                .map_err(|_| invalid("missing caller node id"))?,
+            1 if descriptor.has_id == 0 && descriptor.id.high == 0 && descriptor.id.low == 0 => {
+                NodeId::try_from(item.expected_node)
+                    .map_err(|_| invalid("missing expected node id"))?
+            }
+            _ => {
+                return Err(invalid(
+                    "graph document requires a caller ID on Create or the expected ID on Put",
+                ));
+            }
+        };
+        if linked.iter().any(
+            |prior: &zeppelin_embed::property_graph::GraphNodeDocument| {
+                prior.document.version().doc_id().get() == id.get()
+            },
+        ) {
+            return Err(invalid("duplicate caller node id"));
+        }
+        let image = pool
+            .nodes
+            .get(item.image as usize)
+            .ok_or_else(|| invalid("graph document node image is out of range"))?;
+        let vector = if image.has_vector == 1 {
+            range(pool.vectors, image.vector, "graph document vector")?.to_vec()
+        } else if record_only || store.epoch_identity().is_none() {
+            vec![1.0]
+        } else {
+            return Err(invalid("document in a vector namespace requires a vector"));
+        };
+        let text = if image.has_text == 1 {
+            Some(pool.text(image.text, "graph document text")?)
+        } else {
+            None
+        };
+        bytes = bytes
+            .checked_add(descriptor.metadata_len)
+            .and_then(|total| total.checked_add(text.map_or(0, str::len)))
+            .and_then(|total| total.checked_add(vector.len().checked_mul(4)?))
+            .and_then(|total| {
+                total.checked_add(
+                    descriptor
+                        .attribute_count
+                        .checked_mul(std::mem::size_of::<crate::ZeAttributeValue>())?,
+                )
+            })
+            .ok_or_else(|| invalid("mixed graph input byte length overflows"))?;
+        if bytes > 8 * 1024 * 1024 {
+            return Err(invalid("mixed graph input exceeds 8 MiB"));
+        }
+        let attributes = marshal::read_slice(descriptor.attributes, descriptor.attribute_count)?;
+        let mut columns = Vec::new();
+        for (attribute_index, attribute) in attributes.iter().enumerate() {
+            if attributes
+                .iter()
+                .take(attribute_index)
+                .any(|prior| prior.attribute_id == attribute.attribute_id)
+            {
+                return Err(invalid("duplicate document attribute"));
+            }
+            bytes = bytes
+                .checked_add(attribute.string_len)
+                .ok_or_else(|| invalid("mixed graph input byte length overflows"))?;
+            if bytes > 8 * 1024 * 1024 {
+                return Err(invalid("mixed graph input exceeds 8 MiB"));
+            }
+            if let Some(value) = crate::parse_attribute_value(store.schema(), *attribute)? {
+                columns.push(value);
+            }
+        }
+        let mut document = IngestDocument::new(
+            DocumentVersion::new(id.into(), Revision::new(item.revision)),
+            vector,
+        )
+        .with_timestamp(descriptor.timestamp)
+        .with_columns(columns)
+        .with_metadata(marshal::copy_slice(
+            descriptor.metadata,
+            descriptor.metadata_len,
+        )?);
+        if let Some(text) = text {
+            document = document.with_text(text);
+        }
+        linked.push(zeppelin_embed::property_graph::GraphNodeDocument {
+            item_index: index,
+            document,
+        });
+    }
+    Ok(linked)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 mod tests {

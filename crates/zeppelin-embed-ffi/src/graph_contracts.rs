@@ -1465,3 +1465,49 @@ pub struct ZeGraphResources {
     /// Reserved for application-retention peak (ZE-310); currently zero.
     pub application_peak_bytes: u64,
 }
+
+/// One full document replacement associated with a nondelete node batch item.
+/// Text and vector are taken from that item's node image; attributes are
+/// validated against the Store schema. A create requires a nonzero caller ID;
+/// a put uses the item's expected node and must leave has_id and id zero.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct ZeStoreGraphDocument {
+    /// Exact sizeof this appended descriptor.
+    pub abi_size: u32,
+    /// Must be zero.
+    pub abi_reserved: u32,
+    /// Unique index in graph.items.
+    pub item_index: u32,
+    /// Exactly one for Create, zero for Put.
+    pub has_id: u32,
+    /// Caller-selected Create identity; zero for Put.
+    pub id: crate::ZeDocId,
+    /// Document timestamp.
+    pub timestamp: i64,
+    /// Borrowed Store attribute values.
+    pub attributes: *const crate::ZeAttributeValue,
+    /// Number of attribute values.
+    pub attribute_count: usize,
+    /// Borrowed opaque metadata.
+    pub metadata: *const u8,
+    /// Metadata byte count.
+    pub metadata_len: usize,
+}
+
+/// Appended size-versioned graph batch with per-item document associations.
+/// The graph descriptor and all borrowed inputs remain valid for the call.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct ZeStoreGraphBatchRequestV2 {
+    /// Exact sizeof this version-two descriptor.
+    pub abi_size: u32,
+    /// Must be zero.
+    pub abi_reserved: u32,
+    /// Required version-one graph batch descriptor.
+    pub graph: *const ZeGraphBatchRequest,
+    /// Supplemental document replacements, at most one per node item.
+    pub documents: *const ZeStoreGraphDocument,
+    /// Number of supplemental documents, at most graph.item_count.
+    pub document_count: usize,
+}

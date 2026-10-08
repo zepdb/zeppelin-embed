@@ -15,8 +15,10 @@ use crate::property_graph::query::completed::{
 use crate::property_graph::query::plan::PlanNodeId;
 use crate::property_graph::query::runtime::WorkCounters;
 use crate::property_graph::resources::GraphResources;
-use crate::property_graph::staging::{ItemReceipt, StageError, StructuredWrite};
-use crate::property_graph::{BatchDisposition, GraphGeneration};
+use crate::property_graph::staging::{
+    ItemReceipt, StageError, StructuredOperation, StructuredWrite,
+};
+use crate::property_graph::{BatchDisposition, EntityId, GraphGeneration, NodeId};
 use std::path::{Path, PathBuf};
 
 #[cfg(any(test, feature = "test-seams"))]
@@ -206,9 +208,10 @@ impl Store {
         control: &QueryControl,
     ) -> Result<GraphWriteResult, GraphStoreError> {
         let batch = batch.into();
-        let prepared = match batch.documents {
-            Some(documents) => self.apply_native_mixed(documents, batch.writes, control)?,
-            None => self.apply_native_graph(batch.writes, control)?,
+        let BoundGraphBatch { writes, documents } = batch.bind(self)?;
+        let prepared = match documents.as_deref() {
+            Some(documents) => self.apply_native_mixed(documents, &writes, control)?,
+            None => self.apply_native_graph(&writes, control)?,
         };
         // A published generation is the commit tail's own proof, so it alone
         // decides `Committed`. Without one, a `Changed` batch never reached
@@ -243,14 +246,24 @@ impl Store {
     /// Applies the same atomic batch with binding materialization before commit.
     /// The returned registration is already owned; publication performs no copy.
     #[doc(hidden)]
-    pub fn graph_apply_with_materializer<M: crate::property_graph::staging::ResultMaterializer>(
+    pub fn graph_apply_with_materializer<
+        'a,
+        'b: 'a,
+        'c: 'a,
+        M: crate::property_graph::staging::ResultMaterializer,
+    >(
         &self,
-        requests: &[StructuredWrite<'_, '_>],
+        batch: impl Into<GraphBatch<'a, 'b, 'c>>,
         control: &QueryControl,
         materializer: &mut M,
     ) -> Result<(GraphWriteOutcome, GraphGeneration, M::Registration), GraphStoreError> {
-        let prepared =
-            self.apply_native_graph_with_materializer(requests, control, materializer)?;
+        let BoundGraphBatch { writes, documents } = batch.into().bind(self)?;
+        let prepared = self.apply_native_mixed_with_materializer(
+            documents.as_deref(),
+            &writes,
+            control,
+            materializer,
+        )?;
         let outcome = match (prepared.changed_generation(), prepared.disposition()) {
             (Some(generation), _) => GraphWriteOutcome::Committed { generation },
             (None, BatchDisposition::Replayed) => GraphWriteOutcome::Replayed,
@@ -417,6 +430,160 @@ pub struct GraphBatch<'a, 'b, 'c> {
     pub documents: Option<&'a crate::ingest::IngestBatch>,
     /// Existing keyed graph operations and batch-local references.
     pub writes: &'a [StructuredWrite<'b, 'c>],
+    /// Document replacements bound to individual node items.
+    pub node_documents: &'a [GraphNodeDocument],
+}
+
+/// A document whose identity is the identity of one graph node item.
+#[derive(Clone, Debug)]
+pub struct GraphNodeDocument {
+    /// Index in the graph batch's writes, including relationship items.
+    pub item_index: usize,
+    /// Full replacement document. Create requires a nonzero caller ID;
+    /// Put requires the expected node ID and the same revision as the item.
+    pub document: crate::ingest::IngestDocument,
+}
+
+struct BoundGraphBatch<'a, 'b, 'c> {
+    writes: std::borrow::Cow<'a, [StructuredWrite<'b, 'c>]>,
+    documents: Option<std::borrow::Cow<'a, crate::ingest::IngestBatch>>,
+}
+
+impl<'a, 'b, 'c> GraphBatch<'a, 'b, 'c> {
+    /// Associates full document replacements with node items in one mixed commit.
+    pub const fn with_node_documents(
+        writes: &'a [StructuredWrite<'b, 'c>],
+        node_documents: &'a [GraphNodeDocument],
+    ) -> Self {
+        Self {
+            documents: None,
+            writes,
+            node_documents,
+        }
+    }
+
+    fn bind(&self, store: &Store) -> Result<BoundGraphBatch<'a, 'b, 'c>, GraphStoreError> {
+        let mut writes = std::borrow::Cow::Borrowed(self.writes);
+        if self.node_documents.is_empty() {
+            return Ok(BoundGraphBatch {
+                writes,
+                documents: self.documents.map(std::borrow::Cow::Borrowed),
+            });
+        }
+        if self.documents.is_some() {
+            return Err(GraphStoreError::graph(NativeGraphError::Stage(
+                StageError::InvalidInput,
+            )));
+        }
+        let mut documents = Vec::new();
+        for (position, linked) in self.node_documents.iter().enumerate() {
+            let version = linked.document.version();
+            let id = NodeId::new(version.doc_id().get()).map_err(|_| {
+                GraphStoreError::graph(NativeGraphError::Stage(StageError::InvalidInput))
+            })?;
+            if self.node_documents.iter().take(position).any(|prior| {
+                prior.item_index == linked.item_index
+                    || prior.document.version().doc_id() == version.doc_id()
+            }) {
+                return Err(GraphStoreError::graph(NativeGraphError::Stage(
+                    StageError::InvalidInput,
+                )));
+            }
+            let write = writes.to_mut().get_mut(linked.item_index).ok_or_else(|| {
+                GraphStoreError::graph(NativeGraphError::Stage(StageError::InvalidInput))
+            })?;
+            if !matches!(
+                write.image,
+                Some(crate::property_graph::staging::WriteImage::Node(_))
+            ) || write.revision.get() != version.revision().get()
+            {
+                return Err(GraphStoreError::graph(NativeGraphError::Stage(
+                    StageError::InvalidInput,
+                )));
+            }
+            write.operation = match write.operation {
+                StructuredOperation::Create => StructuredOperation::CreateWithId(id),
+                StructuredOperation::Put(EntityId::Node(expected)) if expected == id => {
+                    write.operation
+                }
+                _ => {
+                    return Err(GraphStoreError::graph(NativeGraphError::Stage(
+                        StageError::InvalidInput,
+                    )));
+                }
+            };
+            documents.push(linked.document.clone());
+        }
+        let mut input_bytes = 0_u64;
+        for document in &documents {
+            let payload =
+                crate::ingest::wal_payload::encode_upsert_v2(document).map_err(|error| {
+                    GraphStoreError::graph(NativeGraphError::Ingest(
+                        crate::ingest::IngestError::Payload(error),
+                    ))
+                })?;
+            input_bytes = input_bytes
+                .checked_add(payload.len() as u64)
+                .ok_or_else(|| GraphStoreError::contract("mixed graph input length overflow"))?;
+        }
+        for write in writes.iter() {
+            use crate::property_graph::staging::WriteImage;
+            use crate::property_graph::{CanonicalContents, ExpectedGraphState};
+            let expected = match write.operation {
+                StructuredOperation::Create | StructuredOperation::CreateWithId(_) => {
+                    ExpectedGraphState::Absent
+                }
+                StructuredOperation::Put(id) | StructuredOperation::Delete(id, _) => {
+                    ExpectedGraphState::Entity(id)
+                }
+                StructuredOperation::Recreate(revision) => ExpectedGraphState::Deletion(revision),
+            };
+            let framing = crate::property_graph::provenance::measure_operation_framing(
+                Some(write.key),
+                expected,
+                &mut || Ok(()),
+            )
+            .map_err(|error| GraphStoreError::graph(NativeGraphError::Stage(error.into())))?;
+            let image_bytes = match write.image {
+                None => 0,
+                Some(WriteImage::Node(image)) => image.encoded_len(),
+                Some(WriteImage::Relationship {
+                    relationship_type,
+                    properties,
+                    ..
+                }) => {
+                    let mut properties = properties.to_vec();
+                    let placeholder = NodeId::new(1)
+                        .map_err(|_| GraphStoreError::contract("nonzero sizing identity"))?;
+                    CanonicalContents::relationship(
+                        placeholder,
+                        placeholder,
+                        relationship_type,
+                        &mut properties,
+                    )
+                    .map_err(|error| GraphStoreError::graph(NativeGraphError::Stage(error.into())))?
+                    .encoded_len()
+                }
+            };
+            input_bytes = input_bytes
+                .checked_add(framing)
+                .and_then(|bytes| bytes.checked_add(image_bytes))
+                .ok_or_else(|| GraphStoreError::contract("mixed graph input length overflow"))?;
+        }
+        if input_bytes > crate::property_graph::MAX_GRAPH_INPUT_BYTES as u64 {
+            return Err(GraphStoreError::graph(NativeGraphError::Stage(
+                StageError::InvalidInput,
+            )));
+        }
+        let mut batch = crate::ingest::IngestBatch::new(documents);
+        if let Some(epoch) = store.epoch_identity() {
+            batch = batch.with_epoch(epoch);
+        }
+        Ok(BoundGraphBatch {
+            writes,
+            documents: Some(std::borrow::Cow::Owned(batch)),
+        })
+    }
 }
 
 impl<'a, 'b, 'c> From<&'a [StructuredWrite<'b, 'c>]> for GraphBatch<'a, 'b, 'c> {
@@ -424,6 +591,7 @@ impl<'a, 'b, 'c> From<&'a [StructuredWrite<'b, 'c>]> for GraphBatch<'a, 'b, 'c> 
         Self {
             documents: None,
             writes,
+            node_documents: &[],
         }
     }
 }

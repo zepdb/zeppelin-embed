@@ -1579,6 +1579,7 @@ mod store_graph {
         let batch = || super::super::GraphBatch {
             documents: Some(&documents),
             writes: &writes,
+            node_documents: &[],
         };
         let result = store.graph_apply(batch(), &control()).unwrap();
         assert_eq!(store.count_documents(None, None).unwrap().count, 1);
@@ -1611,4 +1612,189 @@ mod store_graph {
                 .is_some()
         );
     }
+}
+
+#[test]
+fn ze399_document_node_uses_caller_id_in_one_generation_and_reopens() {
+    use crate::ingest::{DocId, DocumentVersion, IngestDocument, Revision};
+    use crate::property_graph::{GraphBatch, GraphNodeDocument};
+    let parent = tempfile::tempdir().unwrap();
+    let path = parent.path().join("associated");
+    let store = Store::open(&path, options()).unwrap();
+    store.enable_graph().unwrap();
+    let image = CanonicalContents::node(&mut [], &mut [], Some("orchard"), None).unwrap();
+    let writes = [StructuredWrite {
+        key: node_key("associated"),
+        revision: revision(1),
+        operation: StructuredOperation::Create,
+        image: Some(WriteImage::Node(&image)),
+    }];
+    let documents = [GraphNodeDocument {
+        item_index: 0,
+        document: IngestDocument::new(
+            DocumentVersion::new(DocId::new(91), Revision::new(1)),
+            vec![1.0, 0.0],
+        )
+        .with_text("orchard"),
+    }];
+    let result = store
+        .graph_apply(
+            GraphBatch::with_node_documents(&writes, &documents),
+            &control(),
+        )
+        .unwrap();
+    assert_eq!(node_id(&result, 0), NodeId::new(91).unwrap());
+    assert_eq!(
+        result.ack().generation(),
+        result.admitted_generation().get() + 1
+    );
+    assert_eq!(store.count_documents(None, None).unwrap().count, 1);
+    let found = store
+        .search(
+            crate::ingest::SearchRequest::new(&[1.0, 0.0]),
+            1,
+            crate::lifecycle::SearchOptions::default(),
+            control(),
+        )
+        .unwrap();
+    assert_eq!(
+        found.candidates[0].document().unwrap().doc_id(),
+        DocId::new(91)
+    );
+    assert!(
+        store
+            .get_nodes(
+                &[NodeId::new(91).unwrap()],
+                super::GraphGetOptions::default(),
+                &control()
+            )
+            .unwrap()
+            .nodes()[0]
+            .is_some()
+    );
+    let replay = store
+        .graph_apply(
+            GraphBatch::with_node_documents(&writes, &documents),
+            &control(),
+        )
+        .unwrap();
+    assert_eq!(replay.ack(), result.ack());
+    drop(store);
+    let reopened = Store::open(&path, options()).unwrap();
+    assert_eq!(reopened.count_documents(None, None).unwrap().count, 1);
+    assert!(
+        reopened
+            .get_nodes(
+                &[NodeId::new(91).unwrap()],
+                super::GraphGetOptions::default(),
+                &control()
+            )
+            .unwrap()
+            .nodes()[0]
+            .is_some()
+    );
+}
+
+#[test]
+fn ze399_missing_duplicate_and_occupied_caller_ids_preserve_all_bytes() {
+    use crate::ingest::{DocId, DocumentVersion, IngestDocument, Revision};
+    use crate::property_graph::{GraphBatch, GraphNodeDocument};
+    let parent = tempfile::tempdir().unwrap();
+    let path = parent.path().join("refusals");
+    let store = Store::open(&path, options()).unwrap();
+    store.enable_graph().unwrap();
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    let writes = ["first", "second"].map(|key| StructuredWrite {
+        key: node_key(key),
+        revision: revision(1),
+        operation: StructuredOperation::Create,
+        image: Some(WriteImage::Node(&image)),
+    });
+    let associated = |item_index, id| GraphNodeDocument {
+        item_index,
+        document: IngestDocument::new(
+            DocumentVersion::new(DocId::new(id), Revision::new(1)),
+            vec![1.0, 0.0],
+        ),
+    };
+    for documents in [
+        vec![associated(0, 0)],
+        vec![associated(0, 91), associated(1, 91)],
+        vec![associated(0, 91), associated(0, 92)],
+        vec![associated(2, 91)],
+    ] {
+        let before = snapshot(&path);
+        let error = store
+            .graph_apply(
+                GraphBatch::with_node_documents(&writes, &documents),
+                &control(),
+            )
+            .unwrap_err();
+        assert!(error.nothing_committed());
+        assert_eq!(error.kind(), GraphStoreErrorKind::InvalidRequest);
+        assert_eq!(snapshot(&path), before);
+    }
+    store
+        .ingest(crate::ingest::IngestBatch::new(vec![
+            associated(0, 91).document,
+        ]))
+        .unwrap();
+    let before = snapshot(&path);
+    assert!(
+        store
+            .graph_apply(
+                GraphBatch::with_node_documents(&writes, &[associated(0, 91)]),
+                &control()
+            )
+            .unwrap_err()
+            .nothing_committed()
+    );
+    assert_eq!(snapshot(&path), before);
+    assert!(
+        store
+            .graph_apply(
+                GraphBatch::with_node_documents(&writes, &[associated(0, 92)]),
+                &control()
+            )
+            .is_ok()
+    );
+}
+
+#[test]
+fn ze399_replay_requires_the_same_caller_id() {
+    use crate::ingest::{DocId, DocumentVersion, IngestDocument, Revision};
+    use crate::property_graph::{GraphBatch, GraphNodeDocument};
+    let parent = tempfile::tempdir().unwrap();
+    let path = parent.path().join("replay-id");
+    let store = Store::open(&path, options()).unwrap();
+    store.enable_graph().unwrap();
+    let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+    let writes = [StructuredWrite {
+        key: node_key("same"),
+        revision: revision(1),
+        operation: StructuredOperation::Create,
+        image: Some(WriteImage::Node(&image)),
+    }];
+    let associated = |id| GraphNodeDocument {
+        item_index: 0,
+        document: IngestDocument::new(
+            DocumentVersion::new(DocId::new(id), Revision::new(1)),
+            vec![1.0, 0.0],
+        ),
+    };
+    store
+        .graph_apply(
+            GraphBatch::with_node_documents(&writes, &[associated(91)]),
+            &control(),
+        )
+        .unwrap();
+    let before = snapshot(&path);
+    let error = store
+        .graph_apply(
+            GraphBatch::with_node_documents(&writes, &[associated(92)]),
+            &control(),
+        )
+        .unwrap_err();
+    assert!(error.nothing_committed());
+    assert_eq!(snapshot(&path), before);
 }
