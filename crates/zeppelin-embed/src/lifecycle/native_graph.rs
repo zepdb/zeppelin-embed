@@ -2101,6 +2101,7 @@ pub(crate) mod tests {
     mod ranking;
     pub(crate) mod recovery;
     mod retrieval;
+    pub(crate) mod seal;
     mod sparse;
     pub(crate) mod storage_faults;
     mod text_lifecycle;

@@ -2954,6 +2954,12 @@ fn run_program_for_with_clock(
         super::graph_search_qualification::probe(seed, &mut coverage)?;
         super::graph_pattern::probe(seed, &mut coverage)?;
         super::graph_native_relational::probe(seed, &mut coverage)?;
+        for receipt in zeppelin_embed::graph_recovery_test_support::run_seal_rotation_probe() {
+            if receipt.fires != 1 || receipt.clean_controls != 1 {
+                return Err(format!("invalid graph rotation receipt {}", receipt.key));
+            }
+            coverage.hit(receipt.key);
+        }
         super::graph_recovery::probe(seed, &mut coverage)?;
         super::graph_reclaim::probe(seed, &mut coverage)?;
         super::graph_identity::probe(seed, &mut coverage)?;

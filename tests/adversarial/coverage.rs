@@ -3,6 +3,9 @@ use std::collections::BTreeMap;
 /// Native property-graph paths required when the graph feature is selected.
 #[cfg(feature = "graph-cypher")]
 pub const REQUIRED_GRAPH_SMOKE_COVERAGE: &[&str] = &[
+    "storage-durability.seal.graph-rotation.rename",
+    "storage-durability.seal.graph-rotation.post-rename",
+    "storage-durability.seal.graph-rotation.sync",
     "property-graph.c-entry.shared-semantics",
     "property-graph.c-entry.response-after-close",
     "property-graph.c-entry.null-bag-comparator",

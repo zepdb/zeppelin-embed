@@ -182,54 +182,14 @@ impl Store {
             &self.schema,
         )?;
         #[cfg(feature = "graph-cypher")]
-        if let Some(graph) = &mut manifest.graph
-            && graph.graph_absorbed_through < absorbed_through
-        {
-            // Seal is the fold for both watermarks. Until graph folding is
-            // implemented, only a range containing no graph writes can advance.
-            // Read the persisted WAL: the writer may have retired records that
-            // documents already absorbed but the graph still needs.
-            let clean = crate::wal::WalReader::open(vfs, &self.directory.join("wal.ze"))
-                .map_err(StoreError::Wal)?
-                .into_clean()
-                .map_err(StoreError::WalRecovery)?;
-            for record in clean.records().iter().filter(|record| {
-                record.seq.get() > graph.graph_absorbed_through
-                    && record.seq.get() <= absorbed_through
-            }) {
-                use super::wal_payload::{self, MutationPayload};
-                let has_graph = if record.op == wal_payload::MIXED_BATCH_MEMBER_V1 {
-                    let payload = record.payload().map_err(|source| StoreError::WalRecord {
-                        seq: record.seq,
-                        source,
-                    })?;
-                    matches!(
-                        wal_payload::decode_mixed_batch_member(payload).map_err(|source| {
-                            StoreError::WalMutation {
-                                seq: record.seq,
-                                op: record.op,
-                                source,
-                            }
-                        })?,
-                        MutationPayload::MixedBatchMember {
-                            op: wal_payload::GRAPH_COMMIT_V1,
-                            ..
-                        }
-                    )
-                } else {
-                    record.op == wal_payload::GRAPH_COMMIT_V1
-                };
-                if has_graph {
-                    return Err(StoreError::Manifest(
-                        crate::manifest::ManifestError::Decode(format!(
-                            "cannot rotate WAL through {absorbed_through}: graph absorbed only through {}",
-                            graph.graph_absorbed_through
-                        )),
-                    ));
-                }
-            }
-            graph.graph_absorbed_through = absorbed_through;
-        }
+        let graph_fold = if manifest.graph.is_some() {
+            Some(
+                self.prepare_native_graph_seal(&mut manifest, generation, absorbed_through)
+                    .map_err(seal_graph_error)?,
+            )
+        } else {
+            None
+        };
         let columns = active_columns(&manifest.schema, &current.segment, cancel)?;
         let alive = current.segment.alive()?;
         let clustering_key_range = clustering_key_range(current.segment.timestamps(), &alive)?;
@@ -275,6 +235,7 @@ impl Store {
             revisions: current.segment.revisions(),
         };
         let payloads = build_seal_payloads(&current.segment)?;
+        publication = publication.arm();
         let written = write_segment_with_documents_payloads(
             vfs,
             &self.directory,
@@ -350,9 +311,13 @@ impl Store {
         drop(published);
         drop(previous);
         *active = Some(ActiveState::empty(generation));
+        #[cfg(feature = "graph-cypher")]
+        if let Some(fold) = graph_fold {
+            fold.publish(self).map_err(seal_graph_error)?;
+        }
         publication.complete();
         writer.retire_visible_through(LogSeq::new(absorbed_through))?;
-        // The manifest above durably absorbs every record, so the log can
+        // Both watermarks above are at the durable end, so the log can
         // shrink to a header; without this wal.ze grows for the store's life.
         writer.truncate_absorbed(
             vfs,
@@ -365,6 +330,16 @@ impl Store {
         drop(writer_lock);
         drop(state);
         Ok(generation)
+    }
+}
+
+#[cfg(feature = "graph-cypher")]
+fn seal_graph_error(error: crate::lifecycle::native_graph::NativeGraphError) -> StoreError {
+    match error {
+        crate::lifecycle::native_graph::NativeGraphError::Store(error) => error,
+        error => StoreError::Manifest(crate::manifest::ManifestError::Decode(format!(
+            "seal graph fold: {error}",
+        ))),
     }
 }
 
@@ -591,6 +566,56 @@ mod wal_truncation_crash_tests {
                 "{:?}",
                 state.kind()
             );
+            #[cfg(feature = "graph-cypher")]
+            {
+                use crate::ingest::wal_payload::{GRAPH_COMMIT_V1, encode_graph_commit};
+                let graph = encode_graph_commit(
+                    include_bytes!("../../tests/fixtures/graph-wal/complete-v1.bin")
+                        .get(64..2105)
+                        .expect("graph envelope"),
+                )
+                .expect("graph payload");
+                assert_eq!(
+                    resumed
+                        .commit(GRAPH_COMMIT_V1, &graph)
+                        .expect("graph after fold"),
+                    LogSeq::new(5)
+                );
+                let before = crate::vfs::Vfs::read(state.vfs(), &wal).expect("WAL before refusal");
+                assert!(
+                    resumed
+                        .truncate_absorbed(state.vfs(), directory, policy, LogSeq::new(3))
+                        .is_err()
+                );
+                assert_eq!(
+                    crate::vfs::Vfs::read(state.vfs(), &wal).expect("WAL after refusal"),
+                    before
+                );
+                assert_eq!(
+                    resumed
+                        .commit(99, b"after graph")
+                        .expect("definite refusal keeps writer usable"),
+                    LogSeq::new(6)
+                );
+                let recovered = WalReader::open(state.vfs(), &wal)
+                    .expect("graph WAL")
+                    .into_clean()
+                    .expect("clean graph WAL");
+                let record = recovered
+                    .records()
+                    .iter()
+                    .find(|record| record.seq.get() == 5)
+                    .expect("unabsorbed graph retained");
+                assert_eq!(record.op, GRAPH_COMMIT_V1);
+                assert_eq!(record.payload().expect("graph payload"), graph);
+                let mut next =
+                    StoreWal::resume(state.vfs(), &wal, recovered, policy, 3, &accounting)
+                        .expect("resume graph tail");
+                assert_eq!(
+                    next.commit(99, b"next reopen").expect("write after reopen"),
+                    LogSeq::new(7)
+                );
+            }
         }
     }
 }

@@ -727,6 +727,20 @@ impl NativeWriter {
     }
 }
 
+/// Prepared under the shared WAL lock; published only after the seal manifest.
+pub(crate) struct NativeSealFold {
+    admitted: Arc<NativeGraphBundle>,
+    next: Arc<NativeGraphBundle>,
+}
+
+impl NativeSealFold {
+    pub(crate) fn publish(self, store: &crate::lifecycle::Store) -> Result<(), NativeGraphError> {
+        store
+            .native_graph
+            .publish_transition(&self.admitted, self.next)
+    }
+}
+
 pub(super) fn commit_state(bundle: &NativeGraphBundle) -> CommitState<'_> {
     CommitState {
         store: bundle.base().store,
@@ -2861,6 +2875,81 @@ impl crate::lifecycle::Store {
                 ));
             }
         }
+    }
+
+    /// Seal holds WAL and active, so the current bundle cannot change while
+    /// its inventory and fold transition are prepared. No durable write here.
+    pub(crate) fn prepare_native_graph_seal(
+        &self,
+        manifest: &mut crate::manifest::Manifest,
+        generation: u64,
+        absorbed_through: u64,
+    ) -> Result<NativeSealFold, NativeGraphError> {
+        let admitted = self
+            .native_graph
+            .state
+            .lock()
+            .map_err(|_| {
+                NativeGraphError::Store(crate::lifecycle::StoreError::Synchronization {
+                    component: "native graph publication",
+                })
+            })?
+            .current
+            .clone()
+            .ok_or(NativeGraphError::Invalid("seal fold has no current roots"))?;
+        let graph = manifest.graph.as_ref().ok_or(NativeGraphError::Invalid(
+            "seal fold without version barrier",
+        ))?;
+        if graph.graph_absorbed_through < admitted.base().fold.graph_absorbed_through {
+            return Err(NativeGraphError::Store(
+                crate::lifecycle::StoreError::Manifest(crate::manifest::ManifestError::Decode(
+                    format!(
+                        "cannot rotate WAL through {absorbed_through}: graph absorbed only through {}",
+                        graph.graph_absorbed_through,
+                    ),
+                )),
+            ));
+        }
+        let resources = GraphResources::from_store(self)?;
+        let control = crate::lifecycle::QueryControl::Cancel(crate::lifecycle::CancelToken::new());
+        let next = NativeGraphBundle::fold_transition(
+            self,
+            &resources,
+            &admitted,
+            crate::property_graph::staging::FoldMark {
+                manifest_generation: generation,
+                graph_absorbed_through: absorbed_through,
+                envelope_sequence: admitted.sequence(),
+            },
+            None,
+        )?;
+        if admitted.sequence() == admitted.base().fold.envelope_sequence {
+            // No graph state changed: preserve the already durable inventory
+            // and generation history, just absorb the document-only interval.
+            manifest
+                .graph
+                .as_mut()
+                .ok_or(NativeGraphError::Invalid(
+                    "seal fold without version barrier",
+                ))?
+                .graph_absorbed_through = absorbed_through;
+        } else {
+            let memory = WriteMemory::new(&resources, WriteLimits::default())?;
+            let storage = StorageMemory::new(&memory, &control, 32 * 1024 * 1024)?;
+            let objects = super::recovery::manifest_inventory(self, &admitted, &storage)?;
+            manifest.graph = Some(
+                crate::manifest::GraphManifest::new(
+                    commit_state(&admitted),
+                    absorbed_through,
+                    objects,
+                )
+                .map_err(crate::lifecycle::StoreError::Manifest)?,
+            );
+            manifest
+                .record_generation_bump(absorbed_through)
+                .map_err(crate::lifecycle::StoreError::Manifest)?;
+        }
+        Ok(NativeSealFold { admitted, next })
     }
 
     /// Called only by the GraphStore close owner after Open -> Closing. No new

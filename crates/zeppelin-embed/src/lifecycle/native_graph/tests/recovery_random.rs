@@ -407,6 +407,14 @@ pub(super) fn run() {
                 }
                 fault_counts[fault_index] += 1;
             }
+            super::super::seal::rotation_fault(
+                if sequence % 2 == 0 {
+                    FaultPoint::Rename
+                } else {
+                    FaultPoint::DirectorySync
+                },
+                2,
+            );
             let directory = tempfile::tempdir().unwrap();
             let root = std::fs::canonicalize(directory.path()).unwrap();
             let path = root.as_path().join("alpha");
@@ -445,14 +453,14 @@ pub(super) fn run() {
             let mut graph_unfolded = true;
             for index in 0..length {
                 let active = model.documents.difference(&sealed).next().is_some();
-                // Seal still requires a graph fold. Purge orders include both
+                // Seal folds the current graph tail. Purge orders include both
                 // unabsorbed graph tails and checkpoints with active documents.
                 // Physical purge folds any graph tail before rewriting.
                 let eligible: Vec<_> = OPERATIONS
                     .iter()
                     .copied()
                     .filter(|operation| match operation {
-                        Operation::Seal | Operation::Reindex => !active || !graph_unfolded,
+                        Operation::Reindex => !active || !graph_unfolded,
                         Operation::Purge | Operation::Upsert => !model.documents.is_empty(),
                         Operation::PurgeRetryFault => !graph_unfolded && !sealed.is_empty(),
                         Operation::DeleteSealed | Operation::Retention => !sealed.is_empty(),

@@ -52,8 +52,9 @@ mod seal {
         );
         // A real op 10 is required for a graph shortfall. Document-only tails
         // are folded by seal. Admit this framing fixture as already absorbed
-        // for open (graph replay is not implemented yet), then place the lagging
-        // fold before seal. Keep the real catalog and inventory throughout.
+        // for open, then regress the durable watermark under the live bundle.
+        // Seal must refuse that stale authority before any write. Keep the real
+        // catalog and inventory throughout.
         use zeppelin_embed::ingest::wal_payload::{
             DELETE_V1, GRAPH_COMMIT_V1, MIXED_BATCH_MEMBER_V1, encode_delete, encode_graph_commit,
             encode_mixed_batch_member,
@@ -154,6 +155,7 @@ mod seal {
             std::fs::read(directory.path().join("wal.ze")).expect("WAL"),
             wal_before
         );
+        ingest_one(&store, 2);
         store.close().expect("close writer");
     }
 
@@ -1516,4 +1518,37 @@ fn snapshot_cursor_survives_idle_merge_and_reopen() {
         assert!(!path.exists(), "retired input not reclaimed");
     }
     reopened.close().expect("close reopened writer");
+}
+
+#[test]
+fn a_segment_write_failure_fences_the_writer_before_manifest_publication() {
+    let directory = tempdir().expect("directory");
+    let (store, _) = seed_truncation_store(directory.path());
+    let trace = StepFaultVfs::new(StepFault::DieAfter(usize::MAX));
+    let probe_directory = tempdir().expect("probe directory");
+    let (probe, _) = seed_truncation_store(probe_directory.path());
+    probe
+        .seal_with_cancel_on_vfs(&CancelToken::new(), &trace)
+        .expect("probe seal");
+    let segment_rename = trace
+        .steps()
+        .iter()
+        .position(|step| step.starts_with("rename .segment-"))
+        .expect("segment rename");
+    let fault = StepFaultVfs::new(StepFault::FailOnly(segment_rename));
+    store
+        .seal_with_cancel_on_vfs(&CancelToken::new(), &fault)
+        .expect_err("segment rename fails");
+    let error = store
+        .ingest(IngestBatch::new(vec![IngestDocument::new(
+            DocumentVersion::new(DocId::new(9), Revision::new(1)),
+            vec![1.0, 0.0],
+        )]))
+        .expect_err("segment publication failure must fence the shared writer");
+    assert!(matches!(
+        error,
+        IngestError::Store(StoreError::WalWrite(
+            zeppelin_embed::wal::WalWriteError::Failed { .. }
+        ))
+    ));
 }
