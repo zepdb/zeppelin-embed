@@ -13,6 +13,7 @@ import { SPEC, seed, dimensions, documentBatches, queryShapes, decodeRequest } f
 const DATASETS = ['trec-covid', 'fiqa', 'nfcorpus', 'scifact'];
 const BOUNDARIES = [30000, 60000, 90000, 120000, 150000];
 const SETTINGS = { warmups: 20, samples: 1000, threadBudget: 1 };
+const CYPHER_WARMUPS = 1, CYPHER_SAMPLES = 10;
 const TAG = 'v0.6.0', COMMIT = 'f39087d7b20016138d9a1946055bc229cdffdd23';
 const EPOCH = { modelId: 'zeppelin.vector-space', modelVersion: '1', normalization: 'none',
   runtime: 'cpuReference', computeUnits: 'cpu', maxTokens: 0, weightsDigest: [], alignmentDigest: [] };
@@ -373,7 +374,8 @@ export function runWorker(config) {
     }
     cells = cells.map(c => ({ ...c, ...percentiles(c.samplesMs) }));
     for (const q of [...manifest.queries.slice(100), ...(prepared.unified ? unifiedQueries() : [])]) {
-      const cell = measureCell(store, q.request, SETTINGS.warmups, SETTINGS.samples, q.name.startsWith('cypher-'));
+      const isCypher = q.name.startsWith('cypher-'); // one Cypher query is a 150k-document scan (about 6 s): few samples
+      const cell = measureCell(store, q.request, isCypher ? CYPHER_WARMUPS : SETTINGS.warmups, isCypher ? CYPHER_SAMPLES : SETTINGS.samples, isCypher);
       if (q.name.startsWith('cypher-')) assert.deepEqual(cell.hits, cells.find(c => c.name === q.name.slice(7)).hits, 'Cypher/Store eligible parity');
       cells.push({ name: q.name, ...cell, ...percentiles(cell.samplesMs) });
     }
@@ -425,7 +427,7 @@ export function validateMeasurement(v) {
       assert.ok(typeof s.ps === 'string' && s.ps.length); assert.deepEqual(s.taints, []); }
     assert.deepEqual(r.cells.map(c => c.name), [...v.manifest.queries, ...(v.provenance.source === 'checkout' ? unifiedQueries() : [])].map(q => q.name));
     for (const c of r.cells) {
-      keys(c, 'name samplesMs p50 p95 p99 hits'); assert.equal(c.samplesMs.length, 1000); c.samplesMs.forEach(positive);
+      keys(c, 'name samplesMs p50 p95 p99 hits'); assert.equal(c.samplesMs.length, c.name.startsWith('cypher-') ? CYPHER_SAMPLES : 1000); c.samplesMs.forEach(positive);
       for (const [key, val] of Object.entries(percentiles(c.samplesMs))) assert.equal(c[key], val);
       assert.ok(c.hits.length <= 10); unique(c.hits.map(h => h.id));
       for (const h of c.hits) { keys(h, 'id scoreBits'); assert.match(h.id, /^\d+$/); numberFromBits(h.scoreBits); }

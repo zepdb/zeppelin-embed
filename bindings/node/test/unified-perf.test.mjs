@@ -30,7 +30,7 @@ function literalReceipt() {
     settings: { warmups: 20, samples: 1000, threadBudget: 1 }, root: '/literal/store',
     repetitions: Array.from({ length: 5 }, (_, i) => ({ pid: 100 + i, tainted: false,
       before: { load: [0, 0, 0], ps: 'quiet', taints: [] }, after: { load: [0, 0, 0], ps: 'quiet', taints: [] },
-      cells: queries.map(({ name }) => ({ name, samplesMs: Array(1000).fill(1),
+      cells: queries.map(({ name }) => ({ name, samplesMs: Array(name.startsWith('cypher-') ? 10 : 1000).fill(1),
         p50: 1, p95: 1, p99: 1, hits: [] })),
       typeahead: { p50: 1, p95: 1, p99: 1 },
       beir: datasets.map(name => ({ name, queryCount: 1, excludedQueryCount: 1,
@@ -133,7 +133,7 @@ function comparatorFixture() {
   candidate.candidateOnlyQueries.push(...candidate.candidateOnlyQueries.map(q => ({ ...q, name: `cypher-${q.name}` })));
   const extras = ['lexical-eligible', 'hybrid-eligible', 'cypher-lexical-eligible', 'cypher-hybrid-eligible'];
   for (const r of candidate.repetitions) for (const name of extras)
-    r.cells.push({ name, samplesMs: Array(1000).fill(2), p50: 2, p95: 2, p99: 2, hits: [] });
+    r.cells.push({ name, samplesMs: Array(name.startsWith('cypher-') ? 10 : 1000).fill(2), p50: 2, p95: 2, p99: 2, hits: [] });
   function counters(receipt, unified) {
     const names = receipt.manifest.queries.map(q => q.name);
     if (unified) names.push(...extras.slice(0, 2));
