@@ -2762,7 +2762,9 @@ fn segment_file_name(id: &[u8; 16]) -> String {
 }
 
 fn eligible_orphan_name(name: &str, referenced_segments: &[String]) -> bool {
+    // This oracle parses v2 manifests only: none can reach a graph object.
     name == ".manifest.ze.tmp"
+        || (name.starts_with("graph-") && name.ends_with(".zgraph"))
         || (name.starts_with(".segment-") && name.ends_with(".zseg.tmp"))
         || (name.starts_with("segment-")
             && name.ends_with(".zseg")

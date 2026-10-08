@@ -353,6 +353,9 @@ pub(super) fn run() {
         let mut operations = Vec::new();
         // Catch only to add reproducibility context, then fail the entire run.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // Manifest-absent graph debris: List is a definite no-write
+            // refusal; failed first/later unlinks fence and reopen resumes.
+            super::super::orphans::sweep_faults(rng.random());
             // Shuffle the fault histories with the same replayable seed. Every
             // publisher is exercised at the default eight sequences; failures
             // must refuse all subsequent acknowledgements until reopen.

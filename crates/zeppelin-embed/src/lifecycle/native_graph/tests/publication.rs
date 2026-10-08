@@ -269,6 +269,7 @@ pub(crate) enum FaultPoint {
     PostWalRename,
     PostManifestRename,
     Enumeration,
+    List,
     PostTruncate,
     PurgeIntentOpen,
     Publish,
@@ -699,6 +700,9 @@ impl Vfs for RecordingVfs {
     }
 
     fn list(&self, directory: &Path) -> std::io::Result<Vec<PathBuf>> {
+        if self.fire(FaultPoint::List) {
+            return Err(std::io::Error::other("scheduled list failure"));
+        }
         self.list_calls.fetch_add(1, Ordering::Relaxed);
         StdVfs.list(directory)
     }

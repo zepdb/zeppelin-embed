@@ -2864,7 +2864,7 @@ fn validate_tokenizer_epoch(
 fn cleanup_open_orphans(
     store: &Store,
 ) -> Result<crate::manifest::io::OrphanCleanupReport, StoreError> {
-    let reachable_segments = store
+    let (reachable_segments, graph_enabled) = store
         .snapshot
         .read()
         .map_err(|_| StoreError::Synchronization {
@@ -2872,20 +2872,48 @@ fn cleanup_open_orphans(
         })?
         .as_ref()
         .map(|snapshot| {
-            snapshot
+            let reachable = snapshot
                 .all_segments()
                 .iter()
                 .map(|segment| store.directory.join(segment.meta().id.file_name()))
-                .collect::<HashSet<_>>()
+                .collect::<HashSet<_>>();
+            #[cfg(feature = "graph-cypher")]
+            let graph_enabled = snapshot.graph_enabled;
+            #[cfg(not(feature = "graph-cypher"))]
+            let graph_enabled = false;
+            (reachable, graph_enabled)
         })
         .ok_or(StoreError::Closed)?;
-    crate::manifest::io::cleanup_store_orphans(
+    let mut publication = Some(
+        store
+            .wal_writer
+            .lock()
+            .map_err(|_| StoreError::Synchronization {
+                component: "WAL writer",
+            })?
+            .as_ref()
+            .ok_or(StoreError::ReadOnly)?
+            .manifest_publication()?,
+    );
+    let report = crate::manifest::io::cleanup_store_orphans(
         store.vfs.as_ref(),
         &store.directory,
         &reachable_segments,
+        graph_enabled,
         store.durability_policy,
+        || {
+            // Listing and opening a candidate write nothing. Arm only before
+            // the first unlink; retain the fence through the directory sync.
+            publication = publication
+                .take()
+                .map(crate::ingest::ManifestPublication::arm);
+        },
     )
-    .map_err(StoreError::Manifest)
+    .map_err(StoreError::Manifest)?;
+    if let Some(publication) = publication {
+        publication.complete();
+    }
+    Ok(report)
 }
 
 impl Store {

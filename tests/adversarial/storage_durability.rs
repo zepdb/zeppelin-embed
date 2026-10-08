@@ -3806,7 +3806,10 @@ fn observe_reachability_case_from_operation_fixture(
         .clone()
         .or_else(|| fixture.eligible_orphans.first().cloned())
         .unwrap_or_default();
-    let planted_orphans = fixture.eligible_orphans.clone();
+    let mut planted_orphans = fixture.eligible_orphans.clone();
+    // Exercise graph debris in every sweep episode without changing the
+    // retained v1 fixture or omission schedule encoding.
+    planted_orphans.push("graph-0000000000000000000000000000f352.zgraph".to_owned());
     for (index, name) in planted_orphans.iter().enumerate() {
         std::fs::write(base.path().join(name), [seed as u8, index as u8, 0xa5])
             .map_err(|error| error.to_string())?;
@@ -5223,6 +5226,36 @@ pub(crate) mod tests {
                         independent::ReceiptSite::OrphanCleanupDelete
                     }
                 })
+            );
+        }
+    }
+
+    #[test]
+    fn zgraph_sweep_list_and_delete_faults_match_the_independent_comparator() {
+        let mut episode = build_storage_episode_fixtures(256).expect("episode fixture");
+        // Extend this authored case without changing the released v1 fixture
+        // or its six-case codec. Both existing sweep sites now target zgraph.
+        episode.base_evidence.fixture.eligible_orphans[0] =
+            "graph-0000000000000000000000000000f352.zgraph".to_owned();
+        for subsite in [
+            independent::OmissionSubsite::List,
+            independent::OmissionSubsite::Delete,
+        ] {
+            let evidence = observe_reachability_case_from_episode(
+                &episode,
+                0,
+                Some(independent::OmissionCase {
+                    orphan: independent::OrphanKind::FinalSegment,
+                    subsite,
+                }),
+            )
+            .expect("observe zgraph omission");
+            independent::check_i19(&evidence.expected, &evidence.observed)
+                .expect("zgraph retry satisfies I19");
+            assert_receipt_pair(
+                evidence.receipt_expected.as_ref(),
+                evidence.receipt_observed.as_ref(),
+                evidence.receipt.as_ref(),
             );
         }
     }

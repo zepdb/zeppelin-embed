@@ -2275,6 +2275,8 @@ pub(crate) mod tests {
     #[cfg(test)]
     mod mixed_batch;
     mod mutation_admission;
+    #[cfg(test)]
+    pub(crate) mod orphans;
     // Real second processes re-invoke the unit-test executable, so these live
     // only in the test binary and never in a `test-support` library build.
     mod epoch;

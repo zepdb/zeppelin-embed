@@ -155,7 +155,9 @@ fn sweep_orphans(
 ///
 /// Store open calls this only after snapshot/WAL validation and pending-purge
 /// recovery, while it owns the exclusive writer lock. Purge control artifacts
-/// and unknown files are deliberately outside the eligible name set.
+/// and unknown files are deliberately outside the eligible name set. Graph
+/// objects are eligible only without a manifest graph section; otherwise the
+/// native census and reclaim protocol alone own their deletion.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct OrphanCleanupReport {
     pub(crate) reclaimed_bytes: u64,
@@ -168,7 +170,9 @@ pub(crate) fn cleanup_store_orphans(
     vfs: &dyn Vfs,
     directory: &Path,
     reachable_segments: &HashSet<PathBuf>,
+    graph_enabled: bool,
     policy: DurabilityPolicy,
+    mut before_unlink: impl FnMut(),
 ) -> Result<OrphanCleanupReport, ManifestError> {
     let mut paths = vfs
         .list(directory)
@@ -178,12 +182,13 @@ pub(crate) fn cleanup_store_orphans(
     let mut deleted_paths = Vec::new();
     let mut retained_eligible_paths = Vec::new();
     for path in paths {
-        if !is_eligible_store_orphan(&path, reachable_segments) {
+        if !is_eligible_store_orphan(&path, reachable_segments, graph_enabled) {
             continue;
         }
         let length = vfs
             .open(&path)
             .map_err(|error| ManifestError::io(&path, error))?;
+        before_unlink();
         vfs.delete(&path)
             .map_err(|error| ManifestError::io(&path, error))?;
         match vfs.open(&path) {
@@ -216,7 +221,11 @@ pub(crate) fn cleanup_store_orphans(
     })
 }
 
-fn is_eligible_store_orphan(path: &Path, reachable_segments: &HashSet<PathBuf>) -> bool {
+fn is_eligible_store_orphan(
+    path: &Path,
+    reachable_segments: &HashSet<PathBuf>,
+    graph_enabled: bool,
+) -> bool {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
@@ -224,7 +233,8 @@ fn is_eligible_store_orphan(path: &Path, reachable_segments: &HashSet<PathBuf>) 
         && name.ends_with(".zseg")
         && !reachable_segments.contains(path);
     let segment_temporary = name.starts_with(".segment-") && name.ends_with(".zseg.tmp");
-    unreferenced_final || segment_temporary || name == MANIFEST_TEMP_FILE
+    let graph_orphan = !graph_enabled && name.starts_with("graph-") && name.ends_with(".zgraph");
+    unreferenced_final || segment_temporary || name == MANIFEST_TEMP_FILE || graph_orphan
 }
 
 fn is_segment_file(path: &Path) -> bool {
