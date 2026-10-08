@@ -1,4 +1,4 @@
-//! ZE-66 S2: [`GraphStore::query`], the public wrapper over ZE-53's
+//! ZE-66 S2: [`Store::graph_query`], the public wrapper over ZE-53's
 //! structured execution seam (`Store::execute_graph_statement`).
 //!
 //! That seam already picks read or write admission from a plan's own
@@ -15,7 +15,7 @@
 //! and it cannot be reused here: it is `#[cfg(any(test, feature =
 //! "test-seams"))]` only.
 //!
-//! [`GraphStore::query`] does that work once. A caller supplies only its
+//! [`Store::graph_query`] does that work once. A caller supplies only its
 //! own plan data: the operator, expression and eager-search arenas ZE-48's
 //! `PlanDescription` already borrows, a [`GraphPlanBacking`] naming every
 //! other allocation the plan touches (input-edge lists, `Project`/`Mutate`
@@ -32,8 +32,9 @@
     reason = "the typed graph cause stays unboxed and allocation-free, as in GraphQueryError"
 )]
 
-use super::{GraphStore, GraphStoreError};
+use super::GraphStoreError;
 use crate::lifecycle::QueryControl;
+use crate::lifecycle::Store;
 use crate::property_graph::GraphName;
 use crate::property_graph::query::completed::{
     CompletedGraphResult, Executed, GraphBoundary, GraphQuery, GraphQueryError, GraphQueryExecutor,
@@ -96,7 +97,7 @@ impl<'a> GraphPlanBacking<'a> {
     }
 }
 
-/// Caller-owned plan data for [`GraphStore::query`]. Every field borrows the
+/// Caller-owned plan data for [`Store::graph_query`]. Every field borrows the
 /// caller's own arena; nothing here is copied or retained past the call.
 pub struct GraphQueryPlan<'a> {
     /// Operator arena, in dependency order.
@@ -117,7 +118,7 @@ pub struct GraphQueryPlan<'a> {
     pub columns: &'a [&'a str],
 }
 
-impl GraphStore {
+impl Store {
     /// Runs one caller-built plan and returns its complete owned result, or
     /// one typed rejection with no partial result.
     ///
@@ -138,30 +139,30 @@ impl GraphStore {
     /// the store did not change. A write statement submitted to a
     /// read-only-opened store is refused, but folds to
     /// [`GraphStoreErrorKind`](super::GraphStoreErrorKind)`::Unavailable`
-    /// rather than the finer `ReadOnly` [`GraphStore::apply_batch`] reports;
+    /// rather than the finer `ReadOnly` [`Store::graph_apply`] reports;
     /// see [`GraphStoreError::kind`] for why.
-    pub fn query(
+    pub fn graph_query(
         &self,
         control: &QueryControl,
         options: &GraphQueryOptions,
         plan: &GraphQueryPlan<'_>,
     ) -> Result<CompletedGraphResult, GraphStoreError> {
-        Ok(self
-            .store
-            .execute_graph_statement(control, options, |runtime, executor| {
+        Ok(
+            self.execute_graph_statement(control, options, |runtime, executor| {
                 run_query_plan(runtime, executor, plan, options.slot_column_names)
-            })?)
+            })?,
+        )
     }
     /// Runs the same validated plan with binding preparation before commit.
     #[doc(hidden)]
-    pub fn query_with_boundary(
+    pub fn graph_query_with_boundary(
         &self,
         control: &QueryControl,
         options: &GraphQueryOptions,
         plan: &GraphQueryPlan<'_>,
         boundary: &dyn GraphBoundary,
     ) -> Result<CompletedGraphResult, GraphStoreError> {
-        Ok(self.store.execute_graph_statement_with_boundary(
+        Ok(self.execute_graph_statement_with_boundary(
             control,
             options,
             |runtime, executor| run_query_plan(runtime, executor, plan, options.slot_column_names),

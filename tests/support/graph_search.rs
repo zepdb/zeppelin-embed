@@ -10,6 +10,7 @@
 )]
 use std::collections::{BTreeMap, BTreeSet};
 use zeppelin_embed::graph_commit_recovery_test_support::{Fixture, ProbeStore, document};
+use zeppelin_embed::lifecycle::Store;
 use zeppelin_embed::lifecycle::{CancelToken, QueryControl};
 use zeppelin_embed::property_graph::query::completed::{
     CompletedGraphResult, GraphQueryOptions, Value,
@@ -96,7 +97,7 @@ impl Corpus {
         }
         this
     }
-    pub fn graph(&self) -> &GraphStore {
+    pub fn graph(&self) -> &Store {
         self.store.as_ref().unwrap().graph()
     }
     pub fn snapshot(&self) -> oracle::Snapshot {
@@ -214,7 +215,7 @@ impl Corpus {
         .unwrap();
         let write = |image| {
             self.graph()
-                .apply_batch(
+                .graph_apply(
                     &[StructuredWrite {
                         key,
                         revision: GraphRevision::new(m.revision).unwrap(),
@@ -294,7 +295,7 @@ impl Corpus {
     }
     pub fn run(&self, q: &str) -> CompletedGraphResult {
         execute(
-            self.graph().statement_store(),
+            self.graph(),
             &control(),
             &GraphQueryOptions::default(),
             q,
@@ -350,7 +351,7 @@ pub fn observe(r: &CompletedGraphResult) -> Vec<oracle::Row> {
         .collect()
 }
 // Independent structured eligible-domain vector plan. No compiler plan used.
-pub fn structured_plan(store: &GraphStore, k: i64) -> CompletedGraphResult {
+pub fn structured_plan(store: &Store, k: i64) -> CompletedGraphResult {
     let label = String::from("Eligible");
     let coordinates = vec![ExprId(0), ExprId(1)];
     let expressions = vec![
@@ -441,7 +442,7 @@ pub fn structured_plan(store: &GraphStore, k: i64) -> CompletedGraphResult {
         backing.vec(edge).unwrap();
     }
     store
-        .query(
+        .graph_query(
             &control(),
             &GraphQueryOptions::default(),
             &GraphQueryPlan {
@@ -512,7 +513,7 @@ impl Corpus {
             })
             .collect();
         let expected = self.model.apply(&mutations).unwrap();
-        let actual = self.graph().apply_batch(&writes, &control()).unwrap();
+        let actual = self.graph().graph_apply(&writes, &control()).unwrap();
         assert!(
             matches!(actual.outcome(),GraphWriteOutcome::Committed {generation} if generation.get()==expected.generation)
         );

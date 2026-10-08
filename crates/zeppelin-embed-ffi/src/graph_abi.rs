@@ -1,5 +1,6 @@
 //! Graph handles, structured batches and Cypher C boundary.
 use crate::{ZeGraphCompileLimits, ZeGraphCypherRequest};
+use zeppelin_embed::lifecycle::Store;
 use zeppelin_embed::property_graph::query::completed::{GraphQueryOptions, Outcome};
 use zeppelin_embed_cypher::{CompileLimits, ErrorKind, StatementError};
 mod batch;
@@ -15,7 +16,7 @@ use crate::{ZeErrorCode, ZeGraphControl, ZeGraphHandle, ZeGraphOpenRequest, mars
 use std::sync::OnceLock;
 use zeppelin_embed::epoch::EmbeddingTower;
 use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl};
-use zeppelin_embed::property_graph::{GraphStore, GraphStoreError, GraphStoreErrorKind};
+use zeppelin_embed::property_graph::{GraphStoreError, GraphStoreErrorKind};
 
 use crate::graph_result::conversion::{ConversionError, ProducerError, apply_and_settle};
 use crate::graph_result::{
@@ -52,7 +53,7 @@ const MAX_RESIDENT_BYTES: u64 = 256 * 1024 * 1024;
 /// One open native graph store and the document interpretation it was opened
 /// with, which node vectors are validated against.
 pub(crate) struct GraphHandleState {
-    store: GraphStore,
+    store: Store,
     document: Option<EmbeddingTower>,
 }
 
@@ -411,15 +412,15 @@ fn open_declared(
     let store = match request.mode {
         mode if mode == M::ZeGraphOpenCreate as u32 => match rules {
             Some(rules) => {
-                GraphStore::create_with_relationship_types(path, options, document.clone(), rules)
+                Store::create_graph_with_relationship_types(path, options, document.clone(), rules)
             }
-            None => GraphStore::create(path, options, document.clone()),
+            None => Store::create_graph(path, options, document.clone()),
         },
         mode if mode == M::ZeGraphOpenReadWrite as u32 => {
-            GraphStore::open(path, options, document.clone())
+            Store::open_graph(path, options, document.clone())
         }
         mode if mode == M::ZeGraphOpenReadOnly as u32 => {
-            GraphStore::open_read_only(path, options, document.clone())
+            Store::open_graph_read_only(path, options, document.clone())
         }
         _ => {
             return Err(invalid(
@@ -450,7 +451,7 @@ pub(crate) fn close(handle: ZeGraphHandle) -> Result<(), FfiError> {
         CloseAccess::Store(state) => {
             let close = state
                 .store
-                .close()
+                .close_graph()
                 .map_err(|error| store_error(&error, false));
             let release = lock_handles()?.finish_close(internal);
             close.and(release)
@@ -631,7 +632,7 @@ pub(crate) fn cypher_with_row_limit(
             let (_parameter_charge, options) = charge_parameters(store, options, parameter_bytes)?;
             let boundary = completion::Boundary::new(&access, out);
             let result = zeppelin_embed_cypher::execute_with_boundary(
-                store.statement_store(),
+                store,
                 &control,
                 &options,
                 text,
@@ -710,7 +711,7 @@ pub(crate) fn set_maintenance_policy(
         access
             .store
             .store
-            .set_maintenance_policy(zeppelin_embed::property_graph::GraphMaintenancePolicy {
+            .set_graph_maintenance_policy(zeppelin_embed::property_graph::GraphMaintenancePolicy {
                 automatic: policy.automatic == 1,
                 reclaim_after_bytes: policy.reclaim_after_bytes,
             })
@@ -745,7 +746,7 @@ pub(crate) fn maintain(
         let report = access
             .store
             .store
-            .maintain(&control)
+            .graph_maintain_step(&control)
             .map_err(|error| store_error(&error, false))?;
         // SAFETY: same validated caller-owned report, with no retained pointers.
         unsafe {
@@ -877,7 +878,7 @@ pub(crate) fn query(
                 let result = access
                     .store
                     .store
-                    .query_with_boundary(&control, &options, plan, &boundary);
+                    .graph_query_with_boundary(&control, &options, plan, &boundary);
                 if let Some(error) = boundary.take_error() {
                     set_outcome(out, OperationOutcome::NotCommitted);
                     return Err(error);
@@ -904,7 +905,7 @@ pub(crate) fn query(
 }
 
 fn charge_parameters(
-    store: &GraphStore,
+    store: &Store,
     options: GraphQueryOptions,
     bytes: usize,
 ) -> Result<
@@ -920,7 +921,9 @@ fn charge_parameters(
             "parameter backing exceeds query memory",
         )
     })?;
-    let resources = store.resources().map_err(|e| store_error(&e, false))?;
+    let resources = store
+        .graph_resources()
+        .map_err(|e| store_error(&e, false))?;
     let charge = resources
         .reserve(bytes)
         .map_err(|e| FfiError::new(ZeErrorCode::ZeErrOutOfMemory, e.to_string()))?;
@@ -943,7 +946,7 @@ pub(crate) fn resources(
     let resources = access
         .store
         .store
-        .resources()
+        .graph_resources()
         .map_err(|error| store_error(&error, false))?;
     let observed = resources
         .snapshot()

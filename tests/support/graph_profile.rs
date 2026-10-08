@@ -15,10 +15,11 @@ use common::graph::*;
 use common::sized_zeroed;
 use std::collections::{BTreeMap, BTreeSet};
 use tck::V;
+use zeppelin_embed::lifecycle::Store;
 use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl};
 use zeppelin_embed::property_graph::query::completed::{CompletedGraphResult, GraphQueryOptions};
 use zeppelin_embed::property_graph::query::plan::*;
-use zeppelin_embed::property_graph::{GraphName, GraphPlanBacking, GraphQueryPlan, GraphStore};
+use zeppelin_embed::property_graph::{GraphName, GraphPlanBacking, GraphQueryPlan};
 use zeppelin_embed_bench::harness_json::{Value as Json, json};
 use zeppelin_embed_ffi::*;
 
@@ -31,9 +32,9 @@ pub fn manifest() -> Json {
 fn control() -> QueryControl {
     QueryControl::Cancel(CancelToken::new())
 }
-fn rust_cypher(store: &GraphStore, query: &str) -> Result<CompletedGraphResult, String> {
+fn rust_cypher(store: &Store, query: &str) -> Result<CompletedGraphResult, String> {
     zeppelin_embed_cypher::execute(
-        store.statement_store(),
+        store,
         &control(),
         &GraphQueryOptions::default(),
         query,
@@ -85,7 +86,7 @@ fn authored_binary(n: u32) -> BinaryExpression {
     }
 }
 fn rust_structured(
-    store: &GraphStore,
+    store: &Store,
     plan: &Json,
     columns: &[&str],
     values: &[(String, V)],
@@ -472,7 +473,7 @@ fn rust_structured(
     }
     let searches = vec![];
     store
-        .query(
+        .graph_query(
             &control(),
             &GraphQueryOptions::default(),
             &GraphQueryPlan {
@@ -1009,7 +1010,7 @@ pub fn run_local(case: &Json, path: &str) -> Result<Json, String> {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("graph");
     let (actual, delta, metadata, column_kinds) = if path.starts_with("rust") {
-        let store = GraphStore::create(
+        let store = Store::create_graph(
             &root,
             OpenOptions::new().with_max_resident_bytes(256 << 20),
             None,
@@ -1063,8 +1064,8 @@ pub fn run_local(case: &Json, path: &str) -> Result<Json, String> {
             if case["error"]["stage"].as_str() != Some(observed_stage) {
                 return Err("wrong Rust error stage".into());
             }
-            store.close().map_err(|e| e.to_string())?;
-            let reopened = GraphStore::open(
+            store.close_graph().map_err(|e| e.to_string())?;
+            let reopened = Store::open_graph(
                 &root,
                 OpenOptions::new().with_max_resident_bytes(256 << 20),
                 None,
@@ -1073,7 +1074,7 @@ pub fn run_local(case: &Json, path: &str) -> Result<Json, String> {
             if state(|q| rust_cypher(&reopened, q).map(|r| tck::actual_table(&r)))? != after {
                 return Err("rejected state changed on reopen".into());
             }
-            reopened.close().map_err(|e| e.to_string())?;
+            reopened.close_graph().map_err(|e| e.to_string())?;
             return Ok(
                 json!({"case":case["id"],"path":path,"state":"focused GREEN","error":error,"stage":case["error"]["stage"],"effects":[0,0,0,0,0,0,0,0],"released":true,"reopened":true}),
             );
@@ -1100,8 +1101,8 @@ pub fn run_local(case: &Json, path: &str) -> Result<Json, String> {
         }
         let metadata = format!("{:?}", r.metadata());
         let after = state(|q| rust_cypher(&store, q).map(|r| tck::actual_table(&r)))?;
-        store.close().map_err(|e| e.to_string())?;
-        let reopened = GraphStore::open(
+        store.close_graph().map_err(|e| e.to_string())?;
+        let reopened = Store::open_graph(
             &root,
             OpenOptions::new().with_max_resident_bytes(256 << 20),
             None,
@@ -1110,7 +1111,7 @@ pub fn run_local(case: &Json, path: &str) -> Result<Json, String> {
         if state(|q| rust_cypher(&reopened, q).map(|r| tck::actual_table(&r)))? != after {
             return Err("reopen changed state".into());
         }
-        reopened.close().map_err(|e| e.to_string())?;
+        reopened.close_graph().map_err(|e| e.to_string())?;
         (
             tck::actual_table(&r),
             effects(&before, &after),
@@ -1484,7 +1485,7 @@ fn scalar(v: &V) -> zeppelin_embed::property_graph::query::QueryValue<'_> {
     }
 }
 fn rust_cypher_parameters(
-    store: &GraphStore,
+    store: &Store,
     query: &str,
     values: &[(String, V)],
 ) -> Result<CompletedGraphResult, String> {
@@ -1518,7 +1519,7 @@ fn rust_cypher_parameters(
         })
         .collect::<Vec<_>>();
     zeppelin_embed_cypher::execute(
-        store.statement_store(),
+        store,
         &c,
         &GraphQueryOptions::default(),
         query,
@@ -1609,7 +1610,7 @@ pub fn high_id_roundtrip() -> Result<(), String> {
     use zeppelin_embed::property_graph::{NodeId, RelId};
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("graph");
-    let store = GraphStore::create_with_allocator_seed_for_test(
+    let store = Store::create_graph_with_allocator_seed_for_test(
         &root,
         OpenOptions::new().with_max_resident_bytes(256 << 20),
         NodeId::new(7).unwrap(),
@@ -1645,7 +1646,7 @@ pub fn high_id_roundtrip() -> Result<(), String> {
         .collect::<Vec<_>>();
     ids.sort();
     assert_eq!(ids, [11, high_rel]);
-    store.close().map_err(|e| e.to_string())?;
+    store.close_graph().map_err(|e| e.to_string())?;
     // Results still own their strings and graph objects after their store closes.
     assert_eq!(tck::actual_table(&nodes).1.len(), 4);
     assert_eq!(tck::actual_table(&rels).1.len(), 2);
@@ -1687,7 +1688,7 @@ pub fn high_id_roundtrip() -> Result<(), String> {
         ze_graph_response_free(&mut relationships),
         ZeErrorCode::ZeOk
     );
-    let reopened = GraphStore::open(
+    let reopened = Store::open_graph(
         &root,
         OpenOptions::new().with_max_resident_bytes(256 << 20),
         None,
@@ -1701,7 +1702,7 @@ pub fn high_id_roundtrip() -> Result<(), String> {
         tck::actual_table(&result).1,
         vec![vec![V::Str("changed".into())]]
     );
-    reopened.close().map_err(|e| e.to_string())?;
+    reopened.close_graph().map_err(|e| e.to_string())?;
     Ok(())
 }
 

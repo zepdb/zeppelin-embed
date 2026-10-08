@@ -19,8 +19,7 @@ use zeppelin_embed::property_graph::query::plan::*;
 use zeppelin_embed::property_graph::staging::{StructuredOperation, StructuredWrite, WriteImage};
 use zeppelin_embed::property_graph::{
     ApplicationKey, CanonicalContents, EntityId, EntityKind, GraphName, GraphPlanBacking,
-    GraphProperty, GraphQueryPlan, GraphRevision, GraphStore, GraphStoreError, PropertyData,
-    PropertyValue,
+    GraphProperty, GraphQueryPlan, GraphRevision, GraphStoreError, PropertyData, PropertyValue,
 };
 struct View(QueryView);
 impl RetainedView for View {
@@ -43,13 +42,13 @@ fn store_options() -> OpenOptions {
 /// `base + 2` and `base + 3`, in node-ID order.
 struct Fixture {
     _directory: tempfile::TempDir,
-    store: GraphStore,
+    store: Store,
 }
 
 impl Fixture {
     fn create(base: i64) -> Self {
         let directory = tempfile::tempdir().expect("temporary directory");
-        let store = GraphStore::create(directory.path().join("native"), store_options(), None)
+        let store = Store::create_graph(directory.path().join("native"), store_options(), None)
             .expect("graph store");
         let values = [base + 1, base + 2, base + 3];
         let p = GraphName::new("p").expect("property name");
@@ -73,7 +72,7 @@ impl Fixture {
             });
         }
         let result = store
-            .apply_batch(&requests, &control())
+            .graph_apply(&requests, &control())
             .expect("fixture batch");
         let mut nodes = Vec::new();
         for receipt in result.receipts() {
@@ -90,9 +89,9 @@ impl Fixture {
     }
 }
 
-/// `MATCH (n) RETURN n, n.p`, through `GraphStore::query`.
+/// `MATCH (n) RETURN n, n.p`, through `Store::query`.
 fn read_p_with_options(
-    store: &GraphStore,
+    store: &Store,
     control: &QueryControl,
     options: &GraphQueryOptions,
 ) -> Result<CompletedGraphResult, Box<GraphStoreError>> {
@@ -145,7 +144,7 @@ fn read_p_with_options(
         bindings: &[],
         columns: &["p"],
     };
-    store.query(control, options, &plan).map_err(Box::new)
+    store.graph_query(control, options, &plan).map_err(Box::new)
 }
 
 #[test]
@@ -166,7 +165,7 @@ fn ze76_public_work_matches_independent_deltas() {
 #[test]
 fn ze76_oversize_and_control_failures_release_without_partial_effects() {
     let fixture = Fixture::create(10);
-    let resources = fixture.store.resources().unwrap();
+    let resources = fixture.store.graph_resources().unwrap();
     let baseline = resources.reserved_bytes().unwrap();
     let options = GraphQueryOptions::default()
         .with_result_row_limit(1)
@@ -204,7 +203,7 @@ fn ze76_oversize_and_control_failures_release_without_partial_effects() {
             operation: StructuredOperation::Create,
             image: Some(WriteImage::Node(image)),
         });
-    let error = fixture.store.apply_batch(&writes, &control()).unwrap_err();
+    let error = fixture.store.graph_apply(&writes, &control()).unwrap_err();
     assert!(error.nothing_committed());
     assert_eq!(disk(), before);
     assert_eq!(resources.reserved_bytes().unwrap(), baseline);
@@ -252,16 +251,16 @@ fn ze76_public_replay_counts_canonical_byte_pairs() {
         StructuredOperation, StructuredWrite, WriteImage,
     };
     use zeppelin_embed::property_graph::{
-        ApplicationKey, CanonicalContents, EntityKind, GraphRevision, GraphStore,
+        ApplicationKey, CanonicalContents, EntityKind, GraphRevision,
     };
     let dir = tempfile::tempdir().unwrap();
-    let store = GraphStore::create(
+    let store = Store::create_graph(
         dir.path().join("graph"),
         OpenOptions::new().with_max_resident_bytes(16 * 1024 * 1024),
         None,
     )
     .unwrap();
-    let resources = store.resources().unwrap();
+    let resources = store.graph_resources().unwrap();
     let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
     let requests = [StructuredWrite {
         key: ApplicationKey::new(EntityKind::Node, "ze76", "a").unwrap(),
@@ -271,13 +270,13 @@ fn ze76_public_replay_counts_canonical_byte_pairs() {
     }];
     drop(
         store
-            .apply_batch(&requests, &QueryControl::Cancel(CancelToken::new()))
+            .graph_apply(&requests, &QueryControl::Cancel(CancelToken::new()))
             .unwrap(),
     );
     let before = resources.work_ledger().unwrap();
     drop(
         store
-            .apply_batch(&requests, &QueryControl::Cancel(CancelToken::new()))
+            .graph_apply(&requests, &QueryControl::Cancel(CancelToken::new()))
             .unwrap(),
     );
     let after = resources.work_ledger().unwrap();

@@ -9,6 +9,7 @@
 mod search;
 mod support;
 use search::SearchFixture;
+use zeppelin_embed::lifecycle::Store;
 use zeppelin_embed::property_graph::query::completed::Value;
 #[test]
 fn ze58_text_search_returns_real_rows() {
@@ -212,10 +213,7 @@ fn ze58_search_results_outlive_close_and_reopen() {
     let nodes = before.pools().nodes.to_vec();
     let mut reports = before.pools().reports.to_vec();
     assert_eq!(before.metadata().generation.get(), 7);
-    assert_eq!(
-        f.store().statement_store().snapshot().unwrap().generation(),
-        7
-    );
+    assert_eq!(f.store().snapshot().unwrap().generation(), 7);
     f.reopen();
     let after = f.run(q);
     assert_eq!(before.pools().bytes, bytes);
@@ -223,10 +221,7 @@ fn ze58_search_results_outlive_close_and_reopen() {
     assert_eq!(before.pools().reports, reports);
     // Close checkpoints the manifest once. The retained result stays at 7;
     // a new coherent admission and its reports must use store generation 8.
-    assert_eq!(
-        f.store().statement_store().snapshot().unwrap().generation(),
-        8
-    );
+    assert_eq!(f.store().snapshot().unwrap().generation(), 8);
     assert_eq!(after.metadata().generation.get(), 8);
     for report in &mut reports {
         assert_eq!(report.generation.get(), 7);
@@ -301,15 +296,9 @@ fn ze58_search_compile_rejections_publish_nothing() {
     assert_eq!(e.kind, ErrorKind::SearchContext);
     assert_eq!(f.run("RETURN 1").metadata().generation, generation);
     assert_eq!(generation.get(), 7);
-    assert_eq!(
-        f.store().statement_store().snapshot().unwrap().generation(),
-        7
-    );
+    assert_eq!(f.store().snapshot().unwrap().generation(), 7);
     f.reopen();
-    assert_eq!(
-        f.store().statement_store().snapshot().unwrap().generation(),
-        8
-    );
+    assert_eq!(f.store().snapshot().unwrap().generation(), 8);
     assert_eq!(f.run("RETURN 1").metadata().generation.get(), 8);
 }
 #[test]
@@ -338,16 +327,10 @@ fn ze58_search_write_mixing_publish_nothing() {
         before.metadata().generation
     );
     assert_eq!(before.metadata().generation.get(), 7);
-    assert_eq!(
-        f.store().statement_store().snapshot().unwrap().generation(),
-        7
-    );
+    assert_eq!(f.store().snapshot().unwrap().generation(), 7);
     f.reopen();
     let after = f.run("MATCH (n) RETURN n ORDER BY ze.node_id(n)");
-    assert_eq!(
-        f.store().statement_store().snapshot().unwrap().generation(),
-        8
-    );
+    assert_eq!(f.store().snapshot().unwrap().generation(), 8);
     assert_eq!(after.metadata().generation.get(), 8);
     assert_eq!(before.pools().nodes, after.pools().nodes);
     assert_eq!(before.pools().bytes, after.pools().bytes);
@@ -391,7 +374,7 @@ fn ze58_runtime_refusals_return_no_partial_result() {
         .with_result_row_limit(1)
         .unwrap();
     let error = zeppelin_embed_cypher::execute(
-        f.store().statement_store(),
+        f.store(),
         &search::control(),
         &options,
         "CALL ze.text_search('amber',2) YIELD node RETURN node",
@@ -419,10 +402,10 @@ fn ze58_full_u128_ties_remain_ordered() {
         StructuredOperation, StructuredWrite, WriteImage,
     };
     use zeppelin_embed::property_graph::{
-        ApplicationKey, CanonicalContents, EntityKind, GraphRevision, GraphStore, NodeId, RelId,
+        ApplicationKey, CanonicalContents, EntityKind, GraphRevision, NodeId, RelId,
     };
     let root = support::unique_temp_dir("ze58-high-id");
-    let store = GraphStore::create_with_allocator_seed_for_test(
+    let store = Store::create_graph_with_allocator_seed_for_test(
         &root,
         zeppelin_embed::lifecycle::OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
         NodeId::new((1_u128 << 64) - 1).unwrap(),
@@ -432,7 +415,7 @@ fn ze58_full_u128_ties_remain_ordered() {
     for key in ["lo", "hi"] {
         let contents = CanonicalContents::node(&mut [], &mut [], Some("equal"), None).unwrap();
         store
-            .apply_batch(
+            .graph_apply(
                 &[StructuredWrite {
                     key: ApplicationKey::new(EntityKind::Node, "ze58", key).unwrap(),
                     revision: GraphRevision::new(1).unwrap(),
@@ -449,7 +432,7 @@ fn ze58_full_u128_ties_remain_ordered() {
         "RETURN node,score ORDER BY score DESC,ze.node_id(node)",
     ] {
         let r = zeppelin_embed_cypher::execute(
-            store.statement_store(),
+            &store,
             &search::control(),
             &Default::default(),
             &format!("CALL ze.text_search('equal',2) YIELD node,score {tail}"),
@@ -468,7 +451,7 @@ fn ze58_full_u128_ties_remain_ordered() {
         observed.push(ids);
     }
     assert_eq!(observed[0], observed[1]);
-    store.close().unwrap();
+    store.close_graph().unwrap();
     std::fs::remove_dir_all(root).unwrap();
 }
 #[test]

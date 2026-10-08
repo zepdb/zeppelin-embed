@@ -94,7 +94,7 @@ pub fn retained_observation(seed: u64) -> zeppelin_embed_bench::harness_json::Va
     );
     counter.polls.store(0, Ordering::SeqCst);
     let r = zeppelin_embed_cypher::execute(
-        c.graph().statement_store(),
+        c.graph(),
         &ctrl,
         &Default::default(),
         q,
@@ -137,7 +137,7 @@ pub fn retained_observation(seed: u64) -> zeppelin_embed_bench::harness_json::Va
         .unwrap();
         corpus
             .graph()
-            .apply_batch(
+            .graph_apply(
                 &[StructuredWrite {
                     key: ApplicationKey::new(EntityKind::Node, "ze65", "b").unwrap(),
                     revision: GraphRevision::new(2).unwrap(),
@@ -149,7 +149,7 @@ pub fn retained_observation(seed: u64) -> zeppelin_embed_bench::harness_json::Va
             .unwrap();
         corpus
             .graph()
-            .apply_batch(
+            .graph_apply(
                 &[StructuredWrite {
                     key: ApplicationKey::new(EntityKind::Relationship, "ze65", "retained-added")
                         .unwrap(),
@@ -165,7 +165,7 @@ pub fn retained_observation(seed: u64) -> zeppelin_embed_bench::harness_json::Va
                 &control(),
             )
             .unwrap();
-        corpus.graph().maintain_cycle(&control()).unwrap();
+        corpus.graph().graph_maintain_cycle(&control()).unwrap();
     };
     // Writer/maintenance bookkeeping control uses the same publications.
     let clean = Corpus::new();
@@ -174,7 +174,7 @@ pub fn retained_observation(seed: u64) -> zeppelin_embed_bench::harness_json::Va
     let result = std::thread::scope(|scope| {
         let task = scope.spawn(|| {
             zeppelin_embed_cypher::execute(
-                c.graph().statement_store(),
+                c.graph(),
                 &ctrl,
                 &Default::default(),
                 q,

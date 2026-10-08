@@ -8,9 +8,7 @@
     reason = "tests fail loudly on the first broken contract"
 )]
 
-use super::{
-    GraphStore, GraphStoreError, GraphStoreErrorKind, GraphWriteOutcome, GraphWriteResult,
-};
+use super::{GraphStoreError, GraphStoreErrorKind, GraphWriteOutcome, GraphWriteResult};
 use crate::lifecycle::durability::{CommitTier, DurabilityMode, DurabilityPolicy};
 use crate::lifecycle::{CancelToken, OpenOptions, QueryControl, Store, StoreError, StoreErrorKind};
 use crate::property_graph::staging::{
@@ -55,10 +53,10 @@ fn snapshot(path: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
         .collect()
 }
 
-fn create_node(store: &GraphStore, key: &str, at: u64) -> GraphWriteResult {
+fn create_node(store: &Store, key: &str, at: u64) -> GraphWriteResult {
     let image = CanonicalContents::node(&mut [], &mut [], Some("text"), None).expect("node image");
     store
-        .apply_batch(
+        .graph_apply(
             &[StructuredWrite {
                 key: node_key(key),
                 revision: revision(at),
@@ -90,7 +88,7 @@ fn graph_store_creates_a_graph_only_store_with_forced_durable_writes() {
     let path = parent.path().join("graph");
     // The caller's options ask for the default Derived durability; the facade
     // replaces it rather than creating a weaker graph store.
-    let store = GraphStore::create(&path, options(), None).expect("graph-only store");
+    let store = Store::create_graph(&path, options(), None).expect("graph-only store");
     let durable = DurabilityPolicy::new(DurabilityMode::Durable, CommitTier::Durable)
         .expect("durable policy");
     assert_eq!(store.store_for_test().durability_policy, durable);
@@ -107,7 +105,7 @@ fn graph_store_creates_a_graph_only_store_with_forced_durable_writes() {
     assert_eq!(first.receipts().len(), 1);
     assert!(!first.receipts()[0].replayed);
     assert_eq!(first.receipts()[0].generation, generation(2));
-    store.close().expect("close graph store");
+    store.close_graph().expect("close graph store");
     drop(store);
 
     // The graph store uses the unified manifest and WAL, with no legacy selector.
@@ -124,7 +122,7 @@ fn graph_store_creates_a_graph_only_store_with_forced_durable_writes() {
     }
 
     assert!(!path.join("graph-root.ze").exists());
-    let reopened = GraphStore::open(&path, options(), None).expect("reopen graph store");
+    let reopened = Store::open_graph(&path, options(), None).expect("reopen graph store");
     assert_eq!(reopened.store_for_test().durability_policy, durable);
     let second = create_node(&reopened, "second", 1);
     let committed = generation(second.admitted_generation().get() + 1);
@@ -135,14 +133,14 @@ fn graph_store_creates_a_graph_only_store_with_forced_durable_writes() {
         }
     );
     assert_eq!(second.receipts()[0].generation, committed);
-    reopened.close().expect("close reopened store");
+    reopened.close_graph().expect("close reopened store");
     drop(reopened);
 
-    let reader = GraphStore::open_read_only(&path, options(), None).expect("read-only open");
+    let reader = Store::open_graph_read_only(&path, options(), None).expect("read-only open");
     let before = snapshot(&path);
     let image = CanonicalContents::node(&mut [], &mut [], None, None).expect("node image");
     let refused = reader
-        .apply_batch(
+        .graph_apply(
             &[StructuredWrite {
                 key: node_key("third"),
                 revision: revision(1),
@@ -155,7 +153,7 @@ fn graph_store_creates_a_graph_only_store_with_forced_durable_writes() {
     assert_eq!(refused.kind(), GraphStoreErrorKind::ReadOnly);
     assert!(refused.nothing_committed());
     assert_eq!(snapshot(&path), before);
-    reader.close().expect("close reader");
+    reader.close_graph().expect("close reader");
 }
 
 #[test]
@@ -231,15 +229,20 @@ fn graph_open_refuses_a_legacy_store_directory_with_a_typed_error() {
     let parent = tempfile::tempdir().expect("temporary parent");
     let path = parent.path().join("legacy");
     let legacy = Store::open(&path, OpenOptions::new()).expect("legacy store");
-    legacy.close().expect("close legacy store");
+    legacy.close_graph().expect("close legacy store");
     drop(legacy);
 
     let before = snapshot(&path);
     let refusals = [
-        GraphStore::open(&path, options(), None).expect_err("graph open must refuse"),
-        GraphStore::open_read_only(&path, options(), None)
-            .expect_err("read-only graph open must refuse"),
-        GraphStore::create(&path, options(), None).expect_err("graph create must refuse"),
+        Store::open_graph(&path, options(), None)
+            .err()
+            .expect("graph open must refuse"),
+        Store::open_graph_read_only(&path, options(), None)
+            .err()
+            .expect("read-only graph open must refuse"),
+        Store::create_graph(&path, options(), None)
+            .err()
+            .expect("graph create must refuse"),
     ];
     for error in refusals {
         assert_eq!(error.kind(), GraphStoreErrorKind::LegacyStore, "{error}");
@@ -250,7 +253,7 @@ fn graph_open_refuses_a_legacy_store_directory_with_a_typed_error() {
 
     // The legacy store is still intact and opens as itself.
     let legacy = Store::open(&path, OpenOptions::new()).expect("legacy store reopens");
-    legacy.close().expect("close legacy store");
+    legacy.close_graph().expect("close legacy store");
 }
 
 #[test]
@@ -259,7 +262,7 @@ fn graph_store_ids_above_u64_round_trip_through_apply_batch() {
     let path = parent.path().join("wide");
     let first_node = NodeId::new((1_u128 << 64) + 5).expect("wide node seed");
     let first_relationship = RelId::new((1_u128 << 100) + 7).expect("wide relationship seed");
-    let store = GraphStore::create_with_allocator_seed_for_test(
+    let store = Store::create_graph_with_allocator_seed_for_test(
         &path,
         options(),
         first_node,
@@ -297,7 +300,7 @@ fn graph_store_ids_above_u64_round_trip_through_apply_batch() {
                 }),
             },
         ];
-        store.apply_batch(&batch, &control())
+        store.graph_apply(&batch, &control())
     })
     .expect("wide batch");
     // Local references resolve to the identity at their request index; every
@@ -310,16 +313,16 @@ fn graph_store_ids_above_u64_round_trip_through_apply_batch() {
     assert_eq!(source_id, first_node);
     assert_eq!(target_id.get(), first_node.get() + 1);
     assert_eq!(edge_id, first_relationship);
-    store.close().expect("close seeded store");
+    store.close_graph().expect("close seeded store");
     drop(store);
 
     // After reopen the store resolves the full 128-bit identities it returned:
     // a Put names each incarnation by ID, and a truncated ID would conflict.
-    let reopened = GraphStore::open(&path, options(), None).expect("reopen seeded store");
+    let reopened = Store::open_graph(&path, options(), None).expect("reopen seeded store");
     let replacement =
         CanonicalContents::node(&mut [], &mut [], Some("replaced"), None).expect("replacement");
     let replaced = reopened
-        .apply_batch(
+        .graph_apply(
             &[
                 StructuredWrite {
                     key: node_key("source"),
@@ -350,14 +353,14 @@ fn graph_store_ids_above_u64_round_trip_through_apply_batch() {
         replaced.outcome(),
         GraphWriteOutcome::Committed { .. }
     ));
-    reopened.close().expect("close reopened store");
+    reopened.close_graph().expect("close reopened store");
 }
 
 #[test]
 fn graph_store_exact_retry_replays_with_its_original_generation() {
     let parent = tempfile::tempdir().expect("temporary parent");
     let store =
-        GraphStore::create(parent.path().join("retry"), options(), None).expect("graph store");
+        Store::create_graph(parent.path().join("retry"), options(), None).expect("graph store");
     let first = create_node(&store, "first", 1);
     let installed = first.receipts()[0];
 
@@ -373,7 +376,7 @@ fn graph_store_exact_retry_replays_with_its_original_generation() {
     // A mixed batch commits once; each receipt carries its own record.
     let image = CanonicalContents::node(&mut [], &mut [], Some("text"), None).expect("image");
     let mixed = store
-        .apply_batch(
+        .graph_apply(
             &[
                 StructuredWrite {
                     key: node_key("first"),
@@ -404,22 +407,22 @@ fn graph_store_exact_retry_replays_with_its_original_generation() {
     assert_eq!(mixed.receipts()[1].generation, generation(3));
 
     // An empty batch changes nothing.
-    let empty = store.apply_batch(&[], &control()).expect("empty batch");
+    let empty = store.graph_apply(&[], &control()).expect("empty batch");
     assert_eq!(empty.outcome(), GraphWriteOutcome::NoOp);
     assert_eq!(empty.admitted_generation(), generation(3));
     assert!(empty.receipts().is_empty());
-    store.close().expect("close graph store");
+    store.close_graph().expect("close graph store");
 }
 
 #[test]
 fn graph_store_refuses_a_stale_incarnation_with_nothing_committed() {
     let parent = tempfile::tempdir().expect("temporary parent");
     let store =
-        GraphStore::create(parent.path().join("stale"), options(), None).expect("graph store");
+        Store::create_graph(parent.path().join("stale"), options(), None).expect("graph store");
     let image = CanonicalContents::node(&mut [], &mut [], Some("text"), None).expect("image");
     let first = node_id(&create_node(&store, "fenced", 1), 0);
     store
-        .apply_batch(
+        .graph_apply(
             &[StructuredWrite {
                 key: node_key("fenced"),
                 revision: revision(2),
@@ -433,7 +436,7 @@ fn graph_store_refuses_a_stale_incarnation_with_nothing_committed() {
         )
         .expect("delete first incarnation");
     let recreated = store
-        .apply_batch(
+        .graph_apply(
             &[StructuredWrite {
                 key: node_key("fenced"),
                 revision: revision(3),
@@ -452,7 +455,7 @@ fn graph_store_refuses_a_stale_incarnation_with_nothing_committed() {
     assert_ne!(node_id(&recreated, 0), first);
 
     let stale = store
-        .apply_batch(
+        .graph_apply(
             &[StructuredWrite {
                 key: node_key("fenced"),
                 revision: revision(4),
@@ -481,22 +484,22 @@ fn graph_store_refuses_a_stale_incarnation_with_nothing_committed() {
             generation: generation(5)
         }
     );
-    store.close().expect("close graph store");
+    store.close_graph().expect("close graph store");
 }
 
 #[test]
 fn graph_write_results_stay_readable_after_close() {
     let parent = tempfile::tempdir().expect("temporary parent");
     let store =
-        GraphStore::create(parent.path().join("closed"), options(), None).expect("graph store");
+        Store::create_graph(parent.path().join("closed"), options(), None).expect("graph store");
     let result = create_node(&store, "kept", 1);
     let expected = result.clone();
-    store.close().expect("close graph store");
+    store.close_graph().expect("close graph store");
     // Closing twice is harmless.
-    store.close().expect("close again");
+    store.close_graph().expect("close again");
 
     let late = store
-        .apply_batch(&[], &control())
+        .graph_apply(&[], &control())
         .expect_err("a closed store admits nothing");
     assert_eq!(late.kind(), GraphStoreErrorKind::Closed);
     assert!(late.nothing_committed(), "{late}");
@@ -568,13 +571,13 @@ fn relationship_rules_enforce_restrict_and_transitive_cascade_after_reopen() {
             on_delete: policy,
         }];
         let store =
-            GraphStore::create_with_relationship_types(&path, options(), None, &rules).unwrap();
+            Store::create_graph_with_relationship_types(&path, options(), None, &rules).unwrap();
         let a = node_id(&create_node(&store, "a", 1), 0);
         let b = node_id(&create_node(&store, "b", 1), 0);
         let c = node_id(&create_node(&store, "c", 1), 0);
         for (key, source, target) in [("ab", a, b), ("bc", b, c)] {
             store
-                .apply_batch(
+                .graph_apply(
                     &[StructuredWrite {
                         key: ApplicationKey::new(EntityKind::Relationship, "app", key).unwrap(),
                         revision: revision(1),
@@ -590,9 +593,9 @@ fn relationship_rules_enforce_restrict_and_transitive_cascade_after_reopen() {
                 )
                 .unwrap();
         }
-        store.close().unwrap();
-        let store = GraphStore::open(&path, options(), None).unwrap();
-        let result = store.apply_batch(
+        store.close_graph().unwrap();
+        let store = Store::open_graph(&path, options(), None).unwrap();
+        let result = store.graph_apply(
             &[StructuredWrite {
                 key: node_key("c"),
                 revision: revision(2),
@@ -613,8 +616,8 @@ fn relationship_rules_enforce_restrict_and_transitive_cascade_after_reopen() {
         } else {
             assert_eq!(result.unwrap().receipts().len(), 1);
         }
-        store.close().unwrap();
-        let store = GraphStore::open(&path, options(), None).unwrap();
+        store.close_graph().unwrap();
+        let store = Store::open_graph(&path, options(), None).unwrap();
         let nodes = store
             .get_nodes(&[a, b, c], super::GraphGetOptions::default(), &control())
             .unwrap();
@@ -624,7 +627,7 @@ fn relationship_rules_enforce_restrict_and_transitive_cascade_after_reopen() {
                 .iter()
                 .all(|n| n.is_some() == (policy == OnDelete::Restrict))
         );
-        store.close().unwrap();
+        store.close_graph().unwrap();
     }
 }
 
@@ -637,11 +640,12 @@ fn relationship_cascade_revision_overflow_refuses_the_entire_mutation() {
         relationship_type: GraphName::new("IN").unwrap(),
         on_delete: OnDelete::Cascade,
     }];
-    let store = GraphStore::create_with_relationship_types(&path, options(), None, &rules).unwrap();
+    let store =
+        Store::create_graph_with_relationship_types(&path, options(), None, &rules).unwrap();
     let child = node_id(&create_node(&store, "child", u64::MAX), 0);
     let target = node_id(&create_node(&store, "parent", 1), 0);
     store
-        .apply_batch(
+        .graph_apply(
             &[StructuredWrite {
                 key: ApplicationKey::new(EntityKind::Relationship, "app", "in").unwrap(),
                 revision: revision(1),
@@ -657,7 +661,7 @@ fn relationship_cascade_revision_overflow_refuses_the_entire_mutation() {
         )
         .unwrap();
     let error = store
-        .apply_batch(
+        .graph_apply(
             &[StructuredWrite {
                 key: node_key("parent"),
                 revision: revision(2),
@@ -671,8 +675,8 @@ fn relationship_cascade_revision_overflow_refuses_the_entire_mutation() {
         )
         .unwrap_err();
     assert!(error.nothing_committed());
-    store.close().unwrap();
-    let store = GraphStore::open(&path, options(), None).unwrap();
+    store.close_graph().unwrap();
+    let store = Store::open_graph(&path, options(), None).unwrap();
     assert!(
         store
             .get_nodes(
@@ -685,21 +689,21 @@ fn relationship_cascade_revision_overflow_refuses_the_entire_mutation() {
             .iter()
             .all(Option::is_some)
     );
-    store.close().unwrap();
+    store.close_graph().unwrap();
 }
 
 #[test]
 fn ze257_small_batch_does_not_reserve_maximum_wal_envelope() {
     let parent = tempfile::tempdir().expect("temporary parent");
     let store =
-        GraphStore::create(parent.path().join("graph"), options(), None).expect("graph store");
+        Store::create_graph(parent.path().join("graph"), options(), None).expect("graph store");
     let _schedule = crate::property_graph::storage::search::native_vector_index_test_schedule(
         Some(8 * 1024 * 1024),
         None,
         |_| {},
     );
     create_node(&store, "small", 1);
-    store.close().expect("close graph store");
+    store.close_graph().expect("close graph store");
 }
 
 #[test]
@@ -721,7 +725,7 @@ fn ze194_single_batch_400_nodes_with_and_without_vectors() {
             compute_units: ComputeUnits::Cpu,
             os_build: None,
         };
-        let store = GraphStore::create(
+        let store = Store::create_graph(
             parent.path().join("graph"),
             options(),
             with_vectors.then(|| tower.clone()),
@@ -741,7 +745,7 @@ fn ze194_single_batch_400_nodes_with_and_without_vectors() {
             })
             .collect();
         let result = store
-            .apply_batch(&requests, &control())
+            .graph_apply(&requests, &control())
             .expect("400-node single batch under production preparation allowance");
         assert_eq!(result.admitted_generation(), generation(1));
         assert_eq!(
@@ -772,7 +776,7 @@ fn ze194_single_batch_400_nodes_with_and_without_vectors() {
         assert_eq!(read.nodes().len(), 400);
         assert!(read.nodes().iter().all(Option::is_some));
         drop(read);
-        store.close().expect("close graph store");
+        store.close_graph().expect("close graph store");
     }
 }
 
@@ -780,7 +784,7 @@ fn ze194_single_batch_400_nodes_with_and_without_vectors() {
 fn ze257_batch_work_is_admitted_per_mutation() {
     let parent = tempfile::tempdir().expect("temporary parent");
     let store =
-        GraphStore::create(parent.path().join("graph"), options(), None).expect("graph store");
+        Store::create_graph(parent.path().join("graph"), options(), None).expect("graph store");
     let keys: Vec<_> = (0..100).map(|index| index.to_string()).collect();
     let mut labels = [GraphName::new("Doc").expect("label")];
     let mut properties = [GraphProperty::new(
@@ -800,16 +804,16 @@ fn ze257_batch_work_is_admitted_per_mutation() {
         })
         .collect();
     store
-        .apply_batch(&requests, &control())
+        .graph_apply(&requests, &control())
         .expect("100-node batch under defaults");
-    store.close().expect("close graph store");
+    store.close_graph().expect("close graph store");
 }
 
 #[test]
 #[ignore = "opens the explicitly supplied Node scale fixture"]
 fn ze257_recovery_of_node_scale_fixture() {
     let path = std::env::var("ZE_GRAPH_SCALE_FIXTURE").expect("Node scale fixture path");
-    let store = GraphStore::open(&path, options(), None).expect("reopen Node scale fixture");
+    let store = Store::open_graph(&path, options(), None).expect("reopen Node scale fixture");
     let metrics = crate::lifecycle::native_graph::open_metrics_for_test();
     let serial_probes = crate::lifecycle::native_graph::serial_probes_for_test();
     let mut files = 0_u64;
@@ -824,7 +828,7 @@ fn ze257_recovery_of_node_scale_fixture() {
     assert!(metrics.1 <= 32 * 1024 * 1024);
     assert!(metrics.3 <= 256 * 1024 * 1024);
     assert!(serial_probes <= files * 8);
-    store.close().expect("close recovered scale fixture");
+    store.close_graph().expect("close recovered scale fixture");
 }
 
 #[test]
@@ -836,7 +840,7 @@ fn ze257_checkpoint_recovery_work_scales_linearly() {
     for count in [128, 256, 512] {
         let parent = tempfile::tempdir().unwrap();
         let path = parent.path().join("graph");
-        let store = GraphStore::create(&path, options(), None).unwrap();
+        let store = Store::create_graph(&path, options(), None).unwrap();
         let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
         for first in (0..count).step_by(128) {
             let keys: Vec<_> = (first..first + 128)
@@ -851,14 +855,14 @@ fn ze257_checkpoint_recovery_work_scales_linearly() {
                     image: Some(WriteImage::Node(&image)),
                 })
                 .collect();
-            store.apply_batch(&requests, &control()).unwrap();
+            store.graph_apply(&requests, &control()).unwrap();
         }
         store
             .store_for_test()
             .checkpoint_native_graph(&control())
             .unwrap();
-        store.close().unwrap();
-        let store = GraphStore::open(&path, options(), None).unwrap();
+        store.close_graph().unwrap();
+        let store = Store::open_graph(&path, options(), None).unwrap();
         let (work, peak, candidates, resident_peak) =
             crate::lifecycle::native_graph::open_metrics_for_test();
         let bytes: u64 = std::fs::read_dir(&path)
@@ -880,7 +884,7 @@ fn ze257_checkpoint_recovery_work_scales_linearly() {
             candidates, count as u64,
             "one indexed fence candidate per keyed node"
         );
-        store.close().unwrap();
+        store.close_graph().unwrap();
     }
     // Check both doublings and the complete 4x span with 5% tolerance.
     for (index, &(small_nodes, small_work)) in measurements.iter().enumerate() {
@@ -897,19 +901,19 @@ fn ze257_checkpoint_recovery_work_scales_linearly() {
 fn ze257_close_checkpoints_the_graph_replay_tail() {
     let parent = tempfile::tempdir().unwrap();
     let path = parent.path().join("graph");
-    let store = GraphStore::create(&path, options(), None).unwrap();
+    let store = Store::create_graph(&path, options(), None).unwrap();
     for key in ["one", "two", "three"] {
         create_node(&store, key, 1);
     }
-    store.close().unwrap();
-    store.close().unwrap();
-    let store = GraphStore::open(&path, options(), None).unwrap();
+    store.close_graph().unwrap();
+    store.close_graph().unwrap();
+    let store = Store::open_graph(&path, options(), None).unwrap();
     let (_, _, fence_candidates, _) = crate::lifecycle::native_graph::open_metrics_for_test();
     assert_eq!(
         fence_candidates, 3,
         "clean close leaves only the checkpoint to validate"
     );
-    store.close().unwrap();
+    store.close_graph().unwrap();
 }
 
 #[test]
@@ -919,27 +923,25 @@ fn ze257_close_checkpoint_failure_is_reported_and_releases_the_writer() {
     let parent = tempfile::tempdir().unwrap();
     let path = parent.path().join("graph");
     let vfs = Arc::new(RecordingVfs::default());
-    let store = GraphStore {
-        store: Store::create_native_graph_with_infrastructure(
-            &path,
-            options().with_durability(DurabilityMode::Durable, CommitTier::Durable),
-            None,
-            vfs.clone(),
-            Arc::new(crate::lifecycle::SystemMonotonicClock),
-            &mut crate::property_graph::storage::allocation::OsEntropy,
-        )
-        .unwrap(),
-    };
+    let store = Store::create_native_graph_with_infrastructure(
+        &path,
+        options().with_durability(DurabilityMode::Durable, CommitTier::Durable),
+        None,
+        vfs.clone(),
+        Arc::new(crate::lifecycle::SystemMonotonicClock),
+        &mut crate::property_graph::storage::allocation::OsEntropy,
+    )
+    .unwrap();
     create_node(&store, "durable", 1);
     // Unified close publishes the manifest instead of creating a legacy root.
     vfs.arm_fault(FaultPoint::ManifestSync);
     assert_eq!(
-        store.close().unwrap_err().kind(),
+        store.close_graph().unwrap_err().kind(),
         GraphStoreErrorKind::Storage
     );
     vfs.assert_fired_once();
-    store.close().unwrap();
-    let reopened = GraphStore::open(&path, options(), None).unwrap();
+    store.close_graph().unwrap();
+    let reopened = Store::open_graph(&path, options(), None).unwrap();
     assert_eq!(
         reopened
             .store_for_test()
@@ -968,7 +970,7 @@ fn ze257_close_checkpoint_failure_is_reported_and_releases_the_writer() {
             generation: generation(next.admitted_generation().get() + 1),
         }
     );
-    reopened.close().unwrap();
+    reopened.close_graph().unwrap();
 }
 
 #[test]
@@ -977,26 +979,24 @@ fn ze397_manifest_io_and_fenced_writer_keep_storage_class() {
     use std::sync::Arc;
     let parent = tempfile::tempdir().unwrap();
     let vfs = Arc::new(RecordingVfs::default());
-    let store = GraphStore {
-        store: Store::create_native_graph_with_infrastructure(
-            parent.path().join("graph"),
-            options().with_durability(DurabilityMode::Durable, CommitTier::Durable),
-            None,
-            vfs.clone(),
-            Arc::new(crate::lifecycle::SystemMonotonicClock),
-            &mut crate::property_graph::storage::allocation::OsEntropy,
-        )
-        .unwrap(),
-    };
+    let store = Store::create_native_graph_with_infrastructure(
+        parent.path().join("graph"),
+        options().with_durability(DurabilityMode::Durable, CommitTier::Durable),
+        None,
+        vfs.clone(),
+        Arc::new(crate::lifecycle::SystemMonotonicClock),
+        &mut crate::property_graph::storage::allocation::OsEntropy,
+    )
+    .unwrap();
     create_node(&store, "durable", 1);
     vfs.arm_fault(FaultPoint::ManifestSync);
-    let error = store.store.checkpoint_native_graph(&control()).unwrap_err();
+    let error = store.checkpoint_native_graph(&control()).unwrap_err();
     vfs.assert_fired_once();
     assert_eq!(
         GraphStoreError::graph(error).kind(),
         GraphStoreErrorKind::Storage
     );
-    let fenced = store.store.checkpoint_native_graph(&control()).unwrap_err();
+    let fenced = store.checkpoint_native_graph(&control()).unwrap_err();
     assert!(
         fenced
             .to_string()
@@ -1015,11 +1015,11 @@ fn ze257_recovery_sizes_serial_inventory_from_actual_artifacts() {
     };
     let parent = tempfile::tempdir().unwrap();
     let path = parent.path().join("graph");
-    let store = GraphStore::create(&path, options(), None).unwrap();
+    let store = Store::create_graph(&path, options(), None).unwrap();
     let lease = store.store_for_test().admit_native_read().unwrap();
     let store_id = lease.bundle().base().store;
     drop(lease);
-    store.close().unwrap();
+    store.close_graph().unwrap();
     // Valid pre-WAL orphan objects still consume serials. Their descriptors
     // fit comfortably in the existing budget even beyond the old 8192 cap.
     let mut bytes = vec![0; artifact::encoded_len(ContainerKind::Object, &[]).unwrap()];
@@ -1039,13 +1039,13 @@ fn ze257_recovery_sizes_serial_inventory_from_actual_artifacts() {
         .unwrap();
         std::fs::write(path.join(format!("graph-{:032x}.zgraph", id.get())), &bytes).unwrap();
     }
-    let store = GraphStore::open(&path, options(), None)
+    let store = Store::open_graph(&path, options(), None)
         .expect("actual descriptor count fits default memory");
     let probes = crate::lifecycle::native_graph::serial_probes_for_test();
     eprintln!("ZE257 serial inventory probes={probes}");
     assert!(probes < 8192 * 8, "serial inventory probes: {probes}");
     create_node(&store, "after-orphans", 1);
-    store.close().unwrap();
+    store.close_graph().unwrap();
 }
 
 #[test]
@@ -1053,13 +1053,13 @@ fn ze260_maintenance_policy_and_public_step() {
     use super::GraphMaintenancePolicy;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("graph");
-    let store = GraphStore::create(&path, options(), None).unwrap();
+    let store = Store::create_graph(&path, options(), None).unwrap();
     let policy = GraphMaintenancePolicy::default();
     assert!(policy.automatic);
     assert_eq!(policy.reclaim_after_bytes, 64 * 1024 * 1024);
     assert_eq!(
         store
-            .set_maintenance_policy(GraphMaintenancePolicy {
+            .set_graph_maintenance_policy(GraphMaintenancePolicy {
                 automatic: false,
                 reclaim_after_bytes: 0
             })
@@ -1068,22 +1068,25 @@ fn ze260_maintenance_policy_and_public_step() {
         GraphStoreErrorKind::InvalidRequest
     );
     store
-        .set_maintenance_policy(GraphMaintenancePolicy {
+        .set_graph_maintenance_policy(GraphMaintenancePolicy {
             automatic: false,
             reclaim_after_bytes: 1024 * 1024,
         })
         .unwrap();
-    let report = store.maintain(&control()).unwrap();
+    let report = store.graph_maintain_step(&control()).unwrap();
     assert!(report.cycle_complete);
     assert_eq!(report.new_pack_bytes, 0);
-    store.close().unwrap();
-    let reader = GraphStore::open_read_only(&path, options(), None).unwrap();
+    store.close_graph().unwrap();
+    let reader = Store::open_graph_read_only(&path, options(), None).unwrap();
     assert_eq!(
-        reader.set_maintenance_policy(policy).unwrap_err().kind(),
+        reader
+            .set_graph_maintenance_policy(policy)
+            .unwrap_err()
+            .kind(),
         GraphStoreErrorKind::ReadOnly
     );
     assert_eq!(
-        reader.maintain(&control()).unwrap_err().kind(),
+        reader.graph_maintain_step(&control()).unwrap_err().kind(),
         GraphStoreErrorKind::ReadOnly
     );
 }
@@ -1093,10 +1096,10 @@ fn ze260_automatic_reclaim_failure_commits_nothing() {
     use super::GraphMaintenancePolicy;
     use std::sync::atomic::Ordering;
     let dir = tempfile::tempdir().unwrap();
-    let store = GraphStore::create(dir.path().join("graph"), options(), None).unwrap();
+    let store = Store::create_graph(dir.path().join("graph"), options(), None).unwrap();
     create_node(&store, "seed", 1);
     store
-        .set_maintenance_policy(GraphMaintenancePolicy {
+        .set_graph_maintenance_policy(GraphMaintenancePolicy {
             automatic: true,
             reclaim_after_bytes: 1024 * 1024,
         })
@@ -1125,7 +1128,7 @@ fn ze260_automatic_reclaim_failure_commits_nothing() {
     crate::property_graph::storage::inventory::force_next_incomplete_inventory_retirement();
     let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
     let error = store
-        .apply_batch(
+        .graph_apply(
             &[StructuredWrite {
                 key: node_key("changed"),
                 revision: revision(1),
@@ -1154,13 +1157,18 @@ fn ze260_automatic_reclaim_failure_commits_nothing() {
         generation
     );
     store
-        .set_maintenance_policy(GraphMaintenancePolicy {
+        .set_graph_maintenance_policy(GraphMaintenancePolicy {
             automatic: false,
             reclaim_after_bytes: 1024 * 1024,
         })
         .unwrap();
-    store.apply_batch(&[], &control()).unwrap();
-    assert!(store.maintain_cycle(&control()).unwrap().cycle_complete);
+    store.graph_apply(&[], &control()).unwrap();
+    assert!(
+        store
+            .graph_maintain_cycle(&control())
+            .unwrap()
+            .cycle_complete
+    );
 }
 
 #[test]
@@ -1169,9 +1177,9 @@ fn ze260_automatic_reclaim_keeps_an_append_only_store_bounded() {
     use super::GraphMaintenancePolicy;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("graph");
-    let store = GraphStore::create(&path, options(), None).unwrap();
+    let store = Store::create_graph(&path, options(), None).unwrap();
     store
-        .set_maintenance_policy(GraphMaintenancePolicy {
+        .set_graph_maintenance_policy(GraphMaintenancePolicy {
             automatic: true,
             reclaim_after_bytes: 4 * 1024 * 1024,
         })
@@ -1202,7 +1210,7 @@ fn ze260_automatic_reclaim_keeps_an_append_only_store_bounded() {
                     properties: &[],
                 }),
             });
-            store.apply_batch(&writes, &control())
+            store.graph_apply(&writes, &control())
         })
         .unwrap();
         ids.extend(result.receipts().iter().take(100).map(|r| r.entity));
@@ -1219,13 +1227,13 @@ fn ze260_automatic_reclaim_keeps_an_append_only_store_bounded() {
                 image: Some(WriteImage::Node(&image)),
             })
             .collect();
-        store.apply_batch(&writes, &control()).unwrap();
+        store.graph_apply(&writes, &control()).unwrap();
     }
     let files = snapshot(&path);
     assert!(files.values().map(Vec::len).sum::<usize>() <= 8_000_000);
     assert!(files.len() <= 120);
-    store.close().unwrap();
-    let reopened = GraphStore::open(&path, options(), None).unwrap();
+    store.close_graph().unwrap();
+    let reopened = Store::open_graph(&path, options(), None).unwrap();
     let nodes: Vec<_> = ids
         .into_iter()
         .map(|id| match id {
@@ -1248,9 +1256,9 @@ fn ze260_automatic_reclaim_keeps_an_append_only_store_bounded() {
 #[test]
 fn ze201_maintain_after_close_is_closed() {
     let parent = tempfile::tempdir().expect("parent");
-    let store = GraphStore::create(parent.path().join("native"), options(), None).expect("store");
-    store.close().expect("close");
-    let error = store.maintain(&control()).expect_err("closed");
+    let store = Store::create_graph(parent.path().join("native"), options(), None).expect("store");
+    store.close_graph().expect("close");
+    let error = store.graph_maintain_step(&control()).expect_err("closed");
     assert_eq!(error.kind(), GraphStoreErrorKind::Closed);
     assert!(error.nothing_committed());
 }
@@ -1258,9 +1266,9 @@ fn ze201_maintain_after_close_is_closed() {
 #[test]
 fn ze201_maintain_cycle_after_close_is_closed() {
     let parent = tempfile::tempdir().expect("parent");
-    let store = GraphStore::create(parent.path().join("native"), options(), None).expect("store");
-    store.close().expect("close");
-    let error = store.maintain_cycle(&control()).expect_err("closed");
+    let store = Store::create_graph(parent.path().join("native"), options(), None).expect("store");
+    store.close_graph().expect("close");
+    let error = store.graph_maintain_cycle(&control()).expect_err("closed");
     assert_eq!(error.kind(), GraphStoreErrorKind::Closed);
     assert!(error.nothing_committed());
 }
@@ -1295,7 +1303,7 @@ fn ze329_node_scale_batches_use_default_budgets() {
     use std::sync::atomic::Ordering;
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("graph");
-    let store = GraphStore::create(&path, options(), None).unwrap();
+    let store = Store::create_graph(&path, options(), None).unwrap();
     for batch in 0..200 {
         let start = batch * 100;
         let keys: Vec<_> = (start..start + 100).map(|i| i.to_string()).collect();
@@ -1339,7 +1347,7 @@ fn ze329_node_scale_batches_use_default_budgets() {
                     properties: &[],
                 }),
             });
-            store.apply_batch(&writes, &control())
+            store.graph_apply(&writes, &control())
         });
         let report = capture::take();
         if result.is_err() || batch == 32 || batch == 199 {
@@ -1371,14 +1379,14 @@ fn ze329_node_scale_batches_use_default_budgets() {
         ));
         assert_eq!(result.receipts().len(), 101);
     }
-    store.close().unwrap();
+    store.close_graph().unwrap();
     drop(store);
-    let reopened = GraphStore::open(&path, options(), None).unwrap();
+    let reopened = Store::open_graph(&path, options(), None).unwrap();
     ze329_check_scale_queries(&reopened);
-    reopened.close().unwrap();
+    reopened.close_graph().unwrap();
 }
 
-fn ze329_check_scale_queries(store: &GraphStore) {
+fn ze329_check_scale_queries(store: &Store) {
     use super::{GraphPlanBacking, GraphQueryPlan};
     use crate::property_graph::query::completed::{GraphQueryOptions, Value};
     use crate::property_graph::query::plan::{
@@ -1504,7 +1512,7 @@ fn ze329_check_scale_queries(store: &GraphStore) {
             columns: &["t"],
         };
         let result = store
-            .query(&control(), &GraphQueryOptions::default(), &plan)
+            .graph_query(&control(), &GraphQueryOptions::default(), &plan)
             .unwrap();
         if query == 1 {
             assert_eq!(result.metadata().rows, 10);
@@ -1528,24 +1536,79 @@ fn ze329_check_scale_queries(store: &GraphStore) {
 fn a_unified_empty_graph_store_reopens_through_the_compatibility_handle() {
     let parent = tempfile::tempdir().unwrap();
     let path = parent.path().join("unified");
-    let store = GraphStore::create(&path, options(), None).unwrap();
-    store.close().unwrap();
+    let store = Store::create_graph(&path, options(), None).unwrap();
+    store.close_graph().unwrap();
     for read_only in [true, false] {
         let reopened = if read_only {
-            GraphStore::open_read_only(&path, options(), None)
+            Store::open_graph_read_only(&path, options(), None)
         } else {
-            GraphStore::open(&path, options(), None)
+            Store::open_graph(&path, options(), None)
         }
         .unwrap();
+        assert_eq!(reopened.admit_native_read().unwrap().bundle().sequence(), 0);
+        reopened.close_graph().unwrap();
+    }
+}
+
+mod store_graph {
+    use super::*;
+
+    #[test]
+    fn graph_apply_returns_an_ingest_ack_and_receipts() {
+        let parent = tempfile::tempdir().unwrap();
+        let path = parent.path().join("unified");
+        let store = Store::open(&path, options()).unwrap();
+        store.enable_graph().unwrap();
+        let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
+        let writes = [StructuredWrite {
+            key: node_key("ack"),
+            revision: revision(1),
+            operation: StructuredOperation::Create,
+            image: Some(WriteImage::Node(&image)),
+        }];
+        let documents = crate::ingest::IngestBatch::new(vec![
+            crate::ingest::IngestDocument::new(
+                crate::ingest::DocumentVersion::new(
+                    crate::ingest::DocId::new(91),
+                    crate::ingest::Revision::new(1),
+                ),
+                vec![1.0, 0.0],
+            )
+            .with_text("mixed document"),
+        ]);
+        let batch = || super::super::GraphBatch {
+            documents: Some(&documents),
+            writes: &writes,
+        };
+        let result = store.graph_apply(batch(), &control()).unwrap();
+        assert_eq!(store.count_documents(None, None).unwrap().count, 1);
+        let ack: crate::ingest::IngestAck = result.ack();
+        assert_eq!(result.receipts().len(), 1);
+        assert_eq!(result.receipts()[0].generation.get(), ack.generation());
         assert_eq!(
-            reopened
-                .store
-                .admit_native_read()
-                .unwrap()
-                .bundle()
-                .sequence(),
-            0
+            result.outcome(),
+            GraphWriteOutcome::Committed {
+                generation: generation(ack.generation()),
+            }
         );
-        reopened.close().unwrap();
+        assert!(ack.seq().get() > 0);
+        let replay = store.graph_apply(batch(), &control()).unwrap();
+        assert_eq!(replay.outcome(), GraphWriteOutcome::Replayed);
+        assert_eq!(replay.ack(), ack);
+        assert!(replay.receipts()[0].replayed);
+        drop(store);
+        let reopened = Store::open(&path, options()).unwrap();
+        assert_eq!(reopened.count_documents(None, None).unwrap().count, 1);
+        assert!(
+            reopened
+                .get_nodes(
+                    &[node_id(&result, 0)],
+                    super::super::GraphGetOptions::default(),
+                    &control()
+                )
+                .unwrap()
+                .nodes()[0]
+                .is_some()
+        );
     }
 }

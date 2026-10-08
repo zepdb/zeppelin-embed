@@ -253,7 +253,7 @@ fn ze76_public_failure_preserves_real_retrieval_and_publication() {
     use zeppelin_embed_cypher::execute;
     let fixture = search::SearchFixture::create();
     let store = fixture.store();
-    let resources = store.resources().unwrap();
+    let resources = store.graph_resources().unwrap();
     let query = "CALL ze.vector_search([0,0],3,'exact') YIELD node,distance RETURN distance";
     let check = || {
         let ranked = fixture.run(query);
@@ -288,7 +288,7 @@ fn ze76_public_failure_preserves_real_retrieval_and_publication() {
         .unwrap();
     assert!(
         execute(
-            store.statement_store(),
+            store,
             &search::control(),
             &options,
             query,
@@ -301,7 +301,7 @@ fn ze76_public_failure_preserves_real_retrieval_and_publication() {
     token.cancel();
     assert!(
         execute(
-            store.statement_store(),
+            store,
             &QueryControl::Cancel(token),
             &GraphQueryOptions::default(),
             query,
@@ -321,7 +321,7 @@ fn ze76_public_failure_preserves_real_retrieval_and_publication() {
     });
     assert!(
         store
-            .apply_batch(&writes, &search::control())
+            .graph_apply(&writes, &search::control())
             .unwrap_err()
             .nothing_committed()
     );

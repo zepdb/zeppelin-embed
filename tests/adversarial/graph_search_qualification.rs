@@ -194,7 +194,7 @@ pub fn lifecycle_observations(
                 )
                 .unwrap();
                 c.graph()
-                    .apply_batch(
+                    .graph_apply(
                         &[StructuredWrite {
                             key: ApplicationKey::new(EntityKind::Node, "ze65", "b").unwrap(),
                             revision: GraphRevision::new(2).unwrap(),

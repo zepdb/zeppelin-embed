@@ -7,6 +7,7 @@
     clippy::result_large_err
 )]
 mod support;
+use zeppelin_embed::lifecycle::Store;
 use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl};
 use zeppelin_embed::property_graph::query::completed::{GraphQueryOptions, Outcome, Value};
 use zeppelin_embed::property_graph::staging::{
@@ -14,7 +15,7 @@ use zeppelin_embed::property_graph::staging::{
 };
 use zeppelin_embed::property_graph::{
     ApplicationKey, CanonicalContents, EntityId, EntityKind, GraphGeneration, GraphGetOptions,
-    GraphName, GraphProperty, GraphRevision, GraphStore, GraphStoreErrorKind, GraphWriteOutcome,
+    GraphName, GraphProperty, GraphRevision, GraphStoreErrorKind, GraphWriteOutcome,
     KeyLifecycleError, NodeId, PropertyData, PropertyValue,
 };
 use zeppelin_embed_cypher::{CompileLimits, execute};
@@ -34,7 +35,7 @@ fn properties(v: i64) -> [GraphProperty<'static>; 2] {
         ),
     ]
 }
-fn assert_node(graph: &GraphStore, id: NodeId, rev: u64, v: i64, control: &QueryControl) {
+fn assert_node(graph: &Store, id: NodeId, rev: u64, v: i64, control: &QueryControl) {
     let result = graph
         .get_nodes(&[id], GraphGetOptions::default(), control)
         .unwrap();
@@ -55,7 +56,7 @@ fn ze57_local_mixed_structured_and_cypher_revisions_keep_deleted_key_fence() {
     std::fs::create_dir_all(&root).unwrap();
     let path = root.join("graph");
     let options = || OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024);
-    let graph = GraphStore::create(&path, options(), None).unwrap();
+    let graph = Store::create_graph(&path, options(), None).unwrap();
     let control = QueryControl::Cancel(CancelToken::new());
     let key = ApplicationKey::new(EntityKind::Node, "ze57", "one").unwrap();
     let mut original_properties = properties(1);
@@ -66,7 +67,7 @@ fn ze57_local_mixed_structured_and_cypher_revisions_keep_deleted_key_fence() {
         operation: StructuredOperation::Create,
         image: Some(WriteImage::Node(&original)),
     };
-    let created = graph.apply_batch(&[create], &control).unwrap();
+    let created = graph.graph_apply(&[create], &control).unwrap();
     assert_eq!(created.receipts().len(), 1);
     let receipt = created.receipts()[0];
     assert_eq!(receipt.revision, revision(1));
@@ -77,9 +78,9 @@ fn ze57_local_mixed_structured_and_cypher_revisions_keep_deleted_key_fence() {
         panic!("expected node receipt")
     };
     assert_node(&graph, id, 1, 1, &control);
-    let run = |graph: &GraphStore, query: &str| {
+    let run = |graph: &Store, query: &str| {
         execute(
-            graph.statement_store(),
+            graph,
             &control,
             &GraphQueryOptions::default(),
             query,
@@ -102,7 +103,7 @@ fn ze57_local_mixed_structured_and_cypher_revisions_keep_deleted_key_fence() {
     // revision precondition. Pin stale 1, conflicting 2, then install 3.
     for requested in [1, 2] {
         let error = graph
-            .apply_batch(
+            .graph_apply(
                 &[StructuredWrite {
                     key,
                     revision: revision(requested),
@@ -128,7 +129,7 @@ fn ze57_local_mixed_structured_and_cypher_revisions_keep_deleted_key_fence() {
         assert_node(&graph, id, 2, 2, &control);
     }
     let put = graph
-        .apply_batch(
+        .graph_apply(
             &[StructuredWrite {
                 key,
                 revision: revision(3),
@@ -156,14 +157,11 @@ fn ze57_local_mixed_structured_and_cypher_revisions_keep_deleted_key_fence() {
     ));
     let generation = run(&graph, "RETURN 1").metadata().generation;
     assert_eq!(generation, GraphGeneration::new(5));
-    let assert_fence = |graph: &GraphStore, generation: GraphGeneration| {
-        assert_eq!(
-            graph.statement_store().snapshot().unwrap().generation(),
-            generation.get()
-        );
+    let assert_fence = |graph: &Store, generation: GraphGeneration| {
+        assert_eq!(graph.snapshot().unwrap().generation(), generation.get());
         // Reads and refused writes must preserve the admitted store generation.
         assert_eq!(run(graph, "RETURN 1").metadata().generation, generation);
-        let error = graph.apply_batch(&[create], &control).unwrap_err();
+        let error = graph.graph_apply(&[create], &control).unwrap_err();
         assert_eq!(error.kind(), GraphStoreErrorKind::Constraint);
         assert!(error.nothing_committed());
         assert!(
@@ -179,7 +177,7 @@ fn ze57_local_mixed_structured_and_cypher_revisions_keep_deleted_key_fence() {
         );
         // Even a newer ordinary create cannot bypass a retained deletion fence.
         let error = graph
-            .apply_batch(
+            .graph_apply(
                 &[StructuredWrite {
                     revision: revision(5),
                     ..create
@@ -195,16 +193,16 @@ fn ze57_local_mixed_structured_and_cypher_revisions_keep_deleted_key_fence() {
         assert_eq!(run(graph, "RETURN 1").metadata().generation, generation);
     };
     assert_fence(&graph, generation);
-    graph.close().unwrap();
-    let reopened = GraphStore::open(&path, options(), None).unwrap();
+    graph.close_graph().unwrap();
+    let reopened = Store::open_graph(&path, options(), None).unwrap();
     // Close checkpoints the manifest once; coherent reads now expose that bump.
     let generation = GraphGeneration::new(6);
     assert_fence(&reopened, generation);
     assert_eq!(
-        reopened.apply_batch(&[], &control).unwrap().outcome(),
+        reopened.graph_apply(&[], &control).unwrap().outcome(),
         GraphWriteOutcome::NoOp
     );
     assert_eq!(run(&reopened, "RETURN 1").metadata().generation, generation);
-    reopened.close().unwrap();
+    reopened.close_graph().unwrap();
     std::fs::remove_dir_all(root).unwrap();
 }

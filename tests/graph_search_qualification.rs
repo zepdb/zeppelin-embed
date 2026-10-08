@@ -9,6 +9,7 @@
 #[path = "support/graph_search.rs"]
 mod graph_search;
 use graph_search::*;
+use zeppelin_embed::lifecycle::Store;
 use zeppelin_embed_adversarial_oracle::graph_fixture as oracle;
 #[test]
 fn ze65_exact_eligible_rankings_match_oracle() {
@@ -161,7 +162,7 @@ fn ze65_compaction_preserves_logical_search() {
     let before: Vec<_> = queries.iter().map(|q| observe(&c.run(q))).collect();
     let mut relocated = 0;
     for _ in 0..4 {
-        let r = c.graph().maintain(&control()).unwrap();
+        let r = c.graph().graph_maintain_step(&control()).unwrap();
         relocated += r.replaced_physical_refs;
         if r.cycle_complete {
             break;
@@ -289,7 +290,7 @@ fn ze65_modal_and_empty_matrix() {
     )
     .unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let empty = zeppelin_embed::property_graph::GraphStore::create(
+    let empty = zeppelin_embed::lifecycle::Store::create_graph(
         dir.path().join("empty"),
         zeppelin_embed::lifecycle::OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
         Some(zeppelin_embed::graph_commit_recovery_test_support::document()),
@@ -301,7 +302,7 @@ fn ze65_modal_and_empty_matrix() {
         "CALL ze.hybrid_search([0,0],'amber',2,'exact') YIELD node RETURN node",
     ] {
         let r = zeppelin_embed_cypher::execute(
-            empty.statement_store(),
+            &empty,
             &control(),
             &Default::default(),
             q,
@@ -312,7 +313,7 @@ fn ze65_modal_and_empty_matrix() {
         assert_eq!(r.metadata().rows, 0);
         assert_eq!(r.pools().reports.len(), 1);
     }
-    empty.close().unwrap();
+    empty.close_graph().unwrap();
 }
 #[test]
 fn ze65_projection_preserves_ann_metadata() {
@@ -385,7 +386,7 @@ fn ze65_configuration_preserves_graph_visibility() {
     use zeppelin_embed::property_graph::*;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("no-vector");
-    let store = GraphStore::create(
+    let store = Store::create_graph(
         &path,
         OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
         None,
@@ -393,7 +394,7 @@ fn ze65_configuration_preserves_graph_visibility() {
     .unwrap();
     let content = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
     store
-        .apply_batch(
+        .graph_apply(
             &[zeppelin_embed::property_graph::staging::StructuredWrite {
                 key: ApplicationKey::new(EntityKind::Node, "ze65", "graph-only").unwrap(),
                 revision: GraphRevision::new(1).unwrap(),
@@ -407,7 +408,7 @@ fn ze65_configuration_preserves_graph_visibility() {
         .unwrap();
     let q = "MATCH (n) RETURN n";
     let r = zeppelin_embed_cypher::execute(
-        store.statement_store(),
+        &store,
         &control(),
         &Default::default(),
         q,
@@ -416,15 +417,15 @@ fn ze65_configuration_preserves_graph_visibility() {
     )
     .unwrap();
     assert_eq!(r.metadata().rows, 1);
-    store.close().unwrap();
-    let store = GraphStore::open(
+    store.close_graph().unwrap();
+    let store = Store::open_graph(
         &path,
         OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
         None,
     )
     .unwrap();
     let r = zeppelin_embed_cypher::execute(
-        store.statement_store(),
+        &store,
         &control(),
         &Default::default(),
         q,
@@ -433,7 +434,7 @@ fn ze65_configuration_preserves_graph_visibility() {
     )
     .unwrap();
     assert_eq!(r.metadata().rows, 1);
-    store.close().unwrap();
+    store.close_graph().unwrap();
     let mut c = Corpus::new();
     let before = observe(&c.run(q));
     assert_eq!(c.store.take().unwrap().close(), 0);
@@ -451,7 +452,7 @@ fn ze65_configuration_preserves_graph_visibility() {
     let mut incompatible = zeppelin_embed::graph_commit_recovery_test_support::document();
     incompatible.weights_digest.push(65);
     assert!(
-        GraphStore::open(
+        Store::open_graph(
             &path,
             OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
             Some(incompatible)

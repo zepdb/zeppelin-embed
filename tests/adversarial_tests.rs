@@ -19873,12 +19873,7 @@ fn ze41_complete_batch_comparator_rejects_each_mutated_observation() {
         adversarial::graph_recovery::comparator_mutations(&fixture, &actual).unwrap(),
         28
     );
-    let admitted_generation = store
-        .graph()
-        .statement_store()
-        .snapshot()
-        .unwrap()
-        .generation();
+    let admitted_generation = store.graph().snapshot().unwrap().generation();
     let retry = store.apply(&fixture).unwrap();
     assert_eq!(
         adversarial::graph_recovery::retry_comparator_mutations(&retry, true, admitted_generation)

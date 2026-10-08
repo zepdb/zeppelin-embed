@@ -3227,7 +3227,9 @@ impl crate::lifecycle::Store {
                         materialized,
                         admitted_generation,
                         None,
-                        replay_seq.unwrap_or(crate::wal::LogSeq::new(writer.last_graph_seq)),
+                        replay_seq.map_or(crate::wal::LogSeq::new(writer.last_graph_seq), |seq| {
+                            seq.max(crate::wal::LogSeq::new(writer.last_graph_seq))
+                        }),
                     ));
                 }
                 CommitStep::Checkpointed => continue,

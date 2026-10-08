@@ -8,9 +8,10 @@
     reason = "tests fail loudly on the first broken contract"
 )]
 
-use super::super::{GraphStore, GraphWriteResult};
+use super::super::GraphWriteResult;
 use super::{GraphGetOptions, ListKind, Value};
 use crate::epoch::{ComputeUnits, EmbeddingRuntime, EmbeddingTower, Normalization};
+use crate::lifecycle::Store;
 use crate::lifecycle::{CancelToken, OpenOptions, QueryControl};
 use crate::property_graph::staging::{StructuredOperation, StructuredWrite, WriteImage};
 use crate::property_graph::{
@@ -71,12 +72,12 @@ fn tower() -> EmbeddingTower {
 fn graph_store_get_nodes_distinguishes_absent_from_present_empty_text() {
     let parent = tempfile::tempdir().expect("temporary parent");
     let store =
-        GraphStore::create(parent.path().join("text"), options(), None).expect("graph store");
+        Store::create_graph(parent.path().join("text"), options(), None).expect("graph store");
     let no_text = CanonicalContents::node(&mut [], &mut [], None, None).expect("no-text image");
     let empty_text =
         CanonicalContents::node(&mut [], &mut [], Some(""), None).expect("empty-text image");
     let created = store
-        .apply_batch(
+        .graph_apply(
             &[
                 StructuredWrite {
                     key: node_key("absent"),
@@ -123,13 +124,13 @@ fn graph_store_get_nodes_distinguishes_absent_from_present_empty_text() {
         unselected.nodes()[0].as_ref().expect("node present").text,
         None
     );
-    store.close().expect("close store");
+    store.close_graph().expect("close store");
 }
 
 #[test]
 fn ze211_nodes_bulk_pools_match_accessors() {
     let parent = tempfile::tempdir().expect("temporary parent");
-    let store = GraphStore::create(parent.path().join("lists"), options(), Some(tower()))
+    let store = Store::create_graph(parent.path().join("lists"), options(), Some(tower()))
         .expect("graph store");
     let sentinel =
         PropertyValue::new(PropertyData::EmptyList { count: 0 }).expect("untyped empty list value");
@@ -149,7 +150,7 @@ fn ze211_nodes_bulk_pools_match_accessors() {
         CanonicalContents::node(&mut labels, &mut properties, Some("text"), Some(embedding))
             .expect("list image");
     let created = store
-        .apply_batch(
+        .graph_apply(
             &[StructuredWrite {
                 key: node_key("lists"),
                 revision: revision(1),
@@ -218,7 +219,7 @@ fn ze211_nodes_bulk_pools_match_accessors() {
         sentinel_value, typed_value,
         "the untyped sentinel and a typed empty list must remain distinct"
     );
-    store.close().expect("close store");
+    store.close_graph().expect("close store");
     let pools = result.pools();
     for (index, value) in pools.values.iter().enumerate() {
         assert_eq!(result.value(super::ValueIndex(index as u32)), Some(value));
@@ -258,7 +259,7 @@ fn graph_store_get_nodes_round_trips_full_128_bit_ids() {
     let path = parent.path().join("wide");
     let first_node = NodeId::new((1_u128 << 64) + 11).expect("wide node seed");
     let first_relationship = RelId::new((1_u128 << 100) + 13).expect("wide relationship seed");
-    let store = GraphStore::create_with_allocator_seed_for_test(
+    let store = Store::create_graph_with_allocator_seed_for_test(
         &path,
         options(),
         first_node,
@@ -267,7 +268,7 @@ fn graph_store_get_nodes_round_trips_full_128_bit_ids() {
     .expect("seeded graph store");
     let image = CanonicalContents::node(&mut [], &mut [], Some("wide"), None).expect("image");
     let created = store
-        .apply_batch(
+        .graph_apply(
             &[StructuredWrite {
                 key: node_key("wide"),
                 revision: revision(1),
@@ -296,30 +297,30 @@ fn graph_store_get_nodes_round_trips_full_128_bit_ids() {
     assert!(node.id.get() > u128::from(u64::MAX));
     let text_span = node.text.expect("stored text present");
     assert_eq!(result.string(text_span), Some("wide"));
-    store.close().expect("close store");
+    store.close_graph().expect("close store");
 }
 
 #[test]
 fn graph_store_get_nodes_returns_none_for_a_missing_id() {
     let parent = tempfile::tempdir().expect("temporary parent");
     let store =
-        GraphStore::create(parent.path().join("missing"), options(), None).expect("graph store");
+        Store::create_graph(parent.path().join("missing"), options(), None).expect("graph store");
     let never_written = NodeId::new(999_999).expect("unused node id");
     let result = store
         .get_nodes(&[never_written], GraphGetOptions::default(), &control())
         .expect("get missing node");
     assert_eq!(result.nodes(), &[None]);
-    store.close().expect("close store");
+    store.close_graph().expect("close store");
 }
 
 #[test]
 fn graph_store_get_nodes_result_stays_readable_after_close() {
     let parent = tempfile::tempdir().expect("temporary parent");
     let store =
-        GraphStore::create(parent.path().join("closed"), options(), None).expect("graph store");
+        Store::create_graph(parent.path().join("closed"), options(), None).expect("graph store");
     let image = CanonicalContents::node(&mut [], &mut [], Some("kept"), None).expect("image");
     let created = store
-        .apply_batch(
+        .graph_apply(
             &[StructuredWrite {
                 key: node_key("kept"),
                 revision: revision(1),
@@ -340,7 +341,7 @@ fn graph_store_get_nodes_result_stays_readable_after_close() {
             &control(),
         )
         .expect("get node");
-    store.close().expect("close store");
+    store.close_graph().expect("close store");
     drop(store);
 
     let node = result.nodes()[0]
@@ -354,11 +355,11 @@ fn graph_store_get_nodes_result_stays_readable_after_close() {
 #[test]
 fn graph_store_get_nodes_admits_one_generation_for_the_whole_call() {
     let parent = tempfile::tempdir().expect("temporary parent");
-    let store =
-        GraphStore::create(parent.path().join("generation"), options(), None).expect("graph store");
+    let store = Store::create_graph(parent.path().join("generation"), options(), None)
+        .expect("graph store");
     let image = CanonicalContents::node(&mut [], &mut [], Some("x"), None).expect("image");
     let first = store
-        .apply_batch(
+        .graph_apply(
             &[StructuredWrite {
                 key: node_key("first"),
                 revision: revision(1),
@@ -370,7 +371,7 @@ fn graph_store_get_nodes_admits_one_generation_for_the_whole_call() {
         .expect("create first node");
     let first_id = node_id(&first, 0);
     let second = store
-        .apply_batch(
+        .graph_apply(
             &[StructuredWrite {
                 key: node_key("second"),
                 revision: revision(1),
@@ -416,20 +417,20 @@ fn graph_store_get_nodes_admits_one_generation_for_the_whole_call() {
         "each entity keeps its own installing generation"
     );
     assert_eq!(second_node.generation, generation(3));
-    store.close().expect("close store");
+    store.close_graph().expect("close store");
 }
 
 #[test]
 fn graph_store_get_nodes_selects_the_stored_vector_only_when_requested() {
     let parent = tempfile::tempdir().expect("temporary parent");
-    let store = GraphStore::create(parent.path().join("vector"), options(), Some(tower()))
+    let store = Store::create_graph(parent.path().join("vector"), options(), Some(tower()))
         .expect("graph store with a document tower");
     let document = tower();
     let embedding = CanonicalEmbedding::new(&document, &[1.5, -2.5]).expect("canonical embedding");
     let image = CanonicalContents::node(&mut [], &mut [], None, Some(embedding))
         .expect("node with a vector");
     let created = store
-        .apply_batch(
+        .graph_apply(
             &[StructuredWrite {
                 key: node_key("vector"),
                 revision: revision(1),
@@ -467,18 +468,18 @@ fn graph_store_get_nodes_selects_the_stored_vector_only_when_requested() {
         .map(|bits| f32::from_bits(*bits))
         .collect();
     assert_eq!(coordinates, vec![1.5, -2.5]);
-    store.close().expect("close store");
+    store.close_graph().expect("close store");
 }
 
 #[test]
 fn ze211_relationships_bulk_pools_match_accessors() {
     let parent = tempfile::tempdir().expect("temporary parent");
     let store =
-        GraphStore::create(parent.path().join("edges"), options(), None).expect("graph store");
+        Store::create_graph(parent.path().join("edges"), options(), None).expect("graph store");
     let source_image = CanonicalContents::node(&mut [], &mut [], None, None).expect("source");
     let target_image = CanonicalContents::node(&mut [], &mut [], None, None).expect("target");
     let created_nodes = store
-        .apply_batch(
+        .graph_apply(
             &[
                 StructuredWrite {
                     key: node_key("source"),
@@ -501,7 +502,7 @@ fn ze211_relationships_bulk_pools_match_accessors() {
 
     let weight = PropertyValue::new(PropertyData::I64(42)).expect("weight value");
     let created_edge = store
-        .apply_batch(
+        .graph_apply(
             &[StructuredWrite {
                 key: ApplicationKey::new(EntityKind::Relationship, "app", "edge")
                     .expect("relationship key"),
@@ -537,7 +538,7 @@ fn ze211_relationships_bulk_pools_match_accessors() {
     assert_eq!(result.string(properties[0].name), Some("weight"));
     let value = result.value(properties[0].value).expect("weight value");
     assert_eq!(*value, Value::I64(42));
-    store.close().expect("close store");
+    store.close_graph().expect("close store");
     let pools = result.pools();
     for (index, value) in pools.values.iter().enumerate() {
         assert_eq!(result.value(super::ValueIndex(index as u32)), Some(value));
@@ -555,24 +556,24 @@ fn ze211_relationships_bulk_pools_match_accessors() {
 #[test]
 fn graph_store_get_relationships_returns_none_for_a_missing_id() {
     let parent = tempfile::tempdir().expect("temporary parent");
-    let store = GraphStore::create(parent.path().join("missing-edge"), options(), None)
+    let store = Store::create_graph(parent.path().join("missing-edge"), options(), None)
         .expect("graph store");
     let never_written = RelId::new(999_999).expect("unused relationship id");
     let result = store
         .get_relationships(&[never_written], &control())
         .expect("get missing relationship");
     assert_eq!(result.relationships(), &[None]);
-    store.close().expect("close store");
+    store.close_graph().expect("close store");
 }
 
 #[test]
 fn graph_store_get_nodes_copies_the_application_key() {
     let parent = tempfile::tempdir().expect("temporary parent");
     let store =
-        GraphStore::create(parent.path().join("keyed"), options(), None).expect("graph store");
+        Store::create_graph(parent.path().join("keyed"), options(), None).expect("graph store");
     let image = CanonicalContents::node(&mut [], &mut [], None, None).expect("image");
     let created = store
-        .apply_batch(
+        .graph_apply(
             &[StructuredWrite {
                 key: node_key("keyed"),
                 revision: revision(1),
@@ -592,14 +593,14 @@ fn graph_store_get_nodes_copies_the_application_key() {
     assert_eq!(key.kind, EntityKind::Node);
     assert_eq!(result.string(key.namespace), Some("app"));
     assert_eq!(result.string(key.value), Some("keyed"));
-    store.close().expect("close store");
+    store.close_graph().expect("close store");
 }
 
 #[test]
 fn graph_store_get_nodes_orders_multiple_labels_by_name() {
     let parent = tempfile::tempdir().expect("temporary parent");
     let store =
-        GraphStore::create(parent.path().join("labels"), options(), None).expect("graph store");
+        Store::create_graph(parent.path().join("labels"), options(), None).expect("graph store");
     let mut labels = [
         GraphName::new("Zebra").expect("label"),
         GraphName::new("Apple").expect("label"),
@@ -607,7 +608,7 @@ fn graph_store_get_nodes_orders_multiple_labels_by_name() {
     ];
     let image = CanonicalContents::node(&mut labels, &mut [], None, None).expect("image");
     let created = store
-        .apply_batch(
+        .graph_apply(
             &[StructuredWrite {
                 key: node_key("labeled"),
                 revision: revision(1),
@@ -629,14 +630,14 @@ fn graph_store_get_nodes_orders_multiple_labels_by_name() {
         .map(|span| result.string(*span).expect("label text"))
         .collect();
     assert_eq!(label_names, vec!["Apple", "Mango", "Zebra"]);
-    store.close().expect("close store");
+    store.close_graph().expect("close store");
 }
 
 #[test]
 fn get_nodes_over_max_graph_changes_is_refused_as_limit_before_any_read() {
     let parent = tempfile::tempdir().expect("temporary parent");
     let store =
-        GraphStore::create(parent.path().join("nodes-limit"), options(), None).expect("store");
+        Store::create_graph(parent.path().join("nodes-limit"), options(), None).expect("store");
     let too_many: Vec<NodeId> = (1..=(crate::property_graph::MAX_GRAPH_CHANGES as u128 + 1))
         .map(|value| NodeId::new(value).expect("nonzero id"))
         .collect();
@@ -648,14 +649,14 @@ fn get_nodes_over_max_graph_changes_is_refused_as_limit_before_any_read() {
         error.kind(),
         crate::property_graph::GraphStoreErrorKind::Limit
     );
-    store.close().expect("close store");
+    store.close_graph().expect("close store");
 }
 
 #[test]
 fn get_relationships_over_max_graph_changes_is_refused_as_limit_before_any_read() {
     let parent = tempfile::tempdir().expect("temporary parent");
     let store =
-        GraphStore::create(parent.path().join("rels-limit"), options(), None).expect("store");
+        Store::create_graph(parent.path().join("rels-limit"), options(), None).expect("store");
     let too_many: Vec<RelId> = (1..=(crate::property_graph::MAX_GRAPH_CHANGES as u128 + 1))
         .map(|value| RelId::new(value).expect("nonzero id"))
         .collect();
@@ -667,5 +668,5 @@ fn get_relationships_over_max_graph_changes_is_refused_as_limit_before_any_read(
         error.kind(),
         crate::property_graph::GraphStoreErrorKind::Limit
     );
-    store.close().expect("close store");
+    store.close_graph().expect("close store");
 }

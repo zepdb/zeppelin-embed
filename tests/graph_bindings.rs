@@ -12,6 +12,7 @@ mod bindings;
 #[path = "support/graph_search.rs"]
 mod graph_search;
 use graph_search::*;
+use zeppelin_embed::lifecycle::Store;
 use zeppelin_embed_adversarial_oracle::graph_fixture as oracle;
 use zeppelin_embed_ffi::*;
 fn rust_cell(
@@ -380,7 +381,7 @@ fn ze72_rust_c_applications_match_independent_oracle() {
 #[test]
 fn ze72_rust_shared_semantics_match_independent_oracle() {
     let dir = tempfile::tempdir().unwrap();
-    let graph = zeppelin_embed::property_graph::GraphStore::create(
+    let graph = zeppelin_embed::lifecycle::Store::create_graph(
         dir.path().join("graph"),
         zeppelin_embed::lifecycle::OpenOptions::new().with_max_resident_bytes(256 << 20),
         None,
@@ -388,7 +389,7 @@ fn ze72_rust_shared_semantics_match_independent_oracle() {
     .unwrap();
     let run = |q| {
         zeppelin_embed_cypher::execute(
-            graph.statement_store(),
+            &graph,
             &control(),
             &Default::default(),
             q,
@@ -401,7 +402,7 @@ fn ze72_rust_shared_semantics_match_independent_oracle() {
     for (name, q, expected) in bindings::cases() {
         bindings::compare(name, &expected, &rust_observe(&run(q))).unwrap();
     }
-    graph.close().unwrap();
+    graph.close_graph().unwrap();
 }
 
 #[test]
@@ -410,7 +411,7 @@ fn ze72_rust_stored_list_kinds_match_shared_fixture() {
     use zeppelin_embed::property_graph::staging::*;
     use zeppelin_embed::property_graph::*;
     let dir = tempfile::tempdir().unwrap();
-    let graph = GraphStore::create(
+    let graph = Store::create_graph(
         dir.path().join("properties"),
         zeppelin_embed::lifecycle::OpenOptions::new().with_max_resident_bytes(256 << 20),
         None,
@@ -437,7 +438,7 @@ fn ze72_rust_stored_list_kinds_match_shared_fixture() {
         .collect::<Vec<_>>();
     let image = CanonicalContents::node(&mut labels, &mut props, Some(""), None).unwrap();
     let written = graph
-        .apply_batch(
+        .graph_apply(
             &[StructuredWrite {
                 key: ApplicationKey::new(EntityKind::Node, "ze72", "payload").unwrap(),
                 revision: GraphRevision::new(1).unwrap(),
@@ -460,7 +461,7 @@ fn ze72_rust_stored_list_kinds_match_shared_fixture() {
             &control(),
         )
         .unwrap();
-    graph.close().unwrap();
+    graph.close_graph().unwrap();
     let node = result.nodes()[0].unwrap();
     assert_eq!(node.text.and_then(|s| result.string(s)), Some(""));
     assert!(node.vector.is_none());

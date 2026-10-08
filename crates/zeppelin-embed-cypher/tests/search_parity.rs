@@ -13,6 +13,7 @@ mod support;
 #[path = "support/tck.rs"]
 mod tck;
 use search::SearchFixture;
+use zeppelin_embed::lifecycle::Store;
 use zeppelin_embed::property_graph::query::completed::{CompletedGraphResult, GraphQueryOptions};
 use zeppelin_embed::property_graph::query::plan::*;
 use zeppelin_embed::property_graph::{GraphName, GraphPlanBacking, GraphQueryPlan};
@@ -171,7 +172,7 @@ fn structured(f: &SearchFixture, shape: u8) -> CompletedGraphResult {
         _ => &["node", "distance"],
     };
     f.store()
-        .query(
+        .graph_query(
             &search::control(),
             &GraphQueryOptions::default(),
             &GraphQueryPlan {
@@ -252,7 +253,7 @@ fn ze58_three_application_shapes_match_structured() {
 
 use zeppelin_embed::property_graph::query::completed::SearchKind;
 fn search_with_eligibility(
-    store: &zeppelin_embed::property_graph::GraphStore,
+    store: &Store,
     kind: SearchKind,
     k: i64,
     empty: bool,
@@ -349,7 +350,7 @@ fn search_with_eligibility(
     backing.vec(&coordinates).unwrap();
     backing.vec(&projections).unwrap();
     backing.string(&text).unwrap();
-    store.query(
+    store.graph_query(
         &search::control(),
         &GraphQueryOptions::default(),
         &GraphQueryPlan {

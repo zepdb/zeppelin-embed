@@ -1,6 +1,7 @@
 //! Real ranked sources through the public structured query seam.
 use super::*;
 use crate::epoch::{ComputeUnits, EmbeddingRuntime, EmbeddingTower, Normalization};
+use crate::lifecycle::Store;
 use crate::property_graph::CanonicalEmbedding;
 use crate::property_graph::query::completed::{
     ActualTier, CandidateCoverage, LegState, SearchKind,
@@ -24,14 +25,14 @@ fn tower() -> EmbeddingTower {
 
 struct SearchFixture {
     directory: tempfile::TempDir,
-    store: GraphStore,
+    store: Store,
     nodes: [NodeId; 5],
 }
 impl SearchFixture {
     fn create() -> Self {
         let directory = tempfile::tempdir().unwrap();
         let document = tower();
-        let store = GraphStore::create(
+        let store = Store::create_graph(
             directory.path().join("native"),
             store_options(),
             Some(document.clone()),
@@ -78,7 +79,7 @@ impl SearchFixture {
                 image: Some(WriteImage::Node(image)),
             })
             .collect();
-        let receipt = store.apply_batch(&writes, &control()).unwrap();
+        let receipt = store.graph_apply(&writes, &control()).unwrap();
         let nodes = std::array::from_fn(|i| match receipt.receipts()[i].entity {
             EntityId::Node(n) => n,
             _ => panic!("node receipt"),
@@ -92,14 +93,14 @@ impl SearchFixture {
 }
 
 fn search(
-    store: &GraphStore,
+    store: &Store,
     kind: SearchKind,
     k: i64,
 ) -> Result<CompletedGraphResult, GraphStoreError> {
     search_with_eligibility(store, kind, k, false, SearchMode::Exact)
 }
 fn search_with_eligibility(
-    store: &GraphStore,
+    store: &Store,
     kind: SearchKind,
     k: i64,
     empty: bool,
@@ -196,7 +197,7 @@ fn search_with_eligibility(
     backing.vec(&coordinates).unwrap();
     backing.vec(&projections).unwrap();
     backing.string(&text).unwrap();
-    store.query(
+    store.graph_query(
         &control(),
         &GraphQueryOptions::default(),
         &GraphQueryPlan {
@@ -302,7 +303,7 @@ impl SearchFixture {
                 }),
             })
             .collect();
-        let result = self.store.apply_batch(&writes, &control()).unwrap();
+        let result = self.store.graph_apply(&writes, &control()).unwrap();
         std::array::from_fn(|i| match result.receipts()[i].entity {
             EntityId::Relationship(r) => r,
             _ => panic!("edge receipt"),
@@ -313,7 +314,7 @@ impl SearchFixture {
 // None is absent restriction; Some(false) collects duplicate edge destinations;
 // Some(true) collects a real empty scan. Collection remains a global singleton.
 fn expand_search(
-    store: &GraphStore,
+    store: &Store,
     collect: Option<bool>,
     aggregate: bool,
     mode: SearchMode,
@@ -470,7 +471,7 @@ fn expand_search(
     backing.vec(&coordinates).unwrap();
     backing.vec(&sort).unwrap();
     backing.string(&label).unwrap();
-    store.query(
+    store.graph_query(
         &control(),
         &GraphQueryOptions::default(),
         &GraphQueryPlan {
@@ -563,7 +564,7 @@ fn ze64_empty_collect_differs_from_absent_restriction() {
 }
 
 fn two_calls(
-    store: &GraphStore,
+    store: &Store,
     aggregate: bool,
     limit_zero: bool,
     empty_input: bool,
@@ -687,7 +688,7 @@ fn two_calls(
     backing.vec(&projection).unwrap();
     backing.string(&text).unwrap();
     store
-        .query(
+        .graph_query(
             &control(),
             &GraphQueryOptions::default(),
             &GraphQueryPlan {
@@ -804,7 +805,7 @@ fn ze64_invalid_search_plans_publish_nothing() {
         backing.string(&property).unwrap();
         backing.vec(&mutations).unwrap();
         let error = refused(
-            fixture.store.query(
+            fixture.store.graph_query(
                 &control(),
                 &GraphQueryOptions::default(),
                 &GraphQueryPlan {
@@ -909,7 +910,7 @@ fn ze64_hybrid_window_limited_cross_scoring_is_reported_not_hidden() {
             image: Some(WriteImage::Node(image)),
         })
         .collect();
-    fixture.store.apply_batch(&writes, &control()).unwrap();
+    fixture.store.graph_apply(&writes, &control()).unwrap();
     // The producer width is 50, smaller than the 69-member eligible union.
     // Both routes must retain complete cross-scoring of the actual union
     // without claiming complete candidate coverage.

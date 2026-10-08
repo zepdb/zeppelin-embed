@@ -1,5 +1,5 @@
 //! Bounded public graph maintenance and its write-path policy.
-use super::{GraphStore, GraphStoreError};
+use super::GraphStoreError;
 use crate::lifecycle::QueryControl;
 use crate::property_graph::GraphGeneration;
 
@@ -42,38 +42,34 @@ pub struct GraphMaintenanceReport {
     pub cycle_complete: bool,
 }
 
-impl GraphStore {
+impl crate::lifecycle::Store {
     /// Sets this writer's policy.
     /// # Errors
     /// Refuses read-only stores and thresholds below 1 MiB.
-    pub fn set_maintenance_policy(
+    pub fn set_graph_maintenance_policy(
         &self,
         policy: GraphMaintenancePolicy,
     ) -> Result<(), GraphStoreError> {
-        self.store
-            .set_native_graph_maintenance_policy(policy)
+        self.set_native_graph_maintenance_policy(policy)
             .map_err(Into::into)
     }
     /// Performs one bounded maintenance step.
     /// # Errors
     /// Returns the classified admission, preparation or storage failure.
-    pub fn maintain(
+    pub fn graph_maintain_step(
         &self,
         control: &QueryControl,
     ) -> Result<GraphMaintenanceReport, GraphStoreError> {
-        self.store
-            .maintain_native_graph_step(control)
-            .map_err(Into::into)
+        self.maintain_native_graph_step(control).map_err(Into::into)
     }
     /// Runs at most four steps, stopping when the cycle completes.
     /// # Errors
     /// Returns the classified maintenance failure, including an exhausted step cap.
-    pub fn maintain_cycle(
+    pub fn graph_maintain_cycle(
         &self,
         control: &QueryControl,
     ) -> Result<GraphMaintenanceReport, GraphStoreError> {
-        self.store
-            .maintain_native_graph_cycle(control)
+        self.maintain_native_graph_cycle(control)
             .map_err(Into::into)
     }
 }

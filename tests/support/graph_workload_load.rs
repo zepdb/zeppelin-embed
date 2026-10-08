@@ -23,7 +23,7 @@ pub fn load_requests(directory: &Path, name: &str) -> Result<Vec<Value>, String>
     Ok(rows)
 }
 pub fn scheduled_read(
-    store: &zeppelin_embed::property_graph::GraphStore,
+    store: &zeppelin_embed::lifecycle::Store,
     job: &Value,
     frontend: &str,
     exact: bool,
@@ -81,11 +81,11 @@ pub fn read_schedule(
         )?;
         println!("{row}");
         if row["status"] != 0 {
-            store.close().map_err(|e| e.to_string())?;
+            store.close_graph().map_err(|e| e.to_string())?;
             return Err("failed public request retained; not taint".into());
         }
     }
-    store.close().map_err(|e| e.to_string())
+    store.close_graph().map_err(|e| e.to_string())
 }
 /// One recipe meeting: 27 nodes / 110 relationships / 20 supplied vectors.
 /// Shared entities keep observed identities; all newly created keys are unique.
@@ -192,7 +192,7 @@ pub fn import_schedule(
             }
         }
     }
-    store.close().map_err(|e| e.to_string())
+    store.close_graph().map_err(|e| e.to_string())
 }
 pub fn mixed_load(
     store_path: &Path,
@@ -249,7 +249,7 @@ pub fn mixed_load(
     for row in observations.iter() {
         println!("{row}");
     }
-    store.close().map_err(|e| e.to_string())?;
+    store.close_graph().map_err(|e| e.to_string())?;
     if observations.len() != read_count * 4 + write_count || failed {
         return Err("mixed load failed; partial/error outcomes retained, not taint".into());
     }
@@ -286,7 +286,7 @@ pub fn retention_churn(
         );
         ids.clear();
     }
-    store.close().map_err(|e| e.to_string())
+    store.close_graph().map_err(|e| e.to_string())
 }
 /// Logical DETACH must succeed independent of hub degree; subsequent public
 /// edge-facing observations and offline oracle assert endpoint liveness.
@@ -302,17 +302,17 @@ pub fn detach(store_path: &Path, namespace: &str, key: &str, id: u128) -> Result
         json!({"elapsed_ns":elapsed,"operation":"logical-detach","outcome":result.as_ref().ok(),"error":result.as_ref().err()})
     );
     result?;
-    store.close().map_err(|e| e.to_string())
+    store.close_graph().map_err(|e| e.to_string())
 }
 /// One actual process open through first public admission; no OS-cold inference.
 pub fn recover(path: &Path, read_only: bool) -> Result<(), String> {
     use zeppelin_embed::lifecycle::OpenOptions;
-    use zeppelin_embed::property_graph::GraphStore;
+    use zeppelin_embed::lifecycle::Store;
     let start = Instant::now();
     let store = if read_only {
-        GraphStore::open_read_only(path, OpenOptions::new(), Some(tower()))
+        Store::open_graph_read_only(path, OpenOptions::new(), Some(tower()))
     } else {
-        GraphStore::open(path, OpenOptions::new(), Some(tower()))
+        Store::open_graph(path, OpenOptions::new(), Some(tower()))
     }
     .map_err(|e| e.to_string())?;
     let open_ns = start.elapsed().as_nanos();
@@ -322,7 +322,7 @@ pub fn recover(path: &Path, read_only: bool) -> Result<(), String> {
         "{}",
         json!({"process_cold":true,"os_cold":false,"read_only":read_only,"open_ns":open_ns,"through_first_admission_ns":total_ns,"generation":result.metadata().generation.get(),"counters":observed_counters(&store, &result)?,"missing_input":"ZE-76 observed 64-envelope / 16MiB checkpoint-tail and creation-serial inventory counters"})
     );
-    store.close().map_err(|e| e.to_string())
+    store.close_graph().map_err(|e| e.to_string())
 }
 /// Compare observed ANN-selected complete rows with independent exhaustive
 /// full-domain scores; recall is against eligible exact top-k, not row count.
@@ -483,7 +483,7 @@ pub fn cypher_imports(path: &Path, list: &Path, count: usize) -> Result<(), Stri
             }
         }
     }
-    store.close().map_err(|e| e.to_string())
+    store.close_graph().map_err(|e| e.to_string())
 }
 /// Apply primitive imported images independently, using actual public receipts
 /// for allocated identity only. Never fetch product state as expected values.
@@ -684,7 +684,7 @@ pub fn verify_mixed(
 }
 pub fn recovery_series(list: &Path, read_only: bool) -> Result<(), String> {
     use zeppelin_embed::lifecycle::OpenOptions;
-    use zeppelin_embed::property_graph::GraphStore;
+    use zeppelin_embed::lifecycle::Store;
     let paths = std::fs::read_to_string(list)
         .map_err(|e| e.to_string())?
         .lines()
@@ -696,9 +696,9 @@ pub fn recovery_series(list: &Path, read_only: bool) -> Result<(), String> {
     for (index, path) in paths.iter().enumerate() {
         let start = Instant::now();
         let store = if read_only {
-            GraphStore::open_read_only(path, OpenOptions::new(), Some(tower()))
+            Store::open_graph_read_only(path, OpenOptions::new(), Some(tower()))
         } else {
-            GraphStore::open(path, OpenOptions::new(), Some(tower()))
+            Store::open_graph(path, OpenOptions::new(), Some(tower()))
         }
         .map_err(|e| e.to_string())?;
         let open_ns = start.elapsed().as_nanos();
@@ -714,7 +714,7 @@ pub fn recovery_series(list: &Path, read_only: bool) -> Result<(), String> {
             "{}",
             json!({"sample":index,"elapsed_ns":elapsed,"open_ns":open_ns,"through_first_admission_ns":elapsed,"disposal_ns":disposal,"generation":generation,"counters":counters,"status":0,"rows":rows.iter().map(|r|r.iter().map(encode_cell).collect::<Vec<_>>()).collect::<Vec<_>>(),"first_open_in_process":index==0,"os_cold":false,"read_only":read_only})
         );
-        store.close().map_err(|e| e.to_string())?;
+        store.close_graph().map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -811,7 +811,7 @@ pub fn inspect_entities(path: &Path, requests: &Path) -> Result<(), String> {
         }
         println!("{}", json!({"observed":observed}));
     }
-    store.close().map_err(|e| e.to_string())
+    store.close_graph().map_err(|e| e.to_string())
 }
 
 /// Frozen baseline payload, independent of the retained store being checked.

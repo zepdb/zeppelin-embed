@@ -1,8 +1,8 @@
-//! ZE-66 S2: `GraphStore::query`'s own exposure tests over the ZE-53 S3/S4
+//! ZE-66 S2: `Store::query`'s own exposure tests over the ZE-53 S3/S4
 //! seam. These build the same tiny `MATCH (n) RETURN n, n.p` and
 //! `MATCH (n) SET n.p = <assign> RETURN n, n.p` plans ZE-53 S3's
 //! `entry_probe` fixture drives, but entirely through the public
-//! `GraphStore::query`/`GraphQueryPlan`/`GraphPlanBacking` surface, with no
+//! `Store::query`/`GraphQueryPlan`/`GraphPlanBacking` surface, with no
 //! access to `Store`, `RuntimeContext` or the raw builder seam.
 
 #![allow(
@@ -14,6 +14,7 @@
 )]
 
 use super::{GraphPlanBacking, GraphQueryPlan};
+use crate::lifecycle::Store;
 use crate::lifecycle::{CancelToken, OpenOptions, QueryControl};
 use crate::property_graph::query::completed::{CompletedGraphResult, GraphQueryOptions, Value};
 use crate::property_graph::query::plan::{
@@ -24,8 +25,8 @@ use crate::property_graph::query::{Arithmetic, QueryView};
 use crate::property_graph::staging::{StructuredOperation, StructuredWrite, WriteImage};
 use crate::property_graph::{
     ApplicationKey, CanonicalContents, EntityId, EntityKind, GraphGeneration, GraphName,
-    GraphProperty, GraphRevision, GraphStore, GraphStoreError, GraphStoreErrorKind, NodeId,
-    PropertyData, PropertyValue, StoreInstanceId,
+    GraphProperty, GraphRevision, GraphStoreError, GraphStoreErrorKind, NodeId, PropertyData,
+    PropertyValue, StoreInstanceId,
 };
 
 fn control() -> QueryControl {
@@ -40,7 +41,7 @@ fn store_options() -> OpenOptions {
 /// `base + 2` and `base + 3`, in node-ID order.
 struct Fixture {
     _directory: tempfile::TempDir,
-    store: GraphStore,
+    store: Store,
     nodes: [NodeId; 3],
     values: [i64; 3],
 }
@@ -48,7 +49,7 @@ struct Fixture {
 impl Fixture {
     fn create(base: i64) -> Self {
         let directory = tempfile::tempdir().expect("temporary directory");
-        let store = GraphStore::create(directory.path().join("native"), store_options(), None)
+        let store = Store::create_graph(directory.path().join("native"), store_options(), None)
             .expect("graph store");
         let values = [base + 1, base + 2, base + 3];
         let p = GraphName::new("p").expect("property name");
@@ -72,7 +73,7 @@ impl Fixture {
             });
         }
         let result = store
-            .apply_batch(&requests, &control())
+            .graph_apply(&requests, &control())
             .expect("fixture batch");
         let mut nodes = Vec::new();
         for receipt in result.receipts() {
@@ -91,11 +92,8 @@ impl Fixture {
     }
 }
 
-/// `MATCH (n) RETURN n, n.p`, through `GraphStore::query`.
-fn read_p(
-    store: &GraphStore,
-    control: &QueryControl,
-) -> Result<CompletedGraphResult, GraphStoreError> {
+/// `MATCH (n) RETURN n, n.p`, through `Store::query`.
+fn read_p(store: &Store, control: &QueryControl) -> Result<CompletedGraphResult, GraphStoreError> {
     let p = String::from("p");
     let name = GraphName::new(&p).expect("name");
     let unit = vec![PlanNodeId(0)];
@@ -151,7 +149,7 @@ fn read_p(
         bindings: &[],
         columns: &["n", "p"],
     };
-    store.query(control, &GraphQueryOptions::default(), &plan)
+    store.graph_query(control, &GraphQueryOptions::default(), &plan)
 }
 
 /// What a write statement assigns to every scanned node's `p`.
@@ -163,9 +161,9 @@ enum Assign {
     DivideAround(i64),
 }
 
-/// `MATCH (n) SET n.p = <assign> RETURN n, n.p`, through `GraphStore::query`.
+/// `MATCH (n) SET n.p = <assign> RETURN n, n.p`, through `Store::query`.
 fn write_p(
-    store: &GraphStore,
+    store: &Store,
     control: &QueryControl,
     assign: Assign,
 ) -> Result<CompletedGraphResult, GraphStoreError> {
@@ -275,7 +273,7 @@ fn write_p(
         bindings: &[],
         columns: &["n", "p"],
     };
-    store.query(control, &GraphQueryOptions::default(), &plan)
+    store.graph_query(control, &GraphQueryOptions::default(), &plan)
 }
 
 /// Unwraps a refusal. `CompletedGraphResult` is not `Debug` (it holds no
@@ -352,7 +350,7 @@ fn graph_query_write_plan_commits_and_reads_back() {
 fn graph_query_result_stays_valid_after_close() {
     let fixture = Fixture::create(300);
     let result = read_p(&fixture.store, &control()).expect("read plan");
-    fixture.store.close().expect("close graph store");
+    fixture.store.close_graph().expect("close graph store");
     // The owned result holds no lease or reservation on the closed store.
     let expected: Vec<_> = fixture
         .nodes
@@ -405,18 +403,18 @@ fn graph_query_write_on_read_only_store_reports_readonly() {
     // per the owner's decision; only GraphStoreError's mapping was widened.
     let directory = tempfile::tempdir().expect("temporary directory");
     let path = directory.path().join("native");
-    let writer = GraphStore::create(&path, store_options(), None).expect("graph store");
-    writer.close().expect("close writer");
+    let writer = Store::create_graph(&path, store_options(), None).expect("graph store");
+    writer.close_graph().expect("close writer");
     drop(writer);
 
-    let reader = GraphStore::open_read_only(&path, store_options(), None).expect("read-only open");
+    let reader = Store::open_graph_read_only(&path, store_options(), None).expect("read-only open");
     let error = refused(
         write_p(&reader, &control(), Assign::Increment),
         "write on a read-only store",
     );
     assert_eq!(error.kind(), GraphStoreErrorKind::ReadOnly);
     assert!(error.nothing_committed());
-    reader.close().expect("close reader");
+    reader.close_graph().expect("close reader");
 }
 
 #[test]
@@ -501,7 +499,7 @@ fn graph_query_refuses_a_foreign_view_parameter_binding() {
     let error = refused(
         fixture
             .store
-            .query(&control(), &GraphQueryOptions::default(), &plan),
+            .graph_query(&control(), &GraphQueryOptions::default(), &plan),
         "foreign-view parameter binding",
     );
     assert_eq!(error.kind(), GraphStoreErrorKind::InvalidRequest);
@@ -526,7 +524,7 @@ fn ze316_query_mutations_trigger_count_reclaim() {
     let fixture = Fixture::create(0);
     fixture
         .store
-        .set_maintenance_policy(GraphMaintenancePolicy {
+        .set_graph_maintenance_policy(GraphMaintenancePolicy {
             automatic: true,
             reclaim_after_bytes: u64::MAX,
         })

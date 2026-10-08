@@ -9,6 +9,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use std::time::{Duration, Instant};
+use zeppelin_embed::lifecycle::Store;
 use zeppelin_embed::lifecycle::{
     CancelToken, Deadline, ManualMonotonicClock, MonotonicClock, OpenOptions, QueryControl,
 };
@@ -19,7 +20,7 @@ use zeppelin_embed::property_graph::query::runtime::WorkKind;
 use zeppelin_embed::property_graph::resources::GraphResources;
 use zeppelin_embed::property_graph::staging::{StructuredOperation, StructuredWrite, WriteImage};
 use zeppelin_embed::property_graph::{
-    ApplicationKey, CanonicalContents, EntityKind, GraphRevision, GraphStore,
+    ApplicationKey, CanonicalContents, EntityKind, GraphRevision,
 };
 use zeppelin_embed::vfs::StdVfs;
 use zeppelin_embed_cypher::{CompileLimits, StatementError, execute};
@@ -75,22 +76,15 @@ fn observe(r: &CompletedGraphResult) -> Result<Observation, String> {
 const QUERY: &str = "CALL ze.text_search('amber',64) YIELD node,score RETURN score";
 #[allow(clippy::result_large_err)]
 fn run(
-    store: &GraphStore,
+    store: &Store,
     control: &QueryControl,
     options: &GraphQueryOptions,
     text: &str,
 ) -> Result<CompletedGraphResult, StatementError> {
-    execute(
-        store.statement_store(),
-        control,
-        options,
-        text,
-        &[],
-        CompileLimits::default(),
-    )
+    execute(store, control, options, text, &[], CompileLimits::default())
 }
 fn trial(
-    store: &GraphStore,
+    store: &Store,
     seed: u64,
     fire: Option<usize>,
 ) -> Result<(Result<CompletedGraphResult, StatementError>, usize, usize), String> {
@@ -155,7 +149,7 @@ fn check(actual: &Observation, score: f64) -> Result<(), String> {
 pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
     let directory = tempfile::tempdir().map_err(|e| e.to_string())?;
     let store = Arc::new(
-        GraphStore::create(
+        Store::create_graph(
             directory.path().join("graph"),
             OpenOptions::new().with_max_resident_bytes(256 * 1024 * 1024),
             None,
@@ -184,9 +178,9 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
         })
         .collect::<Result<_, String>>()?;
     store
-        .apply_batch(&writes, &QueryControl::Cancel(CancelToken::new()))
+        .graph_apply(&writes, &QueryControl::Cancel(CancelToken::new()))
         .map_err(|e| e.to_string())?;
-    let shared = GraphResources::from_store(store.statement_store()).map_err(|e| e.to_string())?;
+    let shared = GraphResources::from_store(&store).map_err(|e| e.to_string())?;
     let (clean, polls, fires) = trial(&store, seed, None)?;
     if fires != 0 {
         return Err("clean schedule fired".into());
@@ -195,7 +189,6 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
     let observation = observe(&clean)?;
     let generation = zeppelin_embed::property_graph::GraphGeneration::new(
         store
-            .statement_store()
             .snapshot()
             .map_err(|error| error.to_string())?
             .generation(),
@@ -415,7 +408,7 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
             // leases in slot order; its cancellation proves the earlier search
             // lease was cancelled before its clock gate resumes.
             let mut saw_close=false;
-            let result=sentinel_store.statement_store().execute_graph_statement(&QueryControl::Cancel(CancelToken::new()),&Default::default(),|runtime,_| {
+            let result=sentinel_store.execute_graph_statement(&QueryControl::Cancel(CancelToken::new()),&Default::default(),|runtime,_| {
                 ready_send.send(()).expect("sentinel admitted");
                 loop {
                     if let Err(error)=runtime.checkpoint() {
@@ -433,7 +426,7 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
             receive
                 .recv_timeout(Duration::from_secs(2))
                 .map_err(|e| e.to_string())?;
-            close_store.close().map_err(|e| e.to_string())
+            close_store.close_graph().map_err(|e| e.to_string())
         });
         let result = run(&store, &control, &Default::default(), QUERY);
         sentinel
@@ -467,7 +460,7 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
         "ZE58 seed={seed} close cancelled retrieval at nth={nth}; reopened values/reports unchanged"
     );
     drop(clock);
-    let reopened = GraphStore::open(
+    let reopened = Store::open_graph(
         directory.path().join("graph"),
         OpenOptions::new()
             .with_max_resident_bytes(256 * 1024 * 1024)
@@ -479,7 +472,6 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
     // coherent lease reports that store generation, independently of whether
     // graph roots changed. Keep every durable value/report comparison below.
     let reopened_generation = reopened
-        .statement_store()
         .snapshot()
         .map_err(|error| error.to_string())?
         .generation();
@@ -506,7 +498,7 @@ pub fn probe(seed: u64, coverage: &mut CoverageRegistry) -> Result<(), String> {
         ));
     }
     drop(again);
-    reopened.close().map_err(|e| e.to_string())?;
+    reopened.close_graph().map_err(|e| e.to_string())?;
 
     for key in REQUIRED_COVERAGE {
         coverage.hit(*key);

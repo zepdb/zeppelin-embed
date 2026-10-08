@@ -8,6 +8,7 @@
 use super::*;
 use std::mem::size_of;
 use std::ptr::NonNull;
+use zeppelin_embed::lifecycle::Store;
 use zeppelin_embed::lifecycle::{QueryControl, SearchTier};
 use zeppelin_embed::property_graph::EntityId;
 use zeppelin_embed::property_graph::query::completed::{
@@ -22,8 +23,8 @@ use zeppelin_embed::property_graph::query::runtime::{
 use zeppelin_embed::property_graph::query::{QueryError, QueryView};
 use zeppelin_embed::property_graph::staging::{ItemReceipt, StructuredOperation, StructuredWrite};
 use zeppelin_embed::property_graph::{
-    GraphGeneration, GraphGetOptions, GraphQueryPlan, GraphStore, GraphStoreError,
-    GraphWriteOutcome, NodeId, RelId, StoreInstanceId,
+    GraphGeneration, GraphGetOptions, GraphQueryPlan, GraphStoreError, GraphWriteOutcome, NodeId,
+    RelId, StoreInstanceId,
 };
 
 const GLOBAL_WORK_COUNT: usize = 23;
@@ -743,14 +744,14 @@ fn fill_native(
 //
 // Everything above this line is ZE-141's seam for a still-live producer
 // (`ResultSource`/`PreparedGraphResult`, copying inside the same admission
-// that produced the data). `GraphStore::apply_batch`/`query` do not expose
+// that produced the data). `Store::apply_batch`/`query` do not expose
 // that admission: each is one synchronous call that fully owns, copies and
 // detaches its own result before returning (`GraphWriteResult`,
 // `CompletedGraphResult`, both documented to "stay valid after this store
 // closes"). Neither implements `ResultSource`, and neither could:
 // `ResultSource::result_input` requires a live `&QueryView` identical to the
 // caller's own admission (`copy_from` checks `std::ptr::eq`), which no
-// longer exists once `GraphStore` has returned. So this conversion works
+// longer exists once `Store` has returned. So this conversion works
 // directly from the already-owned public types instead: the write path
 // builds its own small receipt-only `ResponseParts` (`GraphWriteResult` has
 // no node/relationship pools to restamp -- see `apply_and_settle`'s doc);
@@ -761,7 +762,7 @@ fn fill_native(
 // Typed gets borrow their payload Pools and add sorted entity descriptors
 // plus request-ordered entity/Null rows, using the same native mapper.
 
-/// A rejected ZE-68 real-producer conversion: either the real `GraphStore`
+/// A rejected ZE-68 real-producer conversion: either the real `Store`
 /// call itself was rejected (no response was built), or the call resolved
 /// but building/publishing the C response afterward failed.
 #[derive(Debug)]
@@ -770,7 +771,7 @@ fn fill_native(
     reason = "GraphStoreError stays unboxed and allocation-free, as it is at its own definition"
 )]
 pub(crate) enum ProducerError {
-    /// The real `GraphStore::apply_batch`/`query` call was rejected.
+    /// The real `Store::apply_batch`/`query` call was rejected.
     Store(GraphStoreError),
     /// The real call resolved; converting or publishing its C response
     /// afterward failed.
@@ -788,7 +789,7 @@ impl From<ConversionError> for ProducerError {
 const PRODUCER_MEMORY_LIMIT: usize = 8 * 1024 * 1024;
 
 /// Always-active retained-view adapter for a `RuntimeContext` built after a
-/// `GraphStore` call has already returned. Nothing here re-checks store
+/// `Store` call has already returned. Nothing here re-checks store
 /// liveness: the data being converted (`GraphWriteResult`,
 /// `CompletedGraphResult`) is already a fully owned, detached copy that by
 /// contract stays valid after the store closes, so there is no consistency
@@ -804,7 +805,7 @@ impl RetainedView for DetachedView {
 }
 
 /// Builds a `RuntimeContext` charged against `store`'s real shared
-/// accounting (`GraphStore::resources`), for converting an already-returned
+/// accounting (`Store::resources`), for converting an already-returned
 /// result into a C response. `control` is the same one the caller passed to
 /// the producing call, so a caller cancellation also interrupts response
 /// construction.
@@ -813,7 +814,7 @@ impl RetainedView for DetachedView {
     reason = "ProducerError retains the allocation-free core GraphStoreError"
 )]
 fn with_producer_context<T>(
-    store: &GraphStore,
+    store: &Store,
     control: &QueryControl,
     body: impl FnOnce(&mut RuntimeContext<'_, '_, '_>) -> T,
 ) -> Result<T, ProducerError> {
@@ -824,12 +825,12 @@ fn with_producer_context<T>(
     reason = "preserve unboxed typed native causes without allocating on failure"
 )]
 fn with_producer_context_limits<T>(
-    store: &GraphStore,
+    store: &Store,
     control: &QueryControl,
     limits: &GraphQueryOptions,
     body: impl FnOnce(&mut RuntimeContext<'_, '_, '_>) -> T,
 ) -> Result<T, ProducerError> {
-    let resources = store.resources().map_err(ProducerError::Store)?;
+    let resources = store.graph_resources().map_err(ProducerError::Store)?;
     let memory = QueryMemory::new(&resources, limits.memory_limit().min(PRODUCER_MEMORY_LIMIT))
         .map_err(|error| ProducerError::from(ConversionError::from(RuntimeError::from(error))))?;
     // 1 is a fixed, obviously nonzero placeholder: nothing checks this token
@@ -846,7 +847,7 @@ fn with_producer_context_limits<T>(
 /// Maps ZE-66's `GraphWriteOutcome` onto Slice B's `WriteSettlement`: they
 /// correspond directly, one variant at a time, confirming Slice B's own
 /// review note. `Replayed` is reachable: a real single-item exact retry
-/// through `GraphStore::apply_batch` produces `GraphWriteOutcome::Replayed`
+/// through `Store::apply_batch` produces `GraphWriteOutcome::Replayed`
 /// (proved by `graph_store_exact_retry_replays_with_its_original_generation`
 /// in `zeppelin-embed`'s own `graph_store::tests`, and again here by
 /// `apply_and_settle_replays_an_exact_retry`).
@@ -900,7 +901,7 @@ fn write_receipt(index: usize, receipt: &ItemReceipt, deleted: bool) -> ZeGraphR
     }
 }
 
-/// Runs one real [`GraphStore::apply_batch`] under the potential-write
+/// Runs one real [`Store::apply_batch`] under the potential-write
 /// guard and publishes its precommit-prepared C receipt response.
 ///
 /// The materializer registers the complete C receipt response before commit.
@@ -908,7 +909,7 @@ fn write_receipt(index: usize, receipt: &ItemReceipt, deleted: bool) -> ZeGraphR
 /// publishes the existing owner. The guard preserves uncertainty on unwind.
 pub(crate) fn apply_and_settle(
     registry: &'static GraphResultRegistry,
-    store: &GraphStore,
+    store: &Store,
     requests: &[StructuredWrite<'_, '_>],
     control: &QueryControl,
 ) -> GuardedWrite<Result<ZeGraphResponse, ProducerError>> {
@@ -931,7 +932,7 @@ pub(crate) fn apply_and_settle(
             error: None,
         };
         let (outcome, admitted, registration) =
-            match store.apply_batch_with_materializer(requests, control, &mut materializer) {
+            match store.graph_apply_with_materializer(requests, control, &mut materializer) {
                 Ok(result) => result,
                 Err(error) => {
                     if error.nothing_committed() {
@@ -955,7 +956,7 @@ impl zeppelin_embed::property_graph::staging::ResultRegistration for BatchRegist
 }
 struct BatchMaterializer<'a> {
     registry: &'static GraphResultRegistry,
-    store: &'a GraphStore,
+    store: &'a Store,
     deleted: &'a [bool],
     control: &'a QueryControl,
     error: Option<ProducerError>,
@@ -1033,13 +1034,13 @@ impl zeppelin_embed::property_graph::staging::ResultMaterializer for BatchMateri
 }
 
 /// Builds a C response directly from an already-detached
-/// `CompletedGraphResult` (`GraphStore::query`'s return value), reusing
+/// `CompletedGraphResult` (`Store::query`'s return value), reusing
 /// `fill_native`/`NativeInitializer` unchanged: `Pools<'_>` is `Pools<'_>`
 /// whether it comes from a still-live `PreparedGraphResult` or an
 /// already-owned `CompletedGraphResult`. `result.metadata().counters`/
 /// `peak_query_bytes` are already the real final values core recorded
 /// internally (`PreparedGraphResult::detach` stamps them before
-/// `GraphStore::query` returns), so this finalizes the global-work rows
+/// `Store::query` returns), so this finalizes the global-work rows
 /// immediately instead of deferring to a live `Execution` driver.
 fn prepare_completed<'m, 'g>(
     registry: &'static GraphResultRegistry,
@@ -1076,7 +1077,7 @@ fn prepare_completed<'m, 'g>(
     Ok((response, outcome))
 }
 
-/// Runs one real [`GraphStore::query`] and builds/publishes its C response.
+/// Runs one real [`Store::query`] and builds/publishes its C response.
 ///
 /// This private helper has no current production callers and does not use
 /// `run_potential_write`. Although `query` supports committing plans, a panic
@@ -1092,13 +1093,13 @@ fn prepare_completed<'m, 'g>(
 )]
 pub(crate) fn run_query(
     registry: &'static GraphResultRegistry,
-    store: &GraphStore,
+    store: &Store,
     control: &QueryControl,
     options: &GraphQueryOptions,
     plan: &GraphQueryPlan<'_>,
 ) -> Result<ZeGraphResponse, ProducerError> {
     let result = store
-        .query(control, options, plan)
+        .graph_query(control, options, plan)
         .map_err(ProducerError::Store)?;
     completed_response(registry, store, control, &result)
 }
@@ -1109,7 +1110,7 @@ pub(crate) fn run_query(
 )]
 pub(crate) fn completed_response(
     registry: &'static GraphResultRegistry,
-    store: &GraphStore,
+    store: &Store,
     control: &QueryControl,
     result: &CompletedGraphResult,
 ) -> Result<ZeGraphResponse, ProducerError> {
@@ -1166,7 +1167,7 @@ fn prepare_get(
 #[allow(clippy::result_large_err, reason = "retains the core producer error")]
 pub(crate) fn run_get_nodes(
     registry: &'static GraphResultRegistry,
-    store: &GraphStore,
+    store: &Store,
     ids: &[NodeId],
     options: GraphGetOptions,
     control: &QueryControl,
@@ -1184,7 +1185,7 @@ pub(crate) fn run_get_nodes(
 #[allow(clippy::result_large_err, reason = "retains the core producer error")]
 pub(crate) fn run_get_nodes_with_limits(
     registry: &'static GraphResultRegistry,
-    store: &GraphStore,
+    store: &Store,
     ids: &[NodeId],
     options: GraphGetOptions,
     control: &QueryControl,
@@ -1273,7 +1274,7 @@ pub(crate) fn run_get_nodes_with_limits(
 #[allow(clippy::result_large_err, reason = "retains the core producer error")]
 pub(crate) fn run_get_relationships(
     registry: &'static GraphResultRegistry,
-    store: &GraphStore,
+    store: &Store,
     ids: &[RelId],
     control: &QueryControl,
 ) -> Result<ZeGraphResponse, ProducerError> {
@@ -1283,7 +1284,7 @@ pub(crate) fn run_get_relationships(
 #[allow(clippy::result_large_err, reason = "retains the core producer error")]
 pub(crate) fn run_get_relationships_with_limits(
     registry: &'static GraphResultRegistry,
-    store: &GraphStore,
+    store: &Store,
     ids: &[RelId],
     control: &QueryControl,
     limits: &GraphQueryOptions,

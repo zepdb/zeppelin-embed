@@ -25,8 +25,8 @@ mod graph_store;
 pub(crate) use graph_store::commit_recovery_test_support;
 #[cfg(feature = "graph-cypher")]
 pub use graph_store::{
-    GraphGetOptions, GraphMaintenancePolicy, GraphMaintenanceReport, GraphNodesResult,
-    GraphPlanBacking, GraphQueryPlan, GraphRelationshipsResult, GraphStore, GraphStoreError,
+    GraphBatch, GraphGetOptions, GraphMaintenancePolicy, GraphMaintenanceReport, GraphNodesResult,
+    GraphPlanBacking, GraphQueryPlan, GraphRelationshipsResult, GraphStoreError,
     GraphStoreErrorKind, GraphWriteOutcome, GraphWriteResult,
 };
 

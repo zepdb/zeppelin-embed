@@ -929,7 +929,6 @@ fn run_after_boundary_pair(
     }
     let expected_admitted_generation = reopened
         .graph()
-        .statement_store()
         .snapshot()
         .map_err(|error| error.to_string())?
         .generation();

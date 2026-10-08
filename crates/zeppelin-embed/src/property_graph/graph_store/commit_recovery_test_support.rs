@@ -6,7 +6,7 @@
     clippy::indexing_slicing,
     clippy::panic
 )]
-use super::{GraphMaintenancePolicy, GraphStore, GraphStoreError, GraphWriteResult};
+use super::{GraphMaintenancePolicy, GraphStoreError, GraphWriteResult};
 use crate::epoch::{ComputeUnits, EmbeddingRuntime, EmbeddingTower, Normalization};
 use crate::lifecycle::native_graph::tests::publication::{FaultPoint, RecordingVfs};
 use crate::lifecycle::{CancelToken, OpenOptions, QueryControl, Store};
@@ -287,12 +287,12 @@ impl crate::lifecycle::native_graph::NativeReadConsumer<BatchObservation>
 
 /// Owns the real public facade; private access is limited to faults and observations.
 pub struct ProbeStore {
-    graph: GraphStore,
+    graph: Store,
     resources: GraphResources,
 }
 impl ProbeStore {
     /// Public facade for integrated qualification queries and writes.
-    pub fn graph(&self) -> &GraphStore {
+    pub fn graph(&self) -> &Store {
         &self.graph
     }
     pub fn create(path: &Path, fixture: &Fixture, vfs: Arc<dyn Vfs>) -> Self {
@@ -306,9 +306,9 @@ impl ProbeStore {
         )
         .expect("ZE41 create");
         let resources = GraphResources::from_store(&store).unwrap();
-        let graph = GraphStore { store };
+        let graph = store;
         graph
-            .set_maintenance_policy(GraphMaintenancePolicy {
+            .set_graph_maintenance_policy(GraphMaintenancePolicy {
                 automatic: false,
                 ..GraphMaintenancePolicy::default()
             })
@@ -316,9 +316,9 @@ impl ProbeStore {
         Self { graph, resources }
     }
     pub fn open(path: &Path) -> Result<Self, GraphStoreError> {
-        let graph = GraphStore::open(path, options(), Some(document()))?;
-        let resources = GraphResources::from_store(&graph.store).unwrap();
-        graph.set_maintenance_policy(GraphMaintenancePolicy {
+        let graph = Store::open_graph(path, options(), Some(document()))?;
+        let resources = GraphResources::from_store(&graph).unwrap();
+        graph.set_graph_maintenance_policy(GraphMaintenancePolicy {
             automatic: false,
             ..GraphMaintenancePolicy::default()
         })?;
@@ -336,7 +336,7 @@ impl ProbeStore {
                 CanonicalContents::node(&mut [], &mut properties, Some(&fixture.text), None)
                     .unwrap();
             let second = CanonicalContents::node(&mut [], &mut [], None, Some(embedding)).unwrap();
-            self.graph.apply_batch(
+            self.graph.graph_apply(
                 &[
                     StructuredWrite {
                         key: ApplicationKey::new(EntityKind::Node, "ze41", "a").unwrap(),
@@ -367,11 +367,7 @@ impl ProbeStore {
         })
     }
     pub fn observe(&self) -> Option<BatchObservation> {
-        let lease = self
-            .graph
-            .store
-            .admit_native_read()
-            .expect("ZE41 admission");
+        let lease = self.graph.admit_native_read().expect("ZE41 admission");
         if lease.bundle().high_waters().node == 0 {
             assert_eq!(lease.bundle().high_waters().relationship, 0);
             assert_eq!(lease.bundle().base().generation.get(), 1);
@@ -384,7 +380,6 @@ impl ProbeStore {
         let node_count = self.query_node_count();
         let mut observation = self
             .graph
-            .store
             .with_native_read(
                 &control(),
                 RuntimeLimits::default(),
@@ -446,7 +441,7 @@ impl ProbeStore {
             columns: &["n"],
         };
         self.graph
-            .query(
+            .graph_query(
                 &control(),
                 &crate::property_graph::query::completed::GraphQueryOptions::default(),
                 &plan,
@@ -457,7 +452,6 @@ impl ProbeStore {
     }
     pub fn checkpoint(&self) -> Result<(), GraphStoreError> {
         self.graph
-            .store
             .checkpoint_native_graph(&control())
             .map_err(GraphStoreError::graph)
     }
@@ -467,10 +461,10 @@ impl ProbeStore {
         use crate::property_graph::storage::{
             NativeCatalog, NativeQuerySource, NativeReadCapability,
         };
-        let lease = self.graph.store.admit_native_read().unwrap();
+        let lease = self.graph.admit_native_read().unwrap();
         let generation = lease.bundle().base().generation;
         self.graph
-            .maintain(&control())
+            .graph_maintain_step(&control())
             .expect("ZE41 public maintenance with retained roots");
         assert_eq!(lease.bundle().base().generation, generation);
         let memory = QueryMemory::new(&self.resources, 8 * 1024 * 1024).unwrap();
@@ -496,24 +490,24 @@ impl ProbeStore {
     }
     pub fn publish_fault(&self) {
         crate::lifecycle::native_graph::tests::publication::arm_query_publication_fault(
-            &self.graph.store,
+            &self.graph,
         );
     }
     pub fn publication_fired(&self) -> bool {
         crate::lifecycle::native_graph::tests::publication::query_publication_fault_fired(
-            &self.graph.store,
+            &self.graph,
         )
     }
     /// Release mapped owners without running the facade's graceful checkpoint.
     /// Only after this returns may the runner materialize a modeled power cut.
     pub fn release(self) -> u64 {
-        self.graph.store.close().expect("ZE41 abrupt-owner release");
+        self.graph.close_graph().expect("ZE41 abrupt-owner release");
         let resources = self.resources.clone();
         drop(self);
         resources.reserved_bytes().unwrap()
     }
     pub fn close(self) -> u64 {
-        self.graph.close().expect("ZE41 public close");
+        self.graph.close_graph().expect("ZE41 public close");
         let resources = self.resources.clone();
         drop(self);
         resources.reserved_bytes().unwrap()
@@ -620,7 +614,7 @@ fn run_boundary_inner(
     let protected_before = image(path);
     vfs.clear_events();
     let before = store.reserved();
-    let wal_bytes_before = store.graph.store.stats().unwrap().wal_bytes;
+    let wal_bytes_before = store.graph.stats().unwrap().wal_bytes;
     if fault {
         if boundary == Boundary::Publication {
             store.publish_fault();
@@ -631,7 +625,6 @@ fn run_boundary_inner(
     let result = if checkpoint {
         store
             .graph
-            .store
             .checkpoint_native_graph(&control())
             .map(|_| ())
             .map_err(GraphStoreError::graph)
@@ -673,7 +666,7 @@ fn run_boundary_inner(
             0
         };
     let after = store.reserved();
-    let wal_bytes_after = store.graph.store.stats().unwrap().wal_bytes;
+    let wal_bytes_after = store.graph.stats().unwrap().wal_bytes;
     let stopped_error = if fault && !checkpoint && !nothing_committed {
         Some(format!(
             "{:?}",
@@ -700,14 +693,14 @@ fn run_boundary_inner(
     let mut remaining = store.release();
     let reopened = ProbeStore::open(path).expect("ZE41 permitted complete recovery");
     let observation = reopened.observe();
-    let generation_before_retry = reopened.graph.store.snapshot().unwrap().generation();
+    let generation_before_retry = reopened.graph.snapshot().unwrap().generation();
     let retry = reopened
         .apply(fixture)
         .expect("ZE41 exact retry after recovery");
     let fresh_image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
     let fresh = reopened
         .graph
-        .apply_batch(
+        .graph_apply(
             &[StructuredWrite {
                 key: ApplicationKey::new(EntityKind::Node, "ze41", "fresh").unwrap(),
                 revision: GraphRevision::new(1).unwrap(),

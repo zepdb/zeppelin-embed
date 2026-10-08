@@ -1,15 +1,4 @@
-//! `GraphStore`: the mode-safe public owner of one native graph store.
-//!
-//! A `GraphStore` owns exactly one native graph directory. It cannot open a
-//! legacy vector/lexical store, and the legacy [`Store`] cannot open a graph
-//! directory: each direction is refused with its own typed error before any
-//! file is changed. Every graph write is Durable: the facade replaces the
-//! caller's durability mode and commit tier with `Durable`/`Durable`.
-//!
-//! [`GraphStore::apply_batch`] runs one atomic structured batch and returns
-//! owned receipts, the batch outcome and the generation the batch was
-//! classified against. It never retries. A caller who wants a retry resubmits
-//! the same keyed batch; an exact retry replays with its original generation.
+//! Graph operations on the unified Store handle.
 
 #![allow(
     clippy::result_large_err,
@@ -38,40 +27,24 @@ pub use maintenance::{GraphMaintenancePolicy, GraphMaintenanceReport};
 mod query;
 pub use query::{GraphPlanBacking, GraphQueryPlan};
 
-/// One open native graph store. Every write it admits is Durable.
+/// The graph API uses the unified Store handle.
 ///
-/// A `GraphStore` is never a legacy [`Store`]; the two open disjoint
-/// directory kinds and refuse each other's directories with typed errors.
-/// A legacy store cannot stand in for a graph store:
-///
+/// The removed owner cannot be imported:
 /// ```compile_fail
-/// use zeppelin_embed::lifecycle::{OpenOptions, Store};
 /// use zeppelin_embed::property_graph::GraphStore;
-/// fn needs_graph(_: &GraphStore) {}
-/// let legacy = Store::open("legacy", OpenOptions::new()).unwrap();
-/// needs_graph(&legacy);
 /// ```
-pub struct GraphStore {
-    store: Store,
-}
-
-impl std::fmt::Debug for GraphStore {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("GraphStore")
-            .field("directory", &self.store.directory)
-            .finish_non_exhaustive()
-    }
-}
-
-impl GraphStore {
+/// ```compile_fail
+/// use zeppelin_embed::GraphStore;
+/// ```
+impl Store {
     /// Creates a store with immutable per-type incoming-reference policies.
     /// Rules are persisted in the catalog and need not be supplied on reopen.
     /// Undeclared types retain ordinary DELETE/DETACH DELETE semantics.
     ///
     /// # Errors
     /// Invalid/duplicate declarations or the classified creation failure.
-    pub fn create_with_relationship_types(
+    #[doc(hidden)]
+    pub fn create_graph_with_relationship_types(
         path: impl AsRef<Path>,
         options: OpenOptions,
         document: Option<EmbeddingTower>,
@@ -90,7 +63,7 @@ impl GraphStore {
             document,
             rules,
         )?;
-        Ok(Self { store })
+        Ok(store)
     }
 
     /// Creates a new, empty graph store at `path`, which must not exist yet.
@@ -104,7 +77,8 @@ impl GraphStore {
     ///
     /// [`GraphStoreErrorKind::LegacyStore`] when `path` holds a legacy store,
     /// and otherwise the classified creation failure.
-    pub fn create(
+    #[doc(hidden)]
+    pub fn create_graph(
         path: impl AsRef<Path>,
         options: OpenOptions,
         document: Option<EmbeddingTower>,
@@ -117,7 +91,7 @@ impl GraphStore {
             graph_options(options, AccessMode::ReadWrite),
             document,
         )?;
-        Ok(Self { store })
+        Ok(store)
     }
 
     /// Opens an existing graph store for reading and writing. The store's
@@ -131,12 +105,13 @@ impl GraphStore {
     /// [`GraphStoreErrorKind::LegacyStore`] when `path` holds a legacy store,
     /// [`GraphStoreErrorKind::Busy`] when another writer owns it, and
     /// otherwise the classified open or recovery failure.
-    pub fn open(
+    #[doc(hidden)]
+    pub fn open_graph(
         path: impl AsRef<Path>,
         options: OpenOptions,
         document: Option<EmbeddingTower>,
     ) -> Result<Self, GraphStoreError> {
-        Self::open_as(path.as_ref(), options, document, AccessMode::ReadWrite)
+        Self::open_graph_as(path.as_ref(), options, document, AccessMode::ReadWrite)
     }
 
     /// Opens an existing graph store without write authority. It takes a
@@ -146,15 +121,16 @@ impl GraphStore {
     /// # Errors
     ///
     /// As for [`open`](Self::open).
-    pub fn open_read_only(
+    #[doc(hidden)]
+    pub fn open_graph_read_only(
         path: impl AsRef<Path>,
         options: OpenOptions,
         document: Option<EmbeddingTower>,
     ) -> Result<Self, GraphStoreError> {
-        Self::open_as(path.as_ref(), options, document, AccessMode::ReadOnly)
+        Self::open_graph_as(path.as_ref(), options, document, AccessMode::ReadOnly)
     }
 
-    fn open_as(
+    fn open_graph_as(
         path: &Path,
         options: OpenOptions,
         document: Option<EmbeddingTower>,
@@ -163,7 +139,7 @@ impl GraphStore {
         refuse_unsupported_platform()?;
         refuse_legacy_directory(path)?;
         let store = Store::open_native_graph(path, graph_options(options, access), document)?;
-        Ok(Self { store })
+        Ok(store)
     }
 
     /// Closes the store: admissions stop, acknowledged state is checkpointed,
@@ -175,10 +151,11 @@ impl GraphStore {
     /// # Errors
     ///
     /// The classified teardown failure.
-    pub fn close(&self) -> Result<(), GraphStoreError> {
+    #[doc(hidden)]
+    pub fn close_graph(&self) -> Result<(), GraphStoreError> {
         let mut checkpoint = Ok(());
-        let closed = self.store.close_with_final_writer(|| {
-            checkpoint = self.store.checkpoint_native_graph_for_close();
+        let closed = self.close_with_final_writer(|| {
+            checkpoint = self.checkpoint_native_graph_for_close();
         });
         checkpoint.map_err(GraphStoreError::graph)?;
         closed.map_err(|error| GraphStoreError::graph(NativeGraphError::Store(error)))
@@ -223,12 +200,16 @@ impl GraphStore {
     /// [`nothing_committed`](GraphStoreError::nothing_committed) is false,
     /// the requested batch did not commit. Automatic maintenance may have
     /// completed before the batch was admitted.
-    pub fn apply_batch(
+    pub fn graph_apply<'a, 'b: 'a, 'c: 'a>(
         &self,
-        requests: &[StructuredWrite<'_, '_>],
+        batch: impl Into<GraphBatch<'a, 'b, 'c>>,
         control: &QueryControl,
     ) -> Result<GraphWriteResult, GraphStoreError> {
-        let prepared = self.store.apply_native_graph(requests, control)?;
+        let batch = batch.into();
+        let prepared = match batch.documents {
+            Some(documents) => self.apply_native_mixed(documents, batch.writes, control)?,
+            None => self.apply_native_graph(batch.writes, control)?,
+        };
         // A published generation is the commit tail's own proof, so it alone
         // decides `Committed`. Without one, a `Changed` batch never reached
         // durability, which breaks the writer's contract: nothing committed.
@@ -243,8 +224,16 @@ impl GraphStore {
             }
         };
         let admitted_generation = prepared.admitted_generation();
+        let ack = crate::ingest::IngestAck::mixed(
+            prepared.seq,
+            prepared
+                .changed_generation()
+                .unwrap_or(admitted_generation)
+                .get(),
+        );
         let receipts = prepared.into_registration().into_receipts();
         Ok(GraphWriteResult {
+            ack,
             receipts,
             outcome,
             admitted_generation,
@@ -254,15 +243,14 @@ impl GraphStore {
     /// Applies the same atomic batch with binding materialization before commit.
     /// The returned registration is already owned; publication performs no copy.
     #[doc(hidden)]
-    pub fn apply_batch_with_materializer<M: crate::property_graph::staging::ResultMaterializer>(
+    pub fn graph_apply_with_materializer<M: crate::property_graph::staging::ResultMaterializer>(
         &self,
         requests: &[StructuredWrite<'_, '_>],
         control: &QueryControl,
         materializer: &mut M,
     ) -> Result<(GraphWriteOutcome, GraphGeneration, M::Registration), GraphStoreError> {
         let prepared =
-            self.store
-                .apply_native_graph_with_materializer(requests, control, materializer)?;
+            self.apply_native_graph_with_materializer(requests, control, materializer)?;
         let outcome = match (prepared.changed_generation(), prepared.disposition()) {
             (Some(generation), _) => GraphWriteOutcome::Committed { generation },
             (None, BatchDisposition::Replayed) => GraphWriteOutcome::Replayed,
@@ -281,7 +269,7 @@ impl GraphStore {
     ///
     /// A caller can use it to build its own `RuntimeContext` for work that
     /// happens after this call has already returned an owned result (for
-    /// example, converting a [`GraphWriteResult`] or a [`query`](Self::query)
+    /// example, converting a [`GraphWriteResult`] or a [`query`](Self::graph_query)
     /// result into another representation): [`GraphResources`] admits no
     /// view and grants no additional store capability beyond accounting, so
     /// this leaks no mutation or admission authority.
@@ -289,24 +277,14 @@ impl GraphStore {
     /// # Errors
     ///
     /// The classified accounting-configuration failure.
-    pub fn resources(&self) -> Result<GraphResources, GraphStoreError> {
-        GraphResources::from_store(&self.store)
+    pub fn graph_resources(&self) -> Result<GraphResources, GraphStoreError> {
+        GraphResources::from_store(self)
             .map_err(|error| GraphStoreError::graph(NativeGraphError::Store(error)))
-    }
-
-    /// The native statement seam this store owns, for the outer Cypher
-    /// compiler (`zeppelin_embed_cypher::execute`) only. It grants no
-    /// capability the seam does not already check: every statement is
-    /// admitted, classified and written exactly as through [`query`](Self::query).
-    #[doc(hidden)]
-    #[must_use]
-    pub const fn statement_store(&self) -> &Store {
-        &self.store
     }
 
     #[cfg(any(test, feature = "test-seams"))]
     #[doc(hidden)]
-    pub fn create_with_allocator_seed_for_test(
+    pub fn create_graph_with_allocator_seed_for_test(
         path: impl AsRef<Path>,
         options: OpenOptions,
         first_node: crate::property_graph::NodeId,
@@ -321,7 +299,7 @@ impl GraphStore {
             first_node,
             first_relationship,
         )?;
-        Ok(Self { store })
+        Ok(store)
     }
 
     /// Nonshipping allocator setup for full-width binding fixtures. Subsequent
@@ -334,16 +312,12 @@ impl GraphStore {
         next_relationship: crate::property_graph::RelId,
         control: &QueryControl,
     ) -> Result<crate::property_graph::GraphGeneration, GraphStoreError> {
-        Ok(self.store.jump_native_graph_allocators_for_test(
-            next_node,
-            next_relationship,
-            control,
-        )?)
+        Ok(self.jump_native_graph_allocators_for_test(next_node, next_relationship, control)?)
     }
 
     #[cfg(test)]
     pub(crate) const fn store_for_test(&self) -> &Store {
-        &self.store
+        self
     }
 }
 
@@ -435,16 +409,54 @@ pub enum GraphWriteOutcome {
     NoOp,
 }
 
-/// The owned result of one [`GraphStore::apply_batch`]. It holds no lease or
+/// Documents and structured graph writes committed atomically through wal.ze.
+/// Receipts correspond to `writes` in request order; document ids are supplied
+/// by their ingest documents.
+pub struct GraphBatch<'a, 'b, 'c> {
+    /// Optional document participant of the unified batch.
+    pub documents: Option<&'a crate::ingest::IngestBatch>,
+    /// Existing keyed graph operations and batch-local references.
+    pub writes: &'a [StructuredWrite<'b, 'c>],
+}
+
+impl<'a, 'b, 'c> From<&'a [StructuredWrite<'b, 'c>]> for GraphBatch<'a, 'b, 'c> {
+    fn from(writes: &'a [StructuredWrite<'b, 'c>]) -> Self {
+        Self {
+            documents: None,
+            writes,
+        }
+    }
+}
+
+impl<'a, 'b, 'c, const N: usize> From<&'a [StructuredWrite<'b, 'c>; N]> for GraphBatch<'a, 'b, 'c> {
+    fn from(writes: &'a [StructuredWrite<'b, 'c>; N]) -> Self {
+        Self::from(writes.as_slice())
+    }
+}
+
+impl<'a, 'b, 'c> From<&'a Vec<StructuredWrite<'b, 'c>>> for GraphBatch<'a, 'b, 'c> {
+    fn from(writes: &'a Vec<StructuredWrite<'b, 'c>>) -> Self {
+        Self::from(writes.as_slice())
+    }
+}
+
+/// The owned result of one [`Store::graph_apply`]. It holds no lease or
 /// reservation, so it stays valid after the store closes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GraphWriteResult {
+    ack: crate::ingest::IngestAck,
     receipts: Box<[ItemReceipt]>,
     outcome: GraphWriteOutcome,
     admitted_generation: GraphGeneration,
 }
 
 impl GraphWriteResult {
+    /// WAL sequence and visible generation returned by the unified writer.
+    #[must_use]
+    pub const fn ack(&self) -> crate::ingest::IngestAck {
+        self.ack
+    }
+
     /// One receipt per request, in request order.
     #[must_use]
     pub fn receipts(&self) -> &[ItemReceipt] {
@@ -591,7 +603,7 @@ enum Cause {
         path: PathBuf,
     },
     Graph(NativeGraphError),
-    /// A rejected [`GraphStore::query`] statement (ZE-66 S2). The typed cause
+    /// A rejected [`Store::graph_query`] statement (ZE-66 S2). The typed cause
     /// is ZE-53's already-reviewed `GraphQueryError`, kept unchanged per the
     /// owner's decision; only its error group is folded into
     /// [`GraphStoreErrorKind`], through the same table [`Cause::Graph`] uses.
@@ -601,10 +613,10 @@ enum Cause {
 }
 
 /// Folds one of ZE-53's plan error groups into the coarser groups a
-/// `GraphStore` caller acts on. [`Cause::Graph`] and [`Cause::Query`] both
+/// Store graph caller acts on. [`Cause::Graph`] and [`Cause::Query`] both
 /// route through this one table so the two paths never drift apart.
 ///
-/// This loses one distinction `GraphStore::apply_batch` can make directly
+/// This loses one distinction `Store::graph_apply` can make directly
 /// from `NativeGraphError`: a write statement against a read-only store
 /// folds here to `Unavailable`, not `ReadOnly`, because `GraphQueryError`
 /// itself already groups `StoreErrorKind::ReadOnly` under its own
@@ -685,7 +697,7 @@ impl GraphStoreError {
         }
     }
 
-    /// The operator [`GraphStore::query`] was running when the statement
+    /// The operator [`Store::graph_query`] was running when the statement
     /// failed, when the failure came from inside the driver. `None` for
     /// every other operation and refusal.
     #[must_use]
@@ -700,7 +712,7 @@ impl GraphStoreError {
         }
     }
 
-    /// The work [`GraphStore::query`]'s driver had done when the statement
+    /// The work [`Store::graph_query`]'s driver had done when the statement
     /// failed, when the failure came from inside the driver.
     #[must_use]
     pub const fn counters(&self) -> Option<WorkCounters> {

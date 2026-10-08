@@ -5,6 +5,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use zeppelin_embed::epoch::{ComputeUnits, EmbeddingRuntime, EmbeddingTower, Normalization};
+use zeppelin_embed::lifecycle::Store;
 use zeppelin_embed::lifecycle::{CancelToken, OpenOptions, QueryControl};
 use zeppelin_embed::property_graph::query::completed::{
     CompletedGraphResult, GraphQueryOptions, Value as Cell,
@@ -36,16 +37,16 @@ pub fn tower() -> EmbeddingTower {
         os_build: None,
     }
 }
-pub fn create(path: &Path) -> Result<GraphStore, String> {
-    GraphStore::create(
+pub fn create(path: &Path) -> Result<Store, String> {
+    Store::create_graph(
         path,
         OpenOptions::new().with_max_resident_bytes(256 << 20),
         Some(tower()),
     )
     .map_err(|e| e.to_string())
 }
-pub fn open(path: &Path) -> Result<GraphStore, String> {
-    GraphStore::open(
+pub fn open(path: &Path) -> Result<Store, String> {
+    Store::open_graph(
         path,
         OpenOptions::new().with_max_resident_bytes(256 << 20),
         Some(tower()),
@@ -104,7 +105,7 @@ fn property<'a>(v: &'a Value, list: &'a [&'a str]) -> Result<PropertyValue<'a>, 
 /// Submit each recipe envelope once, preserving same-batch endpoint references.
 /// A commit error is fatal (ZE-290), never a restart or reduced fixture.
 pub fn apply_record(
-    store: &GraphStore,
+    store: &Store,
     root: &Path,
     row: &Value,
     ids: &mut Ids,
@@ -276,7 +277,7 @@ pub fn apply_record(
         }
         let request_control = control();
         let start = std::time::Instant::now();
-        let result = store.apply_batch(&writes, &request_control);
+        let result = store.graph_apply(&writes, &request_control);
         let elapsed = start.elapsed().as_nanos();
         result.map(|result|(result,elapsed)).map_err(|e|format!("fixture batch {} failed; baseline uninterrupted ingestion requires ZE-290 if this is the known write-limit failure: {e}",row["batch"]))
     })?;
@@ -319,7 +320,7 @@ pub fn ingest_fixture(
         writeln!(output, "{observed}").map_err(|e| e.to_string())
     })?;
     let report = store
-        .maintain_cycle(&control())
+        .graph_maintain_cycle(&control())
         .map_err(|e| format!("fixture maintenance: {e}"))?;
     writeln!(
         output,
@@ -333,7 +334,7 @@ pub fn ingest_fixture(
             writeln!(output, "{observed}").map_err(|e| e.to_string())?;
             if row["after"] == "checkpoint-and-consolidate" {
                 let report = store
-                    .maintain_cycle(&control())
+                    .graph_maintain_cycle(&control())
                     .map_err(|e| format!("fixture maintenance: {e}"))?;
                 writeln!(output,"{}",json!({"maintenance":format!("{report:?}"),"generation":report.generation.get()})).map_err(|e|e.to_string())?;
             }
@@ -352,7 +353,9 @@ pub fn ingest_fixture(
         output.flush().map_err(|e| e.to_string())?;
         std::process::exit(0);
     }
-    store.close().map_err(|e| format!("fixture close: {e}"))?;
+    store
+        .close_graph()
+        .map_err(|e| format!("fixture close: {e}"))?;
     drop(store);
     let reopened = open(path)?;
     let generation = cypher(&reopened, "MATCH (n) RETURN n LIMIT 0")?
@@ -360,7 +363,7 @@ pub fn ingest_fixture(
         .generation
         .get();
     writeln!(output,"{}",json!({"admitted_generation":generation,"state":if state==FixtureState::A{"A"}else{"B"},"checkpoint_reopen":true})).map_err(|e|e.to_string())?;
-    reopened.close().map_err(|e| e.to_string())
+    reopened.close_graph().map_err(|e| e.to_string())
 }
 pub fn scalar(v: &Value) -> Result<oracle::Property, String> {
     Ok(if let Some(a) = v["string_list"].as_array() {
@@ -611,9 +614,9 @@ pub fn observe(result: &CompletedGraphResult) -> Result<Vec<oracle::Row>, String
         })
         .collect()
 }
-pub fn cypher(store: &GraphStore, source: &str) -> Result<CompletedGraphResult, String> {
+pub fn cypher(store: &Store, source: &str) -> Result<CompletedGraphResult, String> {
     execute(
-        store.statement_store(),
+        store,
         &control(),
         &GraphQueryOptions::default(),
         source,
@@ -685,13 +688,13 @@ pub fn build_named_requests(request: &oracle::Query, exact: bool) -> String {
 
 /// Build structured data directly; no compiler/prepared-plan interface involved.
 pub fn structured(
-    store: &GraphStore,
+    store: &Store,
     request: &oracle::Query,
     exact: bool,
 ) -> Result<CompletedGraphResult, String> {
     with_plan(request, exact, |plan| {
         store
-            .query(&control(), &GraphQueryOptions::default(), plan)
+            .graph_query(&control(), &GraphQueryOptions::default(), plan)
             .map_err(|e| e.to_string())
     })
 }
@@ -1220,9 +1223,9 @@ pub fn decode_request(v: &Value) -> Result<oracle::Query, String> {
         _ => return Err("unknown request".into()),
     })
 }
-pub fn resource_counters(store: &GraphStore) -> Result<Value, String> {
+pub fn resource_counters(store: &Store) -> Result<Value, String> {
     let r = store
-        .resources()
+        .graph_resources()
         .map_err(|e| e.to_string())?
         .snapshot()
         .map_err(|e| e.to_string())?;
@@ -1231,9 +1234,9 @@ pub fn resource_counters(store: &GraphStore) -> Result<Value, String> {
         "application_bytes":r.application_bytes,"application_peak_bytes":r.application_peak_bytes}),
     )
 }
-pub fn work_ledger(store: &GraphStore) -> Result<Value, String> {
+pub fn work_ledger(store: &Store) -> Result<Value, String> {
     let w = store
-        .resources()
+        .graph_resources()
         .map_err(|e| e.to_string())?
         .work_ledger()
         .map_err(|e| e.to_string())?;
@@ -1241,7 +1244,7 @@ pub fn work_ledger(store: &GraphStore) -> Result<Value, String> {
         json!({"storage_lookups":w.storage_lookups,"storage_scans":w.storage_scans,"storage_adjacency_entries":w.storage_adjacency_entries,"storage_copied_bytes":w.storage_copied_bytes,"storage_pages_decoded":w.storage_pages_decoded,"storage_pages_copied":w.storage_pages_copied,"storage_property_values":w.storage_property_values,"storage_property_bytes":w.storage_property_bytes,"storage_adjacency_physical_entries":w.storage_adjacency_physical_entries,"storage_adjacency_merged_visits":w.storage_adjacency_merged_visits,"storage_adjacency_merge_runs":w.storage_adjacency_merge_runs,"canonical_comparison_bytes":w.canonical_comparison_bytes,"canonical_encoding_bytes":w.canonical_encoding_bytes,"wal_codec_units":w.wal_codec_units,"encoded_wal_bytes":w.encoded_wal_bytes,"artifact_bytes_written":w.artifact_bytes_written,"artifact_writes":w.artifact_writes,"wal_bytes_appended":w.wal_bytes_appended,"wal_appends":w.wal_appends,"full_sync_attempts":w.full_sync_attempts,"full_sync_successes":w.full_sync_successes,"directory_sync_attempts":w.directory_sync_attempts,"directory_sync_successes":w.directory_sync_successes}),
     )
 }
-pub fn observed_counters(store: &GraphStore, r: &CompletedGraphResult) -> Result<Value, String> {
+pub fn observed_counters(store: &Store, r: &CompletedGraphResult) -> Result<Value, String> {
     use zeppelin_embed::property_graph::query::runtime::WorkKind;
     let mut c = resource_counters(store)?;
     c["query_reservation_peak_bytes"] = json!(r.metadata().peak_query_bytes);
@@ -1307,7 +1310,7 @@ pub fn run_cell(
     let request = decode_request(&value["request"])?;
     let store = open(path)?;
     let interval = store
-        .resources()
+        .graph_resources()
         .map_err(|e| e.to_string())?
         .begin_allocation_interval()
         .map_err(|e| format!("reservation interval: {e:?}"))?;
@@ -1351,7 +1354,7 @@ pub fn run_cell(
     eprintln!(
         "ZE-77 shared reservation interval (engine lifetime capacity peak reported separately): {observed:?}"
     );
-    store.close().map_err(|e| e.to_string())?;
+    store.close_graph().map_err(|e| e.to_string())?;
     if let Some(error) = failure {
         return Err(error);
     }
@@ -1406,7 +1409,7 @@ pub fn decode_cell(v: &Value) -> Result<oracle::Cell, String> {
 
 /// Identical public-entry timing seam for owned structured and compiler calls.
 pub fn timed_request(
-    store: &GraphStore,
+    store: &Store,
     request: &oracle::Query,
     frontend: &str,
     exact: bool,
@@ -1417,7 +1420,7 @@ pub fn timed_request(
         "structured" => with_plan(request, exact, |plan| {
             let start = std::time::Instant::now();
             let result = store
-                .query(&request_control, &options, plan)
+                .graph_query(&request_control, &options, plan)
                 .map_err(|e| e.to_string());
             Ok((result, start.elapsed().as_nanos()))
         }),
@@ -1425,7 +1428,7 @@ pub fn timed_request(
             let source = build_named_requests(request, exact);
             let start = std::time::Instant::now();
             let result = execute(
-                store.statement_store(),
+                store,
                 &request_control,
                 &options,
                 &source,

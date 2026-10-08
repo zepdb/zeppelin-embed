@@ -154,3 +154,55 @@ pub fn execute_with_boundary(
         (Err(error), None) => Err(StatementError::Query(error)),
     }
 }
+
+/// Cypher statements on the unified Store, using the existing bounded compiler.
+#[allow(clippy::result_large_err)]
+pub trait StoreCypherExt {
+    /// Compile and execute a read or write statement under Store admission.
+    fn cypher(
+        &self,
+        control: &QueryControl,
+        options: &GraphQueryOptions,
+        text: &str,
+        parameters: &[ParameterBinding<'_>],
+        limits: CompileLimits,
+    ) -> Result<CompletedGraphResult, StatementError>;
+
+    /// Execute with synchronous binding preparation before commit.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    fn cypher_with_boundary(
+        &self,
+        control: &QueryControl,
+        options: &GraphQueryOptions,
+        text: &str,
+        parameters: &[ParameterBinding<'_>],
+        limits: CompileLimits,
+        boundary: Option<&dyn GraphBoundary>,
+    ) -> Result<CompletedGraphResult, StatementError>;
+}
+
+impl StoreCypherExt for Store {
+    fn cypher(
+        &self,
+        control: &QueryControl,
+        options: &GraphQueryOptions,
+        text: &str,
+        parameters: &[ParameterBinding<'_>],
+        limits: CompileLimits,
+    ) -> Result<CompletedGraphResult, StatementError> {
+        execute(self, control, options, text, parameters, limits)
+    }
+
+    fn cypher_with_boundary(
+        &self,
+        control: &QueryControl,
+        options: &GraphQueryOptions,
+        text: &str,
+        parameters: &[ParameterBinding<'_>],
+        limits: CompileLimits,
+        boundary: Option<&dyn GraphBoundary>,
+    ) -> Result<CompletedGraphResult, StatementError> {
+        execute_with_boundary(self, control, options, text, parameters, limits, boundary)
+    }
+}

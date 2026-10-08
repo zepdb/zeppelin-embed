@@ -15,6 +15,7 @@ mod support;
 mod tck;
 use graph::Graph;
 use tck::V;
+use zeppelin_embed::lifecycle::Store;
 use zeppelin_embed::lifecycle::{CancelToken, QueryControl};
 use zeppelin_embed::property_graph::query::completed::{GraphQueryErrorKind, GraphQueryOptions};
 use zeppelin_embed_cypher::{CompileLimits, StatementError, execute};
@@ -147,20 +148,20 @@ fn ze59_small_mutation_model_matches_progressive_frozen_and_ordered_writes() {
 
 #[test]
 fn ze59_compaction_preserves_observations() {
-    use zeppelin_embed::property_graph::{GraphMaintenancePolicy, GraphStore};
+    use zeppelin_embed::property_graph::GraphMaintenancePolicy;
     let root = support::unique_temp_dir("ze59-compaction");
     std::fs::create_dir_all(&root).unwrap();
     let control = QueryControl::Cancel(CancelToken::new());
-    let mut store = GraphStore::create(root.join("graph"), graph::store_options(), None).unwrap();
+    let mut store = Store::create_graph(root.join("graph"), graph::store_options(), None).unwrap();
     store
-        .set_maintenance_policy(GraphMaintenancePolicy {
+        .set_graph_maintenance_policy(GraphMaintenancePolicy {
             automatic: false,
             reclaim_after_bytes: 1024 * 1024,
         })
         .unwrap();
-    let run = |store: &GraphStore, query: &str| {
+    let run = |store: &Store, query: &str| {
         execute(
-            store.statement_store(),
+            store,
             &control,
             &GraphQueryOptions::default(),
             query,
@@ -176,7 +177,7 @@ fn ze59_compaction_preserves_observations() {
     let query = "MATCH (a)-[r]->(b) RETURN ze.node_id(a), a, ze.relationship_id(r), r, b ORDER BY ze.node_id(a)";
     let retained = run(&store, query);
     let before = tck::actual_table(&retained);
-    let report = store.maintain_cycle(&control).unwrap();
+    let report = store.graph_maintain_cycle(&control).unwrap();
     assert!(report.cycle_complete);
     assert!(
         report.replaced_physical_refs > 0
@@ -185,12 +186,12 @@ fn ze59_compaction_preserves_observations() {
         "no physical maintenance work: {report:?}"
     );
     assert_eq!(tck::actual_table(&run(&store, query)), before);
-    store.close().unwrap();
-    store = GraphStore::open(root.join("graph"), graph::store_options(), None).unwrap();
+    store.close_graph().unwrap();
+    store = Store::open_graph(root.join("graph"), graph::store_options(), None).unwrap();
     assert_eq!(tck::actual_table(&run(&store, query)), before);
     assert_eq!(tck::actual_table(&retained), before);
     eprintln!("ZE59-MAINTENANCE {report:?}");
-    store.close().unwrap();
+    store.close_graph().unwrap();
     std::fs::remove_dir_all(root).unwrap();
 }
 

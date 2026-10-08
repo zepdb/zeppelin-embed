@@ -1,14 +1,15 @@
 //! Independently authored application operator chains and complete PG13 columns.
 use super::graph_search::*;
+use zeppelin_embed::lifecycle::Store;
 use zeppelin_embed::property_graph::query::completed::{CompletedGraphResult, GraphQueryOptions};
 use zeppelin_embed::property_graph::query::plan::*;
-use zeppelin_embed::property_graph::{GraphName, GraphPlanBacking, GraphQueryPlan, GraphStore};
+use zeppelin_embed::property_graph::{GraphName, GraphPlanBacking, GraphQueryPlan};
 pub const APPLICATIONS: [&str; 3] = [
     "MATCH (item:Item)-[:ABOUT]->(project:Project) MATCH (item)-[:SUPPORTED_BY]->(chunk) MATCH (meeting)-[:HAS_CHUNK]->(chunk) RETURN item,item.name,meeting,meeting.name,chunk,chunk.excerpt ORDER BY meeting.timestamp DESC,item,meeting,chunk LIMIT 20",
     "CALL ze.vector_search([0,0],20,'exact') YIELD node AS chunk,distance MATCH (meeting)-[:HAS_CHUNK]->(chunk) MATCH (chunk)-[:MENTIONS]->(entity) RETURN chunk,distance,chunk.excerpt,meeting,meeting.name,entity,entity.name ORDER BY distance,chunk,meeting,entity",
     "MATCH (person:Person)-[:PARTICIPATED_IN]->(meeting)-[:FOR_PROJECT]->(project:Project) MATCH (meeting)-[:HAS_CHUNK]->(chunk) WITH collect(DISTINCT chunk) AS eligible CALL ze.vector_search([0,0],20,'exact',eligible) YIELD node AS chunk,distance MATCH (meeting)-[:HAS_CHUNK]->(chunk) RETURN chunk,distance,chunk.excerpt,meeting ORDER BY distance,chunk,meeting",
 ];
-pub fn structured_application(store: &GraphStore, shape: usize) -> CompletedGraphResult {
+pub fn structured_application(store: &Store, shape: usize) -> CompletedGraphResult {
     let names: Vec<String> = [
         "Item",
         "Person",
@@ -202,7 +203,7 @@ pub fn structured_application(store: &GraphStore, shape: usize) -> CompletedGrap
     backing.vec(&projections).unwrap();
     backing.vec(&sort).unwrap();
     store
-        .query(
+        .graph_query(
             &control(),
             &GraphQueryOptions::default(),
             &GraphQueryPlan {

@@ -1,4 +1,4 @@
-//! ZE-66 S3: typed `GraphStore::get_nodes`/`get_relationships`.
+//! ZE-66 S3: typed `Store::get_nodes`/`get_relationships`.
 //!
 //! Both calls admit exactly one native read lease (`Store::with_native_read`)
 //! for the whole batch of requested identities, so every returned entity was
@@ -16,8 +16,9 @@
 //! text distinction and the typed-empty-list-vs-`EmptyList`-vs-absent-property
 //! distinction the stored canonical encoding already carries.
 
-use super::{GraphStore, GraphStoreError};
+use super::GraphStoreError;
 use crate::lifecycle::QueryControl;
+use crate::lifecycle::Store;
 use crate::lifecycle::native_graph::NativeReadConsumer;
 use crate::property_graph::catalog::Symbol;
 use crate::property_graph::query::completed::{
@@ -30,7 +31,7 @@ use crate::property_graph::storage::stream::{PayloadCursor, PayloadSlice};
 use crate::property_graph::storage::tree::directory::{BlockSource, TreeError, TreeResources};
 use crate::property_graph::{GraphGeneration, MAX_GRAPH_CHANGES, NodeId, RelId};
 
-/// Which optional node fields [`GraphStore::get_nodes`] copies. Labels, the
+/// Which optional node fields [`Store::get_nodes`] copies. Labels, the
 /// application key and properties are always copied; text and vector are
 /// opt-in because reading them copies payload bytes, not just index rows.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -79,7 +80,7 @@ fn span_slice<T>(pool: &[T], span: Span) -> &[T] {
     pool.get(range(span)).unwrap_or(&[])
 }
 
-/// Owned result of [`GraphStore::get_nodes`]. Nothing here borrows the store,
+/// Owned result of [`Store::get_nodes`]. Nothing here borrows the store,
 /// its admitted lease, or its generation; values stay valid after close.
 pub struct GraphNodesResult {
     generation: GraphGeneration,
@@ -141,7 +142,7 @@ impl GraphNodesResult {
     }
 }
 
-/// Owned result of [`GraphStore::get_relationships`]. See
+/// Owned result of [`Store::get_relationships`]. See
 /// [`GraphNodesResult`]; relationships never carry text or a vector.
 pub struct GraphRelationshipsResult {
     generation: GraphGeneration,
@@ -524,7 +525,7 @@ impl NativeReadConsumer<GraphRelationshipsResult> for GetRelationships<'_> {
     }
 }
 
-impl GraphStore {
+impl Store {
     /// Reads a batch of nodes by identity under one admitted read generation.
     ///
     /// Returns one `Option<Node>` per requested id, in request order: `None`
@@ -559,7 +560,7 @@ impl GraphStore {
                 "requested id count exceeds MAX_GRAPH_CHANGES",
             ));
         }
-        Ok(self.store.with_native_read(
+        Ok(self.with_native_read(
             control,
             limits.runtime_limits(),
             limits.memory_limit(),
@@ -595,7 +596,7 @@ impl GraphStore {
                 "requested id count exceeds MAX_GRAPH_CHANGES",
             ));
         }
-        Ok(self.store.with_native_read(
+        Ok(self.with_native_read(
             control,
             limits.runtime_limits(),
             limits.memory_limit(),

@@ -505,12 +505,13 @@ fn ze241_boundary_refusals_leave_no_effects() {
 #[cfg(feature = "abi-panic-probe")]
 #[test]
 fn ze241_get_full_width_nodes_and_relationships_survive_reopen() {
-    use zeppelin_embed::property_graph::{GraphStore, NodeId, RelId};
+    use zeppelin_embed::lifecycle::Store;
+    use zeppelin_embed::property_graph::{NodeId, RelId};
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("seeded");
     let node_seed = (1u128 << 127) + 7;
     let rel_seed = (1u128 << 126) + 19;
-    let bootstrap = GraphStore::create_with_allocator_seed_for_test(
+    let bootstrap = Store::create_graph_with_allocator_seed_for_test(
         &path,
         zeppelin_embed::lifecycle::OpenOptions::new().with_max_resident_bytes(256 << 20),
         NodeId::new(node_seed).unwrap(),
@@ -1112,12 +1113,13 @@ fn ze72_real_faults_match_independent_commit_boundaries() {
 #[cfg(feature = "abi-panic-probe")]
 #[test]
 fn ze72_same_low_half_ids_remain_distinct_after_reopen() {
-    use zeppelin_embed::property_graph::{GraphStore, NodeId, RelId};
+    use zeppelin_embed::lifecycle::Store;
+    use zeppelin_embed::property_graph::{NodeId, RelId};
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("twins");
     let first = (1u128 << 127) + 7;
     let second = first + (1u128 << 64);
-    let graph = GraphStore::create_with_allocator_seed_for_test(
+    let graph = Store::create_graph_with_allocator_seed_for_test(
         &path,
         zeppelin_embed::lifecycle::OpenOptions::new().with_max_resident_bytes(256 << 20),
         NodeId::new(first).unwrap(),
@@ -1128,7 +1130,7 @@ fn ze72_same_low_half_ids_remain_distinct_after_reopen() {
         zeppelin_embed::lifecycle::CancelToken::new(),
     );
     let retained = zeppelin_embed_cypher::execute(
-        graph.statement_store(),
+        &graph,
         &control,
         &Default::default(),
         "CREATE (n:Twin) RETURN n",

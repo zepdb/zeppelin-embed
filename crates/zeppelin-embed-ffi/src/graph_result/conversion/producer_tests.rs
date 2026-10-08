@@ -1,5 +1,5 @@
 //! ZE-68 Slice A: the FFI's coordinator/conversion machinery wired to a
-//! real `GraphStore`, not a synthetic `ResultSource`. Every test here opens
+//! real `Store`, not a synthetic `ResultSource`. Every test here opens
 //! an actual native graph store and drives it through `apply_and_settle`/
 //! `run_query`.
 #![allow(
@@ -11,6 +11,7 @@
 )]
 
 use super::*;
+use zeppelin_embed::lifecycle::Store;
 use zeppelin_embed::lifecycle::{CancelToken, OpenOptions};
 use zeppelin_embed::property_graph::query::plan::{
     ExprId, Expression, Operator, OperatorKind, Parameter, PlanNodeId, Projection, SlotId,
@@ -61,7 +62,7 @@ fn apply_and_settle_commits_a_real_write_and_publishes_its_receipt() {
     static REGISTRY: GraphResultRegistry = GraphResultRegistry::new(16);
     let dir = tempfile::tempdir().expect("temporary directory");
     let store =
-        GraphStore::create(dir.path().join("native"), store_options(), None).expect("graph store");
+        Store::create_graph(dir.path().join("native"), store_options(), None).expect("graph store");
     let image = CanonicalContents::node(&mut [], &mut [], Some("text"), None).expect("image");
     let requests = [create_request("alpha", &image)];
 
@@ -90,7 +91,7 @@ fn apply_and_settle_commits_a_real_write_and_publishes_its_receipt() {
     assert_eq!(receipts[0].deleted, 0);
     assert_eq!(receipts[0].generation, 2);
     REGISTRY.free(&mut response).expect("free");
-    store.close().expect("close graph store");
+    store.close_graph().expect("close graph store");
 }
 
 #[test]
@@ -98,7 +99,7 @@ fn apply_and_settle_replays_an_exact_retry() {
     static REGISTRY: GraphResultRegistry = GraphResultRegistry::new(16);
     let dir = tempfile::tempdir().expect("temporary directory");
     let store =
-        GraphStore::create(dir.path().join("native"), store_options(), None).expect("graph store");
+        Store::create_graph(dir.path().join("native"), store_options(), None).expect("graph store");
     let image = CanonicalContents::node(&mut [], &mut [], Some("text"), None).expect("image");
     let requests = [create_request("alpha", &image)];
 
@@ -125,7 +126,7 @@ fn apply_and_settle_replays_an_exact_retry() {
     assert_eq!(receipts[0].node, installed);
     assert_eq!(receipts[0].generation, 2);
     REGISTRY.free(&mut second_response).expect("free");
-    store.close().expect("close graph store");
+    store.close_graph().expect("close graph store");
 }
 
 #[test]
@@ -133,7 +134,7 @@ fn apply_and_settle_reports_an_empty_batch_as_no_op() {
     static REGISTRY: GraphResultRegistry = GraphResultRegistry::new(16);
     let dir = tempfile::tempdir().expect("temporary directory");
     let store =
-        GraphStore::create(dir.path().join("native"), store_options(), None).expect("graph store");
+        Store::create_graph(dir.path().join("native"), store_options(), None).expect("graph store");
 
     let guarded = apply_and_settle(&REGISTRY, &store, &[], &control());
     assert_eq!(
@@ -147,7 +148,7 @@ fn apply_and_settle_reports_an_empty_batch_as_no_op() {
     );
     assert_eq!(response.receipt_count, 0);
     REGISTRY.free(&mut response).expect("free");
-    store.close().expect("close graph store");
+    store.close_graph().expect("close graph store");
 }
 
 #[test]
@@ -155,7 +156,7 @@ fn apply_and_settle_reports_nothing_committed_on_a_real_constraint_refusal() {
     static REGISTRY: GraphResultRegistry = GraphResultRegistry::new(16);
     let dir = tempfile::tempdir().expect("temporary directory");
     let store =
-        GraphStore::create(dir.path().join("native"), store_options(), None).expect("graph store");
+        Store::create_graph(dir.path().join("native"), store_options(), None).expect("graph store");
     let image = CanonicalContents::node(&mut [], &mut [], Some("text"), None).expect("image");
     let created = apply_and_settle(
         &REGISTRY,
@@ -202,7 +203,7 @@ fn apply_and_settle_reports_nothing_committed_on_a_real_constraint_refusal() {
         ProducerError::Store(store_error) => assert!(store_error.nothing_committed()),
         ProducerError::Conversion(_) => panic!("expected a real store refusal"),
     }
-    store.close().expect("close graph store");
+    store.close_graph().expect("close graph store");
 }
 
 /// `MATCH (n) RETURN n`, through `run_query`.
@@ -212,7 +213,7 @@ fn apply_and_settle_reports_nothing_committed_on_a_real_constraint_refusal() {
 )]
 fn read_all(
     registry: &'static GraphResultRegistry,
-    store: &GraphStore,
+    store: &Store,
     control: &QueryControl,
 ) -> Result<ZeGraphResponse, ProducerError> {
     let unit = vec![PlanNodeId(0)];
@@ -269,7 +270,7 @@ fn run_query_reads_real_committed_nodes() {
     static REGISTRY: GraphResultRegistry = GraphResultRegistry::new(16);
     let dir = tempfile::tempdir().expect("temporary directory");
     let store =
-        GraphStore::create(dir.path().join("native"), store_options(), None).expect("graph store");
+        Store::create_graph(dir.path().join("native"), store_options(), None).expect("graph store");
     let image = CanonicalContents::node(&mut [], &mut [], Some("text"), None).expect("image");
     let write = apply_and_settle(
         &REGISTRY,
@@ -287,7 +288,7 @@ fn run_query_reads_real_committed_nodes() {
     assert_eq!(response.admitted_generation, 2);
     assert_eq!(response.pool.node_count, 1);
     REGISTRY.free(&mut response).expect("free");
-    store.close().expect("close graph store");
+    store.close_graph().expect("close graph store");
 }
 
 // ----- Unit coverage for the two ZE-68 open-question mappings -----
@@ -347,7 +348,7 @@ fn ze241_receipt_response_failure_leaves_batch_not_committed() {
     static FULL: GraphResultRegistry = GraphResultRegistry::new(0);
     static AVAILABLE: GraphResultRegistry = GraphResultRegistry::new(16);
     let dir = tempfile::tempdir().unwrap();
-    let store = GraphStore::create(dir.path().join("native"), store_options(), None).unwrap();
+    let store = Store::create_graph(dir.path().join("native"), store_options(), None).unwrap();
     let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
     let requests = [create_request("alpha", &image)];
     let guarded = apply_and_settle(&FULL, &store, &requests, &control());
@@ -356,8 +357,8 @@ fn ze241_receipt_response_failure_leaves_batch_not_committed() {
         Ok(Err(ProducerError::Conversion(_)))
     ));
     assert_eq!(guarded.outcome, OperationOutcome::NotCommitted);
-    store.close().unwrap();
-    let store = GraphStore::open(dir.path().join("native"), store_options(), None).unwrap();
+    store.close_graph().unwrap();
+    let store = Store::open_graph(dir.path().join("native"), store_options(), None).unwrap();
     let retry = apply_and_settle(&AVAILABLE, &store, &requests, &control());
     assert_eq!(
         retry.outcome,
@@ -367,7 +368,7 @@ fn ze241_receipt_response_failure_leaves_batch_not_committed() {
     );
     let mut response = retry.value.unwrap().unwrap();
     AVAILABLE.free(&mut response).unwrap();
-    store.close().unwrap();
+    store.close_graph().unwrap();
 }
 
 #[cfg(feature = "graph-result-test-support")]
@@ -377,7 +378,7 @@ fn ze241_receipt_allocation_failures_leave_batch_not_committed() {
     static REGISTRY: GraphResultRegistry = GraphResultRegistry::new(16);
     for ordinal in [1, 2] {
         let dir = tempfile::tempdir().unwrap();
-        let store = GraphStore::create(dir.path().join("native"), store_options(), None).unwrap();
+        let store = Store::create_graph(dir.path().join("native"), store_options(), None).unwrap();
         let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
         let requests = [create_request("alpha", &image)];
         let fault = AllocationFaultScope::arm(ordinal);
@@ -391,8 +392,8 @@ fn ze241_receipt_allocation_failures_leave_batch_not_committed() {
             ))))
         ));
         assert_eq!(guarded.outcome, OperationOutcome::NotCommitted);
-        store.close().unwrap();
-        let store = GraphStore::open(dir.path().join("native"), store_options(), None).unwrap();
+        store.close_graph().unwrap();
+        let store = Store::open_graph(dir.path().join("native"), store_options(), None).unwrap();
         let retry = apply_and_settle(&REGISTRY, &store, &requests, &control());
         assert_eq!(
             retry.outcome,
@@ -402,13 +403,13 @@ fn ze241_receipt_allocation_failures_leave_batch_not_committed() {
         );
         let mut response = retry.value.unwrap().unwrap();
         REGISTRY.free(&mut response).unwrap();
-        store.close().unwrap();
+        store.close_graph().unwrap();
     }
 }
 
 fn ze211_fixture() -> (
     tempfile::TempDir,
-    GraphStore,
+    Store,
     [NodeId; 2],
     zeppelin_embed::property_graph::RelId,
 ) {
@@ -416,7 +417,7 @@ fn ze211_fixture() -> (
         GraphName, GraphProperty, NodeRef, PropertyData, PropertyValue,
     };
     let dir = tempfile::tempdir().unwrap();
-    let store = GraphStore::create(dir.path().join("get"), store_options(), None).unwrap();
+    let store = Store::create_graph(dir.path().join("get"), store_options(), None).unwrap();
     let absent = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
     let mut properties = [
         GraphProperty::new(
@@ -435,7 +436,7 @@ fn ze211_fixture() -> (
     let mut labels = [GraphName::new("Label").unwrap()];
     let empty = CanonicalContents::node(&mut labels, &mut properties, Some(""), None).unwrap();
     let result = store
-        .apply_batch(
+        .graph_apply(
             &[create_request("a", &absent), create_request("b", &empty)],
             &control(),
         )
@@ -445,7 +446,7 @@ fn ze211_fixture() -> (
         _ => panic!("node receipt"),
     });
     let result = store
-        .apply_batch(
+        .graph_apply(
             &[StructuredWrite {
                 key: ApplicationKey::new(EntityKind::Relationship, "ze211", "edge").unwrap(),
                 revision: revision(1),
@@ -522,7 +523,7 @@ fn ze211_nodes_preserve_sparse_order_and_payloads() {
     )
     .unwrap();
     store
-        .apply_batch(
+        .graph_apply(
             &[StructuredWrite {
                 key: node_key("a"),
                 revision: revision(2),
@@ -543,7 +544,7 @@ fn ze211_nodes_preserve_sparse_order_and_payloads() {
         &control(),
     )
     .unwrap();
-    store.close().unwrap();
+    store.close_graph().unwrap();
     ze211_check_rows(&deleted, &[0], 4);
     REGISTRY.free(&mut deleted).unwrap();
     ze211_check_rows(&response, &[5, 0, 5, 5], 3);
@@ -601,7 +602,7 @@ fn ze211_relationships_preserve_sparse_order_and_payloads() {
         GraphName, GraphProperty, NodeRef, PropertyData, PropertyValue,
     };
     let created = store
-        .apply_batch(
+        .graph_apply(
             &[StructuredWrite {
                 key: ApplicationKey::new(EntityKind::Relationship, "ze211", "reverse").unwrap(),
                 revision: revision(1),
@@ -634,7 +635,7 @@ fn ze211_relationships_preserve_sparse_order_and_payloads() {
     let mut empty = run_get_relationships(&REGISTRY, &store, &[], &control()).unwrap();
     let mut absent = run_get_relationships(&REGISTRY, &store, &[missing], &control()).unwrap();
     store
-        .apply_batch(
+        .graph_apply(
             &[StructuredWrite {
                 key: ApplicationKey::new(EntityKind::Relationship, "ze211", "edge").unwrap(),
                 revision: revision(2),
@@ -648,7 +649,7 @@ fn ze211_relationships_preserve_sparse_order_and_payloads() {
         )
         .unwrap();
     let mut deleted = run_get_relationships(&REGISTRY, &store, &[edge], &control()).unwrap();
-    store.close().unwrap();
+    store.close_graph().unwrap();
     ze211_check_rows(&deleted, &[0], 5);
     REGISTRY.free(&mut deleted).unwrap();
     ze211_check_rows(&response, &[6, 0, 6, 6], 4);
@@ -722,5 +723,5 @@ fn ze211_get_conversion_refusal_cleans_owner() {
         let mut response = run_get_relationships(&REGISTRY, &store, &[edge], &control()).unwrap();
         REGISTRY.free(&mut response).unwrap();
     }
-    store.close().unwrap();
+    store.close_graph().unwrap();
 }

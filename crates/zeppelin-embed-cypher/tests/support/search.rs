@@ -8,18 +8,19 @@
     clippy::result_large_err
 )]
 use zeppelin_embed::epoch::{ComputeUnits, EmbeddingRuntime, EmbeddingTower, Normalization};
+use zeppelin_embed::lifecycle::Store;
 use zeppelin_embed::lifecycle::{CancelToken, QueryControl};
 use zeppelin_embed::property_graph::query::completed::{CompletedGraphResult, GraphQueryOptions};
 use zeppelin_embed::property_graph::query::plan::ParameterBinding;
 use zeppelin_embed::property_graph::staging::{StructuredOperation, StructuredWrite, WriteImage};
 use zeppelin_embed::property_graph::{
     ApplicationKey, CanonicalContents, CanonicalEmbedding, EntityKind, GraphName, GraphProperty,
-    GraphRevision, GraphStore, PropertyData, PropertyValue,
+    GraphRevision, PropertyData, PropertyValue,
 };
 use zeppelin_embed_cypher::{CompileLimits, StatementError, execute};
 pub struct SearchFixture {
     pub root: std::path::PathBuf,
-    pub store: Option<GraphStore>,
+    pub store: Option<Store>,
     pub tower: EmbeddingTower,
 }
 pub fn control() -> QueryControl {
@@ -40,7 +41,7 @@ impl SearchFixture {
             compute_units: ComputeUnits::Cpu,
             os_build: None,
         };
-        let store = GraphStore::create(
+        let store = Store::create_graph(
             &root,
             zeppelin_embed::lifecycle::OpenOptions::new()
                 .with_max_resident_bytes(256 * 1024 * 1024),
@@ -68,7 +69,7 @@ impl SearchFixture {
             )
             .unwrap();
             store
-                .apply_batch(
+                .graph_apply(
                     &[StructuredWrite {
                         key: ApplicationKey::new(EntityKind::Node, "ze58", key).unwrap(),
                         revision: GraphRevision::new(1).unwrap(),
@@ -89,9 +90,9 @@ impl SearchFixture {
         fixture
     }
     pub fn apply(&self, writes: &[StructuredWrite<'_, '_>]) {
-        self.store().apply_batch(writes, &control()).unwrap();
+        self.store().graph_apply(writes, &control()).unwrap();
     }
-    pub fn store(&self) -> &GraphStore {
+    pub fn store(&self) -> &Store {
         self.store.as_ref().unwrap()
     }
     pub fn run(&self, text: &str) -> CompletedGraphResult {
@@ -104,7 +105,7 @@ impl SearchFixture {
         parameters: &[ParameterBinding<'_>],
     ) -> Result<CompletedGraphResult, StatementError> {
         execute(
-            self.store().statement_store(),
+            self.store(),
             &control(),
             &GraphQueryOptions::default(),
             text,
@@ -113,9 +114,9 @@ impl SearchFixture {
         )
     }
     pub fn reopen(&mut self) {
-        self.store.take().unwrap().close().unwrap();
+        self.store.take().unwrap().close_graph().unwrap();
         self.store = Some(
-            GraphStore::open(
+            Store::open_graph(
                 &self.root,
                 zeppelin_embed::lifecycle::OpenOptions::new()
                     .with_max_resident_bytes(256 * 1024 * 1024),
@@ -128,7 +129,7 @@ impl SearchFixture {
 impl Drop for SearchFixture {
     fn drop(&mut self) {
         if let Some(store) = self.store.take() {
-            let _ = store.close();
+            let _ = store.close_graph();
         }
         let _ = std::fs::remove_dir_all(&self.root);
     }

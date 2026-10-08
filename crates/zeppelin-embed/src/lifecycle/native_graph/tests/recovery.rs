@@ -411,17 +411,17 @@ fn assert_purge_reopens(
 const PURGE_PUBLIC_MARKER: &str = "ZE346PUBLICPURGEDDOCUMENT";
 
 fn public_graph_write(path: &Path, key: &str) -> NodeId {
-    use crate::property_graph::GraphStore;
-    let graph = GraphStore::open(path, native_options(), None).unwrap();
+    use crate::lifecycle::Store;
+    let graph = Store::open_graph(path, native_options(), None).unwrap();
     graph
-        .set_maintenance_policy(crate::property_graph::GraphMaintenancePolicy {
+        .set_graph_maintenance_policy(crate::property_graph::GraphMaintenancePolicy {
             automatic: false,
             ..Default::default()
         })
         .unwrap();
     let image = CanonicalContents::node(&mut [], &mut [], None, None).unwrap();
     let result = graph
-        .apply_batch(
+        .graph_apply(
             &[StructuredWrite {
                 key: ApplicationKey::new(EntityKind::Node, "purge", key).unwrap(),
                 revision: GraphRevision::new(1).unwrap(),
@@ -457,7 +457,7 @@ fn public_purge_fixture(path: &Path) -> NodeId {
 }
 
 fn assert_public_purge_complete(path: &Path, first: NodeId) {
-    use crate::property_graph::{GraphGetOptions, GraphStore};
+    use crate::property_graph::GraphGetOptions;
     assert!(!path.join(crate::ingest::PURGE_INTENT_FILE).exists());
     assert!(file_snapshot(path).values().all(|bytes| {
         !bytes
@@ -468,7 +468,7 @@ fn assert_public_purge_complete(path: &Path, first: NodeId) {
     assert_eq!(store.count_documents(None, None).unwrap().count, 0);
     drop(store);
     let next = public_graph_write(path, "after-purge");
-    let graph = GraphStore::open(path, native_options(), None).unwrap();
+    let graph = Store::open_graph(path, native_options(), None).unwrap();
     let nodes = graph
         .get_nodes(
             &[first, next],
